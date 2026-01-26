@@ -1,8 +1,10 @@
 #![no_std]
 
 pub mod commands;
+pub mod fs;
 pub mod keyboard;
 pub mod memory;
+pub mod persistence;
 pub mod vga;
 
 #[panic_handler]
@@ -14,6 +16,10 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[no_mangle]
 pub extern "C" fn rust_main() -> ! {
+    // Initialize filesystem and persistence services
+    fs::init();
+    persistence::init();
+    
     vga::clear_screen();
     vga::print_str("Oreulia OS\n");
     vga::print_str("Type 'help' for commands.\n\n");
