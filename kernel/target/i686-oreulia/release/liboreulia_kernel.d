@@ -1,0 +1,1 @@
+/Users/keefereeves/Desktop/oreulia/kernel/target/i686-oreulia/release/liboreulia_kernel.a: /Users/keefereeves/Desktop/oreulia/kernel/src/lib.rs /Users/keefereeves/Desktop/oreulia/kernel/src/memory.rs /Users/keefereeves/Desktop/oreulia/kernel/src/vga.rs

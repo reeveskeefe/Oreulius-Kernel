@@ -2,12 +2,13 @@
 name = "oreulia-kernel"
 version = "0.1.0"
 edition = "2021"
+autobins = false
+
+[lib]
+crate-type = ["staticlib"]
 
 [dependencies]
-linked_list_allocator = "0.10"
-uart_16550 = "0.3"
 spin = "0.9"
-x86_64 = "=0.14.10"
 
 [dependencies.lazy_static]
 version = "1.4"
