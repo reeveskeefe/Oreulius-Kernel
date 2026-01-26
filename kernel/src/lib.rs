@@ -1,14 +1,19 @@
 #![no_std]
 
 pub mod commands;
+pub mod e1000;
 pub mod fs;
 pub mod ipc;
 pub mod keyboard;
 pub mod memory;
+pub mod net;
+pub mod pci;
 pub mod persistence;
 pub mod process;
 pub mod registry;
 pub mod vga;
+pub mod wasm;
+pub mod wifi;
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -25,6 +30,35 @@ pub extern "C" fn rust_main() -> ! {
     ipc::init();
     registry::init();
     process::init();  // Creates init process (PID 1)
+    wasm::init();     // Initialize WASM runtime
+    
+    // Initialize PCI and detect network devices
+    vga::print_str("[PCI] Scanning for devices...\n");
+    let mut pci_scanner = pci::PciScanner::new();
+    pci_scanner.scan();
+    
+    // Try WiFi first, then Ethernet
+    if let Some(wifi_device) = pci_scanner.find_wifi_device() {
+        vga::print_str("[NET] WiFi device detected\n");
+        net::init(Some(wifi_device));
+    } else if let Some(eth_device) = pci_scanner.find_ethernet_device() {
+        vga::print_str("[NET] Ethernet device detected (e1000)\n");
+        if e1000::init(eth_device).is_ok() {
+            vga::print_str("[NET] E1000 initialized, MAC: ");
+            if let Some(mac) = e1000::get_mac_address() {
+                for (i, byte) in mac.iter().enumerate() {
+                    if i > 0 { vga::print_str(":"); }
+                    vga::print_str("0x");
+                    // Simple hex print
+                }
+            }
+            vga::print_str("\n");
+        }
+        net::init(Some(eth_device));
+    } else {
+        vga::print_str("[NET] No network device found\n");
+        net::init(None);
+    }
     
     vga::clear_screen();
     vga::print_str("Oreulia OS\n");
