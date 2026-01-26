@@ -2,9 +2,11 @@
 
 pub mod commands;
 pub mod fs;
+pub mod ipc;
 pub mod keyboard;
 pub mod memory;
 pub mod persistence;
+pub mod registry;
 pub mod vga;
 
 #[panic_handler]
@@ -16,9 +18,11 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[no_mangle]
 pub extern "C" fn rust_main() -> ! {
-    // Initialize filesystem and persistence services
+    // Initialize services
     fs::init();
     persistence::init();
+    ipc::init();
+    registry::init();
     
     vga::clear_screen();
     vga::print_str("Oreulia OS\n");

@@ -1,4 +1,4 @@
-# Oreulia — Filesystem v0 (Persistence Service)
+i# Oreulia — Filesystem v0 (Persistence Service)
 
 **Status:** Draft (Jan 24, 2026)
 

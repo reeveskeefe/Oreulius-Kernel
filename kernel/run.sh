@@ -3,32 +3,28 @@
 
 set -euo pipefail
 
-if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
-    echo "qemu-system-x86_64 not found. Install QEMU first."
+# Check for QEMU i386
+if ! command -v qemu-system-i386 >/dev/null 2>&1; then
+    echo "qemu-system-i386 not found. Install QEMU first."
+    echo "  macOS: brew install qemu"
+    echo "  Linux: sudo apt-get install qemu-system-x86"
     exit 1
 fi
 
-if ! command -v bootimage >/dev/null 2>&1; then
-    echo "bootimage not found. Installing..."
-    cargo install bootimage
-fi
+ISO_PATH="oreulia.iso"
 
-if ! command -v rust-objcopy >/dev/null 2>&1; then
-    echo "llvm-tools-preview not found. Installing..."
-    rustup component add llvm-tools-preview
-fi
-
-echo "Building kernel..."
-cargo +nightly bootimage
-
-IMAGE_PATH="target/x86_64-unknown-none/debug/bootimage-oreulia-kernel.bin"
-if [ ! -f "$IMAGE_PATH" ]; then
-    echo "Boot image not found at $IMAGE_PATH"
+# Check if ISO exists
+if [ ! -f "$ISO_PATH" ]; then
+    echo "ISO not found at $ISO_PATH"
+    echo "Run ./build.sh first to create the ISO"
     exit 1
 fi
 
-echo "Starting QEMU..."
-qemu-system-x86_64 \
-    -drive format=raw,file="$IMAGE_PATH" \
-    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+echo "Starting Oreulia OS in QEMU..."
+echo "Press Ctrl+C to exit"
+echo ""
+
+# Run QEMU with the ISO
+qemu-system-i386 \
+    -cdrom "$ISO_PATH" \
     -serial stdio

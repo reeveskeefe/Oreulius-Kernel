@@ -63,6 +63,34 @@ impl FileKey {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Pack key prefix into u32 array for IPC transfer (first 16 bytes)
+    pub fn pack_prefix(&self) -> [u32; 4] {
+        let mut result = [0u32; 4];
+        let len = self.len.min(16);
+        for i in 0..len {
+            let word_idx = i / 4;
+            let byte_idx = i % 4;
+            result[word_idx] |= (self.bytes[i] as u32) << (byte_idx * 8);
+        }
+        result
+    }
+
+    /// Unpack key prefix from u32 array (IPC transfer)
+    pub fn unpack_prefix(data: [u32; 4], len: usize) -> Result<Self, FilesystemError> {
+        if len > 16 {
+            return Err(FilesystemError::KeyTooLong);
+        }
+
+        let mut bytes = [0u8; MAX_KEY_LENGTH];
+        for i in 0..len {
+            let word_idx = i / 4;
+            let byte_idx = i % 4;
+            bytes[i] = ((data[word_idx] >> (byte_idx * 8)) & 0xFF) as u8;
+        }
+
+        Ok(FileKey { bytes, len })
+    }
 }
 
 impl fmt::Display for FileKey {
@@ -229,6 +257,49 @@ impl FilesystemCapability {
             rights: self.rights.attenuate(rights.bits),
             key_prefix: self.key_prefix,
         }
+    }
+
+    /// Convert to IPC capability for transfer
+    pub fn to_ipc_capability(&self) -> crate::ipc::Capability {
+        use crate::ipc::{Capability, CapabilityType};
+        
+        let mut cap = Capability::with_type(
+            self.cap_id,
+            0, // object_id - filesystem is global service
+            self.rights.bits,
+            CapabilityType::Filesystem,
+        );
+
+        // Pack key prefix into extra data if present
+        if let Some(prefix) = &self.key_prefix {
+            cap.extra = prefix.pack_prefix();
+            // Store prefix length in high byte of object_id
+            cap.object_id = prefix.len as u32;
+        }
+
+        cap
+    }
+
+    /// Create from IPC capability
+    pub fn from_ipc_capability(cap: &crate::ipc::Capability) -> Result<Self, FilesystemError> {
+        use crate::ipc::CapabilityType;
+
+        if cap.cap_type != CapabilityType::Filesystem {
+            return Err(FilesystemError::InvalidOperation);
+        }
+
+        let rights = FilesystemRights::new(cap.rights);
+        let key_prefix = if cap.object_id > 0 {
+            Some(FileKey::unpack_prefix(cap.extra, cap.object_id as usize)?)
+        } else {
+            None
+        };
+
+        Ok(FilesystemCapability {
+            cap_id: cap.cap_id,
+            rights,
+            key_prefix,
+        })
     }
 }
 
