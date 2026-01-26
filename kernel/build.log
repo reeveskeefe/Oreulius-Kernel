@@ -1,0 +1,44 @@
+llvm-tools-preview not found. Installing...
+info: component 'llvm-tools' for target 'aarch64-apple-darwin' is up to date
+Building kernel...
+Building kernel
+    Updating crates.io index
+     Locking 2 packages to latest compatible versions
+ Downgrading bootloader v0.11.14 -> v0.9.8 (available: v0.9.33)
+ Downgrading x86_64 v0.15.4 -> v0.14.13 (available: v0.15.4)
+ Downloading crates ...
+  Downloaded x86_64 v0.14.13
+  Downloaded bootloader v0.9.8
+   Compiling compiler_builtins v0.1.160 (/Users/keefereeves/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/Users/keefereeves/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
+   Compiling rustversion v1.0.22
+   Compiling x86 v0.52.0
+   Compiling bootloader v0.9.8
+   Compiling alloc v0.0.0 (/Users/keefereeves/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc)
+   Compiling scopeguard v1.2.0
+   Compiling bit_field v0.10.3
+   Compiling bitflags v1.3.2
+   Compiling bitflags v2.10.0
+   Compiling volatile v0.4.6
+   Compiling raw-cpuid v10.7.0
+   Compiling lock_api v0.4.14
+   Compiling x86_64 v0.14.13
+   Compiling spinning_top v0.2.5
+   Compiling spin v0.9.8
+   Compiling linked_list_allocator v0.10.5
+   Compiling lazy_static v1.5.0
+   Compiling uart_16550 v0.3.2
+   Compiling oreulia-kernel v0.1.0 (/Users/keefereeves/Desktop/oreulia/kernel)
+error[E0015]: cannot call non-const associated function `ColorCode::new` in statics
+   --> src/vga.rs:179:17
+    |
+179 |     color_code: ColorCode::new(Color::White, Color::Black),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: calls in statics are limited to constant functions, tuple structs and tuple variants
+    = note: consider wrapping this expression in `std::sync::LazyLock::new(|| ...)`
+
+For more information about this error, try `rustc --explain E0015`.
+error: could not compile `oreulia-kernel` (bin "oreulia-kernel") due to 1 previous error
+Error: Kernel build failed.
+Stderr: 

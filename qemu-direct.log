@@ -1,0 +1,1 @@
+qemu: could not open kernel file 'target/x86_64-unknown-none/debug/oreulia-kernel': No such file or directory
