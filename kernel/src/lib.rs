@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod commands;
+pub mod keyboard;
 pub mod memory;
 pub mod vga;
 
@@ -12,16 +14,43 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[no_mangle]
 pub extern "C" fn rust_main() -> ! {
-    // Minimal proof that Rust code is running (i686 mode).
-    unsafe {
-        let vga = 0xb8000 as *mut u16;
-        *vga.add(0) = 0x2F52; // R
-        *vga.add(1) = 0x2F55; // U
-        *vga.add(2) = 0x2F53; // S
-        *vga.add(3) = 0x2F54; // T
-    }
+    vga::clear_screen();
+    vga::print_str("Oreulia OS\n");
+    vga::print_str("Type 'help' for commands.\n\n");
+    vga::print_str("> ");
+
+    let mut input: [u8; 256] = [0; 256];
+    let mut len: usize = 0;
 
     loop {
+        if let Some(ch) = keyboard::poll() {
+            match ch {
+                '\n' => {
+                    vga::print_char('\n');
+                    let line = core::str::from_utf8(&input[..len]).unwrap_or("");
+                    commands::execute(line);
+                    len = 0;
+                    input = [0; 256];
+                    vga::print_str("> ");
+                }
+                '\x08' => {
+                    if len > 0 {
+                        len -= 1;
+                        input[len] = 0;
+                        vga::backspace();
+                    }
+                }
+                c if c.is_ascii_graphic() || c == ' ' => {
+                    if len < input.len() - 1 {
+                        input[len] = c as u8;
+                        len += 1;
+                        vga::print_char(c);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         core::hint::spin_loop();
     }
 }

@@ -194,3 +194,30 @@ pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
     WRITER.lock().write_fmt(args).unwrap();
 }
+
+pub fn print_str(s: &str) {
+    WRITER.lock().write_string(s);
+}
+
+pub fn print_char(c: char) {
+    WRITER.lock().write_byte(c as u8);
+}
+
+pub fn clear_screen() {
+    WRITER.lock().clear_screen();
+}
+
+pub fn backspace() {
+    let mut writer = WRITER.lock();
+    if writer.column_position == 0 {
+        return;
+    }
+
+    writer.column_position -= 1;
+    let row = writer.row_position;
+    let col = writer.column_position;
+    writer.buffer.chars[row][col] = ScreenChar {
+        ascii_character: b' ',
+        color_code: writer.color_code,
+    };
+}
