@@ -2,6 +2,7 @@ use crate::vga;
 use crate::fs;
 use crate::ipc;
 use crate::registry;
+use crate::process;
 
 // Helper functions for printing numbers
 fn print_u32(n: u32) {
@@ -61,6 +62,11 @@ pub fn execute(input: &str) {
             vga::print_str("  svc-list     - List all services\n");
             vga::print_str("  svc-stats    - Show registry statistics\n");
             vga::print_str("  intro-demo   - Demo introduction protocol\n");
+            vga::print_str("  spawn        - Spawn a new process (spawn <name>)\n");
+            vga::print_str("  ps           - List all processes\n");
+            vga::print_str("  kill         - Terminate a process (kill <pid>)\n");
+            vga::print_str("  yield        - Yield current process\n");
+            vga::print_str("  whoami       - Show current process\n");
         }
         "clear" => {
             vga::clear_screen();
@@ -120,6 +126,21 @@ pub fn execute(input: &str) {
         }
         "intro-demo" => {
             cmd_intro_demo();
+        }
+        "spawn" => {
+            cmd_spawn(parts);
+        }
+        "ps" => {
+            cmd_ps();
+        }
+        "kill" => {
+            cmd_kill(parts);
+        }
+        "yield" => {
+            cmd_yield();
+        }
+        "whoami" => {
+            cmd_whoami();
         }
         _ => {
             vga::print_str("Unknown command: ");
@@ -1147,4 +1168,195 @@ impl registry::RegistryError {
             registry::RegistryError::TooManyIntroducers => "Too many introducers",
         }
     }
+}
+
+// ============================================================================
+// Process Management Commands
+// ============================================================================
+
+/// Spawn a new process
+fn cmd_spawn(mut parts: core::str::SplitWhitespace) {
+    let name = match parts.next() {
+        Some(n) => n,
+        None => {
+            vga::print_str("Usage: spawn <name>\n");
+            return;
+        }
+    };
+
+    // Get current process as parent
+    let parent = process::current_pid();
+
+    match process::process_manager().spawn(name, parent) {
+        Ok(pid) => {
+            vga::print_str("Process spawned: ");
+            vga::print_str(name);
+            vga::print_str(" (PID ");
+            print_u32(pid.0);
+            vga::print_str(")\n");
+        }
+        Err(e) => {
+            vga::print_str("Failed to spawn: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
+/// List all processes
+fn cmd_ps() {
+    vga::print_str("Processes:\n");
+    vga::print_str("---------\n");
+    vga::print_str("PID  Name                State       Caps\n");
+
+    let (processes, count) = process::process_manager().list();
+
+    if count == 0 {
+        vga::print_str("No processes running\n");
+        return;
+    }
+
+    for i in 0..count {
+        let (pid, name_bytes, state, cap_count) = processes[i];
+        // Print PID (aligned)
+        let pid_val = pid.0;
+        if pid_val < 10 {
+            vga::print_char(' ');
+        }
+        print_u32(pid_val);
+        vga::print_str("  ");
+
+        // Print name (truncate at 18 chars, pad if shorter)
+        let name_len = name_bytes.iter().position(|&c| c == 0).unwrap_or(32).min(18);
+        let name_str = core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("<invalid>");
+        vga::print_str(name_str);
+        
+        // Pad name to 20 chars
+        for _ in name_len..20 {
+            vga::print_char(' ');
+        }
+
+        // Print state (pad to 12 chars)
+        vga::print_str(state.as_str());
+        for _ in state.as_str().len()..12 {
+            vga::print_char(' ');
+        }
+
+        // Print capability count
+        print_usize(cap_count);
+        vga::print_char('\n');
+    }
+
+    vga::print_char('\n');
+    let (count, max) = process::process_manager().stats();
+    vga::print_str("Total: ");
+    print_usize(count);
+    vga::print_str(" / ");
+    print_usize(max);
+    vga::print_str(" processes\n");
+}
+
+/// Kill a process
+fn cmd_kill(mut parts: core::str::SplitWhitespace) {
+    let pid_str = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: kill <pid>\n");
+            return;
+        }
+    };
+
+    // Parse PID
+    let pid = match parse_u32(pid_str) {
+        Some(p) => ipc::ProcessId(p),
+        None => {
+            vga::print_str("Invalid PID: ");
+            vga::print_str(pid_str);
+            vga::print_str("\n");
+            return;
+        }
+    };
+
+    // Don't allow killing init (PID 1)
+    if pid.0 == 1 {
+        vga::print_str("Cannot kill init process (PID 1)\n");
+        return;
+    }
+
+    match process::process_manager().terminate(pid) {
+        Ok(()) => {
+            vga::print_str("Process ");
+            print_u32(pid.0);
+            vga::print_str(" terminated\n");
+            
+            // Reap terminated processes
+            process::process_manager().reap();
+        }
+        Err(e) => {
+            vga::print_str("Failed to kill: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
+/// Yield current process
+fn cmd_yield() {
+    let old_pid = process::current_pid();
+    
+    if let Some(new_pid) = process::process_manager().yield_process() {
+        vga::print_str("Yielded: PID ");
+        if let Some(old) = old_pid {
+            print_u32(old.0);
+        } else {
+            vga::print_str("?");
+        }
+        vga::print_str(" → PID ");
+        print_u32(new_pid.0);
+        vga::print_str("\n");
+    } else {
+        vga::print_str("No other runnable process\n");
+    }
+}
+
+/// Show current process
+fn cmd_whoami() {
+    if let Some(pid) = process::current_pid() {
+        if let Some(proc) = process::process_manager().get(pid) {
+            vga::print_str("Current process: PID ");
+            print_u32(pid.0);
+            vga::print_str(" (");
+            vga::print_str(proc.name_str());
+            vga::print_str(")\n");
+            vga::print_str("  State: ");
+            vga::print_str(proc.state.as_str());
+            vga::print_str("\n");
+            vga::print_str("  Capabilities: ");
+            print_usize(proc.capabilities.count());
+            vga::print_str("\n");
+            vga::print_str("  CPU time: ");
+            print_u32(proc.cpu_time as u32);
+            vga::print_str(" ticks\n");
+        } else {
+            vga::print_str("Current PID: ");
+            print_u32(pid.0);
+            vga::print_str(" (not found in table)\n");
+        }
+    } else {
+        vga::print_str("No current process\n");
+    }
+}
+
+// Helper to parse u32 from string
+fn parse_u32(s: &str) -> Option<u32> {
+    let mut result = 0u32;
+    for byte in s.bytes() {
+        if byte >= b'0' && byte <= b'9' {
+            result = result.checked_mul(10)?;
+            result = result.checked_add((byte - b'0') as u32)?;
+        } else {
+            return None;
+        }
+    }
+    Some(result)
 }

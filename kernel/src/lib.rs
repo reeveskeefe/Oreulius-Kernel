@@ -6,6 +6,7 @@ pub mod ipc;
 pub mod keyboard;
 pub mod memory;
 pub mod persistence;
+pub mod process;
 pub mod registry;
 pub mod vga;
 
@@ -23,6 +24,7 @@ pub extern "C" fn rust_main() -> ! {
     persistence::init();
     ipc::init();
     registry::init();
+    process::init();  // Creates init process (PID 1)
     
     vga::clear_screen();
     vga::print_str("Oreulia OS\n");
