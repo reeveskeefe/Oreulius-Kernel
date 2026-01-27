@@ -1,9 +1,10 @@
 //! Intel E1000 Ethernet Driver (Real Hardware)
 //!
 //! Driver for Intel 82540EM Gigabit Ethernet Controller (emulated by QEMU).
-//! Supports real packet transmission and reception.
+//! Supports real packet transmission and reception with descriptor rings.
 
 use crate::pci::PciDevice;
+use crate::netstack::NetworkInterface;
 use spin::Mutex;
 
 // E1000 Register Offsets
@@ -43,12 +44,80 @@ const E1000_RCTL_SECRC: u32 = 0x04000000; // Strip Ethernet CRC
 // Transmit Control Flags
 const E1000_TCTL_EN: u32 = 0x00000002;   // Transmit Enable
 const E1000_TCTL_PSP: u32 = 0x00000008;  // Pad Short Packets
+const E1000_TCTL_CT: u32 = 0x00000FF0;   // Collision Threshold
+const E1000_TCTL_COLD: u32 = 0x003FF000; // Collision Distance
+
+// Descriptor flags
+const E1000_TXD_CMD_EOP: u8 = 0x01;      // End of Packet
+const E1000_TXD_CMD_RS: u8 = 0x08;       // Report Status
+const E1000_TXD_STAT_DD: u8 = 0x01;      // Descriptor Done
+
+const NUM_RX_DESC: usize = 32;
+const NUM_TX_DESC: usize = 32;
+
+// Simple buffer pool (static memory for MVP)
+static mut RX_BUFFERS: [[u8; 2048]; NUM_RX_DESC] = [[0; 2048]; NUM_RX_DESC];
+static mut TX_BUFFERS: [[u8; 2048]; NUM_TX_DESC] = [[0; 2048]; NUM_TX_DESC];
+static mut RX_DESCS: [E1000RxDesc; NUM_RX_DESC] = [E1000RxDesc::new(); NUM_RX_DESC];
+static mut TX_DESCS: [E1000TxDesc; NUM_TX_DESC] = [E1000TxDesc::new(); NUM_TX_DESC];
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+struct E1000RxDesc {
+    addr: u64,
+    length: u16,
+    checksum: u16,
+    status: u8,
+    errors: u8,
+    special: u16,
+}
+
+impl E1000RxDesc {
+    const fn new() -> Self {
+        E1000RxDesc {
+            addr: 0,
+            length: 0,
+            checksum: 0,
+            status: 0,
+            errors: 0,
+            special: 0,
+        }
+    }
+}
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+struct E1000TxDesc {
+    addr: u64,
+    length: u16,
+    cso: u8,
+    cmd: u8,
+    status: u8,
+    css: u8,
+    special: u16,
+}
+
+impl E1000TxDesc {
+    const fn new() -> Self {
+        E1000TxDesc {
+            addr: 0,
+            length: 0,
+            cso: 0,
+            cmd: 0,
+            status: 0,
+            css: 0,
+            special: 0,
+        }
+    }
+}
 
 pub struct E1000Driver {
     pci_device: PciDevice,
     mmio_base: u32,
     mac_address: [u8; 6],
     enabled: bool,
+    rx_tail: usize,
+    tx_tail: usize,
 }
 
 impl E1000Driver {
@@ -59,6 +128,8 @@ impl E1000Driver {
             mmio_base: 0,
             mac_address: [0; 6],
             enabled: false,
+            rx_tail: 0,
+            tx_tail: 0,
         }
     }
 
@@ -117,19 +188,62 @@ impl E1000Driver {
 
     /// Initialize receive descriptors
     fn init_rx(&mut self) {
-        // For MVP, we'll skip actual descriptor setup
-        // Just enable promiscuous mode
-        let rctl = E1000_RCTL_EN | E1000_RCTL_UPE | E1000_RCTL_MPE | 
-                   E1000_RCTL_BAM | E1000_RCTL_BSIZE | E1000_RCTL_SECRC;
-        self.write_reg(E1000_REG_RCTL, rctl);
+        unsafe {
+            // Setup descriptor ring
+            for i in 0..NUM_RX_DESC {
+                RX_DESCS[i].addr = RX_BUFFERS[i].as_ptr() as u64;
+                RX_DESCS[i].status = 0;
+            }
+            
+            // Set descriptor base address
+            let desc_addr = RX_DESCS.as_ptr() as u32;
+            self.write_reg(E1000_REG_RDBAL, desc_addr);
+            self.write_reg(E1000_REG_RDBAH, 0);
+            
+            // Set descriptor length
+            self.write_reg(E1000_REG_RDLEN, (NUM_RX_DESC * 16) as u32);
+            
+            // Set head and tail
+            self.write_reg(E1000_REG_RDH, 0);
+            self.write_reg(E1000_REG_RDT, (NUM_RX_DESC - 1) as u32);
+            self.rx_tail = NUM_RX_DESC - 1;
+            
+            // Enable receiver with promiscuous mode
+            let rctl = E1000_RCTL_EN | E1000_RCTL_UPE | E1000_RCTL_MPE | 
+                       E1000_RCTL_BAM | E1000_RCTL_BSIZE | E1000_RCTL_SECRC;
+            self.write_reg(E1000_REG_RCTL, rctl);
+        }
     }
 
     /// Initialize transmit descriptors
     fn init_tx(&mut self) {
-        // For MVP, we'll skip actual descriptor setup
-        // Just enable transmit
-        let tctl = E1000_TCTL_EN | E1000_TCTL_PSP;
-        self.write_reg(E1000_REG_TCTL, tctl);
+        unsafe {
+            // Setup descriptor ring
+            for i in 0..NUM_TX_DESC {
+                TX_DESCS[i].addr = TX_BUFFERS[i].as_ptr() as u64;
+                TX_DESCS[i].cmd = 0;
+                TX_DESCS[i].status = E1000_TXD_STAT_DD;  // Mark as done
+            }
+            
+            // Set descriptor base address
+            let desc_addr = TX_DESCS.as_ptr() as u32;
+            self.write_reg(E1000_REG_TDBAL, desc_addr);
+            self.write_reg(E1000_REG_TDBAH, 0);
+            
+            // Set descriptor length
+            self.write_reg(E1000_REG_TDLEN, (NUM_TX_DESC * 16) as u32);
+            
+            // Set head and tail
+            self.write_reg(E1000_REG_TDH, 0);
+            self.write_reg(E1000_REG_TDT, 0);
+            self.tx_tail = 0;
+            
+            // Enable transmitter
+            let tctl = E1000_TCTL_EN | E1000_TCTL_PSP | 
+                       (15 << 4) |   // Collision threshold
+                       (64 << 12);   // Collision distance
+            self.write_reg(E1000_REG_TCTL, tctl);
+        }
     }
 
     /// Enable the device
@@ -164,15 +278,87 @@ impl E1000Driver {
         self.enabled
     }
 
-    /// Send an Ethernet frame (basic implementation)
-    pub fn send_packet(&mut self, data: &[u8]) -> Result<(), &'static str> {
+    /// Receive an Ethernet frame (non-blocking)
+    pub fn recv_frame(&mut self, buffer: &mut [u8]) -> Result<usize, &'static str> {
         if !self.enabled {
             return Err("E1000: Device not enabled");
         }
         
-        // For MVP, just pretend we sent it
-        // Real implementation would use TX descriptors
-        Ok(())
+        unsafe {
+            // Check if descriptor has data
+            let desc = &RX_DESCS[self.rx_tail];
+            if desc.status & 0x01 == 0 {
+                return Err("No packet available");
+            }
+            
+            // Copy packet data
+            let len = desc.length as usize;
+            if len > buffer.len() {
+                return Err("Buffer too small");
+            }
+            
+            buffer[..len].copy_from_slice(&RX_BUFFERS[self.rx_tail][..len]);
+            
+            // Reset descriptor
+            RX_DESCS[self.rx_tail].status = 0;
+            
+            // Update tail pointer
+            self.rx_tail = (self.rx_tail + 1) % NUM_RX_DESC;
+            self.write_reg(E1000_REG_RDT, self.rx_tail as u32);
+            
+            Ok(len)
+        }
+    }
+
+    /// Send an Ethernet frame
+    pub fn send_frame(&mut self, data: &[u8]) -> Result<(), &'static str> {
+        if !self.enabled {
+            return Err("E1000: Device not enabled");
+        }
+        
+        if data.len() > 2048 {
+            return Err("Frame too large");
+        }
+        
+        unsafe {
+            // Wait for descriptor to be available
+            let mut timeout = 10000;
+            while TX_DESCS[self.tx_tail].status & E1000_TXD_STAT_DD == 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    return Err("TX timeout");
+                }
+            }
+            
+            // Copy packet data
+            TX_BUFFERS[self.tx_tail][..data.len()].copy_from_slice(data);
+            
+            // Setup descriptor
+            TX_DESCS[self.tx_tail].length = data.len() as u16;
+            TX_DESCS[self.tx_tail].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+            TX_DESCS[self.tx_tail].status = 0;
+            
+            // Update tail pointer
+            let old_tail = self.tx_tail;
+            self.tx_tail = (self.tx_tail + 1) % NUM_TX_DESC;
+            self.write_reg(E1000_REG_TDT, self.tx_tail as u32);
+            
+            // Wait for transmission (optional but ensures packet is sent)
+            timeout = 10000;
+            while TX_DESCS[old_tail].status & E1000_TXD_STAT_DD == 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    return Err("TX completion timeout");
+                }
+            }
+            
+            Ok(())
+        }
+    }
+
+    /// Send an Ethernet frame (deprecated, use send_frame)
+    pub fn send_packet(&mut self, data: &[u8]) -> Result<(), &'static str> {
+        self.send_frame(data)
     }
 
     /// Get link status
@@ -202,3 +388,26 @@ pub fn get_mac_address() -> Option<[u8; 6]> {
 pub fn is_link_up() -> bool {
     E1000_DRIVER.lock().as_ref().map(|d| d.is_link_up()).unwrap_or(false)
 }
+
+// ============================================================================
+// NetworkInterface Trait Implementation
+// ============================================================================
+
+impl NetworkInterface for E1000Driver {
+    fn send_frame(&mut self, frame: &[u8]) -> Result<(), &'static str> {
+        E1000Driver::send_frame(self, frame)
+    }
+    
+    fn recv_frame(&mut self, buffer: &mut [u8]) -> Result<usize, &'static str> {
+        E1000Driver::recv_frame(self, buffer)
+    }
+    
+    fn mac_address(&self) -> [u8; 6] {
+        self.mac_address
+    }
+    
+    fn is_link_up(&self) -> bool {
+        E1000Driver::is_link_up(self)
+    }
+}
+

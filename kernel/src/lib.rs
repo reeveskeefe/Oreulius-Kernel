@@ -1,5 +1,8 @@
 #![no_std]
 
+extern crate alloc;
+use alloc::boxed::Box;
+
 pub mod commands;
 pub mod e1000;
 pub mod fs;
@@ -7,6 +10,7 @@ pub mod ipc;
 pub mod keyboard;
 pub mod memory;
 pub mod net;
+pub mod netstack;
 pub mod pci;
 pub mod persistence;
 pub mod process;
@@ -44,20 +48,11 @@ pub extern "C" fn rust_main() -> ! {
     } else if let Some(eth_device) = pci_scanner.find_ethernet_device() {
         vga::print_str("[NET] Ethernet device detected (e1000)\n");
         if e1000::init(eth_device).is_ok() {
-            vga::print_str("[NET] E1000 initialized, MAC: ");
-            if let Some(mac) = e1000::get_mac_address() {
-                for (i, byte) in mac.iter().enumerate() {
-                    if i > 0 { vga::print_str(":"); }
-                    vga::print_str("0x");
-                    // Simple hex print
-                }
-            }
-            vga::print_str("\n");
+            vga::print_str("[NET] E1000 initialized - Ready for DNS/ARP/UDP\n");
         }
-        net::init(Some(eth_device));
+        // Don't call net::init for ethernet - it expects WiFi device!
     } else {
         vga::print_str("[NET] No network device found\n");
-        net::init(None);
     }
     
     vga::clear_screen();

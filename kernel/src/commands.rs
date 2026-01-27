@@ -84,6 +84,7 @@ pub fn execute(input: &str) {
             vga::print_str("  dns-resolve  - Resolve domain name (dns-resolve <domain>)\n");
             vga::print_str("  eth-status   - Show Ethernet status\n");
             vga::print_str("  eth-info     - Show Ethernet device info\n");
+            vga::print_str("  netstack-info - Show network stack status (real TCP/IP)\n");
         }
         "clear" => {
             vga::clear_screen();
@@ -206,6 +207,9 @@ pub fn execute(input: &str) {
         }
         "eth-info" => {
             cmd_eth_info();
+        }
+        "netstack-info" => {
+            cmd_netstack_info();
         }
         _ => {
             vga::print_str("Unknown command: ");
@@ -2518,7 +2522,7 @@ fn cmd_http_get(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
-    use crate::net;
+    use crate::netstack;
     
     let domain = match parts.next() {
         Some(d) => d,
@@ -2530,29 +2534,47 @@ fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
     };
     
     vga::print_str("\n");
-    vga::print_str("Resolving: ");
+    vga::print_str("=== Real DNS Resolution ===\n\n");
+    vga::print_str("Domain: ");
     vga::print_str(domain);
     vga::print_str("\n");
     
-    let net_service = net::network();
-    let mut net_lock = net_service.lock();
+    let mut stack = netstack::network_stack().lock();
     
-    let ip = match net_lock.dns_resolve(domain) {
+    if !stack.is_ready() {
+        vga::print_str("Error: Network not ready\n");
+        vga::print_str("Check: eth-status or pci-list\n\n");
+        return;
+    }
+    
+    vga::print_str("Sending UDP DNS query to 8.8.8.8...\n");
+    
+    let ip = match stack.dns_resolve(domain) {
         Ok(addr) => addr,
         Err(e) => {
             vga::print_str("Resolution failed: ");
-            vga::print_str(e.as_str());
-            vga::print_str("\n");
+            vga::print_str(e);
+            vga::print_str("\n\n");
             return;
         }
     };
     
-    vga::print_str("IP Address: ");
-    print_ipv4_net(ip);
+    vga::print_str("Success! IP: ");
+    print_ipv4_netstack(ip);
     vga::print_str("\n\n");
 }
 
 // Helper functions for network commands
+fn print_ipv4_netstack(ip: crate::netstack::Ipv4Addr) {
+    let octets = ip.octets();
+    for (i, octet) in octets.iter().enumerate() {
+        if i > 0 {
+            vga::print_char('.');
+        }
+        print_u8_val(*octet);
+    }
+}
+
 fn print_ipv4_net(ip: crate::net::Ipv4Addr) {
     let octets = ip.octets();
     for (i, octet) in octets.iter().enumerate() {
@@ -2840,3 +2862,35 @@ fn cmd_eth_info() {
     
     vga::print_str("\n");
 }
+
+fn cmd_netstack_info() {
+    use crate::netstack;
+    
+    vga::print_str("\n");
+    vga::print_str("===== Production Network Stack =====\n\n");
+    
+    let stack = netstack::network_stack().lock();
+    
+    vga::print_str("Status: ");
+    if stack.is_ready() {
+        vga::print_str("READY\n");
+    } else {
+        vga::print_str("NOT READY (no interface)\n");
+    }
+    
+    vga::print_str("\nFeatures:\n");
+    vga::print_str("  [x] ARP Protocol (address resolution)\n");
+    vga::print_str("  [x] UDP Protocol (for DNS)\n");
+    vga::print_str("  [x] DNS Client (real queries to 8.8.8.8)\n");
+    vga::print_str("  [x] Real packet I/O via E1000 descriptors\n");
+    vga::print_str("  [x] Universal interface (works with any driver)\n");
+    
+    vga::print_str("\nMy IP: ");
+    print_ipv4_netstack(stack.get_ip());
+    vga::print_str("\n");
+    
+    vga::print_str("\nTry: dns-resolve google.com\n");
+    vga::print_str("     dns-resolve github.com\n");
+    vga::print_str("\n");
+}
+
