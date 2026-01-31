@@ -100,6 +100,15 @@ pub fn execute(input: &str) {
             vga::print_str("  cpu-bench      - Benchmark CPU instructions\n");
             vga::print_str("  atomic-test    - Test atomic operations\n");
             vga::print_str("  spinlock-test  - Test spinlock implementation\n");
+            vga::print_str("\nAdvanced System Commands:\n");
+            vga::print_str("  quantum-stats  - Show quantum scheduler statistics\n");
+            vga::print_str("  alloc-stats    - Show hardened allocator statistics\n");
+            vga::print_str("  leak-check     - Check for memory leaks (debug only)\n");
+            vga::print_str("  futex-test     - Test futex-like blocking primitives\n");
+            vga::print_str("  update-frag    - Update and show fragmentation metrics\n");
+            vga::print_str("\nVirtual Memory & Syscalls:\n");
+            vga::print_str("  paging-test    - Test page mapping/unmapping\n");
+            vga::print_str("  syscall-test   - Test system call interface\n");
         }
         "clear" => {
             vga::clear_screen();
@@ -270,6 +279,27 @@ pub fn execute(input: &str) {
         }
         "spinlock-test" => {
             cmd_spinlock_test();
+        }
+        "quantum-stats" => {
+            crate::advanced_commands::cmd_quantum_stats();
+        }
+        "alloc-stats" => {
+            crate::advanced_commands::cmd_alloc_stats();
+        }
+        "leak-check" => {
+            crate::advanced_commands::cmd_leak_check();
+        }
+        "futex-test" => {
+            crate::advanced_commands::cmd_futex_test();
+        }
+        "update-frag" => {
+            crate::advanced_commands::cmd_update_frag();
+        }
+        "paging-test" => {
+            cmd_paging_test();
+        }
+        "syscall-test" => {
+            cmd_syscall_test();
         }
         _ => {
             vga::print_str("Unknown command: ");
@@ -3979,4 +4009,154 @@ fn cmd_spinlock_test() {
     
     vga::print_str("Spinlock tests completed.\n\n");
 }
+
+fn cmd_paging_test() {
+    use crate::advanced_commands::print_hex;
+    
+    vga::print_str("=== Virtual Memory Paging Test ===\n\n");
+    
+    // Test 1: Allocate and map a page
+    vga::print_str("Test 1: Allocating and mapping page...\n");
+    let test_virt = 0x400000; // 4MB virtual address
+    let test_phys = 0x500000; // 5MB physical address
+    
+    // Get kernel address space
+    use crate::paging::KERNEL_ADDRESS_SPACE;
+    let mut space_opt = KERNEL_ADDRESS_SPACE.lock();
+    
+    let space = match space_opt.as_mut() {
+        Some(s) => s,
+        None => {
+            vga::print_str("  ✗ Paging not initialized!\n");
+            return;
+        }
+    };
+    
+    match space.map_page(test_virt, test_phys, true, false) {
+        Ok(()) => {
+            vga::print_str("  ✓ Page mapped successfully\n");
+            vga::print_str("    Virtual: 0x");
+            print_hex(test_virt as usize);
+            vga::print_str(" -> Physical: 0x");
+            print_hex(test_phys as usize);
+            vga::print_str("\n");
+        }
+        Err(_) => {
+            vga::print_str("  ✗ Failed to map page\n");
+            return;
+        }
+    }
+    
+    // Test 2: Verify mapping
+    vga::print_str("\nTest 2: Verifying address translation...\n");
+    match space.virt_to_phys(test_virt) {
+        Some(phys) => {
+            vga::print_str("  ✓ Translation successful: 0x");
+            print_hex(phys as usize);
+            vga::print_str("\n");
+            if phys == test_phys {
+                vga::print_str("  ✓ Physical address matches expected\n");
+            } else {
+                vga::print_str("  ✗ Physical address mismatch!\n");
+            }
+        }
+        None => {
+            vga::print_str("  ✗ Translation failed (page not mapped)\n");
+        }
+    }
+    
+    // Test 3: Copy-on-write
+    vga::print_str("\nTest 3: Testing copy-on-write flag...\n");
+    match space.mark_copy_on_write(test_virt) {
+        Ok(()) => {
+            vga::print_str("  ✓ COW flag set successfully\n");
+            vga::print_str("  (Write fault would trigger page copy)\n");
+        }
+        Err(_) => {
+            vga::print_str("  ✗ Failed to set COW flag\n");
+        }
+    }
+    
+    // Test 4: Unmap page
+    vga::print_str("\nTest 4: Unmapping page...\n");
+    match space.unmap_page(test_virt) {
+        Ok(()) => {
+            vga::print_str("  ✓ Page unmapped successfully\n");
+        }
+        Err(_) => {
+            vga::print_str("  ✗ Failed to unmap page\n");
+        }
+    }
+    
+    // Test 5: Verify unmapped
+    vga::print_str("\nTest 5: Verifying page is unmapped...\n");
+    if space.is_mapped(test_virt) {
+        vga::print_str("  ✗ Page still appears mapped!\n");
+    } else {
+        vga::print_str("  ✓ Page correctly unmapped\n");
+    }
+    
+    vga::print_str("\n=== Paging Tests Complete ===\n\n");
+}
+
+fn cmd_syscall_test() {
+    vga::print_str("=== System Call Interface Test ===\n\n");
+    
+    // Display syscall statistics
+    let stats = crate::syscall::get_stats();
+    
+    vga::print_str("Syscall Statistics:\n");
+    vga::print_str("  Total calls: ");
+    print_u64(stats.total_calls);
+    vga::print_str("\n");
+    
+    vga::print_str("  Permission denied: ");
+    print_u64(stats.denied);
+    vga::print_str("\n");
+    
+    vga::print_str("  Errors: ");
+    print_u64(stats.errors);
+    vga::print_str("\n");
+    
+    vga::print_str("\nTop syscalls by frequency:\n");
+    
+    // Find top 5 syscalls
+    let mut top: [(usize, u64); 5] = [(0, 0); 5];
+    for i in 0..256 {
+        let count = stats.by_number[i];
+        if count > 0 {
+            // Insert into top 5 if larger
+            for j in 0..5 {
+                if count > top[j].1 {
+                    // Shift down
+                    for k in (j+1..5).rev() {
+                        top[k] = top[k-1];
+                    }
+                    top[j] = (i, count);
+                    break;
+                }
+            }
+        }
+    }
+    
+    for (i, (num, count)) in top.iter().enumerate() {
+        if *count == 0 {
+            break;
+        }
+        vga::print_str("  ");
+        print_usize(i + 1);
+        vga::print_str(". Syscall #");
+        print_usize(*num);
+        vga::print_str(": ");
+        print_u64(*count);
+        vga::print_str(" calls\n");
+    }
+    
+    vga::print_str("\nNote: Use INT 0x80 from user mode to invoke syscalls\n");
+    vga::print_str("Register layout: EAX=number, EBX-EDI=args\n");
+    vga::print_str("Returns: EAX=value, EDX=errno\n");
+    
+    vga::print_str("\n=== Syscall Tests Complete ===\n\n");
+}
+
 

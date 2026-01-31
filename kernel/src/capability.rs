@@ -19,7 +19,8 @@
 
 use core::fmt;
 use spin::Mutex;
-use crate::ipc::{ProcessId, ChannelId};
+pub use crate::ipc::ProcessId;  // Re-export for syscall module
+use crate::ipc::ChannelId;
 use crate::security::{self, SecurityEvent, AuditEntry};
 
 // ============================================================================
@@ -477,4 +478,22 @@ pub fn init() {
     // Create initial capabilities for kernel process
     let kernel_pid = ProcessId::new(0);
     CAPABILITY_MANAGER.init_task(kernel_pid);
+}
+
+/// Check if a process has a specific capability (syscall helper)
+pub fn check_capability(
+    pid: ProcessId,
+    object_id: u64,
+    cap_type: CapabilityType,
+    required_rights: Rights,
+) -> bool {
+    // TODO: Implement proper capability checking
+    // For now, allow all operations from kernel (PID 0)
+    if pid.0 == 0 {
+        return true;
+    }
+    
+    // TODO: Look up capability in process capability table
+    // For now, deny all user-mode operations
+    false
 }

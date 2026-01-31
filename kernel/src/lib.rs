@@ -3,24 +3,29 @@
 extern crate alloc;
 use alloc::boxed::Box;
 
+pub mod advanced_commands;
 pub mod asm_bindings;
 pub mod capability;
 pub mod commands;
 pub mod console_service;
 pub mod e1000;
 pub mod fs;
+pub mod hardened_allocator;
 pub mod ipc;
 pub mod keyboard;
 pub mod memory;
 pub mod net;
 pub mod netstack;
+pub mod paging;
 pub mod pci;
 pub mod persistence;
 pub mod pit;
 pub mod process;
+pub mod quantum_scheduler;
 pub mod registry;
 pub mod scheduler;
 pub mod security;
+pub mod syscall;
 pub mod vga;
 pub mod wasm;
 pub mod wifi;
@@ -39,6 +44,17 @@ pub extern "C" fn rust_main() -> ! {
     
     // Now we can use VGA (and everything else)
     vga::print_str("[MEMORY] Heap allocator initialized\n");
+    
+    // Initialize virtual memory management (must be early, after physical memory)
+    vga::print_str("[PAGING] Enabling virtual memory...\n");
+    paging::init();
+    vga::print_str("[PAGING] Virtual memory enabled (4KB pages, user/kernel separation)\n");
+    
+    // Initialize syscall interface
+    vga::print_str("[SYSCALL] Setting up system call interface...\n");
+    syscall::init();
+    vga::print_str("[SYSCALL] INT 0x80 handler registered\n");
+    
     vga::print_str("[WASM] Runtime initialized\n");
     
     // Initialize services

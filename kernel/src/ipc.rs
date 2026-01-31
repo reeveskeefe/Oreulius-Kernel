@@ -647,6 +647,12 @@ pub fn init() {
     // IPC is statically initialized, nothing to do for v0
 }
 
+/// Create a new channel (syscall stub)
+pub fn create_channel() -> Result<usize, &'static str> {
+    // TODO: Implement channel creation
+    Err("Channel creation not yet implemented")
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
