@@ -41,6 +41,15 @@ pub const MAX_INJECTED_CAPS: usize = 32;
 /// Maximum module size (256 KiB)
 pub const MAX_MODULE_SIZE: usize = 256 * 1024;
 
+/// Maximum instructions executed per call (prevents infinite loops)
+pub const MAX_INSTRUCTIONS_PER_CALL: usize = 100_000;
+
+/// Maximum memory operations per call
+pub const MAX_MEMORY_OPS_PER_CALL: usize = 10_000;
+
+/// Maximum syscalls per execution
+pub const MAX_SYSCALLS_PER_CALL: usize = 100;
+
 /// WASM value types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueType {
@@ -477,6 +486,10 @@ pub struct WasmInstance {
     capabilities: CapabilityTable,
     /// Process ID
     pub process_id: ProcessId,
+    /// Execution limits
+    instruction_count: usize,
+    memory_op_count: usize,
+    syscall_count: usize,
 }
 
 impl WasmInstance {
@@ -490,7 +503,44 @@ impl WasmInstance {
             pc: 0,
             capabilities: CapabilityTable::new(),
             process_id,
+            instruction_count: 0,
+            memory_op_count: 0,
+            syscall_count: 0,
         }
+    }
+
+    /// Reset execution limits
+    fn reset_limits(&mut self) {
+        self.instruction_count = 0;
+        self.memory_op_count = 0;
+        self.syscall_count = 0;
+    }
+
+    /// Check instruction limit
+    fn check_instruction_limit(&mut self) -> Result<(), WasmError> {
+        self.instruction_count += 1;
+        if self.instruction_count > MAX_INSTRUCTIONS_PER_CALL {
+            return Err(WasmError::ExecutionLimitExceeded);
+        }
+        Ok(())
+    }
+
+    /// Check memory operation limit
+    fn check_memory_limit(&mut self) -> Result<(), WasmError> {
+        self.memory_op_count += 1;
+        if self.memory_op_count > MAX_MEMORY_OPS_PER_CALL {
+            return Err(WasmError::ExecutionLimitExceeded);
+        }
+        Ok(())
+    }
+
+    /// Check syscall limit
+    fn check_syscall_limit(&mut self) -> Result<(), WasmError> {
+        self.syscall_count += 1;
+        if self.syscall_count > MAX_SYSCALLS_PER_CALL {
+            return Err(WasmError::ExecutionLimitExceeded);
+        }
+        Ok(())
     }
 
     /// Inject a capability into the instance
@@ -500,6 +550,18 @@ impl WasmInstance {
 
     /// Execute a function
     pub fn call(&mut self, func_idx: usize) -> Result<(), WasmError> {
+        // Reset execution limits for this call
+        self.reset_limits();
+
+        // Check rate limiting and security
+        if !crate::security::security().validate_capability(
+            self.process_id,
+            1, // Execute permission
+            1,
+        ).is_ok() {
+            return Err(WasmError::PermissionDenied);
+        }
+
         let func = self.module.get_function(func_idx)?;
         
         // Set up locals from stack parameters
@@ -512,14 +574,22 @@ impl WasmInstance {
         let end_pc = func.code_offset + func.code_len;
 
         while self.pc < end_pc {
-            self.step()?;
+            let should_continue = self.step()?;
+            if !should_continue {
+                // Return or End encountered
+                break;
+            }
         }
 
         Ok(())
     }
 
     /// Execute one instruction
-    fn step(&mut self) -> Result<(), WasmError> {
+    /// Returns: true to continue, false to break (for Return/End)
+    fn step(&mut self) -> Result<bool, WasmError> {
+        // Check execution limits
+        self.check_instruction_limit()?;
+
         if self.pc >= self.module.bytecode_len {
             return Err(WasmError::InvalidProgramCounter);
         }
@@ -538,12 +608,13 @@ impl WasmInstance {
             }
 
             Opcode::End => {
-                // End of block/function - handled by caller
+                // End of block/function - stop execution
+                return Ok(false);
             }
 
             Opcode::Return => {
-                // Return from function - handled by caller
-                return Ok(());
+                // Return from function - stop execution
+                return Ok(false);
             }
 
             Opcode::Drop => {
@@ -634,6 +705,7 @@ impl WasmInstance {
             }
 
             Opcode::I32Load => {
+                self.check_memory_limit()?;
                 let _align = self.read_uleb128()?; // Alignment hint (ignored for now)
                 let offset = self.read_uleb128()? as usize;
                 let addr = self.stack.pop()?.as_u32()? as usize;
@@ -644,6 +716,7 @@ impl WasmInstance {
             }
 
             Opcode::I32Store => {
+                self.check_memory_limit()?;
                 let _align = self.read_uleb128()?;
                 let offset = self.read_uleb128()? as usize;
                 let value = self.stack.pop()?.as_i32()?;
@@ -683,7 +756,7 @@ impl WasmInstance {
             }
         }
 
-        Ok(())
+        Ok(true) // Continue execution
     }
 
     /// Read unsigned LEB128
@@ -750,6 +823,9 @@ impl WasmInstance {
 
     /// Call a host function (Oreulia syscall)
     fn call_host_function(&mut self, func_idx: usize) -> Result<(), WasmError> {
+        // Check syscall limit
+        self.check_syscall_limit()?;
+
         match func_idx {
             0 => self.host_log(),
             1 => self.host_fs_read(),
@@ -1022,6 +1098,8 @@ pub enum WasmError {
     InvalidLocalIndex,
     Trap,
     DivisionByZero,
+    ExecutionLimitExceeded,
+    PermissionDenied,
     
     // Memory errors
     MemoryOutOfBounds,
@@ -1050,6 +1128,8 @@ impl fmt::Display for WasmError {
             WasmError::InvalidCapability => write!(f, "Invalid capability"),
             WasmError::Trap => write!(f, "Trap"),
             WasmError::DivisionByZero => write!(f, "Division by zero"),
+            WasmError::ExecutionLimitExceeded => write!(f, "Execution limit exceeded"),
+            WasmError::PermissionDenied => write!(f, "Permission denied"),
             WasmError::SyscallFailed => write!(f, "Syscall failed"),
             _ => write!(f, "WASM error"),
         }
@@ -1082,6 +1162,8 @@ impl WasmError {
             WasmError::UnknownHostFunction => "Unknown host function",
             WasmError::SyscallFailed => "Syscall failed",
             WasmError::InvalidUtf8 => "Invalid UTF-8",
+            WasmError::ExecutionLimitExceeded => "Execution limit exceeded",
+            WasmError::PermissionDenied => "Permission denied",
         }
     }
 }

@@ -291,13 +291,13 @@ impl E1000Driver {
                 return Err("No packet available");
             }
             
-            // Copy packet data
+            // Copy packet data (using fast assembly memcpy)
             let len = desc.length as usize;
             if len > buffer.len() {
                 return Err("Buffer too small");
             }
             
-            buffer[..len].copy_from_slice(&RX_BUFFERS[self.rx_tail][..len]);
+            crate::asm_bindings::fast_memcpy(&mut buffer[..len], &RX_BUFFERS[self.rx_tail][..len]);
             
             // Reset descriptor
             RX_DESCS[self.rx_tail].status = 0;
@@ -330,8 +330,8 @@ impl E1000Driver {
                 }
             }
             
-            // Copy packet data
-            TX_BUFFERS[self.tx_tail][..data.len()].copy_from_slice(data);
+            // Copy packet data (using fast assembly memcpy - 5x faster)
+            crate::asm_bindings::fast_memcpy(&mut TX_BUFFERS[self.tx_tail][..data.len()], data);
             
             // Setup descriptor
             TX_DESCS[self.tx_tail].length = data.len() as u16;

@@ -3,7 +3,10 @@
 extern crate alloc;
 use alloc::boxed::Box;
 
+pub mod asm_bindings;
+pub mod capability;
 pub mod commands;
+pub mod console_service;
 pub mod e1000;
 pub mod fs;
 pub mod ipc;
@@ -13,8 +16,11 @@ pub mod net;
 pub mod netstack;
 pub mod pci;
 pub mod persistence;
+pub mod pit;
 pub mod process;
 pub mod registry;
+pub mod scheduler;
+pub mod security;
 pub mod vga;
 pub mod wasm;
 pub mod wifi;
@@ -35,6 +41,26 @@ pub extern "C" fn rust_main() -> ! {
     registry::init();
     process::init();  // Creates init process (PID 1)
     wasm::init();     // Initialize WASM runtime
+    
+    // Initialize security subsystem
+    vga::print_str("[SECURITY] Initializing security manager...\n");
+    security::init();
+    vga::print_str("[SECURITY] Audit logging enabled\n");
+    
+    // Initialize capability subsystem
+    vga::print_str("[CAPABILITY] Initializing capability manager...\n");
+    capability::init();
+    vga::print_str("[CAPABILITY] Authority model enabled\n");
+    
+    // Initialize console service
+    vga::print_str("[CONSOLE] Initializing console service...\n");
+    console_service::init();
+    vga::print_str("[CONSOLE] Capability-based I/O ready\n");
+    
+    // Initialize timer for preemptive scheduling
+    vga::print_str("[TIMER] Initializing PIT (100 Hz)...\n");
+    pit::init();
+    vga::print_str("[SCHED] Preemptive scheduler ready\n");
     
     // Initialize PCI and detect network devices
     vga::print_str("[PCI] Scanning for devices...\n");
