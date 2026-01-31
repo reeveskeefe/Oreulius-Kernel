@@ -34,6 +34,13 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[no_mangle]
 pub extern "C" fn rust_main() -> ! {
+    // CRITICAL: Initialize memory allocator FIRST before ANY allocations
+    memory::init();
+    
+    // Now we can use VGA (and everything else)
+    vga::print_str("[MEMORY] Heap allocator initialized\n");
+    vga::print_str("[WASM] Runtime initialized\n");
+    
     // Initialize services
     fs::init();
     persistence::init();
@@ -57,28 +64,40 @@ pub extern "C" fn rust_main() -> ! {
     console_service::init();
     vga::print_str("[CONSOLE] Capability-based I/O ready\n");
     
+    vga::print_str("[DEBUG] About to initialize timer...\n");
+    
     // Initialize timer for preemptive scheduling
     vga::print_str("[TIMER] Initializing PIT (100 Hz)...\n");
     pit::init();
     vga::print_str("[SCHED] Preemptive scheduler ready\n");
     
-    // Initialize PCI and detect network devices
+    vga::print_str("[DEBUG] Timer initialized successfully\n");
+    
+    // Initialize PCI and detect network devices  
     vga::print_str("[PCI] Scanning for devices...\n");
-    let mut pci_scanner = pci::PciScanner::new();
-    pci_scanner.scan();
+    // TEMPORARILY DISABLED for debugging
+    // let mut pci_scanner = pci::PciScanner::new();
+    // pci_scanner.scan();
     
     // Try WiFi first, then Ethernet
-    if let Some(wifi_device) = pci_scanner.find_wifi_device() {
-        vga::print_str("[NET] WiFi device detected\n");
-        net::init(Some(wifi_device));
-    } else if let Some(eth_device) = pci_scanner.find_ethernet_device() {
-        vga::print_str("[NET] Ethernet device detected (e1000)\n");
-        if e1000::init(eth_device).is_ok() {
-            vga::print_str("[NET] E1000 initialized - Ready for DNS/ARP/UDP\n");
-        }
-        // Don't call net::init for ethernet - it expects WiFi device!
-    } else {
-        vga::print_str("[NET] No network device found\n");
+    // if let Some(wifi_device) = pci_scanner.find_wifi_device() {
+    //     vga::print_str("[NET] WiFi device detected\n");
+    //     net::init(Some(wifi_device));
+    // } else if let Some(eth_device) = pci_scanner.find_ethernet_device() {
+    //     vga::print_str("[NET] Ethernet device detected (e1000)\n");
+    //     if e1000::init(eth_device).is_ok() {
+    //         vga::print_str("[NET] E1000 initialized - Ready for DNS/ARP/UDP\n");
+    //     }
+    //     // Don't call net::init for ethernet - it expects WiFi device!
+    // } else {
+        vga::print_str("[NET] No network device found (PCI scan disabled for debugging)\n");
+    // }
+    
+    vga::print_str("\n[INIT] Initialization complete, starting shell...\n");
+    
+    // Small delay to ensure message is visible
+    for _ in 0..10000000 {
+        core::hint::spin_loop();
     }
     
     vga::clear_screen();
