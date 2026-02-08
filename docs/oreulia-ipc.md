@@ -1,102 +1,54 @@
 # Oreulia — IPC & Dataflow
 
-**Status:** Draft (Jan 24, 2026)
+**Status:** Implemented (Feb 8, 2026)
 
-Oreulia is dataflow-first: components communicate through message passing rather than shared global state.
-
-This document specifies:
-
-- kernel channels (v0)
-- message format (v0)
-- capability transfer over IPC
-- backpressure expectations
+Oreulia is dataflow-first: components communicate through message passing rather than shared global state or shared memory. The Inter-Process Communication (IPC) system is the primary mechanism for interaction between the kernel and user-mode (Wasm) applications.
 
 ---
 
-## 1. Goals
+## 1. Core Concepts
 
-- Simple, correct IPC primitive for early bring-up.
-- Explicit capability transfer (authority moves over messages).
-- Bounded queues to make backpressure explicit.
-- A path to typed schemas later without blocking MVP.
+### 1.1 Channels
+The fundamental primitive is the **Channel**.
+- **Bidirectional**: Channels support both sending and receiving messages.
+- **Bounded**: Each channel has a fixed capacity to ensure backpressure.
+- **Capability-Gated**: A `Channel` is an object in the kernel; processes hold a `ChannelCapability` (handle) to access it.
 
-Non-goals (v0):
-
-- zero-copy everywhere
-- complex routing/brokers in kernel
-
----
-
-## 2. Channel model
-
-### 2.1 Objects and endpoints
-
-A `Channel` is a kernel object.
-
-v0 options (choose one for implementation):
-
-- **Unidirectional channel**: separate send/receive endpoints
-- **Bidirectional channel**: single object supports send/receive with rights
-
-Oreulia’s capability model naturally supports the bidirectional option:
-
-- `Channel` object with rights `Send` and/or `Receive`
-
-### 2.2 Bounded queues
-
-Channels have bounded queues.
-
-- `capacity`: number of messages or bytes
-- send on full queue:
-  - either blocks
-  - or returns `WouldBlock`
-
-v0 recommendation:
-
-- return `WouldBlock` and let user space decide how/when to retry (simpler)
+### 1.2 Messages
+Messages in Oreulia are strictly typed and delimited.
+- **Data Payload**: Byte array (e.g., serialized struct or raw data).
+- **Capability Payload**: Handles can be sent *inside* messages. This is how authority propagates (e.g., passing a `FileDescriptor` to a worker process).
 
 ---
 
-## 3. Message format (v0)
+## 2. Implementation Details
 
-A message has two parts:
+### 2.1 Syscall Interface
+Wasm modules interact with IPC via dedicated imports:
 
-- `data`: opaque bytes
-- `caps`: a list of capabilities to transfer
+```rust
+// Interface from `oreulia-wasm-abi`
+fn ipc_create() -> handle;
+fn ipc_send(handle: u32, msg_ptr: u32, len: u32) -> status;
+fn ipc_recv(handle: u32, buf_ptr: u32) -> len;
+```
 
-Constraints:
-
-- `data_len` is bounded (e.g., 4 KiB v0)
-- `caps_len` is bounded (e.g., 16 caps v0)
-
-Rationale:
-
-- keeps kernel copies small
-- prevents capability spam
+### 2.2 Blocking & Yielding
+- **Receive**: If a channel is empty, `ipc_recv` will **block** the calling process and yield the CPU. The scheduler will wake the process when data arrives.
+- **Send**: If a channel is full, `ipc_send` will block until space is available (providing natural backpressure).
 
 ---
 
-## 4. Capability transfer
+## 3. Capability Transfer
+This is the most powerful feature of Oreulia's IPC.
 
-### 4.1 Send semantics
+1. **Sender** includes a handle index in the message header.
+2. **Kernel** verifies the sender owns that handle.
+3. **Kernel** clones the underlying kernel object reference.
+4. **Kernel** creates a new handle in the **Receiver's** capability table.
+5. **Receiver** gets the new handle index in the message.
 
-When a sender attaches capability references:
-
-- kernel verifies sender holds those caps
-- kernel duplicates/derives transferable representations
-- message enqueued carries “cap payloads”
-
-### 4.2 Receive semantics
-
-On receive:
-
-- kernel dequeues the message
-- kernel installs transferred caps into receiver’s capability table
-- receiver obtains new `cap_id` values corresponding to received caps
-
-### 4.3 Rights preservation and attenuation
-
-Default transfer rule (v0):
+This mechanism allows "zero-trust" service discovery: a process doesn't need to "find" the filesystem service; it is *hand-delivered* a connection to it by the supervisor at startup.
 
 - transferred rights are identical to sender’s capability rights
 

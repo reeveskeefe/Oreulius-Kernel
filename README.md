@@ -22,6 +22,11 @@
 
 Oreulia is an experimental operating system that rethinks traditional OS design principles. Built in Rust with a focus on security and modern execution models, it provides a foundation for exploring capability-based security, WebAssembly execution, and deterministic system behavior.
 
+<div align="center">
+<img src="opencommandlineinterface.png" width="600" alt="the oreulius command line interface once the kernel is booted">
+
+</div>
+
 ### Key Features
 
 - **Capability-Based Security** - No ambient authority; all access is explicitly granted through capabilities

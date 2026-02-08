@@ -1,103 +1,67 @@
-# Oreulia Assembly Enhancements
+# Oreulia — Assembly Enhancements
 
-## Overview
+**Status:** Optimizations Active (Feb 8, 2026)
 
-This document describes the comprehensive assembly language enhancements added to Oreulia OS, providing low-level performance optimizations and hardware access for critical kernel operations.
+This document describes the comprehensive assembly language enhancements added to Oreulia OS, providing low-level performance optimizations and hardware access for critical kernel operations. These modules are hand-optimized x86 assembly replacing generic Rust code where maximum throughput is required.
 
-## New Assembly Modules
+## 1. Overview
 
-### 1. CPU Features Module (`cpu_features.asm`)
+Oreulia bypasses Rust's standard library and compiler intrinsics for specific hot paths, leveraging `NASM` for:
 
-**Purpose**: CPU feature detection and processor identification
+- **Context Switching**: Minimizing register save/restore overhead.
+- **Atomic Operations**: Precise memory ordering without compiler reordering overhead.
+- **Crypto & Checksums**: Utilizing SIMD (SSE/AVX) instructions.
+- **System Calls**: Fast-path sysenter/sysexit wrappers.
+
+---
+
+## 2. Modules
+
+### 2.1 CPU Features (`cpu_features.asm`)
+
+**Purpose**: Runtime detection of processor capabilities to select optimal code paths.
 
 **Functions**:
-- `asm_cpuid` - Execute CPUID instruction with EAX/ECX inputs
-- `asm_has_sse` - Check SSE support
-- `asm_has_sse2` - Check SSE2 support
-- `asm_has_sse3` - Check SSE3 support
-- `asm_has_sse4_1` - Check SSE4.1 support
-- `asm_has_sse4_2` - Check SSE4.2 support
-- `asm_has_avx` - Check AVX support
-- `asm_get_cpu_vendor` - Get 12-byte CPU vendor string (GenuineIntel, AuthenticAMD, etc.)
-- `asm_get_cpu_features` - Get ECX/EDX feature flags from CPUID
-- `asm_get_cache_info` - Get CPU cache descriptor information
-- `asm_rdrand` - Read hardware random number (RDRAND instruction)
-- `asm_xsave_supported` - Check XSAVE/XRSTOR support
-- `asm_fxsave` - Save FPU/MMX/SSE state (512 bytes, 16-byte aligned)
-- `asm_fxrstor` - Restore FPU/MMX/SSE state
+- `asm_cpuid` - Execute CPUID instruction with EAX/ECX inputs.
+- `asm_has_sse/sse2/sse3/...` - Check SIMD support levels.
+- `asm_get_cpu_vendor` - Get 12-byte CPU vendor string (e.g., "GenuineIntel").
+- `asm_rdrand` - High-throughput hardware entropy source.
+- `asm_fxsave/fxrstor` - Save/Restore FPU/SSE state (crucial for Wasm context switching).
 
-**Benefits**:
-- Runtime CPU capability detection
-- Enables conditional SIMD code paths
-- Hardware random number generation
-- FPU state management for context switching
+**Performance Impact**:
+- Allows the kernel to dynamically upgrade algorithms (e.g., using AVX for `memcpy` if available) at runtime without recompilation.
 
-### 2. Atomic Operations Module (`atomic.asm`)
+### 2.2 Atomic Operations (`atomic.asm`)
 
-**Purpose**: Lock-free synchronization and thread-safe operations
+**Purpose**: Lock-free synchronization primitives.
 
-**Atomic Operations**:
-- `asm_atomic_load` - Load with acquire semantics + LFENCE
-- `asm_atomic_store` - Store with release semantics + SFENCE
-- `asm_atomic_add` - Atomic add using LOCK XADD, returns old value
-- `asm_atomic_sub` - Atomic subtract (negated add), returns old value
-- `asm_atomic_inc` - Atomic increment, returns new value
-- `asm_atomic_dec` - Atomic decrement, returns new value
-- `asm_atomic_swap` - Atomic exchange using LOCK XCHG
-- `asm_atomic_cmpxchg` - Compare-and-swap using LOCK CMPXCHG (strong)
-- `asm_atomic_cmpxchg_weak` - Compare-and-swap (weak, same as strong on x86)
-- `asm_atomic_and` - Atomic bitwise AND using LOCK AND
-- `asm_atomic_or` - Atomic bitwise OR using LOCK OR
-- `asm_atomic_xor` - Atomic bitwise XOR using LOCK XOR
+**Functions**:
+- `asm_atomic_load/store` - Memory-ordered access with fences.
+- `asm_atomic_add/sub/inc/dec` - LOCK-prefired arithmetic.
+- `asm_atomic_cmpxchg` - CAS loop primitive.
+- `asm_spinlock_lock/unlock` - Optimized spinloop with `PAUSE` instruction to prevent pipeline flushing.
 
-**Spinlock Primitives**:
-- `asm_spinlock_init` - Initialize spinlock (set to 0 = unlocked)
-- `asm_spinlock_lock` - Acquire spinlock with busy-wait + PAUSE
-- `asm_spinlock_unlock` - Release spinlock (simple store)
-- `asm_spinlock_trylock` - Non-blocking acquire attempt
+**Status**: Used extensively in the Scheduler and channel IPC.
 
-**Memory Fences**:
-- `asm_pause` - PAUSE instruction (spin-wait hint, reduces power)
-- `asm_mfence` - Full memory fence (MFENCE)
-- `asm_lfence` - Load fence (LFENCE)
-- `asm_sfence` - Store fence (SFENCE)
+### 2.3 Performance Monitoring (`perf.asm`)
 
-**Benefits**:
-- Lock-free data structures
-- Safe multi-core synchronization
-- Reduced context switch overhead
-- Power-efficient busy-waiting
+**Purpose**: Cycle-accurate profiling.
 
-### 3. Performance Module (`perf.asm`)
+**Functions**:
+- `asm_rdtsc_begin/end`: Serializing wrappers around `RDTSC` to prevent out-of-order execution from polluting measurements.
+- `asm_serialize`: Strong memory barrier.
 
-**Purpose**: High-precision timing and CPU benchmarking
+**Benchmarks**:
+The kernel includes self-tests (`cpu-bench`) for:
+- `asm_benchmark_nop/add/mul/div`: Instruction latency.
+- `asm_benchmark_load/store`: L1 cache throughput.
 
-**Timing Functions**:
-- `asm_rdtsc_begin` - Cycle-accurate timing start (CPUID + RDTSC)
-- `asm_rdtsc_end` - Cycle-accurate timing end (RDTSCP + CPUID)
-- `asm_rdpmc` - Read Performance Monitoring Counter
-- `asm_serialize` - Serialize instruction execution (CPUID)
-- `asm_lfence_rdtsc` - Alternative timing (LFENCE + RDTSC)
+---
 
-**Microbenchmarks**:
-- `asm_benchmark_nop` - NOP instruction throughput
-- `asm_benchmark_add` - ADD instruction throughput
-- `asm_benchmark_mul` - MUL instruction throughput
-- `asm_benchmark_div` - DIV instruction throughput
-- `asm_benchmark_load` - Memory LOAD throughput
-- `asm_benchmark_store` - Memory STORE throughput
-- `asm_benchmark_lock` - LOCK prefix overhead measurement
+## 3. Implementation Notes
 
-**Cache Control**:
-- `asm_clflush` - Flush cache line (CLFLUSH)
-- `asm_prefetch_t0` - Prefetch to L1 cache (temporal locality)
-- `asm_prefetch_t1` - Prefetch to L2 cache
-- `asm_prefetch_t2` - Prefetch to L3 cache
-- `asm_prefetch_nta` - Non-temporal prefetch (minimal cache pollution)
-
-**Benefits**:
-- Accurate performance measurement (sub-cycle precision)
-- Identify performance bottlenecks
+- **Calling Convention**: All assembly functions adhere to the `C` calling convention (cdecl) for seamless integration with Rust `extern "C"` blocks.
+- **Safety**: Wrapped in `unsafe` Rust blocks in `src/asm_bindings.rs`.
 - Validate optimization effectiveness
 - Cache-aware programming
 

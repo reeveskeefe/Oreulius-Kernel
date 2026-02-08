@@ -1,102 +1,67 @@
 # Oreulia — Persistence (Logs, Snapshots, Recovery)
 
-**Status:** Draft (Jan 24, 2026)
+**Status:** Implemented / Core (Feb 8, 2026)
 
-Oreulia is persistence-first: durable state is a core OS concern.
+Oreulia is **persistence-first**: durable state is a core OS concern, not just a property of the filesystem.
 
-This document specifies a v0 persistence model based on:
-
-- append-only logs
-- periodic snapshots
-- replay-based recovery
+This document specifies the persistence model based on:
+- Append-only logs
+- Log-structured storage
+- Deterministic replay support
 
 ---
 
 ## 1. Goals
 
-- Provide a minimal durable substrate for:
-  - crash recovery
-  - determinism record/replay
-  - auditability
-- Keep v0 simple enough to implement early.
-- Keep the model compatible with capability-based authority.
-
-Non-goals (v0):
-
-- general-purpose POSIX filesystem
-- distributed replication
-- complex transactional semantics
+- **Crash Recovery**: The system can recover its state by replaying logs from the last snapshot.
+- **Determinism**: By logging external inputs (network packets, user input), execution can be replayed for debugging.
+- **Simplicity**: Using a log-structured approach simplifies consistency (no complex locking needed for atomicity).
 
 ---
 
-## 2. Core durable primitives
+## 2. Core Durable Primitives
 
-### 2.1 Append-only log
+### 2.1 Append-Only Log
 
-A log is an ordered sequence of records.
-
-Operations (capability-gated):
-
-- `AppendLog(record) -> offset`
-- `ReadLog(from_offset, max_bytes) -> records`
-
-Constraints (v0):
-
-- records are bytes with a small header
-- maximum record size (e.g., 64 KiB)
+The primary storage abstraction is a **Log**.
+- **Sequential**: Data is always written to the end.
+- **Immutable**: Once written, data cannot be modified in place.
+- **Capability-Gated**: A process needs `Append` rights to write to a log.
 
 ### 2.2 Snapshot
 
-A snapshot is a point-in-time state image associated with a log.
-
-Operations:
-
-- `WriteSnapshot(bytes, last_offset)`
-- `ReadSnapshot() -> (bytes, last_offset)`
+A snapshot is a point-in-time image of a component's state.
+- **Optimization**: To avoid replaying infinite logs, components periodically serialize their state to a snapshot.
+- **Recovery**: On boot/restart, a component loads the latest snapshot and then replays valid log entries after it.
 
 ---
 
-## 3. Authority model
+## 3. Authority Model
 
-Persistence is provided by a service (user space) with capabilities.
+Persistence is managed by the kernel and exposed via capabilities.
 
-### 3.1 Capabilities
-
-- `Store.AppendLog`
-- `Store.ReadLog`
-- `Store.WriteSnapshot`
-- `Store.ReadSnapshot`
-
-Optional refinements:
-
-- per-log capabilities (each log is a different object)
-- quota-limited capabilities
+- `LogCapability`: Represents a handle to a specific append-only stream.
+- `SnapshotCapability`: Represents a handle to a storage blob for state images.
 
 ---
 
-## 4. Record structure (v0)
+## 4. Record Structure
 
-A log record format (suggested):
+Log records follow a robust format to ensure data integrity:
 
-- `magic` (u32)
-- `version` (u16)
-- `type` (u16)
-- `len` (u32)
-- `payload` (bytes)
-- `crc32` (u32)
+```rust
+struct LogRecord {
+    magic: u32,       // 0xDEADBEEF
+    version: u16,     // 1
+    type_id: u16,     // Event Type (Input, Net, Timer)
+    length: u32,      // Payload Length
+    checksum: u32,    // CRC32 of payload
+    payload: [u8],    // Data
+}
+```
 
-Record `type` examples:
+This structure allows the kernel to identify corruption and truncate logs safely during recovery.
 
-- `ExternalInput.ClockRead`
-- `ExternalInput.ConsoleIn`
-- `Component.Event`
-- `Supervisor.Checkpoint`
-
----
-
-## 5. Recovery model
-
-### 5.1 Boot flow
 
 1. Supervisor obtains `Store.ReadSnapshot` and `Store.ReadLog`.
 2. Supervisor loads the latest snapshot.

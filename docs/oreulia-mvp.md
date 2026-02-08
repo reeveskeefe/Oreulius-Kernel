@@ -1,102 +1,88 @@
-# Oreulia — MVP Spec (QEMU-first)
+# Oreulia — Core Specification (MVP & Beyond)
 
-**Status:** Draft (Jan 24, 2026)
+**Status:** Delivered / Surpassed (Feb 8, 2026)
 
-This document turns `docs/oreulia-vision.md` into a concrete, implementable “first bootable” scope.
+This document originally outlined the Minimum Viable Product (MVP) for Oreulia. The project has since met and significantly exceeded these initial goals.
 
-**MVP definition:** A QEMU-bootable Oreulia image that can start a supervisor, run a Wasm module, and demonstrate capability-gated I/O plus record/replay of external inputs.
-
----
-
-## 0. Scope boundaries
-
-**In-scope (MVP):**
-
-- QEMU-first (virt machine, virtio devices), serial console output
-- Kernel: scheduling, basic memory management, IPC channels, capability table/enforcement
-- Supervisor/init: creates system graph and spawns at least one Wasm module
-- Wasm loader: validates and instantiates a module with injected capabilities
-- Persistence v0: append-only log + snapshot v0 (minimum workable)
-- Determinism v0: “record mode” and “replay mode” for external inputs
-
-**Out-of-scope (MVP):**
-
-- Real hardware (UEFI laptops, Wi‑Fi, GPUs)
-- POSIX compatibility, ELF processes, fork/exec
-- Full networking
-- Graphical UI
-- Complex filesystems
+**Current State:** A bootable `i686` kernel with advanced networking, a hierarchical filesystem, and a JIT-enabled implementation of WebAssembly.
 
 ---
 
-## 1. Deliverables
+## 0. Scope & Achievements
 
-### 1.1 Bootable artifacts
-
-- A bootable disk image or ISO that runs in QEMU.
-- A default build/run command documented in `README.md`.
-
-### 1.2 Visible demo behavior
-
-On boot, the system must:
-
-1. Print a deterministic boot banner to serial.
-2. Start the supervisor.
-3. Start a Wasm module named `hello_flow.wasm`.
-4. The Wasm module prints to console *only* via an injected `Console.Write` capability.
-5. The supervisor runs in one of two modes:
-   - **Record mode:** logs external inputs (time ticks, console input if present)
-   - **Replay mode:** replays those inputs to reproduce the same outputs
+| Feature Area | Original MVP Goal (QEMU-only) | Current Implementation Status |
+| :--- | :--- | :--- |
+| **Boot** | Boot to serial console | **Done** (Multiboot compliant, GRUB2) |
+| **Architecture** | Basic x86/Sched | **Done** (i686, Preemptive Priority Sched) |
+| **Wasm** | Interpreter / Simple Loader | **Exceeded** (In-Kernel JIT Compiler) |
+| **Networking** | **Out of Scope** | **Exceeded** (Full TCP/IP Stack, Drivers) |
+| **Filesystem** | Minimal/Flat Store | **Exceeded** (Unix-like VFS, Mounts, Inodes) |
+| **Security** | Capability Table | **Done** (Handle-based, ACLs) |
 
 ---
 
-## 2. Platform target (QEMU)
+## 1. Platform Target
 
-### 2.1 Architecture
-
-- Target: `x86_64` or `aarch64`.
-- Recommendation: start `x86_64` because tooling/debugging is widely documented.
-
-### 2.2 Devices
-
-- Required: serial console
-- Later in MVP (optional but recommended): virtio block for persistence
+- **Architecture**: `i686` (32-bit x86 Protected Mode).
+- **Environment**: QEMU (primary dev), Bochs, Real Hardware (via ISO).
+- **Drivers**:
+  - **Serial**: 16550 UART (Logging/Console).
+  - **Timer**: 8253 PIT (Scheduling).
+  - **Network**: E1000 (Intel), RTL8139 (Realtek), VirtIO-Net.
+  - **Storage**: VirtIO-Blk, IDE/ATA (Basic).
 
 ---
 
-## 3. Kernel MVP requirements
+## 2. Kernel Features
 
-### 3.1 Boot + early logging
+### 2.1 Networking Subsystem (New)
+The MVP was originally offline-only. The kernel now includes a complete **Network Stack**:
+- **Protocols**: Ethernet II, ARP, IPv4, ICMP, UDP, TCP.
+- **Services**: DNS Resolver, DHCP Client, HTTP (Client & Server).
+- **Abstractions**: Socket-like interface for kernel services, capability-gated for Wasm.
 
-- Kernel boots and initializes a serial logger.
-- Kernel has a panic path that prints error + halts.
+### 2.2 Virtual File System (New)
+Moved beyond simple object storage to a full **VFS**:
+- **Structure**: Hierarchical directory tree (`/`, `/dev`, `/mnt`).
+- ** operations**: `open`, `read`, `write`, `close`, `mkdir`, `stat`.
+- **Drivers**: RamFS (initial), FAT (partial), Ext2 (planned).
 
-### 3.2 Interrupts + time
+### 2.3 WebAssembly Runtime
+- **Execution**: JIT (Just-In-Time) compilation of Wasm opcodes to x86 native code.
+- **Performance**: Significant speedup over interpretation.
+- **Integration**: Wasm modules can import kernel functions like properties.
 
-- Timer interrupt provides a monotonic tick source.
-- Kernel supports `yield` and `sleep_until` primitives (sleep uses a virtual clock capability exposed via supervisor service, or a kernel tick v0).
+### 2.4 Scheduler & Processes
+- **Algorithm**: Quantum-based round-robin with priority levels.
+- **Concurrency**: Kernel threads and user processes.
+- **Synchronization**: Spinlocks, Atomics, and Wait Queues.
 
-### 3.3 Tasks and scheduling
+---
 
-- Kernel supports at least:
-  - multiple kernel tasks (threads)
-  - run queue
-  - cooperative `yield` at minimum; preemption optional in v0
+## 3. Deliverables
 
-### 3.4 Memory
+### 3.1 Bootable Artifacts
+- **File**: `oreulia.iso` (Hybrid ISO9660).
+- **Build System**: `build.sh` (Auto-compiles Rust, Assembles startup, Links, and Generates ISO).
 
-- Kernel can allocate memory dynamically (heap allocator v0).
-- Virtual memory: minimum needed to run kernel safely.
-- User mode isolation is allowed to be deferred, but the design should not block adding it.
+### 3.2 Interaction
+- **Shell**: A rich command-line interface (`>`) with 50+ commands.
+    - `help`, `cpu-info`, `net-info`, `ls`, `wasm-run`, etc.
+- **Demo Capability**:
+    - **`wasm-demo`**: Runs a Wasm module to prove execution.
+    - **`http-get`**: Demonstrates live networking.
+    - **`vfs-ls`**: Demonstrates filesystem hierarchy.
 
-### 3.5 IPC channels
+---
 
-- Kernel provides `Channel` object(s) with:
-  - bounded queue
-  - send/receive
-  - ability to transfer capabilities with messages
+## 4. Next Steps (Post-MVP)
 
-### 3.6 Capabilities
+With the core "OS" features (Net, FS, Sched, JIT) in place, the focus shifts to:
+1. **User Mode Hardening**: Strictly enforcing Ring 3 isolation for Wasm payloads.
+2. **SMP**: Multicore support.
+3. **Advanced Persistence**: Completing the snapshot/restore logic.
+4. **GUI**: Framebuffer-based windowing capability.
+
 
 - Kernel provides:
   - per-task capability table

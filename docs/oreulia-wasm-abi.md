@@ -1,103 +1,81 @@
 # Oreulia — Wasm ABI v0 (Host Interface)
 
-**Status:** Draft (Jan 24, 2026)
+**Status:** Implemented / JIT-Native (Feb 8, 2026)
 
-Oreulia is Wasm-native: applications run as WebAssembly modules and interact with the system through a small, capability-oriented host interface.
+Oreulia is Wasm-native: applications run as WebAssembly modules. Unlike typical "Wasm on generic OS" approaches, Oreulia compiles Wasm modules directly to x86 kernel-mode code (Ring 0) or user-mode code (Ring 3) via an **In-Kernel JIT**.
 
-This document defines ABI v0.
-
----
-
-## 1. Goals
-
-- Small, explicit syscall surface.
-- No ambient authority: modules can only use injected capabilities.
-- IPC-first: messaging is the primary interaction mechanism.
-- Determinism-friendly: time/randomness/I/O are capability mediated.
-
-Non-goals (v0):
-
-- POSIX emulation
-- full WASI compatibility (may be layered later)
+This document defines the ABI that allows Wasm modules to interact with the kernel.
 
 ---
 
-## 2. Module contract
+## 1. Execution Model
+
+### 1.1 In-Kernel JIT
+- **Compiler**: The kernel includes a streaming JIT compiler.
+- **Input**: Standard WebAssembly (`.wasm`) binary.
+- **Output**: Native x86 machine code.
+- **Safety**: The JIT enforces memory safety boundaries (sandbox) during compilation by inserting bounds checks.
+
+### 1.2 Performance
+- **Zero-Cost Abstractions**: Internal kernel functions are called directly (via `CALL` instructions), not interpreted.
+- **Throughput**: Near-native execution speed for compute-dense tasks.
+
+---
+
+## 2. Module Contract
 
 ### 2.1 Imports
+Modules import kernel functionality from the `oreulia` namespace.
 
-An Oreulia module imports functions from a single host namespace, e.g.:
-
-- `oreulia.*`
+```wat
+(import "oreulia" "channel_send" (func $send (param i32 i32 i32) (result i32)))
+```
 
 ### 2.2 Exports
-
-A minimal convention:
-
-- module exports `oreulia_main()`
-
-Optionally accept an initial channel capability as the entrypoint argument later; v0 can rely on pre-injected capabilities placed in a table.
+A module **must** export an entry point:
+- `_start` or `oreulia_main`: The function called by the supervisor after instantiation.
 
 ---
 
-## 3. Capability representation inside Wasm
+## 3. Capability Representation
 
-Wasm code cannot hold kernel pointers; it holds integer handles.
-
-- `cap` is a `u32` (index into module’s imported capability table)
-
-The runtime maps Wasm `cap` values to task `cap_id` values.
+Security is handled via integer handles (indices into the process's capability table).
+- **Type**: `i32` (Wasm integer).
+- **Validity**: Verified by the kernel on every syscall. Passing an invalid or unauthorized handle results in an error (or termination).
 
 ---
 
-## 4. Memory model
+## 4. Syscall Interface (ABI)
 
-### 4.1 Linear memory
+The following host functions are available to Wasm modules:
 
-- Module uses Wasm linear memory.
-- Host calls read/write from that memory.
+### 4.1 Process & Threading
+- `proc_yield()`: Voluntarily yield the CPU.
+- `proc_sleep(ms: i32)`: Sleep for N milliseconds.
+- `proc_spawn(name_ptr: i32, len: i32) -> pid`: Capabilities-gated process creation.
 
-### 4.2 Buffers
+### 4.2 IPC (Inter-Process Communication)
+- `ipc_create() -> handle`: Create a new channel.
+- `ipc_send(handle: i32, data_ptr: i32, len: i32) -> status`: blocking send.
+- `ipc_recv(handle: i32, buf_ptr: i32) -> len`: blocking receive.
 
-All byte data passed to/from the host uses `(ptr, len)` pairs.
+### 4.3 Filesystem
+- `fs_open(path_ptr: i32, path_len: i32, flags: i32) -> fd`
+- `fs_read(fd: i32, buf_ptr: i32, max_len: i32) -> len`
+- `fs_write(fd: i32, data_ptr: i32, len: i32) -> len`
+- `fs_close(fd: i32)`
+
+### 4.4 Debugging / Console
+- `debug_log(ptr: i32, len: i32)`: Write to kernel debug log.
+- `console_write(ptr: i32, len: i32)`: Write to serial/vga (if capability held).
 
 ---
 
-## 5. Host calls (v0)
+## 5. Memory Model
 
-### 5.1 `channel_send`
-
-Send bytes and capabilities to a channel.
-
-Signature (conceptual):
-
-- `channel_send(chan_cap: u32, data_ptr: u32, data_len: u32, caps_ptr: u32, caps_len: u32) -> i32`
-
-Where `caps_ptr` points to an array of `u32` capability handles.
-
-Returns:
-
-- `0` on success
-- negative error code on failure
-
-### 5.2 `channel_recv`
-
-Receive bytes and capabilities from a channel.
-
-Signature (conceptual):
-
-- `channel_recv(chan_cap: u32, out_data_ptr: u32, out_data_cap: u32, out_caps_ptr: u32, out_caps_cap: u32) -> i32`
-
-Semantics:
-
-- writes up to `out_data_cap` bytes
-- writes up to `out_caps_cap` capability handles
-- returns a packed result or uses additional out-params (implementation choice)
-
-v0 recommendation:
-
-- use a small result struct written to memory (lengths + status)
-
+- **Linear Memory**: Wasm defines a single linear memory space.
+- **Pointers**: All pointers passed to syscalls are offsets into this linear memory.
+- **Validation**: The kernel validates that `[ptr, ptr + len)` is strictly within the module's memory bounds before reading/writing.
 ### 5.3 `yield`
 
 - `yield() -> void`

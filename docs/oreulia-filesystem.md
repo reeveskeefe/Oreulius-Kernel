@@ -1,103 +1,77 @@
-i# Oreulia — Filesystem v0 (Persistence Service)
+# Oreulia — Virtual File System (VFS)
 
-**Status:** Draft (Jan 24, 2026)
+**Status:** Implemented Base (Feb 8, 2026)
 
-Oreulia’s filesystem is a **persistence-first, capability-gated service** that provides durable storage without ambient paths or global namespaces.
-
-It builds on the persistence primitives (`docs/oreulia-persistence.md`) and integrates with capabilities (`docs/oreulia-capabilities.md`) to make storage authority explicit.
+Oreulia implements a hierarchical **Virtual File System (VFS)** that provides a unified interface for files, directories, and devices. Unlike the early "flat store" vision, the current implementation supports standard Unix-like operations (`open`, `read`, `write`, `mount`), enabling a familiar environment for users and applications.
 
 ---
 
-## 1. Goals
+## 1. Architecture
 
-- Provide a minimal, durable filesystem for MVP (QEMU-first).
-- No ambient access: storage is only reachable via capabilities.
-- Names are views: paths are provided by authority-bearing services, not a universal primitive.
-- Persistence-first: files are durable by default; the filesystem is a thin layer over logs/snapshots.
+The VFS allows different filesystems to be mounted into a single global tree.
 
-Non-goals (v0):
+- **Unified Namespace**: All resources start from root `/`.
+- **Mount Points**: Different filesystems (e.g., RamFS, VirtIO-Block) can be mounted at specific paths (e.g., `/mnt/disk`).
+- **Inodes**: Internal representation of file metadata (type, size, permissions).
 
-- Complex hierarchies (nested directories).
-- POSIX compatibility (no `open`, `read`, `write` syscalls).
-- Performance optimizations (e.g., caching, indexing).
+### 1.1 Supported Operations
 
----
-
-## 2. Model
-
-### 2.1 Filesystem as a service
-
-The filesystem runs as a user-space service that:
-
-- Holds a `Store` capability for logs/snapshots.
-- Provides `Filesystem` capabilities to authorized components.
-- Manages a simple key-value store or flat file namespace.
-
-### 2.2 File objects
-
-A file is a durable object with:
-
-- `key`: a string identifier (e.g., "config.json").
-- `data`: bytes (bounded, e.g., 64 KiB v0).
-- `metadata`: optional (timestamps, size).
-
-Operations:
-
-- Create, read, update, delete (CRUD) via message passing.
-
-### 2.3 Namespace views
-
-Paths are not global; they’re provided by services.
-
-Example:
-
-- A “config service” holds a `Filesystem` capability and provides a view like `/config/app.json`.
-- The view is enforced by the service; the filesystem sees only keys.
-
-This aligns with Oreulia’s “no ambient authority” principle.
+The VFS primitive supports standard operations:
+- `open(path, flags)` -> `fd`
+- `read(fd, buffer)`
+- `write(fd, buffer)`
+- `close(fd)`
+- `mkdir(path)`
+- `list(path)`
+- `stat(path)`
 
 ---
 
-## 3. Capabilities
+## 2. File Descriptors & Capabilities
 
-### 3.1 Filesystem capabilities
+While the kernel implements a standard VFS, access is still capability-gated:
 
-- `Filesystem.Read`: read files by key.
-- `Filesystem.Write`: create/update files by key.
-- `Filesystem.Delete`: delete files by key.
-- `Filesystem.List`: list keys (optional v0).
-
-Rights are attenuated per component (e.g., a component gets `Read` only for its own keys).
-
-### 3.2 Integration with persistence
-
-The filesystem service uses `Store` capabilities to persist files:
-
-- Files are stored as snapshot entries or log records.
-- Recovery: filesystem reconstructs its state from the latest snapshot + replayed logs.
+- **Root Capability**: A process is given a `FileDescriptor` capability acting as its root or CWD.
+- **Relative Paths**: Access is typically relative to an owned directory capability.
+- **No Ambient Authority**: A purely sandboxed Wasm app cannot "guess" `/etc/passwd` unless explicitly granted a capability to that file or directory.
 
 ---
 
-## 4. Message protocol (v0)
+## 3. Implemented Filesystems
 
-The filesystem service communicates via channels.
+### 3.1 RamFS
+The default in-memory filesystem used for root `/` on boot.
+- Fast, non-persistent.
+- Supports directories and files.
 
-### 4.1 Request messages
+### 3.2 VirtIO-Block (Persistent)
+Driver for VirtIO block devices (e.g., QEMU disk images).
+- Allows mounting physical (virtual) disks.
+- Supports reading partition tables (MBR/GPT).
+- **Status**: Block driver implemented; filesystem logic (FAT/Ext2) in progress on top of block layer.
 
-Requests are typed messages sent to the filesystem channel.
+---
 
-Example schema (conceptual):
+## 4. Usage
 
-- `type: "read"`, `key: "config.json"`
-- `type: "write"`, `key: "config.json"`, `data: bytes`
-- `type: "delete"`, `key: "config.json"`
+### 4.1 Shell Commands
+The shell provides direct access to VFS operations:
 
-### 4.2 Response messages
+```bash
+> vfs-mkdir /data
+> vfs-write /data/test.txt "Hello World"
+> vfs-cat /data/test.txt
+Hello World
+> vfs-ls /data
+test.txt  [File]  11 bytes
+```
 
-Responses are sent back on a reply channel (capability-gated).
+### 4.2 WebAssembly Interface
+Wasm modules interact with the file system via imported host functions:
+- `fs_open(path_ptr, path_len, flags) -> fd`
+- `fs_read(fd, buf_ptr, len) -> bytes_read`
 
-- Success: `status: "ok"`, `data: bytes` (for reads)
-- Error: `status: "error"`, `code: "not_found"`
+This mapping maintains the sandbox while offering powerful IO.
 
 ---
 

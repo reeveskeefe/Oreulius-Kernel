@@ -1,6 +1,6 @@
 # Oreulia — Capabilities (Authority Model)
 
-**Status:** Draft (Jan 24, 2026)
+**Status:** Implemented / Core (Feb 8, 2026)
 
 This document specifies Oreulia’s capability model: what a capability is, how it is represented, how it is transferred, and how rights are enforced.
 
@@ -14,90 +14,65 @@ Oreulia’s core rule: **no ambient authority**. If you can do a thing, you hold
 
 A capability is an **unforgeable reference** to an object plus an associated **rights set**.
 
-- Unforgeable: tasks cannot invent capabilities.
-- Transferable: capabilities can be sent over IPC.
-- Attenuatable: capabilities can be reduced to fewer rights.
+- **Unforgeable**: Tasks cannot invent capabilities; they must be granted.
+- **Transferable**: Capabilities can be sent over IPC channels.
+- **Attenuatable**: Capabilities can be reduced to fewer rights (e.g., Read+Write -> Read-Only).
 
 ### 1.2 Object
 
 An object is a kernel-managed resource (or a service-mediated resource) addressed by a kernel handle.
 
 Examples:
-
-- channel
-- console endpoint
-- clock endpoint
-- persistence log
-- module instance
-
-### 1.3 Rights
-
-Rights describe what operations are permitted on an object.
-
-Examples:
-
-- `Send`, `Receive`, `CloneSender`
-- `Write`, `Read`
-- `Append`, `Snapshot`
+- `Channel`
+- `FileDescriptor`
+- `Process`
+- `ServiceRegistry`
 
 ---
 
-## 2. Representation (v0)
+## 2. Representation
 
-### 2.1 Handle type
+### 2.1 Handle Type
 
-In v0, represent capabilities as:
+Capabilities are represented components as:
 
-- `cap_id`: a small integer local to a task (index into a per-task capability table)
+- `Handle`: A simple integer (index into a per-process capability table).
+- **Kernel Table**: The kernel maintains a secure table mapping `(ProcessID, Handle) -> (KernelObjectRef, Rights)`.
 
-The capability table entry contains:
-
-- `object_id` (kernel-internal)
-- `rights` (bitset)
-- metadata (optional): auditing labels, origin, timestamps
+This ensures that a process cannot simply "guess" a pointer or ID to access an object it doesn't own.
 
 ### 2.2 Unforgeability
 
-A task may only obtain a `cap_id` by:
+A task may only obtain a `Handle` by:
 
-- being created with it (inherited from parent/supervisor)
-- receiving it through IPC (capability transfer)
+- **Inheritance**: Being created with it (inherited from parent/supervisor).
+- **IPC Transfer**: Receiving it in a message from another process.
 
-No syscall accepts raw `object_id` values.
+No syscall accepts raw `object_id` or pointer values.
 
 ---
 
-## 3. Core operations
+## 3. Core Operations
 
 ### 3.1 Create
 
-Creation is privileged; generally performed by:
-
-- the kernel (for kernel objects like channels)
-- trusted services (for service-managed resources like logs)
-
-Creation produces a capability with an initial rights set.
+Creation is privileged or capability-derived.
+- Calling `ipc_create()` creates a new Channel and returns two handles (one for each end).
+- Calling `fs_open()` uses a Directory capability to create/access a File capability.
 
 ### 3.2 Transfer
 
 Capabilities are transferred via channel messages:
 
-- a message carries bytes + a list of capability references
-- on receive, the kernel installs received capabilities into the receiver’s table
+- A message header includes a list of `Handle` indices to send.
+- The kernel **moves** or **copies** the underlying capability reference to the receiver's table.
+- The receiver gets new, valid `Handle` indices.
 
-Transfer is explicit:
+### 3.3 Attenuation
 
-- sender chooses which caps to attach
-- receiver chooses whether to accept or drop
+A process can create a "weaker" handle from a strong one before sending it.
+- **Example**: Creating a Read-Only file handle from a Read-Write handle before passing it to an untrusted plugin.
 
-### 3.3 Attenuate
-
-Attenuation derives a new capability with a subset of rights.
-
-Rules:
-
-- `derived.rights ⊆ original.rights`
-- derived caps may be transferred independently
 
 Attenuation primitives:
 

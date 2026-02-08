@@ -1,102 +1,94 @@
-# Oreulia — Vision & Core Architecture (Draft)
+# Oreulia — Vision & Core Architecture
 
-**Status:** Draft (Jan 24, 2026)
+**Status:** Prototype / Alpha (Feb 8, 2026)
 
-Oreulia is an experimental operating system designed to make *authority*, *time*, *state*, and *communication* explicit.
+Oreulia is an experimental operating system that combines the **capability-based security** of microkernels with the **performance and pragmatism** of a modern hybrid kernel.
 
-The goal is not “Unix, but again.” Oreulia is intentionally shaped around:
+The goal is to provide a secure, Wasm-native environment without sacrificing the essential features expected of a real operating system (Networking, Filesystems, Performance).
 
-- **Capability-based security**: no ambient authority; access is granted explicitly.
-- **Dataflow + message passing**: components communicate through typed channels, not shared global state.
-- **Wasm-native execution**: applications are WebAssembly modules with a small, explicit host interface.
-- **Determinism (as a product feature)**: the OS can replay and reason about executions.
-- **Persistence (as the default)**: state is durable and recoverable by design, not an afterthought.
+Oreulia is intentionally shaped around:
 
-This document describes the conceptual model and an initial architecture suitable for a QEMU-first prototype.
-
----
-
-## 1. Non-goals (early)
-
-Oreulia’s early milestones prioritize proving the model over hardware breadth.
-
-- Not targeting real hardware drivers initially (QEMU/virtio first).
-- Not providing POSIX compatibility as a primary goal.
-- Not implementing a full graphical desktop early.
-- Not promising broad language runtimes outside Wasm initially.
+- **Capability-based security**: No ambient authority; access is granted explicitly through handles.
+- **Hybrid-Kernel Architecture**: Critical paths (Networking, VFS, JIT) are in-kernel for performance; policies are capability-gated.
+- **Wasm-native execution**: Applications are WebAssembly modules compiled to native code via an in-kernel JIT.
+- **Dataflow + message passing**: Components communicate through typed channels.
+- **Determinism & Persistence**: Built-in mechanisms for state durability and replayability.
 
 ---
 
-## 2. Core principles
+## 1. Evolution from Initial Vision
 
-### 2.1 No ambient authority
+Oreulia started as a minimal research microkernel but has evolved into a practical hybrid system.
+
+- **Networking**: Originally planned as a user-space experiment, Oreulia now features a comprehensive **in-kernel TCP/IP stack** (Ethernet, ARP, IP, UDP, TCP, DNS, DHCP) and high-performance drivers (e1000, rtl8139, virtio-net) to support real-world connectivity.
+- **Filesystem**: Originally envisioned as a flat object store, Oreulia now implements a **Unix-like Virtual File System (VFS)** with inodes, directory hierarchies, and mount points, backend by virtual block devices.
+- **Execution**: Moved from a simple Wasm interpreter to a **High-Performance JIT Compiler**, converting Wasm bytecode to native x86 machine code at runtime for near-native performance.
+
+---
+
+## 2. Core Principles
+
+### 2.1 No Ambient Authority
 
 In Oreulia, **nothing is globally accessible by default**.
 
-- There is no “global filesystem,” “global network,” or “global clock” accessible by name.
+- There is no "global filesystem" or "global network" accessible by arbitrary names to user apps.
 - Access is obtained by **receiving a capability**.
-- Names (like paths) are *views* provided by an authority-bearing component, not a universal primitive.
+- Even though the kernel implements a global VFS, a process only sees the sub-tree exposed to its root capability.
 
-### 2.2 Everything is a component
+### 2.2 Hybrid Performance, Microkernel Safety
 
-The system is composed of components (services and apps) that:
+The system adopts a hybrid approach:
 
-- run as isolated tasks,
-- communicate by message passing,
-- hold capabilities in explicit tables,
-- can be supervised and restarted.
+- **Kernel Space**: Handles hardware abstraction, protocol stacks (TCP/IP), filesystem logic (VFS), and JIT compilation. This minimizes context switches for high-throughput operations.
+- **User Space (Wasm)**: Applications run in sandboxed Wasm environments. They interact with kernel services purely through capability-guarded system calls (imports).
 
-### 2.3 Dataflow-first
+### 2.3 Dataflow-First
 
 The primary abstraction is a **message channel** between components.
 
 - Components emit events and consume inputs.
-- “System calls” are modeled as message exchanges via capabilities.
+- "System calls" are modeled as message exchanges or direct capability invocations.
 - Backpressure is a first-class concept.
 
-### 2.4 Persistence-first
+### 2.4 Persistence-First
 
 Oreulia treats durable state like a core OS concern.
 
 - Components can opt into durable state via persistent objects/logs.
-- The OS can restart and reconstruct component graphs.
-- The default system story includes crash recovery.
+- The default system story includes crash recovery and snapshotting.
 
-### 2.5 Deterministic execution as an OS feature
+### 2.5 Deterministic Execution
 
 Oreulia aims to make executions:
 
-- reproducible (replay),
-- debuggable (time travel),
-- auditable (why did this happen?).
+- Reproducible (replay inputs).
+- Debuggable (time travel).
+- Auditable (provenance tracking).
 
-This requires controlling sources of nondeterminism (time, randomness, external I/O) behind explicit capabilities.
+### 2.6 Wasm-Native with JIT
 
-### 2.6 Wasm-native, not “Wasm as an app format”
-
-Wasm is the initial application ABI:
-
-- stable sandbox boundary,
-- portable bytecode,
-- structured imports/exports for capability injection,
-- simple story for multi-language apps.
+Wasm is the application ABI, but it is not interpreted slowly.
+- **In-Kernel JIT**: Converts Wasm to x86 machine code.
+- **Sandboxing**: Memory safety is enforced by Wasm limits and bounds checking.
+- **Interface**: A clearly defined ABI (`oreulia-wasm-abi.md`) maps Wasm imports to kernel capabilities.
 
 ---
 
-## 3. Threat model (initial)
+## 3. Threat Model
 
 Oreulia’s security posture assumes:
 
-- Apps/components may be malicious or compromised.
-- The kernel is trusted; everything else is *less* trusted.
-- Authority must be explicit and inspectable.
+- **Untrusted Apps**: Applications are potentially malicious or buggy and are strictly confined by the Wasm sandbox.
+- **Trusted Kernel**: The kernel (Rust + Assembly) is the TCB (Trusted Computing Base). It enforces capability logic.
+- **Explicit Authority**: No component can access a resource (file, network socket, service) without a valid capability handle.
 
 Security goals:
 
-- Prevent ambient access (no unrequested filesystem/network/clock).
-- Minimize attack surface of the “syscall layer.”
-- Enable confinement and least privilege.
-- Make privilege escalation paths visible in capability graphs.
+- **Isolation**: Crash in one app cannot bring down the kernel or other apps.
+- **Least Privilege**: Apps start with zero capabilities and are granted only what they need.
+- **Auditability**: Capability grants and flows can be logged and visualized.
+
 
 ---
 

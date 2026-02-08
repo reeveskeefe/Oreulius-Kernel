@@ -1,6 +1,12 @@
-# Assembly Quick Reference - Oreulia OS
+# Oreulia — Assembly Quick Reference
 
-## Command Summary
+**Status:** Reference (Feb 8, 2026)
+
+This guide provides a quick reference for developers working with the kernel's low-level assembly bindings. These functions are exposed via `crate::asm_bindings`.
+
+---
+
+## 1. Diagnostics Commands
 
 | Command | Description | Use Case |
 |---------|-------------|----------|
