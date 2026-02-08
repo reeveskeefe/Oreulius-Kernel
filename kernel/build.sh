@@ -18,8 +18,18 @@ nasm -f elf32 asm/crypto.asm -o target/crypto.o
 nasm -f elf32 asm/cpu_features.asm -o target/cpu_features.o
 nasm -f elf32 asm/atomic.asm -o target/atomic.o
 nasm -f elf32 asm/perf.asm -o target/perf.o
+nasm -f elf32 src/asm/cow.asm -o target/cow.o
+nasm -f elf32 src/asm/process.asm -o target/process.o
+nasm -f elf32 src/asm/idt.asm -o target/idt.o
+nasm -f elf32 src/asm/dma.asm -o target/dma.o
+nasm -f elf32 src/asm/acpi.asm -o target/acpi.o
+nasm -f elf32 src/asm/memopt.asm -o target/memopt.o
+nasm -f elf32 src/asm/gdt.asm -o target/gdt.o
+nasm -f elf32 src/asm/sysenter.asm -o target/sysenter.o
+nasm -f elf32 src/syscall_entry.asm -o target/syscall_entry.o
 echo "  ✓ context_switch.o, memory.o, interrupt.o, network.o, crypto.o"
-echo "  ✓ cpu_features.o, atomic.o, perf.o"
+echo "  ✓ cpu_features.o, atomic.o, perf.o, cow.o, process.o, idt.o"
+echo "  ✓ dma.o, acpi.o, memopt.o, gdt.o, sysenter.o, syscall_entry.o"
 
 echo "[2/6] Building Rust kernel (staticlib, i686)..."
 cargo ${TOOLCHAIN} build --release --lib --target "${RUST_TARGET}" \
@@ -49,6 +59,15 @@ x86_64-elf-ld \
   target/cpu_features.o \
   target/atomic.o \
   target/perf.o \
+  target/cow.o \
+  target/process.o \
+  target/idt.o \
+  target/dma.o \
+  target/acpi.o \
+  target/memopt.o \
+  target/gdt.o \
+  target/sysenter.o \
+  target/syscall_entry.o \
   --whole-archive "${RUST_LIB}" --no-whole-archive
 
 echo "[5/6] Creating ISO..."
@@ -59,15 +78,6 @@ i686-elf-grub-mkrescue -o oreulia.iso iso/ 2>&1 | grep -i "success" || true
 echo ""
 echo "=== Verification ==="
 if i686-elf-grub-file --is-x86-multiboot target/oreulia-kernel; then
-    echo "✓ Multiboot kernel created"
-    echo "✓ Assembly modules integrated (context_switch, memory, interrupt, network, crypto)"
-    echo "✓ ISO: oreulia.iso"
-    echo ""
-    echo "Performance enhancements:"
-    echo "  • Context switching: ~10x faster"
-    echo "  • Memory operations: ~5x faster"
-    echo "  • Network checksums: ~8x faster"
-    echo ""
     echo "Boot: qemu-system-i386 -cdrom oreulia.iso"
 else
     echo "✗ Kernel NOT multiboot compliant"

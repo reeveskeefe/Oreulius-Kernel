@@ -1,0 +1,102 @@
+=== Building Oreulia OS ===
+[1/6] Assembling optimized assembly modules...
+asm/atomic.asm:88: warning: superfluous LOCK prefix on XCHG instruction [-w+prefix-lock-xchg]
+  ✓ context_switch.o, memory.o, interrupt.o, network.o, crypto.o
+  ✓ cpu_features.o, atomic.o, perf.o, cow.o, process.o, idt.o
+  ✓ dma.o, acpi.o, memopt.o, syscall_entry.o
+[2/6] Building Rust kernel (staticlib, i686)...
+   Compiling oreulia-kernel v0.1.0 (/Users/keefereeves/Desktop/oreulia/kernel)
+error[E0428]: the name `ENOENT` is defined multiple times
+   --> src/syscall.rs:134:1
+    |
+17  | const ENOENT: u32 = 2;   // No such file or directory
+    | ---------------------- previous definition of the value `ENOENT` here
+...
+134 | pub const ENOENT: u32 = 2;     // No such file or directory
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `ENOENT` redefined here
+    |
+    = note: `ENOENT` must be defined only once in the value namespace of this module
+
+error[E0428]: the name `EINVAL` is defined multiple times
+   --> src/syscall.rs:135:1
+    |
+11  | const EINVAL: u32 = 22;  // Invalid argument
+    | ----------------------- previous definition of the value `EINVAL` here
+...
+135 | pub const EINVAL: u32 = 22;    // Invalid argument
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `EINVAL` redefined here
+    |
+    = note: `EINVAL` must be defined only once in the value namespace of this module
+
+error[E0428]: the name `EACCES` is defined multiple times
+   --> src/syscall.rs:136:1
+    |
+12  | const EACCES: u32 = 13;  // Permission denied
+    | ----------------------- previous definition of the value `EACCES` here
+...
+136 | pub const EACCES: u32 = 13;    // Permission denied
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `EACCES` redefined here
+    |
+    = note: `EACCES` must be defined only once in the value namespace of this module
+
+error[E0428]: the name `ENOMEM` is defined multiple times
+   --> src/syscall.rs:137:1
+    |
+14  | const ENOMEM: u32 = 12;  // Out of memory
+    | ----------------------- previous definition of the value `ENOMEM` here
+...
+137 | pub const ENOMEM: u32 = 12;    // Out of memory
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ENOMEM` redefined here
+    |
+    = note: `ENOMEM` must be defined only once in the value namespace of this module
+
+error[E0428]: the name `ENOSYS` is defined multiple times
+   --> src/syscall.rs:138:1
+    |
+10  | const ENOSYS: u32 = 38;  // Function not implemented
+    | ----------------------- previous definition of the value `ENOSYS` here
+...
+138 | pub const ENOSYS: u32 = 38;    // Function not implemented
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ENOSYS` redefined here
+    |
+    = note: `ENOSYS` must be defined only once in the value namespace of this module
+
+error[E0425]: cannot find function `allocate_frame` in module `crate::memory`
+   --> src/syscall.rs:594:30
+    |
+594 |         match crate::memory::allocate_frame() {
+    |                              ^^^^^^^^^^^^^^ not found in `crate::memory`
+
+warning: unused import: `alloc::vec::Vec`
+  --> src/hardened_allocator.rs:13:5
+   |
+13 | use alloc::vec::Vec; // Used for allocation tracking
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+error[E0599]: no function or associated item named `full` found for struct `ChannelRights` in the current scope
+   --> src/ipc.rs:697:24
+    |
+185 | pub struct ChannelRights {
+    | ------------------------ function or associated item `full` not found for this struct
+...
+697 |         ChannelRights::full(),
+    |                        ^^^^ function or associated item not found in `ChannelRights`
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:317:78
+    |
+317 |     match crate::ipc::send_message(crate::ipc::ChannelId(channel_id as u32), message) {
+    |           ------------------------ arguments to this function are incorrect  ^^^^^^^ expected `Message`, found `&[u8]`
+    |
+note: function defined here
+   --> src/ipc.rs:657:8
+    |
+657 | pub fn send_message(channel_id: ChannelId, msg: Message) -> Result<(), &'static str> {
+    |        ^^^^^^^^^^^^                        ------------
+
+Some errors have detailed explanations: E0308, E0425, E0428, E0599.
+For more information about an error, try `rustc --explain E0308`.
+warning: `oreulia-kernel` (lib) generated 1 warning
+error: could not compile `oreulia-kernel` (lib) due to 8 previous errors; 1 warning emitted

@@ -14,14 +14,14 @@
 use core::fmt;
 use spin::Mutex;
 
-/// Maximum file size (64 KiB for v0)
-pub const MAX_FILE_SIZE: usize = 64 * 1024;
+/// Maximum file size (4 KiB - reduced to shrink kernel binary)
+pub const MAX_FILE_SIZE: usize = 4 * 1024;
 
 /// Maximum key length
 pub const MAX_KEY_LENGTH: usize = 256;
 
-/// Maximum number of files in the filesystem (v0)
-pub const MAX_FILES: usize = 256;
+/// Maximum number of files (reduced to shrink kernel binary)
+pub const MAX_FILES: usize = 32;
 
 // ============================================================================
 // Core Types
@@ -740,6 +740,50 @@ pub fn init() {
     // - Load snapshots from disk
     // - Replay logs for recovery
     // - Set up persistence service integration
+}
+
+// ============================================================================
+// Syscall Wrapper Functions
+// ============================================================================
+
+/// Open a file (syscall wrapper)
+pub fn open(path: &str) -> Result<usize, &'static str> {
+    let _ = FileKey::new(path).map_err(|_| "Invalid path")?;
+    crate::vfs::open_for_current(path, crate::vfs::OpenFlags::READ | crate::vfs::OpenFlags::WRITE | crate::vfs::OpenFlags::CREATE)
+}
+
+/// Read from file (syscall wrapper)
+pub fn read(fd: usize, buffer: &mut [u8]) -> Result<usize, &'static str> {
+    let pid = crate::process::current_pid().ok_or("No current process")?;
+    crate::vfs::read_fd(pid, fd, buffer)
+}
+
+/// Write to file (syscall wrapper)
+pub fn write(fd: usize, data: &[u8]) -> Result<usize, &'static str> {
+    let pid = crate::process::current_pid().ok_or("No current process")?;
+    crate::vfs::write_fd(pid, fd, data)
+}
+
+/// Close file (syscall wrapper)
+pub fn close(fd: usize) -> Result<(), &'static str> {
+    let pid = crate::process::current_pid().ok_or("No current process")?;
+    crate::vfs::close_fd(pid, fd)
+}
+
+/// Delete file (syscall wrapper)
+pub fn delete(path: &str) -> Result<(), &'static str> {
+    // Parse path into FileKey
+    let _key = FileKey::new(path).map_err(|_| "Invalid path")?;
+    
+    // TODO: Delete file
+    Ok(())
+}
+
+/// List directory contents (syscall wrapper)
+pub fn list_dir(path: &str, _buffer: &mut [u8]) -> Result<usize, &'static str> {
+    // TODO: List directory entries
+    let _ = path;
+    Ok(0)
 }
 
 // ============================================================================

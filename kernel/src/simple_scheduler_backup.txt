@@ -1,0 +1,80 @@
+This will be added to quantum_scheduler.rs:
+
+// Add these imports at top
+use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::boxed::Box;
+use crate::asm_bindings::asm_load_context;
+use crate::paging;
+
+// Add to ProcessInfo struct
+pub stack: Option<Box<[u8; crate::process::STACK_SIZE]>>,
+
+// Add these functions to QuantumScheduler impl
+
+pub fn add_kernel_thread(&mut self, entry: extern "C" fn() -> !, priority: ProcessPriority) -> Result<Pid, &'static str> {
+    let mut process = Process::new();
+    process.priority = priority;
+    let pid = process.pid;
+    
+    let mut stack = Box::new([0u8; crate::process::STACK_SIZE]);
+    let stack_top = unsafe { stack.as_mut_ptr().add(crate::process::STACK_SIZE) as u32 } & !15;
+    
+    let entry_addr: u32 = (entry as *const () as usize) as u32;
+    let entry_ptr = (stack_top - 4) as *mut u32;
+    unsafe { entry_ptr.write(entry_addr); }
+    
+    let mut ctx = ProcessContext::new();
+    ctx.eip = 0x00100186;  // trampoline address from nm
+    ctx.esp = stack_top - 4;
+    ctx.ebp = stack_top - 4;
+    ctx.cr3 = paging::current_page_directory_addr();
+    
+    process.state = ProcessState::Ready;
+    
+    let info = ProcessInfo {
+        process,
+        context: ctx,
+        stack: Some(stack),
+        quantum_remaining: QUANTUM_NORMAL,
+        total_cpu_time: 0,
+        total_wait_time: 0,
+        last_scheduled: 0,
+        switches: 0,
+    };
+    
+    self.processes[pid.0 as usize] = Some(info);
+    self.enqueue_ready(pid, priority);
+    
+    crate::serial_print!("[SCHED] Added kernel thread PID {} at EIP 0x{:08x}\n", pid.0, ctx.eip);
+    Ok(pid)
+}
+
+pub fn start(&mut self) -> ! {
+    let next_pid = self.dequeue_ready().expect("No processes to run");
+    
+    crate::vga::print_str("[SCHED] Starting scheduler\n");
+    crate::serial_print!("[SCHED] Starting with PID {}\n", next_pid.0);
+    
+    if let Some(ref mut info) = self.processes[next_pid.0 as usize] {
+        info.process.state = ProcessState::Running;
+    }
+    
+    self.current_pid = Some(next_pid);
+    
+    SCHEDULER_STARTED.store(true, Ordering::Release);
+    
+    unsafe { QUANTUM_SCHEDULER.force_unlock(); }
+    
+    let ctx_ptr = if let Some(ref info) = self.processes[next_pid.0 as usize] {
+        crate::serial_print!("[SCHED] Loading context, EIP=0x{:08x}\n", info.context.eip);
+        &info.context as *const ProcessContext
+    } else {
+        panic!("Process disappeared");
+    };
+    
+    crate::serial_print!("[SCHED] Calling asm_load_context...\n");
+    unsafe { asm_load_context(ctx_ptr); }
+}
+
+// Add at end of file:
+static SCHEDULER_STARTED: AtomicBool = AtomicBool::new(false);

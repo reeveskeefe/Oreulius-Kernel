@@ -11,6 +11,7 @@ use spin::Mutex;
 use crate::process::{Process, ProcessState, ProcessPriority, Pid, MAX_PROCESSES};
 use crate::asm_bindings::{ProcessContext, asm_switch_context};
 use crate::pit;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Time slice in milliseconds (10ms = 100 Hz)
 const TIME_SLICE_MS: u32 = 10;
@@ -263,9 +264,12 @@ impl Scheduler {
         } else {
             // No processes to run, idle
             self.current_pid = None;
-            unsafe {
-                // HLT to save power
-                crate::asm_bindings::hlt();
+            let interrupts_enabled = unsafe { crate::process_asm::get_interrupt_state() } != 0;
+            if interrupts_enabled {
+                unsafe {
+                    // HLT to save power
+                    crate::asm_bindings::hlt();
+                }
             }
         }
     }
@@ -410,6 +414,8 @@ pub struct SchedulerStats {
     pub preemptions: u64,
 }
 
+static RESCHED_REQUESTED: AtomicBool = AtomicBool::new(false);
+
 // Global scheduler instance
 pub static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
 
@@ -430,5 +436,30 @@ pub fn sleep(ms: u32) {
 
 /// Timer interrupt handler (called by IRQ0)
 pub fn on_timer_tick() {
+    let in_interrupt = unsafe { crate::process_asm::get_interrupt_state() } == 0;
+    if in_interrupt {
+        let mut sched = SCHEDULER.lock();
+        sched.preemptions += 1;
+        sched.wake_sleeping();
+        if let Some(current_pid) = sched.current_pid {
+            let priority = if let Some(ref mut proc) = sched.processes[current_pid.0 as usize] {
+                proc.state = ProcessState::Ready;
+                proc.priority
+            } else {
+                return;
+            };
+            sched.enqueue_ready(current_pid, priority);
+        }
+        RESCHED_REQUESTED.store(true, Ordering::SeqCst);
+        return;
+    }
+    
     SCHEDULER.lock().on_timer_tick();
+}
+
+/// Perform deferred reschedule if requested by timer IRQ
+pub fn maybe_reschedule() {
+    if RESCHED_REQUESTED.swap(false, Ordering::SeqCst) {
+        SCHEDULER.lock().schedule();
+    }
 }

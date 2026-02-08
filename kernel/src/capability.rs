@@ -57,32 +57,33 @@ impl Rights {
     pub const CHANNEL_SEND: u32 = 1 << 0;
     pub const CHANNEL_RECEIVE: u32 = 1 << 1;
     pub const CHANNEL_CLONE_SENDER: u32 = 1 << 2;
+    pub const CHANNEL_CREATE: u32 = 1 << 3;
     
     // Task rights
-    pub const TASK_SIGNAL: u32 = 1 << 3;
-    pub const TASK_JOIN: u32 = 1 << 4;
+    pub const TASK_SIGNAL: u32 = 1 << 4;
+    pub const TASK_JOIN: u32 = 1 << 5;
     
     // Spawner rights
-    pub const SPAWNER_SPAWN: u32 = 1 << 5;
+    pub const SPAWNER_SPAWN: u32 = 1 << 6;
     
     // Console rights
-    pub const CONSOLE_WRITE: u32 = 1 << 6;
-    pub const CONSOLE_READ: u32 = 1 << 7;
+    pub const CONSOLE_WRITE: u32 = 1 << 7;
+    pub const CONSOLE_READ: u32 = 1 << 8;
     
     // Clock rights
-    pub const CLOCK_READ_MONOTONIC: u32 = 1 << 8;
+    pub const CLOCK_READ_MONOTONIC: u32 = 1 << 9;
     
     // Store rights
-    pub const STORE_APPEND_LOG: u32 = 1 << 9;
-    pub const STORE_READ_LOG: u32 = 1 << 10;
-    pub const STORE_WRITE_SNAPSHOT: u32 = 1 << 11;
-    pub const STORE_READ_SNAPSHOT: u32 = 1 << 12;
+    pub const STORE_APPEND_LOG: u32 = 1 << 10;
+    pub const STORE_READ_LOG: u32 = 1 << 11;
+    pub const STORE_WRITE_SNAPSHOT: u32 = 1 << 12;
+    pub const STORE_READ_SNAPSHOT: u32 = 1 << 13;
     
     // Filesystem rights
-    pub const FS_READ: u32 = 1 << 13;
-    pub const FS_WRITE: u32 = 1 << 14;
-    pub const FS_DELETE: u32 = 1 << 15;
-    pub const FS_LIST: u32 = 1 << 16;
+    pub const FS_READ: u32 = 1 << 14;
+    pub const FS_WRITE: u32 = 1 << 15;
+    pub const FS_DELETE: u32 = 1 << 16;
+    pub const FS_LIST: u32 = 1 << 17;
     
     pub const NONE: u32 = 0;
     pub const ALL: u32 = 0xFFFFFFFF;
@@ -272,6 +273,18 @@ impl CapabilityTable {
     /// Get all capabilities (for auditing)
     pub fn list_all(&self) -> impl Iterator<Item = &OreuliaCapability> {
         self.entries.iter().filter_map(|e| e.as_ref())
+    }
+    
+    /// Create channel capability from ChannelId
+    pub fn create_channel_capability(&mut self, channel: ChannelId, rights: Rights, origin: ProcessId) -> Result<u32, CapabilityError> {
+        let cap = OreuliaCapability::new(
+            0,
+            channel.0 as u64, // Use channel ID as object ID
+            CapabilityType::Channel,
+            rights,
+            origin,
+        );
+        self.install(cap)
     }
 }
 
@@ -496,4 +509,24 @@ pub fn check_capability(
     // TODO: Look up capability in process capability table
     // For now, deny all user-mode operations
     false
+}
+
+// ============================================================================
+// Syscall Wrapper Functions
+// ============================================================================
+
+/// Revoke a capability (syscall wrapper)
+impl CapabilityManager {
+    pub fn revoke_capability(&self, _pid: ProcessId, _cap_id: u32) -> Result<(), &'static str> {
+        // TODO: Implement capability revocation via capability table
+        // For now, just return success
+        Ok(())
+    }
+    
+    /// Query capability information (syscall wrapper)
+    pub fn query_capability(&self, _pid: ProcessId, _cap_id: u32) -> Result<(u32, u64), &'static str> {
+        // TODO: Look up capability and return (type, object_id)
+        // For now, just return dummy data
+        Ok((0, 0))
+    }
 }

@@ -1,0 +1,1198 @@
+=== Building Oreulia OS ===
+[1/6] Assembling optimized assembly modules...
+asm/atomic.asm:88: warning: superfluous LOCK prefix on XCHG instruction [-w+prefix-lock-xchg]
+  ✓ context_switch.o, memory.o, interrupt.o, network.o, crypto.o
+  ✓ cpu_features.o, atomic.o, perf.o, cow.o, process.o, idt.o
+  ✓ dma.o, acpi.o, memopt.o, syscall_entry.o
+[2/6] Building Rust kernel (staticlib, i686)...
+   Compiling oreulia-kernel v0.1.0 (/Users/keefereeves/Desktop/oreulia/kernel)
+error[E0428]: the name `ENOENT` is defined multiple times
+   --> src/syscall.rs:134:1
+    |
+17  | const ENOENT: usize = 2;   // No such file or directory
+    | ------------------------ previous definition of the value `ENOENT` here
+...
+134 | pub const ENOENT: u32 = 2;     // No such file or directory
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `ENOENT` redefined here
+    |
+    = note: `ENOENT` must be defined only once in the value namespace of this module
+
+error[E0428]: the name `EINVAL` is defined multiple times
+   --> src/syscall.rs:135:1
+    |
+11  | const EINVAL: usize = 22;  // Invalid argument
+    | ------------------------- previous definition of the value `EINVAL` here
+...
+135 | pub const EINVAL: u32 = 22;    // Invalid argument
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `EINVAL` redefined here
+    |
+    = note: `EINVAL` must be defined only once in the value namespace of this module
+
+error[E0428]: the name `EACCES` is defined multiple times
+   --> src/syscall.rs:136:1
+    |
+12  | const EACCES: usize = 13;  // Permission denied
+    | ------------------------- previous definition of the value `EACCES` here
+...
+136 | pub const EACCES: u32 = 13;    // Permission denied
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `EACCES` redefined here
+    |
+    = note: `EACCES` must be defined only once in the value namespace of this module
+
+error[E0428]: the name `ENOMEM` is defined multiple times
+   --> src/syscall.rs:137:1
+    |
+14  | const ENOMEM: usize = 12;  // Out of memory
+    | ------------------------- previous definition of the value `ENOMEM` here
+...
+137 | pub const ENOMEM: u32 = 12;    // Out of memory
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ENOMEM` redefined here
+    |
+    = note: `ENOMEM` must be defined only once in the value namespace of this module
+
+error[E0428]: the name `ENOSYS` is defined multiple times
+   --> src/syscall.rs:138:1
+    |
+10  | const ENOSYS: usize = 38;  // Function not implemented
+    | ------------------------- previous definition of the value `ENOSYS` here
+...
+138 | pub const ENOSYS: u32 = 38;    // Function not implemented
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ENOSYS` redefined here
+    |
+    = note: `ENOSYS` must be defined only once in the value namespace of this module
+
+error[E0425]: cannot find function `allocate_frame` in module `crate::memory`
+   --> src/syscall.rs:594:30
+    |
+594 |         match crate::memory::allocate_frame() {
+    |                              ^^^^^^^^^^^^^^ not found in `crate::memory`
+
+warning: unused import: `alloc::vec::Vec`
+  --> src/hardened_allocator.rs:13:5
+   |
+13 | use alloc::vec::Vec; // Used for allocation tracking
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+error[E0599]: no function or associated item named `full` found for struct `ChannelRights` in the current scope
+   --> src/ipc.rs:697:24
+    |
+185 | pub struct ChannelRights {
+    | ------------------------ function or associated item `full` not found for this struct
+...
+697 |         ChannelRights::full(),
+    |                        ^^^^ function or associated item not found in `ChannelRights`
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:182:54
+    |
+182 |         SyscallNumber::Invalid => SyscallResult::err(ENOSYS),
+    |                                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                                   |
+    |                                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+182 |         SyscallNumber::Invalid => SyscallResult::err(ENOSYS.try_into().unwrap()),
+    |                                                            ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:221:24
+    |
+221 |     SyscallResult::err(ENOSYS)
+    |     ------------------ ^^^^^^ expected `u32`, found `usize`
+    |     |
+    |     arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+221 |     SyscallResult::err(ENOSYS.try_into().unwrap())
+    |                              ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:267:35
+    |
+267 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+267 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:287:38
+    |
+287 |         Err(_) => SyscallResult::err(ENOMEM),
+    |                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+287 |         Err(_) => SyscallResult::err(ENOMEM.try_into().unwrap()),
+    |                                            ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:298:35
+    |
+298 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+298 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:303:35
+    |
+303 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+303 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:308:35
+    |
+308 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+308 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:317:78
+    |
+317 |     match crate::ipc::send_message(crate::ipc::ChannelId(channel_id as u32), message) {
+    |           ------------------------ arguments to this function are incorrect  ^^^^^^^ expected `Message`, found `&[u8]`
+    |
+note: function defined here
+   --> src/ipc.rs:657:8
+    |
+657 | pub fn send_message(channel_id: ChannelId, msg: Message) -> Result<(), &'static str> {
+    |        ^^^^^^^^^^^^                        ------------
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:319:38
+    |
+319 |         Err(_) => SyscallResult::err(EIO),
+    |                   ------------------ ^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+319 |         Err(_) => SyscallResult::err(EIO.try_into().unwrap()),
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:330:35
+    |
+330 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+330 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:335:35
+    |
+335 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+335 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:339:35
+    |
+339 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+339 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:349:38
+    |
+349 |         Err(_) => SyscallResult::err(EAGAIN), // No message available
+    |                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+349 |         Err(_) => SyscallResult::err(EAGAIN.try_into().unwrap()), // No message available
+    |                                            ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:358:35
+    |
+358 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+358 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:368:38
+    |
+368 |         Err(_) => SyscallResult::err(EBADF),
+    |                   ------------------ ^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+368 |         Err(_) => SyscallResult::err(EBADF.try_into().unwrap()),
+    |                                           ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:382:35
+    |
+382 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+382 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:411:35
+    |
+411 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+411 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:417:38
+    |
+417 |         Err(_) => SyscallResult::err(ENOENT),
+    |                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+417 |         Err(_) => SyscallResult::err(ENOENT.try_into().unwrap()),
+    |                                            ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:428:35
+    |
+428 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+428 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:433:35
+    |
+433 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+433 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:437:35
+    |
+437 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+437 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:447:38
+    |
+447 |         Err(_) => SyscallResult::err(EIO),
+    |                   ------------------ ^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+447 |         Err(_) => SyscallResult::err(EIO.try_into().unwrap()),
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:458:35
+    |
+458 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+458 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:463:35
+    |
+463 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+463 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:467:35
+    |
+467 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+467 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:477:38
+    |
+477 |         Err(_) => SyscallResult::err(EIO),
+    |                   ------------------ ^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+477 |         Err(_) => SyscallResult::err(EIO.try_into().unwrap()),
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:486:35
+    |
+486 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+486 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:492:38
+    |
+492 |         Err(_) => SyscallResult::err(EBADF),
+    |                   ------------------ ^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+492 |         Err(_) => SyscallResult::err(EBADF.try_into().unwrap()),
+    |                                           ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:501:35
+    |
+501 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+501 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:506:35
+    |
+506 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+506 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:528:38
+    |
+528 |         Err(_) => SyscallResult::err(ENOENT),
+    |                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+528 |         Err(_) => SyscallResult::err(ENOENT.try_into().unwrap()),
+    |                                            ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:539:35
+    |
+539 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+539 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:544:35
+    |
+544 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+544 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:568:38
+    |
+568 |         Err(_) => SyscallResult::err(ENOENT),
+    |                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+568 |         Err(_) => SyscallResult::err(ENOENT.try_into().unwrap()),
+    |                                            ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:582:35
+    |
+582 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+582 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:606:43
+    |
+606 |                 return SyscallResult::err(ENOMEM);
+    |                        ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                        |
+    |                        arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+606 |                 return SyscallResult::err(ENOMEM.try_into().unwrap());
+    |                                                 ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:623:35
+    |
+623 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+623 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:641:35
+    |
+641 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+641 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:647:24
+    |
+647 |     SyscallResult::err(ENOSYS)
+    |     ------------------ ^^^^^^ expected `u32`, found `usize`
+    |     |
+    |     arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+647 |     SyscallResult::err(ENOSYS.try_into().unwrap())
+    |                              ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:656:35
+    |
+656 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+656 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:662:24
+    |
+662 |     SyscallResult::err(ENOSYS)
+    |     ------------------ ^^^^^^ expected `u32`, found `usize`
+    |     |
+    |     arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+662 |     SyscallResult::err(ENOSYS.try_into().unwrap())
+    |                              ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:684:40
+    |
+684 |         _ => return SyscallResult::err(EINVAL),
+    |                     ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                     |
+    |                     arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+684 |         _ => return SyscallResult::err(EINVAL.try_into().unwrap()),
+    |                                              ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:689:35
+    |
+689 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+689 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:701:38
+    |
+701 |         Err(_) => SyscallResult::err(ENOMEM),
+    |                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+701 |         Err(_) => SyscallResult::err(ENOMEM.try_into().unwrap()),
+    |                                            ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:711:38
+    |
+711 |         Err(_) => SyscallResult::err(EINVAL),
+    |                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+711 |         Err(_) => SyscallResult::err(EINVAL.try_into().unwrap()),
+    |                                            ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:721:35
+    |
+721 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+721 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0609]: no field `object_id` on type `(u32, u64)`
+   --> src/syscall.rs:730:38
+    |
+730 |                 ptr.add(0).write(cap.object_id as u32);
+    |                                      ^^^^^^^^^
+
+error[E0609]: no field `cap_type` on type `(u32, u64)`
+   --> src/syscall.rs:731:38
+    |
+731 |                 ptr.add(1).write(cap.cap_type as u32);
+    |                                      ^^^^^^^^
+
+error[E0609]: no field `rights` on type `(u32, u64)`
+   --> src/syscall.rs:732:38
+    |
+732 |                 ptr.add(2).write(cap.rights.bits);
+    |                                      ^^^^^^
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:736:38
+    |
+736 |         Err(_) => SyscallResult::err(EINVAL),
+    |                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+736 |         Err(_) => SyscallResult::err(EINVAL.try_into().unwrap()),
+    |                                            ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:750:35
+    |
+750 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+750 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:755:35
+    |
+755 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+755 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:759:35
+    |
+759 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+759 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:785:35
+    |
+785 |         return SyscallResult::err(EACCES);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+785 |         return SyscallResult::err(EACCES.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:790:35
+    |
+790 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+790 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:794:35
+    |
+794 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+794 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:825:35
+    |
+825 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+825 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:829:35
+    |
+829 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+829 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:843:38
+    |
+843 |         Err(_) => SyscallResult::err(EINVAL),
+    |                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+843 |         Err(_) => SyscallResult::err(EINVAL.try_into().unwrap()),
+    |                                            ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:855:35
+    |
+855 |         return SyscallResult::err(EINVAL);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+855 |         return SyscallResult::err(EINVAL.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:859:35
+    |
+859 |         return SyscallResult::err(EFAULT);
+    |                ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                |
+    |                arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+859 |         return SyscallResult::err(EFAULT.try_into().unwrap());
+    |                                         ++++++++++++++++++++
+
+error[E0308]: mismatched types
+    --> src/syscall.rs:872:59
+     |
+872  |     match crate::wasm::call_function(module_id, func_idx, wasm_args) {
+     |           --------------------------                      ^^^^^^^^^ expected `&[u32]`, found `&[i32]`
+     |           |
+     |           arguments to this function are incorrect
+     |
+     = note: expected reference `&[u32]`
+                found reference `&[i32]`
+note: function defined here
+    --> src/wasm.rs:1271:8
+     |
+1271 | pub fn call_function(module_id: usize, func_idx: usize, args: &[u32]) -> Result<u32, &'static str> {
+     |        ^^^^^^^^^^^^^                                    ------------
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:875:31
+    |
+875 |             SyscallResult::ok(result)
+    |             ----------------- ^^^^^^ expected `i32`, found `u32`
+    |             |
+    |             arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:123:12
+    |
+123 |     pub fn ok(value: i32) -> Self {
+    |            ^^ ----------
+help: you can convert a `u32` to an `i32` and panic if the converted value doesn't fit
+    |
+875 |             SyscallResult::ok(result.try_into().unwrap())
+    |                                     ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:877:38
+    |
+877 |         Err(_) => SyscallResult::err(EINVAL),
+    |                   ------------------ ^^^^^^ expected `u32`, found `usize`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+note: associated function defined here
+   --> src/syscall.rs:127:12
+    |
+127 |     pub fn err(errno: u32) -> Self {
+    |            ^^^ ----------
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+877 |         Err(_) => SyscallResult::err(EINVAL.try_into().unwrap()),
+    |                                            ++++++++++++++++++++
+
+Some errors have detailed explanations: E0308, E0425, E0428, E0599, E0609.
+For more information about an error, try `rustc --explain E0308`.
+warning: `oreulia-kernel` (lib) generated 1 warning
+error: could not compile `oreulia-kernel` (lib) due to 71 previous errors; 1 warning emitted

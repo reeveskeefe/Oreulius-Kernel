@@ -10,7 +10,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use spin::Mutex;
-use alloc::vec::Vec;
+use alloc::vec::Vec; // Used for allocation tracking
 
 extern "C" {
     static _heap_start: usize;
@@ -185,7 +185,7 @@ impl HardenedAllocator {
         // Verify guard pages
         let guard_size = 4096;
         let alloc_start = (header_ptr as usize).saturating_sub(guard_size);
-        let alloc_end = (ptr as usize + header.size + guard_size);
+        let alloc_end = ptr as usize + header.size + guard_size;
         
         if !self.check_guard_page(alloc_start, guard_size) {
             self.stats.guard_page_violations += 1;

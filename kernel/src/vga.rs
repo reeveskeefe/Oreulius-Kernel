@@ -1,6 +1,7 @@
 use core::fmt;
 use spin::Mutex;
 use lazy_static::lazy_static;
+use crate::asm_bindings::{inb, outb};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +27,7 @@ pub enum Color {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-struct ColorCode(u8);
+pub struct ColorCode(u8);
 
 impl ColorCode {
     const fn new(foreground: Color, background: Color) -> ColorCode {
@@ -43,6 +44,8 @@ struct ScreenChar {
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
+pub const SCREEN_HEIGHT: usize = BUFFER_HEIGHT;
+pub const SCREEN_WIDTH: usize = BUFFER_WIDTH;
 
 #[repr(transparent)]
 struct Buffer {
@@ -178,6 +181,10 @@ lazy_static! {
     pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer::new());
 }
 
+// CRT Controller Ports
+const CRTC_ADDR_PORT: u16 = 0x3D4;
+const CRTC_DATA_PORT: u16 = 0x3D5;
+
 #[macro_export]
 macro_rules! vga_print {
     ($($arg:tt)*) => ($crate::vga::_print(format_args!($($arg)*)));
@@ -192,32 +199,92 @@ macro_rules! vga_println {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    WRITER.lock().write_fmt(args).unwrap();
+    // Write to serial for debugging
+    if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
+        let _ = serial.write_fmt(args);
+    }
+
+    struct TerminalAdapter;
+    impl fmt::Write for TerminalAdapter {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            crate::terminal::write_str(s);
+            Ok(())
+        }
+    }
+    let mut terminal_writer = TerminalAdapter;
+    let _ = terminal_writer.write_fmt(args);
 }
 
 pub fn print_str(s: &str) {
-    WRITER.lock().write_string(s);
+    use core::fmt::Write;
+    // Write to serial port for debugging (capture logs)
+    if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
+        let _ = serial.write_str(s);
+    }
+    crate::terminal::write_str(s);
 }
 
 pub fn print_char(c: char) {
-    WRITER.lock().write_byte(c as u8);
+    crate::terminal::write_char(c);
 }
 
 pub fn clear_screen() {
-    WRITER.lock().clear_screen();
+    crate::terminal::clear_screen();
 }
 
 pub fn backspace() {
-    let mut writer = WRITER.lock();
-    if writer.column_position == 0 {
+    crate::terminal::backspace();
+}
+
+pub fn write_cell(row: usize, col: usize, byte: u8, fg: Color, bg: Color) {
+    if row >= BUFFER_HEIGHT || col >= BUFFER_WIDTH {
         return;
     }
-
-    writer.column_position -= 1;
-    let row = writer.row_position;
-    let col = writer.column_position;
+    let mut writer = WRITER.lock();
     writer.buffer.chars[row][col] = ScreenChar {
-        ascii_character: b' ',
-        color_code: writer.color_code,
+        ascii_character: byte,
+        color_code: ColorCode::new(fg, bg),
     };
+}
+
+pub fn clear_screen_with(fg: Color, bg: Color) {
+    let blank = ScreenChar {
+        ascii_character: b' ',
+        color_code: ColorCode::new(fg, bg),
+    };
+    let mut writer = WRITER.lock();
+    writer.set_color(fg, bg);
+    writer.clear_screen();
+}
+
+/// Initialize the VGA driver and enable the hardware cursor
+pub fn init() {
+    // Enable cursor (scanlines 14-15)
+    enable_cursor(14, 15);
+    // Reset cursor position to 0,0 locally and on hardware
+    crate::terminal::clear_screen();
+    update_cursor(0, 0);
+}
+
+pub fn update_cursor(row: usize, col: usize) {
+    let pos = row * BUFFER_WIDTH + col;
+    
+    unsafe {
+        outb(CRTC_ADDR_PORT, 0x0F);
+        outb(CRTC_DATA_PORT, (pos & 0xFF) as u8);
+        outb(CRTC_ADDR_PORT, 0x0E);
+        outb(CRTC_DATA_PORT, ((pos >> 8) & 0xFF) as u8);
+    }
+}
+
+pub fn enable_cursor(start: u8, end: u8) {
+    unsafe {
+        outb(CRTC_ADDR_PORT, 0x0A);
+        let cursor_start = inb(CRTC_DATA_PORT) & 0xC0;
+        outb(CRTC_DATA_PORT, cursor_start | start);
+        
+        outb(CRTC_ADDR_PORT, 0x0B);
+        let cursor_end = inb(CRTC_DATA_PORT) & 0xE0;
+        outb(CRTC_DATA_PORT, cursor_end | end);
+    }
 }

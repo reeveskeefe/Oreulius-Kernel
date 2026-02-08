@@ -14,8 +14,36 @@ global _start
 extern rust_main
 
 _start:
+    ; Direct VGA write - no BIOS interrupts (we're in protected mode)
+    ; Clear screen
+    mov edi, 0xb8000
+    mov ecx, 2000
+    mov ax, 0x0720  ; Light gray on black space
+    rep stosw
+    
+    ; Write "BOOT" at top left
+    mov word [0xb8000], 0x0742  ; 'B' light gray
+    mov word [0xb8002], 0x074f  ; 'O' light gray
+    mov word [0xb8004], 0x074f  ; 'O' light gray
+    mov word [0xb8006], 0x0754  ; 'T' light gray
+    
+    ; Set up stack
     mov esp, stack_top
+    
+    ; Write "CALL" before calling rust_main
+    mov word [0xb8008], 0x0743  ; 'C'
+    mov word [0xb800a], 0x0741  ; 'A'
+    mov word [0xb800c], 0x074c  ; 'L'
+    mov word [0xb800e], 0x074c  ; 'L'
+    
     call rust_main
+    
+    ; If we return (shouldn't happen), show "FAIL"
+    mov word [0xb8010], 0x0446  ; 'F' red
+    mov word [0xb8012], 0x0441  ; 'A' red
+    mov word [0xb8014], 0x0449  ; 'I' red
+    mov word [0xb8016], 0x044c  ; 'L' red
+    
     cli
 .hang:
     hlt

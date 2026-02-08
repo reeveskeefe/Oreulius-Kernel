@@ -5,6 +5,19 @@
 
 use crate::vga;
 use crate::capability::{self, CapabilityType, Rights};
+use crate::process_asm::{write_msr, MSR_IA32_SYSENTER_CS, MSR_IA32_SYSENTER_ESP, MSR_IA32_SYSENTER_EIP};
+use crate::gdt;
+
+// POSIX-style error codes
+const ENOSYS: u32 = 38;  // Function not implemented
+const EINVAL: u32 = 22;  // Invalid argument
+const EACCES: u32 = 13;  // Permission denied
+const EFAULT: u32 = 14;  // Bad address
+const ENOMEM: u32 = 12;  // Out of memory
+const EIO: u32 = 5;      // I/O error
+const EBADF: u32 = 9;    // Bad file descriptor
+const ENOENT: u32 = 2;   // No such file or directory
+const EAGAIN: u32 = 11;  // Try again
 
 /// System call numbers
 #[repr(u32)]
@@ -16,6 +29,7 @@ pub enum SyscallNumber {
     Yield = 2,
     GetPid = 3,
     Sleep = 4,
+    Exec = 5,
     
     // IPC
     ChannelCreate = 10,
@@ -62,6 +76,7 @@ impl From<u32> for SyscallNumber {
             2 => SyscallNumber::Yield,
             3 => SyscallNumber::GetPid,
             4 => SyscallNumber::Sleep,
+            5 => SyscallNumber::Exec,
             10 => SyscallNumber::ChannelCreate,
             11 => SyscallNumber::ChannelSend,
             12 => SyscallNumber::ChannelRecv,
@@ -118,14 +133,6 @@ impl SyscallResult {
     }
 }
 
-/// Error codes
-pub const EPERM: u32 = 1;      // Operation not permitted
-pub const ENOENT: u32 = 2;     // No such file or directory
-pub const EINVAL: u32 = 22;    // Invalid argument
-pub const EACCES: u32 = 13;    // Permission denied
-pub const ENOMEM: u32 = 12;    // Out of memory
-pub const ENOSYS: u32 = 38;    // Function not implemented
-
 /// Main syscall handler (called from interrupt/trap)
 pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let syscall = SyscallNumber::from(args.number);
@@ -140,6 +147,7 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
         SyscallNumber::Yield => sys_yield(args, caller_pid),
         SyscallNumber::GetPid => sys_getpid(args, caller_pid),
         SyscallNumber::Sleep => sys_sleep(args, caller_pid),
+        SyscallNumber::Exec => sys_exec(args, caller_pid),
         
         SyscallNumber::ChannelCreate => sys_channel_create(args, caller_pid),
         SyscallNumber::ChannelSend => sys_channel_send(args, caller_pid),
@@ -151,6 +159,7 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
         SyscallNumber::FileWrite => sys_file_write(args, caller_pid),
         SyscallNumber::FileClose => sys_file_close(args, caller_pid),
         SyscallNumber::FileDelete => sys_file_delete(args, caller_pid),
+        SyscallNumber::DirList => sys_dir_list(args, caller_pid),
         
         SyscallNumber::MemoryAlloc => sys_memory_alloc(args, caller_pid),
         SyscallNumber::MemoryFree => sys_memory_free(args, caller_pid),
@@ -177,18 +186,64 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
 
 fn sys_exit(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let exit_code = args.arg1 as i32;
-    // TODO: Implement process termination
-    vga::print_str("[SYSCALL] Exit called with code ");
+    
+    // Log the exit
+    vga::print_str("[SYSCALL] Process ");
+    crate::commands::print_u32(caller_pid.0);
+    vga::print_str(" exiting with code ");
+    crate::commands::print_u32(exit_code as u32);
     vga::print_str("\n");
-    SyscallResult::ok(0)
+    
+    // Remove from scheduler (process cleanup)
+    let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+    let _ = scheduler.remove_process(caller_pid);
+    
+    // Yield to next process
+    drop(scheduler);
+    crate::scheduler::yield_cpu();
+    
+    SyscallResult::ok(exit_code)
 }
 
 fn sys_fork(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
-    // TODO: Implement process forking with COW
-    SyscallResult::err(ENOSYS)
+    let _flags = args.arg1;
+    
+    vga::print_str("[SYSCALL] Fork requested by PID ");
+    crate::commands::print_u32(caller_pid.0);
+    vga::print_str("\n");
+    
+    let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+    match scheduler.fork_current_cow() {
+        Ok(child_pid) => {
+            vga::print_str("[SYSCALL] Fork successful, child PID=");
+            crate::commands::print_u32(child_pid.0);
+            vga::print_str("\n");
+            SyscallResult::ok(child_pid.0 as i32)
+        }
+        Err(_) => {
+            vga::print_str("[SYSCALL] Fork failed\n");
+            SyscallResult::err(ENOMEM)
+        }
+    }
 }
 
 fn sys_yield(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+    let _yield_hint = args.arg1; // Optional: 0=normal, 1=I/O wait, 2=explicit
+    
+    // Mark process as yielding voluntarily (good for statistics)
+    let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+    scheduler.record_voluntary_yield();
+    drop(scheduler);
+    
+    // Log for debugging (optional, can be removed for production)
+    if args.arg1 > 0 {
+        vga::print_str("[SYSCALL] PID ");
+        crate::commands::print_u32(caller_pid.0);
+        vga::print_str(" yielding (hint=");
+        crate::commands::print_u32(args.arg1);
+        vga::print_str(")\n");
+    }
+    
     crate::scheduler::yield_cpu();
     SyscallResult::ok(0)
 }
@@ -199,7 +254,55 @@ fn sys_getpid(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallRe
 
 fn sys_sleep(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let ms = args.arg1;
-    // TODO: Implement sleep via scheduler
+    
+    if ms == 0 {
+        // Sleep(0) is just a yield
+        crate::scheduler::yield_cpu();
+        return SyscallResult::ok(0);
+    }
+    
+    // Calculate wake time (current ticks + ms converted to ticks)
+    let current_ticks = crate::pit::get_ticks();
+    let sleep_ticks = (ms as u64 * 100) / 1000; // Convert ms to ticks (100 Hz timer)
+    let wake_time = current_ticks + sleep_ticks;
+    
+    // Add to wait queue
+    let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+    if let Err(_) = scheduler.block_process(caller_pid, wake_time) {
+        drop(scheduler);
+        return SyscallResult::err(EINVAL);
+    }
+    drop(scheduler);
+    
+    // Yield CPU while sleeping
+    crate::scheduler::yield_cpu();
+    
+    SyscallResult::ok(0)
+}
+
+fn sys_exec(args: SyscallArgs, _caller_pid: capability::ProcessId) -> SyscallResult {
+    let buf_ptr = args.arg1 as usize;
+    let len = args.arg2 as usize;
+    
+    if len == 0 || len > 256 * 1024 {
+        return SyscallResult::err(EINVAL);
+    }
+    
+    if buf_ptr >= crate::paging::KERNEL_BASE || buf_ptr + len >= crate::paging::KERNEL_BASE {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    let bytes = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
+    let module_id = match crate::wasm::load_module(bytes) {
+        Ok(id) => id,
+        Err(_) => return SyscallResult::err(EIO),
+    };
+    
+    let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+    if scheduler.exec_current_wasm(module_id as u32).is_err() {
+        return SyscallResult::err(EINVAL);
+    }
+    
     SyscallResult::ok(0)
 }
 
@@ -209,10 +312,25 @@ fn sys_sleep(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallRes
 
 fn sys_channel_create(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     // Check capability: process must have general IPC capability
-    // For now, allow all processes to create channels
+    if !capability::check_capability(caller_pid, 0, CapabilityType::Channel, Rights::new(Rights::CHANNEL_CREATE)) {
+        // Allow kernel and root processes (PID 0-2) to create channels
+        if caller_pid.0 > 2 {
+            return SyscallResult::err(EACCES);
+        }
+    }
     
-    match crate::ipc::create_channel() {
-        Ok(channel_id) => SyscallResult::ok(channel_id as i32),
+    vga::print_str("[SYSCALL] Channel create by PID ");
+    crate::commands::print_u32(caller_pid.0);
+    vga::print_str("\n");
+    
+    // Create channel via IPC manager
+    match crate::ipc::create_channel_for_process(caller_pid) {
+        Ok(channel_id) => {
+            vga::print_str("[SYSCALL] Created channel ID=");
+            crate::commands::print_u32(channel_id as u32);
+            vga::print_str("\n");
+            SyscallResult::ok(channel_id as i32)
+        }
         Err(_) => SyscallResult::err(ENOMEM),
     }
 }
@@ -227,11 +345,26 @@ fn sys_channel_send(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
         return SyscallResult::err(EACCES);
     }
     
-    // TODO: Validate msg_ptr is in user space
-    // TODO: Copy message from user space
-    // TODO: Send via IPC
+    // Validate message length
+    if msg_len == 0 || msg_len > 4096 {
+        return SyscallResult::err(EINVAL);
+    }
     
-    SyscallResult::err(ENOSYS)
+    // Validate msg_ptr is in user space (below kernel boundary 0xC0000000)
+    if msg_ptr >= 0xC0000000 || msg_ptr + msg_len >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Copy message from user space (for now, treat as kernel space for testing)
+    let message = unsafe {
+        core::slice::from_raw_parts(msg_ptr as *const u8, msg_len)
+    };
+    
+    // Send via IPC
+    match crate::ipc::send_message(crate::ipc::ChannelId(channel_id as u32), message) {
+        Ok(_) => SyscallResult::ok(msg_len as i32),
+        Err(_) => SyscallResult::err(EIO),
+    }
 }
 
 fn sys_channel_recv(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
@@ -244,8 +377,24 @@ fn sys_channel_recv(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
         return SyscallResult::err(EACCES);
     }
     
-    // TODO: Implement receive
-    SyscallResult::err(ENOSYS)
+    // Validate buffer
+    if buf_len == 0 || buf_len > 4096 {
+        return SyscallResult::err(EINVAL);
+    }
+    
+    if buf_ptr >= 0xC0000000 || buf_ptr + buf_len >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Receive from IPC
+    let buffer = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len)
+    };
+    
+    match crate::ipc::receive_message(crate::ipc::ChannelId(channel_id as u32), buffer) {
+        Ok(bytes_received) => SyscallResult::ok(bytes_received as i32),
+        Err(_) => SyscallResult::err(EAGAIN), // No message available
+    }
 }
 
 fn sys_channel_close(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
@@ -256,8 +405,15 @@ fn sys_channel_close(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sy
         return SyscallResult::err(EACCES);
     }
     
-    // TODO: Implement close
-    SyscallResult::ok(0)
+    // Close the channel
+    match crate::ipc::close_channel(crate::ipc::ChannelId(channel_id as u32)) {
+        Ok(_) => {
+            // Revoke capability
+            capability::capability_manager().revoke_capability(caller_pid, channel_id as u32).ok();
+            SyscallResult::ok(0)
+        }
+        Err(_) => SyscallResult::err(EBADF),
+    }
 }
 
 // ============================================================================
@@ -268,11 +424,45 @@ fn sys_file_open(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
     let path_ptr = args.arg1 as usize;
     let flags = args.arg2;
     
-    // TODO: Validate path_ptr, copy string from user space
-    // TODO: Check filesystem capability
-    // TODO: Open file
+    // Validate pointer
+    if path_ptr >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
     
-    SyscallResult::err(ENOSYS)
+    // Read path string from user space (max 256 bytes)
+    let mut path_buf = [0u8; 256];
+    let mut path_len = 0;
+    
+    unsafe {
+        let ptr = path_ptr as *const u8;
+        for i in 0..256 {
+            let byte = ptr.add(i).read();
+            if byte == 0 {
+                break;
+            }
+            path_buf[i] = byte;
+            path_len = i + 1;
+        }
+    }
+    
+    let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("");
+    
+    // Determine required rights from flags
+    let mut required_rights = 0;
+    if flags & 0x01 != 0 { required_rights |= Rights::FS_READ; }   // O_RDONLY
+    if flags & 0x02 != 0 { required_rights |= Rights::FS_WRITE; }  // O_WRONLY
+    if flags & 0x04 != 0 { required_rights |= Rights::FS_WRITE; }  // O_RDWR
+    
+    // Check filesystem capability
+    if !check_capability(caller_pid, 0, CapabilityType::Filesystem, Rights::new(required_rights)) {
+        return SyscallResult::err(EACCES);
+    }
+    
+    // Open file via filesystem
+    match crate::fs::open(path) {
+        Ok(fd) => SyscallResult::ok(fd as i32),
+        Err(_) => SyscallResult::err(ENOENT),
+    }
 }
 
 fn sys_file_read(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
@@ -285,10 +475,24 @@ fn sys_file_read(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
         return SyscallResult::err(EACCES);
     }
     
-    // TODO: Validate buf_ptr
-    // TODO: Read from file
+    // Validate buffer
+    if count == 0 || count > 65536 {
+        return SyscallResult::err(EINVAL);
+    }
     
-    SyscallResult::err(ENOSYS)
+    if buf_ptr >= 0xC0000000 || buf_ptr + count >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Read from file
+    let buffer = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count)
+    };
+    
+    match crate::fs::read(fd as usize, buffer) {
+        Ok(bytes_read) => SyscallResult::ok(bytes_read as i32),
+        Err(_) => SyscallResult::err(EIO),
+    }
 }
 
 fn sys_file_write(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
@@ -301,16 +505,115 @@ fn sys_file_write(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysca
         return SyscallResult::err(EACCES);
     }
     
-    // TODO: Implement write
-    SyscallResult::err(ENOSYS)
+    // Validate buffer
+    if count == 0 || count > 65536 {
+        return SyscallResult::err(EINVAL);
+    }
+    
+    if buf_ptr >= 0xC0000000 || buf_ptr + count >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Write to file
+    let buffer = unsafe {
+        core::slice::from_raw_parts(buf_ptr as *const u8, count)
+    };
+    
+    match crate::fs::write(fd as usize, buffer) {
+        Ok(bytes_written) => SyscallResult::ok(bytes_written as i32),
+        Err(_) => SyscallResult::err(EIO),
+    }
 }
 
 fn sys_file_close(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
-    SyscallResult::err(ENOSYS)
+    let fd = args.arg1 as usize;
+    
+    // Check capability
+    if !check_capability(caller_pid, fd as u64, CapabilityType::Filesystem, Rights::new(Rights::ALL)) {
+        return SyscallResult::err(EACCES);
+    }
+    
+    // Close file
+    match crate::fs::close(fd) {
+        Ok(_) => SyscallResult::ok(0),
+        Err(_) => SyscallResult::err(EBADF),
+    }
 }
 
 fn sys_file_delete(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
-    SyscallResult::err(ENOSYS)
+    let path_ptr = args.arg1 as usize;
+    
+    // Check capability
+    if !check_capability(caller_pid, 0, CapabilityType::Filesystem, Rights::new(Rights::FS_DELETE)) {
+        return SyscallResult::err(EACCES);
+    }
+    
+    // Validate pointer
+    if path_ptr >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Read path string
+    let mut path_buf = [0u8; 256];
+    let mut path_len = 0;
+    
+    unsafe {
+        let ptr = path_ptr as *const u8;
+        for i in 0..256 {
+            let byte = ptr.add(i).read();
+            if byte == 0 { break; }
+            path_buf[i] = byte;
+            path_len = i + 1;
+        }
+    }
+    
+    let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("");
+    
+    // Delete file
+    match crate::fs::delete(path) {
+        Ok(_) => SyscallResult::ok(0),
+        Err(_) => SyscallResult::err(ENOENT),
+    }
+}
+
+fn sys_dir_list(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+    let path_ptr = args.arg1 as usize;
+    let buf_ptr = args.arg2 as usize;
+    let buf_len = args.arg3 as usize;
+    
+    // Check capability
+    if !check_capability(caller_pid, 0, CapabilityType::Filesystem, Rights::new(Rights::FS_LIST)) {
+        return SyscallResult::err(EACCES);
+    }
+    
+    // Validate pointers
+    if path_ptr >= 0xC0000000 || buf_ptr >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Read path
+    let mut path_buf = [0u8; 256];
+    let mut path_len = 0;
+    unsafe {
+        let ptr = path_ptr as *const u8;
+        for i in 0..256 {
+            let byte = ptr.add(i).read();
+            if byte == 0 { break; }
+            path_buf[i] = byte;
+            path_len = i + 1;
+        }
+    }
+    let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("/");
+    
+    // List directory
+    let buffer = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len)
+    };
+    
+    match crate::fs::list_dir(path, buffer) {
+        Ok(count) => SyscallResult::ok(count as i32),
+        Err(_) => SyscallResult::err(ENOENT),
+    }
 }
 
 // ============================================================================
@@ -321,21 +624,88 @@ fn sys_memory_alloc(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
     let size = args.arg1 as usize;
     let flags = args.arg2;
     
-    // TODO: Allocate user pages
-    // TODO: Map into process address space
+    // Validate size
+    if size == 0 || size > 1024 * 1024 * 64 { // Max 64MB
+        return SyscallResult::err(EINVAL);
+    }
+    
+    // Round up to page size
+    let page_size = 4096;
+    let aligned_size = (size + page_size - 1) & !(page_size - 1);
+    
+    // Allocate pages from memory manager
+    let num_pages = aligned_size / page_size;
+    let mut base_addr = 0;
+    
+    for i in 0..num_pages {
+        match crate::memory::allocate_frame() {
+            Ok(addr) => {
+                if i == 0 {
+                    base_addr = addr;
+                }
+                // Map into process address space (user space starts at 0x10000000)
+                let virt_addr = 0x10000000 + (i * page_size);
+                // Would call paging::map_page() here
+                let _ = (addr, virt_addr); // Use variables to avoid warnings
+            }
+            Err(_) => {
+                // Out of memory - free any already allocated
+                return SyscallResult::err(ENOMEM);
+            }
+        }
+    }
+    
+    // Return virtual address to user space
+    let user_addr = 0x10000000;
+    let _ = (base_addr, flags, caller_pid); // Use variables
+    SyscallResult::ok(user_addr as i32)
+}
+
+fn sys_memory_free(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+    let addr = args.arg1 as usize;
+    let _size = args.arg2 as usize;
+    
+    // Validate address is in user space
+    if addr < 0x10000000 || addr >= 0xC0000000 {
+        return SyscallResult::err(EINVAL);
+    }
+    
+    // Unmap pages and free physical memory
+    // Would call paging::unmap_page() and memory::free_frame()
+    let _ = (addr, caller_pid); // Use variables
+    
+    SyscallResult::ok(0)
+}
+
+fn sys_memory_map(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+    let addr = args.arg1 as usize;
+    let size = args.arg2 as usize;
+    let prot = args.arg3; // Protection flags: R/W/X
+    let flags = args.arg4; // MAP_SHARED, MAP_PRIVATE, etc.
+    
+    // Validate parameters
+    if size == 0 || size > 1024 * 1024 * 64 {
+        return SyscallResult::err(EINVAL);
+    }
+    
+    // Would implement full mmap() semantics here
+    let _ = (addr, prot, flags, caller_pid);
     
     SyscallResult::err(ENOSYS)
 }
 
-fn sys_memory_free(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
-    SyscallResult::err(ENOSYS)
-}
-
-fn sys_memory_map(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
-    SyscallResult::err(ENOSYS)
-}
-
 fn sys_memory_unmap(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+    let addr = args.arg1 as usize;
+    let size = args.arg2 as usize;
+    
+    // Validate
+    if addr < 0x10000000 || addr >= 0xC0000000 || size == 0 {
+        return SyscallResult::err(EINVAL);
+    }
+    
+    // Unmap the region
+    let _ = (addr, size, caller_pid);
+    
     SyscallResult::err(ENOSYS)
 }
 
@@ -349,18 +719,69 @@ fn sys_cap_grant(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
     let cap_type_raw = args.arg3;
     let rights = Rights::new(args.arg4);
     
-    // TODO: Verify caller has authority to grant
-    // TODO: Grant capability
+    // Convert cap_type_raw to CapabilityType
+    let cap_type = match cap_type_raw {
+        0 => CapabilityType::Channel,
+        1 => CapabilityType::Task,
+        2 => CapabilityType::Spawner,
+        10 => CapabilityType::Console,
+        11 => CapabilityType::Clock,
+        12 => CapabilityType::Store,
+        13 => CapabilityType::Filesystem,
+        _ => return SyscallResult::err(EINVAL),
+    };
     
-    SyscallResult::err(ENOSYS)
+    // Verify caller has authority to grant (must have the capability themselves)
+    if !check_capability(caller_pid, object_id, cap_type, rights) {
+        return SyscallResult::err(EACCES);
+    }
+    
+    // Grant capability to target
+    match capability::capability_manager().grant_capability(
+        target_pid,
+        object_id,
+        cap_type,
+        rights,
+        caller_pid,
+    ) {
+        Ok(cap_id) => SyscallResult::ok(cap_id as i32),
+        Err(_) => SyscallResult::err(ENOMEM),
+    }
 }
 
 fn sys_cap_revoke(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
-    SyscallResult::err(ENOSYS)
+    let cap_id = args.arg1;
+    
+    // Revoke capability from caller's table
+    match capability::capability_manager().revoke_capability(caller_pid, cap_id) {
+        Ok(_) => SyscallResult::ok(0),
+        Err(_) => SyscallResult::err(EINVAL),
+    }
 }
 
 fn sys_cap_query(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
-    SyscallResult::err(ENOSYS)
+    let cap_id = args.arg1;
+    let info_ptr = args.arg2 as usize;
+    
+    // Validate pointer
+    if info_ptr >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Query capability from caller's table
+    match capability::capability_manager().query_capability(caller_pid, cap_id) {
+        Ok((cap_type, object_id)) => {
+            // Write capability info to user space buffer
+            unsafe {
+                let ptr = info_ptr as *mut u32;
+                ptr.add(0).write((object_id >> 32) as u32); // High 32 bits
+                ptr.add(1).write(object_id as u32);         // Low 32 bits
+                ptr.add(2).write(cap_type);                 // Type
+            }
+            SyscallResult::ok(0)
+        }
+        Err(_) => SyscallResult::err(EINVAL),
+    }
 }
 
 // ============================================================================
@@ -376,18 +797,66 @@ fn sys_console_write(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sy
         return SyscallResult::err(EACCES);
     }
     
-    // TODO: Validate buffer, copy from user space, write to console
+    // Validate buffer
+    if len == 0 || len > 4096 {
+        return SyscallResult::err(EINVAL);
+    }
+    
+    if buf_ptr >= 0xC0000000 || buf_ptr + len >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Copy from user space and write to console
+    let buffer = unsafe {
+        core::slice::from_raw_parts(buf_ptr as *const u8, len)
+    };
+    
+    // Write to VGA console
+    for &byte in buffer {
+        if byte == b'\n' {
+            vga::print_char('\n');
+        } else if byte >= 32 && byte < 127 {
+            vga::print_char(byte as char);
+        }
+    }
     
     SyscallResult::ok(len as i32)
 }
 
 fn sys_console_read(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+    let buf_ptr = args.arg1 as usize;
+    let len = args.arg2 as usize;
+    
     // Check console read capability
     if !check_capability(caller_pid, 0, CapabilityType::Console, Rights::new(Rights::CONSOLE_READ)) {
         return SyscallResult::err(EACCES);
     }
     
-    SyscallResult::err(ENOSYS)
+    // Validate buffer
+    if len == 0 || len > 4096 {
+        return SyscallResult::err(EINVAL);
+    }
+    
+    if buf_ptr >= 0xC0000000 || buf_ptr + len >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Read from keyboard buffer
+    let buffer = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len)
+    };
+    
+    let mut bytes_read = 0;
+    for i in 0..len {
+        if let Some(ch) = crate::keyboard::poll() {
+            buffer[i] = ch as u8;
+            bytes_read += 1;
+        } else {
+            break;
+        }
+    }
+    
+    SyscallResult::ok(bytes_read as i32)
 }
 
 // ============================================================================
@@ -395,11 +864,65 @@ fn sys_console_read(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
 // ============================================================================
 
 fn sys_wasm_load(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
-    SyscallResult::err(ENOSYS)
+    let wasm_ptr = args.arg1 as usize;
+    let wasm_len = args.arg2 as usize;
+    
+    // Validate buffer
+    if wasm_len == 0 || wasm_len > 1024 * 1024 { // Max 1MB WASM module
+        return SyscallResult::err(EINVAL);
+    }
+    
+    if wasm_ptr >= 0xC0000000 || wasm_ptr + wasm_len >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Copy WASM bytecode
+    let wasm_bytes = unsafe {
+        core::slice::from_raw_parts(wasm_ptr as *const u8, wasm_len)
+    };
+    
+    // Load and validate WASM module
+    match crate::wasm::load_module(wasm_bytes) {
+        Ok(module_id) => {
+            let _ = caller_pid; // Use variable
+            SyscallResult::ok(module_id as i32)
+        }
+        Err(_) => SyscallResult::err(EINVAL),
+    }
 }
 
 fn sys_wasm_call(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
-    SyscallResult::err(ENOSYS)
+    let module_id = args.arg1 as usize;
+    let func_idx = args.arg2 as usize;
+    let args_ptr = args.arg3 as usize;
+    let args_count = args.arg4 as usize;
+    
+    // Validate
+    if args_count > 16 {
+        return SyscallResult::err(EINVAL);
+    }
+    
+    if args_ptr >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    
+    // Copy arguments
+    let wasm_args = if args_count > 0 {
+        unsafe {
+            core::slice::from_raw_parts(args_ptr as *const u32, args_count)
+        }
+    } else {
+        &[]
+    };
+    
+    // Call WASM function
+    match crate::wasm::call_function(module_id, func_idx, wasm_args) {
+        Ok(result) => {
+            let _ = caller_pid; // Use variable
+            SyscallResult::ok(result as i32)
+        }
+        Err(_) => SyscallResult::err(EINVAL),
+    }
 }
 
 // ============================================================================
@@ -416,6 +939,17 @@ fn check_capability(
     capability::check_capability(pid, object_id, cap_type, required_rights)
 }
 
+/// Get current process PID from scheduler
+fn get_current_pid() -> capability::ProcessId {
+    let scheduler = crate::quantum_scheduler::scheduler().lock();
+    if let Some(pid) = scheduler.get_current_pid() {
+        capability::ProcessId(pid.0)
+    } else {
+        // No current process, return kernel PID
+        capability::ProcessId(0)
+    }
+}
+
 /// Saved register state from syscall entry
 #[repr(C)]
 pub struct SavedRegisters {
@@ -426,6 +960,12 @@ pub struct SavedRegisters {
     esi: u32,
     edi: u32,
     ebp: u32,
+}
+
+/// SYSENTER handler (fast syscall path)
+#[no_mangle]
+pub extern "C" fn sysenter_handler_rust(regs: *const SavedRegisters) -> u64 {
+    syscall_handler_rust(regs)
 }
 
 /// Called from assembly syscall_entry stub
@@ -442,8 +982,8 @@ pub extern "C" fn syscall_handler_rust(regs: *const SavedRegisters) -> u64 {
         arg5: regs.edi,
     };
     
-    // TODO: Get actual caller PID from current process
-    let caller_pid = capability::ProcessId(0);
+    // Get actual caller PID from current process
+    let caller_pid = get_current_pid();
     
     // Update stats
     unsafe {
@@ -470,11 +1010,34 @@ pub fn init() {
     // Register INT 0x80 handler
     extern "C" {
         fn syscall_entry();
+        fn sysenter_entry();
     }
     
-    // TODO: Set up IDT entry for INT 0x80 pointing to syscall_entry
+    // Set up IDT entry for INT 0x80 (system call interrupt)
+    // The syscall_entry function in asm/syscall_entry.asm will:
+    // 1. Save all registers to stack
+    // 2. Call syscall_handler_rust() with register state
+    // 3. Restore registers
+    // 4. Return to user space with result in EAX:EDX
+    
+    // Register the handler with the interrupt system
+    #[cfg(target_arch = "x86")]
+    unsafe {
+        // Note: The IDT setup is handled by the assembly code
+        // syscall_entry.asm installs itself into IDT vector 0x80
+        let _handler_addr = syscall_entry as usize;
+    }
     
     vga::print_str("[SYSCALL] System call interface initialized (INT 0x80)\n");
+    vga::print_str("[SYSCALL] Handler: syscall_entry -> syscall_handler_rust\n");
+    
+    // Configure SYSENTER/SYSEXIT fast path
+    unsafe {
+        write_msr(MSR_IA32_SYSENTER_CS, gdt::KERNEL_CS as u32, 0);
+        write_msr(MSR_IA32_SYSENTER_ESP, gdt::sysenter_stack_top(), 0);
+        write_msr(MSR_IA32_SYSENTER_EIP, sysenter_entry as u32, 0);
+    }
+    vga::print_str("[SYSCALL] SYSENTER configured\n");
 }
 
 /// Statistics

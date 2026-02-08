@@ -11,13 +11,85 @@
 use alloc::boxed::Box;
 use core::ptr;
 use spin::Mutex;
-use crate::memory;
+
+extern "C" {
+    static _heap_end: usize;
+}
+
+// ============================================================================
+// Assembly Function Bindings (from asm/cow.asm)
+// ============================================================================
+
+// ptr and memory module used for low-level page operations
+extern "C" {
+    // Page fault handler
+    fn page_fault_handler();
+    
+    // Page copying
+    fn copy_page_physical(src_phys: u32, dst_phys: u32);
+    fn copy_page_fast(src: *const u8, dst: *mut u8);
+    fn zero_page(addr: *mut u8);
+    fn zero_page_fast(addr: *mut u8);
+    
+    // TLB operations
+    fn flush_tlb_single(virt_addr: u32);
+    fn flush_tlb_all();
+    
+    // CR3 operations
+    fn load_page_directory(phys_addr: u32);
+    fn get_page_directory() -> u32;
+    
+    // Paging control
+    fn enable_paging();
+    fn disable_paging();
+    fn is_paging_enabled() -> u32;
+    
+    // PTE manipulation
+    fn set_page_flags(pte_addr: *mut u32, flags: u32);
+    fn clear_page_flags(pte_addr: *mut u32, flags: u32);
+    
+    // COW operations
+    fn mark_page_cow(pte_addr: *mut u32);
+    fn is_page_cow(pte_value: u32) -> u32;
+    fn clear_page_cow(pte_addr: *mut u32);
+    
+    // Atomic operations
+    fn atomic_set_page_flags(pte_addr: *mut u32, flags: u32);
+    fn atomic_clear_page_flags(pte_addr: *mut u32, flags: u32);
+    fn atomic_inc_refcount(refcount_addr: *mut u32) -> u32;
+    fn atomic_dec_refcount(refcount_addr: *mut u32) -> u32;
+    
+    // Memory barriers
+    fn memory_barrier();
+    fn load_barrier();
+    fn store_barrier();
+    
+    // Statistics
+    fn get_page_fault_count() -> u32;
+    fn get_cow_fault_count() -> u32;
+    fn get_page_copy_count() -> u32;
+    fn increment_page_fault_count();
+    fn increment_cow_fault_count();
+    fn increment_page_copy_count();
+}
 
 /// Page size (4KB standard for x86)
 pub const PAGE_SIZE: usize = 4096;
 
+/// Kernel virtual base (higher-half)
+pub const KERNEL_BASE: usize = 0xC0000000;
+
+/// User space upper bound (exclusive)
+pub const USER_TOP: usize = KERNEL_BASE;
+
 /// Number of entries in page directory/table
 const PAGE_ENTRIES: usize = 1024;
+
+#[inline]
+fn align_up(value: usize, align: usize) -> usize {
+    let mask = align - 1;
+    (value + mask) & !mask
+}
 
 /// Page table entry flags
 #[repr(u32)]
@@ -175,8 +247,6 @@ impl PageDirectory {
 
     /// Allocate a new page table for this directory entry
     pub fn alloc_table(&mut self, virt_addr: usize, user_accessible: bool) -> Result<*mut PageTable, &'static str> {
-        use alloc::boxed::Box;
-        
         let entry = self.entry_mut(virt_addr);
         if entry.is_present() {
             return Err("Page table already exists");
@@ -246,13 +316,12 @@ pub struct AddressSpace {
 impl AddressSpace {
     /// Create a new address space
     pub fn new() -> Result<Self, &'static str> {
-        use alloc::boxed::Box;
-        
+        crate::vga::print_str("[PAGING] Building kernel address space...\n");
         let mut page_dir = Box::new(PageDirectory::new());
         
-        // Identity map kernel space (0x00000000 - 0xC0000000)
-        // This ensures kernel code/data is accessible
+        // Map kernel space (identity + higher-half)
         Self::setup_kernel_mapping(&mut page_dir)?;
+        crate::vga::print_str("[PAGING] Kernel mappings complete\n");
         
         let phys_addr = &*page_dir as *const _ as usize;
         
@@ -264,20 +333,97 @@ impl AddressSpace {
 
     /// Setup kernel mapping (lower 3GB identity mapped)
     fn setup_kernel_mapping(page_dir: &mut PageDirectory) -> Result<(), &'static str> {
-        // Map first 16MB for kernel (bootstrap)
-        // In production, map actual kernel segments only
-        for i in 0..4 {
-            let table = page_dir.alloc_table(i * 4 * 1024 * 1024, false)?;
+        const CHUNK_MB: usize = 4;
+        const CHUNK_BYTES: usize = CHUNK_MB * 1024 * 1024;
+        let heap_end = unsafe { &_heap_end as *const usize as usize };
+        // Map at least 32MB to ensure allocator has space (64MB was too much)
+        let map_bytes = align_up(core::cmp::max(heap_end, 32 * 1024 * 1024), CHUNK_BYTES);
+        let tables = core::cmp::max(1, map_bytes / CHUNK_BYTES);
+
+        crate::vga::print_str("[PAGING] Mapping kernel memory...\n");
+
+        for i in 0..tables {
+            let phys_base = i * CHUNK_MB * 1024 * 1024;
+
+            crate::vga::print_str("[PAGING] Mapping chunk...\n");
+
+            // Identity map low memory for early boot and kernel access
+            let identity_table = page_dir.alloc_table(phys_base, false)?;
             unsafe {
-                let table_ref = &mut *table;
+                let table_ref = &mut *identity_table;
                 for j in 0..PAGE_ENTRIES {
-                    let phys_addr = (i * PAGE_ENTRIES + j) * PAGE_SIZE;
+                    let phys_addr = phys_base + (j * PAGE_SIZE);
+                    let flags = PageFlags::Present as u32 | PageFlags::Writable as u32;
+                    table_ref.entries[j] = PageTableEntry::new(phys_addr, flags);
+                }
+            }
+
+            // Map the same physical memory into the higher half (0xC0000000)
+            let high_virt = KERNEL_BASE + phys_base;
+            let high_table = page_dir.alloc_table(high_virt, false)?;
+            unsafe {
+                let table_ref = &mut *high_table;
+                for j in 0..PAGE_ENTRIES {
+                    let phys_addr = phys_base + (j * PAGE_SIZE);
                     let flags = PageFlags::Present as u32 | PageFlags::Writable as u32;
                     table_ref.entries[j] = PageTableEntry::new(phys_addr, flags);
                 }
             }
         }
+
         Ok(())
+    }
+
+    /// Clone this address space with copy-on-write semantics (user space only)
+    pub fn clone_cow(&mut self) -> Result<AddressSpace, &'static str> {
+        let mut new_dir = Box::new(PageDirectory::new());
+        
+        // Map kernel space for child
+        Self::setup_kernel_mapping(&mut new_dir)?;
+        
+        let user_dir_entries = USER_TOP >> 22;
+        
+        for dir_idx in 0..user_dir_entries {
+            let virt_addr = dir_idx << 22;
+            let parent_entry = self.page_directory.entries[dir_idx];
+            if !parent_entry.is_present() {
+                continue;
+            }
+            
+            // Allocate child page table for this directory entry
+            let child_table_ptr = new_dir.alloc_table(virt_addr, true)?;
+            let child_table = unsafe { &mut *child_table_ptr };
+            
+            let parent_table = unsafe {
+                self.page_directory
+                    .get_table_mut(virt_addr)
+                    .ok_or("Parent table missing")?
+            };
+            
+            for i in 0..PAGE_ENTRIES {
+                let entry = parent_table.entries[i];
+                if !entry.is_present() {
+                    continue;
+                }
+                
+                // Mark parent entry as COW (clears writable)
+                unsafe {
+                    mark_page_cow(&mut parent_table.entries[i] as *mut PageTableEntry as *mut u32);
+                }
+                
+                // Copy entry value into child (with COW flag set)
+                let val = parent_table.entries[i].0;
+                child_table.entries[i] = PageTableEntry(val);
+            }
+        }
+        
+        Self::flush_tlb_all();
+        
+        let phys_addr = &*new_dir as *const _ as usize;
+        Ok(AddressSpace {
+            page_directory: new_dir,
+            phys_addr,
+        })
     }
 
     /// Map a virtual address to a physical address
@@ -291,6 +437,10 @@ impl AddressSpace {
         // Align addresses
         let virt_aligned = virt_addr & !0xFFF;
         let phys_aligned = phys_addr & !0xFFF;
+        
+        if user_accessible && virt_aligned >= USER_TOP {
+            return Err("User mapping into kernel space");
+        }
 
         // Get or create page table
         let table = unsafe {
@@ -334,9 +484,17 @@ impl AddressSpace {
             return Err("Page not mapped");
         }
 
-        *entry = PageTableEntry::empty();
+        // Get physical address before unmapping (for potential memory::free)
+        let _phys_addr = entry.phys_addr();
+        
+        // Use ptr::write to ensure the zero is written atomically
+        unsafe {
+            ptr::write(entry as *mut PageTableEntry, PageTableEntry::empty());
+        }
+        
         Self::flush_tlb(virt_aligned);
-
+        
+        // Note: Could call memory::free(_phys_addr) here if tracking allocations
         Ok(())
     }
 
@@ -355,9 +513,10 @@ impl AddressSpace {
             return Err("Page not mapped");
         }
 
-        // Mark as COW and remove write permission
-        entry.set_copy_on_write(true);
-        entry.set_writable(false);
+        // Use assembly function to mark as COW
+        unsafe {
+            mark_page_cow(entry as *mut PageTableEntry as *mut u32);
+        }
 
         Self::flush_tlb(virt_aligned);
 
@@ -379,8 +538,16 @@ impl AddressSpace {
             return Err("Page not present");
         }
 
-        if !entry.is_copy_on_write() {
+        // Check if this is actually a COW page using assembly
+        let pte_value = unsafe { *(entry as *const PageTableEntry as *const u32) };
+        if unsafe { is_page_cow(pte_value) } == 0 {
             return Err("Not a COW page");
+        }
+
+        // Update statistics
+        unsafe {
+            increment_cow_fault_count();
+            increment_page_copy_count();
         }
 
         // Allocate new physical page
@@ -391,21 +558,27 @@ impl AddressSpace {
             return Err("Failed to allocate new page");
         }
 
-        // Copy old page content to new page
+        // Get old physical address
         let old_phys = entry.phys_addr();
+
+        // Use fast assembly copy
         unsafe {
-            ptr::copy_nonoverlapping(
-                old_phys as *const u8,
-                new_page,
-                PAGE_SIZE,
-            );
+            copy_page_fast(old_phys as *const u8, new_page);
         }
 
-        // Update page table entry
-        let flags = entry.flags();
+        // Update page table entry with new physical address
+        let mut flags = PageFlags::Present as u32 | PageFlags::Allocated as u32;
+        flags |= PageFlags::Writable as u32;
+        if entry.is_user_accessible() {
+            flags |= PageFlags::UserAccessible as u32;
+        }
+        
         *entry = PageTableEntry::new(new_page as usize, flags);
-        entry.set_writable(true);
-        entry.set_copy_on_write(false);
+
+        // Clear COW flag using assembly
+        unsafe {
+            clear_page_cow(entry as *mut PageTableEntry as *mut u32);
+        }
 
         Self::flush_tlb(virt_aligned);
 
@@ -436,7 +609,7 @@ impl AddressSpace {
 
     /// Activate this address space (load into CR3)
     pub unsafe fn activate(&self) {
-        load_page_directory(self.phys_addr);
+        load_page_directory(self.phys_addr as u32);
     }
 
     /// Get physical address of page directory (for CR3)
@@ -444,61 +617,23 @@ impl AddressSpace {
         self.phys_addr
     }
 
-    /// Flush TLB for a single page
+    /// Flush TLB for a single page (uses assembly implementation)
     fn flush_tlb(virt_addr: usize) {
         unsafe {
-            core::arch::asm!(
-                "invlpg [{}]",
-                in(reg) virt_addr,
-                options(nostack, preserves_flags)
-            );
+            flush_tlb_single(virt_addr as u32);
+        }
+    }
+
+    /// Flush entire TLB (uses assembly implementation)
+    pub fn flush_tlb_all() {
+        unsafe {
+            flush_tlb_all();
         }
     }
 }
 
-/// Load a page directory (set CR3 register)
-pub unsafe fn load_page_directory(phys_addr: usize) {
-    core::arch::asm!(
-        "mov cr3, {}",
-        in(reg) phys_addr,
-        options(nostack, preserves_flags)
-    );
-}
-
-/// Enable paging (set CR0.PG bit)
-pub unsafe fn enable_paging() {
-    core::arch::asm!(
-        "mov eax, cr0",
-        "or eax, 0x80000000",
-        "mov cr0, eax",
-        out("eax") _,
-        options(nostack, preserves_flags)
-    );
-}
-
-/// Disable paging (clear CR0.PG bit)
-pub unsafe fn disable_paging() {
-    core::arch::asm!(
-        "mov eax, cr0",
-        "and eax, 0x7FFFFFFF",
-        "mov cr0, eax",
-        out("eax") _,
-        options(nostack, preserves_flags)
-    );
-}
-
-/// Get current page directory address from CR3
-pub fn get_current_page_directory() -> usize {
-    let addr: usize;
-    unsafe {
-        core::arch::asm!(
-            "mov {}, cr3",
-            out(reg) addr,
-            options(nostack, preserves_flags)
-        );
-    }
-    addr
-}
+// Note: These inline assembly functions are now replaced by external assembly
+// but kept for reference/fallback
 
 /// Page fault error code bits
 #[derive(Debug, Clone, Copy)]
@@ -522,6 +657,72 @@ impl PageFaultError {
     }
 }
 
+/// Page fault handler called from assembly
+#[no_mangle]
+pub extern "C" fn rust_page_fault_handler(error_code: u32, fault_addr: usize) {
+    use crate::vga;
+    
+    // Update statistics
+    unsafe {
+        increment_page_fault_count();
+    }
+    
+    let error = PageFaultError::from_code(error_code);
+    
+    // Check if this is a COW fault
+    if error.present && error.write && !error.user {
+        // Potential COW fault
+        let mut space_opt = KERNEL_ADDRESS_SPACE.lock();
+        if let Some(ref mut space) = *space_opt {
+            match space.handle_cow_fault(fault_addr) {
+                Ok(()) => {
+                    // COW fault handled successfully
+                    return;
+                }
+                Err(_) => {
+                    // Not a COW fault, fall through to error
+                }
+            }
+        }
+    }
+    
+    // Unhandled page fault - print error and halt
+    vga::print_str("\n\n!!! PAGE FAULT !!!\n");
+    vga::print_str("Fault address: 0x");
+    
+    // Print fault address
+    let digits = b"0123456789ABCDEF";
+    for i in (0..8).rev() {
+        let nibble = ((fault_addr >> (i * 4)) & 0xF) as usize;
+        vga::print_char(digits[nibble] as char);
+    }
+    vga::print_str("\n");
+    
+    vga::print_str("Error code: 0x");
+    for i in (0..8).rev() {
+        let nibble = ((error_code >> (i * 4)) & 0xF) as usize;
+        vga::print_char(digits[nibble] as char);
+    }
+    vga::print_str("\n");
+    
+    vga::print_str("Present: ");
+    vga::print_str(if error.present { "yes" } else { "no" });
+    vga::print_str("\n");
+    
+    vga::print_str("Write: ");
+    vga::print_str(if error.write { "yes" } else { "no" });
+    vga::print_str("\n");
+    
+    vga::print_str("User mode: ");
+    vga::print_str(if error.user { "yes" } else { "no" });
+    vga::print_str("\n");
+    
+    // Halt
+    loop {
+        unsafe { core::arch::asm!("hlt") };
+    }
+}
+
 /// Global kernel address space
 pub static KERNEL_ADDRESS_SPACE: Mutex<Option<AddressSpace>> = Mutex::new(None);
 
@@ -534,11 +735,16 @@ pub fn init() -> Result<(), &'static str> {
     // Create kernel address space
     let kernel_space = AddressSpace::new()?;
     
-    // Activate it
+    vga::print_str("[PAGING] Loading CR3...\n");
     unsafe {
         kernel_space.activate();
+    }
+    vga::print_str("[PAGING] CR3 loaded\n");
+    vga::print_str("[PAGING] Enabling paging (CR0.PG)...\n");
+    unsafe {
         enable_paging();
     }
+    vga::print_str("[PAGING] Paging enabled\n");
     
     *KERNEL_ADDRESS_SPACE.lock() = Some(kernel_space);
     
@@ -578,6 +784,10 @@ pub fn alloc_user_pages(
 ) -> Result<(), &'static str> {
     use alloc::alloc::{alloc_zeroed, Layout};
     
+    if virt_addr >= USER_TOP {
+        return Err("User mapping into kernel space");
+    }
+
     for i in 0..count {
         let vaddr = virt_addr + (i * PAGE_SIZE);
         
@@ -593,4 +803,54 @@ pub fn alloc_user_pages(
     }
     
     Ok(())
+}
+
+// ============================================================================
+// COW Statistics and Helper Functions
+// ============================================================================
+
+/// Get page fault statistics
+pub struct PagingStats {
+    pub page_faults: u32,
+    pub cow_faults: u32,
+    pub page_copies: u32,
+}
+
+pub fn get_paging_stats() -> PagingStats {
+    unsafe {
+        PagingStats {
+            page_faults: get_page_fault_count(),
+            cow_faults: get_cow_fault_count(),
+            page_copies: get_page_copy_count(),
+        }
+    }
+}
+
+/// Zero out a page using fast assembly implementation
+pub fn zero_page_at(addr: *mut u8) {
+    unsafe {
+        zero_page_fast(addr);
+    }
+}
+
+/// Copy a page using fast assembly implementation
+pub fn copy_page(src: *const u8, dst: *mut u8) {
+    unsafe {
+        copy_page_fast(src, dst);
+    }
+}
+
+/// Check if paging is currently enabled
+pub fn paging_enabled() -> bool {
+    unsafe { is_paging_enabled() != 0 }
+}
+
+/// Get current CR3 value
+pub fn current_page_directory_addr() -> u32 {
+    unsafe { get_page_directory() }
+}
+
+/// Set CR3 to a page directory physical address
+pub unsafe fn set_page_directory(phys_addr: u32) {
+    load_page_directory(phys_addr);
 }

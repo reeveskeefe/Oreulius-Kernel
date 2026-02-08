@@ -17,6 +17,9 @@ extern "C" {
     /// Load context from memory (does not return)
     pub fn asm_load_context(ctx: *const ProcessContext) -> !;
     
+    /// Thread start trampoline - pops entry function from stack and calls it
+    pub fn thread_start_trampoline() -> !;
+
     // ===== Memory Operations (memory.asm) =====
     /// Ultra-fast memcpy using rep movsd (5x faster than byte-by-byte)
     pub fn asm_fast_memcpy(dest: *mut u8, src: *const u8, count: usize);
@@ -57,6 +60,13 @@ extern "C" {
     
     /// Write CR3 page directory register
     pub fn asm_write_cr3(page_dir_addr: u32);
+
+    // ===== Port I/O (ports.asm) =====
+    /// Output byte to port
+    pub fn asm_outb(port: u16, value: u8);
+    
+    /// Input byte from port
+    pub fn asm_inb(port: u16) -> u8;
     
     // ===== Network Operations (network.asm) =====
     /// Swap 16-bit endianness (network byte order conversion)
@@ -254,9 +264,9 @@ extern "C" {
 }
 
 /// Process context structure (must match assembly layout)
-/// Layout: 36 bytes total
+/// Layout: 40 bytes total
 ///   +0:  EBX, +4:  ECX, +8:  EDX, +12: ESI
-///   +16: EDI, +20: EBP, +24: ESP, +28: EIP, +32: EFLAGS
+///   +16: EDI, +20: EBP, +24: ESP, +28: EIP, +32: EFLAGS, +36: CR3
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessContext {
@@ -269,6 +279,7 @@ pub struct ProcessContext {
     pub esp: u32,
     pub eip: u32,
     pub eflags: u32,
+    pub cr3: u32,
 }
 
 impl ProcessContext {
@@ -284,6 +295,7 @@ impl ProcessContext {
             esp: 0,
             eip: 0,
             eflags: 0x202, // IF flag set (interrupts enabled)
+            cr3: 0,
         }
     }
 }
@@ -740,4 +752,14 @@ pub fn prefetch_t2(addr: &u8) {
 /// Prefetch data (non-temporal)
 pub fn prefetch_nta(addr: &u8) {
     unsafe { asm_prefetch_nta(addr as *const u8); }
+}
+
+/// Output byte to port
+pub unsafe fn outb(port: u16, value: u8) {
+    asm_outb(port, value);
+}
+
+/// Input byte from port
+pub unsafe fn inb(port: u16) -> u8 {
+    asm_inb(port)
 }

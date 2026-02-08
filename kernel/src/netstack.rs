@@ -6,7 +6,6 @@
 #![allow(dead_code)]
 
 extern crate alloc;
-use alloc::boxed::Box;
 use spin::Mutex;
 
 // ============================================================================
@@ -14,6 +13,7 @@ use spin::Mutex;
 // ============================================================================
 
 /// Universal network interface trait - implemented by E1000, WiFi, VirtIO, etc.
+/// Boxed trait objects allow runtime polymorphism for different NICs
 pub trait NetworkInterface: Send {
     /// Send raw Ethernet frame
     fn send_frame(&mut self, frame: &[u8]) -> Result<(), &'static str>;
@@ -144,6 +144,8 @@ pub struct NetworkStack {
     arp_cache: ArpCache,
     dhcp_enabled: bool,
     has_interface: bool,
+    tcp: TcpManager,
+    http_server: HttpServer,
 }
 
 impl NetworkStack {
@@ -156,12 +158,17 @@ impl NetworkStack {
             arp_cache: ArpCache::new(),
             dhcp_enabled: false,
             has_interface: false,
+            tcp: TcpManager::new(),
+            http_server: HttpServer::new(),
         }
     }
     
     /// Mark interface as available
     pub fn mark_ready(&mut self) {
         self.has_interface = true;
+        if let Some(mac) = crate::e1000::get_mac_address() {
+            self.my_mac = MacAddr(mac);
+        }
     }
     
     /// Check if network is ready
@@ -608,12 +615,19 @@ impl NetworkStack {
                 let _ = self.handle_arp(&frame[14..frame_len]);
             }
             ETHERTYPE_IPV4 => {
-                // Handle IPv4 packet (can add ICMP, TCP, etc. here)
+                let _ = self.handle_ipv4(&frame[14..frame_len]);
             }
             _ => {}
         }
         
         Ok(())
+    }
+
+    /// Timer tick for retransmission/timers
+    pub fn tick(&mut self) {
+        let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
+        tcp.tick(self);
+        self.tcp = tcp;
     }
     
     // ========================================================================
@@ -634,6 +648,739 @@ impl NetworkStack {
     pub fn set_dns_server(&mut self, dns: Ipv4Addr) {
         self.dns_server = dns;
     }
+
+    // ========================================================================
+    // TCP Socket API
+    // ========================================================================
+
+    pub fn tcp_listen(&mut self, port: u16) -> Result<u16, &'static str> {
+        self.tcp.listen(port)
+    }
+
+    pub fn tcp_accept(&mut self, listener: u16) -> Option<u16> {
+        self.tcp.accept(listener)
+    }
+
+    pub fn tcp_connect(&mut self, remote_ip: Ipv4Addr, remote_port: u16) -> Result<u16, &'static str> {
+        let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
+        let res = tcp.connect(self, remote_ip, remote_port);
+        self.tcp = tcp;
+        res
+    }
+
+    pub fn tcp_send(&mut self, conn_id: u16, data: &[u8]) -> Result<usize, &'static str> {
+        let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
+        let res = tcp.send(self, conn_id, data);
+        self.tcp = tcp;
+        res
+    }
+
+    pub fn tcp_recv(&mut self, conn_id: u16, out: &mut [u8]) -> Result<usize, &'static str> {
+        self.tcp.recv(conn_id, out)
+    }
+
+    pub fn tcp_close(&mut self, conn_id: u16) -> Result<(), &'static str> {
+        let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
+        let res = tcp.close(self, conn_id);
+        self.tcp = tcp;
+        res
+    }
+
+    pub fn tcp_stats(&self) -> (usize, usize) {
+        (self.tcp.active_count(), self.tcp.listener_count())
+    }
+
+    // ========================================================================
+    // HTTP Server Demo
+    // ========================================================================
+
+    pub fn http_server_start(&mut self, port: u16) -> Result<(), &'static str> {
+        let listener = self.tcp_listen(port)?;
+        self.http_server.running = true;
+        self.http_server.listener = Some(listener);
+        self.http_server.port = port;
+        Ok(())
+    }
+
+    pub fn http_server_stop(&mut self) {
+        self.http_server.running = false;
+        self.http_server.listener = None;
+    }
+
+    pub fn http_server_status(&self) -> (bool, u16) {
+        (self.http_server.running, self.http_server.port)
+    }
+}
+
+// ============================================================================
+// TCP Implementation
+// ============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TcpState {
+    Closed,
+    Listen,
+    SynSent,
+    SynReceived,
+    Established,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    LastAck,
+}
+
+const MAX_TCP_CONNS: usize = 16;
+const MAX_TCP_LISTEN: usize = 4;
+const MAX_TCP_BACKLOG: usize = 4;
+const TCP_BUF_SIZE: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct TcpConn {
+    in_use: bool,
+    id: u16,
+    state: TcpState,
+    local_ip: Ipv4Addr,
+    local_port: u16,
+    remote_ip: Ipv4Addr,
+    remote_port: u16,
+    snd_una: u32,
+    snd_nxt: u32,
+    rcv_nxt: u32,
+    iss: u32,
+    irs: u32,
+    listener_idx: u8,
+    last_flags: u16,
+    last_seq: u32,
+    last_ack: u32,
+    last_payload: [u8; 256],
+    last_payload_len: usize,
+    last_send_tick: u64,
+    rto_ticks: u64,
+    rtt_start: u64,
+    srtt: u64,
+    rttvar: u64,
+    retries: u8,
+    recv_buf: [u8; TCP_BUF_SIZE],
+    recv_len: usize,
+    http_pending: bool,
+}
+
+impl TcpConn {
+    const fn empty() -> Self {
+        TcpConn {
+            in_use: false,
+            id: 0,
+            state: TcpState::Closed,
+            local_ip: Ipv4Addr([0, 0, 0, 0]),
+            local_port: 0,
+            remote_ip: Ipv4Addr([0, 0, 0, 0]),
+            remote_port: 0,
+            snd_una: 0,
+            snd_nxt: 0,
+            rcv_nxt: 0,
+            iss: 0,
+            irs: 0,
+            listener_idx: 0xFF,
+            last_flags: 0,
+            last_seq: 0,
+            last_ack: 0,
+            last_payload: [0u8; 256],
+            last_payload_len: 0,
+            last_send_tick: 0,
+            rto_ticks: 0,
+            rtt_start: 0,
+            srtt: 0,
+            rttvar: 0,
+            retries: 0,
+            recv_buf: [0u8; TCP_BUF_SIZE],
+            recv_len: 0,
+            http_pending: false,
+        }
+    }
+}
+
+fn tcp_endpoint(conn: &TcpConn) -> TcpEndpoint {
+    TcpEndpoint {
+        local_ip: conn.local_ip,
+        local_port: conn.local_port,
+        remote_ip: conn.remote_ip,
+        remote_port: conn.remote_port,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TcpListener {
+    in_use: bool,
+    port: u16,
+    backlog: [Option<u16>; MAX_TCP_BACKLOG],
+    head: usize,
+    tail: usize,
+}
+
+impl TcpListener {
+    const fn empty() -> Self {
+        TcpListener {
+            in_use: false,
+            port: 0,
+            backlog: [None; MAX_TCP_BACKLOG],
+            head: 0,
+            tail: 0,
+        }
+    }
+
+    fn push(&mut self, conn_id: u16) -> bool {
+        let next = (self.tail + 1) % MAX_TCP_BACKLOG;
+        if next == self.head {
+            return false;
+        }
+        self.backlog[self.tail] = Some(conn_id);
+        self.tail = next;
+        true
+    }
+
+    fn pop(&mut self) -> Option<u16> {
+        if self.head == self.tail {
+            return None;
+        }
+        let conn = self.backlog[self.head].take();
+        self.head = (self.head + 1) % MAX_TCP_BACKLOG;
+        conn
+    }
+}
+
+struct TcpManager {
+    conns: [TcpConn; MAX_TCP_CONNS],
+    listeners: [TcpListener; MAX_TCP_LISTEN],
+    next_id: u16,
+}
+
+impl TcpManager {
+    const fn new() -> Self {
+        TcpManager {
+            conns: [TcpConn::empty(); MAX_TCP_CONNS],
+            listeners: [TcpListener::empty(); MAX_TCP_LISTEN],
+            next_id: 1,
+        }
+    }
+
+    fn active_count(&self) -> usize {
+        self.conns.iter().filter(|c| c.in_use).count()
+    }
+
+    fn listener_count(&self) -> usize {
+        self.listeners.iter().filter(|l| l.in_use).count()
+    }
+
+    fn listen(&mut self, port: u16) -> Result<u16, &'static str> {
+        for listener in &self.listeners {
+            if listener.in_use && listener.port == port {
+                return Err("Port already in use");
+            }
+        }
+        for (i, listener) in self.listeners.iter_mut().enumerate() {
+            if !listener.in_use {
+                *listener = TcpListener::empty();
+                listener.in_use = true;
+                listener.port = port;
+                return Ok(i as u16);
+            }
+        }
+        Err("No listener slots")
+    }
+
+    fn accept(&mut self, listener: u16) -> Option<u16> {
+        let idx = listener as usize;
+        if idx >= self.listeners.len() {
+            return None;
+        }
+        self.listeners[idx].pop()
+    }
+
+    fn alloc_conn(&mut self) -> Result<&mut TcpConn, &'static str> {
+        for conn in &mut self.conns {
+            if !conn.in_use {
+                *conn = TcpConn::empty();
+                conn.in_use = true;
+                conn.id = self.next_id;
+                self.next_id = self.next_id.wrapping_add(1).max(1);
+                return Ok(conn);
+            }
+        }
+        Err("No connection slots")
+    }
+
+    fn find_conn_mut(&mut self, local_port: u16, remote_ip: Ipv4Addr, remote_port: u16) -> Option<&mut TcpConn> {
+        self.conns.iter_mut().find(|c| c.in_use && c.local_port == local_port && c.remote_port == remote_port && c.remote_ip == remote_ip)
+    }
+
+    fn find_conn_id_mut(&mut self, conn_id: u16) -> Option<&mut TcpConn> {
+        self.conns.iter_mut().find(|c| c.in_use && c.id == conn_id)
+    }
+
+    fn find_conn_index(&self, local_port: u16, remote_ip: Ipv4Addr, remote_port: u16) -> Option<usize> {
+        self.conns
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.in_use && c.local_port == local_port && c.remote_port == remote_port && c.remote_ip == remote_ip)
+            .map(|(i, _)| i)
+    }
+
+    fn connect(&mut self, stack: &mut NetworkStack, remote_ip: Ipv4Addr, remote_port: u16) -> Result<u16, &'static str> {
+        let local_port = 40000 + (self.next_id % 10000);
+        let iss = (crate::pit::get_ticks() as u32).wrapping_add(1000);
+        let conn = self.alloc_conn()?;
+        conn.state = TcpState::SynSent;
+        conn.local_ip = stack.my_ip;
+        conn.local_port = local_port;
+        conn.remote_ip = remote_ip;
+        conn.remote_port = remote_port;
+        conn.iss = iss;
+        conn.snd_una = iss;
+        conn.snd_nxt = iss;
+        conn.rto_ticks = (crate::pit::get_frequency() as u64) * 3;
+        conn.rtt_start = crate::pit::get_ticks();
+        let ep = tcp_endpoint(conn);
+        send_tcp_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_SYN, &[])?;
+        record_last(conn, TCP_FLAG_SYN, conn.snd_nxt, conn.rcv_nxt, &[]);
+        conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
+        Ok(conn.id)
+    }
+
+    fn send(&mut self, stack: &mut NetworkStack, conn_id: u16, data: &[u8]) -> Result<usize, &'static str> {
+        let conn = self.find_conn_id_mut(conn_id).ok_or("Connection not found")?;
+        if conn.state != TcpState::Established && conn.state != TcpState::CloseWait {
+            return Err("Connection not established");
+        }
+        let len = core::cmp::min(data.len(), conn.last_payload.len());
+        let ep = tcp_endpoint(conn);
+        send_tcp_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_ACK | TCP_FLAG_PSH, &data[..len])?;
+        record_last(conn, TCP_FLAG_ACK | TCP_FLAG_PSH, conn.snd_nxt, conn.rcv_nxt, &data[..len]);
+        conn.snd_nxt = conn.snd_nxt.wrapping_add(len as u32);
+        Ok(len)
+    }
+
+    fn recv(&mut self, conn_id: u16, out: &mut [u8]) -> Result<usize, &'static str> {
+        let conn = self.find_conn_id_mut(conn_id).ok_or("Connection not found")?;
+        if conn.recv_len == 0 {
+            return Ok(0);
+        }
+        let len = core::cmp::min(out.len(), conn.recv_len);
+        out[..len].copy_from_slice(&conn.recv_buf[..len]);
+        conn.recv_len = 0;
+        Ok(len)
+    }
+
+    fn close(&mut self, stack: &mut NetworkStack, conn_id: u16) -> Result<(), &'static str> {
+        let conn = self.find_conn_id_mut(conn_id).ok_or("Connection not found")?;
+        if conn.state == TcpState::Established {
+            conn.state = TcpState::FinWait1;
+            let ep = tcp_endpoint(conn);
+            send_tcp_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_FIN | TCP_FLAG_ACK, &[])?;
+            record_last(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, conn.snd_nxt, conn.rcv_nxt, &[]);
+            conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
+            return Ok(());
+        }
+        if conn.state == TcpState::CloseWait {
+            conn.state = TcpState::LastAck;
+            let ep = tcp_endpoint(conn);
+            send_tcp_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_FIN | TCP_FLAG_ACK, &[])?;
+            record_last(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, conn.snd_nxt, conn.rcv_nxt, &[]);
+            conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
+            return Ok(());
+        }
+        conn.state = TcpState::Closed;
+        conn.in_use = false;
+        Ok(())
+    }
+
+    fn tick(&mut self, stack: &mut NetworkStack) {
+        let now = crate::pit::get_ticks();
+        for i in 0..self.conns.len() {
+            let mut action: Option<(TcpEndpoint, u32, u32, u16, [u8; 256], usize)> = None;
+            {
+                let conn = &mut self.conns[i];
+                if !conn.in_use || conn.last_send_tick == 0 {
+                    continue;
+                }
+                if now - conn.last_send_tick < conn.rto_ticks {
+                    continue;
+                }
+                if conn.retries >= 5 {
+                    conn.state = TcpState::Closed;
+                    conn.in_use = false;
+                    continue;
+                }
+                let mut payload = [0u8; 256];
+                let len = conn.last_payload_len;
+                payload[..len].copy_from_slice(&conn.last_payload[..len]);
+                action = Some((tcp_endpoint(conn), conn.last_seq, conn.last_ack, conn.last_flags, payload, len));
+                conn.retries = conn.retries.saturating_add(1);
+                conn.last_send_tick = now;
+            }
+            if let Some((ep, seq, ack, flags, payload, len)) = action {
+                let _ = send_tcp_segment(stack, ep, seq, ack, flags, &payload[..len]);
+            }
+        }
+    }
+}
+
+const TCP_FLAG_FIN: u16 = 0x01;
+const TCP_FLAG_SYN: u16 = 0x02;
+const TCP_FLAG_RST: u16 = 0x04;
+const TCP_FLAG_PSH: u16 = 0x08;
+const TCP_FLAG_ACK: u16 = 0x10;
+
+#[derive(Clone, Copy)]
+struct TcpEndpoint {
+    local_ip: Ipv4Addr,
+    local_port: u16,
+    remote_ip: Ipv4Addr,
+    remote_port: u16,
+}
+
+struct HttpServer {
+    running: bool,
+    listener: Option<u16>,
+    port: u16,
+}
+
+impl HttpServer {
+    const fn new() -> Self {
+        HttpServer {
+            running: false,
+            listener: None,
+            port: 8080,
+        }
+    }
+}
+
+fn send_tcp_segment(
+    stack: &mut NetworkStack,
+    ep: TcpEndpoint,
+    seq: u32,
+    ack: u32,
+    flags: u16,
+    payload: &[u8],
+) -> Result<(), &'static str> {
+    let dest_mac = if let Some(mac) = stack.arp_cache.lookup(ep.remote_ip) {
+        mac
+    } else {
+        stack.send_arp_request(ep.remote_ip)?;
+        return Err("ARP unresolved");
+    };
+
+    let tcp_header_len = 20;
+    let ip_header_len = 20;
+    let total_len = 14 + ip_header_len + tcp_header_len + payload.len();
+    if total_len > 1514 {
+        return Err("Packet too large");
+    }
+
+    let mut frame = [0u8; 1514];
+    let mut off = 0;
+
+    frame[off..off + 6].copy_from_slice(&dest_mac.0);
+    off += 6;
+    frame[off..off + 6].copy_from_slice(&stack.my_mac.0);
+    off += 6;
+    frame[off..off + 2].copy_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+    off += 2;
+
+    let ip_start = off;
+    frame[off] = 0x45;
+    frame[off + 1] = 0;
+    let ip_total = (ip_header_len + tcp_header_len + payload.len()) as u16;
+    frame[off + 2..off + 4].copy_from_slice(&ip_total.to_be_bytes());
+    frame[off + 4..off + 6].copy_from_slice(&0u16.to_be_bytes());
+    frame[off + 6..off + 8].copy_from_slice(&0u16.to_be_bytes());
+    frame[off + 8] = 64;
+    frame[off + 9] = IP_PROTOCOL_TCP;
+    frame[off + 10..off + 12].copy_from_slice(&0u16.to_be_bytes());
+    frame[off + 12..off + 16].copy_from_slice(&ep.local_ip.0);
+    frame[off + 16..off + 20].copy_from_slice(&ep.remote_ip.0);
+    let checksum = calculate_checksum(&frame[off..off + ip_header_len]);
+    frame[off + 10..off + 12].copy_from_slice(&checksum.to_be_bytes());
+    off += ip_header_len;
+
+    let tcp_start = off;
+    frame[off..off + 2].copy_from_slice(&ep.local_port.to_be_bytes());
+    frame[off + 2..off + 4].copy_from_slice(&ep.remote_port.to_be_bytes());
+    frame[off + 4..off + 8].copy_from_slice(&seq.to_be_bytes());
+    frame[off + 8..off + 12].copy_from_slice(&ack.to_be_bytes());
+    frame[off + 12] = ((tcp_header_len / 4) as u8) << 4;
+    frame[off + 13] = (flags & 0xFF) as u8;
+    frame[off + 14..off + 16].copy_from_slice(&0x4000u16.to_be_bytes());
+    frame[off + 16..off + 18].copy_from_slice(&0u16.to_be_bytes());
+    frame[off + 18..off + 20].copy_from_slice(&0u16.to_be_bytes());
+    off += tcp_header_len;
+
+    if !payload.is_empty() {
+        frame[off..off + payload.len()].copy_from_slice(payload);
+    }
+
+    let tcp_len = (tcp_header_len + payload.len()) as u16;
+    let tcp_checksum = tcp_checksum(
+        &ep.local_ip.0,
+        &ep.remote_ip.0,
+        IP_PROTOCOL_TCP,
+        tcp_len,
+        &frame[tcp_start..tcp_start + tcp_header_len + payload.len()],
+    );
+    frame[tcp_start + 16..tcp_start + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
+
+    let mut driver = crate::e1000::E1000_DRIVER.lock();
+    let interface = driver.as_mut().ok_or("No E1000 driver")?;
+    interface.send_frame(&frame[..total_len])
+}
+
+fn record_last(conn: &mut TcpConn, flags: u16, seq: u32, ack: u32, payload: &[u8]) {
+    conn.last_flags = flags;
+    conn.last_seq = seq;
+    conn.last_ack = ack;
+    conn.last_payload_len = payload.len().min(conn.last_payload.len());
+    conn.last_payload[..conn.last_payload_len].copy_from_slice(&payload[..conn.last_payload_len]);
+    conn.last_send_tick = crate::pit::get_ticks();
+    conn.retries = 0;
+}
+
+fn tcp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], proto: u8, length: u16, segment: &[u8]) -> u16 {
+    let mut pseudo = [0u8; 12];
+    pseudo[0..4].copy_from_slice(src_ip);
+    pseudo[4..8].copy_from_slice(dst_ip);
+    pseudo[8] = 0;
+    pseudo[9] = proto;
+    pseudo[10..12].copy_from_slice(&length.to_be_bytes());
+
+    let mut sum = checksum_accum(&pseudo);
+    sum = checksum_accum_with(sum, segment);
+    finalize_checksum(sum)
+}
+
+fn checksum_accum(data: &[u8]) -> u32 {
+    checksum_accum_with(0, data)
+}
+
+fn checksum_accum_with(mut sum: u32, data: &[u8]) -> u32 {
+    let mut i = 0;
+    while i + 1 < data.len() {
+        let word = u16::from_be_bytes([data[i], data[i + 1]]) as u32;
+        sum = sum.wrapping_add(word);
+        i += 2;
+    }
+    if i < data.len() {
+        sum = sum.wrapping_add((data[i] as u32) << 8);
+    }
+    sum
+}
+
+fn finalize_checksum(mut sum: u32) -> u16 {
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+impl NetworkStack {
+    fn handle_ipv4(&mut self, packet: &[u8]) -> Result<(), &'static str> {
+        if packet.len() < 20 {
+            return Err("IPv4 packet too short");
+        }
+        let ihl = (packet[0] & 0x0F) as usize * 4;
+        if ihl < 20 || packet.len() < ihl {
+            return Err("Invalid IPv4 header");
+        }
+        let total_len = u16::from_be_bytes([packet[2], packet[3]]) as usize;
+        if total_len > packet.len() {
+            return Err("IPv4 length mismatch");
+        }
+        let proto = packet[9];
+        let dst = Ipv4Addr([packet[16], packet[17], packet[18], packet[19]]);
+        if dst != self.my_ip {
+            return Ok(());
+        }
+        match proto {
+            IP_PROTOCOL_TCP => {
+                let src = Ipv4Addr([packet[12], packet[13], packet[14], packet[15]]);
+                self.handle_tcp(src, &packet[ihl..total_len])?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_tcp(&mut self, src_ip: Ipv4Addr, segment: &[u8]) -> Result<(), &'static str> {
+        if segment.len() < 20 {
+            return Err("TCP segment too short");
+        }
+        let src_port = u16::from_be_bytes([segment[0], segment[1]]);
+        let dst_port = u16::from_be_bytes([segment[2], segment[3]]);
+        let seq = u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]);
+        let ack = u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]);
+        let data_off = (segment[12] >> 4) as usize * 4;
+        let flags = segment[13] as u16;
+        if segment.len() < data_off {
+            return Err("TCP header invalid");
+        }
+        let payload = &segment[data_off..];
+
+        let mut ack_action: Option<(TcpEndpoint, u32, u32)> = None;
+        let mut established_from_listen: Option<(u8, u16)> = None;
+        let mut http_conn_id: Option<u16> = None;
+
+        if let Some(idx) = self.tcp.find_conn_index(dst_port, src_ip, src_port) {
+            {
+                let conn = &mut self.tcp.conns[idx];
+                if flags & TCP_FLAG_RST != 0 {
+                    conn.state = TcpState::Closed;
+                    conn.in_use = false;
+                    return Ok(());
+                }
+                if flags & TCP_FLAG_ACK != 0 && ack > conn.snd_una {
+                    conn.snd_una = ack;
+                    let now = crate::pit::get_ticks();
+                    let sample = now.saturating_sub(conn.rtt_start);
+                    if conn.srtt == 0 {
+                        conn.srtt = sample;
+                        conn.rttvar = sample / 2;
+                    } else {
+                        let err = if conn.srtt > sample { conn.srtt - sample } else { sample - conn.srtt };
+                        conn.rttvar = (3 * conn.rttvar + err) / 4;
+                        conn.srtt = (7 * conn.srtt + sample) / 8;
+                    }
+                    conn.rto_ticks = core::cmp::max(1, conn.srtt + 4 * conn.rttvar);
+                }
+
+                if conn.state == TcpState::SynSent && (flags & (TCP_FLAG_SYN | TCP_FLAG_ACK)) == (TCP_FLAG_SYN | TCP_FLAG_ACK) {
+                    conn.state = TcpState::Established;
+                    conn.irs = seq;
+                    conn.rcv_nxt = seq.wrapping_add(1);
+                    conn.snd_una = ack;
+                    ack_action = Some((tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt));
+                }
+
+                if conn.state == TcpState::SynReceived && (flags & TCP_FLAG_ACK != 0) {
+                    conn.state = TcpState::Established;
+                    if conn.listener_idx != 0xFF {
+                        established_from_listen = Some((conn.listener_idx, conn.id));
+                    }
+                }
+
+                if !payload.is_empty() && seq == conn.rcv_nxt {
+                    let copy_len = core::cmp::min(payload.len(), conn.recv_buf.len());
+                    conn.recv_buf[..copy_len].copy_from_slice(&payload[..copy_len]);
+                    conn.recv_len = copy_len;
+                    conn.rcv_nxt = conn.rcv_nxt.wrapping_add(payload.len() as u32);
+                    ack_action = Some((tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt));
+                    if self.http_server.running && payload.windows(4).any(|w| w == b"\r\n\r\n") {
+                        conn.http_pending = true;
+                        http_conn_id = Some(conn.id);
+                    }
+                }
+
+                if flags & TCP_FLAG_FIN != 0 {
+                    conn.rcv_nxt = conn.rcv_nxt.wrapping_add(1);
+                    ack_action = Some((tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt));
+                    if conn.state == TcpState::Established {
+                        conn.state = TcpState::CloseWait;
+                    } else if conn.state == TcpState::FinWait1 {
+                        conn.state = TcpState::Closed;
+                        conn.in_use = false;
+                    }
+                }
+
+                if conn.state == TcpState::FinWait1 && (flags & TCP_FLAG_ACK != 0) {
+                    conn.state = TcpState::FinWait2;
+                }
+                if conn.state == TcpState::LastAck && (flags & TCP_FLAG_ACK != 0) {
+                    conn.state = TcpState::Closed;
+                    conn.in_use = false;
+                }
+            }
+
+            if let Some((ep, seq_out, ack_out)) = ack_action {
+                let _ = send_tcp_segment(self, ep, seq_out, ack_out, TCP_FLAG_ACK, &[]);
+            }
+            if let Some((idx, conn_id)) = established_from_listen {
+                let idx = idx as usize;
+                if idx < self.tcp.listeners.len() {
+                    let _ = self.tcp.listeners[idx].push(conn_id);
+                }
+            }
+            if let Some(conn_id) = http_conn_id {
+                self.http_server_respond(conn_id);
+            }
+            return Ok(());
+        }
+
+        // No existing connection: check listeners for SYN
+        if flags & TCP_FLAG_SYN != 0 {
+            for (idx, listener) in self.tcp.listeners.iter_mut().enumerate() {
+                if listener.in_use && listener.port == dst_port {
+                    let conn = self.tcp.alloc_conn()?;
+                    conn.local_ip = self.my_ip;
+                    conn.local_port = dst_port;
+                    conn.remote_ip = src_ip;
+                    conn.remote_port = src_port;
+                    conn.state = TcpState::SynReceived;
+                    conn.iss = (crate::pit::get_ticks() as u32).wrapping_add(2000);
+                    conn.snd_una = conn.iss;
+                    conn.snd_nxt = conn.iss;
+                    conn.irs = seq;
+                    conn.rcv_nxt = seq.wrapping_add(1);
+                    conn.listener_idx = idx as u8;
+                    conn.rto_ticks = (crate::pit::get_frequency() as u64) * 3;
+                    let ep = tcp_endpoint(conn);
+                    let seq_out = conn.snd_nxt;
+                    let ack_out = conn.rcv_nxt;
+                    record_last(conn, TCP_FLAG_SYN | TCP_FLAG_ACK, seq_out, ack_out, &[]);
+                    conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
+                    let _ = idx;
+                    let _ = send_tcp_segment(self, ep, seq_out, ack_out, TCP_FLAG_SYN | TCP_FLAG_ACK, &[]);
+                    return Ok(());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn http_server_respond(&mut self, conn_id: u16) {
+        if !self.http_server.running {
+            return;
+        }
+        let (ep, seq, ack) = {
+            let conn = match self.tcp.find_conn_id_mut(conn_id) {
+                Some(c) => c,
+                None => return,
+            };
+            if conn.state != TcpState::Established {
+                return;
+            }
+            (tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt)
+        };
+
+        let body = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOreulia HTTP server online.\n";
+        let _ = send_tcp_segment(self, ep, seq, ack, TCP_FLAG_ACK | TCP_FLAG_PSH, body);
+
+        let (ep2, seq2, ack2) = {
+            let conn = match self.tcp.find_conn_id_mut(conn_id) {
+                Some(c) => c,
+                None => return,
+            };
+            record_last(conn, TCP_FLAG_ACK | TCP_FLAG_PSH, conn.snd_nxt, conn.rcv_nxt, body);
+            conn.snd_nxt = conn.snd_nxt.wrapping_add(body.len() as u32);
+            conn.state = TcpState::LastAck;
+            conn.http_pending = false;
+            (tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt)
+        };
+
+        let _ = send_tcp_segment(self, ep2, seq2, ack2, TCP_FLAG_FIN | TCP_FLAG_ACK, &[]);
+        if let Some(conn) = self.tcp.find_conn_id_mut(conn_id) {
+            record_last(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, conn.snd_nxt, conn.rcv_nxt, &[]);
+            conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
+        }
+    }
+
 }
 
 // ============================================================================
@@ -653,4 +1400,12 @@ pub static NETWORK_STACK: Mutex<NetworkStack> = Mutex::new(NetworkStack::new());
 
 pub fn network_stack() -> &'static Mutex<NetworkStack> {
     &NETWORK_STACK
+}
+
+/// Network IRQ hook (polls for received frames)
+pub fn on_irq() {
+    crate::e1000::handle_irq();
+    if let Some(mut stack) = NETWORK_STACK.try_lock() {
+        let _ = stack.poll_once();
+    }
 }

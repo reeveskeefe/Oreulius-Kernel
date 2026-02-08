@@ -268,6 +268,11 @@ impl E1000Driver {
         }
     }
 
+    /// Handle E1000 interrupt (clears ICR)
+    fn handle_irq(&mut self) {
+        let _ = self.read_reg(E1000_REG_ICR);
+    }
+
     /// Get MAC address
     pub fn mac_address(&self) -> [u8; 6] {
         self.mac_address
@@ -389,6 +394,13 @@ pub fn is_link_up() -> bool {
     E1000_DRIVER.lock().as_ref().map(|d| d.is_link_up()).unwrap_or(false)
 }
 
+/// Handle E1000 IRQ (if enabled)
+pub fn handle_irq() {
+    if let Some(driver) = E1000_DRIVER.lock().as_mut() {
+        driver.handle_irq();
+    }
+}
+
 // ============================================================================
 // NetworkInterface Trait Implementation
 // ============================================================================
@@ -410,4 +422,3 @@ impl NetworkInterface for E1000Driver {
         E1000Driver::is_link_up(self)
     }
 }
-

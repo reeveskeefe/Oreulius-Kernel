@@ -1,0 +1,236 @@
+// ACPI Assembly Bindings
+// Power management and thermal monitoring
+
+use core::fmt;
+
+/// ACPI RSDP structure
+#[repr(C, packed)]
+pub struct Rsdp {
+    pub signature: [u8; 8],
+    pub checksum: u8,
+    pub oem_id: [u8; 6],
+    pub revision: u8,
+    pub rsdt_address: u32,
+}
+
+/// ACPI table header
+#[repr(C, packed)]
+pub struct AcpiTableHeader {
+    pub signature: [u8; 4],
+    pub length: u32,
+    pub revision: u8,
+    pub checksum: u8,
+    pub oem_id: [u8; 6],
+    pub oem_table_id: [u8; 8],
+    pub oem_revision: u32,
+    pub creator_id: u32,
+    pub creator_revision: u32,
+}
+
+/// Power states
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SleepState {
+    S0 = 0,     // Working
+    S1 = 1,     // Sleep
+    S2 = 2,     // Sleep
+    S3 = 3,     // Suspend to RAM
+    S4 = 4,     // Suspend to disk
+    S5 = 5,     // Soft off
+}
+
+/// CPU C-states
+#[derive(Debug, Clone, Copy)]
+pub enum CState {
+    C0,         // Active
+    C1,         // Halt
+    C2,         // Stop clock
+    C3,         // Deep sleep
+}
+
+/// Cooling policy
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum CoolingPolicy {
+    Active = 0,
+    Passive = 1,
+}
+
+/// ACPI statistics
+#[derive(Debug, Default)]
+pub struct AcpiStats {
+    pub sleeps: u32,
+    pub wakes: u32,
+    pub thermal_events: u32,
+}
+
+extern "C" {
+    // Table discovery
+    pub fn acpi_find_rsdp() -> u32;
+    pub fn acpi_checksum(table: *const u8, length: u32) -> u8;
+    pub fn acpi_find_table(rsdt_addr: u32, signature: u32) -> u32;
+    
+    // Register access
+    pub fn acpi_read_pm1_control(pm1a_base: u16) -> u16;
+    pub fn acpi_write_pm1_control(pm1a_base: u16, value: u16);
+    pub fn acpi_read_pm1_status(pm1a_base: u16) -> u16;
+    pub fn acpi_write_pm1_status(pm1a_base: u16, value: u16);
+    
+    // Power state transitions
+    pub fn acpi_enter_sleep_state(pm1a_base: u16, sleep_type: u8, sleep_enable: u8);
+    pub fn acpi_shutdown(pm1a_base: u16);
+    pub fn acpi_reboot(reset_reg_addr: u8);
+    
+    // Thermal monitoring
+    pub fn acpi_read_thermal_zone(ec_data_port: u16, register: u8) -> u32;
+    pub fn acpi_set_cooling_policy(policy: u8);
+    
+    // C-states
+    pub fn acpi_enter_c1();
+    pub fn acpi_enter_c2(p_lvl2_port: u16);
+    pub fn acpi_enter_c3(p_lvl3_port: u16);
+    
+    // P-states
+    pub fn acpi_set_pstate(pstate: u8);
+    pub fn acpi_get_pstate() -> u8;
+    
+    // Battery
+    pub fn acpi_get_battery_status() -> u32;
+    pub fn acpi_get_battery_capacity() -> u8;
+    
+    // Events
+    pub fn acpi_enable_events(pm1a_base: u16, event_mask: u16);
+    pub fn acpi_get_event_status(pm1a_base: u16) -> u16;
+    pub fn acpi_clear_event(pm1a_base: u16, event_bits: u16);
+    
+    // Statistics
+    pub fn get_acpi_stats(sleeps: *mut u32, wakes: *mut u32, thermal: *mut u32);
+}
+
+/// ACPI manager
+pub struct Acpi {
+    rsdp_addr: u32,
+    rsdt_addr: u32,
+    pm1a_base: u16,
+}
+
+impl Acpi {
+    pub fn init() -> Option<Self> {
+        let rsdp_addr = unsafe { acpi_find_rsdp() };
+        if rsdp_addr == 0 {
+            return None;
+        }
+        
+        let rsdp = unsafe { &*(rsdp_addr as *const Rsdp) };
+        
+        // Verify checksum
+        let sum = unsafe { acpi_checksum(rsdp_addr as *const u8, 20) };
+        if sum != 0 {
+            return None;
+        }
+        
+        Some(Self {
+            rsdp_addr,
+            rsdt_addr: rsdp.rsdt_address,
+            pm1a_base: 0,  // Should be read from FADT
+        })
+    }
+    
+    pub fn find_table(&self, signature: &[u8; 4]) -> Option<u32> {
+        let sig = u32::from_le_bytes(*signature);
+        let addr = unsafe { acpi_find_table(self.rsdt_addr, sig) };
+        if addr == 0 {
+            None
+        } else {
+            Some(addr)
+        }
+    }
+    
+    pub fn shutdown(&self) {
+        unsafe { acpi_shutdown(self.pm1a_base) }
+    }
+    
+    pub fn reboot(&self) {
+        unsafe { acpi_reboot(0) }
+    }
+    
+    pub fn enter_sleep(&self, state: SleepState) {
+        unsafe {
+            acpi_enter_sleep_state(self.pm1a_base, state as u8, 1);
+        }
+    }
+}
+
+/// CPU power management
+pub struct CpuPower;
+
+impl CpuPower {
+    pub fn enter_c1() {
+        unsafe { acpi_enter_c1() }
+    }
+    
+    pub fn enter_c2(port: u16) {
+        unsafe { acpi_enter_c2(port) }
+    }
+    
+    pub fn enter_c3(port: u16) {
+        unsafe { acpi_enter_c3(port) }
+    }
+    
+    pub fn set_pstate(state: u8) {
+        unsafe { acpi_set_pstate(state) }
+    }
+    
+    pub fn get_pstate() -> u8 {
+        unsafe { acpi_get_pstate() }
+    }
+}
+
+/// Battery information
+pub struct Battery;
+
+impl Battery {
+    pub fn status() -> BatteryStatus {
+        let status = unsafe { acpi_get_battery_status() };
+        BatteryStatus {
+            charging: (status & 1) != 0,
+            critical: (status & 2) != 0,
+        }
+    }
+    
+    pub fn capacity() -> u8 {
+        unsafe { acpi_get_battery_capacity() }
+    }
+}
+
+#[derive(Debug)]
+pub struct BatteryStatus {
+    pub charging: bool,
+    pub critical: bool,
+}
+
+impl fmt::Display for BatteryStatus {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.critical {
+            write!(f, "CRITICAL - ")?;
+        }
+        if self.charging {
+            write!(f, "Charging")
+        } else {
+            write!(f, "Discharging")
+        }
+    }
+}
+
+/// ACPI statistics accessor
+pub struct AcpiStatsAccessor;
+
+impl AcpiStatsAccessor {
+    pub fn get() -> AcpiStats {
+        let mut stats = AcpiStats::default();
+        unsafe {
+            get_acpi_stats(&mut stats.sleeps, &mut stats.wakes, &mut stats.thermal_events);
+        }
+        stats
+    }
+}

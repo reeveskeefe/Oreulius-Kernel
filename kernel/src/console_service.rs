@@ -155,6 +155,22 @@ pub fn console_stats(pid: ProcessId, cap_id: u32) -> Result<(u64, u64), ConsoleE
     Ok((console.write_count, console.read_count))
 }
 
+/// Validate a capability structure (used for IPC capability transfer)
+pub fn validate_console_capability(cap: &OreuliaCapability) -> Result<(), ConsoleError> {
+    // Check type matches
+    if cap.cap_type != CapabilityType::Console {
+        return Err(ConsoleError::InvalidConsole);
+    }
+    
+    // Verify the console object exists
+    let registry = CONSOLE_REGISTRY.lock();
+    if !registry.consoles.iter().any(|c| c.as_ref().map_or(false, |con| con.object_id == cap.object_id)) {
+        return Err(ConsoleError::InvalidConsole);
+    }
+    
+    Ok(())
+}
+
 // ============================================================================
 // Errors
 // ============================================================================

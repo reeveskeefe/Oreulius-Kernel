@@ -17,7 +17,10 @@
 
 #![allow(dead_code)]
 
+extern crate alloc;
+
 use core::fmt;
+use alloc::vec::Vec;
 use spin::Mutex;
 use crate::ipc::{ProcessId, ChannelId};
 use crate::fs;
@@ -26,8 +29,8 @@ use crate::fs;
 // WASM Types & Constants
 // ============================================================================
 
-/// Maximum linear memory size (1 MiB for v0)
-pub const MAX_MEMORY_SIZE: usize = 1024 * 1024;
+/// Maximum linear memory size (64 KiB for v0 - reduced to shrink kernel)
+pub const MAX_MEMORY_SIZE: usize = 64 * 1024;
 
 /// Maximum stack depth
 pub const MAX_STACK_DEPTH: usize = 1024;
@@ -38,8 +41,8 @@ pub const MAX_LOCALS: usize = 256;
 /// Maximum number of injected capabilities
 pub const MAX_INJECTED_CAPS: usize = 32;
 
-/// Maximum module size (256 KiB)
-pub const MAX_MODULE_SIZE: usize = 256 * 1024;
+/// Maximum module size (16 KiB - reduced to shrink kernel)
+pub const MAX_MODULE_SIZE: usize = 16 * 1024;
 
 /// Maximum instructions executed per call (prevents infinite loops)
 pub const MAX_INSTRUCTIONS_PER_CALL: usize = 100_000;
@@ -218,6 +221,16 @@ impl LinearMemory {
         self.pages
     }
 
+    /// Get active memory size in bytes
+    pub fn active_len(&self) -> usize {
+        self.pages * 64 * 1024
+    }
+
+    /// Get raw pointer to memory
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.data.as_mut_ptr()
+    }
+
     /// Grow memory by delta pages
     pub fn grow(&mut self, delta: usize) -> Result<usize, WasmError> {
         let old_size = self.pages;
@@ -330,6 +343,10 @@ impl Stack {
 
     pub fn is_empty(&self) -> bool {
         self.top == 0
+    }
+
+    pub fn clear(&mut self) {
+        self.top = 0;
     }
 }
 
@@ -490,6 +507,14 @@ pub struct WasmInstance {
     instruction_count: usize,
     memory_op_count: usize,
     syscall_count: usize,
+    /// JIT cache (per-function hash)
+    jit_hash: [Option<u32>; 64],
+    /// JIT stack (i32 only)
+    jit_stack: [i32; MAX_STACK_DEPTH],
+    jit_sp: usize,
+    jit_enabled: bool,
+    jit_hot: [u32; 64],
+    jit_locals: [i32; MAX_LOCALS],
 }
 
 impl WasmInstance {
@@ -506,7 +531,83 @@ impl WasmInstance {
             instruction_count: 0,
             memory_op_count: 0,
             syscall_count: 0,
+            jit_hash: [None; 64],
+            jit_stack: [0; MAX_STACK_DEPTH],
+            jit_sp: 0,
+            jit_enabled: false,
+            jit_hot: [0; 64],
+            jit_locals: [0; MAX_LOCALS],
         }
+    }
+
+    /// Enable or disable JIT
+    pub fn enable_jit(&mut self, enabled: bool) {
+        self.jit_enabled = enabled;
+    }
+
+    fn try_jit(&mut self, func: Function, func_idx: usize) -> Result<bool, WasmError> {
+        if !self.jit_enabled {
+            return Ok(false);
+        }
+        if !jit_config().lock().enabled {
+            return Ok(false);
+        }
+        if func.param_count + func.local_count > MAX_LOCALS {
+            return Ok(false);
+        }
+        if func.result_count > 1 {
+            return Ok(false);
+        }
+        if self.stack.len() < func.param_count {
+            return Ok(false);
+        }
+
+        // Populate JIT locals from stack params (i32 only)
+        for i in (0..func.param_count).rev() {
+            let v = self.stack.pop()?.as_i32()?;
+            self.jit_locals[i] = v;
+        }
+        for i in func.param_count..(func.param_count + func.local_count) {
+            self.jit_locals[i] = 0;
+        }
+
+        if func_idx >= self.jit_hash.len() {
+            return Ok(false);
+        }
+
+        self.jit_hot[func_idx] = self.jit_hot[func_idx].saturating_add(1);
+        if self.jit_hash[func_idx].is_none() {
+            let threshold = jit_config().lock().hot_threshold;
+            if self.jit_hot[func_idx] < threshold {
+                jit_stats().lock().interp_calls += 1;
+                return Ok(false);
+            }
+            let code_start = func.code_offset;
+            let code_end = func.code_offset + func.code_len;
+            let code = &self.module.bytecode[code_start..code_end];
+            let hash = hash_code(code);
+            let entry = jit_cache_get_or_compile(hash, code)
+                .ok_or(WasmError::InvalidModule)?;
+            self.jit_hash[func_idx] = Some(hash);
+            jit_stats().lock().compiled += 1;
+            let _ = entry;
+        }
+
+        let hash = self.jit_hash[func_idx].ok_or(WasmError::InvalidModule)?;
+        let jit_entry = jit_cache_get(hash).ok_or(WasmError::InvalidModule)?;
+        self.jit_sp = 0;
+        let mem_len = self.memory.active_len();
+        let mem_ptr = self.memory.as_mut_ptr();
+        let locals_ptr = self.jit_locals.as_mut_ptr();
+        let ret = unsafe { (jit_entry)(self.jit_stack.as_mut_ptr(), &mut self.jit_sp, mem_ptr, mem_len, locals_ptr) };
+        if ret == -1 {
+            return Err(WasmError::MemoryOutOfBounds);
+        }
+        if func.result_count == 1 {
+            self.stack.push(Value::I32(ret))?;
+        }
+        jit_stats().lock().jit_calls += 1;
+        Ok(true)
     }
 
     /// Reset execution limits
@@ -563,6 +664,10 @@ impl WasmInstance {
         }
 
         let func = self.module.get_function(func_idx)?;
+
+        if self.try_jit(func, func_idx)? {
+            return Ok(());
+        }
         
         // Set up locals from stack parameters
         for i in (0..func.param_count).rev() {
@@ -1253,4 +1358,179 @@ pub fn wasm_runtime() -> &'static WasmRuntime {
 pub fn init() {
     // Runtime is statically initialized
     crate::vga::print_str("[WASM] Runtime initialized\n");
+}
+
+// ============================================================================
+// JIT Config, Cache, Stats
+// ============================================================================
+
+pub struct JitConfig {
+    pub enabled: bool,
+    pub hot_threshold: u32,
+}
+
+impl JitConfig {
+    pub const fn new() -> Self {
+        JitConfig {
+            enabled: false,
+            hot_threshold: 10,
+        }
+    }
+}
+
+pub struct JitStats {
+    pub interp_calls: u64,
+    pub jit_calls: u64,
+    pub compiled: u64,
+    pub failed: u64,
+}
+
+impl JitStats {
+    pub const fn new() -> Self {
+        JitStats {
+            interp_calls: 0,
+            jit_calls: 0,
+            compiled: 0,
+            failed: 0,
+        }
+    }
+}
+
+struct JitCacheEntry {
+    hash: u32,
+    func: crate::wasm_jit::JitFunction,
+}
+
+struct JitCache {
+    entries: Vec<JitCacheEntry>,
+    max_entries: usize,
+}
+
+impl JitCache {
+    const fn new() -> Self {
+        JitCache {
+            entries: Vec::new(),
+            max_entries: 16,
+        }
+    }
+}
+
+static JIT_CONFIG: Mutex<JitConfig> = Mutex::new(JitConfig::new());
+static JIT_STATS: Mutex<JitStats> = Mutex::new(JitStats::new());
+static JIT_CACHE: Mutex<JitCache> = Mutex::new(JitCache::new());
+
+pub fn jit_config() -> &'static Mutex<JitConfig> {
+    &JIT_CONFIG
+}
+
+pub fn jit_stats() -> &'static Mutex<JitStats> {
+    &JIT_STATS
+}
+
+fn hash_code(code: &[u8]) -> u32 {
+    let mut hash: u32 = 2166136261;
+    for &b in code {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
+    hash
+}
+
+fn jit_cache_get(hash: u32) -> Option<crate::wasm_jit::JitFn> {
+    let cache = JIT_CACHE.lock();
+    for entry in cache.entries.iter() {
+        if entry.hash == hash {
+            return Some(entry.func.entry);
+        }
+    }
+    None
+}
+
+fn jit_cache_get_or_compile(hash: u32, code: &[u8]) -> Option<crate::wasm_jit::JitFn> {
+    if let Some(entry) = jit_cache_get(hash) {
+        return Some(entry);
+    }
+    let jit = match crate::wasm_jit::compile(code) {
+        Ok(j) => j,
+        Err(_) => {
+            jit_stats().lock().failed += 1;
+            return None;
+        }
+    };
+    let mut cache = JIT_CACHE.lock();
+    if cache.entries.len() < cache.max_entries {
+        cache.entries.push(JitCacheEntry { hash, func: jit });
+        return Some(cache.entries.last().unwrap().func.entry);
+    }
+    let idx = (hash as usize) % cache.entries.len();
+    cache.entries[idx] = JitCacheEntry { hash, func: jit };
+    Some(cache.entries[idx].func.entry)
+}
+
+/// Simple JIT benchmark (returns interpreter_ticks, jit_ticks)
+pub fn jit_benchmark() -> Result<(u64, u64), &'static str> {
+    jit_config().lock().enabled = true;
+    let mut module = WasmModule::new();
+    let mut code: Vec<u8> = Vec::new();
+
+    // i32.const 1
+    code.push(Opcode::I32Const as u8);
+    code.push(0x01);
+    // Repeat: const 2; add
+    for _ in 0..128 {
+        code.push(Opcode::I32Const as u8);
+        code.push(0x02);
+        code.push(Opcode::I32Add as u8);
+    }
+    code.push(Opcode::End as u8);
+
+    module.load(&code).map_err(|_| "Module load failed")?;
+    module.add_function(Function {
+        code_offset: 0,
+        code_len: code.len(),
+        param_count: 0,
+        result_count: 1,
+        local_count: 0,
+    }).map_err(|_| "Function add failed")?;
+
+    let mut instance = WasmInstance::new(module, ProcessId(1));
+    let iterations = 200;
+
+    let start = crate::pit::get_ticks();
+    for _ in 0..iterations {
+        instance.stack.clear();
+        instance.enable_jit(false);
+        instance.call(0).map_err(|_| "Interpreter failed")?;
+    }
+    let interp_ticks = crate::pit::get_ticks().saturating_sub(start);
+
+    let start = crate::pit::get_ticks();
+    for _ in 0..iterations {
+        instance.stack.clear();
+        instance.enable_jit(true);
+        instance.call(0).map_err(|_| "JIT failed")?;
+    }
+    let jit_ticks = crate::pit::get_ticks().saturating_sub(start);
+
+    Ok((interp_ticks, jit_ticks))
+}
+
+// ============================================================================
+// Syscall Wrapper Functions
+// ============================================================================
+
+/// Load WASM module (syscall wrapper)
+pub fn load_module(bytecode: &[u8]) -> Result<usize, &'static str> {
+    // TODO: Parse and validate WASM bytecode
+    // For now, just return a dummy module ID
+    let _ = bytecode;
+    Ok(1)
+}
+
+/// Call WASM function (syscall wrapper)
+pub fn call_function(module_id: usize, func_idx: usize, args: &[u32]) -> Result<u32, &'static str> {
+    // TODO: Look up module and call function
+    // For now, just return 0
+    let _ = (module_id, func_idx, args);
+    Ok(0)
 }

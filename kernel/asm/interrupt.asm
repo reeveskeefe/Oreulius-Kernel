@@ -10,6 +10,8 @@ global asm_io_wait
 global asm_read_cr0
 global asm_read_cr3
 global asm_write_cr3
+global asm_outb
+global asm_inb
 
 section .text
 
@@ -66,4 +68,21 @@ asm_read_cr3:
 asm_write_cr3:
     mov eax, [esp + 4]
     mov cr3, eax
+    ret
+
+; Output byte to port (OUT DX, AL)
+; Args: (port: u16, value: u8)
+asm_outb:
+    mov dx, [esp + 4]  ; port
+    mov al, [esp + 8]  ; value
+    out dx, al
+    ret
+
+; Input byte from port (IN AL, DX)
+; Args: (port: u16)
+; Returns: AL (read value)
+asm_inb:
+    mov dx, [esp + 4]  ; port
+    xor eax, eax       ; clear eax
+    in al, dx
     ret

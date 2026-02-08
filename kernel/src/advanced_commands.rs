@@ -60,7 +60,8 @@ pub fn cmd_quantum_stats() {
     vga::print_str("  PID | CPU Time | Wait Time | Switches | Quantum\n");
     vga::print_str("  ----+----------+-----------+----------+--------\n");
     
-    let processes = quantum_scheduler::scheduler().lock().list_processes();
+    let scheduler_guard = quantum_scheduler::scheduler().lock();
+    let processes = scheduler_guard.list_processes();
     for (pid, info) in processes {
         vga::print_str("  ");
         print_u32(pid.0);

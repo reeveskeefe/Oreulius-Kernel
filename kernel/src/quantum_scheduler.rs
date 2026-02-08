@@ -8,11 +8,19 @@
 //! - Accounting: CPU time, context switches, wait time
 
 use spin::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::mem::MaybeUninit;
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
+use alloc::boxed::Box;
 use crate::process::{Process, ProcessState, ProcessPriority, Pid, MAX_PROCESSES};
-use crate::asm_bindings::{ProcessContext, asm_switch_context};
+use crate::asm_bindings::{ProcessContext, asm_switch_context, asm_load_context};
 use crate::pit;
+use crate::paging;
+
+// FIX #1: Module-level stacks (properly placed in BSS by linker)
+static mut KERNEL_STACK_0: [u8; 8192] = [0; 8192];
+static mut KERNEL_STACK_1: [u8; 8192] = [0; 8192];
 
 /// Quantum in ticks (100 Hz = 10ms per tick)
 const QUANTUM_HIGH: u32 = 20;      // 200ms for high priority
@@ -41,6 +49,7 @@ pub struct QuantumScheduler {
 pub struct ProcessInfo {
     pub process: Process,
     pub context: ProcessContext,
+    pub stack: Option<Box<[u8; crate::process::STACK_SIZE]>>,
     pub quantum_remaining: u32,
     pub total_cpu_time: u64,      // Total ticks this process ran
     pub total_wait_time: u64,     // Total ticks waiting
@@ -66,14 +75,25 @@ pub struct SchedulerStats {
 }
 
 impl QuantumScheduler {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         const NONE_PROC: Option<ProcessInfo> = None;
+        
+        let mut wait_queues: [WaitQueue; MAX_WAIT_QUEUES] = unsafe {
+            MaybeUninit::uninit().assume_init()
+        };
+        for i in 0..MAX_WAIT_QUEUES {
+            wait_queues[i] = WaitQueue {
+                addr: 0,
+                waiting: VecDeque::new(),
+                active: false,
+            };
+        }
         
         QuantumScheduler {
             processes: [NONE_PROC; MAX_PROCESSES],
             current_pid: None,
             ready_queues: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
-            wait_queues: core::array::from_fn(|_| WaitQueue::empty()),
+            wait_queues,
             wait_queue_count: 0,
             stats: SchedulerStats {
                 total_switches: 0,
@@ -87,6 +107,7 @@ impl QuantumScheduler {
     /// Add a process to the scheduler
     pub fn add_process(&mut self, process: Process) -> Result<(), &'static str> {
         let pid = process.pid;
+        let priority = process.priority;
         let idx = pid.0 as usize;
         
         if idx >= MAX_PROCESSES {
@@ -97,7 +118,7 @@ impl QuantumScheduler {
             return Err("PID already in use");
         }
         
-        let quantum = match process.priority {
+        let quantum = match priority {
             ProcessPriority::High => QUANTUM_HIGH,
             ProcessPriority::Normal => QUANTUM_NORMAL,
             ProcessPriority::Low => QUANTUM_LOW,
@@ -106,6 +127,7 @@ impl QuantumScheduler {
         let info = ProcessInfo {
             process,
             context: ProcessContext::new(),
+            stack: None,
             quantum_remaining: quantum,
             total_cpu_time: 0,
             total_wait_time: 0,
@@ -114,7 +136,7 @@ impl QuantumScheduler {
         };
         
         self.processes[idx] = Some(info);
-        self.enqueue_ready(pid, process.priority);
+        self.enqueue_ready(pid, priority);
         
         Ok(())
     }
@@ -189,14 +211,19 @@ impl QuantumScheduler {
             let to_idx = to.0 as usize;
             
             unsafe {
-                if let Some(ref mut from_info) = self.processes[from_idx] {
-                    if let Some(ref to_info) = self.processes[to_idx] {
-                        asm_switch_context(
-                            &mut from_info.context as *mut ProcessContext,
-                            &to_info.context as *const ProcessContext,
-                        );
-                    }
-                }
+                let from_ptr = if let Some(ref mut info) = self.processes[from_idx] {
+                    &mut info.context as *mut ProcessContext
+                } else {
+                    return;
+                };
+                
+                let to_ptr = if let Some(ref info) = self.processes[to_idx] {
+                    &info.context as *const ProcessContext
+                } else {
+                    return;
+                };
+                
+                asm_switch_context(from_ptr, to_ptr);
             }
         }
     }
@@ -351,6 +378,131 @@ impl QuantumScheduler {
         }
         result
     }
+    
+    /// Add a kernel thread to the scheduler
+    pub fn add_kernel_thread(&mut self, entry: extern "C" fn() -> !, priority: ProcessPriority) -> Result<Pid, &'static str> {
+        // Find available PID
+        let pid = (0..MAX_PROCESSES)
+            .map(|i| Pid(i as u32))
+            .find(|&pid| self.processes[pid.0 as usize].is_none())
+            .ok_or("No available PIDs")?;
+        
+        let mut process = Process::new(pid, "kernel_thread", None);
+        process.priority = priority;
+        
+        // Use module-level stacks (properly placed in BSS)
+        let stack_slice = unsafe {
+            match pid.0 {
+                0 => &mut KERNEL_STACK_0[..],
+                1 => &mut KERNEL_STACK_1[..],
+                _ => return Err("Only 2 kernel threads supported with static stacks"),
+            }
+        };
+        
+        let stack_top = unsafe { stack_slice.as_mut_ptr().add(stack_slice.len()) as u32 } & !15;
+        
+        // FIX #4: Verify stack address is in reasonable range (below 32MB)
+        // Check both top and bottom of usable stack range (we use up to 8 bytes)
+        let stack_bottom = stack_top.saturating_sub(8);
+        if stack_top > 32 * 1024 * 1024 || stack_bottom < 0x1000 {
+            return Err("Stack address out of mapped range");
+        }
+        
+        // Push the entry point (function to call after trampoline)
+        let entry_addr = entry as *const () as u32;
+        let entry_ptr = (stack_top - 4) as *mut u32;
+        unsafe { entry_ptr.write(entry_addr); }
+        
+        let mut ctx = ProcessContext::new();
+
+        // Use actual trampoline address from assembly
+        let trampoline_addr = crate::asm_bindings::thread_start_trampoline as usize as u32;
+        ctx.eip = trampoline_addr;
+        ctx.esp = stack_top - 4;
+        ctx.ebp = stack_top - 4;
+        ctx.cr3 = paging::current_page_directory_addr();
+        
+        process.state = ProcessState::Ready;
+        
+        let info = ProcessInfo {
+            process,
+            context: ctx,
+            stack: None,  // Stack is static, not heap-allocated
+            quantum_remaining: QUANTUM_NORMAL,
+            total_cpu_time: 0,
+            total_wait_time: 0,
+            last_scheduled: 0,
+            switches: 0,
+        };
+        
+        self.processes[pid.0 as usize] = Some(info);
+        self.enqueue_ready(pid, priority);
+        
+        crate::vga::print_str("\n");
+        Ok(pid)
+    }
+    
+    /// Start the scheduler (never returns)
+    pub fn start(&mut self) -> ! {
+        let next_pid = self.dequeue_ready().expect("No processes to run");
+        
+        crate::vga::print_str("[SCHED] Starting scheduler\n");
+        
+        if let Some(ref mut info) = self.processes[next_pid.0 as usize] {
+            info.process.state = ProcessState::Running;
+        }
+        
+        self.current_pid = Some(next_pid);
+        
+        SCHEDULER_STARTED.store(true, Ordering::Release);
+        
+        unsafe { QUANTUM_SCHEDULER.force_unlock(); }
+        
+        let ctx_ptr = if let Some(ref info) = self.processes[next_pid.0 as usize] {
+            crate::vga::print_str("[SCHED] Loading context\n");
+            &info.context as *const ProcessContext
+        } else {
+            panic!("Process disappeared");
+        };
+        
+        crate::vga::print_str("[SCHED] Jumping to task...\n");
+        unsafe { asm_load_context(ctx_ptr); }
+    }
+    
+    /// Add a user process (stub for now)
+    pub fn add_user_process(&mut self, _process: Process, _space: Box<crate::paging::AddressSpace>, _entry: u32, _user_stack: u32) -> Result<Pid, &'static str> {
+        Err("User processes not yet implemented")
+    }
+    
+    /// Remove a process (stub for now)
+    pub fn remove_process(&mut self, _pid: Pid) -> Result<(), &'static str> {
+        Err("Remove not yet implemented")
+    }
+    
+    /// Fork with COW (stub for now)
+    pub fn fork_current_cow(&mut self) -> Result<Pid, &'static str> {
+        Err("Fork not yet implemented")
+    }
+    
+    /// Record voluntary yield
+    pub fn record_voluntary_yield(&mut self) {
+        self.stats.voluntary_yields += 1;
+    }
+    
+    /// Block process
+    pub fn block_process(&mut self, _pid: Pid, _wake_time: u64) -> Result<(), &'static str> {
+        Err("Block not yet implemented")
+    }
+    
+    /// Execute WASM in current process
+    pub fn exec_current_wasm(&mut self, _module_id: u32) -> Result<(), &'static str> {
+        Err("WASM exec not yet implemented")
+    }
+    
+    /// Get current PID
+    pub fn get_current_pid(&self) -> Option<Pid> {
+        self.current_pid
+    }
 }
 
 impl WaitQueue {
@@ -364,7 +516,10 @@ impl WaitQueue {
 }
 
 /// Global scheduler instance
-static QUANTUM_SCHEDULER: Mutex<QuantumScheduler> = Mutex::new(QuantumScheduler::new());
+lazy_static::lazy_static! {
+    static ref QUANTUM_SCHEDULER: Mutex<QuantumScheduler> = Mutex::new(QuantumScheduler::new());
+}
+static SCHEDULER_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Initialize quantum scheduler
 pub fn init() {

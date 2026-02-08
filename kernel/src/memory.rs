@@ -67,3 +67,9 @@ pub fn init() {
         ALLOCATOR.0.lock().init();
     }
 }
+/// Allocate a physical frame (syscall helper stub)
+pub fn allocate_frame() -> Result<usize, &'static str> {
+    // TODO: Implement real frame allocation
+    // For now, return a dummy address
+    Err("Frame allocation not yet implemented")
+}

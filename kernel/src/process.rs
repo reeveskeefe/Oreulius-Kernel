@@ -21,6 +21,9 @@ pub const MAX_PROCESSES: usize = 64;
 /// Maximum capabilities per process
 pub const MAX_CAPS_PER_PROCESS: usize = 128;
 
+/// Maximum open file descriptors per process
+pub const MAX_FD: usize = 32;
+
 /// Stack size per process (64 KiB)
 pub const STACK_SIZE: usize = 64 * 1024;
 
@@ -193,6 +196,8 @@ pub struct Process {
     pub cpu_time: u64,
     /// Creation timestamp
     pub created_at: u64,
+    /// File descriptor table (per-process)
+    pub fd_table: [Option<u64>; MAX_FD],
 }
 
 impl Process {
@@ -214,6 +219,7 @@ impl Process {
             program_counter: 0,
             cpu_time: 0,
             created_at: 0,
+            fd_table: [None; MAX_FD],
         }
     }
 
@@ -226,6 +232,37 @@ impl Process {
     /// Check if process is runnable
     pub fn is_runnable(&self) -> bool {
         matches!(self.state, ProcessState::Ready | ProcessState::Running)
+    }
+
+    /// Allocate a file descriptor (reserves 0,1,2 for stdio)
+    pub fn alloc_fd(&mut self, handle_id: u64) -> Result<usize, ProcessError> {
+        for fd in 3..MAX_FD {
+            if self.fd_table[fd].is_none() {
+                self.fd_table[fd] = Some(handle_id);
+                return Ok(fd);
+            }
+        }
+        Err(ProcessError::FdTableFull)
+    }
+
+    /// Get handle id for a file descriptor
+    pub fn get_fd(&self, fd: usize) -> Result<u64, ProcessError> {
+        if fd >= MAX_FD {
+            return Err(ProcessError::InvalidFd);
+        }
+        self.fd_table[fd].ok_or(ProcessError::InvalidFd)
+    }
+
+    /// Close a file descriptor
+    pub fn close_fd(&mut self, fd: usize) -> Result<(), ProcessError> {
+        if fd >= MAX_FD {
+            return Err(ProcessError::InvalidFd);
+        }
+        if self.fd_table[fd].is_none() {
+            return Err(ProcessError::InvalidFd);
+        }
+        self.fd_table[fd] = None;
+        Ok(())
     }
 
     /// Mark process as running
@@ -495,6 +532,27 @@ impl ProcessManager {
             .ok_or(ProcessError::InvalidCapSlot)
     }
 
+    /// Allocate a file descriptor for a process
+    pub fn alloc_fd(&self, pid: Pid, handle_id: u64) -> Result<usize, ProcessError> {
+        let mut table = self.table.lock();
+        let proc = table.get_mut(pid).ok_or(ProcessError::ProcessNotFound)?;
+        proc.alloc_fd(handle_id)
+    }
+
+    /// Get handle id for a file descriptor
+    pub fn get_fd_handle(&self, pid: Pid, fd: usize) -> Result<u64, ProcessError> {
+        let table = self.table.lock();
+        let proc = table.get(pid).ok_or(ProcessError::ProcessNotFound)?;
+        proc.get_fd(fd)
+    }
+
+    /// Close a file descriptor
+    pub fn close_fd(&self, pid: Pid, fd: usize) -> Result<(), ProcessError> {
+        let mut table = self.table.lock();
+        let proc = table.get_mut(pid).ok_or(ProcessError::ProcessNotFound)?;
+        proc.close_fd(fd)
+    }
+
     /// Remove capability from process's table
     pub fn remove_capability(&self, pid: Pid, slot: u32) -> Result<(), ProcessError> {
         let mut table = self.table.lock();
@@ -547,6 +605,10 @@ pub enum ProcessError {
     CapabilityTableFull,
     /// Process already terminated
     AlreadyTerminated,
+    /// File descriptor table full
+    FdTableFull,
+    /// Invalid file descriptor
+    InvalidFd,
 }
 
 impl ProcessError {
@@ -557,6 +619,8 @@ impl ProcessError {
             ProcessError::InvalidCapSlot => "Invalid capability slot",
             ProcessError::CapabilityTableFull => "Capability table full",
             ProcessError::AlreadyTerminated => "Already terminated",
+            ProcessError::FdTableFull => "File descriptor table full",
+            ProcessError::InvalidFd => "Invalid file descriptor",
         }
     }
 }

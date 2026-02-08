@@ -13,17 +13,17 @@
 use core::fmt;
 use spin::Mutex;
 
-/// Maximum message data size (4 KiB for v0)
-pub const MAX_MESSAGE_SIZE: usize = 4 * 1024;
+/// Maximum message data size (512 bytes - reduced to shrink kernel binary)
+pub const MAX_MESSAGE_SIZE: usize = 512;
 
 /// Maximum capabilities per message
 pub const MAX_CAPS_PER_MESSAGE: usize = 16;
 
-/// Channel capacity (number of messages)
-pub const CHANNEL_CAPACITY: usize = 32;
+/// Channel capacity (reduced to shrink kernel binary)
+pub const CHANNEL_CAPACITY: usize = 4;
 
-/// Maximum number of channels in the system
-pub const MAX_CHANNELS: usize = 128;
+/// Maximum number of channels (reduced to shrink kernel binary)
+pub const MAX_CHANNELS: usize = 16;
 
 // ============================================================================
 // Core Types
@@ -217,6 +217,10 @@ impl ChannelRights {
 
     pub const fn all() -> Self {
         ChannelRights { bits: Self::ALL }
+    }
+    
+    pub const fn full() -> Self {
+        Self::all()
     }
 }
 
@@ -651,6 +655,72 @@ pub fn init() {
 pub fn create_channel() -> Result<usize, &'static str> {
     // TODO: Implement channel creation
     Err("Channel creation not yet implemented")
+}
+
+/// Create a new channel for a specific process (syscall implementation)
+pub fn create_channel_for_process(creator: ProcessId) -> Result<usize, &'static str> {
+    let mut channels = ipc().channels.lock();
+    
+    // Create channel in the table
+    match channels.create_channel(creator) {
+        Ok(channel_id) => {
+            // TODO: Add capability to process's capability table
+            // For now, just return the channel ID
+            Ok(channel_id.0 as usize)
+        }
+        Err(_) => Err("Failed to create channel")
+    }
+}
+
+/// Send message to channel (syscall wrapper)
+pub fn send_message(channel_id: ChannelId, data: &[u8]) -> Result<(), &'static str> {
+    // Create message from data
+    let msg = Message::with_data(ProcessId(0), data).map_err(|_| "Message too large")?;
+    
+    // TODO: Get capability from caller's process
+    // For now, create a temporary capability
+    let cap = ChannelCapability::new(
+        0,
+        channel_id,
+        ChannelRights::send_only(),
+        msg.source,
+    );
+    
+    ipc().send(msg, &cap).map_err(|_| "Failed to send message")
+}
+
+/// Receive message from channel (syscall wrapper)
+pub fn receive_message(channel_id: ChannelId, _buffer: &mut [u8]) -> Result<usize, &'static str> {
+    // TODO: Get capability from caller's process
+    // For now, create a temporary capability
+    let cap = ChannelCapability::new(
+        0,
+        channel_id,
+        ChannelRights::receive_only(),
+        ProcessId(0),
+    );
+    
+    match ipc().try_recv(&cap) {
+        Ok(msg) => {
+            // TODO: Copy message to buffer
+            Ok(msg.payload().len())
+        }
+        Err(_) => Err("No message available")
+    }
+}
+
+/// Close channel (syscall wrapper)
+pub fn close_channel(channel_id: ChannelId) -> Result<(), &'static str> {
+    // TODO: Get capability from caller's process
+    // For now, create a temporary capability
+    let cap = ChannelCapability::new(
+        0,
+        channel_id,
+        ChannelRights::full(),
+        ProcessId(0),
+    );
+    
+    ipc().close(&cap).map_err(|_| "Failed to close channel")
 }
 
 // ============================================================================

@@ -95,6 +95,11 @@ impl PciDevice {
         self.class_code == 0x02 && self.subclass == 0x80
     }
 
+    /// Check if this is a VirtIO block device
+    pub fn is_virtio_block(&self) -> bool {
+        self.vendor_id == 0x1AF4 && (self.device_id == 0x1001 || self.device_id == 0x1042)
+    }
+
     /// Get device name based on vendor/device ID
     pub fn name(&self) -> &'static str {
         match (self.vendor_id, self.device_id) {
@@ -172,6 +177,18 @@ impl PciDevice {
             self.func,
             0x04,
             (command | 0x02) as u32, // Set bit 1 (Memory Space)
+        );
+    }
+
+    /// Enable I/O space access
+    pub unsafe fn enable_io_space(&self) {
+        let command = pci_config_read_u16(self.bus, self.slot, self.func, 0x04);
+        pci_config_write_u32(
+            self.bus,
+            self.slot,
+            self.func,
+            0x04,
+            (command | 0x01) as u32, // Set bit 0 (I/O Space)
         );
     }
 
@@ -322,6 +339,18 @@ impl PciScanner {
         for device_opt in self.devices().iter() {
             if let Some(device) = device_opt {
                 if device.is_ethernet() {
+                    return Some(*device);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find first VirtIO block device
+    pub fn find_virtio_block(&self) -> Option<PciDevice> {
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_virtio_block() {
                     return Some(*device);
                 }
             }

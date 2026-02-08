@@ -1,12 +1,17 @@
+extern crate alloc;
+
 use crate::vga;
 use crate::fs;
 use crate::ipc;
 use crate::registry;
 use crate::process;
 use crate::wasm;
+use crate::virtio_blk;
+use crate::vfs;
+use crate::elf;
 
 // Helper functions for printing numbers
-fn print_u32(n: u32) {
+pub fn print_u32(n: u32) {
     if n == 0 {
         vga::print_char('0');
         return;
@@ -53,6 +58,15 @@ pub fn execute(input: &str) {
             vga::print_str("  fs-delete  - Delete a file (usage: fs-delete <key>)\n");
             vga::print_str("  fs-list    - List all files\n");
             vga::print_str("  fs-stats   - Show filesystem statistics\n");
+            vga::print_str("  vfs-mkdir  - Create directory (vfs-mkdir <path>)\n");
+            vga::print_str("  vfs-write  - Write file (vfs-write <path> <data>)\n");
+            vga::print_str("  vfs-read   - Read file (vfs-read <path>)\n");
+            vga::print_str("  vfs-ls     - List directory (vfs-ls <path>)\n");
+            vga::print_str("  vfs-mount-virtio - Mount VirtIO block at path\n");
+            vga::print_str("  vfs-open   - Open file (vfs-open <path>)\n");
+            vga::print_str("  vfs-readfd - Read via fd (vfs-readfd <fd> [n])\n");
+            vga::print_str("  vfs-writefd - Write via fd (vfs-writefd <fd> <data>)\n");
+            vga::print_str("  vfs-close  - Close fd (vfs-close <fd>)\n");
             vga::print_str("  ipc-create - Create a new channel\n");
             vga::print_str("  ipc-send   - Send a message (usage: ipc-send <chan> <msg>)\n");
             vga::print_str("  ipc-recv   - Receive a message (usage: ipc-recv <chan>)\n");
@@ -75,15 +89,26 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-fs-demo - Demo WASM filesystem syscalls\n");
             vga::print_str("  wasm-log-demo - Demo WASM logging syscall\n");
             vga::print_str("  wasm-list    - List loaded WASM instances\n");
+            vga::print_str("  wasm-jit-bench - Benchmark WASM JIT vs interpreter\n");
+            vga::print_str("  wasm-jit-on  - Enable WASM JIT\n");
+            vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
+            vga::print_str("  wasm-jit-stats - Show WASM JIT stats\n");
+            vga::print_str("  wasm-jit-threshold - Set JIT hot threshold (wasm-jit-threshold <n>)\n");
             vga::print_str("  calculate    - Scientific calculator (calculate <a> <op> <b>)\n");
             vga::print_str("  calculate-help - Show calculator operations\n");
             vga::print_str("  network-help - Show network commands\n");
             vga::print_str("  net-info     - Show network status\n");
             vga::print_str("  pci-list     - List PCI devices (hardware detection)\n");
+            vga::print_str("  blk-info     - Show VirtIO block device info\n");
+            vga::print_str("  blk-partitions - List disk partitions (MBR/GPT)\n");
+            vga::print_str("  blk-read     - Read a disk sector (blk-read <lba>)\n");
+            vga::print_str("  blk-write    - Write byte pattern (blk-write <lba> <byte>)\n");
             vga::print_str("  wifi-scan    - Scan for WiFi networks\n");
             vga::print_str("  wifi-connect - Connect to WiFi (wifi-connect <ssid> [password])\n");
             vga::print_str("  wifi-status  - Show WiFi connection status\n");
             vga::print_str("  http-get     - HTTP GET request (http-get <url>)\n");
+            vga::print_str("  http-server-start - Start HTTP server (http-server-start [port])\n");
+            vga::print_str("  http-server-stop  - Stop HTTP server\n");
             vga::print_str("  dns-resolve  - Resolve domain name (dns-resolve <domain>)\n");
             vga::print_str("  eth-status   - Show Ethernet status\n");
             vga::print_str("  eth-info     - Show Ethernet device info\n");
@@ -109,6 +134,10 @@ pub fn execute(input: &str) {
             vga::print_str("\nVirtual Memory & Syscalls:\n");
             vga::print_str("  paging-test    - Test page mapping/unmapping\n");
             vga::print_str("  syscall-test   - Test system call interface\n");
+            vga::print_str("  test-div0      - Trigger divide-by-zero exception\n");
+            vga::print_str("  test-pf        - Trigger page fault\n");
+            vga::print_str("  user-test      - Enter user mode (INT 0x80 + UD2)\n");
+            vga::print_str("  elf-run       - Load and run ELF from VFS (elf-run <path>)\n");
         }
         "clear" => {
             vga::clear_screen();
@@ -138,6 +167,33 @@ pub fn execute(input: &str) {
         }
         "fs-stats" => {
             cmd_fs_stats();
+        }
+        "vfs-mkdir" => {
+            cmd_vfs_mkdir(parts);
+        }
+        "vfs-write" => {
+            cmd_vfs_write(parts);
+        }
+        "vfs-read" => {
+            cmd_vfs_read(parts);
+        }
+        "vfs-ls" => {
+            cmd_vfs_ls(parts);
+        }
+        "vfs-mount-virtio" => {
+            cmd_vfs_mount_virtio(parts);
+        }
+        "vfs-open" => {
+            cmd_vfs_open(parts);
+        }
+        "vfs-readfd" => {
+            cmd_vfs_readfd(parts);
+        }
+        "vfs-writefd" => {
+            cmd_vfs_writefd(parts);
+        }
+        "vfs-close" => {
+            cmd_vfs_close(parts);
         }
         "ipc-create" => {
             cmd_ipc_create();
@@ -196,6 +252,21 @@ pub fn execute(input: &str) {
         "wasm-list" => {
             cmd_wasm_list();
         }
+        "wasm-jit-bench" => {
+            cmd_wasm_jit_bench();
+        }
+        "wasm-jit-on" => {
+            cmd_wasm_jit_on();
+        }
+        "wasm-jit-off" => {
+            cmd_wasm_jit_off();
+        }
+        "wasm-jit-stats" => {
+            cmd_wasm_jit_stats();
+        }
+        "wasm-jit-threshold" => {
+            cmd_wasm_jit_threshold(parts);
+        }
         "calculate" => {
             cmd_calculate(parts);
         }
@@ -211,6 +282,18 @@ pub fn execute(input: &str) {
         "pci-list" => {
             cmd_pci_list();
         }
+        "blk-info" => {
+            cmd_blk_info();
+        }
+        "blk-partitions" => {
+            cmd_blk_partitions();
+        }
+        "blk-read" => {
+            cmd_blk_read(parts);
+        }
+        "blk-write" => {
+            cmd_blk_write(parts);
+        }
         "wifi-scan" => {
             cmd_wifi_scan();
         }
@@ -222,6 +305,12 @@ pub fn execute(input: &str) {
         }
         "http-get" => {
             cmd_http_get(parts);
+        }
+        "http-server-start" => {
+            cmd_http_server_start(parts);
+        }
+        "http-server-stop" => {
+            cmd_http_server_stop();
         }
         "dns-resolve" => {
             cmd_dns_resolve(parts);
@@ -255,6 +344,18 @@ pub fn execute(input: &str) {
         }
         "security-test" => {
             cmd_security_test();
+        }
+        "test-div0" => {
+            cmd_test_div0();
+        }
+        "test-pf" => {
+            cmd_test_page_fault();
+        }
+        "user-test" => {
+            cmd_user_test();
+        }
+        "elf-run" => {
+            cmd_elf_run(parts);
         }
         "cap-list" => {
             cmd_cap_list();
@@ -510,6 +611,321 @@ fn cmd_fs_stats() {
     vga::print_str(" / ");
     print_number(max);
     vga::print_str("\n");
+}
+
+// ============================================================================
+// VFS Commands (Hierarchical Filesystem)
+// ============================================================================
+
+fn cmd_vfs_mkdir(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: vfs-mkdir <path>\n");
+            return;
+        }
+    };
+
+    match vfs::mkdir(path) {
+        Ok(()) => {
+            vga::print_str("Directory created: ");
+            vga::print_str(path);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_vfs_write(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: vfs-write <path> <data>\n");
+            return;
+        }
+    };
+    let data = match parts.next() {
+        Some(d) => d,
+        None => {
+            vga::print_str("Usage: vfs-write <path> <data>\n");
+            return;
+        }
+    };
+
+    match vfs::write_path(path, data.as_bytes()) {
+        Ok(n) => {
+            vga::print_str("Wrote ");
+            print_number(n);
+            vga::print_str(" bytes\n");
+        }
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_vfs_read(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: vfs-read <path>\n");
+            return;
+        }
+    };
+
+    let mut buf = [0u8; 512];
+    match vfs::read_path(path, &mut buf) {
+        Ok(n) => {
+            vga::print_str("Read ");
+            print_number(n);
+            vga::print_str(" bytes: ");
+            if let Ok(s) = core::str::from_utf8(&buf[..n]) {
+                vga::print_str(s);
+            } else {
+                vga::print_str("<binary>");
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_vfs_ls(mut parts: core::str::SplitWhitespace) {
+    let path = parts.next().unwrap_or("/");
+    let mut buf = [0u8; 512];
+    match vfs::list_dir(path, &mut buf) {
+        Ok(n) => {
+            vga::print_str("Entries: ");
+            if let Ok(s) = core::str::from_utf8(&buf[..n]) {
+                vga::print_str(s);
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_vfs_mount_virtio(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: vfs-mount-virtio <path>\n");
+            return;
+        }
+    };
+
+    match vfs::mount_virtio(path) {
+        Ok(()) => {
+            vga::print_str("Mounted VirtIO block at ");
+            vga::print_str(path);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_vfs_open(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: vfs-open <path>\n");
+            return;
+        }
+    };
+    match vfs::open_for_current(path, vfs::OpenFlags::READ | vfs::OpenFlags::WRITE | vfs::OpenFlags::CREATE) {
+        Ok(fd) => {
+            vga::print_str("Opened fd ");
+            print_number(fd);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_vfs_readfd(mut parts: core::str::SplitWhitespace) {
+    let fd_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: vfs-readfd <fd> [n]\n");
+            return;
+        }
+    };
+    let fd = match parse_number(fd_str) {
+        Some(n) => n,
+        None => {
+            vga::print_str("Invalid fd\n");
+            return;
+        }
+    };
+    let n = parts.next().and_then(parse_number).unwrap_or(256);
+    let mut buf = [0u8; 512];
+    let len = n.min(buf.len());
+    let pid = match process::current_pid() {
+        Some(p) => p,
+        None => {
+            vga::print_str("No current process\n");
+            return;
+        }
+    };
+    match vfs::read_fd(pid, fd, &mut buf[..len]) {
+        Ok(read) => {
+            vga::print_str("Read ");
+            print_number(read);
+            vga::print_str(" bytes: ");
+            if let Ok(s) = core::str::from_utf8(&buf[..read]) {
+                vga::print_str(s);
+            } else {
+                vga::print_str("<binary>");
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_vfs_writefd(mut parts: core::str::SplitWhitespace) {
+    let fd_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: vfs-writefd <fd> <data>\n");
+            return;
+        }
+    };
+    let data = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: vfs-writefd <fd> <data>\n");
+            return;
+        }
+    };
+    let fd = match parse_number(fd_str) {
+        Some(n) => n,
+        None => {
+            vga::print_str("Invalid fd\n");
+            return;
+        }
+    };
+    let pid = match process::current_pid() {
+        Some(p) => p,
+        None => {
+            vga::print_str("No current process\n");
+            return;
+        }
+    };
+    match vfs::write_fd(pid, fd, data.as_bytes()) {
+        Ok(written) => {
+            vga::print_str("Wrote ");
+            print_number(written);
+            vga::print_str(" bytes\n");
+        }
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_vfs_close(mut parts: core::str::SplitWhitespace) {
+    let fd_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: vfs-close <fd>\n");
+            return;
+        }
+    };
+    let fd = match parse_number(fd_str) {
+        Some(n) => n,
+        None => {
+            vga::print_str("Invalid fd\n");
+            return;
+        }
+    };
+    let pid = match process::current_pid() {
+        Some(p) => p,
+        None => {
+            vga::print_str("No current process\n");
+            return;
+        }
+    };
+    match vfs::close_fd(pid, fd) {
+        Ok(()) => {
+            vga::print_str("Closed fd ");
+            print_number(fd);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+// ============================================================================
+// ELF Loader Command
+// ============================================================================
+
+fn cmd_elf_run(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: elf-run <path>\n");
+            return;
+        }
+    };
+
+    let mut buf = alloc::vec::Vec::new();
+    buf.resize(crate::vfs::MAX_VFS_FILE_SIZE, 0);
+    match vfs::read_path(path, &mut buf) {
+        Ok(n) => {
+            buf.truncate(n);
+            let name = elf::name_from_path(path);
+            match elf::spawn_elf_process(&name, &buf) {
+                Ok(()) => {
+                    vga::print_str("ELF loaded and scheduled: ");
+                    vga::print_str(&name);
+                    vga::print_str("\n");
+                }
+                Err(e) => {
+                    vga::print_str("ELF load failed: ");
+                    vga::print_str(e);
+                    vga::print_str("\n");
+                }
+            }
+        }
+        Err(e) => {
+            vga::print_str("Read failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
 }
 
 fn print_number(n: usize) {
@@ -1915,6 +2331,69 @@ fn cmd_wasm_list() {
     }
 }
 
+fn cmd_wasm_jit_bench() {
+    vga::print_str("\n");
+    vga::print_str("===== WASM JIT Benchmark =====\n\n");
+
+    match crate::wasm::jit_benchmark() {
+        Ok((interp, jit)) => {
+            vga::print_str("Interpreter ticks: ");
+            print_u64(interp);
+            vga::print_str("\nJIT ticks: ");
+            print_u64(jit);
+            if jit > 0 {
+                vga::print_str("\nSpeedup: ~");
+                print_u32((interp / jit) as u32);
+                vga::print_str("x\n");
+            }
+        }
+        Err(e) => {
+            vga::print_str("Benchmark failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    vga::print_str("\n");
+}
+
+fn cmd_wasm_jit_on() {
+    crate::wasm::jit_config().lock().enabled = true;
+    vga::print_str("WASM JIT enabled\n");
+}
+
+fn cmd_wasm_jit_off() {
+    crate::wasm::jit_config().lock().enabled = false;
+    vga::print_str("WASM JIT disabled\n");
+}
+
+fn cmd_wasm_jit_stats() {
+    let stats = crate::wasm::jit_stats().lock();
+    vga::print_str("JIT stats:\n");
+    vga::print_str("  Interpreter calls: ");
+    print_u64(stats.interp_calls);
+    vga::print_str("\n  JIT calls: ");
+    print_u64(stats.jit_calls);
+    vga::print_str("\n  Compiled: ");
+    print_u64(stats.compiled);
+    vga::print_str("\n  Failed: ");
+    print_u64(stats.failed);
+    vga::print_str("\n");
+}
+
+fn cmd_wasm_jit_threshold(mut parts: core::str::SplitWhitespace) {
+    let val = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: wasm-jit-threshold <n>\n");
+            return;
+        }
+    };
+    crate::wasm::jit_config().lock().hot_threshold = val;
+    vga::print_str("WASM JIT hot threshold set to ");
+    print_u32(val);
+    vga::print_str("\n");
+}
+
 // ============================================================================
 // Scientific Calculator (WASM-Powered)
 // ============================================================================
@@ -2611,6 +3090,35 @@ fn cmd_http_get(mut parts: core::str::SplitWhitespace) {
     vga::print_str(" bytes\n");
 }
 
+fn cmd_http_server_start(mut parts: core::str::SplitWhitespace) {
+    use crate::netstack;
+    let port = parts
+        .next()
+        .and_then(parse_number)
+        .map(|v| v as u16)
+        .unwrap_or(8080);
+    let mut stack = netstack::network_stack().lock();
+    match stack.http_server_start(port) {
+        Ok(()) => {
+            vga::print_str("HTTP server started on port ");
+            print_number(port as usize);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("HTTP server failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_http_server_stop() {
+    use crate::netstack;
+    let mut stack = netstack::network_stack().lock();
+    stack.http_server_stop();
+    vga::print_str("HTTP server stopped\n");
+}
+
 fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
     use crate::netstack;
     
@@ -2894,6 +3402,218 @@ fn hex_char(n: u8) -> char {
 }
 
 // ============================================================================
+// VirtIO Block Commands
+// ============================================================================
+
+fn cmd_blk_info() {
+    vga::print_str("\n");
+    vga::print_str("===== VirtIO Block Device =====\n\n");
+
+    if !virtio_blk::is_present() {
+        vga::print_str("No VirtIO block device detected\n\n");
+        return;
+    }
+
+    if let Some(sectors) = virtio_blk::capacity_sectors() {
+        vga::print_str("Capacity (sectors): ");
+        print_u64(sectors);
+        vga::print_str("\n");
+
+        vga::print_str("Capacity (bytes): ");
+        print_u64(sectors.saturating_mul(512));
+        vga::print_str("\n");
+    } else {
+        vga::print_str("Capacity: unknown\n");
+    }
+
+    vga::print_str("Sector size: 512 bytes\n");
+    vga::print_str("\n");
+}
+
+fn cmd_blk_partitions() {
+    vga::print_str("\n");
+    vga::print_str("===== Disk Partitions =====\n\n");
+
+    if !virtio_blk::is_present() {
+        vga::print_str("No VirtIO block device detected\n\n");
+        return;
+    }
+
+    let mut mbr = [None; 4];
+    let mut gpt = [None; 4];
+    match virtio_blk::read_partitions(&mut mbr, &mut gpt) {
+        Ok(()) => {
+            vga::print_str("MBR Partitions:\n");
+            let mut any = false;
+            for (i, part) in mbr.iter().enumerate() {
+                if let Some(p) = part {
+                    any = true;
+                    vga::print_str("  ");
+                    print_u32((i + 1) as u32);
+                    vga::print_str(": type 0x");
+                    print_hex_u8(p.part_type);
+                    vga::print_str("  lba ");
+                    print_u32(p.lba_start);
+                    vga::print_str("  sectors ");
+                    print_u32(p.sectors);
+                    vga::print_str("  boot ");
+                    vga::print_str(if p.bootable { "yes" } else { "no" });
+                    vga::print_str("\n");
+                }
+            }
+            if !any {
+                vga::print_str("  (none)\n");
+            }
+
+            vga::print_str("\nGPT Partitions:\n");
+            let mut any_gpt = false;
+            for (i, part) in gpt.iter().enumerate() {
+                if let Some(p) = part {
+                    any_gpt = true;
+                    vga::print_str("  ");
+                    print_u32((i + 1) as u32);
+                    vga::print_str(": lba ");
+                    print_u64(p.first_lba);
+                    vga::print_str(" - ");
+                    print_u64(p.last_lba);
+                    vga::print_str("  name ");
+                    print_gpt_name(&p.name);
+                    vga::print_str("\n");
+                }
+            }
+            if !any_gpt {
+                vga::print_str("  (none)\n");
+            }
+        }
+        Err(e) => {
+            vga::print_str("Error reading partition table: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+
+    vga::print_str("\n");
+}
+
+fn cmd_blk_read(mut parts: core::str::SplitWhitespace) {
+    let lba_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: blk-read <lba>\n");
+            return;
+        }
+    };
+
+    let lba = match parse_number(lba_str) {
+        Some(n) => n as u64,
+        None => {
+            vga::print_str("Error: invalid LBA\n");
+            return;
+        }
+    };
+
+    if !virtio_blk::is_present() {
+        vga::print_str("No VirtIO block device detected\n");
+        return;
+    }
+
+    let mut sector = [0u8; 512];
+    match virtio_blk::read_sector(lba, &mut sector) {
+        Ok(()) => {
+            vga::print_str("Sector ");
+            print_u64(lba);
+            vga::print_str(" (first 64 bytes):\n");
+
+            for row in 0..4 {
+                let base = row * 16;
+                vga::print_str("  0x");
+                print_hex_u32(base as u32);
+                vga::print_str(": ");
+                for col in 0..16 {
+                    let byte = sector[base + col];
+                    print_hex_u8(byte);
+                    vga::print_char(' ');
+                }
+                vga::print_str("\n");
+            }
+        }
+        Err(e) => {
+            vga::print_str("Read failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_blk_write(mut parts: core::str::SplitWhitespace) {
+    let lba_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: blk-write <lba> <byte>\n");
+            return;
+        }
+    };
+    let byte_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: blk-write <lba> <byte>\n");
+            return;
+        }
+    };
+
+    let lba = match parse_number(lba_str) {
+        Some(n) => n as u64,
+        None => {
+            vga::print_str("Error: invalid LBA\n");
+            return;
+        }
+    };
+    let byte = match parse_number(byte_str) {
+        Some(n) if n <= 255 => n as u8,
+        _ => {
+            vga::print_str("Error: byte must be 0-255\n");
+            return;
+        }
+    };
+
+    if !virtio_blk::is_present() {
+        vga::print_str("No VirtIO block device detected\n");
+        return;
+    }
+
+    vga::print_str("Writing sector ");
+    print_u64(lba);
+    vga::print_str(" with byte 0x");
+    print_hex_u8(byte);
+    vga::print_str("...\n");
+
+    let mut sector = [0u8; 512];
+    for b in sector.iter_mut() {
+        *b = byte;
+    }
+
+    match virtio_blk::write_sector(lba, &sector) {
+        Ok(()) => {
+            vga::print_str("Write complete\n");
+        }
+        Err(e) => {
+            vga::print_str("Write failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn print_gpt_name(name: &[u8; 36]) {
+    for &b in name.iter() {
+        if b == 0 {
+            break;
+        }
+        vga::print_char(b as char);
+    }
+}
+
+// ============================================================================
 // Ethernet Commands (E1000)
 // ============================================================================
 
@@ -2977,6 +3697,22 @@ fn cmd_netstack_info() {
     
     vga::print_str("\nMy IP: ");
     print_ipv4_netstack(stack.get_ip());
+    vga::print_str("\n");
+
+    let (tcp_conns, tcp_listeners) = stack.tcp_stats();
+    vga::print_str("\nTCP: ");
+    print_number(tcp_conns);
+    vga::print_str(" connections, ");
+    print_number(tcp_listeners);
+    vga::print_str(" listeners\n");
+
+    let (http_running, http_port) = stack.http_server_status();
+    vga::print_str("HTTP server: ");
+    vga::print_str(if http_running { "ON (port " } else { "OFF" });
+    if http_running {
+        print_number(http_port as usize);
+        vga::print_str(")");
+    }
     vga::print_str("\n");
     
     vga::print_str("\nTry: dns-resolve google.com\n");
@@ -3230,6 +3966,31 @@ fn cmd_uptime() {
     vga::print_str(" Hz\n\n");
 }
 
+fn cmd_test_div0() {
+    vga::print_str("Triggering divide-by-zero exception...\n");
+    unsafe {
+        core::arch::asm!(
+            "xor edx, edx",
+            "mov eax, 1",
+            "div edx",
+            options(nomem, nostack)
+        );
+    }
+}
+
+fn cmd_test_page_fault() {
+    vga::print_str("Triggering page fault...\n");
+    unsafe {
+        let _ = core::ptr::read_volatile(0xDEAD_BEEFu32 as *const u32);
+    }
+}
+
+fn cmd_user_test() {
+    vga::print_str("Entering user mode test (will not return)...\n");
+    vga::print_str("Expected: INT 0x80 then UD2 (Invalid Opcode) with CS=0x1B\n");
+    let _ = crate::usermode::enter_user_mode_test();
+}
+
 fn parse_u32_result(s: &str) -> Result<u32, ()> {
     let mut result: u32 = 0;
     for ch in s.chars() {
@@ -3425,11 +4186,19 @@ fn cmd_cap_list() {
     
     vga::print_str("Channel caps:       ");
     print_u32(channels as u32);
-    vga::print_str("\n");
+    vga::print_str(" (type=");
+    print_u32(CapabilityType::Channel as u32);
+    vga::print_str(")\n");
     
     vga::print_str("Service caps:       ");
     print_u32(services as u32);
-    vga::print_str("\n\n");
+    vga::print_str(" (Console=");
+    print_u32(CapabilityType::Console as u32);
+    vga::print_str(", Clock=");
+    print_u32(CapabilityType::Clock as u32);
+    vga::print_str(", Store=");
+    print_u32(CapabilityType::Store as u32);
+    vga::print_str(")\n\n");
 }
 
 /// Test capability attenuation
@@ -4076,6 +4845,13 @@ fn cmd_paging_test() {
             vga::print_str("  ✗ Failed to set COW flag\n");
         }
     }
+
+    // Test 3b: Trigger COW fault by writing
+    vga::print_str("\nTest 3b: Triggering COW write...\n");
+    unsafe {
+        core::ptr::write_volatile(test_virt as *mut u32, 0xDEADBEEF);
+    }
+    vga::print_str("  ✓ Write completed (COW handled)\n");
     
     // Test 4: Unmap page
     vga::print_str("\nTest 4: Unmapping page...\n");
@@ -4095,6 +4871,34 @@ fn cmd_paging_test() {
     } else {
         vga::print_str("  ✓ Page correctly unmapped\n");
     }
+    
+    // Drop lock before getting stats
+    drop(space_opt);
+    
+    // Test 6: COW Statistics
+    vga::print_str("\nCOW Statistics (from assembly):\n");
+    let paging_stats = crate::paging::get_paging_stats();
+    
+    vga::print_str("  Page faults:  ");
+    print_u32(paging_stats.page_faults);
+    vga::print_str("\n");
+    
+    vga::print_str("  COW faults:   ");
+    print_u32(paging_stats.cow_faults);
+    vga::print_str("\n");
+    
+    vga::print_str("  Page copies:  ");
+    print_u32(paging_stats.page_copies);
+    vga::print_str("\n");
+    
+    vga::print_str("\nPaging Status:\n");
+    vga::print_str("  Paging enabled: ");
+    vga::print_str(if crate::paging::paging_enabled() { "yes" } else { "no" });
+    vga::print_str("\n");
+    
+    vga::print_str("  CR3 value: 0x");
+    print_hex(crate::paging::current_page_directory_addr() as usize);
+    vga::print_str("\n");
     
     vga::print_str("\n=== Paging Tests Complete ===\n\n");
 }
@@ -4158,5 +4962,3 @@ fn cmd_syscall_test() {
     
     vga::print_str("\n=== Syscall Tests Complete ===\n\n");
 }
-
-

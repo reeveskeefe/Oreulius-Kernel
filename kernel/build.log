@@ -1,44 +1,397 @@
-llvm-tools-preview not found. Installing...
-info: component 'llvm-tools' for target 'aarch64-apple-darwin' is up to date
-Building kernel...
-Building kernel
-    Updating crates.io index
-     Locking 2 packages to latest compatible versions
- Downgrading bootloader v0.11.14 -> v0.9.8 (available: v0.9.33)
- Downgrading x86_64 v0.15.4 -> v0.14.13 (available: v0.15.4)
- Downloading crates ...
-  Downloaded x86_64 v0.14.13
-  Downloaded bootloader v0.9.8
-   Compiling compiler_builtins v0.1.160 (/Users/keefereeves/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
-   Compiling core v0.0.0 (/Users/keefereeves/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/core)
-   Compiling rustversion v1.0.22
-   Compiling x86 v0.52.0
-   Compiling bootloader v0.9.8
-   Compiling alloc v0.0.0 (/Users/keefereeves/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc)
-   Compiling scopeguard v1.2.0
-   Compiling bit_field v0.10.3
-   Compiling bitflags v1.3.2
-   Compiling bitflags v2.10.0
-   Compiling volatile v0.4.6
-   Compiling raw-cpuid v10.7.0
-   Compiling lock_api v0.4.14
-   Compiling x86_64 v0.14.13
-   Compiling spinning_top v0.2.5
-   Compiling spin v0.9.8
-   Compiling linked_list_allocator v0.10.5
-   Compiling lazy_static v1.5.0
-   Compiling uart_16550 v0.3.2
+=== Building Oreulia OS ===
+[1/6] Assembling optimized assembly modules...
+asm/atomic.asm:88: warning: superfluous LOCK prefix on XCHG instruction [-w+prefix-lock-xchg]
+  ✓ context_switch.o, memory.o, interrupt.o, network.o, crypto.o
+  ✓ cpu_features.o, atomic.o, perf.o, cow.o, process.o, idt.o
+  ✓ dma.o, acpi.o, memopt.o, syscall_entry.o
+[2/6] Building Rust kernel (staticlib, i686)...
    Compiling oreulia-kernel v0.1.0 (/Users/keefereeves/Desktop/oreulia/kernel)
-error[E0015]: cannot call non-const associated function `ColorCode::new` in statics
-   --> src/vga.rs:179:17
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:298:35
     |
-179 |     color_code: ColorCode::new(Color::White, Color::Black),
-    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    |
-    = note: calls in statics are limited to constant functions, tuple structs and tuple variants
-    = note: consider wrapping this expression in `std::sync::LazyLock::new(|| ...)`
+298 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
 
-For more information about this error, try `rustc --explain E0015`.
-error: could not compile `oreulia-kernel` (bin "oreulia-kernel") due to 1 previous error
-Error: Kernel build failed.
-Stderr: 
+error[E0425]: cannot find function `send_message` in module `crate::ipc`
+   --> src/syscall.rs:307:23
+    |
+307 |     match crate::ipc::send_message(crate::ipc::ChannelId(channel_id), message) {
+    |                       ^^^^^^^^^^^^ not found in `crate::ipc`
+
+error[E0425]: cannot find value `EIO` in this scope
+   --> src/syscall.rs:309:38
+    |
+309 |         Err(_) => SyscallResult::err(EIO),
+    |                                      ^^^ not found in this scope
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:329:35
+    |
+329 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `receive_message` in module `crate::ipc`
+   --> src/syscall.rs:337:23
+    |
+337 |     match crate::ipc::receive_message(crate::ipc::ChannelId(channel_id), buffer) {
+    |                       ^^^^^^^^^^^^^^^ not found in `crate::ipc`
+
+error[E0425]: cannot find value `EAGAIN` in this scope
+   --> src/syscall.rs:339:38
+    |
+339 |         Err(_) => SyscallResult::err(EAGAIN), // No message available
+    |                                      ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `close_channel` in module `crate::ipc`
+   --> src/syscall.rs:352:23
+    |
+352 |     match crate::ipc::close_channel(crate::ipc::ChannelId(channel_id)) {
+    |                       ^^^^^^^^^^^^^ help: a function with a similar name exists: `create_channel`
+    |
+   ::: src/ipc.rs:651:1
+    |
+651 | pub fn create_channel() -> Result<usize, &'static str> {
+    | ------------------------------------------------------ similarly named function `create_channel` defined here
+
+error[E0425]: cannot find value `EBADF` in this scope
+   --> src/syscall.rs:358:38
+    |
+358 |         Err(_) => SyscallResult::err(EBADF),
+    |                                      ^^^^^ not found in this scope
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:372:35
+    |
+372 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `open` in module `crate::fs`
+   --> src/syscall.rs:405:22
+    |
+405 |     match crate::fs::open(path) {
+    |                      ^^^^ not found in `crate::fs`
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:427:35
+    |
+427 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `read` in module `crate::fs`
+   --> src/syscall.rs:435:22
+    |
+435 |     match crate::fs::read(fd as usize, buffer) {
+    |                      ^^^^ not found in `crate::fs`
+    |
+help: consider importing this function
+    |
+6   + use core::ptr::read;
+    |
+help: if you import `read`, refer to it directly
+    |
+435 -     match crate::fs::read(fd as usize, buffer) {
+435 +     match read(fd as usize, buffer) {
+    |
+
+error[E0425]: cannot find value `EIO` in this scope
+   --> src/syscall.rs:437:38
+    |
+437 |         Err(_) => SyscallResult::err(EIO),
+    |                                      ^^^ not found in this scope
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:457:35
+    |
+457 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `write` in module `crate::fs`
+   --> src/syscall.rs:465:22
+    |
+465 |     match crate::fs::write(fd as usize, buffer) {
+    |                      ^^^^^ not found in `crate::fs`
+    |
+help: consider importing one of these items
+    |
+6   + use alloc::fmt::write;
+    |
+6   + use core::fmt::write;
+    |
+6   + use core::ptr::write;
+    |
+help: if you import `write`, refer to it directly
+    |
+465 -     match crate::fs::write(fd as usize, buffer) {
+465 +     match write(fd as usize, buffer) {
+    |
+
+error[E0425]: cannot find value `EIO` in this scope
+   --> src/syscall.rs:467:38
+    |
+467 |         Err(_) => SyscallResult::err(EIO),
+    |                                      ^^^ not found in this scope
+
+error[E0425]: cannot find function `close` in module `crate::fs`
+   --> src/syscall.rs:480:22
+    |
+480 |     match crate::fs::close(fd) {
+    |                      ^^^^^ not found in `crate::fs`
+
+error[E0425]: cannot find value `EBADF` in this scope
+   --> src/syscall.rs:482:38
+    |
+482 |         Err(_) => SyscallResult::err(EBADF),
+    |                                      ^^^^^ not found in this scope
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:496:35
+    |
+496 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `delete` in module `crate::fs`
+   --> src/syscall.rs:516:22
+    |
+516 |     match crate::fs::delete(path) {
+    |                      ^^^^^^ not found in `crate::fs`
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:534:35
+    |
+534 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `list_dir` in module `crate::fs`
+   --> src/syscall.rs:556:22
+    |
+556 |     match crate::fs::list_dir(path, buffer) {
+    |                      ^^^^^^^^ not found in `crate::fs`
+
+error[E0425]: cannot find function `allocate_frame` in module `crate::memory`
+   --> src/syscall.rs:584:30
+    |
+584 |         match crate::memory::allocate_frame() {
+    |                              ^^^^^^^^^^^^^^ not found in `crate::memory`
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:711:35
+    |
+711 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:749:35
+    |
+749 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:784:35
+    |
+784 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:819:35
+    |
+819 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `load_module` in module `crate::wasm`
+   --> src/syscall.rs:828:24
+    |
+828 |     match crate::wasm::load_module(wasm_bytes) {
+    |                        ^^^^^^^^^^^ not found in `crate::wasm`
+
+error[E0425]: cannot find value `EFAULT` in this scope
+   --> src/syscall.rs:849:35
+    |
+849 |         return SyscallResult::err(EFAULT);
+    |                                   ^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `call_function` in module `crate::wasm`
+   --> src/syscall.rs:862:24
+    |
+862 |     match crate::wasm::call_function(module_id, func_idx, wasm_args) {
+    |                        ^^^^^^^^^^^^^ not found in `crate::wasm`
+
+error[E0603]: function `print_u32` is private
+   --> src/syscall.rs:184:22
+    |
+184 |     crate::commands::print_u32(caller_pid.0);
+    |                      ^^^^^^^^^ private function
+    |
+note: the function `print_u32` is defined here
+   --> src/commands.rs:9:1
+    |
+9   | fn print_u32(n: u32) {
+    | ^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: function `print_u32` is private
+   --> src/syscall.rs:186:22
+    |
+186 |     crate::commands::print_u32(exit_code as u32);
+    |                      ^^^^^^^^^ private function
+    |
+note: the function `print_u32` is defined here
+   --> src/commands.rs:9:1
+    |
+9   | fn print_u32(n: u32) {
+    | ^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: function `print_u32` is private
+   --> src/syscall.rs:205:22
+    |
+205 |     crate::commands::print_u32(caller_pid.0);
+    |                      ^^^^^^^^^ private function
+    |
+note: the function `print_u32` is defined here
+   --> src/commands.rs:9:1
+    |
+9   | fn print_u32(n: u32) {
+    | ^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: function `print_u32` is private
+   --> src/syscall.rs:224:26
+    |
+224 |         crate::commands::print_u32(caller_pid.0);
+    |                          ^^^^^^^^^ private function
+    |
+note: the function `print_u32` is defined here
+   --> src/commands.rs:9:1
+    |
+9   | fn print_u32(n: u32) {
+    | ^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: function `print_u32` is private
+   --> src/syscall.rs:226:26
+    |
+226 |         crate::commands::print_u32(args.arg1);
+    |                          ^^^^^^^^^ private function
+    |
+note: the function `print_u32` is defined here
+   --> src/commands.rs:9:1
+    |
+9   | fn print_u32(n: u32) {
+    | ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `alloc::vec::Vec`
+  --> src/hardened_allocator.rs:13:5
+   |
+13 | use alloc::vec::Vec; // Used for allocation tracking
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:191:58
+    |
+191 |     let _ = scheduler.remove_process(crate::process::Pid(caller_pid.0 as usize));
+    |                                      ------------------- ^^^^^^^^^^^^^^^^^^^^^ expected `u32`, found `usize`
+    |                                      |
+    |                                      arguments to this struct are incorrect
+    |
+note: tuple struct defined here
+   --> src/ipc.rs:44:12
+    |
+44  | pub struct ProcessId(pub u32);
+    |            ^^^^^^^^^
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+191 |     let _ = scheduler.remove_process(crate::process::Pid((caller_pid.0 as usize).try_into().unwrap()));
+    |                                                          +                     +++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:254:35
+    |
+254 |     let pid = crate::process::Pid(caller_pid.0 as usize);
+    |               ------------------- ^^^^^^^^^^^^^^^^^^^^^ expected `u32`, found `usize`
+    |               |
+    |               arguments to this struct are incorrect
+    |
+note: tuple struct defined here
+   --> src/ipc.rs:44:12
+    |
+44  | pub struct ProcessId(pub u32);
+    |            ^^^^^^^^^
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+254 |     let pid = crate::process::Pid((caller_pid.0 as usize).try_into().unwrap());
+    |                                   +                     +++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:307:58
+    |
+307 |     match crate::ipc::send_message(crate::ipc::ChannelId(channel_id), message) {
+    |                                    --------------------- ^^^^^^^^^^ expected `u32`, found `usize`
+    |                                    |
+    |                                    arguments to this struct are incorrect
+    |
+note: tuple struct defined here
+   --> src/ipc.rs:34:12
+    |
+34  | pub struct ChannelId(pub u32);
+    |            ^^^^^^^^^
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+307 |     match crate::ipc::send_message(crate::ipc::ChannelId(channel_id.try_into().unwrap()), message) {
+    |                                                                    ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:337:61
+    |
+337 |     match crate::ipc::receive_message(crate::ipc::ChannelId(channel_id), buffer) {
+    |                                       --------------------- ^^^^^^^^^^ expected `u32`, found `usize`
+    |                                       |
+    |                                       arguments to this struct are incorrect
+    |
+note: tuple struct defined here
+   --> src/ipc.rs:34:12
+    |
+34  | pub struct ChannelId(pub u32);
+    |            ^^^^^^^^^
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+337 |     match crate::ipc::receive_message(crate::ipc::ChannelId(channel_id.try_into().unwrap()), buffer) {
+    |                                                                       ++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src/syscall.rs:352:59
+    |
+352 |     match crate::ipc::close_channel(crate::ipc::ChannelId(channel_id)) {
+    |                                     --------------------- ^^^^^^^^^^ expected `u32`, found `usize`
+    |                                     |
+    |                                     arguments to this struct are incorrect
+    |
+note: tuple struct defined here
+   --> src/ipc.rs:34:12
+    |
+34  | pub struct ChannelId(pub u32);
+    |            ^^^^^^^^^
+help: you can convert a `usize` to a `u32` and panic if the converted value doesn't fit
+    |
+352 |     match crate::ipc::close_channel(crate::ipc::ChannelId(channel_id.try_into().unwrap())) {
+    |                                                                     ++++++++++++++++++++
+
+error[E0599]: no method named `revoke_capability` found for reference `&'static CapabilityManager` in the current scope
+   --> src/syscall.rs:355:46
+    |
+355 |             capability::capability_manager().revoke_capability(caller_pid, channel_id as u32).ok();
+    |                                              ^^^^^^^^^^^^^^^^^ help: there is a method with a similar name: `transfer_capability`
+
+error[E0599]: no method named `revoke_capability` found for reference `&'static CapabilityManager` in the current scope
+   --> src/syscall.rs:699:44
+    |
+699 |     match capability::capability_manager().revoke_capability(caller_pid, cap_id) {
+    |                                            ^^^^^^^^^^^^^^^^^ help: there is a method with a similar name: `transfer_capability`
+
+error[E0599]: no method named `query_capability` found for reference `&'static CapabilityManager` in the current scope
+   --> src/syscall.rs:715:44
+    |
+715 |     match capability::capability_manager().query_capability(caller_pid, cap_id) {
+    |                                            ^^^^^^^^^^^^^^^^ help: there is a method with a similar name: `grant_capability`
+
+Some errors have detailed explanations: E0308, E0425, E0599, E0603.
+For more information about an error, try `rustc --explain E0308`.
+warning: `oreulia-kernel` (lib) generated 1 warning
+error: could not compile `oreulia-kernel` (lib) due to 43 previous errors; 1 warning emitted

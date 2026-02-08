@@ -566,7 +566,7 @@ impl SecurityManager {
     }
 
     /// Get recent audit entries (returns up to 32 entries)
-    pub fn get_recent_events(&self, limit: usize) -> [(Option<AuditEntry>); 32] {
+    pub fn get_recent_events(&self, limit: usize) -> [Option<AuditEntry>; 32] {
         let mut result = [None; 32];
         let actual_limit = limit.min(32);
         let mut idx = 0;
