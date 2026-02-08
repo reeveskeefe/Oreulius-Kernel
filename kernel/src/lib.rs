@@ -3,8 +3,8 @@
 
 extern crate alloc;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
+// use alloc::vec::Vec;
+// use alloc::string::String;
 
 pub mod advanced_commands;
 pub mod acpi_asm;
@@ -208,6 +208,10 @@ pub extern "C" fn rust_main() -> ! {
     tasks::start();
 }
 
+static mut SHELL_HISTORY: [[u8; 256]; 16] = [[0; 256]; 16];
+static mut SHELL_HISTORY_LENS: [usize; 16] = [0; 16];
+static mut SHELL_HISTORY_COUNT: usize = 0;
+
 /// Shell loop (runs as init process)
 pub fn shell_loop() -> ! {
     terminal::clear_screen();
@@ -218,8 +222,7 @@ pub fn shell_loop() -> ! {
     let mut input: [u8; 256] = [0; 256];
     let mut len: usize = 0;
     let mut cursor: usize = 0;
-    let mut history: Vec<String> = Vec::new();
-    let mut history_index: usize = 0;
+    let mut history_index: usize = unsafe { SHELL_HISTORY_COUNT };
     let mut prompt_pos = terminal::cursor_position();
     let mut max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
 
@@ -239,9 +242,23 @@ pub fn shell_loop() -> ! {
                     terminal::write_char('\n');
                     let line = core::str::from_utf8(&input[..len]).unwrap_or("");
                     if len > 0 {
-                        history.push(String::from(line));
+                        unsafe {
+                            if SHELL_HISTORY_COUNT < 16 {
+                                SHELL_HISTORY[SHELL_HISTORY_COUNT] = input;
+                                SHELL_HISTORY_LENS[SHELL_HISTORY_COUNT] = len;
+                                SHELL_HISTORY_COUNT += 1;
+                            } else {
+                                // Rotate history
+                                for i in 1..16 {
+                                    SHELL_HISTORY[i-1] = SHELL_HISTORY[i];
+                                    SHELL_HISTORY_LENS[i-1] = SHELL_HISTORY_LENS[i];
+                                }
+                                SHELL_HISTORY[15] = input;
+                                SHELL_HISTORY_LENS[15] = len;
+                            }
+                            history_index = SHELL_HISTORY_COUNT;
+                        }
                     }
-                    history_index = history.len();
                     commands::execute(line);
                     len = 0;
                     cursor = 0;
@@ -332,35 +349,29 @@ pub fn shell_loop() -> ! {
                 keyboard::KeyEvent::Up => {
                     if history_index > 0 {
                         history_index -= 1;
-                        if let Some(cmd) = history.get(history_index) {
-                            len = cmd.len();
-                            if len > 256 { len = 256; }
-                            input = [0; 256];
-                            for (i, b) in cmd.as_bytes().iter().enumerate() {
-                                if i < 256 { input[i] = *b; }
-                            }
+                        unsafe {
+                            input = SHELL_HISTORY[history_index];
+                            len = SHELL_HISTORY_LENS[history_index];
                             cursor = len;
                             redraw_line(&input, len, cursor, prompt_pos);
                         }
                     }
                 }
                 keyboard::KeyEvent::Down => {
-                    if history_index < history.len() {
-                        history_index += 1;
-                        if history_index == history.len() {
-                            len = 0;
-                            input = [0; 256];
-                            cursor = 0;
-                            redraw_line(&input, len, cursor, prompt_pos);
-                        } else if let Some(cmd) = history.get(history_index) {
-                            len = cmd.len();
-                            if len > 256 { len = 256; }
-                            input = [0; 256];
-                            for (i, b) in cmd.as_bytes().iter().enumerate() {
-                                if i < 256 { input[i] = *b; }
+                    unsafe {
+                        if history_index < SHELL_HISTORY_COUNT {
+                            history_index += 1;
+                            if history_index == SHELL_HISTORY_COUNT {
+                                len = 0;
+                                input = [0; 256];
+                                cursor = 0;
+                                redraw_line(&input, len, cursor, prompt_pos);
+                            } else {
+                                input = SHELL_HISTORY[history_index];
+                                len = SHELL_HISTORY_LENS[history_index];
+                                cursor = len;
+                                redraw_line(&input, len, cursor, prompt_pos);
                             }
-                            cursor = len;
-                            redraw_line(&input, len, cursor, prompt_pos);
                         }
                     }
                 }

@@ -456,16 +456,21 @@ impl QuantumScheduler {
         
         SCHEDULER_STARTED.store(true, Ordering::Release);
         
-        unsafe { QUANTUM_SCHEDULER.force_unlock(); }
-        
         let ctx_ptr = if let Some(ref info) = self.processes[next_pid.0 as usize] {
             crate::vga::print_str("[SCHED] Loading context\n");
+            // Safety: We must copy the context or ensure pointer validity after unlock
+            // But ProcessInfo is stored in heap (in `processes` array), so &info.context is stable address.
             &info.context as *const ProcessContext
         } else {
             panic!("Process disappeared");
         };
         
         crate::vga::print_str("[SCHED] Jumping to task...\n");
+        
+        // CRITICAL: Force unlock the mutex before jumping context.
+        // We are switching execution stream entirely. The lock guard on current stack will leverage be dropped.
+        unsafe { QUANTUM_SCHEDULER.force_unlock(); }
+        
         unsafe { asm_load_context(ctx_ptr); }
     }
     
