@@ -57,11 +57,9 @@ qemu-system-i386 -cdrom oreulia.iso -serial stdio -net nic,model=e1000
   - `net.rs`, `netstack.rs`: Networking stack.
   - `wasm.rs`, `wasm_jit.rs`: WebAssembly runtime & JIT.
   - `process.rs`, `scheduler.rs`: Task management.
-- `asm/`: Assembly modules (.asm).
-  - `context_switch.asm`: Task switching logic.
-  - `interrupt.asm`: IDT/ISR handlers.
-  - `atomic.asm`: Synchronization primitives.
-- `boot.asm`: Multiboot header and initial bootstrap code.
+  - `asm/`: Assembly modules (moved from root).
+    - `boot.asm`: Multiboot header and bootstrap.
+    - `context_switch.asm`, `atomic.asm`, etc.: Low-level optimized routines.
 - `kernel.ld`: Linker script defining memory layout.
 
 ## Debugging
