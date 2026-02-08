@@ -3,6 +3,8 @@
 
 extern crate alloc;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
+use alloc::string::String;
 
 pub mod advanced_commands;
 pub mod acpi_asm;
@@ -216,6 +218,8 @@ pub fn shell_loop() -> ! {
     let mut input: [u8; 256] = [0; 256];
     let mut len: usize = 0;
     let mut cursor: usize = 0;
+    let mut history: Vec<String> = Vec::new();
+    let mut history_index: usize = 0;
     let mut prompt_pos = terminal::cursor_position();
     let mut max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
 
@@ -234,6 +238,10 @@ pub fn shell_loop() -> ! {
                 keyboard::KeyEvent::Enter => {
                     terminal::write_char('\n');
                     let line = core::str::from_utf8(&input[..len]).unwrap_or("");
+                    if len > 0 {
+                        history.push(String::from(line));
+                    }
+                    history_index = history.len();
                     commands::execute(line);
                     len = 0;
                     cursor = 0;

@@ -13,7 +13,10 @@
 </div>
 
 ---
+<div align="center">
+<img src="oreuliuslogo.png" alt="the logo for the kernel oreulius">
 
+</div>
 ## Overview
 
 Oreulia is an experimental operating system that rethinks traditional OS design principles. Built in Rust with a focus on security and modern execution models, it provides a foundation for exploring capability-based security, WebAssembly execution, and deterministic system behavior.
