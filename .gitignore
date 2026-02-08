@@ -1,0 +1,20 @@
+# Rust build artifacts
+target/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# QEMU files
+qemu-direct.pid
+qemu-log.txt
+
+# ISO files
+*.iso
