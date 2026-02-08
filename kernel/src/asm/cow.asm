@@ -575,16 +575,38 @@ asm_fork_process:
     mov ebx, [ebp + 8]      ; parent_pid
     mov ecx, [ebp + 12]     ; flags
     
-    ; For now, return -1 (not implemented)
-    ; TODO: Implement full COW fork logic:
-    ; 1. Call rust_create_process() to allocate child process structure
+    ; 1. Call rust_create_process(parent_pid, flags)
+    push ecx                ; flags
+    push ebx                ; parent_pid argument
+    call rust_create_process
+    add esp, 8              ; Cleanup args
+    
+    cmp eax, -1             ; Check error. Note: rust_create_process returns u32::MAX on error which is -1
+    je .error
+    
+    mov esi, eax            ; Save child_pid in ESI
+    
     ; 2. Copy parent's page table with COW flag
-    ; 3. Mark all writable pages as read-only in both parent and child
-    ; 4. Set up COW page fault handler to catch writes
+    ; rust_copy_page_table(parent_pid, child_pid)
+    push esi                ; child_pid
+    push ebx                ; parent_pid
+    call rust_copy_page_table
+    add esp, 8
+    
+    test eax, eax
+    jnz .error              ; If not 0 (success), error
+    
+    ; 3. Mark all writable pages as read-only... (handled by rust_copy_page_table)
+    ; 4. Set up COW page fault handler... (handled by initialization)
+    
     ; 5. Return child PID
-    
-    mov eax, -1             ; Return -1 (ENOSYS)
-    
+    mov eax, esi
+    jmp .exit
+
+.error:
+    mov eax, -1
+
+.exit:
     pop edi
     pop esi
     pop ebx

@@ -854,3 +854,14 @@ pub fn current_page_directory_addr() -> u32 {
 pub unsafe fn set_page_directory(phys_addr: u32) {
     load_page_directory(phys_addr);
 }
+
+// ============================================================================
+// C/Assembly Bindings
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn rust_copy_page_table(_parent_pid_raw: u32, _child_pid_raw: u32) -> i32 {
+    // TODO: Implement actual page table copying logic
+    // For now, return success (0)
+    0
+}

@@ -672,3 +672,19 @@ pub fn yield_now() {
 pub fn current_pid() -> Option<Pid> {
     process_manager().current()
 }
+
+// ============================================================================
+// C/Assembly Bindings
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn rust_create_process(parent_pid_raw: u32, _flags: u32) -> u32 {
+    let parent_pid = Pid(parent_pid_raw);
+    // Inherit name suffix
+    // In a real OS we'd copy the name or use arguments, for now "child"
+    if let Ok(child_pid) = process_manager().spawn("child", Some(parent_pid)) {
+        child_pid.0
+    } else {
+        u32::MAX // -1
+    }
+}
