@@ -67,9 +67,71 @@ pub fn init() {
         ALLOCATOR.0.lock().init();
     }
 }
+
+// ============================================================================
+// Frame Management (for COW)
+// ============================================================================
+
+/// Max supported physical frames (32MB / 4KB = 8192)
+const MAX_FRAMES: usize = 8192;
+const PAGE_SIZE: usize = 4096;
+
+/// simple reference counting for physical frames
+/// TODO: Make this thread-safe/atomic in future
+static mut FRAME_REFCOUNTS: [u8; MAX_FRAMES] = [0; MAX_FRAMES];
+
+/// Get refcount for a physical frame
+pub fn get_refcount(phys_addr: usize) -> u8 {
+    let frame_idx = phys_addr / PAGE_SIZE;
+    if frame_idx < MAX_FRAMES {
+        unsafe { FRAME_REFCOUNTS[frame_idx] }
+    } else {
+        0
+    }
+}
+
+/// Increment refcount
+pub fn inc_refcount(phys_addr: usize) {
+    let frame_idx = phys_addr / PAGE_SIZE;
+    if frame_idx < MAX_FRAMES {
+        unsafe { 
+            if FRAME_REFCOUNTS[frame_idx] < 255 {
+                FRAME_REFCOUNTS[frame_idx] += 1; 
+            }
+        }
+    }
+}
+
+/// Decrement refcount
+pub fn dec_refcount(phys_addr: usize) {
+    let frame_idx = phys_addr / PAGE_SIZE;
+    if frame_idx < MAX_FRAMES {
+        unsafe { 
+            if FRAME_REFCOUNTS[frame_idx] > 0 {
+                FRAME_REFCOUNTS[frame_idx] -= 1; 
+            }
+        }
+    }
+}
+
 /// Allocate a physical frame (syscall helper stub)
 pub fn allocate_frame() -> Result<usize, &'static str> {
-    // TODO: Implement real frame allocation
-    // For now, return a dummy address
-    Err("Frame allocation not yet implemented")
+    // Allocate 4KB from the heap directly, ensuring alignment
+    let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).map_err(|_| "Layout Error")?;
+    unsafe {
+        let ptr = ALLOCATOR.alloc(layout);
+        if ptr.is_null() {
+            Err("Out of memory")
+        } else {
+            let addr = ptr as usize;
+            // Initialize refcount to 1
+            let frame_idx = addr / PAGE_SIZE;
+            if frame_idx < MAX_FRAMES {
+                FRAME_REFCOUNTS[frame_idx] = 1;
+            }
+            // Zero the page
+            ptr::write_bytes(ptr, 0, PAGE_SIZE);
+            Ok(addr)
+        }
+    }
 }

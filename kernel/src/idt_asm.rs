@@ -504,6 +504,9 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
 /// Rust IRQ handler (called from assembly)
 #[no_mangle]
 pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
+    // Debug entry
+    // unsafe { crate::advanced_commands::print_hex(frame as usize); crate::vga::print_char('I'); }
+    
     let frame = unsafe { &*frame };
     
     unsafe { increment_interrupt_count(frame.int_no as u8) }
@@ -515,9 +518,12 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
                 // Acknowledge before preemptive scheduling
                 Pic::send_eoi(irq);
                 crate::pit::tick();
-                if let Some(mut stack) = crate::netstack::NETWORK_STACK.try_lock() {
-                    stack.tick();
-                }
+                
+                // Network stack tick
+                // if let Some(mut stack) = crate::netstack::NETWORK_STACK.try_lock() {
+                //     stack.tick();
+                // }
+                
                 crate::quantum_scheduler::on_timer_tick();
                 return;
             }

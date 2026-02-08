@@ -93,5 +93,5 @@ pub fn start() -> ! {
     vga::print_str("[TASK] Ready to start scheduler (interrupts will be enabled in tasks)...\n");
     
     vga::print_str("[TASK] Entering scheduler...\n");
-    quantum_scheduler::scheduler().lock().start();
+    crate::quantum_scheduler::QuantumScheduler::start_scheduling();
 }

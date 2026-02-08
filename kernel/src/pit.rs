@@ -43,6 +43,11 @@ pub fn get_ticks() -> u64 {
     *TICKS.lock()
 }
 
+/// Try to get ticks (non-blocking) - returns None if lock held
+pub fn try_get_ticks() -> Option<u64> {
+    TICKS.try_lock().map(|t| *t)
+}
+
 /// Get timer frequency in Hz
 pub fn get_frequency() -> u32 {
     TIMER_HZ

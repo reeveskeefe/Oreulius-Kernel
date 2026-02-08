@@ -202,20 +202,20 @@ impl CapabilityTable {
     /// Install a capability (creation or transfer)
     pub fn install(&mut self, cap: OreuliaCapability) -> Result<u32, CapabilityError> {
         // Find empty slot
-        for (i, entry) in self.entries.iter_mut().enumerate() {
+        for (idx, entry) in self.entries.iter_mut().enumerate() {
             if entry.is_none() {
-                let cap_id = self.next_cap_id;
-                self.next_cap_id += 1;
-                
+                let cap_id = idx as u32; // Simplified ID allocation
                 let mut installed = cap;
                 installed.cap_id = cap_id;
                 *entry = Some(installed);
                 
                 // Audit capability installation
+                crate::vga::print_str("[CAP-DEBUG] install: logging event\n");
                 security::security().log_event(
                     AuditEntry::new(SecurityEvent::CapabilityCreated, self.owner, cap_id)
                         .with_context(cap.object_id)
                 );
+                crate::vga::print_str("[CAP-DEBUG] install: logged event\n");
                 
                 return Ok(cap_id);
             }
@@ -340,10 +340,14 @@ impl CapabilityManager {
         rights: Rights,
         origin: ProcessId,
     ) -> Result<u32, CapabilityError> {
+        crate::vga::print_str("[CAP-DEBUG] grant: locking tables\n");
         let mut tables = self.tables.lock();
+        crate::vga::print_str("[CAP-DEBUG] grant: locked tables, getting table\n");
         
         if let Some(table) = tables[pid.0 as usize].as_mut() {
+            crate::vga::print_str("[CAP-DEBUG] grant: found table, creating cap\n");
             let cap = OreuliaCapability::new(0, object_id, cap_type, rights, origin);
+            crate::vga::print_str("[CAP-DEBUG] grant: installing cap\n");
             table.install(cap)
         } else {
             Err(CapabilityError::TaskNotFound)

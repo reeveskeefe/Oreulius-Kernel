@@ -443,33 +443,30 @@ impl QuantumScheduler {
     }
     
     /// Start the scheduler (never returns)
-    pub fn start(&mut self) -> ! {
-        let next_pid = self.dequeue_ready().expect("No processes to run");
-        
-        crate::vga::print_str("[SCHED] Starting scheduler\n");
-        
-        if let Some(ref mut info) = self.processes[next_pid.0 as usize] {
-            info.process.state = ProcessState::Running;
-        }
-        
-        self.current_pid = Some(next_pid);
-        
-        SCHEDULER_STARTED.store(true, Ordering::Release);
-        
-        let ctx_ptr = if let Some(ref info) = self.processes[next_pid.0 as usize] {
-            crate::vga::print_str("[SCHED] Loading context\n");
-            // Safety: We must copy the context or ensure pointer validity after unlock
-            // But ProcessInfo is stored in heap (in `processes` array), so &info.context is stable address.
-            &info.context as *const ProcessContext
-        } else {
-            panic!("Process disappeared");
-        };
-        
+    /// Static method to avoid double locking. Caller must NOT hold the lock.
+    pub fn start_scheduling() -> ! {
+        crate::vga::print_str("[SCHED] Starting scheduler (safe)\n");
+
+        let ctx_ptr = {
+            let mut scheduler = QUANTUM_SCHEDULER.lock();
+            
+            // Find next process
+            let next_pid = scheduler.dequeue_ready().expect("No processes to run");
+            
+            scheduler.current_pid = Some(next_pid);
+            SCHEDULER_STARTED.store(true, Ordering::Release);
+            
+            if let Some(ref mut info) = scheduler.processes[next_pid.0 as usize] {
+                info.process.state = ProcessState::Running;
+                // Return pointer relative to the heap allocation (stable address)
+                &info.context as *const ProcessContext
+            } else {
+                panic!("Process data missing");
+            }
+        }; // Lock is dropped here
+
+        crate::vga::print_str("[SCHED] Lock dropped, loading context\n");
         crate::vga::print_str("[SCHED] Jumping to task...\n");
-        
-        // CRITICAL: Force unlock the mutex before jumping context.
-        // We are switching execution stream entirely. The lock guard on current stack will leverage be dropped.
-        unsafe { QUANTUM_SCHEDULER.force_unlock(); }
         
         unsafe { asm_load_context(ctx_ptr); }
     }

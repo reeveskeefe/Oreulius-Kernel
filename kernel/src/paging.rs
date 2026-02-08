@@ -340,7 +340,9 @@ impl AddressSpace {
         let map_bytes = align_up(core::cmp::max(heap_end, 32 * 1024 * 1024), CHUNK_BYTES);
         let tables = core::cmp::max(1, map_bytes / CHUNK_BYTES);
 
-        crate::vga::print_str("[PAGING] Mapping kernel memory...\n");
+        crate::vga::print_str("[PAGING] Mapping kernel memory (0 to ");
+        crate::advanced_commands::print_hex(map_bytes);
+        crate::vga::print_str(")...\n");
 
         for i in 0..tables {
             let phys_base = i * CHUNK_MB * 1024 * 1024;
@@ -855,13 +857,123 @@ pub unsafe fn set_page_directory(phys_addr: u32) {
     load_page_directory(phys_addr);
 }
 
-// ============================================================================
-// C/Assembly Bindings
-// ============================================================================
+use crate::memory;
+use crate::process::{Pid, process_manager};
 
 #[no_mangle]
-pub extern "C" fn rust_copy_page_table(_parent_pid_raw: u32, _child_pid_raw: u32) -> i32 {
-    // TODO: Implement actual page table copying logic
-    // For now, return success (0)
-    0
+pub extern "C" fn rust_copy_page_table(parent_pid_raw: u32, child_pid_raw: u32) -> i32 {
+    let parent_pid = Pid(parent_pid_raw);
+    let child_pid = Pid(child_pid_raw);
+    let pm = process_manager();
+    
+    // 1. Get Parent PD (Physical Address)
+    // If parent has no PD recorded (e.g. init), use current CR3
+    let parent_pd_phys = match pm.get_process_page_dir(parent_pid) {
+        Some(addr) if addr != 0 => addr as usize,
+        _ => unsafe { get_page_directory() as usize }
+    };
+    
+    // 2. Allocate Child PD
+    let child_pd_phys = match memory::allocate_frame() {
+        Ok(addr) => addr,
+        Err(_) => return -1,
+    };
+    
+    // 3. Loop over directories
+    // unsafe: accessing physical memory directly (identity mapping assumed for kernel heap)
+    let parent_pd = parent_pd_phys as *mut PageDirectory;
+    let child_pd = child_pd_phys as *mut PageDirectory;
+    
+    unsafe {
+        // Init child PD (empty) - assuming valid pointer
+        let child_pd_ref = &mut *child_pd;
+        // Zero it out effectively (or rely on allocate_frame zeroing)
+        // We will overwrite entries anyway or leave them empty.
+        
+        // Note: We must recursively map page tables
+        for i in 0..PAGE_ENTRIES {
+             let pde = &mut (*parent_pd).entries[i];
+             
+             if !pde.is_present() {
+                 child_pd_ref.entries[i] = PageDirEntry::empty();
+                 continue;
+             }
+             
+             // Strategies:
+             // A. Kernel Space (>= 768 for 3GB split, or based on policy): Share Page Table
+             // B. User Space: Copy Page Table (for COW)
+             
+             // Simplify: If it's a kernel mapping, we share the Page Table directly.
+             // Warning: logic assumes standard higher-half split or defined kernel range.
+             // If we don't know, we might COW everything. But COW on kernel stack is bad.
+             // Let's assume > 0xC0000000 (entry 768) is kernel.
+             if i >= 768 { 
+                 child_pd_ref.entries[i] = *pde;
+                 continue;
+             }
+             
+             // User space mapping found.
+             // Allocate new Page Table for child
+             let child_pt_phys = match memory::allocate_frame() {
+                Ok(a) => a,
+                Err(_) => return -1, // Should cleanup allocated child_pd... ignoring for MVP
+             };
+             
+             let parent_pt_phys = pde.table_addr();
+             let parent_pt = parent_pt_phys as *mut PageTable;
+             let child_pt = child_pt_phys as *mut PageTable;
+             let child_pt_ref = &mut *child_pt;
+             
+             // Link the new PT into Child PD
+             child_pd_ref.entries[i] = PageDirEntry::new(child_pt_phys, pde.flags());
+             
+             // Copy/COW PTEs
+             for j in 0..PAGE_ENTRIES {
+                 let pte = &mut (*parent_pt).entries[j];
+                 
+                 if !pte.is_present() {
+                     child_pt_ref.entries[j] = PageTableEntry::empty();
+                     continue;
+                 }
+                 
+                 let phys_frame = pte.phys_addr();
+                 let mut flags = pte.flags();
+                 
+                 // Logic: If Writable -> COW. If ReadOnly -> Shared.
+                 if pte.is_writable() {
+                     // Mark Parent Read-Only + COW
+                     pte.set_writable(false);
+                     pte.set_copy_on_write(true);
+                     
+                     // Mark Child Read-Only + COW
+                     // Remove Write bit from flags for child too
+                     flags &= !(PageFlags::Writable as u32);
+                     flags |= PageFlags::CopyOnWrite as u32;
+                     
+                     child_pt_ref.entries[j] = PageTableEntry::new(phys_frame, flags);
+                     
+                     // Increment refcount (original owner + new owner)
+                     // If it was 1, it becomes 2.
+                     // Note: We increment for EACH new reference.
+                     memory::inc_refcount(phys_frame);
+                     
+                     // Use invlpg if we could. Since we iterate many, flush_all at end is better.
+                 } else {
+                     // Just share it
+                     child_pt_ref.entries[j] = *pte;
+                     memory::inc_refcount(phys_frame);
+                 }
+             }
+        }
+    }
+    
+    // Save to process manager
+    if let Err(_) = pm.set_process_page_dir(child_pid, child_pd_phys as u32) {
+        return -1;
+    }
+    
+    // Flush TLB in parent because we might have marked pages as Read-Only/COW
+    unsafe { flush_tlb_all(); }
+    
+    0 // Success
 }

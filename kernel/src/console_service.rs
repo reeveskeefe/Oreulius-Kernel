@@ -75,18 +75,24 @@ static CONSOLE_REGISTRY: Mutex<ConsoleRegistry> = Mutex::new(ConsoleRegistry::ne
 
 /// Create a console and grant capability to owner
 pub fn create_console(owner: ProcessId) -> Result<u32, ConsoleError> {
+    vga::print_str("[CONSOLE-DEBUG] create_console start\n");
     // Create kernel object
     let object_id = capability_manager().create_object();
+    vga::print_str("[CONSOLE-DEBUG] object created\n");
     let console = Console::new(object_id, owner);
     
     // Register console
+    vga::print_str("[CONSOLE-DEBUG] registering console\n");
     CONSOLE_REGISTRY.lock().register(console)?;
+    vga::print_str("[CONSOLE-DEBUG] registered\n");
     
     // Grant capability to owner with write rights
     let rights = Rights::new(Rights::CONSOLE_WRITE | Rights::CONSOLE_READ);
+    vga::print_str("[CONSOLE-DEBUG] granting capability\n");
     let cap_id = capability_manager()
         .grant_capability(owner, object_id, CapabilityType::Console, rights, owner)
         .map_err(|_| ConsoleError::CapabilityFailed)?;
+    vga::print_str("[CONSOLE-DEBUG] capability granted\n");
     
     Ok(cap_id)
 }

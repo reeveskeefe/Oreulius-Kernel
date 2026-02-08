@@ -198,6 +198,8 @@ pub struct Process {
     pub created_at: u64,
     /// File descriptor table (per-process)
     pub fd_table: [Option<u64>; MAX_FD],
+    /// Physical address of Page Directory (CR3)
+    pub page_dir_phys: u32,
 }
 
 impl Process {
@@ -220,6 +222,7 @@ impl Process {
             cpu_time: 0,
             created_at: 0,
             fd_table: [None; MAX_FD],
+            page_dir_phys: 0, // Will be set by caller or init
         }
     }
 
@@ -346,6 +349,21 @@ impl ProcessTable {
         self.processes.iter().find_map(|p| {
             p.as_ref().filter(|proc| proc.pid == pid)
         })
+    }
+    
+    /// Get the page directory physical address for a process
+    pub fn get_page_dir(&self, pid: Pid) -> Option<u32> {
+        self.get(pid).map(|p| p.page_dir_phys)
+    }
+
+    /// Set the page directory physical address for a process
+    pub fn set_page_dir(&mut self, pid: Pid, pd_phys: u32) -> Result<(), ProcessError> {
+        if let Some(proc) = self.get_mut(pid) {
+            proc.page_dir_phys = pd_phys;
+            Ok(())
+        } else {
+            Err(ProcessError::ProcessNotFound)
+        }
     }
 
     /// Get a mutable process by PID
@@ -495,6 +513,16 @@ impl ProcessManager {
     /// Get current running process
     pub fn current(&self) -> Option<Pid> {
         self.scheduler.lock().current()
+    }
+    
+    /// Helper to access page directory (needs to be public for paging module)
+    pub fn get_process_page_dir(&self, pid: Pid) -> Option<u32> {
+        self.table.lock().get_page_dir(pid)
+    }
+    
+    /// Helper to set page directory
+    pub fn set_process_page_dir(&self, pid: Pid, pd_phys: u32) -> Result<(), ProcessError> {
+        self.table.lock().set_page_dir(pid, pd_phys)
     }
 
     /// Yield current process and schedule next
