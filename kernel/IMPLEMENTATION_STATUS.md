@@ -1,2 +1,0 @@
-- [x] Keyboard driver robustness (Polling decoupled from ISR, ISR Status Register checks)
-- [x] Enhanced keyboard driver (Extended keys, Navigation support, Caps/Shift logic)

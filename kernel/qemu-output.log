@@ -1,3 +1,0 @@
-2026-01-25 21:21:10.511 qemu-system-x86_64[17887:41718364] +[IMKClient subclass]: chose IMKClient_Modern
-2026-01-25 21:21:10.512 qemu-system-x86_64[17887:41718364] +[IMKInputSession subclass]: chose IMKInputSession_Modern
-qemu-system-x86_64: terminating on signal 2 from pid 21157 (<unknown process>)
