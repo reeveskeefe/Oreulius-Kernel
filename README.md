@@ -20,12 +20,12 @@ Oreulia is an experimental operating system that rethinks traditional OS design 
 
 ### Key Features
 
-- 🔐 **Capability-Based Security** - No ambient authority; all access is explicitly granted through capabilities
-- 🌐 **WebAssembly Native** - First-class support for WASM execution with sandboxed module isolation
-- 📡 **Message-Passing IPC** - Dataflow channels for inter-process communication
-- 💾 **Persistence-First Design** - Built-in snapshotting and deterministic replay
-- ⚡ **High-Performance Assembly** - Optimized low-level operations for context switching, memory management, and crypto
-- 🔧 **QEMU-Ready** - Designed for easy testing and development in virtualized environments
+- **Capability-Based Security** - No ambient authority; all access is explicitly granted through capabilities
+- **WebAssembly Native** - First-class support for WASM execution with sandboxed module isolation
+- **Message-Passing IPC** - Dataflow channels for inter-process communication
+- **Persistence-First Design** - Built-in snapshotting and deterministic replay
+- **High-Performance Assembly** - Optimized low-level operations for context switching, memory management, and crypto
+- **QEMU-Ready** - Designed for easy testing and development in virtualized environments
 
 ---
 
