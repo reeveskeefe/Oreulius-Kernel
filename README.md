@@ -17,6 +17,7 @@
 <img src="oreuliuslogo.png" width="300" alt="the logo for the kernel oreulius">
 
 </div>
+
 ## Overview
 
 Oreulia is an experimental operating system that rethinks traditional OS design principles. Built in Rust with a focus on security and modern execution models, it provides a foundation for exploring capability-based security, WebAssembly execution, and deterministic system behavior.
@@ -132,47 +133,85 @@ chmod +x quick-rebuild.sh
 
 Once Oreulia boots, you'll see the shell prompt (`>`). Try these commands:
 
-### System Information
-- `help` - Display all available commands
-- `cpu-info` - Show CPU vendor, SIMD support, and features
-- `mem-info` - Display memory usage statistics
-
-### Performance Testing
-- `cpu-bench` - Benchmark instruction throughput (NOP, ADD, MUL, DIV, LOAD, STORE, LOCK)
-- `atomic-test` - Test atomic operations (add, sub, swap, CAS, bitwise ops)
-- `spinlock-test` - Test spinlock correctness and performance
+### System & General
+- `help` - Display available commands
+- `clear` - Clear the screen
+- `echo <text>` - Echo text back to screen
+- `uptime` - Show system uptime
+- `sleep <ms>` - Sleep for N milliseconds
+- `calculate <a> <op> <b>` - Scientific calculator
+- `cpu-info` - Show CPU features and capabilities
+- `cpu-bench` - Benchmark CPU instructions
+- `pci-list` - List PCI devices (hardware detection)
 
 ### Process Management
-- `ps` - List all processes with their states
-- `spawn <name>` - Create a new process
+- `spawn <name>` - Spawn a new process
+- `ps` - List all processes
 - `kill <pid>` - Terminate a process
-- `nice <pid> <priority>` - Set process priority
+- `yield` - Yield current process
+- `whoami` - Show current process info
+- `sched-stats` - Show scheduler statistics
+- `elf-run <path>` - Load and run ELF executable from VFS
+- `user-test` - Enter user mode (INT 0x80 test)
 
-### Filesystem
-- `ls [path]` - List directory contents
-- `cat <file>` - Display file contents
-- `write <file> <data>` - Write data to a file
-- `rm <file>` - Remove a file
-- `mkdir <dir>` - Create a directory
+### Filesystem (VFS & Block)
+- `vfs-ls <path>` - List directory
+- `vfs-mkdir <path>` - Create directory
+- `vfs-write <path> <data>` - Write file
+- `vfs-read <path>` - Read file
+- `vfs-open <path>` - Open file to get fd
+- `vfs-readfd <fd> [n]` - Read via file descriptor
+- `vfs-writefd <fd> <data>` - Write via file descriptor
+- `vfs-close <fd>` - Close file descriptor
+- `vfs-mount-virtio` - Mount VirtIO block device
+- `blk-info` - Show VirtIO block device info
+- `blk-partitions` - List disk partitions
+- `fs-write/read/delete/list` - Key-value filesystem commands (legacy)
 
-### IPC & Capabilities
-- `ipc-test` - Test inter-process communication
-- `cap-list <pid>` - List capabilities for a process
-- `cap-grant <pid> <object> <rights>` - Grant a capability
+### IPC & Services
+- `ipc-create` - Create a new channel
+- `ipc-send <chan> <msg>` - Send a message to channel
+- `ipc-recv <chan>` - Receive a message from channel
+- `svc-register <type>` - Register a service
+- `svc-request <type>` - Request a service
+- `svc-list` - List all services
+- `cap-demo <key>` - Demo capability passing
+- `intro-demo` - Demo introduction protocol
 
-### Network
-- `net-status` - Show network interface status
-- `ping <ip>` - Send ICMP ping (if network available)
-- `dns-resolve <domain>` - Resolve DNS name
+### Networking
+- `net-info` / `eth-info` - Show network/ethernet status
+- `wifi-scan` - Scan for WiFi networks
+- `wifi-connect <ssid>` - Connect to WiFi
+- `http-get <url>` - Perform HTTP GET request
+- `http-server-start [port]` - Start built-in HTTP server
+- `dns-resolve <domain>` - Resolve domain name
+- `netstack-info` - Show TCP/IP stack status
 
 ### WebAssembly
-- `wasm-load <file>` - Load a WASM module
-- `wasm-run <module>` - Execute a WASM module
-- `wasm-list` - List loaded WASM modules
+- `wasm-demo` - Run simple WASM math demo
+- `wasm-fs-demo` - Demo WASM filesystem access
+- `wasm-log-demo` - Demo WASM logging
+- `wasm-list` - List loaded WASM instances
+- `wasm-jit-on` / `wasm-jit-off` - Enable/Disable JIT compilation
+- `wasm-jit-bench` - Benchmark JIT vs Interpreter
+- `wasm-jit-stats` - Show JIT statistics
 
-### Security
-- `audit-log` - Display security audit log
-- `sec-status` - Show security manager status
+### Security & Capabilities
+- `security-audit [count]` - Show security audit log
+- `security-stats` - Show security subsystem statistics
+- `cap-list` - List capabilities
+- `cap-arch` - Show capability architecture
+- `cap-test-atten/cons` - Test capability mechanisms
+
+### Advanced / Debug / Performance
+- `alloc-stats` - Show allocator statistics
+- `leak-check` - Check for memory leaks
+- `quantum-stats` - Process quantum scheduler stats
+- `paging-test` - Test virtual memory paging
+- `atomic-test` - Test atomic operations
+- `spinlock-test` - Measure spinlock overhead
+- `syscall-test` - Verify system call interface
+- `test-div0` / `test-pf` - Trigger exceptions (div0, page fault)
 
 ---
 
