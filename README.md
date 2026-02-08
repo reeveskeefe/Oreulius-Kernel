@@ -14,7 +14,7 @@
 
 ---
 <div align="center">
-<img src="oreuliuslogo.png" alt="the logo for the kernel oreulius">
+<img src="oreuliuslogo.png" width="300" alt="the logo for the kernel oreulius">
 
 </div>
 ## Overview

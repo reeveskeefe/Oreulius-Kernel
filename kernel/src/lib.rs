@@ -329,6 +329,41 @@ pub fn shell_loop() -> ! {
                     cursor = len;
                     terminal::set_cursor(prompt_pos.0, prompt_pos.1 + cursor);
                 }
+                keyboard::KeyEvent::Up => {
+                    if history_index > 0 {
+                        history_index -= 1;
+                        if let Some(cmd) = history.get(history_index) {
+                            len = cmd.len();
+                            if len > 256 { len = 256; }
+                            input = [0; 256];
+                            for (i, b) in cmd.as_bytes().iter().enumerate() {
+                                if i < 256 { input[i] = *b; }
+                            }
+                            cursor = len;
+                            redraw_line(&input, len, cursor, prompt_pos);
+                        }
+                    }
+                }
+                keyboard::KeyEvent::Down => {
+                    if history_index < history.len() {
+                        history_index += 1;
+                        if history_index == history.len() {
+                            len = 0;
+                            input = [0; 256];
+                            cursor = 0;
+                            redraw_line(&input, len, cursor, prompt_pos);
+                        } else if let Some(cmd) = history.get(history_index) {
+                            len = cmd.len();
+                            if len > 256 { len = 256; }
+                            input = [0; 256];
+                            for (i, b) in cmd.as_bytes().iter().enumerate() {
+                                if i < 256 { input[i] = *b; }
+                            }
+                            cursor = len;
+                            redraw_line(&input, len, cursor, prompt_pos);
+                        }
+                    }
+                }
                 keyboard::KeyEvent::Char(c) => {
                     if (c.is_ascii_graphic() || c == ' ') && len < input.len() - 1 && len < max_len {
                         for i in (cursor..len).rev() {
