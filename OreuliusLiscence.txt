@@ -388,6 +388,6 @@ If there is a conflict between this DPA and the License, this DPA controls solel
 
 20. Related Documents
 The following documents provide additional context and guidance and are referenced by this License:
-- `LICENSE-FAQ.md`
-- `PRIVACY.md`
-- `WHY-LICENSE.md`
+- [LICENSE-FAQ.md](OtherLiscenceFiles/LICENSE-FAQ.md)
+- [PRIVACY.md](OtherLiscenceFiles/PRIVACY.md)
+- [WHY-LICENSE.md](OtherLiscenceFiles/WHY-LICENSE.md)
