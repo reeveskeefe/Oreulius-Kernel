@@ -385,3 +385,9 @@ Customer Personal Data may be processed in Canada and other countries where the 
 
 19.13 Conflict
 If there is a conflict between this DPA and the License, this DPA controls solely with respect to processing of Customer Personal Data. If there is a conflict between this DPA and a Support Addendum, the Support Addendum controls for Support Services to the extent expressly stated.
+
+20. Related Documents
+The following documents provide additional context and guidance and are referenced by this License:
+- `LICENSE-FAQ.md`
+- `PRIVACY.md`
+- `WHY-LICENSE.md`
