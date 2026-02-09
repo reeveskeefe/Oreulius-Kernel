@@ -210,12 +210,10 @@ impl CapabilityTable {
                 *entry = Some(installed);
                 
                 // Audit capability installation
-                crate::vga::print_str("[CAP-DEBUG] install: logging event\n");
                 security::security().log_event(
                     AuditEntry::new(SecurityEvent::CapabilityCreated, self.owner, cap_id)
                         .with_context(cap.object_id)
                 );
-                crate::vga::print_str("[CAP-DEBUG] install: logged event\n");
                 
                 return Ok(cap_id);
             }
@@ -295,6 +293,7 @@ impl CapabilityTable {
 const MAX_TASKS: usize = 64;
 
 /// Global capability manager
+#[repr(align(64))]
 pub struct CapabilityManager {
     tables: Mutex<[Option<alloc::boxed::Box<CapabilityTable>>; MAX_TASKS]>,
     next_object_id: Mutex<u64>,
@@ -340,14 +339,10 @@ impl CapabilityManager {
         rights: Rights,
         origin: ProcessId,
     ) -> Result<u32, CapabilityError> {
-        crate::vga::print_str("[CAP-DEBUG] grant: locking tables\n");
         let mut tables = self.tables.lock();
-        crate::vga::print_str("[CAP-DEBUG] grant: locked tables, getting table\n");
         
         if let Some(table) = tables[pid.0 as usize].as_mut() {
-            crate::vga::print_str("[CAP-DEBUG] grant: found table, creating cap\n");
             let cap = OreuliaCapability::new(0, object_id, cap_type, rights, origin);
-            crate::vga::print_str("[CAP-DEBUG] grant: installing cap\n");
             table.install(cap)
         } else {
             Err(CapabilityError::TaskNotFound)

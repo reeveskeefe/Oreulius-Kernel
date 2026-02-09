@@ -44,8 +44,8 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     static mut TICKS: u64 = 0;
     unsafe {
         TICKS += 1;
-        if TICKS % 1000 == 0 {
-            serial_println!("Timer: {} seconds", TICKS / 1000);
+        if TICKS % 100 == 0 {
+            // serial_println!("Timer: {} seconds", TICKS / 100);
         }
     }
     // Acknowledge PIC

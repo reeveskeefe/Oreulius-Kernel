@@ -2,8 +2,33 @@ use crate::vga::{self, Color};
 use alloc::vec::Vec;
 use lazy_static::lazy_static;
 use spin::Mutex;
+// use x86_64::instructions::interrupts; // Removed unavailable crate
 
 const TERM_COUNT: usize = 6;
+
+// Helper to execute closure with interrupts disabled
+fn without_interrupts<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let flags: usize;
+    unsafe {
+        // Save EFLAGS
+        core::arch::asm!("pushfd; pop {}", out(reg) flags, options(nomem, preserves_flags));
+        // Disable interrupts
+        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+    }
+
+    let ret = f();
+
+    unsafe {
+        // Restore interrupts if they were enabled (IF bit 9 is set)
+        if (flags & 0x200) != 0 {
+            core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+        }
+    }
+    ret
+}
 const SCROLLBACK_MAX: usize = 1000;
 const WIDTH: usize = vga::SCREEN_WIDTH;
 const HEIGHT: usize = vga::SCREEN_HEIGHT;
@@ -486,33 +511,59 @@ lazy_static! {
 }
 
 pub fn write_str(s: &str) {
-    TERMINAL.lock().write_str(s);
+    // Echo to serial for automated testing
+    if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
+        use core::fmt::Write;
+        let _ = serial.write_str(s);
+    }
+    without_interrupts(|| {
+        TERMINAL.lock().write_str(s);
+    });
 }
 
 pub fn write_char(c: char) {
-    TERMINAL.lock().write_char(c);
+    // Echo to serial for automated testing
+    if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
+        use core::fmt::Write;
+        let _ = serial.write_char(c);
+    }
+    without_interrupts(|| {
+        TERMINAL.lock().write_char(c);
+    });
 }
 
 pub fn clear_screen() {
-    TERMINAL.lock().clear_screen();
+    without_interrupts(|| {
+        TERMINAL.lock().clear_screen();
+    });
 }
 
 pub fn backspace() {
-    TERMINAL.lock().backspace();
+    without_interrupts(|| {
+        TERMINAL.lock().backspace();
+    });
 }
 
 pub fn set_cursor(row: usize, col: usize) {
-    TERMINAL.lock().set_cursor(row, col);
+    without_interrupts(|| {
+        TERMINAL.lock().set_cursor(row, col);
+    });
 }
 
 pub fn cursor_position() -> (usize, usize) {
-    TERMINAL.lock().cursor()
+    without_interrupts(|| {
+        TERMINAL.lock().cursor()
+    })
 }
 
 pub fn clear_line_from_cursor() {
-    TERMINAL.lock().clear_line_from_cursor();
+    without_interrupts(|| {
+        TERMINAL.lock().clear_line_from_cursor();
+    });
 }
 
 pub fn switch_terminal(index: usize) {
-    TERMINAL.lock().switch_to(index);
+    without_interrupts(|| {
+        TERMINAL.lock().switch_to(index);
+    });
 }

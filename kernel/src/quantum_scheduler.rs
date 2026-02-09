@@ -143,8 +143,19 @@ impl QuantumScheduler {
 
     /// Schedule next process (called on timer interrupt)
     pub fn schedule(&mut self) {
+        self.schedule_internal(None);
+    }
+
+    /// Internal schedule function allowing explicit previous PID
+    fn schedule_internal(&mut self, prev_pid_override: Option<Pid>) {
         let now = pit::get_ticks();
         
+        // Capture valid previous PID before it might get cleared
+        let mut prev_pid = self.current_pid;
+        if prev_pid.is_none() {
+            prev_pid = prev_pid_override;
+        }
+
         // Update current process accounting
         if let Some(current_pid) = self.current_pid {
             let idx = current_pid.0 as usize;
@@ -176,6 +187,11 @@ impl QuantumScheduler {
             }
         }
         
+        // If we still have a running process with quantum remaining, keep running it
+        if self.current_pid.is_some() {
+            return;
+        }
+
         // Pick next process from ready queues (priority order)
         let next_pid = self.dequeue_ready();
         
@@ -186,7 +202,7 @@ impl QuantumScheduler {
         }
         
         let next_pid = next_pid.unwrap();
-        let prev_pid = self.current_pid;
+        // prev_pid was captured at start
         
         // Context switch if needed
         if prev_pid != Some(next_pid) {
@@ -257,6 +273,7 @@ impl QuantumScheduler {
 
     /// Voluntary yield (cooperative)
     pub fn yield_cpu(&mut self) {
+        let mut prev = self.current_pid;
         if let Some(current_pid) = self.current_pid {
             let idx = current_pid.0 as usize;
             if let Some(ref mut info) = self.processes[idx] {
@@ -267,12 +284,13 @@ impl QuantumScheduler {
             self.current_pid = None;
             self.stats.voluntary_yields += 1;
         }
-        self.schedule();
+        self.schedule_internal(prev);
     }
 
     /// Block current process on a wait queue (futex-like)
     pub fn block_on(&mut self, addr: usize) -> Result<(), &'static str> {
         let current_pid = self.current_pid.ok_or("No current process")?;
+        let prev = Some(current_pid);
         
         // Find or create wait queue
         let queue_idx = self.find_or_create_wait_queue(addr)?;
@@ -286,7 +304,7 @@ impl QuantumScheduler {
         }
         
         self.current_pid = None;
-        self.schedule();
+        self.schedule_internal(prev);
         Ok(())
     }
 
@@ -523,6 +541,16 @@ lazy_static::lazy_static! {
 }
 static SCHEDULER_STARTED: AtomicBool = AtomicBool::new(false);
 
+fn with_interrupts_disabled<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let flags = unsafe { crate::idt_asm::fast_cli_save() };
+    let ret = f();
+    unsafe { crate::idt_asm::fast_sti_restore(flags) };
+    ret
+}
+
 /// Initialize quantum scheduler
 pub fn init() {
     // Scheduler is already initialized via static
@@ -535,25 +563,29 @@ pub fn scheduler() -> &'static Mutex<QuantumScheduler> {
 
 /// Timer tick handler (called from PIT interrupt)
 pub fn on_timer_tick() {
-    QUANTUM_SCHEDULER.lock().schedule();
+    with_interrupts_disabled(|| {
+        QUANTUM_SCHEDULER.lock().schedule();
+    });
 }
 
 /// Yield current process
 pub fn yield_now() {
-    QUANTUM_SCHEDULER.lock().yield_cpu();
+    with_interrupts_disabled(|| {
+        QUANTUM_SCHEDULER.lock().yield_cpu();
+    });
 }
 
 /// Block on address (futex-like)
 pub fn block_on(addr: usize) -> Result<(), &'static str> {
-    QUANTUM_SCHEDULER.lock().block_on(addr)
+    with_interrupts_disabled(|| QUANTUM_SCHEDULER.lock().block_on(addr))
 }
 
 /// Wake one waiter on address
 pub fn wake_one(addr: usize) -> Result<bool, &'static str> {
-    QUANTUM_SCHEDULER.lock().wake_one(addr)
+    with_interrupts_disabled(|| QUANTUM_SCHEDULER.lock().wake_one(addr))
 }
 
 /// Wake all waiters on address
 pub fn wake_all(addr: usize) -> Result<usize, &'static str> {
-    QUANTUM_SCHEDULER.lock().wake_all(addr)
+    with_interrupts_disabled(|| QUANTUM_SCHEDULER.lock().wake_all(addr))
 }

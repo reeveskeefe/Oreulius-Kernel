@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /Users/keefereeves/Desktop/oreulia/kernel
+cd oreulia/kernel
 ./build.sh > /tmp/build-output.log 2>&1
 if [ $? -eq 0 ]; then
     echo "✓ Build successful!"

@@ -1,0 +1,6 @@
+QEMU 10.0.3 monitor - type 'help' for more information
+(qemu) s[K[Dse[K[D[Dsen[K[D[D[Dsend[K[D[D[D[Dsendk[K[D[D[D[D[Dsendke[K[D[D[D[D[D[Dsendkey[K[D[D[D[D[D[D[Dsendkey [K[D[D[D[D[D[D[D[Dsendkey a[K
+(qemu) QEMU 10.0.3 monitor - type 'help' for more information
+(qemu) x[K[Dxp[K[D[Dxp [K[D[D[Dxp /[K[D[D[D[Dxp /2[K[D[D[D[D[Dxp /2h[K[D[D[D[D[D[Dxp /2hx[K[D[D[D[D[D[D[Dxp /2hx [K[D[D[D[D[D[D[D[Dxp /2hx 0[K[D[D[D[D[D[D[D[D[Dxp /2hx 0x[K[D[D[D[D[D[D[D[D[D[Dxp /2hx 0xb[K[D[D[D[D[D[D[D[D[D[D[Dxp /2hx 0xb8[K[D[D[D[D[D[D[D[D[D[D[D[Dxp /2hx 0xb80[K[D[D[D[D[D[D[D[D[D[D[D[D[Dxp /2hx 0xb809[K[D[D[D[D[D[D[D[D[D[D[D[D[D[Dxp /2hx 0xb809c[K
+00000000000b809c: 0x0f20 0x0f20
+(qemu) 

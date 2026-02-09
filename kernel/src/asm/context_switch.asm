@@ -114,13 +114,17 @@ asm_load_context:
     ; Load new stack pointer
     mov esp, [edi + 24]
     
-    ; Now load ALL general-purpose registers from context (except EAX)
+    ; Load ALL general-purpose registers from context (except EAX)
     mov ebx, [edi + 0]
     mov ecx, [edi + 4]
     mov edx, [edi + 8]
     mov esi, [edi + 12]
     mov ebp, [edi + 20]
     
+    ; Load EFLAGS (restore interrupt state)
+    push dword [edi + 32]
+    popfd
+
     ; Load EDI last (we need it for addressing until now)
     push dword [edi + 16]
     pop edi

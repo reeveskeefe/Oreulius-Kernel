@@ -64,10 +64,11 @@ lazy_static::lazy_static! {
 pub fn _print(args: core::fmt::Arguments) {
     use core::fmt::Write;
 
-    SERIAL1
-        .lock()
-        .write_fmt(args)
-        .expect("serial write failed");
+    // Use try_lock to avoid deadlocks in interrupt handlers
+    if let Some(mut serial) = SERIAL1.try_lock() {
+        let _ = serial.write_fmt(args);
+    }
+    // If locked, we drop the message to prevent deadlock
 }
 
 #[macro_export]

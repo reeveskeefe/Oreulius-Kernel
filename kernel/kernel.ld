@@ -23,9 +23,11 @@ SECTIONS {
     }
     
     .bss : {
+        sbss = .;
         *(.bss)
         *(.bss.*)
         *(COMMON)
+        ebss = .;
     }
     
     /* Define heap region after BSS (NOLOAD = not included in binary) */

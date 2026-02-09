@@ -411,10 +411,26 @@ unsafe fn outb(port: u16, value: u8) {
     );
 }
 
+#[inline]
+unsafe fn inb(port: u16) -> u8 {
+    let value: u8;
+    core::arch::asm!(
+        "in al, dx",
+        out("al") value,
+        in("dx") port,
+        options(nomem, nostack, preserves_flags)
+    );
+    value
+}
+
 fn set_pic_masks(master: u8, slave: u8) {
     unsafe {
         outb(PIC1_DATA, master);
         outb(PIC2_DATA, slave);
+        
+        let m1 = inb(PIC1_DATA);
+        let m2 = inb(PIC2_DATA);
+        crate::serial_println!("[PIC] Masks set to M:{:02X} S:{:02X} (Read back: M:{:02X} S:{:02X})", master, slave, m1, m2);
     }
 }
 
@@ -439,8 +455,8 @@ pub fn init() {
         // Remap PIC to 32-47 to avoid conflicts with CPU exceptions
         Pic::remap(32, 40);
         
-        // Mask all IRQs during early init; unmask later once scheduler starts
-        let master_mask = 0xFF; // 11111111b
+        // DEBUG: Unmask Timer(0) and Keyboard(1) IMMEDIATELY to test interrupts
+        let master_mask = 0xFC; // 11111100b
         let slave_mask = 0xFF;  // 11111111b
         set_pic_masks(master_mask, slave_mask);
         
@@ -508,6 +524,18 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
     // unsafe { crate::advanced_commands::print_hex(frame as usize); crate::vga::print_char('I'); }
     
     let frame = unsafe { &*frame };
+
+    // VISUAL DEBUG: Every time IRQ 33 (Keyboard) fires, increment a counter on screen at (0, 70)
+    // We use a raw VGA write to avoid locks or dependencies.
+    if frame.int_no == 33 {
+        unsafe {
+            let vga = 0xb8000 as *mut u16;
+            let val = *vga.add(70);
+            let char_part = (val & 0xFF) as u8;
+            let new_char = if char_part >= b'z' { b'a' } else { char_part + 1 };
+            *vga.add(70) = 0x0E00 | (new_char as u16);
+        }
+    }
     
     unsafe { increment_interrupt_count(frame.int_no as u8) }
     
@@ -518,6 +546,7 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
                 // Acknowledge before preemptive scheduling
                 Pic::send_eoi(irq);
                 crate::pit::tick();
+
                 
                 // Network stack tick
                 // if let Some(mut stack) = crate::netstack::NETWORK_STACK.try_lock() {
@@ -528,7 +557,10 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
                 return;
             }
             Irq::Keyboard => {
-                crate::keyboard::handle_irq();
+                unsafe { crate::keyboard::handle_irq(); }
+            }
+            Irq::Mouse => {
+                unsafe { crate::keyboard::handle_aux_irq(); }
             }
             Irq::PrimaryATA => {
                 crate::disk::handle_primary_irq();

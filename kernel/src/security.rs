@@ -473,6 +473,7 @@ pub fn verify_integrity(data: &[u8], expected_hash: u64) -> bool {
 // ============================================================================
 
 /// Global security manager
+#[repr(align(64))]
 pub struct SecurityManager {
     audit_log: Mutex<AuditLog>,
     validator: Mutex<CapabilityValidator>,
@@ -494,13 +495,8 @@ impl SecurityManager {
 
     /// Log security event
     pub fn log_event(&self, entry: AuditEntry) {
-        crate::vga::print_str("[SEC-DEBUG] log_event: locking log\n");
         if let Some(mut log) = self.audit_log.try_lock() {
             log.log(entry);
-            crate::vga::print_str("[SEC-DEBUG] log_event: logged\n");
-        } else {
-             crate::vga::print_str("[SEC-DEBUG] log_event: FAILED TO LOCK log (ALREADY LOCKED)\n");
-             // Force unlock? unsafe { self.audit_log.force_unlock(); } // spin crate might have this
         }
     }
 
@@ -640,40 +636,11 @@ pub fn security() -> &'static SecurityManager {
 
 /// Initialize security subsystem
 pub fn init() {
-    crate::vga::print_str("[SECURITY-DEBUG] init start\n");
-    
-    // Debug addresses and sizes
-    let sec_addr = &SECURITY as *const _ as usize;
-    crate::vga::print_str("[SECURITY-DEBUG] SECURITY addr: 0x");
-    crate::advanced_commands::print_hex(sec_addr);
-    crate::vga::print_str(" size: ");
-    crate::advanced_commands::print_hex(core::mem::size_of_val(&SECURITY));
-    crate::vga::print_str("\n");
-    
     // Seed random number generator
     let seed = 0xDEADBEEF; 
-    crate::vga::print_str("[SECURITY-DEBUG] locking random\n");
     
     // Try lock
-    match SECURITY.random.try_lock() {
-        Some(mut random) => {
-             crate::vga::print_str("[SECURITY-DEBUG] got lock\n");
-             random.state ^= seed;
-             crate::vga::print_str("[SECURITY-DEBUG] random seeded\n");
-        }
-        None => {
-             crate::vga::print_str("[SECURITY-DEBUG] FAILED to lock random\n");
-             // Check if we can unlock forcefully (unsafe, only for debug)
-             // unsafe { SECURITY.random.force_unlock(); }
-        }
+    if let Some(mut random) = SECURITY.random.try_lock() {
+         random.state ^= seed;
     }
-    
-    crate::vga::print_str("[SECURITY-DEBUG] checking audit log lock\n");
-    if let Some(_log) = SECURITY.audit_log.try_lock() {
-         crate::vga::print_str("[SECURITY-DEBUG] audit log is free\n");
-    } else {
-         crate::vga::print_str("[SECURITY-DEBUG] audit log is LOCKED\n");
-    }
-
-    crate::vga::print_str("[SECURITY-DEBUG] init done\n");
 }

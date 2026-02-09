@@ -12,6 +12,8 @@ align 4
 section .text
 global _start
 extern rust_main
+extern sbss
+extern ebss
 
 _start:
     ; Direct VGA write - no BIOS interrupts (we're in protected mode)
@@ -26,6 +28,14 @@ _start:
     mov word [0xb8002], 0x074f  ; 'O' light gray
     mov word [0xb8004], 0x074f  ; 'O' light gray
     mov word [0xb8006], 0x0754  ; 'T' light gray
+
+    ; Zero BSS section (vital for static Mutexes)
+    mov edi, sbss
+    mov ecx, ebss
+    sub ecx, sbss
+    shr ecx, 2      ; Convert bytes to dwords
+    xor eax, eax
+    rep stosd
     
     ; Set up stack
     mov esp, stack_top
@@ -52,5 +62,5 @@ _start:
 section .bss
 align 16
 stack_bottom:
-    resb 16384
+    resb 131072
 stack_top:

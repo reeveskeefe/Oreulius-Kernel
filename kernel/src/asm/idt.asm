@@ -291,26 +291,34 @@ pic_remap:
     ; Start initialization
     mov al, 0x11
     out 0x20, al            ; ICW1: Init master
+    out 0x80, al            ; wait
     out 0xA0, al            ; ICW1: Init slave
+    out 0x80, al            ; wait
     
     ; Set vector offsets
     mov al, [esp + 12]      ; offset1
     out 0x21, al            ; ICW2: Master offset
+    out 0x80, al            ; wait
     
     mov al, [esp + 16]      ; offset2
     out 0xA1, al            ; ICW2: Slave offset
+    out 0x80, al            ; wait
     
     ; Set up cascade
     mov al, 4
     out 0x21, al            ; ICW3: Master has slave at IRQ2
+    out 0x80, al            ; wait
     
     mov al, 2
     out 0xA1, al            ; ICW3: Slave cascade identity
+    out 0x80, al            ; wait
     
     ; Set mode
     mov al, 0x01
     out 0x21, al            ; ICW4: 8086 mode
+    out 0x80, al            ; wait
     out 0xA1, al
+    out 0x80, al            ; wait
     
     ; Restore masks
     mov al, bl
