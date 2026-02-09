@@ -5,7 +5,7 @@
 **A capability-based, WebAssembly-native operating system built from the ground up**
 
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange.svg)](https://www.rust-lang.org/)
-[![License: Oreulius](docs/oreulius-license-badge.svg)](OreuliusLiscence.txt)
+[![License: Oreulius](docs/oreulius-license-badge.svg)](OreuliusLiscence)
 [![Platform](https://img.shields.io/badge/platform-i686-lightgrey.svg)](https://en.wikipedia.org/wiki/I686)
 
 [Features](#features) • [Architecture](#architecture) • [Building](#building) • [Running](#running) • [Commands](#commands) • [Documentation](#documentation)
