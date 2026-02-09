@@ -5,7 +5,7 @@
 **A capability-based, WebAssembly-native operating system built from the ground up**
 
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: Oreulius](docs/oreulius-license-badge.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-i686-lightgrey.svg)](https://en.wikipedia.org/wiki/I686)
 
 [Features](#features) • [Architecture](#architecture) • [Building](#building) • [Running](#running) • [Commands](#commands) • [Documentation](#documentation)
@@ -232,7 +232,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[Filesystem](docs/oreulia-filesystem.md)** - Virtual filesystem implementation
 - **[WASM ABI](docs/oreulia-wasm-abi.md)** - WebAssembly host interface
 - **[Assembly Enhancements](docs/assembly-enhancements.md)** - Low-level optimization details
-- **[Assembly Quick Reference](docs/assembly-quick-reference.md)** - Developer API guide
+- **[Contributing](docs/CONTRIBUTING.md)** - Contribution guidelines and process
 
 ---
 
@@ -240,30 +240,31 @@ Comprehensive documentation is available in the `docs/` directory:
 
 ```
 oreulia/
-├── kernel/              # Kernel source code
-│   ├── src/            # Rust kernel modules
-│   ├── asm/            # x86 assembly modules
-│   ├── boot.asm        # Multiboot boot stub
-│   ├── build.sh        # Build script
-│   └── kernel.ld       # Linker script
-├── docs/               # Documentation
-├── services/           # User-space services (planned)
-└── wasm/              # WASM modules (planned)
+├── kernel/              # Kernel workspace
+│   ├── .cargo/          # Cargo config
+│   ├── Cargo.toml       # Kernel crate manifest
+│   ├── Cargo.lock       # Dependency lockfile
+│   ├── README.md        # Kernel-specific docs
+│   ├── build.sh         # Build script
+│   ├── build-iso.sh     # ISO build script
+│   ├── run.sh           # QEMU run script
+│   ├── quick-rebuild.sh # Fast rebuild helper
+│   ├── kernel.ld        # Linker script
+│   ├── i686-oreulia.json# Target spec
+│   ├── src/             # Rust kernel modules
+│   │   └── asm/         # x86 assembly modules
+│   ├── iso/             # ISO staging
+│   ├── iso_check/       # ISO validation
+│   ├── target/          # Cargo build output
+│   ├── oreulia.iso      # Build artifact
+│   └── run*.log         # Runtime logs (qemu/run/output)
+├── docs/                # Documentation
+├── services/            # User-space services (planned)
+└── wasm/                # WASM modules (planned)
 ```
 
 ---
 
-## Development
-
-### Code Organization
-
-- **Security**: `src/security.rs`, `src/capability.rs`
-- **Process Management**: `src/process.rs`, `src/scheduler.rs`
-- **IPC**: `src/ipc.rs`
-- **Filesystem**: `src/fs.rs`
-- **Networking**: `src/net.rs`, `src/netstack.rs`, `src/e1000.rs`
-- **WASM**: `src/wasm.rs`
-- **Assembly**: `asm/cpu_features.asm`, `asm/atomic.asm`, `asm/perf.asm`
 
 ### Performance Characteristics
 
@@ -306,6 +307,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 <div align="center">
 
-**Made with ⚡ by Keefe Reeves**
+**Made by Keefe Reeves and any potential contributors of the Oreulius Community**
 
 </div>
