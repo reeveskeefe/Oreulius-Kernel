@@ -521,6 +521,12 @@ pub fn write_str(s: &str) {
     });
 }
 
+pub fn write_str_no_serial(s: &str) {
+    without_interrupts(|| {
+        TERMINAL.lock().write_str(s);
+    });
+}
+
 pub fn write_char(c: char) {
     // Echo to serial for automated testing
     if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {

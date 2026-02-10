@@ -557,6 +557,6 @@ fn redraw_line(input: &[u8; 256], len: usize, cursor: usize, prompt_pos: (usize,
     terminal::set_cursor(prompt_pos.0, prompt_pos.1);
     terminal::clear_line_from_cursor();
     let line = core::str::from_utf8(&input[..len]).unwrap_or("");
-    terminal::write_str(line);
+    terminal::write_str_no_serial(line);
     terminal::set_cursor(prompt_pos.0, prompt_pos.1 + cursor);
 }

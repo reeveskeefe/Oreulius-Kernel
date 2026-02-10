@@ -216,11 +216,6 @@ pub fn _print(args: fmt::Arguments) {
 }
 
 pub fn print_str(s: &str) {
-    use core::fmt::Write;
-    // Write to serial port for debugging (capture logs)
-    if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
-        let _ = serial.write_str(s);
-    }
     crate::terminal::write_str(s);
 }
 
