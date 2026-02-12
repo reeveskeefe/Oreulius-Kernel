@@ -301,52 +301,42 @@ impl LinearMemory {
 
 /// Value stack for WASM execution
 pub struct Stack {
-    values: [Value; MAX_STACK_DEPTH],
-    top: usize,
+    values: Vec<Value>,
 }
 
 impl Stack {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Stack {
-            values: [Value::I32(0); MAX_STACK_DEPTH],
-            top: 0,
+            values: Vec::with_capacity(MAX_STACK_DEPTH),
         }
     }
 
     pub fn push(&mut self, value: Value) -> Result<(), WasmError> {
-        if self.top >= MAX_STACK_DEPTH {
+        if self.values.len() >= MAX_STACK_DEPTH {
             return Err(WasmError::StackOverflow);
         }
-        self.values[self.top] = value;
-        self.top += 1;
+        self.values.push(value);
         Ok(())
     }
 
     pub fn pop(&mut self) -> Result<Value, WasmError> {
-        if self.top == 0 {
-            return Err(WasmError::StackUnderflow);
-        }
-        self.top -= 1;
-        Ok(self.values[self.top])
+        self.values.pop().ok_or(WasmError::StackUnderflow)
     }
 
     pub fn peek(&self) -> Result<Value, WasmError> {
-        if self.top == 0 {
-            return Err(WasmError::StackUnderflow);
-        }
-        Ok(self.values[self.top - 1])
+        self.values.last().copied().ok_or(WasmError::StackUnderflow)
     }
 
     pub fn len(&self) -> usize {
-        self.top
+        self.values.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.top == 0
+        self.values.is_empty()
     }
 
     pub fn clear(&mut self) {
-        self.top = 0;
+        self.values.clear();
     }
 }
 
@@ -428,7 +418,7 @@ pub struct Function {
 /// A loaded WASM module
 pub struct WasmModule {
     /// Module bytecode
-    bytecode: [u8; MAX_MODULE_SIZE],
+    bytecode: Vec<u8>,
     /// Bytecode length
     bytecode_len: usize,
     /// Functions in the module
@@ -439,9 +429,9 @@ pub struct WasmModule {
 
 impl WasmModule {
     /// Create a new empty module
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         WasmModule {
-            bytecode: [0u8; MAX_MODULE_SIZE],
+            bytecode: Vec::with_capacity(MAX_MODULE_SIZE),
             bytecode_len: 0,
             functions: [None; 64],
             function_count: 0,
@@ -454,7 +444,8 @@ impl WasmModule {
             return Err(WasmError::ModuleTooLarge);
         }
 
-        self.bytecode[..bytecode.len()].copy_from_slice(bytecode);
+        self.bytecode.clear();
+        self.bytecode.extend_from_slice(bytecode);
         self.bytecode_len = bytecode.len();
 
         // For v0, we'll use a simplified function format
@@ -496,7 +487,7 @@ pub struct WasmInstance {
     /// Value stack
     pub stack: Stack,
     /// Local variables
-    locals: [Value; MAX_LOCALS],
+    locals: Vec<Value>,
     /// Program counter
     pc: usize,
     /// Capability table
@@ -510,11 +501,11 @@ pub struct WasmInstance {
     /// JIT cache (per-function hash)
     jit_hash: [Option<u32>; 64],
     /// JIT stack (i32 only)
-    jit_stack: [i32; MAX_STACK_DEPTH],
+    jit_stack: Vec<i32>,
     jit_sp: usize,
     jit_enabled: bool,
     jit_hot: [u32; 64],
-    jit_locals: [i32; MAX_LOCALS],
+    jit_locals: Vec<i32>,
 }
 
 impl WasmInstance {
@@ -524,7 +515,7 @@ impl WasmInstance {
             module,
             memory: LinearMemory::new(1), // 1 page = 64 KiB
             stack: Stack::new(),
-            locals: [Value::I32(0); MAX_LOCALS],
+            locals: alloc::vec![Value::I32(0); MAX_LOCALS],
             pc: 0,
             capabilities: CapabilityTable::new(),
             process_id,
@@ -532,11 +523,11 @@ impl WasmInstance {
             memory_op_count: 0,
             syscall_count: 0,
             jit_hash: [None; 64],
-            jit_stack: [0; MAX_STACK_DEPTH],
+            jit_stack: alloc::vec![0; MAX_STACK_DEPTH],
             jit_sp: 0,
             jit_enabled: false,
             jit_hot: [0; 64],
-            jit_locals: [0; MAX_LOCALS],
+            jit_locals: alloc::vec![0; MAX_LOCALS],
         }
     }
 
