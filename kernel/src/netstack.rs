@@ -6,7 +6,6 @@
 #![allow(dead_code)]
 
 extern crate alloc;
-use spin::Mutex;
 
 // ============================================================================
 // Network Interface Trait (Universal Abstraction)
@@ -625,9 +624,33 @@ impl NetworkStack {
 
     /// Timer tick for retransmission/timers
     pub fn tick(&mut self) {
-        let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
-        tcp.tick(self);
-        self.tcp = tcp;
+        let now = crate::pit::get_ticks();
+        for i in 0..self.tcp.conns.len() {
+            let mut action: Option<(TcpEndpoint, u32, u32, u16, [u8; 256], usize)> = None;
+            {
+                let conn = &mut self.tcp.conns[i];
+                if !conn.in_use || conn.last_send_tick == 0 {
+                    continue;
+                }
+                if now - conn.last_send_tick < conn.rto_ticks {
+                    continue;
+                }
+                if conn.retries >= 5 {
+                    conn.state = TcpState::Closed;
+                    conn.in_use = false;
+                    continue;
+                }
+                let mut payload = [0u8; 256];
+                let len = conn.last_payload_len;
+                payload[..len].copy_from_slice(&conn.last_payload[..len]);
+                action = Some((tcp_endpoint(conn), conn.last_seq, conn.last_ack, conn.last_flags, payload, len));
+                conn.retries = conn.retries.saturating_add(1);
+                conn.last_send_tick = now;
+            }
+            if let Some((ep, seq, ack, flags, payload, len)) = action {
+                let _ = send_tcp_segment(self, ep, seq, ack, flags, &payload[..len]);
+            }
+        }
     }
     
     // ========================================================================
@@ -1390,22 +1413,4 @@ impl NetworkStack {
 fn calculate_checksum(data: &[u8]) -> u16 {
     // Use assembly implementation for 8x performance boost
     crate::asm_bindings::ip_checksum(data)
-}
-
-// ============================================================================
-// Global Network Stack
-// ============================================================================
-
-pub static NETWORK_STACK: Mutex<NetworkStack> = Mutex::new(NetworkStack::new());
-
-pub fn network_stack() -> &'static Mutex<NetworkStack> {
-    &NETWORK_STACK
-}
-
-/// Network IRQ hook (polls for received frames)
-pub fn on_irq() {
-    crate::e1000::handle_irq();
-    if let Some(mut stack) = NETWORK_STACK.try_lock() {
-        let _ = stack.poll_once();
-    }
 }

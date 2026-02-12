@@ -6,6 +6,7 @@
 use crate::pci::PciDevice;
 use crate::netstack::NetworkInterface;
 use spin::Mutex;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 // E1000 Register Offsets
 const E1000_REG_CTRL: u32 = 0x0000;      // Device Control
@@ -56,8 +57,13 @@ const NUM_RX_DESC: usize = 32;
 const NUM_TX_DESC: usize = 32;
 
 // Simple buffer pool (static memory for MVP)
-static mut RX_BUFFERS: [[u8; 2048]; NUM_RX_DESC] = [[0; 2048]; NUM_RX_DESC];
-static mut TX_BUFFERS: [[u8; 2048]; NUM_TX_DESC] = [[0; 2048]; NUM_TX_DESC];
+#[repr(align(4096))]
+struct AlignedRxPool { data: [[u8; 2048]; NUM_RX_DESC] }
+#[repr(align(4096))]
+struct AlignedTxPool { data: [[u8; 2048]; NUM_TX_DESC] }
+
+static mut RX_BUFFERS: AlignedRxPool = AlignedRxPool { data: [[0; 2048]; NUM_RX_DESC] };
+static mut TX_BUFFERS: AlignedTxPool = AlignedTxPool { data: [[0; 2048]; NUM_TX_DESC] };
 static mut RX_DESCS: [E1000RxDesc; NUM_RX_DESC] = [E1000RxDesc::new(); NUM_RX_DESC];
 static mut TX_DESCS: [E1000TxDesc; NUM_TX_DESC] = [E1000TxDesc::new(); NUM_TX_DESC];
 
@@ -120,6 +126,9 @@ pub struct E1000Driver {
     tx_tail: usize,
 }
 
+// MMIO base for IRQ-safe interrupt acknowledge
+static E1000_MMIO_BASE: AtomicU32 = AtomicU32::new(0);
+
 impl E1000Driver {
     /// Create a new E1000 driver instance
     pub fn new(pci_device: PciDevice) -> Self {
@@ -147,6 +156,7 @@ impl E1000Driver {
         }
         
         self.mmio_base = bar0 & !0xF;  // Clear flag bits
+        E1000_MMIO_BASE.store(self.mmio_base, Ordering::Release);
         
         // Reset the device
         self.reset();
@@ -189,9 +199,14 @@ impl E1000Driver {
     /// Initialize receive descriptors
     fn init_rx(&mut self) {
         unsafe {
+            let rx_phys = RX_BUFFERS.data.as_ptr() as u32;
+            crate::serial_println!("[NET] Rx Buffers: {:#x} - {:#x}", rx_phys, rx_phys + (2048 * NUM_RX_DESC) as u32);
+            crate::serial_println!("[NET] Rx Descriptors: {:#x}", &RX_DESCS as *const _ as u32);
+            crate::serial_println!("[NET] Tx Buffers: {:#x} - {:#x}", &TX_BUFFERS as *const _ as u32, &TX_BUFFERS as *const _ as u32 + (2048 * NUM_TX_DESC) as u32);
+            crate::serial_println!("[NET] Tx Descriptors: {:#x}", &TX_DESCS as *const _ as u32);
             // Setup descriptor ring
             for i in 0..NUM_RX_DESC {
-                RX_DESCS[i].addr = RX_BUFFERS[i].as_ptr() as u64;
+                RX_DESCS[i].addr = RX_BUFFERS.data[i].as_ptr() as u64;
                 RX_DESCS[i].status = 0;
             }
             
@@ -218,11 +233,14 @@ impl E1000Driver {
     /// Initialize transmit descriptors
     fn init_tx(&mut self) {
         unsafe {
+            let tx_phys = TX_BUFFERS.data.as_ptr() as u32;
+            crate::serial_println!("[NET] Tx Buffers: {:#x} - {:#x}", &TX_BUFFERS as *const _ as u32, &TX_BUFFERS as *const _ as u32 + (2048 * NUM_TX_DESC) as u32);
+            crate::serial_println!("[NET] Tx Descriptors: {:#x}", &TX_DESCS as *const _ as u32);
             // Setup descriptor ring
             for i in 0..NUM_TX_DESC {
-                TX_DESCS[i].addr = TX_BUFFERS[i].as_ptr() as u64;
+                TX_DESCS[i].addr = TX_BUFFERS.data[i].as_ptr() as u64;
                 TX_DESCS[i].cmd = 0;
-                TX_DESCS[i].status = E1000_TXD_STAT_DD;  // Mark as done
+                TX_DESCS[i].status = E1000_TXD_STAT_DD;
             }
             
             // Set descriptor base address
@@ -302,7 +320,7 @@ impl E1000Driver {
                 return Err("Buffer too small");
             }
             
-            crate::asm_bindings::fast_memcpy(&mut buffer[..len], &RX_BUFFERS[self.rx_tail][..len]);
+            crate::asm_bindings::fast_memcpy(&mut buffer[..len], &RX_BUFFERS.data[self.rx_tail][..len]);
             
             // Reset descriptor
             RX_DESCS[self.rx_tail].status = 0;
@@ -326,17 +344,13 @@ impl E1000Driver {
         }
         
         unsafe {
-            // Wait for descriptor to be available
-            let mut timeout = 10000;
-            while TX_DESCS[self.tx_tail].status & E1000_TXD_STAT_DD == 0 {
-                timeout -= 1;
-                if timeout == 0 {
-                    return Err("TX timeout");
-                }
+            // Non-blocking: descriptor must be available
+            if TX_DESCS[self.tx_tail].status & E1000_TXD_STAT_DD == 0 {
+                return Err("TX busy");
             }
             
             // Copy packet data (using fast assembly memcpy - 5x faster)
-            crate::asm_bindings::fast_memcpy(&mut TX_BUFFERS[self.tx_tail][..data.len()], data);
+            crate::asm_bindings::fast_memcpy(&mut TX_BUFFERS.data[self.tx_tail][..data.len()], data);
             
             // Setup descriptor
             TX_DESCS[self.tx_tail].length = data.len() as u16;
@@ -344,18 +358,8 @@ impl E1000Driver {
             TX_DESCS[self.tx_tail].status = 0;
             
             // Update tail pointer
-            let old_tail = self.tx_tail;
             self.tx_tail = (self.tx_tail + 1) % NUM_TX_DESC;
             self.write_reg(E1000_REG_TDT, self.tx_tail as u32);
-            
-            // Wait for transmission (optional but ensures packet is sent)
-            timeout = 10000;
-            while TX_DESCS[old_tail].status & E1000_TXD_STAT_DD == 0 {
-                timeout -= 1;
-                if timeout == 0 {
-                    return Err("TX completion timeout");
-                }
-            }
             
             Ok(())
         }
@@ -396,9 +400,19 @@ pub fn is_link_up() -> bool {
 
 /// Handle E1000 IRQ (if enabled)
 pub fn handle_irq() {
-    if let Some(driver) = E1000_DRIVER.lock().as_mut() {
-        driver.handle_irq();
+    let base = E1000_MMIO_BASE.load(Ordering::Acquire);
+    if base == 0 {
+        return;
     }
+    unsafe {
+        let addr = (base + E1000_REG_ICR) as *const u32;
+        let _ = core::ptr::read_volatile(addr);
+    }
+}
+
+/// Get MMIO base (for diagnostics)
+pub fn mmio_base() -> u32 {
+    E1000_MMIO_BASE.load(Ordering::Acquire)
 }
 
 // ============================================================================

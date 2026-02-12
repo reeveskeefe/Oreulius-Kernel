@@ -487,7 +487,12 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
         unsafe {
             core::arch::asm!("mov {}, cr2", out(reg) fault_addr);
         }
-        crate::paging::rust_page_fault_handler(frame.err_code, fault_addr as usize);
+        crate::paging::rust_page_fault_handler_ex(
+            frame.err_code,
+            fault_addr as usize,
+            frame.eip as usize,
+            frame.esp as usize,
+        );
         return;
     }
     
@@ -569,7 +574,7 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
                 crate::disk::handle_secondary_irq();
             }
             Irq::Free2 | Irq::Free3 => {
-                crate::netstack::on_irq();
+                crate::net_reactor::on_irq();
             }
             _ => {}
         }

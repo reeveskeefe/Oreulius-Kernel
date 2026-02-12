@@ -38,6 +38,7 @@ asm_switch_context:
     ; Save EFLAGS
     pushfd
     pop ecx
+    or ecx, 0x200           ; Ensure IF stays enabled for saved context
     mov [eax + 32], ecx
 
 .load_only:
@@ -57,7 +58,8 @@ asm_switch_context:
     push dword [eax + 32]
     popfd
     
-    ; Jump to saved EIP (process resumes execution)
+    ; Simulate ret: Increment ESP to skip the saved EIP slot, then jump to it
+    add esp, 4
     jmp [eax + 28]
 
 ; Save current context to memory
@@ -130,6 +132,7 @@ asm_load_context:
     pop edi
     
     ; EAX still has the target EIP - jump directly to it
+    add esp, 4
     jmp eax
 
 ; Thread start trampoline
@@ -157,4 +160,3 @@ _thread_start_trampoline:
 .halt:
     hlt
     jmp .halt
-

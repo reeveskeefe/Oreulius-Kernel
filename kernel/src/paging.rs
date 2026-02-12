@@ -662,6 +662,12 @@ impl PageFaultError {
 /// Page fault handler called from assembly
 #[no_mangle]
 pub extern "C" fn rust_page_fault_handler(error_code: u32, fault_addr: usize) {
+    // Legacy entry point (assembly calls this). EIP unknown in this path.
+    rust_page_fault_handler_ex(error_code, fault_addr, 0, 0);
+}
+
+#[no_mangle]
+pub extern "C" fn rust_page_fault_handler_ex(error_code: u32, fault_addr: usize, eip: usize, esp: usize) {
     use crate::vga;
     
     // Update statistics
@@ -718,6 +724,56 @@ pub extern "C" fn rust_page_fault_handler(error_code: u32, fault_addr: usize) {
     vga::print_str("User mode: ");
     vga::print_str(if error.user { "yes" } else { "no" });
     vga::print_str("\n");
+
+    if eip != 0 {
+        vga::print_str("EIP: 0x");
+        crate::advanced_commands::print_hex(eip);
+        vga::print_str("\n");
+    } else {
+        vga::print_str("EIP: (unknown)\n");
+    }
+
+    if esp != 0 {
+        vga::print_str("ESP: 0x");
+        crate::advanced_commands::print_hex(esp);
+        vga::print_str("\n");
+    } else {
+        vga::print_str("ESP: (unknown)\n");
+    }
+
+    let stacks = crate::quantum_scheduler::kernel_stack_bounds();
+    vga::print_str("KSTACK0: 0x");
+    crate::advanced_commands::print_hex(stacks[0].0);
+    vga::print_str(" - 0x");
+    crate::advanced_commands::print_hex(stacks[0].1);
+    vga::print_str("\n");
+    vga::print_str("KSTACK1: 0x");
+    crate::advanced_commands::print_hex(stacks[1].0);
+    vga::print_str(" - 0x");
+    crate::advanced_commands::print_hex(stacks[1].1);
+    vga::print_str("\n");
+    vga::print_str("ESP in KSTACK0: ");
+    let in0 = esp >= stacks[0].0 && esp < stacks[0].1;
+    vga::print_str(if in0 { "yes" } else { "no" });
+    vga::print_str("\n");
+    vga::print_str("ESP in KSTACK1: ");
+    let in1 = esp >= stacks[1].0 && esp < stacks[1].1;
+    vga::print_str(if in1 { "yes" } else { "no" });
+    vga::print_str("\n");
+
+    let mmio_base = crate::e1000::mmio_base() as usize;
+    if mmio_base != 0 {
+        let mmio_end = mmio_base + 128 * 1024;
+        vga::print_str("E1000 MMIO: 0x");
+        crate::advanced_commands::print_hex(mmio_base);
+        vga::print_str(" - 0x");
+        crate::advanced_commands::print_hex(mmio_end);
+        vga::print_str("\n");
+        vga::print_str("Fault in MMIO range: ");
+        let in_range = fault_addr >= mmio_base && fault_addr < mmio_end;
+        vga::print_str(if in_range { "yes" } else { "no" });
+        vga::print_str("\n");
+    }
     
     // Halt
     loop {

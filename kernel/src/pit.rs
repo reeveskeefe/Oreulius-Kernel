@@ -3,7 +3,7 @@
 //! The PIT generates periodic timer interrupts for preemptive multitasking.
 //! We configure it to fire IRQ0 at a configurable frequency (default 100 Hz).
 
-use spin::Mutex;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 // PIT I/O ports
 const PIT_CHANNEL_0: u16 = 0x40;
@@ -15,8 +15,9 @@ const PIT_FREQUENCY: u32 = 1193182;
 // Target interrupt frequency (100 Hz = 10ms ticks)
 const TIMER_HZ: u32 = 100;
 
-// Global tick counter
-static TICKS: Mutex<u64> = Mutex::new(0);
+// Global tick counter (IRQ-safe, 64-bit via two 32-bit atomics)
+static TICKS_LO: AtomicU32 = AtomicU32::new(0);
+static TICKS_HI: AtomicU32 = AtomicU32::new(0);
 
 /// Initialize the PIT timer
 pub fn init() {
@@ -34,18 +35,27 @@ pub fn init() {
 
 /// Called by the timer interrupt handler
 pub fn tick() {
-    let mut ticks = TICKS.lock();
-    *ticks += 1;
+    let prev = TICKS_LO.fetch_add(1, Ordering::Relaxed);
+    if prev == u32::MAX {
+        TICKS_HI.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Get current tick count
 pub fn get_ticks() -> u64 {
-    *TICKS.lock()
+    loop {
+        let hi1 = TICKS_HI.load(Ordering::Relaxed);
+        let lo = TICKS_LO.load(Ordering::Relaxed);
+        let hi2 = TICKS_HI.load(Ordering::Relaxed);
+        if hi1 == hi2 {
+            return ((hi1 as u64) << 32) | (lo as u64);
+        }
+    }
 }
 
 /// Try to get ticks (non-blocking) - returns None if lock held
 pub fn try_get_ticks() -> Option<u64> {
-    TICKS.try_lock().map(|t| *t)
+    Some(get_ticks())
 }
 
 /// Get timer frequency in Hz

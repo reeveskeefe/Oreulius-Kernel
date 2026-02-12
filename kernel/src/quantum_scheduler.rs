@@ -19,8 +19,13 @@ use crate::pit;
 use crate::paging;
 
 // FIX #1: Module-level stacks (properly placed in BSS by linker)
-static mut KERNEL_STACK_0: [u8; 8192] = [0; 8192];
-static mut KERNEL_STACK_1: [u8; 8192] = [0; 8192];
+#[repr(align(4096))]
+struct AlignedStack {
+    data: [u8; 65536],
+}
+static mut KERNEL_STACK_0: AlignedStack = AlignedStack { data: [0; 65536] };
+static mut KERNEL_STACK_1: AlignedStack = AlignedStack { data: [0; 65536] };
+static mut KERNEL_STACK_2: AlignedStack = AlignedStack { data: [0; 65536] };
 
 /// Quantum in ticks (100 Hz = 10ms per tick)
 const QUANTUM_HIGH: u32 = 20;      // 200ms for high priority
@@ -141,13 +146,8 @@ impl QuantumScheduler {
         Ok(())
     }
 
-    /// Schedule next process (called on timer interrupt)
-    pub fn schedule(&mut self) {
-        self.schedule_internal(None);
-    }
-
-    /// Internal schedule function allowing explicit previous PID
-    fn schedule_internal(&mut self, prev_pid_override: Option<Pid>) {
+    /// Decide the next context to switch to (returns context pointers if switching).
+    fn plan_switch(&mut self, prev_pid_override: Option<Pid>) -> Option<(*mut ProcessContext, *const ProcessContext)> {
         let now = pit::get_ticks();
         
         // Capture valid previous PID before it might get cleared
@@ -189,7 +189,7 @@ impl QuantumScheduler {
         
         // If we still have a running process with quantum remaining, keep running it
         if self.current_pid.is_some() {
-            return;
+            return None;
         }
 
         // Pick next process from ready queues (priority order)
@@ -198,16 +198,21 @@ impl QuantumScheduler {
         if next_pid.is_none() {
             self.stats.idle_ticks += 1;
             self.current_pid = None;
-            return;
+            return None;
         }
         
         let next_pid = next_pid.unwrap();
         // prev_pid was captured at start
         
-        // Context switch if needed
-        if prev_pid != Some(next_pid) {
-            self.perform_switch(prev_pid, next_pid);
-            self.stats.total_switches += 1;
+        // If no switch needed, keep running current
+        if prev_pid == Some(next_pid) {
+            self.current_pid = Some(next_pid);
+            if let Some(ref mut info) = self.processes[next_pid.0 as usize] {
+                info.process.state = ProcessState::Running;
+                info.last_scheduled = now;
+                info.switches += 1;
+            }
+            return None;
         }
         
         self.current_pid = Some(next_pid);
@@ -218,30 +223,25 @@ impl QuantumScheduler {
             info.last_scheduled = now;
             info.switches += 1;
         }
+
+        self.stats.total_switches += 1;
+
+        let from_ptr = prev_pid.and_then(|from_pid| {
+            let from_idx = from_pid.0 as usize;
+            self.processes[from_idx]
+                .as_mut()
+                .map(|info| &mut info.context as *mut ProcessContext)
+        })?;
+        let to_ptr = self.processes[next_pid.0 as usize]
+            .as_ref()
+            .map(|info| &info.context as *const ProcessContext)?;
+
+        Some((from_ptr, to_ptr))
     }
 
-    /// Perform actual context switch
-    fn perform_switch(&mut self, from: Option<Pid>, to: Pid) {
-        if let Some(from_pid) = from {
-            let from_idx = from_pid.0 as usize;
-            let to_idx = to.0 as usize;
-            
-            unsafe {
-                let from_ptr = if let Some(ref mut info) = self.processes[from_idx] {
-                    &mut info.context as *mut ProcessContext
-                } else {
-                    return;
-                };
-                
-                let to_ptr = if let Some(ref info) = self.processes[to_idx] {
-                    &info.context as *const ProcessContext
-                } else {
-                    return;
-                };
-                
-                asm_switch_context(from_ptr, to_ptr);
-            }
-        }
+    /// Schedule next process (called on timer interrupt)
+    pub fn schedule(&mut self) -> Option<(*mut ProcessContext, *const ProcessContext)> {
+        self.plan_switch(None)
     }
 
     /// Enqueue process to ready queue
@@ -272,7 +272,7 @@ impl QuantumScheduler {
     }
 
     /// Voluntary yield (cooperative)
-    pub fn yield_cpu(&mut self) {
+    pub fn yield_cpu(&mut self) -> Option<(*mut ProcessContext, *const ProcessContext)> {
         let mut prev = self.current_pid;
         if let Some(current_pid) = self.current_pid {
             let idx = current_pid.0 as usize;
@@ -284,11 +284,11 @@ impl QuantumScheduler {
             self.current_pid = None;
             self.stats.voluntary_yields += 1;
         }
-        self.schedule_internal(prev);
+        self.plan_switch(prev)
     }
 
     /// Block current process on a wait queue (futex-like)
-    pub fn block_on(&mut self, addr: usize) -> Result<(), &'static str> {
+    pub fn block_on(&mut self, addr: usize) -> Result<Option<(*mut ProcessContext, *const ProcessContext)>, &'static str> {
         let current_pid = self.current_pid.ok_or("No current process")?;
         let prev = Some(current_pid);
         
@@ -304,8 +304,7 @@ impl QuantumScheduler {
         }
         
         self.current_pid = None;
-        self.schedule_internal(prev);
-        Ok(())
+        Ok(self.plan_switch(prev))
     }
 
     /// Wake one process from wait queue
@@ -399,6 +398,9 @@ impl QuantumScheduler {
     
     /// Add a kernel thread to the scheduler
     pub fn add_kernel_thread(&mut self, entry: extern "C" fn() -> !, priority: ProcessPriority) -> Result<Pid, &'static str> {
+        unsafe {
+             crate::serial_println!("[SCHED] Process Table: {:p}", self.processes.as_ptr());
+        }
         // Find available PID
         let pid = (0..MAX_PROCESSES)
             .map(|i| Pid(i as u32))
@@ -411,9 +413,10 @@ impl QuantumScheduler {
         // Use module-level stacks (properly placed in BSS)
         let stack_slice = unsafe {
             match pid.0 {
-                0 => &mut KERNEL_STACK_0[..],
-                1 => &mut KERNEL_STACK_1[..],
-                _ => return Err("Only 2 kernel threads supported with static stacks"),
+                0 => &mut KERNEL_STACK_0.data[..],
+                1 => &mut KERNEL_STACK_1.data[..],
+                2 => &mut KERNEL_STACK_2.data[..],
+                _ => return Err("Only 3 kernel threads supported with static stacks"),
             }
         };
         
@@ -436,8 +439,10 @@ impl QuantumScheduler {
         // Use actual trampoline address from assembly
         let trampoline_addr = crate::asm_bindings::thread_start_trampoline as usize as u32;
         ctx.eip = trampoline_addr;
-        ctx.esp = stack_top - 4;
-        ctx.ebp = stack_top - 4;
+        // Start ESP 4 bytes lower because context_switch does 'add esp, 4' to simulate ret
+        // valid entry_addr is at stack_top - 4
+        ctx.esp = stack_top - 8;
+        ctx.ebp = stack_top - 8;
         ctx.cr3 = paging::current_page_directory_addr();
         
         process.state = ProcessState::Ready;
@@ -457,6 +462,8 @@ impl QuantumScheduler {
         self.enqueue_ready(pid, priority);
         
         crate::vga::print_str("\n");
+        // Print stack assignment for debugging
+        crate::serial_println!("[SCHED] Assigned PID {} stack: {:p} - {:p}", pid.0, stack_slice.as_ptr(), unsafe { stack_slice.as_ptr().add(stack_slice.len()) });
         Ok(pid)
     }
     
@@ -540,16 +547,7 @@ lazy_static::lazy_static! {
     static ref QUANTUM_SCHEDULER: Mutex<QuantumScheduler> = Mutex::new(QuantumScheduler::new());
 }
 static SCHEDULER_STARTED: AtomicBool = AtomicBool::new(false);
-
-fn with_interrupts_disabled<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    let flags = unsafe { crate::idt_asm::fast_cli_save() };
-    let ret = f();
-    unsafe { crate::idt_asm::fast_sti_restore(flags) };
-    ret
-}
+static RESCHED_REQUEST: AtomicBool = AtomicBool::new(false);
 
 /// Initialize quantum scheduler
 pub fn init() {
@@ -561,31 +559,67 @@ pub fn scheduler() -> &'static Mutex<QuantumScheduler> {
     &QUANTUM_SCHEDULER
 }
 
+/// Kernel stack bounds for diagnostics (start, end) for each kernel thread stack.
+pub fn kernel_stack_bounds() -> [(usize, usize); 2] {
+    unsafe {
+        let s0 = KERNEL_STACK_0.data.as_ptr() as usize;
+        let e0 = s0 + KERNEL_STACK_0.data.len();
+        let s1 = KERNEL_STACK_1.data.as_ptr() as usize;
+        let e1 = s1 + KERNEL_STACK_1.data.len();
+        [(s0, e0), (s1, e1)]
+    }
+}
+
 /// Timer tick handler (called from PIT interrupt)
 pub fn on_timer_tick() {
-    with_interrupts_disabled(|| {
-        QUANTUM_SCHEDULER.lock().schedule();
-    });
+    // IRQ context: only mark that a reschedule is needed.
+    RESCHED_REQUEST.store(true, Ordering::Release);
 }
 
 /// Yield current process
 pub fn yield_now() {
-    with_interrupts_disabled(|| {
-        QUANTUM_SCHEDULER.lock().yield_cpu();
-    });
+    let flags = unsafe { crate::idt_asm::fast_cli_save() };
+    RESCHED_REQUEST.store(false, Ordering::Release);
+    let switch = {
+        let mut sched = QUANTUM_SCHEDULER.lock();
+        sched.yield_cpu()
+    };
+    if let Some((from_ptr, to_ptr)) = switch {
+        unsafe { asm_switch_context(from_ptr, to_ptr); }
+    } else {
+        unsafe { crate::idt_asm::fast_sti_restore(flags) };
+    }
 }
 
 /// Block on address (futex-like)
 pub fn block_on(addr: usize) -> Result<(), &'static str> {
-    with_interrupts_disabled(|| QUANTUM_SCHEDULER.lock().block_on(addr))
+    let flags = unsafe { crate::idt_asm::fast_cli_save() };
+    let result = {
+        let mut sched = QUANTUM_SCHEDULER.lock();
+        sched.block_on(addr)
+    };
+    match result {
+        Ok(Some((from_ptr, to_ptr))) => {
+            unsafe { asm_switch_context(from_ptr, to_ptr); }
+            Ok(())
+        }
+        Ok(None) => {
+            unsafe { crate::idt_asm::fast_sti_restore(flags) };
+            Ok(())
+        }
+        Err(e) => {
+            unsafe { crate::idt_asm::fast_sti_restore(flags) };
+            Err(e)
+        }
+    }
 }
 
 /// Wake one waiter on address
 pub fn wake_one(addr: usize) -> Result<bool, &'static str> {
-    with_interrupts_disabled(|| QUANTUM_SCHEDULER.lock().wake_one(addr))
+    QUANTUM_SCHEDULER.lock().wake_one(addr)
 }
 
 /// Wake all waiters on address
 pub fn wake_all(addr: usize) -> Result<usize, &'static str> {
-    with_interrupts_disabled(|| QUANTUM_SCHEDULER.lock().wake_all(addr))
+    QUANTUM_SCHEDULER.lock().wake_all(addr)
 }

@@ -3091,14 +3091,13 @@ fn cmd_http_get(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_http_server_start(mut parts: core::str::SplitWhitespace) {
-    use crate::netstack;
+    use crate::net_reactor;
     let port = parts
         .next()
         .and_then(parse_number)
         .map(|v| v as u16)
         .unwrap_or(8080);
-    let mut stack = netstack::network_stack().lock();
-    match stack.http_server_start(port) {
+    match net_reactor::http_server_start(port) {
         Ok(()) => {
             vga::print_str("HTTP server started on port ");
             print_number(port as usize);
@@ -3113,14 +3112,19 @@ fn cmd_http_server_start(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_http_server_stop() {
-    use crate::netstack;
-    let mut stack = netstack::network_stack().lock();
-    stack.http_server_stop();
-    vga::print_str("HTTP server stopped\n");
+    use crate::net_reactor;
+    match net_reactor::http_server_stop() {
+        Ok(()) => vga::print_str("HTTP server stopped\n"),
+        Err(e) => {
+            vga::print_str("HTTP server stop failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
 }
 
 fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
-    use crate::netstack;
+    use crate::net_reactor;
     
     let domain = match parts.next() {
         Some(d) => d,
@@ -3137,9 +3141,17 @@ fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
     vga::print_str(domain);
     vga::print_str("\n");
     
-    let mut stack = netstack::network_stack().lock();
+    let info = match net_reactor::get_info() {
+        Ok(info) => info,
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n\n");
+            return;
+        }
+    };
     
-    if !stack.is_ready() {
+    if !info.ready {
         vga::print_str("Error: Network not ready\n");
         vga::print_str("Check: eth-status or pci-list\n\n");
         return;
@@ -3147,7 +3159,7 @@ fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
     
     vga::print_str("Sending UDP DNS query to 8.8.8.8...\n");
     
-    let ip = match stack.dns_resolve(domain) {
+    let ip = match net_reactor::dns_resolve(domain) {
         Ok(addr) => addr,
         Err(e) => {
             vga::print_str("Resolution failed: ");
@@ -3674,15 +3686,23 @@ fn cmd_eth_info() {
 }
 
 fn cmd_netstack_info() {
-    use crate::netstack;
+    use crate::net_reactor;
     
     vga::print_str("\n");
     vga::print_str("===== Production Network Stack =====\n\n");
     
-    let stack = netstack::network_stack().lock();
+    let info = match net_reactor::get_info() {
+        Ok(info) => info,
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
     
     vga::print_str("Status: ");
-    if stack.is_ready() {
+    if info.ready {
         vga::print_str("READY\n");
     } else {
         vga::print_str("NOT READY (no interface)\n");
@@ -3696,21 +3716,19 @@ fn cmd_netstack_info() {
     vga::print_str("  [x] Universal interface (works with any driver)\n");
     
     vga::print_str("\nMy IP: ");
-    print_ipv4_netstack(stack.get_ip());
+    print_ipv4_netstack(info.ip);
     vga::print_str("\n");
 
-    let (tcp_conns, tcp_listeners) = stack.tcp_stats();
     vga::print_str("\nTCP: ");
-    print_number(tcp_conns);
+    print_number(info.tcp_conns);
     vga::print_str(" connections, ");
-    print_number(tcp_listeners);
+    print_number(info.tcp_listeners);
     vga::print_str(" listeners\n");
 
-    let (http_running, http_port) = stack.http_server_status();
     vga::print_str("HTTP server: ");
-    vga::print_str(if http_running { "ON (port " } else { "OFF" });
-    if http_running {
-        print_number(http_port as usize);
+    vga::print_str(if info.http_running { "ON (port " } else { "OFF" });
+    if info.http_running {
+        print_number(info.http_port as usize);
         vga::print_str(")");
     }
     vga::print_str("\n");

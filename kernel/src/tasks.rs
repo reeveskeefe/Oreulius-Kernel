@@ -53,31 +53,9 @@ extern "C" fn worker_task() -> ! {
 
 #[no_mangle]
 extern "C" fn network_task() -> ! {
-    vga::print_str("[NET] Network task started\n");
+    crate::serial_println!("[NET] Network task started");
     unsafe { crate::asm_bindings::enable_interrupts(); }
-
-    let mut last_tick = crate::pit::get_ticks();
-    let mut debug_counter = 0;
-
-    loop {
-        debug_counter += 1;
-        if debug_counter % 1000 == 0 {
-            // vga::print_str("."); // Removed to reduce noise
-        }
-        
-        let current_tick = crate::pit::get_ticks();
-        
-        // Run every tick (10ms)
-        if current_tick > last_tick {
-             if let Some(mut stack) = crate::netstack::NETWORK_STACK.try_lock() {
-                 stack.tick();
-             }
-             last_tick = current_tick;
-        }
-
-        // Always yield to let other tasks run
-        crate::quantum_scheduler::yield_now();
-    }
+    crate::net_reactor::run();
 }
 
 pub fn start() -> ! {
@@ -111,11 +89,11 @@ pub fn start() -> ! {
     vga::print_str("[TASK] Shell task added successfully\n");
     vga::print_str("[TASK] Shell task registered\n");
 
-    // vga::print_str("[TASK] Adding network task to scheduler...\n");
-    // let _ = quantum_scheduler::scheduler()
-    //     .lock()
-    //     .add_kernel_thread(network_task, ProcessPriority::Normal); // Normal priority to prevent starvation
-    // vga::print_str("[TASK] Network task registered\n");
+    vga::print_str("[TASK] Adding network task to scheduler...\n");
+    let _ = quantum_scheduler::scheduler()
+        .lock()
+        .add_kernel_thread(network_task, ProcessPriority::Normal); // Normal priority to prevent starvation
+    vga::print_str("[TASK] Network task registered\n");
 
     // Keep worker disabled for now - test single task first
     // vga::print_str("[TASK] Adding worker task to scheduler...\n");

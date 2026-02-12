@@ -205,10 +205,6 @@ pub struct Keyboard {
 }
 
 impl Keyboard {
-    const fn new() -> Self {
-        Self {}
-    }
-
     pub fn reset_state() {
         SHIFT_PRESSED.store(false, Ordering::Relaxed);
         CAPS_LOCK.store(false, Ordering::Relaxed);
@@ -384,15 +380,8 @@ impl Keyboard {
     }
 }
 
-#[inline]
-fn is_data_available() -> bool {
-    unsafe { inb(STATUS_PORT) & 0x01 != 0 }
-}
-
-#[inline]
-fn read_scancode() -> u8 {
-    unsafe { inb(DATA_PORT) }
-}
+// Removed unused read_scancode and is_data_available functions to prevent race conditions with IRQ handler
+// Input is now exclusively interrupt-driven via EVENT_BUFFER
 
 #[inline]
 unsafe fn inb(port: u16) -> u8 {
@@ -536,34 +525,15 @@ pub fn poll_event() -> Option<KeyEvent> {
     }
 
     // Fallback: poll the controller directly if IRQs are not firing
-    if !is_data_available() {
-        return None;
-    }
-    let status = unsafe { inb(STATUS_PORT) };
-    let scancode = unsafe { inb(DATA_PORT) };
-
-    // Ignore AUX (mouse) bytes
-    if (status & 0x20) != 0 {
-        ERROR_STATUS.fetch_add(1, Ordering::Relaxed);
-        return None;
-    }
-    // Ignore controller ACK/RESEND responses
-    if scancode == 0xFA || scancode == 0xFE {
-        return None;
-    }
-    // Ignore invalid/phantom scancodes
-    if scancode == 0 || scancode == 0xFF {
-        return None;
-    }
-
-    LAST_SCANCODE.store(scancode, Ordering::Relaxed);
-    let ev = Keyboard::handle_scancode(scancode);
-    if ev.is_some() {
-        EVENTS_PUSHED.fetch_add(1, Ordering::Relaxed);
-    } else {
-        EVENTS_NONE.fetch_add(1, Ordering::Relaxed);
-    }
-    ev
+    // REMOVED: Polling causes race conditions with IRQ handler (double typing)
+    // if !is_data_available() {
+    //     return None;
+    // }
+    // let status = unsafe { inb(STATUS_PORT) };
+    // let scancode = unsafe { inb(DATA_PORT) };
+    
+    // Return None if buffer is empty
+    None
 }
 
 /// Get event buffer length

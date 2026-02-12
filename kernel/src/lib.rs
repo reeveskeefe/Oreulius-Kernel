@@ -25,6 +25,7 @@ pub mod keyboard;
 pub mod memory;
 pub mod memopt_asm;
 pub mod net;
+pub mod net_reactor;
 pub mod netstack;
 pub mod paging;
 pub mod pci;
@@ -233,20 +234,34 @@ pub extern "C" fn rust_main() -> ! {
             let phys_base = (bar0 & !0xF) as usize;
             let size = 128 * 1024; // 128KB
             
+            // DEBUG: Print phys_base
+            vga::print_str("MMIO Base: 0x");
+            advanced_commands::print_hex(phys_base);
+            vga::print_str("\n");
+
             if let Some(ref mut space) = *paging::kernel_space().lock() {
                  for offset in (0..size).step_by(paging::PAGE_SIZE) {
                      let addr = phys_base + offset;
                      let _ = space.map_page(addr, addr, true, false);
                  }
             }
+            
+            // DEBUG: Verify mapping
+            if let Some(ref mut space) = *paging::kernel_space().lock() {
+                if space.is_mapped(phys_base) {
+                     vga::print_str("MMIO Base Mapped successfully\n");
+                } else {
+                     vga::print_str("MMIO Base failed to map\n");
+                }
+            }
         }
         
         if e1000::init(eth_device).is_ok() {
             vga::print_str("[NET] E1000 initialized - Ready for DNS/ARP/UDP\n");
             // Enable network stack processing
-            if let Some(mut stack) = netstack::NETWORK_STACK.try_lock() {
-                 vga::print_str("[NET] Network stack available, link up\n");
-            }
+            // if let Some(mut stack) = netstack::NETWORK_STACK.try_lock() {
+            //      vga::print_str("[NET] Network stack available, link up\n");
+            // }
         } else {
             vga::print_str("[NET] E1000 init failed\n");
         }

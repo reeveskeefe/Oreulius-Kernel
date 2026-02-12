@@ -199,7 +199,7 @@ impl Opcode {
 /// WASM linear memory (isolated per-module)
 pub struct LinearMemory {
     /// Memory buffer
-    data: [u8; MAX_MEMORY_SIZE],
+    data: Vec<u8>,
     /// Current size in pages (64 KiB each)
     pages: usize,
     /// Maximum pages allowed
@@ -208,9 +208,9 @@ pub struct LinearMemory {
 
 impl LinearMemory {
     /// Create new linear memory with initial size
-    pub const fn new(initial_pages: usize) -> Self {
+    pub fn new(initial_pages: usize) -> Self {
         LinearMemory {
-            data: [0u8; MAX_MEMORY_SIZE],
+            data: alloc::vec![0u8; MAX_MEMORY_SIZE],
             pages: initial_pages,
             max_pages: Some(MAX_MEMORY_SIZE / (64 * 1024)),
         }
