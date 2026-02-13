@@ -499,14 +499,51 @@ pub fn check_capability(
     cap_type: CapabilityType,
     required_rights: Rights,
 ) -> bool {
-    // TODO: Implement proper capability checking
-    // For now, allow all operations from kernel (PID 0)
+    // Allow all operations from kernel (PID 0)
     if pid.0 == 0 {
         return true;
     }
     
-    // TODO: Look up capability in process capability table
-    // For now, deny all user-mode operations
+    // Rate limit check via SecurityManager
+    if security::security().validate_capability(pid, required_rights.bits, required_rights.bits).is_err() {
+        return false;
+    }
+    
+    // Look up capability in process capability table
+    let tables = CAPABILITY_MANAGER.tables.lock();
+    
+    if let Some(table) = tables[pid.0 as usize].as_ref() {
+        // Iterate through all capabilities to find matching one
+        for entry in &table.entries {
+            if let Some(cap) = entry {
+                // Check capability type matches
+                if cap.cap_type != cap_type {
+                    continue;
+                }
+                
+                // Check object_id matches (or is wildcard 0 for non-object-specific capabilities)
+                if object_id != 0 && cap.object_id != 0 && cap.object_id != object_id {
+                    continue;
+                }
+                
+                // Check if capability has required rights
+                if !cap.rights.is_subset_of(&Rights::new(cap.rights.bits | required_rights.bits)) {
+                    continue;
+                }
+                
+                if cap.has_right(required_rights.bits) {
+                    // Audit successful capability use
+                    security::security().log_event(
+                        AuditEntry::new(SecurityEvent::CapabilityUsed, pid, cap.cap_id)
+                            .with_context(cap.object_id)
+                    );
+                    return true;
+                }
+            }
+        }
+    }
+    
+    // No matching capability found
     false
 }
 
