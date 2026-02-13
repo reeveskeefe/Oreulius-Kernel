@@ -9,6 +9,8 @@ use crate::wasm;
 use crate::virtio_blk;
 use crate::vfs;
 use crate::elf;
+use crate::persistence;
+use crate::net;
 
 // Helper functions for printing numbers
 pub fn print_u32(n: u32) {
@@ -1526,23 +1528,404 @@ fn handle_timer_request(message: &ipc::Message) -> ipc::Message {
 }
 
 /// Handle persistence service requests
+/// Supported commands:
+/// - APPEND <type> <data> - Append a log record
+/// - READ <offset> <count> - Read log records
+/// - SNAPSHOT_WRITE <data> - Write snapshot
+/// - SNAPSHOT_READ - Read snapshot
+/// - STATS - Get persistence statistics
 fn handle_persistence_request(message: &ipc::Message) -> ipc::Message {
     let mut response = ipc::Message::new(ipc::ProcessId(1));
 
-    let success_msg = b"OK: Persistence service not yet implemented";
-    response.payload[..success_msg.len()].copy_from_slice(success_msg);
-    response.payload_len = success_msg.len();
+    // Parse the request command
+    if let Ok(request_str) = core::str::from_utf8(&message.payload[..message.payload_len]) {
+        let mut parts = request_str.trim().split_whitespace();
+        let command = parts.next().unwrap_or("");
+
+        match command {
+            "APPEND" => {
+                // APPEND <type> <data>
+                let record_type_str = parts.next().unwrap_or("component");
+                let data_str = parts.collect::<alloc::vec::Vec<&str>>().join(" ");
+
+                // Map type string to RecordType
+                let record_type = match record_type_str {
+                    "clock" => persistence::RecordType::ExternalInputClockRead,
+                    "console" => persistence::RecordType::ExternalInputConsoleIn,
+                    "component" => persistence::RecordType::ComponentEvent,
+                    "checkpoint" => persistence::RecordType::SupervisorCheckpoint,
+                    "fs" => persistence::RecordType::FilesystemOp,
+                    _ => persistence::RecordType::ComponentEvent,
+                };
+
+                // Create log record
+                let data_bytes = data_str.as_bytes();
+                match persistence::LogRecord::new(record_type, data_bytes) {
+                    Ok(record) => {
+                        // Create a capability with append rights
+                        let cap = persistence::StoreCapability::new(1, persistence::StoreRights::all());
+                        
+                        // Append to log
+                        let mut persist_svc = persistence::persistence().lock();
+                        match persist_svc.append_log(&cap, record) {
+                            Ok(offset) => {
+                                let success_msg = alloc::format!("OK: Record appended at offset {}", offset);
+                                let bytes = success_msg.as_bytes();
+                                if bytes.len() <= response.payload.len() {
+                                    response.payload[..bytes.len()].copy_from_slice(bytes);
+                                    response.payload_len = bytes.len();
+                                }
+                            }
+                            Err(e) => {
+                                let error_msg = alloc::format!("ERROR: Failed to append: {}", e);
+                                let bytes = error_msg.as_bytes();
+                                if bytes.len() <= response.payload.len() {
+                                    response.payload[..bytes.len()].copy_from_slice(bytes);
+                                    response.payload_len = bytes.len();
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = alloc::format!("ERROR: Failed to create record: {}", e);
+                        let bytes = error_msg.as_bytes();
+                        if bytes.len() <= response.payload.len() {
+                            response.payload[..bytes.len()].copy_from_slice(bytes);
+                            response.payload_len = bytes.len();
+                        }
+                    }
+                }
+            }
+            "READ" => {
+                // READ <offset> <count>
+                let offset_str = parts.next().unwrap_or("0");
+                let count_str = parts.next().unwrap_or("10");
+
+                let offset = offset_str.parse::<usize>().unwrap_or(0);
+                let count = count_str.parse::<usize>().unwrap_or(10).min(50);
+
+                // Build the result inside the lock scope  
+                let cap = persistence::StoreCapability::new(1, persistence::StoreRights::all());
+                let persist_svc = persistence::persistence().lock();
+                
+                let result_msg = match persist_svc.read_log(&cap, offset, count) {
+                    Ok(records) => {
+                        let mut msg = alloc::format!("OK: Records from offset {}:\n", offset);
+                        for (i, record) in records.enumerate() {
+                            // Copy packed struct fields to avoid unaligned reference error
+                            let record_type = record.header.record_type;
+                            let record_len = record.header.len;
+                            
+                            let payload_preview = if record.payload().len() > 40 {
+                                alloc::format!("{}...", core::str::from_utf8(&record.payload()[..40]).unwrap_or("<binary>"))
+                            } else {
+                                alloc::format!("{}", core::str::from_utf8(record.payload()).unwrap_or("<binary>"))
+                            };
+                            msg.push_str(&alloc::format!("  [{}] type={}, len={}, data: {}\n", 
+                                offset + i, record_type, record_len, payload_preview));
+                        }
+                        Ok(msg)
+                    }
+                    Err(e) => {
+                        Err(alloc::format!("ERROR: Failed to read log: {}", e))
+                    }
+                };
+                drop(persist_svc); // Explicitly drop the lock
+
+                // Format the response outside the lock
+                match result_msg {
+                    Ok(result_str) => {
+                        let bytes = result_str.as_bytes();
+                        let copy_len = bytes.len().min(response.payload.len());
+                        response.payload[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                        response.payload_len = copy_len;
+                    }
+                    Err(error_msg) => {
+                        let bytes = error_msg.as_bytes();
+                        if bytes.len() <= response.payload.len() {
+                            response.payload[..bytes.len()].copy_from_slice(bytes);
+                            response.payload_len = bytes.len();
+                        }
+                    }
+                }
+            }
+            "SNAPSHOT_WRITE" => {
+                // SNAPSHOT_WRITE <data>
+                let data_str = parts.collect::<alloc::vec::Vec<&str>>().join(" ");
+                let data_bytes = data_str.as_bytes();
+
+                let cap = persistence::StoreCapability::new(1, persistence::StoreRights::all());
+                let mut persist_svc = persistence::persistence().lock();
+                let last_offset = persist_svc.log_stats().0;
+
+                match persist_svc.write_snapshot(&cap, data_bytes, last_offset) {
+                    Ok(()) => {
+                        let success_msg = alloc::format!("OK: Snapshot written ({} bytes at offset {})", data_bytes.len(), last_offset);
+                        let bytes = success_msg.as_bytes();
+                        if bytes.len() <= response.payload.len() {
+                            response.payload[..bytes.len()].copy_from_slice(bytes);
+                            response.payload_len = bytes.len();
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = alloc::format!("ERROR: Failed to write snapshot: {}", e);
+                        let bytes = error_msg.as_bytes();
+                        if bytes.len() <= response.payload.len() {
+                            response.payload[..bytes.len()].copy_from_slice(bytes);
+                            response.payload_len = bytes.len();
+                        }
+                    }
+                }
+            }
+            "SNAPSHOT_READ" => {
+                let cap = persistence::StoreCapability::new(1, persistence::StoreRights::all());
+                let persist_svc = persistence::persistence().lock();
+
+                match persist_svc.read_snapshot(&cap) {
+                    Ok((data, last_offset)) => {
+                        let preview = if data.len() > 100 {
+                            alloc::format!("{}...", core::str::from_utf8(&data[..100]).unwrap_or("<binary>"))
+                        } else {
+                            alloc::format!("{}", core::str::from_utf8(data).unwrap_or("<binary>"))
+                        };
+                        let result = alloc::format!("OK: Snapshot ({} bytes at offset {}):\n{}", data.len(), last_offset, preview);
+                        let bytes = result.as_bytes();
+                        let copy_len = bytes.len().min(response.payload.len());
+                        response.payload[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                        response.payload_len = copy_len;
+                    }
+                    Err(e) => {
+                        let error_msg = alloc::format!("ERROR: Failed to read snapshot: {}", e);
+                        let bytes = error_msg.as_bytes();
+                        if bytes.len() <= response.payload.len() {
+                            response.payload[..bytes.len()].copy_from_slice(bytes);
+                            response.payload_len = bytes.len();
+                        }
+                    }
+                }
+            }
+            "STATS" => {
+                let persist_svc = persistence::persistence().lock();
+                let (count, capacity) = persist_svc.log_stats();
+                let result = alloc::format!("OK: Persistence Stats:\n  Log records: {}/{}\n  Utilization: {}%", 
+                    count, capacity, (count * 100) / capacity.max(1));
+                let bytes = result.as_bytes();
+                if bytes.len() <= response.payload.len() {
+                    response.payload[..bytes.len()].copy_from_slice(bytes);
+                    response.payload_len = bytes.len();
+                }
+            }
+            _ => {
+                let error_msg = b"ERROR: Unknown persistence command. Use: APPEND, READ, SNAPSHOT_WRITE, SNAPSHOT_READ, STATS";
+                response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                response.payload_len = error_msg.len();
+            }
+        }
+    } else {
+        let error_msg = b"ERROR: Invalid persistence request";
+        response.payload[..error_msg.len()].copy_from_slice(error_msg);
+        response.payload_len = error_msg.len();
+    }
 
     response
 }
 
 /// Handle network service requests
+/// Supported commands:
+/// - WIFI_SCAN - Scan for WiFi networks
+/// - WIFI_CONNECT <ssid> [password] - Connect to WiFi
+/// - WIFI_STATUS - Get WiFi connection status
+/// - DNS_RESOLVE <domain> - Resolve domain name
+/// - HTTP_GET <url> - Perform HTTP GET request
+/// - STATS - Get network statistics
 fn handle_network_request(message: &ipc::Message) -> ipc::Message {
     let mut response = ipc::Message::new(ipc::ProcessId(1));
 
-    let success_msg = b"OK: Network service not yet implemented";
-    response.payload[..success_msg.len()].copy_from_slice(success_msg);
-    response.payload_len = success_msg.len();
+    // Parse the request command
+    if let Ok(request_str) = core::str::from_utf8(&message.payload[..message.payload_len]) {
+        let mut parts = request_str.trim().split_whitespace();
+        let command = parts.next().unwrap_or("");
+
+        match command {
+            "WIFI_SCAN" => {
+                let net_svc = net::network().lock();
+                match net_svc.wifi_scan() {
+                    Ok(count) => {
+                        let result = alloc::format!("OK: Found {} WiFi networks", count);
+                        let bytes = result.as_bytes();
+                        if bytes.len() <= response.payload.len() {
+                            response.payload[..bytes.len()].copy_from_slice(bytes);
+                            response.payload_len = bytes.len();
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = alloc::format!("ERROR: WiFi scan failed: {}", e.as_str());
+                        let bytes = error_msg.as_bytes();
+                        if bytes.len() <= response.payload.len() {
+                            response.payload[..bytes.len()].copy_from_slice(bytes);
+                            response.payload_len = bytes.len();
+                        }
+                    }
+                }
+            }
+            "WIFI_CONNECT" => {
+                // WIFI_CONNECT <ssid> [password]
+                let ssid = parts.next().unwrap_or("");
+                let password = parts.next();
+
+                if ssid.is_empty() {
+                    let error_msg = b"ERROR: SSID required. Usage: WIFI_CONNECT <ssid> [password]";
+                    response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                    response.payload_len = error_msg.len();
+                } else {
+                    let mut net_svc = net::network().lock();
+                    match net_svc.wifi_connect(ssid, password) {
+                        Ok(()) => {
+                            let result = alloc::format!("OK: Connected to WiFi network '{}'", ssid);
+                            let bytes = result.as_bytes();
+                            if bytes.len() <= response.payload.len() {
+                                response.payload[..bytes.len()].copy_from_slice(bytes);
+                                response.payload_len = bytes.len();
+                            }
+                        }
+                        Err(e) => {
+                            let error_msg = alloc::format!("ERROR: WiFi connect failed: {}", e.as_str());
+                            let bytes = error_msg.as_bytes();
+                            if bytes.len() <= response.payload.len() {
+                                response.payload[..bytes.len()].copy_from_slice(bytes);
+                                response.payload_len = bytes.len();
+                            }
+                        }
+                    }
+                }
+            }
+            "WIFI_STATUS" => {
+                let net_svc = net::network().lock();
+                match net_svc.wifi_status() {
+                    Ok(status) => {
+                        let status_str = match status {
+                            crate::wifi::WifiState::Disabled => "Disabled",
+                            crate::wifi::WifiState::Idle => "Idle",
+                            crate::wifi::WifiState::Scanning => "Scanning",
+                            crate::wifi::WifiState::Connecting => "Connecting",
+                            crate::wifi::WifiState::Authenticating => "Authenticating",
+                            crate::wifi::WifiState::Associated => "Associated",
+                            crate::wifi::WifiState::Connected => "Connected",
+                            crate::wifi::WifiState::Disconnecting => "Disconnecting",
+                            crate::wifi::WifiState::Error => "Error",
+                        };
+                        let result = alloc::format!("OK: WiFi status: {}", status_str);
+                        let bytes = result.as_bytes();
+                        if bytes.len() <= response.payload.len() {
+                            response.payload[..bytes.len()].copy_from_slice(bytes);
+                            response.payload_len = bytes.len();
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = alloc::format!("ERROR: Failed to get WiFi status: {}", e.as_str());
+                        let bytes = error_msg.as_bytes();
+                        if bytes.len() <= response.payload.len() {
+                            response.payload[..bytes.len()].copy_from_slice(bytes);
+                            response.payload_len = bytes.len();
+                        }
+                    }
+                }
+            }
+            "DNS_RESOLVE" => {
+                // DNS_RESOLVE <domain>
+                let domain = parts.next().unwrap_or("");
+
+                if domain.is_empty() {
+                    let error_msg = b"ERROR: Domain required. Usage: DNS_RESOLVE <domain>";
+                    response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                    response.payload_len = error_msg.len();
+                } else {
+                    let mut net_svc = net::network().lock();
+                    match net_svc.dns_resolve(domain) {
+                        Ok(ip) => {
+                            let result = alloc::format!("OK: {} resolved to {}.{}.{}.{}", 
+                                domain, ip.octets()[0], ip.octets()[1], ip.octets()[2], ip.octets()[3]);
+                            let bytes = result.as_bytes();
+                            if bytes.len() <= response.payload.len() {
+                                response.payload[..bytes.len()].copy_from_slice(bytes);
+                                response.payload_len = bytes.len();
+                            }
+                        }
+                        Err(e) => {
+                            let error_msg = alloc::format!("ERROR: DNS resolution failed: {}", e.as_str());
+                            let bytes = error_msg.as_bytes();
+                            if bytes.len() <= response.payload.len() {
+                                response.payload[..bytes.len()].copy_from_slice(bytes);
+                                response.payload_len = bytes.len();
+                            }
+                        }
+                    }
+                }
+            }
+            "HTTP_GET" => {
+                // HTTP_GET <url>
+                let url = parts.collect::<alloc::vec::Vec<&str>>().join(" ");
+
+                if url.is_empty() {
+                    let error_msg = b"ERROR: URL required. Usage: HTTP_GET <url>";
+                    response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                    response.payload_len = error_msg.len();
+                } else {
+                    let mut net_svc = net::network().lock();
+                    match net_svc.http_get(&url) {
+                        Ok(http_response) => {
+                            let body_preview = if http_response.body_len > 100 {
+                                alloc::format!("{}...", 
+                                    core::str::from_utf8(&http_response.body[..100]).unwrap_or("<binary>"))
+                            } else {
+                                alloc::format!("{}", 
+                                    core::str::from_utf8(&http_response.body[..http_response.body_len]).unwrap_or("<binary>"))
+                            };
+                            let result = alloc::format!("OK: HTTP {} - {} bytes:\n{}", 
+                                http_response.status_code, http_response.body_len, body_preview);
+                            let bytes = result.as_bytes();
+                            let copy_len = bytes.len().min(response.payload.len());
+                            response.payload[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                            response.payload_len = copy_len;
+                        }
+                        Err(e) => {
+                            let error_msg = alloc::format!("ERROR: HTTP GET failed: {}", e.as_str());
+                            let bytes = error_msg.as_bytes();
+                            if bytes.len() <= response.payload.len() {
+                                response.payload[..bytes.len()].copy_from_slice(bytes);
+                                response.payload_len = bytes.len();
+                            }
+                        }
+                    }
+                }
+            }
+            "STATS" => {
+                let net_svc = net::network().lock();
+                let stats = net_svc.stats();
+                let ip_str = alloc::format!("{}.{}.{}.{}", 
+                    stats.ip_address.octets()[0], stats.ip_address.octets()[1], 
+                    stats.ip_address.octets()[2], stats.ip_address.octets()[3]);
+                let result = alloc::format!("OK: Network Stats:\n  WiFi: {}\n  IP: {}\n  TCP connections: {}\n  DNS cache: {}",
+                    if stats.wifi_enabled { "Enabled" } else { "Disabled" },
+                    ip_str,
+                    stats.tcp_connections,
+                    stats.dns_cache_entries);
+                let bytes = result.as_bytes();
+                let copy_len = bytes.len().min(response.payload.len());
+                response.payload[..copy_len].copy_from_slice(&bytes[..copy_len]);
+                response.payload_len = copy_len;
+            }
+            _ => {
+                let error_msg = b"ERROR: Unknown network command. Use: WIFI_SCAN, WIFI_CONNECT, WIFI_STATUS, DNS_RESOLVE, HTTP_GET, STATS";
+                response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                response.payload_len = error_msg.len();
+            }
+        }
+    } else {
+        let error_msg = b"ERROR: Invalid network request";
+        response.payload[..error_msg.len()].copy_from_slice(error_msg);
+        response.payload_len = error_msg.len();
+    }
 
     response
 }
