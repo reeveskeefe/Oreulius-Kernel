@@ -6,7 +6,47 @@ Traditional operating systems avoid this problem by moving JIT compilation to us
 
 This creates a philosophical and practical dilemma for achieving "provably secure" systems. While Oreulia's capability-based security model is theoretically elegant—no ambient authority, unforgeable capabilities, complete audit trails—the presence of an unverified JIT compiler in kernel space undermines these guarantees at the implementation level. The engineering defenses are impressive: memory tagging, W^X enforcement, control flow integrity, HMAC-signed capabilities, and defense-in-depth strategies can mitigate many attack vectors. However, mathematically proving the system's security requires formally verifying the JIT compiler itself—a problem that remains at the frontier of computer science research and has consumed entire PhD programs for simpler compilers like CompCert. The tension between performance (JIT in kernel) and provable security (formalized correctness guarantees) represents the central challenge in transforming Oreulia from an innovative research prototype into a production-grade secure operating system. Without formal verification of the JIT compiler or strong in-kernel hardening and translation validation, the system remains vulnerable to a class of attacks that bypass all other security mechanisms, making "impenetrability" a practical impossibility rather than an achievable engineering goal.
 
+---
 
+## ✅ Current Status (as of 2026-02-13)
+
+### **Completed or Strongly Implemented**
+- **W^X enforcement for JIT**: code is emitted into RW memory, then sealed to RX via page flag changes.
+- **Isolated execution address space**: JIT runs under a sandbox page directory; only required ranges are mapped.
+- **Ring 3 usermode execution for JIT code**: entry via `IRET` into `USER_CS/USER_DS` with a user trampoline.
+- **Guard page for user JIT stack**: unmapped page under the user-mode JIT stack to catch stack underflow.
+- **JIT page-fault trapping**: faults are converted into traps and return safely to the kernel.
+- **Fuel-based execution limits**: instruction and memory operation fuel enforced in generated code.
+- **Integrity checks**: code + exec buffer hashes and sealed exec buffers are verified before execution.
+- **Shadow validation**: early JIT calls are compared against interpreter results for semantic sanity checks.
+- **JIT cache hardening**: 64-bit FNV-1a for cache keys, plus code hash validation in cache hits.
+- **Concurrency hardening**: JIT return state uses atomics + locking to avoid IRQ/SMP races.
+- **Kernel text/rodata read-only**: kernel `.text`/`.rodata` mapped read-only; `.data`/`.bss` remain writable.
+
+### **Partially Implemented**
+- **Instruction whitelist**: basic x86 subset verification exists but is not a full validator.
+- **SFI-style bounds checks**: bounds checks exist for JIT memory ops; not full masking for every access path.
+- **Guard pages for all JIT regions**: guard page exists for user stack, not yet for all JIT mappings.
+- **Translation validation**: shadow execution exists, but not a full proof or per-block validator.
+
+### **Remaining TODOs**
+- **Full CFI (shadow stack + valid target sets)**
+- **Formal verification of critical JIT paths and capability checks**
+- **Memory tagging / hardware isolation (SGX/TrustZone)**
+- **Cryptographic capability tokens (HMAC)**
+- **Systematic fuzzing for JIT and verifier**
+- **Anomaly detection / audit hardening beyond current logs**
+
+## 🧾 Recent Security Improvements (2026-02)
+- W^X sealing for JIT exec buffers and kernel RO mappings.
+- Ring 3 JIT execution via user trampoline + `IRET`.
+- JIT sandbox page directory with narrow user mappings.
+- JIT page-fault trapping path (no kernel panic).
+- Guard page under user JIT stack.
+- Fuel-based execution limits.
+- Shadow validation vs interpreter (differential checking).
+- 64-bit JIT cache hashing and integrity verification.
+- Deterministic replay hooks for WASM host calls (for auditability).
 
 ---
 
@@ -14,7 +54,7 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 
 ## **Layer 1: Hardened In-Kernel JIT** (Critical)
 
-### **Architecture (Keep JIT in Ring 0, Constrain It):**
+### **Architecture (Compile in Ring 0, Execute in Ring 3):**
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -35,7 +75,17 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 └──────────────────────────────────────────────┘
 ```
 
+**Current architecture note:** The JIT compiler runs in Ring 0, but JIT **execution** drops to Ring 3 using a user-mode trampoline and an isolated page directory. Only the minimum ranges (trampoline/call/stack, JIT code, JIT state, WASM memory) are mapped into the sandbox.
+
 ### **Implementation (In-Kernel JIT with Verification Gate):**
+
+**Current implementation (actual code paths):**
+- **W^X sealing**: `JitExecBuffer::write_and_seal` (`kernel/src/wasm_jit.rs`)
+- **Usermode execution + sandbox mapping**: `call_jit_user` + `AddressSpace::new_jit_sandbox` (`kernel/src/wasm.rs`)
+- **Trap conversion on faults**: `jit_handle_page_fault` (`kernel/src/wasm.rs`)
+- **Instruction subset scan**: `verify_x86_subset` (`kernel/src/wasm_jit.rs`)
+- **Fuel checks**: `emit_instr_fuel_check` / `emit_mem_fuel_check` (`kernel/src/wasm_jit.rs`)
+- **Shadow validation**: `try_jit` interpreter comparison (`kernel/src/wasm.rs`)
 
 ```rust
 // kernel/src/jit.rs
@@ -84,15 +134,20 @@ impl JitVerifier {
 }
 ```
 
-### **Hardening Rules (Non-Negotiable):**
+### **Hardening Rules (Current Status):**
 
-- **SFI for memory:** all loads/stores must be masked or bounds-checked into the JIT data region.
-- **CFI for control flow:** indirect calls/jumps only to registered targets; enforce shadow stack for returns.
-- **W^X + dual mapping:** generate in RW, execute in RX; never RWX.
-- **Instruction whitelist:** ban privileged, I/O, MSR, and system control ops.
-- **Translation validation:** verify the emitted code refines IR semantics (cheap proof per block).
-- **Guard pages:** surround code and data regions with unmapped pages.
-- **SMEP/SMAP + KPTI:** prevent accidental access to user memory or user code from Ring 0.
+- ✅ **W^X + RW→RX sealing**: enforced for all JIT code pages.
+- ✅ **Ring 3 execution + isolated page directory**: user-mode trampoline + sandbox PD switch.
+- ✅ **Narrow sandbox mappings**: only JIT code/state/WASM memory/trampoline/stack mapped.
+- ✅ **Faults → traps**: page faults in JIT are converted into safe traps.
+- ✅ **Fuel-based limits**: instruction + memory op fuel enforced in JIT.
+- ✅ **JIT cache integrity**: sealed exec buffer + hash verification.
+- 🟡 **Instruction whitelist**: partial subset validation present; not complete.
+- 🟡 **SFI-style bounds checks**: bounds checks for JIT memory ops; no full masking.
+- 🟡 **Guard pages**: guard page under user JIT stack; not all regions.
+- 🟡 **Translation validation**: shadow execution exists; not full translation proof.
+- 🔶 **CFI (shadow stack / target sets)**: not yet implemented.
+- 🔶 **SMEP/SMAP/KPTI**: not yet implemented.
 
 **Benefits:**
 - ✅ Keeps JIT in kernel for performance
@@ -678,7 +733,7 @@ impl AnomalyDetector {
 
 | Layer | Defense Mechanism | Prevents | Performance Cost |
 |-------|------------------|----------|-----------------|
-| **1** | JIT in User-Space | Kernel compromise via JIT bug | ~5% overhead |
+| **1** | Ring 3 JIT Execution + Sandbox | Kernel compromise via JIT bug | ~5% overhead |
 | **2** | Formal Verification | Logic errors in security code | 0% (compile-time) |
 | **3** | SGX/TrustZone | Hardware-level isolation | ~10% overhead |
 | **4** | Control Flow Integrity | ROP/JOP attacks | ~2% overhead |
@@ -696,23 +751,24 @@ impl AnomalyDetector {
 
 ## 🎯 **Priority Implementation Order**
 
-### **Phase 1 (Critical - Do Immediately):**
-1. ✅ Move JIT to user-space
-2. ✅ Implement W^X
-3. ✅ Add HMAC to capabilities
-4. ✅ Set up fuzzing
+### **Phase 1 (Complete - Implemented):**
+1. ✅ W^X sealing for JIT exec buffers + kernel RO mappings
+2. ✅ Ring 3 JIT execution with isolated sandbox address space
+3. ✅ Fault-to-trap handling + user JIT stack guard page
+4. ✅ Fuel-based limits, integrity checks, and shadow validation
 
-### **Phase 2 (Important - Next Quarter):**
-1. ✅ Formal verification of core functions
-2. ✅ Control Flow Integrity
-3. ✅ Tamper-proof audit log
-4. ✅ Memory tagging (if hardware supports)
+### **Phase 2 (Next - In Progress):**
+1. 🟡 Complete instruction whitelist / decoder validation
+2. 🟡 Expand SFI (bounds checks or masking for all memory paths)
+3. 🟡 Guard pages for all JIT regions + per-instance cleanup
+4. 🟡 Systematic JIT fuzzing + regression harness
+5. 🟡 Cryptographic capability tokens (if adopted)
 
 ### **Phase 3 (Advanced - Long-term):**
-1. ✅ SGX/TrustZone integration
-2. ✅ Anomaly detection
-3. ✅ Full formal verification
-4. ✅ Hardware security module integration
+1. 🔶 Full CFI (shadow stack + valid target sets)
+2. 🔶 Formal verification of JIT translation + capability checks
+3. 🔶 Memory tagging / SGX/TrustZone-class isolation
+4. 🔶 Tamper-proof audit chaining + anomaly detection
 
 ---
 
@@ -720,7 +776,7 @@ impl AnomalyDetector {
 
 **Before:** ⭐⭐⭐☆☆ (3/5) - "Promising but unproven"
 
-**After:**  ⭐⭐⭐⭐⭐ (5/5) - **"Production-grade, defense-in-depth, formally verified"**
+**Target:**  ⭐⭐⭐⭐⭐ (5/5) - **"Production-grade, defense-in-depth, formally verified"**
 
 ### **Comparison to Industry Leaders:**
 
@@ -742,7 +798,7 @@ impl AnomalyDetector {
 
 ---
 
-**Bottom Line:** Implement these 10 layers and Oreulia goes from **"interesting research project"** to **"production-ready, military-grade, formally-verified secure OS."**
+**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution, sandboxed address space, fuel limits, integrity checks, shadow validation). The remaining gap to "provably secure" is **formal verification + full CFI/SFI + cryptographic capability tokens + systematic fuzzing**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
 
 # 🔬 **Mathematical Problems to Make Oreulia Provably Impenetrable**
 
