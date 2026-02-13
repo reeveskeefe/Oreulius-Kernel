@@ -626,7 +626,7 @@ impl NetworkStack {
     pub fn tick(&mut self) {
         let now = crate::pit::get_ticks();
         for i in 0..self.tcp.conns.len() {
-            let mut action: Option<(TcpEndpoint, u32, u32, u16, [u8; 256], usize)> = None;
+            let mut action = None;
             {
                 let conn = &mut self.tcp.conns[i];
                 if !conn.in_use || conn.last_send_tick == 0 {
@@ -1019,7 +1019,7 @@ impl TcpManager {
     fn tick(&mut self, stack: &mut NetworkStack) {
         let now = crate::pit::get_ticks();
         for i in 0..self.conns.len() {
-            let mut action: Option<(TcpEndpoint, u32, u32, u16, [u8; 256], usize)> = None;
+            let mut action = None;
             {
                 let conn = &mut self.conns[i];
                 if !conn.in_use || conn.last_send_tick == 0 {
@@ -1121,7 +1121,7 @@ fn send_tcp_segment(
     frame[off + 10..off + 12].copy_from_slice(&0u16.to_be_bytes());
     frame[off + 12..off + 16].copy_from_slice(&ep.local_ip.0);
     frame[off + 16..off + 20].copy_from_slice(&ep.remote_ip.0);
-    let checksum = calculate_checksum(&frame[off..off + ip_header_len]);
+    let checksum = calculate_checksum(&frame[ip_start..ip_start + ip_header_len]);
     frame[off + 10..off + 12].copy_from_slice(&checksum.to_be_bytes());
     off += ip_header_len;
 
