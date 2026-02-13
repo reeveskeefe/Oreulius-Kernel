@@ -220,6 +220,14 @@ Once Oreulia boots, you'll see the shell prompt (`>`). Try these commands:
 
 ---
 
+## Commercial Use Cases
+
+Oreulieus is built for secure, programmable edge systems where dynamic logic must run safely at high speed. The commercial vision covers embedded/edge appliances, multi-tenant IoT gateways, security/network appliances, and AI thin-client edge nodes.
+
+Read the full overview here: **[Commercial Use Cases](docs/CommercialUseCases.md)**.
+
+---
+
 ## Documentation
 
 Comprehensive documentation is available in the `docs/` directory:
@@ -232,6 +240,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[Filesystem](docs/oreulia-filesystem.md)** - Virtual filesystem implementation
 - **[WASM ABI](docs/oreulia-wasm-abi.md)** - WebAssembly host interface
 - **[Assembly Enhancements](docs/assembly-enhancements.md)** - Low-level optimization details
+- **[Commercial Use Cases](docs/CommercialUseCases.md)** - Market targets and product vision
 - **[Contributing](docs/CONTRIBUTING.md)** - Contribution guidelines and process
 
 ---
