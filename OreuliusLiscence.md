@@ -1,8 +1,9 @@
-OreuliusLiscence v1.5
-Effective Date: 2026-02-08
+# Oreulius Liscence v1
+ **Effective Date: 2026-02-08**
 
-Copyright (c) 2026 Oreulia Project / Licensor.
-All rights reserved except as expressly granted in this OreuliusLiscence (the "License").
+*Copyright (c) 2026 Oreulia Project / Licensor*
+
+*All rights reserved except as expressly granted in this OreuliusLiscence (the "License")*
 
 0. License Type (Not OSI Open Source)
 This License is a source-available commercial license and is not an Open Source license as defined by the Open Source Initiative (OSI). Only Open Source Components expressly designated by the Licensor are licensed under an OSI License, as described in Section 6.6.
