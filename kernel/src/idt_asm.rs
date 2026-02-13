@@ -485,7 +485,7 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
     if frame.int_no == Exception::PageFault as u32 {
         let fault_addr: u32;
         unsafe {
-            core::arch::asm!("mov {}, cr2", out(reg) fault_addr);
+            core::arch::asm!("mov {0:e}, cr2", out(reg) fault_addr);
         }
         crate::paging::rust_page_fault_handler_ex(
             frame.err_code,

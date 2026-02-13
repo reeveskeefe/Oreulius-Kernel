@@ -56,8 +56,6 @@ extern "C" {
     // Atomic operations
     fn atomic_set_page_flags(pte_addr: *mut u32, flags: u32);
     fn atomic_clear_page_flags(pte_addr: *mut u32, flags: u32);
-    fn atomic_inc_refcount(refcount_addr: *mut u32) -> u32;
-    fn atomic_dec_refcount(refcount_addr: *mut u32) -> u32;
     
     // Memory barriers
     fn memory_barrier();
@@ -76,6 +74,31 @@ extern "C" {
 // ============================================================================
 // Public Wrapper Functions
 // ============================================================================
+
+/// Set PTE flags without atomic operations (for single-threaded boot-time use only)
+/// SAFETY: Only safe during boot before multicore is active
+pub unsafe fn modify_pte_set_flags_init(pte_addr: *mut u32, flags: u32) {
+    set_page_flags(pte_addr, flags);
+}
+
+/// Clear PTE flags without atomic operations (for single-threaded boot-time use only)
+/// SAFETY: Only safe during boot before multicore is active
+pub unsafe fn modify_pte_clear_flags_init(pte_addr: *mut u32, flags: u32) {
+    clear_page_flags(pte_addr, flags);
+}
+
+/// Clear COW flag from a PTE atomically
+/// SAFETY: Caller must ensure pte_addr is valid and aligned
+pub unsafe fn clear_pte_cow_flag(pte_addr: *mut u32) {
+    clear_page_cow(pte_addr);
+    store_barrier();
+}
+
+/// Read memory barrier - ensures all loads before this point complete before any loads after
+/// Use before reading shared data structures in multicore contexts
+pub unsafe fn read_barrier() {
+    load_barrier();
+}
 
 /// Initialize page fault handler (for IDT setup)
 pub fn init_page_fault_handler() {
@@ -426,6 +449,9 @@ impl AddressSpace {
                     let phys_addr = phys_base + (j * PAGE_SIZE);
                     let flags = PageFlags::Present as u32 | PageFlags::Writable as u32;
                     table_ref.entries[j] = PageTableEntry::new(phys_addr, flags);
+                    // Use non-atomic operation during single-threaded boot for performance
+                    let pte_addr = &mut table_ref.entries[j].0 as *mut u32;
+                    modify_pte_set_flags_init(pte_addr, flags);
                 }
             }
 
@@ -438,6 +464,9 @@ impl AddressSpace {
                     let phys_addr = phys_base + (j * PAGE_SIZE);
                     let flags = PageFlags::Present as u32 | PageFlags::Writable as u32;
                     table_ref.entries[j] = PageTableEntry::new(phys_addr, flags);
+                    // Use non-atomic operation during single-threaded boot for performance
+                    let pte_addr = &mut table_ref.entries[j].0 as *mut u32;
+                    modify_pte_set_flags_init(pte_addr, flags);
                 }
             }
         }
@@ -669,6 +698,9 @@ impl AddressSpace {
         unsafe {
             let table = self.page_directory.get_table(virt_aligned)?;
             let entry = table.entry(virt_aligned);
+            
+            // Ensure we read the latest PTE value in multicore context
+            read_barrier();
             
             if entry.is_present() {
                 Some(entry.phys_addr() + offset)

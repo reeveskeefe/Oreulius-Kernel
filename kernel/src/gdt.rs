@@ -131,7 +131,7 @@ static mut SYSENTER_STACK: [u8; 4096] = [0; 4096];
 fn read_esp() -> u32 {
     let esp: u32;
     unsafe {
-        core::arch::asm!("mov {}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
+        core::arch::asm!("mov {0:e}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
     }
     esp
 }

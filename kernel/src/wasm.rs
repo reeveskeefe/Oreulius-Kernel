@@ -576,19 +576,39 @@ impl WasmInstance {
             let code_start = func.code_offset;
             let code_end = func.code_offset + func.code_len;
             let code = &self.module.bytecode[code_start..code_end];
-            let hash = hash_code(code);
-            let entry = jit_cache_get_or_compile(hash, code)
-                .ok_or(WasmError::InvalidModule)?;
+            let locals_total = func.param_count + func.local_count;
+            let hash = hash_code(code, locals_total);
+            let entry = match jit_cache_get_or_compile(hash, code, locals_total) {
+                Some(e) => e,
+                None => {
+                    return Ok(false);
+                }
+            };
             self.jit_hash[func_idx] = Some(hash);
             jit_stats().lock().compiled += 1;
             let _ = entry;
         }
 
         let hash = self.jit_hash[func_idx].ok_or(WasmError::InvalidModule)?;
-        let jit_entry = jit_cache_get(hash).ok_or(WasmError::InvalidModule)?;
+        let jit_entry = match jit_cache_get(hash) {
+            Some(e) => e,
+            None => {
+                self.jit_hash[func_idx] = None;
+                return Ok(false);
+            }
+        };
         self.jit_sp = 0;
         let mem_len = self.memory.active_len();
+        if mem_len > u32::MAX as usize {
+            return Ok(false);
+        }
         let mem_ptr = self.memory.as_mut_ptr();
+        if mem_ptr.is_null() {
+            return Ok(false);
+        }
+        if (mem_ptr as usize).checked_add(mem_len).is_none() {
+            return Ok(false);
+        }
         let locals_ptr = self.jit_locals.as_mut_ptr();
         let ret = unsafe { (jit_entry)(self.jit_stack.as_mut_ptr(), &mut self.jit_sp, mem_ptr, mem_len, locals_ptr) };
         if ret == -1 {
@@ -1418,12 +1438,14 @@ pub fn jit_stats() -> &'static Mutex<JitStats> {
     &JIT_STATS
 }
 
-fn hash_code(code: &[u8]) -> u32 {
+fn hash_code(code: &[u8], locals_total: usize) -> u32 {
     let mut hash: u32 = 2166136261;
     for &b in code {
         hash ^= b as u32;
         hash = hash.wrapping_mul(16777619);
     }
+    hash ^= locals_total as u32;
+    hash = hash.wrapping_mul(16777619);
     hash
 }
 
@@ -1431,17 +1453,20 @@ fn jit_cache_get(hash: u32) -> Option<crate::wasm_jit::JitFn> {
     let cache = JIT_CACHE.lock();
     for entry in cache.entries.iter() {
         if entry.hash == hash {
+            if !entry.func.verify_integrity() {
+                return None;
+            }
             return Some(entry.func.entry);
         }
     }
     None
 }
 
-fn jit_cache_get_or_compile(hash: u32, code: &[u8]) -> Option<crate::wasm_jit::JitFn> {
+fn jit_cache_get_or_compile(hash: u32, code: &[u8], locals_total: usize) -> Option<crate::wasm_jit::JitFn> {
     if let Some(entry) = jit_cache_get(hash) {
         return Some(entry);
     }
-    let jit = match crate::wasm_jit::compile(code) {
+    let jit = match crate::wasm_jit::compile(code, locals_total) {
         Ok(j) => j,
         Err(_) => {
             jit_stats().lock().failed += 1;

@@ -1030,6 +1030,7 @@ pub extern "C" fn syscall_handler_rust(regs: *const SavedRegisters) -> u64 {
 pub fn init() {
     // Register INT 0x80 handler
     extern "C" {
+        #[allow(dead_code)]  // Used via address cast, not direct call
         fn syscall_entry();
         fn sysenter_entry();
     }

@@ -547,16 +547,6 @@ impl QuantumScheduler {
     }
 }
 
-impl WaitQueue {
-    const fn empty() -> Self {
-        WaitQueue {
-            addr: 0,
-            waiting: VecDeque::new(),
-            active: false,
-        }
-    }
-}
-
 impl Default for WaitQueue {
     fn default() -> Self {
         WaitQueue {
@@ -567,8 +557,8 @@ impl Default for WaitQueue {
     }
 }
 
-/// Global scheduler instance
 lazy_static::lazy_static! {
+    /// Global scheduler instance
     static ref QUANTUM_SCHEDULER: Mutex<QuantumScheduler> = Mutex::new(QuantumScheduler::new());
 }
 static SCHEDULER_STARTED: AtomicBool = AtomicBool::new(false);
