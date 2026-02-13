@@ -292,7 +292,7 @@ Oreulia is an experimental research project. Contributions, ideas, and feedback 
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the OREULIUS LISCENCE - see the [liscence](OreuliusLiscence) for details.
 
 ---
 

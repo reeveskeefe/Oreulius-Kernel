@@ -3516,8 +3516,6 @@ fn cmd_network_help() {
 }
 
 fn cmd_net_info() {
-    use crate::net;
-    
     vga::print_str("\n");
     vga::print_str("===== Network Status =====\n");
     vga::print_str("\n");
@@ -3550,8 +3548,6 @@ fn cmd_net_info() {
 }
 
 fn cmd_wifi_scan() {
-    use crate::net;
-    
     vga::print_str("\n");
     vga::print_str("===== WiFi Network Scan =====\n");
     vga::print_str("\n");
@@ -3632,8 +3628,6 @@ fn cmd_wifi_scan() {
 }
 
 fn cmd_wifi_connect(mut parts: core::str::SplitWhitespace) {
-    use crate::net;
-    
     let ssid = match parts.next() {
         Some(s) => s,
         None => {
@@ -3670,7 +3664,6 @@ fn cmd_wifi_connect(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_wifi_status() {
-    use crate::net;
     use crate::wifi::WifiState;
     
     vga::print_str("\n");
@@ -3724,8 +3717,6 @@ fn cmd_wifi_status() {
 }
 
 fn cmd_http_get(mut parts: core::str::SplitWhitespace) {
-    use crate::net;
-    
     let url = match parts.next() {
         Some(u) => u,
         None => {
