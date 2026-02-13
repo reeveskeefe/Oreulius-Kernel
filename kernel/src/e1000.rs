@@ -234,7 +234,7 @@ impl E1000Driver {
     fn init_tx(&mut self) {
         unsafe {
             let tx_phys = TX_BUFFERS.data.as_ptr() as u32;
-            crate::serial_println!("[NET] Tx Buffers: {:#x} - {:#x}", &TX_BUFFERS as *const _ as u32, &TX_BUFFERS as *const _ as u32 + (2048 * NUM_TX_DESC) as u32);
+            crate::serial_println!("[NET] Tx Buffers: {:#x} - {:#x}", tx_phys, tx_phys + (2048 * NUM_TX_DESC) as u32);
             crate::serial_println!("[NET] Tx Descriptors: {:#x}", &TX_DESCS as *const _ as u32);
             // Setup descriptor ring
             for i in 0..NUM_TX_DESC {

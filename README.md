@@ -14,7 +14,7 @@
 
 ---
 <div align="center">
-<img src="oreuliuswhitebackground.png" width="600" alt="the logo for the kernel oreulius">
+<img src="oreuliuswhitebackground.png" border-radius="10%" width="600" alt="the logo for the kernel oreulius">
 
 </div>
 
@@ -292,7 +292,7 @@ Oreulia is an experimental research project. Contributions, ideas, and feedback 
 
 ## License
 
-This project is licensed under the OREULIUS LISCENCE - see the [liscence](OreuliusLiscence) for details.
+This project is licensed under the OREULIUS LISCENCE - see the [liscence](OreuliusLiscence.md) for details.
 
 ---
 
