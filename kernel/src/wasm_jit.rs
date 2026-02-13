@@ -1,3 +1,35 @@
+/*!
+ * Oreulia Kernel Project
+ * 
+ * SPDX-License-Identifier: MIT
+ * 
+ * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * 
+ * Contributing:
+ * - By contributing to this file, you agree to license your work under the same terms.
+ * - Please see CONTRIBUTING.md for code style and review guidelines.
+ * 
+ */
+
+
 //! Minimal WASM JIT compiler (ELF-less, in-kernel).
 //!
 //! Supports a small subset of opcodes and translates to 32-bit x86 machine code.
@@ -32,16 +64,16 @@ pub struct JitFunction {
     pub code: Vec<u8>,
     pub entry: JitFn,
     pub blocks: Vec<BasicBlock>,
-    pub code_hash: u32,
+    pub code_hash: u64,
     pub exec: JitExecBuffer,
-    pub exec_hash: u32,
+    pub exec_hash: u64,
 }
 
 // SAFETY: JitFunction is safe to send/sync because all components are:
 // - Vec<u8> (Send + Sync)
 // - JitFn (function pointer, Send + Sync)
 // - Vec<BasicBlock> (Send + Sync)
-// - u32 fields (Copy, Send + Sync)
+// - u64 fields (Copy, Send + Sync)
 // - JitExecBuffer (now explicitly Send + Sync, see above)
 unsafe impl Send for JitFunction {}
 unsafe impl Sync for JitFunction {}
@@ -586,7 +618,7 @@ impl Emitter {
         self.emit_push_eax();
     }
 
-    fn emit_bounds_check(&mut self, off: u32) {
+    fn emit_bounds_check(&mut self, off: u32, size: u32) {
         // eax = addr, ecx = mem_len
         // add eax, off
         if off != 0 {
@@ -595,21 +627,38 @@ impl Emitter {
             // jc trap (rel32)
             self.emit_trap_mem_jump(0x82);
         }
-        // mov ebx, eax
-        self.emit(&[0x89, 0xC3]);
-        // add ebx, 4
-        self.emit(&[0x83, 0xC3, 0x04]);
-        // jc trap (rel32)
-        self.emit_trap_mem_jump(0x82);
-        // cmp ebx, ecx
-        self.emit(&[0x39, 0xCB]);
-        // ja trap (rel32)
-        self.emit_trap_mem_jump(0x87);
+        if size != 0 {
+            // if mem_len < size -> trap
+            if size <= 0x7F {
+                // cmp ecx, imm8
+                self.emit(&[0x83, 0xF9, size as u8]);
+            } else {
+                // cmp ecx, imm32
+                self.emit(&[0x81, 0xF9]);
+                self.emit_u32(size);
+            }
+            // jb trap (rel32)
+            self.emit_trap_mem_jump(0x82);
+
+            // mov ebx, ecx
+            self.emit(&[0x89, 0xCB]);
+            // sub ebx, size
+            if size <= 0x7F {
+                self.emit(&[0x83, 0xEB, size as u8]);
+            } else {
+                self.emit(&[0x81, 0xEB]);
+                self.emit_u32(size);
+            }
+            // cmp eax, ebx
+            self.emit(&[0x39, 0xD8]);
+            // ja trap (rel32)
+            self.emit_trap_mem_jump(0x87);
+        }
     }
 
     fn emit_i32_load(&mut self, off: u32) {
         self.emit_pop_to_eax();
-        self.emit_bounds_check(off);
+        self.emit_bounds_check(off, 4);
         // mov eax, [edx + eax]
         self.emit(&[0x8B, 0x04, 0x02]);
         self.emit_push_eax();
@@ -657,23 +706,7 @@ impl Emitter {
         // push ebx (save value)
         self.emit(&[0x53]);
         // bounds check using ebx temp
-        // add eax, off
-        if off != 0 {
-            self.emit(&[0x05]);
-            self.emit_u32(off);
-            // jc trap (rel32)
-            self.emit_trap_mem_jump(0x82);
-        }
-        // mov ebx, eax
-        self.emit(&[0x89, 0xC3]);
-        // add ebx, 4
-        self.emit(&[0x83, 0xC3, 0x04]);
-        // jc trap (rel32)
-        self.emit_trap_mem_jump(0x82);
-        // cmp ebx, ecx
-        self.emit(&[0x39, 0xCB]);
-        // ja trap (rel32)
-        self.emit_trap_mem_jump(0x87);
+        self.emit_bounds_check(off, 4);
         // pop ebx (restore value)
         self.emit(&[0x5B]);
         // mov [edx + eax], ebx

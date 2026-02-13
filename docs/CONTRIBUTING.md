@@ -51,5 +51,23 @@ Thank you for considering a contribution. We welcome all kinds of help: code, do
 - Assume good intent and focus on the work.
 - If you are unsure about anything, ask. We are happy to help.
 
+---
+
+## License and Contribution Header for New Scripts
+
+All new scripts and modules must begin with the full license and contribution header block. This ensures that every file in the Oreulia codebase is clearly licensed, attributed, and provides guidance for future contributors.
+
+**Why is this required?**
+- It guarantees that all code is covered by the project’s open source license and contributor agreement.
+- It makes the terms of use and contribution clear to anyone reading or reusing the code.
+- It helps maintainers and users quickly identify the file’s purpose, authorship, and contribution process.
+
+**How to implement:**
+- Copy the entire header block from [`codepageheader.md`](../codepageheader.md) and paste it at the very top of your new script or module.
+- Fill in the script/module name and a brief description of its features and purpose.
+- Update the feature list and notes as the file evolves.
+
+See [`codepageheader.md`](../codepageheader.md) for the latest template and detailed instructions.
+
 **License**
 By contributing, you agree that your contributions are provided under the project license unless a separate agreement is in place.
