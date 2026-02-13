@@ -52,7 +52,7 @@
 extern crate alloc;
 
 use core::fmt;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use alloc::vec::Vec;
 use spin::Mutex;
 use crate::ipc::{ProcessId, ChannelId};
@@ -744,6 +744,7 @@ const USER_JIT_STACK_BASE: usize = 0x0042_0000;
 const USER_JIT_CODE_BASE: usize = 0x0043_0000;
 const USER_JIT_DATA_BASE: usize = 0x0044_0000;
 const USER_WASM_MEM_BASE: usize = 0x0050_0000;
+const USER_JIT_STACK_GUARD_PAGES: usize = 1;
 const USER_JIT_STACK_PAGES: usize = 1;
 
 #[repr(C)]
@@ -1917,7 +1918,6 @@ impl JitCache {
 static JIT_CONFIG: Mutex<JitConfig> = Mutex::new(JitConfig::new());
 static JIT_STATS: Mutex<JitStats> = Mutex::new(JitStats::new());
 static JIT_CACHE: Mutex<JitCache> = Mutex::new(JitCache::new());
-static JIT_SANDBOX_SPACE: Mutex<Option<paging::AddressSpace>> = Mutex::new(None);
 static JIT_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static mut JIT_FAULT_TRAP_PTR: *mut i32 = core::ptr::null_mut();
 static JIT_USER_LOCK: Mutex<()> = Mutex::new(());
@@ -1933,13 +1933,13 @@ struct JitUserPages {
 static JIT_USER_PAGES: Mutex<Option<JitUserPages>> = Mutex::new(None);
 
 #[no_mangle]
-pub static mut JIT_USER_ACTIVE: u32 = 0;
+pub static JIT_USER_ACTIVE: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
-pub static mut JIT_USER_RETURN_PENDING: u32 = 0;
+pub static JIT_USER_RETURN_PENDING: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
-pub static mut JIT_USER_RETURN_EIP: u32 = 0;
+pub static JIT_USER_RETURN_EIP: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
-pub static mut JIT_USER_RETURN_ESP: u32 = 0;
+pub static JIT_USER_RETURN_ESP: AtomicU32 = AtomicU32::new(0);
 
 const TRAP_MEM: i32 = -1;
 
@@ -1949,14 +1949,6 @@ pub fn jit_config() -> &'static Mutex<JitConfig> {
 
 pub fn jit_stats() -> &'static Mutex<JitStats> {
     &JIT_STATS
-}
-
-fn jit_sandbox_pd() -> Option<u32> {
-    let mut guard = JIT_SANDBOX_SPACE.lock();
-    if guard.is_none() {
-        *guard = Some(paging::AddressSpace::new_jit_sandbox().ok()?);
-    }
-    guard.as_ref().map(|space| space.phys_addr() as u32)
 }
 
 fn jit_fault_enter(trap_ptr: *mut i32) {
@@ -2092,7 +2084,7 @@ fn ensure_jit_user_pages() -> Result<JitUserPages, &'static str> {
     }
     let trampoline = memory::jit_allocate_pages(1)?;
     let call = memory::jit_allocate_pages(1)?;
-    let stack_pages = USER_JIT_STACK_PAGES;
+    let stack_pages = USER_JIT_STACK_PAGES + USER_JIT_STACK_GUARD_PAGES;
     let stack = memory::jit_allocate_pages(stack_pages)?;
     write_jit_user_trampoline(trampoline as *mut u8, USER_JIT_CALL_BASE as u32);
     let _ = paging::set_page_writable_range(trampoline, paging::PAGE_SIZE, false);
@@ -2107,11 +2099,9 @@ fn ensure_jit_user_pages() -> Result<JitUserPages, &'static str> {
 }
 
 pub fn jit_user_mark_returned() -> bool {
-    unsafe {
-        if JIT_USER_ACTIVE != 0 {
-            JIT_USER_RETURN_PENDING = 1;
-            return true;
-        }
+    if JIT_USER_ACTIVE.load(Ordering::SeqCst) != 0 {
+        JIT_USER_RETURN_PENDING.store(1, Ordering::SeqCst);
+        return true;
     }
     false
 }
@@ -2130,14 +2120,15 @@ pub fn jit_handle_page_fault(
         }
     }
     if (frame.cs & 0x3) == 3 {
-        unsafe {
-            if JIT_USER_ACTIVE != 0 {
-                frame.eax = 0;
-                frame.eip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u32;
-                frame.user_esp =
-                    (USER_JIT_STACK_BASE + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 4) as u32;
-                return true;
-            }
+        if JIT_USER_ACTIVE.load(Ordering::SeqCst) != 0 {
+            let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
+            frame.eax = 0;
+            frame.eip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u32;
+            frame.user_esp = (USER_JIT_STACK_BASE
+                + guard_bytes
+                + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE)
+                - 4) as u32;
+            return true;
         }
     }
     frame.eax = 0;
@@ -2201,10 +2192,21 @@ fn call_jit_kernel(
 ) -> i32 {
     let flags = unsafe { idt_asm::fast_cli_save() };
     let old_cr3 = paging::current_page_directory_addr();
-    if let Some(pd) = jit_sandbox_pd() {
-        jit_fault_enter(trap_code);
-        unsafe { paging::set_page_directory(pd) };
-    }
+    let sandbox = match paging::AddressSpace::new_jit_sandbox() {
+        Ok(space) => space,
+        Err(_) => {
+            unsafe {
+                if !trap_code.is_null() {
+                    *trap_code = TRAP_MEM;
+                }
+            }
+            unsafe { idt_asm::fast_sti_restore(flags) };
+            return 0;
+        }
+    };
+    let pd = sandbox.phys_addr() as u32;
+    jit_fault_enter(trap_code);
+    unsafe { paging::set_page_directory(pd) };
     let ret = unsafe {
         (jit_entry.entry)(
             stack_ptr,
@@ -2246,22 +2248,22 @@ fn call_jit_user(
         return Err("Invalid WASM memory");
     }
 
-    unsafe {
-        if JIT_USER_ACTIVE != 0 {
-            return Err("JIT user mode already active");
-        }
-        JIT_USER_RETURN_PENDING = 0;
+    if JIT_USER_ACTIVE.load(Ordering::SeqCst) != 0 {
+        return Err("JIT user mode already active");
     }
+    JIT_USER_RETURN_PENDING.store(0, Ordering::SeqCst);
 
     let pages = ensure_jit_user_pages()?;
-
-    let mut sandbox_guard = JIT_SANDBOX_SPACE.lock();
-    if sandbox_guard.is_none() {
-        *sandbox_guard = Some(paging::AddressSpace::new_jit_sandbox()?);
+    unsafe {
+        core::ptr::write_bytes(pages.call as *mut u8, 0, paging::PAGE_SIZE);
+        core::ptr::write_bytes(
+            pages.stack as *mut u8,
+            0,
+            pages.stack_pages * paging::PAGE_SIZE,
+        );
     }
-    let sandbox = sandbox_guard
-        .as_mut()
-        .ok_or("JIT sandbox not initialized")?;
+
+    let mut sandbox = paging::AddressSpace::new_jit_sandbox()?;
 
     let kernel_guard = paging::kernel_space().lock();
     let kernel_space = kernel_guard
@@ -2320,10 +2322,11 @@ fn call_jit_user(
         paging::PAGE_SIZE,
         true,
     )?;
+    let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
     sandbox.map_user_range_phys(
-        USER_JIT_STACK_BASE,
-        stack_phys,
-        pages.stack_pages * paging::PAGE_SIZE,
+        USER_JIT_STACK_BASE + guard_bytes,
+        stack_phys + guard_bytes,
+        USER_JIT_STACK_PAGES * paging::PAGE_SIZE,
         true,
     )?;
     sandbox.map_user_range_phys(
@@ -2347,7 +2350,6 @@ fn call_jit_user(
 
     let sandbox_pd = sandbox.phys_addr() as u32;
     drop(kernel_guard);
-    drop(sandbox_guard);
 
     let entry_offset = (jit_entry.entry as usize)
         .checked_sub(exec_ptr)
@@ -2394,7 +2396,10 @@ fn call_jit_user(
     let old_cr3 = paging::current_page_directory_addr();
     unsafe { paging::set_page_directory(sandbox_pd) };
 
-    let user_stack_top = USER_JIT_STACK_BASE + (pages.stack_pages * paging::PAGE_SIZE) - 16;
+    let user_stack_top = USER_JIT_STACK_BASE
+        + guard_bytes
+        + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE)
+        - 16;
     unsafe {
         process_asm::jit_user_enter(
             user_stack_top as u32,
@@ -2554,6 +2559,107 @@ pub fn jit_benchmark() -> Result<(u64, u64), &'static str> {
 
     let _ = wasm_runtime().destroy(instance_id);
     Ok((interp_ticks, jit_ticks))
+}
+
+/// JIT bounds self-test (expects MemoryOutOfBounds traps in both interpreter and JIT).
+pub fn jit_bounds_self_test() -> Result<(), &'static str> {
+    struct JitConfigGuard {
+        enabled: bool,
+        hot_threshold: u32,
+        user_mode: bool,
+    }
+    impl Drop for JitConfigGuard {
+        fn drop(&mut self) {
+            let mut cfg = jit_config().lock();
+            cfg.enabled = self.enabled;
+            cfg.hot_threshold = self.hot_threshold;
+            cfg.user_mode = self.user_mode;
+        }
+    }
+
+    let guard = {
+        let mut cfg = jit_config().lock();
+        let guard = JitConfigGuard {
+            enabled: cfg.enabled,
+            hot_threshold: cfg.hot_threshold,
+            user_mode: cfg.user_mode,
+        };
+        cfg.enabled = true;
+        cfg.hot_threshold = 0;
+        cfg.user_mode = true;
+        guard
+    };
+
+    let mut module = WasmModule::new();
+    let mut code: Vec<u8> = Vec::new();
+
+    fn push_uleb128(buf: &mut Vec<u8>, mut value: u32) {
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            buf.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    // i32.const 8
+    code.push(Opcode::I32Const as u8);
+    code.push(0x08);
+    // i32.load align=0 offset=0xFFFF_FFFC (overflow when added to 8)
+    code.push(Opcode::I32Load as u8);
+    push_uleb128(&mut code, 0);
+    push_uleb128(&mut code, 0xFFFF_FFFC);
+    code.push(Opcode::End as u8);
+
+    module.load(&code).map_err(|_| "Module load failed")?;
+    module
+        .add_function(Function {
+            code_offset: 0,
+            code_len: code.len(),
+            param_count: 0,
+            result_count: 1,
+            local_count: 0,
+        })
+        .map_err(|_| "Function add failed")?;
+
+    let instance_id = wasm_runtime()
+        .instantiate_module(module, ProcessId(1))
+        .map_err(|_| "Instance create failed")?;
+
+    let interp = wasm_runtime()
+        .get_instance_mut(instance_id, |instance| {
+            instance.stack.clear();
+            instance.enable_jit(false);
+            instance.call(0)
+        })
+        .map_err(|_| "Instance missing")?;
+    if !matches!(interp, Err(WasmError::MemoryOutOfBounds)) {
+        let _ = wasm_runtime().destroy(instance_id);
+        drop(guard);
+        return Err("Interpreter did not trap on bounds overflow");
+    }
+
+    let jit = wasm_runtime()
+        .get_instance_mut(instance_id, |instance| {
+            instance.stack.clear();
+            instance.enable_jit(true);
+            instance.call(0)
+        })
+        .map_err(|_| "Instance missing")?;
+    if !matches!(jit, Err(WasmError::MemoryOutOfBounds)) {
+        let _ = wasm_runtime().destroy(instance_id);
+        drop(guard);
+        return Err("JIT did not trap on bounds overflow");
+    }
+
+    let _ = wasm_runtime().destroy(instance_id);
+    drop(guard);
+    Ok(())
 }
 
 // ============================================================================

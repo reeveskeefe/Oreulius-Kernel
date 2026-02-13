@@ -196,7 +196,8 @@ jit_user_enter:
     mov [JIT_USER_RETURN_ESP], eax
     mov eax, .return
     mov [JIT_USER_RETURN_EIP], eax
-    mov dword [JIT_USER_ACTIVE], 1
+    mov eax, 1
+    xchg eax, [JIT_USER_ACTIVE]
 
     ; Load args
     mov eax, [ebp + 8]      ; User ESP
@@ -214,7 +215,8 @@ jit_user_enter:
     add esp, 16
 
 .return:
-    mov dword [JIT_USER_ACTIVE], 0
+    xor eax, eax
+    xchg eax, [JIT_USER_ACTIVE]
     pop edi
     pop esi
     pop ebx

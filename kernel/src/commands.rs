@@ -100,6 +100,7 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-log-demo - Demo WASM logging syscall\n");
             vga::print_str("  wasm-list    - List loaded WASM instances\n");
             vga::print_str("  wasm-jit-bench - Benchmark WASM JIT vs interpreter\n");
+            vga::print_str("  wasm-jit-selftest - Run WASM JIT bounds self-test\n");
             vga::print_str("  wasm-jit-on  - Enable WASM JIT\n");
             vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
             vga::print_str("  wasm-jit-stats - Show WASM JIT stats\n");
@@ -264,6 +265,9 @@ pub fn execute(input: &str) {
         }
         "wasm-jit-bench" => {
             cmd_wasm_jit_bench();
+        }
+        "wasm-jit-selftest" => {
+            cmd_wasm_jit_selftest();
         }
         "wasm-jit-on" => {
             cmd_wasm_jit_on();
@@ -3088,6 +3092,22 @@ fn cmd_wasm_jit_bench() {
         }
         Err(e) => {
             vga::print_str("Benchmark failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    vga::print_str("\n");
+}
+
+fn cmd_wasm_jit_selftest() {
+    vga::print_str("\n");
+    vga::print_str("===== WASM JIT Bounds Self-Test =====\n\n");
+    match crate::wasm::jit_bounds_self_test() {
+        Ok(()) => {
+            vga::print_str("Self-test passed (interpreter + JIT trapped as expected)\n");
+        }
+        Err(e) => {
+            vga::print_str("Self-test failed: ");
             vga::print_str(e);
             vga::print_str("\n");
         }

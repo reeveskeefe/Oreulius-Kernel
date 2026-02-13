@@ -1,12 +1,18 @@
 ENTRY(_start)
 
+PHDRS {
+    text   PT_LOAD FLAGS(5);  /* R + X */
+    rodata PT_LOAD FLAGS(4);  /* R */
+    data   PT_LOAD FLAGS(6);  /* R + W */
+}
+
 SECTIONS {
     . = 0x100000;
     __jit_arena_size = 0x200000; /* 2 MB dedicated JIT arena */
     
     .multiboot : {
         KEEP(*(.multiboot))
-    }
+    } :text
     
     .text : {
         _text_start = .;
@@ -14,7 +20,7 @@ SECTIONS {
         *(.text.*)
         . = ALIGN(4096);
         _text_end = .;
-    }
+    } :text
     
     .rodata : {
         _rodata_start = .;
@@ -22,7 +28,7 @@ SECTIONS {
         *(.rodata.*)
         . = ALIGN(4096);
         _rodata_end = .;
-    }
+    } :rodata
     
     .data : {
         _data_start = .;
@@ -30,7 +36,7 @@ SECTIONS {
         *(.data.*)
         . = ALIGN(4096);
         _data_end = .;
-    }
+    } :data
     
     .bss : {
         _bss_start = .;
@@ -41,14 +47,14 @@ SECTIONS {
         ebss = .;
         . = ALIGN(4096);
         _bss_end = .;
-    }
+    } :data
 
     /* Dedicated JIT arena (NOLOAD = not included in binary) */
     . = ALIGN(4096);
     _jit_arena_start = .;
     .jit_arena (NOLOAD) : {
         . += __jit_arena_size;
-    }
+    } :data
     _jit_arena_end = .;
     
     /* Define heap region after BSS (NOLOAD = not included in binary) */
@@ -56,6 +62,6 @@ SECTIONS {
     _heap_start = .;
     .heap (NOLOAD) : {
         . += 0x1000000;  /* 16 MB heap */
-    }
+    } :data
     _heap_end = .;
 }

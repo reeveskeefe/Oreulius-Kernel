@@ -85,7 +85,7 @@ asm_atomic_dec:
 asm_atomic_swap:
     mov ecx, [esp + 4]   ; ptr
     mov eax, [esp + 8]   ; new_value
-    lock xchg [ecx], eax ; Atomic exchange
+    xchg [ecx], eax      ; Atomic exchange (XCHG with memory is implicitly locked)
     ret                  ; Returns old value in EAX
 
 ; Atomic compare-and-swap (strong version)

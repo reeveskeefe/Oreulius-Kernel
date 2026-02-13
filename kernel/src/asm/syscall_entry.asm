@@ -38,10 +38,12 @@ syscall_entry:
     add esp, 4
 
     ; If JIT user-mode requested a kernel return, jump back to saved kernel frame.
-    cmp dword [JIT_USER_RETURN_PENDING], 0
+    xor eax, eax
+    xchg eax, [JIT_USER_RETURN_PENDING]
+    test eax, eax
     je .normal_return
-    mov dword [JIT_USER_RETURN_PENDING], 0
-    mov dword [JIT_USER_ACTIVE], 0
+    xor eax, eax
+    xchg eax, [JIT_USER_ACTIVE]
     mov esp, [JIT_USER_RETURN_ESP]
     mov eax, [JIT_USER_RETURN_EIP]
     jmp eax
@@ -64,3 +66,5 @@ syscall_entry:
     mov edx, ecx    ; Errno
     
     iret
+
+section .note.GNU-stack noalloc noexec nowrite progbits
