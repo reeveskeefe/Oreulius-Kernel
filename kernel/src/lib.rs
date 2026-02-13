@@ -35,6 +35,7 @@ pub mod process;
 pub mod process_asm;
 pub mod quantum_scheduler;
 pub mod registry;
+pub mod replay;
 pub mod scheduler;
 pub mod security;
 pub mod serial;

@@ -105,6 +105,13 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
             vga::print_str("  wasm-jit-stats - Show WASM JIT stats\n");
             vga::print_str("  wasm-jit-threshold - Set JIT hot threshold (wasm-jit-threshold <n>)\n");
+            vga::print_str("  wasm-replay-record - Start WASM replay recording (wasm-replay-record <id>)\n");
+            vga::print_str("  wasm-replay-stop - Stop WASM replay (wasm-replay-stop <id>)\n");
+            vga::print_str("  wasm-replay-save - Save replay transcript (wasm-replay-save <id> <key>)\n");
+            vga::print_str("  wasm-replay-load - Load replay transcript (wasm-replay-load <id> <key>)\n");
+            vga::print_str("  wasm-replay-status - Show replay status (wasm-replay-status <id>)\n");
+            vga::print_str("  wasm-replay-clear - Clear replay session (wasm-replay-clear <id>)\n");
+            vga::print_str("  wasm-replay-verify - Verify replay completion (wasm-replay-verify <id>)\n");
             vga::print_str("  calculate    - Scientific calculator (calculate <a> <op> <b>)\n");
             vga::print_str("  calculate-help - Show calculator operations\n");
             vga::print_str("  network-help - Show network commands\n");
@@ -280,6 +287,27 @@ pub fn execute(input: &str) {
         }
         "wasm-jit-threshold" => {
             cmd_wasm_jit_threshold(parts);
+        }
+        "wasm-replay-record" => {
+            cmd_wasm_replay_record(parts);
+        }
+        "wasm-replay-stop" => {
+            cmd_wasm_replay_stop(parts);
+        }
+        "wasm-replay-save" => {
+            cmd_wasm_replay_save(parts);
+        }
+        "wasm-replay-load" => {
+            cmd_wasm_replay_load(parts);
+        }
+        "wasm-replay-status" => {
+            cmd_wasm_replay_status(parts);
+        }
+        "wasm-replay-clear" => {
+            cmd_wasm_replay_clear(parts);
+        }
+        "wasm-replay-verify" => {
+            cmd_wasm_replay_verify(parts);
         }
         "calculate" => {
             cmd_calculate(parts);
@@ -3151,6 +3179,275 @@ fn cmd_wasm_jit_threshold(mut parts: core::str::SplitWhitespace) {
     vga::print_str("WASM JIT hot threshold set to ");
     print_u32(val);
     vga::print_str("\n");
+}
+
+fn cmd_wasm_replay_record(mut parts: core::str::SplitWhitespace) {
+    let id = match parts.next().and_then(parse_number) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: wasm-replay-record <id>\n");
+            return;
+        }
+    };
+    let info = crate::wasm::wasm_runtime().get_instance_mut(id, |instance| {
+        (instance.module_hash(), instance.module_len())
+    });
+    let (hash, len) = match info {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Instance error: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+            return;
+        }
+    };
+    match crate::replay::start_record(id, hash, len) {
+        Ok(()) => {
+            vga::print_str("Replay recording enabled for instance ");
+            print_usize(id);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Replay record error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_wasm_replay_stop(mut parts: core::str::SplitWhitespace) {
+    let id = match parts.next().and_then(parse_number) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: wasm-replay-stop <id>\n");
+            return;
+        }
+    };
+    match crate::replay::stop(id) {
+        Ok(()) => {
+            vga::print_str("Replay stopped for instance ");
+            print_usize(id);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Replay stop error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_wasm_replay_save(mut parts: core::str::SplitWhitespace) {
+    let id = match parts.next().and_then(parse_number) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: wasm-replay-save <id> <key>\n");
+            return;
+        }
+    };
+    let key_str = match parts.next() {
+        Some(k) => k,
+        None => {
+            vga::print_str("Usage: wasm-replay-save <id> <key>\n");
+            return;
+        }
+    };
+    let transcript = match crate::replay::export_transcript(id) {
+        Ok(t) => t,
+        Err(e) => {
+            vga::print_str("Replay export error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
+    let key = match fs::FileKey::new(key_str) {
+        Ok(k) => k,
+        Err(e) => {
+            vga::print_str("Error creating key: ");
+            vga::print_str(match e {
+                fs::FilesystemError::KeyTooLong => "key too long\n",
+                fs::FilesystemError::InvalidKey => "invalid key\n",
+                _ => "unknown error\n",
+            });
+            return;
+        }
+    };
+    let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::all(), None);
+    let request = match fs::Request::write(key, &transcript, cap) {
+        Ok(r) => r,
+        Err(_) => {
+            vga::print_str("Replay save error: file too large\n");
+            return;
+        }
+    };
+    let response = fs::filesystem().handle_request(request);
+    match response.status {
+        fs::ResponseStatus::Ok => {
+            vga::print_str("Replay transcript saved: ");
+            vga::print_str(key_str);
+            vga::print_str(" (");
+            print_usize(transcript.len());
+            vga::print_str(" bytes)\n");
+        }
+        fs::ResponseStatus::Error(e) => {
+            vga::print_str("Replay save error: ");
+            vga::print_str(match e {
+                fs::FilesystemError::NotFound => "not found\n",
+                fs::FilesystemError::AlreadyExists => "already exists\n",
+                fs::FilesystemError::FileTooLarge => "file too large\n",
+                fs::FilesystemError::PermissionDenied => "permission denied\n",
+                fs::FilesystemError::FilesystemFull => "filesystem full\n",
+                _ => "unknown error\n",
+            });
+        }
+    }
+}
+
+fn cmd_wasm_replay_load(mut parts: core::str::SplitWhitespace) {
+    let id = match parts.next().and_then(parse_number) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: wasm-replay-load <id> <key>\n");
+            return;
+        }
+    };
+    let key_str = match parts.next() {
+        Some(k) => k,
+        None => {
+            vga::print_str("Usage: wasm-replay-load <id> <key>\n");
+            return;
+        }
+    };
+    let key = match fs::FileKey::new(key_str) {
+        Ok(k) => k,
+        Err(e) => {
+            vga::print_str("Error creating key: ");
+            vga::print_str(match e {
+                fs::FilesystemError::KeyTooLong => "key too long\n",
+                fs::FilesystemError::InvalidKey => "invalid key\n",
+                _ => "unknown error\n",
+            });
+            return;
+        }
+    };
+    let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::all(), None);
+    let request = fs::Request::read(key, cap);
+    let response = fs::filesystem().handle_request(request);
+    let data = match response.status {
+        fs::ResponseStatus::Ok => response.get_data(),
+        fs::ResponseStatus::Error(e) => {
+            vga::print_str("Replay load error: ");
+            vga::print_str(match e {
+                fs::FilesystemError::NotFound => "not found\n",
+                fs::FilesystemError::PermissionDenied => "permission denied\n",
+                _ => "unknown error\n",
+            });
+            return;
+        }
+    };
+    let info = crate::wasm::wasm_runtime().get_instance_mut(id, |instance| {
+        (instance.module_hash(), instance.module_len())
+    });
+    let (hash, len) = match info {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Instance error: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+            return;
+        }
+    };
+    match crate::replay::load_transcript(id, hash, len, data) {
+        Ok(()) => {
+            vga::print_str("Replay transcript loaded for instance ");
+            print_usize(id);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Replay load error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_wasm_replay_status(mut parts: core::str::SplitWhitespace) {
+    let id = match parts.next().and_then(parse_number) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: wasm-replay-status <id>\n");
+            return;
+        }
+    };
+    match crate::replay::status(id) {
+        Some(status) => {
+            let mode_str = match status.mode {
+                crate::replay::ReplayMode::Off => "off",
+                crate::replay::ReplayMode::Record => "record",
+                crate::replay::ReplayMode::Replay => "replay",
+            };
+            vga::print_str("Replay status for instance ");
+            print_usize(id);
+            vga::print_str(":\n  Mode: ");
+            vga::print_str(mode_str);
+            vga::print_str("\n  Events: ");
+            print_usize(status.events);
+            vga::print_str("\n  Cursor: ");
+            print_usize(status.cursor);
+            vga::print_str("\n  Module hash: ");
+            print_u64(status.module_hash);
+            vga::print_str("\n  Event hash: ");
+            print_u64(status.event_hash);
+            vga::print_str("\n");
+        }
+        None => {
+            vga::print_str("No replay session for instance ");
+            print_usize(id);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_wasm_replay_clear(mut parts: core::str::SplitWhitespace) {
+    let id = match parts.next().and_then(parse_number) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: wasm-replay-clear <id>\n");
+            return;
+        }
+    };
+    crate::replay::clear(id);
+    vga::print_str("Replay session cleared for instance ");
+    print_usize(id);
+    vga::print_str("\n");
+}
+
+fn cmd_wasm_replay_verify(mut parts: core::str::SplitWhitespace) {
+    let id = match parts.next().and_then(parse_number) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: wasm-replay-verify <id>\n");
+            return;
+        }
+    };
+    match crate::replay::is_complete(id) {
+        Some(true) => {
+            vga::print_str("Replay complete for instance ");
+            print_usize(id);
+            vga::print_str("\n");
+        }
+        Some(false) => {
+            vga::print_str("Replay not complete for instance ");
+            print_usize(id);
+            vga::print_str("\n");
+        }
+        None => {
+            vga::print_str("No replay session for instance ");
+            print_usize(id);
+            vga::print_str("\n");
+        }
+    }
 }
 
 // ============================================================================

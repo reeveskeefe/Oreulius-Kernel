@@ -63,6 +63,7 @@ use crate::memory;
 use crate::syscall::SYSCALL_JIT_RETURN;
 use crate::gdt;
 use crate::process_asm;
+use crate::replay::{self, ReplayEventStatus, ReplayMode};
 
 // ============================================================================
 // WASM Types & Constants
@@ -777,6 +778,10 @@ pub struct WasmInstance {
     capabilities: CapabilityTable,
     /// Process ID
     pub process_id: ProcessId,
+    /// Instance ID (slot index)
+    instance_id: usize,
+    /// Shadow instance for JIT validation (skip replay/record)
+    is_shadow: bool,
     /// Execution limits
     instruction_count: usize,
     memory_op_count: usize,
@@ -823,7 +828,7 @@ impl WasmInstance {
     }
 
     /// Create a new instance
-    pub fn new(module: WasmModule, process_id: ProcessId) -> Self {
+    pub fn new(module: WasmModule, process_id: ProcessId, instance_id: usize) -> Self {
         let (jit_state, jit_state_pages) = Self::alloc_jit_state();
         WasmInstance {
             module,
@@ -833,6 +838,8 @@ impl WasmInstance {
             pc: 0,
             capabilities: CapabilityTable::new(),
             process_id,
+            instance_id,
+            is_shadow: false,
             instruction_count: 0,
             memory_op_count: 0,
             syscall_count: 0,
@@ -848,6 +855,16 @@ impl WasmInstance {
     /// Enable or disable JIT
     pub fn enable_jit(&mut self, enabled: bool) {
         self.jit_enabled = enabled;
+    }
+
+    /// Hash the module bytecode (for replay verification)
+    pub fn module_hash(&self) -> u64 {
+        hash_memory(&self.module.bytecode[..self.module.bytecode_len])
+    }
+
+    /// Byte length of the module
+    pub fn module_len(&self) -> usize {
+        self.module.bytecode_len
     }
 
     fn try_jit(&mut self, func: Function, func_idx: usize) -> Result<bool, WasmError> {
@@ -1045,6 +1062,8 @@ impl WasmInstance {
             pc: self.pc,
             capabilities: self.capabilities.clone(),
             process_id: self.process_id,
+            instance_id: self.instance_id,
+            is_shadow: true,
             instruction_count: 0,
             memory_op_count: 0,
             syscall_count: 0,
@@ -1428,6 +1447,14 @@ impl WasmInstance {
         }
     }
 
+    fn replay_mode(&self) -> ReplayMode {
+        if self.is_shadow {
+            ReplayMode::Off
+        } else {
+            replay::mode(self.instance_id)
+        }
+    }
+
     // ========================================================================
     // Oreulia Syscalls
     // ========================================================================
@@ -1438,10 +1465,38 @@ impl WasmInstance {
         let msg_ptr = self.stack.pop()?.as_i32()? as usize;
 
         let msg_bytes = self.memory.read(msg_ptr, msg_len)?;
+        let func_id: u16 = 0;
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, msg_len as u32);
+        args_hash = replay::hash_bytes(args_hash, msg_bytes);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            return Ok(());
+        }
+
         if let Ok(msg_str) = core::str::from_utf8(msg_bytes) {
             crate::vga::print_str("[WASM] ");
             crate::vga::print_str(msg_str);
             crate::vga::print_char('\n');
+        }
+
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                0,
+                &[],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
         }
 
         Ok(())
@@ -1463,6 +1518,30 @@ impl WasmInstance {
 
         // Read key from memory
         let key_bytes = self.memory.read(key_ptr, key_len)?;
+        let func_id: u16 = 1;
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, key_len as u32);
+        args_hash = replay::hash_u32(args_hash, buf_len as u32);
+        args_hash = replay::hash_bytes(args_hash, key_bytes);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.data.len() > buf_len {
+                return Err(WasmError::DeterminismViolation);
+            }
+            if !out.data.is_empty() {
+                self.memory.write(buf_ptr, &out.data)?;
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
         let key_str = core::str::from_utf8(key_bytes)
             .map_err(|_| WasmError::InvalidUtf8)?;
         let key = fs::FileKey::new(key_str)
@@ -1478,9 +1557,31 @@ impl WasmInstance {
                 let copy_len = data.len().min(buf_len);
                 self.memory.write(buf_ptr, &data[..copy_len])?;
                 self.stack.push(Value::I32(copy_len as i32))?;
+                if mode == ReplayMode::Record {
+                    replay::record_host_call(
+                        self.instance_id,
+                        func_id,
+                        args_hash,
+                        ReplayEventStatus::Ok,
+                        copy_len as i32,
+                        &data[..copy_len],
+                    )
+                    .map_err(|_| WasmError::ReplayError)?;
+                }
             }
             fs::ResponseStatus::Error(_) => {
                 self.stack.push(Value::I32(-1))?;
+                if mode == ReplayMode::Record {
+                    replay::record_host_call(
+                        self.instance_id,
+                        func_id,
+                        args_hash,
+                        ReplayEventStatus::Ok,
+                        -1,
+                        &[],
+                    )
+                    .map_err(|_| WasmError::ReplayError)?;
+                }
             }
         }
 
@@ -1503,12 +1604,30 @@ impl WasmInstance {
 
         // Read key and data from memory
         let key_bytes = self.memory.read(key_ptr, key_len)?;
+        let data = self.memory.read(data_ptr, data_len)?;
+        let func_id: u16 = 2;
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, key_len as u32);
+        args_hash = replay::hash_bytes(args_hash, key_bytes);
+        args_hash = replay::hash_u32(args_hash, data_len as u32);
+        args_hash = replay::hash_bytes(args_hash, data);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
         let key_str = core::str::from_utf8(key_bytes)
             .map_err(|_| WasmError::InvalidUtf8)?;
         let key = fs::FileKey::new(key_str)
             .map_err(|_| WasmError::SyscallFailed)?;
-
-        let data = self.memory.read(data_ptr, data_len)?;
 
         // Call filesystem
         let request = fs::Request::write(key, data, fs_cap)
@@ -1518,9 +1637,31 @@ impl WasmInstance {
         match response.status {
             fs::ResponseStatus::Ok => {
                 self.stack.push(Value::I32(0))?;
+                if mode == ReplayMode::Record {
+                    replay::record_host_call(
+                        self.instance_id,
+                        func_id,
+                        args_hash,
+                        ReplayEventStatus::Ok,
+                        0,
+                        &[],
+                    )
+                    .map_err(|_| WasmError::ReplayError)?;
+                }
             }
             fs::ResponseStatus::Error(_) => {
                 self.stack.push(Value::I32(-1))?;
+                if mode == ReplayMode::Record {
+                    replay::record_host_call(
+                        self.instance_id,
+                        func_id,
+                        args_hash,
+                        ReplayEventStatus::Ok,
+                        -1,
+                        &[],
+                    )
+                    .map_err(|_| WasmError::ReplayError)?;
+                }
             }
         }
 
@@ -1541,6 +1682,23 @@ impl WasmInstance {
 
         // Read message from memory
         let msg_data = self.memory.read(msg_ptr, msg_len)?;
+        let func_id: u16 = 3;
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, msg_len as u32);
+        args_hash = replay::hash_bytes(args_hash, msg_data);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
 
         // Send message via IPC
         let channel_cap = crate::ipc::ChannelCapability::new(
@@ -1553,10 +1711,34 @@ impl WasmInstance {
         let msg = crate::ipc::Message::with_data(self.process_id, msg_data)
             .map_err(|_| WasmError::SyscallFailed)?;
         
-        crate::ipc::ipc().send(msg, &channel_cap)
-            .map_err(|_| WasmError::SyscallFailed)?;
+        let send_result = crate::ipc::ipc().send(msg, &channel_cap);
+        if send_result.is_err() {
+            if mode == ReplayMode::Record {
+                replay::record_host_call(
+                    self.instance_id,
+                    func_id,
+                    args_hash,
+                    ReplayEventStatus::Err,
+                    -1,
+                    &[],
+                )
+                .map_err(|_| WasmError::ReplayError)?;
+            }
+            return Err(WasmError::SyscallFailed);
+        }
 
         self.stack.push(Value::I32(0))?;
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                0,
+                &[],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
         Ok(())
     }
 
@@ -1572,6 +1754,29 @@ impl WasmInstance {
             _ => return Err(WasmError::InvalidCapability),
         };
 
+        let func_id: u16 = 4;
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, buf_len as u32);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.data.len() > buf_len {
+                return Err(WasmError::DeterminismViolation);
+            }
+            if !out.data.is_empty() {
+                self.memory.write(buf_ptr, &out.data)?;
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
+
         // Receive message via IPC
         let channel_cap = crate::ipc::ChannelCapability::new(
             0, // cap_id (not used for receiving)
@@ -1586,10 +1791,32 @@ impl WasmInstance {
                 let copy_len = msg_data.len().min(buf_len);
                 self.memory.write(buf_ptr, &msg_data[..copy_len])?;
                 self.stack.push(Value::I32(copy_len as i32))?;
+                if mode == ReplayMode::Record {
+                    replay::record_host_call(
+                        self.instance_id,
+                        func_id,
+                        args_hash,
+                        ReplayEventStatus::Ok,
+                        copy_len as i32,
+                        &msg_data[..copy_len],
+                    )
+                    .map_err(|_| WasmError::ReplayError)?;
+                }
             }
             Err(_) => {
                 // No message available
                 self.stack.push(Value::I32(0))?;
+                if mode == ReplayMode::Record {
+                    replay::record_host_call(
+                        self.instance_id,
+                        func_id,
+                        args_hash,
+                        ReplayEventStatus::Ok,
+                        0,
+                        &[],
+                    )
+                    .map_err(|_| WasmError::ReplayError)?;
+                }
             }
         }
 
@@ -1605,6 +1832,29 @@ impl WasmInstance {
 
         // Read URL from memory
         let url_bytes = self.memory.read(url_ptr, url_len)?;
+        let func_id: u16 = 5;
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, url_len as u32);
+        args_hash = replay::hash_u32(args_hash, buf_len as u32);
+        args_hash = replay::hash_bytes(args_hash, url_bytes);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.data.len() > buf_len {
+                return Err(WasmError::DeterminismViolation);
+            }
+            if !out.data.is_empty() {
+                self.memory.write(buf_ptr, &out.data)?;
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
         let url_str = core::str::from_utf8(url_bytes)
             .map_err(|_| WasmError::InvalidUtf8)?;
 
@@ -1613,14 +1863,40 @@ impl WasmInstance {
         let mut net_lock = net.lock();
 
         // Perform GET request
-        let response = net_lock.http_get(url_str)
-            .map_err(|_| WasmError::SyscallFailed)?;
+        let response = match net_lock.http_get(url_str) {
+            Ok(resp) => resp,
+            Err(_) => {
+                if mode == ReplayMode::Record {
+                    replay::record_host_call(
+                        self.instance_id,
+                        func_id,
+                        args_hash,
+                        ReplayEventStatus::Err,
+                        -1,
+                        &[],
+                    )
+                    .map_err(|_| WasmError::ReplayError)?;
+                }
+                return Err(WasmError::SyscallFailed);
+            }
+        };
 
         // Copy to WASM memory
         let copy_len = response.body_len.min(buf_len);
         self.memory.write(buf_ptr, &response.body[..copy_len])?;
         
         self.stack.push(Value::I32(copy_len as i32))?;
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                copy_len as i32,
+                &response.body[..copy_len],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
         Ok(())
     }
 
@@ -1632,11 +1908,39 @@ impl WasmInstance {
 
         // Read host from memory
         let host_bytes = self.memory.read(host_ptr, host_len)?;
+        let func_id: u16 = 6;
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, host_len as u32);
+        args_hash = replay::hash_u32(args_hash, _port as u32);
+        args_hash = replay::hash_bytes(args_hash, host_bytes);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
         let _host_str = core::str::from_utf8(host_bytes)
             .map_err(|_| WasmError::InvalidUtf8)?;
 
         // For v1, return success (real socket implementation would happen here)
         self.stack.push(Value::I32(1))?; // Simulated socket ID
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                1,
+                &[],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
         Ok(())
     }
 
@@ -1647,6 +1951,22 @@ impl WasmInstance {
 
         // Read domain from memory
         let domain_bytes = self.memory.read(domain_ptr, domain_len)?;
+        let func_id: u16 = 7;
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, domain_len as u32);
+        args_hash = replay::hash_bytes(args_hash, domain_bytes);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
         let domain_str = core::str::from_utf8(domain_bytes)
             .map_err(|_| WasmError::InvalidUtf8)?;
 
@@ -1655,10 +1975,36 @@ impl WasmInstance {
         let mut net_lock = net.lock();
 
         // Resolve via DNS
-        let ip = net_lock.dns_resolve(domain_str)
-            .map_err(|_| WasmError::SyscallFailed)?;
+        let ip = match net_lock.dns_resolve(domain_str) {
+            Ok(ip) => ip,
+            Err(_) => {
+                if mode == ReplayMode::Record {
+                    replay::record_host_call(
+                        self.instance_id,
+                        func_id,
+                        args_hash,
+                        ReplayEventStatus::Err,
+                        -1,
+                        &[],
+                    )
+                    .map_err(|_| WasmError::ReplayError)?;
+                }
+                return Err(WasmError::SyscallFailed);
+            }
+        };
 
         self.stack.push(Value::I32(ip.to_u32() as i32))?;
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                ip.to_u32() as i32,
+                &[],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
         Ok(())
     }
 }
@@ -1702,6 +2048,8 @@ pub enum WasmError {
     UnknownHostFunction,
     SyscallFailed,
     InvalidUtf8,
+    DeterminismViolation,
+    ReplayError,
 }
 
 impl fmt::Display for WasmError {
@@ -1720,6 +2068,8 @@ impl fmt::Display for WasmError {
             WasmError::ExecutionLimitExceeded => write!(f, "Execution limit exceeded"),
             WasmError::PermissionDenied => write!(f, "Permission denied"),
             WasmError::SyscallFailed => write!(f, "Syscall failed"),
+            WasmError::DeterminismViolation => write!(f, "Determinism violation"),
+            WasmError::ReplayError => write!(f, "Replay error"),
             _ => write!(f, "WASM error"),
         }
     }
@@ -1751,6 +2101,8 @@ impl WasmError {
             WasmError::UnknownHostFunction => "Unknown host function",
             WasmError::SyscallFailed => "Syscall failed",
             WasmError::InvalidUtf8 => "Invalid UTF-8",
+            WasmError::DeterminismViolation => "Determinism violation",
+            WasmError::ReplayError => "Replay error",
             WasmError::ExecutionLimitExceeded => "Execution limit exceeded",
             WasmError::PermissionDenied => "Permission denied",
         }
@@ -1788,7 +2140,7 @@ impl WasmRuntime {
         for (i, slot) in instances.iter_mut().enumerate() {
             if slot.is_none() {
                 let module = module_opt.take().ok_or(WasmError::InvalidModule)?;
-                *slot = Some(WasmInstance::new(module, process_id));
+                *slot = Some(WasmInstance::new(module, process_id, i));
                 return Ok(i);
             }
         }
@@ -1819,6 +2171,7 @@ impl WasmRuntime {
             return Err(WasmError::InvalidModule);
         }
         instances[instance_id] = None;
+        crate::replay::clear(instance_id);
         Ok(())
     }
 
