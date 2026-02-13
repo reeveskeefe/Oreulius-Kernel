@@ -63,11 +63,11 @@ All new scripts and modules must begin with the full license and contribution he
 - It helps maintainers and users quickly identify the file’s purpose, authorship, and contribution process.
 
 **How to implement:**
-- Copy the entire header block from [`codepageheader.md`](../codepageheader.md) and paste it at the very top of your new script or module.
+- Copy the entire header block from [`codepageheader.md`](codepageheader.md) and paste it at the very top of your new script or module.
 - Fill in the script/module name and a brief description of its features and purpose.
 - Update the feature list and notes as the file evolves.
 
-See [`codepageheader.md`](../codepageheader.md) for the latest template and detailed instructions.
+See [`codepageheader.md`](codepageheader.md) for the latest template and detailed instructions.
 
 **License**
 By contributing, you agree that your contributions are provided under the project license unless a separate agreement is in place.

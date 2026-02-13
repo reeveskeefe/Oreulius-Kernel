@@ -1,6 +1,6 @@
 Below is what is required on top of each new script on the contribution, if it is a new script, the whole block along with the features must be documented and etailed in the block. if you are contriuting to a pre-exisitng script, you must keep this block as is, and write the features you included in the detail on the bottom of the liscence 
 
-
+```bash
 /*!
  * Oreulia Kernel Project
  * 
@@ -44,7 +44,7 @@ Below is what is required on top of each new script on the contribution, if it i
  //! fill out line by line features of the file here, and any important notes about the implementation
  //! ...
  //! ...
-
+```
 ## Contribution Instructions for New Scripts
 
 - **License and Copyright:**
