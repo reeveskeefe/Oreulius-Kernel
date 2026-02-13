@@ -626,7 +626,7 @@ impl NetworkStack {
     pub fn tick(&mut self) {
         let now = crate::pit::get_ticks();
         for i in 0..self.tcp.conns.len() {
-            let mut action = None;
+            let action;
             {
                 let conn = &mut self.tcp.conns[i];
                 if !conn.in_use || conn.last_send_tick == 0 {
@@ -1019,7 +1019,7 @@ impl TcpManager {
     fn tick(&mut self, stack: &mut NetworkStack) {
         let now = crate::pit::get_ticks();
         for i in 0..self.conns.len() {
-            let mut action = None;
+            let action;
             {
                 let conn = &mut self.conns[i];
                 if !conn.in_use || conn.last_send_tick == 0 {

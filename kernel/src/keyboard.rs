@@ -75,12 +75,26 @@ impl KeyBuffer {
             KEY_BUFFER_SIZE - head + tail
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
+    }
 }
 
 // SAFETY: KeyBuffer uses atomics for synchronization, making it safe to share across threads
 unsafe impl Sync for KeyBuffer {}
 
 static KEY_BUFFER: KeyBuffer = KeyBuffer::new();
+
+/// Check if keyboard buffer has input available
+pub fn has_input() -> bool {
+    !KEY_BUFFER.is_empty()
+}
+
+/// Get number of bytes available in keyboard buffer
+pub fn available_bytes() -> usize {
+    KEY_BUFFER.len()
+}
 
 const EVENT_BUFFER_SIZE: usize = 64;
 

@@ -1,4 +1,4 @@
-# Oreulia OS
+# The Oreulius Kernel
 
 <div align="center">
 
@@ -20,7 +20,7 @@
 
 ## Overview
 
-Oreulia is an experimental operating system that rethinks traditional OS design principles. Built in Rust with a focus on security and modern execution models, it provides a foundation for exploring capability-based security, WebAssembly execution, and deterministic system behavior.
+Oreulieus is an experimental operating system that rethinks traditional OS design principles. Built in Rust with a focus on security and modern execution models, it provides a foundation for exploring capability-based security, WebAssembly execution, and deterministic system behavior.
 
 <div align="center">
 <img src="opencommandlineinterface.png" width="600" alt="the oreulius command line interface once the kernel is booted">
@@ -40,7 +40,7 @@ Oreulia is an experimental operating system that rethinks traditional OS design 
 
 ## Architecture
 
-Oreulia is built on several core subsystems:
+Oreulieus is built on several core subsystems:
 
 - **Security Manager** - Audit logging and security policy enforcement
 - **Capability Manager** - Authority model with fine-grained permissions
@@ -52,7 +52,7 @@ Oreulia is built on several core subsystems:
 
 ### Assembly-Optimized Components
 
-Oreulia includes hand-written x86 assembly modules for critical operations:
+Oreulieus includes hand-written x86 assembly modules for critical operations:
 
 - **CPU Features** - CPUID detection, SIMD support (SSE/SSE2/SSE3/SSE4/AVX), RDRAND
 - **Atomic Operations** - Lock-free synchronization primitives with spinlocks
@@ -85,7 +85,7 @@ brew install qemu
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/reeveskeefe/oreulia.git
+   git clone https://github.com/reeveskeefe/oreulieus-kernel.git
    cd oreulia/kernel
    ```
 

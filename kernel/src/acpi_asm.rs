@@ -129,11 +129,44 @@ impl Acpi {
             return None;
         }
         
-        Some(Self {
+        crate::serial_println!("[ACPI] RSDP found at address: 0x{:08X}", rsdp_addr);
+        crate::serial_println!("[ACPI] RSDP signature: {}", 
+            core::str::from_utf8(&rsdp.signature).unwrap_or("<invalid>"));
+        
+        // Copy packed field to avoid unaligned reference
+        let rsdt_addr = rsdp.rsdt_address;
+        crate::serial_println!("[ACPI] RSDT address: 0x{:08X}", rsdt_addr);
+        
+        let acpi = Self {
             rsdp_addr,
             rsdt_addr: rsdp.rsdt_address,
             pm1a_base: 0,  // Should be read from FADT
-        })
+        };
+        
+        // Log ACPI initialization details using rsdp_addr
+        crate::serial_println!("[ACPI] Initialized successfully");
+        crate::serial_println!("[ACPI] Memory map: RSDP=0x{:08X}, RSDT=0x{:08X}", 
+            acpi.rsdp_address(), acpi.rsdt_address());
+        
+        Some(acpi)
+    }
+    
+    /// Get RSDP address for diagnostics
+    pub fn rsdp_address(&self) -> u32 {
+        self.rsdp_addr
+    }
+    
+    /// Get RSDT address
+    pub fn rsdt_address(&self) -> u32 {
+        self.rsdt_addr
+    }
+    
+    /// Print ACPI table information for diagnostics
+    pub fn print_info(&self) {
+        crate::serial_println!("[ACPI] Table Addresses:");
+        crate::serial_println!("[ACPI]   RSDP: 0x{:08X}", self.rsdp_addr);
+        crate::serial_println!("[ACPI]   RSDT: 0x{:08X}", self.rsdt_addr);
+        crate::serial_println!("[ACPI]   PM1a Control: 0x{:04X}", self.pm1a_base);
     }
     
     pub fn find_table(&self, signature: &[u8; 4]) -> Option<u32> {

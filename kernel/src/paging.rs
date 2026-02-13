@@ -73,6 +73,40 @@ extern "C" {
     fn increment_page_copy_count();
 }
 
+// ============================================================================
+// Public Wrapper Functions
+// ============================================================================
+
+/// Initialize page fault handler (for IDT setup)
+pub fn init_page_fault_handler() {
+    unsafe { page_fault_handler(); }
+}
+
+/// Copy one physical page to another
+pub fn copy_physical_page(src_phys: u32, dst_phys: u32) {
+    unsafe { copy_page_physical(src_phys, dst_phys); }
+}
+
+/// Disable paging temporarily
+pub fn disable_paging_temp() {
+    unsafe { disable_paging(); }
+}
+
+/// Flush TLB for single page
+pub fn flush_tlb_page(virt_addr: u32) {
+    unsafe { flush_tlb_single(virt_addr); }
+}
+
+/// Flush entire TLB
+pub fn flush_all_tlb() {
+    unsafe { flush_tlb_all(); }
+}
+
+/// Get current page directory physical address
+pub fn current_page_directory() -> u32 {
+    unsafe { get_page_directory() }
+}
+
 /// Page size (4KB standard for x86)
 pub const PAGE_SIZE: usize = 4096;
 

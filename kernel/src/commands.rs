@@ -1482,6 +1482,47 @@ fn handle_filesystem_request(message: &ipc::Message) -> ipc::Message {
     response
 }
 
+// ============================================================================
+// IPC Service Dispatcher
+// ============================================================================
+
+/// IPC Service identifiers
+const SERVICE_CONSOLE: u32 = 1;
+const SERVICE_TIMER: u32 = 2;
+const SERVICE_PERSISTENCE: u32 = 3;
+const SERVICE_NETWORK: u32 = 4;
+
+/// Central IPC service dispatcher
+/// Routes IPC messages to appropriate service handlers based on service ID
+pub fn dispatch_ipc_service(service_id: u32, message: &ipc::Message) -> ipc::Message {
+    match service_id {
+        SERVICE_CONSOLE => handle_console_request(message),
+        SERVICE_TIMER => handle_timer_request(message),
+        SERVICE_PERSISTENCE => handle_persistence_request(message),
+        SERVICE_NETWORK => handle_network_request(message),
+        _ => {
+            let mut err = ipc::Message::new(ipc::ProcessId(1));
+            let msg = b"ERROR: Unknown service ID";
+            if msg.len() <= err.payload.len() {
+                err.payload[..msg.len()].copy_from_slice(msg);
+                err.payload_len = msg.len();
+            }
+            err
+        }
+    }
+}
+
+/// Get service name for diagnostics
+pub fn get_service_name(service_id: u32) -> &'static str {
+    match service_id {
+        SERVICE_CONSOLE => "Console",
+        SERVICE_TIMER => "Timer",
+        SERVICE_PERSISTENCE => "Persistence",
+        SERVICE_NETWORK => "Network",
+        _ => "Unknown",
+    }
+}
+
 /// Handle console service requests
 fn handle_console_request(message: &ipc::Message) -> ipc::Message {
     let mut response = ipc::Message::new(ipc::ProcessId(1));
@@ -1879,6 +1920,10 @@ fn handle_network_request(message: &ipc::Message) -> ipc::Message {
                     response.payload[..error_msg.len()].copy_from_slice(error_msg);
                     response.payload_len = error_msg.len();
                 } else {
+                    // Parse URL to extract host and path using parse_url_simple
+                    let (host, path) = parse_url_simple(&url);
+                    crate::serial_println!("[NET] HTTP GET request to {} (path: {})", host, path);
+                    
                     let mut net_svc = net::network().lock();
                     match net_svc.http_get(&url) {
                         Ok(http_response) => {

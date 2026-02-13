@@ -36,6 +36,19 @@ impl Console {
             read_count: 0,
         }
     }
+    
+    /// Validate that the given process ID owns this console
+    fn validate_owner(&self, pid: ProcessId) -> bool {
+        self.owner == pid
+    }
+    
+    /// Check if process has access to this console
+    fn check_access(&self, pid: ProcessId) -> Result<(), &'static str> {
+        if !self.validate_owner(pid) {
+            return Err("Access denied: not console owner");
+        }
+        Ok(())
+    }
 }
 
 struct ConsoleRegistry {
@@ -113,6 +126,9 @@ pub fn console_write(
     let console = registry.lookup_mut(object_id)
         .ok_or(ConsoleError::InvalidConsole)?;
     
+    // Validate owner has access
+    console.check_access(pid).map_err(|_| ConsoleError::AccessDenied)?;
+    
     // Write to VGA (actual output)
     for &byte in data {
         if byte == b'\n' {
@@ -188,6 +204,7 @@ pub enum ConsoleError {
     CapabilityFailed,
     CapabilityDenied(CapabilityError),
     NotImplemented,
+    AccessDenied,
 }
 
 impl ConsoleError {
@@ -198,6 +215,7 @@ impl ConsoleError {
             ConsoleError::CapabilityFailed => "Failed to create capability",
             ConsoleError::CapabilityDenied(_) => "Console access denied",
             ConsoleError::NotImplemented => "Feature not implemented",
+            ConsoleError::AccessDenied => "Access denied: not console owner",
         }
     }
 }

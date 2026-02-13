@@ -164,6 +164,9 @@ impl E1000Driver {
         // Read MAC address from EEPROM
         self.read_mac_address();
         
+        // Initialize multicast table
+        self.init_multicast_table();
+        
         // Initialize RX/TX
         self.init_rx();
         self.init_tx();
@@ -191,9 +194,48 @@ impl E1000Driver {
 
     /// Read MAC address from EEPROM
     fn read_mac_address(&mut self) {
-        // For simplicity, use a default MAC for now
-        // Real implementation would read from EEPROM
-        self.mac_address = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+        // Read MAC address from EEPROM using E1000_REG_EEPROM
+        // MAC is stored in EEPROM words 0-2 (6 bytes total)
+        for i in 0..3 {
+            let word = self.read_eeprom(i);
+            let idx = (i * 2) as usize;
+            self.mac_address[idx] = (word & 0xFF) as u8;
+            self.mac_address[idx + 1] = ((word >> 8) & 0xFF) as u8;
+        }
+        
+        crate::serial_println!("[E1000] MAC address read from EEPROM: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            self.mac_address[0], self.mac_address[1], self.mac_address[2],
+            self.mac_address[3], self.mac_address[4], self.mac_address[5]);
+    }
+    
+    /// Read a 16-bit word from EEPROM
+    fn read_eeprom(&mut self, addr: u16) -> u16 {
+        // Write EEPROM read request: address | start bit
+        self.write_reg(E1000_REG_EEPROM, 0x00000001 | ((addr as u32) << 8));
+        
+        // Poll for done bit (bit 4)
+        let mut result = 0;
+        for _ in 0..1000 {
+            result = self.read_reg(E1000_REG_EEPROM);
+            if (result & 0x10) != 0 {
+                break;
+            }
+            // Small delay
+            for _ in 0..100 {
+                unsafe { core::arch::asm!("nop"); }
+            }
+        }
+        
+        // Extract data from bits 16-31
+        ((result >> 16) & 0xFFFF) as u16
+    }
+
+    /// Initialize multicast table array (128 entries)
+    fn init_multicast_table(&mut self) {
+        // Clear all multicast table entries using E1000_REG_MTA
+        for i in 0..128 {
+            self.write_reg(E1000_REG_MTA + (i * 4), 0);
+        }
     }
 
     /// Initialize receive descriptors
@@ -256,10 +298,10 @@ impl E1000Driver {
             self.write_reg(E1000_REG_TDT, 0);
             self.tx_tail = 0;
             
-            // Enable transmitter
+            // Enable transmitter with collision parameters
             let tctl = E1000_TCTL_EN | E1000_TCTL_PSP | 
-                       (15 << 4) |   // Collision threshold
-                       (64 << 12);   // Collision distance
+                       ((15 << 4) & E1000_TCTL_CT) |   // Collision threshold
+                       ((64 << 12) & E1000_TCTL_COLD); // Collision distance
             self.write_reg(E1000_REG_TCTL, tctl);
         }
     }
@@ -268,6 +310,9 @@ impl E1000Driver {
     fn enable(&mut self) {
         let ctrl = E1000_CTRL_ASDE | E1000_CTRL_SLU;
         self.write_reg(E1000_REG_CTRL, ctrl);
+        
+        // Configure extended control register
+        self.write_reg(E1000_REG_CTRL_EXT, 0);
     }
 
     /// Write to an E1000 register
@@ -286,9 +331,27 @@ impl E1000Driver {
         }
     }
 
-    /// Handle E1000 interrupt (clears ICR)
-    fn handle_irq(&mut self) {
-        let _ = self.read_reg(E1000_REG_ICR);
+    /// Handle E1000 interrupt (clears ICR and processes events)
+    pub fn handle_irq(&mut self) {
+        let icr = self.read_reg(E1000_REG_ICR);
+        
+        if icr == 0 {
+            return; // Not our interrupt
+        }
+        
+        // Log interrupt cause for diagnostics
+        if (icr & 0x80) != 0 {
+            crate::serial_println!("[E1000] IRQ: RX packet received");
+        }
+        if (icr & 0x01) != 0 {
+            crate::serial_println!("[E1000] IRQ: TX descriptor written back");
+        }
+        if (icr & 0x04) != 0 {
+            crate::serial_println!("[E1000] IRQ: Link status change");
+        }
+        
+        // Clear interrupt by reading ICR (already done above)
+        // Additional processing could be added here
     }
 
     /// Get MAC address
