@@ -52,7 +52,7 @@ pub struct JitExecBuffer {
     sealed: bool,
 }
 
-// SAFETY: JitExecBuffer is kernel-managed executable memory allocated via kernel allocator.
+// SAFETY: JitExecBuffer is kernel-managed executable memory allocated via the JIT arena.
 // The raw pointer is safe to send across threads because:
 // 1. Memory is allocated from kernel heap (not stack-local)
 // 2. Access is synchronized via Mutex in JIT_CACHE
@@ -70,7 +70,7 @@ impl JitExecBuffer {
             .checked_add(paging::PAGE_SIZE - 1)
             .ok_or("Size overflow")?
             / paging::PAGE_SIZE;
-        let base = memory::allocate_pages(pages)?;
+        let base = memory::jit_allocate_pages(pages)?;
         Ok(JitExecBuffer {
             ptr: base as *mut u8,
             len,

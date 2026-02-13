@@ -11,6 +11,7 @@ global asm_read_cr0
 global asm_write_cr0
 global asm_read_cr3
 global asm_write_cr3
+global asm_jit_fault_resume
 global asm_outb
 global asm_inb
 
@@ -76,6 +77,13 @@ asm_read_cr3:
 asm_write_cr3:
     mov eax, [esp + 4]
     mov cr3, eax
+    ret
+
+; Resume from a JIT sandbox page fault by unwinding the JIT frame.
+; Assumes EBP still points to the JIT frame base.
+asm_jit_fault_resume:
+    mov esp, ebp
+    pop ebp
     ret
 
 ; Output byte to port (OUT DX, AL)

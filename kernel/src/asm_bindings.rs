@@ -64,6 +64,9 @@ extern "C" {
     /// Write CR3 page directory register
     pub fn asm_write_cr3(page_dir_addr: u32);
 
+    /// Resume from a JIT sandbox page fault by unwinding the JIT frame
+    pub fn asm_jit_fault_resume();
+
     // ===== Port I/O (ports.asm) =====
     /// Output byte to port
     pub fn asm_outb(port: u16, value: u8);

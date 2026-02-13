@@ -480,12 +480,15 @@ impl InterruptStats {
 /// Rust exception handler (called from assembly)
 #[no_mangle]
 pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
-    let frame = unsafe { &*frame };
+    let frame = unsafe { &mut *(frame as *const _ as *mut InterruptFrame) };
     
     if frame.int_no == Exception::PageFault as u32 {
         let fault_addr: u32;
         unsafe {
             core::arch::asm!("mov {0:e}, cr2", out(reg) fault_addr);
+        }
+        if crate::wasm::jit_handle_page_fault(frame, fault_addr as usize, frame.err_code) {
+            return;
         }
         crate::paging::rust_page_fault_handler_ex(
             frame.err_code,

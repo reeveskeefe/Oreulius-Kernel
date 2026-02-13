@@ -14,6 +14,16 @@ use spin::Mutex;
 
 extern "C" {
     static _heap_end: usize;
+    static _text_start: usize;
+    static _text_end: usize;
+    static _rodata_start: usize;
+    static _rodata_end: usize;
+    static _data_start: usize;
+    static _data_end: usize;
+    static _bss_start: usize;
+    static _bss_end: usize;
+    static _jit_arena_start: usize;
+    static _jit_arena_end: usize;
 }
 
 // ============================================================================
@@ -181,6 +191,29 @@ const PAGE_ENTRIES: usize = 1024;
 fn align_up(value: usize, align: usize) -> usize {
     let mask = align - 1;
     (value + mask) & !mask
+}
+
+#[inline]
+fn align_down(value: usize, align: usize) -> usize {
+    value & !(align - 1)
+}
+
+#[inline]
+fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
+    a_start < b_end && b_start < a_end
+}
+
+fn section_range(start: &usize, end: &usize) -> (usize, usize) {
+    let s = start as *const usize as usize;
+    let e = end as *const usize as usize;
+    (s, e)
+}
+
+fn page_is_read_only(phys_start: usize, phys_end: usize) -> bool {
+    let (text_start, text_end) = unsafe { section_range(&_text_start, &_text_end) };
+    let (ro_start, ro_end) = unsafe { section_range(&_rodata_start, &_rodata_end) };
+    ranges_overlap(phys_start, phys_end, text_start, text_end)
+        || ranges_overlap(phys_start, phys_end, ro_start, ro_end)
 }
 
 /// Page table entry flags
@@ -458,7 +491,11 @@ impl AddressSpace {
                 let table_ref = &mut *identity_table;
                 for j in 0..PAGE_ENTRIES {
                     let phys_addr = phys_base + (j * PAGE_SIZE);
-                    let flags = PageFlags::Present as u32 | PageFlags::Writable as u32;
+                    let ro = page_is_read_only(phys_addr, phys_addr + PAGE_SIZE);
+                    let mut flags = PageFlags::Present as u32;
+                    if !ro {
+                        flags |= PageFlags::Writable as u32;
+                    }
                     table_ref.entries[j] = PageTableEntry::new(phys_addr, flags);
                     // Use non-atomic operation during single-threaded boot for performance
                     let pte_addr = &mut table_ref.entries[j].0 as *mut u32;
@@ -473,7 +510,11 @@ impl AddressSpace {
                 let table_ref = &mut *high_table;
                 for j in 0..PAGE_ENTRIES {
                     let phys_addr = phys_base + (j * PAGE_SIZE);
-                    let flags = PageFlags::Present as u32 | PageFlags::Writable as u32;
+                    let ro = page_is_read_only(phys_addr, phys_addr + PAGE_SIZE);
+                    let mut flags = PageFlags::Present as u32;
+                    if !ro {
+                        flags |= PageFlags::Writable as u32;
+                    }
                     table_ref.entries[j] = PageTableEntry::new(phys_addr, flags);
                     // Use non-atomic operation during single-threaded boot for performance
                     let pte_addr = &mut table_ref.entries[j].0 as *mut u32;
@@ -485,12 +526,75 @@ impl AddressSpace {
         Ok(())
     }
 
+    fn map_page_in_dir(
+        page_dir: &mut PageDirectory,
+        virt_addr: usize,
+        phys_addr: usize,
+        writable: bool,
+        user_accessible: bool,
+    ) -> Result<(), &'static str> {
+        let virt_aligned = virt_addr & !0xFFF;
+        let phys_aligned = phys_addr & !0xFFF;
+
+        if user_accessible && virt_aligned >= USER_TOP {
+            return Err("User mapping into kernel space");
+        }
+
+        let table = unsafe {
+            if page_dir.entry(virt_aligned).is_present() {
+                page_dir.get_table_mut(virt_aligned).unwrap()
+            } else {
+                &mut *page_dir.alloc_table(virt_aligned, user_accessible)?
+            }
+        };
+
+        let mut flags = PageFlags::Present as u32;
+        if writable {
+            flags |= PageFlags::Writable as u32;
+        }
+        if user_accessible {
+            flags |= PageFlags::UserAccessible as u32;
+        }
+
+        let entry = table.entry_mut(virt_aligned);
+        *entry = PageTableEntry::new(phys_aligned, flags);
+        Ok(())
+    }
+
+    fn map_range_identity_high(
+        page_dir: &mut PageDirectory,
+        start: usize,
+        end: usize,
+        writable: bool,
+    ) -> Result<(), &'static str> {
+        if end <= start {
+            return Ok(());
+        }
+        let start = align_down(start, PAGE_SIZE);
+        let end = align_up(end, PAGE_SIZE);
+        let mut addr = start;
+        while addr < end {
+            Self::map_page_in_dir(page_dir, addr, addr, writable, false)?;
+            Self::map_page_in_dir(page_dir, KERNEL_BASE + addr, addr, writable, false)?;
+            addr += PAGE_SIZE;
+        }
+        Ok(())
+    }
+
     /// Create a minimal kernel-only address space for JIT sandboxing.
     pub fn new_jit_sandbox() -> Result<Self, &'static str> {
         let mut page_dir = Box::new(PageDirectory::new());
-        let heap_end = unsafe { &_heap_end as *const usize as usize };
-        // Map only kernel image + heap (identity + higher-half mirror).
-        Self::setup_kernel_mapping_range(&mut page_dir, heap_end)?;
+        let (text_start, text_end) = unsafe { section_range(&_text_start, &_text_end) };
+        let (ro_start, ro_end) = unsafe { section_range(&_rodata_start, &_rodata_end) };
+        let (data_start, data_end) = unsafe { section_range(&_data_start, &_data_end) };
+        let (bss_start, bss_end) = unsafe { section_range(&_bss_start, &_bss_end) };
+        let (jit_start, jit_end) = unsafe { section_range(&_jit_arena_start, &_jit_arena_end) };
+
+        Self::map_range_identity_high(&mut page_dir, text_start, text_end, false)?;
+        Self::map_range_identity_high(&mut page_dir, ro_start, ro_end, false)?;
+        Self::map_range_identity_high(&mut page_dir, data_start, data_end, true)?;
+        Self::map_range_identity_high(&mut page_dir, bss_start, bss_end, true)?;
+        Self::map_range_identity_high(&mut page_dir, jit_start, jit_end, false)?;
         let phys_addr = &*page_dir as *const _ as usize;
         Ok(AddressSpace {
             page_directory: page_dir,

@@ -1,10 +1,13 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 extern "C" {
     static _heap_start: usize;
     static _heap_end: usize;
+    static _jit_arena_start: usize;
+    static _jit_arena_end: usize;
 }
 
 pub struct BumpAllocator {
@@ -66,6 +69,7 @@ pub fn init() {
     unsafe {
         ALLOCATOR.0.lock().init();
     }
+    init_jit_arena();
 }
 
 // ============================================================================
@@ -75,6 +79,73 @@ pub fn init() {
 /// Max supported physical frames (32MB / 4KB = 8192)
 const MAX_FRAMES: usize = 8192;
 const PAGE_SIZE: usize = 4096;
+
+// ============================================================================
+// Dedicated JIT Arena (for executable buffers)
+// ============================================================================
+
+static JIT_ARENA_START: AtomicUsize = AtomicUsize::new(0);
+static JIT_ARENA_END: AtomicUsize = AtomicUsize::new(0);
+
+struct JitArena {
+    next: usize,
+}
+
+impl JitArena {
+    const fn new() -> Self {
+        JitArena { next: 0 }
+    }
+}
+
+static JIT_ARENA: Mutex<JitArena> = Mutex::new(JitArena::new());
+
+fn init_jit_arena() {
+    let start = unsafe { &_jit_arena_start as *const usize as usize };
+    let end = unsafe { &_jit_arena_end as *const usize as usize };
+    if end <= start {
+        return;
+    }
+    JIT_ARENA_START.store(start, Ordering::Relaxed);
+    JIT_ARENA_END.store(end, Ordering::Relaxed);
+    let mut arena = JIT_ARENA.lock();
+    arena.next = start;
+    unsafe {
+        ptr::write_bytes(start as *mut u8, 0, end - start);
+    }
+}
+
+pub fn jit_arena_range() -> (usize, usize) {
+    (
+        JIT_ARENA_START.load(Ordering::Relaxed),
+        JIT_ARENA_END.load(Ordering::Relaxed),
+    )
+}
+
+pub fn jit_allocate(size: usize, align: usize) -> Result<usize, &'static str> {
+    if size == 0 {
+        return Err("Invalid allocation size");
+    }
+    let (start, end) = jit_arena_range();
+    if start == 0 || end == 0 || end <= start {
+        return Err("JIT arena not initialized");
+    }
+    let mut arena = JIT_ARENA.lock();
+    let base = align_up(core::cmp::max(arena.next, start), align);
+    let alloc_end = base.checked_add(size).ok_or("Size overflow")?;
+    if alloc_end > end {
+        return Err("JIT arena out of memory");
+    }
+    arena.next = alloc_end;
+    Ok(base)
+}
+
+pub fn jit_allocate_pages(count: usize) -> Result<usize, &'static str> {
+    if count == 0 {
+        return Err("Invalid page count");
+    }
+    let size = count.checked_mul(PAGE_SIZE).ok_or("Size overflow")?;
+    jit_allocate(size, PAGE_SIZE)
+}
 
 // Import atomic refcount operations from assembly
 extern "C" {

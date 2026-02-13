@@ -1,3 +1,35 @@
+/*!
+ * Oreulia Kernel Project
+ * 
+ * SPDX-License-Identifier: MIT
+ * 
+ * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * 
+ * Contributing:
+ * - By contributing to this file, you agree to license your work under the same terms.
+ * - Please see CONTRIBUTING.md for code style and review guidelines.
+ * 
+ * ---------------------------------------------------------------------------
+ */
+
 //! Oreulia WASM Interpreter v0
 //!
 //! A minimal WebAssembly interpreter for running untrusted code safely.
@@ -20,6 +52,7 @@
 extern crate alloc;
 
 use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 use alloc::vec::Vec;
 use spin::Mutex;
 use crate::ipc::{ProcessId, ChannelId};
@@ -332,21 +365,20 @@ fn validate_bytecode(code: &[u8]) -> Result<(), WasmError> {
 
 /// WASM linear memory (isolated per-module)
 pub struct LinearMemory {
-    /// Memory buffer
-    data: Vec<u8>,
+    /// Memory buffer (fixed-size, in .bss)
+    data: [u8; MAX_MEMORY_SIZE],
     /// Current size in pages (64 KiB each)
     pages: usize,
-    /// Maximum pages allowed
-    max_pages: Option<usize>,
 }
 
 impl LinearMemory {
     /// Create new linear memory with initial size
     pub fn new(initial_pages: usize) -> Self {
+        let max_pages = MAX_MEMORY_SIZE / (64 * 1024);
+        let pages = core::cmp::min(initial_pages, max_pages);
         LinearMemory {
-            data: alloc::vec![0u8; MAX_MEMORY_SIZE],
-            pages: initial_pages,
-            max_pages: Some(MAX_MEMORY_SIZE / (64 * 1024)),
+            data: [0u8; MAX_MEMORY_SIZE],
+            pages,
         }
     }
 
@@ -375,13 +407,8 @@ impl LinearMemory {
         let old_size = self.pages;
         let new_size = old_size + delta;
 
-        if let Some(max) = self.max_pages {
-            if new_size > max {
-                return Err(WasmError::MemoryGrowFailed);
-            }
-        }
-
-        if new_size * 64 * 1024 > MAX_MEMORY_SIZE {
+        let max_pages = MAX_MEMORY_SIZE / (64 * 1024);
+        if new_size > max_pages {
             return Err(WasmError::MemoryGrowFailed);
         }
 
@@ -437,9 +464,8 @@ impl LinearMemory {
 impl Clone for LinearMemory {
     fn clone(&self) -> Self {
         LinearMemory {
-            data: self.data.clone(),
+            data: self.data,
             pages: self.pages,
-            max_pages: self.max_pages,
         }
     }
 }
@@ -450,49 +476,67 @@ impl Clone for LinearMemory {
 
 /// Value stack for WASM execution
 pub struct Stack {
-    values: Vec<Value>,
+    values: [Value; MAX_STACK_DEPTH],
+    len: usize,
 }
 
 impl Stack {
     pub fn new() -> Self {
         Stack {
-            values: Vec::with_capacity(MAX_STACK_DEPTH),
+            values: [Value::I32(0); MAX_STACK_DEPTH],
+            len: 0,
         }
     }
 
     pub fn push(&mut self, value: Value) -> Result<(), WasmError> {
-        if self.values.len() >= MAX_STACK_DEPTH {
+        if self.len >= MAX_STACK_DEPTH {
             return Err(WasmError::StackOverflow);
         }
-        self.values.push(value);
+        self.values[self.len] = value;
+        self.len += 1;
         Ok(())
     }
 
     pub fn pop(&mut self) -> Result<Value, WasmError> {
-        self.values.pop().ok_or(WasmError::StackUnderflow)
+        if self.len == 0 {
+            return Err(WasmError::StackUnderflow);
+        }
+        self.len -= 1;
+        Ok(self.values[self.len])
     }
 
     pub fn peek(&self) -> Result<Value, WasmError> {
-        self.values.last().copied().ok_or(WasmError::StackUnderflow)
+        if self.len == 0 {
+            return Err(WasmError::StackUnderflow);
+        }
+        Ok(self.values[self.len - 1])
     }
 
     pub fn len(&self) -> usize {
-        self.values.len()
+        self.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
+        self.len == 0
     }
 
     pub fn clear(&mut self) {
-        self.values.clear();
+        self.len = 0;
+    }
+
+    pub fn get(&self, idx: usize) -> Result<Value, WasmError> {
+        if idx >= self.len {
+            return Err(WasmError::StackUnderflow);
+        }
+        Ok(self.values[idx])
     }
 }
 
 impl Clone for Stack {
     fn clone(&self) -> Self {
         Stack {
-            values: self.values.clone(),
+            values: self.values,
+            len: self.len,
         }
     }
 }
@@ -655,7 +699,7 @@ pub struct WasmInstance {
     /// Value stack
     pub stack: Stack,
     /// Local variables
-    locals: Vec<Value>,
+    locals: [Value; MAX_LOCALS],
     /// Program counter
     pc: usize,
     /// Capability table
@@ -669,11 +713,11 @@ pub struct WasmInstance {
     /// JIT cache (per-function hash)
     jit_hash: [Option<u32>; 64],
     /// JIT stack (i32 only)
-    jit_stack: Vec<i32>,
+    jit_stack: [i32; MAX_STACK_DEPTH],
     jit_sp: usize,
     jit_enabled: bool,
     jit_hot: [u32; 64],
-    jit_locals: Vec<i32>,
+    jit_locals: [i32; MAX_LOCALS],
     jit_validate_remaining: [u8; 64],
 }
 
@@ -684,7 +728,7 @@ impl WasmInstance {
             module,
             memory: LinearMemory::new(1), // 1 page = 64 KiB
             stack: Stack::new(),
-            locals: alloc::vec![Value::I32(0); MAX_LOCALS],
+            locals: [Value::I32(0); MAX_LOCALS],
             pc: 0,
             capabilities: CapabilityTable::new(),
             process_id,
@@ -692,11 +736,11 @@ impl WasmInstance {
             memory_op_count: 0,
             syscall_count: 0,
             jit_hash: [None; 64],
-            jit_stack: alloc::vec![0; MAX_STACK_DEPTH],
+            jit_stack: [0; MAX_STACK_DEPTH],
             jit_sp: 0,
             jit_enabled: false,
             jit_hot: [0; 64],
-            jit_locals: alloc::vec![0; MAX_LOCALS],
+            jit_locals: [0; MAX_LOCALS],
             jit_validate_remaining: [JIT_VALIDATE_CALLS; 64],
         }
     }
@@ -771,7 +815,7 @@ impl WasmInstance {
         let stack_len = self.stack.len();
         for i in 0..func.param_count {
             let idx = stack_len - func.param_count + i;
-            let v = self.stack.values[idx].as_i32()?;
+            let v = self.stack.get(idx)?.as_i32()?;
             self.jit_locals[i] = v;
         }
         for i in func.param_count..(func.param_count + func.local_count) {
@@ -874,7 +918,7 @@ impl WasmInstance {
             module: self.module.clone(),
             memory: self.memory.clone(),
             stack: self.stack.clone(),
-            locals: self.locals.clone(),
+            locals: self.locals,
             pc: self.pc,
             capabilities: self.capabilities.clone(),
             process_id: self.process_id,
@@ -882,11 +926,11 @@ impl WasmInstance {
             memory_op_count: 0,
             syscall_count: 0,
             jit_hash: [None; 64],
-            jit_stack: alloc::vec![0; MAX_STACK_DEPTH],
+            jit_stack: [0; MAX_STACK_DEPTH],
             jit_sp: 0,
             jit_enabled: false,
             jit_hot: [0; 64],
-            jit_locals: alloc::vec![0; MAX_LOCALS],
+            jit_locals: [0; MAX_LOCALS],
             jit_validate_remaining: [0; 64],
         }
     }
@@ -1610,12 +1654,17 @@ impl WasmRuntime {
         let mut module = WasmModule::new();
         module.load(bytecode)?;
 
-        let instance = WasmInstance::new(module, process_id);
-        
+        self.instantiate_module(module, process_id)
+    }
+
+    /// Instantiate a pre-built module (used by tests/benchmarks)
+    pub fn instantiate_module(&self, module: WasmModule, process_id: ProcessId) -> Result<usize, WasmError> {
+        let mut module_opt = Some(module);
         let mut instances = self.instances.lock();
         for (i, slot) in instances.iter_mut().enumerate() {
             if slot.is_none() {
-                *slot = Some(instance);
+                let module = module_opt.take().ok_or(WasmError::InvalidModule)?;
+                *slot = Some(WasmInstance::new(module, process_id));
                 return Ok(i);
             }
         }
@@ -1735,6 +1784,10 @@ static JIT_CONFIG: Mutex<JitConfig> = Mutex::new(JitConfig::new());
 static JIT_STATS: Mutex<JitStats> = Mutex::new(JitStats::new());
 static JIT_CACHE: Mutex<JitCache> = Mutex::new(JitCache::new());
 static JIT_SANDBOX_PD: Mutex<Option<u32>> = Mutex::new(None);
+static JIT_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
+static mut JIT_FAULT_TRAP_PTR: *mut i32 = core::ptr::null_mut();
+
+const TRAP_MEM: i32 = -1;
 
 pub fn jit_config() -> &'static Mutex<JitConfig> {
     &JIT_CONFIG
@@ -1756,6 +1809,38 @@ fn jit_sandbox_pd() -> Option<u32> {
     Some(pd)
 }
 
+fn jit_fault_enter(trap_ptr: *mut i32) {
+    unsafe {
+        JIT_FAULT_TRAP_PTR = trap_ptr;
+    }
+    JIT_FAULT_ACTIVE.store(true, Ordering::SeqCst);
+}
+
+fn jit_fault_exit() {
+    JIT_FAULT_ACTIVE.store(false, Ordering::SeqCst);
+    unsafe {
+        JIT_FAULT_TRAP_PTR = core::ptr::null_mut();
+    }
+}
+
+pub fn jit_handle_page_fault(
+    frame: &mut crate::idt_asm::InterruptFrame,
+    _fault_addr: usize,
+    _error_code: u32,
+) -> bool {
+    if !JIT_FAULT_ACTIVE.load(Ordering::SeqCst) {
+        return false;
+    }
+    unsafe {
+        if !JIT_FAULT_TRAP_PTR.is_null() {
+            *JIT_FAULT_TRAP_PTR = TRAP_MEM;
+        }
+    }
+    frame.eax = 0;
+    frame.eip = crate::asm_bindings::asm_jit_fault_resume as u32;
+    true
+}
+
 fn call_jit_sandboxed(
     jit_entry: crate::wasm_jit::JitFn,
     stack_ptr: *mut i32,
@@ -1770,6 +1855,7 @@ fn call_jit_sandboxed(
     let flags = unsafe { idt_asm::fast_cli_save() };
     let old_cr3 = paging::current_page_directory_addr();
     if let Some(pd) = jit_sandbox_pd() {
+        jit_fault_enter(trap_code);
         unsafe { paging::set_page_directory(pd) };
     }
     let ret = unsafe {
@@ -1785,6 +1871,7 @@ fn call_jit_sandboxed(
         )
     };
     unsafe { paging::set_page_directory(old_cr3) };
+    jit_fault_exit();
     unsafe { idt_asm::fast_sti_restore(flags) };
     ret
 }
@@ -1869,25 +1956,38 @@ pub fn jit_benchmark() -> Result<(u64, u64), &'static str> {
         local_count: 0,
     }).map_err(|_| "Function add failed")?;
 
-    let mut instance = WasmInstance::new(module, ProcessId(1));
+    let instance_id = wasm_runtime()
+        .instantiate_module(module, ProcessId(1))
+        .map_err(|_| "Instance create failed")?;
     let iterations = 200;
 
     let start = crate::pit::get_ticks();
     for _ in 0..iterations {
-        instance.stack.clear();
-        instance.enable_jit(false);
-        instance.call(0).map_err(|_| "Interpreter failed")?;
+        wasm_runtime()
+            .get_instance_mut(instance_id, |instance| {
+                instance.stack.clear();
+                instance.enable_jit(false);
+                instance.call(0)
+            })
+            .map_err(|_| "Instance missing")?
+            .map_err(|_| "Interpreter failed")?;
     }
     let interp_ticks = crate::pit::get_ticks().saturating_sub(start);
 
     let start = crate::pit::get_ticks();
     for _ in 0..iterations {
-        instance.stack.clear();
-        instance.enable_jit(true);
-        instance.call(0).map_err(|_| "JIT failed")?;
+        wasm_runtime()
+            .get_instance_mut(instance_id, |instance| {
+                instance.stack.clear();
+                instance.enable_jit(true);
+                instance.call(0)
+            })
+            .map_err(|_| "Instance missing")?
+            .map_err(|_| "JIT failed")?;
     }
     let jit_ticks = crate::pit::get_ticks().saturating_sub(start);
 
+    let _ = wasm_runtime().destroy(instance_id);
     Ok((interp_ticks, jit_ticks))
 }
 
