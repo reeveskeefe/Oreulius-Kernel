@@ -1421,7 +1421,11 @@ impl WifiDriver {
                                 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
                                 unsafe {
                                     use crate::memopt_asm::AesNi;
-                                    AesNi::decrypt(&encrypted_gtk[i..i+16], kek, &mut gtk[i..i+16], 10);
+                                    let mut input_block = [0u8; 16];
+                                    let mut output_block = [0u8; 16];
+                                    input_block.copy_from_slice(&encrypted_gtk[i..i+16]);
+                                    AesNi::decrypt_block(&mut output_block, &input_block, kek, 10);
+                                    gtk[i..i+16].copy_from_slice(&output_block);
                                 }
                                 
                                 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
