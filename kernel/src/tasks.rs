@@ -10,7 +10,23 @@ extern "C" fn shell_task() -> ! {
     // CRITICAL: Enable interrupts NOW that task is safely running
     // This must be the FIRST operation to prevent race condition where
     // timer interrupt fires during trampoline execution before stack is ready
-    unsafe { crate::asm_bindings::enable_interrupts(); }
+    
+    // Enhanced interrupt state management with verification
+    crate::asm_bindings::enable_interrupts();
+    
+    // Verify interrupts are actually enabled by reading EFLAGS IF bit
+    #[cfg(target_arch = "x86")]
+    {
+        let eflags: u32;
+        unsafe {
+            core::arch::asm!("pushfd", "pop {}", out(reg) eflags, options(nomem, nostack));
+        }
+        if (eflags & 0x200) != 0 {
+            vga::print_str("[TASK] Shell interrupts verified enabled\n");
+        } else {
+            vga::print_str("[TASK] ERROR: Failed to enable interrupts!\n");
+        }
+    }
     
     // Write marker to confirm we reached the task
     // unsafe {
@@ -24,7 +40,16 @@ extern "C" fn shell_task() -> ! {
     
     // Enable interrupts for preemptive scheduling
     vga::print_str("[TASK] Enabling interrupts for scheduler...\n");
-    unsafe { crate::asm_bindings::enable_interrupts(); }
+    crate::asm_bindings::enable_interrupts();
+    
+    // Verify interrupt state after enabling
+    let int_state = unsafe { crate::process_asm::get_interrupt_state() };
+    if int_state != 0 {
+        vga::print_str("[TASK] Scheduler interrupts verified active\n");
+    } else {
+        vga::print_str("[TASK] WARNING: Interrupt state check failed\n");
+    }
+    
     vga::print_str("[TASK] Interrupts enabled, starting shell...\n");
     
     // Start the actual shell loop
@@ -40,7 +65,10 @@ extern "C" fn worker_task() -> ! {
     }
     
     // Enable interrupts for this task too
-    unsafe { crate::asm_bindings::enable_interrupts(); }
+    crate::asm_bindings::enable_interrupts();
+    
+    // Log interrupt state for worker task
+    crate::serial_println!("[WORKER] Interrupts enabled for background task");
     
     loop {
         // Simple background task to demonstrate preemption
@@ -54,7 +82,14 @@ extern "C" fn worker_task() -> ! {
 #[no_mangle]
 extern "C" fn network_task() -> ! {
     crate::serial_println!("[NET] Network task started");
-    unsafe { crate::asm_bindings::enable_interrupts(); }
+    
+    // Enable interrupts for network processing
+    crate::asm_bindings::enable_interrupts();
+    
+    // Verify interrupt delivery for network events
+    let int_state = unsafe { crate::process_asm::get_interrupt_state() };
+    crate::serial_println!("[NET] Interrupt state: {}", if int_state != 0 { "ENABLED" } else { "DISABLED" });
+    
     crate::net_reactor::run();
 }
 

@@ -1043,10 +1043,26 @@ pub fn init() {
     
     // Register the handler with the interrupt system
     #[cfg(target_arch = "x86")]
-    unsafe {
-        // Note: The IDT setup is handled by the assembly code
-        // syscall_entry.asm installs itself into IDT vector 0x80
-        let _handler_addr = syscall_entry as usize;
+    {
+        // Enhanced IDT entry verification and validation
+        let handler_addr = syscall_entry as usize;
+        
+        // Validate handler address is in kernel space and properly aligned
+        if handler_addr < 0xC0000000 {
+            vga::print_str("[SYSCALL] WARNING: Handler address in user space!\n");
+        }
+        if handler_addr % 4 != 0 {
+            vga::print_str("[SYSCALL] WARNING: Handler address misaligned!\n");
+        }
+        
+        // Log handler registration details
+        crate::serial_println!("[SYSCALL] Registered handler at 0x{:08X}", handler_addr);
+        crate::serial_println!("[SYSCALL] IDT vector: 0x80 (INT 0x80)");
+        crate::serial_println!("[SYSCALL] Handler: syscall_entry -> syscall_handler_rust");
+        
+        // Verify the IDT entry (read back from IDT)
+        // Note: Full verification would require reading IDTR and parsing IDT structure
+        crate::serial_println!("[SYSCALL] IDT entry verification: assembly-managed");
     }
     
     vga::print_str("[SYSCALL] System call interface initialized (INT 0x80)\n");

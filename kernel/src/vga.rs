@@ -248,15 +248,32 @@ pub fn clear_screen_with(fg: Color, bg: Color) {
         color_code: ColorCode::new(fg, bg),
     };
     let mut writer = WRITER.lock();
+    
+    // Enhanced buffer validation and integrity checking
+    let buffer_addr = writer.buffer as *const _ as usize;
+    
+    // Verify VGA buffer is at expected address (0xB8000 for text mode)
+    if buffer_addr != 0xB8000 {
+        // Buffer might be remapped, but log for diagnostics
+        crate::serial_println!("[VGA] Buffer at non-standard address: 0x{:X}", buffer_addr);
+    }
+    
+    // Validate color codes are in valid range (0-15)
+    if fg as u8 > 15 || bg as u8 > 15 {
+        crate::serial_println!("[VGA] WARNING: Invalid color codes - fg:{:?} bg:{:?}", fg, bg);
+    }
+    
     // Efficiently fill entire screen buffer with colored blank character
     // This provides explicit color control vs just setting default colors
-    unsafe {
-        for row in 0..BUFFER_HEIGHT {
-            for col in 0..BUFFER_WIDTH {
-                writer.buffer.chars[row][col] = blank;
-            }
+    for row in 0..BUFFER_HEIGHT {
+        for col in 0..BUFFER_WIDTH {
+            writer.buffer.chars[row][col] = blank;
         }
     }
+    
+    // Memory fence to ensure all writes complete before proceeding
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
+    
     // Update writer's default color for future writes
     writer.set_color(fg, bg);
     // Reset cursor to origin

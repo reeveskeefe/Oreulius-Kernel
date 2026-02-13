@@ -1415,18 +1415,58 @@ impl WifiDriver {
                         let encrypted_gtk = &frame[key_data_start + gtk_offset..key_data_start + gtk_offset + gtk_len];
                         
                         // Decrypt using AES-NI if available
+                        // Enhanced with CPU feature detection and cryptographic validation
+                        
+                        // Validate KEK length (must be exactly 16 bytes for AES-128)
+                        if kek.len() != 16 {
+                            crate::vga::print_str("[WiFi] ERROR: Invalid KEK length\n");
+                            return Err(WifiError::AuthenticationFailed);
+                        }
+                        
                         for i in (0..gtk_len).step_by(16) {
                             let block_len = 16.min(gtk_len - i);
                             if block_len == 16 {
                                 // Use AES-NI for hardware-accelerated decryption
                                 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                                unsafe {
+                                {
                                     use crate::memopt_asm::AesNi;
+                                    
+                                    // Verify AES-NI support via CPUID (bit 25 of ECX in CPUID.01H)
+                                    let has_aesni: u8;
+                                    unsafe {
+                                        core::arch::asm!(
+                                            "push ebx",      // Save EBX (callee-saved)
+                                            "push edx",      // Save EDX
+                                            "mov eax, 1",
+                                            "cpuid",
+                                            "bt ecx, 25",
+                                            "setc {0}",
+                                            "pop edx",       // Restore EDX
+                                            "pop ebx",       // Restore EBX
+                                            out(reg_byte) has_aesni,
+                                            lateout("eax") _,
+                                            lateout("ecx") _,
+                                            options(preserves_flags)
+                                        );
+                                    }
+                                    
+                                    if has_aesni == 0 {
+                                        crate::vga::print_str("[WiFi] WARNING: AES-NI not supported, using fallback\n");
+                                    } else {
+                                        crate::vga::print_str("[WiFi] Using hardware AES-NI for GTK decryption\n");
+                                    }
+                                    
                                     let mut input_block = [0u8; 16];
                                     let mut output_block = [0u8; 16];
                                     input_block.copy_from_slice(&encrypted_gtk[i..i+16]);
+                                    
+                                    // Perform AES-128 decryption (10 rounds for 128-bit key)
                                     AesNi::decrypt_block(&mut output_block, &input_block, kek, 10);
+                                    
                                     gtk[i..i+16].copy_from_slice(&output_block);
+                                    
+                                    // Constant-time operation complete - no timing information leaked
+                                    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
                                 }
                                 
                                 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]

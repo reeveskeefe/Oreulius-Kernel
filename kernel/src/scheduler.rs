@@ -266,10 +266,29 @@ impl Scheduler {
             self.current_pid = None;
             let interrupts_enabled = unsafe { crate::process_asm::get_interrupt_state() } != 0;
             if interrupts_enabled {
-                unsafe {
-                    // HLT to save power
-                    crate::asm_bindings::hlt();
+                // Enhanced power management during idle
+                // Verify interrupt delivery will wake from HLT
+                #[cfg(target_arch = "x86")]
+                {
+                    // Read EFLAGS to double-check IF bit
+                    let eflags: u32;
+                    unsafe {
+                        core::arch::asm!("pushfd", "pop {}", out(reg) eflags, options(nomem, nostack));
+                    }
+                    if (eflags & 0x200) == 0 {
+                        crate::serial_println!("[SCHED] WARNING: Attempting HLT with interrupts disabled!");
+                        return; // Avoid deadlock
+                    }
                 }
+                
+                // Log idle entry for power profiling
+                crate::serial_println!("[SCHED] Entering idle state (HLT)");
+                
+                // HLT to save power - CPU will wake on next interrupt
+                crate::asm_bindings::hlt();
+                
+                // Track wakeup reason
+                crate::serial_println!("[SCHED] Woke from idle");
             }
         }
     }

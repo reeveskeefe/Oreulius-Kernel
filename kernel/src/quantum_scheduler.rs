@@ -398,9 +398,27 @@ impl QuantumScheduler {
     
     /// Add a kernel thread to the scheduler
     pub fn add_kernel_thread(&mut self, entry: extern "C" fn() -> !, priority: ProcessPriority) -> Result<Pid, &'static str> {
-        unsafe {
-             crate::serial_println!("[SCHED] Process Table: {:p}", self.processes.as_ptr());
+        // Enhanced process table diagnostics with validation
+        let table_ptr = self.processes.as_ptr();
+        let table_addr = table_ptr as usize;
+        
+        // Validate process table alignment (should be at least 8-byte aligned)
+        if table_addr % 8 != 0 {
+            crate::serial_println!("[SCHED] WARNING: Process table misaligned at {:p}", table_ptr);
         }
+        
+        // Log comprehensive process table state
+        let active_count = self.processes.iter().filter(|p| p.is_some()).count();
+        crate::serial_println!("[SCHED] Process Table: {:p} | Capacity: {} | Active: {} | Available: {}",
+            table_ptr, MAX_PROCESSES, active_count, MAX_PROCESSES - active_count);
+        crate::serial_println!("[SCHED] Memory bounds: {:p} - {:p} ({} bytes)",
+            table_ptr, 
+            (table_addr + core::mem::size_of_val(&self.processes)) as *const u8,
+            core::mem::size_of_val(&self.processes));
+        
+        // Memory barrier to ensure consistency
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        
         // Find available PID
         let pid = (0..MAX_PROCESSES)
             .map(|i| Pid(i as u32))
