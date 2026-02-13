@@ -891,11 +891,11 @@ fn stack_pop(depth: &mut i32, n: i32) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn hash_jit_code(code: &[u8]) -> u32 {
-    let mut hash: u32 = 2166136261;
+fn hash_jit_code(code: &[u8]) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
     for &b in code {
-        hash ^= b as u32;
-        hash = hash.wrapping_mul(16777619);
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(1099511628211);
     }
     hash
 }
@@ -926,7 +926,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
             0x81 => {
                 need(code, i, 6)?;
                 let b1 = code[i + 1];
-                if b1 != 0xC3 && b1 != 0xFB {
+                if b1 != 0xC3 && b1 != 0xFB && b1 != 0xF9 && b1 != 0xEB {
                     return Err("Unexpected 0x81 encoding");
                 }
                 i += 6;
@@ -934,7 +934,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
             0x83 => {
                 let b1 = *code.get(i + 1).ok_or("Truncated 0x83")?;
                 match b1 {
-                    0xEC | 0xC4 | 0xFB | 0xF8 | 0xC3 | 0x38 => {
+                    0xEC | 0xC4 | 0xFB | 0xF8 | 0xC3 | 0x38 | 0xF9 | 0xEB => {
                         need(code, i, 3)?;
                         i += 3;
                     }
@@ -1046,6 +1046,10 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                         need(code, i, 2)?;
                         i += 2;
                     }
+                    0xCB => {
+                        need(code, i, 2)?;
+                        i += 2;
+                    }
                     0x83 => {
                         need(code, i, 6)?;
                         i += 6;
@@ -1139,7 +1143,7 @@ impl JitFunction {
     }
 }
 
-fn hash_exec_code(ptr: *const u8, len: usize) -> u32 {
+fn hash_exec_code(ptr: *const u8, len: usize) -> u64 {
     if ptr.is_null() || len == 0 {
         return 0;
     }
