@@ -19,6 +19,9 @@ const EBADF: u32 = 9;    // Bad file descriptor
 const ENOENT: u32 = 2;   // No such file or directory
 const EAGAIN: u32 = 11;  // Try again
 
+/// Internal syscall number used to return from user-mode JIT execution.
+pub const SYSCALL_JIT_RETURN: u32 = 250;
+
 /// System call numbers
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -63,6 +66,7 @@ pub enum SyscallNumber {
     // WASM
     WasmLoad = 60,
     WasmCall = 61,
+    JitReturn = SYSCALL_JIT_RETURN,
     
     // Invalid
     Invalid = 0xFFFFFFFF,
@@ -98,6 +102,7 @@ impl From<u32> for SyscallNumber {
             51 => SyscallNumber::ConsoleRead,
             60 => SyscallNumber::WasmLoad,
             61 => SyscallNumber::WasmCall,
+            SYSCALL_JIT_RETURN => SyscallNumber::JitReturn,
             _ => SyscallNumber::Invalid,
         }
     }
@@ -175,6 +180,7 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
         
         SyscallNumber::WasmLoad => sys_wasm_load(args, caller_pid),
         SyscallNumber::WasmCall => sys_wasm_call(args, caller_pid),
+        SyscallNumber::JitReturn => sys_jit_return(args, caller_pid),
         
         SyscallNumber::Invalid => SyscallResult::err(ENOSYS),
     }
@@ -943,6 +949,14 @@ fn sys_wasm_call(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
             SyscallResult::ok(result as i32)
         }
         Err(_) => SyscallResult::err(EINVAL),
+    }
+}
+
+fn sys_jit_return(_args: SyscallArgs, _caller_pid: capability::ProcessId) -> SyscallResult {
+    if crate::wasm::jit_user_mark_returned() {
+        SyscallResult::ok(0)
+    } else {
+        SyscallResult::err(EACCES)
     }
 }
 

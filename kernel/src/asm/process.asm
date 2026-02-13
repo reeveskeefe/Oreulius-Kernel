@@ -143,6 +143,10 @@ enter_kernel_mode:
     ret
 
 global enter_user_mode
+global jit_user_enter
+extern JIT_USER_RETURN_EIP
+extern JIT_USER_RETURN_ESP
+extern JIT_USER_ACTIVE
 ; void enter_user_mode(u32 esp, u32 eip, u16 cs, u16 ds)
 ; Transitions from kernel to user mode
 ; Prepares for IRET to user space
@@ -174,6 +178,48 @@ enter_user_mode:
     push eax
     
     iretd                   ; Return to user mode
+
+; ============================================================================
+; JIT User Mode Entry (saves kernel return context)
+; ============================================================================
+
+; void jit_user_enter(u32 esp, u32 eip, u16 cs, u16 ds)
+jit_user_enter:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+
+    ; Save kernel return context
+    mov eax, esp
+    mov [JIT_USER_RETURN_ESP], eax
+    mov eax, .return
+    mov [JIT_USER_RETURN_EIP], eax
+    mov dword [JIT_USER_ACTIVE], 1
+
+    ; Load args
+    mov eax, [ebp + 8]      ; User ESP
+    mov ebx, [ebp + 12]     ; User EIP
+    mov cx, [ebp + 16]      ; User CS
+    mov dx, [ebp + 20]      ; User DS
+
+    movzx eax, dx
+    push eax
+    movzx eax, cx
+    push eax
+    push ebx
+    push eax
+    call enter_user_mode
+    add esp, 16
+
+.return:
+    mov dword [JIT_USER_ACTIVE], 0
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
 
 ; ============================================================================
 ; Process State Management
@@ -725,4 +771,3 @@ increment_context_switch_count:
     ret
 
 ; interrupt_count functions are defined in idt.asm
-

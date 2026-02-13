@@ -41,6 +41,7 @@ extern "C" {
     // Privilege Level Transitions
     pub fn enter_kernel_mode();
     pub fn enter_user_mode(esp: u32, eip: u32, cs: u16, ds: u16);
+    pub fn jit_user_enter(esp: u32, eip: u32, cs: u16, ds: u16);
     
     // FPU/SSE State Management
     pub fn save_fpu_state(buffer: *mut u8); // 512 bytes

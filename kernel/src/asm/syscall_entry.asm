@@ -13,6 +13,10 @@
 [BITS 32]
 
 extern syscall_handler_rust
+extern JIT_USER_RETURN_PENDING
+extern JIT_USER_RETURN_EIP
+extern JIT_USER_RETURN_ESP
+extern JIT_USER_ACTIVE
 
 global syscall_entry
 syscall_entry:
@@ -32,6 +36,17 @@ syscall_entry:
     push eax
     call syscall_handler_rust
     add esp, 4
+
+    ; If JIT user-mode requested a kernel return, jump back to saved kernel frame.
+    cmp dword [JIT_USER_RETURN_PENDING], 0
+    je .normal_return
+    mov dword [JIT_USER_RETURN_PENDING], 0
+    mov dword [JIT_USER_ACTIVE], 0
+    mov esp, [JIT_USER_RETURN_ESP]
+    mov eax, [JIT_USER_RETURN_EIP]
+    jmp eax
+
+.normal_return:
     
     ; EAX:EDX now contain result (EAX = value, EDX = errno)
     ; Save return values

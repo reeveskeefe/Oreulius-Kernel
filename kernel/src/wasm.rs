@@ -59,6 +59,10 @@ use crate::ipc::{ProcessId, ChannelId};
 use crate::fs;
 use crate::paging;
 use crate::idt_asm;
+use crate::memory;
+use crate::syscall::SYSCALL_JIT_RETURN;
+use crate::gdt;
+use crate::process_asm;
 
 // ============================================================================
 // WASM Types & Constants
@@ -365,20 +369,34 @@ fn validate_bytecode(code: &[u8]) -> Result<(), WasmError> {
 
 /// WASM linear memory (isolated per-module)
 pub struct LinearMemory {
-    /// Memory buffer (fixed-size, in .bss)
-    data: [u8; MAX_MEMORY_SIZE],
+    /// Memory buffer (dedicated JIT arena allocation)
+    data: *mut u8,
     /// Current size in pages (64 KiB each)
     pages: usize,
+    /// Maximum pages allowed
+    max_pages: usize,
 }
+
+// SAFETY: LinearMemory owns a kernel-allocated buffer and is only accessed
+// through the WasmRuntime mutex, so moving between threads is safe.
+unsafe impl Send for LinearMemory {}
 
 impl LinearMemory {
     /// Create new linear memory with initial size
     pub fn new(initial_pages: usize) -> Self {
         let max_pages = MAX_MEMORY_SIZE / (64 * 1024);
         let pages = core::cmp::min(initial_pages, max_pages);
+        let alloc_pages = (MAX_MEMORY_SIZE + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
+        let base = memory::jit_allocate_pages(alloc_pages).unwrap_or(0) as *mut u8;
+        if !base.is_null() {
+            unsafe {
+                core::ptr::write_bytes(base, 0, MAX_MEMORY_SIZE);
+            }
+        }
         LinearMemory {
-            data: [0u8; MAX_MEMORY_SIZE],
+            data: base,
             pages,
+            max_pages,
         }
     }
 
@@ -394,12 +412,15 @@ impl LinearMemory {
 
     /// Get raw pointer to memory
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.data.as_mut_ptr()
+        self.data
     }
 
     /// Get active memory slice
     pub fn active_slice(&self) -> &[u8] {
-        &self.data[..self.active_len()]
+        if self.data.is_null() {
+            return &[];
+        }
+        unsafe { core::slice::from_raw_parts(self.data, self.active_len()) }
     }
 
     /// Grow memory by delta pages
@@ -407,8 +428,7 @@ impl LinearMemory {
         let old_size = self.pages;
         let new_size = old_size + delta;
 
-        let max_pages = MAX_MEMORY_SIZE / (64 * 1024);
-        if new_size > max_pages {
+        if new_size > self.max_pages {
             return Err(WasmError::MemoryGrowFailed);
         }
 
@@ -422,7 +442,10 @@ impl LinearMemory {
         if end > self.pages * 64 * 1024 {
             return Err(WasmError::MemoryOutOfBounds);
         }
-        Ok(&self.data[offset..end])
+        if self.data.is_null() {
+            return Err(WasmError::MemoryOutOfBounds);
+        }
+        unsafe { Ok(core::slice::from_raw_parts(self.data.add(offset), len)) }
     }
 
     /// Write bytes to memory
@@ -431,7 +454,12 @@ impl LinearMemory {
         if end > self.pages * 64 * 1024 {
             return Err(WasmError::MemoryOutOfBounds);
         }
-        self.data[offset..end].copy_from_slice(data);
+        if self.data.is_null() {
+            return Err(WasmError::MemoryOutOfBounds);
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(data.as_ptr(), self.data.add(offset), data.len());
+        }
         Ok(())
     }
 
@@ -463,9 +491,18 @@ impl LinearMemory {
 
 impl Clone for LinearMemory {
     fn clone(&self) -> Self {
+        let max_pages = MAX_MEMORY_SIZE / (64 * 1024);
+        let alloc_pages = (MAX_MEMORY_SIZE + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
+        let base = memory::jit_allocate_pages(alloc_pages).unwrap_or(0) as *mut u8;
+        if !base.is_null() && !self.data.is_null() {
+            unsafe {
+                core::ptr::copy_nonoverlapping(self.data, base, MAX_MEMORY_SIZE);
+            }
+        }
         LinearMemory {
-            data: self.data,
+            data: base,
             pages: self.pages,
+            max_pages,
         }
     }
 }
@@ -690,6 +727,39 @@ impl WasmModule {
 // WASM Instance (execution context)
 // ============================================================================
 
+#[repr(C)]
+struct JitUserState {
+    stack: [i32; MAX_STACK_DEPTH],
+    sp: usize,
+    locals: [i32; MAX_LOCALS],
+    instr_fuel: u32,
+    mem_fuel: u32,
+    trap_code: i32,
+}
+
+const USER_JIT_TRAMPOLINE_BASE: usize = 0x0040_0000;
+const USER_JIT_TRAMPOLINE_FAULT_OFFSET: usize = 0x0000_0100;
+const USER_JIT_CALL_BASE: usize = 0x0041_0000;
+const USER_JIT_STACK_BASE: usize = 0x0042_0000;
+const USER_JIT_CODE_BASE: usize = 0x0043_0000;
+const USER_JIT_DATA_BASE: usize = 0x0044_0000;
+const USER_WASM_MEM_BASE: usize = 0x0050_0000;
+const USER_JIT_STACK_PAGES: usize = 1;
+
+#[repr(C)]
+struct JitUserCall {
+    entry: u32,
+    stack_ptr: u32,
+    sp_ptr: u32,
+    mem_ptr: u32,
+    mem_len: u32,
+    locals_ptr: u32,
+    instr_fuel_ptr: u32,
+    mem_fuel_ptr: u32,
+    trap_ptr: u32,
+    ret: i32,
+}
+
 /// A running WASM instance
 pub struct WasmInstance {
     /// The module being executed
@@ -712,18 +782,48 @@ pub struct WasmInstance {
     syscall_count: usize,
     /// JIT cache (per-function hash)
     jit_hash: [Option<u64>; 64],
-    /// JIT stack (i32 only)
-    jit_stack: [i32; MAX_STACK_DEPTH],
-    jit_sp: usize,
+    /// JIT user state (stack/locals/fuel/trap)
+    jit_state: *mut JitUserState,
+    jit_state_pages: usize,
     jit_enabled: bool,
     jit_hot: [u32; 64],
-    jit_locals: [i32; MAX_LOCALS],
     jit_validate_remaining: [u8; 64],
 }
 
+// SAFETY: WasmInstance contains raw pointers to kernel-managed memory and is
+// only accessed via the WasmRuntime mutex, so sending between threads is safe.
+unsafe impl Send for WasmInstance {}
+
 impl WasmInstance {
+    fn alloc_jit_state() -> (*mut JitUserState, usize) {
+        let size = core::mem::size_of::<JitUserState>();
+        let pages = (size + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
+        let base = memory::jit_allocate_pages(pages).unwrap_or(0) as *mut JitUserState;
+        if !base.is_null() {
+            unsafe {
+                core::ptr::write_bytes(base as *mut u8, 0, pages * paging::PAGE_SIZE);
+            }
+        }
+        (base, pages)
+    }
+
+    fn jit_state_mut(&mut self) -> Result<&mut JitUserState, WasmError> {
+        if self.jit_state.is_null() {
+            return Err(WasmError::Trap);
+        }
+        Ok(unsafe { &mut *self.jit_state })
+    }
+
+    fn jit_state(&self) -> Result<&JitUserState, WasmError> {
+        if self.jit_state.is_null() {
+            return Err(WasmError::Trap);
+        }
+        Ok(unsafe { &*self.jit_state })
+    }
+
     /// Create a new instance
     pub fn new(module: WasmModule, process_id: ProcessId) -> Self {
+        let (jit_state, jit_state_pages) = Self::alloc_jit_state();
         WasmInstance {
             module,
             memory: LinearMemory::new(1), // 1 page = 64 KiB
@@ -736,11 +836,10 @@ impl WasmInstance {
             memory_op_count: 0,
             syscall_count: 0,
             jit_hash: [None; 64],
-            jit_stack: [0; MAX_STACK_DEPTH],
-            jit_sp: 0,
+            jit_state,
+            jit_state_pages,
             jit_enabled: false,
             jit_hot: [0; 64],
-            jit_locals: [0; MAX_LOCALS],
             jit_validate_remaining: [JIT_VALIDATE_CALLS; 64],
         }
     }
@@ -814,13 +913,15 @@ impl WasmInstance {
 
         // Populate JIT locals from stack params (i32 only), without mutating stack yet.
         let stack_len = self.stack.len();
+        let locals_total = func.param_count + func.local_count;
+        let mut locals_buf = [0i32; MAX_LOCALS];
         for i in 0..func.param_count {
             let idx = stack_len - func.param_count + i;
             let v = self.stack.get(idx)?.as_i32()?;
-            self.jit_locals[i] = v;
+            locals_buf[i] = v;
         }
-        for i in func.param_count..(func.param_count + func.local_count) {
-            self.jit_locals[i] = 0;
+        for i in func.param_count..locals_total {
+            locals_buf[i] = 0;
         }
 
         if let Some(ref mut shadow_inst) = shadow {
@@ -828,7 +929,6 @@ impl WasmInstance {
             shadow_inst.call(func_idx)?;
         }
 
-        self.jit_sp = 0;
         let mem_len = self.memory.active_len();
         if mem_len > u32::MAX as usize {
             return Ok(false);
@@ -840,28 +940,46 @@ impl WasmInstance {
         if (mem_ptr as usize).checked_add(mem_len).is_none() {
             return Ok(false);
         }
-        let locals_ptr = self.jit_locals.as_mut_ptr();
-        let mut instr_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
-        let mut mem_fuel = MAX_MEMORY_OPS_PER_CALL as u32;
-        let mut trap_code: i32 = 0;
+        let jit_state_base = self.jit_state as *mut u8;
+        let jit_state_pages = self.jit_state_pages;
 
         // Consume stack params now that we're committed to JIT execution.
         for _ in 0..func.param_count {
             let _ = self.stack.pop()?;
         }
 
-        let ret = call_jit_sandboxed(
-            jit_entry,
-            self.jit_stack.as_mut_ptr(),
-            &mut self.jit_sp,
-            mem_ptr,
-            mem_len,
-            locals_ptr,
-            &mut instr_fuel,
-            &mut mem_fuel,
-            &mut trap_code,
-        );
-        if trap_code == -1 {
+        let ret = {
+            let state = self.jit_state_mut()?;
+            for i in 0..locals_total {
+                state.locals[i] = locals_buf[i];
+            }
+            state.sp = 0;
+            state.instr_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
+            state.mem_fuel = MAX_MEMORY_OPS_PER_CALL as u32;
+            state.trap_code = 0;
+            let locals_ptr = state.locals.as_mut_ptr();
+            let instr_fuel = &mut state.instr_fuel as *mut u32;
+            let mem_fuel = &mut state.mem_fuel as *mut u32;
+            let trap_code = &mut state.trap_code as *mut i32;
+            call_jit_sandboxed(
+                jit_entry,
+                state.stack.as_mut_ptr(),
+                &mut state.sp as *mut usize,
+                mem_ptr,
+                mem_len,
+                locals_ptr,
+                instr_fuel,
+                mem_fuel,
+                trap_code,
+                jit_state_base,
+                jit_state_pages,
+            )
+        };
+        let (trap_code_val, instr_left, mem_left) = {
+            let state = self.jit_state()?;
+            (state.trap_code, state.instr_fuel, state.mem_fuel)
+        };
+        if trap_code_val == -1 {
             if let Some(shadow_inst) = shadow {
                 self.restore_from_shadow(shadow_inst);
                 self.disable_jit_for_function(func_idx);
@@ -869,7 +987,7 @@ impl WasmInstance {
             }
             return Err(WasmError::MemoryOutOfBounds);
         }
-        if trap_code == -2 {
+        if trap_code_val == -2 {
             if let Some(shadow_inst) = shadow {
                 self.restore_from_shadow(shadow_inst);
                 self.disable_jit_for_function(func_idx);
@@ -877,7 +995,7 @@ impl WasmInstance {
             }
             return Err(WasmError::ExecutionLimitExceeded);
         }
-        if trap_code == -3 {
+        if trap_code_val == -3 {
             if let Some(shadow_inst) = shadow {
                 self.restore_from_shadow(shadow_inst);
                 self.disable_jit_for_function(func_idx);
@@ -885,7 +1003,7 @@ impl WasmInstance {
             }
             return Err(WasmError::Trap);
         }
-        if trap_code != 0 {
+        if trap_code_val != 0 {
             if let Some(shadow_inst) = shadow {
                 self.restore_from_shadow(shadow_inst);
                 self.disable_jit_for_function(func_idx);
@@ -896,8 +1014,10 @@ impl WasmInstance {
         if func.result_count == 1 {
             self.stack.push(Value::I32(ret))?;
         }
-        self.instruction_count = (MAX_INSTRUCTIONS_PER_CALL as u32).saturating_sub(instr_fuel) as usize;
-        self.memory_op_count = (MAX_MEMORY_OPS_PER_CALL as u32).saturating_sub(mem_fuel) as usize;
+        self.instruction_count =
+            (MAX_INSTRUCTIONS_PER_CALL as u32).saturating_sub(instr_left) as usize;
+        self.memory_op_count =
+            (MAX_MEMORY_OPS_PER_CALL as u32).saturating_sub(mem_left) as usize;
 
         if let Some(shadow_inst) = shadow {
             if !self.validate_against_shadow(&shadow_inst, func) {
@@ -915,6 +1035,7 @@ impl WasmInstance {
     }
 
     fn clone_for_validation(&self) -> Self {
+        let (jit_state, jit_state_pages) = Self::alloc_jit_state();
         WasmInstance {
             module: self.module.clone(),
             memory: self.memory.clone(),
@@ -927,11 +1048,10 @@ impl WasmInstance {
             memory_op_count: 0,
             syscall_count: 0,
             jit_hash: [None; 64],
-            jit_stack: [0; MAX_STACK_DEPTH],
-            jit_sp: 0,
+            jit_state,
+            jit_state_pages,
             jit_enabled: false,
             jit_hot: [0; 64],
-            jit_locals: [0; MAX_LOCALS],
             jit_validate_remaining: [0; 64],
         }
     }
@@ -944,7 +1064,9 @@ impl WasmInstance {
         self.instruction_count = shadow.instruction_count;
         self.memory_op_count = shadow.memory_op_count;
         self.syscall_count = shadow.syscall_count;
-        self.jit_sp = 0;
+        if let Ok(state) = self.jit_state_mut() {
+            state.sp = 0;
+        }
     }
 
     fn disable_jit_for_function(&mut self, func_idx: usize) {
@@ -1733,6 +1855,7 @@ pub fn init() {
 pub struct JitConfig {
     pub enabled: bool,
     pub hot_threshold: u32,
+    pub user_mode: bool,
 }
 
 impl JitConfig {
@@ -1740,6 +1863,7 @@ impl JitConfig {
         JitConfig {
             enabled: false,
             hot_threshold: 10,
+            user_mode: true,
         }
     }
 }
@@ -1769,6 +1893,13 @@ struct JitCacheEntry {
     func: crate::wasm_jit::JitFunction,
 }
 
+#[derive(Clone, Copy)]
+struct JitExecInfo {
+    entry: crate::wasm_jit::JitFn,
+    exec_ptr: *mut u8,
+    exec_len: usize,
+}
+
 struct JitCache {
     entries: Vec<JitCacheEntry>,
     max_entries: usize,
@@ -1786,9 +1917,29 @@ impl JitCache {
 static JIT_CONFIG: Mutex<JitConfig> = Mutex::new(JitConfig::new());
 static JIT_STATS: Mutex<JitStats> = Mutex::new(JitStats::new());
 static JIT_CACHE: Mutex<JitCache> = Mutex::new(JitCache::new());
-static JIT_SANDBOX_PD: Mutex<Option<u32>> = Mutex::new(None);
+static JIT_SANDBOX_SPACE: Mutex<Option<paging::AddressSpace>> = Mutex::new(None);
 static JIT_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static mut JIT_FAULT_TRAP_PTR: *mut i32 = core::ptr::null_mut();
+static JIT_USER_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Clone, Copy)]
+struct JitUserPages {
+    trampoline: usize,
+    call: usize,
+    stack: usize,
+    stack_pages: usize,
+}
+
+static JIT_USER_PAGES: Mutex<Option<JitUserPages>> = Mutex::new(None);
+
+#[no_mangle]
+pub static mut JIT_USER_ACTIVE: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_RETURN_PENDING: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_RETURN_EIP: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_RETURN_ESP: u32 = 0;
 
 const TRAP_MEM: i32 = -1;
 
@@ -1801,15 +1952,11 @@ pub fn jit_stats() -> &'static Mutex<JitStats> {
 }
 
 fn jit_sandbox_pd() -> Option<u32> {
-    let mut guard = JIT_SANDBOX_PD.lock();
-    if let Some(pd) = *guard {
-        return Some(pd);
+    let mut guard = JIT_SANDBOX_SPACE.lock();
+    if guard.is_none() {
+        *guard = Some(paging::AddressSpace::new_jit_sandbox().ok()?);
     }
-    let sandbox = paging::AddressSpace::new_jit_sandbox().ok()?;
-    let pd = sandbox.phys_addr() as u32;
-    core::mem::forget(sandbox);
-    *guard = Some(pd);
-    Some(pd)
+    guard.as_ref().map(|space| space.phys_addr() as u32)
 }
 
 fn jit_fault_enter(trap_ptr: *mut i32) {
@@ -1826,6 +1973,149 @@ fn jit_fault_exit() {
     }
 }
 
+fn write_jit_user_trampoline(trampoline: *mut u8, call_addr: u32) {
+    unsafe {
+        let mut idx = 0usize;
+        macro_rules! write_u8 {
+            ($b:expr) => {{
+                core::ptr::write_volatile(trampoline.add(idx), $b);
+                idx += 1;
+            }};
+        }
+        macro_rules! write_u32 {
+            ($v:expr) => {{
+                for byte in ($v).to_le_bytes().iter() {
+                    write_u8!(*byte);
+                }
+            }};
+        }
+
+        // mov ecx, imm32
+        write_u8!(0xB9);
+        write_u32!(call_addr);
+        // push ecx (save call pointer)
+        write_u8!(0x51);
+        // mov eax, [ecx]
+        write_u8!(0x8B);
+        write_u8!(0x01);
+        // push dword [ecx+32]
+        write_u8!(0xFF);
+        write_u8!(0x71);
+        write_u8!(0x20);
+        // push dword [ecx+28]
+        write_u8!(0xFF);
+        write_u8!(0x71);
+        write_u8!(0x1C);
+        // push dword [ecx+24]
+        write_u8!(0xFF);
+        write_u8!(0x71);
+        write_u8!(0x18);
+        // push dword [ecx+20]
+        write_u8!(0xFF);
+        write_u8!(0x71);
+        write_u8!(0x14);
+        // push dword [ecx+16]
+        write_u8!(0xFF);
+        write_u8!(0x71);
+        write_u8!(0x10);
+        // push dword [ecx+12]
+        write_u8!(0xFF);
+        write_u8!(0x71);
+        write_u8!(0x0C);
+        // push dword [ecx+8]
+        write_u8!(0xFF);
+        write_u8!(0x71);
+        write_u8!(0x08);
+        // push dword [ecx+4]
+        write_u8!(0xFF);
+        write_u8!(0x71);
+        write_u8!(0x04);
+        // call eax
+        write_u8!(0xFF);
+        write_u8!(0xD0);
+        // add esp, 32
+        write_u8!(0x83);
+        write_u8!(0xC4);
+        write_u8!(0x20);
+        // pop ecx (restore call pointer)
+        write_u8!(0x59);
+        // mov [ecx+36], eax
+        write_u8!(0x89);
+        write_u8!(0x41);
+        write_u8!(0x24);
+        // mov eax, imm32 (syscall number)
+        write_u8!(0xB8);
+        write_u32!(SYSCALL_JIT_RETURN);
+        // int 0x80
+        write_u8!(0xCD);
+        write_u8!(0x80);
+        // hlt; jmp $
+        write_u8!(0xF4);
+        write_u8!(0xEB);
+        write_u8!(0xFE);
+        let _ = idx;
+
+        // Fault stub at fixed offset
+        let fault_ptr = trampoline.add(USER_JIT_TRAMPOLINE_FAULT_OFFSET);
+        let mut fidx = 0usize;
+        macro_rules! f_write_u8 {
+            ($b:expr) => {{
+                core::ptr::write_volatile(fault_ptr.add(fidx), $b);
+                fidx += 1;
+            }};
+        }
+        macro_rules! f_write_u32 {
+            ($v:expr) => {{
+                for byte in ($v).to_le_bytes().iter() {
+                    f_write_u8!(*byte);
+                }
+            }};
+        }
+        // mov eax, imm32 (syscall number)
+        f_write_u8!(0xB8);
+        f_write_u32!(SYSCALL_JIT_RETURN);
+        // int 0x80
+        f_write_u8!(0xCD);
+        f_write_u8!(0x80);
+        // hlt; jmp $
+        f_write_u8!(0xF4);
+        f_write_u8!(0xEB);
+        f_write_u8!(0xFE);
+        let _ = fidx;
+    }
+}
+
+fn ensure_jit_user_pages() -> Result<JitUserPages, &'static str> {
+    let mut guard = JIT_USER_PAGES.lock();
+    if let Some(pages) = *guard {
+        return Ok(pages);
+    }
+    let trampoline = memory::jit_allocate_pages(1)?;
+    let call = memory::jit_allocate_pages(1)?;
+    let stack_pages = USER_JIT_STACK_PAGES;
+    let stack = memory::jit_allocate_pages(stack_pages)?;
+    write_jit_user_trampoline(trampoline as *mut u8, USER_JIT_CALL_BASE as u32);
+    let _ = paging::set_page_writable_range(trampoline, paging::PAGE_SIZE, false);
+    let pages = JitUserPages {
+        trampoline,
+        call,
+        stack,
+        stack_pages,
+    };
+    *guard = Some(pages);
+    Ok(pages)
+}
+
+pub fn jit_user_mark_returned() -> bool {
+    unsafe {
+        if JIT_USER_ACTIVE != 0 {
+            JIT_USER_RETURN_PENDING = 1;
+            return true;
+        }
+    }
+    false
+}
+
 pub fn jit_handle_page_fault(
     frame: &mut crate::idt_asm::InterruptFrame,
     _fault_addr: usize,
@@ -1839,13 +2129,67 @@ pub fn jit_handle_page_fault(
             *JIT_FAULT_TRAP_PTR = TRAP_MEM;
         }
     }
+    if (frame.cs & 0x3) == 3 {
+        unsafe {
+            if JIT_USER_ACTIVE != 0 {
+                frame.eax = 0;
+                frame.eip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u32;
+                frame.user_esp =
+                    (USER_JIT_STACK_BASE + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 4) as u32;
+                return true;
+            }
+        }
+    }
     frame.eax = 0;
     frame.eip = crate::asm_bindings::asm_jit_fault_resume as u32;
     true
 }
 
 fn call_jit_sandboxed(
-    jit_entry: crate::wasm_jit::JitFn,
+    jit_entry: JitExecInfo,
+    stack_ptr: *mut i32,
+    sp_ptr: *mut usize,
+    mem_ptr: *mut u8,
+    mem_len: usize,
+    locals_ptr: *mut i32,
+    instr_fuel: *mut u32,
+    mem_fuel: *mut u32,
+    trap_code: *mut i32,
+    jit_state_base: *mut u8,
+    jit_state_pages: usize,
+) -> i32 {
+    if jit_config().lock().user_mode {
+        if let Ok(ret) = call_jit_user(
+            jit_entry,
+            stack_ptr,
+            sp_ptr,
+            mem_ptr,
+            mem_len,
+            locals_ptr,
+            instr_fuel,
+            mem_fuel,
+            trap_code,
+            jit_state_base,
+            jit_state_pages,
+        ) {
+            return ret;
+        }
+    }
+    call_jit_kernel(
+        jit_entry,
+        stack_ptr,
+        sp_ptr,
+        mem_ptr,
+        mem_len,
+        locals_ptr,
+        instr_fuel,
+        mem_fuel,
+        trap_code,
+    )
+}
+
+fn call_jit_kernel(
+    jit_entry: JitExecInfo,
     stack_ptr: *mut i32,
     sp_ptr: *mut usize,
     mem_ptr: *mut u8,
@@ -1862,7 +2206,7 @@ fn call_jit_sandboxed(
         unsafe { paging::set_page_directory(pd) };
     }
     let ret = unsafe {
-        (jit_entry)(
+        (jit_entry.entry)(
             stack_ptr,
             sp_ptr,
             mem_ptr,
@@ -1877,6 +2221,195 @@ fn call_jit_sandboxed(
     jit_fault_exit();
     unsafe { idt_asm::fast_sti_restore(flags) };
     ret
+}
+
+fn call_jit_user(
+    jit_entry: JitExecInfo,
+    _stack_ptr: *mut i32,
+    _sp_ptr: *mut usize,
+    mem_ptr: *mut u8,
+    mem_len: usize,
+    _locals_ptr: *mut i32,
+    instr_fuel: *mut u32,
+    mem_fuel: *mut u32,
+    trap_code: *mut i32,
+    jit_state_base: *mut u8,
+    jit_state_pages: usize,
+) -> Result<i32, &'static str> {
+    let _guard = JIT_USER_LOCK.lock();
+    let _ = instr_fuel;
+    let _ = mem_fuel;
+    if jit_state_base.is_null() || jit_state_pages == 0 {
+        return Err("JIT state not initialized");
+    }
+    if mem_ptr.is_null() || mem_len == 0 {
+        return Err("Invalid WASM memory");
+    }
+
+    unsafe {
+        if JIT_USER_ACTIVE != 0 {
+            return Err("JIT user mode already active");
+        }
+        JIT_USER_RETURN_PENDING = 0;
+    }
+
+    let pages = ensure_jit_user_pages()?;
+
+    let mut sandbox_guard = JIT_SANDBOX_SPACE.lock();
+    if sandbox_guard.is_none() {
+        *sandbox_guard = Some(paging::AddressSpace::new_jit_sandbox()?);
+    }
+    let sandbox = sandbox_guard
+        .as_mut()
+        .ok_or("JIT sandbox not initialized")?;
+
+    let kernel_guard = paging::kernel_space().lock();
+    let kernel_space = kernel_guard
+        .as_ref()
+        .ok_or("Kernel address space not initialized")?;
+
+    let trampoline_phys = kernel_space
+        .virt_to_phys(pages.trampoline)
+        .ok_or("Trampoline not mapped")?;
+    let call_phys = kernel_space
+        .virt_to_phys(pages.call)
+        .ok_or("Call page not mapped")?;
+    let stack_phys = kernel_space
+        .virt_to_phys(pages.stack)
+        .ok_or("User stack not mapped")?;
+
+    let exec_ptr = jit_entry.exec_ptr as usize;
+    let exec_phys = kernel_space
+        .virt_to_phys(exec_ptr)
+        .ok_or("JIT exec not mapped")?;
+    let exec_offset = exec_ptr & (paging::PAGE_SIZE - 1);
+    let exec_map_len = jit_entry
+        .exec_len
+        .checked_add(exec_offset)
+        .ok_or("JIT exec size overflow")?;
+
+    let mem_ptr_usize = mem_ptr as usize;
+    let mem_phys = kernel_space
+        .virt_to_phys(mem_ptr_usize)
+        .ok_or("WASM memory not mapped")?;
+    let mem_offset = mem_ptr_usize & (paging::PAGE_SIZE - 1);
+    let mem_map_len = mem_len
+        .checked_add(mem_offset)
+        .ok_or("WASM memory size overflow")?;
+
+    let state_ptr = jit_state_base as usize;
+    let state_phys = kernel_space
+        .virt_to_phys(state_ptr)
+        .ok_or("JIT state not mapped")?;
+    let state_offset = state_ptr & (paging::PAGE_SIZE - 1);
+    let state_map_len = jit_state_pages
+        .checked_mul(paging::PAGE_SIZE)
+        .ok_or("JIT state size overflow")?
+        .checked_add(state_offset)
+        .ok_or("JIT state size overflow")?;
+
+    sandbox.map_user_range_phys(
+        USER_JIT_TRAMPOLINE_BASE,
+        trampoline_phys,
+        paging::PAGE_SIZE,
+        false,
+    )?;
+    sandbox.map_user_range_phys(
+        USER_JIT_CALL_BASE,
+        call_phys,
+        paging::PAGE_SIZE,
+        true,
+    )?;
+    sandbox.map_user_range_phys(
+        USER_JIT_STACK_BASE,
+        stack_phys,
+        pages.stack_pages * paging::PAGE_SIZE,
+        true,
+    )?;
+    sandbox.map_user_range_phys(
+        USER_JIT_CODE_BASE,
+        exec_phys,
+        exec_map_len,
+        false,
+    )?;
+    sandbox.map_user_range_phys(
+        USER_JIT_DATA_BASE,
+        state_phys,
+        state_map_len,
+        true,
+    )?;
+    sandbox.map_user_range_phys(
+        USER_WASM_MEM_BASE,
+        mem_phys,
+        mem_map_len,
+        true,
+    )?;
+
+    let sandbox_pd = sandbox.phys_addr() as u32;
+    drop(kernel_guard);
+    drop(sandbox_guard);
+
+    let entry_offset = (jit_entry.entry as usize)
+        .checked_sub(exec_ptr)
+        .ok_or("Invalid JIT entry")?;
+    if entry_offset >= jit_entry.exec_len {
+        return Err("JIT entry out of range");
+    }
+    let user_entry = USER_JIT_CODE_BASE
+        .checked_add(exec_offset)
+        .and_then(|v| v.checked_add(entry_offset))
+        .ok_or("User entry overflow")?;
+
+    let user_state_base = USER_JIT_DATA_BASE + state_offset;
+    let state_ptr = jit_state_base as *mut JitUserState;
+    let base = state_ptr as usize;
+    let stack_off = unsafe { core::ptr::addr_of!((*state_ptr).stack) as usize } - base;
+    let sp_off = unsafe { core::ptr::addr_of!((*state_ptr).sp) as usize } - base;
+    let locals_off = unsafe { core::ptr::addr_of!((*state_ptr).locals) as usize } - base;
+    let instr_fuel_off =
+        unsafe { core::ptr::addr_of!((*state_ptr).instr_fuel) as usize } - base;
+    let mem_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).mem_fuel) as usize } - base;
+    let trap_off = unsafe { core::ptr::addr_of!((*state_ptr).trap_code) as usize } - base;
+
+    let user_mem_ptr = USER_WASM_MEM_BASE + mem_offset;
+
+    let call_ptr = pages.call as *mut JitUserCall;
+    unsafe {
+        (*call_ptr).entry = user_entry as u32;
+        (*call_ptr).stack_ptr = (user_state_base + stack_off) as u32;
+        (*call_ptr).sp_ptr = (user_state_base + sp_off) as u32;
+        (*call_ptr).mem_ptr = user_mem_ptr as u32;
+        (*call_ptr).mem_len = mem_len as u32;
+        (*call_ptr).locals_ptr = (user_state_base + locals_off) as u32;
+        (*call_ptr).instr_fuel_ptr = (user_state_base + instr_fuel_off) as u32;
+        (*call_ptr).mem_fuel_ptr = (user_state_base + mem_fuel_off) as u32;
+        (*call_ptr).trap_ptr = (user_state_base + trap_off) as u32;
+        (*call_ptr).ret = 0;
+    }
+
+    // Ensure trap pointers are set for fault handling.
+    jit_fault_enter(trap_code);
+
+    let flags = unsafe { idt_asm::fast_cli_save() };
+    let old_cr3 = paging::current_page_directory_addr();
+    unsafe { paging::set_page_directory(sandbox_pd) };
+
+    let user_stack_top = USER_JIT_STACK_BASE + (pages.stack_pages * paging::PAGE_SIZE) - 16;
+    unsafe {
+        process_asm::jit_user_enter(
+            user_stack_top as u32,
+            USER_JIT_TRAMPOLINE_BASE as u32,
+            gdt::USER_CS,
+            gdt::USER_DS,
+        );
+    }
+
+    unsafe { paging::set_page_directory(old_cr3) };
+    jit_fault_exit();
+    unsafe { idt_asm::fast_sti_restore(flags) };
+
+    let ret = unsafe { (*call_ptr).ret };
+    Ok(ret)
 }
 
 fn hash_code(code: &[u8], locals_total: usize) -> u64 {
@@ -1901,7 +2434,7 @@ fn hash_memory(bytes: &[u8]) -> u64 {
     hash
 }
 
-fn jit_cache_get(hash: u64, code: &[u8], locals_total: usize) -> Option<crate::wasm_jit::JitFn> {
+fn jit_cache_get(hash: u64, code: &[u8], locals_total: usize) -> Option<JitExecInfo> {
     let cache = JIT_CACHE.lock();
     for entry in cache.entries.iter() {
         if entry.hash == hash && entry.locals_total == locals_total && entry.code_len == code.len() {
@@ -1911,13 +2444,17 @@ fn jit_cache_get(hash: u64, code: &[u8], locals_total: usize) -> Option<crate::w
             if !entry.func.verify_integrity() {
                 return None;
             }
-            return Some(entry.func.entry);
+            return Some(JitExecInfo {
+                entry: entry.func.entry,
+                exec_ptr: entry.func.exec.ptr,
+                exec_len: entry.func.exec.len,
+            });
         }
     }
     None
 }
 
-fn jit_cache_get_or_compile(hash: u64, code: &[u8], locals_total: usize) -> Option<crate::wasm_jit::JitFn> {
+fn jit_cache_get_or_compile(hash: u64, code: &[u8], locals_total: usize) -> Option<JitExecInfo> {
     if let Some(entry) = jit_cache_get(hash, code, locals_total) {
         return Some(entry);
     }
@@ -1936,7 +2473,12 @@ fn jit_cache_get_or_compile(hash: u64, code: &[u8], locals_total: usize) -> Opti
             code_len: code.len(),
             func: jit,
         });
-        return Some(cache.entries.last().unwrap().func.entry);
+        let entry = cache.entries.last().unwrap();
+        return Some(JitExecInfo {
+            entry: entry.func.entry,
+            exec_ptr: entry.func.exec.ptr,
+            exec_len: entry.func.exec.len,
+        });
     }
     let idx = (hash as usize) % cache.entries.len();
     cache.entries[idx] = JitCacheEntry {
@@ -1945,7 +2487,12 @@ fn jit_cache_get_or_compile(hash: u64, code: &[u8], locals_total: usize) -> Opti
         code_len: code.len(),
         func: jit,
     };
-    Some(cache.entries[idx].func.entry)
+    let entry = &cache.entries[idx];
+    Some(JitExecInfo {
+        entry: entry.func.entry,
+        exec_ptr: entry.func.exec.ptr,
+        exec_len: entry.func.exec.len,
+    })
 }
 
 /// Simple JIT benchmark (returns interpreter_ticks, jit_ticks)

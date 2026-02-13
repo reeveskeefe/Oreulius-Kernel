@@ -581,6 +581,28 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Map a physical range into user virtual memory (user-accessible pages).
+    pub fn map_user_range_phys(
+        &mut self,
+        virt_start: usize,
+        phys_start: usize,
+        size: usize,
+        writable: bool,
+    ) -> Result<(), &'static str> {
+        if size == 0 {
+            return Ok(());
+        }
+        let mut virt = align_down(virt_start, PAGE_SIZE);
+        let mut phys = align_down(phys_start, PAGE_SIZE);
+        let end = align_up(virt_start.checked_add(size).ok_or("Range overflow")?, PAGE_SIZE);
+        while virt < end {
+            Self::map_page_in_dir(&mut self.page_directory, virt, phys, writable, true)?;
+            virt += PAGE_SIZE;
+            phys += PAGE_SIZE;
+        }
+        Ok(())
+    }
+
     /// Create a minimal kernel-only address space for JIT sandboxing.
     pub fn new_jit_sandbox() -> Result<Self, &'static str> {
         let mut page_dir = Box::new(PageDirectory::new());
@@ -594,7 +616,8 @@ impl AddressSpace {
         Self::map_range_identity_high(&mut page_dir, ro_start, ro_end, false)?;
         Self::map_range_identity_high(&mut page_dir, data_start, data_end, true)?;
         Self::map_range_identity_high(&mut page_dir, bss_start, bss_end, true)?;
-        Self::map_range_identity_high(&mut page_dir, jit_start, jit_end, false)?;
+        // JIT arena must be writable for JIT state/memory and trap handling.
+        Self::map_range_identity_high(&mut page_dir, jit_start, jit_end, true)?;
         let phys_addr = &*page_dir as *const _ as usize;
         Ok(AddressSpace {
             page_directory: page_dir,
