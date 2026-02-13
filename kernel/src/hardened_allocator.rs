@@ -10,6 +10,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use spin::Mutex;
+#[cfg(debug_assertions)]
 use alloc::vec::Vec; // Used for allocation tracking
 
 extern "C" {
