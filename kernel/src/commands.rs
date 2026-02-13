@@ -1346,6 +1346,208 @@ fn cmd_cap_demo(mut parts: core::str::SplitWhitespace) {
 }
 
 // ============================================================================
+// Service Request Handlers
+// ============================================================================
+
+/// Handle filesystem service requests
+fn handle_filesystem_request(message: &ipc::Message) -> ipc::Message {
+    let mut response = ipc::Message::new(ipc::ProcessId(1));
+
+    // Parse the request (simple text-based protocol for demo)
+    if let Ok(request_str) = core::str::from_utf8(&message.payload[..message.payload_len]) {
+        if request_str.starts_with("READ ") {
+            // Extract filename
+            let filename = &request_str[5..];
+            let key = match fs::FileKey::new(filename) {
+                Ok(k) => k,
+                Err(_) => {
+                    let error_msg = b"ERROR: Invalid filename";
+                    response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                    response.payload_len = error_msg.len();
+                    return response;
+                }
+            };
+
+            // Create capability and read
+            let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::read_only(), None);
+            let read_req = fs::Request::read(key, cap);
+            let read_response = fs::filesystem().handle_request(read_req);
+
+            match read_response.status {
+                fs::ResponseStatus::Ok => {
+                    let data = read_response.get_data();
+                    if data.len() <= response.payload.len() {
+                        response.payload[..data.len()].copy_from_slice(data);
+                        response.payload_len = data.len();
+                    } else {
+                        let error_msg = b"ERROR: File too large";
+                        response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                        response.payload_len = error_msg.len();
+                    }
+                }
+                fs::ResponseStatus::Error(_) => {
+                    let error_msg = b"ERROR: File not found";
+                    response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                    response.payload_len = error_msg.len();
+                }
+            }
+        } else if request_str.starts_with("WRITE ") {
+            // Simple write request: "WRITE filename data"
+            if let Some(space_pos) = request_str[6..].find(' ') {
+                let filename = &request_str[6..6+space_pos];
+                let data = &request_str[6+space_pos+1..];
+
+                let key = match fs::FileKey::new(filename) {
+                    Ok(k) => k,
+                    Err(_) => {
+                        let error_msg = b"ERROR: Invalid filename";
+                        response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                        response.payload_len = error_msg.len();
+                        return response;
+                    }
+                };
+
+                let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::all(), None);
+                let write_req = match fs::Request::write(key, data.as_bytes(), cap) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let error_msg = b"ERROR: Write request failed";
+                        response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                        response.payload_len = error_msg.len();
+                        return response;
+                    }
+                };
+
+                match fs::filesystem().handle_request(write_req).status {
+                    fs::ResponseStatus::Ok => {
+                        let success_msg = b"OK: File written";
+                        response.payload[..success_msg.len()].copy_from_slice(success_msg);
+                        response.payload_len = success_msg.len();
+                    }
+                    fs::ResponseStatus::Error(_) => {
+                        let error_msg = b"ERROR: Write failed";
+                        response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                        response.payload_len = error_msg.len();
+                    }
+                }
+            } else {
+                let error_msg = b"ERROR: Invalid WRITE format";
+                response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                response.payload_len = error_msg.len();
+            }
+        } else if request_str.starts_with("LIST") {
+            let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::new(fs::FilesystemRights::LIST), None);
+            let list_req = fs::Request::list(cap);
+            let list_response = fs::filesystem().handle_request(list_req);
+
+            match list_response.status {
+                fs::ResponseStatus::Ok => {
+                    let data = list_response.get_data();
+                    if data.len() <= response.payload.len() {
+                        response.payload[..data.len()].copy_from_slice(data);
+                        response.payload_len = data.len();
+                    } else {
+                        let error_msg = b"ERROR: List too large";
+                        response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                        response.payload_len = error_msg.len();
+                    }
+                }
+                fs::ResponseStatus::Error(_) => {
+                    let error_msg = b"ERROR: List failed";
+                    response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                    response.payload_len = error_msg.len();
+                }
+            }
+        } else {
+            let error_msg = b"ERROR: Unknown command. Use: READ <file>, WRITE <file> <data>, LIST";
+            response.payload[..error_msg.len()].copy_from_slice(error_msg);
+            response.payload_len = error_msg.len();
+        }
+    } else {
+        let error_msg = b"ERROR: Invalid request format";
+        response.payload[..error_msg.len()].copy_from_slice(error_msg);
+        response.payload_len = error_msg.len();
+    }
+
+    response
+}
+
+/// Handle console service requests
+fn handle_console_request(message: &ipc::Message) -> ipc::Message {
+    let mut response = ipc::Message::new(ipc::ProcessId(1));
+
+    if let Ok(text) = core::str::from_utf8(&message.payload[..message.payload_len]) {
+        // Echo the text to console
+        vga::print_str("Console: ");
+        vga::print_str(text);
+        vga::print_str("\n");
+
+        let success_msg = b"OK: Text displayed on console";
+        response.payload[..success_msg.len()].copy_from_slice(success_msg);
+        response.payload_len = success_msg.len();
+    } else {
+        let error_msg = b"ERROR: Invalid console text";
+        response.payload[..error_msg.len()].copy_from_slice(error_msg);
+        response.payload_len = error_msg.len();
+    }
+
+    response
+}
+
+/// Handle timer service requests
+fn handle_timer_request(message: &ipc::Message) -> ipc::Message {
+    let mut response = ipc::Message::new(ipc::ProcessId(1));
+
+    if let Ok(command) = core::str::from_utf8(&message.payload[..message.payload_len]) {
+        if command.trim() == "TIME" {
+            let ticks = crate::pit::get_ticks();
+            let time_str = alloc::format!("Current ticks: {}", ticks);
+            let bytes = time_str.as_bytes();
+            if bytes.len() <= response.payload.len() {
+                response.payload[..bytes.len()].copy_from_slice(bytes);
+                response.payload_len = bytes.len();
+            } else {
+                let error_msg = b"ERROR: Time string too long";
+                response.payload[..error_msg.len()].copy_from_slice(error_msg);
+                response.payload_len = error_msg.len();
+            }
+        } else {
+            let error_msg = b"ERROR: Unknown timer command. Use: TIME";
+            response.payload[..error_msg.len()].copy_from_slice(error_msg);
+            response.payload_len = error_msg.len();
+        }
+    } else {
+        let error_msg = b"ERROR: Invalid timer request";
+        response.payload[..error_msg.len()].copy_from_slice(error_msg);
+        response.payload_len = error_msg.len();
+    }
+
+    response
+}
+
+/// Handle persistence service requests
+fn handle_persistence_request(message: &ipc::Message) -> ipc::Message {
+    let mut response = ipc::Message::new(ipc::ProcessId(1));
+
+    let success_msg = b"OK: Persistence service not yet implemented";
+    response.payload[..success_msg.len()].copy_from_slice(success_msg);
+    response.payload_len = success_msg.len();
+
+    response
+}
+
+/// Handle network service requests
+fn handle_network_request(message: &ipc::Message) -> ipc::Message {
+    let mut response = ipc::Message::new(ipc::ProcessId(1));
+
+    let success_msg = b"OK: Network service not yet implemented";
+    response.payload[..success_msg.len()].copy_from_slice(success_msg);
+    response.payload_len = success_msg.len();
+
+    response
+}
+
+// ============================================================================
 // Service Registry Commands
 // ============================================================================
 
@@ -1379,7 +1581,7 @@ fn cmd_svc_register(mut parts: core::str::SplitWhitespace) {
     // Create a channel for this service
     let channel_result = ipc::ipc().create_channel(ipc::ProcessId(1));
 
-    let (cap1, cap2) = match channel_result {
+    let (cap1, _cap2) = match channel_result {
         Ok(caps) => caps,
         Err(e) => {
             vga::print_str("Failed to create channel: ");
@@ -1390,6 +1592,9 @@ fn cmd_svc_register(mut parts: core::str::SplitWhitespace) {
     };
     
     let channel = cap1.channel_id;
+    
+    // Store the receiver capability for the service to use
+    let service_cap = _cap2;
 
     // Create service metadata
     let metadata = ServiceMetadata::new(1, 10, ipc::ProcessId(1));
@@ -1410,6 +1615,50 @@ fn cmd_svc_register(mut parts: core::str::SplitWhitespace) {
             vga::print_str(" on channel ");
             print_u32(channel.0);
             vga::print_str("\n");
+            
+            // Demonstrate service operation using the receiver capability
+            vga::print_str("Service is now listening for requests...\n");
+            
+            // In a real implementation, this would be a service loop
+            // For demo purposes, we'll try to receive one message
+            match ipc::ipc().try_recv(&service_cap) {
+                Ok(message) => {
+                    vga::print_str("Received message from process ");
+                    print_u32(message.source.0);
+                    vga::print_str(": ");
+                    for i in 0..message.payload_len.min(32) {
+                        vga::print_char(message.payload[i] as char);
+                    }
+                    if message.payload_len > 32 {
+                        vga::print_str("...");
+                    }
+                    vga::print_str("\n");
+                    
+                    // Send a response
+                    let mut response = ipc::Message::new(ipc::ProcessId(1));
+                    let response_text = b"Service response: Hello from ";
+                    response.payload[..response_text.len()].copy_from_slice(response_text);
+                    response.payload[response_text.len()..response_text.len() + service_type.name().len()].copy_from_slice(service_type.name().as_bytes());
+                    response.payload_len = response_text.len() + service_type.name().len();
+                    
+                    match ipc::ipc().send(response, &cap1) {
+                        Ok(()) => vga::print_str("Response sent\n"),
+                        Err(e) => {
+                            vga::print_str("Failed to send response: ");
+                            vga::print_str(e.as_str());
+                            vga::print_str("\n");
+                        }
+                    }
+                }
+                Err(ipc::IpcError::WouldBlock) => {
+                    vga::print_str("No messages received (service ready)\n");
+                }
+                Err(e) => {
+                    vga::print_str("Error receiving message: ");
+                    vga::print_str(e.as_str());
+                    vga::print_str("\n");
+                }
+            }
         }
         Err(e) => {
             vga::print_str("Failed to register: ");
@@ -1559,7 +1808,7 @@ fn cmd_intro_demo() {
     
     let channel_result = ipc::ipc().create_channel(ipc::ProcessId(100));
 
-    let (cap1, cap2) = match channel_result {
+    let (cap1, _cap2) = match channel_result {
         Ok(caps) => caps,
         Err(e) => {
             vga::print_str("  ✗ Failed to create channel: ");
@@ -1570,6 +1819,9 @@ fn cmd_intro_demo() {
     };
     
     let channel = cap1.channel_id;
+    
+    // Store the receiver capability for the service to use
+    let service_cap = _cap2;
 
     let metadata = ServiceMetadata::new(1, 5, ipc::ProcessId(100));
     let offer = ServiceOffer::new(
@@ -1584,7 +1836,58 @@ fn cmd_intro_demo() {
             vga::print_str("  ✓ Filesystem service registered\n");
             vga::print_str("    Channel: ");
             print_u32(channel.0);
-            vga::print_str("\n    Max connections: 5\n\n");
+            vga::print_str("\n    Max connections: 5\n");
+            
+            // Service loop for filesystem operations
+            let mut request_count = 0;
+            let max_requests = 5; // Shorter for demo
+
+            while request_count < max_requests {
+                match ipc::ipc().try_recv(&service_cap) {
+                    Ok(message) => {
+                        request_count += 1;
+                        vga::print_str("    [");
+                        print_u32(request_count);
+                        vga::print_str("] Filesystem request from process ");
+                        print_u32(message.source.0);
+                        vga::print_str(": ");
+
+                        // Process filesystem request
+                        let response = handle_filesystem_request(&message);
+
+                        // Send the response
+                        match ipc::ipc().send(response, &cap1) {
+                            Ok(()) => {
+                                vga::print_str(" -> Response sent\n");
+                            }
+                            Err(e) => {
+                                vga::print_str(" -> Failed to send response: ");
+                                vga::print_str(e.as_str());
+                                vga::print_str("\n");
+                            }
+                        }
+                    }
+                    Err(ipc::IpcError::WouldBlock) => {
+                        // No message available, continue
+                        continue;
+                    }
+                    Err(e) => {
+                        vga::print_str("    ✗ Service error: ");
+                        vga::print_str(e.as_str());
+                        vga::print_str("\n");
+                        break;
+                    }
+                }
+
+                // Small delay
+                for _ in 0..50000 {
+                    core::hint::spin_loop();
+                }
+            }
+
+            vga::print_str("    Service completed handling ");
+            print_u32(request_count);
+            vga::print_str(" filesystem requests\n\n");
         }
         Err(e) => {
             vga::print_str("  ✗ Registration failed: ");

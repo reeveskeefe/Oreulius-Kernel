@@ -10,7 +10,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use spin::Mutex;
-// use alloc::vec::Vec; // Used for allocation tracking
+use alloc::vec::Vec; // Used for allocation tracking
 
 extern "C" {
     static _heap_start: usize;

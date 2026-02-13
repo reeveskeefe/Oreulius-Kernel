@@ -1,0 +1,42 @@
+#!/usr/bin/expect -f
+# Test script for service functionality using expect
+
+set timeout 30
+
+# Start QEMU
+spawn /Users/keefereeves/Desktop/oreulia/kernel/run.sh
+
+# Wait for shell prompt
+expect "> "
+
+# Test service commands
+send "svc-list\r"
+expect "> "
+
+send "svc-register filesystem\r"
+expect "> "
+
+send "svc-register console\r"
+expect "> "
+
+send "svc-register timer\r"
+expect "> "
+
+send "svc-list\r"
+expect "> "
+
+send "svc-stats\r"
+expect "> "
+
+send "svc-request filesystem\r"
+expect "> "
+
+send "svc-request console\r"
+expect "> "
+
+send "svc-request timer\r"
+expect "> "
+
+# Wait a bit and exit
+sleep 2
+send "\x03"  # Send Ctrl+C to exit
