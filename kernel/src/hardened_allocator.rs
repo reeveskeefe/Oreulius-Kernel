@@ -53,6 +53,7 @@ pub struct AllocatorStats {
     pub bytes_in_use: usize,
     pub peak_bytes_in_use: usize,
     pub fragmentation_score: f32,  // 0.0 = no fragmentation, 1.0 = high
+    pub heap_efficiency: f32,      // 0.0 = empty, 1.0 = fully used
     pub guard_page_violations: u64,
     pub canary_violations: u64,
 }
@@ -85,6 +86,7 @@ impl HardenedAllocator {
                 bytes_in_use: 0,
                 peak_bytes_in_use: 0,
                 fragmentation_score: 0.0,
+                heap_efficiency: 0.0,
                 guard_page_violations: 0,
                 canary_violations: 0,
             },
@@ -175,6 +177,12 @@ impl HardenedAllocator {
         let header_ptr = (ptr as usize - header_size) as *const AllocationHeader;
         let header = ptr::read(header_ptr);
         
+        // Validate that the layout size matches the allocation
+        if header.size != layout.size() {
+            #[cfg(debug_assertions)]
+            panic!("Layout size mismatch: expected {}, got {}", header.size, layout.size());
+        }
+        
         // Verify canaries
         if header.canary_pre != CANARY || header.canary_post != CANARY {
             self.stats.canary_violations += 1;
@@ -249,6 +257,9 @@ impl HardenedAllocator {
         } else {
             0.0
         };
+        
+        // Store heap efficiency for monitoring
+        self.stats.heap_efficiency = efficiency;
         
         // Simple fragmentation metric: wasted space / total space
         let wasted = self.stats.bytes_allocated - self.stats.bytes_in_use;
