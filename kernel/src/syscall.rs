@@ -248,7 +248,7 @@ fn sys_yield(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallRes
     SyscallResult::ok(0)
 }
 
-fn sys_getpid(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+fn sys_getpid(_args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     SyscallResult::ok(caller_pid.0 as i32)
 }
 
@@ -321,10 +321,31 @@ fn sys_channel_create(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
     
     vga::print_str("[SYSCALL] Channel create by PID ");
     crate::commands::print_u32(caller_pid.0);
+    
+    // Parse channel configuration flags from arg1
+    // Bits 0-7: Channel flags (bounded, unbounded, high-priority, reliable, async)
+    // Bits 8-15: Priority level (0-255)
+    let config = args.arg1 as u32;
+    let flags_bits = config & 0xFF;
+    let priority = ((config >> 8) & 0xFF) as u8;
+    
+    // Default to medium priority if not specified
+    let priority = if priority == 0 { 128 } else { priority };
+    
+    let flags = crate::ipc::ChannelFlags::new(flags_bits);
+    
+    vga::print_str(" with flags=0x");
+    crate::commands::print_hex_u32(flags_bits);
+    vga::print_str(" priority=");
+    crate::commands::print_u32(priority as u32);
     vga::print_str("\n");
     
-    // Create channel via IPC manager
-    match crate::ipc::create_channel_for_process(caller_pid) {
+    // Create channel via IPC manager with custom configuration
+    match crate::ipc::create_channel_for_process_with_flags(
+        crate::ipc::ProcessId(caller_pid.0), 
+        flags,
+        priority
+    ) {
         Ok(channel_id) => {
             vga::print_str("[SYSCALL] Created channel ID=");
             crate::commands::print_u32(channel_id as u32);

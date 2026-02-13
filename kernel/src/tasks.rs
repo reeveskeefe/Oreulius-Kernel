@@ -69,17 +69,45 @@ pub fn start() -> ! {
     // Init process is created in process::init(); reuse it for shell task.
     let init_pid = match process::current_pid() {
         Some(pid) => {
-            vga::print_str("[TASK] Found existing init PID\n");
+            vga::print_str("[TASK] Found existing init PID=");
+            crate::commands::print_u32(pid.0);
+            vga::print_str("\n");
             pid
         }
         None => {
             vga::print_str("[TASK] Creating new init process...\n");
             // Fallback: create init process if missing
-            process::process_manager()
+            let pid = process::process_manager()
                 .spawn("init", None)
-                .unwrap_or(process::Pid(1))
+                .unwrap_or(process::Pid(1));
+            vga::print_str("[TASK] Created init PID=");
+            crate::commands::print_u32(pid.0);
+            vga::print_str("\n");
+            pid
         }
     };
+    
+    // Validate that init process exists before starting scheduler
+    vga::print_str("[TASK] Validating init process (PID=");
+    crate::commands::print_u32(init_pid.0);
+    vga::print_str(")...\n");
+    
+    let pm = process::process_manager();
+    if let Some(init_proc) = pm.get(init_pid) {
+        vga::print_str("[TASK] Init process validated: name='");
+        vga::print_str(init_proc.name_str());
+        vga::print_str("', state=");
+        match init_proc.state {
+            process::ProcessState::Ready => vga::print_str("Ready"),
+            process::ProcessState::Running => vga::print_str("Running"),
+            process::ProcessState::Blocked => vga::print_str("Blocked"),
+            process::ProcessState::Terminated => vga::print_str("Terminated"),
+            process::ProcessState::WaitingOnChannel => vga::print_str("WaitingOnChannel"),
+        }
+        vga::print_str("\n");
+    } else {
+        vga::print_str("[TASK] WARNING: Init process not found in process table!\n");
+    }
     
     vga::print_str("[TASK] Getting init process...\n");
     vga::print_str("[TASK] Adding shell task to scheduler...\n");

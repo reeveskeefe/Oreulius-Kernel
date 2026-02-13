@@ -248,8 +248,19 @@ pub fn clear_screen_with(fg: Color, bg: Color) {
         color_code: ColorCode::new(fg, bg),
     };
     let mut writer = WRITER.lock();
+    // Efficiently fill entire screen buffer with colored blank character
+    // This provides explicit color control vs just setting default colors
+    unsafe {
+        for row in 0..BUFFER_HEIGHT {
+            for col in 0..BUFFER_WIDTH {
+                writer.buffer.chars[row][col] = blank;
+            }
+        }
+    }
+    // Update writer's default color for future writes
     writer.set_color(fg, bg);
-    writer.clear_screen();
+    // Reset cursor to origin
+    writer.column_position = 0;
 }
 
 /// Initialize the VGA driver and enable the hardware cursor

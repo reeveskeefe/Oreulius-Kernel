@@ -293,7 +293,7 @@ pub fn shell_loop() -> ! {
     let mut cursor: usize = 0;
     let mut history_index: usize = unsafe { SHELL_HISTORY_COUNT };
     let mut prompt_pos = terminal::cursor_position();
-    let mut max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+    let mut _max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
 
     // Diagnostic Counters
     let mut loops: usize = 0;
@@ -375,7 +375,7 @@ pub fn shell_loop() -> ! {
                     len = 0;
                     cursor = 0;
                     prompt_pos = terminal::cursor_position();
-                    max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    _max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
                 }
                 keyboard::KeyEvent::Enter => {
                     terminal::write_char('\n');
@@ -404,7 +404,7 @@ pub fn shell_loop() -> ! {
                     input = [0; 256];
                     terminal::write_str("> ");
                     prompt_pos = terminal::cursor_position();
-                    max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    _max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
                 }
                 keyboard::KeyEvent::Backspace => {
                     if cursor > 0 {
@@ -453,7 +453,7 @@ pub fn shell_loop() -> ! {
                     len = 0;
                     cursor = 0;
                     prompt_pos = terminal::cursor_position();
-                    max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    _max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
                 }
                 keyboard::KeyEvent::Ctrl('z') => {
                     terminal::set_cursor(prompt_pos.0, prompt_pos.1);
@@ -463,7 +463,7 @@ pub fn shell_loop() -> ! {
                     len = 0;
                     cursor = 0;
                     prompt_pos = terminal::cursor_position();
-                    max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    _max_len = vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
                 }
                 keyboard::KeyEvent::Ctrl(c) => {
                     // Fallback: treat unhandled Ctrl combinations as normal input

@@ -121,7 +121,7 @@ pub fn compile(code: &[u8]) -> Result<JitFunction, &'static str> {
                 pc += n2;
                 emitter.emit_i32_store(off as i32);
             }
-            Opcode::If | Opcode::Else | Opcode::End | Opcode::Br | Opcode::BrIf => {
+            Opcode::If | Opcode::Else | Opcode::Br | Opcode::BrIf => {
                 return Err("Control flow not supported by JIT");
             }
             _ => return Err("Opcode not supported by JIT"),

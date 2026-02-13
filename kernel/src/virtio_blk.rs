@@ -210,15 +210,17 @@ impl BlockCache {
     fn put(&mut self, sector: u64, data: &[u8]) {
         self.tick = self.tick.wrapping_add(1);
         let mut victim = 0;
-        let mut oldest = u64::MAX;
+        let mut oldest_time = u64::MAX;
+        
+        // LRU eviction: find oldest entry or first invalid slot
         for (i, entry) in self.entries.iter().enumerate() {
             if !entry.valid {
+                // Empty slot found - use it immediately
                 victim = i;
-                oldest = 0;
                 break;
             }
-            if entry.last_used < oldest {
-                oldest = entry.last_used;
+            if entry.last_used < oldest_time {
+                oldest_time = entry.last_used;
                 victim = i;
             }
         }
@@ -410,7 +412,7 @@ pub fn init(device: PciDevice) -> Result<(), &'static str> {
         lo | (hi << 32)
     };
 
-    let mut driver = VirtioBlk {
+    let driver = VirtioBlk {
         pci: device,
         io_base,
         queue,

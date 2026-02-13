@@ -682,7 +682,7 @@ fn mount_read(backend: MountBackend, subpath: &str, out: &mut [u8]) -> Result<us
             match sub.as_str() {
                 "/raw" => virtio_read_at(0, out),
                 "/partitions" => {
-                    let mut text = generate_partition_text()?;
+                    let text = generate_partition_text()?;
                     let bytes = text.as_bytes();
                     let len = min(out.len(), bytes.len());
                     out[..len].copy_from_slice(&bytes[..len]);

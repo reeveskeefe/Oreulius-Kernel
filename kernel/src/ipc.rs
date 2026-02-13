@@ -318,6 +318,41 @@ impl RingBuffer {
 // Channel
 // ============================================================================
 
+/// Channel configuration flags (bitfield)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelFlags {
+    bits: u32,
+}
+
+impl ChannelFlags {
+    pub const NONE: u32 = 0;
+    pub const BOUNDED: u32 = 1 << 0;      // Bounded queue (default)
+    pub const UNBOUNDED: u32 = 1 << 1;    // Unbounded queue (memory permitting)
+    pub const HIGH_PRIORITY: u32 = 1 << 2; // High-priority channel for latency-sensitive messages
+    pub const RELIABLE: u32 = 1 << 3;     // Guaranteed delivery (block on full)
+    pub const ASYNC: u32 = 1 << 4;        // Non-blocking sends (drop on full)
+    
+    pub const fn new(bits: u32) -> Self {
+        ChannelFlags { bits }
+    }
+    
+    pub const fn is_bounded(&self) -> bool {
+        (self.bits & Self::UNBOUNDED) == 0
+    }
+    
+    pub const fn is_high_priority(&self) -> bool {
+        (self.bits & Self::HIGH_PRIORITY) != 0
+    }
+    
+    pub const fn is_reliable(&self) -> bool {
+        (self.bits & Self::RELIABLE) != 0
+    }
+    
+    pub const fn is_async(&self) -> bool {
+        (self.bits & Self::ASYNC) != 0
+    }
+}
+
 /// A bidirectional channel for message passing
 #[derive(Clone, Copy)]
 pub struct Channel {
@@ -329,16 +364,34 @@ pub struct Channel {
     closed: bool,
     /// Channel creator (for ownership tracking)
     creator: ProcessId,
+    /// Channel configuration flags
+    flags: ChannelFlags,
+    /// Priority level (0-255, higher = more important)
+    priority: u8,
 }
 
 impl Channel {
-    /// Create a new channel
+    /// Create a new channel with default configuration
     pub fn new(id: ChannelId, creator: ProcessId) -> Self {
         Channel {
             id,
             buffer: RingBuffer::new(),
             closed: false,
             creator,
+            flags: ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::RELIABLE),
+            priority: 128, // Default medium priority
+        }
+    }
+    
+    /// Create a new channel with custom configuration
+    pub fn new_with_flags(id: ChannelId, creator: ProcessId, flags: ChannelFlags, priority: u8) -> Self {
+        Channel {
+            id,
+            buffer: RingBuffer::new(),
+            closed: false,
+            creator,
+            flags,
+            priority,
         }
     }
 
@@ -355,6 +408,12 @@ impl Channel {
 
         if self.closed {
             return Err(IpcError::Closed);
+        }
+        
+        // Handle async channels (non-blocking send)
+        if self.flags.is_async() && self.buffer.is_full() {
+            // Drop message on full buffer for async channels
+            return Err(IpcError::WouldBlock);
         }
 
         self.buffer.push(msg)
@@ -408,6 +467,16 @@ impl Channel {
     pub fn pending(&self) -> usize {
         self.buffer.len()
     }
+    
+    /// Get channel priority
+    pub fn priority(&self) -> u8 {
+        self.priority
+    }
+    
+    /// Get channel flags
+    pub fn flags(&self) -> ChannelFlags {
+        self.flags
+    }
 
     /// Check if channel is empty
     pub fn is_empty(&self) -> bool {
@@ -440,12 +509,17 @@ impl ChannelTable {
 
     /// Create a new channel
     pub fn create_channel(&mut self, creator: ProcessId) -> Result<ChannelId, IpcError> {
+        self.create_channel_with_flags(creator, ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::RELIABLE), 128)
+    }
+    
+    /// Create a new channel with custom configuration
+    pub fn create_channel_with_flags(&mut self, creator: ProcessId, flags: ChannelFlags, priority: u8) -> Result<ChannelId, IpcError> {
         // Find empty slot
         for slot in &mut self.channels {
             if slot.is_none() {
                 let id = ChannelId::new(self.next_id);
                 self.next_id += 1;
-                *slot = Some(Channel::new(id, creator));
+                *slot = Some(Channel::new_with_flags(id, creator, flags, priority));
                 return Ok(id);
             }
         }
@@ -659,10 +733,15 @@ pub fn create_channel() -> Result<usize, &'static str> {
 
 /// Create a new channel for a specific process (syscall implementation)
 pub fn create_channel_for_process(creator: ProcessId) -> Result<usize, &'static str> {
+    create_channel_for_process_with_flags(creator, ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::RELIABLE), 128)
+}
+
+/// Create a new channel for a specific process with custom configuration
+pub fn create_channel_for_process_with_flags(creator: ProcessId, flags: ChannelFlags, priority: u8) -> Result<usize, &'static str> {
     let mut channels = ipc().channels.lock();
     
-    // Create channel in the table
-    match channels.create_channel(creator) {
+    // Create channel in the table with custom flags
+    match channels.create_channel_with_flags(creator, flags, priority) {
         Ok(channel_id) => {
             // TODO: Add capability to process's capability table
             // For now, just return the channel ID

@@ -35,6 +35,14 @@ pub fn print_u32(n: u32) {
     }
 }
 
+pub fn print_hex_u32(n: u32) {
+    let chars = b"0123456789ABCDEF";
+    for i in (0..8).rev() {
+        let digit = ((n >> (i * 4)) & 0xF) as usize;
+        vga::print_char(chars[digit] as char);
+    }
+}
+
 fn print_usize(n: usize) {
     print_u32(n as u32);
 }
@@ -4075,11 +4083,6 @@ fn print_hex_u8(n: u8) {
 fn print_hex_u16(n: u16) {
     print_hex_u8((n >> 8) as u8);
     print_hex_u8(n as u8);
-}
-
-fn print_hex_u32(n: u32) {
-    print_hex_u16((n >> 16) as u16);
-    print_hex_u16(n as u16);
 }
 
 fn hex_char(n: u8) -> char {

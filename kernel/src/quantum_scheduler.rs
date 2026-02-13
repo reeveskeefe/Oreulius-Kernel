@@ -273,7 +273,7 @@ impl QuantumScheduler {
 
     /// Voluntary yield (cooperative)
     pub fn yield_cpu(&mut self) -> Option<(*mut ProcessContext, *const ProcessContext)> {
-        let mut prev = self.current_pid;
+        let prev = self.current_pid;
         if let Some(current_pid) = self.current_pid {
             let idx = current_pid.0 as usize;
             if let Some(ref mut info) = self.processes[idx] {

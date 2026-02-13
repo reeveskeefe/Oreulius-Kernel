@@ -295,7 +295,7 @@ impl Terminal {
     }
 
     fn handle_csi(&mut self, cmd: u8, params: &[u16; 6], count: usize, render: bool) {
-        let mut get = |idx: usize, default: u16| -> u16 {
+        let get = |idx: usize, default: u16| -> u16 {
             if idx < count {
                 params[idx]
             } else {
