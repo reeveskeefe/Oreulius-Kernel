@@ -143,3 +143,30 @@ pub fn allocate_frame() -> Result<usize, &'static str> {
         }
     }
 }
+
+/// Allocate multiple contiguous pages (page-aligned).
+pub fn allocate_pages(count: usize) -> Result<usize, &'static str> {
+    if count == 0 {
+        return Err("Invalid page count");
+    }
+    let size = count.checked_mul(PAGE_SIZE).ok_or("Size overflow")?;
+    let layout = Layout::from_size_align(size, PAGE_SIZE).map_err(|_| "Layout Error")?;
+    unsafe {
+        let ptr = ALLOCATOR.alloc(layout);
+        if ptr.is_null() {
+            return Err("Out of memory");
+        }
+        let base = ptr as usize;
+        // Initialize refcounts per 4KB page
+        for i in 0..count {
+            let addr = base + (i * PAGE_SIZE);
+            let frame_idx = addr / PAGE_SIZE;
+            if frame_idx < MAX_FRAMES {
+                FRAME_REFCOUNTS[frame_idx] = 1;
+            }
+        }
+        // Zero the pages
+        ptr::write_bytes(ptr, 0, size);
+        Ok(base)
+    }
+}

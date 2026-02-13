@@ -8,6 +8,7 @@ global asm_halt
 global asm_read_tsc
 global asm_io_wait
 global asm_read_cr0
+global asm_write_cr0
 global asm_read_cr3
 global asm_write_cr3
 global asm_outb
@@ -54,6 +55,13 @@ asm_io_wait:
 ; CR0 controls CPU operating mode (protected mode, paging, etc.)
 asm_read_cr0:
     mov eax, cr0
+    ret
+
+; Write CR0 control register
+; Args: (value: u32)
+asm_write_cr0:
+    mov eax, [esp + 4]
+    mov cr0, eax
     ret
 
 ; Read CR3 page directory register

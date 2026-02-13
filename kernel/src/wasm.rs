@@ -24,6 +24,8 @@ use alloc::vec::Vec;
 use spin::Mutex;
 use crate::ipc::{ProcessId, ChannelId};
 use crate::fs;
+use crate::paging;
+use crate::idt_asm;
 
 // ============================================================================
 // WASM Types & Constants
@@ -52,6 +54,9 @@ pub const MAX_MEMORY_OPS_PER_CALL: usize = 10_000;
 
 /// Maximum syscalls per execution
 pub const MAX_SYSCALLS_PER_CALL: usize = 100;
+
+/// Number of initial JIT calls to validate against interpreter
+pub const JIT_VALIDATE_CALLS: u8 = 2;
 
 /// WASM value types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +197,135 @@ impl Opcode {
     }
 }
 
+fn read_uleb128_validate(bytes: &[u8], mut offset: usize) -> Result<(u32, usize), WasmError> {
+    let mut result = 0u32;
+    let mut shift = 0;
+    let mut count = 0;
+    loop {
+        if offset >= bytes.len() {
+            return Err(WasmError::UnexpectedEndOfCode);
+        }
+        let byte = bytes[offset];
+        offset += 1;
+        count += 1;
+        result |= ((byte & 0x7F) as u32) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift > 28 {
+            return Err(WasmError::Leb128Overflow);
+        }
+    }
+    Ok((result, count))
+}
+
+fn read_sleb128_i32_validate(bytes: &[u8], mut offset: usize) -> Result<(i32, usize), WasmError> {
+    let mut result = 0i32;
+    let mut shift = 0;
+    let mut count = 0;
+    let mut byte: u8;
+    loop {
+        if offset >= bytes.len() {
+            return Err(WasmError::UnexpectedEndOfCode);
+        }
+        byte = bytes[offset];
+        offset += 1;
+        count += 1;
+        result |= ((byte & 0x7F) as i32) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if shift > 28 {
+            return Err(WasmError::Leb128Overflow);
+        }
+    }
+    if shift < 32 && (byte & 0x40) != 0 {
+        result |= !0 << shift;
+    }
+    Ok((result, count))
+}
+
+fn read_sleb128_i64_validate(bytes: &[u8], mut offset: usize) -> Result<(i64, usize), WasmError> {
+    let mut result = 0i64;
+    let mut shift = 0;
+    let mut count = 0;
+    let mut byte: u8;
+    loop {
+        if offset >= bytes.len() {
+            return Err(WasmError::UnexpectedEndOfCode);
+        }
+        byte = bytes[offset];
+        offset += 1;
+        count += 1;
+        result |= ((byte & 0x7F) as i64) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if shift > 63 {
+            return Err(WasmError::Leb128Overflow);
+        }
+    }
+    if shift < 64 && (byte & 0x40) != 0 {
+        result |= !0i64 << shift;
+    }
+    Ok((result, count))
+}
+
+fn validate_bytecode(code: &[u8]) -> Result<(), WasmError> {
+    let mut pc = 0usize;
+    while pc < code.len() {
+        let opcode_byte = code[pc];
+        pc += 1;
+        let opcode = Opcode::from_byte(opcode_byte).ok_or(WasmError::UnknownOpcode(opcode_byte))?;
+        match opcode {
+            Opcode::I32Const => {
+                let (_v, n) = read_sleb128_i32_validate(code, pc)?;
+                pc += n;
+            }
+            Opcode::I64Const => {
+                let (_v, n) = read_sleb128_i64_validate(code, pc)?;
+                pc += n;
+            }
+            Opcode::LocalGet
+            | Opcode::LocalSet
+            | Opcode::LocalTee
+            | Opcode::GlobalGet
+            | Opcode::GlobalSet
+            | Opcode::Br
+            | Opcode::BrIf
+            | Opcode::Call => {
+                let (_v, n) = read_uleb128_validate(code, pc)?;
+                pc += n;
+            }
+            Opcode::I32Load | Opcode::I64Load | Opcode::I32Store | Opcode::I64Store => {
+                let (_align, n1) = read_uleb128_validate(code, pc)?;
+                pc += n1;
+                let (_off, n2) = read_uleb128_validate(code, pc)?;
+                pc += n2;
+            }
+            Opcode::Block | Opcode::Loop | Opcode::If => {
+                let (_ty, n) = read_sleb128_i32_validate(code, pc)?;
+                pc += n;
+            }
+            Opcode::MemorySize | Opcode::MemoryGrow => {
+                if pc >= code.len() {
+                    return Err(WasmError::UnexpectedEndOfCode);
+                }
+                let zero = code[pc];
+                pc += 1;
+                if zero != 0 {
+                    return Err(WasmError::InvalidModule);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Linear Memory
 // ============================================================================
@@ -229,6 +363,11 @@ impl LinearMemory {
     /// Get raw pointer to memory
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.data.as_mut_ptr()
+    }
+
+    /// Get active memory slice
+    pub fn active_slice(&self) -> &[u8] {
+        &self.data[..self.active_len()]
     }
 
     /// Grow memory by delta pages
@@ -295,6 +434,16 @@ impl LinearMemory {
     }
 }
 
+impl Clone for LinearMemory {
+    fn clone(&self) -> Self {
+        LinearMemory {
+            data: self.data.clone(),
+            pages: self.pages,
+            max_pages: self.max_pages,
+        }
+    }
+}
+
 // ============================================================================
 // Execution Stack
 // ============================================================================
@@ -337,6 +486,14 @@ impl Stack {
 
     pub fn clear(&mut self) {
         self.values.clear();
+    }
+}
+
+impl Clone for Stack {
+    fn clone(&self) -> Self {
+        Stack {
+            values: self.values.clone(),
+        }
     }
 }
 
@@ -392,6 +549,15 @@ impl CapabilityTable {
     }
 }
 
+impl Clone for CapabilityTable {
+    fn clone(&self) -> Self {
+        CapabilityTable {
+            caps: self.caps,
+            count: self.count,
+        }
+    }
+}
+
 // ============================================================================
 // WASM Function
 // ============================================================================
@@ -416,6 +582,7 @@ pub struct Function {
 // ============================================================================
 
 /// A loaded WASM module
+#[derive(Clone)]
 pub struct WasmModule {
     /// Module bytecode
     bytecode: Vec<u8>,
@@ -443,6 +610,7 @@ impl WasmModule {
         if bytecode.len() > MAX_MODULE_SIZE {
             return Err(WasmError::ModuleTooLarge);
         }
+        validate_bytecode(bytecode)?;
 
         self.bytecode.clear();
         self.bytecode.extend_from_slice(bytecode);
@@ -506,6 +674,7 @@ pub struct WasmInstance {
     jit_enabled: bool,
     jit_hot: [u32; 64],
     jit_locals: Vec<i32>,
+    jit_validate_remaining: [u8; 64],
 }
 
 impl WasmInstance {
@@ -528,6 +697,7 @@ impl WasmInstance {
             jit_enabled: false,
             jit_hot: [0; 64],
             jit_locals: alloc::vec![0; MAX_LOCALS],
+            jit_validate_remaining: [JIT_VALIDATE_CALLS; 64],
         }
     }
 
@@ -551,15 +721,6 @@ impl WasmInstance {
         }
         if self.stack.len() < func.param_count {
             return Ok(false);
-        }
-
-        // Populate JIT locals from stack params (i32 only)
-        for i in (0..func.param_count).rev() {
-            let v = self.stack.pop()?.as_i32()?;
-            self.jit_locals[i] = v;
-        }
-        for i in func.param_count..(func.param_count + func.local_count) {
-            self.jit_locals[i] = 0;
         }
 
         if func_idx >= self.jit_hash.len() {
@@ -597,6 +758,31 @@ impl WasmInstance {
                 return Ok(false);
             }
         };
+
+        let mut shadow = if func_idx < self.jit_validate_remaining.len()
+            && self.jit_validate_remaining[func_idx] > 0
+        {
+            Some(self.clone_for_validation())
+        } else {
+            None
+        };
+
+        // Populate JIT locals from stack params (i32 only), without mutating stack yet.
+        let stack_len = self.stack.len();
+        for i in 0..func.param_count {
+            let idx = stack_len - func.param_count + i;
+            let v = self.stack.values[idx].as_i32()?;
+            self.jit_locals[i] = v;
+        }
+        for i in func.param_count..(func.param_count + func.local_count) {
+            self.jit_locals[i] = 0;
+        }
+
+        if let Some(ref mut shadow_inst) = shadow {
+            shadow_inst.enable_jit(false);
+            shadow_inst.call(func_idx)?;
+        }
+
         self.jit_sp = 0;
         let mem_len = self.memory.active_len();
         if mem_len > u32::MAX as usize {
@@ -610,15 +796,134 @@ impl WasmInstance {
             return Ok(false);
         }
         let locals_ptr = self.jit_locals.as_mut_ptr();
-        let ret = unsafe { (jit_entry)(self.jit_stack.as_mut_ptr(), &mut self.jit_sp, mem_ptr, mem_len, locals_ptr) };
-        if ret == -1 {
+        let mut instr_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
+        let mut mem_fuel = MAX_MEMORY_OPS_PER_CALL as u32;
+        let mut trap_code: i32 = 0;
+
+        // Consume stack params now that we're committed to JIT execution.
+        for _ in 0..func.param_count {
+            let _ = self.stack.pop()?;
+        }
+
+        let ret = call_jit_sandboxed(
+            jit_entry,
+            self.jit_stack.as_mut_ptr(),
+            &mut self.jit_sp,
+            mem_ptr,
+            mem_len,
+            locals_ptr,
+            &mut instr_fuel,
+            &mut mem_fuel,
+            &mut trap_code,
+        );
+        if trap_code == -1 {
+            if let Some(shadow_inst) = shadow {
+                self.restore_from_shadow(shadow_inst);
+                self.disable_jit_for_function(func_idx);
+                return Ok(true);
+            }
             return Err(WasmError::MemoryOutOfBounds);
+        }
+        if trap_code == -2 {
+            if let Some(shadow_inst) = shadow {
+                self.restore_from_shadow(shadow_inst);
+                self.disable_jit_for_function(func_idx);
+                return Ok(true);
+            }
+            return Err(WasmError::ExecutionLimitExceeded);
+        }
+        if trap_code == -3 {
+            if let Some(shadow_inst) = shadow {
+                self.restore_from_shadow(shadow_inst);
+                self.disable_jit_for_function(func_idx);
+                return Ok(true);
+            }
+            return Err(WasmError::Trap);
+        }
+        if trap_code != 0 {
+            if let Some(shadow_inst) = shadow {
+                self.restore_from_shadow(shadow_inst);
+                self.disable_jit_for_function(func_idx);
+                return Ok(true);
+            }
+            return Err(WasmError::Trap);
         }
         if func.result_count == 1 {
             self.stack.push(Value::I32(ret))?;
         }
+        self.instruction_count = (MAX_INSTRUCTIONS_PER_CALL as u32).saturating_sub(instr_fuel) as usize;
+        self.memory_op_count = (MAX_MEMORY_OPS_PER_CALL as u32).saturating_sub(mem_fuel) as usize;
+
+        if let Some(shadow_inst) = shadow {
+            if !self.validate_against_shadow(&shadow_inst, func) {
+                self.restore_from_shadow(shadow_inst);
+                self.disable_jit_for_function(func_idx);
+                return Ok(true);
+            }
+            if func_idx < self.jit_validate_remaining.len() {
+                self.jit_validate_remaining[func_idx] =
+                    self.jit_validate_remaining[func_idx].saturating_sub(1);
+            }
+        }
         jit_stats().lock().jit_calls += 1;
         Ok(true)
+    }
+
+    fn clone_for_validation(&self) -> Self {
+        WasmInstance {
+            module: self.module.clone(),
+            memory: self.memory.clone(),
+            stack: self.stack.clone(),
+            locals: self.locals.clone(),
+            pc: self.pc,
+            capabilities: self.capabilities.clone(),
+            process_id: self.process_id,
+            instruction_count: 0,
+            memory_op_count: 0,
+            syscall_count: 0,
+            jit_hash: [None; 64],
+            jit_stack: alloc::vec![0; MAX_STACK_DEPTH],
+            jit_sp: 0,
+            jit_enabled: false,
+            jit_hot: [0; 64],
+            jit_locals: alloc::vec![0; MAX_LOCALS],
+            jit_validate_remaining: [0; 64],
+        }
+    }
+
+    fn restore_from_shadow(&mut self, shadow: WasmInstance) {
+        self.memory = shadow.memory;
+        self.stack = shadow.stack;
+        self.locals = shadow.locals;
+        self.pc = shadow.pc;
+        self.instruction_count = shadow.instruction_count;
+        self.memory_op_count = shadow.memory_op_count;
+        self.syscall_count = shadow.syscall_count;
+        self.jit_sp = 0;
+    }
+
+    fn disable_jit_for_function(&mut self, func_idx: usize) {
+        if func_idx < self.jit_hash.len() {
+            self.jit_hash[func_idx] = None;
+            self.jit_hot[func_idx] = 0;
+            self.jit_validate_remaining[func_idx] = 0;
+        }
+    }
+
+    fn validate_against_shadow(&self, shadow: &WasmInstance, func: Function) -> bool {
+        if self.stack.len() != shadow.stack.len() {
+            return false;
+        }
+        if func.result_count == 1 {
+            let shadow_res = shadow.stack.peek().ok().and_then(|v| v.as_i32().ok());
+            let self_res = self.stack.peek().ok().and_then(|v| v.as_i32().ok());
+            if shadow_res != self_res {
+                return false;
+            }
+        }
+        let shadow_hash = hash_memory(shadow.memory.active_slice());
+        let self_hash = hash_memory(self.memory.active_slice());
+        shadow_hash == self_hash
     }
 
     /// Reset execution limits
@@ -1429,6 +1734,7 @@ impl JitCache {
 static JIT_CONFIG: Mutex<JitConfig> = Mutex::new(JitConfig::new());
 static JIT_STATS: Mutex<JitStats> = Mutex::new(JitStats::new());
 static JIT_CACHE: Mutex<JitCache> = Mutex::new(JitCache::new());
+static JIT_SANDBOX_PD: Mutex<Option<u32>> = Mutex::new(None);
 
 pub fn jit_config() -> &'static Mutex<JitConfig> {
     &JIT_CONFIG
@@ -1436,6 +1742,51 @@ pub fn jit_config() -> &'static Mutex<JitConfig> {
 
 pub fn jit_stats() -> &'static Mutex<JitStats> {
     &JIT_STATS
+}
+
+fn jit_sandbox_pd() -> Option<u32> {
+    let mut guard = JIT_SANDBOX_PD.lock();
+    if let Some(pd) = *guard {
+        return Some(pd);
+    }
+    let sandbox = paging::AddressSpace::new_jit_sandbox().ok()?;
+    let pd = sandbox.phys_addr() as u32;
+    core::mem::forget(sandbox);
+    *guard = Some(pd);
+    Some(pd)
+}
+
+fn call_jit_sandboxed(
+    jit_entry: crate::wasm_jit::JitFn,
+    stack_ptr: *mut i32,
+    sp_ptr: *mut usize,
+    mem_ptr: *mut u8,
+    mem_len: usize,
+    locals_ptr: *mut i32,
+    instr_fuel: *mut u32,
+    mem_fuel: *mut u32,
+    trap_code: *mut i32,
+) -> i32 {
+    let flags = unsafe { idt_asm::fast_cli_save() };
+    let old_cr3 = paging::current_page_directory_addr();
+    if let Some(pd) = jit_sandbox_pd() {
+        unsafe { paging::set_page_directory(pd) };
+    }
+    let ret = unsafe {
+        (jit_entry)(
+            stack_ptr,
+            sp_ptr,
+            mem_ptr,
+            mem_len,
+            locals_ptr,
+            instr_fuel,
+            mem_fuel,
+            trap_code,
+        )
+    };
+    unsafe { paging::set_page_directory(old_cr3) };
+    unsafe { idt_asm::fast_sti_restore(flags) };
+    ret
 }
 
 fn hash_code(code: &[u8], locals_total: usize) -> u32 {
@@ -1446,6 +1797,15 @@ fn hash_code(code: &[u8], locals_total: usize) -> u32 {
     }
     hash ^= locals_total as u32;
     hash = hash.wrapping_mul(16777619);
+    hash
+}
+
+fn hash_memory(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 2166136261;
+    for &b in bytes {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
     hash
 }
 
@@ -1539,7 +1899,7 @@ pub fn jit_benchmark() -> Result<(u64, u64), &'static str> {
 pub fn load_module(bytecode: &[u8]) -> Result<usize, &'static str> {
     // TODO: Parse and validate WASM bytecode
     // For now, just return a dummy module ID
-    let _ = bytecode;
+    validate_bytecode(bytecode).map_err(|_| "Invalid WASM module")?;
     Ok(1)
 }
 

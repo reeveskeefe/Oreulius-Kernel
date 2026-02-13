@@ -9,8 +9,18 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::wasm::{Opcode, MAX_STACK_DEPTH, MAX_INSTRUCTIONS_PER_CALL, MAX_LOCALS};
+use crate::{memory, paging};
 
-pub type JitFn = unsafe extern "C" fn(*mut i32, *mut usize, *mut u8, usize, *mut i32) -> i32;
+pub type JitFn = unsafe extern "C" fn(
+    *mut i32,
+    *mut usize,
+    *mut u8,
+    usize,
+    *mut i32,
+    *mut u32,
+    *mut u32,
+    *mut i32,
+) -> i32;
 
 #[derive(Clone, Copy, Debug)]
 pub struct BasicBlock {
@@ -23,6 +33,73 @@ pub struct JitFunction {
     pub entry: JitFn,
     pub blocks: Vec<BasicBlock>,
     pub code_hash: u32,
+    pub exec: JitExecBuffer,
+    pub exec_hash: u32,
+}
+
+// SAFETY: JitFunction is safe to send/sync because all components are:
+// - Vec<u8> (Send + Sync)
+// - JitFn (function pointer, Send + Sync)
+// - Vec<BasicBlock> (Send + Sync)
+// - u32 fields (Copy, Send + Sync)
+// - JitExecBuffer (now explicitly Send + Sync, see above)
+unsafe impl Send for JitFunction {}
+unsafe impl Sync for JitFunction {}
+
+pub struct JitExecBuffer {
+    pub ptr: *mut u8,
+    pub len: usize,
+    sealed: bool,
+}
+
+// SAFETY: JitExecBuffer is kernel-managed executable memory allocated via kernel allocator.
+// The raw pointer is safe to send across threads because:
+// 1. Memory is allocated from kernel heap (not stack-local)
+// 2. Access is synchronized via Mutex in JIT_CACHE
+// 3. Once sealed, the buffer is read-only executable memory
+unsafe impl Send for JitExecBuffer {}
+unsafe impl Sync for JitExecBuffer {}
+
+const TRAP_MEM: i32 = -1;
+const TRAP_FUEL: i32 = -2;
+const TRAP_STACK: i32 = -3;
+
+impl JitExecBuffer {
+    fn new(len: usize) -> Result<Self, &'static str> {
+        let pages = len
+            .checked_add(paging::PAGE_SIZE - 1)
+            .ok_or("Size overflow")?
+            / paging::PAGE_SIZE;
+        let base = memory::allocate_pages(pages)?;
+        Ok(JitExecBuffer {
+            ptr: base as *mut u8,
+            len,
+            sealed: false,
+        })
+    }
+
+    fn write_and_seal(&mut self, code: &[u8]) -> Result<(), &'static str> {
+        if code.len() > self.len {
+            return Err("Code length overflow");
+        }
+        // Ensure writable during copy
+        paging::set_page_writable_range(self.ptr as usize, self.len, true)?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(code.as_ptr(), self.ptr, code.len());
+        }
+        // Seal pages (read-only policy)
+        paging::set_page_writable_range(self.ptr as usize, self.len, false)?;
+        self.sealed = true;
+        Ok(())
+    }
+
+    fn is_sealed(&self) -> bool {
+        self.sealed
+    }
+
+    fn as_ptr(&self) -> *const u8 {
+        self.ptr as *const u8
+    }
 }
 
 pub fn analyze_basic_blocks(code: &[u8]) -> Vec<BasicBlock> {
@@ -79,85 +156,106 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
             return Err("JIT function too large");
         }
         match opcode {
-            Opcode::Nop => {}
-            Opcode::End | Opcode::Return => break,
+            Opcode::Nop => {
+                emitter.emit_instr_fuel_check();
+            }
+            Opcode::End | Opcode::Return => {
+                emitter.emit_instr_fuel_check();
+                break;
+            }
             Opcode::Drop => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 1)?;
                 emitter.emit_pop_discard();
             }
             Opcode::I32Const => {
+                emitter.emit_instr_fuel_check();
                 let (imm, n) = read_sleb128_i32(code, pc).ok_or("Bad const")?;
                 pc += n;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_const(imm);
             }
             Opcode::I32Add => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_add();
             }
             Opcode::I32Sub => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_sub();
             }
             Opcode::I32Mul => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_mul();
             }
             Opcode::I32DivS => return Err("i32.div_s not supported by JIT"),
             Opcode::I32And => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_and();
             }
             Opcode::I32Or => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_or();
             }
             Opcode::I32Xor => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_xor();
             }
             Opcode::I32Eq => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_eq();
             }
             Opcode::I32Ne => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_ne();
             }
             Opcode::I32Eqz => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 1)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_eqz();
             }
             Opcode::I32LtS => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_lts();
             }
             Opcode::I32GtS => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_gts();
             }
             Opcode::I32LeS => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_les();
             }
             Opcode::I32GeS => {
+                emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_ges();
             }
             Opcode::LocalGet => {
+                emitter.emit_instr_fuel_check();
                 let (idx, n) = read_uleb128(code, pc).ok_or("Bad local")?;
                 pc += n;
                 if idx as usize >= locals_total {
@@ -167,6 +265,7 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
                 emitter.emit_local_get(idx as u32);
             }
             Opcode::LocalSet => {
+                emitter.emit_instr_fuel_check();
                 let (idx, n) = read_uleb128(code, pc).ok_or("Bad local")?;
                 pc += n;
                 if idx as usize >= locals_total {
@@ -176,6 +275,7 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
                 emitter.emit_local_set(idx as u32);
             }
             Opcode::LocalTee => {
+                emitter.emit_instr_fuel_check();
                 let (idx, n) = read_uleb128(code, pc).ok_or("Bad local")?;
                 pc += n;
                 if idx as usize >= locals_total {
@@ -186,6 +286,8 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
                 emitter.emit_local_tee(idx as u32);
             }
             Opcode::I32Load => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
                 let (_align, n1) = read_uleb128(code, pc).ok_or("Bad load")?;
                 pc += n1;
                 let (off, n2) = read_uleb128(code, pc).ok_or("Bad load")?;
@@ -195,6 +297,8 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
                 emitter.emit_i32_load(off);
             }
             Opcode::I32Store => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
                 let (_align, n1) = read_uleb128(code, pc).ok_or("Bad store")?;
                 pc += n1;
                 let (off, n2) = read_uleb128(code, pc).ok_or("Bad store")?;
@@ -209,17 +313,27 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
         }
     }
 
-    let trap_pos = emitter.emit_trap();
-    let ret_pos = emitter.emit_epilogue();
-    emitter.patch_traps(trap_pos, ret_pos);
+    let _ret_pos = emitter.emit_epilogue();
+    let trap_mem_pos = emitter.emit_trap_stub(TRAP_MEM);
+    let trap_fuel_pos = emitter.emit_trap_stub(TRAP_FUEL);
+    let trap_stack_pos = emitter.emit_trap_stub(TRAP_STACK);
+    emitter.patch_traps(trap_mem_pos, trap_fuel_pos, trap_stack_pos);
 
-    let entry = unsafe { core::mem::transmute::<*const u8, JitFn>(emitter.code.as_ptr()) };
+    verify_x86_subset(&emitter.code)?;
+
+    let mut exec = JitExecBuffer::new(emitter.code.len())?;
+    exec.write_and_seal(&emitter.code)?;
+
+    let entry = unsafe { core::mem::transmute::<*const u8, JitFn>(exec.as_ptr()) };
     let code_hash = hash_jit_code(&emitter.code);
+    let exec_hash = hash_exec_code(exec.as_ptr(), exec.len);
     Ok(JitFunction {
         code: emitter.code,
         entry,
         blocks,
         code_hash,
+        exec,
+        exec_hash,
     })
 }
 
@@ -229,14 +343,18 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
 
 struct Emitter {
     code: Vec<u8>,
-    trap_jumps: Vec<usize>,
+    trap_mem_jumps: Vec<usize>,
+    trap_fuel_jumps: Vec<usize>,
+    trap_stack_jumps: Vec<usize>,
 }
 
 impl Emitter {
     fn new() -> Self {
         Emitter {
             code: Vec::new(),
-            trap_jumps: Vec::new(),
+            trap_mem_jumps: Vec::new(),
+            trap_fuel_jumps: Vec::new(),
+            trap_stack_jumps: Vec::new(),
         }
     }
 
@@ -269,10 +387,22 @@ impl Emitter {
         self.emit(&[0x8B, 0x4D, 0x14]);
         // mov eax, [ebp+24]
         self.emit(&[0x8B, 0x45, 0x18]);
-        // sub esp, 4
-        self.emit(&[0x83, 0xEC, 0x04]);
+        // sub esp, 16
+        self.emit(&[0x83, 0xEC, 0x10]);
         // mov [ebp-4], eax (locals pointer)
         self.emit(&[0x89, 0x45, 0xFC]);
+        // mov eax, [ebp+28] (instr fuel ptr)
+        self.emit(&[0x8B, 0x45, 0x1C]);
+        // mov [ebp-8], eax
+        self.emit(&[0x89, 0x45, 0xF8]);
+        // mov eax, [ebp+32] (mem fuel ptr)
+        self.emit(&[0x8B, 0x45, 0x20]);
+        // mov [ebp-12], eax
+        self.emit(&[0x89, 0x45, 0xF4]);
+        // mov eax, [ebp+36] (trap ptr)
+        self.emit(&[0x8B, 0x45, 0x24]);
+        // mov [ebp-16], eax
+        self.emit(&[0x89, 0x45, 0xF0]);
     }
 
     fn emit_pop_to_eax(&mut self) {
@@ -281,7 +411,7 @@ impl Emitter {
         // cmp ebx, 0
         self.emit(&[0x83, 0xFB, 0x00]);
         // je trap (rel32)
-        self.emit_trap_jump_rel32(0x84);
+        self.emit_trap_stack_jump(0x84);
         // dec ebx
         self.emit(&[0x4B]);
         // mov eax, [edi + ebx*4]
@@ -296,7 +426,7 @@ impl Emitter {
         // cmp eax, 0
         self.emit(&[0x83, 0xF8, 0x00]);
         // je trap (rel32)
-        self.emit_trap_jump_rel32(0x84);
+        self.emit_trap_stack_jump(0x84);
         // dec eax
         self.emit(&[0x48]);
         // mov ebx, [edi + eax*4]
@@ -312,7 +442,7 @@ impl Emitter {
         self.emit(&[0x81, 0xFB]);
         self.emit_u32(MAX_STACK_DEPTH as u32);
         // jae trap (rel32)
-        self.emit_trap_jump_rel32(0x83);
+        self.emit_trap_stack_jump(0x83);
         // mov [edi + ebx*4], eax
         self.emit(&[0x89, 0x04, 0x9F]);
         // inc ebx
@@ -327,7 +457,7 @@ impl Emitter {
         // cmp eax, 0
         self.emit(&[0x83, 0xF8, 0x00]);
         // je trap (rel32)
-        self.emit_trap_jump_rel32(0x84);
+        self.emit_trap_stack_jump(0x84);
         // dec eax
         self.emit(&[0x48]);
         // mov [esi], eax
@@ -463,18 +593,18 @@ impl Emitter {
             self.emit(&[0x05]);
             self.emit_u32(off);
             // jc trap (rel32)
-            self.emit_trap_jump_rel32(0x82);
+            self.emit_trap_mem_jump(0x82);
         }
         // mov ebx, eax
         self.emit(&[0x89, 0xC3]);
         // add ebx, 4
         self.emit(&[0x83, 0xC3, 0x04]);
         // jc trap (rel32)
-        self.emit_trap_jump_rel32(0x82);
+        self.emit_trap_mem_jump(0x82);
         // cmp ebx, ecx
         self.emit(&[0x39, 0xCB]);
         // ja trap (rel32)
-        self.emit_trap_jump_rel32(0x87);
+        self.emit_trap_mem_jump(0x87);
     }
 
     fn emit_i32_load(&mut self, off: u32) {
@@ -532,36 +662,50 @@ impl Emitter {
             self.emit(&[0x05]);
             self.emit_u32(off);
             // jc trap (rel32)
-            self.emit_trap_jump_rel32(0x82);
+            self.emit_trap_mem_jump(0x82);
         }
         // mov ebx, eax
         self.emit(&[0x89, 0xC3]);
         // add ebx, 4
         self.emit(&[0x83, 0xC3, 0x04]);
         // jc trap (rel32)
-        self.emit_trap_jump_rel32(0x82);
+        self.emit_trap_mem_jump(0x82);
         // cmp ebx, ecx
         self.emit(&[0x39, 0xCB]);
         // ja trap (rel32)
-        self.emit_trap_jump_rel32(0x87);
+        self.emit_trap_mem_jump(0x87);
         // pop ebx (restore value)
         self.emit(&[0x5B]);
         // mov [edx + eax], ebx
         self.emit(&[0x89, 0x1C, 0x02]);
     }
 
-    fn emit_trap(&mut self) -> usize {
-        let pos = self.code.len();
-        // mov eax, 0xFFFFFFFF
-        self.emit(&[0xB8]);
-        self.emit_u32(0xFFFF_FFFF);
-        pos
+    fn emit_instr_fuel_check(&mut self) {
+        // mov eax, [ebp-8]
+        self.emit(&[0x8B, 0x45, 0xF8]);
+        // cmp dword [eax], 0
+        self.emit(&[0x83, 0x38, 0x00]);
+        // je trap (rel32)
+        self.emit_trap_fuel_jump(0x84);
+        // dec dword [eax]
+        self.emit(&[0xFF, 0x08]);
+    }
+
+    fn emit_mem_fuel_check(&mut self) {
+        // mov eax, [ebp-12]
+        self.emit(&[0x8B, 0x45, 0xF4]);
+        // cmp dword [eax], 0
+        self.emit(&[0x83, 0x38, 0x00]);
+        // je trap (rel32)
+        self.emit_trap_fuel_jump(0x84);
+        // dec dword [eax]
+        self.emit(&[0xFF, 0x08]);
     }
 
     fn emit_epilogue(&mut self) -> usize {
         let pos = self.code.len();
-        // add esp, 4
-        self.emit(&[0x83, 0xC4, 0x04]);
+        // add esp, 16
+        self.emit(&[0x83, 0xC4, 0x10]);
         // mov ebx, [esi]
         self.emit(&[0x8B, 0x1E]);
         // cmp ebx, 0
@@ -583,18 +727,58 @@ impl Emitter {
         pos
     }
 
-    fn emit_trap_jump_rel32(&mut self, opcode_ext: u8) {
+    fn emit_trap_stub(&mut self, code: i32) -> usize {
+        let pos = self.code.len();
+        // add esp, 16
+        self.emit(&[0x83, 0xC4, 0x10]);
+        // mov eax, [ebp-16]
+        self.emit(&[0x8B, 0x45, 0xF0]);
+        // mov dword [eax], imm32
+        self.emit(&[0xC7, 0x00]);
+        self.emit_i32(code);
+        // xor eax, eax
+        self.emit(&[0x31, 0xC0]);
+        // pop ebp; ret
+        self.emit(&[0x5D, 0xC3]);
+        pos
+    }
+
+    fn emit_trap_mem_jump(&mut self, opcode_ext: u8) {
         // 0F xx rel32
         self.emit(&[0x0F, opcode_ext]);
         let pos = self.code.len();
         self.emit_u32(0);
-        self.trap_jumps.push(pos);
+        self.trap_mem_jumps.push(pos);
     }
 
-    fn patch_traps(&mut self, trap_pos: usize, _ret_pos: usize) {
-        for &idx in &self.trap_jumps {
+    fn emit_trap_fuel_jump(&mut self, opcode_ext: u8) {
+        self.emit(&[0x0F, opcode_ext]);
+        let pos = self.code.len();
+        self.emit_u32(0);
+        self.trap_fuel_jumps.push(pos);
+    }
+
+    fn emit_trap_stack_jump(&mut self, opcode_ext: u8) {
+        self.emit(&[0x0F, opcode_ext]);
+        let pos = self.code.len();
+        self.emit_u32(0);
+        self.trap_stack_jumps.push(pos);
+    }
+
+    fn patch_traps(&mut self, trap_mem_pos: usize, trap_fuel_pos: usize, trap_stack_pos: usize) {
+        for &idx in &self.trap_mem_jumps {
             let next = idx + 4;
-            let rel = (trap_pos as isize - next as isize) as i32;
+            let rel = (trap_mem_pos as isize - next as isize) as i32;
+            self.code[idx..idx + 4].copy_from_slice(&rel.to_le_bytes());
+        }
+        for &idx in &self.trap_fuel_jumps {
+            let next = idx + 4;
+            let rel = (trap_fuel_pos as isize - next as isize) as i32;
+            self.code[idx..idx + 4].copy_from_slice(&rel.to_le_bytes());
+        }
+        for &idx in &self.trap_stack_jumps {
+            let next = idx + 4;
+            let rel = (trap_stack_pos as isize - next as isize) as i32;
             self.code[idx..idx + 4].copy_from_slice(&rel.to_le_bytes());
         }
     }
@@ -683,8 +867,249 @@ fn hash_jit_code(code: &[u8]) -> u32 {
     hash
 }
 
+fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
+    fn need(code: &[u8], i: usize, n: usize) -> Result<(), &'static str> {
+        if i + n > code.len() {
+            return Err("Truncated x86 instruction");
+        }
+        Ok(())
+    }
+
+    let mut i = 0usize;
+    while i < code.len() {
+        let b = code[i];
+        match b {
+            0x55 | 0x4B | 0x48 | 0x43 | 0x50 | 0x53 | 0x58 | 0x5B | 0x5D | 0xC3 => {
+                i += 1;
+            }
+            0x74 | 0xEB => {
+                need(code, i, 2)?;
+                i += 2;
+            }
+            0xB8 | 0x05 => {
+                need(code, i, 5)?;
+                i += 5;
+            }
+            0x81 => {
+                need(code, i, 6)?;
+                let b1 = code[i + 1];
+                if b1 != 0xC3 && b1 != 0xFB {
+                    return Err("Unexpected 0x81 encoding");
+                }
+                i += 6;
+            }
+            0x83 => {
+                let b1 = *code.get(i + 1).ok_or("Truncated 0x83")?;
+                match b1 {
+                    0xEC | 0xC4 | 0xFB | 0xF8 | 0xC3 | 0x38 => {
+                        need(code, i, 3)?;
+                        i += 3;
+                    }
+                    0x7D => {
+                        need(code, i, 4)?;
+                        i += 4;
+                    }
+                    _ => return Err("Unexpected 0x83 encoding"),
+                }
+            }
+            0x8B => {
+                let b1 = *code.get(i + 1).ok_or("Truncated 0x8B")?;
+                match b1 {
+                    0x7D => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0x08 {
+                            return Err("Unexpected 0x8B 0x7D disp");
+                        }
+                        i += 3;
+                    }
+                    0x75 => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0x0C {
+                            return Err("Unexpected 0x8B 0x75 disp");
+                        }
+                        i += 3;
+                    }
+                    0x55 => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0x10 {
+                            return Err("Unexpected 0x8B 0x55 disp");
+                        }
+                        i += 3;
+                    }
+                    0x4D => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0x14 {
+                            return Err("Unexpected 0x8B 0x4D disp");
+                        }
+                        i += 3;
+                    }
+                    0x45 => {
+                        need(code, i, 3)?;
+                        match code[i + 2] {
+                            0x18 | 0x1C | 0x20 | 0x24 | 0xF8 | 0xF4 | 0xF0 => {
+                                i += 3;
+                            }
+                            _ => return Err("Unexpected 0x8B 0x45 disp"),
+                        }
+                    }
+                    0x1E | 0x06 => {
+                        need(code, i, 2)?;
+                        i += 2;
+                    }
+                    0x04 => {
+                        need(code, i, 3)?;
+                        match code[i + 2] {
+                            0x9F | 0x02 => i += 3,
+                            _ => return Err("Unexpected 0x8B 0x04 SIB"),
+                        }
+                    }
+                    0x1C => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0x87 {
+                            return Err("Unexpected 0x8B 0x1C SIB");
+                        }
+                        i += 3;
+                    }
+                    0x5D => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0xFC {
+                            return Err("Unexpected 0x8B 0x5D disp");
+                        }
+                        i += 3;
+                    }
+                    0x83 => {
+                        need(code, i, 6)?;
+                        i += 6;
+                    }
+                    _ => return Err("Unexpected 0x8B encoding"),
+                }
+            }
+            0x89 => {
+                let b1 = *code.get(i + 1).ok_or("Truncated 0x89")?;
+                match b1 {
+                    0xE5 => {
+                        need(code, i, 2)?;
+                        i += 2;
+                    }
+                    0x45 => {
+                        need(code, i, 3)?;
+                        match code[i + 2] {
+                            0xFC | 0xF8 | 0xF4 | 0xF0 => i += 3,
+                            _ => return Err("Unexpected 0x89 0x45 disp"),
+                        }
+                    }
+                    0x1E | 0x06 => {
+                        need(code, i, 2)?;
+                        i += 2;
+                    }
+                    0x04 => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0x9F {
+                            return Err("Unexpected 0x89 0x04 SIB");
+                        }
+                        i += 3;
+                    }
+                    0xC3 => {
+                        need(code, i, 2)?;
+                        i += 2;
+                    }
+                    0x83 => {
+                        need(code, i, 6)?;
+                        i += 6;
+                    }
+                    0x1C => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0x02 {
+                            return Err("Unexpected 0x89 0x1C SIB");
+                        }
+                        i += 3;
+                    }
+                    _ => return Err("Unexpected 0x89 encoding"),
+                }
+            }
+            0x39 => {
+                need(code, i, 2)?;
+                match code[i + 1] {
+                    0xCB | 0xD8 => i += 2,
+                    _ => return Err("Unexpected 0x39 encoding"),
+                }
+            }
+            0x01 | 0x29 | 0x21 | 0x09 | 0x31 => {
+                need(code, i, 2)?;
+                match code[i + 1] {
+                    0xD8 | 0xC0 => i += 2,
+                    _ => return Err("Unexpected ALU encoding"),
+                }
+            }
+            0x0F => {
+                let b1 = *code.get(i + 1).ok_or("Truncated 0x0F")?;
+                match b1 {
+                    0xAF => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0xC3 {
+                            return Err("Unexpected 0x0F 0xAF encoding");
+                        }
+                        i += 3;
+                    }
+                    0x94 | 0x95 | 0x9C | 0x9F | 0x9E | 0x9D | 0xB6 => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0xC0 {
+                            return Err("Unexpected 0x0F setcc/movzx encoding");
+                        }
+                        i += 3;
+                    }
+                    0x84 | 0x83 | 0x82 | 0x87 => {
+                        need(code, i, 6)?;
+                        i += 6;
+                    }
+                    _ => return Err("Unexpected 0x0F opcode"),
+                }
+            }
+            0xFF => {
+                let b1 = *code.get(i + 1).ok_or("Truncated 0xFF")?;
+                match b1 {
+                    0x08 => {
+                        need(code, i, 2)?;
+                        i += 2;
+                    }
+                    0x4D => {
+                        need(code, i, 3)?;
+                        if code[i + 2] == 0xF8 || code[i + 2] == 0xF4 {
+                            i += 3;
+                        } else {
+                            return Err("Unexpected 0xFF 0x4D disp");
+                        }
+                    }
+                    _ => return Err("Unexpected 0xFF encoding"),
+                }
+            }
+            0xC7 => {
+                need(code, i, 6)?;
+                if code[i + 1] != 0x00 {
+                    return Err("Unexpected 0xC7 encoding");
+                }
+                i += 6;
+            }
+            _ => return Err("Unexpected opcode byte"),
+        }
+    }
+    Ok(())
+}
+
 impl JitFunction {
     pub fn verify_integrity(&self) -> bool {
-        self.code_hash == hash_jit_code(&self.code)
+        if !self.exec.is_sealed() {
+            return false;
+        }
+        let exec_hash = hash_exec_code(self.exec.as_ptr(), self.exec.len);
+        self.exec_hash == exec_hash && self.code_hash == hash_jit_code(&self.code)
     }
+}
+
+fn hash_exec_code(ptr: *const u8, len: usize) -> u32 {
+    if ptr.is_null() || len == 0 {
+        return 0;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    hash_jit_code(bytes)
 }

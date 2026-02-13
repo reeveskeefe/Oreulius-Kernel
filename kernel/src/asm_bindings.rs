@@ -55,6 +55,9 @@ extern "C" {
     /// Read CR0 control register
     pub fn asm_read_cr0() -> u32;
     
+    /// Write CR0 control register
+    pub fn asm_write_cr0(value: u32);
+    
     /// Read CR3 page directory register
     pub fn asm_read_cr3() -> u32;
     
@@ -466,6 +469,11 @@ pub fn hlt() {
 /// Read CR0 control register
 pub fn read_cr0() -> u32 {
     unsafe { asm_read_cr0() }
+}
+
+/// Write CR0 control register
+pub fn write_cr0(value: u32) {
+    unsafe { asm_write_cr0(value) };
 }
 
 /// Read CR3 page directory register

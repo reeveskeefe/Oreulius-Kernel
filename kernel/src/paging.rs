@@ -430,6 +430,17 @@ impl AddressSpace {
         let heap_end = unsafe { &_heap_end as *const usize as usize };
         // Map at least 32MB to ensure allocator has space (64MB was too much)
         let map_bytes = align_up(core::cmp::max(heap_end, 32 * 1024 * 1024), CHUNK_BYTES);
+        Self::setup_kernel_mapping_range(page_dir, map_bytes)
+    }
+
+    /// Setup kernel mapping for a specific range (identity + higher-half mirror).
+    fn setup_kernel_mapping_range(page_dir: &mut PageDirectory, map_bytes: usize) -> Result<(), &'static str> {
+        const CHUNK_MB: usize = 4;
+        const CHUNK_BYTES: usize = CHUNK_MB * 1024 * 1024;
+        if map_bytes == 0 {
+            return Err("Invalid kernel map size");
+        }
+        let map_bytes = align_up(map_bytes, CHUNK_BYTES);
         let tables = core::cmp::max(1, map_bytes / CHUNK_BYTES);
 
         crate::vga::print_str("[PAGING] Mapping kernel memory (0 to ");
@@ -472,6 +483,19 @@ impl AddressSpace {
         }
 
         Ok(())
+    }
+
+    /// Create a minimal kernel-only address space for JIT sandboxing.
+    pub fn new_jit_sandbox() -> Result<Self, &'static str> {
+        let mut page_dir = Box::new(PageDirectory::new());
+        let heap_end = unsafe { &_heap_end as *const usize as usize };
+        // Map only kernel image + heap (identity + higher-half mirror).
+        Self::setup_kernel_mapping_range(&mut page_dir, heap_end)?;
+        let phys_addr = &*page_dir as *const _ as usize;
+        Ok(AddressSpace {
+            page_directory: page_dir,
+            phys_addr,
+        })
     }
 
     /// Clone this address space with copy-on-write semantics (user space only)
@@ -909,6 +933,12 @@ pub fn init() -> Result<(), &'static str> {
         enable_paging();
     }
     vga::print_str("[PAGING] Paging enabled\n");
+
+    // Enforce write-protect in Ring 0 (CR0.WP) to honor read-only pages.
+    let mut cr0 = crate::asm_bindings::read_cr0();
+    cr0 |= 1 << 16;
+    crate::asm_bindings::write_cr0(cr0);
+    vga::print_str("[PAGING] CR0.WP enabled (kernel W^X enforced)\n");
     
     *KERNEL_ADDRESS_SPACE.lock() = Some(kernel_space);
     
@@ -919,6 +949,48 @@ pub fn init() -> Result<(), &'static str> {
 /// Get reference to kernel address space
 pub fn kernel_space() -> &'static Mutex<Option<AddressSpace>> {
     &KERNEL_ADDRESS_SPACE
+}
+
+/// Set writable flag for a range of kernel-mapped pages.
+/// This is used to enforce W^X policy for JIT code pages (policy-level on 32-bit).
+pub fn set_page_writable_range(virt_addr: usize, size: usize, writable: bool) -> Result<(), &'static str> {
+    if size == 0 {
+        return Ok(());
+    }
+    let start = virt_addr & !(PAGE_SIZE - 1);
+    let end = virt_addr
+        .checked_add(size)
+        .ok_or("Range overflow")?
+        .checked_add(PAGE_SIZE - 1)
+        .ok_or("Range overflow")?
+        & !(PAGE_SIZE - 1);
+
+    let mut space_guard = KERNEL_ADDRESS_SPACE.lock();
+    let space = space_guard.as_mut().ok_or("Kernel address space not initialized")?;
+
+    let mut addr = start;
+    while addr < end {
+        let entry = unsafe {
+            let table = space.page_directory.get_table_mut(addr).ok_or("Missing page table")?;
+            let pte = table.entry_mut(addr);
+            if !pte.is_present() {
+                return Err("Page not mapped");
+            }
+            pte
+        };
+        let pte_addr = entry as *mut PageTableEntry as *mut u32;
+        unsafe {
+            if writable {
+                atomic_modify_pte_set_flags(pte_addr, PageFlags::Writable as u32);
+            } else {
+                atomic_modify_pte_clear_flags(pte_addr, PageFlags::Writable as u32);
+            }
+        }
+        unsafe { flush_tlb_single(addr as u32) };
+        addr += PAGE_SIZE;
+    }
+
+    Ok(())
 }
 
 /// Handle page fault interrupt
