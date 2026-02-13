@@ -76,40 +76,48 @@ pub fn init() {
 const MAX_FRAMES: usize = 8192;
 const PAGE_SIZE: usize = 4096;
 
-/// simple reference counting for physical frames
-/// TODO: Make this thread-safe/atomic in future
-static mut FRAME_REFCOUNTS: [u8; MAX_FRAMES] = [0; MAX_FRAMES];
+// Import atomic refcount operations from assembly
+extern "C" {
+    fn atomic_inc_refcount(refcount_addr: *mut u32) -> u32;
+    fn atomic_dec_refcount(refcount_addr: *mut u32) -> u32;
+}
+
+/// Physical frame reference counting (thread-safe via atomic operations)
+static mut FRAME_REFCOUNTS: [u32; MAX_FRAMES] = [0; MAX_FRAMES];
 
 /// Get refcount for a physical frame
-pub fn get_refcount(phys_addr: usize) -> u8 {
+pub fn get_refcount(phys_addr: usize) -> u32 {
     let frame_idx = phys_addr / PAGE_SIZE;
     if frame_idx < MAX_FRAMES {
-        unsafe { FRAME_REFCOUNTS[frame_idx] }
+        unsafe { core::ptr::read_volatile(&FRAME_REFCOUNTS[frame_idx]) }
     } else {
         0
     }
 }
 
-/// Increment refcount
+/// Increment refcount (atomic operation for multicore safety)
 pub fn inc_refcount(phys_addr: usize) {
     let frame_idx = phys_addr / PAGE_SIZE;
     if frame_idx < MAX_FRAMES {
-        unsafe { 
-            if FRAME_REFCOUNTS[frame_idx] < 255 {
-                FRAME_REFCOUNTS[frame_idx] += 1; 
+        unsafe {
+            let refcount_ptr = &mut FRAME_REFCOUNTS[frame_idx] as *mut u32;
+            let new_count = atomic_inc_refcount(refcount_ptr);
+            // Check for overflow (wrapped from u32::MAX to 0)
+            if new_count == 0 {
+                // Overflow protection: decrement back
+                atomic_dec_refcount(refcount_ptr);
             }
         }
     }
 }
 
-/// Decrement refcount
+/// Decrement refcount (atomic operation for multicore safety)
 pub fn dec_refcount(phys_addr: usize) {
     let frame_idx = phys_addr / PAGE_SIZE;
     if frame_idx < MAX_FRAMES {
-        unsafe { 
-            if FRAME_REFCOUNTS[frame_idx] > 0 {
-                FRAME_REFCOUNTS[frame_idx] -= 1; 
-            }
+        unsafe {
+            let refcount_ptr = &mut FRAME_REFCOUNTS[frame_idx] as *mut u32;
+            atomic_dec_refcount(refcount_ptr);
         }
     }
 }

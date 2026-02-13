@@ -379,6 +379,9 @@ impl Terminal {
     }
 
     fn scroll_up(&mut self, render: bool) {
+        // Save top line to scrollback before scrolling
+        self.push_scrollback();
+        
         // Move lines up in buffer
         for row in 1..HEIGHT {
             for col in 0..WIDTH {

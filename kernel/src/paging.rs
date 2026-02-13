@@ -107,6 +107,41 @@ pub fn current_page_directory() -> u32 {
     unsafe { get_page_directory() }
 }
 
+// ============================================================================
+// Atomic PTE Operations for Multicore Safety
+// ============================================================================
+
+/// Atomically set page table entry flags (multicore-safe)
+pub unsafe fn atomic_modify_pte_set_flags(pte_addr: *mut u32, flags: u32) {
+    atomic_set_page_flags(pte_addr, flags);
+    store_barrier(); // Ensure write completes before TLB operations
+}
+
+/// Atomically clear page table entry flags (multicore-safe)
+pub unsafe fn atomic_modify_pte_clear_flags(pte_addr: *mut u32, flags: u32) {
+    atomic_clear_page_flags(pte_addr, flags);
+    store_barrier(); // Ensure write completes before TLB operations
+}
+
+/// Check if CPU has SSE support for fast page operations
+fn has_sse_support() -> bool {
+    unsafe {
+        let mut edx: u32;
+        core::arch::asm!(
+            "push ebx",           // Save ebx (used by LLVM)
+            "mov eax, 1",
+            "cpuid",
+            "pop ebx",            // Restore ebx
+            out("edx") edx,
+            out("eax") _,
+            out("ecx") _,
+            options(nostack),
+        );
+        // SSE support is bit 25 of EDX
+        (edx & (1 << 25)) != 0
+    }
+}
+
 /// Page size (4KB standard for x86)
 pub const PAGE_SIZE: usize = 4096;
 
@@ -602,18 +637,23 @@ impl AddressSpace {
             copy_page_fast(old_phys as *const u8, new_page);
         }
 
-        // Update page table entry with new physical address
+        // Update page table entry with new physical address (atomic operation)
         let mut flags = PageFlags::Present as u32 | PageFlags::Allocated as u32;
         flags |= PageFlags::Writable as u32;
         if entry.is_user_accessible() {
             flags |= PageFlags::UserAccessible as u32;
         }
         
-        *entry = PageTableEntry::new(new_page as usize, flags);
-
-        // Clear COW flag using assembly
+        // Use atomic operations for multicore safety
         unsafe {
-            clear_page_cow(entry as *mut PageTableEntry as *mut u32);
+            let pte_addr = entry as *mut PageTableEntry as *mut u32;
+            // First clear COW flag
+            atomic_modify_pte_clear_flags(pte_addr, PageFlags::CopyOnWrite as u32);
+            // Then set new flags (Present + Writable + UserAccessible)
+            atomic_modify_pte_set_flags(pte_addr, flags);
+            // Update physical address (requires reconstructing full PTE value)
+            core::ptr::write_volatile(pte_addr, ((new_page as u32) & 0xFFFFF000) | flags);
+            memory_barrier(); // Ensure all writes visible before TLB flush
         }
 
         Self::flush_tlb(virt_aligned);
@@ -921,7 +961,12 @@ pub fn get_paging_stats() -> PagingStats {
 /// Zero out a page using fast assembly implementation
 pub fn zero_page_at(addr: *mut u8) {
     unsafe {
-        zero_page_fast(addr);
+        // Use SSE version if available, otherwise use slow fallback
+        if has_sse_support() {
+            zero_page_fast(addr);
+        } else {
+            zero_page(addr);
+        }
     }
 }
 
@@ -1031,9 +1076,10 @@ pub extern "C" fn rust_copy_page_table(parent_pid_raw: u32, child_pid_raw: u32) 
                  
                  // Logic: If Writable -> COW. If ReadOnly -> Shared.
                  if pte.is_writable() {
-                     // Mark Parent Read-Only + COW
-                     pte.set_writable(false);
-                     pte.set_copy_on_write(true);
+                     // Mark Parent Read-Only + COW (atomic operations for multicore safety)
+                     let pte_addr = pte as *mut PageTableEntry as *mut u32;
+                     atomic_modify_pte_clear_flags(pte_addr, PageFlags::Writable as u32);
+                     atomic_modify_pte_set_flags(pte_addr, PageFlags::CopyOnWrite as u32);
                      
                      // Mark Child Read-Only + COW
                      // Remove Write bit from flags for child too
@@ -1056,6 +1102,9 @@ pub extern "C" fn rust_copy_page_table(parent_pid_raw: u32, child_pid_raw: u32) 
              }
         }
     }
+    
+    // Memory barrier before saving page directory
+    unsafe { memory_barrier(); }
     
     // Save to process manager
     if let Err(_) = pm.set_process_page_dir(child_pid, child_pd_phys as u32) {

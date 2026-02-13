@@ -9,7 +9,6 @@
 
 use spin::Mutex;
 use core::sync::atomic::{AtomicBool, Ordering};
-use core::mem::MaybeUninit;
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 use alloc::boxed::Box;
@@ -83,16 +82,9 @@ impl QuantumScheduler {
     pub fn new() -> Self {
         const NONE_PROC: Option<ProcessInfo> = None;
         
-        let mut wait_queues: [WaitQueue; MAX_WAIT_QUEUES] = unsafe {
-            MaybeUninit::uninit().assume_init()
-        };
-        for i in 0..MAX_WAIT_QUEUES {
-            wait_queues[i] = WaitQueue {
-                addr: 0,
-                waiting: VecDeque::new(),
-                active: false,
-            };
-        }
+        // Properly initialize wait queues array using from_fn
+        let wait_queues: [WaitQueue; MAX_WAIT_QUEUES] = 
+            core::array::from_fn(|_| WaitQueue::default());
         
         QuantumScheduler {
             processes: [NONE_PROC; MAX_PROCESSES],
@@ -416,8 +408,13 @@ impl QuantumScheduler {
             (table_addr + core::mem::size_of_val(&self.processes)) as *const u8,
             core::mem::size_of_val(&self.processes));
         
-        // Memory barrier to ensure consistency
-        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        // Hardware memory barrier to ensure process table consistency across CPUs
+        unsafe {
+            extern "C" {
+                fn memory_barrier();
+            }
+            memory_barrier();
+        }
         
         // Find available PID
         let pid = (0..MAX_PROCESSES)
@@ -552,6 +549,16 @@ impl QuantumScheduler {
 
 impl WaitQueue {
     const fn empty() -> Self {
+        WaitQueue {
+            addr: 0,
+            waiting: VecDeque::new(),
+            active: false,
+        }
+    }
+}
+
+impl Default for WaitQueue {
+    fn default() -> Self {
         WaitQueue {
             addr: 0,
             waiting: VecDeque::new(),

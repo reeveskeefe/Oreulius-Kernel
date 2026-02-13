@@ -38,6 +38,8 @@ pub struct Scheduler {
     /// Sleeping processes
     sleeping: [SleepingProcess; MAX_SLEEPING],
     sleeping_count: usize,
+    /// Ticks since last schedule (for time slice enforcement)
+    ticks_since_schedule: u32,
     /// Statistics
     total_switches: u64,
     preemptions: u64,
@@ -71,6 +73,7 @@ impl Scheduler {
             sleeping_count: 0,
             total_switches: 0,
             preemptions: 0,
+            ticks_since_schedule: 0,
         }
     }
 
@@ -210,10 +213,23 @@ impl Scheduler {
 
     /// Timer tick handler (called by IRQ0)
     pub fn on_timer_tick(&mut self) {
-        self.preemptions += 1;
-        
         // Wake any sleeping processes
         self.wake_sleeping();
+        
+        // Increment tick counter
+        self.ticks_since_schedule += 1;
+        
+        // Calculate ticks per time slice (100 Hz timer = 10ms per tick)
+        const TIMER_HZ: u32 = 100;
+        const TICKS_PER_SLICE: u32 = (TIME_SLICE_MS * TIMER_HZ) / 1000;
+        
+        // Only preempt after full time slice has elapsed
+        if self.ticks_since_schedule < TICKS_PER_SLICE {
+            return;
+        }
+        
+        self.ticks_since_schedule = 0;
+        self.preemptions += 1;
         
         // Preempt current process
         if let Some(current_pid) = self.current_pid {
