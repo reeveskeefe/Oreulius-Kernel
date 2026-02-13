@@ -869,7 +869,7 @@ impl WifiDriver {
         // Step 1: Derive PMK (Pairwise Master Key) from password
         // PMK = PBKDF2(password, ssid, 4096 iterations, 256 bits)
         let ssid = &self.connection.network.ssid[..self.connection.network.ssid_len];
-        let pmk = self.pbkdf2_sha1(password.as_bytes(), ssid, 4096, 32)?;
+        let pmk = self.pbkdf2_sha1(password.as_bytes(), ssid, 4096)?;
         
         // Step 2: Wait for Message 1 from AP (contains ANonce)
         crate::vga::print_str("[WiFi] Waiting for Message 1 (ANonce)...\n");
@@ -904,7 +904,8 @@ impl WifiDriver {
     
     /// PBKDF2-HMAC-SHA1 key derivation
     /// Used to derive PMK from password and SSID
-    fn pbkdf2_sha1(&self, password: &[u8], salt: &[u8], iterations: usize, dklen: usize) 
+    /// Generates exactly 32 bytes (256 bits) as required by WPA2 specification
+    fn pbkdf2_sha1(&self, password: &[u8], salt: &[u8], iterations: usize) 
         -> Result<[u8; 32], WifiError> {
         
         let mut result = [0u8; 32];
@@ -1741,10 +1742,45 @@ impl WifiDriver {
     
     /// Transmit management frame
     fn transmit_mgmt_frame(&mut self, frame: &[u8]) -> Result<(), WifiError> {
-        // In a real implementation, this would:
-        // - Set up DMA descriptor
-        // - Write frame to TX buffer
-        // - Trigger transmission via hardware register
+        if let Some(device) = self.pci_device {
+            unsafe {
+                let bar0 = device.read_bar(0);
+                if bar0 != 0 {
+                    let base_addr = bar0 as *mut u32;
+                    
+                    // Wait for TX ready
+                    let mut timeout = 10000;
+                    while timeout > 0 {
+                        let tx_status = core::ptr::read_volatile(base_addr.add(0x200 / 4));
+                        if (tx_status & 0x01) == 0 {
+                            break; // TX ready
+                        }
+                        timeout -= 1;
+                        for _ in 0..100 {
+                            core::hint::spin_loop();
+                        }
+                    }
+                    
+                    if timeout == 0 {
+                        return Err(WifiError::HardwareError);
+                    }
+                    
+                    // Write frame to TX buffer (offset 0x1000)
+                    let tx_buffer = (bar0 as usize + 0x1000) as *mut u8;
+                    for i in 0..frame.len() {
+                        core::ptr::write_volatile(tx_buffer.add(i), frame[i]);
+                    }
+                    
+                    // Set frame length in TX length register (offset 0x204)
+                    core::ptr::write_volatile(base_addr.add(0x204 / 4), frame.len() as u32);
+                    
+                    // Trigger transmission with management frame flag
+                    // 0x80000000 = TX enable bit (management frame, bit 0 clear)
+                    // vs 0x80000001 for data frames (bit 0 set)
+                    core::ptr::write_volatile(base_addr.add(0x200 / 4), 0x80000000);
+                }
+            }
+        }
         Ok(())
     }
     
