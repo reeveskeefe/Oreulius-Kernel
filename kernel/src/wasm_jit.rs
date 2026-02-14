@@ -924,8 +924,71 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
     }
 
     let mut i = 0usize;
+    let mut guard_state = 0u8;
+    let mut guard_ready = false;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum GuardTok {
+        AddEaxImm,
+        Jb,
+        CmpEcxImm,
+        MovEbxEcx,
+        SubEbxImm,
+        CmpEaxEbx,
+        Ja,
+    }
+
+    fn guard_advance(state: &mut u8, tok: Option<GuardTok>) -> bool {
+        match (*state, tok) {
+            (0, Some(GuardTok::AddEaxImm)) => {
+                *state = 1;
+                false
+            }
+            (0, Some(GuardTok::CmpEcxImm)) => {
+                *state = 3;
+                false
+            }
+            (1, Some(GuardTok::Jb)) => {
+                *state = 2;
+                false
+            }
+            (2, Some(GuardTok::CmpEcxImm)) => {
+                *state = 3;
+                false
+            }
+            (3, Some(GuardTok::Jb)) => {
+                *state = 4;
+                false
+            }
+            (4, Some(GuardTok::MovEbxEcx)) => {
+                *state = 5;
+                false
+            }
+            (5, Some(GuardTok::SubEbxImm)) => {
+                *state = 6;
+                false
+            }
+            (6, Some(GuardTok::CmpEaxEbx)) => {
+                *state = 7;
+                false
+            }
+            (7, Some(GuardTok::Ja)) => {
+                *state = 0;
+                true
+            }
+            _ => {
+                *state = 0;
+                false
+            }
+        }
+    }
+
     while i < code.len() {
         let b = code[i];
+        let mut guard_tok = None;
+        let mut linear_load = false;
+        let mut linear_store = false;
+        let mut pop_ebx = false;
         match b {
             // Disallow all known prefixes (emitter never uses them).
             0xF0 | 0xF2 | 0xF3 | 0x66 | 0x67 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 => {
@@ -933,6 +996,9 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
             }
             // Single-byte opcodes
             0x55 | 0x4B | 0x48 | 0x43 | 0x50 | 0x53 | 0x58 | 0x5B | 0x5D | 0xC3 => {
+                if b == 0x5B {
+                    pop_ebx = true;
+                }
                 i += 1;
             }
             // Short jumps (only used in epilogue)
@@ -948,6 +1014,9 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
             }
             // mov eax, imm32 | add eax, imm32
             0xB8 | 0x05 => {
+                if b == 0x05 {
+                    guard_tok = Some(GuardTok::AddEaxImm);
+                }
                 need(code, i, 5)?;
                 i += 5;
             }
@@ -955,7 +1024,11 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
             0x81 => {
                 need(code, i, 6)?;
                 let b1 = code[i + 1];
-                if b1 != 0xFB && b1 != 0xF9 && b1 != 0xEB {
+                if b1 == 0xF9 {
+                    guard_tok = Some(GuardTok::CmpEcxImm);
+                } else if b1 == 0xEB {
+                    guard_tok = Some(GuardTok::SubEbxImm);
+                } else if b1 != 0xFB {
                     return Err("Unexpected 0x81 encoding");
                 }
                 i += 6;
@@ -966,6 +1039,11 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                 let b1 = code[i + 1];
                 match b1 {
                     0xFB | 0xF8 | 0xF9 | 0xEB => {
+                        if b1 == 0xF9 {
+                            guard_tok = Some(GuardTok::CmpEcxImm);
+                        } else if b1 == 0xEB {
+                            guard_tok = Some(GuardTok::SubEbxImm);
+                        }
                         i += 3;
                     }
                     0xEC | 0xC4 => {
@@ -1015,7 +1093,11 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     0x04 => {
                         need(code, i, 3)?;
                         match code[i + 2] {
-                            0x9F | 0x02 => i += 3,
+                            0x9F => i += 3,
+                            0x02 => {
+                                linear_load = true;
+                                i += 3;
+                            }
                             _ => return Err("Unexpected 0x8B SIB"),
                         }
                     }
@@ -1053,6 +1135,9 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0x1E | 0x06 | 0xCB => {
                         need(code, i, 2)?;
+                        if b1 == 0xCB {
+                            guard_tok = Some(GuardTok::MovEbxEcx);
+                        }
                         i += 2;
                     }
                     0x04 => {
@@ -1067,6 +1152,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                         if code[i + 2] != 0x02 {
                             return Err("Unexpected 0x89 SIB");
                         }
+                        linear_store = true;
                         i += 3;
                     }
                     0x83 => {
@@ -1082,6 +1168,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                 if code[i + 1] != 0xD8 {
                     return Err("Unexpected 0x39 encoding");
                 }
+                guard_tok = Some(GuardTok::CmpEaxEbx);
                 i += 2;
             }
             // ALU ops
@@ -1119,6 +1206,11 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0x84 | 0x83 | 0x82 | 0x87 => {
                         need(code, i, 6)?;
+                        if b1 == 0x82 {
+                            guard_tok = Some(GuardTok::Jb);
+                        } else if b1 == 0x87 {
+                            guard_tok = Some(GuardTok::Ja);
+                        }
                         i += 6;
                     }
                     _ => return Err("Unexpected 0x0F opcode"),
@@ -1141,6 +1233,27 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                 i += 6;
             }
             _ => return Err("Unexpected opcode byte"),
+        }
+
+        if linear_load || linear_store {
+            if !guard_ready {
+                return Err("Linear memory access without bounds guard");
+            }
+            guard_ready = false;
+        } else if guard_ready {
+            if pop_ebx {
+                // allow pop between guard and store
+            } else {
+                guard_ready = false;
+            }
+        }
+
+        if let Some(tok) = guard_tok {
+            if guard_advance(&mut guard_state, Some(tok)) {
+                guard_ready = true;
+            }
+        } else {
+            guard_advance(&mut guard_state, None);
         }
     }
     Ok(())
