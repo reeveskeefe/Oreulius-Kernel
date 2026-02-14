@@ -908,82 +908,105 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
         Ok(())
     }
 
+    fn expect_disp8(code: &[u8], i: usize, allowed: &[u8]) -> Result<(), &'static str> {
+        let disp = *code.get(i).ok_or("Truncated disp8")?;
+        if !allowed.contains(&disp) {
+            return Err("Unexpected disp8");
+        }
+        Ok(())
+    }
+
+    fn expect_u8(code: &[u8], i: usize, val: u8) -> Result<(), &'static str> {
+        if *code.get(i).ok_or("Truncated imm8")? != val {
+            return Err("Unexpected imm8");
+        }
+        Ok(())
+    }
+
     let mut i = 0usize;
     while i < code.len() {
         let b = code[i];
         match b {
+            // Disallow all known prefixes (emitter never uses them).
+            0xF0 | 0xF2 | 0xF3 | 0x66 | 0x67 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 => {
+                return Err("Unexpected instruction prefix");
+            }
+            // Single-byte opcodes
             0x55 | 0x4B | 0x48 | 0x43 | 0x50 | 0x53 | 0x58 | 0x5B | 0x5D | 0xC3 => {
                 i += 1;
             }
-            0x74 | 0xEB => {
+            // Short jumps (only used in epilogue)
+            0x74 => {
                 need(code, i, 2)?;
+                expect_u8(code, i + 1, 0x06)?;
                 i += 2;
             }
+            0xEB => {
+                need(code, i, 2)?;
+                expect_u8(code, i + 1, 0x02)?;
+                i += 2;
+            }
+            // mov eax, imm32 | add eax, imm32
             0xB8 | 0x05 => {
                 need(code, i, 5)?;
                 i += 5;
             }
+            // imm32 group: cmp/sub
             0x81 => {
                 need(code, i, 6)?;
                 let b1 = code[i + 1];
-                if b1 != 0xC3 && b1 != 0xFB && b1 != 0xF9 && b1 != 0xEB {
+                if b1 != 0xFB && b1 != 0xF9 && b1 != 0xEB {
                     return Err("Unexpected 0x81 encoding");
                 }
                 i += 6;
             }
+            // imm8 group: cmp/add/sub
             0x83 => {
-                let b1 = *code.get(i + 1).ok_or("Truncated 0x83")?;
+                need(code, i, 3)?;
+                let b1 = code[i + 1];
                 match b1 {
-                    0xEC | 0xC4 | 0xFB | 0xF8 | 0xC3 | 0x38 | 0xF9 | 0xEB => {
-                        need(code, i, 3)?;
+                    0xFB | 0xF8 | 0xF9 | 0xEB => {
                         i += 3;
                     }
-                    0x7D => {
-                        need(code, i, 4)?;
-                        i += 4;
+                    0xEC | 0xC4 => {
+                        expect_u8(code, i + 2, 0x10)?;
+                        i += 3;
+                    }
+                    0x38 => {
+                        expect_u8(code, i + 2, 0x00)?;
+                        i += 3;
                     }
                     _ => return Err("Unexpected 0x83 encoding"),
                 }
             }
+            // mov r32, r/m32
             0x8B => {
                 let b1 = *code.get(i + 1).ok_or("Truncated 0x8B")?;
                 match b1 {
                     0x7D => {
                         need(code, i, 3)?;
-                        if code[i + 2] != 0x08 {
-                            return Err("Unexpected 0x8B 0x7D disp");
-                        }
+                        expect_u8(code, i + 2, 0x08)?;
                         i += 3;
                     }
                     0x75 => {
                         need(code, i, 3)?;
-                        if code[i + 2] != 0x0C {
-                            return Err("Unexpected 0x8B 0x75 disp");
-                        }
+                        expect_u8(code, i + 2, 0x0C)?;
                         i += 3;
                     }
                     0x55 => {
                         need(code, i, 3)?;
-                        if code[i + 2] != 0x10 {
-                            return Err("Unexpected 0x8B 0x55 disp");
-                        }
+                        expect_u8(code, i + 2, 0x10)?;
                         i += 3;
                     }
                     0x4D => {
                         need(code, i, 3)?;
-                        if code[i + 2] != 0x14 {
-                            return Err("Unexpected 0x8B 0x4D disp");
-                        }
+                        expect_u8(code, i + 2, 0x14)?;
                         i += 3;
                     }
                     0x45 => {
                         need(code, i, 3)?;
-                        match code[i + 2] {
-                            0x18 | 0x1C | 0x20 | 0x24 | 0xF8 | 0xF4 | 0xF0 => {
-                                i += 3;
-                            }
-                            _ => return Err("Unexpected 0x8B 0x45 disp"),
-                        }
+                        expect_disp8(code, i + 2, &[0x18, 0x1C, 0x20, 0x24, 0xF8, 0xF4, 0xF0])?;
+                        i += 3;
                     }
                     0x1E | 0x06 => {
                         need(code, i, 2)?;
@@ -993,21 +1016,19 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                         need(code, i, 3)?;
                         match code[i + 2] {
                             0x9F | 0x02 => i += 3,
-                            _ => return Err("Unexpected 0x8B 0x04 SIB"),
+                            _ => return Err("Unexpected 0x8B SIB"),
                         }
                     }
                     0x1C => {
                         need(code, i, 3)?;
                         if code[i + 2] != 0x87 {
-                            return Err("Unexpected 0x8B 0x1C SIB");
+                            return Err("Unexpected 0x8B SIB");
                         }
                         i += 3;
                     }
                     0x5D => {
                         need(code, i, 3)?;
-                        if code[i + 2] != 0xFC {
-                            return Err("Unexpected 0x8B 0x5D disp");
-                        }
+                        expect_u8(code, i + 2, 0xFC)?;
                         i += 3;
                     }
                     0x83 => {
@@ -1017,6 +1038,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     _ => return Err("Unexpected 0x8B encoding"),
                 }
             }
+            // mov r/m32, r32
             0x89 => {
                 let b1 = *code.get(i + 1).ok_or("Truncated 0x89")?;
                 match b1 {
@@ -1026,72 +1048,72 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0x45 => {
                         need(code, i, 3)?;
-                        match code[i + 2] {
-                            0xFC | 0xF8 | 0xF4 | 0xF0 => i += 3,
-                            _ => return Err("Unexpected 0x89 0x45 disp"),
-                        }
+                        expect_disp8(code, i + 2, &[0xFC, 0xF8, 0xF4, 0xF0])?;
+                        i += 3;
                     }
-                    0x1E | 0x06 => {
+                    0x1E | 0x06 | 0xCB => {
                         need(code, i, 2)?;
                         i += 2;
                     }
                     0x04 => {
                         need(code, i, 3)?;
                         if code[i + 2] != 0x9F {
-                            return Err("Unexpected 0x89 0x04 SIB");
+                            return Err("Unexpected 0x89 SIB");
                         }
                         i += 3;
                     }
-                    0xC3 => {
-                        need(code, i, 2)?;
-                        i += 2;
-                    }
-                    0xCB => {
-                        need(code, i, 2)?;
-                        i += 2;
+                    0x1C => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0x02 {
+                            return Err("Unexpected 0x89 SIB");
+                        }
+                        i += 3;
                     }
                     0x83 => {
                         need(code, i, 6)?;
                         i += 6;
                     }
-                    0x1C => {
-                        need(code, i, 3)?;
-                        if code[i + 2] != 0x02 {
-                            return Err("Unexpected 0x89 0x1C SIB");
-                        }
-                        i += 3;
-                    }
                     _ => return Err("Unexpected 0x89 encoding"),
                 }
             }
+            // cmp eax, ebx
             0x39 => {
                 need(code, i, 2)?;
-                match code[i + 1] {
-                    0xCB | 0xD8 => i += 2,
-                    _ => return Err("Unexpected 0x39 encoding"),
+                if code[i + 1] != 0xD8 {
+                    return Err("Unexpected 0x39 encoding");
                 }
+                i += 2;
             }
-            0x01 | 0x29 | 0x21 | 0x09 | 0x31 => {
+            // ALU ops
+            0x01 | 0x29 | 0x21 | 0x09 => {
+                need(code, i, 2)?;
+                if code[i + 1] != 0xD8 {
+                    return Err("Unexpected ALU encoding");
+                }
+                i += 2;
+            }
+            0x31 => {
                 need(code, i, 2)?;
                 match code[i + 1] {
                     0xD8 | 0xC0 => i += 2,
-                    _ => return Err("Unexpected ALU encoding"),
+                    _ => return Err("Unexpected XOR encoding"),
                 }
             }
+            // Two-byte opcodes
             0x0F => {
                 let b1 = *code.get(i + 1).ok_or("Truncated 0x0F")?;
                 match b1 {
                     0xAF => {
                         need(code, i, 3)?;
                         if code[i + 2] != 0xC3 {
-                            return Err("Unexpected 0x0F 0xAF encoding");
+                            return Err("Unexpected imul encoding");
                         }
                         i += 3;
                     }
                     0x94 | 0x95 | 0x9C | 0x9F | 0x9E | 0x9D | 0xB6 => {
                         need(code, i, 3)?;
                         if code[i + 2] != 0xC0 {
-                            return Err("Unexpected 0x0F setcc/movzx encoding");
+                            return Err("Unexpected setcc/movzx encoding");
                         }
                         i += 3;
                     }
@@ -1102,24 +1124,15 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     _ => return Err("Unexpected 0x0F opcode"),
                 }
             }
+            // dec dword [eax]
             0xFF => {
-                let b1 = *code.get(i + 1).ok_or("Truncated 0xFF")?;
-                match b1 {
-                    0x08 => {
-                        need(code, i, 2)?;
-                        i += 2;
-                    }
-                    0x4D => {
-                        need(code, i, 3)?;
-                        if code[i + 2] == 0xF8 || code[i + 2] == 0xF4 {
-                            i += 3;
-                        } else {
-                            return Err("Unexpected 0xFF 0x4D disp");
-                        }
-                    }
-                    _ => return Err("Unexpected 0xFF encoding"),
+                need(code, i, 2)?;
+                if code[i + 1] != 0x08 {
+                    return Err("Unexpected 0xFF encoding");
                 }
+                i += 2;
             }
+            // mov dword [eax], imm32
             0xC7 => {
                 need(code, i, 6)?;
                 if code[i + 1] != 0x00 {
