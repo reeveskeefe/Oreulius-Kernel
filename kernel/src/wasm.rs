@@ -96,6 +96,27 @@ pub const MAX_SYSCALLS_PER_CALL: usize = 100;
 /// Number of initial JIT calls to validate against interpreter
 pub const JIT_VALIDATE_CALLS: u8 = 2;
 
+/// First mismatch details for JIT fuzzing.
+pub struct JitFuzzMismatch {
+    pub iteration: u32,
+    pub locals_total: u32,
+    pub code: Vec<u8>,
+    pub interp: Result<i32, WasmError>,
+    pub jit: Result<i32, WasmError>,
+    pub interp_mem_hash: u64,
+    pub jit_mem_hash: u64,
+}
+
+/// JIT fuzzing statistics
+pub struct JitFuzzStats {
+    pub iterations: u32,
+    pub ok: u32,
+    pub traps: u32,
+    pub mismatches: u32,
+    pub compile_errors: u32,
+    pub first_mismatch: Option<JitFuzzMismatch>,
+}
+
 /// WASM value types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueType {
@@ -680,7 +701,7 @@ impl WasmModule {
     /// Create a new empty module
     pub fn new() -> Self {
         WasmModule {
-            bytecode: Vec::with_capacity(MAX_MODULE_SIZE),
+            bytecode: Vec::new(),
             bytecode_len: 0,
             functions: [None; 64],
             function_count: 0,
@@ -695,6 +716,7 @@ impl WasmModule {
         validate_bytecode(bytecode)?;
 
         self.bytecode.clear();
+        self.bytecode.reserve_exact(bytecode.len());
         self.bytecode.extend_from_slice(bytecode);
         self.bytecode_len = bytecode.len();
 
@@ -1029,6 +1051,14 @@ impl WasmInstance {
                 return Ok(true);
             }
             return Err(WasmError::Trap);
+        }
+        if trap_code_val == -4 {
+            if let Some(shadow_inst) = shadow {
+                self.restore_from_shadow(shadow_inst);
+                self.disable_jit_for_function(func_idx);
+                return Ok(true);
+            }
+            return Err(WasmError::ControlFlowViolation);
         }
         if trap_code_val != 0 {
             if let Some(shadow_inst) = shadow {
@@ -2059,6 +2089,7 @@ pub enum WasmError {
     InvalidUtf8,
     DeterminismViolation,
     ReplayError,
+    ControlFlowViolation,
 }
 
 impl fmt::Display for WasmError {
@@ -2079,6 +2110,7 @@ impl fmt::Display for WasmError {
             WasmError::SyscallFailed => write!(f, "Syscall failed"),
             WasmError::DeterminismViolation => write!(f, "Determinism violation"),
             WasmError::ReplayError => write!(f, "Replay error"),
+            WasmError::ControlFlowViolation => write!(f, "Control flow violation"),
             _ => write!(f, "WASM error"),
         }
     }
@@ -2112,6 +2144,7 @@ impl WasmError {
             WasmError::InvalidUtf8 => "Invalid UTF-8",
             WasmError::DeterminismViolation => "Determinism violation",
             WasmError::ReplayError => "Replay error",
+            WasmError::ControlFlowViolation => "Control flow violation",
             WasmError::ExecutionLimitExceeded => "Execution limit exceeded",
             WasmError::PermissionDenied => "Permission denied",
         }
@@ -2827,6 +2860,15 @@ fn hash_memory(bytes: &[u8]) -> u64 {
     hash
 }
 
+fn hash_memory_fuzz(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash
+}
+
 fn jit_cache_get(hash: u64, code: &[u8], locals_total: usize) -> Option<JitExecInfo> {
     let cache = JIT_CACHE.lock();
     for entry in cache.entries.iter() {
@@ -3048,6 +3090,322 @@ pub fn jit_bounds_self_test() -> Result<(), &'static str> {
     let _ = wasm_runtime().destroy(instance_id);
     drop(guard);
     Ok(())
+}
+
+/// JIT fuzzing harness (generates random programs and compares interpreter vs JIT).
+pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str> {
+    struct JitConfigGuard {
+        enabled: bool,
+        hot_threshold: u32,
+        user_mode: bool,
+    }
+    impl Drop for JitConfigGuard {
+        fn drop(&mut self) {
+            let mut cfg = jit_config().lock();
+            cfg.enabled = self.enabled;
+            cfg.hot_threshold = self.hot_threshold;
+            cfg.user_mode = self.user_mode;
+        }
+    }
+
+    struct FuzzRng {
+        state: u64,
+    }
+    impl FuzzRng {
+        fn new(mut seed: u64) -> Self {
+            if seed == 0 {
+                seed = 0x9E37_79B9_7F4A_7C15;
+            }
+            FuzzRng { state: seed }
+        }
+        fn next_u32(&mut self) -> u32 {
+            let mut x = self.state;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.state = x;
+            (x as u32) ^ ((x >> 32) as u32)
+        }
+        fn next_i32(&mut self) -> i32 {
+            self.next_u32() as i32
+        }
+    }
+
+    fn push_uleb128(buf: &mut Vec<u8>, mut value: u32) {
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            buf.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    fn push_sleb128_i32(buf: &mut Vec<u8>, mut value: i32) {
+        let mut more = true;
+        while more {
+            let mut byte = (value & 0x7F) as u8;
+            let sign = (byte & 0x40) != 0;
+            value >>= 7;
+            if (value == 0 && !sign) || (value == -1 && sign) {
+                more = false;
+            } else {
+                byte |= 0x80;
+            }
+            buf.push(byte);
+        }
+    }
+
+    fn run_instance(
+        instance_id: usize,
+        enable_jit: bool,
+    ) -> Result<(Result<i32, WasmError>, u64), WasmError> {
+        wasm_runtime().get_instance_mut(instance_id, |instance| {
+            instance.stack.clear();
+            instance.enable_jit(enable_jit);
+            let res = instance.call(0);
+            let value = instance
+                .stack
+                .peek()
+                .ok()
+                .and_then(|v| v.as_i32().ok())
+                .unwrap_or(0);
+            let mem_hash = hash_memory_fuzz(instance.memory.active_slice());
+            (res.map(|_| value), mem_hash)
+        })
+    }
+
+    let _guard = {
+        let mut cfg = jit_config().lock();
+        let guard = JitConfigGuard {
+            enabled: cfg.enabled,
+            hot_threshold: cfg.hot_threshold,
+            user_mode: cfg.user_mode,
+        };
+        cfg.enabled = true;
+        cfg.hot_threshold = 0;
+        cfg.user_mode = true;
+        guard
+    };
+    let _rate_guard = {
+        struct RateLimitGuard {
+            enabled: bool,
+        }
+        impl Drop for RateLimitGuard {
+            fn drop(&mut self) {
+                crate::security::security().set_rate_limit_enabled(self.enabled);
+            }
+        }
+        let sec = crate::security::security();
+        let prev = sec.rate_limit_enabled();
+        sec.set_rate_limit_enabled(false);
+        RateLimitGuard { enabled: prev }
+    };
+
+    let mut rng = FuzzRng::new(seed);
+    let mut stats = JitFuzzStats {
+        iterations,
+        ok: 0,
+        traps: 0,
+        mismatches: 0,
+        compile_errors: 0,
+        first_mismatch: None,
+    };
+
+    for iter in 0..iterations {
+        let locals_total = (rng.next_u32() % 4) as usize;
+        let mut code: Vec<u8> = Vec::new();
+        let mut stack_depth: i32 = 0;
+        let ops = 8 + (rng.next_u32() % 32) as usize;
+
+        for _ in 0..ops {
+            let choice = rng.next_u32() % 14;
+            match choice {
+                0 => code.push(Opcode::Nop as u8),
+                1 => {
+                    if stack_depth > 0 {
+                        code.push(Opcode::Drop as u8);
+                        stack_depth -= 1;
+                    } else {
+                        code.push(Opcode::I32Const as u8);
+                        push_sleb128_i32(&mut code, rng.next_i32());
+                        stack_depth += 1;
+                    }
+                }
+                2 => {
+                    if stack_depth < (MAX_STACK_DEPTH as i32) - 1 {
+                        code.push(Opcode::I32Const as u8);
+                        push_sleb128_i32(&mut code, rng.next_i32());
+                        stack_depth += 1;
+                    }
+                }
+                3 => {
+                    if stack_depth >= 2 {
+                        code.push(Opcode::I32Add as u8);
+                        stack_depth -= 1;
+                    }
+                }
+                4 => {
+                    if stack_depth >= 2 {
+                        code.push(Opcode::I32Sub as u8);
+                        stack_depth -= 1;
+                    }
+                }
+                5 => {
+                    if stack_depth >= 2 {
+                        code.push(Opcode::I32Mul as u8);
+                        stack_depth -= 1;
+                    }
+                }
+                6 => {
+                    if stack_depth >= 2 {
+                        code.push(Opcode::I32And as u8);
+                        stack_depth -= 1;
+                    }
+                }
+                7 => {
+                    if stack_depth >= 2 {
+                        code.push(Opcode::I32Or as u8);
+                        stack_depth -= 1;
+                    }
+                }
+                8 => {
+                    if stack_depth >= 2 {
+                        code.push(Opcode::I32Xor as u8);
+                        stack_depth -= 1;
+                    }
+                }
+                9 => {
+                    if stack_depth >= 1 {
+                        code.push(Opcode::I32Eqz as u8);
+                    }
+                }
+                10 => {
+                    if stack_depth >= 1 {
+                        code.push(Opcode::I32Load as u8);
+                        push_uleb128(&mut code, 0);
+                        push_uleb128(&mut code, rng.next_u32());
+                    }
+                }
+                11 => {
+                    if stack_depth >= 2 {
+                        code.push(Opcode::I32Store as u8);
+                        push_uleb128(&mut code, 0);
+                        push_uleb128(&mut code, rng.next_u32());
+                        stack_depth -= 2;
+                    }
+                }
+                12 => {
+                    if locals_total > 0 {
+                        code.push(Opcode::LocalGet as u8);
+                        push_uleb128(&mut code, (rng.next_u32() as usize % locals_total) as u32);
+                        stack_depth += 1;
+                    }
+                }
+                _ => {
+                    if locals_total > 0 && stack_depth > 0 {
+                        code.push(Opcode::LocalSet as u8);
+                        push_uleb128(&mut code, (rng.next_u32() as usize % locals_total) as u32);
+                        stack_depth -= 1;
+                    }
+                }
+            }
+        }
+
+        code.push(Opcode::End as u8);
+
+        let mut module = WasmModule::new();
+        if module.load(&code).is_err() {
+            stats.compile_errors += 1;
+            continue;
+        }
+        if module
+            .add_function(Function {
+                code_offset: 0,
+                code_len: code.len(),
+                param_count: 0,
+                result_count: 1,
+                local_count: locals_total,
+            })
+            .is_err()
+        {
+            stats.compile_errors += 1;
+            continue;
+        }
+
+        let interp_id = wasm_runtime()
+            .instantiate_module(module.clone(), ProcessId(1))
+            .map_err(|_| "Instance create failed")?;
+        let interp = match run_instance(interp_id, false) {
+            Ok(result) => result,
+            Err(_) => {
+                stats.compile_errors += 1;
+                let _ = wasm_runtime().destroy(interp_id);
+                continue;
+            }
+        };
+        let _ = wasm_runtime().destroy(interp_id);
+
+        let jit_id = wasm_runtime()
+            .instantiate_module(module, ProcessId(1))
+            .map_err(|_| "Instance create failed")?;
+        let jit = match run_instance(jit_id, true) {
+            Ok(result) => result,
+            Err(_) => {
+                stats.compile_errors += 1;
+                let _ = wasm_runtime().destroy(jit_id);
+                continue;
+            }
+        };
+        let _ = wasm_runtime().destroy(jit_id);
+
+        let interp_res = interp.0;
+        let jit_res = jit.0;
+        let interp_mem = interp.1;
+        let jit_mem = jit.1;
+        let mut mismatch = false;
+
+        match (interp_res, jit_res) {
+            (Ok(iv), Ok(jv)) => {
+                if iv == jv && interp_mem == jit_mem {
+                    stats.ok += 1;
+                } else {
+                    stats.mismatches += 1;
+                    mismatch = true;
+                }
+            }
+            (Err(ie), Err(je)) => {
+                if ie == je {
+                    stats.traps += 1;
+                } else {
+                    stats.mismatches += 1;
+                    mismatch = true;
+                }
+            }
+            _ => {
+                stats.mismatches += 1;
+                mismatch = true;
+            }
+        }
+
+        if mismatch && stats.first_mismatch.is_none() {
+            stats.first_mismatch = Some(JitFuzzMismatch {
+                iteration: iter,
+                locals_total: locals_total as u32,
+                code: code.clone(),
+                interp: interp_res,
+                jit: jit_res,
+                interp_mem_hash: interp_mem,
+                jit_mem_hash: jit_mem,
+            });
+        }
+    }
+
+    Ok(stats)
 }
 
 // ============================================================================

@@ -101,6 +101,7 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-list    - List loaded WASM instances\n");
             vga::print_str("  wasm-jit-bench - Benchmark WASM JIT vs interpreter\n");
             vga::print_str("  wasm-jit-selftest - Run WASM JIT bounds self-test\n");
+            vga::print_str("  wasm-jit-fuzz  - Fuzz JIT vs interpreter (wasm-jit-fuzz <iters> [seed])\n");
             vga::print_str("  wasm-jit-on  - Enable WASM JIT\n");
             vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
             vga::print_str("  wasm-jit-stats - Show WASM JIT stats\n");
@@ -275,6 +276,9 @@ pub fn execute(input: &str) {
         }
         "wasm-jit-selftest" => {
             cmd_wasm_jit_selftest();
+        }
+        "wasm-jit-fuzz" => {
+            cmd_wasm_jit_fuzz(parts);
         }
         "wasm-jit-on" => {
             cmd_wasm_jit_on();
@@ -3136,6 +3140,96 @@ fn cmd_wasm_jit_selftest() {
         }
         Err(e) => {
             vga::print_str("Self-test failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    vga::print_str("\n");
+}
+
+fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
+    let iters = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: wasm-jit-fuzz <iters> [seed]\n");
+            return;
+        }
+    };
+    const MAX_FUZZ_ITERS: u32 = 10_000;
+    if iters > MAX_FUZZ_ITERS {
+        vga::print_str("Iterations too high for kernel allocator.\n");
+        vga::print_str("Use <= 10000. Did you swap iters/seed?\n");
+        return;
+    }
+    let seed = parts
+        .next()
+        .and_then(parse_number)
+        .map(|v| v as u64)
+        .unwrap_or_else(|| crate::security::security().random_u32() as u64);
+
+    vga::print_str("\n===== WASM JIT Fuzz =====\n\n");
+    vga::print_str("Iterations: ");
+    print_u32(iters);
+    vga::print_str("\nSeed: ");
+    print_u64(seed);
+    vga::print_str("\n\n");
+
+    match crate::wasm::jit_fuzz(iters, seed) {
+        Ok(stats) => {
+            vga::print_str("OK: ");
+            print_u32(stats.ok);
+            vga::print_str("\nTraps: ");
+            print_u32(stats.traps);
+            vga::print_str("\nMismatches: ");
+            print_u32(stats.mismatches);
+            vga::print_str("\nCompile errors: ");
+            print_u32(stats.compile_errors);
+            vga::print_str("\n");
+            if stats.mismatches > 0 {
+                if let Some(mismatch) = stats.first_mismatch {
+                    vga::print_str("\nFirst mismatch:\n");
+                    vga::print_str("Iter: ");
+                    print_u32(mismatch.iteration);
+                    vga::print_str("  Locals: ");
+                    print_u32(mismatch.locals_total);
+                    vga::print_str("  Code len: ");
+                    print_u32(mismatch.code.len() as u32);
+                    vga::print_str("\nInterp: ");
+                    match mismatch.interp {
+                        Ok(v) => {
+                            vga::print_str("ok ");
+                            print_i32(v);
+                        }
+                        Err(e) => vga::print_str(e.as_str()),
+                    }
+                    vga::print_str("  JIT: ");
+                    match mismatch.jit {
+                        Ok(v) => {
+                            vga::print_str("ok ");
+                            print_i32(v);
+                        }
+                        Err(e) => vga::print_str(e.as_str()),
+                    }
+                    vga::print_str("\nMem hash (interp/jit): 0x");
+                    print_hex_u32((mismatch.interp_mem_hash >> 32) as u32);
+                    print_hex_u32(mismatch.interp_mem_hash as u32);
+                    vga::print_str(" / 0x");
+                    print_hex_u32((mismatch.jit_mem_hash >> 32) as u32);
+                    print_hex_u32(mismatch.jit_mem_hash as u32);
+                    vga::print_str("\nCode bytes:\n");
+                    for (idx, byte) in mismatch.code.iter().enumerate() {
+                        if idx > 0 && idx % 16 == 0 {
+                            vga::print_str("\n");
+                        }
+                        print_hex_byte(*byte);
+                        vga::print_str(" ");
+                    }
+                    vga::print_str("\n");
+                }
+            }
+        }
+        Err(e) => {
+            vga::print_str("Fuzz failed: ");
             vga::print_str(e);
             vga::print_str("\n");
         }

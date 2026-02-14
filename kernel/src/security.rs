@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use crate::ipc::ProcessId;
 
@@ -478,6 +479,7 @@ pub struct SecurityManager {
     audit_log: Mutex<AuditLog>,
     validator: Mutex<CapabilityValidator>,
     rate_limiter: Mutex<RateLimiter>,
+    rate_limit_enabled: AtomicBool,
     resource_tracker: Mutex<ResourceTracker>,
     random: Mutex<SecureRandom>,
 }
@@ -488,9 +490,19 @@ impl SecurityManager {
             audit_log: Mutex::new(AuditLog::new()),
             validator: Mutex::new(CapabilityValidator::new()),
             rate_limiter: Mutex::new(RateLimiter::new()),
+            rate_limit_enabled: AtomicBool::new(true),
             resource_tracker: Mutex::new(ResourceTracker::new()),
             random: Mutex::new(SecureRandom::new(0x1234567890ABCDEF)),
         }
+    }
+
+    /// Enable/disable rate limiting (used by fuzz harness).
+    pub fn set_rate_limit_enabled(&self, enabled: bool) {
+        self.rate_limit_enabled.store(enabled, Ordering::SeqCst);
+    }
+
+    pub fn rate_limit_enabled(&self) -> bool {
+        self.rate_limit_enabled.load(Ordering::SeqCst)
     }
 
     /// Log security event
@@ -503,11 +515,13 @@ impl SecurityManager {
     /// Validate capability operation
     pub fn validate_capability(&self, process: ProcessId, required_rights: u32, actual_rights: u32) -> Result<(), SecurityError> {
         // Check rate limit
-        if !self.rate_limiter.lock().allow(process) {
-            self.log_event(
-                AuditEntry::new(SecurityEvent::RateLimitExceeded, process, 0)
-            );
-            return Err(SecurityError::RateLimitExceeded);
+        if self.rate_limit_enabled.load(Ordering::SeqCst) {
+            if !self.rate_limiter.lock().allow(process) {
+                self.log_event(
+                    AuditEntry::new(SecurityEvent::RateLimitExceeded, process, 0)
+                );
+                return Err(SecurityError::RateLimitExceeded);
+            }
         }
 
         // Validate rights
