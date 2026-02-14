@@ -52,6 +52,8 @@ pub type JitFn = unsafe extern "C" fn(
     *mut u32,
     *mut u32,
     *mut i32,
+    *mut u32,
+    *mut usize,
 ) -> i32;
 
 #[derive(Clone, Copy, Debug)]
@@ -95,6 +97,7 @@ unsafe impl Sync for JitExecBuffer {}
 const TRAP_MEM: i32 = -1;
 const TRAP_FUEL: i32 = -2;
 const TRAP_STACK: i32 = -3;
+const TRAP_CFI: i32 = -4;
 
 impl JitExecBuffer {
     fn new(len: usize) -> Result<Self, &'static str> {
@@ -349,7 +352,8 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
     let trap_mem_pos = emitter.emit_trap_stub(TRAP_MEM);
     let trap_fuel_pos = emitter.emit_trap_stub(TRAP_FUEL);
     let trap_stack_pos = emitter.emit_trap_stub(TRAP_STACK);
-    emitter.patch_traps(trap_mem_pos, trap_fuel_pos, trap_stack_pos);
+    let trap_cfi_pos = emitter.emit_trap_stub(TRAP_CFI);
+    emitter.patch_traps(trap_mem_pos, trap_fuel_pos, trap_stack_pos, trap_cfi_pos);
 
     verify_x86_subset(&emitter.code)?;
 
@@ -378,6 +382,7 @@ struct Emitter {
     trap_mem_jumps: Vec<usize>,
     trap_fuel_jumps: Vec<usize>,
     trap_stack_jumps: Vec<usize>,
+    trap_cfi_jumps: Vec<usize>,
 }
 
 impl Emitter {
@@ -387,6 +392,7 @@ impl Emitter {
             trap_mem_jumps: Vec::new(),
             trap_fuel_jumps: Vec::new(),
             trap_stack_jumps: Vec::new(),
+            trap_cfi_jumps: Vec::new(),
         }
     }
 
@@ -419,8 +425,8 @@ impl Emitter {
         self.emit(&[0x8B, 0x4D, 0x14]);
         // mov eax, [ebp+24]
         self.emit(&[0x8B, 0x45, 0x18]);
-        // sub esp, 16
-        self.emit(&[0x83, 0xEC, 0x10]);
+        // sub esp, 24
+        self.emit(&[0x83, 0xEC, 0x18]);
         // mov [ebp-4], eax (locals pointer)
         self.emit(&[0x89, 0x45, 0xFC]);
         // mov eax, [ebp+28] (instr fuel ptr)
@@ -435,6 +441,15 @@ impl Emitter {
         self.emit(&[0x8B, 0x45, 0x24]);
         // mov [ebp-16], eax
         self.emit(&[0x89, 0x45, 0xF0]);
+        // mov eax, [ebp+40] (shadow stack ptr)
+        self.emit(&[0x8B, 0x45, 0x28]);
+        // mov [ebp-20], eax
+        self.emit(&[0x89, 0x45, 0xEC]);
+        // mov eax, [ebp+44] (shadow sp ptr)
+        self.emit(&[0x8B, 0x45, 0x2C]);
+        // mov [ebp-24], eax
+        self.emit(&[0x89, 0x45, 0xE8]);
+        self.emit_cfi_push_return();
     }
 
     fn emit_pop_to_eax(&mut self) {
@@ -713,6 +728,53 @@ impl Emitter {
         self.emit(&[0x89, 0x1C, 0x02]);
     }
 
+    fn emit_cfi_push_return(&mut self) {
+        // mov eax, [ebp-24] (shadow sp ptr)
+        self.emit(&[0x8B, 0x45, 0xE8]);
+        // mov ebx, [eax]
+        self.emit(&[0x8B, 0x18]);
+        // cmp ebx, MAX_STACK_DEPTH
+        self.emit(&[0x81, 0xFB]);
+        self.emit_u32(MAX_STACK_DEPTH as u32);
+        // jae trap (rel32)
+        self.emit_trap_cfi_jump(0x83);
+        // mov edx, [ebp-20] (shadow stack base)
+        self.emit(&[0x8B, 0x55, 0xEC]);
+        // mov ecx, [ebp+4] (return address)
+        self.emit(&[0x8B, 0x4D, 0x04]);
+        // mov [edx + ebx*4], ecx
+        self.emit(&[0x89, 0x0C, 0x9A]);
+        // inc ebx
+        self.emit(&[0x43]);
+        // mov [eax], ebx
+        self.emit(&[0x89, 0x18]);
+    }
+
+    fn emit_cfi_check_return(&mut self) {
+        // mov eax, [ebp-24] (shadow sp ptr)
+        self.emit(&[0x8B, 0x45, 0xE8]);
+        // mov ebx, [eax]
+        self.emit(&[0x8B, 0x18]);
+        // cmp ebx, 0
+        self.emit(&[0x83, 0xFB, 0x00]);
+        // je trap (rel32)
+        self.emit_trap_cfi_jump(0x84);
+        // dec ebx
+        self.emit(&[0x4B]);
+        // mov [eax], ebx
+        self.emit(&[0x89, 0x18]);
+        // mov edx, [ebp-20] (shadow stack base)
+        self.emit(&[0x8B, 0x55, 0xEC]);
+        // mov ecx, [edx + ebx*4] (expected ret)
+        self.emit(&[0x8B, 0x0C, 0x9A]);
+        // mov edx, [ebp+4] (actual ret)
+        self.emit(&[0x8B, 0x55, 0x04]);
+        // cmp edx, ecx
+        self.emit(&[0x39, 0xCA]);
+        // jne trap (rel32)
+        self.emit_trap_cfi_jump(0x85);
+    }
+
     fn emit_instr_fuel_check(&mut self) {
         // mov eax, [ebp-8]
         self.emit(&[0x8B, 0x45, 0xF8]);
@@ -737,8 +799,8 @@ impl Emitter {
 
     fn emit_epilogue(&mut self) -> usize {
         let pos = self.code.len();
-        // add esp, 16
-        self.emit(&[0x83, 0xC4, 0x10]);
+        // add esp, 24
+        self.emit(&[0x83, 0xC4, 0x18]);
         // mov ebx, [esi]
         self.emit(&[0x8B, 0x1E]);
         // cmp ebx, 0
@@ -755,6 +817,7 @@ impl Emitter {
         self.emit(&[0xEB, 0x02]);
         // xor eax, eax
         self.emit(&[0x31, 0xC0]);
+        self.emit_cfi_check_return();
         // pop ebp; ret
         self.emit(&[0x5D, 0xC3]);
         pos
@@ -762,8 +825,8 @@ impl Emitter {
 
     fn emit_trap_stub(&mut self, code: i32) -> usize {
         let pos = self.code.len();
-        // add esp, 16
-        self.emit(&[0x83, 0xC4, 0x10]);
+        // add esp, 24
+        self.emit(&[0x83, 0xC4, 0x18]);
         // mov eax, [ebp-16]
         self.emit(&[0x8B, 0x45, 0xF0]);
         // mov dword [eax], imm32
@@ -798,7 +861,20 @@ impl Emitter {
         self.trap_stack_jumps.push(pos);
     }
 
-    fn patch_traps(&mut self, trap_mem_pos: usize, trap_fuel_pos: usize, trap_stack_pos: usize) {
+    fn emit_trap_cfi_jump(&mut self, opcode_ext: u8) {
+        self.emit(&[0x0F, opcode_ext]);
+        let pos = self.code.len();
+        self.emit_u32(0);
+        self.trap_cfi_jumps.push(pos);
+    }
+
+    fn patch_traps(
+        &mut self,
+        trap_mem_pos: usize,
+        trap_fuel_pos: usize,
+        trap_stack_pos: usize,
+        trap_cfi_pos: usize,
+    ) {
         for &idx in &self.trap_mem_jumps {
             let next = idx + 4;
             let rel = (trap_mem_pos as isize - next as isize) as i32;
@@ -812,6 +888,11 @@ impl Emitter {
         for &idx in &self.trap_stack_jumps {
             let next = idx + 4;
             let rel = (trap_stack_pos as isize - next as isize) as i32;
+            self.code[idx..idx + 4].copy_from_slice(&rel.to_le_bytes());
+        }
+        for &idx in &self.trap_cfi_jumps {
+            let next = idx + 4;
+            let rel = (trap_cfi_pos as isize - next as isize) as i32;
             self.code[idx..idx + 4].copy_from_slice(&rel.to_le_bytes());
         }
     }
@@ -1047,7 +1128,10 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                         i += 3;
                     }
                     0xEC | 0xC4 => {
-                        expect_u8(code, i + 2, 0x10)?;
+                        let imm = *code.get(i + 2).ok_or("Truncated imm8")?;
+                        if imm != 0x10 && imm != 0x18 {
+                            return Err("Unexpected stack adjust imm8");
+                        }
                         i += 3;
                     }
                     0x38 => {
@@ -1073,20 +1157,28 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0x55 => {
                         need(code, i, 3)?;
-                        expect_u8(code, i + 2, 0x10)?;
+                        expect_disp8(code, i + 2, &[0x10, 0xEC, 0x04])?;
                         i += 3;
                     }
                     0x4D => {
                         need(code, i, 3)?;
-                        expect_u8(code, i + 2, 0x14)?;
+                        expect_disp8(code, i + 2, &[0x14, 0x04])?;
                         i += 3;
                     }
                     0x45 => {
                         need(code, i, 3)?;
-                        expect_disp8(code, i + 2, &[0x18, 0x1C, 0x20, 0x24, 0xF8, 0xF4, 0xF0])?;
+                        expect_disp8(
+                            code,
+                            i + 2,
+                            &[0x18, 0x1C, 0x20, 0x24, 0x28, 0x2C, 0xF8, 0xF4, 0xF0, 0xEC, 0xE8],
+                        )?;
                         i += 3;
                     }
                     0x1E | 0x06 => {
+                        need(code, i, 2)?;
+                        i += 2;
+                    }
+                    0x18 => {
                         need(code, i, 2)?;
                         i += 2;
                     }
@@ -1100,6 +1192,13 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                             }
                             _ => return Err("Unexpected 0x8B SIB"),
                         }
+                    }
+                    0x0C => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0x9A {
+                            return Err("Unexpected 0x8B SIB");
+                        }
+                        i += 3;
                     }
                     0x1C => {
                         need(code, i, 3)?;
@@ -1130,10 +1229,10 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0x45 => {
                         need(code, i, 3)?;
-                        expect_disp8(code, i + 2, &[0xFC, 0xF8, 0xF4, 0xF0])?;
+                        expect_disp8(code, i + 2, &[0xFC, 0xF8, 0xF4, 0xF0, 0xEC, 0xE8])?;
                         i += 3;
                     }
-                    0x1E | 0x06 | 0xCB => {
+                    0x1E | 0x06 | 0xCB | 0x18 => {
                         need(code, i, 2)?;
                         if b1 == 0xCB {
                             guard_tok = Some(GuardTok::MovEbxEcx);
@@ -1155,6 +1254,13 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                         linear_store = true;
                         i += 3;
                     }
+                    0x0C => {
+                        need(code, i, 3)?;
+                        if code[i + 2] != 0x9A {
+                            return Err("Unexpected 0x89 SIB");
+                        }
+                        i += 3;
+                    }
                     0x83 => {
                         need(code, i, 6)?;
                         i += 6;
@@ -1165,11 +1271,16 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
             // cmp eax, ebx
             0x39 => {
                 need(code, i, 2)?;
-                if code[i + 1] != 0xD8 {
-                    return Err("Unexpected 0x39 encoding");
+                match code[i + 1] {
+                    0xD8 => {
+                        guard_tok = Some(GuardTok::CmpEaxEbx);
+                        i += 2;
+                    }
+                    0xCA => {
+                        i += 2;
+                    }
+                    _ => return Err("Unexpected 0x39 encoding"),
                 }
-                guard_tok = Some(GuardTok::CmpEaxEbx);
-                i += 2;
             }
             // ALU ops
             0x01 | 0x29 | 0x21 | 0x09 => {
@@ -1204,7 +1315,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                         }
                         i += 3;
                     }
-                    0x84 | 0x83 | 0x82 | 0x87 => {
+                    0x84 | 0x83 | 0x82 | 0x87 | 0x85 => {
                         need(code, i, 6)?;
                         if b1 == 0x82 {
                             guard_tok = Some(GuardTok::Jb);

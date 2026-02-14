@@ -736,6 +736,8 @@ struct JitUserState {
     instr_fuel: u32,
     mem_fuel: u32,
     trap_code: i32,
+    shadow_stack: [u32; MAX_STACK_DEPTH],
+    shadow_sp: usize,
 }
 
 const USER_JIT_TRAMPOLINE_BASE: usize = 0x0040_0000;
@@ -759,6 +761,8 @@ struct JitUserCall {
     instr_fuel_ptr: u32,
     mem_fuel_ptr: u32,
     trap_ptr: u32,
+    shadow_stack_ptr: u32,
+    shadow_sp_ptr: u32,
     ret: i32,
 }
 
@@ -975,10 +979,13 @@ impl WasmInstance {
             state.instr_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
             state.mem_fuel = MAX_MEMORY_OPS_PER_CALL as u32;
             state.trap_code = 0;
+            state.shadow_sp = 0;
             let locals_ptr = state.locals.as_mut_ptr();
             let instr_fuel = &mut state.instr_fuel as *mut u32;
             let mem_fuel = &mut state.mem_fuel as *mut u32;
             let trap_code = &mut state.trap_code as *mut i32;
+            let shadow_stack_ptr = state.shadow_stack.as_mut_ptr();
+            let shadow_sp_ptr = &mut state.shadow_sp as *mut usize;
             call_jit_sandboxed(
                 jit_entry,
                 state.stack.as_mut_ptr(),
@@ -989,6 +996,8 @@ impl WasmInstance {
                 instr_fuel,
                 mem_fuel,
                 trap_code,
+                shadow_stack_ptr,
+                shadow_sp_ptr,
                 jit_state_base,
                 jit_state_pages,
             )
@@ -2343,51 +2352,59 @@ fn write_jit_user_trampoline(trampoline: *mut u8, call_addr: u32) {
         // mov eax, [ecx]
         write_u8!(0x8B);
         write_u8!(0x01);
-        // push dword [ecx+32]
+        // push dword [ecx+40] (shadow sp)
+        write_u8!(0xFF);
+        write_u8!(0x71);
+        write_u8!(0x28);
+        // push dword [ecx+36] (shadow stack)
+        write_u8!(0xFF);
+        write_u8!(0x71);
+        write_u8!(0x24);
+        // push dword [ecx+32] (trap ptr)
         write_u8!(0xFF);
         write_u8!(0x71);
         write_u8!(0x20);
-        // push dword [ecx+28]
+        // push dword [ecx+28] (mem fuel)
         write_u8!(0xFF);
         write_u8!(0x71);
         write_u8!(0x1C);
-        // push dword [ecx+24]
+        // push dword [ecx+24] (instr fuel)
         write_u8!(0xFF);
         write_u8!(0x71);
         write_u8!(0x18);
-        // push dword [ecx+20]
+        // push dword [ecx+20] (locals ptr)
         write_u8!(0xFF);
         write_u8!(0x71);
         write_u8!(0x14);
-        // push dword [ecx+16]
+        // push dword [ecx+16] (mem len)
         write_u8!(0xFF);
         write_u8!(0x71);
         write_u8!(0x10);
-        // push dword [ecx+12]
+        // push dword [ecx+12] (mem ptr)
         write_u8!(0xFF);
         write_u8!(0x71);
         write_u8!(0x0C);
-        // push dword [ecx+8]
+        // push dword [ecx+8] (sp ptr)
         write_u8!(0xFF);
         write_u8!(0x71);
         write_u8!(0x08);
-        // push dword [ecx+4]
+        // push dword [ecx+4] (stack ptr)
         write_u8!(0xFF);
         write_u8!(0x71);
         write_u8!(0x04);
         // call eax
         write_u8!(0xFF);
         write_u8!(0xD0);
-        // add esp, 32
+        // add esp, 40
         write_u8!(0x83);
         write_u8!(0xC4);
-        write_u8!(0x20);
+        write_u8!(0x28);
         // pop ecx (restore call pointer)
         write_u8!(0x59);
-        // mov [ecx+36], eax
+        // mov [ecx+44], eax
         write_u8!(0x89);
         write_u8!(0x41);
-        write_u8!(0x24);
+        write_u8!(0x2C);
         // mov eax, imm32 (syscall number)
         write_u8!(0xB8);
         write_u32!(SYSCALL_JIT_RETURN);
@@ -2499,6 +2516,8 @@ fn call_jit_sandboxed(
     instr_fuel: *mut u32,
     mem_fuel: *mut u32,
     trap_code: *mut i32,
+    shadow_stack_ptr: *mut u32,
+    shadow_sp_ptr: *mut usize,
     jit_state_base: *mut u8,
     jit_state_pages: usize,
 ) -> i32 {
@@ -2513,6 +2532,8 @@ fn call_jit_sandboxed(
             instr_fuel,
             mem_fuel,
             trap_code,
+            shadow_stack_ptr,
+            shadow_sp_ptr,
             jit_state_base,
             jit_state_pages,
         ) {
@@ -2529,6 +2550,8 @@ fn call_jit_sandboxed(
         instr_fuel,
         mem_fuel,
         trap_code,
+        shadow_stack_ptr,
+        shadow_sp_ptr,
     )
 }
 
@@ -2542,6 +2565,8 @@ fn call_jit_kernel(
     instr_fuel: *mut u32,
     mem_fuel: *mut u32,
     trap_code: *mut i32,
+    shadow_stack_ptr: *mut u32,
+    shadow_sp_ptr: *mut usize,
 ) -> i32 {
     let flags = unsafe { idt_asm::fast_cli_save() };
     let old_cr3 = paging::current_page_directory_addr();
@@ -2570,6 +2595,8 @@ fn call_jit_kernel(
             instr_fuel,
             mem_fuel,
             trap_code,
+            shadow_stack_ptr,
+            shadow_sp_ptr,
         )
     };
     unsafe { paging::set_page_directory(old_cr3) };
@@ -2588,6 +2615,8 @@ fn call_jit_user(
     instr_fuel: *mut u32,
     mem_fuel: *mut u32,
     trap_code: *mut i32,
+    _shadow_stack_ptr: *mut u32,
+    _shadow_sp_ptr: *mut usize,
     jit_state_base: *mut u8,
     jit_state_pages: usize,
 ) -> Result<i32, &'static str> {
@@ -2725,6 +2754,10 @@ fn call_jit_user(
         unsafe { core::ptr::addr_of!((*state_ptr).instr_fuel) as usize } - base;
     let mem_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).mem_fuel) as usize } - base;
     let trap_off = unsafe { core::ptr::addr_of!((*state_ptr).trap_code) as usize } - base;
+    let shadow_stack_off =
+        unsafe { core::ptr::addr_of!((*state_ptr).shadow_stack) as usize } - base;
+    let shadow_sp_off =
+        unsafe { core::ptr::addr_of!((*state_ptr).shadow_sp) as usize } - base;
 
     let user_mem_ptr = USER_WASM_MEM_BASE + mem_offset;
 
@@ -2739,6 +2772,8 @@ fn call_jit_user(
         (*call_ptr).instr_fuel_ptr = (user_state_base + instr_fuel_off) as u32;
         (*call_ptr).mem_fuel_ptr = (user_state_base + mem_fuel_off) as u32;
         (*call_ptr).trap_ptr = (user_state_base + trap_off) as u32;
+        (*call_ptr).shadow_stack_ptr = (user_state_base + shadow_stack_off) as u32;
+        (*call_ptr).shadow_sp_ptr = (user_state_base + shadow_sp_off) as u32;
         (*call_ptr).ret = 0;
     }
 
