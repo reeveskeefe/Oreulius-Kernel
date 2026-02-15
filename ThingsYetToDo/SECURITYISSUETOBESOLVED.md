@@ -30,6 +30,7 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **Expanded SFI (all memory access paths)**: verifier enforces stack + linear memory guards for every access path.
 - **Per-instance JIT user pages + wipe between runs**: per-instance JIT trampoline/call/stack pages are wiped and re-sealed on each run.
 - **Full CFI (shadow stack + valid target sets)**: return checks run on all exits; verifier restricts indirect/branch targets to trap stubs.
+- **SMEP/SMAP/KPTI**: CR4 protections enabled when supported; KPTI uses user IDT + trampolines, CR3 switching on entry/exit, and minimal kernel mappings.
 
 ### **Partially Implemented**
 - **Translation validation**: shadow execution exists, but not a full proof or per-block validator.
@@ -53,6 +54,7 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - Return-address shadow stack checks in generated code (CFI-lite).
 - SipHash MAC tokens on IPC capabilities.
 - SipHash MAC tokens on in-kernel capability table entries.
+- SMEP/SMAP enabled (when supported) + KPTI user IDT/trampoline/CR3 switching.
 - In-kernel JIT fuzz harness with regression seeds.
 - Complete instruction whitelist + decoder validation for JIT output.
 - Expanded SFI enforcement for all memory access paths in JIT verifier.
@@ -165,8 +167,8 @@ impl JitVerifier {
 - ✅ **Guard pages**: guard pages protect user JIT stack, code, data, and WASM memory windows.
 - ✅ **Per-instance JIT user pages**: trampoline/call/stack pages are per instance and wiped between runs.
 - ✅ **CFI (shadow stack + valid target sets)**: return checks on all exits + verifier-enforced trap targets.
+- ✅ **SMEP/SMAP/KPTI**: CR4 protections + user IDT trampolines + CR3 isolation.
 - 🟡 **Translation validation**: shadow execution exists; not full translation proof.
-- 🔶 **SMEP/SMAP/KPTI**: not yet implemented.
 
 **Benefits:**
 - ✅ Keeps JIT in kernel for performance
@@ -810,7 +812,7 @@ impl AnomalyDetector {
 
 ---
 
-**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, fuel limits, integrity checks, shadow validation, capability MACs in IPC + core tables, a complete decoder/whitelist, expanded SFI, and in-kernel fuzzing). The remaining gap to "provably secure" is **formal verification + coverage-guided fuzzing**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
+**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, SMEP/SMAP/KPTI, fuel limits, integrity checks, shadow validation, capability MACs in IPC + core tables, a complete decoder/whitelist, expanded SFI, and in-kernel fuzzing). The remaining gap to "provably secure" is **formal verification + coverage-guided fuzzing**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
 
 # 🔬 **Mathematical Problems to Make Oreulia Provably Impenetrable**
 

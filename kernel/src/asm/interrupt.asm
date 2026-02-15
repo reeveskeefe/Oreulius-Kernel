@@ -11,6 +11,10 @@ global asm_read_cr0
 global asm_write_cr0
 global asm_read_cr3
 global asm_write_cr3
+global asm_read_cr4
+global asm_write_cr4
+global asm_stac
+global asm_clac
 global asm_jit_fault_resume
 global asm_outb
 global asm_inb
@@ -77,6 +81,29 @@ asm_read_cr3:
 asm_write_cr3:
     mov eax, [esp + 4]
     mov cr3, eax
+    ret
+
+; Read CR4 control register
+; Returns: EAX = CR4
+asm_read_cr4:
+    mov eax, cr4
+    ret
+
+; Write CR4 control register
+; Args: (value: u32)
+asm_write_cr4:
+    mov eax, [esp + 4]
+    mov cr4, eax
+    ret
+
+; Set AC flag (SMAP: allow supervisor access to user pages)
+asm_stac:
+    stac
+    ret
+
+; Clear AC flag (SMAP: disallow supervisor access to user pages)
+asm_clac:
+    clac
     ret
 
 ; Resume from a JIT sandbox page fault by unwinding the JIT frame.

@@ -74,6 +74,7 @@ idt_set_gate:
 ; ============================================================================
 
 extern rust_exception_handler
+extern KPTI_USER_CR3
 
 ; Macro for exception without error code
 %macro ISR_NOERRCODE 1
@@ -168,6 +169,16 @@ isr_common_stub:
     
     ; Clean up error code and interrupt number
     add esp, 8
+
+    ; KPTI: restore user CR3 if returning to ring 3
+    mov eax, [KPTI_USER_CR3]
+    test eax, eax
+    je .isr_kpti_done
+    mov edx, [esp + 4]      ; CS selector on stack
+    test dl, 0x3            ; CPL == 3?
+    jz .isr_kpti_done
+    mov cr3, eax
+.isr_kpti_done:
     
     ; Return from interrupt
     iretd
@@ -245,6 +256,16 @@ irq_common_stub:
     
     ; Clean up error code and IRQ number
     add esp, 8
+
+    ; KPTI: restore user CR3 if returning to ring 3
+    mov eax, [KPTI_USER_CR3]
+    test eax, eax
+    je .irq_kpti_done
+    mov edx, [esp + 4]      ; CS selector on stack
+    test dl, 0x3            ; CPL == 3?
+    jz .irq_kpti_done
+    mov cr3, eax
+.irq_kpti_done:
     
     ; Return from interrupt
     iretd

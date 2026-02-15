@@ -2,9 +2,10 @@
 
 <div align="center">
 
-**A capability-based, WebAssembly-native operating system built from the ground up**
+**A capability-based microkernel hybrid, WebAssembly-native kernel built from the ground up**
 
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange.svg)](https://www.rust-lang.org/)
+[![Written in assembly](https://img.shields.io/badge/written%20in-Assembly-brown.svg)](https://en.wikipedia.org/wiki/Assembly_language)
 [![License: Oreulius](docs/oreulius-license-badge.svg)](OreuliusLiscence.md)
 [![Platform](https://img.shields.io/badge/platform-i686-lightgrey.svg)](https://en.wikipedia.org/wiki/I686)
 

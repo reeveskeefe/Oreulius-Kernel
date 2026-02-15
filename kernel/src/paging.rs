@@ -456,6 +456,16 @@ impl AddressSpace {
         })
     }
 
+    /// Create an empty address space with no kernel mappings (for KPTI user mode).
+    pub fn new_user_minimal() -> Result<Self, &'static str> {
+        let page_dir = Box::new(PageDirectory::new());
+        let phys_addr = &*page_dir as *const _ as usize;
+        Ok(AddressSpace {
+            page_directory: page_dir,
+            phys_addr,
+        })
+    }
+
     /// Setup kernel mapping (lower 3GB identity mapped)
     fn setup_kernel_mapping(page_dir: &mut PageDirectory) -> Result<(), &'static str> {
         const CHUNK_MB: usize = 4;
@@ -1076,6 +1086,12 @@ pub fn init() -> Result<(), &'static str> {
 /// Get reference to kernel address space
 pub fn kernel_space() -> &'static Mutex<Option<AddressSpace>> {
     &KERNEL_ADDRESS_SPACE
+}
+
+/// Get the kernel page directory physical address (CR3).
+pub fn kernel_page_directory_addr() -> Option<u32> {
+    let guard = KERNEL_ADDRESS_SPACE.lock();
+    guard.as_ref().map(|space| space.phys_addr() as u32)
 }
 
 /// Set writable flag for a range of kernel-mapped pages.

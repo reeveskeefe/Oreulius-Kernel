@@ -63,6 +63,7 @@ use crate::memory;
 use crate::syscall::SYSCALL_JIT_RETURN;
 use crate::gdt;
 use crate::process_asm;
+use crate::kpti;
 use crate::replay::{self, ReplayEventStatus, ReplayMode};
 
 // ============================================================================
@@ -2903,12 +2904,20 @@ fn call_jit_user(
     let pages = ensure_jit_user_pages(jit_user_pages)?;
     wipe_jit_user_pages(&pages);
 
-    let mut sandbox = paging::AddressSpace::new_jit_sandbox()?;
+    let mut sandbox = if kpti::enabled() {
+        paging::AddressSpace::new_user_minimal()?
+    } else {
+        paging::AddressSpace::new_jit_sandbox()?
+    };
 
     let kernel_guard = paging::kernel_space().lock();
     let kernel_space = kernel_guard
         .as_ref()
         .ok_or("Kernel address space not initialized")?;
+
+    if kpti::enabled() {
+        kpti::map_user_support(&mut sandbox, kernel_space)?;
+    }
 
     let trampoline_phys = kernel_space
         .virt_to_phys(pages.trampoline)
@@ -3096,6 +3105,9 @@ fn call_jit_user(
 
     let flags = unsafe { idt_asm::fast_cli_save() };
     let old_cr3 = paging::current_page_directory_addr();
+    if kpti::enabled() {
+        let _ = kpti::enter_user(sandbox_pd);
+    }
     unsafe { paging::set_page_directory(sandbox_pd) };
 
     let user_stack_top = USER_JIT_STACK_BASE
@@ -3112,6 +3124,9 @@ fn call_jit_user(
     }
 
     unsafe { paging::set_page_directory(old_cr3) };
+    if kpti::enabled() {
+        kpti::leave_user();
+    }
     jit_fault_exit();
     unsafe { idt_asm::fast_sti_restore(flags) };
 

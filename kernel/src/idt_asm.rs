@@ -36,6 +36,7 @@ impl IdtEntry {
 
 /// IDT pointer structure for LIDT instruction
 #[repr(C, packed)]
+#[derive(Copy, Clone)]
 pub struct IdtPointer {
     pub limit: u16,         // Size of IDT - 1
     pub base: u32,          // Address of first IDT entry
@@ -135,6 +136,19 @@ extern "C" {
     pub fn irq13();
     pub fn irq14();
     pub fn irq15();
+
+    // Context-switch debug latches from context_switch.asm
+    static asm_dbg_ctx_ptr: u32;
+    static asm_dbg_eip_target: u32;
+    static asm_dbg_esp_loaded: u32;
+    static asm_dbg_entry_popped: u32;
+    static asm_dbg_stage: u32;
+    static asm_sw_old_ptr: u32;
+    static asm_sw_new_ptr: u32;
+    static asm_sw_saved_old_eip: u32;
+    static asm_sw_new_eip: u32;
+    static asm_sw_new_esp: u32;
+    static asm_sw_stage: u32;
     
     // PIC Operations
     pub fn pic_send_eoi(irq: u8);
@@ -464,6 +478,13 @@ pub fn init() {
     }
 }
 
+/// Reload the current kernel IDT (used after temporary user IDT loads).
+pub fn reload() {
+    unsafe {
+        IDT.load();
+    }
+}
+
 /// Interrupt statistics
 pub struct InterruptStats;
 
@@ -490,6 +511,25 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
         if crate::wasm::jit_handle_page_fault(frame, fault_addr as usize, frame.err_code) {
             return;
         }
+        let dbg_ctx_ptr = unsafe { asm_dbg_ctx_ptr };
+        let dbg_eip_target = unsafe { asm_dbg_eip_target };
+        let dbg_esp_loaded = unsafe { asm_dbg_esp_loaded };
+        let dbg_entry_popped = unsafe { asm_dbg_entry_popped };
+        let dbg_stage = unsafe { asm_dbg_stage };
+        let sw_old_ptr = unsafe { asm_sw_old_ptr };
+        let sw_new_ptr = unsafe { asm_sw_new_ptr };
+        let sw_saved_old_eip = unsafe { asm_sw_saved_old_eip };
+        let sw_new_eip = unsafe { asm_sw_new_eip };
+        let sw_new_esp = unsafe { asm_sw_new_esp };
+        let sw_stage = unsafe { asm_sw_stage };
+        crate::serial::_print(format_args!(
+            "[CTX-DBG] stage={} ctx_ptr=0x{:08x} eip_target=0x{:08x} esp_loaded=0x{:08x} entry_popped=0x{:08x}\n",
+            dbg_stage, dbg_ctx_ptr, dbg_eip_target, dbg_esp_loaded, dbg_entry_popped
+        ));
+        crate::serial::_print(format_args!(
+            "[SW-DBG] stage={} old=0x{:08x} new=0x{:08x} save_eip=0x{:08x} load_eip=0x{:08x} load_esp=0x{:08x}\n",
+            sw_stage, sw_old_ptr, sw_new_ptr, sw_saved_old_eip, sw_new_eip, sw_new_esp
+        ));
         crate::paging::rust_page_fault_handler_ex(
             frame.err_code,
             fault_addr as usize,
@@ -517,6 +557,27 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
             "EAX: 0x{:08x}, EBX: 0x{:08x}, ECX: 0x{:08x}, EDX: 0x{:08x}\n",
             frame.eax, frame.ebx, frame.ecx, frame.edx
         ));
+        if exc == Exception::InvalidOpcode {
+            let dbg_ctx_ptr = unsafe { asm_dbg_ctx_ptr };
+            let dbg_eip_target = unsafe { asm_dbg_eip_target };
+            let dbg_esp_loaded = unsafe { asm_dbg_esp_loaded };
+            let dbg_entry_popped = unsafe { asm_dbg_entry_popped };
+            let dbg_stage = unsafe { asm_dbg_stage };
+            let sw_old_ptr = unsafe { asm_sw_old_ptr };
+            let sw_new_ptr = unsafe { asm_sw_new_ptr };
+            let sw_saved_old_eip = unsafe { asm_sw_saved_old_eip };
+            let sw_new_eip = unsafe { asm_sw_new_eip };
+            let sw_new_esp = unsafe { asm_sw_new_esp };
+            let sw_stage = unsafe { asm_sw_stage };
+            crate::serial::_print(format_args!(
+                "[CTX-DBG] stage={} ctx_ptr=0x{:08x} eip_target=0x{:08x} esp_loaded=0x{:08x} entry_popped=0x{:08x}\n",
+                dbg_stage, dbg_ctx_ptr, dbg_eip_target, dbg_esp_loaded, dbg_entry_popped
+            ));
+            crate::serial::_print(format_args!(
+                "[SW-DBG] stage={} old=0x{:08x} new=0x{:08x} save_eip=0x{:08x} load_eip=0x{:08x} load_esp=0x{:08x}\n",
+                sw_stage, sw_old_ptr, sw_new_ptr, sw_saved_old_eip, sw_new_eip, sw_new_esp
+            ));
+        }
     }
     
     // Halt the system

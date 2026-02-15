@@ -17,9 +17,18 @@ extern JIT_USER_RETURN_PENDING
 extern JIT_USER_RETURN_EIP
 extern JIT_USER_RETURN_ESP
 extern JIT_USER_ACTIVE
+extern KPTI_KERNEL_CR3
+extern KPTI_USER_CR3
 
 global syscall_entry
 syscall_entry:
+    ; KPTI: switch to kernel page directory if coming from user mode
+    mov eax, [KPTI_USER_CR3]
+    test eax, eax
+    je .kpti_enter_done
+    mov eax, [KPTI_KERNEL_CR3]
+    mov cr3, eax
+.kpti_enter_done:
     ; Save all registers
     push ebp
     push edi
@@ -64,7 +73,14 @@ syscall_entry:
     ; Put return values in correct registers
     mov eax, ebx    ; Return value
     mov edx, ecx    ; Errno
-    
+
+    ; KPTI: restore user page directory before returning to ring 3
+    mov ebx, [KPTI_USER_CR3]
+    test ebx, ebx
+    je .kpti_exit_done
+    mov cr3, ebx
+.kpti_exit_done:
+
     iret
 
 section .note.GNU-stack noalloc noexec nowrite progbits

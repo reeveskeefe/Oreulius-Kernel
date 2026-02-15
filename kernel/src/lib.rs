@@ -12,6 +12,7 @@ pub mod asm_bindings;
 pub mod capability;
 pub mod commands;
 pub mod console_service;
+pub mod cpu_security;
 pub mod dma_asm;
 pub mod disk;
 pub mod elf;
@@ -47,6 +48,7 @@ pub mod virtio_blk;
 pub mod wasm_jit;
 pub mod wasm;
 pub mod wifi;
+pub mod kpti;
 pub mod usermode;
 pub mod tasks;
 
@@ -148,6 +150,14 @@ pub extern "C" fn rust_main() -> ! {
         loop { core::hint::spin_loop(); }
     }
     vga::print_str("[PAGING] Virtual memory enabled (4KB pages, user/kernel separation)\n");
+
+    // Enable CPU hardening features (SMEP/SMAP) if supported.
+    cpu_security::init();
+    if let Err(e) = kpti::init() {
+        vga::print_str("[KPTI] Init failed: ");
+        vga::print_str(e);
+        vga::print_str("\n");
+    }
     
     // Initialize syscall interface
     vga::print_str("[SYSCALL] Setting up system call interface...\n");

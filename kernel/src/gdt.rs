@@ -126,7 +126,8 @@ pub const TSS_SELECTOR: u16 = 0x28;
 static mut GDT: [GdtEntry; 6] = [GdtEntry::null(); 6];
 static mut TSS_ENTRY: Tss = Tss::new();
 
-static mut SYSENTER_STACK: [u8; 4096] = [0; 4096];
+const SYSENTER_STACK_SIZE: usize = 4096;
+static mut SYSENTER_STACK: [u8; SYSENTER_STACK_SIZE] = [0; SYSENTER_STACK_SIZE];
 
 fn read_esp() -> u32 {
     let esp: u32;
@@ -174,5 +175,27 @@ pub fn update_kernel_stack(esp0: u32) {
 }
 
 pub fn sysenter_stack_top() -> u32 {
-    unsafe { SYSENTER_STACK.as_ptr().add(SYSENTER_STACK.len()) as u32 }
+    unsafe { SYSENTER_STACK.as_ptr().add(SYSENTER_STACK_SIZE) as u32 }
+}
+
+pub fn gdt_range() -> (usize, usize) {
+    let start = unsafe { &GDT as *const _ as usize };
+    let end = start + core::mem::size_of::<[GdtEntry; 6]>();
+    (start, end)
+}
+
+pub fn tss_range() -> (usize, usize) {
+    let start = unsafe { &TSS_ENTRY as *const _ as usize };
+    let end = start + core::mem::size_of::<Tss>();
+    (start, end)
+}
+
+pub fn sysenter_stack_range() -> (usize, usize) {
+    let start = unsafe { SYSENTER_STACK.as_ptr() as usize };
+    let end = start + SYSENTER_STACK_SIZE;
+    (start, end)
+}
+
+pub fn kernel_stack_ptr() -> u32 {
+    unsafe { TSS_ENTRY.esp0 }
 }

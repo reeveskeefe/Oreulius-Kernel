@@ -7,6 +7,17 @@ global asm_save_context
 global asm_load_context
 global thread_start_trampoline
 global _thread_start_trampoline
+global asm_dbg_ctx_ptr
+global asm_dbg_eip_target
+global asm_dbg_esp_loaded
+global asm_dbg_entry_popped
+global asm_dbg_stage
+global asm_sw_old_ptr
+global asm_sw_new_ptr
+global asm_sw_saved_old_eip
+global asm_sw_new_eip
+global asm_sw_new_esp
+global asm_sw_stage
 
 section .text
 
@@ -19,6 +30,8 @@ section .text
 asm_switch_context:
     ; Save old context
     mov eax, [esp + 4]  ; old_ctx pointer
+    mov [asm_sw_old_ptr], eax
+    mov dword [asm_sw_stage], 1
     test eax, eax
     jz .load_only
     
@@ -34,16 +47,18 @@ asm_switch_context:
     ; Save return address as EIP
     mov ecx, [esp]
     mov [eax + 28], ecx
+    mov [asm_sw_saved_old_eip], ecx
     
     ; Save EFLAGS
     pushfd
     pop ecx
-    or ecx, 0x200           ; Ensure IF stays enabled for saved context
     mov [eax + 32], ecx
 
 .load_only:
     ; Load new context
     mov eax, [esp + 8]  ; new_ctx pointer
+    mov [asm_sw_new_ptr], eax
+    mov dword [asm_sw_stage], 2
     
     ; Load general-purpose registers
     mov ebx, [eax + 0]
@@ -53,6 +68,7 @@ asm_switch_context:
     mov edi, [eax + 16]
     mov ebp, [eax + 20]
     mov esp, [eax + 24]
+    mov [asm_sw_new_esp], esp
     
     ; Load EFLAGS
     push dword [eax + 32]
@@ -60,7 +76,10 @@ asm_switch_context:
     
     ; Simulate ret: Increment ESP to skip the saved EIP slot, then jump to it
     add esp, 4
-    jmp [eax + 28]
+    mov edx, [eax + 28]
+    mov [asm_sw_new_eip], edx
+    mov dword [asm_sw_stage], 3
+    jmp edx
 
 ; Save current context to memory
 ; Returns 0 (used to distinguish from context restoration)
@@ -91,17 +110,10 @@ asm_save_context:
 ; Load context from memory (does not return)
 ; This function loads a saved processor context and jumps to it
 asm_load_context:
-    ; Debug: Print 'L'
-    push eax
-    push dx
-    mov dx, 0x3F8
-    mov al, 'L'
-    out dx, al
-    pop dx
-    pop eax
-
     cli                 ; Disable interrupts during context switch
     mov edi, [esp + 4]  ; Get ctx pointer from stack into EDI
+    mov dword [asm_dbg_stage], 1
+    mov [asm_dbg_ctx_ptr], edi
     
     ; REMOVED: CR3 reload - all kernel tasks share same page directory
     ; Reloading CR3 with same value only flushes TLB, causing page table
@@ -112,9 +124,13 @@ asm_load_context:
     ; Load the target EIP into EAX (we'll jump to it after loading other registers)
     ; EAX is safe to use because ProcessContext doesn't store EAX
     mov eax, [edi + 28]
+    mov dword [asm_dbg_stage], 2
+    mov [asm_dbg_eip_target], eax
     
     ; Load new stack pointer
     mov esp, [edi + 24]
+    mov dword [asm_dbg_stage], 3
+    mov [asm_dbg_esp_loaded], esp
     
     ; Load ALL general-purpose registers from context (except EAX)
     mov ebx, [edi + 0]
@@ -126,6 +142,7 @@ asm_load_context:
     ; Load EFLAGS (restore interrupt state)
     push dword [edi + 32]
     popfd
+    mov dword [asm_dbg_stage], 4
 
     ; Load EDI last (we need it for addressing until now)
     push dword [edi + 16]
@@ -133,6 +150,7 @@ asm_load_context:
     
     ; EAX still has the target EIP - jump directly to it
     add esp, 4
+    mov dword [asm_dbg_stage], 5
     jmp eax
 
 ; Thread start trampoline
@@ -140,18 +158,12 @@ asm_load_context:
 ; FIX #5: Simplified - no alignment to avoid corrupting stack pointer
 thread_start_trampoline:
 _thread_start_trampoline:
-    ; Debug: Print 'T' to serial to confirm trampoline entry
-    push dx
-    push eax
-    mov dx, 0x3F8
-    mov al, 'T'
-    out dx, al
-    pop eax
-    pop dx
-
+    mov dword [asm_dbg_stage], 6
     ; DON'T enable interrupts here - let the task enable them when ready
     
     pop eax             ; Pop entry function pointer from stack
+    mov dword [asm_dbg_stage], 7
+    mov [asm_dbg_entry_popped], eax
     
     ; Don't align - just use current ESP to avoid moving to unmapped region
     call eax            ; Call the thread entry function
@@ -160,3 +172,17 @@ _thread_start_trampoline:
 .halt:
     hlt
     jmp .halt
+
+section .bss
+align 4
+asm_dbg_ctx_ptr: resd 1
+asm_dbg_eip_target: resd 1
+asm_dbg_esp_loaded: resd 1
+asm_dbg_entry_popped: resd 1
+asm_dbg_stage: resd 1
+asm_sw_old_ptr: resd 1
+asm_sw_new_ptr: resd 1
+asm_sw_saved_old_eip: resd 1
+asm_sw_new_eip: resd 1
+asm_sw_new_esp: resd 1
+asm_sw_stage: resd 1

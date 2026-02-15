@@ -64,6 +64,18 @@ extern "C" {
     /// Write CR3 page directory register
     pub fn asm_write_cr3(page_dir_addr: u32);
 
+    /// Read CR4 control register
+    pub fn asm_read_cr4() -> u32;
+
+    /// Write CR4 control register
+    pub fn asm_write_cr4(value: u32);
+
+    /// Set AC flag (SMAP: allow supervisor access to user pages)
+    pub fn asm_stac();
+
+    /// Clear AC flag (SMAP: disallow supervisor access to user pages)
+    pub fn asm_clac();
+
     /// Resume from a JIT sandbox page fault by unwinding the JIT frame
     pub fn asm_jit_fault_resume();
 
@@ -487,6 +499,26 @@ pub fn read_cr3() -> u32 {
 /// Write CR3 page directory register (updates page tables)
 pub fn write_cr3(page_dir_addr: u32) {
     unsafe { asm_write_cr3(page_dir_addr); }
+}
+
+/// Read CR4 control register
+pub fn read_cr4() -> u32 {
+    unsafe { asm_read_cr4() }
+}
+
+/// Write CR4 control register
+pub fn write_cr4(value: u32) {
+    unsafe { asm_write_cr4(value) };
+}
+
+/// Temporarily allow supervisor access to user pages (SMAP)
+pub fn stac() {
+    unsafe { asm_stac(); }
+}
+
+/// Disallow supervisor access to user pages (SMAP)
+pub fn clac() {
+    unsafe { asm_clac(); }
 }
 
 /// Convert 16-bit value from network byte order to host byte order

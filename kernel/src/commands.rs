@@ -5627,6 +5627,26 @@ fn cmd_cpu_info() {
     } else {
         vga::print_str("✗ No\n");
     }
+
+    vga::print_str("\nMemory Protection:\n");
+    vga::print_str("  SMEP:    ");
+    if crate::cpu_security::has_smep() {
+        vga::print_str("✓ Yes\n");
+    } else {
+        vga::print_str("✗ No\n");
+    }
+    vga::print_str("  SMAP:    ");
+    if crate::cpu_security::has_smap() {
+        vga::print_str("✓ Yes\n");
+    } else {
+        vga::print_str("✗ No\n");
+    }
+    vga::print_str("  KPTI:    ");
+    if crate::kpti::enabled() {
+        vga::print_str("✓ Enabled\n");
+    } else {
+        vga::print_str("✗ Disabled\n");
+    }
     
     // Other Features
     vga::print_str("\nOther Features:\n");

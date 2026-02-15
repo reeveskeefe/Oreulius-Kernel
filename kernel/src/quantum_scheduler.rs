@@ -459,6 +459,17 @@ impl QuantumScheduler {
         ctx.esp = stack_top - 8;
         ctx.ebp = stack_top - 8;
         ctx.cr3 = paging::current_page_directory_addr();
+        // Keep IF cleared until thread entry explicitly enables interrupts.
+        // This avoids taking an IRQ in the narrow window between context load
+        // and trampoline/entry setup.
+        ctx.eflags = 0x0000_0002;
+
+        crate::serial_println!(
+            "[SCHED] kernel_thread ctx init: entry=0x{:08x} tramp=0x{:08x} esp=0x{:08x}",
+            entry_addr,
+            trampoline_addr,
+            ctx.esp
+        );
         
         process.state = ProcessState::Ready;
         
@@ -507,6 +518,38 @@ impl QuantumScheduler {
 
         crate::vga::print_str("[SCHED] Lock dropped, loading context\n");
         crate::vga::print_str("[SCHED] Jumping to task...\n");
+        unsafe {
+            let ctx = &*ctx_ptr;
+            crate::serial_println!(
+                "[SCHED] ctx_ptr={:p} eip=0x{:08x} esp=0x{:08x} ebp=0x{:08x} eflags=0x{:08x} cr3=0x{:08x}",
+                ctx_ptr,
+                ctx.eip,
+                ctx.esp,
+                ctx.ebp,
+                ctx.eflags,
+                ctx.cr3
+            );
+            let slot0 = *(ctx.esp as *const u32);
+            let slot1 = *((ctx.esp + 4) as *const u32);
+            crate::serial_println!(
+                "[SCHED] stack slots: [esp]=0x{:08x} [esp+4]=0x{:08x}",
+                slot0,
+                slot1
+            );
+            let esp: u32;
+            core::arch::asm!(
+                "mov {0:e}, esp",
+                out(reg) esp,
+                options(nomem, nostack, preserves_flags)
+            );
+            let top = *(esp as *const u32);
+            crate::serial_println!(
+                "[SCHED] esp=0x{:08x} top=0x{:08x} ctx_ptr=0x{:08x}",
+                esp,
+                top,
+                ctx_ptr as u32
+            );
+        }
         
         unsafe { asm_load_context(ctx_ptr); }
     }
@@ -601,6 +644,8 @@ pub fn yield_now() {
     };
     if let Some((from_ptr, to_ptr)) = switch {
         unsafe { asm_switch_context(from_ptr, to_ptr); }
+        // When this thread is resumed, restore its original interrupt state.
+        unsafe { crate::idt_asm::fast_sti_restore(flags) };
     } else {
         unsafe { crate::idt_asm::fast_sti_restore(flags) };
     }
@@ -616,6 +661,8 @@ pub fn block_on(addr: usize) -> Result<(), &'static str> {
     match result {
         Ok(Some((from_ptr, to_ptr))) => {
             unsafe { asm_switch_context(from_ptr, to_ptr); }
+            // When this thread is resumed, restore its original interrupt state.
+            unsafe { crate::idt_asm::fast_sti_restore(flags) };
             Ok(())
         }
         Ok(None) => {
