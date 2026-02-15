@@ -4,49 +4,60 @@ At the heart of Oreulia's architecture lies a bold but controversial design deci
 
 Traditional operating systems avoid this problem by moving JIT compilation to user space (Ring 3), where compiler bugs result in application crashes rather than kernel compromises. When V8 compiles JavaScript or when Wasmtime generates native code, these operations occur in sandboxed processes with limited privileges; if the compiler produces incorrect machine code or crashes while optimizing a hot loop, only the application dies—the kernel remains intact and other processes continue unaffected. Oreulia's decision to embed the JIT compiler directly in kernel space means accepting a dramatically expanded Trusted Computing Base (TCB): every line of code in the JIT compiler, every optimization pass, every instruction selection heuristic, and every bounds check insertion must be flawless. A single integer overflow in address calculation, a missing bounds check in an optimization path, or a type confusion in the register allocator becomes a kernel-level vulnerability that could grant an attacker complete control of the system.
 
-This creates a philosophical and practical dilemma for achieving "provably secure" systems. While Oreulia's capability-based security model is theoretically elegant—no ambient authority, unforgeable capabilities, complete audit trails—the presence of an unverified JIT compiler in kernel space undermines these guarantees at the implementation level. The engineering defenses are impressive: memory tagging, W^X enforcement, control flow integrity, HMAC-signed capabilities, and defense-in-depth strategies can mitigate many attack vectors. However, mathematically proving the system's security requires formally verifying the JIT compiler itself—a problem that remains at the frontier of computer science research and has consumed entire PhD programs for simpler compilers like CompCert. The tension between performance (JIT in kernel) and provable security (formalized correctness guarantees) represents the central challenge in transforming Oreulia from an innovative research prototype into a production-grade secure operating system. Without formal verification of the JIT compiler or strong in-kernel hardening and translation validation, the system remains vulnerable to a class of attacks that bypass all other security mechanisms, making "impenetrability" a practical impossibility rather than an achievable engineering goal.
+This creates a philosophical and practical dilemma for achieving "provably secure" systems. While Oreulia's capability-based security model is theoretically elegant—no ambient authority, unforgeable capabilities, complete audit trails—the presence of an unverified JIT compiler in kernel space undermines these guarantees at the implementation level. The engineering defenses are impressive: memory tagging, W^X enforcement, control flow integrity, MAC-signed IPC capabilities (SipHash), and defense-in-depth strategies can mitigate many attack vectors. However, mathematically proving the system's security requires formally verifying the JIT compiler itself—a problem that remains at the frontier of computer science research and has consumed entire PhD programs for simpler compilers like CompCert. The tension between performance (JIT in kernel) and provable security (formalized correctness guarantees) represents the central challenge in transforming Oreulia from an innovative research prototype into a production-grade secure operating system. Without formal verification of the JIT compiler or strong in-kernel hardening and translation validation, the system remains vulnerable to a class of attacks that bypass all other security mechanisms, making "impenetrability" a practical impossibility rather than an achievable engineering goal.
 
 ---
 
-## ✅ Current Status (as of 2026-02-13)
+## ✅ Current Status (as of 2026-02-15)
 
 ### **Completed or Strongly Implemented**
 - **W^X enforcement for JIT**: code is emitted into RW memory, then sealed to RX via page flag changes.
+- **Kernel `.text`/`.rodata` read-only**: kernel `.text`/`.rodata` mapped read-only; `.data`/`.bss` remain writable.
+- **Dedicated JIT arena**: executable buffers allocated from a bounded JIT arena (reduces mapping footprint).
 - **Isolated execution address space**: JIT runs under a sandbox page directory; only required ranges are mapped.
-- **Ring 3 usermode execution for JIT code**: entry via `IRET` into `USER_CS/USER_DS` with a user trampoline.
+- **Ring 3 usermode execution path**: entry via `IRET` into `USER_CS/USER_DS` with a user trampoline (configurable; fuzz uses kernel-mode execution).
 - **Guard page for user JIT stack**: unmapped page under the user-mode JIT stack to catch stack underflow.
 - **JIT page-fault trapping**: faults are converted into traps and return safely to the kernel.
 - **Fuel-based execution limits**: instruction and memory operation fuel enforced in generated code.
 - **Integrity checks**: code + exec buffer hashes and sealed exec buffers are verified before execution.
 - **Shadow validation**: early JIT calls are compared against interpreter results for semantic sanity checks.
 - **JIT cache hardening**: 64-bit FNV-1a for cache keys, plus code hash validation in cache hits.
-- **Concurrency hardening**: JIT return state uses atomics + locking to avoid IRQ/SMP races.
-- **Kernel text/rodata read-only**: kernel `.text`/`.rodata` mapped read-only; `.data`/`.bss` remain writable.
+- **Concurrency hardening**: user-mode JIT execution uses locking around transition/return.
+- **Cryptographic capability tokens (IPC)**: SipHash-2-4 MAC tokens added to IPC capabilities (per-boot secret).
+- **JIT fuzz harness + regression seeds**: in-kernel JIT vs interpreter fuzzing with mismatch-free runs on known seeds.
 
 ### **Partially Implemented**
-- **Instruction whitelist**: basic x86 subset verification exists but is not a full validator.
+- **Instruction whitelist / decoder validation**: whitelist exists, but not a full decoder for all encodings.
 - **SFI-style bounds checks**: bounds checks exist for JIT memory ops; not full masking for every access path.
+- **CFI (return protection)**: return-address shadow stack checks exist; indirect target sets not yet enforced.
 - **Guard pages for all JIT regions**: guard page exists for user stack, not yet for all JIT mappings.
 - **Translation validation**: shadow execution exists, but not a full proof or per-block validator.
+- **Capability tokens beyond IPC**: in-kernel tables remain non-cryptographic; only IPC transfers are MACed.
 
 ### **Remaining TODOs**
-- **Full CFI (shadow stack + valid target sets)**
+- **Full CFI (shadow stack + valid target sets for indirect branches)**
+- **Complete instruction decoder + whitelist**
+- **SFI masking for all memory access paths**
+- **Per-instance sandbox page directory or full wipe between runs**
+- **Guard pages for all JIT regions**
 - **Formal verification of critical JIT paths and capability checks**
 - **Memory tagging / hardware isolation (SGX/TrustZone)**
-- **Cryptographic capability tokens (HMAC)**
-- **Systematic fuzzing for JIT and verifier**
+- **External fuzzing + coverage-guided regression**
 - **Anomaly detection / audit hardening beyond current logs**
 
 ## 🧾 Recent Security Improvements (2026-02)
 - W^X sealing for JIT exec buffers and kernel RO mappings.
-- Ring 3 JIT execution via user trampoline + `IRET`.
+- Dedicated JIT arena for executable buffers.
+- Ring 3 JIT execution via user trampoline + `IRET` (configurable).
 - JIT sandbox page directory with narrow user mappings.
 - JIT page-fault trapping path (no kernel panic).
 - Guard page under user JIT stack.
 - Fuel-based execution limits.
 - Shadow validation vs interpreter (differential checking).
 - 64-bit JIT cache hashing and integrity verification.
-- Deterministic replay hooks for WASM host calls (for auditability).
+- Return-address shadow stack checks in generated code (CFI-lite).
+- SipHash MAC tokens on IPC capabilities.
+- In-kernel JIT fuzz harness with regression seeds.
 
 ---
 
@@ -137,16 +148,18 @@ impl JitVerifier {
 ### **Hardening Rules (Current Status):**
 
 - ✅ **W^X + RW→RX sealing**: enforced for all JIT code pages.
-- ✅ **Ring 3 execution + isolated page directory**: user-mode trampoline + sandbox PD switch.
+- ✅ **Ring 3 execution path + isolated page directory**: user-mode trampoline + sandbox PD switch (configurable; fuzz uses kernel-mode).
 - ✅ **Narrow sandbox mappings**: only JIT code/state/WASM memory/trampoline/stack mapped.
+- ✅ **Dedicated JIT arena**: executable buffers allocated from a bounded arena.
 - ✅ **Faults → traps**: page faults in JIT are converted into safe traps.
 - ✅ **Fuel-based limits**: instruction + memory op fuel enforced in JIT.
 - ✅ **JIT cache integrity**: sealed exec buffer + hash verification.
+- ✅ **IPC capability MACs**: SipHash token on IPC-transferred capabilities.
 - 🟡 **Instruction whitelist**: partial subset validation present; not complete.
 - 🟡 **SFI-style bounds checks**: bounds checks for JIT memory ops; no full masking.
 - 🟡 **Guard pages**: guard page under user JIT stack; not all regions.
 - 🟡 **Translation validation**: shadow execution exists; not full translation proof.
-- 🔶 **CFI (shadow stack / target sets)**: not yet implemented.
+- 🟡 **CFI (return checks)**: return shadow stack present; indirect target sets not yet enforced.
 - 🔶 **SMEP/SMAP/KPTI**: not yet implemented.
 
 **Benefits:**
@@ -291,6 +304,8 @@ impl SecureEnclave {
 ---
 
 ## **Layer 4: Control Flow Integrity (CFI)**
+
+**Current status:** Return-address shadow stack checks are implemented in JIT code; indirect target-set enforcement is still pending.
 
 ### **Enforce Valid Control Flow:**
 
@@ -464,79 +479,52 @@ pub fn jit_compile_secure(bytecode: &[u8]) -> Result<ExecutableCode, Error> {
 
 ## **Layer 7: Cryptographic Capability Tokens**
 
-### **HMAC-Signed Capabilities:**
+### **SipHash MAC for IPC Capabilities (Implemented):**
 
 ```rust
-// kernel/src/capability_crypto.rs
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-
-type HmacSha256 = Hmac<Sha256>;
-
-/// Cryptographically authenticated capability
-pub struct AuthenticatedCapability {
+// kernel/src/ipc.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capability {
     pub cap_id: u32,
-    pub object_id: u64,
-    pub rights: Rights,
-    pub hmac: [u8; 32],  // HMAC-SHA256 signature
+    pub object_id: u32,
+    pub rights: u32,
+    pub cap_type: CapabilityType,
+    pub extra: [u32; 4],
+    pub token: u64, // SipHash-2-4 MAC
 }
 
-/// Secret key (stored in secure enclave)
-static CAPABILITY_KEY: Mutex<[u8; 32]> = Mutex::new([0u8; 32]);
-
-impl AuthenticatedCapability {
-    /// Create capability with HMAC signature
-    pub fn create(cap_id: u32, object_id: u64, rights: Rights) -> Self {
-        let mut mac = HmacSha256::new_from_slice(&CAPABILITY_KEY.lock())
-            .expect("HMAC init");
-        
-        // Sign capability fields
-        mac.update(&cap_id.to_le_bytes());
-        mac.update(&object_id.to_le_bytes());
-        mac.update(&rights.bits.to_le_bytes());
-        
-        let hmac = mac.finalize().into_bytes();
-        let mut hmac_array = [0u8; 32];
-        hmac_array.copy_from_slice(&hmac);
-        
-        AuthenticatedCapability {
-            cap_id,
-            object_id,
-            rights,
-            hmac: hmac_array,
-        }
+impl Capability {
+    pub fn sign(&mut self) {
+        let payload = self.token_payload();
+        self.token = security::security().cap_token_sign(&payload);
     }
-    
-    /// Verify HMAC before use
-    pub fn verify(&self) -> Result<(), Error> {
-        let mut mac = HmacSha256::new_from_slice(&CAPABILITY_KEY.lock())
-            .expect("HMAC init");
-        
-        mac.update(&self.cap_id.to_le_bytes());
-        mac.update(&self.object_id.to_le_bytes());
-        mac.update(&self.rights.bits.to_le_bytes());
-        
-        mac.verify_slice(&self.hmac)
-            .map_err(|_| Error::CapabilityForged)?;
-        
-        Ok(())
+
+    pub fn verify(&self) -> bool {
+        let payload = self.token_payload();
+        security::security().cap_token_verify(&payload, self.token)
     }
 }
 
-// Usage:
-pub fn use_capability(cap: &AuthenticatedCapability) -> Result<(), Error> {
-    // ALWAYS verify HMAC first
-    cap.verify()?;
-    
-    // Now safe to use
-    perform_operation(cap)
-}
+// Message::add_capability() auto-signs before send.
 ```
 
+```rust
+// kernel/src/security.rs
+// Per-boot secret key + SipHash-2-4
+pub fn cap_token_sign(&self, data: &[u8]) -> u64 { /* ... */ }
+pub fn cap_token_verify(&self, data: &[u8], token: u64) -> bool { /* ... */ }
+```
+
+**Notes:**
+- Tokens are **per-boot** (key generated at init).
+- Applied to **IPC-transferred** capabilities (e.g., filesystem capability transfer).
+- In-kernel capability tables remain non-cryptographic (future hardening).
+- HMAC-SHA256 remains a possible future upgrade if persistence or external verification is required.
+
 **Prevents:**
-- ✅ Capability forgery
-- ✅ Capability tampering
-- ✅ Privilege escalation via memory corruption
+- ✅ IPC capability forgery
+- ✅ IPC capability tampering
+- ✅ Privilege escalation via forged transfer blobs
 
 ---
 
@@ -636,44 +624,27 @@ impl TamperProofAuditLog {
 
 ## **Layer 9: Fuzzing & Continuous Testing**
 
-### **Automated Security Testing:**
+### **In-Kernel JIT Differential Fuzzing (Implemented):**
 
-```rust
-// tests/fuzz_jit.rs
-#[cfg(test)]
-mod fuzz_tests {
-    use libfuzzer_sys::fuzz_target;
-    
-    fuzz_target!(|data: &[u8]| {
-        // Feed random bytecode to JIT
-        let result = wasm_jit::compile(data);
-        
-        match result {
-            Ok(compiled) => {
-                // If JIT accepts it, validate output
-                validate_compiled_code(&compiled).expect("Invalid output");
-            }
-            Err(_) => {
-                // Rejection is fine
-            }
-        }
-    });
-    
-    fn validate_compiled_code(code: &CompiledCode) {
-        // No privileged instructions
-        assert!(!contains_privileged_instructions(code));
-        
-        // All memory accesses bounds-checked
-        assert!(all_accesses_checked(code));
-        
-        // Control flow only to valid targets
-        assert!(valid_control_flow(code));
-    }
-}
+The kernel now includes an in-kernel fuzz harness that generates random WASM bytecode, runs both the interpreter and JIT, and compares results + memory hashes.
 
-// Run continuously:
-// $ cargo fuzz run fuzz_jit -- -max_len=4096 -runs=1000000000
 ```
+wasm-jit-fuzz <iters> [seed]
+```
+
+**Example:**
+```
+wasm-jit-fuzz 1000 3418704842
+```
+
+**Behavior:**
+- **OK**: interpreter == JIT and memory hashes match
+- **Traps**: both sides trap with identical error
+- **Mismatches**: semantic divergence (should be 0)
+- **Compile errors**: JIT rejects a program (acceptable, but tracked)
+
+**Future:**
+- Coverage-guided external fuzzing (libFuzzer/AFL) against the JIT compiler and verifier.
 
 ---
 
@@ -739,7 +710,7 @@ impl AnomalyDetector {
 | **4** | Control Flow Integrity | ROP/JOP attacks | ~2% overhead |
 | **5** | Memory Tagging | Use-after-free, overflow | ~3% overhead (hardware) |
 | **6** | W^X Enforcement | Code injection | ~1% overhead |
-| **7** | HMAC Capabilities | Capability forgery | ~1% overhead |
+| **7** | IPC Capability MACs (SipHash) | Capability forgery in transfers | ~1% overhead |
 | **8** | Tamper-Proof Audit | Evidence destruction | ~2% overhead |
 | **9** | Continuous Fuzzing | Unknown vulnerabilities | 0% (offline) |
 | **10** | Anomaly Detection | Zero-day exploits | ~5% overhead |
@@ -753,16 +724,20 @@ impl AnomalyDetector {
 
 ### **Phase 1 (Complete - Implemented):**
 1. ✅ W^X sealing for JIT exec buffers + kernel RO mappings
-2. ✅ Ring 3 JIT execution with isolated sandbox address space
+2. ✅ Ring 3 JIT execution path with isolated sandbox address space
 3. ✅ Fault-to-trap handling + user JIT stack guard page
 4. ✅ Fuel-based limits, integrity checks, and shadow validation
+5. ✅ Dedicated JIT arena for executable buffers
+6. ✅ IPC capability MAC tokens (SipHash-2-4)
+7. ✅ In-kernel JIT fuzz harness + regression seeds
+8. ✅ Return-address shadow stack checks (CFI-lite)
 
 ### **Phase 2 (Next - In Progress):**
 1. 🟡 Complete instruction whitelist / decoder validation
 2. 🟡 Expand SFI (bounds checks or masking for all memory paths)
 3. 🟡 Guard pages for all JIT regions + per-instance cleanup
-4. 🟡 Systematic JIT fuzzing + regression harness
-5. 🟡 Cryptographic capability tokens (if adopted)
+4. 🟡 Per-instance sandbox address spaces or full wipe between runs
+5. 🟡 Coverage-guided fuzzing + external regression corpus
 
 ### **Phase 3 (Advanced - Long-term):**
 1. 🔶 Full CFI (shadow stack + valid target sets)
@@ -798,7 +773,7 @@ impl AnomalyDetector {
 
 ---
 
-**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution, sandboxed address space, fuel limits, integrity checks, shadow validation). The remaining gap to "provably secure" is **formal verification + full CFI/SFI + cryptographic capability tokens + systematic fuzzing**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
+**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, fuel limits, integrity checks, shadow validation, IPC capability MACs, and in-kernel fuzzing). The remaining gap to "provably secure" is **formal verification + full CFI/SFI + a complete decoder/whitelist + coverage-guided fuzzing**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
 
 # 🔬 **Mathematical Problems to Make Oreulia Provably Impenetrable**
 
@@ -923,17 +898,17 @@ let bytes = [0u8; size_of::<Capability>()];
 let cap = transmute::<[u8; N], Capability>(bytes);
 // Is this a valid capability?
 
-// 4. HMAC collision
-// Can attacker find two different capabilities with same HMAC?
+// 4. MAC collision
+// Can attacker find two different capabilities with same MAC?
 ```
 
 ### **What Needs to Be Proven:**
 
 ```mathematical
 Theorem (Capability Integrity):
-  ∀ valid capabilities C with HMAC H_C
+  ∀ valid capabilities C with MAC T_C
   
-  Pr[∃ forged C' where HMAC(C') = H_C] < 2⁻²⁵⁶
+  Pr[∃ forged C' where MAC(C') = T_C] < 2⁻⁶⁴   // SipHash tag (current)
   
   AND
   
@@ -945,7 +920,7 @@ Theorem (Capability Integrity):
 ```
 
 **Requires proving:**
-- HMAC collision resistance
+- MAC collision resistance (SipHash tag security)
 - Memory isolation properties
 - Type safety guarantees
 - No integer overflow in capability IDs
@@ -1227,7 +1202,7 @@ Theorem (Starvation Freedom):
 
 ```
 ∀ adversaries A with oracle access to:
-  - HMAC(·) for chosen capabilities
+  - MAC_K(·) for chosen capabilities
   - Verification of tokens
   
 Pr[A produces valid token for unauthorized capability C*] ≤ negl(λ)
@@ -1240,30 +1215,20 @@ WHERE negl(λ) = negligible function in security parameter λ
 ```rust
 // Cryptographic attacks:
 
-// 1. Hash length extension
-// HMAC(K, M) is secure
-// But naive construction: Hash(K || M) is NOT
+// 1. Naive hash != MAC
+// Hash(K || M) is not a secure MAC.
 let naive = sha256(secret_key || capability_data);
-// Attacker can compute sha256(secret_key || capability_data || extra_data)
-// without knowing secret_key!
+// Attacker can extend / manipulate without knowing secret_key.
 
-// 2. Related-key attacks
-// Attacker observes:
-//   HMAC(K, cap1) = H1
-//   HMAC(K, cap2) = H2
-// Can attacker derive HMAC(K', cap3) for related key K'?
+// 2. Related-key / structure attacks
+// Attacker observes MAC(K, cap1) and MAC(K, cap2).
+// Can they derive MAC(K', cap3) for related keys?
 
 // 3. Side-channel attacks
 fn verify_capability(cap: &Capability) -> bool {
-    let computed = hmac(&SECRET_KEY, &cap.data);
-    
-    // Early return leaks timing information
-    for i in 0..32 {
-        if computed[i] != cap.hmac[i] {
-            return false;  // Attacker learns: "First i bytes matched"
-        }
-    }
-    true
+    let computed = mac(&SECRET_KEY, &cap.data);
+    // Must compare in constant time (even for 64-bit tags)
+    constant_time_eq_u64(computed, cap.token)
 }
 
 // 4. Birthday attacks
@@ -1281,19 +1246,19 @@ Theorem (Cryptographic Capability Security):
   Pr[A forges capability token] ≤ (q/2^λ) + negl(λ)
   
   WHERE:
-    q = number of HMAC oracle queries
-    λ = security parameter (256 for SHA-256)
+    q = number of MAC oracle queries
+    λ = security parameter (64 for SipHash tag; 256 if upgraded to HMAC-SHA256)
     negl(λ) = negligible function
     
   ASSUMING:
-    - HMAC-SHA256 is PRF (Pseudorandom Function)
-    - Secret key has 256 bits entropy
+    - SipHash-2-4 behaves as a PRF (current implementation)
+    - Secret key is unpredictable (per-boot key)
     - Constant-time comparison
     - No side-channel leakage
 ```
 
 **Requires proving:**
-- HMAC security properties
+- MAC security properties (SipHash PRF assumptions)
 - Key management correctness
 - Constant-time comparison
 - No timing leaks
@@ -1671,9 +1636,9 @@ Theorem (Partial Correctness):
 ## 💡 **Practical Approach: Layered Formal Verification**
 
 
-1. ✅ Capability unforgeability (HMAC correctness)
+1. ✅ Capability unforgeability (MAC correctness)
 2. ✅ Memory safety (no use-after-free, bounds checks)
-3. ✅ Crypto primitives (constant-time HMAC)
+3. ✅ Crypto primitives (constant-time MAC compare)
 
 
 5. ✅ Information flow (no covert channels >1 bit/sec)
