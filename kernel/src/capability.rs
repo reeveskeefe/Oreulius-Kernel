@@ -214,6 +214,13 @@ struct CapabilityAccessRequest {
     required_right: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemoteLeaseDecision {
+    NotMapped,
+    Allow,
+    Deny,
+}
+
 fn verify_capability_access(
     owner: ProcessId,
     cap: &OreuliaCapability,
@@ -234,6 +241,116 @@ fn verify_capability_access(
     Ok(())
 }
 
+fn check_remote_capability_access(
+    pid: ProcessId,
+    object_id: u64,
+    required_type: CapabilityType,
+    required_rights: Rights,
+) -> bool {
+    let now = crate::pit::get_ticks() as u64;
+    let mut leases = CAPABILITY_MANAGER.remote_leases.lock();
+
+    for entry in leases.iter_mut() {
+        if let Some(lease) = entry.as_mut() {
+            if !lease.active || lease.revoked {
+                continue;
+            }
+            // Owner-bound leases should be enforced through mapped local table entries.
+            if lease.mapped_cap_id != 0 {
+                continue;
+            }
+            if !lease.owner_any && lease.owner_pid != pid {
+                continue;
+            }
+            if lease.cap_type != required_type {
+                continue;
+            }
+            if object_id != 0 && lease.object_id != 0 && lease.object_id != object_id {
+                continue;
+            }
+            if now < lease.not_before || now > lease.expires_at {
+                lease.active = false;
+                lease.revoked = true;
+                lease.mapped_cap_id = 0;
+                continue;
+            }
+            if !lease.rights.contains(required_rights.bits) {
+                continue;
+            }
+            if lease.enforce_use_budget {
+                if lease.uses_remaining == 0 {
+                    continue;
+                }
+                lease.uses_remaining = lease.uses_remaining.saturating_sub(1);
+            }
+
+            security::security().log_event(
+                AuditEntry::new(SecurityEvent::CapabilityUsed, pid, lease.mapped_cap_id)
+                    .with_context(lease.object_id),
+            );
+            return true;
+        }
+    }
+
+    false
+}
+
+fn evaluate_mapped_remote_capability(
+    pid: ProcessId,
+    mapped_cap_id: u32,
+    object_id: u64,
+    required_type: CapabilityType,
+    required_rights: Rights,
+) -> RemoteLeaseDecision {
+    let now = crate::pit::get_ticks() as u64;
+    let mut leases = CAPABILITY_MANAGER.remote_leases.lock();
+
+    for entry in leases.iter_mut() {
+        let lease = match entry.as_mut() {
+            Some(lease) => lease,
+            None => continue,
+        };
+        if lease.mapped_cap_id != mapped_cap_id {
+            continue;
+        }
+        if !lease.owner_any && lease.owner_pid != pid {
+            continue;
+        }
+        if !lease.active || lease.revoked {
+            return RemoteLeaseDecision::Deny;
+        }
+        if lease.cap_type != required_type {
+            return RemoteLeaseDecision::Deny;
+        }
+        if object_id != 0 && lease.object_id != 0 && lease.object_id != object_id {
+            return RemoteLeaseDecision::Deny;
+        }
+        if now < lease.not_before || now > lease.expires_at {
+            lease.active = false;
+            lease.revoked = true;
+            lease.mapped_cap_id = 0;
+            return RemoteLeaseDecision::Deny;
+        }
+        if !lease.rights.contains(required_rights.bits) {
+            return RemoteLeaseDecision::Deny;
+        }
+        if lease.enforce_use_budget {
+            if lease.uses_remaining == 0 {
+                return RemoteLeaseDecision::Deny;
+            }
+            lease.uses_remaining = lease.uses_remaining.saturating_sub(1);
+        }
+
+        security::security().log_event(
+            AuditEntry::new(SecurityEvent::CapabilityUsed, pid, mapped_cap_id)
+                .with_context(lease.object_id),
+        );
+        return RemoteLeaseDecision::Allow;
+    }
+
+    RemoteLeaseDecision::NotMapped
+}
+
 fn write_u32(buf: &mut [u8], offset: &mut usize, value: u32) {
     let bytes = value.to_le_bytes();
     buf[*offset..*offset + 4].copy_from_slice(&bytes);
@@ -251,6 +368,51 @@ fn write_u64(buf: &mut [u8], offset: &mut usize, value: u64) {
 // ============================================================================
 
 const MAX_CAPABILITIES: usize = 256;
+const MAX_REMOTE_LEASES: usize = 128;
+
+/// Remote capability lease created from a validated CapNet token.
+#[derive(Debug, Clone, Copy)]
+pub struct RemoteCapabilityLease {
+    pub active: bool,
+    pub token_id: u64,
+    pub mapped_cap_id: u32,
+    pub owner_pid: ProcessId,
+    pub owner_any: bool,
+    pub issuer_device_id: u64,
+    pub measurement_hash: u64,
+    pub session_id: u32,
+    pub object_id: u64,
+    pub cap_type: CapabilityType,
+    pub rights: Rights,
+    pub not_before: u64,
+    pub expires_at: u64,
+    pub revoked: bool,
+    pub enforce_use_budget: bool,
+    pub uses_remaining: u16,
+}
+
+impl RemoteCapabilityLease {
+    const fn empty() -> Self {
+        RemoteCapabilityLease {
+            active: false,
+            token_id: 0,
+            mapped_cap_id: 0,
+            owner_pid: ProcessId(0),
+            owner_any: false,
+            issuer_device_id: 0,
+            measurement_hash: 0,
+            session_id: 0,
+            object_id: 0,
+            cap_type: CapabilityType::Reserved,
+            rights: Rights::new(Rights::NONE),
+            not_before: 0,
+            expires_at: 0,
+            revoked: false,
+            enforce_use_budget: false,
+            uses_remaining: 0,
+        }
+    }
+}
 
 /// Per-task capability table (unforgeable capability storage)
 pub struct CapabilityTable {
@@ -291,6 +453,32 @@ impl CapabilityTable {
         }
         
         Err(CapabilityError::TableFull)
+    }
+
+    /// Install a capability at a fixed cap_id, replacing any existing entry.
+    /// Used for mapped remote leases so lease ID and table slot stay aligned.
+    pub fn install_or_replace(
+        &mut self,
+        preferred_cap_id: Option<u32>,
+        cap: OreuliaCapability,
+    ) -> Result<u32, CapabilityError> {
+        if let Some(cap_id) = preferred_cap_id {
+            let idx = cap_id as usize;
+            if idx < MAX_CAPABILITIES {
+                let mut installed = cap;
+                installed.cap_id = cap_id;
+                installed.granted_at = crate::pit::get_ticks() as u64;
+                installed.sign(self.owner);
+                self.entries[idx] = Some(installed);
+
+                security::security().log_event(
+                    AuditEntry::new(SecurityEvent::CapabilityCreated, self.owner, cap_id)
+                        .with_context(installed.object_id),
+                );
+                return Ok(cap_id);
+            }
+        }
+        self.install(cap)
     }
     
     /// Lookup capability by cap_id
@@ -385,6 +573,8 @@ const MAX_TASKS: usize = 64;
 pub struct CapabilityManager {
     tables: Mutex<[Option<alloc::boxed::Box<CapabilityTable>>; MAX_TASKS]>,
     next_object_id: Mutex<u64>,
+    remote_leases: Mutex<[Option<RemoteCapabilityLease>; MAX_REMOTE_LEASES]>,
+    next_remote_cap_id: Mutex<u32>,
 }
 
 impl CapabilityManager {
@@ -399,6 +589,8 @@ impl CapabilityManager {
                                None, None, None, None, None, None, None, None,
                                None, None, None, None, None, None, None, None]),
             next_object_id: Mutex::new(1),
+            remote_leases: Mutex::new([None; MAX_REMOTE_LEASES]),
+            next_remote_cap_id: Mutex::new(1),
         }
     }
     
@@ -536,6 +728,204 @@ impl CapabilityManager {
             (0, 0, 0)
         }
     }
+
+    fn alloc_remote_cap_id(&self) -> u32 {
+        let mut next = self.next_remote_cap_id.lock();
+        let id = (*next).max(1);
+        *next = (*next).wrapping_add(1).max(1);
+        id
+    }
+
+    fn install_remote_cap_mapping(
+        &self,
+        tables: &mut [Option<alloc::boxed::Box<CapabilityTable>>; MAX_TASKS],
+        owner_pid: ProcessId,
+        object_id: u64,
+        cap_type: CapabilityType,
+        rights: Rights,
+        preferred_cap_id: Option<u32>,
+    ) -> Result<u32, CapabilityError> {
+        let idx = owner_pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return Err(CapabilityError::TaskNotFound);
+        }
+        let table = tables[idx].as_mut().ok_or(CapabilityError::TaskNotFound)?;
+        let cap = OreuliaCapability::new(0, object_id, cap_type, rights, owner_pid);
+        table.install_or_replace(preferred_cap_id, cap)
+    }
+
+    fn remove_remote_cap_mapping(
+        &self,
+        tables: &mut [Option<alloc::boxed::Box<CapabilityTable>>; MAX_TASKS],
+        owner_pid: ProcessId,
+        mapped_cap_id: u32,
+    ) {
+        if mapped_cap_id == 0 {
+            return;
+        }
+        let idx = owner_pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return;
+        }
+        if let Some(table) = tables[idx].as_mut() {
+            let _ = table.remove(mapped_cap_id);
+        }
+    }
+
+    /// Install or update a remote capability lease from a verified CapNet token.
+    pub fn install_remote_lease(
+        &self,
+        owner_pid: ProcessId,
+        owner_any: bool,
+        token_id: u64,
+        issuer_device_id: u64,
+        measurement_hash: u64,
+        session_id: u32,
+        object_id: u64,
+        cap_type: CapabilityType,
+        rights: Rights,
+        not_before: u64,
+        expires_at: u64,
+        enforce_use_budget: bool,
+        uses_remaining: u16,
+    ) -> Result<u32, CapabilityError> {
+        let mut tables = self.tables.lock();
+        let mut leases = self.remote_leases.lock();
+        let mut existing_idx = None;
+        for i in 0..leases.len() {
+            if let Some(lease) = leases[i].as_ref() {
+                if lease.token_id == token_id {
+                    existing_idx = Some(i);
+                    break;
+                }
+            }
+        }
+
+        let previous = existing_idx.and_then(|idx| leases[idx]);
+        let preferred_cap_id = if !owner_any {
+            if let Some(prev) = previous {
+                if !prev.owner_any && prev.owner_pid == owner_pid && prev.mapped_cap_id != 0 {
+                    Some(prev.mapped_cap_id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mapped_cap_id = if owner_any {
+            0
+        } else {
+            self.install_remote_cap_mapping(
+                &mut tables,
+                owner_pid,
+                object_id,
+                cap_type,
+                rights,
+                preferred_cap_id,
+            )?
+        };
+
+        if let Some(idx) = existing_idx {
+            if let Some(lease) = leases[idx].as_mut() {
+                lease.active = true;
+                lease.token_id = token_id;
+                lease.mapped_cap_id = mapped_cap_id;
+                lease.owner_pid = owner_pid;
+                lease.owner_any = owner_any;
+                lease.issuer_device_id = issuer_device_id;
+                lease.measurement_hash = measurement_hash;
+                lease.session_id = session_id;
+                lease.object_id = object_id;
+                lease.cap_type = cap_type;
+                lease.rights = rights;
+                lease.not_before = not_before;
+                lease.expires_at = expires_at;
+                lease.revoked = false;
+                lease.enforce_use_budget = enforce_use_budget;
+                lease.uses_remaining = uses_remaining;
+            }
+        } else {
+            let mut inserted = false;
+            for entry in leases.iter_mut() {
+                if entry.is_none() {
+                    *entry = Some(RemoteCapabilityLease {
+                        active: true,
+                        token_id,
+                        mapped_cap_id,
+                        owner_pid,
+                        owner_any,
+                        issuer_device_id,
+                        measurement_hash,
+                        session_id,
+                        object_id,
+                        cap_type,
+                        rights,
+                        not_before,
+                        expires_at,
+                        revoked: false,
+                        enforce_use_budget,
+                        uses_remaining,
+                    });
+                    inserted = true;
+                    break;
+                }
+            }
+
+            if !inserted {
+                if !owner_any {
+                    self.remove_remote_cap_mapping(&mut tables, owner_pid, mapped_cap_id);
+                }
+                return Err(CapabilityError::TableFull);
+            }
+        }
+
+        if let Some(prev) = previous {
+            let same_mapping =
+                !owner_any && !prev.owner_any && prev.owner_pid == owner_pid && prev.mapped_cap_id == mapped_cap_id;
+            if prev.mapped_cap_id != 0 && !same_mapping {
+                self.remove_remote_cap_mapping(&mut tables, prev.owner_pid, prev.mapped_cap_id);
+            }
+        }
+
+        security::security().log_event(
+            AuditEntry::new(SecurityEvent::CapabilityCreated, owner_pid, mapped_cap_id)
+                .with_context(token_id),
+        );
+        Ok(mapped_cap_id)
+    }
+
+    /// Revoke a remote capability lease by token id.
+    pub fn revoke_remote_lease_by_token(&self, token_id: u64) -> bool {
+        let mut tables = self.tables.lock();
+        let mut leases = self.remote_leases.lock();
+        for entry in leases.iter_mut() {
+            if let Some(lease) = entry.as_mut() {
+                if lease.token_id == token_id {
+                    let owner_pid = lease.owner_pid;
+                    let mapped_cap_id = lease.mapped_cap_id;
+                    if !lease.owner_any {
+                        self.remove_remote_cap_mapping(&mut tables, owner_pid, mapped_cap_id);
+                    }
+                    *entry = None;
+                    security::security().log_event(
+                        AuditEntry::new(SecurityEvent::CapabilityRevoked, owner_pid, mapped_cap_id)
+                            .with_context(token_id),
+                    );
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn remote_lease_snapshots(&self) -> [Option<RemoteCapabilityLease>; MAX_REMOTE_LEASES] {
+        let leases = self.remote_leases.lock();
+        *leases
+    }
 }
 
 // ============================================================================
@@ -622,12 +1012,30 @@ pub fn check_capability(
                     },
                 );
                 if access.is_ok() {
-                    // Audit successful capability use
-                    security::security().log_event(
-                        AuditEntry::new(SecurityEvent::CapabilityUsed, pid, cap.cap_id)
-                            .with_context(cap.object_id)
-                    );
-                    return true;
+                    match evaluate_mapped_remote_capability(
+                        pid,
+                        cap.cap_id,
+                        object_id,
+                        cap_type,
+                        required_rights,
+                    ) {
+                        RemoteLeaseDecision::Allow => return true,
+                        RemoteLeaseDecision::Deny => {
+                            security::security().log_event(
+                                AuditEntry::new(SecurityEvent::InvalidCapability, pid, cap.cap_id)
+                                    .with_context(cap.object_id),
+                            );
+                            continue;
+                        }
+                        RemoteLeaseDecision::NotMapped => {
+                            // Audit successful capability use
+                            security::security().log_event(
+                                AuditEntry::new(SecurityEvent::CapabilityUsed, pid, cap.cap_id)
+                                    .with_context(cap.object_id)
+                            );
+                            return true;
+                        }
+                    }
                 }
                 if matches!(access, Err(CapabilityError::InvalidCapability)) {
                     security::security().log_event(
@@ -639,8 +1047,66 @@ pub fn check_capability(
         }
     }
     
-    // No matching capability found
+    // Fallback to active remote leases installed from validated CapNet tokens.
+    if check_remote_capability_access(pid, object_id, cap_type, required_rights) {
+        return true;
+    }
+
+    // No matching local capability or remote lease found
     false
+}
+
+fn capability_type_from_capnet(cap_type: u8) -> Option<CapabilityType> {
+    match cap_type {
+        0 => Some(CapabilityType::Channel),
+        1 => Some(CapabilityType::Task),
+        2 => Some(CapabilityType::Spawner),
+        10 => Some(CapabilityType::Console),
+        11 => Some(CapabilityType::Clock),
+        12 => Some(CapabilityType::Store),
+        13 => Some(CapabilityType::Filesystem),
+        _ => None,
+    }
+}
+
+/// Install/update a remote capability lease from a verified CapNet token.
+///
+/// `context == 0` in the token means "any local process"; non-zero binds to a PID.
+pub fn install_remote_lease_from_capnet_token(
+    token: &crate::capnet::CapabilityTokenV1,
+) -> Result<u32, &'static str> {
+    let cap_type = capability_type_from_capnet(token.cap_type).ok_or("Unsupported cap type")?;
+    let owner_any = token.context == 0;
+    let owner_pid = if owner_any {
+        ProcessId(0)
+    } else {
+        ProcessId(token.context)
+    };
+    let enforce_use_budget =
+        (token.constraints_flags & crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE) != 0;
+    let uses_remaining = if enforce_use_budget { token.max_uses } else { 0 };
+
+    CAPABILITY_MANAGER
+        .install_remote_lease(
+            owner_pid,
+            owner_any,
+            token.token_id(),
+            token.issuer_device_id,
+            token.measurement_hash,
+            token.session_id,
+            token.object_id,
+            cap_type,
+            Rights::new(token.rights),
+            token.not_before,
+            token.expires_at,
+            enforce_use_budget,
+            uses_remaining,
+        )
+        .map_err(|e| e.as_str())
+}
+
+pub fn revoke_remote_lease_by_token(token_id: u64) -> bool {
+    CAPABILITY_MANAGER.revoke_remote_lease_by_token(token_id)
 }
 
 pub fn formal_capability_self_check() -> Result<(), &'static str> {

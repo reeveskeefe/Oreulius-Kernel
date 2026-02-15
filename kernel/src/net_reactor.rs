@@ -6,6 +6,7 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::capnet::CapabilityTokenV1;
 use crate::netstack::{Ipv4Addr, NetworkStack};
 
 const MAX_STR: usize = 128;
@@ -18,6 +19,37 @@ enum NetRequest {
     HttpServerStart { port: u16 },
     HttpServerStop,
     GetInfo,
+    CapNetHello {
+        peer_device_id: u64,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+    },
+    CapNetHeartbeat {
+        peer_device_id: u64,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        ack: u32,
+        ack_only: bool,
+    },
+    CapNetTokenOffer {
+        peer_device_id: u64,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        token: CapabilityTokenV1,
+    },
+    CapNetTokenAccept {
+        peer_device_id: u64,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        token_id: u64,
+        ack: u32,
+    },
+    CapNetTokenRevoke {
+        peer_device_id: u64,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        token_id: u64,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -34,6 +66,7 @@ pub struct NetInfo {
 enum NetResponse {
     None,
     Ok,
+    U64(u64),
     Err(&'static str),
     DnsResult(Ipv4Addr),
     Info(NetInfo),
@@ -113,6 +146,52 @@ fn handle_request(stack: &mut NetworkStack) {
                 http_port,
             })
         }
+        NetRequest::CapNetHello {
+            peer_device_id,
+            dest_ip,
+            dest_port,
+        } => match stack.capnet_send_hello(dest_ip, dest_port, peer_device_id) {
+            Ok(seq) => NetResponse::U64(seq as u64),
+            Err(e) => NetResponse::Err(e),
+        },
+        NetRequest::CapNetHeartbeat {
+            peer_device_id,
+            dest_ip,
+            dest_port,
+            ack,
+            ack_only,
+        } => match stack.capnet_send_heartbeat(dest_ip, dest_port, peer_device_id, ack, ack_only) {
+            Ok(seq) => NetResponse::U64(seq as u64),
+            Err(e) => NetResponse::Err(e),
+        },
+        NetRequest::CapNetTokenOffer {
+            peer_device_id,
+            dest_ip,
+            dest_port,
+            token,
+        } => match stack.capnet_send_token_offer(dest_ip, dest_port, peer_device_id, token) {
+            Ok(token_id) => NetResponse::U64(token_id),
+            Err(e) => NetResponse::Err(e),
+        },
+        NetRequest::CapNetTokenAccept {
+            peer_device_id,
+            dest_ip,
+            dest_port,
+            token_id,
+            ack,
+        } => match stack.capnet_send_token_accept(dest_ip, dest_port, peer_device_id, token_id, ack) {
+            Ok(seq) => NetResponse::U64(seq as u64),
+            Err(e) => NetResponse::Err(e),
+        },
+        NetRequest::CapNetTokenRevoke {
+            peer_device_id,
+            dest_ip,
+            dest_port,
+            token_id,
+        } => match stack.capnet_send_token_revoke(dest_ip, dest_port, peer_device_id, token_id) {
+            Ok(seq) => NetResponse::U64(seq as u64),
+            Err(e) => NetResponse::Err(e),
+        },
     };
 
     unsafe {
@@ -212,6 +291,98 @@ pub fn http_server_stop() -> Result<(), &'static str> {
 pub fn get_info() -> Result<NetInfo, &'static str> {
     match request(NetRequest::GetInfo)? {
         NetResponse::Info(info) => Ok(info),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn capnet_send_hello(
+    peer_device_id: u64,
+    dest_ip: Ipv4Addr,
+    dest_port: u16,
+) -> Result<u32, &'static str> {
+    match request(NetRequest::CapNetHello {
+        peer_device_id,
+        dest_ip,
+        dest_port,
+    })? {
+        NetResponse::U64(v) => Ok(v as u32),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn capnet_send_heartbeat(
+    peer_device_id: u64,
+    dest_ip: Ipv4Addr,
+    dest_port: u16,
+    ack: u32,
+    ack_only: bool,
+) -> Result<u32, &'static str> {
+    match request(NetRequest::CapNetHeartbeat {
+        peer_device_id,
+        dest_ip,
+        dest_port,
+        ack,
+        ack_only,
+    })? {
+        NetResponse::U64(v) => Ok(v as u32),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn capnet_send_token_offer(
+    peer_device_id: u64,
+    dest_ip: Ipv4Addr,
+    dest_port: u16,
+    token: CapabilityTokenV1,
+) -> Result<u64, &'static str> {
+    match request(NetRequest::CapNetTokenOffer {
+        peer_device_id,
+        dest_ip,
+        dest_port,
+        token,
+    })? {
+        NetResponse::U64(v) => Ok(v),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn capnet_send_token_revoke(
+    peer_device_id: u64,
+    dest_ip: Ipv4Addr,
+    dest_port: u16,
+    token_id: u64,
+) -> Result<u32, &'static str> {
+    match request(NetRequest::CapNetTokenRevoke {
+        peer_device_id,
+        dest_ip,
+        dest_port,
+        token_id,
+    })? {
+        NetResponse::U64(v) => Ok(v as u32),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn capnet_send_token_accept(
+    peer_device_id: u64,
+    dest_ip: Ipv4Addr,
+    dest_port: u16,
+    token_id: u64,
+    ack: u32,
+) -> Result<u32, &'static str> {
+    match request(NetRequest::CapNetTokenAccept {
+        peer_device_id,
+        dest_ip,
+        dest_port,
+        token_id,
+        ack,
+    })? {
+        NetResponse::U64(v) => Ok(v as u32),
         NetResponse::Err(e) => Err(e),
         _ => Err("Unexpected response"),
     }

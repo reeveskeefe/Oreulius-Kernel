@@ -790,6 +790,100 @@ impl SecurityManager {
         self.cap_token_sign(data) == token
     }
 
+    /// Sign a token payload with an explicit key pair.
+    /// Used by CapNet peer-session keyed verification.
+    pub fn cap_token_sign_with_key(&self, k0: u64, k1: u64, data: &[u8]) -> u64 {
+        siphash24(k0, k1, data)
+    }
+
+    /// Verify a token payload against an explicit key pair.
+    pub fn cap_token_verify_with_key(&self, k0: u64, k1: u64, data: &[u8], token: u64) -> bool {
+        self.cap_token_sign_with_key(k0, k1, data) == token
+    }
+
+    /// Derive a CapNet peer session keypair from handshake material.
+    ///
+    /// Note:
+    /// - This expands material via the per-boot secret and is appropriate for
+    ///   same-kernel or pre-shared-secret flows.
+    /// - Cross-device deployments should feed a shared secret negotiated via
+    ///   attestation/exchange and then call `cap_token_sign_with_key`.
+    pub fn capnet_derive_session_key(
+        &self,
+        peer_device_id: u64,
+        nonce_a: u64,
+        nonce_b: u64,
+        measurement_hash: u64,
+        key_epoch: u32,
+    ) -> [u64; 2] {
+        const CONTEXT: u32 = 0x3154_5043; // "CPT1"
+
+        let lo = core::cmp::min(nonce_a, nonce_b);
+        let hi = core::cmp::max(nonce_a, nonce_b);
+
+        let mut payload = [0u8; 40];
+        payload[0..4].copy_from_slice(&CONTEXT.to_le_bytes());
+        payload[4..12].copy_from_slice(&peer_device_id.to_le_bytes());
+        payload[12..20].copy_from_slice(&lo.to_le_bytes());
+        payload[20..28].copy_from_slice(&hi.to_le_bytes());
+        payload[28..36].copy_from_slice(&measurement_hash.to_le_bytes());
+        payload[36..40].copy_from_slice(&key_epoch.to_le_bytes());
+
+        let mut p0 = [0u8; 48];
+        p0[0..40].copy_from_slice(&payload);
+        p0[40..48].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut p1 = [0u8; 48];
+        p1[0..40].copy_from_slice(&payload);
+        p1[40..48].copy_from_slice(&1u64.to_le_bytes());
+
+        [self.cap_token_sign(&p0), self.cap_token_sign(&p1)]
+    }
+
+    /// Derive a CapNet peer session keypair from an explicit shared secret.
+    ///
+    /// This is the cross-device path used after remote attestation establishes
+    /// a verifier trust relationship and both sides share `shared_secret`.
+    pub fn capnet_derive_session_key_with_secret(
+        &self,
+        shared_secret: u64,
+        peer_device_id: u64,
+        nonce_a: u64,
+        nonce_b: u64,
+        measurement_hash: u64,
+        key_epoch: u32,
+    ) -> [u64; 2] {
+        const CONTEXT: u32 = 0x3254_5043; // "CPT2"
+
+        let lo = core::cmp::min(nonce_a, nonce_b);
+        let hi = core::cmp::max(nonce_a, nonce_b);
+
+        let mut payload = [0u8; 48];
+        payload[0..4].copy_from_slice(&CONTEXT.to_le_bytes());
+        payload[4..12].copy_from_slice(&peer_device_id.to_le_bytes());
+        payload[12..20].copy_from_slice(&lo.to_le_bytes());
+        payload[20..28].copy_from_slice(&hi.to_le_bytes());
+        payload[28..36].copy_from_slice(&measurement_hash.to_le_bytes());
+        payload[36..40].copy_from_slice(&key_epoch.to_le_bytes());
+        payload[40..48].copy_from_slice(&shared_secret.to_le_bytes());
+
+        let k0 = shared_secret ^ 0xA5A5_A5A5_5A5A_5A5A;
+        let k1 = shared_secret.rotate_left(23) ^ 0x5A5A_5A5A_A5A5_A5A5;
+
+        let mut p0 = [0u8; 56];
+        p0[0..48].copy_from_slice(&payload);
+        p0[48..56].copy_from_slice(&0u64.to_le_bytes());
+
+        let mut p1 = [0u8; 56];
+        p1[0..48].copy_from_slice(&payload);
+        p1[48..56].copy_from_slice(&1u64.to_le_bytes());
+
+        [
+            self.cap_token_sign_with_key(k0, k1, &p0),
+            self.cap_token_sign_with_key(k0, k1, &p1),
+        ]
+    }
+
     /// Get audit statistics
     pub fn get_audit_stats(&self) -> (usize, usize, usize) {
         let log = self.audit_log.lock();

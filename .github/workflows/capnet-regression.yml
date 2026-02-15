@@ -1,0 +1,50 @@
+name: capnet-regression
+
+on:
+  push:
+    paths:
+      - "kernel/**"
+      - ".github/workflows/capnet-regression.yml"
+  pull_request:
+    paths:
+      - "kernel/**"
+      - ".github/workflows/capnet-regression.yml"
+
+jobs:
+  capnet-corpus-replay:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: kernel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            nasm \
+            qemu-system-x86 \
+            expect \
+            xorriso \
+            grub-pc-bin \
+            grub-common \
+            mtools
+
+      - name: Install Rust nightly (kernel toolchain)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2023-11-01
+
+      - name: Build kernel ISO
+        run: ./build.sh
+
+      - name: Replay CapNet corpus + soak + formal checks
+        env:
+          QEMU_EXTRA_ARGS: -display none -nographic -no-reboot -no-shutdown
+        run: ./fuzz/ci_capnet_check.sh 1000 2

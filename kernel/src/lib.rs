@@ -10,6 +10,7 @@ pub mod advanced_commands;
 pub mod acpi_asm;
 pub mod asm_bindings;
 pub mod capability;
+pub mod capnet;
 pub mod commands;
 pub mod console_service;
 pub mod cpu_security;
@@ -193,6 +194,8 @@ pub extern "C" fn rust_main() -> ! {
     vga::print_str("[SECURITY] Initializing security manager...\n");
     security::init();
     vga::print_str("[SECURITY] Audit logging enabled\n");
+    capnet::init();
+    vga::print_str("[CAPNET] Peer token subsystem initialized\n");
     
     // Initialize capability subsystem
     vga::print_str("[CAPABILITY] Initializing capability manager...\n");

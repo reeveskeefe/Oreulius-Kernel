@@ -8,17 +8,18 @@ A security-hardened, bare-metal operating system kernel implementing advanced sy
 
 ---
 
-## Formal Security Paper
+## Formal Security Papers
 
-Oreulia's completed formal resolution record for the in-kernel JIT security paradox is documented here:
+Oreulia's formal security records are documented in two companion papers:
 
 - [`../docs/oreulia-jit-security-resolution.md`](../docs/oreulia-jit-security-resolution.md)
+- [`../docs/capnet.md`](../docs/capnet.md)
 
-This paper includes:
+These papers include:
 - formal model, assumptions, definitions, lemmas/theorems/corollaries
 - proof-obligation structure and release-gate equations
-- threat-control matrix and compositional security argument
-- in-depth implementation mapping for all completed hardening controls
+- threat-control matrix and compositional security arguments
+- implementation-to-invariant mappings for JIT hardening and networked capability transfer
 
 ---
 
@@ -31,6 +32,7 @@ The kernel has moved beyond baseline JIT and capability hardening into a fully l
 - Complete x86 whitelist + decoder validation, expanded SFI on all memory paths, and full CFI (shadow stack + target-set checks)
 - Per-block JIT translation certificates with integrity-time recomputation checks
 - Cryptographic capability token verification across IPC and core capability tables (SipHash-based MACs)
+- CapNet decentralized capability-network control plane with attestation-bound peer sessions and replay-safe token transfer
 - SMEP/SMAP/KPTI integration (where hardware support exists), plus memory-tag policy enforcement
 - SGX/TrustZone-capable enclave lifecycle framework with attestation/key-policy fail-closed gating
 - Coverage-guided JIT fuzzing, external seed corpus replay, and multi-round soak verification paths
@@ -109,6 +111,15 @@ Oreulia implements a **capability-oriented kernel architecture** with explicit i
 - **Revocation**: Central authority can invalidate capability groups instantly
 - **Prevents confused deputy**: System services validate caps on every operation
 
+#### **CapNet: Decentralized Capability Networking**
+- **Portable authority objects**: `CapabilityTokenV1` encodes capability semantics into a fixed-width network token
+- **Per-peer cryptographic context**: Tokens and control frames are authenticated using session keys installed from attestation exchange
+- **Replay-safe control channel**: Frame sequence windows and token nonce windows enforce deterministic stale/duplicate rejection
+- **Delegation-chain enforcement**: Parent token linkage, max-depth checks, and rights-subset attenuation are validated before lease install
+- **Local enforcement bridge**: Accepted remote tokens map to `RemoteCapabilityLease` entries and are checked on capability-use paths
+- **Persistent revocation safety**: Epoch-ordered tombstones survive reboot and are replayed at init for fail-closed semantics
+- **Verification surface**: In-kernel fuzz, corpus replay, soak loops, and formal checks gate parser and enforcer regressions
+
 #### **Hardware-Optimized Assembly Modules**
 All performance-critical kernel operations hand-coded in NASM Assembly:
 
@@ -168,6 +179,27 @@ The JIT compiler implements **single-pass translation** with **linear-time compl
 - **Guard pages**: Unmapped memory before/after Wasm linear memory traps out-of-bounds access
 - **Bounds checks**: Every `load`/`store` validates address before dereferencing
 - **Type enforcement**: Wasm values tagged with types, mismatches caught at validation
+
+### CapNet Protocol Semantics
+CapNet acceptance is defined as a conjunction of cryptographic, temporal, replay, attenuation, and revocation predicates:
+
+\[
+\operatorname{Accept}(\tau, p, R) =
+\operatorname{MACValid}_{k_p}(\tau)
+\land \operatorname{TemporalValid}(\tau)
+\land \operatorname{FreshSeq}(p)
+\land \operatorname{FreshNonce}(p,\tau)
+\land \operatorname{DelegationValid}(\tau)
+\land \neg \operatorname{Revoked}(\tau, R)
+\]
+
+Rights monotonicity is enforced by attenuation:
+
+\[
+\operatorname{rights}(\tau_{child}) \subseteq \operatorname{rights}(\tau_{parent})
+\]
+
+Acceptance installs a lease only when all predicates hold, and every lease-use path re-checks lease activity/revocation and budget constraints.
 
 ---
 
@@ -240,7 +272,7 @@ qemu-system-i386 -cdrom oreulia.iso -smp 4
 Use these commands from the Oreulia shell to validate current security posture:
 
 - `formal-verify`
-  - Executes JIT translation proof checks, capability proof checks, and mechanized model checks.
+  - Executes JIT translation proof checks, capability proof checks, CapNet formal self-checks, and mechanized model checks.
 - `wasm-jit-fuzz <iters> [seed]`
   - Differential fuzzing of interpreter vs JIT with mismatch/compile-error reporting.
 - `wasm-jit-fuzz-corpus <iters>`
@@ -253,6 +285,14 @@ Use these commands from the Oreulia shell to validate current security posture:
   - Prints anomaly detector window counters, score, and alert totals.
 - `sched-net-soak <seconds> [probe_ms]`
   - Runs scheduler/network stress verification with progress and error deltas.
+- `capnet-fuzz <iters> [seed]`
+  - Fuzzes CapNet parser/enforcement transitions with deterministic seed control.
+- `capnet-fuzz-corpus <iters>`
+  - Replays the CapNet external regression seed set and reports aggregate pass/fail metrics.
+- `capnet-fuzz-soak <iters> <rounds>`
+  - Repeats full corpus replay to detect residual non-determinism and long-run drift.
+- `capnet-demo`
+  - Runs an end-to-end lend/use/revoke loopback verification path.
 
 ---
 
@@ -263,12 +303,16 @@ Kernel security regression checks are now integrated into repository CI:
 - Workflow: `../.github/workflows/wasm-jit-regression.yml`
 - External runner: `fuzz/run_wasm_jit_corpus.expect`
 - CI parser/gate: `fuzz/ci_regression_check.sh`
+- Workflow: `../.github/workflows/capnet-regression.yml`
+- External runner: `fuzz/run_capnet_corpus.expect`
+- CI parser/gate: `fuzz/ci_capnet_check.sh`
 
 CI fails on:
 - incomplete corpus pass rate (seed replay not fully green)
 - non-zero corpus mismatches
 - non-zero corpus compile errors
 - failed soak rounds
+- CapNet corpus mismatch/compile-error or soak failure
 
 This converts fuzz/corpus confidence into a merge-time admission policy.
 
@@ -281,6 +325,7 @@ This converts fuzz/corpus confidence into a merge-time admission policy.
 - **Network path**: DMA-backed descriptor rings on E1000/RTL8139-class drivers
 - **Memory path**: SSE2-optimized primitives for hot memcpy/memset routines
 - **Wasm path**: JIT and interpreter dual execution with differential replay/fuzz controls
+- **CapNet path**: fixed-width control parser + lease enforcement with replay-window and tombstone checks
 - **Note**: absolute latency/throughput depends on QEMU host configuration and CPU virtualization mode
 
 ---
@@ -294,6 +339,7 @@ This converts fuzz/corpus confidence into a merge-time admission policy.
 - **W^X publish discipline**: writable-then-sealed executable pages for JIT outputs
 - **Kernel section protection**: `.text`/`.rodata` mapped read-only; mutable segments isolated
 - **Capability MAC integrity**: SipHash-backed token/object validation for IPC and core capability tables
+- **CapNet control security**: Session-key MAC validation, sequence/nonce replay windows, and delegation-chain attenuation checks
 - **CPU hardening**: SMEP/SMAP/KPTI enabled where hardware supports those controls
 - **Interrupt validation**: EFLAGS checked before HLT (prevents deadlock attacks)
 - **Bounds enforcement**: Every array access validated, panics on out-of-bounds
@@ -309,6 +355,7 @@ This converts fuzz/corpus confidence into a merge-time admission policy.
 - **Anomaly score monitoring** with thresholded alert events in audit stream
 - **Attestation interoperability checks** (vendor roots, signer linkage, token freshness)
 - **Fail-closed key lifecycle rules** for enclave session open/enter/close
+- **Persistent revocation journal replay** for cross-reboot denial of revoked remote capability tokens
 
 ### Security Posture Summary
 
@@ -324,6 +371,7 @@ This kernel demonstrates several novel implementations:
 2. **WPA2 handshake stack from scratch**: In-tree 802.11i-oriented cryptographic and EAPOL flow implementation
 3. **Quantum scheduling**: Deterministic priority-aware scheduling with MLFQ + quantum accounting on embedded systems
 4. **Assembly-accelerated cryptography**: AES-NI integration with CPUID detection and fallback paths
+5. **Decentralized kernel capability networking**: CapNet portable token protocol with attestation-bound sessions, replay-safe control frames, lease bridging, and persistent revocation semantics
 
 The codebase serves as educational reference for:
 - Systems programming in Rust without `std` library

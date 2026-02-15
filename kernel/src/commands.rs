@@ -104,7 +104,10 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-jit-fuzz  - Coverage-guided JIT fuzz (wasm-jit-fuzz <iters> [seed])\n");
             vga::print_str("  wasm-jit-fuzz-corpus - Run external regression seed corpus (wasm-jit-fuzz-corpus <iters>)\n");
             vga::print_str("  wasm-jit-fuzz-soak - Repeat corpus replay (wasm-jit-fuzz-soak <iters> <rounds>)\n");
-            vga::print_str("  formal-verify - Run formal verification checks (JIT translation + capability model)\n");
+            vga::print_str("  capnet-fuzz - Fuzz CapNet parser/enforcer (capnet-fuzz <iters> [seed])\n");
+            vga::print_str("  capnet-fuzz-corpus - Replay CapNet seed corpus (capnet-fuzz-corpus <iters>)\n");
+            vga::print_str("  capnet-fuzz-soak - Repeat CapNet corpus replay (capnet-fuzz-soak <iters> <rounds>)\n");
+            vga::print_str("  formal-verify - Run formal verification checks (JIT + capability + CapNet)\n");
             vga::print_str("  wasm-jit-on  - Enable WASM JIT\n");
             vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
             vga::print_str("  wasm-jit-stats - Show WASM JIT stats\n");
@@ -135,6 +138,18 @@ pub fn execute(input: &str) {
             vga::print_str("  eth-status   - Show Ethernet status\n");
             vga::print_str("  eth-info     - Show Ethernet device info\n");
             vga::print_str("  netstack-info - Show network stack status (real TCP/IP)\n");
+            vga::print_str("  capnet-local - Show local CapNet device identity\n");
+            vga::print_str("  capnet-peer-add - Register/update a CapNet peer (capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement])\n");
+            vga::print_str("  capnet-peer-show - Show CapNet peer state (capnet-peer-show <peer_id>)\n");
+            vga::print_str("  capnet-peer-list - List active CapNet peers\n");
+            vga::print_str("  capnet-lease-list - List active remote capability leases\n");
+            vga::print_str("  capnet-hello - Send CapNet HELLO (capnet-hello <ip> <port> <peer_id>)\n");
+            vga::print_str("  capnet-heartbeat - Send CapNet heartbeat (capnet-heartbeat <ip> <port> <peer_id> [ack] [ack_only])\n");
+            vga::print_str("  capnet-lend - Lend a capability token (capnet-lend <ip> <port> <peer_id> <cap_type> <object_id> <rights> <ttl_ticks> [context_pid] [max_uses] [max_bytes] [measurement] [session_id])\n");
+            vga::print_str("  capnet-accept - Send token acceptance (capnet-accept <ip> <port> <peer_id> <token_id> [ack])\n");
+            vga::print_str("  capnet-revoke - Revoke a sent token (capnet-revoke <ip> <port> <peer_id> <token_id>)\n");
+            vga::print_str("  capnet-stats - Show CapNet peer/lease/session statistics\n");
+            vga::print_str("  capnet-demo - Run end-to-end CapNet lend/use/revoke loopback demo\n");
             vga::print_str("  asm-test     - Test assembly performance functions\n");
             vga::print_str("  security-stats - Show security statistics\n");
             vga::print_str("  security-anomaly - Show anomaly detector status\n");
@@ -291,6 +306,15 @@ pub fn execute(input: &str) {
         "wasm-jit-fuzz-soak" => {
             cmd_wasm_jit_fuzz_soak(parts);
         }
+        "capnet-fuzz" => {
+            cmd_capnet_fuzz(parts);
+        }
+        "capnet-fuzz-corpus" => {
+            cmd_capnet_fuzz_corpus(parts);
+        }
+        "capnet-fuzz-soak" => {
+            cmd_capnet_fuzz_soak(parts);
+        }
         "formal-verify" => {
             cmd_formal_verify();
         }
@@ -383,6 +407,42 @@ pub fn execute(input: &str) {
         }
         "netstack-info" => {
             cmd_netstack_info();
+        }
+        "capnet-local" => {
+            cmd_capnet_local();
+        }
+        "capnet-peer-add" => {
+            cmd_capnet_peer_add(parts);
+        }
+        "capnet-peer-show" => {
+            cmd_capnet_peer_show(parts);
+        }
+        "capnet-peer-list" => {
+            cmd_capnet_peer_list();
+        }
+        "capnet-lease-list" => {
+            cmd_capnet_lease_list();
+        }
+        "capnet-hello" => {
+            cmd_capnet_hello(parts);
+        }
+        "capnet-heartbeat" => {
+            cmd_capnet_heartbeat(parts);
+        }
+        "capnet-lend" => {
+            cmd_capnet_lend(parts);
+        }
+        "capnet-accept" => {
+            cmd_capnet_accept(parts);
+        }
+        "capnet-revoke" => {
+            cmd_capnet_revoke(parts);
+        }
+        "capnet-stats" => {
+            cmd_capnet_stats();
+        }
+        "capnet-demo" => {
+            cmd_capnet_demo();
         }
         "asm-test" => {
             cmd_asm_test();
@@ -2731,6 +2791,34 @@ fn parse_u32(s: &str) -> Option<u32> {
     Some(result)
 }
 
+fn parse_u64_any(s: &str) -> Option<u64> {
+    if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        let mut result = 0u64;
+        for b in rest.bytes() {
+            let digit = match b {
+                b'0'..=b'9' => (b - b'0') as u64,
+                b'a'..=b'f' => (b - b'a' + 10) as u64,
+                b'A'..=b'F' => (b - b'A' + 10) as u64,
+                _ => return None,
+            };
+            result = result.checked_mul(16)?;
+            result = result.checked_add(digit)?;
+        }
+        Some(result)
+    } else {
+        let mut result = 0u64;
+        for b in s.bytes() {
+            if b >= b'0' && b <= b'9' {
+                result = result.checked_mul(10)?;
+                result = result.checked_add((b - b'0') as u64)?;
+            } else {
+                return None;
+            }
+        }
+        Some(result)
+    }
+}
+
 // ============================================================================
 // WASM Commands
 // ============================================================================
@@ -3169,7 +3257,7 @@ fn cmd_wasm_jit_selftest() {
 
 fn cmd_formal_verify() {
     vga::print_str("\n===== Formal Verification =====\n\n");
-    vga::print_str("[1/3] JIT translation proof obligations...\n");
+    vga::print_str("[1/4] JIT translation proof obligations...\n");
     match crate::wasm_jit::formal_translation_self_check() {
         Ok(()) => vga::print_str("  ✓ JIT translation verification passed\n"),
         Err(e) => {
@@ -3180,7 +3268,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[2/3] Capability proof obligations...\n");
+    vga::print_str("[2/4] Capability proof obligations...\n");
     match crate::capability::formal_capability_self_check() {
         Ok(()) => vga::print_str("  ✓ Capability verification passed\n"),
         Err(e) => {
@@ -3191,7 +3279,18 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[3/3] Mechanized backend model checks...\n");
+    vga::print_str("[3/4] CapNet proof obligations...\n");
+    match crate::capnet::formal_capnet_self_check() {
+        Ok(()) => vga::print_str("  ✓ CapNet verification passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ CapNet verification failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    vga::print_str("[4/4] Mechanized backend model checks...\n");
     match crate::formal::run_mechanized_backend_check() {
         Ok(summary) => {
             vga::print_str("  ✓ Mechanized checks passed (obligations=");
@@ -3609,6 +3708,229 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
         }
     }
 
+    vga::print_str("\n");
+}
+
+fn print_capnet_fuzz_failure(failure: crate::capnet::CapNetFuzzFailure) {
+    vga::print_str("Iter: ");
+    print_u32(failure.iteration);
+    vga::print_str("  Stage: ");
+    vga::print_str(failure.stage);
+    vga::print_str("\nReason: ");
+    vga::print_str(failure.reason);
+    vga::print_str("\nSample bytes:\n");
+    let mut i = 0usize;
+    while i < failure.sample_len as usize {
+        print_hex_byte(failure.sample[i]);
+        vga::print_str(" ");
+        if (i + 1) % 16 == 0 {
+            vga::print_str("\n");
+        }
+        i += 1;
+    }
+    if (failure.sample_len as usize) % 16 != 0 {
+        vga::print_str("\n");
+    }
+}
+
+fn cmd_capnet_fuzz(mut parts: core::str::SplitWhitespace) {
+    let iters = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: capnet-fuzz <iters> [seed]\n");
+            return;
+        }
+    };
+    const MAX_FUZZ_ITERS: u32 = 10_000;
+    if iters == 0 || iters > MAX_FUZZ_ITERS {
+        vga::print_str("Iterations must be 1..=10000.\n");
+        return;
+    }
+    let seed = parts
+        .next()
+        .and_then(parse_u64_any)
+        .unwrap_or_else(|| crate::security::security().random_u32() as u64);
+
+    vga::print_str("\n===== CapNet Fuzz =====\n\n");
+    vga::print_str("Iterations: ");
+    print_u32(iters);
+    vga::print_str("\nSeed: ");
+    print_u64(seed);
+    vga::print_str("\n\n");
+
+    match crate::capnet::capnet_fuzz(iters, seed) {
+        Ok(stats) => {
+            vga::print_str("Valid path OK: ");
+            print_u32(stats.valid_path_ok);
+            vga::print_str("\nReplay rejects: ");
+            print_u32(stats.replay_rejects);
+            vga::print_str("\nConstraint rejects: ");
+            print_u32(stats.constraint_rejects);
+            vga::print_str("\nToken decode ok/err: ");
+            print_u32(stats.token_decode_ok);
+            vga::print_str(" / ");
+            print_u32(stats.token_decode_err);
+            vga::print_str("\nControl decode ok/err: ");
+            print_u32(stats.control_decode_ok);
+            vga::print_str(" / ");
+            print_u32(stats.control_decode_err);
+            vga::print_str("\nProcess ok/err: ");
+            print_u32(stats.process_ok);
+            vga::print_str(" / ");
+            print_u32(stats.process_err);
+            vga::print_str("\nFailures: ");
+            print_u32(stats.failures);
+            if let Some(failure) = stats.first_failure {
+                vga::print_str("\nFirst failure:\n");
+                print_capnet_fuzz_failure(failure);
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("CapNet fuzz failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    vga::print_str("\n");
+}
+
+fn cmd_capnet_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
+    let iters = parts
+        .next()
+        .and_then(parse_number)
+        .map(|v| v as u32)
+        .unwrap_or(1000);
+    const MAX_FUZZ_ITERS: u32 = 10_000;
+    if iters == 0 || iters > MAX_FUZZ_ITERS {
+        vga::print_str("Usage: capnet-fuzz-corpus <iters>\n");
+        vga::print_str("Iterations must be 1..=10000.\n");
+        return;
+    }
+
+    vga::print_str("\n===== CapNet Regression Corpus =====\n\n");
+    vga::print_str("Seeds: ");
+    print_u32(crate::capnet::CAPNET_FUZZ_REGRESSION_SEEDS.len() as u32);
+    vga::print_str("\nIterations per seed: ");
+    print_u32(iters);
+    vga::print_str("\n\n");
+
+    match crate::capnet::capnet_fuzz_regression_default(iters) {
+        Ok(stats) => {
+            vga::print_str("Seeds passed: ");
+            print_u32(stats.seeds_passed);
+            vga::print_str(" / ");
+            print_u32(stats.seeds_total);
+            vga::print_str("\nSeeds failed: ");
+            print_u32(stats.seeds_failed);
+            vga::print_str("\nTotal failures: ");
+            print_u32(stats.total_failures);
+            vga::print_str("\nTotal valid-path OK: ");
+            print_u32(stats.total_valid_path_ok);
+            vga::print_str("\nTotal replay rejects: ");
+            print_u32(stats.total_replay_rejects);
+            vga::print_str("\nTotal constraint rejects: ");
+            print_u32(stats.total_constraint_rejects);
+            vga::print_str("\nTotal token decode errors: ");
+            print_u32(stats.total_token_decode_err);
+            vga::print_str("\nTotal control decode errors: ");
+            print_u32(stats.total_control_decode_err);
+            vga::print_str("\nTotal process errors: ");
+            print_u32(stats.total_process_err);
+            if let Some(seed) = stats.first_failed_seed {
+                vga::print_str("\nFirst failing seed: ");
+                print_u64(seed);
+                if let Some(failure) = stats.first_failure {
+                    vga::print_str("\nFirst failure:\n");
+                    print_capnet_fuzz_failure(failure);
+                }
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("CapNet regression corpus failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    vga::print_str("\n");
+}
+
+fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
+    let iters = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: capnet-fuzz-soak <iters> <rounds>\n");
+            return;
+        }
+    };
+    let rounds = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: capnet-fuzz-soak <iters> <rounds>\n");
+            return;
+        }
+    };
+    const MAX_FUZZ_ITERS: u32 = 10_000;
+    const MAX_SOAK_ROUNDS: u32 = 100;
+    if iters == 0 || iters > MAX_FUZZ_ITERS {
+        vga::print_str("Iterations must be 1..=10000.\n");
+        return;
+    }
+    if rounds == 0 || rounds > MAX_SOAK_ROUNDS {
+        vga::print_str("Rounds must be 1..=100.\n");
+        return;
+    }
+
+    vga::print_str("\n===== CapNet Corpus Soak =====\n\n");
+    vga::print_str("Rounds: ");
+    print_u32(rounds);
+    vga::print_str("\nIterations per seed: ");
+    print_u32(iters);
+    vga::print_str("\nSeeds per round: ");
+    print_u32(crate::capnet::CAPNET_FUZZ_REGRESSION_SEEDS.len() as u32);
+    vga::print_str("\n\n");
+
+    match crate::capnet::capnet_fuzz_regression_soak_default(iters, rounds) {
+        Ok(stats) => {
+            vga::print_str("Rounds passed: ");
+            print_u32(stats.rounds_passed);
+            vga::print_str(" / ");
+            print_u32(stats.rounds);
+            vga::print_str("\nRounds failed: ");
+            print_u32(stats.rounds_failed);
+            vga::print_str("\nSeed passes: ");
+            print_u32(stats.seed_passes);
+            vga::print_str("\nSeed failures: ");
+            print_u32(stats.seed_failures);
+            vga::print_str("\nTotal failures: ");
+            print_u32(stats.total_failures);
+            vga::print_str("\nTotal valid-path OK: ");
+            print_u32(stats.total_valid_path_ok);
+            vga::print_str("\nTotal replay rejects: ");
+            print_u32(stats.total_replay_rejects);
+            vga::print_str("\nTotal constraint rejects: ");
+            print_u32(stats.total_constraint_rejects);
+            if let Some(round_idx) = stats.first_failed_round {
+                vga::print_str("\nFirst failing round: ");
+                print_u32(round_idx);
+                if let Some(seed) = stats.first_failed_seed {
+                    vga::print_str("\nFirst failing seed: ");
+                    print_u64(seed);
+                }
+                if let Some(failure) = stats.first_failure {
+                    vga::print_str("\nFirst failure:\n");
+                    print_capnet_fuzz_failure(failure);
+                }
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("CapNet corpus soak failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
     vga::print_str("\n");
 }
 
@@ -4352,6 +4674,825 @@ fn cmd_network_help() {
     vga::print_str("  - Packet I/O over WiFi interface\n");
     vga::print_str("  - Capability-based security model\n");
     vga::print_str("\n");
+
+    vga::print_str("CAPNET COMMANDS:\n");
+    vga::print_str("  capnet-local\n");
+    vga::print_str("  capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]\n");
+    vga::print_str("  capnet-peer-show <peer_id>\n");
+    vga::print_str("  capnet-peer-list\n");
+    vga::print_str("  capnet-lease-list\n");
+    vga::print_str("  capnet-hello <ip> <port> <peer_id>\n");
+    vga::print_str("  capnet-heartbeat <ip> <port> <peer_id> [ack] [ack_only]\n");
+    vga::print_str("  capnet-lend <ip> <port> <peer_id> <cap_type> <object_id> <rights> <ttl_ticks> [context_pid] [max_uses] [max_bytes] [measurement] [session_id]\n");
+    vga::print_str("  capnet-accept <ip> <port> <peer_id> <token_id> [ack]\n");
+    vga::print_str("  capnet-revoke <ip> <port> <peer_id> <token_id>\n");
+    vga::print_str("  capnet-stats\n");
+    vga::print_str("  capnet-demo\n");
+    vga::print_str("  capnet-fuzz <iters> [seed]\n");
+    vga::print_str("  capnet-fuzz-corpus <iters>\n");
+    vga::print_str("  capnet-fuzz-soak <iters> <rounds>\n");
+    vga::print_str("\n");
+}
+
+fn parse_capnet_policy(s: &str) -> Option<crate::capnet::PeerTrustPolicy> {
+    if s.eq_ignore_ascii_case("disabled") {
+        return Some(crate::capnet::PeerTrustPolicy::Disabled);
+    }
+    if s.eq_ignore_ascii_case("audit") {
+        return Some(crate::capnet::PeerTrustPolicy::Audit);
+    }
+    if s.eq_ignore_ascii_case("enforce") {
+        return Some(crate::capnet::PeerTrustPolicy::Enforce);
+    }
+    None
+}
+
+fn parse_capnet_cap_type(s: &str) -> Option<u8> {
+    if s.eq_ignore_ascii_case("channel") {
+        return Some(crate::capability::CapabilityType::Channel as u8);
+    }
+    if s.eq_ignore_ascii_case("task") {
+        return Some(crate::capability::CapabilityType::Task as u8);
+    }
+    if s.eq_ignore_ascii_case("spawner") {
+        return Some(crate::capability::CapabilityType::Spawner as u8);
+    }
+    if s.eq_ignore_ascii_case("console") {
+        return Some(crate::capability::CapabilityType::Console as u8);
+    }
+    if s.eq_ignore_ascii_case("clock") {
+        return Some(crate::capability::CapabilityType::Clock as u8);
+    }
+    if s.eq_ignore_ascii_case("store") {
+        return Some(crate::capability::CapabilityType::Store as u8);
+    }
+    if s.eq_ignore_ascii_case("filesystem") || s.eq_ignore_ascii_case("fs") {
+        return Some(crate::capability::CapabilityType::Filesystem as u8);
+    }
+    let numeric = parse_u32(s)?;
+    if numeric <= u8::MAX as u32 {
+        Some(numeric as u8)
+    } else {
+        None
+    }
+}
+
+fn cmd_capnet_local() {
+    vga::print_str("\n===== CapNet Local Identity =====\n");
+    match crate::capnet::local_device_id() {
+        Some(id) => {
+            vga::print_str("Device ID: 0x");
+            print_u64_hex(id);
+            vga::print_str("\n");
+        }
+        None => {
+            vga::print_str("Local CapNet identity not initialized\n");
+        }
+    }
+    vga::print_str("\n");
+}
+
+fn cmd_capnet_peer_add(mut parts: core::str::SplitWhitespace) {
+    let peer_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]\n");
+            return;
+        }
+    };
+    let policy_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]\n");
+            return;
+        }
+    };
+    let peer_id = match parse_u64_any(peer_str) {
+        Some(v) if v != 0 => v,
+        _ => {
+            vga::print_str("Invalid peer_id (expected non-zero u64; decimal or 0xhex)\n");
+            return;
+        }
+    };
+    let policy = match parse_capnet_policy(policy_str) {
+        Some(p) => p,
+        None => {
+            vga::print_str("Invalid policy: use disabled, audit, or enforce\n");
+            return;
+        }
+    };
+    let measurement = parts.next().and_then(parse_u64_any).unwrap_or(0);
+    match crate::capnet::register_peer(peer_id, policy, measurement) {
+        Ok(()) => {
+            vga::print_str("CapNet peer registered: peer=0x");
+            print_u64_hex(peer_id);
+            vga::print_str(" policy=");
+            vga::print_str(match policy {
+                crate::capnet::PeerTrustPolicy::Disabled => "disabled",
+                crate::capnet::PeerTrustPolicy::Audit => "audit",
+                crate::capnet::PeerTrustPolicy::Enforce => "enforce",
+            });
+            vga::print_str(" measurement=0x");
+            print_u64_hex(measurement);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("CapNet peer add failed: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_capnet_peer_show(mut parts: core::str::SplitWhitespace) {
+    let peer_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: capnet-peer-show <peer_id>\n");
+            return;
+        }
+    };
+    let peer_id = match parse_u64_any(peer_str) {
+        Some(v) if v != 0 => v,
+        _ => {
+            vga::print_str("Invalid peer_id (expected non-zero u64)\n");
+            return;
+        }
+    };
+    match crate::capnet::peer_snapshot(peer_id) {
+        Some(s) => {
+            vga::print_str("\n===== CapNet Peer =====\n");
+            vga::print_str("Peer: 0x");
+            print_u64_hex(s.peer_device_id);
+            vga::print_str("\nPolicy: ");
+            vga::print_str(match s.trust {
+                crate::capnet::PeerTrustPolicy::Disabled => "disabled",
+                crate::capnet::PeerTrustPolicy::Audit => "audit",
+                crate::capnet::PeerTrustPolicy::Enforce => "enforce",
+            });
+            vga::print_str("\nMeasurement: 0x");
+            print_u64_hex(s.measurement_hash);
+            vga::print_str("\nKey epoch: ");
+            print_u32(s.key_epoch);
+            vga::print_str("\nReplay high nonce: ");
+            print_u64(s.replay_high_nonce);
+            vga::print_str("\nLast seen epoch: ");
+            print_u64(s.last_seen_epoch);
+            vga::print_str("\n\n");
+        }
+        None => {
+            vga::print_str("CapNet peer not found\n");
+        }
+    }
+}
+
+fn cmd_capnet_peer_list() {
+    let peers = crate::capnet::peer_snapshots();
+    let mut active = 0usize;
+    vga::print_str("\n===== CapNet Peer Table =====\n");
+    for i in 0..peers.len() {
+        if let Some(p) = peers[i] {
+            active += 1;
+            vga::print_str("[");
+            print_number(i);
+            vga::print_str("] peer=0x");
+            print_u64_hex(p.peer_device_id);
+            vga::print_str(" policy=");
+            vga::print_str(match p.trust {
+                crate::capnet::PeerTrustPolicy::Disabled => "disabled",
+                crate::capnet::PeerTrustPolicy::Audit => "audit",
+                crate::capnet::PeerTrustPolicy::Enforce => "enforce",
+            });
+            vga::print_str(" key_epoch=");
+            print_u32(p.key_epoch);
+            vga::print_str("\n");
+        }
+    }
+    if active == 0 {
+        vga::print_str("(no active peers)\n");
+    }
+    vga::print_str("Total active: ");
+    print_number(active);
+    vga::print_str("\n\n");
+}
+
+fn cmd_capnet_lease_list() {
+    let leases = crate::capability::capability_manager().remote_lease_snapshots();
+    let mut active = 0usize;
+    vga::print_str("\n===== CapNet Remote Leases =====\n");
+    for i in 0..leases.len() {
+        if let Some(l) = leases[i] {
+            if !l.active || l.revoked {
+                continue;
+            }
+            active += 1;
+            vga::print_str("[");
+            print_number(i);
+            vga::print_str("] token=0x");
+            print_u64_hex(l.token_id);
+            vga::print_str(" cap=");
+            print_u32(l.mapped_cap_id);
+            vga::print_str(" owner=");
+            if l.owner_any {
+                vga::print_str("*");
+            } else {
+                print_u32(l.owner_pid.0);
+            }
+            vga::print_str(" type=");
+            print_u32(l.cap_type as u32);
+            vga::print_str(" obj=0x");
+            print_u64_hex(l.object_id);
+            vga::print_str(" exp=");
+            print_u64(l.expires_at);
+            vga::print_str("\n");
+        }
+    }
+    if active == 0 {
+        vga::print_str("(no active leases)\n");
+    }
+    vga::print_str("Total active: ");
+    print_number(active);
+    vga::print_str("\n\n");
+}
+
+fn cmd_capnet_hello(mut parts: core::str::SplitWhitespace) {
+    use crate::net_reactor;
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(ip) => ip,
+        None => {
+            vga::print_str("Usage: capnet-hello <ip> <port> <peer_id>\n");
+            return;
+        }
+    };
+    let port = match parts.next().and_then(parse_u32) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        _ => {
+            vga::print_str("Invalid port\n");
+            return;
+        }
+    };
+    let peer_id = match parts.next().and_then(parse_u64_any) {
+        Some(v) if v != 0 => v,
+        _ => {
+            vga::print_str("Invalid peer_id\n");
+            return;
+        }
+    };
+    match net_reactor::capnet_send_hello(peer_id, ip, port) {
+        Ok(seq) => {
+            vga::print_str("CapNet HELLO sent, seq=");
+            print_u32(seq);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("CapNet HELLO failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_capnet_heartbeat(mut parts: core::str::SplitWhitespace) {
+    use crate::net_reactor;
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(ip) => ip,
+        None => {
+            vga::print_str("Usage: capnet-heartbeat <ip> <port> <peer_id> [ack] [ack_only]\n");
+            return;
+        }
+    };
+    let port = match parts.next().and_then(parse_u32) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        _ => {
+            vga::print_str("Invalid port\n");
+            return;
+        }
+    };
+    let peer_id = match parts.next().and_then(parse_u64_any) {
+        Some(v) if v != 0 => v,
+        _ => {
+            vga::print_str("Invalid peer_id\n");
+            return;
+        }
+    };
+    let ack = parts.next().and_then(parse_u32).unwrap_or(0);
+    let ack_only = parts.next().and_then(parse_u32).map(|v| v != 0).unwrap_or(false);
+    match net_reactor::capnet_send_heartbeat(peer_id, ip, port, ack, ack_only) {
+        Ok(seq) => {
+            vga::print_str("CapNet heartbeat sent, seq=");
+            print_u32(seq);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("CapNet heartbeat failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_capnet_lend(mut parts: core::str::SplitWhitespace) {
+    use crate::net_reactor;
+
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(ip) => ip,
+        None => {
+            vga::print_str("Usage: capnet-lend <ip> <port> <peer_id> <cap_type> <object_id> <rights> <ttl_ticks> [context_pid] [max_uses] [max_bytes] [measurement] [session_id]\n");
+            return;
+        }
+    };
+    let port = match parts.next().and_then(parse_u32) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        _ => {
+            vga::print_str("Invalid port\n");
+            return;
+        }
+    };
+    let peer_id = match parts.next().and_then(parse_u64_any) {
+        Some(v) if v != 0 => v,
+        _ => {
+            vga::print_str("Invalid peer_id\n");
+            return;
+        }
+    };
+    let cap_type = match parts.next().and_then(parse_capnet_cap_type) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Invalid cap_type (use channel/task/spawner/console/clock/store/filesystem or numeric)\n");
+            return;
+        }
+    };
+    let object_id = match parts.next().and_then(parse_u64_any) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Invalid object_id\n");
+            return;
+        }
+    };
+    let rights = match parts.next().and_then(parse_u64_any) {
+        Some(v) if v <= u32::MAX as u64 => v as u32,
+        _ => {
+            vga::print_str("Invalid rights (u32, decimal or 0xhex)\n");
+            return;
+        }
+    };
+    let ttl_ticks = match parts.next().and_then(parse_u64_any) {
+        Some(v) if v > 0 => v,
+        _ => {
+            vga::print_str("Invalid ttl_ticks (must be > 0)\n");
+            return;
+        }
+    };
+    let context_pid = parts.next().and_then(parse_u32).unwrap_or(0);
+    let max_uses = match parts.next().and_then(parse_u32) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        Some(_) => {
+            vga::print_str("Invalid max_uses (must be <= 65535)\n");
+            return;
+        }
+        None => 0,
+    };
+    let max_bytes = match parts.next().and_then(parse_u64_any) {
+        Some(v) if v <= u32::MAX as u64 => v as u32,
+        Some(_) => {
+            vga::print_str("Invalid max_bytes (must be <= u32::MAX)\n");
+            return;
+        }
+        None => 0,
+    };
+    let measurement_hash = parts.next().and_then(parse_u64_any).unwrap_or(0);
+    let session_id = parts.next().and_then(parse_u32).unwrap_or(0);
+
+    let issuer_device_id = match crate::capnet::local_device_id() {
+        Some(id) => id,
+        None => {
+            vga::print_str("CapNet local identity not initialized\n");
+            return;
+        }
+    };
+    let now = crate::pit::get_ticks() as u64;
+    let nonce_hi = crate::security::security().random_u32() as u64;
+    let nonce_lo = crate::security::security().random_u32() as u64;
+
+    let mut token = crate::capnet::CapabilityTokenV1::empty();
+    token.cap_type = cap_type;
+    token.issuer_device_id = issuer_device_id;
+    token.subject_device_id = peer_id;
+    token.object_id = object_id;
+    token.rights = rights;
+    token.issued_at = now;
+    token.not_before = now;
+    token.expires_at = now.saturating_add(ttl_ticks);
+    token.nonce = (nonce_hi << 32) | nonce_lo;
+    token.context = context_pid;
+    token.max_uses = max_uses;
+    token.max_bytes = max_bytes;
+    token.measurement_hash = measurement_hash;
+    token.session_id = session_id;
+    token.constraints_flags = 0;
+    if max_uses > 0 {
+        token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
+    }
+    if max_bytes > 0 {
+        token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BYTE_QUOTA;
+    }
+    if measurement_hash != 0 {
+        token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_MEASUREMENT_BOUND;
+    }
+    if session_id != 0 {
+        token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_SESSION_BOUND;
+    }
+
+    match net_reactor::capnet_send_token_offer(peer_id, ip, port, token) {
+        Ok(token_id) => {
+            vga::print_str("CapNet token offer sent: token_id=0x");
+            print_u64_hex(token_id);
+            vga::print_str(" cap_type=");
+            print_u8_val(cap_type);
+            vga::print_str(" rights=0x");
+            print_hex_u32(rights);
+            vga::print_str(" ttl=");
+            print_u64(ttl_ticks);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("CapNet token offer failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_capnet_accept(mut parts: core::str::SplitWhitespace) {
+    use crate::net_reactor;
+
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(ip) => ip,
+        None => {
+            vga::print_str("Usage: capnet-accept <ip> <port> <peer_id> <token_id> [ack]\n");
+            return;
+        }
+    };
+    let port = match parts.next().and_then(parse_u32) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        _ => {
+            vga::print_str("Invalid port\n");
+            return;
+        }
+    };
+    let peer_id = match parts.next().and_then(parse_u64_any) {
+        Some(v) if v != 0 => v,
+        _ => {
+            vga::print_str("Invalid peer_id\n");
+            return;
+        }
+    };
+    let token_id = match parts.next().and_then(parse_u64_any) {
+        Some(v) if v != 0 => v,
+        _ => {
+            vga::print_str("Invalid token_id\n");
+            return;
+        }
+    };
+    let ack = parts.next().and_then(parse_u32).unwrap_or(0);
+
+    match net_reactor::capnet_send_token_accept(peer_id, ip, port, token_id, ack) {
+        Ok(seq) => {
+            vga::print_str("CapNet token accept sent: seq=");
+            print_u32(seq);
+            vga::print_str(" token_id=0x");
+            print_u64_hex(token_id);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("CapNet token accept failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_capnet_revoke(mut parts: core::str::SplitWhitespace) {
+    use crate::net_reactor;
+
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(ip) => ip,
+        None => {
+            vga::print_str("Usage: capnet-revoke <ip> <port> <peer_id> <token_id>\n");
+            return;
+        }
+    };
+    let port = match parts.next().and_then(parse_u32) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        _ => {
+            vga::print_str("Invalid port\n");
+            return;
+        }
+    };
+    let peer_id = match parts.next().and_then(parse_u64_any) {
+        Some(v) if v != 0 => v,
+        _ => {
+            vga::print_str("Invalid peer_id\n");
+            return;
+        }
+    };
+    let token_id = match parts.next().and_then(parse_u64_any) {
+        Some(v) if v != 0 => v,
+        _ => {
+            vga::print_str("Invalid token_id\n");
+            return;
+        }
+    };
+
+    match net_reactor::capnet_send_token_revoke(peer_id, ip, port, token_id) {
+        Ok(seq) => {
+            vga::print_str("CapNet token revoke sent: seq=");
+            print_u32(seq);
+            vga::print_str(" token_id=0x");
+            print_u64_hex(token_id);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("CapNet token revoke failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_capnet_stats() {
+    let peers = crate::capnet::peer_snapshots();
+    let mut peer_active = 0usize;
+    let mut peer_keyed = 0usize;
+    let mut peer_policy_disabled = 0usize;
+    let mut peer_policy_audit = 0usize;
+    let mut peer_policy_enforce = 0usize;
+
+    for i in 0..peers.len() {
+        if let Some(peer) = peers[i] {
+            peer_active += 1;
+            if peer.key_epoch != 0 {
+                peer_keyed += 1;
+            }
+            match peer.trust {
+                crate::capnet::PeerTrustPolicy::Disabled => peer_policy_disabled += 1,
+                crate::capnet::PeerTrustPolicy::Audit => peer_policy_audit += 1,
+                crate::capnet::PeerTrustPolicy::Enforce => peer_policy_enforce += 1,
+            }
+        }
+    }
+
+    let leases = crate::capability::capability_manager().remote_lease_snapshots();
+    let mut lease_active = 0usize;
+    let mut lease_owner_any = 0usize;
+    let mut lease_owner_bound = 0usize;
+    let mut lease_bounded_use = 0usize;
+    for i in 0..leases.len() {
+        if let Some(lease) = leases[i] {
+            if !lease.active || lease.revoked {
+                continue;
+            }
+            lease_active += 1;
+            if lease.owner_any {
+                lease_owner_any += 1;
+            } else {
+                lease_owner_bound += 1;
+            }
+            if lease.enforce_use_budget {
+                lease_bounded_use += 1;
+            }
+        }
+    }
+
+    let journal = crate::capnet::journal_stats();
+
+    vga::print_str("\n===== CapNet Stats =====\n");
+    vga::print_str("Local device: ");
+    match crate::capnet::local_device_id() {
+        Some(id) => {
+            vga::print_str("0x");
+            print_u64_hex(id);
+        }
+        None => vga::print_str("(uninitialized)"),
+    }
+    vga::print_str("\n");
+    vga::print_str("Active peers: ");
+    print_number(peer_active);
+    vga::print_str("\n");
+    vga::print_str("Peers with session key: ");
+    print_number(peer_keyed);
+    vga::print_str("\n");
+    vga::print_str("Policy disabled/audit/enforce: ");
+    print_number(peer_policy_disabled);
+    vga::print_str(" / ");
+    print_number(peer_policy_audit);
+    vga::print_str(" / ");
+    print_number(peer_policy_enforce);
+    vga::print_str("\n");
+    vga::print_str("Active leases: ");
+    print_number(lease_active);
+    vga::print_str("\n");
+    vga::print_str("Lease owner any/bound: ");
+    print_number(lease_owner_any);
+    vga::print_str(" / ");
+    print_number(lease_owner_bound);
+    vga::print_str("\n");
+    vga::print_str("Bounded-use leases: ");
+    print_number(lease_bounded_use);
+    vga::print_str("\n");
+    vga::print_str("Delegation records (active): ");
+    print_number(journal.delegation_records_active);
+    vga::print_str("\n");
+    vga::print_str("Revocation tombstones (active): ");
+    print_number(journal.revocation_tombstones_active);
+    vga::print_str("\n");
+    vga::print_str("Revocation epoch max/next: ");
+    print_u32(journal.max_revocation_epoch);
+    vga::print_str(" / ");
+    print_u32(journal.next_revocation_epoch);
+    vga::print_str("\n\n");
+}
+
+fn cmd_capnet_demo() {
+    let local_id = match crate::capnet::local_device_id() {
+        Some(id) => id,
+        None => {
+            vga::print_str("CapNet local identity not initialized\n");
+            return;
+        }
+    };
+
+    vga::print_str("\n===== CapNet End-to-End Demo =====\n");
+
+    // Loopback peer uses local ID so we can run a deterministic control-path
+    // demo on one node without a second machine.
+    let loopback_peer = local_id;
+    if let Err(e) = crate::capnet::register_peer(
+        loopback_peer,
+        crate::capnet::PeerTrustPolicy::Audit,
+        0,
+    ) {
+        vga::print_str("Demo failed: peer registration: ");
+        vga::print_str(e.as_str());
+        vga::print_str("\n");
+        return;
+    }
+
+    let mut k0 = ((crate::security::security().random_u32() as u64) << 32)
+        | (crate::security::security().random_u32() as u64);
+    let mut k1 = ((crate::security::security().random_u32() as u64) << 32)
+        | (crate::security::security().random_u32() as u64);
+    if k0 == 0 && k1 == 0 {
+        k1 = 1;
+    } else if k0 == 0 {
+        k0 = 1;
+    }
+    let key_epoch = (crate::security::security().random_u32() | 1).max(1);
+    if let Err(e) = crate::capnet::install_peer_session_key(loopback_peer, key_epoch, k0, k1, 0) {
+        vga::print_str("Demo failed: session install: ");
+        vga::print_str(e.as_str());
+        vga::print_str("\n");
+        return;
+    }
+
+    let now = crate::pit::get_ticks() as u64;
+    let mut token = crate::capnet::CapabilityTokenV1::empty();
+    token.cap_type = crate::capability::CapabilityType::Filesystem as u8;
+    token.object_id = 0x4341_504E_4554_0000u64 ^ now.rotate_left(7);
+    token.rights = crate::capability::Rights::FS_READ;
+    token.issued_at = now;
+    token.not_before = now;
+    token.expires_at = now.saturating_add(512);
+    token.nonce = ((crate::security::security().random_u32() as u64) << 32)
+        | (crate::security::security().random_u32() as u64);
+    token.constraints_flags = crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
+    token.max_uses = 2;
+    token.context = 0; // owner_any lease for demo capability check.
+
+    if token.validate_semantics().is_err() {
+        vga::print_str("Demo failed: token semantic validation\n");
+        return;
+    }
+
+    vga::print_str("Step 1: Build+process TOKEN_OFFER...\n");
+    let offer = match crate::capnet::build_token_offer_frame(loopback_peer, 0, &mut token) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Demo failed: build offer: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+            return;
+        }
+    };
+    let offer_rx = match crate::capnet::process_incoming_control_payload(
+        &offer.bytes[..offer.len],
+        crate::pit::get_ticks() as u64,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Demo failed: process offer: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+            return;
+        }
+    };
+    if offer_rx.msg_type != crate::capnet::CapNetControlType::TokenOffer {
+        vga::print_str("Demo failed: unexpected rx type for offer\n");
+        return;
+    }
+
+    let mut lease_present = false;
+    let leases_after_offer = crate::capability::capability_manager().remote_lease_snapshots();
+    let mut i = 0usize;
+    while i < leases_after_offer.len() {
+        if let Some(lease) = leases_after_offer[i] {
+            if lease.active && !lease.revoked && lease.token_id == offer.token_id {
+                lease_present = true;
+                break;
+            }
+        }
+        i += 1;
+    }
+    if !lease_present {
+        vga::print_str("Demo failed: lease not installed after offer\n");
+        return;
+    }
+
+    vga::print_str("Step 2: Use leased capability before revoke...\n");
+    let demo_pid = crate::ipc::ProcessId(1);
+    let allow_before_revoke = crate::capability::check_capability(
+        demo_pid,
+        token.object_id,
+        crate::capability::CapabilityType::Filesystem,
+        crate::capability::Rights::new(crate::capability::Rights::FS_READ),
+    );
+    if !allow_before_revoke {
+        vga::print_str("Demo failed: capability denied before revoke\n");
+        return;
+    }
+
+    vga::print_str("Step 3: Build+process TOKEN_REVOKE...\n");
+    let revoke = match crate::capnet::build_token_revoke_frame(loopback_peer, offer.seq, offer.token_id) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Demo failed: build revoke: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+            return;
+        }
+    };
+    let revoke_rx = match crate::capnet::process_incoming_control_payload(
+        &revoke.bytes[..revoke.len],
+        crate::pit::get_ticks() as u64,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Demo failed: process revoke: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+            return;
+        }
+    };
+    if revoke_rx.msg_type != crate::capnet::CapNetControlType::TokenRevoke {
+        vga::print_str("Demo failed: unexpected rx type for revoke\n");
+        return;
+    }
+
+    let allow_after_revoke = crate::capability::check_capability(
+        demo_pid,
+        token.object_id,
+        crate::capability::CapabilityType::Filesystem,
+        crate::capability::Rights::new(crate::capability::Rights::FS_READ),
+    );
+    if allow_after_revoke {
+        vga::print_str("Demo failed: capability still allowed after revoke\n");
+        return;
+    }
+
+    let mut lease_still_present = false;
+    let leases_after_revoke = crate::capability::capability_manager().remote_lease_snapshots();
+    let mut j = 0usize;
+    while j < leases_after_revoke.len() {
+        if let Some(lease) = leases_after_revoke[j] {
+            if lease.active && !lease.revoked && lease.token_id == offer.token_id {
+                lease_still_present = true;
+                break;
+            }
+        }
+        j += 1;
+    }
+    if lease_still_present {
+        vga::print_str("Demo failed: lease still active after revoke\n");
+        return;
+    }
+
+    vga::print_str("Step 4: Result\n");
+    vga::print_str("  Token ID: 0x");
+    print_u64_hex(offer.token_id);
+    vga::print_str("\n  Use before revoke: allowed\n");
+    vga::print_str("  Use after revoke: denied\n");
+    vga::print_str("  Lease install/revoke: verified\n");
+    vga::print_str("CapNet end-to-end demo passed.\n\n");
 }
 
 fn cmd_net_info() {
@@ -4699,6 +5840,31 @@ fn print_ipv4_netstack(ip: crate::netstack::Ipv4Addr) {
         }
         print_u8_val(*octet);
     }
+}
+
+fn parse_ipv4_netstack(s: &str) -> Option<crate::netstack::Ipv4Addr> {
+    let mut octets = [0u8; 4];
+    let mut count = 0usize;
+    for part in s.split('.') {
+        if count >= 4 {
+            return None;
+        }
+        let val = parse_u32(part)?;
+        if val > 255 {
+            return None;
+        }
+        octets[count] = val as u8;
+        count += 1;
+    }
+    if count != 4 {
+        return None;
+    }
+    Some(crate::netstack::Ipv4Addr(octets))
+}
+
+fn print_u64_hex(n: u64) {
+    print_hex_u32((n >> 32) as u32);
+    print_hex_u32(n as u32);
 }
 
 fn print_ipv4_net(ip: crate::net::Ipv4Addr) {

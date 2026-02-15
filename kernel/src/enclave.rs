@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 
 use crate::memory_isolation::{self, AccessPolicy, IsolationDomain};
-use crate::{memory, security};
+use crate::{capnet, memory, security};
 
 const MAX_ENCLAVE_SESSIONS: usize = 16;
 const MAX_ATTESTATION_CERTS: usize = 8;
@@ -1113,6 +1113,8 @@ fn remote_attestation_exchange(
         return Err("Remote attestation token invalid");
     }
 
+    install_capnet_peer_session(policy, session, quote, verifier, issued)?;
+
     session.remote_attested = true;
     session.remote_verifier_id = token.verifier_id;
     session.remote_quote_nonce = token.quote_nonce;
@@ -1120,6 +1122,47 @@ fn remote_attestation_exchange(
     session.remote_attest_expires_epoch = token.expires_epoch;
     session.remote_attest_mac = token.token_mac;
     REMOTE_ATTESTATION_VERIFIED_TOTAL.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+fn capnet_trust_policy(policy: RemoteAttestationPolicy) -> capnet::PeerTrustPolicy {
+    match policy {
+        RemoteAttestationPolicy::Enforce => capnet::PeerTrustPolicy::Enforce,
+        RemoteAttestationPolicy::Audit => capnet::PeerTrustPolicy::Audit,
+        RemoteAttestationPolicy::Disabled => capnet::PeerTrustPolicy::Disabled,
+    }
+}
+
+fn install_capnet_peer_session(
+    policy: RemoteAttestationPolicy,
+    session: &EnclaveSession,
+    quote: &AttestationQuote,
+    verifier: RemoteVerifier,
+    issued_epoch: u32,
+) -> Result<(), &'static str> {
+    let peer_device_id = verifier.verifier_fingerprint;
+    let trust = capnet_trust_policy(policy);
+    capnet::register_peer(peer_device_id, trust, quote.measurement)
+        .map_err(|_| "CapNet peer registration failed")?;
+
+    let key_epoch = issued_epoch.max(1);
+    let keys = security::security().capnet_derive_session_key_with_secret(
+        verifier.shared_secret,
+        peer_device_id,
+        quote.nonce,
+        quote.launch_token_mac,
+        session.measurement,
+        key_epoch,
+    );
+
+    capnet::install_peer_session_key(
+        peer_device_id,
+        key_epoch,
+        keys[0],
+        keys[1],
+        quote.measurement,
+    )
+    .map_err(|_| "CapNet peer session install failed")?;
     Ok(())
 }
 

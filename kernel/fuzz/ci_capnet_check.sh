@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+iters="${1:-1000}"
+soak_rounds="${2:-2}"
+
+if [[ "${iters}" -lt 1 || "${iters}" -gt 10000 ]]; then
+    echo "iters must be in 1..10000"
+    exit 1
+fi
+if [[ "${soak_rounds}" -lt 1 || "${soak_rounds}" -gt 50 ]]; then
+    echo "soak_rounds must be in 1..50"
+    exit 1
+fi
+
+log_file="$(mktemp -t oreulia-capnet-corpus.XXXXXX.log)"
+trap 'rm -f "${log_file}"' EXIT
+
+export QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:--display none -nographic -no-reboot -no-shutdown}"
+
+echo "Running CapNet corpus replay (iters=${iters}, soak_rounds=${soak_rounds})..."
+./fuzz/run_capnet_corpus.expect "${iters}" "${soak_rounds}" | tee "${log_file}"
+
+seeds_line="$(grep -E '^Seeds passed:' "${log_file}" | tail -1 || true)"
+failures_line="$(grep -E '^Total failures:' "${log_file}" | head -1 || true)"
+formal_line="$(grep -E '^Formal verification checks: PASSED' "${log_file}" | tail -1 || true)"
+
+if [[ -z "${seeds_line}" || -z "${failures_line}" ]]; then
+    echo "ERROR: Could not parse CapNet corpus summary from output"
+    exit 1
+fi
+
+seeds_passed="$(echo "${seeds_line}" | awk '{print $3}')"
+seeds_total="$(echo "${seeds_line}" | awk '{print $5}')"
+total_failures="$(echo "${failures_line}" | awk '{print $3}')"
+
+if (( seeds_passed != seeds_total )); then
+    echo "ERROR: CapNet corpus replay failed (${seeds_passed}/${seeds_total} seeds passed)"
+    exit 1
+fi
+if (( total_failures != 0 )); then
+    echo "ERROR: CapNet corpus replay reported failures (${total_failures})"
+    exit 1
+fi
+
+rounds_line="$(awk '
+    /^===== CapNet Corpus Soak =====/ {in_soak=1; next}
+    in_soak && /^Rounds passed:/ {line=$0}
+    END {print line}
+' "${log_file}")"
+soak_failures_line="$(awk '
+    /^===== CapNet Corpus Soak =====/ {in_soak=1; next}
+    in_soak && /^Total failures:/ {line=$0}
+    END {print line}
+' "${log_file}")"
+
+if [[ -z "${rounds_line}" || -z "${soak_failures_line}" ]]; then
+    echo "ERROR: Could not parse CapNet soak summary from output"
+    exit 1
+fi
+
+rounds_passed="$(echo "${rounds_line}" | awk '{print $3}')"
+rounds_total="$(echo "${rounds_line}" | awk '{print $5}')"
+soak_failures="$(echo "${soak_failures_line}" | awk '{print $3}')"
+
+if (( rounds_passed != rounds_total )); then
+    echo "ERROR: CapNet soak replay failed (${rounds_passed}/${rounds_total} rounds passed)"
+    exit 1
+fi
+if (( soak_failures != 0 )); then
+    echo "ERROR: CapNet soak replay reported failures (${soak_failures})"
+    exit 1
+fi
+
+if [[ -z "${formal_line}" ]]; then
+    echo "ERROR: Formal verification did not report success"
+    exit 1
+fi
+
+echo "CapNet corpus replay + soak + formal checks passed."

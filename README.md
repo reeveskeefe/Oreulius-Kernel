@@ -11,7 +11,7 @@
 <br>
 [![Canada Badge](docs/Made-In-Canada-Badge.svg)](https://en.wikipedia.org/wiki/Canada)
 
-[Features](#features) • [Architecture](#architecture) • [Building](#building) • [Running](#running) • [Commands](#commands) • [Documentation](#documentation)
+[Features](#key-features) • [Architecture](#architecture) • [Building](#building) • [Running](#running) • [Commands](#commands) • [Documentation](#documentation)
 
 </div>
 
@@ -30,17 +30,19 @@ Oreulieus is an experimental operating system that rethinks traditional OS desig
 
 </div>
 
-## Formal Security Paper
+## Formal Security Papers
 
-The full technical resolution of Oreulia's in-kernel JIT security paradox is documented here:
+Oreulia's formal security records are documented in two companion papers:
 
 - **[Oreulia JIT Security Resolution](docs/oreulia-jit-security-resolution.md)**
+- **[CapNet Scientific Resolution](docs/capnet.md)**
 
-This paper includes a formal model, threat-control matrix, proof obligations, theorem blocks, and implementation-to-invariant mapping.
+Together they cover theorem-backed hardening for in-kernel JIT execution and decentralized capability transfer over the network control plane.
 
 ### Key Features
 
 - **Capability-Based Security** - No ambient authority; all access is explicitly granted through capabilities
+- **CapNet Capability Network** - Portable capability tokens with session-key MAC verification, replay windows, delegation-chain constraints, and persistent revocation
 - **WebAssembly Native** - First-class support for WASM execution with sandboxed module isolation
 - **JIT Hardening Pipeline** - W^X sealing, decoder whitelist validation, SFI/CFI constraints, and translation certificates
 - **Message-Passing IPC** - Dataflow channels for inter-process communication
@@ -62,6 +64,24 @@ Oreulieus is built on several core subsystems:
 - **Filesystem Service** - Virtual filesystem with quota management
 - **WASM Runtime** - Sandboxed execution environment for WebAssembly modules
 - **Network Stack** - Ethernet (E1000/RTL8139) and WiFi support with ARP/ICMP/UDP/TCP + DNS paths
+- **CapNet Control Plane** - Authenticated capability-token exchange (`HELLO/ATTEST/TOKEN_OFFER/TOKEN_ACCEPT/TOKEN_REVOKE/HEARTBEAT`) with attestation-bound peer policy
+
+### CapNet Capability Networking
+
+CapNet extends Oreulia's local capability semantics to cross-device delegation without introducing ambient trust. Tokens are fixed-size, signed capability objects accepted only when all invariants hold:
+
+\[
+\text{Accept}(\tau, p) = \text{MAC}_{k_p}(\tau) \land \text{FreshSeq}(p) \land \text{FreshNonce}(p) \land \text{SubsetRights}(\tau) \land \text{NotRevoked}(\tau)
+\]
+
+Implementation properties:
+
+- **Token Integrity** - `CapabilityTokenV1` uses deterministic encoding and SipHash MAC under per-peer session keys (boot-key fallback for local diagnostics).
+- **Attestation-Bound Session Keys** - `enclave.rs` installs CapNet peer sessions after attestation policy checks; peer trust policy (`disabled`/`audit`/`enforce`) gates acceptance strictness.
+- **Delegation Safety** - token acceptance enforces parent hash linkage, bounded depth, and rights attenuation before creating a local remote-capability lease.
+- **Replay Resistance** - both control-frame sequence numbers and token nonces use high-watermark + bitmap windows for deterministic stale/duplicate rejection.
+- **Revocation Durability** - token revocations are stored as epoch-ordered tombstones and replayed at initialization to prevent post-reboot replay.
+- **Deterministic Validation** - shell commands expose `capnet-fuzz`, corpus replay, and soak loops for reproducible parser/enforcer regression checks.
 
 ### Assembly-Optimized Components
 
@@ -207,6 +227,22 @@ Once Oreulia boots, you'll see the shell prompt (`>`). Try these commands:
 - `dns-resolve <domain>` - Resolve domain name
 - `netstack-info` - Show TCP/IP stack status
 
+### CapNet (Capability Network)
+- `capnet-local` - Show local CapNet device identity
+- `capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]` - Register/update peer trust state
+- `capnet-peer-show <peer_id>` / `capnet-peer-list` - Inspect peer session and trust metadata
+- `capnet-lease-list` - Show active remote capability leases
+- `capnet-hello <ip> <port> <peer_id>` - Send HELLO control frame
+- `capnet-heartbeat <ip> <port> <peer_id> [ack] [ack_only]` - Send heartbeat/ack control frame
+- `capnet-lend <ip> <port> <peer_id> <cap_type> <object_id> <rights> <ttl_ticks> [context_pid] [max_uses] [max_bytes] [measurement] [session_id]` - Send delegated capability token
+- `capnet-accept <ip> <port> <peer_id> <token_id> [ack]` - Acknowledge accepted delegated token
+- `capnet-revoke <ip> <port> <peer_id> <token_id>` - Revoke a delegated token
+- `capnet-stats` - Report peer/lease/journal counters
+- `capnet-demo` - End-to-end lend/use/revoke verification loop
+- `capnet-fuzz <iters> [seed]` - CapNet parser/enforcer fuzzing
+- `capnet-fuzz-corpus <iters>` - Replay deterministic CapNet seed corpus
+- `capnet-fuzz-soak <iters> <rounds>` - Multi-round CapNet corpus soak test
+
 ### WebAssembly
 - `wasm-demo` - Run simple WASM math demo
 - `wasm-fs-demo` - Demo WASM filesystem access
@@ -218,7 +254,7 @@ Once Oreulia boots, you'll see the shell prompt (`>`). Try these commands:
 - `wasm-jit-fuzz <iters> [seed]` - Coverage-guided differential JIT fuzzing
 - `wasm-jit-fuzz-corpus <iters>` - Replay external seed corpus
 - `wasm-jit-fuzz-soak <iters> <rounds>` - Multi-round corpus replay for non-determinism checks
-- `formal-verify` - Run formal verification obligations for JIT translation and capability model
+- `formal-verify` - Run formal verification obligations for JIT translation, capability logic, and CapNet model checks
 
 ### Security & Capabilities
 - `security-audit [count]` - Show security audit log
@@ -262,6 +298,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[WASM ABI](docs/oreulia-wasm-abi.md)** - WebAssembly host interface
 - **[Assembly Quick Reference](docs/assembly-quick-reference.md)** - Low-level assembly interfaces and notes
 - **[JIT Security Resolution](docs/oreulia-jit-security-resolution.md)** - Formal security model and implementation proof obligations
+- **[CapNet Scientific Resolution](docs/capnet.md)** - Formal model and implementation analysis for decentralized capability networking
 - **[Commercial Use Cases](docs/CommercialUseCases.md)** - Market targets and product vision
 - **[Contributing](docs/CONTRIBUTING.md)** - Contribution guidelines and process
 
@@ -304,6 +341,7 @@ oreulia/
 - Memory hot paths use optimized assembly primitives.
 - Networking uses descriptor-ring DMA on supported NICs.
 - JIT and interpreter dual paths support differential validation and replay.
+- CapNet control-path parsing and token verification are fixed-width and bounded by protocol constants.
 - Absolute throughput/latency depends on host CPU, QEMU mode, and runtime workload.
 
 ---

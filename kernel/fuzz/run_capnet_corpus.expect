@@ -1,0 +1,63 @@
+#!/usr/bin/expect -f
+#
+# External regression runner for the CapNet seed corpus.
+# Run from `kernel/`:
+#   ./fuzz/run_capnet_corpus.expect 1000
+
+set timeout 0
+set iters 1000
+set soak_rounds 0
+if {[llength $argv] >= 1} {
+    set iters [lindex $argv 0]
+}
+if {[llength $argv] >= 2} {
+    set soak_rounds [lindex $argv 1]
+}
+
+set corpus_path "fuzz/capnet_seed_corpus.txt"
+if {![file exists $corpus_path]} {
+    puts "Corpus file not found: $corpus_path"
+    exit 1
+}
+
+set qemu_extra ""
+if {[info exists env(QEMU_EXTRA_ARGS)]} {
+    set qemu_extra $env(QEMU_EXTRA_ARGS)
+}
+
+if {$qemu_extra eq ""} {
+    spawn ./run.sh
+} else {
+    spawn env QEMU_EXTRA_ARGS=$qemu_extra ./run.sh
+}
+expect "> "
+
+set fp [open $corpus_path r]
+while {[gets $fp line] >= 0} {
+    set trimmed [string trim $line]
+    if {$trimmed eq ""} {
+        continue
+    }
+    if {[string first "#" $trimmed] == 0} {
+        continue
+    }
+    send "capnet-fuzz $iters $trimmed\r"
+    expect "> "
+}
+close $fp
+
+# Aggregate summary.
+send "capnet-fuzz-corpus $iters\r"
+expect "> "
+
+if {$soak_rounds > 0} {
+    send "capnet-fuzz-soak $iters $soak_rounds\r"
+    expect "> "
+}
+
+# Build-gate formal obligations.
+send "formal-verify\r"
+expect "> "
+
+sleep 1
+send "\003"

@@ -41,6 +41,10 @@ const IP_PROTOCOL_UDP: u8 = 17;
 const ARP_OP_REQUEST: u16 = 1;
 const ARP_OP_REPLY: u16 = 2;
 
+const CAPNET_MAX_RETX: usize = 8;
+const CAPNET_RETX_INTERVAL_TICKS: u64 = 25;
+const CAPNET_RETX_MAX_RETRIES: u8 = 4;
+
 // ============================================================================
 // Network Types
 // ============================================================================
@@ -131,6 +135,35 @@ impl ArpCache {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CapNetRetransmitEntry {
+    active: bool,
+    peer_device_id: u64,
+    dest_ip: Ipv4Addr,
+    dest_port: u16,
+    seq: u32,
+    retries: u8,
+    next_retry_tick: u64,
+    len: usize,
+    frame: [u8; crate::capnet::CAPNET_CTRL_MAX_FRAME_LEN],
+}
+
+impl CapNetRetransmitEntry {
+    const fn empty() -> Self {
+        CapNetRetransmitEntry {
+            active: false,
+            peer_device_id: 0,
+            dest_ip: Ipv4Addr([0, 0, 0, 0]),
+            dest_port: 0,
+            seq: 0,
+            retries: 0,
+            next_retry_tick: 0,
+            len: 0,
+            frame: [0u8; crate::capnet::CAPNET_CTRL_MAX_FRAME_LEN],
+        }
+    }
+}
+
 // ============================================================================
 // Network Stack
 // ============================================================================
@@ -143,6 +176,7 @@ pub struct NetworkStack {
     arp_cache: ArpCache,
     dhcp_enabled: bool,
     has_interface: bool,
+    capnet_retx: [CapNetRetransmitEntry; CAPNET_MAX_RETX],
     tcp: TcpManager,
     http_server: HttpServer,
 }
@@ -157,6 +191,7 @@ impl NetworkStack {
             arp_cache: ArpCache::new(),
             dhcp_enabled: false,
             has_interface: false,
+            capnet_retx: [CapNetRetransmitEntry::empty(); CAPNET_MAX_RETX],
             tcp: TcpManager::new(),
             http_server: HttpServer::new(),
         }
@@ -430,6 +465,171 @@ impl NetworkStack {
         buffer[..payload_len].copy_from_slice(&frame[udp_offset+8..udp_offset+8+payload_len]);
         Ok(payload_len)
     }
+
+    // ========================================================================
+    // CapNet Control Channel (UDP)
+    // ========================================================================
+
+    pub fn capnet_send_hello(
+        &mut self,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        peer_device_id: u64,
+    ) -> Result<u32, &'static str> {
+        let frame = crate::capnet::build_hello_frame(peer_device_id, 0).map_err(|e| e.as_str())?;
+        self.send_udp(dest_ip, dest_port, crate::capnet::CAPNET_CONTROL_PORT, &frame.bytes[..frame.len])?;
+        self.capnet_queue_retx(peer_device_id, dest_ip, dest_port, frame.seq, &frame.bytes[..frame.len])?;
+        Ok(frame.seq)
+    }
+
+    pub fn capnet_send_heartbeat(
+        &mut self,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        peer_device_id: u64,
+        ack: u32,
+        ack_only: bool,
+    ) -> Result<u32, &'static str> {
+        let frame = crate::capnet::build_heartbeat_frame(peer_device_id, ack, ack_only)
+            .map_err(|e| e.as_str())?;
+        self.send_udp(dest_ip, dest_port, crate::capnet::CAPNET_CONTROL_PORT, &frame.bytes[..frame.len])?;
+        if !ack_only {
+            self.capnet_queue_retx(peer_device_id, dest_ip, dest_port, frame.seq, &frame.bytes[..frame.len])?;
+        }
+        Ok(frame.seq)
+    }
+
+    pub fn capnet_send_token_offer(
+        &mut self,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        peer_device_id: u64,
+        mut token: crate::capnet::CapabilityTokenV1,
+    ) -> Result<u64, &'static str> {
+        let frame =
+            crate::capnet::build_token_offer_frame(peer_device_id, 0, &mut token).map_err(|e| e.as_str())?;
+        self.send_udp(dest_ip, dest_port, crate::capnet::CAPNET_CONTROL_PORT, &frame.bytes[..frame.len])?;
+        self.capnet_queue_retx(peer_device_id, dest_ip, dest_port, frame.seq, &frame.bytes[..frame.len])?;
+        Ok(frame.token_id)
+    }
+
+    pub fn capnet_send_token_accept(
+        &mut self,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        peer_device_id: u64,
+        token_id: u64,
+        ack: u32,
+    ) -> Result<u32, &'static str> {
+        let frame =
+            crate::capnet::build_token_accept_frame(peer_device_id, ack, token_id).map_err(|e| e.as_str())?;
+        self.send_udp(dest_ip, dest_port, crate::capnet::CAPNET_CONTROL_PORT, &frame.bytes[..frame.len])?;
+        // Token-accept frames are ack-only confirmations and do not need retransmit queueing.
+        Ok(frame.seq)
+    }
+
+    pub fn capnet_send_token_revoke(
+        &mut self,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        peer_device_id: u64,
+        token_id: u64,
+    ) -> Result<u32, &'static str> {
+        let frame =
+            crate::capnet::build_token_revoke_frame(peer_device_id, 0, token_id).map_err(|e| e.as_str())?;
+        self.send_udp(dest_ip, dest_port, crate::capnet::CAPNET_CONTROL_PORT, &frame.bytes[..frame.len])?;
+        self.capnet_queue_retx(peer_device_id, dest_ip, dest_port, frame.seq, &frame.bytes[..frame.len])?;
+        Ok(frame.seq)
+    }
+
+    fn capnet_queue_retx(
+        &mut self,
+        peer_device_id: u64,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        seq: u32,
+        frame: &[u8],
+    ) -> Result<(), &'static str> {
+        if seq == 0 {
+            return Ok(());
+        }
+        if frame.len() > crate::capnet::CAPNET_CTRL_MAX_FRAME_LEN {
+            return Err("CapNet frame too large");
+        }
+        let mut free_idx = None;
+        for i in 0..self.capnet_retx.len() {
+            let slot = &self.capnet_retx[i];
+            if slot.active && slot.peer_device_id == peer_device_id && slot.seq == seq {
+                return Ok(());
+            }
+            if !slot.active && free_idx.is_none() {
+                free_idx = Some(i);
+            }
+        }
+        let idx = free_idx.ok_or("CapNet retransmit queue full")?;
+        let mut slot = CapNetRetransmitEntry::empty();
+        slot.active = true;
+        slot.peer_device_id = peer_device_id;
+        slot.dest_ip = dest_ip;
+        slot.dest_port = dest_port;
+        slot.seq = seq;
+        slot.retries = 0;
+        slot.next_retry_tick = crate::pit::get_ticks().saturating_add(CAPNET_RETX_INTERVAL_TICKS);
+        slot.len = frame.len();
+        slot.frame[..frame.len()].copy_from_slice(frame);
+        self.capnet_retx[idx] = slot;
+        Ok(())
+    }
+
+    fn capnet_ack_seq(&mut self, peer_device_id: u64, ack: u32) {
+        if ack == 0 {
+            return;
+        }
+        for i in 0..self.capnet_retx.len() {
+            let slot = &mut self.capnet_retx[i];
+            if slot.active && slot.peer_device_id == peer_device_id && slot.seq == ack {
+                slot.active = false;
+                slot.len = 0;
+                slot.retries = 0;
+            }
+        }
+    }
+
+    fn capnet_retx_tick(&mut self, now: u64) {
+        for i in 0..self.capnet_retx.len() {
+            let mut frame_copy = [0u8; crate::capnet::CAPNET_CTRL_MAX_FRAME_LEN];
+            let (dest_ip, dest_port, len, should_send) = {
+                let slot = &mut self.capnet_retx[i];
+                if !slot.active || now < slot.next_retry_tick {
+                    (Ipv4Addr([0, 0, 0, 0]), 0u16, 0usize, false)
+                } else if slot.retries >= CAPNET_RETX_MAX_RETRIES {
+                    slot.active = false;
+                    crate::security::security().log_event(
+                        crate::security::AuditEntry::new(
+                            crate::security::SecurityEvent::RateLimitExceeded,
+                            crate::ipc::ProcessId(0),
+                            0,
+                        )
+                        .with_context(slot.seq as u64),
+                    );
+                    (Ipv4Addr([0, 0, 0, 0]), 0u16, 0usize, false)
+                } else {
+                    slot.retries = slot.retries.saturating_add(1);
+                    slot.next_retry_tick = now.saturating_add(CAPNET_RETX_INTERVAL_TICKS);
+                    frame_copy[..slot.len].copy_from_slice(&slot.frame[..slot.len]);
+                    (slot.dest_ip, slot.dest_port, slot.len, true)
+                }
+            };
+            if should_send {
+                let _ = self.send_udp(
+                    dest_ip,
+                    dest_port,
+                    crate::capnet::CAPNET_CONTROL_PORT,
+                    &frame_copy[..len],
+                );
+            }
+        }
+    }
     
     // ========================================================================
     // DNS Protocol
@@ -593,13 +793,14 @@ impl NetworkStack {
     
     /// Poll for incoming packets once
     pub fn poll_once(&mut self) -> Result<(), &'static str> {
-        let mut driver = crate::e1000::E1000_DRIVER.lock();
-        let interface = driver.as_mut().ok_or("No E1000 driver")?;
-        
         let mut frame = [0u8; 1514];
-        let frame_len = match interface.recv_frame(&mut frame) {
-            Ok(len) => len,
-            Err(_) => return Ok(()),  // No packet available
+        let frame_len = {
+            let mut driver = crate::e1000::E1000_DRIVER.lock();
+            let interface = driver.as_mut().ok_or("No E1000 driver")?;
+            match interface.recv_frame(&mut frame) {
+                Ok(len) => len,
+                Err(_) => return Ok(()), // No packet available
+            }
         };
         
         if frame_len < 14 {
@@ -625,6 +826,7 @@ impl NetworkStack {
     /// Timer tick for retransmission/timers
     pub fn tick(&mut self) {
         let now = crate::pit::get_ticks();
+        self.capnet_retx_tick(now);
         for i in 0..self.tcp.conns.len() {
             let action;
             {
@@ -1226,7 +1428,95 @@ impl NetworkStack {
                 let src = Ipv4Addr([packet[12], packet[13], packet[14], packet[15]]);
                 self.handle_tcp(src, &packet[ihl..total_len])?;
             }
+            IP_PROTOCOL_UDP => {
+                let src = Ipv4Addr([packet[12], packet[13], packet[14], packet[15]]);
+                self.handle_udp(src, &packet[ihl..total_len])?;
+            }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_udp(&mut self, src_ip: Ipv4Addr, datagram: &[u8]) -> Result<(), &'static str> {
+        if datagram.len() < 8 {
+            return Err("UDP datagram too short");
+        }
+        let src_port = u16::from_be_bytes([datagram[0], datagram[1]]);
+        let dst_port = u16::from_be_bytes([datagram[2], datagram[3]]);
+        let udp_len = u16::from_be_bytes([datagram[4], datagram[5]]) as usize;
+        if udp_len < 8 || udp_len > datagram.len() {
+            return Err("UDP length invalid");
+        }
+        let payload = &datagram[8..udp_len];
+        if dst_port == crate::capnet::CAPNET_CONTROL_PORT {
+            self.handle_capnet_control(src_ip, src_port, payload)?;
+        }
+        Ok(())
+    }
+
+    fn handle_capnet_control(
+        &mut self,
+        src_ip: Ipv4Addr,
+        src_port: u16,
+        payload: &[u8],
+    ) -> Result<(), &'static str> {
+        let now = crate::pit::get_ticks() as u64;
+        let rx = match crate::capnet::process_incoming_control_payload(payload, now) {
+            Ok(v) => v,
+            Err(e) => {
+                crate::security::security().log_event(
+                    crate::security::AuditEntry::new(
+                        crate::security::SecurityEvent::IntegrityCheckFailed,
+                        crate::ipc::ProcessId(0),
+                        0,
+                    )
+                    .with_context(e as u64),
+                );
+                return Err(e.as_str());
+            }
+        };
+
+        self.capnet_ack_seq(rx.peer_device_id, rx.ack);
+
+        if rx.ack_only {
+            return Ok(());
+        }
+
+        let (reply, queue_reply) = match rx.msg_type {
+            crate::capnet::CapNetControlType::TokenOffer => {
+                (
+                    crate::capnet::build_token_accept_frame(rx.peer_device_id, rx.seq, rx.token_id)
+                        .map_err(|e| e.as_str())?,
+                    true,
+                )
+            }
+            crate::capnet::CapNetControlType::TokenRevoke
+            | crate::capnet::CapNetControlType::TokenAccept
+            | crate::capnet::CapNetControlType::Hello
+            | crate::capnet::CapNetControlType::Attest
+            | crate::capnet::CapNetControlType::Heartbeat => {
+                (
+                    crate::capnet::build_heartbeat_frame(rx.peer_device_id, rx.seq, true)
+                        .map_err(|e| e.as_str())?,
+                    false,
+                )
+            }
+        };
+
+        self.send_udp(
+            src_ip,
+            src_port,
+            crate::capnet::CAPNET_CONTROL_PORT,
+            &reply.bytes[..reply.len],
+        )?;
+        if queue_reply {
+            self.capnet_queue_retx(
+                rx.peer_device_id,
+                src_ip,
+                src_port,
+                reply.seq,
+                &reply.bytes[..reply.len],
+            )?;
         }
         Ok(())
     }
