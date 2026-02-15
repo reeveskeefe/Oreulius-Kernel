@@ -798,6 +798,9 @@ const USER_JIT_DATA_BASE: usize = 0x0044_0000;
 const USER_WASM_MEM_BASE: usize = 0x0050_0000;
 const USER_JIT_STACK_GUARD_PAGES: usize = 1;
 const USER_JIT_STACK_PAGES: usize = 1;
+const USER_JIT_CODE_GUARD_PAGES: usize = 1;
+const USER_JIT_DATA_GUARD_PAGES: usize = 1;
+const USER_WASM_MEM_GUARD_PAGES: usize = 1;
 
 #[repr(C)]
 struct JitUserCall {
@@ -844,6 +847,7 @@ pub struct WasmInstance {
     /// JIT user state (stack/locals/fuel/trap)
     jit_state: *mut JitUserState,
     jit_state_pages: usize,
+    jit_user_pages: Option<JitUserPages>,
     jit_enabled: bool,
     jit_hot: [u32; 64],
     jit_validate_remaining: [u8; 64],
@@ -1036,6 +1040,7 @@ impl WasmInstance {
             jit_hash: [None; 64],
             jit_state,
             jit_state_pages,
+            jit_user_pages: None,
             jit_enabled: false,
             jit_hot: [0; 64],
             jit_validate_remaining: [JIT_VALIDATE_CALLS; 64],
@@ -1156,7 +1161,16 @@ impl WasmInstance {
             let _ = self.stack.pop()?;
         }
 
-        let ret = {
+        let (
+            stack_ptr,
+            sp_ptr,
+            locals_ptr,
+            instr_fuel,
+            mem_fuel,
+            trap_code,
+            shadow_stack_ptr,
+            shadow_sp_ptr,
+        ) = {
             let state = self.jit_state_mut()?;
             for i in 0..locals_total {
                 state.locals[i] = locals_buf[i];
@@ -1166,28 +1180,33 @@ impl WasmInstance {
             state.mem_fuel = MAX_MEMORY_OPS_PER_CALL as u32;
             state.trap_code = 0;
             state.shadow_sp = 0;
-            let locals_ptr = state.locals.as_mut_ptr();
-            let instr_fuel = &mut state.instr_fuel as *mut u32;
-            let mem_fuel = &mut state.mem_fuel as *mut u32;
-            let trap_code = &mut state.trap_code as *mut i32;
-            let shadow_stack_ptr = state.shadow_stack.as_mut_ptr();
-            let shadow_sp_ptr = &mut state.shadow_sp as *mut usize;
-            call_jit_sandboxed(
-                jit_entry,
+            (
                 state.stack.as_mut_ptr(),
                 &mut state.sp as *mut usize,
-                mem_ptr,
-                mem_len,
-                locals_ptr,
-                instr_fuel,
-                mem_fuel,
-                trap_code,
-                shadow_stack_ptr,
-                shadow_sp_ptr,
-                jit_state_base,
-                jit_state_pages,
+                state.locals.as_mut_ptr(),
+                &mut state.instr_fuel as *mut u32,
+                &mut state.mem_fuel as *mut u32,
+                &mut state.trap_code as *mut i32,
+                state.shadow_stack.as_mut_ptr(),
+                &mut state.shadow_sp as *mut usize,
             )
         };
+        let ret = call_jit_sandboxed(
+            jit_entry,
+            stack_ptr,
+            sp_ptr,
+            mem_ptr,
+            mem_len,
+            locals_ptr,
+            instr_fuel,
+            mem_fuel,
+            trap_code,
+            shadow_stack_ptr,
+            shadow_sp_ptr,
+            jit_state_base,
+            jit_state_pages,
+            &mut self.jit_user_pages,
+        );
         let (trap_code_val, instr_left, mem_left) = {
             let state = self.jit_state()?;
             (state.trap_code, state.instr_fuel, state.mem_fuel)
@@ -1273,6 +1292,7 @@ impl WasmInstance {
             jit_hash: [None; 64],
             jit_state,
             jit_state_pages,
+            jit_user_pages: None,
             jit_enabled: false,
             jit_hot: [0; 64],
             jit_validate_remaining: [0; 64],
@@ -2489,8 +2509,6 @@ struct JitUserPages {
     stack_pages: usize,
 }
 
-static JIT_USER_PAGES: Mutex<Option<JitUserPages>> = Mutex::new(None);
-
 #[no_mangle]
 pub static JIT_USER_ACTIVE: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
@@ -2644,10 +2662,9 @@ fn write_jit_user_trampoline(trampoline: *mut u8, call_addr: u32) {
     }
 }
 
-fn ensure_jit_user_pages() -> Result<JitUserPages, &'static str> {
-    let mut guard = JIT_USER_PAGES.lock();
-    if let Some(pages) = *guard {
-        return Ok(pages);
+fn ensure_jit_user_pages(pages: &mut Option<JitUserPages>) -> Result<JitUserPages, &'static str> {
+    if let Some(existing) = *pages {
+        return Ok(existing);
     }
     let trampoline = memory::jit_allocate_pages(1)?;
     let call = memory::jit_allocate_pages(1)?;
@@ -2655,14 +2672,28 @@ fn ensure_jit_user_pages() -> Result<JitUserPages, &'static str> {
     let stack = memory::jit_allocate_pages(stack_pages)?;
     write_jit_user_trampoline(trampoline as *mut u8, USER_JIT_CALL_BASE as u32);
     let _ = paging::set_page_writable_range(trampoline, paging::PAGE_SIZE, false);
-    let pages = JitUserPages {
+    let new_pages = JitUserPages {
         trampoline,
         call,
         stack,
         stack_pages,
     };
-    *guard = Some(pages);
-    Ok(pages)
+    *pages = Some(new_pages);
+    Ok(new_pages)
+}
+
+fn wipe_jit_user_pages(pages: &JitUserPages) {
+    let _ = paging::set_page_writable_range(pages.trampoline, paging::PAGE_SIZE, true);
+    write_jit_user_trampoline(pages.trampoline as *mut u8, USER_JIT_CALL_BASE as u32);
+    let _ = paging::set_page_writable_range(pages.trampoline, paging::PAGE_SIZE, false);
+    unsafe {
+        core::ptr::write_bytes(pages.call as *mut u8, 0, paging::PAGE_SIZE);
+        core::ptr::write_bytes(
+            pages.stack as *mut u8,
+            0,
+            pages.stack_pages * paging::PAGE_SIZE,
+        );
+    }
 }
 
 pub fn jit_user_mark_returned() -> bool {
@@ -2717,6 +2748,7 @@ fn call_jit_sandboxed(
     shadow_sp_ptr: *mut usize,
     jit_state_base: *mut u8,
     jit_state_pages: usize,
+    jit_user_pages: &mut Option<JitUserPages>,
 ) -> i32 {
     if jit_config().lock().user_mode {
         if let Ok(ret) = call_jit_user(
@@ -2733,6 +2765,7 @@ fn call_jit_sandboxed(
             shadow_sp_ptr,
             jit_state_base,
             jit_state_pages,
+            jit_user_pages,
         ) {
             return ret;
         }
@@ -2850,6 +2883,7 @@ fn call_jit_user(
     _shadow_sp_ptr: *mut usize,
     jit_state_base: *mut u8,
     jit_state_pages: usize,
+    jit_user_pages: &mut Option<JitUserPages>,
 ) -> Result<i32, &'static str> {
     let _guard = JIT_USER_LOCK.lock();
     let _ = instr_fuel;
@@ -2866,15 +2900,8 @@ fn call_jit_user(
     }
     JIT_USER_RETURN_PENDING.store(0, Ordering::SeqCst);
 
-    let pages = ensure_jit_user_pages()?;
-    unsafe {
-        core::ptr::write_bytes(pages.call as *mut u8, 0, paging::PAGE_SIZE);
-        core::ptr::write_bytes(
-            pages.stack as *mut u8,
-            0,
-            pages.stack_pages * paging::PAGE_SIZE,
-        );
-    }
+    let pages = ensure_jit_user_pages(jit_user_pages)?;
+    wipe_jit_user_pages(&pages);
 
     let mut sandbox = paging::AddressSpace::new_jit_sandbox()?;
 
@@ -2923,6 +2950,62 @@ fn call_jit_user(
         .checked_add(state_offset)
         .ok_or("JIT state size overflow")?;
 
+    let code_guard = USER_JIT_CODE_GUARD_PAGES * paging::PAGE_SIZE;
+    let data_guard = USER_JIT_DATA_GUARD_PAGES * paging::PAGE_SIZE;
+    let mem_guard = USER_WASM_MEM_GUARD_PAGES * paging::PAGE_SIZE;
+
+    let code_window = USER_JIT_DATA_BASE
+        .checked_sub(USER_JIT_CODE_BASE)
+        .ok_or("JIT code window overflow")?;
+    let data_window = USER_WASM_MEM_BASE
+        .checked_sub(USER_JIT_DATA_BASE)
+        .ok_or("JIT data window overflow")?;
+    let mem_window = paging::USER_TOP
+        .checked_sub(USER_WASM_MEM_BASE)
+        .ok_or("WASM memory window overflow")?;
+
+    let code_guard_total = code_guard
+        .checked_mul(2)
+        .ok_or("JIT code guard overflow")?;
+    if code_guard_total >= code_window {
+        return Err("JIT code guard exceeds window");
+    }
+    let data_guard_total = data_guard
+        .checked_mul(2)
+        .ok_or("JIT data guard overflow")?;
+    if data_guard_total >= data_window {
+        return Err("JIT data guard exceeds window");
+    }
+    let mem_guard_total = mem_guard
+        .checked_mul(2)
+        .ok_or("WASM memory guard overflow")?;
+    if mem_guard_total >= mem_window {
+        return Err("WASM memory guard exceeds window");
+    }
+
+    let code_max = code_window - code_guard_total;
+    if exec_map_len > code_max {
+        return Err("JIT code mapping exceeds window");
+    }
+    let data_max = data_window - data_guard_total;
+    if state_map_len > data_max {
+        return Err("JIT state mapping exceeds window");
+    }
+    let mem_max = mem_window - mem_guard_total;
+    if mem_map_len > mem_max {
+        return Err("WASM memory mapping exceeds window");
+    }
+
+    let code_base = USER_JIT_CODE_BASE
+        .checked_add(code_guard)
+        .ok_or("JIT code base overflow")?;
+    let data_base = USER_JIT_DATA_BASE
+        .checked_add(data_guard)
+        .ok_or("JIT data base overflow")?;
+    let mem_base = USER_WASM_MEM_BASE
+        .checked_add(mem_guard)
+        .ok_or("WASM memory base overflow")?;
+
     sandbox.map_user_range_phys(
         USER_JIT_TRAMPOLINE_BASE,
         trampoline_phys,
@@ -2943,19 +3026,19 @@ fn call_jit_user(
         true,
     )?;
     sandbox.map_user_range_phys(
-        USER_JIT_CODE_BASE,
+        code_base,
         exec_phys,
         exec_map_len,
         false,
     )?;
     sandbox.map_user_range_phys(
-        USER_JIT_DATA_BASE,
+        data_base,
         state_phys,
         state_map_len,
         true,
     )?;
     sandbox.map_user_range_phys(
-        USER_WASM_MEM_BASE,
+        mem_base,
         mem_phys,
         mem_map_len,
         true,
@@ -2970,12 +3053,12 @@ fn call_jit_user(
     if entry_offset >= jit_entry.exec_len {
         return Err("JIT entry out of range");
     }
-    let user_entry = USER_JIT_CODE_BASE
+    let user_entry = code_base
         .checked_add(exec_offset)
         .and_then(|v| v.checked_add(entry_offset))
         .ok_or("User entry overflow")?;
 
-    let user_state_base = USER_JIT_DATA_BASE + state_offset;
+    let user_state_base = data_base + state_offset;
     let state_ptr = jit_state_base as *mut JitUserState;
     let base = state_ptr as usize;
     let stack_off = unsafe { core::ptr::addr_of!((*state_ptr).stack) as usize } - base;
@@ -2990,7 +3073,7 @@ fn call_jit_user(
     let shadow_sp_off =
         unsafe { core::ptr::addr_of!((*state_ptr).shadow_sp) as usize } - base;
 
-    let user_mem_ptr = USER_WASM_MEM_BASE + mem_offset;
+    let user_mem_ptr = mem_base + mem_offset;
 
     let call_ptr = pages.call as *mut JitUserCall;
     unsafe {
