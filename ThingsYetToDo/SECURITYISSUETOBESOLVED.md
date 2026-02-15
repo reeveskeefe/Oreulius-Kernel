@@ -31,15 +31,16 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **Per-instance JIT user pages + wipe between runs**: per-instance JIT trampoline/call/stack pages are wiped and re-sealed on each run.
 - **Full CFI (shadow stack + valid target sets)**: return checks run on all exits; verifier restricts indirect/branch targets to trap stubs.
 - **SMEP/SMAP/KPTI**: CR4 protections enabled when supported; KPTI uses user IDT + trampolines, CR3 switching on entry/exit, and minimal kernel mappings.
-
-### **Partially Implemented**
-- **Translation validation**: shadow execution exists, but not a full proof or per-block validator.
+- **Scheduler/context-switch hardening**: first-run kernel thread contexts start with IF cleared, context-switch preserves raw saved EFLAGS, and resumed threads restore prior interrupt state.
+- **Keyboard IRQ recovery under preemption**: cooperative switch paths now restore interrupt state on resume, preventing latent IRQ starvation after yields/blocks.
+- **Translation validation (per-block certificate)**: each compiled function now carries a per-op translation trace and per-block digest; cache/integrity checks re-validate WASM-to-x86 block coverage, fuel-check insertion, and memory-guard shape before execution.
 
 ### **Remaining TODOs**
 - **Formal verification of critical JIT paths and capability checks**
 - **Memory tagging / hardware isolation (SGX/TrustZone)**
 - **External fuzzing + coverage-guided regression**
 - **Anomaly detection / audit hardening beyond current logs**
+- **Long-run scheduler/network stress verification**: continue soak testing preemptive shell/network switching to close intermittent runtime-fault reports.
 
 ## 🧾 Recent Security Improvements (2026-02)
 - W^X sealing for JIT exec buffers and kernel RO mappings.
@@ -60,10 +61,15 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - Expanded SFI enforcement for all memory access paths in JIT verifier.
 - Per-instance JIT user pages wiped/resealed on each run.
 - Full CFI enforcement: shadow stack checks on all exits + verifier target validation.
+- Per-block translation certificates with runtime integrity re-validation of WASM->x86 trace coverage.
+- Scheduler bootstrap race fix: initial kernel-thread IF handling and resumed interrupt-state restoration.
+- Cooperative context-switch interrupt hygiene: per-thread IRQ state preserved and restored across `yield`/`block`.
 
 ## ✅ Verified Milestone (2026-02-15)
 - **JIT verifier alignment**: `wasm-jit-fuzz 1000` on seeds `3418704842` and `2788077538` produced **0 mismatches** and **0 compile errors** (kernel-mode fuzz).
 - **Expanded SFI validation**: `wasm-jit-fuzz 1000` on seeds `3418704842`, `2788077538`, and `3609752155` produced **0 mismatches** and **0 compile errors**.
+- **Translation validation upgrade**: compile-time + integrity-time per-block translation certificate checks are now enforced (trace coverage, fuel checks, memory-guard shape, block digests).
+- **Scheduler bootstrap stability**: kernel thread handoff reaches task entry reliably (shell + network tasks start), and keyboard input path remains interrupt-driven after context switches.
 
 ---
 
@@ -168,7 +174,7 @@ impl JitVerifier {
 - ✅ **Per-instance JIT user pages**: trampoline/call/stack pages are per instance and wiped between runs.
 - ✅ **CFI (shadow stack + valid target sets)**: return checks on all exits + verifier-enforced trap targets.
 - ✅ **SMEP/SMAP/KPTI**: CR4 protections + user IDT trampolines + CR3 isolation.
-- 🟡 **Translation validation**: shadow execution exists; not full translation proof.
+- ✅ **Translation validation**: per-block translation certificates are generated and re-validated (WASM trace coverage + opcode guard obligations + block digests).
 
 **Benefits:**
 - ✅ Keeps JIT in kernel for performance
@@ -313,7 +319,7 @@ impl SecureEnclave {
 
 ## **Layer 4: Control Flow Integrity (CFI)**
 
-**Current status:** Return-address shadow stack checks are implemented in JIT code; indirect target-set enforcement is still pending.
+**Current status:** Full CFI protections are implemented in the JIT path (shadow stack checks on exits + verifier-enforced valid target sets for indirect/control-flow edges).
 
 ### **Enforce Valid Control Flow:**
 

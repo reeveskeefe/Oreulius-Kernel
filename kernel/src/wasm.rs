@@ -106,6 +106,10 @@ pub struct JitFuzzMismatch {
     pub jit: Result<i32, WasmError>,
     pub interp_mem_hash: u64,
     pub jit_mem_hash: u64,
+    pub interp_mem_len: u32,
+    pub jit_mem_len: u32,
+    pub interp_first_nonzero: Option<(u32, u8)>,
+    pub jit_first_nonzero: Option<(u32, u8)>,
 }
 
 /// JIT fuzzing statistics
@@ -3169,7 +3173,7 @@ fn jit_cache_get(hash: u64, code: &[u8], locals_total: usize) -> Option<JitExecI
     let cache = JIT_CACHE.lock();
     for entry in cache.entries.iter() {
         if entry.hash == hash && entry.locals_total == locals_total && entry.code_len == code.len() {
-            if entry.func.code != code {
+            if entry.func.wasm_code != code {
                 continue;
             }
             if !entry.func.verify_integrity() {
@@ -3456,6 +3460,15 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         }
     }
 
+    fn first_nonzero(bytes: &[u8]) -> Option<(u32, u8)> {
+        for (idx, byte) in bytes.iter().enumerate() {
+            if *byte != 0 {
+                return Some((idx as u32, *byte));
+            }
+        }
+        None
+    }
+
     let _guard = {
         let mut cfg = jit_config().lock();
         let guard = JitConfigGuard {
@@ -3484,6 +3497,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     };
 
     let mut code: Vec<u8> = Vec::with_capacity(MAX_FUZZ_CODE_SIZE);
+    let mut interp_mem_snapshot: Vec<u8> = Vec::with_capacity(MAX_MEMORY_SIZE);
     let mut compiler = crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE)
         .map_err(|_| "Fuzz compiler init failed")?;
 
@@ -3639,8 +3653,18 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 .ok()
                 .and_then(|v| v.as_i32().ok())
                 .unwrap_or(0);
-            let mem_hash = hash_memory_fuzz(instance.memory.active_slice());
-            Ok::<(Result<i32, WasmError>, u64), WasmError>((res.map(|_| value), mem_hash))
+            let mem_slice = instance.memory.active_slice();
+            interp_mem_snapshot.clear();
+            interp_mem_snapshot.extend_from_slice(mem_slice);
+            let mem_hash = hash_memory_fuzz(mem_slice);
+            let mem_len = mem_slice.len() as u32;
+            let first_nz = first_nonzero(mem_slice);
+            Ok::<(Result<i32, WasmError>, u64, u32, Option<(u32, u8)>), WasmError>((
+                res.map(|_| value),
+                mem_hash,
+                mem_len,
+                first_nz,
+            ))
         }) {
             Ok(result) => match result {
                 Ok(val) => val,
@@ -3674,8 +3698,18 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 .ok()
                 .and_then(|v| v.as_i32().ok())
                 .unwrap_or(0);
-            let mem_hash = hash_memory_fuzz(instance.memory.active_slice());
-            Ok::<(Result<i32, WasmError>, u64), WasmError>((res.map(|_| value), mem_hash))
+            let mem_slice = instance.memory.active_slice();
+            let mem_hash = hash_memory_fuzz(mem_slice);
+            let mem_len = mem_slice.len() as u32;
+            let first_nz = first_nonzero(mem_slice);
+            let mem_equal = mem_slice == interp_mem_snapshot.as_slice();
+            Ok::<(Result<i32, WasmError>, u64, u32, Option<(u32, u8)>, bool), WasmError>((
+                res.map(|_| value),
+                mem_hash,
+                mem_len,
+                first_nz,
+                mem_equal,
+            ))
         }) {
             Ok(result) => match result {
                 Ok(val) => val,
@@ -3691,11 +3725,16 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         let jit_res = jit.0;
         let interp_mem = interp.1;
         let jit_mem = jit.1;
+        let interp_mem_len = interp.2;
+        let jit_mem_len = jit.2;
+        let interp_first_nonzero = interp.3;
+        let jit_first_nonzero = jit.3;
+        let mem_equal = jit.4;
         let mut mismatch = false;
 
         match (interp_res, jit_res) {
             (Ok(iv), Ok(jv)) => {
-                if iv == jv && interp_mem == jit_mem {
+                if iv == jv && mem_equal {
                     stats.ok += 1;
                 } else {
                     stats.mismatches += 1;
@@ -3725,6 +3764,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 jit: jit_res,
                 interp_mem_hash: interp_mem,
                 jit_mem_hash: jit_mem,
+                interp_mem_len,
+                jit_mem_len,
+                interp_first_nonzero,
+                jit_first_nonzero,
             });
         }
     }

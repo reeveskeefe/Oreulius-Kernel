@@ -63,12 +63,14 @@ pub struct BasicBlock {
 }
 
 pub struct JitFunction {
+    pub wasm_code: Vec<u8>,
     pub code: Vec<u8>,
     pub entry: JitFn,
     pub blocks: Vec<BasicBlock>,
     pub code_hash: u64,
     pub exec: JitExecBuffer,
     pub exec_hash: u64,
+    translation: TranslationValidation,
 }
 
 // SAFETY: JitFunction is safe to send/sync because all components are:
@@ -79,6 +81,20 @@ pub struct JitFunction {
 // - JitExecBuffer (now explicitly Send + Sync, see above)
 unsafe impl Send for JitFunction {}
 unsafe impl Sync for JitFunction {}
+
+#[derive(Clone, Copy)]
+struct TranslationRecord {
+    wasm_start: usize,
+    wasm_end: usize,
+    x86_start: usize,
+    x86_end: usize,
+    opcode: Opcode,
+}
+
+struct TranslationValidation {
+    records: Vec<TranslationRecord>,
+    block_hashes: Vec<u64>,
+}
 
 pub struct JitExecBuffer {
     pub ptr: *mut u8,
@@ -170,18 +186,24 @@ pub fn analyze_basic_blocks(code: &[u8]) -> Vec<BasicBlock> {
     blocks
 }
 
-fn emit_code(code: &[u8], locals_total: usize, emitter: &mut Emitter) -> Result<(), &'static str> {
+fn emit_code(
+    code: &[u8],
+    locals_total: usize,
+    emitter: &mut Emitter,
+) -> Result<Vec<TranslationRecord>, &'static str> {
     if locals_total > MAX_LOCALS {
         return Err("Too many locals");
     }
     emitter.reset();
     emitter.emit_prologue();
 
+    let mut traces = Vec::new();
     let mut pc = 0usize;
     let mut stack_depth: i32 = 0;
     let mut max_depth: i32 = 0;
     let mut instr_count: usize = 0;
     while pc < code.len() {
+        let wasm_start = pc;
         let op = code[pc];
         pc += 1;
         let opcode = Opcode::from_byte(op).ok_or("Unsupported opcode")?;
@@ -189,13 +211,15 @@ fn emit_code(code: &[u8], locals_total: usize, emitter: &mut Emitter) -> Result<
         if instr_count > MAX_INSTRUCTIONS_PER_CALL {
             return Err("JIT function too large");
         }
+        let x86_start = emitter.code.len();
+        let mut terminates = false;
         match opcode {
             Opcode::Nop => {
                 emitter.emit_instr_fuel_check();
             }
             Opcode::End | Opcode::Return => {
                 emitter.emit_instr_fuel_check();
-                break;
+                terminates = true;
             }
             Opcode::Drop => {
                 emitter.emit_instr_fuel_check();
@@ -345,6 +369,20 @@ fn emit_code(code: &[u8], locals_total: usize, emitter: &mut Emitter) -> Result<
             }
             _ => return Err("Opcode not supported by JIT"),
         }
+        let x86_end = emitter.code.len();
+        if x86_end <= x86_start {
+            return Err("Empty translation record");
+        }
+        traces.push(TranslationRecord {
+            wasm_start,
+            wasm_end: pc,
+            x86_start,
+            x86_end,
+            opcode,
+        });
+        if terminates {
+            break;
+        }
     }
 
     let _ret_pos = emitter.emit_epilogue();
@@ -352,7 +390,7 @@ fn emit_code(code: &[u8], locals_total: usize, emitter: &mut Emitter) -> Result<
     let trap_fuel_pos = emitter.emit_trap_stub(TRAP_FUEL, true);
     let trap_stack_pos = emitter.emit_trap_stub(TRAP_STACK, true);
     let trap_cfi_pos = emitter.emit_trap_stub(TRAP_CFI, false);
-    emitter.patch_traps(trap_mem_pos, trap_fuel_pos, trap_stack_pos, trap_cfi_pos);
+    emitter.patch_traps(trap_mem_pos, trap_fuel_pos, trap_stack_pos, trap_cfi_pos)?;
 
     let trap_targets = [
         trap_mem_pos,
@@ -361,13 +399,201 @@ fn emit_code(code: &[u8], locals_total: usize, emitter: &mut Emitter) -> Result<
         trap_cfi_pos,
     ];
     verify_x86_subset(&emitter.code, locals_total, &trap_targets)?;
+    Ok(traces)
+}
+
+const FNV1A64_OFFSET: u64 = 14695981039346656037;
+const FNV1A64_PRIME: u64 = 1099511628211;
+// mov eax,[ebp-*] (3) + cmp [eax],0 (3) + jcc rel32 (6) + dec [eax] (2)
+const INSTR_FUEL_CHECK_LEN: usize = 14;
+const MEM_FUEL_CHECK_LEN: usize = 14;
+
+fn hash_translation_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(FNV1A64_PRIME);
+    }
+    hash
+}
+
+fn has_prefix_at(code: &[u8], at: usize, prefix: &[u8]) -> bool {
+    at.checked_add(prefix.len())
+        .and_then(|end| code.get(at..end))
+        .map(|s| s == prefix)
+        .unwrap_or(false)
+}
+
+fn consume_instr_fuel_check(code: &[u8], at: usize) -> Result<usize, &'static str> {
+    // mov eax, [ebp-8]; cmp dword [eax],0; je trap; dec dword [eax]
+    const PREFIX: [u8; 8] = [0x8B, 0x45, 0xF8, 0x83, 0x38, 0x00, 0x0F, 0x84];
+    if !has_prefix_at(code, at, &PREFIX) {
+        return Err("Missing instruction fuel check");
+    }
+    let rel_off = at + PREFIX.len();
+    if rel_off + 4 + 2 > code.len() {
+        return Err("Truncated instruction fuel check");
+    }
+    if code[rel_off + 4] != 0xFF || code[rel_off + 5] != 0x08 {
+        return Err("Invalid instruction fuel check suffix");
+    }
+    Ok(at + INSTR_FUEL_CHECK_LEN)
+}
+
+fn consume_mem_fuel_check(code: &[u8], at: usize) -> Result<usize, &'static str> {
+    // mov eax, [ebp-12]; cmp dword [eax],0; je trap; dec dword [eax]
+    const PREFIX: [u8; 8] = [0x8B, 0x45, 0xF4, 0x83, 0x38, 0x00, 0x0F, 0x84];
+    if !has_prefix_at(code, at, &PREFIX) {
+        return Err("Missing memory fuel check");
+    }
+    let rel_off = at + PREFIX.len();
+    if rel_off + 4 + 2 > code.len() {
+        return Err("Truncated memory fuel check");
+    }
+    if code[rel_off + 4] != 0xFF || code[rel_off + 5] != 0x08 {
+        return Err("Invalid memory fuel check suffix");
+    }
+    Ok(at + MEM_FUEL_CHECK_LEN)
+}
+
+fn contains_subseq(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+fn validate_trace_shape(opcode: Opcode, code: &[u8]) -> Result<(), &'static str> {
+    let mut at = consume_instr_fuel_check(code, 0)?;
+    let is_mem_op = matches!(opcode, Opcode::I32Load | Opcode::I32Store);
+    if is_mem_op {
+        at = consume_mem_fuel_check(code, at)?;
+    } else if has_prefix_at(code, at, &[0x8B, 0x45, 0xF4, 0x83, 0x38, 0x00, 0x0F, 0x84]) {
+        return Err("Unexpected memory fuel check");
+    }
+
+    if at == code.len() {
+        if matches!(opcode, Opcode::Nop | Opcode::End | Opcode::Return) {
+            return Ok(());
+        }
+        return Err("Missing opcode body");
+    }
+
+    if matches!(opcode, Opcode::I32Load | Opcode::I32Store) {
+        // Bounds checks must contain jb/ja trap edges.
+        if !contains_subseq(code, &[0x0F, 0x82]) || !contains_subseq(code, &[0x0F, 0x87]) {
+            return Err("Missing memory bounds trap edges");
+        }
+    }
+    if matches!(opcode, Opcode::I32Load) && !contains_subseq(code, &[0x8B, 0x04, 0x02]) {
+        return Err("Missing linear memory load");
+    }
+    if matches!(opcode, Opcode::I32Store) && !contains_subseq(code, &[0x89, 0x1C, 0x02]) {
+        return Err("Missing linear memory store");
+    }
+
     Ok(())
+}
+
+fn validate_translation_per_block(
+    wasm_code: &[u8],
+    blocks: &[BasicBlock],
+    traces: &[TranslationRecord],
+    native_code: &[u8],
+) -> Result<Vec<u64>, &'static str> {
+    if wasm_code.is_empty() {
+        if !blocks.is_empty() || !traces.is_empty() {
+            return Err("Empty WASM with non-empty translation metadata");
+        }
+        return Ok(Vec::new());
+    }
+    if blocks.is_empty() {
+        return Err("Missing basic block metadata");
+    }
+    if traces.is_empty() {
+        return Err("Missing translation traces");
+    }
+
+    let mut block_hashes = Vec::with_capacity(blocks.len());
+    let mut trace_idx = 0usize;
+    let mut expected_x86 = traces[0].x86_start;
+
+    for (block_idx, block) in blocks.iter().enumerate() {
+        if block.start >= block.end || block.end > wasm_code.len() {
+            return Err("Invalid basic block range");
+        }
+        if trace_idx >= traces.len() {
+            return Err("Missing trace for basic block");
+        }
+        if traces[trace_idx].wasm_start != block.start {
+            return Err("Block trace start mismatch");
+        }
+
+        let mut block_hash = FNV1A64_OFFSET;
+        let mut prev_wasm_end = block.start;
+        let mut saw_trace = false;
+
+        while trace_idx < traces.len() {
+            let trace = traces[trace_idx];
+            if trace.wasm_start < block.start || trace.wasm_end > block.end {
+                break;
+            }
+            if trace.wasm_start != prev_wasm_end {
+                return Err("Non-contiguous WASM translation trace");
+            }
+            if trace.x86_start != expected_x86 {
+                return Err("Non-contiguous native translation trace");
+            }
+            if trace.x86_end <= trace.x86_start || trace.x86_end > native_code.len() {
+                return Err("Invalid native translation range");
+            }
+            let native_slice = &native_code[trace.x86_start..trace.x86_end];
+            validate_trace_shape(trace.opcode, native_slice)?;
+
+            let wasm_slice = &wasm_code[trace.wasm_start..trace.wasm_end];
+            block_hash ^= trace.opcode as u8 as u64;
+            block_hash = block_hash.wrapping_mul(FNV1A64_PRIME);
+            block_hash = hash_translation_bytes(block_hash, wasm_slice);
+            block_hash = hash_translation_bytes(block_hash, native_slice);
+
+            saw_trace = true;
+            prev_wasm_end = trace.wasm_end;
+            expected_x86 = trace.x86_end;
+            trace_idx += 1;
+
+            if prev_wasm_end == block.end {
+                break;
+            }
+        }
+
+        if !saw_trace || prev_wasm_end != block.end {
+            return Err("Incomplete basic block translation coverage");
+        }
+
+        let last_opcode = traces[trace_idx - 1].opcode;
+        if block_idx + 1 < blocks.len() && !matches!(last_opcode, Opcode::End | Opcode::Return) {
+            return Err("Non-terminal block boundary in translation metadata");
+        }
+
+        block_hashes.push(block_hash);
+    }
+
+    if trace_idx != traces.len() {
+        return Err("Orphan translation traces");
+    }
+
+    Ok(block_hashes)
 }
 
 pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static str> {
     let blocks = analyze_basic_blocks(code);
     let mut emitter = Emitter::new();
-    emit_code(code, locals_total, &mut emitter)?;
+    let traces = emit_code(code, locals_total, &mut emitter)?;
+    let block_hashes = validate_translation_per_block(code, &blocks, &traces, &emitter.code)?;
 
     let mut exec = JitExecBuffer::new(emitter.code.len())?;
     exec.write_and_seal(&emitter.code)?;
@@ -376,12 +602,17 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
     let code_hash = hash_jit_code(&emitter.code);
     let exec_hash = hash_exec_code(exec.as_ptr(), exec.len);
     Ok(JitFunction {
+        wasm_code: code.to_vec(),
         code: emitter.code,
         entry,
         blocks,
         code_hash,
         exec,
         exec_hash,
+        translation: TranslationValidation {
+            records: traces,
+            block_hashes,
+        },
     })
 }
 
@@ -400,7 +631,9 @@ impl FuzzCompiler {
     }
 
     pub fn compile(&mut self, code: &[u8], locals_total: usize) -> Result<JitFn, &'static str> {
-        emit_code(code, locals_total, &mut self.emitter)?;
+        let traces = emit_code(code, locals_total, &mut self.emitter)?;
+        let blocks = analyze_basic_blocks(code);
+        let _ = validate_translation_per_block(code, &blocks, &traces, &self.emitter.code)?;
         if self.emitter.code.len() > self.exec.len {
             return Err("JIT code too large for fuzz buffer");
         }
@@ -800,16 +1033,13 @@ impl Emitter {
     }
 
     fn emit_i32_store(&mut self, off: u32) {
-        // pop addr -> eax
-        self.emit_pop_to_eax();
+        // WASM stack order for i32.store is [..., addr, value] (value on top).
         // pop value -> ebx
         self.emit_pop_to_ebx();
-        // mov [ebp-28], ebx (save value)
-        self.emit(&[0x89, 0x5D, 0xE4]);
-        // bounds check using ebx temp
+        // pop addr -> eax (preserves ebx value via helper scratch)
+        self.emit_pop_to_eax();
+        // bounds check address in eax
         self.emit_bounds_check(off, 4);
-        // mov ebx, [ebp-28] (restore value)
-        self.emit(&[0x8B, 0x5D, 0xE4]);
         // mov [edx + eax], ebx
         self.emit(&[0x89, 0x1C, 0x02]);
     }
@@ -834,6 +1064,11 @@ impl Emitter {
         self.emit(&[0x43]);
         // mov [eax], ebx
         self.emit(&[0x89, 0x18]);
+        // Restore linear-memory base/len after CFI scratch use.
+        // mov edx, [ebp+16] (mem ptr)
+        self.emit(&[0x8B, 0x55, 0x10]);
+        // mov ecx, [ebp+20] (mem len)
+        self.emit(&[0x8B, 0x4D, 0x14]);
     }
 
     fn emit_cfi_check_return(&mut self) {
@@ -977,27 +1212,30 @@ impl Emitter {
         trap_fuel_pos: usize,
         trap_stack_pos: usize,
         trap_cfi_pos: usize,
-    ) {
-        for &idx in &self.trap_mem_jumps {
-            let next = idx + 4;
-            let rel = (trap_mem_pos as isize - next as isize) as i32;
-            self.code[idx..idx + 4].copy_from_slice(&rel.to_le_bytes());
+    ) -> Result<(), &'static str> {
+        fn patch_jump_list(
+            code: &mut [u8],
+            jumps: &[usize],
+            trap_pos: usize,
+        ) -> Result<(), &'static str> {
+            for &idx in jumps {
+                let end = idx
+                    .checked_add(4)
+                    .ok_or("Trap patch index overflow")?;
+                if end > code.len() {
+                    return Err("Trap patch index out of range");
+                }
+                let rel = (trap_pos as isize - end as isize) as i32;
+                code[idx..end].copy_from_slice(&rel.to_le_bytes());
+            }
+            Ok(())
         }
-        for &idx in &self.trap_fuel_jumps {
-            let next = idx + 4;
-            let rel = (trap_fuel_pos as isize - next as isize) as i32;
-            self.code[idx..idx + 4].copy_from_slice(&rel.to_le_bytes());
-        }
-        for &idx in &self.trap_stack_jumps {
-            let next = idx + 4;
-            let rel = (trap_stack_pos as isize - next as isize) as i32;
-            self.code[idx..idx + 4].copy_from_slice(&rel.to_le_bytes());
-        }
-        for &idx in &self.trap_cfi_jumps {
-            let next = idx + 4;
-            let rel = (trap_cfi_pos as isize - next as isize) as i32;
-            self.code[idx..idx + 4].copy_from_slice(&rel.to_le_bytes());
-        }
+
+        patch_jump_list(&mut self.code, &self.trap_mem_jumps, trap_mem_pos)?;
+        patch_jump_list(&mut self.code, &self.trap_fuel_jumps, trap_fuel_pos)?;
+        patch_jump_list(&mut self.code, &self.trap_stack_jumps, trap_stack_pos)?;
+        patch_jump_list(&mut self.code, &self.trap_cfi_jumps, trap_cfi_pos)?;
+        Ok(())
     }
 }
 
@@ -1748,6 +1986,21 @@ fn verify_x86_subset(
 impl JitFunction {
     pub fn verify_integrity(&self) -> bool {
         if !self.exec.is_sealed() {
+            return false;
+        }
+        if self.translation.block_hashes.len() != self.blocks.len() {
+            return false;
+        }
+        let recomputed_hashes = match validate_translation_per_block(
+            &self.wasm_code,
+            &self.blocks,
+            &self.translation.records,
+            &self.code,
+        ) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        if recomputed_hashes != self.translation.block_hashes {
             return false;
         }
         let exec_hash = hash_exec_code(self.exec.as_ptr(), self.exec.len);

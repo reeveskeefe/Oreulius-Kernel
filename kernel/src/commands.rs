@@ -3216,6 +3216,30 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
                     vga::print_str(" / 0x");
                     print_hex_u32((mismatch.jit_mem_hash >> 32) as u32);
                     print_hex_u32(mismatch.jit_mem_hash as u32);
+                    vga::print_str("\nMem len (interp/jit): ");
+                    print_u32(mismatch.interp_mem_len);
+                    vga::print_str(" / ");
+                    print_u32(mismatch.jit_mem_len);
+                    vga::print_str("\nFirst non-zero (interp/jit): ");
+                    match mismatch.interp_first_nonzero {
+                        Some((off, byte)) => {
+                            vga::print_str("0x");
+                            print_hex_u32(off);
+                            vga::print_str(":");
+                            print_hex_byte(byte);
+                        }
+                        None => vga::print_str("none"),
+                    }
+                    vga::print_str(" / ");
+                    match mismatch.jit_first_nonzero {
+                        Some((off, byte)) => {
+                            vga::print_str("0x");
+                            print_hex_u32(off);
+                            vga::print_str(":");
+                            print_hex_byte(byte);
+                        }
+                        None => vga::print_str("none"),
+                    }
                     vga::print_str("\nCode bytes:\n");
                     for (idx, byte) in mismatch.code.iter().enumerate() {
                         if idx > 0 && idx % 16 == 0 {
