@@ -1,4 +1,4 @@
-# Contributing to Oreulia
+# Contributing to Oreulius
 
 Thank you for considering a contribution. We welcome all kinds of help: code, documentation, tests, design notes, and bug reports. This guide is intentionally short and clear so you can get started quickly.
 
