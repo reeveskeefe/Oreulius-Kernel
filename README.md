@@ -303,6 +303,13 @@ Oreulia is an experimental research project. Contributions, ideas, and feedback 
 
 This project is licensed under the OREULIUS LISCENCE - see the [liscence](OreuliusLiscence.md) for details.
 
+## Contact
+
+# Email 
+```bash
+reeveskeefe@gmail.com
+```
+
 ---
 
 ## Acknowledgments

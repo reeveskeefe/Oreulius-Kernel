@@ -64,3 +64,10 @@ We may update this notice from time to time. The effective date will be updated 
 
 ## Contact
 For privacy inquiries, contact the Licensor using the notice address listed in the repository or licensing communications.
+
+## Contact
+
+# Email 
+```bash
+reeveskeefe@gmail.com
+```

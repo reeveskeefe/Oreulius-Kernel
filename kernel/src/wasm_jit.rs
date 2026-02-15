@@ -100,7 +100,7 @@ const TRAP_STACK: i32 = -3;
 const TRAP_CFI: i32 = -4;
 
 impl JitExecBuffer {
-    fn new(len: usize) -> Result<Self, &'static str> {
+    pub fn new(len: usize) -> Result<Self, &'static str> {
         let pages = len
             .checked_add(paging::PAGE_SIZE - 1)
             .ok_or("Size overflow")?
@@ -170,12 +170,11 @@ pub fn analyze_basic_blocks(code: &[u8]) -> Vec<BasicBlock> {
     blocks
 }
 
-pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static str> {
+fn emit_code(code: &[u8], locals_total: usize, emitter: &mut Emitter) -> Result<(), &'static str> {
     if locals_total > MAX_LOCALS {
         return Err("Too many locals");
     }
-    let blocks = analyze_basic_blocks(code);
-    let mut emitter = Emitter::new();
+    emitter.reset();
     emitter.emit_prologue();
 
     let mut pc = 0usize;
@@ -356,6 +355,13 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
     emitter.patch_traps(trap_mem_pos, trap_fuel_pos, trap_stack_pos, trap_cfi_pos);
 
     verify_x86_subset(&emitter.code)?;
+    Ok(())
+}
+
+pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static str> {
+    let blocks = analyze_basic_blocks(code);
+    let mut emitter = Emitter::new();
+    emit_code(code, locals_total, &mut emitter)?;
 
     let mut exec = JitExecBuffer::new(emitter.code.len())?;
     exec.write_and_seal(&emitter.code)?;
@@ -371,6 +377,39 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
         exec,
         exec_hash,
     })
+}
+
+/// Reusable JIT compiler for fuzzing (avoids per-iteration allocations).
+pub struct FuzzCompiler {
+    emitter: Emitter,
+    exec: JitExecBuffer,
+}
+
+impl FuzzCompiler {
+    pub fn new(max_code_size: usize) -> Result<Self, &'static str> {
+        let mut emitter = Emitter::new();
+        emitter.reserve(max_code_size, 128);
+        let exec = JitExecBuffer::new(max_code_size)?;
+        Ok(FuzzCompiler { emitter, exec })
+    }
+
+    pub fn compile(&mut self, code: &[u8], locals_total: usize) -> Result<JitFn, &'static str> {
+        emit_code(code, locals_total, &mut self.emitter)?;
+        if self.emitter.code.len() > self.exec.len {
+            return Err("JIT code too large for fuzz buffer");
+        }
+        self.exec.write_and_seal(&self.emitter.code)?;
+        let entry = unsafe { core::mem::transmute::<*const u8, JitFn>(self.exec.as_ptr()) };
+        Ok(entry)
+    }
+
+    pub fn exec_ptr(&self) -> *mut u8 {
+        self.exec.ptr
+    }
+
+    pub fn exec_len(&self) -> usize {
+        self.exec.len
+    }
 }
 
 // ============================================================================
@@ -396,6 +435,36 @@ impl Emitter {
         }
     }
 
+    fn reset(&mut self) {
+        self.code.clear();
+        self.trap_mem_jumps.clear();
+        self.trap_fuel_jumps.clear();
+        self.trap_stack_jumps.clear();
+        self.trap_cfi_jumps.clear();
+    }
+
+    fn reserve(&mut self, code_cap: usize, jump_cap: usize) {
+        if code_cap > self.code.capacity() {
+            self.code.reserve_exact(code_cap - self.code.capacity());
+        }
+        if jump_cap > self.trap_mem_jumps.capacity() {
+            self.trap_mem_jumps
+                .reserve_exact(jump_cap - self.trap_mem_jumps.capacity());
+        }
+        if jump_cap > self.trap_fuel_jumps.capacity() {
+            self.trap_fuel_jumps
+                .reserve_exact(jump_cap - self.trap_fuel_jumps.capacity());
+        }
+        if jump_cap > self.trap_stack_jumps.capacity() {
+            self.trap_stack_jumps
+                .reserve_exact(jump_cap - self.trap_stack_jumps.capacity());
+        }
+        if jump_cap > self.trap_cfi_jumps.capacity() {
+            self.trap_cfi_jumps
+                .reserve_exact(jump_cap - self.trap_cfi_jumps.capacity());
+        }
+    }
+
     fn emit(&mut self, bytes: &[u8]) {
         self.code.extend_from_slice(bytes);
     }
@@ -415,6 +484,15 @@ impl Emitter {
     fn emit_prologue(&mut self) {
         // push ebp; mov ebp, esp
         self.emit(&[0x55, 0x89, 0xE5]);
+        // sub esp, 40 (includes scratch + callee-saved regs)
+        self.emit(&[0x83, 0xEC, 0x28]);
+        // save callee-saved registers
+        // mov [ebp-32], ebx
+        self.emit(&[0x89, 0x5D, 0xE0]);
+        // mov [ebp-36], esi
+        self.emit(&[0x89, 0x75, 0xDC]);
+        // mov [ebp-40], edi
+        self.emit(&[0x89, 0x7D, 0xD8]);
         // mov edi, [ebp+8]
         self.emit(&[0x8B, 0x7D, 0x08]);
         // mov esi, [ebp+12]
@@ -425,8 +503,6 @@ impl Emitter {
         self.emit(&[0x8B, 0x4D, 0x14]);
         // mov eax, [ebp+24]
         self.emit(&[0x8B, 0x45, 0x18]);
-        // sub esp, 24
-        self.emit(&[0x83, 0xEC, 0x18]);
         // mov [ebp-4], eax (locals pointer)
         self.emit(&[0x89, 0x45, 0xFC]);
         // mov eax, [ebp+28] (instr fuel ptr)
@@ -453,6 +529,8 @@ impl Emitter {
     }
 
     fn emit_pop_to_eax(&mut self) {
+        // Preserve ebx (used by callers that need the previous pop value).
+        self.emit(&[0x89, 0x5D, 0xE4]);
         // mov ebx, [esi]
         self.emit(&[0x8B, 0x1E]);
         // cmp ebx, 0
@@ -465,9 +543,13 @@ impl Emitter {
         self.emit(&[0x8B, 0x04, 0x9F]);
         // mov [esi], ebx
         self.emit(&[0x89, 0x1E]);
+        // Restore ebx
+        self.emit(&[0x8B, 0x5D, 0xE4]);
     }
 
     fn emit_pop_to_ebx(&mut self) {
+        // save eax (preserve prior pop)
+        self.emit(&[0x89, 0x45, 0xE4]);
         // mov eax, [esi]
         self.emit(&[0x8B, 0x06]);
         // cmp eax, 0
@@ -480,6 +562,8 @@ impl Emitter {
         self.emit(&[0x8B, 0x1C, 0x87]);
         // mov [esi], eax
         self.emit(&[0x89, 0x06]);
+        // restore eax
+        self.emit(&[0x8B, 0x45, 0xE4]);
     }
 
     fn emit_push_eax(&mut self) {
@@ -712,18 +796,14 @@ impl Emitter {
     fn emit_i32_store(&mut self, off: u32) {
         // pop addr -> eax
         self.emit_pop_to_eax();
-        // push eax (save addr)
-        self.emit(&[0x50]);
         // pop value -> ebx
         self.emit_pop_to_ebx();
-        // pop eax (restore addr)
-        self.emit(&[0x58]);
-        // push ebx (save value)
-        self.emit(&[0x53]);
+        // mov [ebp-28], ebx (save value)
+        self.emit(&[0x89, 0x5D, 0xE4]);
         // bounds check using ebx temp
         self.emit_bounds_check(off, 4);
-        // pop ebx (restore value)
-        self.emit(&[0x5B]);
+        // mov ebx, [ebp-28] (restore value)
+        self.emit(&[0x8B, 0x5D, 0xE4]);
         // mov [edx + eax], ebx
         self.emit(&[0x89, 0x1C, 0x02]);
     }
@@ -751,18 +831,18 @@ impl Emitter {
     }
 
     fn emit_cfi_check_return(&mut self) {
-        // mov eax, [ebp-24] (shadow sp ptr)
-        self.emit(&[0x8B, 0x45, 0xE8]);
-        // mov ebx, [eax]
-        self.emit(&[0x8B, 0x18]);
+        // mov edx, [ebp-24] (shadow sp ptr)
+        self.emit(&[0x8B, 0x55, 0xE8]);
+        // mov ebx, [edx]
+        self.emit(&[0x8B, 0x1A]);
         // cmp ebx, 0
         self.emit(&[0x83, 0xFB, 0x00]);
         // je trap (rel32)
         self.emit_trap_cfi_jump(0x84);
         // dec ebx
         self.emit(&[0x4B]);
-        // mov [eax], ebx
-        self.emit(&[0x89, 0x18]);
+        // mov [edx], ebx
+        self.emit(&[0x89, 0x1A]);
         // mov edx, [ebp-20] (shadow stack base)
         self.emit(&[0x8B, 0x55, 0xEC]);
         // mov ecx, [edx + ebx*4] (expected ret)
@@ -799,14 +879,14 @@ impl Emitter {
 
     fn emit_epilogue(&mut self) -> usize {
         let pos = self.code.len();
-        // add esp, 24
-        self.emit(&[0x83, 0xC4, 0x18]);
+        // add esp, 40
+        self.emit(&[0x83, 0xC4, 0x28]);
         // mov ebx, [esi]
         self.emit(&[0x8B, 0x1E]);
         // cmp ebx, 0
         self.emit(&[0x83, 0xFB, 0x00]);
-        // je +6
-        self.emit(&[0x74, 0x06]);
+        // je +8 (skip value load/store and jmp to xor)
+        self.emit(&[0x74, 0x08]);
         // dec ebx
         self.emit(&[0x4B]);
         // mov eax, [edi + ebx*4]
@@ -818,6 +898,13 @@ impl Emitter {
         // xor eax, eax
         self.emit(&[0x31, 0xC0]);
         self.emit_cfi_check_return();
+        // restore callee-saved registers
+        // mov edi, [ebp-40]
+        self.emit(&[0x8B, 0x7D, 0xD8]);
+        // mov esi, [ebp-36]
+        self.emit(&[0x8B, 0x75, 0xDC]);
+        // mov ebx, [ebp-32]
+        self.emit(&[0x8B, 0x5D, 0xE0]);
         // pop ebp; ret
         self.emit(&[0x5D, 0xC3]);
         pos
@@ -825,8 +912,8 @@ impl Emitter {
 
     fn emit_trap_stub(&mut self, code: i32) -> usize {
         let pos = self.code.len();
-        // add esp, 24
-        self.emit(&[0x83, 0xC4, 0x18]);
+        // add esp, 40
+        self.emit(&[0x83, 0xC4, 0x28]);
         // mov eax, [ebp-16]
         self.emit(&[0x8B, 0x45, 0xF0]);
         // mov dword [eax], imm32
@@ -834,6 +921,13 @@ impl Emitter {
         self.emit_i32(code);
         // xor eax, eax
         self.emit(&[0x31, 0xC0]);
+        // restore callee-saved registers
+        // mov edi, [ebp-40]
+        self.emit(&[0x8B, 0x7D, 0xD8]);
+        // mov esi, [ebp-36]
+        self.emit(&[0x8B, 0x75, 0xDC]);
+        // mov ebx, [ebp-32]
+        self.emit(&[0x8B, 0x5D, 0xE0]);
         // pop ebp; ret
         self.emit(&[0x5D, 0xC3]);
         pos
@@ -1085,7 +1179,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
             // Short jumps (only used in epilogue)
             0x74 => {
                 need(code, i, 2)?;
-                expect_u8(code, i + 1, 0x06)?;
+                expect_disp8(code, i + 1, &[0x06, 0x08])?;
                 i += 2;
             }
             0xEB => {
@@ -1129,7 +1223,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0xEC | 0xC4 => {
                         let imm = *code.get(i + 2).ok_or("Truncated imm8")?;
-                        if imm != 0x10 && imm != 0x18 {
+                        if imm != 0x10 && imm != 0x18 && imm != 0x1C && imm != 0x28 {
                             return Err("Unexpected stack adjust imm8");
                         }
                         i += 3;
@@ -1147,17 +1241,17 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                 match b1 {
                     0x7D => {
                         need(code, i, 3)?;
-                        expect_u8(code, i + 2, 0x08)?;
+                        expect_disp8(code, i + 2, &[0x08, 0xD8])?;
                         i += 3;
                     }
                     0x75 => {
                         need(code, i, 3)?;
-                        expect_u8(code, i + 2, 0x0C)?;
+                        expect_disp8(code, i + 2, &[0x0C, 0xDC])?;
                         i += 3;
                     }
                     0x55 => {
                         need(code, i, 3)?;
-                        expect_disp8(code, i + 2, &[0x10, 0xEC, 0x04])?;
+                        expect_disp8(code, i + 2, &[0x10, 0xEC, 0xE8, 0x04])?;
                         i += 3;
                     }
                     0x4D => {
@@ -1170,11 +1264,11 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                         expect_disp8(
                             code,
                             i + 2,
-                            &[0x18, 0x1C, 0x20, 0x24, 0x28, 0x2C, 0xF8, 0xF4, 0xF0, 0xEC, 0xE8],
+                            &[0x18, 0x1C, 0x20, 0x24, 0x28, 0x2C, 0xF8, 0xF4, 0xF0, 0xEC, 0xE8, 0xE4],
                         )?;
                         i += 3;
                     }
-                    0x1E | 0x06 => {
+                    0x1E | 0x1A | 0x06 => {
                         need(code, i, 2)?;
                         i += 2;
                     }
@@ -1209,7 +1303,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0x5D => {
                         need(code, i, 3)?;
-                        expect_u8(code, i + 2, 0xFC)?;
+                        expect_disp8(code, i + 2, &[0xFC, 0xE4, 0xE0])?;
                         i += 3;
                     }
                     0x83 => {
@@ -1229,15 +1323,30 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0x45 => {
                         need(code, i, 3)?;
-                        expect_disp8(code, i + 2, &[0xFC, 0xF8, 0xF4, 0xF0, 0xEC, 0xE8])?;
+                        expect_disp8(code, i + 2, &[0xFC, 0xF8, 0xF4, 0xF0, 0xEC, 0xE8, 0xE4])?;
                         i += 3;
                     }
-                    0x1E | 0x06 | 0xCB | 0x18 => {
+                    0x1E | 0x1A | 0x06 | 0xCB | 0x18 => {
                         need(code, i, 2)?;
                         if b1 == 0xCB {
                             guard_tok = Some(GuardTok::MovEbxEcx);
                         }
                         i += 2;
+                    }
+                    0x5D => {
+                        need(code, i, 3)?;
+                        expect_disp8(code, i + 2, &[0xE4, 0xE0])?;
+                        i += 3;
+                    }
+                    0x75 => {
+                        need(code, i, 3)?;
+                        expect_u8(code, i + 2, 0xDC)?;
+                        i += 3;
+                    }
+                    0x7D => {
+                        need(code, i, 3)?;
+                        expect_u8(code, i + 2, 0xD8)?;
+                        i += 3;
                     }
                     0x04 => {
                         need(code, i, 3)?;

@@ -117,6 +117,9 @@ pub struct JitFuzzStats {
     pub first_mismatch: Option<JitFuzzMismatch>,
 }
 
+const MAX_FUZZ_CODE_SIZE: usize = 256;
+const MAX_FUZZ_JIT_CODE_SIZE: usize = 8192;
+
 /// WASM value types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueType {
@@ -445,6 +448,16 @@ impl LinearMemory {
         unsafe { core::slice::from_raw_parts(self.data, self.active_len()) }
     }
 
+    /// Zero active memory (fuzz harness/reset).
+    pub fn clear_active(&mut self) {
+        if self.data.is_null() {
+            return;
+        }
+        unsafe {
+            core::ptr::write_bytes(self.data, 0, self.active_len());
+        }
+    }
+
     /// Grow memory by delta pages
     pub fn grow(&mut self, delta: usize) -> Result<usize, WasmError> {
         let old_size = self.pages;
@@ -725,6 +738,20 @@ impl WasmModule {
         Ok(())
     }
 
+    /// Reserve bytecode capacity (used by fuzz harness to avoid reallocations).
+    pub fn reserve_bytecode(&mut self, capacity: usize) {
+        let cap = core::cmp::min(capacity, MAX_MODULE_SIZE);
+        if cap > self.bytecode.capacity() {
+            self.bytecode.reserve_exact(cap - self.bytecode.capacity());
+        }
+    }
+
+    /// Clear function table (used by fuzz harness).
+    pub fn reset_functions(&mut self) {
+        self.functions = [None; 64];
+        self.function_count = 0;
+    }
+
     /// Add a function (for testing/demo)
     pub fn add_function(&mut self, func: Function) -> Result<usize, WasmError> {
         if self.function_count >= 64 {
@@ -851,6 +878,143 @@ impl WasmInstance {
             return Err(WasmError::Trap);
         }
         Ok(unsafe { &*self.jit_state })
+    }
+
+    fn prepare_fuzz(&mut self) {
+        self.module.reserve_bytecode(MAX_FUZZ_CODE_SIZE);
+    }
+
+    fn load_fuzz_program(&mut self, code: &[u8], locals_total: usize) -> Result<(), WasmError> {
+        self.module.load(code)?;
+        self.module.reset_functions();
+        let _ = self.module.add_function(Function {
+            code_offset: 0,
+            code_len: code.len(),
+            param_count: 0,
+            result_count: 1,
+            local_count: locals_total,
+        })?;
+        self.stack.clear();
+        self.locals = [Value::I32(0); MAX_LOCALS];
+        self.pc = 0;
+        self.instruction_count = 0;
+        self.memory_op_count = 0;
+        self.syscall_count = 0;
+        self.jit_hash = [None; 64];
+        self.jit_hot = [0; 64];
+        self.jit_validate_remaining = [0; 64];
+        if let Ok(state) = self.jit_state_mut() {
+            state.sp = 0;
+            state.shadow_sp = 0;
+            state.trap_code = 0;
+        }
+        self.memory.clear_active();
+        Ok(())
+    }
+
+    fn run_jit_entry(&mut self, func_idx: usize, jit_entry: JitExecInfo) -> Result<(), WasmError> {
+        let func = self.module.get_function(func_idx)?;
+        if func.param_count + func.local_count > MAX_LOCALS {
+            return Err(WasmError::InvalidModule);
+        }
+        if func.result_count > 1 {
+            return Err(WasmError::InvalidModule);
+        }
+        if self.stack.len() < func.param_count {
+            return Err(WasmError::StackUnderflow);
+        }
+
+        let code_start = func.code_offset;
+        let code_end = func.code_offset + func.code_len;
+        let _code = &self.module.bytecode[code_start..code_end];
+        let locals_total = func.param_count + func.local_count;
+
+        // Populate locals from stack params (i32 only).
+        let stack_len = self.stack.len();
+        let mut locals_buf = [0i32; MAX_LOCALS];
+        for i in 0..func.param_count {
+            let idx = stack_len - func.param_count + i;
+            let v = self.stack.get(idx)?.as_i32()?;
+            locals_buf[i] = v;
+        }
+        for i in func.param_count..locals_total {
+            locals_buf[i] = 0;
+        }
+
+        let mem_len = self.memory.active_len();
+        if mem_len > u32::MAX as usize {
+            return Err(WasmError::MemoryOutOfBounds);
+        }
+        let mem_ptr = self.memory.as_mut_ptr();
+        if mem_ptr.is_null() {
+            return Err(WasmError::MemoryOutOfBounds);
+        }
+        if (mem_ptr as usize).checked_add(mem_len).is_none() {
+            return Err(WasmError::MemoryOutOfBounds);
+        }
+        // Consume stack params now that we're committed to JIT execution.
+        for _ in 0..func.param_count {
+            let _ = self.stack.pop()?;
+        }
+
+        let ret = {
+            let state = self.jit_state_mut()?;
+            for i in 0..locals_total {
+                state.locals[i] = locals_buf[i];
+            }
+            state.sp = 0;
+            state.instr_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
+            state.mem_fuel = MAX_MEMORY_OPS_PER_CALL as u32;
+            state.trap_code = 0;
+            state.shadow_sp = 0;
+            let locals_ptr = state.locals.as_mut_ptr();
+            let instr_fuel = &mut state.instr_fuel as *mut u32;
+            let mem_fuel = &mut state.mem_fuel as *mut u32;
+            let trap_code = &mut state.trap_code as *mut i32;
+            let shadow_stack_ptr = state.shadow_stack.as_mut_ptr();
+            let shadow_sp_ptr = &mut state.shadow_sp as *mut usize;
+            // Fuzz harness: call directly without per-iteration sandbox allocation.
+            call_jit_direct(
+                jit_entry,
+                state.stack.as_mut_ptr(),
+                &mut state.sp as *mut usize,
+                mem_ptr,
+                mem_len,
+                locals_ptr,
+                instr_fuel,
+                mem_fuel,
+                trap_code,
+                shadow_stack_ptr,
+                shadow_sp_ptr,
+            )
+        };
+        let (trap_code_val, instr_left, mem_left) = {
+            let state = self.jit_state()?;
+            (state.trap_code, state.instr_fuel, state.mem_fuel)
+        };
+        if trap_code_val == -1 {
+            return Err(WasmError::MemoryOutOfBounds);
+        }
+        if trap_code_val == -2 {
+            return Err(WasmError::ExecutionLimitExceeded);
+        }
+        if trap_code_val == -3 {
+            return Err(WasmError::Trap);
+        }
+        if trap_code_val == -4 {
+            return Err(WasmError::ControlFlowViolation);
+        }
+        if trap_code_val != 0 {
+            return Err(WasmError::Trap);
+        }
+        if func.result_count == 1 {
+            self.stack.push(Value::I32(ret))?;
+        }
+        self.instruction_count =
+            (MAX_INSTRUCTIONS_PER_CALL as u32).saturating_sub(instr_left) as usize;
+        self.memory_op_count =
+            (MAX_MEMORY_OPS_PER_CALL as u32).saturating_sub(mem_left) as usize;
+        Ok(())
     }
 
     /// Create a new instance
@@ -2638,6 +2802,40 @@ fn call_jit_kernel(
     ret
 }
 
+fn call_jit_direct(
+    jit_entry: JitExecInfo,
+    stack_ptr: *mut i32,
+    sp_ptr: *mut usize,
+    mem_ptr: *mut u8,
+    mem_len: usize,
+    locals_ptr: *mut i32,
+    instr_fuel: *mut u32,
+    mem_fuel: *mut u32,
+    trap_code: *mut i32,
+    shadow_stack_ptr: *mut u32,
+    shadow_sp_ptr: *mut usize,
+) -> i32 {
+    let flags = unsafe { idt_asm::fast_cli_save() };
+    jit_fault_enter(trap_code);
+    let ret = unsafe {
+        (jit_entry.entry)(
+            stack_ptr,
+            sp_ptr,
+            mem_ptr,
+            mem_len,
+            locals_ptr,
+            instr_fuel,
+            mem_fuel,
+            trap_code,
+            shadow_stack_ptr,
+            shadow_sp_ptr,
+        )
+    };
+    jit_fault_exit();
+    unsafe { idt_asm::fast_sti_restore(flags) };
+    ret
+}
+
 fn call_jit_user(
     jit_entry: JitExecInfo,
     _stack_ptr: *mut i32,
@@ -3160,25 +3358,6 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         }
     }
 
-    fn run_instance(
-        instance_id: usize,
-        enable_jit: bool,
-    ) -> Result<(Result<i32, WasmError>, u64), WasmError> {
-        wasm_runtime().get_instance_mut(instance_id, |instance| {
-            instance.stack.clear();
-            instance.enable_jit(enable_jit);
-            let res = instance.call(0);
-            let value = instance
-                .stack
-                .peek()
-                .ok()
-                .and_then(|v| v.as_i32().ok())
-                .unwrap_or(0);
-            let mem_hash = hash_memory_fuzz(instance.memory.active_slice());
-            (res.map(|_| value), mem_hash)
-        })
-    }
-
     let _guard = {
         let mut cfg = jit_config().lock();
         let guard = JitConfigGuard {
@@ -3188,7 +3367,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         };
         cfg.enabled = true;
         cfg.hot_threshold = 0;
-        cfg.user_mode = true;
+        cfg.user_mode = false;
         guard
     };
     let _rate_guard = {
@@ -3206,6 +3385,37 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         RateLimitGuard { enabled: prev }
     };
 
+    let mut code: Vec<u8> = Vec::with_capacity(MAX_FUZZ_CODE_SIZE);
+    let mut compiler = crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE)
+        .map_err(|_| "Fuzz compiler init failed")?;
+
+    let mut base_module = WasmModule::new();
+    base_module.reserve_bytecode(MAX_FUZZ_CODE_SIZE);
+    base_module.load(&[Opcode::End as u8]).map_err(|_| "Module load failed")?;
+    base_module
+        .add_function(Function {
+            code_offset: 0,
+            code_len: 1,
+            param_count: 0,
+            result_count: 1,
+            local_count: 0,
+        })
+        .map_err(|_| "Function add failed")?;
+
+    let interp_id = wasm_runtime()
+        .instantiate_module(base_module.clone(), ProcessId(1))
+        .map_err(|_| "Instance create failed")?;
+    let jit_id = wasm_runtime()
+        .instantiate_module(base_module, ProcessId(1))
+        .map_err(|_| "Instance create failed")?;
+
+    let _ = wasm_runtime().get_instance_mut(interp_id, |instance| {
+        instance.prepare_fuzz();
+    });
+    let _ = wasm_runtime().get_instance_mut(jit_id, |instance| {
+        instance.prepare_fuzz();
+    });
+
     let mut rng = FuzzRng::new(seed);
     let mut stats = JitFuzzStats {
         iterations,
@@ -3218,11 +3428,14 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
 
     for iter in 0..iterations {
         let locals_total = (rng.next_u32() % 4) as usize;
-        let mut code: Vec<u8> = Vec::new();
+        code.clear();
         let mut stack_depth: i32 = 0;
         let ops = 8 + (rng.next_u32() % 32) as usize;
 
         for _ in 0..ops {
+            if code.len() + 8 >= MAX_FUZZ_CODE_SIZE {
+                break;
+            }
             let choice = rng.next_u32() % 14;
             match choice {
                 0 => code.push(Opcode::Nop as u8),
@@ -3318,50 +3531,63 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
 
         code.push(Opcode::End as u8);
 
-        let mut module = WasmModule::new();
-        if module.load(&code).is_err() {
-            stats.compile_errors += 1;
-            continue;
-        }
-        if module
-            .add_function(Function {
-                code_offset: 0,
-                code_len: code.len(),
-                param_count: 0,
-                result_count: 1,
-                local_count: locals_total,
-            })
-            .is_err()
-        {
-            stats.compile_errors += 1;
-            continue;
-        }
+        let interp = match wasm_runtime().get_instance_mut(interp_id, |instance| {
+            instance.load_fuzz_program(&code, locals_total)?;
+            instance.enable_jit(false);
+            let res = instance.call(0);
+            let value = instance
+                .stack
+                .peek()
+                .ok()
+                .and_then(|v| v.as_i32().ok())
+                .unwrap_or(0);
+            let mem_hash = hash_memory_fuzz(instance.memory.active_slice());
+            Ok::<(Result<i32, WasmError>, u64), WasmError>((res.map(|_| value), mem_hash))
+        }) {
+            Ok(result) => match result {
+                Ok(val) => val,
+                Err(_) => {
+                    stats.compile_errors += 1;
+                    continue;
+                }
+            },
+            Err(_) => return Err("Instance missing"),
+        };
 
-        let interp_id = wasm_runtime()
-            .instantiate_module(module.clone(), ProcessId(1))
-            .map_err(|_| "Instance create failed")?;
-        let interp = match run_instance(interp_id, false) {
-            Ok(result) => result,
+        let entry = match compiler.compile(&code, locals_total) {
+            Ok(entry) => entry,
             Err(_) => {
                 stats.compile_errors += 1;
-                let _ = wasm_runtime().destroy(interp_id);
                 continue;
             }
         };
-        let _ = wasm_runtime().destroy(interp_id);
-
-        let jit_id = wasm_runtime()
-            .instantiate_module(module, ProcessId(1))
-            .map_err(|_| "Instance create failed")?;
-        let jit = match run_instance(jit_id, true) {
-            Ok(result) => result,
-            Err(_) => {
-                stats.compile_errors += 1;
-                let _ = wasm_runtime().destroy(jit_id);
-                continue;
-            }
+        let jit_entry = JitExecInfo {
+            entry,
+            exec_ptr: compiler.exec_ptr(),
+            exec_len: compiler.exec_len(),
         };
-        let _ = wasm_runtime().destroy(jit_id);
+
+        let jit = match wasm_runtime().get_instance_mut(jit_id, |instance| {
+            instance.load_fuzz_program(&code, locals_total)?;
+            let res = instance.run_jit_entry(0, jit_entry);
+            let value = instance
+                .stack
+                .peek()
+                .ok()
+                .and_then(|v| v.as_i32().ok())
+                .unwrap_or(0);
+            let mem_hash = hash_memory_fuzz(instance.memory.active_slice());
+            Ok::<(Result<i32, WasmError>, u64), WasmError>((res.map(|_| value), mem_hash))
+        }) {
+            Ok(result) => match result {
+                Ok(val) => val,
+                Err(_) => {
+                    stats.compile_errors += 1;
+                    continue;
+                }
+            },
+            Err(_) => return Err("Instance missing"),
+        };
 
         let interp_res = interp.0;
         let jit_res = jit.0;
@@ -3404,6 +3630,9 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             });
         }
     }
+
+    let _ = wasm_runtime().destroy(interp_id);
+    let _ = wasm_runtime().destroy(jit_id);
 
     Ok(stats)
 }

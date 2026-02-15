@@ -12,3 +12,10 @@ This license is designed to:
 - Keep the code available for inspection, modification, and improvement.
 
 If you are unsure which use class applies, start with the FAQ. If you need certainty for revenue attribution or enterprise planning, request a pre-approval from the Licensor.
+
+## Contact
+
+# Email 
+```bash
+reeveskeefe@gmail.com
+```

@@ -3172,7 +3172,7 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
     print_u32(iters);
     vga::print_str("\nSeed: ");
     print_u64(seed);
-    vga::print_str("\n\n");
+    vga::print_str("\nMode: kernel (user-mode disabled)\n\n");
 
     match crate::wasm::jit_fuzz(iters, seed) {
         Ok(stats) => {
