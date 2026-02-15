@@ -5725,6 +5725,12 @@ fn cmd_cpu_info() {
     print_usize(enc.open_sessions);
     vga::print_str("\n  Active enclave session: ");
     print_u32(enc.active_session);
+    vga::print_str("\n  Enclave created/failed: ");
+    print_u32(enc.created_total);
+    vga::print_str(" / ");
+    print_u32(enc.failed_total);
+    vga::print_str("\n  Enclave backend ops: ");
+    print_u32(enc.backend_ops_total);
     vga::print_str("\n");
     
     // Other Features
