@@ -16,6 +16,8 @@ From `kernel/`:
 
 ```bash
 ./fuzz/run_wasm_jit_corpus.expect 1000
+./fuzz/run_wasm_jit_corpus.expect 1000 3
+./fuzz/ci_regression_check.sh 1000 2
 ```
 
 Inside the Oreulia shell, you can also run:

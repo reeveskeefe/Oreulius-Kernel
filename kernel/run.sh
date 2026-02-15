@@ -24,7 +24,15 @@ echo "Starting Oreulia OS in QEMU..."
 echo "Press Ctrl+C to exit"
 echo ""
 
-# Run QEMU with the ISO
-qemu-system-i386 \
-    -cdrom "$ISO_PATH" \
-    -serial stdio
+QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:-}"
+if [ -n "$QEMU_EXTRA_ARGS" ]; then
+    # shellcheck disable=SC2086
+    qemu-system-i386 \
+        -cdrom "$ISO_PATH" \
+        -serial stdio \
+        $QEMU_EXTRA_ARGS
+else
+    qemu-system-i386 \
+        -cdrom "$ISO_PATH" \
+        -serial stdio
+fi

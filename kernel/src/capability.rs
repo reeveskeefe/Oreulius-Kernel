@@ -207,6 +207,33 @@ impl OreuliaCapability {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CapabilityAccessRequest {
+    object_id: u64,
+    required_type: CapabilityType,
+    required_right: u32,
+}
+
+fn verify_capability_access(
+    owner: ProcessId,
+    cap: &OreuliaCapability,
+    req: CapabilityAccessRequest,
+) -> Result<(), CapabilityError> {
+    if !cap.verify_token(owner) {
+        return Err(CapabilityError::InvalidCapability);
+    }
+    if cap.cap_type != req.required_type {
+        return Err(CapabilityError::TypeMismatch);
+    }
+    if req.object_id != 0 && cap.object_id != 0 && cap.object_id != req.object_id {
+        return Err(CapabilityError::InvalidCapability);
+    }
+    if !cap.has_right(req.required_right) {
+        return Err(CapabilityError::InsufficientRights);
+    }
+    Ok(())
+}
+
 fn write_u32(buf: &mut [u8], offset: &mut usize, value: u32) {
     let bytes = value.to_le_bytes();
     buf[*offset..*offset + 4].copy_from_slice(&bytes);
@@ -454,7 +481,15 @@ impl CapabilityManager {
         
         if let Some(table) = tables[pid.0 as usize].as_ref() {
             let cap = table.lookup(cap_id)?;
-            cap.verify(required_type, required_right)?;
+            verify_capability_access(
+                table.owner,
+                cap,
+                CapabilityAccessRequest {
+                    object_id: 0,
+                    required_type,
+                    required_right,
+                },
+            )?;
             
             // Audit capability use
             security::security().log_event(
@@ -577,30 +612,16 @@ pub fn check_capability(
         // Iterate through all capabilities to find matching one
         for entry in &table.entries {
             if let Some(cap) = entry {
-                // Check capability type matches
-                if cap.cap_type != cap_type {
-                    continue;
-                }
-
-                if !cap.verify_token(table.owner) {
-                    security::security().log_event(
-                        AuditEntry::new(SecurityEvent::InvalidCapability, pid, cap.cap_id)
-                            .with_context(cap.object_id)
-                    );
-                    continue;
-                }
-                
-                // Check object_id matches (or is wildcard 0 for non-object-specific capabilities)
-                if object_id != 0 && cap.object_id != 0 && cap.object_id != object_id {
-                    continue;
-                }
-                
-                // Check if capability has required rights
-                if !cap.rights.is_subset_of(&Rights::new(cap.rights.bits | required_rights.bits)) {
-                    continue;
-                }
-                
-                if cap.has_right(required_rights.bits) {
+                let access = verify_capability_access(
+                    table.owner,
+                    cap,
+                    CapabilityAccessRequest {
+                        object_id,
+                        required_type: cap_type,
+                        required_right: required_rights.bits,
+                    },
+                );
+                if access.is_ok() {
                     // Audit successful capability use
                     security::security().log_event(
                         AuditEntry::new(SecurityEvent::CapabilityUsed, pid, cap.cap_id)
@@ -608,12 +629,106 @@ pub fn check_capability(
                     );
                     return true;
                 }
+                if matches!(access, Err(CapabilityError::InvalidCapability)) {
+                    security::security().log_event(
+                        AuditEntry::new(SecurityEvent::InvalidCapability, pid, cap.cap_id)
+                            .with_context(cap.object_id),
+                    );
+                }
             }
         }
     }
     
     // No matching capability found
     false
+}
+
+pub fn formal_capability_self_check() -> Result<(), &'static str> {
+    let owner = ProcessId::new(42);
+    let mut cap = OreuliaCapability::new(
+        7,
+        0xABCD,
+        CapabilityType::Channel,
+        Rights::new(Rights::CHANNEL_SEND | Rights::CHANNEL_RECEIVE),
+        owner,
+    );
+    cap.sign(owner);
+
+    // Proof obligation 1: Valid token + required rights/type/object must pass.
+    verify_capability_access(
+        owner,
+        &cap,
+        CapabilityAccessRequest {
+            object_id: 0xABCD,
+            required_type: CapabilityType::Channel,
+            required_right: Rights::CHANNEL_SEND,
+        },
+    )
+    .map_err(|_| "Formal capability self-check denied valid capability")?;
+
+    // Proof obligation 2: Wrong right must fail.
+    if verify_capability_access(
+        owner,
+        &cap,
+        CapabilityAccessRequest {
+            object_id: 0xABCD,
+            required_type: CapabilityType::Channel,
+            required_right: Rights::CHANNEL_CREATE,
+        },
+    )
+    .is_ok()
+    {
+        return Err("Formal capability self-check accepted insufficient rights");
+    }
+
+    // Proof obligation 3: Wrong type must fail.
+    if verify_capability_access(
+        owner,
+        &cap,
+        CapabilityAccessRequest {
+            object_id: 0xABCD,
+            required_type: CapabilityType::Filesystem,
+            required_right: Rights::CHANNEL_SEND,
+        },
+    )
+    .is_ok()
+    {
+        return Err("Formal capability self-check accepted wrong type");
+    }
+
+    // Proof obligation 4: Token tampering must be detected.
+    let mut forged = cap;
+    forged.token ^= 0x1;
+    if verify_capability_access(
+        owner,
+        &forged,
+        CapabilityAccessRequest {
+            object_id: 0xABCD,
+            required_type: CapabilityType::Channel,
+            required_right: Rights::CHANNEL_SEND,
+        },
+    )
+    .is_ok()
+    {
+        return Err("Formal capability self-check failed token tamper detection");
+    }
+
+    // Proof obligation 5: Attenuation subset law holds.
+    let attenuated = cap
+        .attenuate(Rights::new(Rights::CHANNEL_SEND))
+        .map_err(|_| "Formal capability self-check attenuation rejected valid subset")?;
+    if !attenuated.has_right(Rights::CHANNEL_SEND) || attenuated.has_right(Rights::CHANNEL_RECEIVE)
+    {
+        return Err("Formal capability self-check attenuation produced invalid rights set");
+    }
+    if cap
+        .attenuate(Rights::new(Rights::CHANNEL_SEND | Rights::CHANNEL_CREATE))
+        .is_ok()
+    {
+        return Err("Formal capability self-check accepted non-subset attenuation");
+    }
+
+    Ok(())
 }
 
 // ============================================================================

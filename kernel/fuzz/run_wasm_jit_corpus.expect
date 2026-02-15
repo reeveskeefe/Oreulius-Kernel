@@ -6,8 +6,12 @@
 
 set timeout 0
 set iters 1000
+set soak_rounds 0
 if {[llength $argv] >= 1} {
     set iters [lindex $argv 0]
+}
+if {[llength $argv] >= 2} {
+    set soak_rounds [lindex $argv 1]
 }
 
 set corpus_path "fuzz/wasm_jit_seed_corpus.txt"
@@ -16,7 +20,16 @@ if {![file exists $corpus_path]} {
     exit 1
 }
 
-spawn ./run.sh
+set qemu_extra ""
+if {[info exists env(QEMU_EXTRA_ARGS)]} {
+    set qemu_extra $env(QEMU_EXTRA_ARGS)
+}
+
+if {$qemu_extra eq ""} {
+    spawn ./run.sh
+} else {
+    spawn env QEMU_EXTRA_ARGS=$qemu_extra ./run.sh
+}
 expect "> "
 
 set fp [open $corpus_path r]
@@ -36,6 +49,11 @@ close $fp
 # Also run in-kernel corpus aggregate command for a summary.
 send "wasm-jit-fuzz-corpus $iters\r"
 expect "> "
+
+if {$soak_rounds > 0} {
+    send "wasm-jit-fuzz-soak $iters $soak_rounds\r"
+    expect "> "
+}
 
 sleep 1
 send "\003"

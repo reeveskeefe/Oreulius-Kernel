@@ -7,6 +7,10 @@ autobins = false
 [lib]
 crate-type = ["staticlib"]
 
+[features]
+default = []
+formal-verify = []
+
 [dependencies]
 spin = "0.9"
 bitflags = "2.5"

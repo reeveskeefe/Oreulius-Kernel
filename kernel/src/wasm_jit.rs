@@ -94,6 +94,14 @@ struct TranslationRecord {
 struct TranslationValidation {
     records: Vec<TranslationRecord>,
     block_hashes: Vec<u64>,
+    proof: TranslationProof,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TranslationProof {
+    trace_count: u32,
+    mem_trace_count: u32,
+    hash: u64,
 }
 
 pub struct JitExecBuffer {
@@ -427,6 +435,12 @@ fn hash_translation_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
     hash
 }
 
+fn hash_translation_u64(mut hash: u64, value: u64) -> u64 {
+    hash ^= value;
+    hash = hash.wrapping_mul(FNV1A64_PRIME);
+    hash
+}
+
 fn has_prefix_at(code: &[u8], at: usize, prefix: &[u8]) -> bool {
     at.checked_add(prefix.len())
         .and_then(|end| code.get(at..end))
@@ -600,11 +614,86 @@ fn validate_translation_per_block(
     Ok(block_hashes)
 }
 
+fn build_translation_proof(
+    wasm_code: &[u8],
+    traces: &[TranslationRecord],
+    native_code: &[u8],
+) -> Result<TranslationProof, &'static str> {
+    if wasm_code.is_empty() {
+        if !traces.is_empty() {
+            return Err("Non-empty translation for empty WASM");
+        }
+        return Ok(TranslationProof {
+            trace_count: 0,
+            mem_trace_count: 0,
+            hash: FNV1A64_OFFSET,
+        });
+    }
+    if traces.is_empty() {
+        return Err("Missing translation traces");
+    }
+
+    let mut hash = FNV1A64_OFFSET;
+    let mut mem_trace_count = 0u32;
+    let mut expected_wasm = traces[0].wasm_start;
+    let mut expected_x86 = traces[0].x86_start;
+
+    for trace in traces {
+        if trace.wasm_start != expected_wasm {
+            return Err("Trace proof wasm continuity failure");
+        }
+        if trace.x86_start != expected_x86 {
+            return Err("Trace proof native continuity failure");
+        }
+        if trace.wasm_end <= trace.wasm_start || trace.wasm_end > wasm_code.len() {
+            return Err("Trace proof invalid WASM span");
+        }
+        if trace.x86_end <= trace.x86_start || trace.x86_end > native_code.len() {
+            return Err("Trace proof invalid native span");
+        }
+
+        let decoded = Opcode::from_byte(wasm_code[trace.wasm_start])
+            .ok_or("Trace proof undecodable opcode")?;
+        if decoded != trace.opcode {
+            return Err("Trace proof opcode mismatch");
+        }
+
+        if matches!(trace.opcode, Opcode::I32Load | Opcode::I32Store) {
+            mem_trace_count = mem_trace_count.saturating_add(1);
+        }
+
+        hash = hash_translation_u64(hash, trace.opcode as u8 as u64);
+        hash = hash_translation_u64(hash, trace.wasm_start as u64);
+        hash = hash_translation_u64(hash, trace.wasm_end as u64);
+        hash = hash_translation_u64(hash, trace.x86_start as u64);
+        hash = hash_translation_u64(hash, trace.x86_end as u64);
+        hash = hash_translation_bytes(hash, &wasm_code[trace.wasm_start..trace.wasm_end]);
+        hash = hash_translation_bytes(hash, &native_code[trace.x86_start..trace.x86_end]);
+
+        expected_wasm = trace.wasm_end;
+        expected_x86 = trace.x86_end;
+    }
+
+    if expected_wasm < wasm_code.len() {
+        let tail_opcode = traces[traces.len() - 1].opcode;
+        if !matches!(tail_opcode, Opcode::Return | Opcode::End) {
+            return Err("Trace proof left reachable WASM tail uncovered");
+        }
+    }
+
+    Ok(TranslationProof {
+        trace_count: traces.len() as u32,
+        mem_trace_count,
+        hash,
+    })
+}
+
 pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static str> {
     let blocks = analyze_basic_blocks(code);
     let mut emitter = Emitter::new();
     let traces = emit_code(code, locals_total, &mut emitter)?;
     let block_hashes = validate_translation_per_block(code, &blocks, &traces, &emitter.code)?;
+    let proof = build_translation_proof(code, &traces, &emitter.code)?;
 
     let mut exec = JitExecBuffer::new(emitter.code.len())?;
     exec.write_and_seal(&emitter.code)?;
@@ -623,6 +712,7 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
         translation: TranslationValidation {
             records: traces,
             block_hashes,
+            proof,
         },
     })
 }
@@ -645,6 +735,7 @@ impl FuzzCompiler {
         let traces = emit_code(code, locals_total, &mut self.emitter)?;
         let blocks = analyze_basic_blocks(code);
         let _ = validate_translation_per_block(code, &blocks, &traces, &self.emitter.code)?;
+        let _ = build_translation_proof(code, &traces, &self.emitter.code)?;
         if self.emitter.code.len() > self.exec.len {
             return Err("JIT code too large for fuzz buffer");
         }
@@ -2048,9 +2139,46 @@ impl JitFunction {
         if recomputed_hashes != self.translation.block_hashes {
             return false;
         }
+        let recomputed_proof = match build_translation_proof(
+            &self.wasm_code,
+            &self.translation.records,
+            &self.code,
+        ) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        if recomputed_proof != self.translation.proof {
+            return false;
+        }
         let exec_hash = hash_exec_code(self.exec.as_ptr(), self.exec.len);
         self.exec_hash == exec_hash && self.code_hash == hash_jit_code(&self.code)
     }
+}
+
+pub fn formal_translation_self_check() -> Result<(), &'static str> {
+    let samples: [(&[u8], usize); 5] = [
+        (&[0x41, 0x00, 0x0B], 0), // const 0; end
+        (&[0x41, 0x01, 0x41, 0x02, 0x6A, 0x0B], 0), // add
+        (&[0x20, 0x00, 0x21, 0x01, 0x20, 0x01, 0x0B], 2), // local get/set/get
+        (&[0x41, 0x00, 0x28, 0x00, 0x00, 0x0B], 0), // load
+        (&[0x41, 0x00, 0x41, 0x2A, 0x36, 0x00, 0x00, 0x0B], 0), // store
+    ];
+
+    for (code, locals) in samples {
+        let mut jit = compile(code, locals)?;
+        if !jit.verify_integrity() {
+            return Err("Formal translation self-check failed integrity");
+        }
+        if jit.code.is_empty() {
+            return Err("Formal translation self-check produced empty x86");
+        }
+        // Ensure integrity check detects post-compile tampering.
+        jit.code[0] ^= 0x01;
+        if jit.verify_integrity() {
+            return Err("Formal translation tamper detection failed");
+        }
+    }
+    Ok(())
 }
 
 fn hash_exec_code(ptr: *const u8, len: usize) -> u64 {

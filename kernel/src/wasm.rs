@@ -173,6 +173,28 @@ pub struct JitFuzzRegressionStats {
     pub first_failed_compile_error: Option<JitFuzzCompileError>,
 }
 
+pub struct JitFuzzSoakStats {
+    pub rounds: u32,
+    pub rounds_passed: u32,
+    pub rounds_failed: u32,
+    pub seeds_per_round: u32,
+    pub total_seed_passes: u32,
+    pub total_seed_failures: u32,
+    pub total_ok: u32,
+    pub total_traps: u32,
+    pub total_mismatches: u32,
+    pub total_compile_errors: u32,
+    pub max_opcode_bins_hit: u32,
+    pub max_opcode_edges_hit: u32,
+    pub total_novel_programs: u32,
+    pub first_failed_round: Option<u32>,
+    pub first_failed_seed: Option<u64>,
+    pub first_failed_mismatches: u32,
+    pub first_failed_compile_errors: u32,
+    pub first_failed_mismatch: Option<JitFuzzMismatch>,
+    pub first_failed_compile_error: Option<JitFuzzCompileError>,
+}
+
 struct JitFuzzScratch {
     code: Vec<u8>,
     interp_mem_snapshot: Vec<u8>,
@@ -4204,6 +4226,74 @@ pub fn jit_fuzz_regression_default(
             }
         }
         i += 1;
+    }
+
+    Ok(out)
+}
+
+pub fn jit_fuzz_regression_soak_default(
+    iterations_per_seed: u32,
+    rounds: u32,
+) -> Result<JitFuzzSoakStats, &'static str> {
+    if rounds == 0 {
+        return Err("Rounds must be > 0");
+    }
+
+    let mut out = JitFuzzSoakStats {
+        rounds,
+        rounds_passed: 0,
+        rounds_failed: 0,
+        seeds_per_round: JIT_FUZZ_REGRESSION_SEEDS.len() as u32,
+        total_seed_passes: 0,
+        total_seed_failures: 0,
+        total_ok: 0,
+        total_traps: 0,
+        total_mismatches: 0,
+        total_compile_errors: 0,
+        max_opcode_bins_hit: 0,
+        max_opcode_edges_hit: 0,
+        total_novel_programs: 0,
+        first_failed_round: None,
+        first_failed_seed: None,
+        first_failed_mismatches: 0,
+        first_failed_compile_errors: 0,
+        first_failed_mismatch: None,
+        first_failed_compile_error: None,
+    };
+
+    let mut round = 0u32;
+    while round < rounds {
+        let stats = jit_fuzz_regression_default(iterations_per_seed)?;
+
+        out.total_seed_passes = out.total_seed_passes.saturating_add(stats.seeds_passed);
+        out.total_seed_failures = out.total_seed_failures.saturating_add(stats.seeds_failed);
+        out.total_ok = out.total_ok.saturating_add(stats.total_ok);
+        out.total_traps = out.total_traps.saturating_add(stats.total_traps);
+        out.total_mismatches = out.total_mismatches.saturating_add(stats.total_mismatches);
+        out.total_compile_errors = out.total_compile_errors.saturating_add(stats.total_compile_errors);
+        out.total_novel_programs = out.total_novel_programs.saturating_add(stats.total_novel_programs);
+        if stats.max_opcode_bins_hit > out.max_opcode_bins_hit {
+            out.max_opcode_bins_hit = stats.max_opcode_bins_hit;
+        }
+        if stats.max_opcode_edges_hit > out.max_opcode_edges_hit {
+            out.max_opcode_edges_hit = stats.max_opcode_edges_hit;
+        }
+
+        if stats.seeds_failed == 0 {
+            out.rounds_passed = out.rounds_passed.saturating_add(1);
+        } else {
+            out.rounds_failed = out.rounds_failed.saturating_add(1);
+            if out.first_failed_round.is_none() {
+                out.first_failed_round = Some(round.saturating_add(1));
+                out.first_failed_seed = stats.first_failed_seed;
+                out.first_failed_mismatches = stats.first_failed_mismatches;
+                out.first_failed_compile_errors = stats.first_failed_compile_errors;
+                out.first_failed_mismatch = stats.first_failed_mismatch;
+                out.first_failed_compile_error = stats.first_failed_compile_error;
+            }
+        }
+
+        round = round.saturating_add(1);
     }
 
     Ok(out)

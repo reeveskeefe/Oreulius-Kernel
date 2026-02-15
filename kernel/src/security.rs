@@ -32,6 +32,15 @@ pub const RATE_LIMIT_OPS_PER_SEC: u32 = 1000;
 /// Maximum capability lifetime in milliseconds (0 = unlimited)
 pub const MAX_CAPABILITY_LIFETIME_MS: u64 = 0;
 
+/// Sliding anomaly window width (seconds).
+pub const ANOMALY_WINDOW_SECONDS: u64 = 10;
+/// Alert threshold for anomaly score.
+pub const ANOMALY_ALERT_SCORE: u32 = 64;
+/// Critical threshold for anomaly score.
+pub const ANOMALY_CRITICAL_SCORE: u32 = 160;
+/// Number of per-second buckets used for anomaly accounting.
+const ANOMALY_BUCKETS: usize = 32;
+
 // ============================================================================
 // Audit Log
 // ============================================================================
@@ -57,6 +66,8 @@ pub enum SecurityEvent {
     InvalidCapability,
     /// Integrity check failed
     IntegrityCheckFailed,
+    /// Runtime anomaly score crossed threshold
+    AnomalyDetected,
     /// Process spawned
     ProcessSpawned,
     /// Process terminated
@@ -75,6 +86,7 @@ impl SecurityEvent {
             SecurityEvent::RateLimitExceeded => "RateLimitExceeded",
             SecurityEvent::InvalidCapability => "InvalidCap",
             SecurityEvent::IntegrityCheckFailed => "IntegrityFailed",
+            SecurityEvent::AnomalyDetected => "Anomaly",
             SecurityEvent::ProcessSpawned => "ProcSpawned",
             SecurityEvent::ProcessTerminated => "ProcTerminated",
         }
@@ -165,6 +177,182 @@ impl AuditLog {
     /// Get total event count
     pub fn total_count(&self) -> usize {
         self.count
+    }
+}
+
+// ============================================================================
+// Runtime Anomaly Detection
+// ============================================================================
+
+#[derive(Clone, Copy)]
+struct AnomalyBucket {
+    epoch_sec: u64,
+    denied: u16,
+    quota: u16,
+    rate: u16,
+    invalid: u16,
+    integrity: u16,
+}
+
+impl AnomalyBucket {
+    const fn empty() -> Self {
+        Self {
+            epoch_sec: 0,
+            denied: 0,
+            quota: 0,
+            rate: 0,
+            invalid: 0,
+            integrity: 0,
+        }
+    }
+
+    fn reset(&mut self, epoch_sec: u64) {
+        self.epoch_sec = epoch_sec;
+        self.denied = 0;
+        self.quota = 0;
+        self.rate = 0;
+        self.invalid = 0;
+        self.integrity = 0;
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct AnomalyStats {
+    pub alerts_total: u32,
+    pub critical_total: u32,
+    pub last_score: u32,
+    pub max_score: u32,
+    pub recent_denied: u32,
+    pub recent_quota: u32,
+    pub recent_rate: u32,
+    pub recent_invalid: u32,
+    pub recent_integrity: u32,
+}
+
+pub struct AnomalyDetector {
+    buckets: [AnomalyBucket; ANOMALY_BUCKETS],
+    alerts_total: u32,
+    critical_total: u32,
+    last_alert_tick: u64,
+    last_score: u32,
+    max_score: u32,
+}
+
+impl AnomalyDetector {
+    pub const fn new() -> Self {
+        Self {
+            buckets: [AnomalyBucket::empty(); ANOMALY_BUCKETS],
+            alerts_total: 0,
+            critical_total: 0,
+            last_alert_tick: 0,
+            last_score: 0,
+            max_score: 0,
+        }
+    }
+
+    fn epoch_sec(now_ticks: u64) -> u64 {
+        let hz = crate::pit::get_frequency() as u64;
+        if hz == 0 {
+            now_ticks
+        } else {
+            now_ticks / hz
+        }
+    }
+
+    fn bucket_mut(&mut self, epoch_sec: u64) -> &mut AnomalyBucket {
+        let idx = (epoch_sec as usize) % ANOMALY_BUCKETS;
+        if self.buckets[idx].epoch_sec != epoch_sec {
+            self.buckets[idx].reset(epoch_sec);
+        }
+        &mut self.buckets[idx]
+    }
+
+    fn score_window(&self, epoch_sec: u64) -> (u32, u32, u32, u32, u32, u32) {
+        let window_start = epoch_sec.saturating_sub(ANOMALY_WINDOW_SECONDS.saturating_sub(1));
+        let mut denied = 0u32;
+        let mut quota = 0u32;
+        let mut rate = 0u32;
+        let mut invalid = 0u32;
+        let mut integrity = 0u32;
+        let mut i = 0usize;
+        while i < self.buckets.len() {
+            let b = self.buckets[i];
+            if b.epoch_sec >= window_start && b.epoch_sec <= epoch_sec {
+                denied = denied.saturating_add(b.denied as u32);
+                quota = quota.saturating_add(b.quota as u32);
+                rate = rate.saturating_add(b.rate as u32);
+                invalid = invalid.saturating_add(b.invalid as u32);
+                integrity = integrity.saturating_add(b.integrity as u32);
+            }
+            i += 1;
+        }
+        // Weighted score tuned for noisy-but-benign operation under fuzzing.
+        let score = denied
+            .saturating_mul(2)
+            .saturating_add(quota.saturating_mul(2))
+            .saturating_add(rate)
+            .saturating_add(invalid.saturating_mul(4))
+            .saturating_add(integrity.saturating_mul(16));
+        (score, denied, quota, rate, invalid, integrity)
+    }
+
+    pub fn record(&mut self, event: SecurityEvent, now_ticks: u64) -> Option<u32> {
+        let epoch = Self::epoch_sec(now_ticks);
+        let bucket = self.bucket_mut(epoch);
+        match event {
+            SecurityEvent::PermissionDenied => {
+                bucket.denied = bucket.denied.saturating_add(1);
+            }
+            SecurityEvent::QuotaExceeded => {
+                bucket.quota = bucket.quota.saturating_add(1);
+            }
+            SecurityEvent::RateLimitExceeded => {
+                bucket.rate = bucket.rate.saturating_add(1);
+            }
+            SecurityEvent::InvalidCapability => {
+                bucket.invalid = bucket.invalid.saturating_add(1);
+            }
+            SecurityEvent::IntegrityCheckFailed => {
+                bucket.integrity = bucket.integrity.saturating_add(1);
+            }
+            _ => {}
+        }
+
+        let (score, ..) = self.score_window(epoch);
+        self.last_score = score;
+        if score > self.max_score {
+            self.max_score = score;
+        }
+
+        if score < ANOMALY_ALERT_SCORE {
+            return None;
+        }
+        let min_gap = (crate::pit::get_frequency() as u64).max(1);
+        if self.last_alert_tick != 0 && now_ticks.saturating_sub(self.last_alert_tick) < min_gap {
+            return None;
+        }
+        self.last_alert_tick = now_ticks;
+        self.alerts_total = self.alerts_total.saturating_add(1);
+        if score >= ANOMALY_CRITICAL_SCORE {
+            self.critical_total = self.critical_total.saturating_add(1);
+        }
+        Some(score)
+    }
+
+    pub fn snapshot(&self, now_ticks: u64) -> AnomalyStats {
+        let epoch = Self::epoch_sec(now_ticks);
+        let (_, denied, quota, rate, invalid, integrity) = self.score_window(epoch);
+        AnomalyStats {
+            alerts_total: self.alerts_total,
+            critical_total: self.critical_total,
+            last_score: self.last_score,
+            max_score: self.max_score,
+            recent_denied: denied,
+            recent_quota: quota,
+            recent_rate: rate,
+            recent_invalid: invalid,
+            recent_integrity: integrity,
+        }
     }
 }
 
@@ -477,6 +665,7 @@ pub fn verify_integrity(data: &[u8], expected_hash: u64) -> bool {
 #[repr(align(64))]
 pub struct SecurityManager {
     audit_log: Mutex<AuditLog>,
+    anomaly_detector: Mutex<AnomalyDetector>,
     validator: Mutex<CapabilityValidator>,
     rate_limiter: Mutex<RateLimiter>,
     rate_limit_enabled: AtomicBool,
@@ -489,6 +678,7 @@ impl SecurityManager {
     pub const fn new() -> Self {
         SecurityManager {
             audit_log: Mutex::new(AuditLog::new()),
+            anomaly_detector: Mutex::new(AnomalyDetector::new()),
             validator: Mutex::new(CapabilityValidator::new()),
             rate_limiter: Mutex::new(RateLimiter::new()),
             rate_limit_enabled: AtomicBool::new(true),
@@ -509,8 +699,22 @@ impl SecurityManager {
 
     /// Log security event
     pub fn log_event(&self, entry: AuditEntry) {
+        let now = crate::pit::get_ticks();
+        let anomaly_score = self.anomaly_detector.lock().record(entry.event, now);
         if let Some(mut log) = self.audit_log.try_lock() {
-            log.log(entry);
+            let mut stamped = entry;
+            stamped.timestamp = now;
+            log.log(stamped);
+            if let Some(score) = anomaly_score {
+                let mut anomaly = AuditEntry::new(
+                    SecurityEvent::AnomalyDetected,
+                    entry.process_id,
+                    entry.cap_id,
+                )
+                .with_context(score as u64);
+                anomaly.timestamp = now;
+                log.log(anomaly);
+            }
         }
     }
 
@@ -609,6 +813,10 @@ impl SecurityManager {
         }
         
         result
+    }
+
+    pub fn get_anomaly_stats(&self) -> AnomalyStats {
+        self.anomaly_detector.lock().snapshot(crate::pit::get_ticks())
     }
 
     /// Check if process should be terminated

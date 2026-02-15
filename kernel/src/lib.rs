@@ -20,6 +20,7 @@ pub mod elf;
 pub mod gdt;
 pub mod e1000;
 pub mod fs;
+pub mod formal;
 pub mod hardened_allocator;
 pub mod idt_asm;
 pub mod ipc;

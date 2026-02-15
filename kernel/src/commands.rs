@@ -103,6 +103,8 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-jit-selftest - Run WASM JIT bounds self-test\n");
             vga::print_str("  wasm-jit-fuzz  - Coverage-guided JIT fuzz (wasm-jit-fuzz <iters> [seed])\n");
             vga::print_str("  wasm-jit-fuzz-corpus - Run external regression seed corpus (wasm-jit-fuzz-corpus <iters>)\n");
+            vga::print_str("  wasm-jit-fuzz-soak - Repeat corpus replay (wasm-jit-fuzz-soak <iters> <rounds>)\n");
+            vga::print_str("  formal-verify - Run formal verification checks (JIT translation + capability model)\n");
             vga::print_str("  wasm-jit-on  - Enable WASM JIT\n");
             vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
             vga::print_str("  wasm-jit-stats - Show WASM JIT stats\n");
@@ -135,6 +137,7 @@ pub fn execute(input: &str) {
             vga::print_str("  netstack-info - Show network stack status (real TCP/IP)\n");
             vga::print_str("  asm-test     - Test assembly performance functions\n");
             vga::print_str("  security-stats - Show security statistics\n");
+            vga::print_str("  security-anomaly - Show anomaly detector status\n");
             vga::print_str("  security-audit - Show recent security events (security-audit [count])\n");
             vga::print_str("  security-test  - Run security test suite\n");
             vga::print_str("  cap-list       - List capability table\n");
@@ -147,6 +150,7 @@ pub fn execute(input: &str) {
             vga::print_str("  spinlock-test  - Test spinlock implementation\n");
             vga::print_str("\nAdvanced System Commands:\n");
             vga::print_str("  quantum-stats  - Show quantum scheduler statistics\n");
+            vga::print_str("  sched-net-soak - Scheduler/network soak test (sched-net-soak <seconds> [probe_ms])\n");
             vga::print_str("  alloc-stats    - Show hardened allocator statistics\n");
             vga::print_str("  leak-check     - Check for memory leaks (debug only)\n");
             vga::print_str("  futex-test     - Test futex-like blocking primitives\n");
@@ -284,6 +288,12 @@ pub fn execute(input: &str) {
         "wasm-jit-fuzz-corpus" => {
             cmd_wasm_jit_fuzz_corpus(parts);
         }
+        "wasm-jit-fuzz-soak" => {
+            cmd_wasm_jit_fuzz_soak(parts);
+        }
+        "formal-verify" => {
+            cmd_formal_verify();
+        }
         "wasm-jit-on" => {
             cmd_wasm_jit_on();
         }
@@ -389,6 +399,9 @@ pub fn execute(input: &str) {
         "security-stats" => {
             cmd_security_stats();
         }
+        "security-anomaly" => {
+            cmd_security_anomaly();
+        }
         "security-audit" => {
             cmd_security_audit(parts);
         }
@@ -433,6 +446,9 @@ pub fn execute(input: &str) {
         }
         "quantum-stats" => {
             crate::advanced_commands::cmd_quantum_stats();
+        }
+        "sched-net-soak" => {
+            cmd_sched_net_soak(parts);
         }
         "alloc-stats" => {
             crate::advanced_commands::cmd_alloc_stats();
@@ -3151,6 +3167,50 @@ fn cmd_wasm_jit_selftest() {
     vga::print_str("\n");
 }
 
+fn cmd_formal_verify() {
+    vga::print_str("\n===== Formal Verification =====\n\n");
+    vga::print_str("[1/3] JIT translation proof obligations...\n");
+    match crate::wasm_jit::formal_translation_self_check() {
+        Ok(()) => vga::print_str("  ✓ JIT translation verification passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ JIT translation verification failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    vga::print_str("[2/3] Capability proof obligations...\n");
+    match crate::capability::formal_capability_self_check() {
+        Ok(()) => vga::print_str("  ✓ Capability verification passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ Capability verification failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    vga::print_str("[3/3] Mechanized backend model checks...\n");
+    match crate::formal::run_mechanized_backend_check() {
+        Ok(summary) => {
+            vga::print_str("  ✓ Mechanized checks passed (obligations=");
+            print_u32(summary.obligations);
+            vga::print_str(", states=");
+            print_u64(summary.checked_states);
+            vga::print_str(")\n");
+        }
+        Err(e) => {
+            vga::print_str("  ✗ Mechanized checks failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    vga::print_str("\nFormal verification checks: PASSED\n\n");
+}
+
 fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
     let iters = match parts.next().and_then(parse_number) {
         Some(v) => v as u32,
@@ -3461,6 +3521,94 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\n");
         }
     }
+    vga::print_str("\n");
+}
+
+fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
+    let iters = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: wasm-jit-fuzz-soak <iters> <rounds>\n");
+            return;
+        }
+    };
+    let rounds = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: wasm-jit-fuzz-soak <iters> <rounds>\n");
+            return;
+        }
+    };
+    const MAX_FUZZ_ITERS: u32 = 10_000;
+    const MAX_SOAK_ROUNDS: u32 = 100;
+    if iters == 0 || iters > MAX_FUZZ_ITERS {
+        vga::print_str("Iterations must be 1..=10000.\n");
+        return;
+    }
+    if rounds == 0 || rounds > MAX_SOAK_ROUNDS {
+        vga::print_str("Rounds must be 1..=100.\n");
+        return;
+    }
+
+    vga::print_str("\n===== WASM JIT Corpus Soak =====\n\n");
+    vga::print_str("Rounds: ");
+    print_u32(rounds);
+    vga::print_str("\nIterations per seed: ");
+    print_u32(iters);
+    vga::print_str("\nSeeds per round: ");
+    print_u32(crate::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
+    vga::print_str("\n\n");
+
+    match crate::wasm::jit_fuzz_regression_soak_default(iters, rounds) {
+        Ok(stats) => {
+            vga::print_str("Rounds passed: ");
+            print_u32(stats.rounds_passed);
+            vga::print_str(" / ");
+            print_u32(stats.rounds);
+            vga::print_str("\nRounds failed: ");
+            print_u32(stats.rounds_failed);
+            vga::print_str("\nSeed passes: ");
+            print_u32(stats.total_seed_passes);
+            vga::print_str("\nSeed failures: ");
+            print_u32(stats.total_seed_failures);
+            vga::print_str("\nTotal OK: ");
+            print_u32(stats.total_ok);
+            vga::print_str("\nTotal traps: ");
+            print_u32(stats.total_traps);
+            vga::print_str("\nTotal mismatches: ");
+            print_u32(stats.total_mismatches);
+            vga::print_str("\nTotal compile errors: ");
+            print_u32(stats.total_compile_errors);
+            vga::print_str("\nMax opcode bins hit: ");
+            print_u32(stats.max_opcode_bins_hit);
+            vga::print_str(" / 14");
+            vga::print_str("\nMax opcode edges hit: ");
+            print_u32(stats.max_opcode_edges_hit);
+            vga::print_str(" / 196");
+            vga::print_str("\nTotal novel programs: ");
+            print_u32(stats.total_novel_programs);
+
+            if let Some(round_idx) = stats.first_failed_round {
+                vga::print_str("\nFirst failing round: ");
+                print_u32(round_idx);
+                if let Some(seed) = stats.first_failed_seed {
+                    vga::print_str("\nFirst failing seed: ");
+                    print_u64(seed);
+                }
+                vga::print_str("\nMismatch/compile errors: ");
+                print_u32(stats.first_failed_mismatches);
+                vga::print_str(" / ");
+                print_u32(stats.first_failed_compile_errors);
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Corpus soak failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+
     vga::print_str("\n");
 }
 
@@ -5433,6 +5581,182 @@ fn cmd_security_stats() {
     vga::print_str("  Ops per second: ");
     print_usize(security::RATE_LIMIT_OPS_PER_SEC as usize);
     vga::print_str("\n\n");
+
+    let anomaly = security::security().get_anomaly_stats();
+    vga::print_str("Anomaly Detector:\n");
+    vga::print_str("  Alert score threshold: ");
+    print_u32(security::ANOMALY_ALERT_SCORE);
+    vga::print_str("\n");
+    vga::print_str("  Critical score threshold: ");
+    print_u32(security::ANOMALY_CRITICAL_SCORE);
+    vga::print_str("\n");
+    vga::print_str("  Alerts total: ");
+    print_u32(anomaly.alerts_total);
+    vga::print_str("\n");
+    vga::print_str("  Critical alerts: ");
+    print_u32(anomaly.critical_total);
+    vga::print_str("\n");
+    vga::print_str("  Last score: ");
+    print_u32(anomaly.last_score);
+    vga::print_str("\n");
+    vga::print_str("  Max score: ");
+    print_u32(anomaly.max_score);
+    vga::print_str("\n\n");
+}
+
+fn cmd_security_anomaly() {
+    use crate::security;
+    let anomaly = security::security().get_anomaly_stats();
+    vga::print_str("\n===== Security Anomaly Detector =====\n\n");
+    vga::print_str("Window: ");
+    print_u32(security::ANOMALY_WINDOW_SECONDS as u32);
+    vga::print_str("s");
+    vga::print_str("\nAlert threshold: ");
+    print_u32(security::ANOMALY_ALERT_SCORE);
+    vga::print_str("\nCritical threshold: ");
+    print_u32(security::ANOMALY_CRITICAL_SCORE);
+    vga::print_str("\n\nCounters (current window):\n");
+    vga::print_str("  Permission denied: ");
+    print_u32(anomaly.recent_denied);
+    vga::print_str("\n  Quota exceeded: ");
+    print_u32(anomaly.recent_quota);
+    vga::print_str("\n  Rate limit exceeded: ");
+    print_u32(anomaly.recent_rate);
+    vga::print_str("\n  Invalid capability: ");
+    print_u32(anomaly.recent_invalid);
+    vga::print_str("\n  Integrity failures: ");
+    print_u32(anomaly.recent_integrity);
+    vga::print_str("\n\nScores:\n");
+    vga::print_str("  Last score: ");
+    print_u32(anomaly.last_score);
+    vga::print_str("\n  Max score: ");
+    print_u32(anomaly.max_score);
+    vga::print_str("\n  Alerts total: ");
+    print_u32(anomaly.alerts_total);
+    vga::print_str("\n  Critical total: ");
+    print_u32(anomaly.critical_total);
+    vga::print_str("\n\n");
+}
+
+fn cmd_sched_net_soak(mut parts: core::str::SplitWhitespace) {
+    let seconds = parts
+        .next()
+        .and_then(parse_number)
+        .map(|v| v as u32)
+        .unwrap_or(30);
+    let probe_ms = parts
+        .next()
+        .and_then(parse_number)
+        .map(|v| v as u32)
+        .unwrap_or(100);
+
+    if seconds == 0 || seconds > 600 {
+        vga::print_str("Usage: sched-net-soak <seconds 1..600> [probe_ms 1..1000]\n");
+        return;
+    }
+    if probe_ms == 0 || probe_ms > 1000 {
+        vga::print_str("Usage: sched-net-soak <seconds 1..600> [probe_ms 1..1000]\n");
+        return;
+    }
+
+    vga::print_str("\n===== Scheduler + Network Soak =====\n\n");
+    vga::print_str("Duration (s): ");
+    print_u32(seconds);
+    vga::print_str("\nProbe interval (ms): ");
+    print_u32(probe_ms);
+    vga::print_str("\n\n");
+
+    let sched_before = crate::quantum_scheduler::scheduler().lock().get_stats();
+    let anomaly_before = crate::security::security().get_anomaly_stats();
+    let start_ticks = crate::pit::get_ticks();
+    let hz = (crate::pit::get_frequency() as u64).max(1);
+    let probe_ticks = ((probe_ms as u64).saturating_mul(hz).saturating_add(999)) / 1000;
+    let end_ticks = start_ticks.saturating_add((seconds as u64).saturating_mul(hz));
+
+    let mut probes = 0u32;
+    let mut net_ok = 0u32;
+    let mut net_err = 0u32;
+    let mut net_not_ready = 0u32;
+    let mut first_err: Option<&'static str> = None;
+
+    while crate::pit::get_ticks() < end_ticks {
+        match crate::net_reactor::get_info() {
+            Ok(info) => {
+                net_ok = net_ok.saturating_add(1);
+                if !info.ready {
+                    net_not_ready = net_not_ready.saturating_add(1);
+                }
+            }
+            Err(e) => {
+                net_err = net_err.saturating_add(1);
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+        probes = probes.saturating_add(1);
+
+        let wait_until = crate::pit::get_ticks().saturating_add(probe_ticks.max(1));
+        while crate::pit::get_ticks() < wait_until {
+            crate::quantum_scheduler::yield_now();
+        }
+    }
+
+    let sched_after = crate::quantum_scheduler::scheduler().lock().get_stats();
+    let anomaly_after = crate::security::security().get_anomaly_stats();
+
+    let delta_switches = sched_after
+        .total_switches
+        .saturating_sub(sched_before.total_switches);
+    let delta_preempt = sched_after.preemptions.saturating_sub(sched_before.preemptions);
+    let delta_yields = sched_after
+        .voluntary_yields
+        .saturating_sub(sched_before.voluntary_yields);
+    let delta_idle = sched_after.idle_ticks.saturating_sub(sched_before.idle_ticks);
+    let delta_alerts = anomaly_after
+        .alerts_total
+        .saturating_sub(anomaly_before.alerts_total);
+    let delta_critical = anomaly_after
+        .critical_total
+        .saturating_sub(anomaly_before.critical_total);
+
+    vga::print_str("Probes: ");
+    print_u32(probes);
+    vga::print_str("\nNetwork OK: ");
+    print_u32(net_ok);
+    vga::print_str("\nNetwork errors: ");
+    print_u32(net_err);
+    if let Some(e) = first_err {
+        vga::print_str("\nFirst network error: ");
+        vga::print_str(e);
+    }
+    vga::print_str("\nNetwork not-ready probes: ");
+    print_u32(net_not_ready);
+
+    vga::print_str("\n\nScheduler deltas:\n");
+    vga::print_str("  Context switches: ");
+    print_u64(delta_switches);
+    vga::print_str("\n  Preemptions: ");
+    print_u64(delta_preempt);
+    vga::print_str("\n  Voluntary yields: ");
+    print_u64(delta_yields);
+    vga::print_str("\n  Idle ticks: ");
+    print_u64(delta_idle);
+
+    vga::print_str("\n\nSecurity anomaly deltas:\n");
+    vga::print_str("  Alerts: ");
+    print_u32(delta_alerts);
+    vga::print_str("\n  Critical alerts: ");
+    print_u32(delta_critical);
+    vga::print_str("\n  Final anomaly score: ");
+    print_u32(anomaly_after.last_score);
+
+    vga::print_str("\n\nResult: ");
+    if net_err == 0 && delta_critical == 0 {
+        vga::print_str("PASS\n\n");
+    } else {
+        vga::print_str("REVIEW REQUIRED\n\n");
+    }
 }
 
 fn cmd_security_audit(mut parts: core::str::SplitWhitespace) {
