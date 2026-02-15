@@ -24,18 +24,17 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **JIT cache hardening**: 64-bit FNV-1a for cache keys, plus code hash validation in cache hits.
 - **Concurrency hardening**: user-mode JIT execution uses locking around transition/return.
 - **Cryptographic capability tokens (IPC)**: SipHash-2-4 MAC tokens added to IPC capabilities (per-boot secret).
+- **Cryptographic capability tokens (core tables)**: OreuliaCapability entries are MAC-signed and verified on use/transfer.
 - **JIT fuzz harness + regression seeds**: in-kernel JIT vs interpreter fuzzing with mismatch-free runs on known seeds.
 - **Complete instruction whitelist + decoder validation**: full x86 emitter whitelist and strict decoder validation (no unexpected encodings).
 - **Expanded SFI (all memory access paths)**: verifier enforces stack + linear memory guards for every access path.
 - **Per-instance JIT user pages + wipe between runs**: per-instance JIT trampoline/call/stack pages are wiped and re-sealed on each run.
+- **Full CFI (shadow stack + valid target sets)**: return checks run on all exits; verifier restricts indirect/branch targets to trap stubs.
 
 ### **Partially Implemented**
-- **CFI (return protection)**: return-address shadow stack checks exist; indirect target sets not yet enforced.
 - **Translation validation**: shadow execution exists, but not a full proof or per-block validator.
-- **Capability tokens beyond IPC**: in-kernel tables remain non-cryptographic; only IPC transfers are MACed.
 
 ### **Remaining TODOs**
-- **Full CFI (shadow stack + valid target sets for indirect branches)**
 - **Formal verification of critical JIT paths and capability checks**
 - **Memory tagging / hardware isolation (SGX/TrustZone)**
 - **External fuzzing + coverage-guided regression**
@@ -53,10 +52,12 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - 64-bit JIT cache hashing and integrity verification.
 - Return-address shadow stack checks in generated code (CFI-lite).
 - SipHash MAC tokens on IPC capabilities.
+- SipHash MAC tokens on in-kernel capability table entries.
 - In-kernel JIT fuzz harness with regression seeds.
 - Complete instruction whitelist + decoder validation for JIT output.
 - Expanded SFI enforcement for all memory access paths in JIT verifier.
 - Per-instance JIT user pages wiped/resealed on each run.
+- Full CFI enforcement: shadow stack checks on all exits + verifier target validation.
 
 ## ✅ Verified Milestone (2026-02-15)
 - **JIT verifier alignment**: `wasm-jit-fuzz 1000` on seeds `3418704842` and `2788077538` produced **0 mismatches** and **0 compile errors** (kernel-mode fuzz).
@@ -158,12 +159,13 @@ impl JitVerifier {
 - ✅ **Fuel-based limits**: instruction + memory op fuel enforced in JIT.
 - ✅ **JIT cache integrity**: sealed exec buffer + hash verification.
 - ✅ **IPC capability MACs**: SipHash token on IPC-transferred capabilities.
+- ✅ **Capability table MACs**: OreuliaCapability entries are signed and verified on use/transfer.
 - ✅ **Instruction whitelist**: full decoder/whitelist validation for emitted x86.
 - ✅ **SFI-style bounds checks**: guards enforced for all memory access paths.
 - ✅ **Guard pages**: guard pages protect user JIT stack, code, data, and WASM memory windows.
 - ✅ **Per-instance JIT user pages**: trampoline/call/stack pages are per instance and wiped between runs.
+- ✅ **CFI (shadow stack + valid target sets)**: return checks on all exits + verifier-enforced trap targets.
 - 🟡 **Translation validation**: shadow execution exists; not full translation proof.
-- 🟡 **CFI (return checks)**: return shadow stack present; indirect target sets not yet enforced.
 - 🔶 **SMEP/SMAP/KPTI**: not yet implemented.
 
 **Benefits:**
@@ -522,13 +524,45 @@ pub fn cap_token_verify(&self, data: &[u8], token: u64) -> bool { /* ... */ }
 **Notes:**
 - Tokens are **per-boot** (key generated at init).
 - Applied to **IPC-transferred** capabilities (e.g., filesystem capability transfer).
-- In-kernel capability tables remain non-cryptographic (future hardening).
+- In-kernel capability tables are now MAC-signed and verified on use/transfer.
 - HMAC-SHA256 remains a possible future upgrade if persistence or external verification is required.
 
 **Prevents:**
 - ✅ IPC capability forgery
 - ✅ IPC capability tampering
 - ✅ Privilege escalation via forged transfer blobs
+
+### **SipHash MAC for Core Capability Tables (Implemented):**
+
+```rust
+// kernel/src/capability.rs
+#[derive(Debug, Clone, Copy)]
+pub struct OreuliaCapability {
+    pub cap_id: u32,
+    pub object_id: u64,
+    pub cap_type: CapabilityType,
+    pub rights: Rights,
+    pub origin: ProcessId,
+    pub granted_at: u64,
+    pub label_hash: u32,
+    pub token: u64, // SipHash-2-4 MAC
+}
+
+impl OreuliaCapability {
+    pub fn sign(&mut self, owner: ProcessId) { /* ... */ }
+    pub fn verify_token(&self, owner: ProcessId) -> bool { /* ... */ }
+}
+
+// CapabilityTable::install() signs, lookup/remove verify.
+```
+
+**Notes:**
+- Capability entries are **MACed per process table** (owner PID is part of the token payload).
+- Token verification happens during lookup, use, and transfer.
+
+**Prevents:**
+- ✅ In-kernel capability table tampering
+- ✅ Forged capability entries (memory corruption)
 
 ---
 
@@ -733,8 +767,9 @@ impl AnomalyDetector {
 4. ✅ Fuel-based limits, integrity checks, and shadow validation
 5. ✅ Dedicated JIT arena for executable buffers
 6. ✅ IPC capability MAC tokens (SipHash-2-4)
-7. ✅ In-kernel JIT fuzz harness + regression seeds
-8. ✅ Return-address shadow stack checks (CFI-lite)
+7. ✅ Capability table MAC tokens (SipHash-2-4)
+8. ✅ In-kernel JIT fuzz harness + regression seeds
+9. ✅ Return-address shadow stack checks (CFI-lite)
 
 ### **Phase 2 (Next - In Progress):**
 1. ✅ Complete instruction whitelist / decoder validation
@@ -743,10 +778,9 @@ impl AnomalyDetector {
 4. 🟡 Coverage-guided fuzzing + external regression corpus
 
 ### **Phase 3 (Advanced - Long-term):**
-1. 🔶 Full CFI (shadow stack + valid target sets)
-2. 🔶 Formal verification of JIT translation + capability checks
-3. 🔶 Memory tagging / SGX/TrustZone-class isolation
-4. 🔶 Tamper-proof audit chaining + anomaly detection
+1. 🔶 Formal verification of JIT translation + capability checks
+2. 🔶 Memory tagging / SGX/TrustZone-class isolation
+3. 🔶 Tamper-proof audit chaining + anomaly detection
 
 ---
 
@@ -776,7 +810,7 @@ impl AnomalyDetector {
 
 ---
 
-**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, fuel limits, integrity checks, shadow validation, IPC capability MACs, a complete decoder/whitelist, expanded SFI, and in-kernel fuzzing). The remaining gap to "provably secure" is **formal verification + full CFI + coverage-guided fuzzing**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
+**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, fuel limits, integrity checks, shadow validation, capability MACs in IPC + core tables, a complete decoder/whitelist, expanded SFI, and in-kernel fuzzing). The remaining gap to "provably secure" is **formal verification + coverage-guided fuzzing**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
 
 # 🔬 **Mathematical Problems to Make Oreulia Provably Impenetrable**
 

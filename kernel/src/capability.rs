@@ -126,6 +126,8 @@ pub struct OreuliaCapability {
     pub granted_at: u64,
     /// Optional label for debugging
     pub label_hash: u32,
+    /// Cryptographic token (SipHash-2-4 MAC)
+    pub token: u64,
 }
 
 impl OreuliaCapability {
@@ -144,6 +146,7 @@ impl OreuliaCapability {
             origin,
             granted_at: crate::pit::get_ticks() as u64,
             label_hash: 0,
+            token: 0,
         }
     }
     
@@ -175,6 +178,45 @@ impl OreuliaCapability {
         
         Ok(())
     }
+
+    pub fn sign(&mut self, owner: ProcessId) {
+        let payload = self.token_payload(owner);
+        self.token = security::security().cap_token_sign(&payload);
+    }
+
+    pub fn verify_token(&self, owner: ProcessId) -> bool {
+        let payload = self.token_payload(owner);
+        security::security().cap_token_verify(&payload, self.token)
+    }
+
+    fn token_payload(&self, owner: ProcessId) -> [u8; 48] {
+        const TOKEN_CONTEXT: u32 = 0x4B43_4150; // "KCAP"
+        let mut buf = [0u8; 48];
+        let mut offset = 0usize;
+        write_u32(&mut buf, &mut offset, TOKEN_CONTEXT);
+        write_u32(&mut buf, &mut offset, owner.0);
+        write_u32(&mut buf, &mut offset, self.cap_id);
+        write_u64(&mut buf, &mut offset, self.object_id);
+        write_u32(&mut buf, &mut offset, self.cap_type as u32);
+        write_u32(&mut buf, &mut offset, self.rights.bits);
+        write_u32(&mut buf, &mut offset, self.origin.0);
+        write_u64(&mut buf, &mut offset, self.granted_at);
+        write_u32(&mut buf, &mut offset, self.label_hash);
+        write_u32(&mut buf, &mut offset, 0);
+        buf
+    }
+}
+
+fn write_u32(buf: &mut [u8], offset: &mut usize, value: u32) {
+    let bytes = value.to_le_bytes();
+    buf[*offset..*offset + 4].copy_from_slice(&bytes);
+    *offset += 4;
+}
+
+fn write_u64(buf: &mut [u8], offset: &mut usize, value: u64) {
+    let bytes = value.to_le_bytes();
+    buf[*offset..*offset + 8].copy_from_slice(&bytes);
+    *offset += 8;
 }
 
 // ============================================================================
@@ -207,6 +249,8 @@ impl CapabilityTable {
                 let cap_id = idx as u32; // Simplified ID allocation
                 let mut installed = cap;
                 installed.cap_id = cap_id;
+                installed.granted_at = crate::pit::get_ticks() as u64;
+                installed.sign(self.owner);
                 *entry = Some(installed);
                 
                 // Audit capability installation
@@ -224,11 +268,22 @@ impl CapabilityTable {
     
     /// Lookup capability by cap_id
     pub fn lookup(&self, cap_id: u32) -> Result<&OreuliaCapability, CapabilityError> {
-        self.entries
+        if let Some(entry) = self
+            .entries
             .iter()
             .find(|e| e.as_ref().map_or(false, |c| c.cap_id == cap_id))
-            .and_then(|e| e.as_ref())
-            .ok_or(CapabilityError::InvalidCapability)
+        {
+            if let Some(cap) = entry.as_ref() {
+                if !cap.verify_token(self.owner) {
+                    security::security().log_event(
+                        AuditEntry::new(SecurityEvent::InvalidCapability, self.owner, cap_id),
+                    );
+                    return Err(CapabilityError::InvalidCapability);
+                }
+                return Ok(cap);
+            }
+        }
+        Err(CapabilityError::InvalidCapability)
     }
     
     /// Remove capability (for transfer or revocation)
@@ -236,6 +291,12 @@ impl CapabilityTable {
         for entry in self.entries.iter_mut() {
             if let Some(cap) = entry {
                 if cap.cap_id == cap_id {
+                    if !cap.verify_token(self.owner) {
+                        security::security().log_event(
+                            AuditEntry::new(SecurityEvent::InvalidCapability, self.owner, cap_id),
+                        );
+                        return Err(CapabilityError::InvalidCapability);
+                    }
                     let removed = *cap;
                     *entry = None;
                     
@@ -518,6 +579,14 @@ pub fn check_capability(
             if let Some(cap) = entry {
                 // Check capability type matches
                 if cap.cap_type != cap_type {
+                    continue;
+                }
+
+                if !cap.verify_token(table.owner) {
+                    security::security().log_event(
+                        AuditEntry::new(SecurityEvent::InvalidCapability, pid, cap.cap_id)
+                            .with_context(cap.object_id)
+                    );
                     continue;
                 }
                 
