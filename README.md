@@ -308,7 +308,7 @@ This project is licensed under the OREULIUS LISCENCE - see the [liscence](Oreuli
 
 ## Contact
 
-# Email 
+**Email**
 ```bash
 reeveskeefe@gmail.com
 ```

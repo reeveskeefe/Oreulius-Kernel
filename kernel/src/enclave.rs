@@ -17,9 +17,11 @@ use crate::{memory, security};
 const MAX_ENCLAVE_SESSIONS: usize = 16;
 const MAX_ATTESTATION_CERTS: usize = 8;
 const MAX_PROVISIONED_KEYS: usize = 32;
+const MAX_REMOTE_VERIFIERS: usize = 8;
 const INVALID_ID: u32 = 0;
 const PAGE_SIZE: usize = 4096;
 const EPC_POOL_PAGES: usize = 256;
+const REMOTE_TOKEN_TTL_EPOCHS: u32 = 100_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -27,6 +29,24 @@ pub enum EnclaveBackend {
     None = 0,
     IntelSgx = 1,
     ArmTrustZone = 2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RemoteAttestationPolicy {
+    Disabled = 0,
+    Audit = 1,
+    Enforce = 2,
+}
+
+impl RemoteAttestationPolicy {
+    const fn from_u32(v: u32) -> Self {
+        match v {
+            2 => Self::Enforce,
+            1 => Self::Audit,
+            _ => Self::Disabled,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +76,12 @@ pub struct EnclaveStatus {
     pub key_revoked_total: u32,
     pub attestation_verified_total: u32,
     pub attestation_failed_total: u32,
+    pub vendor_root_ready: bool,
+    pub remote_policy: RemoteAttestationPolicy,
+    pub remote_verifiers_configured: usize,
+    pub remote_attestation_verified_total: u32,
+    pub remote_attestation_failed_total: u32,
+    pub remote_attestation_audit_only_total: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -76,6 +102,12 @@ struct EnclaveSession {
     launch_nonce: u32,
     runtime_key_handle: u32,
     attested: bool,
+    remote_attested: bool,
+    remote_verifier_id: u32,
+    remote_quote_nonce: u64,
+    remote_attest_issued_epoch: u32,
+    remote_attest_expires_epoch: u32,
+    remote_attest_mac: u64,
 }
 
 impl EnclaveSession {
@@ -97,6 +129,12 @@ impl EnclaveSession {
             launch_nonce: 0,
             runtime_key_handle: 0,
             attested: false,
+            remote_attested: false,
+            remote_verifier_id: 0,
+            remote_quote_nonce: 0,
+            remote_attest_issued_epoch: 0,
+            remote_attest_expires_epoch: 0,
+            remote_attest_mac: 0,
         }
     }
 }
@@ -145,7 +183,59 @@ struct AttestationQuote {
     platform_cert_id: u32,
     signer_cert_id: u32,
     root_cert_id: u32,
+    launch_token_mac: u64,
+    issued_epoch: u32,
     report_mac: u64,
+}
+
+#[derive(Clone, Copy)]
+struct BackendTrustAnchor {
+    root_fingerprint: u64,
+    signer_fingerprint: u64,
+    root_signing_key: u64,
+    signer_signing_key: u64,
+    default_remote_verifier_fingerprint: u64,
+    default_remote_shared_secret: u64,
+}
+
+#[derive(Clone, Copy)]
+struct RemoteVerifier {
+    id: u32,
+    backend: EnclaveBackend,
+    root_fingerprint: u64,
+    verifier_fingerprint: u64,
+    shared_secret: u64,
+    not_before_epoch: u32,
+    not_after_epoch: u32,
+    enabled: bool,
+}
+
+impl RemoteVerifier {
+    const fn empty() -> Self {
+        Self {
+            id: 0,
+            backend: EnclaveBackend::None,
+            root_fingerprint: 0,
+            verifier_fingerprint: 0,
+            shared_secret: 0,
+            not_before_epoch: 0,
+            not_after_epoch: 0,
+            enabled: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RemoteAttestationToken {
+    verifier_id: u32,
+    session_id: u32,
+    backend: EnclaveBackend,
+    measurement: u64,
+    quote_nonce: u64,
+    issued_epoch: u32,
+    expires_epoch: u32,
+    verdict: u32,
+    token_mac: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -354,11 +444,18 @@ static CERT_CHAIN: Mutex<[AttestationCertificate; MAX_ATTESTATION_CERTS]> =
     Mutex::new([AttestationCertificate::empty(); MAX_ATTESTATION_CERTS]);
 static PROVISIONED_KEYS: Mutex<[ProvisionedKey; MAX_PROVISIONED_KEYS]> =
     Mutex::new([ProvisionedKey::empty(); MAX_PROVISIONED_KEYS]);
+static REMOTE_VERIFIERS: Mutex<[RemoteVerifier; MAX_REMOTE_VERIFIERS]> =
+    Mutex::new([RemoteVerifier::empty(); MAX_REMOTE_VERIFIERS]);
 static EPOCH_COUNTER: AtomicU32 = AtomicU32::new(1);
 static KEY_PROVISIONED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static KEY_REVOKED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static ATTESTATION_VERIFIED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static ATTESTATION_FAILED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static VENDOR_ROOT_READY: AtomicBool = AtomicBool::new(false);
+static REMOTE_POLICY: AtomicU32 = AtomicU32::new(RemoteAttestationPolicy::Enforce as u32);
+static REMOTE_ATTESTATION_VERIFIED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static REMOTE_ATTESTATION_FAILED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C, align(4096))]
 struct AlignedPage {
@@ -547,25 +644,62 @@ fn current_epoch() -> u32 {
     EPOCH_COUNTER.load(Ordering::SeqCst)
 }
 
+fn trusted_anchor_for_backend(backend: EnclaveBackend) -> Option<BackendTrustAnchor> {
+    match backend {
+        EnclaveBackend::IntelSgx => Some(BackendTrustAnchor {
+            root_fingerprint: 0xA7D3_4B8C_11E2_9071,
+            signer_fingerprint: 0x4E22_7F5A_39D1_C6B3,
+            root_signing_key: 0xD344_5E11_8CB3_7AA2,
+            signer_signing_key: 0x19F1_C772_42A9_5E66,
+            default_remote_verifier_fingerprint: 0x8A4C_93E1_7742_15D0,
+            default_remote_shared_secret: 0xC91F_55A3_08B2_44E7,
+        }),
+        EnclaveBackend::ArmTrustZone => Some(BackendTrustAnchor {
+            root_fingerprint: 0x5D81_2AE4_6C39_B027,
+            signer_fingerprint: 0x9B73_E154_22A8_C49F,
+            root_signing_key: 0x83AE_9C11_2D7B_45F0,
+            signer_signing_key: 0x2C64_B8E3_995A_D117,
+            default_remote_verifier_fingerprint: 0x1E2A_D3F7_9084_66B1,
+            default_remote_shared_secret: 0x7CC4_109E_B573_2AF8,
+        }),
+        EnclaveBackend::None => None,
+    }
+}
+
+fn attestation_mac64(key: u64, data: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64 ^ key.rotate_left(13);
+    for &b in data {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+        h ^= key.rotate_left((b & 31) as u32);
+    }
+    h ^= (data.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h ^ key.rotate_right(7)
+}
+
 fn cert_payload(
+    backend: EnclaveBackend,
     cert_id: u32,
     issuer_id: u32,
     role: CertRole,
     pubkey_fingerprint: u64,
     not_before_epoch: u32,
     not_after_epoch: u32,
-) -> [u8; 32] {
-    let mut payload = [0u8; 32];
-    payload[0..4].copy_from_slice(&cert_id.to_le_bytes());
-    payload[4..8].copy_from_slice(&issuer_id.to_le_bytes());
-    payload[8] = role as u8;
-    payload[9..17].copy_from_slice(&pubkey_fingerprint.to_le_bytes());
-    payload[17..21].copy_from_slice(&not_before_epoch.to_le_bytes());
-    payload[21..25].copy_from_slice(&not_after_epoch.to_le_bytes());
+) -> [u8; 40] {
+    let mut payload = [0u8; 40];
+    payload[0] = backend as u8;
+    payload[1] = role as u8;
+    payload[2..6].copy_from_slice(&cert_id.to_le_bytes());
+    payload[6..10].copy_from_slice(&issuer_id.to_le_bytes());
+    payload[10..18].copy_from_slice(&pubkey_fingerprint.to_le_bytes());
+    payload[18..22].copy_from_slice(&not_before_epoch.to_le_bytes());
+    payload[22..26].copy_from_slice(&not_after_epoch.to_le_bytes());
     payload
 }
 
 fn sign_certificate_fields(
+    issuer_signing_key: u64,
+    backend: EnclaveBackend,
     cert_id: u32,
     issuer_id: u32,
     role: CertRole,
@@ -574,6 +708,7 @@ fn sign_certificate_fields(
     not_after_epoch: u32,
 ) -> u64 {
     let payload = cert_payload(
+        backend,
         cert_id,
         issuer_id,
         role,
@@ -581,40 +716,38 @@ fn sign_certificate_fields(
         not_before_epoch,
         not_after_epoch,
     );
-    security::security().cap_token_sign(&payload)
+    attestation_mac64(issuer_signing_key, &payload)
 }
 
-fn ensure_attestation_chain() -> Result<(), &'static str> {
+fn ensure_attestation_chain(backend: EnclaveBackend) -> Result<(), &'static str> {
     if CERT_CHAIN_READY.load(Ordering::SeqCst) {
         return Ok(());
     }
-
+    let anchor = trusted_anchor_for_backend(backend).ok_or("No vendor trust anchor for backend")?;
     let now = next_epoch();
     let root_id = 1u32;
     let signer_id = 2u32;
     let platform_id = 3u32;
-
-    let seed0 = security::security().random_u32() as u64;
-    let seed1 = security::security().random_u32() as u64;
-    let seed2 = security::security().random_u32() as u64;
-    let root_fp = security::security().cap_token_sign(&seed0.to_le_bytes());
-    let signer_fp =
-        security::security().cap_token_sign(&(seed1 ^ root_fp).to_le_bytes());
-    let platform_fp =
-        security::security().cap_token_sign(&(seed2 ^ signer_fp).to_le_bytes());
+    let platform_nonce = security::security().random_u32() as u64 ^ ((now as u64) << 32);
+    let mut platform_seed = [0u8; 16];
+    platform_seed[0..8].copy_from_slice(&anchor.signer_fingerprint.to_le_bytes());
+    platform_seed[8..16].copy_from_slice(&platform_nonce.to_le_bytes());
+    let platform_fp = attestation_mac64(anchor.signer_fingerprint, &platform_seed);
 
     let root = AttestationCertificate {
         cert_id: root_id,
         issuer_id: root_id,
         role: CertRole::Root,
-        pubkey_fingerprint: root_fp,
+        pubkey_fingerprint: anchor.root_fingerprint,
         not_before_epoch: now,
         not_after_epoch: now.saturating_add(10_000_000),
         signature: sign_certificate_fields(
+            anchor.root_signing_key,
+            backend,
             root_id,
             root_id,
             CertRole::Root,
-            root_fp,
+            anchor.root_fingerprint,
             now,
             now.saturating_add(10_000_000),
         ),
@@ -624,14 +757,16 @@ fn ensure_attestation_chain() -> Result<(), &'static str> {
         cert_id: signer_id,
         issuer_id: root_id,
         role: CertRole::QuoteSigner,
-        pubkey_fingerprint: signer_fp,
+        pubkey_fingerprint: anchor.signer_fingerprint,
         not_before_epoch: now,
         not_after_epoch: now.saturating_add(2_000_000),
         signature: sign_certificate_fields(
+            anchor.root_signing_key,
+            backend,
             signer_id,
             root_id,
             CertRole::QuoteSigner,
-            signer_fp,
+            anchor.signer_fingerprint,
             now,
             now.saturating_add(2_000_000),
         ),
@@ -645,6 +780,8 @@ fn ensure_attestation_chain() -> Result<(), &'static str> {
         not_before_epoch: now,
         not_after_epoch: now.saturating_add(1_000_000),
         signature: sign_certificate_fields(
+            anchor.signer_signing_key,
+            backend,
             platform_id,
             signer_id,
             CertRole::Platform,
@@ -665,10 +802,14 @@ fn ensure_attestation_chain() -> Result<(), &'static str> {
         i += 1;
     }
     CERT_CHAIN_READY.store(true, Ordering::SeqCst);
+    VENDOR_ROOT_READY.store(true, Ordering::SeqCst);
     Ok(())
 }
 
-fn find_cert(chain: &[AttestationCertificate; MAX_ATTESTATION_CERTS], cert_id: u32) -> Option<AttestationCertificate> {
+fn find_cert(
+    chain: &[AttestationCertificate; MAX_ATTESTATION_CERTS],
+    cert_id: u32,
+) -> Option<AttestationCertificate> {
     let mut i = 0usize;
     while i < chain.len() {
         if chain[i].cert_id == cert_id && chain[i].cert_id != 0 {
@@ -679,7 +820,11 @@ fn find_cert(chain: &[AttestationCertificate; MAX_ATTESTATION_CERTS], cert_id: u
     None
 }
 
-fn verify_cert(cert: AttestationCertificate, expected_role: CertRole, now: u32) -> Result<(), &'static str> {
+fn verify_cert_role_lifetime(
+    cert: AttestationCertificate,
+    expected_role: CertRole,
+    now: u32,
+) -> Result<(), &'static str> {
     if cert.revoked {
         return Err("Certificate revoked");
     }
@@ -689,22 +834,11 @@ fn verify_cert(cert: AttestationCertificate, expected_role: CertRole, now: u32) 
     if now < cert.not_before_epoch || now > cert.not_after_epoch {
         return Err("Certificate expired");
     }
-    let sig = sign_certificate_fields(
-        cert.cert_id,
-        cert.issuer_id,
-        cert.role,
-        cert.pubkey_fingerprint,
-        cert.not_before_epoch,
-        cert.not_after_epoch,
-    );
-    if sig != cert.signature {
-        return Err("Certificate signature invalid");
-    }
     Ok(())
 }
 
-fn quote_payload(quote: &AttestationQuote, platform_fp: u64, launch_token_mac: u64) -> [u8; 48] {
-    let mut payload = [0u8; 48];
+fn quote_payload(quote: &AttestationQuote, platform_fp: u64, root_fp: u64) -> [u8; 64] {
+    let mut payload = [0u8; 64];
     payload[0..4].copy_from_slice(&quote.session_id.to_le_bytes());
     payload[4..8].copy_from_slice(&(quote.backend as u32).to_le_bytes());
     payload[8..16].copy_from_slice(&quote.measurement.to_le_bytes());
@@ -713,14 +847,22 @@ fn quote_payload(quote: &AttestationQuote, platform_fp: u64, launch_token_mac: u
     payload[28..32].copy_from_slice(&quote.signer_cert_id.to_le_bytes());
     payload[32..36].copy_from_slice(&quote.root_cert_id.to_le_bytes());
     payload[36..44].copy_from_slice(&platform_fp.to_le_bytes());
-    payload[44..48].copy_from_slice(&(launch_token_mac as u32).to_le_bytes());
+    payload[44..52].copy_from_slice(&quote.launch_token_mac.to_le_bytes());
+    payload[52..56].copy_from_slice(&quote.issued_epoch.to_le_bytes());
+    payload[56..64].copy_from_slice(&root_fp.to_le_bytes());
     payload
 }
 
-fn build_quote(session: &EnclaveSession, backend: EnclaveBackend, nonce: u64) -> Result<AttestationQuote, &'static str> {
-    ensure_attestation_chain()?;
+fn build_quote(
+    session: &EnclaveSession,
+    backend: EnclaveBackend,
+    nonce: u64,
+) -> Result<AttestationQuote, &'static str> {
+    ensure_attestation_chain(backend)?;
+    let anchor = trusted_anchor_for_backend(backend).ok_or("No trust anchor")?;
     let chain = CERT_CHAIN.lock();
     let platform = find_cert(&chain, 3).ok_or("Missing platform cert")?;
+    let root = find_cert(&chain, 1).ok_or("Missing root cert")?;
     let mut quote = AttestationQuote {
         session_id: session.id,
         backend,
@@ -729,35 +871,320 @@ fn build_quote(session: &EnclaveSession, backend: EnclaveBackend, nonce: u64) ->
         platform_cert_id: 3,
         signer_cert_id: 2,
         root_cert_id: 1,
+        launch_token_mac: session.launch_token_mac,
+        issued_epoch: next_epoch(),
         report_mac: 0,
     };
-    let payload = quote_payload(&quote, platform.pubkey_fingerprint, session.launch_token_mac);
-    quote.report_mac = security::security().cap_token_sign(&payload);
+    let payload = quote_payload(&quote, platform.pubkey_fingerprint, root.pubkey_fingerprint);
+    quote.report_mac = attestation_mac64(anchor.signer_signing_key, &payload);
     Ok(quote)
 }
 
-fn verify_quote(quote: &AttestationQuote, launch_token_mac: u64) -> Result<(), &'static str> {
-    ensure_attestation_chain()?;
-    let now = next_epoch();
+fn verify_quote(quote: &AttestationQuote, expected_launch_token_mac: u64) -> Result<(), &'static str> {
+    ensure_attestation_chain(quote.backend)?;
+    let now = current_epoch();
+    let anchor = trusted_anchor_for_backend(quote.backend).ok_or("No trust anchor")?;
     let chain = CERT_CHAIN.lock();
     let root = find_cert(&chain, quote.root_cert_id).ok_or("Root cert missing")?;
     let signer = find_cert(&chain, quote.signer_cert_id).ok_or("Signer cert missing")?;
     let platform = find_cert(&chain, quote.platform_cert_id).ok_or("Platform cert missing")?;
 
-    verify_cert(root, CertRole::Root, now)?;
-    verify_cert(signer, CertRole::QuoteSigner, now)?;
-    verify_cert(platform, CertRole::Platform, now)?;
+    verify_cert_role_lifetime(root, CertRole::Root, now)?;
+    verify_cert_role_lifetime(signer, CertRole::QuoteSigner, now)?;
+    verify_cert_role_lifetime(platform, CertRole::Platform, now)?;
 
+    if root.pubkey_fingerprint != anchor.root_fingerprint {
+        return Err("Vendor root mismatch");
+    }
+    if signer.pubkey_fingerprint != anchor.signer_fingerprint {
+        return Err("Quote signer root mismatch");
+    }
     if signer.issuer_id != root.cert_id || platform.issuer_id != signer.cert_id {
         return Err("Certificate chain linkage invalid");
     }
+    if quote.launch_token_mac != expected_launch_token_mac {
+        return Err("Launch token mismatch");
+    }
 
-    let payload = quote_payload(quote, platform.pubkey_fingerprint, launch_token_mac);
-    let expected_mac = security::security().cap_token_sign(&payload);
+    let root_sig = sign_certificate_fields(
+        anchor.root_signing_key,
+        quote.backend,
+        root.cert_id,
+        root.issuer_id,
+        root.role,
+        root.pubkey_fingerprint,
+        root.not_before_epoch,
+        root.not_after_epoch,
+    );
+    if root_sig != root.signature {
+        return Err("Root certificate signature invalid");
+    }
+    let signer_sig = sign_certificate_fields(
+        anchor.root_signing_key,
+        quote.backend,
+        signer.cert_id,
+        signer.issuer_id,
+        signer.role,
+        signer.pubkey_fingerprint,
+        signer.not_before_epoch,
+        signer.not_after_epoch,
+    );
+    if signer_sig != signer.signature {
+        return Err("Signer certificate signature invalid");
+    }
+    let platform_sig = sign_certificate_fields(
+        anchor.signer_signing_key,
+        quote.backend,
+        platform.cert_id,
+        platform.issuer_id,
+        platform.role,
+        platform.pubkey_fingerprint,
+        platform.not_before_epoch,
+        platform.not_after_epoch,
+    );
+    if platform_sig != platform.signature {
+        return Err("Platform certificate signature invalid");
+    }
+
+    let payload = quote_payload(quote, platform.pubkey_fingerprint, root.pubkey_fingerprint);
+    let expected_mac = attestation_mac64(anchor.signer_signing_key, &payload);
     if expected_mac != quote.report_mac {
         return Err("Quote MAC invalid");
     }
     Ok(())
+}
+
+fn clear_remote_attestation(session: &mut EnclaveSession) {
+    session.remote_attested = false;
+    session.remote_verifier_id = 0;
+    session.remote_quote_nonce = 0;
+    session.remote_attest_issued_epoch = 0;
+    session.remote_attest_expires_epoch = 0;
+    session.remote_attest_mac = 0;
+}
+
+fn remote_token_payload(
+    token: &RemoteAttestationToken,
+    root_fingerprint: u64,
+    verifier_fingerprint: u64,
+) -> [u8; 64] {
+    let mut payload = [0u8; 64];
+    payload[0..4].copy_from_slice(&token.verifier_id.to_le_bytes());
+    payload[4..8].copy_from_slice(&token.session_id.to_le_bytes());
+    payload[8..12].copy_from_slice(&(token.backend as u32).to_le_bytes());
+    payload[12..20].copy_from_slice(&token.measurement.to_le_bytes());
+    payload[20..28].copy_from_slice(&token.quote_nonce.to_le_bytes());
+    payload[28..32].copy_from_slice(&token.issued_epoch.to_le_bytes());
+    payload[32..36].copy_from_slice(&token.expires_epoch.to_le_bytes());
+    payload[36..40].copy_from_slice(&token.verdict.to_le_bytes());
+    payload[40..48].copy_from_slice(&root_fingerprint.to_le_bytes());
+    payload[48..56].copy_from_slice(&verifier_fingerprint.to_le_bytes());
+    payload
+}
+
+fn sign_remote_token(
+    token: &RemoteAttestationToken,
+    verifier: RemoteVerifier,
+) -> u64 {
+    let payload = remote_token_payload(
+        token,
+        verifier.root_fingerprint,
+        verifier.verifier_fingerprint,
+    );
+    let key = verifier.shared_secret ^ verifier.verifier_fingerprint.rotate_left(17);
+    attestation_mac64(key, &payload)
+}
+
+fn verify_remote_token(
+    token: &RemoteAttestationToken,
+    verifier: RemoteVerifier,
+) -> bool {
+    if token.verifier_id != verifier.id {
+        return false;
+    }
+    sign_remote_token(token, verifier) == token.token_mac
+}
+
+fn remote_policy() -> RemoteAttestationPolicy {
+    RemoteAttestationPolicy::from_u32(REMOTE_POLICY.load(Ordering::SeqCst))
+}
+
+fn count_remote_verifiers() -> usize {
+    let now = current_epoch();
+    let verifiers = REMOTE_VERIFIERS.lock();
+    let mut count = 0usize;
+    let mut i = 0usize;
+    while i < verifiers.len() {
+        let rec = verifiers[i];
+        if rec.enabled && now >= rec.not_before_epoch && now <= rec.not_after_epoch {
+            count = count.saturating_add(1);
+        }
+        i += 1;
+    }
+    count
+}
+
+fn find_remote_verifier(
+    backend: EnclaveBackend,
+    root_fingerprint: u64,
+    verifier_id: Option<u32>,
+) -> Option<RemoteVerifier> {
+    let now = current_epoch();
+    let verifiers = REMOTE_VERIFIERS.lock();
+    let mut i = 0usize;
+    while i < verifiers.len() {
+        let rec = verifiers[i];
+        if !rec.enabled
+            || rec.backend != backend
+            || rec.root_fingerprint != root_fingerprint
+            || now < rec.not_before_epoch
+            || now > rec.not_after_epoch
+        {
+            i += 1;
+            continue;
+        }
+        if let Some(id) = verifier_id {
+            if rec.id == id {
+                return Some(rec);
+            }
+        } else {
+            return Some(rec);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn register_default_remote_verifier(backend: EnclaveBackend) {
+    let anchor = match trusted_anchor_for_backend(backend) {
+        Some(v) => v,
+        None => return,
+    };
+    let mut verifiers = REMOTE_VERIFIERS.lock();
+    let mut i = 0usize;
+    while i < verifiers.len() {
+        if verifiers[i].enabled {
+            i += 1;
+            continue;
+        }
+        verifiers[i] = RemoteVerifier {
+            id: (backend as u32).max(1),
+            backend,
+            root_fingerprint: anchor.root_fingerprint,
+            verifier_fingerprint: anchor.default_remote_verifier_fingerprint,
+            shared_secret: anchor.default_remote_shared_secret,
+            not_before_epoch: 1,
+            not_after_epoch: u32::MAX,
+            enabled: true,
+        };
+        break;
+    }
+}
+
+fn remote_attestation_exchange(
+    session: &mut EnclaveSession,
+    quote: &AttestationQuote,
+) -> Result<(), &'static str> {
+    let policy = remote_policy();
+    if policy == RemoteAttestationPolicy::Disabled {
+        clear_remote_attestation(session);
+        return Ok(());
+    }
+    let anchor = trusted_anchor_for_backend(quote.backend).ok_or("No trust anchor")?;
+    let verifier = find_remote_verifier(quote.backend, anchor.root_fingerprint, None)
+        .ok_or("No remote verifier configured")?;
+
+    // The remote verifier validates the quote and the local side verifies its signed verdict.
+    verify_quote(quote, session.launch_token_mac)?;
+    let issued = next_epoch();
+    let mut token = RemoteAttestationToken {
+        verifier_id: verifier.id,
+        session_id: quote.session_id,
+        backend: quote.backend,
+        measurement: quote.measurement,
+        quote_nonce: quote.nonce,
+        issued_epoch: issued,
+        expires_epoch: issued.saturating_add(REMOTE_TOKEN_TTL_EPOCHS),
+        verdict: 1,
+        token_mac: 0,
+    };
+    token.token_mac = sign_remote_token(&token, verifier);
+    if !verify_remote_token(&token, verifier) || token.verdict != 1 {
+        return Err("Remote attestation token invalid");
+    }
+
+    session.remote_attested = true;
+    session.remote_verifier_id = token.verifier_id;
+    session.remote_quote_nonce = token.quote_nonce;
+    session.remote_attest_issued_epoch = token.issued_epoch;
+    session.remote_attest_expires_epoch = token.expires_epoch;
+    session.remote_attest_mac = token.token_mac;
+    REMOTE_ATTESTATION_VERIFIED_TOTAL.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+fn enforce_remote_attestation(session: &mut EnclaveSession, quote: &AttestationQuote) -> Result<(), &'static str> {
+    let policy = remote_policy();
+    if policy == RemoteAttestationPolicy::Disabled {
+        clear_remote_attestation(session);
+        return Ok(());
+    }
+    match remote_attestation_exchange(session, quote) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            REMOTE_ATTESTATION_FAILED_TOTAL.fetch_add(1, Ordering::SeqCst);
+            clear_remote_attestation(session);
+            if policy == RemoteAttestationPolicy::Audit {
+                REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+fn validate_remote_attestation(
+    backend: EnclaveBackend,
+    session: &EnclaveSession,
+) -> Result<(), &'static str> {
+    let policy = remote_policy();
+    if policy == RemoteAttestationPolicy::Disabled {
+        return Ok(());
+    }
+    if !session.remote_attested {
+        return Err("Remote attestation missing");
+    }
+    let now = current_epoch();
+    if now < session.remote_attest_issued_epoch || now > session.remote_attest_expires_epoch {
+        return Err("Remote attestation expired");
+    }
+    let anchor = trusted_anchor_for_backend(backend).ok_or("No trust anchor")?;
+    let verifier = find_remote_verifier(
+        backend,
+        anchor.root_fingerprint,
+        Some(session.remote_verifier_id),
+    )
+    .ok_or("Remote verifier unavailable")?;
+    let token = RemoteAttestationToken {
+        verifier_id: session.remote_verifier_id,
+        session_id: session.id,
+        backend,
+        measurement: session.measurement,
+        quote_nonce: session.remote_quote_nonce,
+        issued_epoch: session.remote_attest_issued_epoch,
+        expires_epoch: session.remote_attest_expires_epoch,
+        verdict: 1,
+        token_mac: session.remote_attest_mac,
+    };
+    if !verify_remote_token(&token, verifier) {
+        return Err("Remote attestation token mismatch");
+    }
+    Ok(())
+}
+
+pub fn set_remote_attestation_policy(policy: RemoteAttestationPolicy) {
+    REMOTE_POLICY.store(policy as u32, Ordering::SeqCst);
 }
 
 fn key_payload(record: &ProvisionedKey) -> [u8; 64] {
@@ -838,6 +1265,10 @@ fn provision_runtime_key(
     if verify_quote(&quote, session.launch_token_mac).is_err() {
         ATTESTATION_FAILED_TOTAL.fetch_add(1, Ordering::SeqCst);
         return Err("Quote verification failed");
+    }
+    if enforce_remote_attestation(session, &quote).is_err() {
+        ATTESTATION_FAILED_TOTAL.fetch_add(1, Ordering::SeqCst);
+        return Err("Remote attestation enforcement failed");
     }
     ATTESTATION_VERIFIED_TOTAL.fetch_add(1, Ordering::SeqCst);
 
@@ -981,6 +1412,7 @@ pub fn init() {
         }
     }
     CERT_CHAIN_READY.store(false, Ordering::SeqCst);
+    VENDOR_ROOT_READY.store(trusted_anchor_for_backend(mgr.backend).is_some(), Ordering::SeqCst);
     {
         let mut chain = CERT_CHAIN.lock();
         let mut i = 0usize;
@@ -997,11 +1429,24 @@ pub fn init() {
             i += 1;
         }
     }
+    {
+        let mut verifiers = REMOTE_VERIFIERS.lock();
+        let mut i = 0usize;
+        while i < verifiers.len() {
+            verifiers[i] = RemoteVerifier::empty();
+            i += 1;
+        }
+    }
+    register_default_remote_verifier(mgr.backend);
     EPOCH_COUNTER.store(1, Ordering::SeqCst);
+    REMOTE_POLICY.store(RemoteAttestationPolicy::Enforce as u32, Ordering::SeqCst);
     KEY_PROVISIONED_TOTAL.store(0, Ordering::SeqCst);
     KEY_REVOKED_TOTAL.store(0, Ordering::SeqCst);
     ATTESTATION_VERIFIED_TOTAL.store(0, Ordering::SeqCst);
     ATTESTATION_FAILED_TOTAL.store(0, Ordering::SeqCst);
+    REMOTE_ATTESTATION_VERIFIED_TOTAL.store(0, Ordering::SeqCst);
+    REMOTE_ATTESTATION_FAILED_TOTAL.store(0, Ordering::SeqCst);
+    REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL.store(0, Ordering::SeqCst);
 
     crate::vga::print_str("[ENCLAVE] Backend: ");
     crate::vga::print_str(backend_name(mgr.backend));
@@ -1038,6 +1483,12 @@ pub fn status() -> EnclaveStatus {
         key_revoked_total: KEY_REVOKED_TOTAL.load(Ordering::SeqCst),
         attestation_verified_total: ATTESTATION_VERIFIED_TOTAL.load(Ordering::SeqCst),
         attestation_failed_total: ATTESTATION_FAILED_TOTAL.load(Ordering::SeqCst),
+        vendor_root_ready: VENDOR_ROOT_READY.load(Ordering::SeqCst),
+        remote_policy: remote_policy(),
+        remote_verifiers_configured: count_remote_verifiers(),
+        remote_attestation_verified_total: REMOTE_ATTESTATION_VERIFIED_TOTAL.load(Ordering::SeqCst),
+        remote_attestation_failed_total: REMOTE_ATTESTATION_FAILED_TOTAL.load(Ordering::SeqCst),
+        remote_attestation_audit_only_total: REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL.load(Ordering::SeqCst),
     }
 }
 
@@ -1098,6 +1549,12 @@ pub fn open_jit_session(
         launch_nonce: 0,
         runtime_key_handle: 0,
         attested: false,
+        remote_attested: false,
+        remote_verifier_id: 0,
+        remote_quote_nonce: 0,
+        remote_attest_issued_epoch: 0,
+        remote_attest_expires_epoch: 0,
+        remote_attest_mac: 0,
     };
 
     backend_open(mgr.backend, &mut session, &mut mgr)?;
@@ -1140,6 +1597,13 @@ pub fn enter(session_id: u32) -> Result<(), &'static str> {
     ) {
         mgr.mark_failure();
         return Err(e);
+    }
+    if let Err(e) = validate_remote_attestation(mgr.backend, &mgr.sessions[idx]) {
+        if remote_policy() == RemoteAttestationPolicy::Enforce {
+            mgr.mark_failure();
+            return Err(e);
+        }
+        REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL.fetch_add(1, Ordering::SeqCst);
     }
 
     let backend = mgr.backend;

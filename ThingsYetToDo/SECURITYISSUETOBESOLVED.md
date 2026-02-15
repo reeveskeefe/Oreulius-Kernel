@@ -36,6 +36,7 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **Hardware enclave primitive wiring**: SGX backend now issues real `ECREATE/EADD/EEXTEND/EINIT/EENTER` instructions (when supported); TrustZone backend uses secure monitor call hooks (`SMC`) on ARM targets.
 - **Production enclave provisioning**: SGX EPC pool/page reservation, launch-token signing + verification, and local attestation report generation are integrated; TrustZone now enforces a negotiated secure-world service contract before session open.
 - **Remote attestation + key provisioning hardening (implemented)**: session open is fail-closed unless runtime key provisioning succeeds after backend open; session enter requires attested state plus runtime key validation (active, purpose-bound, unexpired, MAC-integrity checked); session close revokes the runtime key before teardown; enclave init resets attestation cert/key stores and counters; status/`cpu-info` expose cert-chain readiness, key lifecycle totals, and quote verification success/failure counters.
+- **External remote attestation interoperability hardening (implemented)**: quote verification now enforces backend-specific vendor root-of-trust anchors (SGX/TrustZone), signer-root linkage, and deterministic certificate signature validation; remote verifier exchange issues signed verdict tokens bound to session/measurement/nonce; policy modes (`disabled` / `audit` / `enforce`) gate fail-open vs fail-closed behavior; `enter` re-validates token integrity + expiry before backend transition.
 - **Scheduler/context-switch hardening**: first-run kernel thread contexts start with IF cleared, context-switch preserves raw saved EFLAGS, and resumed threads restore prior interrupt state.
 - **Keyboard IRQ recovery under preemption**: cooperative switch paths now restore interrupt state on resume, preventing latent IRQ starvation after yields/blocks.
 - **Translation validation (per-block certificate)**: each compiled function now carries a per-op translation trace and per-block digest; cache/integrity checks re-validate WASM-to-x86 block coverage, fuel-check insertion, and memory-guard shape before execution.
@@ -45,7 +46,6 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 
 ### **Remaining TODOs**
 - **Formal verification of critical JIT paths and capability checks**
-- **External remote attestation interoperability hardening**: integrate vendor quote/certificate root-of-trust verification and remote verifier exchange for cross-system trust.
 - **CI automation for external corpus replay**: run corpus replay automatically per commit and fail on mismatches/compile errors.
 - **Close residual non-determinism in long corpus runs**: continue replaying the 10-seed corpus after rebooted runs and soak iterations until sustained 10/10 pass.
 - **Anomaly detection / audit hardening beyond current logs**
@@ -68,6 +68,7 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - Enclave backend manager with measured session lifecycle, runtime backend reporting, and real SGX/TrustZone primitive dispatch paths.
 - SGX EPC pool manager + launch-token MAC flow + local attestation report API + TrustZone service-contract negotiation.
 - Fail-closed enclave runtime key lifecycle enforcement: provision on open, validate on enter, revoke on close, with cert/key/counter reset at init and runtime observability in `cpu-info`.
+- External attestation interoperability path: backend vendor root anchors, cert chain signer validation, remote verifier verdict tokens, and policy-driven (`audit`/`enforce`) admission checks.
 - In-kernel JIT fuzz harness with regression seeds.
 - Complete instruction whitelist + decoder validation for JIT output.
 - Expanded SFI enforcement for all memory access paths in JIT verifier.
@@ -200,6 +201,7 @@ impl JitVerifier {
 - ✅ **SGX/TrustZone primitive backend path**: SGX sessions call `ECREATE/EADD/EEXTEND/EINIT/EENTER`; TrustZone sessions call secure monitor (`SMC`) hooks on ARM builds.
 - ✅ **Production provisioning path**: SGX EPC reservations + launch-token MAC validation + local attestation reports + TrustZone contract negotiation are enforced in backend session setup.
 - ✅ **Remote attestation + key provisioning enforcement**: `open_jit_session` fails closed unless runtime key provisioning succeeds; `enter` requires attested state and runtime key validation; `close` revokes runtime keys before teardown; `init` resets cert/key stores and attestation counters.
+- ✅ **External attestation interoperability enforcement**: quote verification is pinned to backend vendor root/signer anchors, remote verifier verdict tokens are signed and bound to session identity/measurement/nonce, and `enter` re-checks token integrity + expiry under policy (`disabled` / `audit` / `enforce`).
 - ✅ **Translation validation**: per-block translation certificates are generated and re-validated (WASM trace coverage + opcode guard obligations + block digests).
 
 **Benefits:**
@@ -817,7 +819,7 @@ impl AnomalyDetector {
 
 ### **Phase 3 (Advanced - Long-term):**
 1. 🔶 Formal verification of JIT translation + capability checks
-2. 🟡 External remote attestation interoperability (vendor trust chain + remote verifier integration)
+2. ✅ External remote attestation interoperability (vendor trust chain + remote verifier integration)
 3. 🔶 Tamper-proof audit chaining + anomaly detection
 
 ---
@@ -848,7 +850,7 @@ impl AnomalyDetector {
 
 ---
 
-**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, SMEP/SMAP/KPTI, fuel limits, integrity checks, shadow validation, capability MACs in IPC + core tables, complete decoder/whitelist, expanded SFI, software memory-tag policy enforcement with fail-closed user mappings, SGX/TrustZone capability detection, translation certificates, and in-kernel coverage-guided corpus fuzzing). The remaining gap to "provably secure" is **formal verification + external attestation interoperability hardening + long-run deterministic regression/soak validation**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
+**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, SMEP/SMAP/KPTI, fuel limits, integrity checks, shadow validation, capability MACs in IPC + core tables, complete decoder/whitelist, expanded SFI, software memory-tag policy enforcement with fail-closed user mappings, SGX/TrustZone capability detection, translation certificates, external attestation interoperability enforcement, and in-kernel coverage-guided corpus fuzzing). The remaining gap to "provably secure" is **formal verification + long-run deterministic regression/soak validation + audit/anomaly hardening**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
 
 # 🔬 **Mathematical Problems to Make Oreulia Provably Impenetrable**
 

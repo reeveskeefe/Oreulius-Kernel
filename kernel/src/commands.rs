@@ -5957,6 +5957,12 @@ fn cmd_cpu_info() {
     } else {
         vga::print_str("not-ready");
     }
+    vga::print_str("\n  Vendor root: ");
+    if enc.vendor_root_ready {
+        vga::print_str("ready");
+    } else {
+        vga::print_str("not-ready");
+    }
     vga::print_str("\n  Provisioned keys (active/provisioned/revoked): ");
     print_usize(enc.provisioned_keys_active);
     vga::print_str(" / ");
@@ -5967,6 +5973,20 @@ fn cmd_cpu_info() {
     print_u32(enc.attestation_verified_total);
     vga::print_str(" / ");
     print_u32(enc.attestation_failed_total);
+    vga::print_str("\n  Remote attest policy: ");
+    match enc.remote_policy {
+        crate::enclave::RemoteAttestationPolicy::Disabled => vga::print_str("disabled"),
+        crate::enclave::RemoteAttestationPolicy::Audit => vga::print_str("audit"),
+        crate::enclave::RemoteAttestationPolicy::Enforce => vga::print_str("enforce"),
+    }
+    vga::print_str("\n  Remote verifiers: ");
+    print_usize(enc.remote_verifiers_configured);
+    vga::print_str("\n  Remote attest (ok/fail/audit-bypass): ");
+    print_u32(enc.remote_attestation_verified_total);
+    vga::print_str(" / ");
+    print_u32(enc.remote_attestation_failed_total);
+    vga::print_str(" / ");
+    print_u32(enc.remote_attestation_audit_only_total);
     vga::print_str("\n  TZ contract: ");
     if enc.trustzone_contract_ready {
         vga::print_str("ready");
