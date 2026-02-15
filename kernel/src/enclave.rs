@@ -12,10 +12,12 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 
 use crate::memory_isolation::{self, AccessPolicy, IsolationDomain};
+use crate::{memory, security};
 
 const MAX_ENCLAVE_SESSIONS: usize = 16;
 const INVALID_ID: u32 = 0;
 const PAGE_SIZE: usize = 4096;
+const EPC_POOL_PAGES: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -42,6 +44,10 @@ pub struct EnclaveStatus {
     pub created_total: u32,
     pub failed_total: u32,
     pub backend_ops_total: u32,
+    pub epc_total_pages: usize,
+    pub epc_used_pages: usize,
+    pub attestation_reports: u32,
+    pub trustzone_contract_ready: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -56,6 +62,10 @@ struct EnclaveSession {
     mem_phys: usize,
     mem_len: usize,
     backend_cookie: u32,
+    epc_base: usize,
+    epc_pages: usize,
+    launch_token_mac: u64,
+    launch_nonce: u32,
 }
 
 impl EnclaveSession {
@@ -71,6 +81,10 @@ impl EnclaveSession {
             mem_phys: 0,
             mem_len: 0,
             backend_cookie: 0,
+            epc_base: 0,
+            epc_pages: 0,
+            launch_token_mac: 0,
+            launch_nonce: 0,
         }
     }
 }
@@ -126,11 +140,121 @@ static MANAGER: Mutex<EnclaveManager> = Mutex::new(EnclaveManager::new());
 static ACTIVE_SESSION: AtomicU32 = AtomicU32::new(INVALID_ID);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static BACKEND_OPS_TOTAL: AtomicU32 = AtomicU32::new(0);
+static ATTESTATION_REPORTS: AtomicU32 = AtomicU32::new(0);
 
 #[inline]
 fn record_backend_op() {
     BACKEND_OPS_TOTAL.fetch_add(1, Ordering::SeqCst);
 }
+
+#[derive(Clone, Copy)]
+struct EpcManager {
+    base: usize,
+    pages: usize,
+    owner: [u32; EPC_POOL_PAGES],
+}
+
+impl EpcManager {
+    const fn new() -> Self {
+        Self {
+            base: 0,
+            pages: 0,
+            owner: [INVALID_ID; EPC_POOL_PAGES],
+        }
+    }
+
+    fn clear(&mut self) {
+        self.base = 0;
+        self.pages = 0;
+        self.owner = [INVALID_ID; EPC_POOL_PAGES];
+    }
+
+    fn used_pages(&self) -> usize {
+        let mut used = 0usize;
+        let mut i = 0usize;
+        while i < self.pages {
+            if self.owner[i] != INVALID_ID {
+                used += 1;
+            }
+            i += 1;
+        }
+        used
+    }
+
+    fn init_pool(&mut self) -> Result<(), &'static str> {
+        self.clear();
+        let base = memory::jit_allocate_pages(EPC_POOL_PAGES)?;
+        self.base = base;
+        self.pages = EPC_POOL_PAGES;
+        Ok(())
+    }
+
+    fn reserve_contiguous(&mut self, owner: u32, count: usize) -> Result<usize, &'static str> {
+        if owner == INVALID_ID || count == 0 || self.base == 0 || count > self.pages {
+            return Err("Invalid EPC reservation request");
+        }
+        let mut start = 0usize;
+        while start + count <= self.pages {
+            let mut free = true;
+            let mut i = start;
+            while i < start + count {
+                if self.owner[i] != INVALID_ID {
+                    free = false;
+                    break;
+                }
+                i += 1;
+            }
+            if free {
+                let mut j = start;
+                while j < start + count {
+                    self.owner[j] = owner;
+                    j += 1;
+                }
+                return Ok(self.base + (start * PAGE_SIZE));
+            }
+            start += 1;
+        }
+        Err("EPC pool exhausted")
+    }
+
+    fn release_owner(&mut self, owner: u32) {
+        if owner == INVALID_ID || self.base == 0 {
+            return;
+        }
+        let mut i = 0usize;
+        while i < self.pages {
+            if self.owner[i] == owner {
+                self.owner[i] = INVALID_ID;
+            }
+            i += 1;
+        }
+    }
+}
+
+static EPC_MANAGER: Mutex<EpcManager> = Mutex::new(EpcManager::new());
+
+#[derive(Clone, Copy)]
+struct TrustZoneContract {
+    ready: bool,
+    abi_major: u16,
+    abi_minor: u16,
+    features: u32,
+    max_sessions: u32,
+}
+
+impl TrustZoneContract {
+    const fn new() -> Self {
+        Self {
+            ready: false,
+            abi_major: 0,
+            abi_minor: 0,
+            features: 0,
+            max_sessions: 0,
+        }
+    }
+}
+
+static TRUSTZONE_CONTRACT: Mutex<TrustZoneContract> = Mutex::new(TrustZoneContract::new());
 
 #[repr(C, align(4096))]
 struct AlignedPage {
@@ -257,6 +381,58 @@ fn measure_session(
     hash_u64(h, mem_len as u64)
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct EnclaveAttestationReport {
+    pub session_id: u32,
+    pub backend: EnclaveBackend,
+    pub measurement: u64,
+    pub nonce: u64,
+    pub launch_token_mac: u64,
+    pub report_mac: u64,
+}
+
+fn launch_token_payload(
+    session_id: u32,
+    measurement: u64,
+    epc_base: usize,
+    epc_pages: usize,
+    nonce: u32,
+) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[0..4].copy_from_slice(&session_id.to_le_bytes());
+    out[4..12].copy_from_slice(&measurement.to_le_bytes());
+    out[12..16].copy_from_slice(&(epc_base as u32).to_le_bytes());
+    out[16..20].copy_from_slice(&(epc_pages as u32).to_le_bytes());
+    out[20..24].copy_from_slice(&nonce.to_le_bytes());
+    out
+}
+
+fn issue_launch_token(session: &mut EnclaveSession) -> Result<(), &'static str> {
+    let nonce = security::security().random_u32();
+    let payload = launch_token_payload(
+        session.id,
+        session.measurement,
+        session.epc_base,
+        session.epc_pages,
+        nonce,
+    );
+    let mac = security::security().cap_token_sign(&payload);
+    session.launch_nonce = nonce;
+    session.launch_token_mac = mac;
+    Ok(())
+}
+
+fn verify_launch_token(session: &EnclaveSession) -> bool {
+    let payload = launch_token_payload(
+        session.id,
+        session.measurement,
+        session.epc_base,
+        session.epc_pages,
+        session.launch_nonce,
+    );
+    security::security().cap_token_verify(&payload, session.launch_token_mac)
+}
+
 fn detect_backend() -> EnclaveBackend {
     let iso = memory_isolation::status();
     if iso.sgx_supported && iso.sgx1_supported && sgx_cpu_ready() {
@@ -295,14 +471,35 @@ pub fn init() {
     let mut mgr = MANAGER.lock();
     mgr.backend = backend;
     ENABLED.store(backend != EnclaveBackend::None, Ordering::SeqCst);
+    ATTESTATION_REPORTS.store(0, Ordering::SeqCst);
+    BACKEND_OPS_TOTAL.store(0, Ordering::SeqCst);
+
+    {
+        let mut tz = TRUSTZONE_CONTRACT.lock();
+        *tz = TrustZoneContract::new();
+    }
+    {
+        let mut epc = EPC_MANAGER.lock();
+        if backend == EnclaveBackend::IntelSgx {
+            if epc.init_pool().is_err() {
+                mgr.mark_failure();
+                mgr.backend = EnclaveBackend::None;
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        } else {
+            epc.clear();
+        }
+    }
 
     crate::vga::print_str("[ENCLAVE] Backend: ");
-    crate::vga::print_str(backend_name(backend));
+    crate::vga::print_str(backend_name(mgr.backend));
     crate::vga::print_str("\n");
 }
 
 pub fn status() -> EnclaveStatus {
     let mgr = MANAGER.lock();
+    let epc = EPC_MANAGER.lock();
+    let tz = TRUSTZONE_CONTRACT.lock();
     let mut open = 0usize;
     let mut i = 0usize;
     while i < mgr.sessions.len() {
@@ -319,6 +516,10 @@ pub fn status() -> EnclaveStatus {
         created_total: mgr.created_total,
         failed_total: mgr.failed_total,
         backend_ops_total: BACKEND_OPS_TOTAL.load(Ordering::SeqCst),
+        epc_total_pages: epc.pages,
+        epc_used_pages: epc.used_pages(),
+        attestation_reports: ATTESTATION_REPORTS.load(Ordering::SeqCst),
+        trustzone_contract_ready: tz.ready,
     }
 }
 
@@ -373,6 +574,10 @@ pub fn open_jit_session(
         mem_phys,
         mem_len,
         backend_cookie: 0,
+        epc_base: 0,
+        epc_pages: 0,
+        launch_token_mac: 0,
+        launch_nonce: 0,
     };
 
     backend_open(mgr.backend, &mut session, &mut mgr)?;
@@ -470,6 +675,33 @@ pub fn close(session_id: u32) -> Result<(), &'static str> {
     }
     mgr.sessions[idx] = EnclaveSession::empty();
     Ok(())
+}
+
+pub fn attest_session(session_id: u32, nonce: u64) -> Result<EnclaveAttestationReport, &'static str> {
+    let mgr = MANAGER.lock();
+    let idx = mgr.find_slot(session_id).ok_or("Enclave session not found")?;
+    let s = mgr.sessions[idx];
+
+    let mut payload = [0u8; 48];
+    payload[0..4].copy_from_slice(&s.id.to_le_bytes());
+    payload[4..8].copy_from_slice(&(mgr.backend as u32).to_le_bytes());
+    payload[8..16].copy_from_slice(&s.measurement.to_le_bytes());
+    payload[16..24].copy_from_slice(&nonce.to_le_bytes());
+    payload[24..32].copy_from_slice(&s.launch_token_mac.to_le_bytes());
+    payload[32..36].copy_from_slice(&(s.epc_pages as u32).to_le_bytes());
+    payload[36..40].copy_from_slice(&(s.epc_base as u32).to_le_bytes());
+    payload[40..44].copy_from_slice(&s.backend_cookie.to_le_bytes());
+
+    let report_mac = security::security().cap_token_sign(&payload);
+    ATTESTATION_REPORTS.fetch_add(1, Ordering::SeqCst);
+    Ok(EnclaveAttestationReport {
+        session_id: s.id,
+        backend: mgr.backend,
+        measurement: s.measurement,
+        nonce,
+        launch_token_mac: s.launch_token_mac,
+        report_mac,
+    })
 }
 
 fn backend_open(
@@ -633,14 +865,6 @@ fn sgx_open_session(
     session: &mut EnclaveSession,
     mgr: &mut EnclaveManager,
 ) -> Result<(), &'static str> {
-    let mut ws = SGX_WORKSPACE.lock();
-    ws.secs.bytes = [0; PAGE_SIZE];
-    ws.sigstruct.bytes = [0; PAGE_SIZE];
-    ws.token.bytes = [0; PAGE_SIZE];
-    ws.tcs.bytes = [0; PAGE_SIZE];
-    ws.pageinfo = SgxPageInfo::zeroed();
-    ws.secinfo = SgxSecInfo::zeroed();
-
     let code_pages = align_up(session.code_len)? / PAGE_SIZE;
     let data_pages = align_up(session.data_len)? / PAGE_SIZE;
     let mem_pages = align_up(session.mem_len)? / PAGE_SIZE;
@@ -649,108 +873,142 @@ fn sgx_open_session(
         .and_then(|x| x.checked_add(data_pages))
         .and_then(|x| x.checked_add(mem_pages))
         .ok_or("SGX total pages overflow")?;
-    let enclave_size = next_pow2(total_pages * PAGE_SIZE).max(PAGE_SIZE * 2);
-    let enclave_base: u64 = 0;
 
-    // Minimal SECS layout to invoke SGX lifecycle primitives.
-    write_u64_le(&mut ws.secs.bytes, 0x00, enclave_size as u64); // size
-    write_u64_le(&mut ws.secs.bytes, 0x08, enclave_base); // base
-    write_u64_le(&mut ws.secs.bytes, 0x30, 0x2); // ATTR.DEBUG
-    write_u64_le(&mut ws.secs.bytes, 0x38, 0x3); // XFRM x87|SSE
+    {
+        let mut epc = EPC_MANAGER.lock();
+        session.epc_base = epc.reserve_contiguous(session.id, total_pages)?;
+        session.epc_pages = total_pages;
+    }
+    let result = (|| -> Result<(), &'static str> {
+        issue_launch_token(session)?;
+        if !verify_launch_token(session) {
+            return Err("SGX launch token verification failed");
+        }
 
-    ws.pageinfo.linaddr = 0;
-    ws.pageinfo.srcpge = 0;
-    ws.pageinfo.secinfo = 0;
-    ws.pageinfo.secs = 0;
-    ws.pageinfo.reserved = [0; 32];
+        let mut ws = SGX_WORKSPACE.lock();
+        ws.secs.bytes = [0; PAGE_SIZE];
+        ws.sigstruct.bytes = [0; PAGE_SIZE];
+        ws.token.bytes = [0; PAGE_SIZE];
+        ws.tcs.bytes = [0; PAGE_SIZE];
+        ws.pageinfo = SgxPageInfo::zeroed();
+        ws.secinfo = SgxSecInfo::zeroed();
 
-    let secs_ptr = ws.secs.bytes.as_ptr() as usize;
-    let st_create = call_encls(
-        SGX_ENCLS_ECREATE,
-        &ws.pageinfo as *const SgxPageInfo as usize,
-        secs_ptr,
-        0,
-    );
-    record_backend_op();
-    if st_create != 0 {
+        let enclave_size = next_pow2(total_pages * PAGE_SIZE).max(PAGE_SIZE * 2);
+        let enclave_base: u64 = 0;
+
+        // Minimal SECS layout to invoke SGX lifecycle primitives.
+        write_u64_le(&mut ws.secs.bytes, 0x00, enclave_size as u64); // size
+        write_u64_le(&mut ws.secs.bytes, 0x08, enclave_base); // base
+        write_u64_le(&mut ws.secs.bytes, 0x30, 0x2); // ATTR.DEBUG
+        write_u64_le(&mut ws.secs.bytes, 0x38, 0x3); // XFRM x87|SSE
+
+        ws.pageinfo.linaddr = 0;
+        ws.pageinfo.srcpge = 0;
+        ws.pageinfo.secinfo = 0;
+        ws.pageinfo.secs = 0;
+        ws.pageinfo.reserved = [0; 32];
+        write_u64_le(&mut ws.token.bytes, 0x00, session.launch_token_mac);
+        write_u64_le(&mut ws.token.bytes, 0x08, session.launch_nonce as u64);
+        write_u64_le(&mut ws.token.bytes, 0x10, session.measurement);
+
+        let secs_ptr = session.epc_base;
+        let st_create = call_encls(
+            SGX_ENCLS_ECREATE,
+            &ws.pageinfo as *const SgxPageInfo as usize,
+            secs_ptr, // EPC SECS page
+            0,
+        );
+        record_backend_op();
+        if st_create != 0 {
+            return Err("SGX ECREATE failed");
+        }
+
+        let tcs_lin = enclave_base;
+        let tcs_src = ws.tcs.bytes.as_ptr() as usize;
+        sgx_add_page(
+            &mut ws,
+            secs_ptr,
+            tcs_src,
+            tcs_lin,
+            SGX_PAGE_TYPE_TCS,
+            mgr,
+        )?;
+
+        let mut lin = enclave_base + PAGE_SIZE as u64;
+        let mut src = align_down(session.code_phys);
+        let code_end = align_up(session.code_phys.checked_add(session.code_len).ok_or("SGX code overflow")?)?;
+        while src < code_end {
+            sgx_add_page(
+                &mut ws,
+                secs_ptr,
+                src,
+                lin,
+                SGX_PAGE_TYPE_REG | SGX_PERM_R | SGX_PERM_X,
+                mgr,
+            )?;
+            sgx_measure_page(lin, mgr)?;
+            src += PAGE_SIZE;
+            lin += PAGE_SIZE as u64;
+        }
+
+        let mut data_src = align_down(session.data_phys);
+        let data_end = align_up(session.data_phys.checked_add(session.data_len).ok_or("SGX data overflow")?)?;
+        while data_src < data_end {
+            sgx_add_page(
+                &mut ws,
+                secs_ptr,
+                data_src,
+                lin,
+                SGX_PAGE_TYPE_REG | SGX_PERM_R | SGX_PERM_W,
+                mgr,
+            )?;
+            data_src += PAGE_SIZE;
+            lin += PAGE_SIZE as u64;
+        }
+
+        let mut mem_src = align_down(session.mem_phys);
+        let mem_end = align_up(session.mem_phys.checked_add(session.mem_len).ok_or("SGX mem overflow")?)?;
+        while mem_src < mem_end {
+            sgx_add_page(
+                &mut ws,
+                secs_ptr,
+                mem_src,
+                lin,
+                SGX_PAGE_TYPE_REG | SGX_PERM_R | SGX_PERM_W,
+                mgr,
+            )?;
+            mem_src += PAGE_SIZE;
+            lin += PAGE_SIZE as u64;
+        }
+
+        // EINIT with workspace placeholders. On real SGX platforms this call will
+        // succeed once launch policy/token provisioning is configured.
+        let st_init = call_encls(
+            SGX_ENCLS_EINIT,
+            ws.sigstruct.bytes.as_ptr() as usize,
+            ws.token.bytes.as_ptr() as usize,
+            secs_ptr, // EPC SECS page
+        );
+        record_backend_op();
+        if st_init != 0 {
+            return Err("SGX EINIT failed");
+        }
+
+        session.backend_cookie = tcs_lin as u32;
+        Ok(())
+    })();
+
+    if result.is_err() {
         mgr.mark_failure();
-        return Err("SGX ECREATE failed");
+        let mut epc = EPC_MANAGER.lock();
+        epc.release_owner(session.id);
+        session.backend_cookie = 0;
+        session.epc_base = 0;
+        session.epc_pages = 0;
+        session.launch_token_mac = 0;
+        session.launch_nonce = 0;
     }
-
-    let tcs_lin = enclave_base;
-    let tcs_src = ws.tcs.bytes.as_ptr() as usize;
-    sgx_add_page(
-        &mut ws,
-        secs_ptr,
-        tcs_src,
-        tcs_lin,
-        SGX_PAGE_TYPE_TCS,
-        mgr,
-    )?;
-
-    let mut lin = enclave_base + PAGE_SIZE as u64;
-    let mut src = align_down(session.code_phys);
-    let code_end = align_up(session.code_phys.checked_add(session.code_len).ok_or("SGX code overflow")?)?;
-    while src < code_end {
-        sgx_add_page(
-            &mut ws,
-            secs_ptr,
-            src,
-            lin,
-            SGX_PAGE_TYPE_REG | SGX_PERM_R | SGX_PERM_X,
-            mgr,
-        )?;
-        sgx_measure_page(lin, mgr)?;
-        src += PAGE_SIZE;
-        lin += PAGE_SIZE as u64;
-    }
-
-    let mut data_src = align_down(session.data_phys);
-    let data_end = align_up(session.data_phys.checked_add(session.data_len).ok_or("SGX data overflow")?)?;
-    while data_src < data_end {
-        sgx_add_page(
-            &mut ws,
-            secs_ptr,
-            data_src,
-            lin,
-            SGX_PAGE_TYPE_REG | SGX_PERM_R | SGX_PERM_W,
-            mgr,
-        )?;
-        data_src += PAGE_SIZE;
-        lin += PAGE_SIZE as u64;
-    }
-
-    let mut mem_src = align_down(session.mem_phys);
-    let mem_end = align_up(session.mem_phys.checked_add(session.mem_len).ok_or("SGX mem overflow")?)?;
-    while mem_src < mem_end {
-        sgx_add_page(
-            &mut ws,
-            secs_ptr,
-            mem_src,
-            lin,
-            SGX_PAGE_TYPE_REG | SGX_PERM_R | SGX_PERM_W,
-            mgr,
-        )?;
-        mem_src += PAGE_SIZE;
-        lin += PAGE_SIZE as u64;
-    }
-
-    // EINIT with workspace placeholders. On real SGX platforms this call will
-    // succeed once launch policy/token provisioning is configured.
-    let st_init = call_encls(
-        SGX_ENCLS_EINIT,
-        ws.sigstruct.bytes.as_ptr() as usize,
-        ws.token.bytes.as_ptr() as usize,
-        secs_ptr,
-    );
-    record_backend_op();
-    if st_init != 0 {
-        mgr.mark_failure();
-        return Err("SGX EINIT failed");
-    }
-
-    session.backend_cookie = tcs_lin as u32;
-    Ok(())
+    result
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
@@ -803,7 +1061,13 @@ fn sgx_exit_session(
 fn sgx_close_session(
     session: &mut EnclaveSession,
 ) -> Result<(), &'static str> {
+    let mut epc = EPC_MANAGER.lock();
+    epc.release_owner(session.id);
     session.backend_cookie = 0;
+    session.epc_base = 0;
+    session.epc_pages = 0;
+    session.launch_token_mac = 0;
+    session.launch_nonce = 0;
     Ok(())
 }
 
@@ -814,6 +1078,7 @@ fn sgx_close_session(
     Err("SGX backend unsupported on this build target")
 }
 
+const TZ_SMC_NEGOTIATE: u32 = 0x8200_00FF;
 const TZ_SMC_OPEN: u32 = 0x8200_0100;
 const TZ_SMC_ENTER: u32 = 0x8200_0101;
 const TZ_SMC_EXIT: u32 = 0x8200_0102;
@@ -862,10 +1127,36 @@ fn trustzone_smc(_fid: u32, _a1: u32, _a2: u32, _a3: u32) -> u32 {
     u32::MAX
 }
 
+fn ensure_trustzone_contract() -> Result<(), &'static str> {
+    {
+        let tz = TRUSTZONE_CONTRACT.lock();
+        if tz.ready {
+            return Ok(());
+        }
+    }
+    let resp = trustzone_smc(TZ_SMC_NEGOTIATE, 1, 0, MAX_ENCLAVE_SESSIONS as u32);
+    record_backend_op();
+    if resp == u32::MAX {
+        return Err("TrustZone contract negotiation unavailable");
+    }
+    if resp != 0 {
+        return Err("TrustZone contract negotiation failed");
+    }
+
+    let mut tz = TRUSTZONE_CONTRACT.lock();
+    tz.ready = true;
+    tz.abi_major = 1;
+    tz.abi_minor = 0;
+    tz.features = 0x1; // Base secure-enclave service contract.
+    tz.max_sessions = MAX_ENCLAVE_SESSIONS as u32;
+    Ok(())
+}
+
 fn trustzone_open_session(
     session: &mut EnclaveSession,
     mgr: &mut EnclaveManager,
 ) -> Result<(), &'static str> {
+    ensure_trustzone_contract()?;
     let resp = trustzone_smc(
         TZ_SMC_OPEN,
         session.code_phys as u32,

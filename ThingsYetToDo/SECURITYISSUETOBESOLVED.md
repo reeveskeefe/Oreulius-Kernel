@@ -34,13 +34,14 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **Memory tagging + hardware isolation capability layer**: software-tagged physical ranges now enforce fail-closed user mappings; SGX capability detection and TrustZone architecture gating are surfaced at runtime.
 - **Hardware enclave backend framework**: measured enclave sessions are created/entered/exited/closed around JIT user execution with strict lifecycle checks and backend selection (`intel-sgx` / `arm-trustzone` / `none`).
 - **Hardware enclave primitive wiring**: SGX backend now issues real `ECREATE/EADD/EEXTEND/EINIT/EENTER` instructions (when supported); TrustZone backend uses secure monitor call hooks (`SMC`) on ARM targets.
+- **Production enclave provisioning**: SGX EPC pool/page reservation, launch-token signing + verification, and local attestation report generation are integrated; TrustZone now enforces a negotiated secure-world service contract before session open.
 - **Scheduler/context-switch hardening**: first-run kernel thread contexts start with IF cleared, context-switch preserves raw saved EFLAGS, and resumed threads restore prior interrupt state.
 - **Keyboard IRQ recovery under preemption**: cooperative switch paths now restore interrupt state on resume, preventing latent IRQ starvation after yields/blocks.
 - **Translation validation (per-block certificate)**: each compiled function now carries a per-op translation trace and per-block digest; cache/integrity checks re-validate WASM-to-x86 block coverage, fuel-check insertion, and memory-guard shape before execution.
 
 ### **Remaining TODOs**
 - **Formal verification of critical JIT paths and capability checks**
-- **Production enclave provisioning**: add SGX EPC page management + launch token/attestation flow (or TrustZone secure-world service contract) for hardware-backed deployment.
+- **Remote attestation + key provisioning hardening**: integrate quote/certificate verification chain and hardware-backed key lifecycle for production rollout.
 - **External fuzzing + coverage-guided regression**
 - **Anomaly detection / audit hardening beyond current logs**
 - **Long-run scheduler/network stress verification**: continue soak testing preemptive shell/network switching to close intermittent runtime-fault reports.
@@ -60,6 +61,7 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - SipHash MAC tokens on in-kernel capability table entries.
 - SMEP/SMAP enabled (when supported) + KPTI user IDT/trampoline/CR3 switching.
 - Enclave backend manager with measured session lifecycle, runtime backend reporting, and real SGX/TrustZone primitive dispatch paths.
+- SGX EPC pool manager + launch-token MAC flow + local attestation report API + TrustZone service-contract negotiation.
 - In-kernel JIT fuzz harness with regression seeds.
 - Complete instruction whitelist + decoder validation for JIT output.
 - Expanded SFI enforcement for all memory access paths in JIT verifier.
@@ -184,6 +186,7 @@ impl JitVerifier {
 - ✅ **Hardware isolation capability reporting**: SGX/TrustZone availability is detected and exposed for policy decisions.
 - ✅ **Enclave session lifecycle framework**: JIT user execution is wrapped in measured enclave sessions with explicit `open -> enter -> exit -> close` state transitions and backend-aware gating.
 - ✅ **SGX/TrustZone primitive backend path**: SGX sessions call `ECREATE/EADD/EEXTEND/EINIT/EENTER`; TrustZone sessions call secure monitor (`SMC`) hooks on ARM builds.
+- ✅ **Production provisioning path**: SGX EPC reservations + launch-token MAC validation + local attestation reports + TrustZone contract negotiation are enforced in backend session setup.
 - ✅ **Translation validation**: per-block translation certificates are generated and re-validated (WASM trace coverage + opcode guard obligations + block digests).
 
 **Benefits:**
@@ -797,7 +800,7 @@ impl AnomalyDetector {
 
 ### **Phase 3 (Advanced - Long-term):**
 1. 🔶 Formal verification of JIT translation + capability checks
-2. 🔶 Production enclave provisioning + attestation (SGX EPC management / TrustZone secure-world service contract)
+2. 🔶 Remote attestation trust chain + hardware key provisioning (quotes/certs/sealing lifecycle)
 3. 🔶 Tamper-proof audit chaining + anomaly detection
 
 ---

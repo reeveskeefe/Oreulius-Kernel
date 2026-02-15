@@ -5731,6 +5731,18 @@ fn cmd_cpu_info() {
     print_u32(enc.failed_total);
     vga::print_str("\n  Enclave backend ops: ");
     print_u32(enc.backend_ops_total);
+    vga::print_str("\n  EPC pages (used/total): ");
+    print_usize(enc.epc_used_pages);
+    vga::print_str(" / ");
+    print_usize(enc.epc_total_pages);
+    vga::print_str("\n  Attestation reports: ");
+    print_u32(enc.attestation_reports);
+    vga::print_str("\n  TZ contract: ");
+    if enc.trustzone_contract_ready {
+        vga::print_str("ready");
+    } else {
+        vga::print_str("not-ready");
+    }
     vga::print_str("\n");
     
     // Other Features
