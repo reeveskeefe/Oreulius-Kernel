@@ -15,6 +15,7 @@ pub mod console_service;
 pub mod cpu_security;
 pub mod dma_asm;
 pub mod disk;
+pub mod enclave;
 pub mod elf;
 pub mod gdt;
 pub mod e1000;
@@ -160,6 +161,7 @@ pub extern "C" fn rust_main() -> ! {
         vga::print_str("\n");
     }
     memory_isolation::init();
+    enclave::init();
     
     // Initialize syscall interface
     vga::print_str("[SYSCALL] Setting up system call interface...\n");

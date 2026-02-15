@@ -9,7 +9,7 @@
 [![License: Oreulius](docs/oreulius-license-badge.svg)](OreuliusLiscence.md)
 [![Platform](https://img.shields.io/badge/platform-i686-lightgrey.svg)](https://en.wikipedia.org/wiki/I686)
 <br>
-[![Canada Badge](docs/Made-In-Canada-Badge.svg)](https://en.wikipedia.org/wiki/Made_in_Canada)
+[![Canada Badge](docs/Made-In-Canada-Badge.svg)](https://en.wikipedia.org/wiki/Canada)
 
 [Features](#features) • [Architecture](#architecture) • [Building](#building) • [Running](#running) • [Commands](#commands) • [Documentation](#documentation)
 

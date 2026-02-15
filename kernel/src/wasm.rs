@@ -3076,6 +3076,15 @@ fn call_jit_user(
         true,
     )?;
 
+    let enclave_session = crate::enclave::open_jit_session(
+        exec_phys,
+        exec_map_len,
+        state_phys,
+        state_map_len,
+        mem_phys,
+        mem_map_len,
+    )?;
+
     let sandbox_pd = sandbox.phys_addr() as u32;
     drop(kernel_guard);
 
@@ -3126,6 +3135,13 @@ fn call_jit_user(
     // Ensure trap pointers are set for fault handling.
     jit_fault_enter(trap_code);
 
+    if let Some(session_id) = enclave_session {
+        if let Err(e) = crate::enclave::enter(session_id) {
+            let _ = crate::enclave::close(session_id);
+            return Err(e);
+        }
+    }
+
     let flags = unsafe { idt_asm::fast_cli_save() };
     let old_cr3 = paging::current_page_directory_addr();
     if kpti::enabled() {
@@ -3151,6 +3167,10 @@ fn call_jit_user(
         kpti::leave_user();
     }
     jit_fault_exit();
+    if let Some(session_id) = enclave_session {
+        let _ = crate::enclave::exit(session_id);
+        let _ = crate::enclave::close(session_id);
+    }
     let _ = memory_isolation::tag_jit_user_trampoline(trampoline_phys, paging::PAGE_SIZE, false);
     let _ = memory_isolation::tag_jit_user_state(call_phys, paging::PAGE_SIZE, false);
     let _ = memory_isolation::tag_jit_user_stack(

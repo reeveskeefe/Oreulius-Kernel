@@ -5707,6 +5707,25 @@ fn cmd_cpu_info() {
     vga::print_str("\n  Denied user maps: ");
     print_u32(iso.denied_user_mappings);
     vga::print_str("\n");
+
+    let enc = crate::enclave::status();
+    vga::print_str("  Enclave backend: ");
+    match enc.backend {
+        crate::enclave::EnclaveBackend::None => vga::print_str("none\n"),
+        crate::enclave::EnclaveBackend::IntelSgx => vga::print_str("intel-sgx\n"),
+        crate::enclave::EnclaveBackend::ArmTrustZone => vga::print_str("arm-trustzone\n"),
+    }
+    vga::print_str("  Enclave enabled: ");
+    if enc.enabled {
+        vga::print_str("✓ Yes\n");
+    } else {
+        vga::print_str("✗ No\n");
+    }
+    vga::print_str("  Enclave sessions: ");
+    print_usize(enc.open_sessions);
+    vga::print_str("\n  Active enclave session: ");
+    print_u32(enc.active_session);
+    vga::print_str("\n");
     
     // Other Features
     vga::print_str("\nOther Features:\n");

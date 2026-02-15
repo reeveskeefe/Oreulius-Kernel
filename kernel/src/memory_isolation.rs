@@ -45,6 +45,8 @@ pub enum IsolationDomain {
     JitUserState = 10,
     JitUserStack = 11,
     DeviceMmio = 12,
+    EnclaveCode = 13,
+    EnclaveData = 14,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
