@@ -40,11 +40,14 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **Keyboard IRQ recovery under preemption**: cooperative switch paths now restore interrupt state on resume, preventing latent IRQ starvation after yields/blocks.
 - **Translation validation (per-block certificate)**: each compiled function now carries a per-op translation trace and per-block digest; cache/integrity checks re-validate WASM-to-x86 block coverage, fuel-check insertion, and memory-guard shape before execution.
 - **Coverage-guided fuzzing + external regression corpus**: JIT fuzz generation now uses opcode-coverage feedback (bin + edge novelty), reports coverage metrics, and includes a stable external seed corpus with a replay runner for deterministic regression.
+- **Panic-safe bytecode/function range handling**: interpreter/JIT call paths now validate function code ranges with checked arithmetic and clamped bytecode lengths, converting corrupt metadata into `InvalidModule` instead of slice panics.
+- **Allocator-stable corpus fuzz execution**: regression corpus runs now reuse fuzz instances, compiler, and scratch buffers across seeds to avoid allocator exhaustion during long in-kernel campaigns.
 
 ### **Remaining TODOs**
 - **Formal verification of critical JIT paths and capability checks**
 - **External remote attestation interoperability hardening**: integrate vendor quote/certificate root-of-trust verification and remote verifier exchange for cross-system trust.
 - **CI automation for external corpus replay**: run corpus replay automatically per commit and fail on mismatches/compile errors.
+- **Close residual non-determinism in long corpus runs**: continue replaying the 10-seed corpus after rebooted runs and soak iterations until sustained 10/10 pass.
 - **Anomaly detection / audit hardening beyond current logs**
 - **Long-run scheduler/network stress verification**: continue soak testing preemptive shell/network switching to close intermittent runtime-fault reports.
 
@@ -73,6 +76,8 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - Per-block translation certificates with runtime integrity re-validation of WASM->x86 trace coverage.
 - Coverage-guided fuzz heuristics (opcode bins/edges + novelty tracking) and `wasm-jit-fuzz-corpus` aggregate regression command.
 - External seed corpus files and replay runner under `kernel/fuzz/`.
+- Panic-safe function range checks in interpreter/JIT execution paths (checked `code_offset + code_len`, clamped bytecode-length reads).
+- Corpus fuzz memory-stability updates: shared scratch buffers, shared compiler, and shared fuzz instances across seed runs.
 - Software memory tagging with fail-closed user-mapping policy checks in paging.
 - SGX capability detection + TrustZone architecture gating surfaced via boot logs and `cpu-info`.
 - Scheduler bootstrap race fix: initial kernel-thread IF handling and resumed interrupt-state restoration.
@@ -83,6 +88,8 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **Expanded SFI validation**: `wasm-jit-fuzz 1000` on seeds `3418704842`, `2788077538`, and `3609752155` produced **0 mismatches** and **0 compile errors**.
 - **Translation validation upgrade**: compile-time + integrity-time per-block translation certificate checks are now enforced (trace coverage, fuel checks, memory-guard shape, block digests).
 - **Scheduler bootstrap stability**: kernel thread handoff reaches task entry reliably (shell + network tasks start), and keyboard input path remains interrupt-driven after context switches.
+- **Runtime panic hardening**: fuzz-discovered slice panic (`code_offset/code_len`) is now fail-closed (`InvalidModule`) via checked range validation.
+- **Latest corpus snapshot (pre-reboot before allocator-stability patch)**: `wasm-jit-fuzz-corpus 1000` reached **9/10 seeds passed**, **0 compile errors**, **1 mismatch** (seed `3418704842`, iter `155`, code `41 00 0b`). Re-validation after reboot is required for final sign-off.
 
 ---
 
@@ -802,7 +809,7 @@ impl AnomalyDetector {
 8. ✅ In-kernel JIT fuzz harness + regression seeds
 9. ✅ Return-address shadow stack checks (CFI-lite)
 
-### **Phase 2 (Next - In Progress):**
+### **Phase 2 (Complete - Implemented):**
 1. ✅ Complete instruction whitelist / decoder validation
 2. ✅ Expand SFI (bounds checks or masking for all memory paths)
 3. ✅ Guard pages for all JIT regions + per-instance cleanup
@@ -841,7 +848,7 @@ impl AnomalyDetector {
 
 ---
 
-**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, SMEP/SMAP/KPTI, fuel limits, integrity checks, shadow validation, capability MACs in IPC + core tables, complete decoder/whitelist, expanded SFI, software memory-tag policy enforcement with fail-closed user mappings, SGX/TrustZone capability detection, and in-kernel fuzzing). The remaining gap to "provably secure" is **formal verification + coverage-guided fuzzing + platform enclave backend work**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
+**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, SMEP/SMAP/KPTI, fuel limits, integrity checks, shadow validation, capability MACs in IPC + core tables, complete decoder/whitelist, expanded SFI, software memory-tag policy enforcement with fail-closed user mappings, SGX/TrustZone capability detection, translation certificates, and in-kernel coverage-guided corpus fuzzing). The remaining gap to "provably secure" is **formal verification + external attestation interoperability hardening + long-run deterministic regression/soak validation**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
 
 # 🔬 **Mathematical Problems to Make Oreulia Provably Impenetrable**
 
