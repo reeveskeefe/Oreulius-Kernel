@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**A capability-based microkernel hybrid, WebAssembly-native kernel built from the ground up**
+**A capability-oriented, WebAssembly-native kernel built from the ground up**
 
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Written in assembly](https://img.shields.io/badge/written%20in-Assembly-brown.svg)](https://en.wikipedia.org/wiki/Assembly_language)
@@ -23,20 +23,30 @@
 
 ## Overview
 
-Oreulieus is an experimental operating system that rethinks traditional OS design principles. Built in Rust with a focus on security and modern execution models, it provides a foundation for exploring capability-based security, WebAssembly execution, and deterministic system behavior.
+Oreulieus is an experimental operating system that rethinks traditional OS design principles. Built in Rust with a focus on security and modern execution models, it provides a foundation for exploring capability-based security, WebAssembly execution, strict privilege transitions, and deterministic system behavior.
 
 <div align="center">
 <img src="opencommandlineinterface.png" width="600" alt="the oreulius command line interface once the kernel is booted">
 
 </div>
 
+## Formal Security Paper
+
+The full technical resolution of Oreulia's in-kernel JIT security paradox is documented here:
+
+- **[Oreulia JIT Security Resolution](docs/oreulia-jit-security-resolution.md)**
+
+This paper includes a formal model, threat-control matrix, proof obligations, theorem blocks, and implementation-to-invariant mapping.
+
 ### Key Features
 
 - **Capability-Based Security** - No ambient authority; all access is explicitly granted through capabilities
 - **WebAssembly Native** - First-class support for WASM execution with sandboxed module isolation
+- **JIT Hardening Pipeline** - W^X sealing, decoder whitelist validation, SFI/CFI constraints, and translation certificates
 - **Message-Passing IPC** - Dataflow channels for inter-process communication
 - **Persistence-First Design** - Built-in snapshotting and deterministic replay
 - **High-Performance Assembly** - Optimized low-level operations for context switching, memory management, and crypto
+- **Formal + Fuzz Verification** - In-kernel `formal-verify`, coverage-guided fuzzing, corpus replay, and soak checks
 - **QEMU-Ready** - Designed for easy testing and development in virtualized environments
 
 ---
@@ -51,18 +61,20 @@ Oreulieus is built on several core subsystems:
 - **IPC System** - Typed message channels with capability-based access control
 - **Filesystem Service** - Virtual filesystem with quota management
 - **WASM Runtime** - Sandboxed execution environment for WebAssembly modules
-- **Network Stack** - Ethernet (e1000) and WiFi device support with DNS/ARP/UDP
+- **Network Stack** - Ethernet (E1000/RTL8139) and WiFi support with ARP/ICMP/UDP/TCP + DNS paths
 
 ### Assembly-Optimized Components
 
 Oreulieus includes hand-written x86 assembly modules for critical operations:
 
-- **CPU Features** - CPUID detection, SIMD support (SSE/SSE2/SSE3/SSE4/AVX), RDRAND
+- **CPU Features** - CPUID detection and runtime capability gating
 - **Atomic Operations** - Lock-free synchronization primitives with spinlocks
 - **Performance Tools** - RDTSC timing, instruction benchmarking, cache control
-- **Context Switching** - ~10× faster than pure Rust implementation
-- **Memory Operations** - ~5× faster with optimized routines
-- **Cryptography** - ~8× faster checksums and hashing
+- **Context Switching** - Register/EFLAGS save-restore and thread trampoline transitions
+- **Memory Operations** - Optimized copy/zero paths for hot memory routines
+- **Cryptography** - Assembly-assisted primitives and secure wipe/compare paths
+- **Privilege Entry Paths** - INT 0x80 and SYSENTER with KPTI-aware CR3 transitions
+- **SGX Primitives** - `ECREATE/EADD/EEXTEND/EINIT/EENTER` wiring on supported targets
 
 ---
 
@@ -73,15 +85,15 @@ Oreulieus includes hand-written x86 assembly modules for critical operations:
 Make sure you have the following tools installed:
 
 ```bash
-# Rust toolchain (nightly)
-rustup default nightly
+# Rust toolchain (kernel-pinned nightly)
+rustup toolchain install nightly-2023-11-01
 rustup component add rust-src
 
-# Cross-compilation tools
-brew install nasm x86_64-elf-gcc x86_64-elf-binutils i686-elf-grub
+# Build tools (macOS example)
+brew install nasm qemu xorriso
 
-# QEMU for testing
-brew install qemu
+# GRUB tooling
+brew install grub
 ```
 
 ### Build Steps
@@ -89,7 +101,7 @@ brew install qemu
 1. **Clone the repository**
    ```bash
    git clone https://github.com/reeveskeefe/oreulieus-kernel.git
-   cd oreulia/kernel
+   cd oreulieus-kernel/kernel
    ```
 
 2. **Build the kernel**
@@ -116,14 +128,14 @@ brew install qemu
 ### Launch with QEMU
 
 ```bash
-# Standard launch
-qemu-system-i386 -cdrom oreulia.iso
+# Recommended launcher (uses project defaults)
+./run.sh
 
-# With serial output (useful for debugging)
+# Manual launch with serial output
 qemu-system-i386 -cdrom oreulia.iso -serial stdio
 
 # Headless mode
-qemu-system-i386 -cdrom oreulia.iso -serial stdio -nographic
+QEMU_EXTRA_ARGS="-display none -nographic -no-reboot -no-shutdown" ./run.sh
 ```
 
 ### Quick Rebuild Script
@@ -203,10 +215,15 @@ Once Oreulia boots, you'll see the shell prompt (`>`). Try these commands:
 - `wasm-jit-on` / `wasm-jit-off` - Enable/Disable JIT compilation
 - `wasm-jit-bench` - Benchmark JIT vs Interpreter
 - `wasm-jit-stats` - Show JIT statistics
+- `wasm-jit-fuzz <iters> [seed]` - Coverage-guided differential JIT fuzzing
+- `wasm-jit-fuzz-corpus <iters>` - Replay external seed corpus
+- `wasm-jit-fuzz-soak <iters> <rounds>` - Multi-round corpus replay for non-determinism checks
+- `formal-verify` - Run formal verification obligations for JIT translation and capability model
 
 ### Security & Capabilities
 - `security-audit [count]` - Show security audit log
 - `security-stats` - Show security subsystem statistics
+- `security-anomaly` - Show anomaly detector score/window state
 - `cap-list` - List capabilities
 - `cap-arch` - Show capability architecture
 - `cap-test-atten/cons` - Test capability mechanisms
@@ -215,6 +232,7 @@ Once Oreulia boots, you'll see the shell prompt (`>`). Try these commands:
 - `alloc-stats` - Show allocator statistics
 - `leak-check` - Check for memory leaks
 - `quantum-stats` - Process quantum scheduler stats
+- `sched-net-soak <seconds> [probe_ms]` - Scheduler/network soak verification
 - `paging-test` - Test virtual memory paging
 - `atomic-test` - Test atomic operations
 - `spinlock-test` - Measure spinlock overhead
@@ -242,7 +260,8 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[Persistence](docs/oreulia-persistence.md)** - Logging, snapshots, and recovery
 - **[Filesystem](docs/oreulia-filesystem.md)** - Virtual filesystem implementation
 - **[WASM ABI](docs/oreulia-wasm-abi.md)** - WebAssembly host interface
-- **[Assembly Enhancements](docs/assembly-enhancements.md)** - Low-level optimization details
+- **[Assembly Quick Reference](docs/assembly-quick-reference.md)** - Low-level assembly interfaces and notes
+- **[JIT Security Resolution](docs/oreulia-jit-security-resolution.md)** - Formal security model and implementation proof obligations
 - **[Commercial Use Cases](docs/CommercialUseCases.md)** - Market targets and product vision
 - **[Contributing](docs/CONTRIBUTING.md)** - Contribution guidelines and process
 
@@ -280,14 +299,12 @@ oreulia/
 
 ### Performance Characteristics
 
-Based on internal benchmarks:
-
-| Operation | Pure Rust | Assembly | Speedup |
-|-----------|-----------|----------|---------|
-| Context Switch | ~1000 cycles | ~100 cycles | 10× |
-| Memory Copy | ~500 cycles | ~100 cycles | 5× |
-| Network Checksum | ~800 cycles | ~100 cycles | 8× |
-| Spinlock Acquire | ~50 cycles | ~10 cycles | 5× |
+- Scheduler dispatch path is O(1) over fixed MLFQ levels.
+- Syscall entry supports both INT 0x80 and SYSENTER/SYSEXIT fast paths.
+- Memory hot paths use optimized assembly primitives.
+- Networking uses descriptor-ring DMA on supported NICs.
+- JIT and interpreter dual paths support differential validation and replay.
+- Absolute throughput/latency depends on host CPU, QEMU mode, and runtime workload.
 
 ---
 
