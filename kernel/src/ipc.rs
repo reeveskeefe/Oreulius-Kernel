@@ -74,6 +74,8 @@ pub struct Capability {
     pub cap_type: CapabilityType,
     /// Extra data (e.g., for filesystem: key_prefix length + bytes)
     pub extra: [u32; 4],
+    /// Cryptographic token (SipHash-2-4 MAC)
+    pub token: u64,
 }
 
 impl Capability {
@@ -84,6 +86,7 @@ impl Capability {
             rights,
             cap_type: CapabilityType::Generic,
             extra: [0; 4],
+            token: 0,
         }
     }
 
@@ -94,8 +97,40 @@ impl Capability {
             rights,
             cap_type,
             extra: [0; 4],
+            token: 0,
         }
     }
+
+    pub fn sign(&mut self) {
+        let payload = self.token_payload();
+        self.token = crate::security::security().cap_token_sign(&payload);
+    }
+
+    pub fn verify(&self) -> bool {
+        let payload = self.token_payload();
+        crate::security::security().cap_token_verify(&payload, self.token)
+    }
+
+    fn token_payload(&self) -> [u8; 40] {
+        const TOKEN_CONTEXT: u32 = 0x4F43_4150; // "OCAP"
+        let mut buf = [0u8; 40];
+        let mut offset = 0usize;
+        write_u32(&mut buf, &mut offset, TOKEN_CONTEXT);
+        write_u32(&mut buf, &mut offset, self.cap_id);
+        write_u32(&mut buf, &mut offset, self.object_id);
+        write_u32(&mut buf, &mut offset, self.rights);
+        write_u32(&mut buf, &mut offset, self.cap_type as u32);
+        for word in &self.extra {
+            write_u32(&mut buf, &mut offset, *word);
+        }
+        buf
+    }
+}
+
+fn write_u32(buf: &mut [u8], offset: &mut usize, value: u32) {
+    let bytes = value.to_le_bytes();
+    buf[*offset..*offset + 4].copy_from_slice(&bytes);
+    *offset += 4;
 }
 
 // ============================================================================
@@ -148,7 +183,9 @@ impl Message {
             return Err(IpcError::TooManyCaps);
         }
 
-        self.caps[self.caps_len] = Some(cap);
+        let mut signed = cap;
+        signed.sign();
+        self.caps[self.caps_len] = Some(signed);
         self.caps_len += 1;
         Ok(())
     }

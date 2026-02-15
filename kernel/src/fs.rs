@@ -278,6 +278,7 @@ impl FilesystemCapability {
             cap.object_id = prefix.len as u32;
         }
 
+        cap.sign();
         cap
     }
 
@@ -286,6 +287,9 @@ impl FilesystemCapability {
         use crate::ipc::CapabilityType;
 
         if cap.cap_type != CapabilityType::Filesystem {
+            return Err(FilesystemError::InvalidOperation);
+        }
+        if !cap.verify() {
             return Err(FilesystemError::InvalidOperation);
         }
 

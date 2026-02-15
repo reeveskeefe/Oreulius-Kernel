@@ -592,6 +592,9 @@ pub fn get_cache_info() -> CacheInfo {
 
 /// Try to get hardware random number
 pub fn try_rdrand() -> Option<u32> {
+    if !has_rdrand() {
+        return None;
+    }
     let mut value: u32 = 0;
     unsafe {
         if asm_rdrand(&mut value as *mut u32) != 0 {
@@ -600,6 +603,12 @@ pub fn try_rdrand() -> Option<u32> {
             None
         }
     }
+}
+
+/// Check if CPU supports RDRAND (CPUID.01H:ECX.RDRAND[bit 30]).
+pub fn has_rdrand() -> bool {
+    let result = cpuid(1, 0);
+    (result.ecx & (1 << 30)) != 0
 }
 
 /// Check if XSAVE is supported

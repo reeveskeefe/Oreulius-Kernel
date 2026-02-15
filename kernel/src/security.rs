@@ -482,6 +482,7 @@ pub struct SecurityManager {
     rate_limit_enabled: AtomicBool,
     resource_tracker: Mutex<ResourceTracker>,
     random: Mutex<SecureRandom>,
+    cap_token_key: Mutex<[u64; 2]>,
 }
 
 impl SecurityManager {
@@ -493,6 +494,7 @@ impl SecurityManager {
             rate_limit_enabled: AtomicBool::new(true),
             resource_tracker: Mutex::new(ResourceTracker::new()),
             random: Mutex::new(SecureRandom::new(0x1234567890ABCDEF)),
+            cap_token_key: Mutex::new([0xA5A5_A5A5_5A5A_5A5A, 0x5A5A_5A5A_A5A5_A5A5]),
         }
     }
 
@@ -573,6 +575,17 @@ impl SecurityManager {
         self.random.lock().next_u32()
     }
 
+    /// Sign a capability token payload using a per-boot secret key.
+    pub fn cap_token_sign(&self, data: &[u8]) -> u64 {
+        let key = self.cap_token_key.lock();
+        siphash24(key[0], key[1], data)
+    }
+
+    /// Verify a capability token payload against a provided token.
+    pub fn cap_token_verify(&self, data: &[u8], token: u64) -> bool {
+        self.cap_token_sign(data) == token
+    }
+
     /// Get audit statistics
     pub fn get_audit_stats(&self) -> (usize, usize, usize) {
         let log = self.audit_log.lock();
@@ -651,10 +664,113 @@ pub fn security() -> &'static SecurityManager {
 /// Initialize security subsystem
 pub fn init() {
     // Seed random number generator
-    let seed = 0xDEADBEEF; 
-    
-    // Try lock
-    if let Some(mut random) = SECURITY.random.try_lock() {
-         random.state ^= seed;
+    let mut seed = 0xDEADBEEF_u64;
+    if let Some(r) = crate::asm_bindings::try_rdrand() {
+        seed ^= ((r as u64) << 32) | r as u64;
     }
+    seed ^= read_rdtsc();
+
+    if let Some(mut random) = SECURITY.random.try_lock() {
+        random.state ^= seed;
+    }
+
+    // Initialize capability token key from RNG.
+    let mut key_bytes = [0u8; 16];
+    SECURITY.random.lock().fill_bytes(&mut key_bytes);
+    let k0 = u64::from_le_bytes([
+        key_bytes[0], key_bytes[1], key_bytes[2], key_bytes[3],
+        key_bytes[4], key_bytes[5], key_bytes[6], key_bytes[7],
+    ]);
+    let k1 = u64::from_le_bytes([
+        key_bytes[8], key_bytes[9], key_bytes[10], key_bytes[11],
+        key_bytes[12], key_bytes[13], key_bytes[14], key_bytes[15],
+    ]);
+    if let Some(mut key) = SECURITY.cap_token_key.try_lock() {
+        *key = [k0, k1];
+    }
+}
+
+fn read_rdtsc() -> u64 {
+    #[cfg(target_arch = "x86")]
+    unsafe {
+        core::arch::x86::_rdtsc() as u64
+    }
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::x86_64::_rdtsc() as u64
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        0
+    }
+}
+
+#[inline]
+fn rotl64(x: u64, b: u32) -> u64 {
+    (x << b) | (x >> (64 - b))
+}
+
+fn siphash24(k0: u64, k1: u64, data: &[u8]) -> u64 {
+    let mut v0 = 0x736f6d6570736575_u64 ^ k0;
+    let mut v1 = 0x646f72616e646f6d_u64 ^ k1;
+    let mut v2 = 0x6c7967656e657261_u64 ^ k0;
+    let mut v3 = 0x7465646279746573_u64 ^ k1;
+
+    let mut i = 0usize;
+    while i + 8 <= data.len() {
+        let m = u64::from_le_bytes([
+            data[i],
+            data[i + 1],
+            data[i + 2],
+            data[i + 3],
+            data[i + 4],
+            data[i + 5],
+            data[i + 6],
+            data[i + 7],
+        ]);
+        v3 ^= m;
+        sip_round(&mut v0, &mut v1, &mut v2, &mut v3);
+        sip_round(&mut v0, &mut v1, &mut v2, &mut v3);
+        v0 ^= m;
+        i += 8;
+    }
+
+    let mut last = (data.len() as u64) << 56;
+    let rem = &data[i..];
+    for (idx, &b) in rem.iter().enumerate() {
+        last |= (b as u64) << (idx * 8);
+    }
+
+    v3 ^= last;
+    sip_round(&mut v0, &mut v1, &mut v2, &mut v3);
+    sip_round(&mut v0, &mut v1, &mut v2, &mut v3);
+    v0 ^= last;
+
+    v2 ^= 0xFF;
+    for _ in 0..4 {
+        sip_round(&mut v0, &mut v1, &mut v2, &mut v3);
+    }
+
+    v0 ^ v1 ^ v2 ^ v3
+}
+
+#[inline]
+fn sip_round(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
+    *v0 = (*v0).wrapping_add(*v1);
+    *v1 = rotl64(*v1, 13);
+    *v1 ^= *v0;
+    *v0 = rotl64(*v0, 32);
+
+    *v2 = (*v2).wrapping_add(*v3);
+    *v3 = rotl64(*v3, 16);
+    *v3 ^= *v2;
+
+    *v0 = (*v0).wrapping_add(*v3);
+    *v3 = rotl64(*v3, 21);
+    *v3 ^= *v0;
+
+    *v2 = (*v2).wrapping_add(*v1);
+    *v1 = rotl64(*v1, 17);
+    *v1 ^= *v2;
+    *v2 = rotl64(*v2, 32);
 }
