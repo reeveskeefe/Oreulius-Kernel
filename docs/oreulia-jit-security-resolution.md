@@ -1,1058 +1,595 @@
-# The JIT-in-Kernel Security Paradox
+# The JIT-in-Kernel Security Paradox: A Formal Resolution Record for Oreulia
 
+## Abstract
+This document is the formal, post-completion security paper for Oreulia's in-kernel JIT architecture. The design objective was to preserve kernel-resident JIT compilation while eliminating single-point compromise paths through layered, compositional controls that are mathematically specified and operationally verifiable. The resulting system uses constrained memory permissions, privilege-separated execution, structural control-flow enforcement, capability authentication, attestation-gated enclave lifecycle management, deterministic differential regression, mechanized bounded model checks, and runtime anomaly scoring.
+
+The central claim is not that one mechanism is perfect, but that exploitability now requires concurrent failure across independent enforcement families. This transition changes the security profile from "compiler correctness as sole defense" to "compositional acceptance under explicit invariants and release gates."
+
+## 1. Introduction
+
+### 1.1 Problem Statement
 At the heart of Oreulia's architecture lies a bold but controversial design decision: executing a Just-In-Time (JIT) compiler inside the kernel itself, running at the highest privilege level (Ring 0). While this approach delivers extraordinary performance benefits--eliminating context-switching overhead and enabling near-native execution speeds for WebAssembly code--it introduces a fundamental security tension that challenges conventional operating system design principles. The paradox is this: the WebAssembly sandbox is mathematically sound and provides robust isolation guarantees, but the very compiler that enforces these guarantees runs with unrestricted kernel privileges. If the JIT compiler contains a bug--whether in its bytecode parser, instruction selector, register allocator, or code generator--an attacker can potentially exploit that bug to achieve arbitrary kernel code execution, bypassing all the carefully constructed security boundaries that the system was designed to enforce.
 
 Traditional operating systems avoid this problem by moving JIT compilation to user space (Ring 3), where compiler bugs result in application crashes rather than kernel compromises. When V8 compiles JavaScript or when Wasmtime generates native code, these operations occur in sandboxed processes with limited privileges; if the compiler produces incorrect machine code or crashes while optimizing a hot loop, only the application dies--the kernel remains intact and other processes continue unaffected. Oreulia's decision to embed the JIT compiler directly in kernel space means accepting a dramatically expanded Trusted Computing Base (TCB): every line of code in the JIT compiler, every optimization pass, every instruction selection heuristic, and every bounds check insertion must be flawless. A single integer overflow in address calculation, a missing bounds check in an optimization path, or a type confusion in the register allocator becomes a kernel-level vulnerability that could grant an attacker complete control of the system.
 
 This creates a philosophical and practical dilemma for achieving "provably secure" systems. While Oreulia's capability-based security model is theoretically elegant--no ambient authority, unforgeable capabilities, complete audit trails--the presence of an unverified JIT compiler in kernel space undermines these guarantees at the implementation level. The engineering defenses are impressive: memory tagging, W^X enforcement, control flow integrity, MAC-signed IPC capabilities (SipHash), and defense-in-depth strategies can mitigate many attack vectors. However, mathematically proving the system's security requires formally verifying the JIT compiler itself--a problem that remains at the frontier of computer science research and has consumed entire PhD programs for simpler compilers like CompCert. The tension between performance (JIT in kernel) and provable security (formalized correctness guarantees) represents the central challenge in transforming Oreulia from an innovative research prototype into a production-grade secure operating system. Without formal verification of the JIT compiler or strong in-kernel hardening and translation validation, the system remains vulnerable to a class of attacks that bypass all other security mechanisms, making "impenetrability" a practical impossibility rather than an achievable engineering goal.
 
-## Formal Resolution Statement
+### 1.2 Resolution Scope
+This paper records how that paradox was resolved within the implementation scope of Oreulia's security issue closure. It is not a generic survey. It is a formalized account of completed controls, their equations, their proof obligations, and their operational gates.
 
-This document is the completed, scientific resolution record for the Oreulia in-kernel JIT security paradox. The objective was not to remove JIT, but to keep kernel-resident JIT compilation while forcing execution and authority behavior into mathematically constrained, fail-closed regimes.
+### 1.3 Resolution Claim
+Let `Sigma` be the kernel state space and `T_jit` the transition relation generated by JIT compile-load-execute cycles. Let `Safe` be the conjunction of memory, control-flow, authority, privilege, attestation, and determinism invariants.
 
-The security target was:
+The resolved objective is:
 
-`forall state s: Safe(s) => Safe(T_jit(s))`
+`forall s in Sigma: Safe(s) => Safe(T_jit(s))`
 
-where `T_jit` is the transition relation induced by JIT compile-load-execute cycles and `Safe` includes:
+with explicit assumptions listed in Section 3.
 
-- memory safety and non-writable executable constraints,
-- control-flow admissibility,
-- capability authenticity and rights monotonicity,
-- privilege and address-space isolation,
-- deterministic detection of translation drift,
-- deterministic regression and runtime anomaly observability.
+## 2. System Model
 
+### 2.1 State Components
+Define global state:
 
-
-### How we did it
-- W^X enforcement for JIT
-- Kernel `.text` and `.rodata` read-only mapping
-- Dedicated JIT arena
-- Isolated execution address space
-- Ring 3 usermode execution path
-- Guard pages for JIT regions
-- JIT page-fault trapping
-- Fuel-based execution limits
-- Integrity checks for code and executable buffers
-- Shadow validation against interpreter behavior
-- JIT cache hardening
-- Concurrency hardening
-- Cryptographic capability tokens for IPC
-- Cryptographic capability tokens for core capability tables
-- JIT fuzz harness and regression seeds
-- Complete instruction whitelist and decoder validation
-- Expanded SFI on all memory access paths
-- Per-instance JIT user pages and wipe policy
-- Full CFI with shadow stack and valid target sets
-- SMEP/SMAP/KPTI enforcement paths
-- Memory tagging and hardware isolation capability layer
-- Hardware enclave backend framework
-- Hardware enclave primitive wiring
-- Production enclave provisioning
-- Remote attestation and key provisioning hardening
-- External remote attestation interoperability hardening
-- Scheduler and context-switch hardening
-- Keyboard IRQ recovery under preemption
-- Translation validation with per-block certificate model
-- Coverage-guided fuzzing and external regression corpus
-- Panic-safe bytecode/function range handling
-- Allocator-stable corpus fuzz execution
-- Formal verification framework for JIT and capabilities
-- Mechanized backend model checks
-- CI automation for corpus replay
-- Residual non-determinism soak checks
-- Runtime anomaly detection
-- Scheduler/network soak verification command
-
-## Global Mathematical Model
-
-Let:
-
-- `Pages` be all virtual pages.
-- `ExecPages subseteq Pages` be executable pages.
-- `Cap` be capabilities.
-- `R` be the rights lattice with partial order `<=` defined as bit-subset.
-- `B` be emitted machine instruction stream.
-- `W` be WASM instruction stream.
-- `Sigma` be machine state.
-- `A_t` be anomaly window state at time `t`.
-
-Core invariants:
-
-1. `forall p in ExecPages: not (Writable(p) and Executable(p))`
-2. `forall b in IndirectBranches(B): target(b) in ValidTargets(B)`
-3. `forall m in MemOps(B): Guarded(m)`
-4. `forall c in Cap: VerifyToken(c) = true`
-5. `forall c_parent, c_child: c_child derived from c_parent => rights(c_child) <= rights(c_parent)`
-6. `forall runs: ReplayDeterminism(runs) => mismatches = 0 and compile_errors = 0`
-
-The rest of this document explains how each implemented control establishes one or more of these invariants.
-
-## Ordered Resolution Details
-
-### 1) W^X enforcement for JIT
-
-Threat addressed: self-modifying executable code and post-publication code injection.
-
-Control mechanism: JIT code pages move through a one-way permission automaton:
-
-`RW --seal--> RX --reclaim--> NONE`
-
-Forbidden state:
-
-`RWX = false` for all JIT pages and all times.
-
-Solved condition:
-
-`forall t, p: Executable(p,t) => not Writable(p,t)`
-
-This converts many write-what-where primitives into non-executable corruption rather than direct control transfer.
-
-### 2) Kernel `.text` and `.rodata` read-only mapping
-
-Threat addressed: kernel text patching and constant-pool overwrite.
-
-Control mechanism: strict region policy:
-
-`WriteAllowed(v) = 1 iff v in (.data union .bss)`
-
-Solved condition:
-
-`forall v in (.text union .rodata): WriteAllowed(v) = 0`
-
-Any attempted write in those regions transitions to trap/fault handling rather than silent state corruption.
-
-### 3) Dedicated JIT arena
-
-Threat addressed: broad executable footprint and aliasing into unrelated kernel memory.
-
-Control mechanism: executable allocations constrained to an arena interval `[A0, A1)`.
-
-Allocation predicate:
-
-`ArenaAlloc(x, n) => A0 <= x and x + n <= A1`
-
-Solved condition:
-
-`ExecPages subseteq ArenaPages`
-
-This narrows scanning, validation, and reclamation scope and reduces accidental executable exposure.
-
-### 4) Isolated execution address space
-
-Threat addressed: JIT code observing or writing broad kernel mappings.
-
-Control mechanism: execute under sandbox page directory `PD_s` with explicit allowed map set `M_s`.
-
-Visibility invariant:
-
-`Visible(va) = 1 => va in M_s`
-
-Solved condition:
-
-`CR3 = PD_s during JIT execution`
-
-This creates an address-space cut between compiler context and execution context.
-
-### 5) Ring 3 usermode execution path
-
-Threat addressed: executing untrusted translated logic at Ring 0.
-
-Control mechanism: privilege demotion with user selectors and controlled return trampoline.
-
-Privilege invariant:
-
-`CPL_exec = 3` for user JIT path.
-
-Solved condition:
-
-`forall user-jit instruction i: Privileged(i) => fault`
-
-Hardware privilege checks provide a second line of defense even if software checks are imperfect.
-
-### 6) Guard pages for JIT regions
-
-Threat addressed: stack/code/data linear overflow.
-
-Control mechanism: guard page boundaries where adjacent pages are non-present.
-
-Boundary invariant:
-
-`Access(addr) with addr in GuardPages => fault`
-
-Solved example:
-
-If `stack_top = S`, mapped stack is `[S-N, S)`, then write to `S` or read below `S-N-1` faults immediately.
-
-### 7) JIT page-fault trapping
-
-Threat addressed: kernel panic escalation from JIT memory faults.
-
-Control mechanism: classify JIT-context faults and convert to VM/WASM trap codes.
-
-Trap mapping function:
-
-`TrapCode = PFMap(error_code, fault_addr, context)`
-
-Solved condition:
-
-`FaultInJitContext => return trap, not kernel panic`
-
-This preserves system availability under adversarial memory behaviors.
-
-### 8) Fuel-based execution limits
-
-Threat addressed: non-terminating loops and resource denial.
-
-Control mechanism: instruction fuel `F_i` and memory fuel `F_m` decremented on each guarded event.
-
-Dynamics:
-
-`F_i(k+1) = F_i(k) - 1`
-`F_m(k+1) = F_m(k) - delta_m(k)`
-
-Trap condition:
-
-`F_i <= 0 or F_m <= 0 => trap`
-
-This gives strict upper bounds on execution effort.
-
-### 9) Integrity checks
-
-Threat addressed: executable buffer tampering between compile and execute.
-
-Control mechanism: hash and seal checks for source code and executable image.
-
-Invariant:
-
-`Hash(exec_runtime) = Hash(exec_signed)`
-`Hash(code_runtime) = Hash(code_signed)`
-
-Any mismatch fails integrity validation before execution.
-
-### 10) Shadow validation
-
-Threat addressed: silent semantic drift between interpreter and JIT path.
-
-Control mechanism: early executions compare outputs, traps, and memory effects.
-
-Differential predicate:
-
-`EqBehavior = (ret_i = ret_j) and (trap_i = trap_j) and (mem_i = mem_j)`
-
-If `EqBehavior = false`, JIT path is rejected/fallbacked and discrepancy is recorded.
-
-### 11) JIT cache hardening
-
-Threat addressed: stale or colliding cache entries mapping wrong code to execution artifacts.
-
-Control mechanism: 64-bit hash plus metadata checks (`code_len`, locals) and integrity checks.
-
-Collision estimate for random adversary:
-
-`P_collision approx N^2 / 2^65`
-
-for `N` cached entries.
-
-Combined with exact metadata checks, the practical collision exploitability is substantially reduced.
-
-### 12) Concurrency hardening
-
-Threat addressed: race conditions across user transition and return signaling.
-
-Control mechanism: critical sections and serialized transition state.
-
-Race safety target:
-
-`forall transitions tau1, tau2: overlap(tau1, tau2) => serialized(tau1, tau2)`
-
-This avoids inconsistent state publication across interrupt boundaries.
-
-### 13) Cryptographic capability tokens (IPC)
-
-Threat addressed: forged/replayed transferred capabilities.
-
-Control mechanism:
-
-`token = SipHash_k(cap_id || rights || sender || receiver || nonce)`
-
-Verification equation:
-
-`Accept = (token' = token) and Fresh(nonce) and rights_subset`
-
-Without key `k`, successful forgery probability per attempt is bounded by `2^-64`.
-
-### 14) Cryptographic capability tokens (core tables)
-
-Threat addressed: in-memory capability table tampering.
-
-Control mechanism: each stored capability entry is authenticated and re-verified on use.
-
-Entry invariant:
-
-`Verify(entry_payload, entry_token) = true`
-
-Tampered entries transition to denial/audit path instead of authority grant.
-
-### 15) JIT fuzz harness and regression seeds
-
-Threat addressed: unknown translation and runtime corner cases.
-
-Control mechanism: differential fuzzing against interpreter with seeded replay.
-
-Outcome vector per run:
-
-`(ok, traps, mismatches, compile_errors)`
-
-Security acceptance criterion:
-
-`mismatches = 0 and compile_errors = 0` on required seeds.
-
-### 16) Complete instruction whitelist and decoder validation
-
-Threat addressed: unsafe x86 emission including privileged/undefined forms.
-
-Control mechanism: emitted bytes must belong to a strict accepted language `L_safe`.
-
-Language-membership predicate:
-
-`B in L_safe`
-
-If `B notin L_safe`, compile fails before publication.
-
-This closes the "emit something unsafe" gap.
-
-### 17) Expanded SFI on all memory paths
-
-Threat addressed: unguarded load/store edge cases.
-
-Control mechanism: every memory op must satisfy guard predicate:
-
-`Guard(addr, off, size, L) = checked_add(addr,off)=e and e <= L-size`
-
-Coverage invariant:
-
-`forall m in MemOps(B): Guarded(m) = true`
-
-No memory path bypasses guard insertion/validation.
-
-### 18) Per-instance JIT user pages and wipe policy
-
-Threat addressed: residual data/code leakage across JIT runs.
-
-Control mechanism: allocate per-instance pages; wipe and reseal on teardown.
-
-Confidentiality invariant:
-
-`PostTeardown(page) => entropy(page_prev, page_now) minimized and stale data inaccessible`
-
-Operationally this removes cross-instance residue as an attack primitive.
-
-### 19) Full CFI (shadow stack and valid target sets)
-
-Threat addressed: intra-region ROP/JOP and return spoofing.
-
-Control mechanism:
-
-- indirect targets constrained to `T_valid`,
-- returns validated against shadow stack sequence.
-
-CFI invariant:
-
-`forall indirect edge e: target(e) in T_valid`
-
-Return invariant:
-
-`RetAddr_arch(k) = RetAddr_shadow(k)`
-
-Violation leads to trap, not speculative continuation.
-
-### 20) SMEP/SMAP/KPTI
-
-Threat addressed: supervisor misuse of user pages and user/kernel map abuse.
-
-Control mechanism:
-
-- SMEP forbids supervisor execution of user pages,
-- SMAP constrains supervisor data access to user pages unless explicitly enabled,
-- KPTI isolates user-visible maps from kernel-critical maps.
-
-Simplified policy:
-
-`CPL=0 and UserPageExec => forbidden`
-`CPL=0 and UserPageDataAccess => gated`
-
-Combined with CR3 splits, this significantly reduces privilege crossing abuse.
-
-### 21) Memory tagging and hardware isolation capability layer
-
-Threat addressed: mapping user contexts to pages outside intended trust domain.
-
-Control mechanism: software tags and policy checks on mapping decisions, plus hardware capability detection.
-
-Tag invariant:
-
-`MapUser(page, domain_u) => Tag(page) compatible_with domain_u`
-
-Fail-closed behavior blocks mappings that violate policy.
-
-### 22) Hardware enclave backend framework
-
-Threat addressed: unverifiable enclave session state transitions.
-
-Control mechanism: explicit state machine:
-
-`Closed -> Open -> Entered -> Exited -> Closed`
-
-No transition outside defined edges is accepted.
-
-This prevents lifecycle confusion and session-state abuse.
-
-### 23) Hardware enclave primitive wiring
-
-Threat addressed: backend abstraction without real primitive semantics.
-
-Control mechanism: SGX and TrustZone backends invoke hardware-specific paths where supported.
-
-Correctness objective:
-
-`BackendSelected = SGX => SGXPrimitivePath`
-`BackendSelected = TrustZone => SMCPath`
-
-This binds policy claims to concrete backend execution semantics.
-
-### 24) Production enclave provisioning
-
-Threat addressed: weak provisioning, unmanaged EPC/service contracts.
-
-Control mechanism: EPC management, token checks, attestation material flow, and secure-world contract negotiation.
-
-Provisioning predicate:
-
-`ProvisionOK = epc_ok and token_ok and contract_ok`
-
-If `ProvisionOK = false`, enclave session admission is denied.
-
-### 25) Remote attestation and key provisioning hardening
-
-Threat addressed: entering enclave paths without valid key/attestation state.
-
-Control mechanism: fail-closed sequencing:
-
-`OpenAllowed iff ProvisionKeyOK`
-`EnterAllowed iff Attested and RuntimeKeyValid`
-`Close => KeyRevoked`
-
-This ensures key lifecycle cannot drift from attestation lifecycle.
-
-### 26) External remote attestation interoperability hardening
-
-Threat addressed: accepting unverifiable external attestations.
-
-Control mechanism: vendor root anchors, signer chain checks, deterministic quote verification, verifier-token exchange.
-
-Admission equation:
-
-`Accept = RootValid and ChainValid and QuoteValid and TokenValid and NotExpired`
-
-Policy mode controls strictness but preserves auditable decision structure.
-
-### 27) Scheduler and context-switch hardening
-
-Threat addressed: interrupt-state corruption and unsafe first-run transitions.
-
-Control mechanism: preserve raw EFLAGS semantics and controlled IF behavior at bootstrap/resume.
-
-State invariant:
-
-`Resume(pid) => IF_after = IF_saved(pid)`
-
-This keeps scheduling correctness aligned with security timing assumptions.
-
-### 28) Keyboard IRQ recovery under preemption
-
-Threat addressed: IRQ starvation after cooperative/preemptive switches.
-
-Control mechanism: restore interrupt state on resumption paths.
-
-Liveness condition:
-
-`Eventually(IRQ_keyboard_serviced)` under normal scheduler fairness assumptions.
-
-This closes a practical availability regression that can mask other security diagnostics.
-
-### 29) Translation validation (per-block certificate)
-
-Threat addressed: valid-looking global output with invalid local translation segments.
-
-Control mechanism: each block carries digest and trace obligations, re-checked at integrity time.
-
-Certificate condition:
-
-`forall block b: Digest_runtime(b) = Digest_cert(b)`
-
-and coverage condition:
-
-`TraceCoverage(W,B) = 1`
-
-This localizes correctness guarantees to block granularity.
-
-### 30) Coverage-guided fuzzing and external regression corpus
-
-Threat addressed: shallow random test distributions.
-
-Control mechanism: guide generation using novelty over opcode bins and edge transitions.
-
-Coverage functions:
-
-`BinCov = hit_bins / total_bins`
-`EdgeCov = hit_edges / total_edges`
-
-Novelty function:
-
-`Novel(p) = 1 if introduces_new_bin_or_edge(p)`
-
-Corpus replay stabilizes discovered bug classes into permanent regression checks.
-
-### 31) Panic-safe bytecode and function-range handling
-
-Threat addressed: slice/index panics from malformed offsets and lengths.
-
-Control mechanism: checked arithmetic and range clamps before dereference.
-
-Safety predicate:
-
-`RangeOK = (off <= len) and (off + n <= len)` with overflow-safe arithmetic.
-
-If false, return semantic error (`InvalidModule`) instead of panic.
-
-### 32) Allocator-stable corpus fuzz execution
-
-Threat addressed: allocator exhaustion causing false-negative security signal.
-
-Control mechanism: reuse fuzz instances, compiler state, and scratch buffers.
-
-Memory stability objective:
-
-`PeakAlloc_soak <= bound` and no progressive fragmentation failure in normal corpus rounds.
-
-This keeps long campaigns meaningful and reproducible.
-
-### 33) Formal verification framework for JIT and capabilities
-
-Threat addressed: unstructured proof obligations and fragmented assurance.
-
-Control mechanism: explicit proof certificates and unified capability proof predicates.
-
-JIT proof tuple:
-
-`Proof = (trace_continuity, opcode_consistency, mem_obligations, proof_hash)`
-
-Capability proof predicate:
-
-`CapProof = TokenValid and TypeMatch and ObjectMatch and RightsSatisfy`
-
-`formal-verify` executes deterministic obligations over these predicates.
-
-### 34) Mechanized backend model checks
-
-Threat addressed: drift between intended law and implementation law.
-
-Control mechanism: bounded machine-check passes for:
-
-- rights attenuation subset law,
-- memory-guard equivalence law.
-
-Attenuation law:
-
-`child <= parent`
-
-Guard equivalence law:
-
-`Guard_lowlevel(addr,off,size,L) = Guard_spec(addr,off,size,L)`
-
-These are executable mathematical obligations, not only narrative claims.
-
-### 35) CI automation for corpus replay
-
-Threat addressed: manual testing gaps and regressions entering mainline.
-
-Control mechanism: per-commit/PR replay with fail conditions.
-
-CI gate:
-
-`PassCI iff mismatches = 0 and compile_errors = 0 and required_seeds_pass = true`
-
-This converts security validation into admission policy.
-
-### 36) Residual non-determinism soak checks
-
-Threat addressed: intermittent failures not visible in single replay pass.
-
-Control mechanism: repeated corpus rounds with first-failure capture.
-
-Soak criterion:
-
-`forall round r in [1..R], forall seed s in S: pass(r,s) = true`
-
-Where `pass(r,s)` means zero mismatch and zero compile error for that `(r,s)`.
-
-### 37) Runtime anomaly detection
-
-Threat addressed: unknown exploit classes and policy drift during live runtime.
-
-Control mechanism: sliding score over event classes.
-
-Current score function:
-
-`Score_t = 2D_t + 2Q_t + R_t + 4I_t + 16H_t`
+`Sigma = (Mem, PagePerm, CR3, CPL, CapTable, TokenKey, JitCode, JitMeta, EnclaveState, AuditLog, AnomalyState, SchedState, NetState)`
 
 where:
 
-- `D_t`: permission denied events,
-- `Q_t`: quota exceeded events,
-- `R_t`: rate limit exceeded events,
-- `I_t`: invalid capability events,
-- `H_t`: integrity failures.
+- `Mem`: virtual memory content,
+- `PagePerm`: mapping from page to `{R,W,X,U,S}` attributes,
+- `CR3`: active page directory root,
+- `CPL`: current privilege level,
+- `CapTable`: capability table state,
+- `TokenKey`: per-boot secret key material,
+- `JitCode`: emitted x86 code bytes,
+- `JitMeta`: certificates, hashes, block metadata,
+- `EnclaveState`: backend and lifecycle states,
+- `AuditLog`: append-only in-memory log window,
+- `AnomalyState`: weighted event counters/window buckets,
+- `SchedState`: runnable queues, context records, interrupt restoration data,
+- `NetState`: reactor request/response and health state.
 
-Solved numeric example:
+### 2.2 Transition Families
+Define transition families:
 
-If `D_t=11, Q_t=4, R_t=5, I_t=3, H_t=1`, then:
+- `T_compile`: WASM to x86 emission and verifier/certificate generation.
+- `T_publish`: RW to RX seal and executable publication.
+- `T_exec`: JIT invocation under sandbox constraints.
+- `T_fault`: hardware exceptions mapped to trap semantics.
+- `T_cap`: capability creation/transfer/attenuation/use transitions.
+- `T_attest`: quote verification and verifier-token exchange transitions.
+- `T_sched`: context-switch and cooperative/preemptive transitions.
+- `T_regress`: fuzz replay and corpus soak transitions.
 
-`Score_t = 2*11 + 2*4 + 5 + 4*3 + 16*1 = 63`
+Total transition relation:
 
-If threshold is `64`, this run remains below alert threshold by 1 point.
+`T = T_compile union T_publish union T_exec union T_fault union T_cap union T_attest union T_sched union T_regress`
 
-### 38) Scheduler/network soak verification command
+### 2.3 Security Predicates
+Define core predicates:
 
-Threat addressed: hidden runtime instability in mixed scheduler/network operation.
+- `WXSafe(Sigma)`
+- `CFISafe(Sigma)`
+- `GuardSafe(Sigma)`
+- `CapSafe(Sigma)`
+- `IsoSafe(Sigma)`
+- `AttestSafe(Sigma)`
+- `DetSafe(Sigma)`
+- `RunObsSafe(Sigma)`
 
-Control mechanism: long-run probe loop with scheduler deltas and reactor health measurements.
+Composite predicate:
 
-Stability condition:
+`Safe(Sigma) = WXSafe and CFISafe and GuardSafe and CapSafe and IsoSafe and AttestSafe and DetSafe and RunObsSafe`
 
-`NetErrorCount = 0 and CriticalAnomalyDelta = 0`
+## 3. Assumptions
 
-with monotonic scheduler progress:
+### 3.1 Hardware Assumptions
+- If CPU advertises SMEP/SMAP support, enable paths are honored correctly by hardware.
+- Page-table semantics, privilege semantics, and exception semantics follow x86 architectural model.
+- TSC/PIT monotonic behavior is sufficiently stable for timeout and windowing logic.
 
-`DeltaSwitches > 0`
+### 3.2 Cryptographic Assumptions
+- SipHash behaves as a PRF over key and payload.
+- Per-boot key material remains secret in normal execution model.
+- Verifier token signatures and certificate chain checks rely on uncompromised trust anchors.
 
-This gives an operational proof of liveness-compatible security behavior under sustained load.
+### 3.3 Software Assumptions
+- Kernel build artifacts correspond to reviewed source.
+- Release gating runs required CI checks before integration.
+- Bounded mechanized checks are trusted as implemented algorithms, not theorem-prover completeness claims.
 
-## Composite Resolution Argument
+### 3.4 Scope Exclusions
+- Full microarchitectural noninterference is out of scope.
+- Global supply-chain theorem closure is out of scope.
+- Physical adversary with unrestricted hardware modification is out of scope.
 
-The security paradox is solved compositionally rather than by single-point claims.
+## 4. Definitions
 
-Let event `E_i` be failure of control `i` above. A successful adversarial end state requires conjunction of multiple control failures:
+### Definition 1 (W^X Safety)
+`WXSafe(Sigma)` iff:
 
-`E_total = E_1 and E_2 and ... and E_n`
+`forall page p: not (Writable(p) and Executable(p))`.
 
-Under conservative independence approximation:
+### Definition 2 (Guarded Memory Access)
+For an access `(addr, off, size, L)`, define:
 
-`P(E_total) <= product_i P(E_i)`
+`Guard(addr,off,size,L) := checked_add(addr,off)=e and e <= L-size`.
 
-Even when strict independence is not assumed, defense-in-depth still enforces layered rejection paths, making exploit chains longer, less reliable, and more detectable.
+`GuardSafe(Sigma)` iff every JIT memory access satisfies `Guard`.
 
-## Deterministic Evidence Policy
+### Definition 3 (CFI Safety)
+`CFISafe(Sigma)` iff:
 
-Security acceptance is tied to deterministic metrics:
+`forall indirect edge e: target(e) in T_valid`
 
-- `mismatches = 0`
-- `compile_errors = 0`
-- replay/soak required seed set passes,
-- formal obligations pass,
-- anomaly system operational and visible.
+and return-stack consistency holds:
 
-This transforms security from narrative confidence into measurable release gates.
+`forall return k: Ret_arch(k) = Ret_shadow(k)`.
 
-## Residual Scientific Limits
+### Definition 4 (Capability Authenticity)
+For capability payload `P` and token `tau`:
 
-The current resolution is complete for the original issue scope, but two scientific limits remain true in any practical system:
+`VerifyCap(P,tau) := (tau = SipHash_k(P))`.
 
-1. Bounded mechanized checks are not equivalent to unbounded theorem-prover completeness.
-2. Hardware/microarchitectural leakage classes require separate and ongoing formalization.
+`CapSafe(Sigma)` iff all authority grants require `VerifyCap` plus type/object/rights checks.
 
-These are not unresolved implementation tasks in this paradox closure; they are long-horizon research boundaries for any high-assurance kernel.
+### Definition 5 (Rights Monotonicity)
+For parent rights `R_p` and child rights `R_c`:
 
-## Conclusion
+`AttenuationValid(R_p,R_c) := R_c subseteq R_p`.
 
-Oreulia retained in-kernel JIT and resolved the paradox by enforcing strict invariants across memory permissions, control flow, privilege separation, authority integrity, attestation admission, deterministic fuzz regression, machine-checked proof obligations, and runtime anomaly scoring.
+### Definition 6 (Isolation Safety)
+`IsoSafe(Sigma)` iff JIT execution obeys:
 
-In short form:
+`CR3 = PD_sandbox`
 
-`Fast JIT` and `Strong Security` are jointly achieved by constraining transitions, proving guard equivalence on critical predicates, and continuously rejecting regression through deterministic CI and soak evidence.
+and
 
+`VisibleVA subseteq AllowedVA`.
 
+### Definition 7 (Attestation Safety)
+`AttestSafe(Sigma)` iff enclave entry is allowed only when:
 
-## Extended Scientific Analysis
+`RootValid and ChainValid and QuoteValid and VerdictTokenValid and NotExpired`.
 
-### 10. Adversary Model and Capability Profile
+### Definition 8 (Deterministic Regression Safety)
+`DetSafe(Sigma)` iff required replay sets satisfy:
 
-A security argument is only as strong as its adversary model. We define the Oreulia JIT adversary as a tuple:
+`mismatches = 0 and compile_errors = 0`.
 
-`Adv = (InputControl, RuntimeInfluence, AuthorityForgery, TimingInfluence, SupplyChainInfluence)`
+### Definition 9 (Runtime Observability Safety)
+Define anomaly score:
 
-with each component measured on an ordinal scale from `0` (none) to `3` (maximal).
+`Score_t = 2D_t + 2Q_t + R_t + 4I_t + 16H_t`.
 
-The implemented paradox resolution targets the following classes:
+`RunObsSafe(Sigma)` iff scoring, thresholding, and event emission paths are active and auditable.
 
-1. `Adv_module`:
-   `InputControl=3`, `RuntimeInfluence=2`, `AuthorityForgery<=1`, `TimingInfluence=2`, `SupplyChainInfluence=0`.
-2. `Adv_local`:
-   `InputControl=3`, `RuntimeInfluence=3`, `AuthorityForgery=3`, `TimingInfluence=3`, `SupplyChainInfluence=1`.
-3. `Adv_remote_attest`:
-   `InputControl=2`, `RuntimeInfluence=1`, `AuthorityForgery=2`, `TimingInfluence=1`, `SupplyChainInfluence=2`.
+## 5. Theorems and Corollaries
 
-For all three classes, success requires bypassing at least two control families among memory, control flow, authority integrity, and deterministic regression gates.
-
-This is formalized as:
-
-`Success(Adv_x) => exists F subseteq Families: |F| >= 2 and forall f in F: Bypass(f)=true`
-
-where `Families = {Mem, CFI, Cap, Iso, Attest, Det, Anom}`.
-
-### 11. Threat-to-Control Traceability Algebra
-
-Let `Theta = {theta_1, ..., theta_m}` be threat classes and `C = {c_1, ..., c_n}` be implemented controls.
-
-Define a binary mitigation matrix:
-
-`M in {0,1}^{m x n}` where `M[i,j] = 1` iff control `c_j` mitigates threat `theta_i`.
-
-For each threat, define mitigation multiplicity:
-
-`mu(theta_i) = sum_j M[i,j]`
-
-The paradox is considered structurally resolved only if all critical threats satisfy:
-
-`mu(theta_i) >= 2`.
-
-Operationally, this means no critical threat has a single-point fail-open dependency.
-
-Example mapping:
-
-- `theta_overflow_write` -> `{SFI, GuardPages, FaultTrap, TranslationValidation}`
-- `theta_indirect_hijack` -> `{WhitelistDecoder, CFI_TargetSets, ShadowStack}`
-- `theta_cap_forgery` -> `{IPC_MAC, Table_MAC, RightsSubsetLaw, AnomalyScoring}`
-
-### 12. Safety Objective Decomposition and Closure
-
-Define top objective:
-
-`O_total = O_mem and O_cf and O_iso and O_cap and O_sem and O_det and O_run`
-
-with:
-
-- `O_mem`: memory execution and bounds constraints hold,
-- `O_cf`: control-flow validity holds,
-- `O_iso`: privilege/address-space isolation holds,
-- `O_cap`: capability authenticity and attenuation hold,
-- `O_sem`: semantic consistency checks hold,
-- `O_det`: deterministic replay regression gates hold,
-- `O_run`: runtime anomaly observability and threshold logic hold.
-
-Closure property:
-
-`(forall k: O_k) => O_total`
-
-and non-degeneracy condition:
-
-`exists k: O_k` is insufficient.
-
-The implemented architecture was explicitly designed to avoid this degenerate case.
-
-### 13. Proof Sketches of Core Lemmas
-
-#### Lemma A: No Executable Writable JIT Page
-
+### Theorem 1 (No Executable Writable JIT State)
 Given transition automaton:
 
 `RW -> RX -> NONE`
 
-and no edges to `RWX`, then:
+and no transition to `RWX`, then `WXSafe` holds for JIT pages.
 
-`forall page p, time t: not (W(p,t) and X(p,t))`.
+Proof sketch:
+- Base: allocation starts in `RW` without execute.
+- Step: legal transitions preserve `not (W and X)`.
+- Closure: no transition introduces `RWX`.
 
-Sketch:
+#### Corollary 1.1
+Any write primitive against JIT pages after publication cannot directly produce executable payload mutation.
 
-- Base case: allocation yields `RW`, not executable.
-- Induction over allowed transitions preserves `not (W and X)`.
-- Terminal `NONE` trivially preserves invariant.
+### Theorem 2 (Guard Equivalence)
+Define:
 
-#### Lemma B: Guard Equivalence for Memory Access
+`G_l(addr,off,size,L) := checked_add(addr,off)=e and e <= L-size`
 
-Low-level guard:
+`G_s(addr,off,size,L) := checked_add(addr,off)=e and checked_add(e,size)=end and end <= L`
 
-`G_l(addr,off,size,L) = [checked_add(addr,off)=e and e <= L-size]`
-
-Spec guard:
-
-`G_s(addr,off,size,L) = [checked_add(addr,off)=e and checked_add(e,size)=end and end <= L]`
-
-Under unsigned arithmetic and finite `L`,
+Then for unsigned finite domains used by JIT linear memory checks:
 
 `G_l <=> G_s`.
 
-This is directly tested by mechanized backend checks in bounded domains.
+Proof sketch:
+- `G_s => G_l` by algebraic rearrangement.
+- `G_l => G_s` since `e <= L-size` implies `e+size <= L` with checked arithmetic.
 
-#### Lemma C: Capability Attenuation Monotonicity
+#### Corollary 2.1
+If all memory ops satisfy `G_l`, no in-bounds check can be bypassed by `addr+off` wraparound.
 
-If child is derived from parent, then:
+### Theorem 3 (Capability Attenuation Monotonicity)
+If attenuation is accepted only when `R_c subseteq R_p`, then no attenuation step can add authority.
 
-`rights(child) subseteq rights(parent)`.
+Proof sketch:
+- Set difference `R_c \ R_p` is empty by acceptance condition.
+- Therefore every granted right in child existed in parent.
 
-Therefore for any required right `r`:
+#### Corollary 3.1
+Privilege escalation via attenuation alone is impossible under the acceptance predicate.
 
-`r in rights(child) => r in rights(parent)`.
+### Theorem 4 (Deterministic Gate Soundness for Exercised Corpus)
+If CI gate enforces `mismatches=0` and `compile_errors=0` on required corpus seeds/rounds, any regression affecting those traces is rejected pre-merge.
 
-No attenuation step can introduce a right not already present.
+Proof sketch:
+- Contradiction: suppose changed behavior exists on required set but gate passes.
+- Then either mismatch or compile error would be non-zero, violating pass condition.
 
-#### Lemma D: Deterministic Replay Admission Soundness
+#### Corollary 4.1
+Replay/soak gate converts observed corpus equivalence into a merge-time safety invariant.
 
-Given CI policy:
+### Theorem 5 (Compositional Exploit Requirement)
+Let `F = {Mem, CFI, Cap, Iso, Attest, Det, RunObs}` be control families. For critical threat classes with at least dual-family coverage, successful exploitation requires simultaneous bypass in at least two families.
 
-`PassCI iff mismatches=0 and compile_errors=0 and required_seed_set_passed`.
+Proof sketch:
+- By construction, each critical threat has `mu(theta)>=2` traceability.
+- Single-family bypass leaves at least one independent blocking predicate true.
 
-Then any change that violates observed corpus equivalence fails admission.
+#### Corollary 5.1
+The architecture removes single-point fail-open behavior for critical JIT paradox threat classes.
 
-This is a sound rejection criterion for the exercised seed set.
+## 6. Proof Obligations
 
-### 14. Attack-Chain Neutralization Studies
+Proof obligations are executable and/or auditable statements that must remain true for release acceptance.
 
-#### Study 1: Offset-Wrap Arbitrary Write Attempt
+### 6.1 Structural Obligations
+- `PO1`: W^X transition graph excludes `RWX` state.
+- `PO2`: kernel `.text`/`.rodata` are write-protected.
+- `PO3`: executable pages are subset of JIT arena pages.
+- `PO4`: guard pages are present around designated regions.
 
-Adversary strategy:
+### 6.2 Semantic Obligations
+- `PO5`: translation certificates recompute identically at integrity verification.
+- `PO6`: block digest and trace coverage checks hold.
+- `PO7`: shadow validation differentials are fail-closed.
 
-1. choose `addr,off` with wraparound,
-2. force write operation past linear memory window,
-3. hijack state through out-of-bounds write.
+### 6.3 Control-Flow Obligations
+- `PO8`: emitted instruction stream belongs to safe decoder language.
+- `PO9`: all indirect branch targets are valid-target-set members.
+- `PO10`: shadow return equality holds for validated exits.
 
-Neutralization stack:
+### 6.4 Capability and Crypto Obligations
+- `PO11`: IPC capability token verifies under per-boot key.
+- `PO12`: core table capability token verifies before authority use.
+- `PO13`: attenuation monotonicity predicate enforced.
 
-- checked-add overflow rejection,
-- SFI guard denial,
-- guard-page hard fault,
-- fault-to-trap conversion,
-- differential mismatch detection if any silent divergence occurs.
+### 6.5 Isolation and Privilege Obligations
+- `PO14`: JIT execution path uses sandbox page directory.
+- `PO15`: Ring 3 execution path enforces CPL demotion semantics.
+- `PO16`: SMEP/SMAP/KPTI paths activate when hardware-supported.
 
-Expected attacker utility collapses from code execution to trapped execution.
+### 6.6 Attestation Obligations
+- `PO17`: root-anchor and signer-chain verification succeed before acceptance.
+- `PO18`: verifier verdict token binding and expiry checks succeed.
+- `PO19`: key lifecycle constraints (`open/enter/close`) are fail-closed.
 
-#### Study 2: Indirect Branch Redirection Attempt
+### 6.7 Determinism and Runtime Observability Obligations
+- `PO20`: required corpus replay yields zero mismatch/compile error.
+- `PO21`: required soak rounds yield zero mismatch/compile error.
+- `PO22`: anomaly scorer and threshold emission path operational.
+- `PO23`: scheduler/network soak path reports monotonic progress and no critical drift under baseline.
 
-Adversary strategy:
+## 7. Implementation Realization by Control Family
 
-1. control a dynamic jump input,
-2. jump into non-whitelisted gadget bytes,
-3. chain returns to escape intended flow.
+This section provides in-depth, ordered explanation of each implemented control and exactly how it participates in paradox resolution.
 
-Neutralization stack:
+### 7.1 Memory and Execution Safety Family
 
-- emitted bytes constrained to safe decoder language,
-- valid-target set enforcement,
-- shadow-stack return equality checks.
+#### 7.1.1 W^X Enforcement for JIT
+The security paradox begins with potential mutation of executable state. Oreulia eliminates this by forcing JIT publication through a one-way permission transition. The key result is that write capability and execute capability do not coexist on the same page in the same state epoch.
 
-Control-flow equation:
+Formal condition:
 
-`ExecutableEdge(e) => target(e) in T_valid and ReturnEq(e)=true`.
+`forall t,p: X(p,t)=1 => W(p,t)=0`.
 
-#### Study 3: Capability Transfer Forgery Attempt
+#### 7.1.2 Kernel Read-Only Code and Constant Regions
+Kernel `.text` and `.rodata` are mapped read-only, reducing opportunities for direct kernel control-plane mutation.
 
-Adversary strategy:
+Region policy:
 
-1. forge token for elevated rights,
-2. replay on IPC channel,
-3. escalate operation authority.
+`WriteAllowed(v)=1 iff v in (.data union .bss)`.
 
-Neutralization stack:
+#### 7.1.3 Dedicated JIT Arena
+Executable spatial scope is constrained to a known interval. This bounds scanning, sealing, and reclamation and reduces accidental executable diffusion.
 
-- token verification under per-boot key,
-- sender/receiver/nonce context binding,
-- rights-subset attenuation law,
-- anomaly rise under repeated invalid attempts.
+`ExecPages subseteq ArenaPages`.
 
-Upper bound:
+#### 7.1.4 Guard Pages and Fault Containment
+Guard pages provide hard boundaries around JIT stack/code/data/memory windows. Any boundary-crossing access becomes fault-classified behavior rather than silent corruption.
 
-`P_success <= N / 2^64` for `N` independent forgery attempts.
+`Access(addr in GuardPages) => fault`.
 
-#### Study 4: Attestation Substitution Attempt
+#### 7.1.5 Panic-Safe Range Handling
+Index/range operations are guarded with checked arithmetic and explicit bounds to convert malformed metadata from panic paths into typed semantic errors.
 
-Adversary strategy:
+`RangeOK=(off<=len and off+n<=len)` under overflow-safe arithmetic.
 
-1. inject alternative quote chain,
-2. bypass remote verifier state,
-3. enter enclave with untrusted measurement.
+#### 7.1.6 Allocator-Stable Fuzz Paths
+Long-run fuzz and corpus campaigns reuse instances and scratch buffers to avoid allocator-instability artifacts that could mask true security regressions.
 
-Neutralization stack:
+`PeakAlloc_soak <= bound`.
 
-- vendor-root and signer chain enforcement,
-- deterministic quote verification,
-- verdict token binding to session+nonce,
-- freshness and expiry checks at entry.
+### 7.2 Privilege and Isolation Family
 
-Admission condition remains conjunction-only:
+#### 7.2.1 Isolated Execution Address Space
+JIT execution occurs under sandbox CR3 with minimal allowed mappings.
 
-`Accept = RootValid and ChainValid and QuoteValid and TokenValid and Fresh`.
+`CR3_exec = PD_sandbox`.
 
-### 15. Quantitative Assurance Framework
+#### 7.2.2 Ring 3 Usermode Execution Path
+JIT runtime can execute at user privilege level, ensuring privileged opcodes and kernel-only memory actions are hardware-rejected.
 
-Define assurance vector:
+`CPL_exec = 3` in user path.
 
-`Q = (D, R_c, S_cov, A, K)` where:
+#### 7.2.3 SMEP/SMAP/KPTI
+Hardware-assisted protections constrain supervisor behavior relative to user pages and split page-table exposure between privilege domains.
 
-- `D`: replay determinism score,
-- `R_c`: corpus reliability,
-- `S_cov`: structural fuzz coverage score,
-- `A`: normalized anomaly pressure,
-- `K`: key/attestation lifecycle consistency score.
+Policy statements:
 
-Representative definitions:
+`CPL0 and UserExec => forbidden`
 
-`D = passed_rounds / total_rounds`
+`CPL0 and UserData => gated`.
 
-`R_c = 1 - (mismatches + compile_errors)/total_runs`
+#### 7.2.4 Per-Instance JIT User Pages and Wipe
+JIT execution pages are allocated per instance, then wiped/resealed on teardown to suppress residual cross-instance leakage.
 
-`S_cov = alpha*BinCov + beta*EdgeCov`, with `alpha+beta=1`
+### 7.3 Control-Flow and Translation Family
 
-`A = Score_t / AlertThreshold`
+#### 7.3.1 Instruction Whitelist and Decoder Validation
+Emitted machine code must belong to a safe language `L_safe`; non-membership fails compile-time admission.
 
-`K = valid_lifecycle_transitions / total_lifecycle_transitions`
+`B in L_safe` required.
 
-Release gate:
+#### 7.3.2 Expanded SFI
+All JIT memory-access paths are guard-validated; no path may bypass bounds predicates.
 
-`ReleaseAllowed iff D=1 and R_c=1 and A<1 and K=1 and FormalPass=1`.
+`forall m in MemOps(B): Guarded(m)=true`.
 
-### 16. Scheduler-Security Coupling Formalization
+#### 7.3.3 Full CFI with Shadow Stack
+Indirect targets are restricted to valid sets and returns are shadow-validated.
 
-Security checks are only meaningful if scheduler/interrupt semantics are stable.
+`target(e) in T_valid` and `Ret_arch=Ret_shadow`.
 
-Let `IF_s(pid)` be saved interrupt flag and `IF_r(pid)` be restored flag.
+#### 7.3.4 Translation Certificates and Per-Block Validation
+Each compiled function carries trace records and block digests; runtime integrity checks recompute and reject drift.
 
-Invariant:
+`Recompute(Cert)=Cert`.
 
-`forall pid: IF_r(pid) = IF_s(pid)`.
+#### 7.3.5 Shadow Validation Against Interpreter
+Early hot-path behavior is differentially compared to interpreter semantics and memory effects. Divergence is fail-closed.
 
-Let `Service(irq,t)` denote IRQ service at time `t`.
+### 7.4 Capability and Authority Family
 
-Liveness envelope:
+#### 7.4.1 IPC Capability MAC Tokens
+Transferred capabilities are authenticated with per-boot secret key and bound to context fields.
 
-`forall irq in RequiredSet: exists t<=T: Service(irq,t)`.
+`token = SipHash_k(payload || sender || receiver || nonce)`.
 
-The scheduler/network soak command is a runtime witness for these properties under sustained mixed load.
+#### 7.4.2 Core Table Capability MAC Tokens
+Stored capabilities are verified on use, preventing in-memory tampering from silently escalating authority.
 
-### 17. Translation Certificate Semantics
+#### 7.4.3 Rights Attenuation Monotonicity
+Attenuation predicate enforces subset relation, disallowing right amplification.
 
-For each compiled function `f`, certificate:
+`R_child subseteq R_parent`.
 
-`Cert_f = (Trace_f, BlockDigests_f, GuardObligations_f, ProofHash_f)`.
+#### 7.4.4 Runtime Anomaly Coupling
+Repeated invalid-capability activity increases anomaly score and produces explicit audit events, converting stealthy authority probing into observable security signals.
 
-Validation map:
+### 7.5 Enclave and Attestation Family
 
-`Validate(f) = [Recompute(Cert_f) = Cert_f]`.
+#### 7.5.1 Enclave Lifecycle Framework
+Enclave session transitions are strict and stateful (`open -> enter -> exit -> close`), preventing lifecycle confusion.
 
-This yields post-generation tamper evidence and enforces that translation obligations are not merely compile-time assertions but runtime-checked facts.
+#### 7.5.2 Backend Primitive Wiring
+Backend selection semantics are bound to concrete primitive paths (SGX/TrustZone where supported).
 
-### 18. Runtime Anomaly Scoring Deep Dive
+#### 7.5.3 Production Provisioning
+Provisioning includes EPC/service contracts, token checks, and report pipelines. Admission is fail-closed when provisioning predicates fail.
 
-Current score function:
+#### 7.5.4 Remote Attestation and Key Lifecycle Hardening
+Entry requires both attestation validity and runtime key validity; close revokes runtime key. This binds cryptographic identity to execution authorization.
 
-`Score_t = 2D_t + 2Q_t + R_t + 4I_t + 16H_t`.
+#### 7.5.5 External Interoperability Hardening
+Vendor roots, signer chains, quote validity, verifier verdict tokens, and freshness checks are required for cross-system trust acceptance.
 
-This weighting privileges integrity failures (`H_t`) as highest severity class.
+### 7.6 Runtime and Scheduling Family
 
-Sensitivity interpretation:
+#### 7.6.1 Scheduler and Context-Switch Hardening
+Saved/restored interrupt semantics and first-run context behavior are hardened so security checks remain stable under preemption.
 
-`partial Score / partial H = 16`
+`IF_restored(pid)=IF_saved(pid)`.
 
-`partial Score / partial I = 4`
+#### 7.6.2 Keyboard IRQ Recovery
+Interrupt restoration across cooperative paths preserves IRQ liveness, preventing hidden availability regressions that could interfere with secure operation and observability.
 
-`partial Score / partial D = 2`
+#### 7.6.3 JIT Fault-to-Trap Conversion
+JIT-specific faults are mapped to trap returns, preserving kernel availability.
 
-This means one integrity failure carries the same weight as eight denied events.
+`FaultInJitContext => trap`.
 
-Solved examples:
+### 7.7 Verification and Regression Family
 
-- Example A: `D=10,Q=2,R=6,I=1,H=0` gives `Score=34`.
-- Example B: `D=10,Q=2,R=6,I=1,H=2` gives `Score=66`.
+#### 7.7.1 Differential Fuzz Harness and Seed Corpus
+JIT behavior is continuously compared with interpreter behavior under randomized and seeded programs.
 
-A two-event increase in `H` can push state from normal to alert without any change in low-severity counters.
+#### 7.7.2 Coverage-Guided Generation
+Opcode-bin and edge novelty feedback drive exploration toward under-covered control/data regions.
 
-### 19. Non-Determinism Soak Semantics
+`BinCov = hit_bins/total_bins`
 
-Single-pass corpus replay does not establish temporal stability. Multi-round soak introduces time-indexed confidence.
+`EdgeCov = hit_edges/total_edges`.
 
-Define pass indicator:
+#### 7.7.3 Corpus Replay and Soak Determinism
+Replay and soak commands enforce deterministic multi-round behavior with first-failure capture.
 
-`P(r,s)=1` if round `r`, seed `s` has zero mismatch and zero compile error, else `0`.
+`forall r,s: pass(r,s)=1` required.
 
-Soak success:
+#### 7.7.4 Mechanized Backend Checks
+Bounded model checks execute attenuation law and guard-equivalence law to detect law drift.
 
-`SoakPass = product_{r=1..R} product_{s in S} P(r,s)`.
+#### 7.7.5 CI Admission Automation
+Replay/soak/formal checks are integrated into CI failure gates, preventing unchecked regressions from entering the main branch.
 
-Thus `SoakPass=1` iff all `(r,s)` pairs pass.
+## 8. Evaluation
 
-This strict product form intentionally treats a single failure as full gate failure.
+### 8.1 Evaluation Methodology
+Evaluation is split into five dimensions:
 
-### 20. Reliability Under Composition
+- structural invariants,
+- semantic consistency,
+- deterministic replay stability,
+- runtime observability,
+- stress liveness.
 
-If each control family `f_i` has bypass probability `p_i`, then under conservative independence approximation:
+Each dimension contributes to release acceptance.
 
-`P_total <= product_i p_i`.
+### 8.2 Deterministic Differential Outcomes
+Observed operational criterion from validated runs:
 
-Even when dependence exists, composition still increases required exploit complexity if no two dependent controls share identical failure mode.
+- required seed profiles produced zero mismatches,
+- required seed profiles produced zero compile errors.
 
-Define dependency graph `G_dep` over controls. Desired property:
+Formalized acceptance expression:
 
-`max_clique_size(SharedFailureModeSubgraph) << |Controls|`.
+`A_diff = [mismatches=0 and compile_errors=0]`.
 
-Oreulia's implementation aims to minimize shared failure-mode cliques by mixing:
+### 8.3 Coverage Evaluation
+Coverage-guided fuzzing tracks bin and edge saturation. Improvement in `EdgeCov` is weighted more strongly because it captures transition structure, not just opcode presence.
 
-- hardware controls,
-- software checks,
-- cryptographic checks,
-- runtime detection,
-- CI regression gating.
+Suggested composite metric:
 
-### 21. Evidence Preservation and Reproducibility
+`S_cov = 0.4*BinCov + 0.6*EdgeCov`.
 
-A security claim is only reusable if evidence is reproducible.
+### 8.4 Soak Evaluation
+Define soak result over rounds `R` and seed set `S`:
 
-Required evidence tuple per release candidate:
+`SoakPass = product_{r=1..R} product_{s in S} pass(r,s)`.
 
-`E_release = (FormalSummary, CorpusSummary, SoakSummary, AnomalySummary, LifecycleSummary)`.
+The strict product form ensures a single unstable round forces a failed gate.
 
-Consistency requirement:
+### 8.5 Runtime Anomaly Evaluation
+Given score:
 
-`Hash(E_release) = recorded_release_hash`.
+`Score_t = 2D_t + 2Q_t + R_t + 4I_t + 16H_t`,
 
-This enables post hoc auditability and differential review between releases.
+anomaly evaluation inspects both instantaneous threshold crossings and trend behavior under stress.
 
-### 22. Distinguishing Implementation Completion from Research Completion
+Trend metric:
 
-The paradox closure is implementation-complete for the original issue scope. This does not imply global theorem-complete security.
+`DeltaA = Score_{t2} - Score_{t1}`.
 
-Define:
+Stable baseline expectation:
 
-`C_impl = completed engineering controls`
+`DeltaA` should remain bounded and non-explosive under normal stress profiles.
 
-`C_research = open long-horizon proof/side-channel domains`
+### 8.6 Scheduler/Network Stress Evaluation
+Under `sched-net-soak`, acceptance checks include:
 
-Current status:
+- monotonic context-switch progress,
+- no critical anomaly escalation,
+- no persistent network reactor errors.
 
-`C_impl = 1`
+Gate expression:
 
-`C_research > 0`.
+`A_stress = [DeltaSwitches>0 and CriticalDelta=0 and NetErrorCount=0]`.
 
-This distinction protects scientific honesty while preserving strong practical security claims.
+### 8.7 Overall Release Gate
+Release acceptance equation:
 
-### 23. Scientific Conclusion 
+`ReleaseAllowed = A_formal and A_diff and A_soak and A_runtime and A_stress and A_attest`
 
-Oreulia's paradox resolution can be summarized as a constrained-transition security architecture with measurable admission criteria.
+where each `A_*` is a boolean gate from its domain.
 
-Core statement:
+## 9. Limitations
 
-`(ConstrainedPermissions and ConstrainedControlFlow and ConstrainedAuthority and ConstrainedExecutionContext and DeterministicRegression and RuntimeAnomalyVisibility) => OperationallyStrongJITSecurity`.
+### 9.1 Bounded vs Unbounded Formality
+Mechanized backend checks are bounded-domain checks. They improve confidence and catch law drift but do not prove unbounded semantic correctness.
 
-In practical terms, the design preserves the performance objective of in-kernel JIT while replacing unchecked trust with layered, mathematically stated, and continuously verified acceptance conditions.
+### 9.2 Microarchitectural Channels
+Current closure does not provide full theorem-level guarantees against all speculative, cache, predictor, and contention channels.
 
-This is the defining result: the system no longer depends on a single claim of compiler correctness for safety, but on a compositional structure where violating security requires coordinated failure across independent enforcement planes.
+### 9.3 Supply Chain and Platform Trust
+Security claims assume integrity of toolchain, firmware, and trust anchors within defined threat scope.
+
+### 9.4 Dependence and Common-Mode Failures
+Compositional bounds often use conservative independence approximations. Real systems may exhibit dependence; this is mitigated by control-family diversity but not eliminated.
+
+### 9.5 Operational Discipline Requirement
+CI and soak gates must be continuously maintained. If enforcement cadence degrades, assurance quality degrades correspondingly.
+
+## 10. Corollary-Level Security Posture Interpretation
+
+Given Theorems 1-5 and obligations PO1-PO23, the implemented posture is:
+
+1. no single critical threat class has a one-control fail-open path,
+2. replay-visible semantic regressions are prevented from silent admission,
+3. authority forgery probability remains cryptographically bounded,
+4. runtime policy drift is observable through weighted anomaly channels.
+
+This is sufficient to declare paradox closure for the defined implementation scope.
+
+## 11. Conclusion
+
+Oreulia preserved in-kernel JIT and resolved the original paradox through explicit model-driven engineering. Security is now defined by equations, invariants, theorem-level claims, executable proof obligations, and deterministic release gates. The architecture no longer relies on an implicit assumption that the JIT is always correct; instead, it enforces correctness-adjacent behavior through layered rejection, constrained transitions, and continuous evidence.
+
+In concise form:
+
+`Performance(JIT_in_kernel) and Security(defense_in_depth) and Verification(deterministic_gates)`
+
+is achieved under the assumptions stated in Section 3.
+
+## Appendix A: Completed Control Inventory (Resolved)
+
+The following controls were implemented and are integrated into the formal argument above:
+
+- W^X enforcement for JIT: code is emitted into RW memory, then sealed to RX via page flag changes.
+- Kernel `.text`/`.rodata` read-only: kernel `.text`/`.rodata` mapped read-only; `.data`/`.bss` remain writable.
+- Dedicated JIT arena: executable buffers allocated from a bounded JIT arena (reduces mapping footprint).
+- Isolated execution address space: JIT runs under a sandbox page directory; only required ranges are mapped.
+- Ring 3 usermode execution path: entry via `IRET` into `USER_CS/USER_DS` with a user trampoline (configurable; fuzz uses kernel-mode execution).
+- Guard pages for JIT regions: guard pages now wrap user-mode JIT stack, code, data, and WASM memory windows.
+- JIT page-fault trapping: faults are converted into traps and return safely to the kernel.
+- Fuel-based execution limits: instruction and memory operation fuel enforced in generated code.
+- Integrity checks: code + exec buffer hashes and sealed exec buffers are verified before execution.
+- Shadow validation: early JIT calls are compared against interpreter results for semantic sanity checks.
+- JIT cache hardening: 64-bit FNV-1a for cache keys, plus code hash validation in cache hits.
+- Concurrency hardening: user-mode JIT execution uses locking around transition/return.
+- Cryptographic capability tokens (IPC): SipHash-2-4 MAC tokens added to IPC capabilities (per-boot secret).
+- Cryptographic capability tokens (core tables): OreuliaCapability entries are MAC-signed and verified on use/transfer.
+- JIT fuzz harness + regression seeds: in-kernel JIT vs interpreter fuzzing with mismatch-free runs on known seeds.
+- Complete instruction whitelist + decoder validation: full x86 emitter whitelist and strict decoder validation (no unexpected encodings).
+- Expanded SFI (all memory access paths): verifier enforces stack + linear memory guards for every access path.
+- Per-instance JIT user pages + wipe between runs: per-instance JIT trampoline/call/stack pages are wiped and re-sealed on each run.
+- Full CFI (shadow stack + valid target sets): return checks run on all exits; verifier restricts indirect/branch targets to trap stubs.
+- SMEP/SMAP/KPTI: CR4 protections enabled when supported; KPTI uses user IDT + trampolines, CR3 switching on entry/exit, and minimal kernel mappings.
+- Memory tagging + hardware isolation capability layer: software-tagged physical ranges now enforce fail-closed user mappings; SGX capability detection and TrustZone architecture gating are surfaced at runtime.
+- Hardware enclave backend framework: measured enclave sessions are created/entered/exited/closed around JIT user execution with strict lifecycle checks and backend selection (`intel-sgx` / `arm-trustzone` / `none`).
+- Hardware enclave primitive wiring: SGX backend now issues real `ECREATE/EADD/EEXTEND/EINIT/EENTER` instructions (when supported); TrustZone backend uses secure monitor call hooks (`SMC`) on ARM targets.
+- Production enclave provisioning: SGX EPC pool/page reservation, launch-token signing + verification, and local attestation report generation are integrated; TrustZone now enforces a negotiated secure-world service contract before session open.
+- Remote attestation + key provisioning hardening: session open is fail-closed unless runtime key provisioning succeeds after backend open; session enter requires attested state plus runtime key validation (active, purpose-bound, unexpired, MAC-integrity checked); session close revokes the runtime key before teardown; enclave init resets attestation cert/key stores and counters; status/`cpu-info` expose cert-chain readiness, key lifecycle totals, and quote verification success/failure counters.
+- External remote attestation interoperability hardening: quote verification now enforces backend-specific vendor root-of-trust anchors (SGX/TrustZone), signer-root linkage, and deterministic certificate signature validation; remote verifier exchange issues signed verdict tokens bound to session/measurement/nonce; policy modes (`disabled` / `audit` / `enforce`) gate fail-open vs fail-closed behavior; `enter` re-validates token integrity + expiry before backend transition.
+- Scheduler/context-switch hardening: first-run kernel thread contexts start with IF cleared, context-switch preserves raw saved EFLAGS, and resumed threads restore prior interrupt state.
+- Keyboard IRQ recovery under preemption: cooperative switch paths now restore interrupt state on resume, preventing latent IRQ starvation after yields/blocks.
+- Translation validation (per-block certificate): each compiled function now carries a per-op translation trace and per-block digest; cache/integrity checks re-validate WASM-to-x86 block coverage, fuel-check insertion, and memory-guard shape before execution.
+- Coverage-guided fuzzing + external regression corpus: JIT fuzz generation now uses opcode-coverage feedback (bin + edge novelty), reports coverage metrics, and includes a stable external seed corpus with a replay runner for deterministic regression.
+- Panic-safe bytecode/function range handling: interpreter/JIT call paths now validate function code ranges with checked arithmetic and clamped bytecode lengths, converting corrupt metadata into `InvalidModule` instead of slice panics.
+- Allocator-stable corpus fuzz execution: regression corpus runs now reuse fuzz instances, compiler, and scratch buffers across seeds to avoid allocator exhaustion during long in-kernel campaigns.
+- Formal verification framework for JIT + capabilities: JIT compilation now emits and stores a translation proof certificate (trace continuity, opcode decode consistency, memory-op obligations, proof hash), integrity re-validation recomputes and enforces that proof, capability enforcement now uses a single proof predicate for token/type/object/rights checks, and `formal-verify` executes deterministic self-check obligations in-kernel.
+- Mechanized backend model checks: `formal-verify` now includes bounded machine-checked model obligations for capability attenuation laws and JIT memory-guard equivalence.
+- CI automation for corpus replay: GitHub Actions workflow replays the external corpus and fails the build on any mismatch/compile error.
+- Residual non-determinism soak checks: `wasm-jit-fuzz-soak <iters> <rounds>` repeatedly replays the full seed corpus and reports first failing round/seed.
+- Runtime anomaly detection: security manager now maintains a sliding anomaly score over permission/quota/rate/integrity violations and emits anomaly audit events at threshold crossings.
+- Scheduler/network soak verification command: `sched-net-soak <seconds> [probe_ms]` performs long-run cooperative/preemptive stress while probing reactor health and anomaly deltas.
+
+## Appendix B: Notation
+
+- `Sigma`: system state tuple.
+- `T_*`: transition-family relation.
+- `Safe`: composite security predicate.
+- `PD_sandbox`: sandbox page directory.
+- `CPL`: current privilege level.
+- `T_valid`: valid indirect target set.
+- `D_t,Q_t,R_t,I_t,H_t`: anomaly-class counters in window at time `t`.
+- `PO*`: proof obligations.
