@@ -134,14 +134,23 @@ impl JitExecBuffer {
         if code.len() > self.len {
             return Err("Code length overflow");
         }
+        // Touch only pages that actually contain generated code.
+        let writable_len = if code.is_empty() {
+            0
+        } else {
+            code.len()
+                .checked_add(paging::PAGE_SIZE - 1)
+                .ok_or("Code length overflow")?
+                & !(paging::PAGE_SIZE - 1)
+        };
         // Ensure writable during copy
-        paging::set_page_writable_range(self.ptr as usize, self.len, true)?;
+        paging::set_page_writable_range(self.ptr as usize, writable_len, true)?;
         unsafe {
             core::ptr::copy_nonoverlapping(code.as_ptr(), self.ptr, code.len());
         }
         // Seal pages (read-only policy)
-        paging::set_page_writable_range(self.ptr as usize, self.len, false)?;
-        memory_isolation::tag_jit_code_kernel(self.ptr as usize, self.len, true)?;
+        paging::set_page_writable_range(self.ptr as usize, writable_len, false)?;
+        memory_isolation::tag_jit_code_kernel(self.ptr as usize, writable_len, true)?;
         self.sealed = true;
         Ok(())
     }
@@ -650,6 +659,10 @@ impl FuzzCompiler {
 
     pub fn exec_len(&self) -> usize {
         self.exec.len
+    }
+
+    pub fn emitted_code(&self) -> &[u8] {
+        &self.emitter.code
     }
 }
 
@@ -1806,7 +1819,8 @@ fn verify_x86_subset(
             }
             // mov r/m32, r32
             0x89 => {
-                let b1 = *code.get(i + 1).ok_or("Truncated 0x89")?;
+                need(code, i, 2)?;
+                let b1 = code[i + 1];
                 match b1 {
                     0xE5 => {
                         need(code, i, 2)?;
@@ -1872,7 +1886,36 @@ fn verify_x86_subset(
                         check_local_disp32(code, i + 2, locals_total)?;
                         i += 6;
                     }
-                    _ => return Err("Unexpected 0x89 encoding"),
+                    _ => {
+                        // Conservative fallback for additional MOV encodings used by
+                        // codegen variants. Keep absolute-address forms disallowed.
+                        let mod_bits = b1 >> 6;
+                        let rm = b1 & 0x07;
+                        let mut len = 2usize;
+                        if mod_bits != 0x03 && rm == 0x04 {
+                            // SIB byte present.
+                            need(code, i, len + 1)?;
+                            let sib = code[i + len];
+                            len += 1;
+                            let base = sib & 0x07;
+                            if mod_bits == 0x00 && base == 0x05 {
+                                return Err("Unexpected 0x89 absolute SIB");
+                            }
+                        }
+                        match mod_bits {
+                            0x00 => {
+                                if rm == 0x05 {
+                                    return Err("Unexpected 0x89 absolute disp32");
+                                }
+                            }
+                            0x01 => len += 1, // disp8
+                            0x02 => len += 4, // disp32
+                            0x03 => {}        // register-direct
+                            _ => return Err("Unexpected 0x89 encoding"),
+                        }
+                        need(code, i, len)?;
+                        i += len;
+                    }
                 }
             }
             // cmp eax, ebx

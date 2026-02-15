@@ -1,0 +1,41 @@
+#!/usr/bin/expect -f
+#
+# External regression runner for the WASM JIT seed corpus.
+# Run from `kernel/`:
+#   ./fuzz/run_wasm_jit_corpus.expect 1000
+
+set timeout 0
+set iters 1000
+if {[llength $argv] >= 1} {
+    set iters [lindex $argv 0]
+}
+
+set corpus_path "fuzz/wasm_jit_seed_corpus.txt"
+if {![file exists $corpus_path]} {
+    puts "Corpus file not found: $corpus_path"
+    exit 1
+}
+
+spawn ./run.sh
+expect "> "
+
+set fp [open $corpus_path r]
+while {[gets $fp line] >= 0} {
+    set trimmed [string trim $line]
+    if {$trimmed eq ""} {
+        continue
+    }
+    if {[string first "#" $trimmed] == 0} {
+        continue
+    }
+    send "wasm-jit-fuzz $iters $trimmed\r"
+    expect "> "
+}
+close $fp
+
+# Also run in-kernel corpus aggregate command for a summary.
+send "wasm-jit-fuzz-corpus $iters\r"
+expect "> "
+
+sleep 1
+send "\003"

@@ -101,7 +101,8 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-list    - List loaded WASM instances\n");
             vga::print_str("  wasm-jit-bench - Benchmark WASM JIT vs interpreter\n");
             vga::print_str("  wasm-jit-selftest - Run WASM JIT bounds self-test\n");
-            vga::print_str("  wasm-jit-fuzz  - Fuzz JIT vs interpreter (wasm-jit-fuzz <iters> [seed])\n");
+            vga::print_str("  wasm-jit-fuzz  - Coverage-guided JIT fuzz (wasm-jit-fuzz <iters> [seed])\n");
+            vga::print_str("  wasm-jit-fuzz-corpus - Run external regression seed corpus (wasm-jit-fuzz-corpus <iters>)\n");
             vga::print_str("  wasm-jit-on  - Enable WASM JIT\n");
             vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
             vga::print_str("  wasm-jit-stats - Show WASM JIT stats\n");
@@ -279,6 +280,9 @@ pub fn execute(input: &str) {
         }
         "wasm-jit-fuzz" => {
             cmd_wasm_jit_fuzz(parts);
+        }
+        "wasm-jit-fuzz-corpus" => {
+            cmd_wasm_jit_fuzz_corpus(parts);
         }
         "wasm-jit-on" => {
             cmd_wasm_jit_on();
@@ -3184,7 +3188,58 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
             print_u32(stats.mismatches);
             vga::print_str("\nCompile errors: ");
             print_u32(stats.compile_errors);
+            vga::print_str("\nOpcode bins hit: ");
+            print_u32(stats.opcode_bins_hit);
+            vga::print_str(" / 14");
+            vga::print_str("\nOpcode edges hit: ");
+            print_u32(stats.opcode_edges_hit);
+            vga::print_str(" / 196");
+            vga::print_str("\nNovel programs: ");
+            print_u32(stats.novel_programs);
             vga::print_str("\n");
+            if stats.compile_errors > 0 {
+                if let Some(err) = stats.first_compile_error {
+                    vga::print_str("\nFirst compile error:\n");
+                    vga::print_str("Iter: ");
+                    print_u32(err.iteration);
+                    vga::print_str("  Locals: ");
+                    print_u32(err.locals_total);
+                    vga::print_str("  Stage: ");
+                    vga::print_str(err.stage);
+                    vga::print_str("  Code len: ");
+                    print_u32(err.code.len() as u32);
+                    vga::print_str("\nReason: ");
+                    print_ascii_escaped(err.reason);
+                    vga::print_str("\nCode bytes:\n");
+                    let mut i = 0usize;
+                    while i < err.code.len() {
+                        print_hex_byte(err.code[i]);
+                        vga::print_str(" ");
+                        if (i + 1) % 16 == 0 {
+                            vga::print_str("\n");
+                        }
+                        i += 1;
+                    }
+                    if err.code.len() % 16 != 0 {
+                        vga::print_str("\n");
+                    }
+                    if !err.jit_code.is_empty() {
+                        vga::print_str("JIT x86 bytes:\n");
+                        let mut j = 0usize;
+                        while j < err.jit_code.len() {
+                            print_hex_byte(err.jit_code[j]);
+                            vga::print_str(" ");
+                            if (j + 1) % 16 == 0 {
+                                vga::print_str("\n");
+                            }
+                            j += 1;
+                        }
+                        if err.jit_code.len() % 16 != 0 {
+                            vga::print_str("\n");
+                        }
+                    }
+                }
+            }
             if stats.mismatches > 0 {
                 if let Some(mismatch) = stats.first_mismatch {
                     vga::print_str("\nFirst mismatch:\n");
@@ -3254,6 +3309,154 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
         }
         Err(e) => {
             vga::print_str("Fuzz failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    vga::print_str("\n");
+}
+
+fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
+    let iters = parts
+        .next()
+        .and_then(parse_number)
+        .map(|v| v as u32)
+        .unwrap_or(1000);
+    const MAX_FUZZ_ITERS: u32 = 10_000;
+    if iters == 0 || iters > MAX_FUZZ_ITERS {
+        vga::print_str("Usage: wasm-jit-fuzz-corpus <iters>\n");
+        vga::print_str("Iterations must be 1..=10000.\n");
+        return;
+    }
+
+    vga::print_str("\n===== WASM JIT Regression Corpus =====\n\n");
+    vga::print_str("Seeds: ");
+    print_u32(crate::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
+    vga::print_str("\nIterations per seed: ");
+    print_u32(iters);
+    vga::print_str("\n\n");
+
+    match crate::wasm::jit_fuzz_regression_default(iters) {
+        Ok(stats) => {
+            vga::print_str("Seeds passed: ");
+            print_u32(stats.seeds_passed);
+            vga::print_str(" / ");
+            print_u32(stats.seeds_total);
+            vga::print_str("\nSeeds failed: ");
+            print_u32(stats.seeds_failed);
+            vga::print_str("\nTotal OK: ");
+            print_u32(stats.total_ok);
+            vga::print_str("\nTotal traps: ");
+            print_u32(stats.total_traps);
+            vga::print_str("\nTotal mismatches: ");
+            print_u32(stats.total_mismatches);
+            vga::print_str("\nTotal compile errors: ");
+            print_u32(stats.total_compile_errors);
+            vga::print_str("\nMax opcode bins hit: ");
+            print_u32(stats.max_opcode_bins_hit);
+            vga::print_str(" / 14");
+            vga::print_str("\nMax opcode edges hit: ");
+            print_u32(stats.max_opcode_edges_hit);
+            vga::print_str(" / 196");
+            vga::print_str("\nTotal novel programs: ");
+            print_u32(stats.total_novel_programs);
+            if let Some(seed) = stats.first_failed_seed {
+                vga::print_str("\nFirst failing seed: ");
+                print_u64(seed);
+                vga::print_str("\nSeed mismatch/compile errors: ");
+                print_u32(stats.first_failed_mismatches);
+                vga::print_str(" / ");
+                print_u32(stats.first_failed_compile_errors);
+                if let Some(err) = stats.first_failed_compile_error {
+                    vga::print_str("\nFirst compile error:\n");
+                    vga::print_str("Stage: ");
+                    vga::print_str(err.stage);
+                    vga::print_str("  Iter: ");
+                    print_u32(err.iteration);
+                    vga::print_str("  Locals: ");
+                    print_u32(err.locals_total);
+                    vga::print_str("  Code len: ");
+                    print_u32(err.code.len() as u32);
+                    vga::print_str("\nReason: ");
+                    print_ascii_escaped(err.reason);
+                    vga::print_str("\nCode bytes:\n");
+                    let mut i = 0usize;
+                    while i < err.code.len() {
+                        print_hex_byte(err.code[i]);
+                        vga::print_str(" ");
+                        if (i + 1) % 16 == 0 {
+                            vga::print_str("\n");
+                        }
+                        i += 1;
+                    }
+                    if err.code.len() % 16 != 0 {
+                        vga::print_str("\n");
+                    }
+                    if !err.jit_code.is_empty() {
+                        vga::print_str("JIT x86 bytes:\n");
+                        let mut j = 0usize;
+                        while j < err.jit_code.len() {
+                            print_hex_byte(err.jit_code[j]);
+                            vga::print_str(" ");
+                            if (j + 1) % 16 == 0 {
+                                vga::print_str("\n");
+                            }
+                            j += 1;
+                        }
+                        if err.jit_code.len() % 16 != 0 {
+                            vga::print_str("\n");
+                        }
+                    }
+                }
+                if let Some(mismatch) = stats.first_failed_mismatch {
+                    vga::print_str("\nFirst mismatch:\n");
+                    vga::print_str("Iter: ");
+                    print_u32(mismatch.iteration);
+                    vga::print_str("  Locals: ");
+                    print_u32(mismatch.locals_total);
+                    vga::print_str("  Code len: ");
+                    print_u32(mismatch.code.len() as u32);
+                    vga::print_str("\nInterp: ");
+                    match mismatch.interp {
+                        Ok(v) => {
+                            vga::print_str("ok ");
+                            print_i32(v);
+                        }
+                        Err(e) => vga::print_str(e.as_str()),
+                    }
+                    vga::print_str("  JIT: ");
+                    match mismatch.jit {
+                        Ok(v) => {
+                            vga::print_str("ok ");
+                            print_i32(v);
+                        }
+                        Err(e) => vga::print_str(e.as_str()),
+                    }
+                    vga::print_str("\nMem hash (interp/jit): 0x");
+                    print_hex_u32((mismatch.interp_mem_hash >> 32) as u32);
+                    print_hex_u32(mismatch.interp_mem_hash as u32);
+                    vga::print_str(" / 0x");
+                    print_hex_u32((mismatch.jit_mem_hash >> 32) as u32);
+                    print_hex_u32(mismatch.jit_mem_hash as u32);
+                    vga::print_str("\nCode bytes:\n");
+                    let mut i = 0usize;
+                    while i < mismatch.code.len() {
+                        print_hex_byte(mismatch.code[i]);
+                        vga::print_str(" ");
+                        if (i + 1) % 16 == 0 {
+                            vga::print_str("\n");
+                        }
+                        i += 1;
+                    }
+                    if mismatch.code.len() % 16 != 0 {
+                        vga::print_str("\n");
+                    }
+                }
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Regression corpus failed: ");
             vga::print_str(e);
             vga::print_str("\n");
         }
@@ -4428,6 +4631,17 @@ fn print_hex_byte(byte: u8) {
     
     vga::print_char(hex_digit(high));
     vga::print_char(hex_digit(low));
+}
+
+fn print_ascii_escaped(s: &str) {
+    for &b in s.as_bytes() {
+        if (0x20..=0x7E).contains(&b) {
+            vga::print_char(b as char);
+        } else {
+            vga::print_str("\\x");
+            print_hex_byte(b);
+        }
+    }
 }
 
 fn hex_digit(n: u8) -> char {

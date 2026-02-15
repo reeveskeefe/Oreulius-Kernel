@@ -39,11 +39,12 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **Scheduler/context-switch hardening**: first-run kernel thread contexts start with IF cleared, context-switch preserves raw saved EFLAGS, and resumed threads restore prior interrupt state.
 - **Keyboard IRQ recovery under preemption**: cooperative switch paths now restore interrupt state on resume, preventing latent IRQ starvation after yields/blocks.
 - **Translation validation (per-block certificate)**: each compiled function now carries a per-op translation trace and per-block digest; cache/integrity checks re-validate WASM-to-x86 block coverage, fuel-check insertion, and memory-guard shape before execution.
+- **Coverage-guided fuzzing + external regression corpus**: JIT fuzz generation now uses opcode-coverage feedback (bin + edge novelty), reports coverage metrics, and includes a stable external seed corpus with a replay runner for deterministic regression.
 
 ### **Remaining TODOs**
 - **Formal verification of critical JIT paths and capability checks**
 - **External remote attestation interoperability hardening**: integrate vendor quote/certificate root-of-trust verification and remote verifier exchange for cross-system trust.
-- **External fuzzing + coverage-guided regression**
+- **CI automation for external corpus replay**: run corpus replay automatically per commit and fail on mismatches/compile errors.
 - **Anomaly detection / audit hardening beyond current logs**
 - **Long-run scheduler/network stress verification**: continue soak testing preemptive shell/network switching to close intermittent runtime-fault reports.
 
@@ -70,6 +71,8 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - Per-instance JIT user pages wiped/resealed on each run.
 - Full CFI enforcement: shadow stack checks on all exits + verifier target validation.
 - Per-block translation certificates with runtime integrity re-validation of WASM->x86 trace coverage.
+- Coverage-guided fuzz heuristics (opcode bins/edges + novelty tracking) and `wasm-jit-fuzz-corpus` aggregate regression command.
+- External seed corpus files and replay runner under `kernel/fuzz/`.
 - Software memory tagging with fail-closed user-mapping policy checks in paging.
 - SGX capability detection + TrustZone architecture gating surfaced via boot logs and `cpu-info`.
 - Scheduler bootstrap race fix: initial kernel-thread IF handling and resumed interrupt-state restoration.
@@ -705,8 +708,12 @@ wasm-jit-fuzz 1000 3418704842
 - **Mismatches**: semantic divergence (should be 0)
 - **Compile errors**: JIT rejects a program (acceptable, but tracked)
 
-**Future:**
-- Coverage-guided external fuzzing (libFuzzer/AFL) against the JIT compiler and verifier.
+**Coverage-guided + corpus replay (implemented):**
+- `wasm-jit-fuzz` now biases generation toward under-covered opcode bins and opcode edges, and reports coverage/novelty metrics.
+- `wasm-jit-fuzz-corpus <iters>` replays the stable regression corpus and prints aggregate pass/fail totals.
+- External corpus artifacts live in `kernel/fuzz/`:
+  - `kernel/fuzz/wasm_jit_seed_corpus.txt`
+  - `kernel/fuzz/run_wasm_jit_corpus.expect`
 
 ---
 
@@ -799,7 +806,7 @@ impl AnomalyDetector {
 1. ✅ Complete instruction whitelist / decoder validation
 2. ✅ Expand SFI (bounds checks or masking for all memory paths)
 3. ✅ Guard pages for all JIT regions + per-instance cleanup
-4. 🟡 Coverage-guided fuzzing + external regression corpus
+4. ✅ Coverage-guided fuzzing + external regression corpus
 
 ### **Phase 3 (Advanced - Long-term):**
 1. 🔶 Formal verification of JIT translation + capability checks

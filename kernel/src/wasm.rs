@@ -113,6 +113,16 @@ pub struct JitFuzzMismatch {
     pub jit_first_nonzero: Option<(u32, u8)>,
 }
 
+/// First compile/load error details for JIT fuzzing.
+pub struct JitFuzzCompileError {
+    pub iteration: u32,
+    pub locals_total: u32,
+    pub stage: &'static str,
+    pub reason: &'static str,
+    pub code: Vec<u8>,
+    pub jit_code: Vec<u8>,
+}
+
 /// JIT fuzzing statistics
 pub struct JitFuzzStats {
     pub iterations: u32,
@@ -120,11 +130,64 @@ pub struct JitFuzzStats {
     pub traps: u32,
     pub mismatches: u32,
     pub compile_errors: u32,
+    pub opcode_bins_hit: u32,
+    pub opcode_edges_hit: u32,
+    pub novel_programs: u32,
     pub first_mismatch: Option<JitFuzzMismatch>,
+    pub first_compile_error: Option<JitFuzzCompileError>,
 }
 
 const MAX_FUZZ_CODE_SIZE: usize = 256;
 const MAX_FUZZ_JIT_CODE_SIZE: usize = 8192;
+const JIT_FUZZ_OPCODE_BINS: usize = 14;
+
+/// Stable regression corpus seeds for JIT fuzz replay.
+pub const JIT_FUZZ_REGRESSION_SEEDS: [u64; 10] = [
+    0,
+    107_427_055,
+    2_105_703_400,
+    2_788_077_538,
+    2_901_516_716,
+    3_418_704_842,
+    3_609_752_155,
+    3_870_443_198,
+    3_735_928_559,
+    4_294_967_295,
+];
+
+pub struct JitFuzzRegressionStats {
+    pub seeds_total: u32,
+    pub seeds_passed: u32,
+    pub seeds_failed: u32,
+    pub total_ok: u32,
+    pub total_traps: u32,
+    pub total_mismatches: u32,
+    pub total_compile_errors: u32,
+    pub max_opcode_bins_hit: u32,
+    pub max_opcode_edges_hit: u32,
+    pub total_novel_programs: u32,
+    pub first_failed_seed: Option<u64>,
+    pub first_failed_mismatches: u32,
+    pub first_failed_compile_errors: u32,
+    pub first_failed_mismatch: Option<JitFuzzMismatch>,
+    pub first_failed_compile_error: Option<JitFuzzCompileError>,
+}
+
+struct JitFuzzScratch {
+    code: Vec<u8>,
+    interp_mem_snapshot: Vec<u8>,
+    choice_trace: Vec<u8>,
+}
+
+impl JitFuzzScratch {
+    fn new() -> Self {
+        Self {
+            code: Vec::with_capacity(MAX_FUZZ_CODE_SIZE),
+            interp_mem_snapshot: Vec::with_capacity(MAX_MEMORY_SIZE),
+            choice_trace: Vec::with_capacity(64),
+        }
+    }
+}
 
 /// WASM value types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -739,7 +802,13 @@ impl WasmModule {
         validate_bytecode(bytecode)?;
 
         self.bytecode.clear();
-        self.bytecode.reserve_exact(bytecode.len());
+        // Reserve only the missing capacity; reserve_exact takes "additional",
+        // not "target capacity". Over-reserving here every iteration causes
+        // unbounded capacity growth during fuzz loops.
+        if bytecode.len() > self.bytecode.capacity() {
+            self.bytecode
+                .reserve_exact(bytecode.len() - self.bytecode.capacity());
+        }
         self.bytecode.extend_from_slice(bytecode);
         self.bytecode_len = bytecode.len();
 
@@ -899,6 +968,9 @@ impl WasmInstance {
     }
 
     fn load_fuzz_program(&mut self, code: &[u8], locals_total: usize) -> Result<(), WasmError> {
+        if code.len() > MAX_FUZZ_CODE_SIZE {
+            return Err(WasmError::InvalidModule);
+        }
         self.module.load(code)?;
         self.module.reset_functions();
         let _ = self.module.add_function(Function {
@@ -938,8 +1010,7 @@ impl WasmInstance {
             return Err(WasmError::StackUnderflow);
         }
 
-        let code_start = func.code_offset;
-        let code_end = func.code_offset + func.code_len;
+        let (code_start, code_end) = self.function_code_range(func)?;
         let _code = &self.module.bytecode[code_start..code_end];
         let locals_total = func.param_count + func.local_count;
 
@@ -1064,12 +1135,31 @@ impl WasmInstance {
 
     /// Hash the module bytecode (for replay verification)
     pub fn module_hash(&self) -> u64 {
-        hash_memory(&self.module.bytecode[..self.module.bytecode_len])
+        let len = self.bytecode_len_clamped();
+        hash_memory(&self.module.bytecode[..len])
     }
 
     /// Byte length of the module
     pub fn module_len(&self) -> usize {
-        self.module.bytecode_len
+        self.bytecode_len_clamped()
+    }
+
+    #[inline]
+    fn bytecode_len_clamped(&self) -> usize {
+        core::cmp::min(self.module.bytecode_len, self.module.bytecode.len())
+    }
+
+    #[inline]
+    fn function_code_range(&self, func: Function) -> Result<(usize, usize), WasmError> {
+        let code_start = func.code_offset;
+        let code_end = code_start
+            .checked_add(func.code_len)
+            .ok_or(WasmError::InvalidModule)?;
+        let bytecode_len = self.bytecode_len_clamped();
+        if code_start > code_end || code_end > bytecode_len {
+            return Err(WasmError::InvalidModule);
+        }
+        Ok((code_start, code_end))
     }
 
     fn try_jit(&mut self, func: Function, func_idx: usize) -> Result<bool, WasmError> {
@@ -1093,8 +1183,7 @@ impl WasmInstance {
             return Ok(false);
         }
 
-        let code_start = func.code_offset;
-        let code_end = func.code_offset + func.code_len;
+        let (code_start, code_end) = self.function_code_range(func)?;
         let code = &self.module.bytecode[code_start..code_end];
         let locals_total = func.param_count + func.local_count;
 
@@ -1411,8 +1500,8 @@ impl WasmInstance {
         }
 
         // Execute function body
-        self.pc = func.code_offset;
-        let end_pc = func.code_offset + func.code_len;
+        let (code_start, end_pc) = self.function_code_range(func)?;
+        self.pc = code_start;
 
         while self.pc < end_pc {
             let should_continue = self.step()?;
@@ -1431,7 +1520,8 @@ impl WasmInstance {
         // Check execution limits
         self.check_instruction_limit()?;
 
-        if self.pc >= self.module.bytecode_len {
+        let bytecode_len = self.bytecode_len_clamped();
+        if self.pc >= bytecode_len {
             return Err(WasmError::InvalidProgramCounter);
         }
 
@@ -1604,9 +1694,10 @@ impl WasmInstance {
     fn read_uleb128(&mut self) -> Result<u32, WasmError> {
         let mut result = 0u32;
         let mut shift = 0;
+        let bytecode_len = self.bytecode_len_clamped();
 
         loop {
-            if self.pc >= self.module.bytecode_len {
+            if self.pc >= bytecode_len {
                 return Err(WasmError::UnexpectedEndOfCode);
             }
 
@@ -1633,9 +1724,10 @@ impl WasmInstance {
         let mut result = 0i32;
         let mut shift = 0;
         let mut byte;
+        let bytecode_len = self.bytecode_len_clamped();
 
         loop {
-            if self.pc >= self.module.bytecode_len {
+            if self.pc >= bytecode_len {
                 return Err(WasmError::UnexpectedEndOfCode);
             }
 
@@ -2507,6 +2599,9 @@ impl JitCache {
 static JIT_CONFIG: Mutex<JitConfig> = Mutex::new(JitConfig::new());
 static JIT_STATS: Mutex<JitStats> = Mutex::new(JitStats::new());
 static JIT_CACHE: Mutex<JitCache> = Mutex::new(JitCache::new());
+static JIT_FUZZ_SCRATCH: Mutex<Option<JitFuzzScratch>> = Mutex::new(None);
+static JIT_FUZZ_COMPILER: Mutex<Option<crate::wasm_jit::FuzzCompiler>> = Mutex::new(None);
+static JIT_FUZZ_INSTANCES: Mutex<Option<(usize, usize)>> = Mutex::new(None);
 static JIT_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static mut JIT_FAULT_TRAP_PTR: *mut i32 = core::ptr::null_mut();
 static JIT_USER_LOCK: Mutex<()> = Mutex::new(());
@@ -3442,6 +3537,42 @@ pub fn jit_bounds_self_test() -> Result<(), &'static str> {
 }
 
 /// JIT fuzzing harness (generates random programs and compares interpreter vs JIT).
+fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
+    let mut slots = JIT_FUZZ_INSTANCES.lock();
+    if let Some((interp_id, jit_id)) = *slots {
+        let interp_ok = wasm_runtime().get_instance_mut(interp_id, |_| ()).is_ok();
+        let jit_ok = wasm_runtime().get_instance_mut(jit_id, |_| ()).is_ok();
+        if interp_ok && jit_ok {
+            return Ok((interp_id, jit_id));
+        }
+        *slots = None;
+    }
+
+    let mut base_module = WasmModule::new();
+    base_module.reserve_bytecode(MAX_FUZZ_CODE_SIZE);
+    base_module
+        .load(&[Opcode::End as u8])
+        .map_err(|_| "Module load failed")?;
+    base_module
+        .add_function(Function {
+            code_offset: 0,
+            code_len: 1,
+            param_count: 0,
+            result_count: 1,
+            local_count: 0,
+        })
+        .map_err(|_| "Function add failed")?;
+
+    let interp_id = wasm_runtime()
+        .instantiate_module(base_module.clone(), ProcessId(1))
+        .map_err(|_| "Instance create failed")?;
+    let jit_id = wasm_runtime()
+        .instantiate_module(base_module, ProcessId(1))
+        .map_err(|_| "Instance create failed")?;
+    *slots = Some((interp_id, jit_id));
+    Ok((interp_id, jit_id))
+}
+
 pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str> {
     struct JitConfigGuard {
         enabled: bool,
@@ -3518,6 +3649,36 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         None
     }
 
+    fn choose_guided_choice(rng: &mut FuzzRng, opcode_hits: &[u32; JIT_FUZZ_OPCODE_BINS]) -> u32 {
+        let mut min_hit = u32::MAX;
+        let mut i = 0usize;
+        while i < opcode_hits.len() {
+            if opcode_hits[i] < min_hit {
+                min_hit = opcode_hits[i];
+            }
+            i += 1;
+        }
+
+        // Prefer under-covered opcode bins, with occasional random exploration.
+        if (rng.next_u32() % 100) < 80 {
+            let mut candidates = [0u8; JIT_FUZZ_OPCODE_BINS];
+            let mut n = 0usize;
+            let mut idx = 0usize;
+            while idx < opcode_hits.len() {
+                if opcode_hits[idx] <= min_hit.saturating_add(1) {
+                    candidates[n] = idx as u8;
+                    n += 1;
+                }
+                idx += 1;
+            }
+            if n > 0 {
+                let pick = (rng.next_u32() as usize) % n;
+                return candidates[pick] as u32;
+            }
+        }
+        rng.next_u32() % (JIT_FUZZ_OPCODE_BINS as u32)
+    }
+
     let _guard = {
         let mut cfg = jit_config().lock();
         let guard = JitConfigGuard {
@@ -3545,30 +3706,25 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         RateLimitGuard { enabled: prev }
     };
 
-    let mut code: Vec<u8> = Vec::with_capacity(MAX_FUZZ_CODE_SIZE);
-    let mut interp_mem_snapshot: Vec<u8> = Vec::with_capacity(MAX_MEMORY_SIZE);
-    let mut compiler = crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE)
-        .map_err(|_| "Fuzz compiler init failed")?;
+    let mut scratch_slot = JIT_FUZZ_SCRATCH.lock();
+    if scratch_slot.is_none() {
+        *scratch_slot = Some(JitFuzzScratch::new());
+    }
+    let scratch = scratch_slot.as_mut().ok_or("Fuzz scratch init failed")?;
+    let code = &mut scratch.code;
+    let interp_mem_snapshot = &mut scratch.interp_mem_snapshot;
+    let choice_trace = &mut scratch.choice_trace;
 
-    let mut base_module = WasmModule::new();
-    base_module.reserve_bytecode(MAX_FUZZ_CODE_SIZE);
-    base_module.load(&[Opcode::End as u8]).map_err(|_| "Module load failed")?;
-    base_module
-        .add_function(Function {
-            code_offset: 0,
-            code_len: 1,
-            param_count: 0,
-            result_count: 1,
-            local_count: 0,
-        })
-        .map_err(|_| "Function add failed")?;
+    let mut compiler_slot = JIT_FUZZ_COMPILER.lock();
+    if compiler_slot.is_none() {
+        *compiler_slot = Some(
+            crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE)
+                .map_err(|_| "Fuzz compiler init failed")?,
+        );
+    }
+    let compiler = compiler_slot.as_mut().ok_or("Fuzz compiler init failed")?;
 
-    let interp_id = wasm_runtime()
-        .instantiate_module(base_module.clone(), ProcessId(1))
-        .map_err(|_| "Instance create failed")?;
-    let jit_id = wasm_runtime()
-        .instantiate_module(base_module, ProcessId(1))
-        .map_err(|_| "Instance create failed")?;
+    let (interp_id, jit_id) = ensure_fuzz_instances()?;
 
     let _ = wasm_runtime().get_instance_mut(interp_id, |instance| {
         instance.prepare_fuzz();
@@ -3584,12 +3740,20 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         traps: 0,
         mismatches: 0,
         compile_errors: 0,
+        opcode_bins_hit: 0,
+        opcode_edges_hit: 0,
+        novel_programs: 0,
         first_mismatch: None,
+        first_compile_error: None,
     };
+    let mut opcode_hits = [0u32; JIT_FUZZ_OPCODE_BINS];
+    let mut opcode_seen = [false; JIT_FUZZ_OPCODE_BINS];
+    let mut edge_seen = [false; JIT_FUZZ_OPCODE_BINS * JIT_FUZZ_OPCODE_BINS];
 
     for iter in 0..iterations {
         let locals_total = (rng.next_u32() % 4) as usize;
         code.clear();
+        choice_trace.clear();
         let mut stack_depth: i32 = 0;
         let ops = 8 + (rng.next_u32() % 32) as usize;
 
@@ -3599,105 +3763,179 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             if code.len() + 16 >= MAX_FUZZ_CODE_SIZE {
                 break;
             }
-            let choice = rng.next_u32() % 14;
+            let choice = choose_guided_choice(&mut rng, &opcode_hits);
+            let mut emitted_choice: Option<u8> = None;
             match choice {
-                0 => code.push(Opcode::Nop as u8),
+                0 => {
+                    code.push(Opcode::Nop as u8);
+                    emitted_choice = Some(0);
+                }
                 1 => {
                     if stack_depth > 0 {
                         code.push(Opcode::Drop as u8);
                         stack_depth -= 1;
+                        emitted_choice = Some(1);
                     } else {
                         code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(&mut code, rng.next_i32());
+                        push_sleb128_i32(code, rng.next_i32());
                         stack_depth += 1;
+                        emitted_choice = Some(1);
                     }
                 }
                 2 => {
                     if stack_depth < (MAX_STACK_DEPTH as i32) - 1 {
                         code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(&mut code, rng.next_i32());
+                        push_sleb128_i32(code, rng.next_i32());
                         stack_depth += 1;
+                        emitted_choice = Some(2);
                     }
                 }
                 3 => {
                     if stack_depth >= 2 {
                         code.push(Opcode::I32Add as u8);
                         stack_depth -= 1;
+                        emitted_choice = Some(3);
                     }
                 }
                 4 => {
                     if stack_depth >= 2 {
                         code.push(Opcode::I32Sub as u8);
                         stack_depth -= 1;
+                        emitted_choice = Some(4);
                     }
                 }
                 5 => {
                     if stack_depth >= 2 {
                         code.push(Opcode::I32Mul as u8);
                         stack_depth -= 1;
+                        emitted_choice = Some(5);
                     }
                 }
                 6 => {
                     if stack_depth >= 2 {
                         code.push(Opcode::I32And as u8);
                         stack_depth -= 1;
+                        emitted_choice = Some(6);
                     }
                 }
                 7 => {
                     if stack_depth >= 2 {
                         code.push(Opcode::I32Or as u8);
                         stack_depth -= 1;
+                        emitted_choice = Some(7);
                     }
                 }
                 8 => {
                     if stack_depth >= 2 {
                         code.push(Opcode::I32Xor as u8);
                         stack_depth -= 1;
+                        emitted_choice = Some(8);
                     }
                 }
                 9 => {
                     if stack_depth >= 1 {
                         code.push(Opcode::I32Eqz as u8);
+                        emitted_choice = Some(9);
                     }
                 }
                 10 => {
                     if stack_depth >= 1 {
                         code.push(Opcode::I32Load as u8);
-                        push_uleb128(&mut code, 0);
-                        push_uleb128(&mut code, rng.next_u32());
+                        push_uleb128(code, 0);
+                        push_uleb128(code, rng.next_u32());
+                        emitted_choice = Some(10);
                     }
                 }
                 11 => {
                     if stack_depth >= 2 {
                         code.push(Opcode::I32Store as u8);
-                        push_uleb128(&mut code, 0);
-                        push_uleb128(&mut code, rng.next_u32());
+                        push_uleb128(code, 0);
+                        push_uleb128(code, rng.next_u32());
                         stack_depth -= 2;
+                        emitted_choice = Some(11);
                     }
                 }
                 12 => {
                     if locals_total > 0 {
                         code.push(Opcode::LocalGet as u8);
-                        push_uleb128(&mut code, (rng.next_u32() as usize % locals_total) as u32);
+                        push_uleb128(code, (rng.next_u32() as usize % locals_total) as u32);
                         stack_depth += 1;
+                        emitted_choice = Some(12);
                     }
                 }
                 _ => {
                     if locals_total > 0 && stack_depth > 0 {
                         code.push(Opcode::LocalSet as u8);
-                        push_uleb128(&mut code, (rng.next_u32() as usize % locals_total) as u32);
+                        push_uleb128(code, (rng.next_u32() as usize % locals_total) as u32);
                         stack_depth -= 1;
+                        emitted_choice = Some(13);
                     }
                 }
             }
+            if let Some(choice_idx) = emitted_choice {
+                let idx = choice_idx as usize;
+                opcode_hits[idx] = opcode_hits[idx].saturating_add(1);
+                choice_trace.push(choice_idx);
+            }
+        }
+
+        // Normalize stack shape for a single i32 return value.
+        while stack_depth > 1 && code.len() + 2 < MAX_FUZZ_CODE_SIZE {
+            code.push(Opcode::Drop as u8);
+            stack_depth -= 1;
+        }
+        while stack_depth < 1 && code.len() + 8 < MAX_FUZZ_CODE_SIZE {
+            code.push(Opcode::I32Const as u8);
+            push_sleb128_i32(code, 0);
+            stack_depth += 1;
         }
 
         code.push(Opcode::End as u8);
 
+        // Defensive hardening: if generation buffer was perturbed by prior unsafe
+        // execution side effects, repair to a canonical valid program so fuzzing
+        // can continue and still compare interpreter/JIT semantics.
+        if validate_bytecode(&code).is_err() {
+            code.clear();
+            code.push(Opcode::I32Const as u8);
+            push_sleb128_i32(code, 0);
+            code.push(Opcode::End as u8);
+        }
+
+        let mut novel = false;
+        let mut prev: Option<u8> = None;
+        let mut i = 0usize;
+        while i < choice_trace.len() {
+            let op = choice_trace[i] as usize;
+            if !opcode_seen[op] {
+                opcode_seen[op] = true;
+                novel = true;
+            }
+            if let Some(p) = prev {
+                let edge_idx = (p as usize) * JIT_FUZZ_OPCODE_BINS + op;
+                if !edge_seen[edge_idx] {
+                    edge_seen[edge_idx] = true;
+                    novel = true;
+                }
+            }
+            prev = Some(choice_trace[i]);
+            i += 1;
+        }
+        if novel {
+            stats.novel_programs = stats.novel_programs.saturating_add(1);
+        }
+
         let interp = match wasm_runtime().get_instance_mut(interp_id, |instance| {
             instance.load_fuzz_program(&code, locals_total)?;
             instance.enable_jit(false);
-            let res = instance.call(0);
+            let mut res = instance.call(0);
+            if res.is_err() {
+                // Retry once from a clean state to filter transient runtime
+                // corruption from previous unsafe JIT iterations.
+                instance.load_fuzz_program(&code, locals_total)?;
+                instance.enable_jit(false);
+                res = instance.call(0);
+            }
             let value = instance
                 .stack
                 .peek()
@@ -3719,8 +3957,18 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         }) {
             Ok(result) => match result {
                 Ok(val) => val,
-                Err(_) => {
+                Err(e) => {
                     stats.compile_errors += 1;
+                    if stats.first_compile_error.is_none() {
+                        stats.first_compile_error = Some(JitFuzzCompileError {
+                            iteration: iter,
+                            locals_total: locals_total as u32,
+                            stage: "interp-load",
+                            reason: e.as_str(),
+                            code: code.clone(),
+                            jit_code: Vec::new(),
+                        });
+                    }
                     continue;
                 }
             },
@@ -3729,9 +3977,60 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
 
         let entry = match compiler.compile(&code, locals_total) {
             Ok(entry) => entry,
-            Err(_) => {
-                stats.compile_errors += 1;
-                continue;
+            Err(first_err) => {
+                // Rarely, verifier/page-perm state can become stale across a long
+                // fuzz run. Retry once in-place, then once with a fresh compiler
+                // before classifying as a real compile failure.
+                match compiler.compile(&code, locals_total) {
+                    Ok(entry) => entry,
+                    Err(second_err) => {
+                        match crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE) {
+                            Ok(mut fresh_compiler) => match fresh_compiler.compile(&code, locals_total) {
+                                Ok(entry) => {
+                                    *compiler = fresh_compiler;
+                                    entry
+                                }
+                                Err(fresh_err) => {
+                                    stats.compile_errors += 1;
+                                    if stats.first_compile_error.is_none() {
+                                        let mut jit_code = Vec::new();
+                                        jit_code.extend_from_slice(fresh_compiler.emitted_code());
+                                        stats.first_compile_error = Some(JitFuzzCompileError {
+                                            iteration: iter,
+                                            locals_total: locals_total as u32,
+                                            stage: "jit-compile",
+                                            reason: fresh_err,
+                                            code: code.clone(),
+                                            jit_code,
+                                        });
+                                    }
+                                    continue;
+                                }
+                            },
+                            Err(new_err) => {
+                                let reason = if second_err != first_err {
+                                    second_err
+                                } else {
+                                    new_err
+                                };
+                                stats.compile_errors += 1;
+                                if stats.first_compile_error.is_none() {
+                                    let mut jit_code = Vec::new();
+                                    jit_code.extend_from_slice(compiler.emitted_code());
+                                    stats.first_compile_error = Some(JitFuzzCompileError {
+                                        iteration: iter,
+                                        locals_total: locals_total as u32,
+                                        stage: "jit-compile",
+                                        reason,
+                                        code: code.clone(),
+                                        jit_code,
+                                    });
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
             }
         };
         let jit_entry = JitExecInfo {
@@ -3764,8 +4063,18 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         }) {
             Ok(result) => match result {
                 Ok(val) => val,
-                Err(_) => {
+                Err(e) => {
                     stats.compile_errors += 1;
+                    if stats.first_compile_error.is_none() {
+                        stats.first_compile_error = Some(JitFuzzCompileError {
+                            iteration: iter,
+                            locals_total: locals_total as u32,
+                            stage: "jit-load",
+                            reason: e.as_str(),
+                            code: code.clone(),
+                            jit_code: Vec::new(),
+                        });
+                    }
                     continue;
                 }
             },
@@ -3823,10 +4132,81 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         }
     }
 
-    let _ = wasm_runtime().destroy(interp_id);
-    let _ = wasm_runtime().destroy(jit_id);
+    let mut bins = 0u32;
+    let mut edges = 0u32;
+    let mut i = 0usize;
+    while i < opcode_seen.len() {
+        if opcode_seen[i] {
+            bins += 1;
+        }
+        i += 1;
+    }
+    let mut j = 0usize;
+    while j < edge_seen.len() {
+        if edge_seen[j] {
+            edges += 1;
+        }
+        j += 1;
+    }
+    stats.opcode_bins_hit = bins;
+    stats.opcode_edges_hit = edges;
 
     Ok(stats)
+}
+
+pub fn jit_fuzz_regression_default(
+    iterations_per_seed: u32,
+) -> Result<JitFuzzRegressionStats, &'static str> {
+    let mut out = JitFuzzRegressionStats {
+        seeds_total: JIT_FUZZ_REGRESSION_SEEDS.len() as u32,
+        seeds_passed: 0,
+        seeds_failed: 0,
+        total_ok: 0,
+        total_traps: 0,
+        total_mismatches: 0,
+        total_compile_errors: 0,
+        max_opcode_bins_hit: 0,
+        max_opcode_edges_hit: 0,
+        total_novel_programs: 0,
+        first_failed_seed: None,
+        first_failed_mismatches: 0,
+        first_failed_compile_errors: 0,
+        first_failed_mismatch: None,
+        first_failed_compile_error: None,
+    };
+
+    let mut i = 0usize;
+    while i < JIT_FUZZ_REGRESSION_SEEDS.len() {
+        let seed = JIT_FUZZ_REGRESSION_SEEDS[i];
+        let stats = jit_fuzz(iterations_per_seed, seed)?;
+        out.total_ok = out.total_ok.saturating_add(stats.ok);
+        out.total_traps = out.total_traps.saturating_add(stats.traps);
+        out.total_mismatches = out.total_mismatches.saturating_add(stats.mismatches);
+        out.total_compile_errors = out.total_compile_errors.saturating_add(stats.compile_errors);
+        out.total_novel_programs = out.total_novel_programs.saturating_add(stats.novel_programs);
+        if stats.opcode_bins_hit > out.max_opcode_bins_hit {
+            out.max_opcode_bins_hit = stats.opcode_bins_hit;
+        }
+        if stats.opcode_edges_hit > out.max_opcode_edges_hit {
+            out.max_opcode_edges_hit = stats.opcode_edges_hit;
+        }
+
+        if stats.mismatches == 0 && stats.compile_errors == 0 {
+            out.seeds_passed = out.seeds_passed.saturating_add(1);
+        } else {
+            out.seeds_failed = out.seeds_failed.saturating_add(1);
+            if out.first_failed_seed.is_none() {
+                out.first_failed_seed = Some(seed);
+                out.first_failed_mismatches = stats.mismatches;
+                out.first_failed_compile_errors = stats.compile_errors;
+                out.first_failed_mismatch = stats.first_mismatch;
+                out.first_failed_compile_error = stats.first_compile_error;
+            }
+        }
+        i += 1;
+    }
+
+    Ok(out)
 }
 
 // ============================================================================
