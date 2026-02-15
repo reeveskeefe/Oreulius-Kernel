@@ -25,10 +25,10 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **Concurrency hardening**: user-mode JIT execution uses locking around transition/return.
 - **Cryptographic capability tokens (IPC)**: SipHash-2-4 MAC tokens added to IPC capabilities (per-boot secret).
 - **JIT fuzz harness + regression seeds**: in-kernel JIT vs interpreter fuzzing with mismatch-free runs on known seeds.
+- **Complete instruction whitelist + decoder validation**: full x86 emitter whitelist and strict decoder validation (no unexpected encodings).
+- **Expanded SFI (all memory access paths)**: verifier enforces stack + linear memory guards for every access path.
 
 ### **Partially Implemented**
-- **Instruction whitelist / decoder validation**: whitelist exists, but not a full decoder for all encodings.
-- **SFI-style bounds checks**: bounds checks exist for JIT memory ops; not full masking for every access path.
 - **CFI (return protection)**: return-address shadow stack checks exist; indirect target sets not yet enforced.
 - **Guard pages for all JIT regions**: guard page exists for user stack, not yet for all JIT mappings.
 - **Translation validation**: shadow execution exists, but not a full proof or per-block validator.
@@ -36,8 +36,6 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 
 ### **Remaining TODOs**
 - **Full CFI (shadow stack + valid target sets for indirect branches)**
-- **Complete instruction decoder + whitelist**
-- **SFI masking for all memory access paths**
 - **Per-instance sandbox page directory or full wipe between runs**
 - **Guard pages for all JIT regions**
 - **Formal verification of critical JIT paths and capability checks**
@@ -58,6 +56,12 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - Return-address shadow stack checks in generated code (CFI-lite).
 - SipHash MAC tokens on IPC capabilities.
 - In-kernel JIT fuzz harness with regression seeds.
+- Complete instruction whitelist + decoder validation for JIT output.
+- Expanded SFI enforcement for all memory access paths in JIT verifier.
+
+## ✅ Verified Milestone (2026-02-15)
+- **JIT verifier alignment**: `wasm-jit-fuzz 1000` on seeds `3418704842` and `2788077538` produced **0 mismatches** and **0 compile errors** (kernel-mode fuzz).
+- **Expanded SFI validation**: `wasm-jit-fuzz 1000` on seeds `3418704842`, `2788077538`, and `3609752155` produced **0 mismatches** and **0 compile errors**.
 
 ---
 
@@ -155,8 +159,8 @@ impl JitVerifier {
 - ✅ **Fuel-based limits**: instruction + memory op fuel enforced in JIT.
 - ✅ **JIT cache integrity**: sealed exec buffer + hash verification.
 - ✅ **IPC capability MACs**: SipHash token on IPC-transferred capabilities.
-- 🟡 **Instruction whitelist**: partial subset validation present; not complete.
-- 🟡 **SFI-style bounds checks**: bounds checks for JIT memory ops; no full masking.
+- ✅ **Instruction whitelist**: full decoder/whitelist validation for emitted x86.
+- ✅ **SFI-style bounds checks**: guards enforced for all memory access paths.
 - 🟡 **Guard pages**: guard page under user JIT stack; not all regions.
 - 🟡 **Translation validation**: shadow execution exists; not full translation proof.
 - 🟡 **CFI (return checks)**: return shadow stack present; indirect target sets not yet enforced.
@@ -733,8 +737,8 @@ impl AnomalyDetector {
 8. ✅ Return-address shadow stack checks (CFI-lite)
 
 ### **Phase 2 (Next - In Progress):**
-1. 🟡 Complete instruction whitelist / decoder validation
-2. 🟡 Expand SFI (bounds checks or masking for all memory paths)
+1. ✅ Complete instruction whitelist / decoder validation
+2. ✅ Expand SFI (bounds checks or masking for all memory paths)
 3. 🟡 Guard pages for all JIT regions + per-instance cleanup
 4. 🟡 Per-instance sandbox address spaces or full wipe between runs
 5. 🟡 Coverage-guided fuzzing + external regression corpus
@@ -773,7 +777,7 @@ impl AnomalyDetector {
 
 ---
 
-**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, fuel limits, integrity checks, shadow validation, IPC capability MACs, and in-kernel fuzzing). The remaining gap to "provably secure" is **formal verification + full CFI/SFI + a complete decoder/whitelist + coverage-guided fuzzing**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
+**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, fuel limits, integrity checks, shadow validation, IPC capability MACs, a complete decoder/whitelist, expanded SFI, and in-kernel fuzzing). The remaining gap to "provably secure" is **formal verification + full CFI + coverage-guided fuzzing**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
 
 # 🔬 **Mathematical Problems to Make Oreulia Provably Impenetrable**
 

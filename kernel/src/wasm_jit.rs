@@ -354,7 +354,7 @@ fn emit_code(code: &[u8], locals_total: usize, emitter: &mut Emitter) -> Result<
     let trap_cfi_pos = emitter.emit_trap_stub(TRAP_CFI);
     emitter.patch_traps(trap_mem_pos, trap_fuel_pos, trap_stack_pos, trap_cfi_pos);
 
-    verify_x86_subset(&emitter.code)?;
+    verify_x86_subset(&emitter.code, locals_total)?;
     Ok(())
 }
 
@@ -1075,10 +1075,42 @@ fn hash_jit_code(code: &[u8]) -> u64 {
     hash
 }
 
-fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
+fn verify_x86_subset(code: &[u8], locals_total: usize) -> Result<(), &'static str> {
     fn need(code: &[u8], i: usize, n: usize) -> Result<(), &'static str> {
         if i + n > code.len() {
             return Err("Truncated x86 instruction");
+        }
+        Ok(())
+    }
+
+    fn read_u32(code: &[u8], i: usize) -> Result<u32, &'static str> {
+        let bytes: [u8; 4] = code
+            .get(i..i + 4)
+            .ok_or("Truncated imm32")?
+            .try_into()
+            .map_err(|_| "Truncated imm32")?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn expect_imm8(code: &[u8], i: usize, val: u8) -> Result<(), &'static str> {
+        let imm = *code.get(i).ok_or("Truncated imm8")?;
+        if imm != val {
+            return Err("Unexpected imm8");
+        }
+        Ok(())
+    }
+
+    fn check_local_disp32(code: &[u8], i: usize, locals_total: usize) -> Result<(), &'static str> {
+        if locals_total == 0 {
+            return Err("Local access with zero locals");
+        }
+        let disp = read_u32(code, i)? as usize;
+        if disp % 4 != 0 {
+            return Err("Unaligned local offset");
+        }
+        let idx = disp / 4;
+        if idx >= locals_total {
+            return Err("Local index out of bounds");
         }
         Ok(())
     }
@@ -1091,16 +1123,156 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
         Ok(())
     }
 
-    fn expect_u8(code: &[u8], i: usize, val: u8) -> Result<(), &'static str> {
-        if *code.get(i).ok_or("Truncated imm8")? != val {
-            return Err("Unexpected imm8");
-        }
-        Ok(())
-    }
-
     let mut i = 0usize;
     let mut guard_state = 0u8;
     let mut guard_ready = false;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum StackTok {
+        MovEbxSp,
+        MovEaxSp,
+        CmpEbxMax,
+        CmpEbxZero,
+        CmpEaxZero,
+        Jae,
+        Je,
+        JeShort,
+        DecEbx,
+        DecEax,
+        IncEbx,
+        StoreStack,
+        LoadFromEbx,
+        LoadFromEax,
+        StoreSpEbx,
+        StoreSpEax,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum StackState {
+        None,
+        EbxStart,
+        EaxStart,
+        PushCmp,
+        PushJcc,
+        PushStore,
+        PushInc,
+        PopCmpEbx,
+        PopJccEbx,
+        PopDecEbx,
+        PopLoadEbx,
+        PopCmpEax,
+        PopJccEax,
+        PopDecEax,
+        PopLoadEax,
+    }
+
+    fn is_stack_access(tok: StackTok) -> bool {
+        matches!(
+            tok,
+            StackTok::StoreStack
+                | StackTok::LoadFromEbx
+                | StackTok::LoadFromEax
+                | StackTok::StoreSpEbx
+                | StackTok::StoreSpEax
+        )
+    }
+
+    fn stack_advance(state: &mut StackState, tok: Option<StackTok>) -> Result<(), &'static str> {
+        match (*state, tok) {
+            (StackState::None, None) => Ok(()),
+            (StackState::None, Some(StackTok::MovEbxSp)) => {
+                *state = StackState::EbxStart;
+                Ok(())
+            }
+            (StackState::None, Some(StackTok::MovEaxSp)) => {
+                *state = StackState::EaxStart;
+                Ok(())
+            }
+            (StackState::None, Some(tok)) => {
+                if is_stack_access(tok) {
+                    Err("Stack access without guard")
+                } else {
+                    Ok(())
+                }
+            }
+            (StackState::EbxStart, Some(StackTok::CmpEbxMax)) => {
+                *state = StackState::PushCmp;
+                Ok(())
+            }
+            (StackState::EbxStart, Some(StackTok::CmpEbxZero)) => {
+                *state = StackState::PopCmpEbx;
+                Ok(())
+            }
+            (StackState::EaxStart, Some(StackTok::CmpEaxZero)) => {
+                *state = StackState::PopCmpEax;
+                Ok(())
+            }
+            (StackState::PushCmp, Some(StackTok::Jae)) => {
+                *state = StackState::PushJcc;
+                Ok(())
+            }
+            (StackState::PushJcc, Some(StackTok::StoreStack)) => {
+                *state = StackState::PushStore;
+                Ok(())
+            }
+            (StackState::PushStore, Some(StackTok::IncEbx)) => {
+                *state = StackState::PushInc;
+                Ok(())
+            }
+            (StackState::PushInc, Some(StackTok::StoreSpEbx)) => {
+                *state = StackState::None;
+                Ok(())
+            }
+            (StackState::PopCmpEbx, Some(StackTok::Je)) => {
+                *state = StackState::PopJccEbx;
+                Ok(())
+            }
+            (StackState::PopCmpEbx, Some(StackTok::JeShort)) => {
+                *state = StackState::PopJccEbx;
+                Ok(())
+            }
+            (StackState::PopJccEbx, Some(StackTok::DecEbx)) => {
+                *state = StackState::PopDecEbx;
+                Ok(())
+            }
+            (StackState::PopDecEbx, Some(StackTok::LoadFromEbx)) => {
+                *state = StackState::PopLoadEbx;
+                Ok(())
+            }
+            (StackState::PopLoadEbx, Some(StackTok::StoreSpEbx)) => {
+                *state = StackState::None;
+                Ok(())
+            }
+            (StackState::PopCmpEax, Some(StackTok::Je)) => {
+                *state = StackState::PopJccEax;
+                Ok(())
+            }
+            (StackState::PopCmpEax, Some(StackTok::JeShort)) => {
+                *state = StackState::PopJccEax;
+                Ok(())
+            }
+            (StackState::PopJccEax, Some(StackTok::DecEax)) => {
+                *state = StackState::PopDecEax;
+                Ok(())
+            }
+            (StackState::PopDecEax, Some(StackTok::LoadFromEax)) => {
+                *state = StackState::PopLoadEax;
+                Ok(())
+            }
+            (StackState::PopDecEax, Some(StackTok::StoreSpEax)) => {
+                *state = StackState::None;
+                Ok(())
+            }
+            (StackState::PopLoadEax, Some(StackTok::StoreSpEax)) => {
+                *state = StackState::None;
+                Ok(())
+            }
+            (_, None) => Err("Unexpected stack guard sequence"),
+            _ => Err("Unexpected stack guard sequence"),
+        }
+    }
+
+    let mut stack_state = StackState::None;
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum GuardTok {
@@ -1163,28 +1335,34 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
         let mut guard_tok = None;
         let mut linear_load = false;
         let mut linear_store = false;
-        let mut pop_ebx = false;
+        let mut guard_bridge = false;
+        let mut stack_tok = None;
         match b {
             // Disallow all known prefixes (emitter never uses them).
             0xF0 | 0xF2 | 0xF3 | 0x66 | 0x67 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 => {
                 return Err("Unexpected instruction prefix");
             }
             // Single-byte opcodes
-            0x55 | 0x4B | 0x48 | 0x43 | 0x50 | 0x53 | 0x58 | 0x5B | 0x5D | 0xC3 => {
-                if b == 0x5B {
-                    pop_ebx = true;
+            0x55 | 0x4B | 0x48 | 0x43 | 0x5D | 0xC3 => {
+                if b == 0x4B {
+                    stack_tok = Some(StackTok::DecEbx);
+                } else if b == 0x48 {
+                    stack_tok = Some(StackTok::DecEax);
+                } else if b == 0x43 {
+                    stack_tok = Some(StackTok::IncEbx);
                 }
                 i += 1;
             }
             // Short jumps (only used in epilogue)
             0x74 => {
                 need(code, i, 2)?;
-                expect_disp8(code, i + 1, &[0x06, 0x08])?;
+                expect_disp8(code, i + 1, &[0x08])?;
+                stack_tok = Some(StackTok::JeShort);
                 i += 2;
             }
             0xEB => {
                 need(code, i, 2)?;
-                expect_u8(code, i + 1, 0x02)?;
+                expect_imm8(code, i + 1, 0x02)?;
                 i += 2;
             }
             // mov eax, imm32 | add eax, imm32
@@ -1199,12 +1377,29 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
             0x81 => {
                 need(code, i, 6)?;
                 let b1 = code[i + 1];
-                if b1 == 0xF9 {
-                    guard_tok = Some(GuardTok::CmpEcxImm);
-                } else if b1 == 0xEB {
-                    guard_tok = Some(GuardTok::SubEbxImm);
-                } else if b1 != 0xFB {
-                    return Err("Unexpected 0x81 encoding");
+                match b1 {
+                    0xFB => {
+                        let imm = read_u32(code, i + 2)? as usize;
+                        if imm != MAX_STACK_DEPTH {
+                            return Err("Unexpected cmp ebx, imm32");
+                        }
+                        stack_tok = Some(StackTok::CmpEbxMax);
+                    }
+                    0xF9 => {
+                        let imm = read_u32(code, i + 2)?;
+                        if imm != 4 {
+                            return Err("Unexpected cmp ecx, imm32");
+                        }
+                        guard_tok = Some(GuardTok::CmpEcxImm);
+                    }
+                    0xEB => {
+                        let imm = read_u32(code, i + 2)?;
+                        if imm != 4 {
+                            return Err("Unexpected sub ebx, imm32");
+                        }
+                        guard_tok = Some(GuardTok::SubEbxImm);
+                    }
+                    _ => return Err("Unexpected 0x81 encoding"),
                 }
                 i += 6;
             }
@@ -1213,23 +1408,32 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                 need(code, i, 3)?;
                 let b1 = code[i + 1];
                 match b1 {
-                    0xFB | 0xF8 | 0xF9 | 0xEB => {
-                        if b1 == 0xF9 {
-                            guard_tok = Some(GuardTok::CmpEcxImm);
-                        } else if b1 == 0xEB {
-                            guard_tok = Some(GuardTok::SubEbxImm);
-                        }
+                    0xFB => {
+                        expect_imm8(code, i + 2, 0x00)?;
+                        stack_tok = Some(StackTok::CmpEbxZero);
+                        i += 3;
+                    }
+                    0xF8 => {
+                        expect_imm8(code, i + 2, 0x00)?;
+                        stack_tok = Some(StackTok::CmpEaxZero);
+                        i += 3;
+                    }
+                    0xF9 => {
+                        expect_imm8(code, i + 2, 0x04)?;
+                        guard_tok = Some(GuardTok::CmpEcxImm);
+                        i += 3;
+                    }
+                    0xEB => {
+                        expect_imm8(code, i + 2, 0x04)?;
+                        guard_tok = Some(GuardTok::SubEbxImm);
                         i += 3;
                     }
                     0xEC | 0xC4 => {
-                        let imm = *code.get(i + 2).ok_or("Truncated imm8")?;
-                        if imm != 0x10 && imm != 0x18 && imm != 0x1C && imm != 0x28 {
-                            return Err("Unexpected stack adjust imm8");
-                        }
+                        expect_imm8(code, i + 2, 0x28)?;
                         i += 3;
                     }
                     0x38 => {
-                        expect_u8(code, i + 2, 0x00)?;
+                        expect_imm8(code, i + 2, 0x00)?;
                         i += 3;
                     }
                     _ => return Err("Unexpected 0x83 encoding"),
@@ -1270,6 +1474,11 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0x1E | 0x1A | 0x06 => {
                         need(code, i, 2)?;
+                        if b1 == 0x1E {
+                            stack_tok = Some(StackTok::MovEbxSp);
+                        } else if b1 == 0x06 {
+                            stack_tok = Some(StackTok::MovEaxSp);
+                        }
                         i += 2;
                     }
                     0x18 => {
@@ -1279,7 +1488,10 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     0x04 => {
                         need(code, i, 3)?;
                         match code[i + 2] {
-                            0x9F => i += 3,
+                            0x9F => {
+                                stack_tok = Some(StackTok::LoadFromEbx);
+                                i += 3;
+                            }
                             0x02 => {
                                 linear_load = true;
                                 i += 3;
@@ -1299,15 +1511,20 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                         if code[i + 2] != 0x87 {
                             return Err("Unexpected 0x8B SIB");
                         }
+                        stack_tok = Some(StackTok::LoadFromEax);
                         i += 3;
                     }
                     0x5D => {
                         need(code, i, 3)?;
                         expect_disp8(code, i + 2, &[0xFC, 0xE4, 0xE0])?;
+                        if code[i + 2] == 0xE4 {
+                            guard_bridge = true;
+                        }
                         i += 3;
                     }
                     0x83 => {
                         need(code, i, 6)?;
+                        check_local_disp32(code, i + 2, locals_total)?;
                         i += 6;
                     }
                     _ => return Err("Unexpected 0x8B encoding"),
@@ -1331,6 +1548,11 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                         if b1 == 0xCB {
                             guard_tok = Some(GuardTok::MovEbxEcx);
                         }
+                        if b1 == 0x1E {
+                            stack_tok = Some(StackTok::StoreSpEbx);
+                        } else if b1 == 0x06 {
+                            stack_tok = Some(StackTok::StoreSpEax);
+                        }
                         i += 2;
                     }
                     0x5D => {
@@ -1340,12 +1562,12 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0x75 => {
                         need(code, i, 3)?;
-                        expect_u8(code, i + 2, 0xDC)?;
+                        expect_imm8(code, i + 2, 0xDC)?;
                         i += 3;
                     }
                     0x7D => {
                         need(code, i, 3)?;
-                        expect_u8(code, i + 2, 0xD8)?;
+                        expect_imm8(code, i + 2, 0xD8)?;
                         i += 3;
                     }
                     0x04 => {
@@ -1353,6 +1575,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                         if code[i + 2] != 0x9F {
                             return Err("Unexpected 0x89 SIB");
                         }
+                        stack_tok = Some(StackTok::StoreStack);
                         i += 3;
                     }
                     0x1C => {
@@ -1372,6 +1595,7 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                     }
                     0x83 => {
                         need(code, i, 6)?;
+                        check_local_disp32(code, i + 2, locals_total)?;
                         i += 6;
                     }
                     _ => return Err("Unexpected 0x89 encoding"),
@@ -1430,6 +1654,10 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
                             guard_tok = Some(GuardTok::Jb);
                         } else if b1 == 0x87 {
                             guard_tok = Some(GuardTok::Ja);
+                        } else if b1 == 0x83 {
+                            stack_tok = Some(StackTok::Jae);
+                        } else if b1 == 0x84 {
+                            stack_tok = Some(StackTok::Je);
                         }
                         i += 6;
                     }
@@ -1461,8 +1689,8 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
             }
             guard_ready = false;
         } else if guard_ready {
-            if pop_ebx {
-                // allow pop between guard and store
+            if guard_bridge {
+                // Allow one restore between guard and store
             } else {
                 guard_ready = false;
             }
@@ -1475,6 +1703,9 @@ fn verify_x86_subset(code: &[u8]) -> Result<(), &'static str> {
         } else {
             guard_advance(&mut guard_state, None);
         }
+
+        stack_advance(&mut stack_state, stack_tok)?;
+
     }
     Ok(())
 }
