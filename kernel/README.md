@@ -1,10 +1,43 @@
 # Oreulia Kernel
 
-A production-grade, bare-metal operating system kernel implementing cutting-edge systems research concepts in Rust and x86 Assembly.
+A security-hardened, bare-metal operating system kernel implementing advanced systems research concepts in Rust and x86 Assembly.
 
-**Architecture**: i686 (32-bit Protected Mode with PAE extensions)  
+**Architecture**: i686 (32-bit Protected Mode, two-level 4KB paging)  
 **Boot Protocol**: Multiboot 1 (GRUB-compatible)  
 **Design Philosophy**: Zero-compromise performance with cryptographic-grade security
+
+---
+
+## Formal Security Paper
+
+Oreulia's completed formal resolution record for the in-kernel JIT security paradox is documented here:
+
+- [`../docs/oreulia-jit-security-resolution.md`](../docs/oreulia-jit-security-resolution.md)
+
+This paper includes:
+- formal model, assumptions, definitions, lemmas/theorems/corollaries
+- proof-obligation structure and release-gate equations
+- threat-control matrix and compositional security argument
+- in-depth implementation mapping for all completed hardening controls
+
+---
+
+## Latest Kernel State (2026 Hardening Additions)
+
+The kernel has moved beyond baseline JIT and capability hardening into a fully layered security posture. Recent additions include:
+
+- Full JIT W^X publish lifecycle (RW -> RX -> reclaim) and kernel `.text`/`.rodata` write protection
+- Ring 3 JIT execution path with sandbox page-directory switching and explicit fault-to-trap conversion
+- Complete x86 whitelist + decoder validation, expanded SFI on all memory paths, and full CFI (shadow stack + target-set checks)
+- Per-block JIT translation certificates with integrity-time recomputation checks
+- Cryptographic capability token verification across IPC and core capability tables (SipHash-based MACs)
+- SMEP/SMAP/KPTI integration (where hardware support exists), plus memory-tag policy enforcement
+- SGX/TrustZone-capable enclave lifecycle framework with attestation/key-policy fail-closed gating
+- Coverage-guided JIT fuzzing, external seed corpus replay, and multi-round soak verification paths
+- Mechanized bounded formal backend checks for capability attenuation and memory-guard equivalence
+- Runtime anomaly scoring and alert event generation integrated with security audit visibility
+- Scheduler/network soak verification command path for long-run stability and security-signal integrity
+- CI admission gating for regression corpus replay and soak checks
 
 ---
 
@@ -12,15 +45,15 @@ A production-grade, bare-metal operating system kernel implementing cutting-edge
 
 ### Core Design Principles
 
-Oreulia implements a **hybrid microkernel architecture** that strategically places performance-critical services in kernel space while maintaining strict isolation boundaries through capability-based security. The kernel achieves deterministic real-time behavior through quantum-based scheduling and hardware-accelerated cryptographic operations.
+Oreulia implements a **capability-oriented kernel architecture** with explicit isolation boundaries around high-risk execution paths (JIT, user transitions, enclave/session lifecycle, and capability transfer). The kernel emphasizes deterministic scheduling behavior, strict privilege transitions, and measurable hardening invariants over broad userspace abstraction.
 
 ### Features
 
-#### **Quantum Scheduler with Priority Inheritance**
+#### **Quantum Scheduler with MLFQ**
 - **O(1) constant-time** task scheduling using multi-level feedback queues
-- Three-tier priority system (High/Normal/Low) with automatic priority boosting
+- Three-tier priority system (High/Normal/Low) with queue-level dispatch ordering
 - Preemptive multitasking with configurable quantum slices (default: 10ms)
-- Context switching optimized in Assembly with full CPU state preservation (general-purpose registers, segment registers, FPU/SSE state)
+- Context switching optimized in Assembly with explicit general-register, EFLAGS, and control-context save/restore
 - Process capability tracking integrated into scheduler state
 - Real-time interrupt state verification with EFLAGS monitoring
 
@@ -30,10 +63,11 @@ Oreulia implements a **hybrid microkernel architecture** that strategically plac
 - **Instruction selection**: Direct translation of Wasm opcodes to optimal x86 instruction sequences
 - **Memory safety**: Bounds checking on every memory access, prevents buffer overflows
 - **Type safety**: Static verification of Wasm type constraints before execution
-- **Security isolation**: Generated code runs in ring 3 (user mode) with no privileged instructions
+- **Security isolation**: User-mode (ring 3) execution path with `IRET` transition and sandbox CR3, plus deterministic kernel-mode execution mode for fuzz/replay diagnostics
+- **Translation assurance**: Per-block translation certificates and decoder/whitelist validation before execution
 
 #### **IEEE 802.11i WPA2 Security Stack**
-- **Complete 4-way handshake**: Full EAPOL key exchange implementation (Messages 1-4)
+- **4-way handshake path**: EAPOL key exchange implementation (Messages 1-4)
 - **Cryptographic primitives** (all implemented from specification, no external dependencies):
   - **PBKDF2-HMAC-SHA1**: 4096 iterations for Pairwise Master Key (PMK) derivation
   - **SHA-1**: 512-bit block processing, full message schedule expansion
@@ -49,14 +83,14 @@ Oreulia implements a **hybrid microkernel architecture** that strategically plac
 
 #### **Full TCP/IP Network Stack**
 - **Layer 2**: Ethernet II framing, ARP resolution with caching
-- **Layer 3**: IPv4 with fragmentation/reassembly, ICMP echo (ping)
-- **Layer 4**: UDP connectionless, TCP with three-way handshake, sliding window flow control, retransmission
-- **Application**: DNS client with query/response parsing, DHCP client for automatic IP configuration
+- **Layer 3**: IPv4 packet handling, ICMP echo (ping)
+- **Layer 4**: UDP and TCP (three-way handshake, window/state tracking, retransmit timers)
+- **Application**: DNS query/response parsing with cache; DHCP scaffolding present in network stack
 - **Hardware drivers**: 
   - **Intel E1000**: PCI-based Gigabit Ethernet with descriptor ring management
   - **Realtek RTL8139**: Legacy 10/100 Fast Ethernet support
 - **Zero-copy I/O**: DMA buffers accessed directly, no intermediate copying
-- **Asynchronous I/O reactor**: Event-driven packet processing with interrupt coalescing
+- **Asynchronous I/O reactor**: Event-driven packet processing with IRQ/timer signaling
 
 #### **Virtual File System (VFS)**
 - **Unix-like hierarchy**: Root directory (`/`) with full path resolution (`../`, `./` support)
@@ -79,7 +113,7 @@ Oreulia implements a **hybrid microkernel architecture** that strategically plac
 All performance-critical kernel operations hand-coded in NASM Assembly:
 
 - **`atomic.asm`**: Lock-free atomic operations (CAS, fetch-add, memory barriers)
-- **`context_switch.asm`**: Sub-microsecond task switching with FPU state preservation
+- **`context_switch.asm`**: Register/EFLAGS context save-restore and thread trampoline transitions
 - **`syscall_entry.asm`**: INT 0x80 handler with register preservation, SYSENTER/SYSEXIT fast path
 - **`idt.asm`**: Interrupt Descriptor Table setup, 256 exception/interrupt vectors
 - **`gdt.asm`**: Global Descriptor Table with flat memory model (kernel/user code/data segments)
@@ -87,14 +121,15 @@ All performance-critical kernel operations hand-coded in NASM Assembly:
 - **`crypto.asm`**: Constant-time comparison, secure memory wiping
 - **`dma.asm`**: Direct Memory Access setup for network/disk I/O
 - **`acpi.asm`**: Power management (CPU halt, C-states)
+- **`sgx.asm`**: SGX primitive wrappers (`ECREATE/EADD/EEXTEND/EINIT/EENTER`) on supported targets
 
 #### **Memory Management**
 - **Paging**: 4KB pages with Page Directory and Page Tables
-- **PAE support**: Physical Address Extension for >4GB RAM addressing
 - **Copy-on-Write (CoW)**: Deferred page copying on fork() for efficiency
-- **Demand paging**: Pages allocated only when accessed (lazy allocation)
+- **Fault-driven CoW resolution**: write-fault handler allocates/remaps private pages on first write
+- **Explicit user mapping APIs**: checked range mapping with user/kernel boundary enforcement
 - **Heap allocator**: Hardened bump allocator with overflow detection, alignment enforcement
-- **Stack guard pages**: Unmapped pages detecting stack overflow instantly
+- **Guard-page instrumentation**: JIT user stack/code/data/memory windows and allocator guard sentinels
 - **Memory barriers**: Compiler and hardware fences ensuring memory ordering
 
 ---
@@ -102,18 +137,18 @@ All performance-critical kernel operations hand-coded in NASM Assembly:
 ## Scientific Foundations
 
 ### Scheduling Theory
-The quantum scheduler implements **Completely Fair Scheduling (CFS)** concepts with **virtual runtime tracking**. Each process accumulates vruntime proportional to its actual CPU time weighted by priority. The scheduler always selects the task with minimum vruntime, providing **O(1) selection** via sorted ready queues and **bounded latency** guarantees.
+The quantum scheduler implements a **multi-level feedback queue (MLFQ)** with per-priority quantum budgets and deterministic FIFO ordering inside each priority level. Dispatch selection is constant-time over three queues, and per-task accounting tracks CPU time, wait time, preemptions, and voluntary yields.
 
-**Priority inversion** is handled through **priority inheritance protocol**: when a low-priority task holds a lock needed by high-priority task, the low-priority task temporarily inherits the high priority to expedite lock release.
+Interrupt-state correctness is treated as a scheduling invariant: context handoff preserves saved EFLAGS semantics, and cooperative/preemptive transitions restore prior interrupt state on resume paths.
 
 ### Cryptographic Security
-The WPA2 implementation follows **IEEE 802.11i-2004** specification precisely:
+The WPA2 path implements the core **IEEE 802.11i-2004** handshake phases and in-tree crypto primitives:
 
 1. **PMK derivation**: `PBKDF2(password, SSID, 4096, 256)` applies iterated hashing to resist brute-force attacks
 2. **PTK generation**: `PRF-512(PMK, "Pairwise key expansion", AA || SPA || ANonce || SNonce)` creates 512-bit key material
 3. **Key hierarchy split**: PTK[0:15] = KCK (MIC), PTK[16:31] = KEK (GTK encryption), PTK[32:47] = TK (data encryption)
 4. **MIC computation**: `HMAC-SHA1(KCK, EAPOL-frame)` binds keys to specific frames, preventing replay attacks
-5. **GTK unwrapping**: AES Key Wrap (RFC 3394 concepts) decrypts Group Temporal Key using KEK
+5. **GTK handling**: KEK-backed GTK decode/install path is implemented with hardware AES acceleration when available (with explicit fallback path)
 
 **Constant-time implementations** prevent side-channel attacks: all comparison operations execute the same number of instructions regardless of input values.
 
@@ -168,7 +203,7 @@ The JIT compiler implements **single-pass translation** with **linear-time compl
 
 **Launch in QEMU**:
 ```bash
-./run.sh  # Serial console on stdio, E1000 NIC enabled
+./run.sh  # Serial console on stdio, default virtual NIC profile
 ```
 
 **Advanced QEMU Options**:
@@ -200,16 +235,53 @@ qemu-system-i386 -cdrom oreulia.iso -smp 4
 ./test-boot.sh
 ```
 
+### Security Validation Commands (In-Kernel Shell)
+
+Use these commands from the Oreulia shell to validate current security posture:
+
+- `formal-verify`
+  - Executes JIT translation proof checks, capability proof checks, and mechanized model checks.
+- `wasm-jit-fuzz <iters> [seed]`
+  - Differential fuzzing of interpreter vs JIT with mismatch/compile-error reporting.
+- `wasm-jit-fuzz-corpus <iters>`
+  - Replays the built-in regression seed corpus and aggregates failure metrics.
+- `wasm-jit-fuzz-soak <iters> <rounds>`
+  - Repeats full corpus rounds to detect residual non-determinism.
+- `security-stats`
+  - Shows security event counters and current enforcement limits.
+- `security-anomaly`
+  - Prints anomaly detector window counters, score, and alert totals.
+- `sched-net-soak <seconds> [probe_ms]`
+  - Runs scheduler/network stress verification with progress and error deltas.
+
+---
+
+## Continuous Verification (CI)
+
+Kernel security regression checks are now integrated into repository CI:
+
+- Workflow: `../.github/workflows/wasm-jit-regression.yml`
+- External runner: `fuzz/run_wasm_jit_corpus.expect`
+- CI parser/gate: `fuzz/ci_regression_check.sh`
+
+CI fails on:
+- incomplete corpus pass rate (seed replay not fully green)
+- non-zero corpus mismatches
+- non-zero corpus compile errors
+- failed soak rounds
+
+This converts fuzz/corpus confidence into a merge-time admission policy.
+
 ---
 
 ## Performance Characteristics
 
-- **Context switch latency**: <1 microsecond (hand-optimized Assembly)
-- **Syscall overhead**: ~50 nanoseconds (SYSENTER fast path)
-- **Network throughput**: Line-rate Gigabit on E1000 (hardware-limited)
-- **Memory copy**: 10+ GB/s (SSE2 SIMD acceleration)
-- **Wasm execution**: 70-90% of native speed (JIT compilation eliminates interpretation)
-- **Scheduler overhead**: O(1) constant time regardless of process count
+- **Scheduler dispatch complexity**: O(1) queue selection with fixed three-level MLFQ
+- **Syscall entry path**: INT 0x80 + SYSENTER/SYSEXIT support with assembly fast paths
+- **Network path**: DMA-backed descriptor rings on E1000/RTL8139-class drivers
+- **Memory path**: SSE2-optimized primitives for hot memcpy/memset routines
+- **Wasm path**: JIT and interpreter dual execution with differential replay/fuzz controls
+- **Note**: absolute latency/throughput depends on QEMU host configuration and CPU virtualization mode
 
 ---
 
@@ -219,11 +291,28 @@ qemu-system-i386 -cdrom oreulia.iso -smp 4
 
 **Mitigations**:
 - **Ring separation**: Kernel (ring 0), user processes (ring 3), no ring 1/2 used
-- **No-execute (NX)**: Code pages marked executable, data pages non-executable (prevents code injection)
-- **Stack canaries**: Random values before return addresses detect buffer overflows
-- **Capability sealing**: HMAC prevents forging capability tokens
+- **W^X publish discipline**: writable-then-sealed executable pages for JIT outputs
+- **Kernel section protection**: `.text`/`.rodata` mapped read-only; mutable segments isolated
+- **Capability MAC integrity**: SipHash-backed token/object validation for IPC and core capability tables
+- **CPU hardening**: SMEP/SMAP/KPTI enabled where hardware supports those controls
 - **Interrupt validation**: EFLAGS checked before HLT (prevents deadlock attacks)
 - **Bounds enforcement**: Every array access validated, panics on out-of-bounds
+
+### Additional Defense-in-Depth Controls (Current State)
+
+- **JIT page permission sealing** with explicit RW->RX transitions and post-run cleanup policy
+- **Guard-page-backed fault containment** for JIT stack/code/data/memory windows
+- **Instruction whitelist + decoder verifier** rejecting unsafe or malformed emitted x86 forms
+- **SFI and CFI enforcement** on memory/control-flow edges in generated code
+- **Fuel-bounded execution** (instruction and memory operation budgets)
+- **Deterministic replay gates** with corpus + soak pass criteria
+- **Anomaly score monitoring** with thresholded alert events in audit stream
+- **Attestation interoperability checks** (vendor roots, signer linkage, token freshness)
+- **Fail-closed key lifecycle rules** for enclave session open/enter/close
+
+### Security Posture Summary
+
+Oreulia now treats security as a composition of enforceable invariants and deterministic acceptance gates rather than one-time hardening claims. The canonical formal statement and theorem-level structure are maintained in the linked security paper.
 
 ---
 
@@ -231,9 +320,9 @@ qemu-system-i386 -cdrom oreulia.iso -smp 4
 
 This kernel demonstrates several novel implementations:
 
-1. **WebAssembly in bare-metal context**: First documented i686 kernel with in-kernel Wasm JIT (no OS dependencies)
-2. **Full WPA2 from scratch**: Complete IEEE 802.11i implementation without external crypto libraries
-3. **Quantum scheduling**: Deterministic real-time scheduling with priority inheritance on embedded systems
+1. **WebAssembly in bare-metal context**: i686 kernel with in-kernel Wasm JIT, translation certificates, and formalized proof obligations
+2. **WPA2 handshake stack from scratch**: In-tree 802.11i-oriented cryptographic and EAPOL flow implementation
+3. **Quantum scheduling**: Deterministic priority-aware scheduling with MLFQ + quantum accounting on embedded systems
 4. **Assembly-accelerated cryptography**: AES-NI integration with CPUID detection and fallback paths
 
 The codebase serves as educational reference for:
