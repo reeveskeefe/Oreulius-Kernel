@@ -63,6 +63,8 @@ pub enum CapabilityType {
     Filesystem = 2,
     /// Store/persistence capability
     Store = 3,
+    /// Directly callable WASM service/function reference
+    ServicePointer = 4,
 }
 
 /// Generic capability (simplified for v0)
@@ -981,6 +983,34 @@ pub fn send_message_for_process(
     ipc().send(msg, &cap).map_err(|_| "Failed to send message")
 }
 
+/// Send a message with attached capabilities on behalf of a process.
+pub fn send_message_with_caps_for_process(
+    source: ProcessId,
+    channel_id: ChannelId,
+    data: &[u8],
+    caps: &[Capability],
+) -> Result<(), &'static str> {
+    if caps.len() > MAX_CAPS_PER_MESSAGE {
+        return Err("Too many capabilities");
+    }
+
+    let mut msg = Message::with_data(source, data).map_err(|_| "Message too large")?;
+    for cap in caps.iter() {
+        msg.add_capability(*cap)
+            .map_err(|_| "Failed to attach capability")?;
+    }
+
+    let channel_cap = crate::capability::resolve_channel_capability(
+        source,
+        channel_id,
+        crate::capability::ChannelAccess::Send,
+    )
+    .map_err(|_| "Missing channel capability")?;
+
+    ipc().send(msg, &channel_cap)
+        .map_err(|_| "Failed to send message")
+}
+
 /// Receive message from channel (syscall wrapper)
 pub fn receive_message(channel_id: ChannelId, buffer: &mut [u8]) -> Result<usize, &'static str> {
     receive_message_for_process(ProcessId(0), channel_id, buffer)
@@ -1006,6 +1036,39 @@ pub fn receive_message_for_process(
             Ok(copy_len)
         }
         Err(_) => Err("No message available")
+    }
+}
+
+/// Receive a message and capability attachments on behalf of a process.
+pub fn receive_message_with_caps_for_process(
+    owner: ProcessId,
+    channel_id: ChannelId,
+    buffer: &mut [u8],
+    caps_out: &mut [Capability],
+) -> Result<(usize, usize), &'static str> {
+    let cap = crate::capability::resolve_channel_capability(
+        owner,
+        channel_id,
+        crate::capability::ChannelAccess::Receive,
+    )
+    .map_err(|_| "Missing channel capability")?;
+
+    match ipc().try_recv(&cap) {
+        Ok(msg) => {
+            let copy_len = msg.payload_len.min(buffer.len());
+            crate::asm_bindings::fast_memcpy(&mut buffer[..copy_len], &msg.payload[..copy_len]);
+
+            let mut copied_caps = 0usize;
+            for mcap in msg.capabilities() {
+                if copied_caps >= caps_out.len() {
+                    break;
+                }
+                caps_out[copied_caps] = *mcap;
+                copied_caps += 1;
+            }
+            Ok((copy_len, copied_caps))
+        }
+        Err(_) => Err("No message available"),
     }
 }
 

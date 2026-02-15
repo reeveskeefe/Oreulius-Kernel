@@ -953,6 +953,8 @@ impl SecurityManager {
                 CapabilityType::Channel,
                 crate::capability::Rights::CHANNEL_SEND | crate::capability::Rights::CHANNEL_RECEIVE,
             )),
+            14 => Some((CapabilityType::Channel, crate::capability::Rights::CHANNEL_SEND)),
+            15 => Some((CapabilityType::Channel, crate::capability::Rights::CHANNEL_RECEIVE)),
             20 => {
                 let flags = args[1];
                 let mut rights = 0u32;
@@ -977,6 +979,18 @@ impl SecurityManager {
             25 => Some((CapabilityType::Filesystem, crate::capability::Rights::FS_LIST)),
             50 => Some((CapabilityType::Console, crate::capability::Rights::CONSOLE_WRITE)),
             51 => Some((CapabilityType::Console, crate::capability::Rights::CONSOLE_READ)),
+            62 => Some((
+                CapabilityType::ServicePointer,
+                crate::capability::Rights::SERVICE_INVOKE,
+            )),
+            63 => Some((
+                CapabilityType::ServicePointer,
+                crate::capability::Rights::SERVICE_INVOKE,
+            )),
+            64 => Some((
+                CapabilityType::ServicePointer,
+                crate::capability::Rights::SERVICE_INTROSPECT,
+            )),
             _ => None,
         }
     }

@@ -39,6 +39,8 @@ pub enum SyscallNumber {
     ChannelSend = 11,
     ChannelRecv = 12,
     ChannelClose = 13,
+    ChannelSendCaps = 14,
+    ChannelRecvCaps = 15,
     
     // Filesystem
     FileOpen = 20,
@@ -66,6 +68,9 @@ pub enum SyscallNumber {
     // WASM
     WasmLoad = 60,
     WasmCall = 61,
+    ServicePointerRegister = 62,
+    ServicePointerInvoke = 63,
+    ServicePointerRevoke = 64,
     JitReturn = SYSCALL_JIT_RETURN,
     
     // Invalid
@@ -85,6 +90,8 @@ impl From<u32> for SyscallNumber {
             11 => SyscallNumber::ChannelSend,
             12 => SyscallNumber::ChannelRecv,
             13 => SyscallNumber::ChannelClose,
+            14 => SyscallNumber::ChannelSendCaps,
+            15 => SyscallNumber::ChannelRecvCaps,
             20 => SyscallNumber::FileOpen,
             21 => SyscallNumber::FileRead,
             22 => SyscallNumber::FileWrite,
@@ -102,6 +109,9 @@ impl From<u32> for SyscallNumber {
             51 => SyscallNumber::ConsoleRead,
             60 => SyscallNumber::WasmLoad,
             61 => SyscallNumber::WasmCall,
+            62 => SyscallNumber::ServicePointerRegister,
+            63 => SyscallNumber::ServicePointerInvoke,
+            64 => SyscallNumber::ServicePointerRevoke,
             SYSCALL_JIT_RETURN => SyscallNumber::JitReturn,
             _ => SyscallNumber::Invalid,
         }
@@ -138,6 +148,57 @@ impl SyscallResult {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SysIpcCapability {
+    cap_id: u32,
+    object_hi: u32,
+    object_lo: u32,
+    rights: u32,
+    cap_type: u32,
+    extra0: u32,
+    extra1: u32,
+    extra2: u32,
+    extra3: u32,
+}
+
+fn ipc_cap_type_from_raw(raw: u32) -> Option<crate::ipc::CapabilityType> {
+    match raw {
+        0 => Some(crate::ipc::CapabilityType::Generic),
+        1 => Some(crate::ipc::CapabilityType::Channel),
+        2 => Some(crate::ipc::CapabilityType::Filesystem),
+        3 => Some(crate::ipc::CapabilityType::Store),
+        4 => Some(crate::ipc::CapabilityType::ServicePointer),
+        _ => None,
+    }
+}
+
+fn ipc_cap_to_sys(cap: &crate::ipc::Capability) -> SysIpcCapability {
+    SysIpcCapability {
+        cap_id: cap.cap_id,
+        object_hi: cap.extra[0],
+        object_lo: cap.object_id,
+        rights: cap.rights,
+        cap_type: cap.cap_type as u32,
+        extra0: cap.extra[0],
+        extra1: cap.extra[1],
+        extra2: cap.extra[2],
+        extra3: cap.extra[3],
+    }
+}
+
+fn sys_cap_to_ipc(raw: &SysIpcCapability) -> Result<crate::ipc::Capability, ()> {
+    let cap_type = ipc_cap_type_from_raw(raw.cap_type).ok_or(())?;
+    let mut cap = crate::ipc::Capability::with_type(
+        raw.cap_id,
+        raw.object_lo,
+        raw.rights,
+        cap_type,
+    );
+    cap.extra = [raw.object_hi, raw.extra1, raw.extra2, raw.extra3];
+    Ok(cap)
+}
+
 /// Main syscall handler (called from interrupt/trap)
 pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let syscall = SyscallNumber::from(args.number);
@@ -161,6 +222,8 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
         SyscallNumber::ChannelSend => sys_channel_send(args, caller_pid),
         SyscallNumber::ChannelRecv => sys_channel_recv(args, caller_pid),
         SyscallNumber::ChannelClose => sys_channel_close(args, caller_pid),
+        SyscallNumber::ChannelSendCaps => sys_channel_send_caps(args, caller_pid),
+        SyscallNumber::ChannelRecvCaps => sys_channel_recv_caps(args, caller_pid),
         
         SyscallNumber::FileOpen => sys_file_open(args, caller_pid),
         SyscallNumber::FileRead => sys_file_read(args, caller_pid),
@@ -183,6 +246,9 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
         
         SyscallNumber::WasmLoad => sys_wasm_load(args, caller_pid),
         SyscallNumber::WasmCall => sys_wasm_call(args, caller_pid),
+        SyscallNumber::ServicePointerRegister => sys_service_pointer_register(args, caller_pid),
+        SyscallNumber::ServicePointerInvoke => sys_service_pointer_invoke(args, caller_pid),
+        SyscallNumber::ServicePointerRevoke => sys_service_pointer_revoke(args, caller_pid),
         SyscallNumber::JitReturn => sys_jit_return(args, caller_pid),
         
         SyscallNumber::Invalid => SyscallResult::err(ENOSYS),
@@ -470,6 +536,122 @@ fn sys_channel_close(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sy
                 SyscallResult::err(EACCES)
             } else {
                 SyscallResult::err(EBADF)
+            }
+        }
+    }
+}
+
+fn sys_channel_send_caps(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+    let channel_id = args.arg1 as usize;
+    let msg_ptr = args.arg2 as usize;
+    let msg_len = args.arg3 as usize;
+    let caps_ptr = args.arg4 as usize;
+    let caps_count = args.arg5 as usize;
+
+    if msg_len == 0 || msg_len > 4096 {
+        return SyscallResult::err(EINVAL);
+    }
+    if caps_count > crate::ipc::MAX_CAPS_PER_MESSAGE {
+        return SyscallResult::err(EINVAL);
+    }
+    if msg_ptr >= 0xC0000000 || msg_ptr + msg_len >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    if caps_count > 0 {
+        let caps_bytes = caps_count.saturating_mul(core::mem::size_of::<SysIpcCapability>());
+        if caps_ptr >= 0xC0000000 || caps_ptr + caps_bytes >= 0xC0000000 {
+            return SyscallResult::err(EFAULT);
+        }
+    }
+
+    let message = unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len) };
+    let mut caps = [crate::ipc::Capability::new(0, 0, 0); crate::ipc::MAX_CAPS_PER_MESSAGE];
+    if caps_count > 0 {
+        let raw_caps = unsafe {
+            core::slice::from_raw_parts(caps_ptr as *const SysIpcCapability, caps_count)
+        };
+        let mut i = 0usize;
+        while i < caps_count {
+            caps[i] = match sys_cap_to_ipc(&raw_caps[i]) {
+                Ok(c) => c,
+                Err(_) => return SyscallResult::err(EINVAL),
+            };
+            i += 1;
+        }
+    }
+
+    match crate::ipc::send_message_with_caps_for_process(
+        crate::ipc::ProcessId(caller_pid.0),
+        crate::ipc::ChannelId(channel_id as u32),
+        message,
+        &caps[..caps_count],
+    ) {
+        Ok(_) => SyscallResult::ok(msg_len as i32),
+        Err(e) => {
+            if e == "Missing channel capability" {
+                SyscallResult::err(EACCES)
+            } else {
+                SyscallResult::err(EIO)
+            }
+        }
+    }
+}
+
+fn sys_channel_recv_caps(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+    let channel_id = args.arg1 as usize;
+    let buf_ptr = args.arg2 as usize;
+    let buf_len = args.arg3 as usize;
+    let caps_ptr = args.arg4 as usize;
+    let caps_count_ptr = args.arg5 as usize;
+
+    if buf_len == 0 || buf_len > 4096 {
+        return SyscallResult::err(EINVAL);
+    }
+    if buf_ptr >= 0xC0000000 || buf_ptr + buf_len >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+    if caps_ptr >= 0xC0000000 || caps_count_ptr >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+
+    let caps_bytes =
+        crate::ipc::MAX_CAPS_PER_MESSAGE.saturating_mul(core::mem::size_of::<SysIpcCapability>());
+    if caps_ptr + caps_bytes >= 0xC0000000 {
+        return SyscallResult::err(EFAULT);
+    }
+
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+    let mut caps =
+        [crate::ipc::Capability::new(0, 0, 0); crate::ipc::MAX_CAPS_PER_MESSAGE];
+
+    match crate::ipc::receive_message_with_caps_for_process(
+        crate::ipc::ProcessId(caller_pid.0),
+        crate::ipc::ChannelId(channel_id as u32),
+        buffer,
+        &mut caps,
+    ) {
+        Ok((bytes_received, caps_received)) => {
+            let caps_out = unsafe {
+                core::slice::from_raw_parts_mut(
+                    caps_ptr as *mut SysIpcCapability,
+                    crate::ipc::MAX_CAPS_PER_MESSAGE,
+                )
+            };
+            let mut i = 0usize;
+            while i < caps_received {
+                caps_out[i] = ipc_cap_to_sys(&caps[i]);
+                i += 1;
+            }
+            unsafe {
+                (caps_count_ptr as *mut u32).write(caps_received as u32);
+            }
+            SyscallResult::ok(bytes_received as i32)
+        }
+        Err(e) => {
+            if e == "Missing channel capability" {
+                SyscallResult::err(EACCES)
+            } else {
+                SyscallResult::err(EAGAIN)
             }
         }
     }
@@ -815,6 +997,7 @@ fn sys_cap_grant(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
         11 => CapabilityType::Clock,
         12 => CapabilityType::Store,
         13 => CapabilityType::Filesystem,
+        14 => CapabilityType::ServicePointer,
         _ => return SyscallResult::err(EINVAL),
     };
     
@@ -1017,6 +1200,61 @@ fn sys_jit_return(_args: SyscallArgs, _caller_pid: capability::ProcessId) -> Sys
         SyscallResult::ok(0)
     } else {
         SyscallResult::err(EACCES)
+    }
+}
+
+fn sys_service_pointer_register(
+    args: SyscallArgs,
+    caller_pid: capability::ProcessId,
+) -> SyscallResult {
+    let instance_id = args.arg1 as usize;
+    let function_index = args.arg2 as usize;
+    let allow_delegate = (args.arg3 & 0x1) != 0;
+
+    match crate::wasm::register_service_pointer(caller_pid, instance_id, function_index, allow_delegate) {
+        Ok(registration) => SyscallResult::ok(registration.cap_id as i32),
+        Err(_) => SyscallResult::err(EACCES),
+    }
+}
+
+fn sys_service_pointer_invoke(
+    args: SyscallArgs,
+    caller_pid: capability::ProcessId,
+) -> SyscallResult {
+    let object_id = ((args.arg2 as u64) << 32) | args.arg1 as u64;
+    let args_ptr = args.arg3 as usize;
+    let args_count = args.arg4 as usize;
+
+    if args_count > crate::wasm::MAX_SERVICE_CALL_ARGS {
+        return SyscallResult::err(EINVAL);
+    }
+    if args_count > 0 {
+        let bytes = args_count.saturating_mul(4);
+        if args_ptr >= 0xC0000000 || args_ptr.saturating_add(bytes) >= 0xC0000000 {
+            return SyscallResult::err(EFAULT);
+        }
+    }
+
+    let call_args: &[u32] = if args_count == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(args_ptr as *const u32, args_count) }
+    };
+
+    match crate::wasm::invoke_service_pointer(caller_pid, object_id, call_args) {
+        Ok(result) => SyscallResult::ok(result as i32),
+        Err(_) => SyscallResult::err(EACCES),
+    }
+}
+
+fn sys_service_pointer_revoke(
+    args: SyscallArgs,
+    caller_pid: capability::ProcessId,
+) -> SyscallResult {
+    let object_id = ((args.arg2 as u64) << 32) | args.arg1 as u64;
+    match crate::wasm::revoke_service_pointer(caller_pid, object_id) {
+        Ok(()) => SyscallResult::ok(0),
+        Err(_) => SyscallResult::err(EACCES),
     }
 }
 

@@ -99,6 +99,13 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-fs-demo - Demo WASM filesystem syscalls\n");
             vga::print_str("  wasm-log-demo - Demo WASM logging syscall\n");
             vga::print_str("  wasm-list    - List loaded WASM instances\n");
+            vga::print_str("  svcptr-register - Register service pointer (svcptr-register <instance_id> <func_idx> [delegate])\n");
+            vga::print_str("  svcptr-invoke   - Invoke service pointer (svcptr-invoke <object_id> [arg ...])\n");
+            vga::print_str("  svcptr-send     - Send service pointer cap via IPC (svcptr-send <channel_id> <cap_id>)\n");
+            vga::print_str("  svcptr-recv     - Receive/import service pointer cap (svcptr-recv <channel_id>)\n");
+            vga::print_str("  svcptr-inject   - Inject service pointer cap into WASM instance (svcptr-inject <instance_id> <cap_id>)\n");
+            vga::print_str("  svcptr-demo     - End-to-end service pointer transfer/invoke demo\n");
+            vga::print_str("  svcptr-demo-crosspid - Cross-PID transfer/invoke proof demo\n");
             vga::print_str("  wasm-jit-bench - Benchmark WASM JIT vs interpreter\n");
             vga::print_str("  wasm-jit-selftest - Run WASM JIT bounds self-test\n");
             vga::print_str("  wasm-jit-fuzz  - Coverage-guided JIT fuzz (wasm-jit-fuzz <iters> [seed])\n");
@@ -293,6 +300,27 @@ pub fn execute(input: &str) {
         }
         "wasm-list" => {
             cmd_wasm_list();
+        }
+        "svcptr-register" => {
+            cmd_svcptr_register(parts);
+        }
+        "svcptr-invoke" => {
+            cmd_svcptr_invoke(parts);
+        }
+        "svcptr-send" => {
+            cmd_svcptr_send(parts);
+        }
+        "svcptr-recv" => {
+            cmd_svcptr_recv(parts);
+        }
+        "svcptr-inject" => {
+            cmd_svcptr_inject(parts);
+        }
+        "svcptr-demo" => {
+            cmd_svcptr_demo();
+        }
+        "svcptr-demo-crosspid" => {
+            cmd_svcptr_demo_crosspid();
         }
         "wasm-jit-bench" => {
             cmd_wasm_jit_bench();
@@ -3226,6 +3254,658 @@ fn cmd_wasm_list() {
     }
 }
 
+fn cmd_svcptr_register(mut parts: core::str::SplitWhitespace) {
+    let instance_id = match parts.next().and_then(parse_number) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: svcptr-register <instance_id> <func_idx> [delegate]\n");
+            return;
+        }
+    };
+    let func_idx = match parts.next().and_then(parse_number) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: svcptr-register <instance_id> <func_idx> [delegate]\n");
+            return;
+        }
+    };
+    let delegate = parts
+        .next()
+        .and_then(parse_number)
+        .map(|v| v != 0)
+        .unwrap_or(false);
+
+    let pid = process::current_pid().unwrap_or(ipc::ProcessId(1));
+    match wasm::register_service_pointer(pid, instance_id, func_idx, delegate) {
+        Ok(reg) => {
+            vga::print_str("Service pointer registered\n  object_id: 0x");
+            print_u64_hex(reg.object_id);
+            vga::print_str("\n  cap_id: ");
+            print_u32(reg.cap_id);
+            vga::print_str("\n  instance: ");
+            print_usize(reg.target_instance);
+            vga::print_str("\n  function: ");
+            print_usize(reg.function_index);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Failed to register service pointer: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_svcptr_invoke(mut parts: core::str::SplitWhitespace) {
+    let object_id = match parts.next().and_then(parse_u64_any) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: svcptr-invoke <object_id> [arg ...]\n");
+            return;
+        }
+    };
+
+    let mut args = [0u32; wasm::MAX_SERVICE_CALL_ARGS];
+    let mut argc = 0usize;
+    for token in parts {
+        if argc >= args.len() {
+            vga::print_str("Too many args (max ");
+            print_usize(args.len());
+            vga::print_str(")\n");
+            return;
+        }
+        let val = match parse_u32(token) {
+            Some(v) => v,
+            None => {
+                vga::print_str("Invalid arg: ");
+                vga::print_str(token);
+                vga::print_str("\n");
+                return;
+            }
+        };
+        args[argc] = val;
+        argc += 1;
+    }
+
+    let pid = process::current_pid().unwrap_or(ipc::ProcessId(1));
+    match wasm::invoke_service_pointer(pid, object_id, &args[..argc]) {
+        Ok(ret) => {
+            vga::print_str("Service pointer result: ");
+            print_u32(ret);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Service pointer invoke failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_svcptr_send(mut parts: core::str::SplitWhitespace) {
+    let channel_id = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: svcptr-send <channel_id> <cap_id>\n");
+            return;
+        }
+    };
+    let cap_id = match parts.next().and_then(parse_u32) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: svcptr-send <channel_id> <cap_id>\n");
+            return;
+        }
+    };
+
+    let pid = process::current_pid().unwrap_or(ipc::ProcessId(1));
+    let send_cap = match crate::capability::resolve_channel_capability(
+        pid,
+        ipc::ChannelId(channel_id),
+        crate::capability::ChannelAccess::Send,
+    ) {
+        Ok(cap) => cap,
+        Err(_) => {
+            vga::print_str("Missing send capability for channel\n");
+            return;
+        }
+    };
+
+    let mut msg = match ipc::Message::with_data(pid, b"svcptr") {
+        Ok(m) => m,
+        Err(_) => {
+            vga::print_str("Failed to construct IPC message\n");
+            return;
+        }
+    };
+    let export = match crate::capability::export_capability_to_ipc(pid, cap_id) {
+        Ok(cap) => cap,
+        Err(e) => {
+            vga::print_str("Failed to export capability: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
+    if export.cap_type != ipc::CapabilityType::ServicePointer {
+        vga::print_str("Capability is not a service pointer capability\n");
+        return;
+    }
+    if msg.add_capability(export).is_err() {
+        vga::print_str("Failed to attach capability to message\n");
+        return;
+    }
+    match ipc::ipc().send(msg, &send_cap) {
+        Ok(()) => {
+            vga::print_str("Service pointer capability sent on channel ");
+            print_u32(channel_id);
+            vga::print_str("\n");
+        }
+        Err(_) => {
+            vga::print_str("Failed to send service pointer capability\n");
+        }
+    }
+}
+
+fn cmd_svcptr_recv(mut parts: core::str::SplitWhitespace) {
+    let channel_id = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: svcptr-recv <channel_id>\n");
+            return;
+        }
+    };
+
+    let pid = process::current_pid().unwrap_or(ipc::ProcessId(1));
+    let recv_cap = match crate::capability::resolve_channel_capability(
+        pid,
+        ipc::ChannelId(channel_id),
+        crate::capability::ChannelAccess::Receive,
+    ) {
+        Ok(cap) => cap,
+        Err(_) => {
+            vga::print_str("Missing receive capability for channel\n");
+            return;
+        }
+    };
+
+    match ipc::ipc().try_recv(&recv_cap) {
+        Ok(msg) => {
+            let mut imported_any = false;
+            for cap in msg.capabilities() {
+                if cap.cap_type != ipc::CapabilityType::ServicePointer {
+                    continue;
+                }
+                match crate::capability::import_capability_from_ipc(pid, cap, msg.source) {
+                    Ok(new_cap_id) => {
+                        imported_any = true;
+                        if let Ok((_cap_type, object_id)) = crate::capability::capability_manager()
+                            .query_capability(pid, new_cap_id)
+                        {
+                            vga::print_str("Imported service pointer capability\n  cap_id: ");
+                            print_u32(new_cap_id);
+                            vga::print_str("\n  object_id: 0x");
+                            print_u64_hex(object_id);
+                            vga::print_str("\n");
+                        }
+                    }
+                    Err(e) => {
+                        vga::print_str("Failed to import service pointer cap: ");
+                        vga::print_str(e);
+                        vga::print_str("\n");
+                    }
+                }
+            }
+            if !imported_any {
+                vga::print_str("Received message without service pointer capability\n");
+            }
+        }
+        Err(_) => {
+            vga::print_str("No message available\n");
+        }
+    }
+}
+
+fn cmd_svcptr_inject(mut parts: core::str::SplitWhitespace) {
+    let instance_id = match parts.next().and_then(parse_number) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: svcptr-inject <instance_id> <cap_id>\n");
+            return;
+        }
+    };
+    let cap_id = match parts.next().and_then(parse_u32) {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: svcptr-inject <instance_id> <cap_id>\n");
+            return;
+        }
+    };
+
+    let pid = process::current_pid().unwrap_or(ipc::ProcessId(1));
+    match wasm::inject_service_pointer_capability(instance_id, pid, cap_id) {
+        Ok(handle) => {
+            vga::print_str("Injected service pointer capability into WASM instance\n  handle: ");
+            print_u32(handle.0);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Injection failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_svcptr_demo() {
+    vga::print_str("\n=== Service Pointer End-to-End Demo ===\n");
+    let pid = process::current_pid().unwrap_or(ipc::ProcessId(1));
+    vga::print_str("Using PID ");
+    print_u32(pid.0);
+    vga::print_str("\n");
+
+    // Provider bytecode: i32.const 1337; return; end.
+    let provider_code: [u8; 5] = [0x41, 0xB9, 0x0A, 0x0F, 0x0B];
+    let provider_instance = match wasm::wasm_runtime().instantiate(&provider_code, pid) {
+        Ok(id) => id,
+        Err(_) => {
+            vga::print_str("Failed to create provider WASM instance\n");
+            return;
+        }
+    };
+
+    let provider_func = wasm::Function {
+        code_offset: 0,
+        code_len: provider_code.len(),
+        param_count: 0,
+        result_count: 1,
+        local_count: 0,
+    };
+    let set_provider_func = wasm::wasm_runtime().get_instance_mut(provider_instance, |inst| {
+        inst.module.add_function(provider_func).map(|_| ())
+    });
+    if !matches!(set_provider_func, Ok(Ok(()))) {
+        vga::print_str("Failed to install provider function\n");
+        let _ = wasm::wasm_runtime().destroy(provider_instance);
+        return;
+    }
+
+    vga::print_str("Step 1: Registering provider function as service pointer\n");
+    let registration = match wasm::register_service_pointer(pid, provider_instance, 0, true) {
+        Ok(reg) => reg,
+        Err(e) => {
+            vga::print_str("Registration failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            let _ = wasm::wasm_runtime().destroy(provider_instance);
+            return;
+        }
+    };
+    vga::print_str("  object_id=0x");
+    print_u64_hex(registration.object_id);
+    vga::print_str(" cap_id=");
+    print_u32(registration.cap_id);
+    vga::print_str("\n");
+
+    vga::print_str("Step 2: Creating IPC channel and transferring capability\n");
+    let channel_id = match ipc::create_channel_for_process(pid) {
+        Ok(id) => id as u32,
+        Err(_) => {
+            vga::print_str("Channel creation failed\n");
+            let _ = wasm::wasm_runtime().destroy(provider_instance);
+            return;
+        }
+    };
+    let send_cap = match crate::capability::resolve_channel_capability(
+        pid,
+        ipc::ChannelId(channel_id),
+        crate::capability::ChannelAccess::Send,
+    ) {
+        Ok(cap) => cap,
+        Err(_) => {
+            vga::print_str("Failed to resolve send capability\n");
+            let _ = wasm::wasm_runtime().destroy(provider_instance);
+            return;
+        }
+    };
+    let recv_cap = match crate::capability::resolve_channel_capability(
+        pid,
+        ipc::ChannelId(channel_id),
+        crate::capability::ChannelAccess::Receive,
+    ) {
+        Ok(cap) => cap,
+        Err(_) => {
+            vga::print_str("Failed to resolve receive capability\n");
+            let _ = wasm::wasm_runtime().destroy(provider_instance);
+            return;
+        }
+    };
+
+    let mut msg = match ipc::Message::with_data(pid, b"svcptr-demo") {
+        Ok(m) => m,
+        Err(_) => {
+            vga::print_str("Failed to build demo message\n");
+            let _ = wasm::wasm_runtime().destroy(provider_instance);
+            return;
+        }
+    };
+    let exported = match crate::capability::export_capability_to_ipc(pid, registration.cap_id) {
+        Ok(cap) => cap,
+        Err(e) => {
+            vga::print_str("Export failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            let _ = wasm::wasm_runtime().destroy(provider_instance);
+            return;
+        }
+    };
+    if msg.add_capability(exported).is_err() {
+        vga::print_str("Failed to attach exported capability\n");
+        let _ = wasm::wasm_runtime().destroy(provider_instance);
+        return;
+    }
+    if ipc::ipc().send(msg, &send_cap).is_err() {
+        vga::print_str("Failed to send demo IPC message\n");
+        let _ = wasm::wasm_runtime().destroy(provider_instance);
+        return;
+    }
+
+    let received = match ipc::ipc().try_recv(&recv_cap) {
+        Ok(m) => m,
+        Err(_) => {
+            vga::print_str("Failed to receive demo IPC message\n");
+            let _ = wasm::wasm_runtime().destroy(provider_instance);
+            return;
+        }
+    };
+    let mut imported_object = 0u64;
+    let mut imported_cap_id = 0u32;
+    for cap in received.capabilities() {
+        if cap.cap_type != ipc::CapabilityType::ServicePointer {
+            continue;
+        }
+        if let Ok(new_cap_id) = crate::capability::import_capability_from_ipc(pid, cap, received.source) {
+            if let Ok((_cap_type, object_id)) = crate::capability::capability_manager()
+                .query_capability(pid, new_cap_id)
+            {
+                imported_cap_id = new_cap_id;
+                imported_object = object_id;
+                break;
+            }
+        }
+    }
+    if imported_object == 0 {
+        vga::print_str("Import failed: no service pointer capability received\n");
+        let _ = wasm::wasm_runtime().destroy(provider_instance);
+        return;
+    }
+    vga::print_str("  imported cap_id=");
+    print_u32(imported_cap_id);
+    vga::print_str(" object_id=0x");
+    print_u64_hex(imported_object);
+    vga::print_str("\n");
+
+    vga::print_str("Step 3: Invoking imported service pointer\n");
+    match wasm::invoke_service_pointer(pid, imported_object, &[]) {
+        Ok(result) => {
+            vga::print_str("  invocation result=");
+            print_u32(result);
+            vga::print_str(" (expected 1337)\n");
+            if result == 1337 {
+                vga::print_str("Demo success: direct callable capability path works\n");
+            } else {
+                vga::print_str("Demo warning: unexpected result\n");
+            }
+        }
+        Err(e) => {
+            vga::print_str("Invocation failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+
+    let _ = wasm::wasm_runtime().destroy(provider_instance);
+    let _ = ipc::close_channel_for_process(pid, ipc::ChannelId(channel_id));
+    vga::print_str("=== Demo Complete ===\n\n");
+}
+
+fn cmd_svcptr_demo_crosspid() {
+    vga::print_str("\n=== Service Pointer Cross-PID Demo ===\n");
+
+    let parent = process::current_pid();
+    let mut provider_pid: Option<ipc::ProcessId> = None;
+    let mut consumer_pid: Option<ipc::ProcessId> = None;
+    let mut provider_instance: Option<usize> = None;
+    let mut channel_id: Option<u32> = None;
+    let mut success = false;
+
+    'demo: loop {
+        let provider = match process::process_manager().spawn("svcptr-provider", parent) {
+            Ok(pid) => pid,
+            Err(e) => {
+                vga::print_str("Failed to spawn provider process: ");
+                vga::print_str(e.as_str());
+                vga::print_str("\n");
+                break 'demo;
+            }
+        };
+        provider_pid = Some(provider);
+
+        let consumer = match process::process_manager().spawn("svcptr-consumer", parent) {
+            Ok(pid) => pid,
+            Err(e) => {
+                vga::print_str("Failed to spawn consumer process: ");
+                vga::print_str(e.as_str());
+                vga::print_str("\n");
+                break 'demo;
+            }
+        };
+        consumer_pid = Some(consumer);
+
+        if provider.0 == consumer.0 {
+            vga::print_str("Cross-PID proof failed: provider and consumer PID are equal\n");
+            break 'demo;
+        }
+
+        vga::print_str("Provider PID=");
+        print_u32(provider.0);
+        vga::print_str(", Consumer PID=");
+        print_u32(consumer.0);
+        vga::print_str("\n");
+
+        // Provider function returns 1337.
+        let provider_code: [u8; 5] = [0x41, 0xB9, 0x0A, 0x0F, 0x0B];
+        let instance_id = match wasm::wasm_runtime().instantiate(&provider_code, provider) {
+            Ok(id) => id,
+            Err(_) => {
+                vga::print_str("Failed to create provider WASM instance\n");
+                break 'demo;
+            }
+        };
+        provider_instance = Some(instance_id);
+
+        let provider_func = wasm::Function {
+            code_offset: 0,
+            code_len: provider_code.len(),
+            param_count: 0,
+            result_count: 1,
+            local_count: 0,
+        };
+        let set_provider_func = wasm::wasm_runtime().get_instance_mut(instance_id, |inst| {
+            inst.module.add_function(provider_func).map(|_| ())
+        });
+        if !matches!(set_provider_func, Ok(Ok(()))) {
+            vga::print_str("Failed to install provider function\n");
+            break 'demo;
+        }
+
+        vga::print_str("Step 1: Provider registers service pointer\n");
+        let registration = match wasm::register_service_pointer(provider, instance_id, 0, true) {
+            Ok(reg) => reg,
+            Err(e) => {
+                vga::print_str("Registration failed: ");
+                vga::print_str(e);
+                vga::print_str("\n");
+                break 'demo;
+            }
+        };
+        vga::print_str("  provider object_id=0x");
+        print_u64_hex(registration.object_id);
+        vga::print_str(" cap_id=");
+        print_u32(registration.cap_id);
+        vga::print_str("\n");
+
+        vga::print_str("Step 2: Provider opens channel, consumer gets receive right\n");
+        let ch = match ipc::create_channel_for_process(provider) {
+            Ok(id) => id as u32,
+            Err(_) => {
+                vga::print_str("Channel creation failed\n");
+                break 'demo;
+            }
+        };
+        channel_id = Some(ch);
+
+        let recv_rights = crate::capability::Rights::new(crate::capability::Rights::CHANNEL_RECEIVE);
+        if crate::capability::capability_manager()
+            .grant_capability(
+                consumer,
+                ch as u64,
+                crate::capability::CapabilityType::Channel,
+                recv_rights,
+                provider,
+            )
+            .is_err()
+        {
+            vga::print_str("Failed to grant receive right to consumer\n");
+            break 'demo;
+        }
+
+        let send_cap = match crate::capability::resolve_channel_capability(
+            provider,
+            ipc::ChannelId(ch),
+            crate::capability::ChannelAccess::Send,
+        ) {
+            Ok(cap) => cap,
+            Err(_) => {
+                vga::print_str("Failed to resolve provider send capability\n");
+                break 'demo;
+            }
+        };
+
+        let recv_cap = match crate::capability::resolve_channel_capability(
+            consumer,
+            ipc::ChannelId(ch),
+            crate::capability::ChannelAccess::Receive,
+        ) {
+            Ok(cap) => cap,
+            Err(_) => {
+                vga::print_str("Failed to resolve consumer receive capability\n");
+                break 'demo;
+            }
+        };
+
+        let mut msg = match ipc::Message::with_data(provider, b"svcptr-crosspid") {
+            Ok(m) => m,
+            Err(_) => {
+                vga::print_str("Failed to build cross-pid IPC message\n");
+                break 'demo;
+            }
+        };
+        let exported =
+            match crate::capability::export_capability_to_ipc(provider, registration.cap_id) {
+                Ok(cap) => cap,
+                Err(e) => {
+                    vga::print_str("Export failed: ");
+                    vga::print_str(e);
+                    vga::print_str("\n");
+                    break 'demo;
+                }
+            };
+        if msg.add_capability(exported).is_err() {
+            vga::print_str("Failed to attach exported service pointer\n");
+            break 'demo;
+        }
+        if ipc::ipc().send(msg, &send_cap).is_err() {
+            vga::print_str("Provider failed to send channel message\n");
+            break 'demo;
+        }
+
+        let received = match ipc::ipc().try_recv(&recv_cap) {
+            Ok(m) => m,
+            Err(_) => {
+                vga::print_str("Consumer failed to receive channel message\n");
+                break 'demo;
+            }
+        };
+
+        let mut imported_object = 0u64;
+        for cap in received.capabilities() {
+            if cap.cap_type != ipc::CapabilityType::ServicePointer {
+                continue;
+            }
+            if let Ok(new_cap_id) =
+                crate::capability::import_capability_from_ipc(consumer, cap, received.source)
+            {
+                if let Ok((_cap_type, object_id)) = crate::capability::capability_manager()
+                    .query_capability(consumer, new_cap_id)
+                {
+                    vga::print_str("  consumer imported cap_id=");
+                    print_u32(new_cap_id);
+                    vga::print_str(" object_id=0x");
+                    print_u64_hex(object_id);
+                    vga::print_str("\n");
+                    imported_object = object_id;
+                    break;
+                }
+            }
+        }
+        if imported_object == 0 {
+            vga::print_str("Consumer did not import a service pointer capability\n");
+            break 'demo;
+        }
+
+        vga::print_str("Step 3: Consumer invokes provider pointer\n");
+        match wasm::invoke_service_pointer(consumer, imported_object, &[]) {
+            Ok(result) => {
+                vga::print_str("  invocation result=");
+                print_u32(result);
+                vga::print_str(" (expected 1337)\n");
+                if result == 1337 {
+                    vga::print_str("Cross-PID proof success: transfer + invoke across different PIDs verified\n");
+                    success = true;
+                } else {
+                    vga::print_str("Cross-PID proof warning: unexpected result\n");
+                }
+            }
+            Err(e) => {
+                vga::print_str("Consumer invocation failed: ");
+                vga::print_str(e);
+                vga::print_str("\n");
+            }
+        }
+        break 'demo;
+    }
+
+    if let Some(inst) = provider_instance {
+        let _ = wasm::wasm_runtime().destroy(inst);
+    }
+    if let (Some(provider), Some(ch)) = (provider_pid, channel_id) {
+        let _ = ipc::close_channel_for_process(provider, ipc::ChannelId(ch));
+    }
+    if let Some(pid) = consumer_pid {
+        let _ = process::process_manager().terminate(pid);
+    }
+    if let Some(pid) = provider_pid {
+        let _ = process::process_manager().terminate(pid);
+    }
+
+    if success {
+        vga::print_str("=== Cross-PID Demo Complete (PASS) ===\n\n");
+    } else {
+        vga::print_str("=== Cross-PID Demo Complete (FAIL) ===\n\n");
+    }
+}
+
 fn cmd_wasm_jit_bench() {
     vga::print_str("\n");
     vga::print_str("===== WASM JIT Benchmark =====\n\n");
@@ -3269,7 +3949,7 @@ fn cmd_wasm_jit_selftest() {
 
 fn cmd_formal_verify() {
     vga::print_str("\n===== Formal Verification =====\n\n");
-    vga::print_str("[1/4] JIT translation proof obligations...\n");
+    vga::print_str("[1/5] JIT translation proof obligations...\n");
     match crate::wasm_jit::formal_translation_self_check() {
         Ok(()) => vga::print_str("  ✓ JIT translation verification passed\n"),
         Err(e) => {
@@ -3280,7 +3960,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[2/4] Capability proof obligations...\n");
+    vga::print_str("[2/5] Capability proof obligations...\n");
     match crate::capability::formal_capability_self_check() {
         Ok(()) => vga::print_str("  ✓ Capability verification passed\n"),
         Err(e) => {
@@ -3291,7 +3971,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[3/4] CapNet proof obligations...\n");
+    vga::print_str("[3/5] CapNet proof obligations...\n");
     match crate::capnet::formal_capnet_self_check() {
         Ok(()) => vga::print_str("  ✓ CapNet verification passed\n"),
         Err(e) => {
@@ -3302,7 +3982,18 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[4/4] Mechanized backend model checks...\n");
+    vga::print_str("[4/5] Service pointer proof obligations...\n");
+    match crate::wasm::formal_service_pointer_self_check() {
+        Ok(()) => vga::print_str("  ✓ Service pointer verification passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ Service pointer verification failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    vga::print_str("[5/5] Mechanized backend model checks...\n");
     match crate::formal::run_mechanized_backend_check() {
         Ok(summary) => {
             vga::print_str("  ✓ Mechanized checks passed (obligations=");
@@ -4740,6 +5431,12 @@ fn parse_capnet_cap_type(s: &str) -> Option<u8> {
     }
     if s.eq_ignore_ascii_case("filesystem") || s.eq_ignore_ascii_case("fs") {
         return Some(crate::capability::CapabilityType::Filesystem as u8);
+    }
+    if s.eq_ignore_ascii_case("service-pointer")
+        || s.eq_ignore_ascii_case("servicepointer")
+        || s.eq_ignore_ascii_case("svcptr")
+    {
+        return Some(crate::capability::CapabilityType::ServicePointer as u8);
     }
     let numeric = parse_u32(s)?;
     if numeric <= u8::MAX as u32 {
@@ -7519,6 +8216,10 @@ fn cmd_cap_list() {
     print_u32(CapabilityType::Clock as u32);
     vga::print_str(", Store=");
     print_u32(CapabilityType::Store as u32);
+    vga::print_str(", FS=");
+    print_u32(CapabilityType::Filesystem as u32);
+    vga::print_str(", SvcPtr=");
+    print_u32(CapabilityType::ServicePointer as u32);
     vga::print_str(")\n\n");
 }
 

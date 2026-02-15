@@ -520,6 +520,8 @@ impl ProcessManager {
         // Tear down capability/security state to prevent stale restrictions,
         // quotas, and authority from surviving process termination.
         let _ = crate::ipc::purge_channels_for_process(pid);
+        let _ = crate::wasm::revoke_service_pointers_for_owner(pid);
+        let _ = crate::wasm::unload_modules_for_owner(pid);
         capability::capability_manager().deinit_task(pid);
         security::security().terminate_process(pid);
 

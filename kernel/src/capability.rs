@@ -41,9 +41,26 @@ pub enum CapabilityType {
     Clock = 11,
     Store = 12,
     Filesystem = 13,
+    ServicePointer = 14,
     
     // Future: Network, Device, etc.
     Reserved = 255,
+}
+
+impl CapabilityType {
+    pub const fn from_raw(raw: u8) -> Option<Self> {
+        match raw {
+            0 => Some(CapabilityType::Channel),
+            1 => Some(CapabilityType::Task),
+            2 => Some(CapabilityType::Spawner),
+            10 => Some(CapabilityType::Console),
+            11 => Some(CapabilityType::Clock),
+            12 => Some(CapabilityType::Store),
+            13 => Some(CapabilityType::Filesystem),
+            14 => Some(CapabilityType::ServicePointer),
+            _ => None,
+        }
+    }
 }
 
 /// Rights bitflags for capabilities
@@ -84,6 +101,11 @@ impl Rights {
     pub const FS_WRITE: u32 = 1 << 15;
     pub const FS_DELETE: u32 = 1 << 16;
     pub const FS_LIST: u32 = 1 << 17;
+
+    // Service-pointer rights
+    pub const SERVICE_INVOKE: u32 = 1 << 18;
+    pub const SERVICE_DELEGATE: u32 = 1 << 19;
+    pub const SERVICE_INTROSPECT: u32 = 1 << 20;
     
     pub const NONE: u32 = 0;
     pub const ALL: u32 = 0xFFFFFFFF;
@@ -102,6 +124,10 @@ impl Rights {
     
     pub fn attenuate(&self, mask: u32) -> Self {
         Rights { bits: self.bits & mask }
+    }
+
+    pub const fn bits(&self) -> u32 {
+        self.bits
     }
 }
 
@@ -840,7 +866,8 @@ impl CapabilityManager {
             let services = table.count_by_type(CapabilityType::Console) 
                 + table.count_by_type(CapabilityType::Clock)
                 + table.count_by_type(CapabilityType::Store)
-                + table.count_by_type(CapabilityType::Filesystem);
+                + table.count_by_type(CapabilityType::Filesystem)
+                + table.count_by_type(CapabilityType::ServicePointer);
             
             (total, channels, services)
         } else {
@@ -1519,16 +1546,7 @@ pub fn check_capability(
 }
 
 fn capability_type_from_capnet(cap_type: u8) -> Option<CapabilityType> {
-    match cap_type {
-        0 => Some(CapabilityType::Channel),
-        1 => Some(CapabilityType::Task),
-        2 => Some(CapabilityType::Spawner),
-        10 => Some(CapabilityType::Console),
-        11 => Some(CapabilityType::Clock),
-        12 => Some(CapabilityType::Store),
-        13 => Some(CapabilityType::Filesystem),
-        _ => None,
-    }
+    CapabilityType::from_raw(cap_type)
 }
 
 /// Install/update a remote capability lease from a verified CapNet token.
@@ -1688,4 +1706,143 @@ impl CapabilityManager {
         let cap = table.lookup(cap_id).map_err(|e| e.as_str())?;
         Ok((cap.cap_type as u32, cap.object_id))
     }
+
+    /// Revoke all capabilities referencing a specific object/type pair across all tasks.
+    pub fn revoke_object_capabilities(
+        &self,
+        cap_type: CapabilityType,
+        object_id: u64,
+    ) -> usize {
+        let mut tables = self.tables.lock();
+        let mut revoked = 0usize;
+
+        for slot in tables.iter_mut() {
+            let table = match slot.as_mut() {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let mut revoke_ids = [0u32; MAX_CAPABILITIES];
+            let mut revoke_count = 0usize;
+            for entry in table.entries.iter() {
+                let cap = match entry {
+                    Some(c) => c,
+                    None => continue,
+                };
+                if cap.cap_type != cap_type || cap.object_id != object_id {
+                    continue;
+                }
+                if revoke_count < revoke_ids.len() {
+                    revoke_ids[revoke_count] = cap.cap_id;
+                    revoke_count += 1;
+                }
+            }
+
+            let mut i = 0usize;
+            while i < revoke_count {
+                if table.remove(revoke_ids[i]).is_ok() {
+                    revoked = revoked.saturating_add(1);
+                }
+                i += 1;
+            }
+        }
+        revoked
+    }
+
+    /// Return full capability metadata for kernel mediation paths.
+    pub fn get_capability(
+        &self,
+        pid: ProcessId,
+        cap_id: u32,
+    ) -> Result<OreuliaCapability, &'static str> {
+        let idx = pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return Err("Task not found");
+        }
+
+        let tables = self.tables.lock();
+        let table = tables[idx].as_ref().ok_or("Task not found")?;
+        let cap = table.lookup(cap_id).map_err(|e| e.as_str())?;
+        Ok(*cap)
+    }
+}
+
+fn ipc_cap_type_for(cap_type: CapabilityType) -> crate::ipc::CapabilityType {
+    match cap_type {
+        CapabilityType::Channel => crate::ipc::CapabilityType::Channel,
+        CapabilityType::Filesystem => crate::ipc::CapabilityType::Filesystem,
+        CapabilityType::Store => crate::ipc::CapabilityType::Store,
+        CapabilityType::ServicePointer => crate::ipc::CapabilityType::ServicePointer,
+        _ => crate::ipc::CapabilityType::Generic,
+    }
+}
+
+fn cap_type_from_ipc(
+    cap_type: crate::ipc::CapabilityType,
+    extra_words: [u32; 4],
+) -> Option<CapabilityType> {
+    match cap_type {
+        crate::ipc::CapabilityType::Channel => Some(CapabilityType::Channel),
+        crate::ipc::CapabilityType::Filesystem => Some(CapabilityType::Filesystem),
+        crate::ipc::CapabilityType::Store => Some(CapabilityType::Store),
+        crate::ipc::CapabilityType::ServicePointer => Some(CapabilityType::ServicePointer),
+        crate::ipc::CapabilityType::Generic => CapabilityType::from_raw(extra_words[3] as u8),
+    }
+}
+
+fn object_id_from_ipc_cap(cap: &crate::ipc::Capability) -> u64 {
+    ((cap.extra[0] as u64) << 32) | cap.object_id as u64
+}
+
+/// Export a local capability as an authenticated IPC capability attachment.
+pub fn export_capability_to_ipc(
+    owner: ProcessId,
+    cap_id: u32,
+) -> Result<crate::ipc::Capability, &'static str> {
+    let cap = capability_manager().get_capability(owner, cap_id)?;
+
+    if cap.cap_type == CapabilityType::ServicePointer
+        && !cap.has_right(Rights::SERVICE_DELEGATE)
+    {
+        return Err("Service pointer requires delegate right for transfer");
+    }
+
+    let mut out = crate::ipc::Capability::with_type(
+        cap.cap_id,
+        cap.object_id as u32,
+        cap.rights.bits(),
+        ipc_cap_type_for(cap.cap_type),
+    );
+    // Preserve full object identity and capability taxonomy for generic transports.
+    out.extra[0] = (cap.object_id >> 32) as u32;
+    out.extra[1] = cap.origin.0;
+    out.extra[2] = cap.granted_at as u32;
+    out.extra[3] = cap.cap_type as u32;
+    out.sign();
+    Ok(out)
+}
+
+/// Import an IPC-attached capability into a process capability table.
+pub fn import_capability_from_ipc(
+    owner: ProcessId,
+    cap: &crate::ipc::Capability,
+    source: ProcessId,
+) -> Result<u32, &'static str> {
+    if !cap.verify() {
+        return Err("Invalid IPC capability token");
+    }
+
+    let cap_type = cap_type_from_ipc(cap.cap_type, cap.extra)
+        .ok_or("Unsupported IPC capability type")?;
+    let object_id = object_id_from_ipc_cap(cap);
+
+    if cap_type == CapabilityType::ServicePointer
+        && !crate::wasm::service_pointer_exists(object_id)
+    {
+        return Err("Unknown service pointer object");
+    }
+
+    capability_manager()
+        .grant_capability(owner, object_id, cap_type, Rights::new(cap.rights), source)
+        .map_err(|e| e.as_str())
 }

@@ -58,6 +58,11 @@ The following host functions are available to Wasm modules:
 - `ipc_create() -> handle`: Create a new channel.
 - `ipc_send(handle: i32, data_ptr: i32, len: i32) -> status`: blocking send.
 - `ipc_recv(handle: i32, buf_ptr: i32) -> len`: blocking receive.
+- `channel_send_cap(chan_cap: i32, msg_ptr: i32, msg_len: i32, cap_handle: i32) -> i32`:
+  send a message and optionally attach one transferable capability.
+  - pass `cap_handle = -1` (`u32::MAX`) for no attachment.
+- `last_service_cap() -> i32`: returns the most recently imported service-pointer cap handle
+  from `channel_recv`/`ipc_recv` processing (`-1` if none).
 
 ### 4.3 Filesystem
 - `fs_open(path_ptr: i32, path_len: i32, flags: i32) -> fd`
@@ -68,6 +73,18 @@ The following host functions are available to Wasm modules:
 ### 4.4 Debugging / Console
 - `debug_log(ptr: i32, len: i32)`: Write to kernel debug log.
 - `console_write(ptr: i32, len: i32)`: Write to serial/vga (if capability held).
+
+### 4.5 Service Pointer Capabilities
+- `service_register(func_idx: i32, delegate: i32) -> i32`:
+  register an exported function as a directly callable capability and return a cap handle.
+  - `delegate != 0` grants transfer right.
+- `service_invoke(cap_handle: i32, args_ptr: i32, args_count: i32) -> i32`:
+  invoke a service-pointer capability directly (no conventional syscall trampoline).
+
+Notes:
+- Service-pointer capabilities are typed kernel capabilities (`ServicePointer`), not raw pointers.
+- Invocation is authorized by capability rights (`SERVICE_INVOKE`) and per-pointer rate policy.
+- Transfer authorization is enforced by `SERVICE_DELEGATE`.
 
 ---
 
@@ -127,6 +144,10 @@ Mechanisms (choose one for v0):
 v0 recommendation:
 
 - **Init message** (more explicit and scalable).
+
+For service-pointer capabilities, runtime injection is also available:
+- shell: `svcptr-inject <instance_id> <cap_id>`
+- kernel host path: `inject_service_pointer_capability(...)`
 
 ---
 

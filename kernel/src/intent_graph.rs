@@ -479,6 +479,7 @@ impl IntentGraph {
             CapabilityType::Clock => 1 << 4,
             CapabilityType::Store => 1 << 5,
             CapabilityType::Filesystem => 1 << 6,
+            CapabilityType::ServicePointer => 1 << 7,
             CapabilityType::Reserved => 0,
         }
     }
@@ -491,6 +492,7 @@ impl IntentGraph {
             | (1 << 4)
             | (1 << 5)
             | (1 << 6)
+            | (1 << 7)
     }
 
     fn roll_window(state: &mut IntentProcessState, now_ticks: u64, window_seconds: u64) {

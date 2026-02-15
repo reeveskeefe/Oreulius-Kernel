@@ -33,6 +33,13 @@ fn ipc_send(handle: u32, msg_ptr: u32, len: u32) -> status;
 fn ipc_recv(handle: u32, buf_ptr: u32) -> len;
 ```
 
+Kernel syscall boundary also exposes capability-attachment variants:
+- `channel_send_caps(channel, msg_ptr, msg_len, caps_ptr, caps_count)`
+- `channel_recv_caps(channel, buf_ptr, buf_len, caps_ptr, caps_count_out_ptr)`
+
+`caps_ptr` is an array of packed capability descriptors (`SysIpcCapability`), max
+`MAX_CAPS_PER_MESSAGE` entries.
+
 ### 2.2 Blocking & Yielding
 - **Receive**: If a channel is empty, `ipc_recv` will **block** the calling process and yield the CPU. The scheduler will wake the process when data arrives.
 - **Send**: If a channel is full, `ipc_send` will block until space is available (providing natural backpressure).
@@ -51,11 +58,21 @@ This is the most powerful feature of Oreulia's IPC.
 This mechanism allows "zero-trust" service discovery: a process doesn't need to "find" the filesystem service; it is *hand-delivered* a connection to it by the supervisor at startup.
 
 - transferred rights are identical to sender’s capability rights
+- service-pointer transfer additionally requires sender right `SERVICE_DELEGATE`
+- imported capabilities are validated against capability type and kernel object liveness
 
 Optional improvement:
 
 - allow sender to attenuate at transfer time (preferred)
   - attach `(cap_id, rights_mask)`
+
+### 3.1 Service Pointer Transfer Pattern
+
+For directly callable function/service capabilities:
+1. Provider registers a service pointer (`service_register`).
+2. Provider exports and attaches capability on IPC send.
+3. Consumer imports capability from received message.
+4. Consumer invokes with `service_invoke`.
 
 ---
 

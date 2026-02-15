@@ -10,15 +10,15 @@ Capability-Based "Intent Graphs" with Predictive Revocation:
 New Twist: Instead of static capabilities, create an "intent graph" where the kernel predicts and revokes permissions based on behavioral patterns (using lightweight ML in WASM). For example, if a module starts accessing too many resources (like in a compromised AI edge device), the graph auto-restricts it before escalation.
 Why Truly Inventive?: This isn't just formal verification—it's proactive, AI-driven security native to the kernel. No major kernel does this; it's inspired by anomaly detection but kernel-integrated for capabilities.
 Alignment: Leverages your Security Manager and WASM; prevents attacks in real-time for edge scenarios.
-Implementation: Use your IPC for data collection, add a simple anomaly detector in WASM.
+Implementation: Use your IPC for data collection, add a simple anomaly detector in WASM. COMPLETED
 
 
- Function/Service Pointer Capabilities (Directly Callable Capabilities)
+Function/Service Pointer Capabilities (Directly Callable Capabilities)
 
 Concept: Capabilities as "opaque pointers" to live WASM functions/objects (not just handles). Services invoke each other directly via these pointers, bypassing traditional syscalls for composable, message-passing APIs.
 Why Inventive?: Traditional kernels use IDs or handles; this makes capabilities executable and first-class, enabling agile, cross-module calls in a secure, pointer-like way— a new model for kernel composition.
 Alignment: Leverages your IPC System and WASM Runtime; keeps modularity and hot-swapping for edge devices.
-Implementation Starter: Extend your IPC to pass WASM function references as capabilities. Use Rust's type safety to ensure sandboxing.
+Implementation Starter: Extend your IPC to pass WASM function references as capabilities. Use Rust's type safety to ensure sandboxing. [in progress]
 
 
 Persistent/Versioned Kernel State Objects ("Temporal Objects")
