@@ -348,13 +348,19 @@ fn emit_code(code: &[u8], locals_total: usize, emitter: &mut Emitter) -> Result<
     }
 
     let _ret_pos = emitter.emit_epilogue();
-    let trap_mem_pos = emitter.emit_trap_stub(TRAP_MEM);
-    let trap_fuel_pos = emitter.emit_trap_stub(TRAP_FUEL);
-    let trap_stack_pos = emitter.emit_trap_stub(TRAP_STACK);
-    let trap_cfi_pos = emitter.emit_trap_stub(TRAP_CFI);
+    let trap_mem_pos = emitter.emit_trap_stub(TRAP_MEM, true);
+    let trap_fuel_pos = emitter.emit_trap_stub(TRAP_FUEL, true);
+    let trap_stack_pos = emitter.emit_trap_stub(TRAP_STACK, true);
+    let trap_cfi_pos = emitter.emit_trap_stub(TRAP_CFI, false);
     emitter.patch_traps(trap_mem_pos, trap_fuel_pos, trap_stack_pos, trap_cfi_pos);
 
-    verify_x86_subset(&emitter.code, locals_total)?;
+    let trap_targets = [
+        trap_mem_pos,
+        trap_fuel_pos,
+        trap_stack_pos,
+        trap_cfi_pos,
+    ];
+    verify_x86_subset(&emitter.code, locals_total, &trap_targets)?;
     Ok(())
 }
 
@@ -910,7 +916,7 @@ impl Emitter {
         pos
     }
 
-    fn emit_trap_stub(&mut self, code: i32) -> usize {
+    fn emit_trap_stub(&mut self, code: i32, check_cfi: bool) -> usize {
         let pos = self.code.len();
         // add esp, 40
         self.emit(&[0x83, 0xC4, 0x28]);
@@ -921,6 +927,9 @@ impl Emitter {
         self.emit_i32(code);
         // xor eax, eax
         self.emit(&[0x31, 0xC0]);
+        if check_cfi {
+            self.emit_cfi_check_return();
+        }
         // restore callee-saved registers
         // mov edi, [ebp-40]
         self.emit(&[0x8B, 0x7D, 0xD8]);
@@ -1075,7 +1084,11 @@ fn hash_jit_code(code: &[u8]) -> u64 {
     hash
 }
 
-fn verify_x86_subset(code: &[u8], locals_total: usize) -> Result<(), &'static str> {
+fn verify_x86_subset(
+    code: &[u8],
+    locals_total: usize,
+    trap_targets: &[usize],
+) -> Result<(), &'static str> {
     fn need(code: &[u8], i: usize, n: usize) -> Result<(), &'static str> {
         if i + n > code.len() {
             return Err("Truncated x86 instruction");
@@ -1119,6 +1132,27 @@ fn verify_x86_subset(code: &[u8], locals_total: usize) -> Result<(), &'static st
         let disp = *code.get(i).ok_or("Truncated disp8")?;
         if !allowed.contains(&disp) {
             return Err("Unexpected disp8");
+        }
+        Ok(())
+    }
+
+    fn check_rel32_target(
+        code: &[u8],
+        i: usize,
+        allowed: &[usize],
+    ) -> Result<(), &'static str> {
+        let rel = read_u32(code, i + 2)? as i32;
+        let base = (i + 6) as isize;
+        let target = base.wrapping_add(rel as isize);
+        if target < 0 {
+            return Err("Invalid branch target");
+        }
+        let target = target as usize;
+        if target >= code.len() {
+            return Err("Branch target out of range");
+        }
+        if !allowed.iter().any(|&t| t == target) {
+            return Err("Unexpected branch target");
         }
         Ok(())
     }
@@ -1650,6 +1684,7 @@ fn verify_x86_subset(code: &[u8], locals_total: usize) -> Result<(), &'static st
                     }
                     0x84 | 0x83 | 0x82 | 0x87 | 0x85 => {
                         need(code, i, 6)?;
+                        check_rel32_target(code, i, trap_targets)?;
                         if b1 == 0x82 {
                             guard_tok = Some(GuardTok::Jb);
                         } else if b1 == 0x87 {

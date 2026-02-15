@@ -16,7 +16,7 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **Dedicated JIT arena**: executable buffers allocated from a bounded JIT arena (reduces mapping footprint).
 - **Isolated execution address space**: JIT runs under a sandbox page directory; only required ranges are mapped.
 - **Ring 3 usermode execution path**: entry via `IRET` into `USER_CS/USER_DS` with a user trampoline (configurable; fuzz uses kernel-mode execution).
-- **Guard page for user JIT stack**: unmapped page under the user-mode JIT stack to catch stack underflow.
+- **Guard pages for JIT regions**: guard pages now wrap user-mode JIT stack, code, data, and WASM memory windows.
 - **JIT page-fault trapping**: faults are converted into traps and return safely to the kernel.
 - **Fuel-based execution limits**: instruction and memory operation fuel enforced in generated code.
 - **Integrity checks**: code + exec buffer hashes and sealed exec buffers are verified before execution.
@@ -27,17 +27,15 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **JIT fuzz harness + regression seeds**: in-kernel JIT vs interpreter fuzzing with mismatch-free runs on known seeds.
 - **Complete instruction whitelist + decoder validation**: full x86 emitter whitelist and strict decoder validation (no unexpected encodings).
 - **Expanded SFI (all memory access paths)**: verifier enforces stack + linear memory guards for every access path.
+- **Per-instance JIT user pages + wipe between runs**: per-instance JIT trampoline/call/stack pages are wiped and re-sealed on each run.
 
 ### **Partially Implemented**
 - **CFI (return protection)**: return-address shadow stack checks exist; indirect target sets not yet enforced.
-- **Guard pages for all JIT regions**: guard page exists for user stack, not yet for all JIT mappings.
 - **Translation validation**: shadow execution exists, but not a full proof or per-block validator.
 - **Capability tokens beyond IPC**: in-kernel tables remain non-cryptographic; only IPC transfers are MACed.
 
 ### **Remaining TODOs**
 - **Full CFI (shadow stack + valid target sets for indirect branches)**
-- **Per-instance sandbox page directory or full wipe between runs**
-- **Guard pages for all JIT regions**
 - **Formal verification of critical JIT paths and capability checks**
 - **Memory tagging / hardware isolation (SGX/TrustZone)**
 - **External fuzzing + coverage-guided regression**
@@ -49,7 +47,7 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - Ring 3 JIT execution via user trampoline + `IRET` (configurable).
 - JIT sandbox page directory with narrow user mappings.
 - JIT page-fault trapping path (no kernel panic).
-- Guard page under user JIT stack.
+- Guard pages around user JIT stack, code, data, and WASM memory windows.
 - Fuel-based execution limits.
 - Shadow validation vs interpreter (differential checking).
 - 64-bit JIT cache hashing and integrity verification.
@@ -58,6 +56,7 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - In-kernel JIT fuzz harness with regression seeds.
 - Complete instruction whitelist + decoder validation for JIT output.
 - Expanded SFI enforcement for all memory access paths in JIT verifier.
+- Per-instance JIT user pages wiped/resealed on each run.
 
 ## ✅ Verified Milestone (2026-02-15)
 - **JIT verifier alignment**: `wasm-jit-fuzz 1000` on seeds `3418704842` and `2788077538` produced **0 mismatches** and **0 compile errors** (kernel-mode fuzz).
@@ -161,7 +160,8 @@ impl JitVerifier {
 - ✅ **IPC capability MACs**: SipHash token on IPC-transferred capabilities.
 - ✅ **Instruction whitelist**: full decoder/whitelist validation for emitted x86.
 - ✅ **SFI-style bounds checks**: guards enforced for all memory access paths.
-- 🟡 **Guard pages**: guard page under user JIT stack; not all regions.
+- ✅ **Guard pages**: guard pages protect user JIT stack, code, data, and WASM memory windows.
+- ✅ **Per-instance JIT user pages**: trampoline/call/stack pages are per instance and wiped between runs.
 - 🟡 **Translation validation**: shadow execution exists; not full translation proof.
 - 🟡 **CFI (return checks)**: return shadow stack present; indirect target sets not yet enforced.
 - 🔶 **SMEP/SMAP/KPTI**: not yet implemented.
@@ -739,9 +739,8 @@ impl AnomalyDetector {
 ### **Phase 2 (Next - In Progress):**
 1. ✅ Complete instruction whitelist / decoder validation
 2. ✅ Expand SFI (bounds checks or masking for all memory paths)
-3. 🟡 Guard pages for all JIT regions + per-instance cleanup
-4. 🟡 Per-instance sandbox address spaces or full wipe between runs
-5. 🟡 Coverage-guided fuzzing + external regression corpus
+3. ✅ Guard pages for all JIT regions + per-instance cleanup
+4. 🟡 Coverage-guided fuzzing + external regression corpus
 
 ### **Phase 3 (Advanced - Long-term):**
 1. 🔶 Full CFI (shadow stack + valid target sets)
