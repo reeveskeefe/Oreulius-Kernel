@@ -5737,6 +5737,22 @@ fn cmd_cpu_info() {
     print_usize(enc.epc_total_pages);
     vga::print_str("\n  Attestation reports: ");
     print_u32(enc.attestation_reports);
+    vga::print_str("\n  Cert chain: ");
+    if enc.cert_chain_ready {
+        vga::print_str("ready");
+    } else {
+        vga::print_str("not-ready");
+    }
+    vga::print_str("\n  Provisioned keys (active/provisioned/revoked): ");
+    print_usize(enc.provisioned_keys_active);
+    vga::print_str(" / ");
+    print_u32(enc.key_provisioned_total);
+    vga::print_str(" / ");
+    print_u32(enc.key_revoked_total);
+    vga::print_str("\n  Quote verify (ok/fail): ");
+    print_u32(enc.attestation_verified_total);
+    vga::print_str(" / ");
+    print_u32(enc.attestation_failed_total);
     vga::print_str("\n  TZ contract: ");
     if enc.trustzone_contract_ready {
         vga::print_str("ready");

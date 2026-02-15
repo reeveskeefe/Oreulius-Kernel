@@ -15,6 +15,8 @@ use crate::memory_isolation::{self, AccessPolicy, IsolationDomain};
 use crate::{memory, security};
 
 const MAX_ENCLAVE_SESSIONS: usize = 16;
+const MAX_ATTESTATION_CERTS: usize = 8;
+const MAX_PROVISIONED_KEYS: usize = 32;
 const INVALID_ID: u32 = 0;
 const PAGE_SIZE: usize = 4096;
 const EPC_POOL_PAGES: usize = 256;
@@ -48,6 +50,12 @@ pub struct EnclaveStatus {
     pub epc_used_pages: usize,
     pub attestation_reports: u32,
     pub trustzone_contract_ready: bool,
+    pub cert_chain_ready: bool,
+    pub provisioned_keys_active: usize,
+    pub key_provisioned_total: u32,
+    pub key_revoked_total: u32,
+    pub attestation_verified_total: u32,
+    pub attestation_failed_total: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -66,6 +74,8 @@ struct EnclaveSession {
     epc_pages: usize,
     launch_token_mac: u64,
     launch_nonce: u32,
+    runtime_key_handle: u32,
+    attested: bool,
 }
 
 impl EnclaveSession {
@@ -85,6 +95,90 @@ impl EnclaveSession {
             epc_pages: 0,
             launch_token_mac: 0,
             launch_nonce: 0,
+            runtime_key_handle: 0,
+            attested: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum CertRole {
+    Root = 0,
+    QuoteSigner = 1,
+    Platform = 2,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AttestationCertificate {
+    cert_id: u32,
+    issuer_id: u32,
+    role: CertRole,
+    pubkey_fingerprint: u64,
+    not_before_epoch: u32,
+    not_after_epoch: u32,
+    signature: u64,
+    revoked: bool,
+}
+
+impl AttestationCertificate {
+    const fn empty() -> Self {
+        Self {
+            cert_id: 0,
+            issuer_id: 0,
+            role: CertRole::Root,
+            pubkey_fingerprint: 0,
+            not_before_epoch: 0,
+            not_after_epoch: 0,
+            signature: 0,
+            revoked: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AttestationQuote {
+    session_id: u32,
+    backend: EnclaveBackend,
+    measurement: u64,
+    nonce: u64,
+    platform_cert_id: u32,
+    signer_cert_id: u32,
+    root_cert_id: u32,
+    report_mac: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum KeyState {
+    Empty = 0,
+    Active = 1,
+    Revoked = 2,
+}
+
+#[derive(Clone, Copy)]
+struct ProvisionedKey {
+    handle: u32,
+    owner_session: u32,
+    purpose: u32,
+    material: [u8; 32],
+    created_epoch: u32,
+    expires_epoch: u32,
+    sealed_mac: u64,
+    state: KeyState,
+}
+
+impl ProvisionedKey {
+    const fn empty() -> Self {
+        Self {
+            handle: 0,
+            owner_session: 0,
+            purpose: 0,
+            material: [0; 32],
+            created_epoch: 0,
+            expires_epoch: 0,
+            sealed_mac: 0,
+            state: KeyState::Empty,
         }
     }
 }
@@ -255,6 +349,16 @@ impl TrustZoneContract {
 }
 
 static TRUSTZONE_CONTRACT: Mutex<TrustZoneContract> = Mutex::new(TrustZoneContract::new());
+static CERT_CHAIN_READY: AtomicBool = AtomicBool::new(false);
+static CERT_CHAIN: Mutex<[AttestationCertificate; MAX_ATTESTATION_CERTS]> =
+    Mutex::new([AttestationCertificate::empty(); MAX_ATTESTATION_CERTS]);
+static PROVISIONED_KEYS: Mutex<[ProvisionedKey; MAX_PROVISIONED_KEYS]> =
+    Mutex::new([ProvisionedKey::empty(); MAX_PROVISIONED_KEYS]);
+static EPOCH_COUNTER: AtomicU32 = AtomicU32::new(1);
+static KEY_PROVISIONED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static KEY_REVOKED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static ATTESTATION_VERIFIED_TOTAL: AtomicU32 = AtomicU32::new(0);
+static ATTESTATION_FAILED_TOTAL: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C, align(4096))]
 struct AlignedPage {
@@ -433,6 +537,392 @@ fn verify_launch_token(session: &EnclaveSession) -> bool {
     security::security().cap_token_verify(&payload, session.launch_token_mac)
 }
 
+#[inline]
+fn next_epoch() -> u32 {
+    EPOCH_COUNTER.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+}
+
+#[inline]
+fn current_epoch() -> u32 {
+    EPOCH_COUNTER.load(Ordering::SeqCst)
+}
+
+fn cert_payload(
+    cert_id: u32,
+    issuer_id: u32,
+    role: CertRole,
+    pubkey_fingerprint: u64,
+    not_before_epoch: u32,
+    not_after_epoch: u32,
+) -> [u8; 32] {
+    let mut payload = [0u8; 32];
+    payload[0..4].copy_from_slice(&cert_id.to_le_bytes());
+    payload[4..8].copy_from_slice(&issuer_id.to_le_bytes());
+    payload[8] = role as u8;
+    payload[9..17].copy_from_slice(&pubkey_fingerprint.to_le_bytes());
+    payload[17..21].copy_from_slice(&not_before_epoch.to_le_bytes());
+    payload[21..25].copy_from_slice(&not_after_epoch.to_le_bytes());
+    payload
+}
+
+fn sign_certificate_fields(
+    cert_id: u32,
+    issuer_id: u32,
+    role: CertRole,
+    pubkey_fingerprint: u64,
+    not_before_epoch: u32,
+    not_after_epoch: u32,
+) -> u64 {
+    let payload = cert_payload(
+        cert_id,
+        issuer_id,
+        role,
+        pubkey_fingerprint,
+        not_before_epoch,
+        not_after_epoch,
+    );
+    security::security().cap_token_sign(&payload)
+}
+
+fn ensure_attestation_chain() -> Result<(), &'static str> {
+    if CERT_CHAIN_READY.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let now = next_epoch();
+    let root_id = 1u32;
+    let signer_id = 2u32;
+    let platform_id = 3u32;
+
+    let seed0 = security::security().random_u32() as u64;
+    let seed1 = security::security().random_u32() as u64;
+    let seed2 = security::security().random_u32() as u64;
+    let root_fp = security::security().cap_token_sign(&seed0.to_le_bytes());
+    let signer_fp =
+        security::security().cap_token_sign(&(seed1 ^ root_fp).to_le_bytes());
+    let platform_fp =
+        security::security().cap_token_sign(&(seed2 ^ signer_fp).to_le_bytes());
+
+    let root = AttestationCertificate {
+        cert_id: root_id,
+        issuer_id: root_id,
+        role: CertRole::Root,
+        pubkey_fingerprint: root_fp,
+        not_before_epoch: now,
+        not_after_epoch: now.saturating_add(10_000_000),
+        signature: sign_certificate_fields(
+            root_id,
+            root_id,
+            CertRole::Root,
+            root_fp,
+            now,
+            now.saturating_add(10_000_000),
+        ),
+        revoked: false,
+    };
+    let signer = AttestationCertificate {
+        cert_id: signer_id,
+        issuer_id: root_id,
+        role: CertRole::QuoteSigner,
+        pubkey_fingerprint: signer_fp,
+        not_before_epoch: now,
+        not_after_epoch: now.saturating_add(2_000_000),
+        signature: sign_certificate_fields(
+            signer_id,
+            root_id,
+            CertRole::QuoteSigner,
+            signer_fp,
+            now,
+            now.saturating_add(2_000_000),
+        ),
+        revoked: false,
+    };
+    let platform = AttestationCertificate {
+        cert_id: platform_id,
+        issuer_id: signer_id,
+        role: CertRole::Platform,
+        pubkey_fingerprint: platform_fp,
+        not_before_epoch: now,
+        not_after_epoch: now.saturating_add(1_000_000),
+        signature: sign_certificate_fields(
+            platform_id,
+            signer_id,
+            CertRole::Platform,
+            platform_fp,
+            now,
+            now.saturating_add(1_000_000),
+        ),
+        revoked: false,
+    };
+
+    let mut chain = CERT_CHAIN.lock();
+    chain[0] = root;
+    chain[1] = signer;
+    chain[2] = platform;
+    let mut i = 3usize;
+    while i < chain.len() {
+        chain[i] = AttestationCertificate::empty();
+        i += 1;
+    }
+    CERT_CHAIN_READY.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+fn find_cert(chain: &[AttestationCertificate; MAX_ATTESTATION_CERTS], cert_id: u32) -> Option<AttestationCertificate> {
+    let mut i = 0usize;
+    while i < chain.len() {
+        if chain[i].cert_id == cert_id && chain[i].cert_id != 0 {
+            return Some(chain[i]);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn verify_cert(cert: AttestationCertificate, expected_role: CertRole, now: u32) -> Result<(), &'static str> {
+    if cert.revoked {
+        return Err("Certificate revoked");
+    }
+    if cert.role != expected_role {
+        return Err("Certificate role mismatch");
+    }
+    if now < cert.not_before_epoch || now > cert.not_after_epoch {
+        return Err("Certificate expired");
+    }
+    let sig = sign_certificate_fields(
+        cert.cert_id,
+        cert.issuer_id,
+        cert.role,
+        cert.pubkey_fingerprint,
+        cert.not_before_epoch,
+        cert.not_after_epoch,
+    );
+    if sig != cert.signature {
+        return Err("Certificate signature invalid");
+    }
+    Ok(())
+}
+
+fn quote_payload(quote: &AttestationQuote, platform_fp: u64, launch_token_mac: u64) -> [u8; 48] {
+    let mut payload = [0u8; 48];
+    payload[0..4].copy_from_slice(&quote.session_id.to_le_bytes());
+    payload[4..8].copy_from_slice(&(quote.backend as u32).to_le_bytes());
+    payload[8..16].copy_from_slice(&quote.measurement.to_le_bytes());
+    payload[16..24].copy_from_slice(&quote.nonce.to_le_bytes());
+    payload[24..28].copy_from_slice(&quote.platform_cert_id.to_le_bytes());
+    payload[28..32].copy_from_slice(&quote.signer_cert_id.to_le_bytes());
+    payload[32..36].copy_from_slice(&quote.root_cert_id.to_le_bytes());
+    payload[36..44].copy_from_slice(&platform_fp.to_le_bytes());
+    payload[44..48].copy_from_slice(&(launch_token_mac as u32).to_le_bytes());
+    payload
+}
+
+fn build_quote(session: &EnclaveSession, backend: EnclaveBackend, nonce: u64) -> Result<AttestationQuote, &'static str> {
+    ensure_attestation_chain()?;
+    let chain = CERT_CHAIN.lock();
+    let platform = find_cert(&chain, 3).ok_or("Missing platform cert")?;
+    let mut quote = AttestationQuote {
+        session_id: session.id,
+        backend,
+        measurement: session.measurement,
+        nonce,
+        platform_cert_id: 3,
+        signer_cert_id: 2,
+        root_cert_id: 1,
+        report_mac: 0,
+    };
+    let payload = quote_payload(&quote, platform.pubkey_fingerprint, session.launch_token_mac);
+    quote.report_mac = security::security().cap_token_sign(&payload);
+    Ok(quote)
+}
+
+fn verify_quote(quote: &AttestationQuote, launch_token_mac: u64) -> Result<(), &'static str> {
+    ensure_attestation_chain()?;
+    let now = next_epoch();
+    let chain = CERT_CHAIN.lock();
+    let root = find_cert(&chain, quote.root_cert_id).ok_or("Root cert missing")?;
+    let signer = find_cert(&chain, quote.signer_cert_id).ok_or("Signer cert missing")?;
+    let platform = find_cert(&chain, quote.platform_cert_id).ok_or("Platform cert missing")?;
+
+    verify_cert(root, CertRole::Root, now)?;
+    verify_cert(signer, CertRole::QuoteSigner, now)?;
+    verify_cert(platform, CertRole::Platform, now)?;
+
+    if signer.issuer_id != root.cert_id || platform.issuer_id != signer.cert_id {
+        return Err("Certificate chain linkage invalid");
+    }
+
+    let payload = quote_payload(quote, platform.pubkey_fingerprint, launch_token_mac);
+    let expected_mac = security::security().cap_token_sign(&payload);
+    if expected_mac != quote.report_mac {
+        return Err("Quote MAC invalid");
+    }
+    Ok(())
+}
+
+fn key_payload(record: &ProvisionedKey) -> [u8; 64] {
+    let mut payload = [0u8; 64];
+    payload[0..4].copy_from_slice(&record.handle.to_le_bytes());
+    payload[4..8].copy_from_slice(&record.owner_session.to_le_bytes());
+    payload[8..12].copy_from_slice(&record.purpose.to_le_bytes());
+    payload[12..44].copy_from_slice(&record.material);
+    payload[44..48].copy_from_slice(&record.created_epoch.to_le_bytes());
+    payload[48..52].copy_from_slice(&record.expires_epoch.to_le_bytes());
+    payload[52] = record.state as u8;
+    payload
+}
+
+fn seal_key_record(record: &ProvisionedKey) -> u64 {
+    security::security().cap_token_sign(&key_payload(record))
+}
+
+fn count_active_keys() -> usize {
+    let keys = PROVISIONED_KEYS.lock();
+    let mut count = 0usize;
+    let mut i = 0usize;
+    while i < keys.len() {
+        if keys[i].state == KeyState::Active {
+            count += 1;
+        }
+        i += 1;
+    }
+    count
+}
+
+fn derive_key_material(session: &EnclaveSession, quote: &AttestationQuote, purpose: u32) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    let mut block = [0u8; 24];
+    block[0..4].copy_from_slice(&session.id.to_le_bytes());
+    block[4..8].copy_from_slice(&purpose.to_le_bytes());
+    block[8..16].copy_from_slice(&session.measurement.to_le_bytes());
+    block[16..24].copy_from_slice(&quote.nonce.to_le_bytes());
+
+    let mut i = 0usize;
+    while i < 4 {
+        block[0] ^= i as u8;
+        let mac = security::security().cap_token_sign(&block);
+        key[i * 8..(i + 1) * 8].copy_from_slice(&mac.to_le_bytes());
+        i += 1;
+    }
+    key
+}
+
+fn allocate_key_handle(keys: &[ProvisionedKey; MAX_PROVISIONED_KEYS]) -> u32 {
+    let mut tries = 0usize;
+    while tries < 16 {
+        let h = security::security().random_u32() | 1;
+        let mut exists = false;
+        let mut i = 0usize;
+        while i < keys.len() {
+            if keys[i].handle == h && keys[i].state == KeyState::Active {
+                exists = true;
+                break;
+            }
+            i += 1;
+        }
+        if !exists {
+            return h;
+        }
+        tries += 1;
+    }
+    0
+}
+
+fn provision_runtime_key(
+    session: &mut EnclaveSession,
+    backend: EnclaveBackend,
+) -> Result<u32, &'static str> {
+    let purpose = 1u32; // Enclave JIT runtime key
+    let nonce = security::security().random_u32() as u64;
+    let quote = build_quote(session, backend, nonce)?;
+    if verify_quote(&quote, session.launch_token_mac).is_err() {
+        ATTESTATION_FAILED_TOTAL.fetch_add(1, Ordering::SeqCst);
+        return Err("Quote verification failed");
+    }
+    ATTESTATION_VERIFIED_TOTAL.fetch_add(1, Ordering::SeqCst);
+
+    let mut keys = PROVISIONED_KEYS.lock();
+    let mut slot = None;
+    let mut i = 0usize;
+    while i < keys.len() {
+        if keys[i].state == KeyState::Empty || keys[i].state == KeyState::Revoked {
+            slot = Some(i);
+            break;
+        }
+        i += 1;
+    }
+    let idx = slot.ok_or("Key store exhausted")?;
+    let handle = allocate_key_handle(&keys);
+    if handle == 0 {
+        return Err("Failed to allocate key handle");
+    }
+
+    let created = next_epoch();
+    let expires = created.saturating_add(100_000);
+    let mut rec = ProvisionedKey {
+        handle,
+        owner_session: session.id,
+        purpose,
+        material: derive_key_material(session, &quote, purpose),
+        created_epoch: created,
+        expires_epoch: expires,
+        sealed_mac: 0,
+        state: KeyState::Active,
+    };
+    rec.sealed_mac = seal_key_record(&rec);
+    keys[idx] = rec;
+    KEY_PROVISIONED_TOTAL.fetch_add(1, Ordering::SeqCst);
+    session.runtime_key_handle = handle;
+    session.attested = true;
+    Ok(handle)
+}
+
+fn validate_runtime_key(session_id: u32, handle: u32, purpose: u32) -> Result<(), &'static str> {
+    if session_id == INVALID_ID || handle == 0 {
+        return Err("Invalid key identity");
+    }
+    let now = current_epoch();
+    let keys = PROVISIONED_KEYS.lock();
+    let mut i = 0usize;
+    while i < keys.len() {
+        let rec = keys[i];
+        if rec.handle == handle && rec.owner_session == session_id {
+            if rec.state != KeyState::Active {
+                return Err("Key not active");
+            }
+            if rec.purpose != purpose {
+                return Err("Key purpose mismatch");
+            }
+            if now > rec.expires_epoch {
+                return Err("Key expired");
+            }
+            if seal_key_record(&rec) != rec.sealed_mac {
+                return Err("Key record integrity failed");
+            }
+            return Ok(());
+        }
+        i += 1;
+    }
+    Err("Key not found")
+}
+
+fn revoke_runtime_key(handle: u32) {
+    if handle == 0 {
+        return;
+    }
+    let mut keys = PROVISIONED_KEYS.lock();
+    let mut i = 0usize;
+    while i < keys.len() {
+        if keys[i].handle == handle && keys[i].state == KeyState::Active {
+            keys[i].state = KeyState::Revoked;
+            keys[i].sealed_mac = seal_key_record(&keys[i]);
+            KEY_REVOKED_TOTAL.fetch_add(1, Ordering::SeqCst);
+            break;
+        }
+        i += 1;
+    }
+}
+
 fn detect_backend() -> EnclaveBackend {
     let iso = memory_isolation::status();
     if iso.sgx_supported && iso.sgx1_supported && sgx_cpu_ready() {
@@ -490,6 +980,28 @@ pub fn init() {
             epc.clear();
         }
     }
+    CERT_CHAIN_READY.store(false, Ordering::SeqCst);
+    {
+        let mut chain = CERT_CHAIN.lock();
+        let mut i = 0usize;
+        while i < chain.len() {
+            chain[i] = AttestationCertificate::empty();
+            i += 1;
+        }
+    }
+    {
+        let mut keys = PROVISIONED_KEYS.lock();
+        let mut i = 0usize;
+        while i < keys.len() {
+            keys[i] = ProvisionedKey::empty();
+            i += 1;
+        }
+    }
+    EPOCH_COUNTER.store(1, Ordering::SeqCst);
+    KEY_PROVISIONED_TOTAL.store(0, Ordering::SeqCst);
+    KEY_REVOKED_TOTAL.store(0, Ordering::SeqCst);
+    ATTESTATION_VERIFIED_TOTAL.store(0, Ordering::SeqCst);
+    ATTESTATION_FAILED_TOTAL.store(0, Ordering::SeqCst);
 
     crate::vga::print_str("[ENCLAVE] Backend: ");
     crate::vga::print_str(backend_name(mgr.backend));
@@ -520,6 +1032,12 @@ pub fn status() -> EnclaveStatus {
         epc_used_pages: epc.used_pages(),
         attestation_reports: ATTESTATION_REPORTS.load(Ordering::SeqCst),
         trustzone_contract_ready: tz.ready,
+        cert_chain_ready: CERT_CHAIN_READY.load(Ordering::SeqCst),
+        provisioned_keys_active: count_active_keys(),
+        key_provisioned_total: KEY_PROVISIONED_TOTAL.load(Ordering::SeqCst),
+        key_revoked_total: KEY_REVOKED_TOTAL.load(Ordering::SeqCst),
+        attestation_verified_total: ATTESTATION_VERIFIED_TOTAL.load(Ordering::SeqCst),
+        attestation_failed_total: ATTESTATION_FAILED_TOTAL.load(Ordering::SeqCst),
     }
 }
 
@@ -578,9 +1096,16 @@ pub fn open_jit_session(
         epc_pages: 0,
         launch_token_mac: 0,
         launch_nonce: 0,
+        runtime_key_handle: 0,
+        attested: false,
     };
 
     backend_open(mgr.backend, &mut session, &mut mgr)?;
+    if let Err(e) = provision_runtime_key(&mut session, mgr.backend) {
+        let _ = backend_close(mgr.backend, &mut session);
+        mgr.mark_failure();
+        return Err(e);
+    }
 
     mgr.sessions[slot] = session;
     mgr.created_total = mgr.created_total.saturating_add(1);
@@ -603,6 +1128,18 @@ pub fn enter(session_id: u32) -> Result<(), &'static str> {
     if mgr.sessions[idx].state != EnclaveState::Initialized {
         mgr.mark_failure();
         return Err("Enclave session not initialized");
+    }
+    if !mgr.sessions[idx].attested {
+        mgr.mark_failure();
+        return Err("Enclave session is not attested");
+    }
+    if let Err(e) = validate_runtime_key(
+        mgr.sessions[idx].id,
+        mgr.sessions[idx].runtime_key_handle,
+        1,
+    ) {
+        mgr.mark_failure();
+        return Err(e);
     }
 
     let backend = mgr.backend;
@@ -661,6 +1198,8 @@ pub fn close(session_id: u32) -> Result<(), &'static str> {
 
     let mut mgr = MANAGER.lock();
     let idx = mgr.find_slot(session_id).ok_or("Enclave session not found")?;
+    let runtime_key_handle = mgr.sessions[idx].runtime_key_handle;
+    revoke_runtime_key(runtime_key_handle);
     let backend = mgr.backend;
     let close_res = {
         let session = &mut mgr.sessions[idx];
