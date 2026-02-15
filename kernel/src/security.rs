@@ -14,6 +14,11 @@
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
+use crate::capability::CapabilityType;
+use crate::intent_graph::{
+    IntentDecision, IntentGraph, IntentGraphStats, IntentPolicy, IntentPolicyError,
+    IntentProcessSnapshot, IntentSignal,
+};
 use crate::ipc::ProcessId;
 
 // ============================================================================
@@ -40,6 +45,11 @@ pub const ANOMALY_ALERT_SCORE: u32 = 64;
 pub const ANOMALY_CRITICAL_SCORE: u32 = 160;
 /// Number of per-second buckets used for anomaly accounting.
 const ANOMALY_BUCKETS: usize = 32;
+
+pub use crate::intent_graph::{
+    INTENT_ALERT_SCORE, INTENT_ISOLATE_RESTRICTIONS, INTENT_RESTRICT_SCORE,
+    INTENT_TERMINATE_RESTRICTIONS, INTENT_WINDOW_SECONDS,
+};
 
 // ============================================================================
 // Audit Log
@@ -68,6 +78,8 @@ pub enum SecurityEvent {
     IntegrityCheckFailed,
     /// Runtime anomaly score crossed threshold
     AnomalyDetected,
+    /// Syscall observed at boundary
+    SyscallObserved,
     /// Process spawned
     ProcessSpawned,
     /// Process terminated
@@ -87,6 +99,7 @@ impl SecurityEvent {
             SecurityEvent::InvalidCapability => "InvalidCap",
             SecurityEvent::IntegrityCheckFailed => "IntegrityFailed",
             SecurityEvent::AnomalyDetected => "Anomaly",
+            SecurityEvent::SyscallObserved => "Syscall",
             SecurityEvent::ProcessSpawned => "ProcSpawned",
             SecurityEvent::ProcessTerminated => "ProcTerminated",
         }
@@ -421,6 +434,21 @@ impl CapabilityValidator {
             .unwrap_or(0)
     }
 
+    /// Remove stored violation state for a process.
+    pub fn clear_process(&mut self, process: ProcessId) {
+        let mut i = 0usize;
+        while i < self.violation_count {
+            if self.violations[i].0 == process {
+                let last = self.violation_count.saturating_sub(1);
+                self.violations[i] = self.violations[last];
+                self.violations[last] = (ProcessId(0), 0);
+                self.violation_count = last;
+                return;
+            }
+            i += 1;
+        }
+    }
+
     /// Check if process should be terminated
     pub fn should_terminate(&self, process: ProcessId) -> bool {
         self.get_violations(process) >= MAX_VIOLATIONS_PER_PROCESS
@@ -491,6 +519,21 @@ impl RateLimiter {
             .find(|(pid, _, _)| *pid == process)
             .map(|(_, tokens, _)| *tokens)
             .unwrap_or(0)
+    }
+
+    /// Remove rate limiting state for a process.
+    pub fn remove_process(&mut self, process: ProcessId) {
+        let mut i = 0usize;
+        while i < self.count {
+            if self.tokens[i].0 == process {
+                let last = self.count.saturating_sub(1);
+                self.tokens[i] = self.tokens[last];
+                self.tokens[last] = (ProcessId(0), 0, 0);
+                self.count = last;
+                return;
+            }
+            i += 1;
+        }
     }
 }
 
@@ -586,6 +629,21 @@ impl ResourceTracker {
         }
         (0, 0)
     }
+
+    /// Remove all resource quota state for a process.
+    pub fn remove_process(&mut self, process: ProcessId) {
+        let mut i = 0usize;
+        while i < self.count {
+            if self.quotas[i].0 == process {
+                let last = self.count.saturating_sub(1);
+                self.quotas[i] = self.quotas[last];
+                self.quotas[last] = (ProcessId(0), [ResourceQuota::empty(); 5]);
+                self.count = last;
+                return;
+            }
+            i += 1;
+        }
+    }
 }
 
 impl ResourceQuota {
@@ -666,6 +724,7 @@ pub fn verify_integrity(data: &[u8], expected_hash: u64) -> bool {
 pub struct SecurityManager {
     audit_log: Mutex<AuditLog>,
     anomaly_detector: Mutex<AnomalyDetector>,
+    intent_graph: Mutex<IntentGraph>,
     validator: Mutex<CapabilityValidator>,
     rate_limiter: Mutex<RateLimiter>,
     rate_limit_enabled: AtomicBool,
@@ -679,6 +738,7 @@ impl SecurityManager {
         SecurityManager {
             audit_log: Mutex::new(AuditLog::new()),
             anomaly_detector: Mutex::new(AnomalyDetector::new()),
+            intent_graph: Mutex::new(IntentGraph::new()),
             validator: Mutex::new(CapabilityValidator::new()),
             rate_limiter: Mutex::new(RateLimiter::new()),
             rate_limit_enabled: AtomicBool::new(true),
@@ -716,6 +776,243 @@ impl SecurityManager {
                 log.log(anomaly);
             }
         }
+    }
+
+    fn record_intent_signal(&self, process: ProcessId, signal: IntentSignal) {
+        let now = crate::pit::get_ticks();
+        let decision = {
+            let mut graph = self.intent_graph.lock();
+            graph.record(process, signal, now)
+        };
+
+        match decision {
+            IntentDecision::Allow => {}
+            IntentDecision::Alert(score) => {
+                self.log_event(
+                    AuditEntry::new(SecurityEvent::AnomalyDetected, process, 0)
+                        .with_context(score as u64),
+                );
+            }
+            IntentDecision::Restrict(score) => {
+                let context = ((score as u64) << 40)
+                    | ((signal.cap_type as u64) << 32)
+                    | signal.rights_mask as u64;
+                self.log_event(
+                    AuditEntry::new(SecurityEvent::CapabilityRevoked, process, 0)
+                        .with_context(context),
+                );
+            }
+        }
+    }
+
+    pub fn intent_capability_probe(
+        &self,
+        process: ProcessId,
+        cap_type: CapabilityType,
+        rights_mask: u32,
+        object_hint: u64,
+    ) {
+        self.record_intent_signal(
+            process,
+            IntentSignal::capability_probe(cap_type, rights_mask, object_hint),
+        );
+    }
+
+    pub fn intent_capability_denied(
+        &self,
+        process: ProcessId,
+        cap_type: CapabilityType,
+        rights_mask: u32,
+        object_hint: u64,
+    ) {
+        self.record_intent_signal(
+            process,
+            IntentSignal::capability_denied(cap_type, rights_mask, object_hint),
+        );
+    }
+
+    pub fn intent_invalid_capability(
+        &self,
+        process: ProcessId,
+        cap_type: CapabilityType,
+        rights_mask: u32,
+        object_hint: u64,
+    ) {
+        self.record_intent_signal(
+            process,
+            IntentSignal::invalid_capability(cap_type, rights_mask, object_hint),
+        );
+    }
+
+    pub fn intent_ipc_send(&self, process: ProcessId, channel_id: u64) {
+        self.record_intent_signal(process, IntentSignal::ipc_send(channel_id));
+    }
+
+    pub fn intent_ipc_recv(&self, process: ProcessId, channel_id: u64) {
+        self.record_intent_signal(process, IntentSignal::ipc_recv(channel_id));
+    }
+
+    pub fn intent_wasm_call(&self, process: ProcessId, host_fn: u64) {
+        self.record_intent_signal(process, IntentSignal::wasm_call(host_fn));
+    }
+
+    pub fn intent_syscall(
+        &self,
+        process: ProcessId,
+        syscall_no: u32,
+        cap_type: CapabilityType,
+        rights_mask: u32,
+    ) {
+        self.record_intent_signal(
+            process,
+            IntentSignal::syscall(syscall_no as u64, cap_type, rights_mask),
+        );
+    }
+
+    pub fn intent_fs_read(&self, process: ProcessId, object_hint: u64) {
+        self.record_intent_signal(process, IntentSignal::fs_read(object_hint));
+    }
+
+    pub fn intent_fs_write(&self, process: ProcessId, object_hint: u64) {
+        self.record_intent_signal(process, IntentSignal::fs_write(object_hint));
+    }
+
+    pub fn is_predictively_restricted(
+        &self,
+        process: ProcessId,
+        cap_type: CapabilityType,
+        rights_mask: u32,
+    ) -> bool {
+        let now = crate::pit::get_ticks();
+        self.intent_graph
+            .lock()
+            .is_restricted(process, cap_type, rights_mask, now)
+    }
+
+    pub fn get_intent_graph_stats(&self) -> IntentGraphStats {
+        let now = crate::pit::get_ticks();
+        self.intent_graph.lock().stats(now)
+    }
+
+    pub fn get_intent_policy(&self) -> IntentPolicy {
+        self.intent_graph.lock().policy()
+    }
+
+    pub fn set_intent_policy(&self, policy: IntentPolicy) -> Result<(), IntentPolicyError> {
+        self.intent_graph.lock().set_policy(policy)
+    }
+
+    pub fn reset_intent_policy(&self) {
+        self.intent_graph.lock().reset_policy();
+    }
+
+    pub fn get_intent_process_snapshot(&self, process: ProcessId) -> Option<IntentProcessSnapshot> {
+        let now = crate::pit::get_ticks();
+        self.intent_graph.lock().process_snapshot(process, now)
+    }
+
+    pub fn clear_intent_restriction(&self, process: ProcessId) -> bool {
+        let now = crate::pit::get_ticks();
+        self.intent_graph.lock().clear_restriction(process, now)
+    }
+
+    /// Get current predictive restriction expiry tick for a process (0 if none).
+    pub fn restriction_until_tick(&self, process: ProcessId) -> u64 {
+        let now = crate::pit::get_ticks();
+        self.intent_graph
+            .lock()
+            .process_snapshot(process, now)
+            .map(|s| s.restriction_until_tick)
+            .unwrap_or(0)
+    }
+
+    /// Consume a pending intent-based termination recommendation for process.
+    pub fn take_intent_termination_recommendation(&self, process: ProcessId) -> bool {
+        self.intent_graph
+            .lock()
+            .take_termination_recommendation(process)
+    }
+
+    fn hash_syscall_args(args: [u32; 5]) -> u32 {
+        let mut h = 0x811C_9DC5u32;
+        let mut i = 0usize;
+        while i < args.len() {
+            h ^= args[i];
+            h = h.rotate_left(5).wrapping_mul(0x0100_0193);
+            i += 1;
+        }
+        h
+    }
+
+    fn syscall_required_access(syscall_no: u32, args: [u32; 5]) -> Option<(CapabilityType, u32)> {
+        match syscall_no {
+            10 => Some((CapabilityType::Channel, crate::capability::Rights::CHANNEL_CREATE)),
+            11 => Some((CapabilityType::Channel, crate::capability::Rights::CHANNEL_SEND)),
+            12 => Some((CapabilityType::Channel, crate::capability::Rights::CHANNEL_RECEIVE)),
+            13 => Some((
+                CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_SEND | crate::capability::Rights::CHANNEL_RECEIVE,
+            )),
+            20 => {
+                let flags = args[1];
+                let mut rights = 0u32;
+                if (flags & 0x01) != 0 {
+                    rights |= crate::capability::Rights::FS_READ;
+                }
+                if (flags & 0x02) != 0 || (flags & 0x04) != 0 {
+                    rights |= crate::capability::Rights::FS_WRITE;
+                }
+                if rights == 0 {
+                    rights = crate::capability::Rights::FS_READ;
+                }
+                Some((CapabilityType::Filesystem, rights))
+            }
+            21 => Some((CapabilityType::Filesystem, crate::capability::Rights::FS_READ)),
+            22 => Some((CapabilityType::Filesystem, crate::capability::Rights::FS_WRITE)),
+            23 => Some((
+                CapabilityType::Filesystem,
+                crate::capability::Rights::FS_READ | crate::capability::Rights::FS_WRITE,
+            )),
+            24 => Some((CapabilityType::Filesystem, crate::capability::Rights::FS_DELETE)),
+            25 => Some((CapabilityType::Filesystem, crate::capability::Rights::FS_LIST)),
+            50 => Some((CapabilityType::Console, crate::capability::Rights::CONSOLE_WRITE)),
+            51 => Some((CapabilityType::Console, crate::capability::Rights::CONSOLE_READ)),
+            _ => None,
+        }
+    }
+
+    /// Audit syscall ingress and feed intent graph.
+    pub fn audit_syscall(&self, process: ProcessId, syscall_no: u32, args: [u32; 5]) {
+        let args_hash = Self::hash_syscall_args(args);
+        let context = ((syscall_no as u64) << 32) | args_hash as u64;
+        self.log_event(
+            AuditEntry::new(SecurityEvent::SyscallObserved, process, 0).with_context(context),
+        );
+
+        let (cap_type, rights) = Self::syscall_required_access(syscall_no, args)
+            .unwrap_or((CapabilityType::Reserved, 0));
+        self.intent_syscall(process, syscall_no, cap_type, rights);
+    }
+
+    /// Policy gate for syscall-level predictive revocation.
+    pub fn syscall_policy_blocked(&self, process: ProcessId, syscall_no: u32, args: [u32; 5]) -> bool {
+        let (cap_type, rights) = match Self::syscall_required_access(syscall_no, args) {
+            Some(v) => v,
+            None => return false,
+        };
+        if rights == 0 {
+            return false;
+        }
+
+        if self.is_predictively_restricted(process, cap_type, rights) {
+            self.intent_capability_denied(process, cap_type, rights, syscall_no as u64);
+            self.log_event(
+                AuditEntry::new(SecurityEvent::PermissionDenied, process, 0)
+                    .with_context(syscall_no as u64),
+            );
+            return true;
+        }
+        false
     }
 
     /// Validate capability operation
@@ -764,8 +1061,20 @@ impl SecurityManager {
     /// Initialize process security context
     pub fn init_process(&self, process: ProcessId) {
         self.resource_tracker.lock().init_process(process);
+        self.intent_graph.lock().init_process(process);
         self.log_event(
             AuditEntry::new(SecurityEvent::ProcessSpawned, process, 0)
+        );
+    }
+
+    /// Tear down process security context and transient detector state.
+    pub fn terminate_process(&self, process: ProcessId) {
+        self.resource_tracker.lock().remove_process(process);
+        self.rate_limiter.lock().remove_process(process);
+        self.validator.lock().clear_process(process);
+        self.intent_graph.lock().deinit_process(process);
+        self.log_event(
+            AuditEntry::new(SecurityEvent::ProcessTerminated, process, 0)
         );
     }
 

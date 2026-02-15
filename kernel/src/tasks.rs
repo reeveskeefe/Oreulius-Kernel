@@ -146,17 +146,45 @@ pub fn start() -> ! {
     
     vga::print_str("[TASK] Getting init process...\n");
     vga::print_str("[TASK] Adding shell task to scheduler...\n");
-    let _ = quantum_scheduler::scheduler()
-        .lock()
-        .add_kernel_thread(shell_task, ProcessPriority::Normal);
-    vga::print_str("[TASK] Shell task added successfully\n");
+    let shell_pid = {
+        let mut sched = quantum_scheduler::scheduler().lock();
+        sched.add_kernel_thread(shell_task, ProcessPriority::Normal)
+    };
+    let shell_pid = match shell_pid {
+        Ok(pid) => pid,
+        Err(e) => {
+            vga::print_str("[TASK] FATAL: failed to add shell task: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            crate::serial_println!("[TASK] FATAL: failed to add shell task: {}", e);
+            loop {
+                unsafe { core::arch::asm!("hlt") };
+            }
+        }
+    };
+    vga::print_str("[TASK] Shell task added successfully (PID=");
+    crate::commands::print_u32(shell_pid.0);
+    vga::print_str(")\n");
     vga::print_str("[TASK] Shell task registered\n");
 
     vga::print_str("[TASK] Adding network task to scheduler...\n");
-    let _ = quantum_scheduler::scheduler()
-        .lock()
-        .add_kernel_thread(network_task, ProcessPriority::Normal); // Normal priority to prevent starvation
-    vga::print_str("[TASK] Network task registered\n");
+    let network_pid = {
+        let mut sched = quantum_scheduler::scheduler().lock();
+        sched.add_kernel_thread(network_task, ProcessPriority::Normal)
+    };
+    match network_pid {
+        Ok(pid) => {
+            vga::print_str("[TASK] Network task registered (PID=");
+            crate::commands::print_u32(pid.0);
+            vga::print_str(")\n");
+        }
+        Err(e) => {
+            vga::print_str("[TASK] WARNING: failed to add network task: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            crate::serial_println!("[TASK] WARNING: failed to add network task: {}", e);
+        }
+    }
 
     // Keep worker disabled for now - test single task first
     // vga::print_str("[TASK] Adding worker task to scheduler...\n");

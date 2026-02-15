@@ -25,6 +25,8 @@ pub mod formal;
 pub mod hardened_allocator;
 pub mod idt_asm;
 pub mod ipc;
+pub mod intent_graph;
+pub mod intent_wasm;
 pub mod keyboard;
 pub mod memory;
 pub mod memopt_asm;

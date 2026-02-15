@@ -394,9 +394,14 @@ impl QuantumScheduler {
         let table_ptr = self.processes.as_ptr();
         let table_addr = table_ptr as usize;
         
-        // Validate process table alignment (should be at least 8-byte aligned)
-        if table_addr % 8 != 0 {
-            crate::serial_println!("[SCHED] WARNING: Process table misaligned at {:p}", table_ptr);
+        // Validate process table alignment against the actual type requirement.
+        let required_align = core::mem::align_of::<Option<ProcessInfo>>();
+        if table_addr % required_align != 0 {
+            crate::serial_println!(
+                "[SCHED] WARNING: Process table misaligned at {:p} (required align: {})",
+                table_ptr,
+                required_align
+            );
         }
         
         // Log comprehensive process table state
@@ -437,11 +442,26 @@ impl QuantumScheduler {
         
         let stack_top = unsafe { stack_slice.as_mut_ptr().add(stack_slice.len()) as u32 } & !15;
         
-        // FIX #4: Verify stack address is in reasonable range (below 32MB)
-        // Check both top and bottom of usable stack range (we use up to 8 bytes)
+        // Verify stack address is sane and currently mapped.
+        // Do not enforce a fixed upper bound: kernel image/heap placement can
+        // legitimately exceed 32MB on this build configuration.
         let stack_bottom = stack_top.saturating_sub(8);
-        if stack_top > 32 * 1024 * 1024 || stack_bottom < 0x1000 {
-            return Err("Stack address out of mapped range");
+        if stack_bottom < 0x1000 || stack_top <= stack_bottom {
+            return Err("Stack address invalid");
+        }
+        let mapped = {
+            let guard = crate::paging::kernel_space().lock();
+            if let Some(space) = guard.as_ref() {
+                let bottom = stack_bottom as usize;
+                let top_byte = (stack_top as usize).saturating_sub(1);
+                space.is_mapped(bottom) && space.is_mapped(top_byte)
+            } else {
+                // During very early boot this may not be initialized yet.
+                true
+            }
+        };
+        if !mapped {
+            return Err("Stack address not mapped");
         }
         
         // Push the entry point (function to call after trampoline)
@@ -501,8 +521,38 @@ impl QuantumScheduler {
         let ctx_ptr = {
             let mut scheduler = QUANTUM_SCHEDULER.lock();
             
-            // Find next process
-            let next_pid = scheduler.dequeue_ready().expect("No processes to run");
+            // Find next process (prefer ready queues, recover from process table if needed).
+            let next_pid = match scheduler.dequeue_ready() {
+                Some(pid) => pid,
+                None => {
+                    crate::serial_println!("[SCHED] Ready queues empty at scheduler start, scanning process table");
+                    let recovered = scheduler
+                        .processes
+                        .iter()
+                        .enumerate()
+                        .find_map(|(idx, info_opt)| {
+                            let info = info_opt.as_ref()?;
+                            if matches!(info.process.state, ProcessState::Ready | ProcessState::Running) {
+                                Some(Pid(idx as u32))
+                            } else {
+                                None
+                            }
+                        });
+                    match recovered {
+                        Some(pid) => {
+                            crate::serial_println!("[SCHED] Recovered runnable PID {} from process table", pid.0);
+                            pid
+                        }
+                        None => {
+                            crate::serial_println!("[SCHED] FATAL: no runnable processes in scheduler");
+                            crate::vga::print_str("[SCHED] FATAL: no runnable processes\n");
+                            loop {
+                                unsafe { core::arch::asm!("hlt") };
+                            }
+                        }
+                    }
+                }
+            };
             
             scheduler.current_pid = Some(next_pid);
             SCHEDULER_STARTED.store(true, Ordering::Release);
@@ -559,9 +609,51 @@ impl QuantumScheduler {
         Err("User processes not yet implemented")
     }
     
-    /// Remove a process (stub for now)
-    pub fn remove_process(&mut self, _pid: Pid) -> Result<(), &'static str> {
-        Err("Remove not yet implemented")
+    /// Remove a process from scheduler state and all run/wait queues.
+    pub fn remove_process(&mut self, pid: Pid) -> Result<(), &'static str> {
+        let idx = pid.0 as usize;
+        if idx >= MAX_PROCESSES {
+            return Err("Invalid PID");
+        }
+        if self.processes[idx].is_none() {
+            return Err("Process not found");
+        }
+
+        if self.current_pid == Some(pid) {
+            self.current_pid = None;
+        }
+
+        for queue in &mut self.ready_queues {
+            let len = queue.len();
+            for _ in 0..len {
+                if let Some(queued_pid) = queue.pop_front() {
+                    if queued_pid != pid {
+                        queue.push_back(queued_pid);
+                    }
+                }
+            }
+        }
+
+        for i in 0..self.wait_queue_count {
+            let wait = &mut self.wait_queues[i];
+            if !wait.active {
+                continue;
+            }
+            let len = wait.waiting.len();
+            for _ in 0..len {
+                if let Some(waiting_pid) = wait.waiting.pop_front() {
+                    if waiting_pid != pid {
+                        wait.waiting.push_back(waiting_pid);
+                    }
+                }
+            }
+            if wait.waiting.is_empty() {
+                wait.active = false;
+            }
+        }
+
+        self.processes[idx] = None;
+        Ok(())
     }
     
     /// Fork with COW (stub for now)

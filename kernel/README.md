@@ -10,16 +10,17 @@ A security-hardened, bare-metal operating system kernel implementing advanced sy
 
 ## Formal Security Papers
 
-Oreulia's formal security records are documented in two companion papers:
+Oreulia's formal security records are documented in three companion papers:
 
 - [`../docs/oreulia-jit-security-resolution.md`](../docs/oreulia-jit-security-resolution.md)
 - [`../docs/capnet.md`](../docs/capnet.md)
+- [`../docs/oreulia-intent-graph-predictive-revocation.md`](../docs/oreulia-intent-graph-predictive-revocation.md)
 
 These papers include:
 - formal model, assumptions, definitions, lemmas/theorems/corollaries
 - proof-obligation structure and release-gate equations
 - threat-control matrix and compositional security arguments
-- implementation-to-invariant mappings for JIT hardening and networked capability transfer
+- implementation-to-invariant mappings for JIT hardening, networked capability transfer, and behavior-aware predictive capability control
 
 ---
 
@@ -37,7 +38,8 @@ The kernel has moved beyond baseline JIT and capability hardening into a fully l
 - SGX/TrustZone-capable enclave lifecycle framework with attestation/key-policy fail-closed gating
 - Coverage-guided JIT fuzzing, external seed corpus replay, and multi-round soak verification paths
 - Mechanized bounded formal backend checks for capability attenuation and memory-guard equivalence
-- Runtime anomaly scoring and alert event generation integrated with security audit visibility
+- Intent graph telemetry over IPC/capability activity with per-process behavioral scoring
+- Predictive restriction and capability quarantine with escalation to isolate/terminate recommendations
 - Scheduler/network soak verification command path for long-run stability and security-signal integrity
 - CI admission gating for regression corpus replay and soak checks
 
@@ -110,6 +112,7 @@ Oreulia implements a **capability-oriented kernel architecture** with explicit i
 - **Delegation**: Capabilities can be passed between processes via IPC (with attenuation)
 - **Revocation**: Central authority can invalidate capability groups instantly
 - **Prevents confused deputy**: System services validate caps on every operation
+- **Predictive gating**: Intent graph risk state can preemptively restrict or quarantine capabilities before escalation
 
 #### **CapNet: Decentralized Capability Networking**
 - **Portable authority objects**: `CapabilityTokenV1` encodes capability semantics into a fixed-width network token
@@ -272,7 +275,7 @@ qemu-system-i386 -cdrom oreulia.iso -smp 4
 Use these commands from the Oreulia shell to validate current security posture:
 
 - `formal-verify`
-  - Executes JIT translation proof checks, capability proof checks, CapNet formal self-checks, and mechanized model checks.
+  - Executes JIT translation proof checks, capability proof checks, CapNet formal self-checks, intent graph policy checks, and mechanized model checks.
 - `wasm-jit-fuzz <iters> [seed]`
   - Differential fuzzing of interpreter vs JIT with mismatch/compile-error reporting.
 - `wasm-jit-fuzz-corpus <iters>`
@@ -283,6 +286,12 @@ Use these commands from the Oreulia shell to validate current security posture:
   - Shows security event counters and current enforcement limits.
 - `security-anomaly`
   - Prints anomaly detector window counters, score, and alert totals.
+- `security-intent [pid]`
+  - Shows per-process intent graph snapshot (scores, counters, restrictions, escalation state).
+- `security-intent-clear <pid>`
+  - Clears active intent restriction/recommendation and force-restores quarantined capabilities for that process.
+- `security-intent-policy [show|set|reset]`
+  - Displays or updates runtime intent graph thresholds, cooldowns, and duration policy without rebuild.
 - `sched-net-soak <seconds> [probe_ms]`
   - Runs scheduler/network stress verification with progress and error deltas.
 - `capnet-fuzz <iters> [seed]`
@@ -326,6 +335,7 @@ This converts fuzz/corpus confidence into a merge-time admission policy.
 - **Memory path**: SSE2-optimized primitives for hot memcpy/memset routines
 - **Wasm path**: JIT and interpreter dual execution with differential replay/fuzz controls
 - **CapNet path**: fixed-width control parser + lease enforcement with replay-window and tombstone checks
+- **Intent graph path**: bounded per-process scoring windows with incremental edge/counter updates and deterministic escalation checks
 - **Note**: absolute latency/throughput depends on QEMU host configuration and CPU virtualization mode
 
 ---
@@ -340,6 +350,7 @@ This converts fuzz/corpus confidence into a merge-time admission policy.
 - **Kernel section protection**: `.text`/`.rodata` mapped read-only; mutable segments isolated
 - **Capability MAC integrity**: SipHash-backed token/object validation for IPC and core capability tables
 - **CapNet control security**: Session-key MAC validation, sequence/nonce replay windows, and delegation-chain attenuation checks
+- **Intent-graph predictive revocation**: Capability use is dynamically restricted/quarantined when behavioral risk crosses policy thresholds
 - **CPU hardening**: SMEP/SMAP/KPTI enabled where hardware supports those controls
 - **Interrupt validation**: EFLAGS checked before HLT (prevents deadlock attacks)
 - **Bounds enforcement**: Every array access validated, panics on out-of-bounds
@@ -356,6 +367,7 @@ This converts fuzz/corpus confidence into a merge-time admission policy.
 - **Attestation interoperability checks** (vendor roots, signer linkage, token freshness)
 - **Fail-closed key lifecycle rules** for enclave session open/enter/close
 - **Persistent revocation journal replay** for cross-reboot denial of revoked remote capability tokens
+- **Quarantine/restore automaton** for intent-driven capability rollback with bounded hysteresis and explicit override paths
 
 ### Security Posture Summary
 
@@ -372,6 +384,7 @@ This kernel demonstrates several novel implementations:
 3. **Quantum scheduling**: Deterministic priority-aware scheduling with MLFQ + quantum accounting on embedded systems
 4. **Assembly-accelerated cryptography**: AES-NI integration with CPUID detection and fallback paths
 5. **Decentralized kernel capability networking**: CapNet portable token protocol with attestation-bound sessions, replay-safe control frames, lease bridging, and persistent revocation semantics
+6. **Kernel-native behavior-aware capability control**: Intent graph scoring and predictive revocation integrated directly into capability enforcement
 
 The codebase serves as educational reference for:
 - Systems programming in Rust without `std` library

@@ -32,16 +32,18 @@ Oreulieus is an experimental operating system that rethinks traditional OS desig
 
 ## Formal Security Papers
 
-Oreulia's formal security records are documented in two companion papers:
+Oreulia's formal security records are documented in three companion papers:
 
 - **[Oreulia JIT Security Resolution](docs/oreulia-jit-security-resolution.md)**
 - **[CapNet Scientific Resolution](docs/capnet.md)**
+- **[Intent Graph Predictive Revocation](docs/oreulia-intent-graph-predictive-revocation.md)**
 
-Together they cover theorem-backed hardening for in-kernel JIT execution and decentralized capability transfer over the network control plane.
+Together they cover theorem-backed hardening for in-kernel JIT execution, decentralized capability transfer over the network control plane, and behavior-aware predictive capability control in kernel space.
 
 ### Key Features
 
 - **Capability-Based Security** - No ambient authority; all access is explicitly granted through capabilities
+- **Intent Graph Predictive Revocation** - Per-process behavioral graph scoring with predictive restriction, quarantine/restore, isolation escalation, and termination recommendation
 - **CapNet Capability Network** - Portable capability tokens with session-key MAC verification, replay windows, delegation-chain constraints, and persistent revocation
 - **WebAssembly Native** - First-class support for WASM execution with sandboxed module isolation
 - **JIT Hardening Pipeline** - W^X sealing, decoder whitelist validation, SFI/CFI constraints, and translation certificates
@@ -58,6 +60,7 @@ Together they cover theorem-backed hardening for in-kernel JIT execution and dec
 Oreulieus is built on several core subsystems:
 
 - **Security Manager** - Audit logging and security policy enforcement
+- **Intent Graph Engine** - Behavioral telemetry, risk scoring, and escalation policy for predictive capability control
 - **Capability Manager** - Authority model with fine-grained permissions
 - **Process Scheduler** - Preemptive multitasking with 100Hz timer
 - **IPC System** - Typed message channels with capability-based access control
@@ -254,12 +257,15 @@ Once Oreulia boots, you'll see the shell prompt (`>`). Try these commands:
 - `wasm-jit-fuzz <iters> [seed]` - Coverage-guided differential JIT fuzzing
 - `wasm-jit-fuzz-corpus <iters>` - Replay external seed corpus
 - `wasm-jit-fuzz-soak <iters> <rounds>` - Multi-round corpus replay for non-determinism checks
-- `formal-verify` - Run formal verification obligations for JIT translation, capability logic, and CapNet model checks
+- `formal-verify` - Run formal verification obligations for JIT translation, capability logic, CapNet model checks, and intent policy checks
 
 ### Security & Capabilities
 - `security-audit [count]` - Show security audit log
 - `security-stats` - Show security subsystem statistics
 - `security-anomaly` - Show anomaly detector score/window state
+- `security-intent [pid]` - Show intent-graph process snapshot (scores, counters, restrictions, escalation state)
+- `security-intent-clear <pid>` - Clear intent restriction/recommendation and force-restore quarantined capabilities
+- `security-intent-policy [show|set|reset]` - View or tune runtime intent thresholds/cooldowns/durations without rebuilds
 - `cap-list` - List capabilities
 - `cap-arch` - Show capability architecture
 - `cap-test-atten/cons` - Test capability mechanisms
@@ -299,6 +305,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[Assembly Quick Reference](docs/assembly-quick-reference.md)** - Low-level assembly interfaces and notes
 - **[JIT Security Resolution](docs/oreulia-jit-security-resolution.md)** - Formal security model and implementation proof obligations
 - **[CapNet Scientific Resolution](docs/capnet.md)** - Formal model and implementation analysis for decentralized capability networking
+- **[Intent Graph Predictive Revocation](docs/oreulia-intent-graph-predictive-revocation.md)** - Formal specification of behavioral scoring, escalation thresholds, quarantine automaton, and correctness lemmas
 - **[Commercial Use Cases](docs/CommercialUseCases.md)** - Market targets and product vision
 - **[Contributing](docs/CONTRIBUTING.md)** - Contribution guidelines and process
 

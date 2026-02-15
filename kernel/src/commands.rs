@@ -153,6 +153,9 @@ pub fn execute(input: &str) {
             vga::print_str("  asm-test     - Test assembly performance functions\n");
             vga::print_str("  security-stats - Show security statistics\n");
             vga::print_str("  security-anomaly - Show anomaly detector status\n");
+            vga::print_str("  security-intent - Show intent graph state (security-intent [pid])\n");
+            vga::print_str("  security-intent-clear - Clear intent restriction for PID (security-intent-clear <pid>)\n");
+            vga::print_str("  security-intent-policy - Show/set runtime intent policy (security-intent-policy [show|set|reset])\n");
             vga::print_str("  security-audit - Show recent security events (security-audit [count])\n");
             vga::print_str("  security-test  - Run security test suite\n");
             vga::print_str("  cap-list       - List capability table\n");
@@ -461,6 +464,15 @@ pub fn execute(input: &str) {
         }
         "security-anomaly" => {
             cmd_security_anomaly();
+        }
+        "security-intent" => {
+            cmd_security_intent(parts);
+        }
+        "security-intent-clear" => {
+            cmd_security_intent_clear(parts);
+        }
+        "security-intent-policy" => {
+            cmd_security_intent_policy(parts);
         }
         "security-audit" => {
             cmd_security_audit(parts);
@@ -6714,6 +6726,42 @@ fn parse_u32_result(s: &str) -> Result<u32, ()> {
 // Security Commands
 // ============================================================================
 
+fn print_security_intent_policy(policy: crate::intent_graph::IntentPolicy) {
+    vga::print_str("  Window (seconds): ");
+    print_u64(policy.window_seconds);
+    vga::print_str("\n");
+    vga::print_str("  Alert threshold: ");
+    print_u32(policy.alert_score);
+    vga::print_str("\n");
+    vga::print_str("  Restrict threshold: ");
+    print_u32(policy.restrict_score);
+    vga::print_str("\n");
+    vga::print_str("  Isolate after restricts/window: ");
+    print_u32(policy.isolate_restrictions as u32);
+    vga::print_str("\n");
+    vga::print_str("  Terminate recommend after restricts/window: ");
+    print_u32(policy.terminate_restrictions as u32);
+    vga::print_str("\n");
+    vga::print_str("  Restrict base duration (s): ");
+    print_u32(policy.restrict_base_seconds as u32);
+    vga::print_str("\n");
+    vga::print_str("  Restrict max duration (s): ");
+    print_u32(policy.restrict_max_seconds as u32);
+    vga::print_str("\n");
+    vga::print_str("  Isolation extension (s): ");
+    print_u32(policy.isolate_extension_seconds as u32);
+    vga::print_str("\n");
+    vga::print_str("  Severity step score: ");
+    print_u32(policy.severity_step_score as u32);
+    vga::print_str("\n");
+    vga::print_str("  Alert cooldown (ms): ");
+    print_u32(policy.alert_cooldown_ms as u32);
+    vga::print_str("\n");
+    vga::print_str("  Restrict cooldown (ms): ");
+    print_u32(policy.restrict_cooldown_ms as u32);
+    vga::print_str("\n");
+}
+
 fn cmd_security_stats() {
     use crate::security;
     
@@ -6749,6 +6797,8 @@ fn cmd_security_stats() {
     vga::print_str("\n\n");
 
     let anomaly = security::security().get_anomaly_stats();
+    let intent = security::security().get_intent_graph_stats();
+    let intent_policy = security::security().get_intent_policy();
     vga::print_str("Anomaly Detector:\n");
     vga::print_str("  Alert score threshold: ");
     print_u32(security::ANOMALY_ALERT_SCORE);
@@ -6768,11 +6818,35 @@ fn cmd_security_stats() {
     vga::print_str("  Max score: ");
     print_u32(anomaly.max_score);
     vga::print_str("\n\n");
+
+    vga::print_str("Intent Graph Policy (runtime):\n");
+    print_security_intent_policy(intent_policy);
+    vga::print_str("\nIntent Graph State:\n");
+    vga::print_str("  Tracked processes: ");
+    print_u32(intent.tracked_processes);
+    vga::print_str("\n");
+    vga::print_str("  Restricted processes: ");
+    print_u32(intent.restricted_processes);
+    vga::print_str("\n");
+    vga::print_str("  Alerts total: ");
+    print_u32(intent.alerts_total);
+    vga::print_str("\n");
+    vga::print_str("  Predictive revocations: ");
+    print_u32(intent.restrictions_total);
+    vga::print_str("\n");
+    vga::print_str("  Latest score: ");
+    print_u32(intent.latest_score);
+    vga::print_str("\n");
+    vga::print_str("  Highest score: ");
+    print_u32(intent.highest_score);
+    vga::print_str("\n\n");
 }
 
 fn cmd_security_anomaly() {
     use crate::security;
     let anomaly = security::security().get_anomaly_stats();
+    let intent = security::security().get_intent_graph_stats();
+    let intent_policy = security::security().get_intent_policy();
     vga::print_str("\n===== Security Anomaly Detector =====\n\n");
     vga::print_str("Window: ");
     print_u32(security::ANOMALY_WINDOW_SECONDS as u32);
@@ -6802,6 +6876,343 @@ fn cmd_security_anomaly() {
     vga::print_str("\n  Critical total: ");
     print_u32(anomaly.critical_total);
     vga::print_str("\n\n");
+
+    vga::print_str("Intent graph (predictive):\n");
+    print_security_intent_policy(intent_policy);
+    vga::print_str("\n  Tracked processes: ");
+    print_u32(intent.tracked_processes);
+    vga::print_str("\n  Restricted processes: ");
+    print_u32(intent.restricted_processes);
+    vga::print_str("\n  Alerts total: ");
+    print_u32(intent.alerts_total);
+    vga::print_str("\n  Predictive revocations: ");
+    print_u32(intent.restrictions_total);
+    vga::print_str("\n  Latest score: ");
+    print_u32(intent.latest_score);
+    vga::print_str("\n  Highest score: ");
+    print_u32(intent.highest_score);
+    vga::print_str("\n\n");
+}
+
+fn apply_intent_policy_field(
+    policy: &mut crate::intent_graph::IntentPolicy,
+    field: &str,
+    value: usize,
+) -> Result<(), &'static str> {
+    match field {
+        "window" | "window_s" | "window_sec" | "window_seconds" => {
+            policy.window_seconds = value as u64;
+            Ok(())
+        }
+        "alert" | "alert_score" => {
+            if value > 255 {
+                return Err("alert_score must be in 0..=255");
+            }
+            policy.alert_score = value as u32;
+            Ok(())
+        }
+        "restrict" | "restrict_score" => {
+            if value > 255 {
+                return Err("restrict_score must be in 0..=255");
+            }
+            policy.restrict_score = value as u32;
+            Ok(())
+        }
+        "isolate" | "isolate_restrictions" => {
+            if value > u16::MAX as usize {
+                return Err("isolate_restrictions is too large");
+            }
+            policy.isolate_restrictions = value as u16;
+            Ok(())
+        }
+        "terminate" | "terminate_restrictions" => {
+            if value > u16::MAX as usize {
+                return Err("terminate_restrictions is too large");
+            }
+            policy.terminate_restrictions = value as u16;
+            Ok(())
+        }
+        "restrict_base_s" | "restrict_base_seconds" => {
+            if value > u16::MAX as usize {
+                return Err("restrict_base_seconds is too large");
+            }
+            policy.restrict_base_seconds = value as u16;
+            Ok(())
+        }
+        "restrict_max_s" | "restrict_max_seconds" => {
+            if value > u16::MAX as usize {
+                return Err("restrict_max_seconds is too large");
+            }
+            policy.restrict_max_seconds = value as u16;
+            Ok(())
+        }
+        "isolate_extension_s" | "isolate_extension_seconds" | "isolate_seconds" => {
+            if value > u16::MAX as usize {
+                return Err("isolate_extension_seconds is too large");
+            }
+            policy.isolate_extension_seconds = value as u16;
+            Ok(())
+        }
+        "severity_step" | "severity_step_score" => {
+            if value > u16::MAX as usize {
+                return Err("severity_step_score is too large");
+            }
+            policy.severity_step_score = value as u16;
+            Ok(())
+        }
+        "alert_cooldown_ms" => {
+            if value > u16::MAX as usize {
+                return Err("alert_cooldown_ms is too large");
+            }
+            policy.alert_cooldown_ms = value as u16;
+            Ok(())
+        }
+        "restrict_cooldown_ms" => {
+            if value > u16::MAX as usize {
+                return Err("restrict_cooldown_ms is too large");
+            }
+            policy.restrict_cooldown_ms = value as u16;
+            Ok(())
+        }
+        _ => Err("unknown field"),
+    }
+}
+
+fn print_security_intent_policy_usage() {
+    vga::print_str("Usage:\n");
+    vga::print_str("  security-intent-policy\n");
+    vga::print_str("  security-intent-policy show\n");
+    vga::print_str("  security-intent-policy reset\n");
+    vga::print_str("  security-intent-policy set <field> <value> [field value ...]\n");
+    vga::print_str("Fields:\n");
+    vga::print_str("  window_seconds, alert_score, restrict_score,\n");
+    vga::print_str("  isolate_restrictions, terminate_restrictions,\n");
+    vga::print_str("  restrict_base_seconds, restrict_max_seconds,\n");
+    vga::print_str("  isolate_extension_seconds, severity_step_score,\n");
+    vga::print_str("  alert_cooldown_ms, restrict_cooldown_ms\n");
+}
+
+fn cmd_security_intent_policy(mut parts: core::str::SplitWhitespace) {
+    use crate::security;
+
+    let op = parts.next();
+    match op {
+        None | Some("show") => {
+            let policy = security::security().get_intent_policy();
+            vga::print_str("\n===== Security Intent Policy (runtime) =====\n\n");
+            print_security_intent_policy(policy);
+            vga::print_str("\n");
+        }
+        Some("reset") => {
+            security::security().reset_intent_policy();
+            let policy = security::security().get_intent_policy();
+            vga::print_str("Reset intent policy to baseline defaults.\n\n");
+            print_security_intent_policy(policy);
+            vga::print_str("\n");
+        }
+        Some("set") => {
+            let mut policy = security::security().get_intent_policy();
+            let mut updates = 0usize;
+
+            loop {
+                let field = match parts.next() {
+                    Some(f) => f,
+                    None => break,
+                };
+                let value_raw = match parts.next() {
+                    Some(v) => v,
+                    None => {
+                        vga::print_str("Missing value for field: ");
+                        vga::print_str(field);
+                        vga::print_str("\n");
+                        print_security_intent_policy_usage();
+                        return;
+                    }
+                };
+
+                let value = match parse_number(value_raw) {
+                    Some(v) => v,
+                    None => {
+                        vga::print_str("Invalid numeric value for ");
+                        vga::print_str(field);
+                        vga::print_str(": ");
+                        vga::print_str(value_raw);
+                        vga::print_str("\n");
+                        return;
+                    }
+                };
+
+                match apply_intent_policy_field(&mut policy, field, value) {
+                    Ok(()) => updates = updates.saturating_add(1),
+                    Err("unknown field") => {
+                        vga::print_str("Unknown policy field: ");
+                        vga::print_str(field);
+                        vga::print_str("\n");
+                        print_security_intent_policy_usage();
+                        return;
+                    }
+                    Err(msg) => {
+                        vga::print_str("Invalid value for ");
+                        vga::print_str(field);
+                        vga::print_str(": ");
+                        vga::print_str(msg);
+                        vga::print_str("\n");
+                        return;
+                    }
+                }
+            }
+
+            if updates == 0 {
+                print_security_intent_policy_usage();
+                return;
+            }
+
+            match security::security().set_intent_policy(policy) {
+                Ok(()) => {
+                    let active = security::security().get_intent_policy();
+                    vga::print_str("Updated intent policy at runtime.\n\n");
+                    print_security_intent_policy(active);
+                    vga::print_str("\n");
+                }
+                Err(err) => {
+                    vga::print_str("Rejected intent policy update: ");
+                    vga::print_str(err.as_str());
+                    vga::print_str("\n");
+                }
+            }
+        }
+        Some(_) => {
+            print_security_intent_policy_usage();
+        }
+    }
+}
+
+fn cmd_security_intent(mut parts: core::str::SplitWhitespace) {
+    use crate::security;
+
+    let pid = match parts.next() {
+        Some(pid_raw) => match parse_number(pid_raw) {
+            Some(v) => crate::ipc::ProcessId(v as u32),
+            None => {
+                vga::print_str("Usage: security-intent [pid]\n");
+                return;
+            }
+        },
+        None => process::current_pid().unwrap_or(crate::ipc::ProcessId(0)),
+    };
+
+    vga::print_str("\n===== Security Intent Snapshot =====\n\n");
+    vga::print_str("PID: ");
+    print_u32(pid.0);
+    vga::print_str("\n");
+
+    let snapshot = match security::security().get_intent_process_snapshot(pid) {
+        Some(s) => s,
+        None => {
+            vga::print_str("No intent graph state for this process.\n\n");
+            return;
+        }
+    };
+
+    let now = crate::pit::get_ticks();
+    let remaining_ticks = snapshot.restriction_until_tick.saturating_sub(now);
+
+    vga::print_str("Scores:\n");
+    vga::print_str("  Last: ");
+    print_u32(snapshot.last_score);
+    vga::print_str("\n  Max: ");
+    print_u32(snapshot.max_score);
+    vga::print_str("\n\n");
+
+    vga::print_str("Counters (window):\n");
+    vga::print_str("  Events: ");
+    print_u32(snapshot.window_events as u32);
+    vga::print_str("\n  Denied: ");
+    print_u32(snapshot.denied_events as u32);
+    vga::print_str("\n  Invalid capability: ");
+    print_u32(snapshot.invalid_events as u32);
+    vga::print_str("\n  IPC: ");
+    print_u32(snapshot.ipc_events as u32);
+    vga::print_str("\n  WASM host calls: ");
+    print_u32(snapshot.wasm_events as u32);
+    vga::print_str("\n  Syscalls: ");
+    print_u32(snapshot.syscall_events as u32);
+    vga::print_str("\n  FS read: ");
+    print_u32(snapshot.fs_read_events as u32);
+    vga::print_str("\n  FS write: ");
+    print_u32(snapshot.fs_write_events as u32);
+    vga::print_str("\n  Novel objects: ");
+    print_u32(snapshot.novel_object_events as u32);
+    vga::print_str("\n\n");
+
+    vga::print_str("Policy:\n");
+    vga::print_str("  Alerts total: ");
+    print_u32(snapshot.alerts_total);
+    vga::print_str("\n  Predictive revocations: ");
+    print_u32(snapshot.restrictions_total);
+    vga::print_str("\n  Isolation events: ");
+    print_u32(snapshot.isolations_total);
+    vga::print_str("\n  Window restrictions: ");
+    print_u32(snapshot.window_restrictions as u32);
+    vga::print_str("\n  Termination recommendations total: ");
+    print_u32(snapshot.terminate_recommendations_total);
+    vga::print_str("\n  Termination currently recommended: ");
+    vga::print_str(if snapshot.terminate_recommended { "yes" } else { "no" });
+    vga::print_str("\n  Restriction until tick: ");
+    print_u64(snapshot.restriction_until_tick);
+    vga::print_str("\n  Restriction remaining ticks: ");
+    print_u64(remaining_ticks);
+    vga::print_str("\n  Restricted capability types mask: 0x");
+    print_hex_u32(snapshot.restricted_cap_types as u32);
+    vga::print_str("\n  Restricted rights mask: 0x");
+    print_hex_u32(snapshot.restricted_rights);
+    vga::print_str("\n\n");
+}
+
+fn cmd_security_intent_clear(mut parts: core::str::SplitWhitespace) {
+    use crate::{capability, security};
+
+    let pid = match parts.next().and_then(parse_number) {
+        Some(v) => crate::ipc::ProcessId(v as u32),
+        None => {
+            vga::print_str("Usage: security-intent-clear <pid>\n");
+            return;
+        }
+    };
+
+    let cleared = security::security().clear_intent_restriction(pid);
+    let cleared_term = security::security().take_intent_termination_recommendation(pid);
+    let restored = capability::capability_manager().force_restore_quarantined_capabilities(pid);
+    if cleared {
+        vga::print_str("Cleared intent restriction for PID ");
+        print_u32(pid.0);
+        vga::print_str(" (restored quarantined caps: ");
+        print_u32(restored as u32);
+        if cleared_term {
+            vga::print_str(", cleared termination recommendation");
+        }
+        vga::print_str(")");
+        vga::print_str("\n");
+    } else {
+        if restored > 0 {
+            vga::print_str("No active intent restriction for PID ");
+            print_u32(pid.0);
+            vga::print_str(" (restored quarantined caps: ");
+            print_u32(restored as u32);
+            if cleared_term {
+                vga::print_str(", cleared termination recommendation");
+            }
+            vga::print_str(")\n");
+        } else if cleared_term {
+            vga::print_str("No active intent restriction for PID ");
+            print_u32(pid.0);
+            vga::print_str(" (cleared termination recommendation)\n");
+        } else {
+            vga::print_str("No active intent restriction for PID ");
+            print_u32(pid.0);
+            vga::print_str("\n");
+        }
+    }
 }
 
 fn cmd_sched_net_soak(mut parts: core::str::SplitWhitespace) {
@@ -7042,6 +7453,34 @@ fn cmd_security_test() {
         vga::print_str("  ✓ Modified data detected\n");
     } else {
         vga::print_str("  ✗ Modified data not detected\n");
+    }
+
+    // Test 5: Intent graph predictive revocation
+    vga::print_str("\nTest 5: Intent graph predictive revocation\n");
+    for i in 0..48u64 {
+        security::security().intent_capability_denied(
+            test_pid,
+            crate::capability::CapabilityType::Filesystem,
+            crate::capability::Rights::FS_WRITE,
+            0x2000 + i,
+        );
+        security::security().intent_invalid_capability(
+            test_pid,
+            crate::capability::CapabilityType::Filesystem,
+            crate::capability::Rights::FS_WRITE,
+            0x2000 + i,
+        );
+    }
+
+    let restricted = security::security().is_predictively_restricted(
+        test_pid,
+        crate::capability::CapabilityType::Filesystem,
+        crate::capability::Rights::FS_WRITE,
+    );
+    if restricted {
+        vga::print_str("  ✓ Predictive restriction active\n");
+    } else {
+        vga::print_str("  ✗ Predictive restriction not triggered\n");
     }
     
     vga::print_str("\nAll security tests completed.\n\n");

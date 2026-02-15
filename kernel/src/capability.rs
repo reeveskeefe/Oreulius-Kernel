@@ -20,7 +20,7 @@
 use core::fmt;
 use spin::Mutex;
 pub use crate::ipc::ProcessId;  // Re-export for syscall module
-use crate::ipc::ChannelId;
+use crate::ipc::{ChannelCapability, ChannelId, ChannelRights};
 use crate::security::{self, SecurityEvent, AuditEntry};
 
 // ============================================================================
@@ -369,6 +369,7 @@ fn write_u64(buf: &mut [u8], offset: &mut usize, value: u64) {
 
 const MAX_CAPABILITIES: usize = 256;
 const MAX_REMOTE_LEASES: usize = 128;
+const MAX_QUARANTINED_CAPS: usize = 256;
 
 /// Remote capability lease created from a validated CapNet token.
 #[derive(Debug, Clone, Copy)]
@@ -412,6 +413,13 @@ impl RemoteCapabilityLease {
             uses_remaining: 0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QuarantinedCapability {
+    owner_pid: ProcessId,
+    cap: OreuliaCapability,
+    restore_at_tick: u64,
 }
 
 /// Per-task capability table (unforgeable capability storage)
@@ -560,6 +568,66 @@ impl CapabilityTable {
         );
         self.install(cap)
     }
+
+    /// Revoke all capabilities matching type and rights mask.
+    ///
+    /// `rights_mask == 0` means revoke all capabilities of `cap_type`.
+    pub fn revoke_matching(&mut self, cap_type: CapabilityType, rights_mask: u32) -> usize {
+        let mut revoke_ids = [0u32; MAX_CAPABILITIES];
+        let mut revoke_count = 0usize;
+
+        for entry in self.entries.iter() {
+            let cap = match entry {
+                Some(cap) => cap,
+                None => continue,
+            };
+            if cap.cap_type != cap_type {
+                continue;
+            }
+            if rights_mask != 0 && (cap.rights.bits & rights_mask) == 0 {
+                continue;
+            }
+            if revoke_count < revoke_ids.len() {
+                revoke_ids[revoke_count] = cap.cap_id;
+                revoke_count += 1;
+            }
+        }
+
+        let mut revoked = 0usize;
+        let mut i = 0usize;
+        while i < revoke_count {
+            if self.remove(revoke_ids[i]).is_ok() {
+                revoked += 1;
+            }
+            i += 1;
+        }
+        revoked
+    }
+
+    /// Revoke every capability in the table.
+    pub fn revoke_all(&mut self) -> usize {
+        let mut revoke_ids = [0u32; MAX_CAPABILITIES];
+        let mut revoke_count = 0usize;
+
+        for entry in self.entries.iter() {
+            if let Some(cap) = entry {
+                if revoke_count < revoke_ids.len() {
+                    revoke_ids[revoke_count] = cap.cap_id;
+                    revoke_count += 1;
+                }
+            }
+        }
+
+        let mut revoked = 0usize;
+        let mut i = 0usize;
+        while i < revoke_count {
+            if self.remove(revoke_ids[i]).is_ok() {
+                revoked += 1;
+            }
+            i += 1;
+        }
+        revoked
+    }
 }
 
 // ============================================================================
@@ -574,6 +642,7 @@ pub struct CapabilityManager {
     tables: Mutex<[Option<alloc::boxed::Box<CapabilityTable>>; MAX_TASKS]>,
     next_object_id: Mutex<u64>,
     remote_leases: Mutex<[Option<RemoteCapabilityLease>; MAX_REMOTE_LEASES]>,
+    quarantined_caps: Mutex<[Option<QuarantinedCapability>; MAX_QUARANTINED_CAPS]>,
     next_remote_cap_id: Mutex<u32>,
 }
 
@@ -590,6 +659,7 @@ impl CapabilityManager {
                                None, None, None, None, None, None, None, None]),
             next_object_id: Mutex::new(1),
             remote_leases: Mutex::new([None; MAX_REMOTE_LEASES]),
+            quarantined_caps: Mutex::new([None; MAX_QUARANTINED_CAPS]),
             next_remote_cap_id: Mutex::new(1),
         }
     }
@@ -599,6 +669,55 @@ impl CapabilityManager {
         let mut tables = self.tables.lock();
         if (pid.0 as usize) < MAX_TASKS {
             tables[pid.0 as usize] = Some(alloc::boxed::Box::new(CapabilityTable::new(pid)));
+        }
+    }
+
+    /// Tear down capability state for a task and revoke owner-bound remote leases.
+    pub fn deinit_task(&self, pid: ProcessId) {
+        let idx = pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return;
+        }
+
+        let mut tables = self.tables.lock();
+        if let Some(table) = tables[idx].as_mut() {
+            let revoked_local = table.revoke_all();
+            security::security().log_event(
+                AuditEntry::new(SecurityEvent::CapabilityRevoked, pid, 0)
+                    .with_context(revoked_local as u64),
+            );
+        }
+        tables[idx] = None;
+
+        let mut quarantined = self.quarantined_caps.lock();
+        for entry in quarantined.iter_mut() {
+            let remove = match entry.as_ref() {
+                Some(cap) => cap.owner_pid == pid,
+                None => false,
+            };
+            if remove {
+                *entry = None;
+            }
+        }
+
+        let mut leases = self.remote_leases.lock();
+        for entry in leases.iter_mut() {
+            let remove = match entry.as_ref() {
+                Some(lease) => !lease.owner_any && lease.owner_pid == pid,
+                None => false,
+            };
+            if !remove {
+                continue;
+            }
+            let token_id = match entry.as_ref() {
+                Some(lease) => lease.token_id,
+                None => 0,
+            };
+            *entry = None;
+            security::security().log_event(
+                AuditEntry::new(SecurityEvent::CapabilityRevoked, pid, 0)
+                    .with_context(token_id),
+            );
         }
     }
     
@@ -727,6 +846,207 @@ impl CapabilityManager {
         } else {
             (0, 0, 0)
         }
+    }
+
+    fn quarantine_insert(
+        quarantined: &mut [Option<QuarantinedCapability>; MAX_QUARANTINED_CAPS],
+        owner_pid: ProcessId,
+        cap: OreuliaCapability,
+        restore_at_tick: u64,
+    ) -> bool {
+        let mut slot_idx = None;
+        let mut i = 0usize;
+        while i < quarantined.len() {
+            match quarantined[i] {
+                Some(existing) if existing.owner_pid == owner_pid && existing.cap.cap_id == cap.cap_id => {
+                    slot_idx = Some(i);
+                    break;
+                }
+                None if slot_idx.is_none() => {
+                    slot_idx = Some(i);
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        let idx = match slot_idx {
+            Some(idx) => idx,
+            None => return false,
+        };
+        quarantined[idx] = Some(QuarantinedCapability {
+            owner_pid,
+            cap,
+            restore_at_tick,
+        });
+        true
+    }
+
+    fn restore_quarantined_inner(
+        tables: &mut [Option<alloc::boxed::Box<CapabilityTable>>; MAX_TASKS],
+        quarantined: &mut [Option<QuarantinedCapability>; MAX_QUARANTINED_CAPS],
+        pid: ProcessId,
+        now: u64,
+        force: bool,
+    ) -> usize {
+        let idx = pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return 0;
+        }
+
+        let table = match tables[idx].as_mut() {
+            Some(table) => table,
+            None => {
+                for entry in quarantined.iter_mut() {
+                    let should_drop = match entry.as_ref() {
+                        Some(q) => q.owner_pid == pid,
+                        None => false,
+                    };
+                    if should_drop {
+                        *entry = None;
+                    }
+                }
+                return 0;
+            }
+        };
+
+        let mut restored = 0usize;
+        for entry in quarantined.iter_mut() {
+            let q = match *entry {
+                Some(q) => q,
+                None => continue,
+            };
+            if q.owner_pid != pid {
+                continue;
+            }
+            if !force && now < q.restore_at_tick {
+                continue;
+            }
+
+            let slot = q.cap.cap_id as usize;
+            if slot >= MAX_CAPABILITIES {
+                *entry = None;
+                continue;
+            }
+
+            // Never clobber a currently occupied slot; prefer preserving current authority.
+            if table.entries[slot].is_some() {
+                continue;
+            }
+
+            if table.install_or_replace(Some(q.cap.cap_id), q.cap).is_ok() {
+                *entry = None;
+                restored = restored.saturating_add(1);
+            }
+        }
+
+        restored
+    }
+
+    /// Restore quarantined capabilities for a process whose quarantine timer expired.
+    pub fn restore_quarantined_capabilities(&self, pid: ProcessId) -> usize {
+        let now = crate::pit::get_ticks() as u64;
+        let mut tables = self.tables.lock();
+        let mut quarantined = self.quarantined_caps.lock();
+        Self::restore_quarantined_inner(&mut tables, &mut quarantined, pid, now, false)
+    }
+
+    /// Force-restore all quarantined capabilities for a process, regardless of timer.
+    pub fn force_restore_quarantined_capabilities(&self, pid: ProcessId) -> usize {
+        let now = crate::pit::get_ticks() as u64;
+        let mut tables = self.tables.lock();
+        let mut quarantined = self.quarantined_caps.lock();
+        Self::restore_quarantined_inner(&mut tables, &mut quarantined, pid, now, true)
+    }
+
+    /// Predictively revoke matching local capabilities and remote leases.
+    pub fn predictive_revoke_capabilities(
+        &self,
+        pid: ProcessId,
+        cap_type: CapabilityType,
+        rights_mask: u32,
+        restore_at_tick: u64,
+    ) -> usize {
+        let idx = pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return 0;
+        }
+
+        let now = crate::pit::get_ticks() as u64;
+        let hz = (crate::pit::get_frequency() as u64).max(1);
+        let min_restore_at = now.saturating_add(hz);
+        let restore_at_tick = if restore_at_tick > min_restore_at {
+            restore_at_tick
+        } else {
+            min_restore_at
+        };
+
+        let mut revoked = 0usize;
+        let mut tables = self.tables.lock();
+        let mut quarantined = self.quarantined_caps.lock();
+        if let Some(table) = tables[idx].as_mut() {
+            let mut revoke_ids = [0u32; MAX_CAPABILITIES];
+            let mut revoke_count = 0usize;
+
+            for entry in table.entries.iter() {
+                let cap = match entry {
+                    Some(cap) => cap,
+                    None => continue,
+                };
+                if cap.cap_type != cap_type {
+                    continue;
+                }
+                if rights_mask != 0 && (cap.rights.bits & rights_mask) == 0 {
+                    continue;
+                }
+                if revoke_count < revoke_ids.len() {
+                    revoke_ids[revoke_count] = cap.cap_id;
+                    revoke_count += 1;
+                }
+            }
+
+            let mut i = 0usize;
+            while i < revoke_count {
+                if let Ok(cap) = table.remove(revoke_ids[i]) {
+                    let _ = Self::quarantine_insert(&mut quarantined, pid, cap, restore_at_tick);
+                    revoked = revoked.saturating_add(1);
+                }
+                i += 1;
+            }
+        }
+
+        let mut leases = self.remote_leases.lock();
+        for entry in leases.iter_mut() {
+            let should_revoke = match entry.as_ref() {
+                Some(lease) => {
+                    !lease.owner_any
+                        && lease.owner_pid == pid
+                        && lease.cap_type == cap_type
+                        && (rights_mask == 0 || (lease.rights.bits & rights_mask) != 0)
+                }
+                None => false,
+            };
+            if !should_revoke {
+                continue;
+            }
+
+            let (mapped_cap_id, token_id) = match entry.as_ref() {
+                Some(lease) => (lease.mapped_cap_id, lease.token_id),
+                None => continue,
+            };
+
+            if mapped_cap_id != 0 {
+                self.remove_remote_cap_mapping(&mut tables, pid, mapped_cap_id);
+            }
+            *entry = None;
+            revoked = revoked.saturating_add(1);
+            security::security().log_event(
+                AuditEntry::new(SecurityEvent::CapabilityRevoked, pid, mapped_cap_id)
+                    .with_context(token_id),
+            );
+        }
+
+        revoked
     }
 
     fn alloc_remote_cap_id(&self) -> u32 {
@@ -978,6 +1298,103 @@ pub fn init() {
     CAPABILITY_MANAGER.init_task(kernel_pid);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelAccess {
+    Send,
+    Receive,
+    Close,
+}
+
+/// Resolve a process-owned channel capability into an IPC channel capability token.
+///
+/// This binds IPC operations to real capability table entries instead of temporary
+/// placeholder rights.
+pub fn resolve_channel_capability(
+    pid: ProcessId,
+    channel_id: ChannelId,
+    access: ChannelAccess,
+) -> Result<ChannelCapability, &'static str> {
+    if pid.0 == 0 {
+        return Ok(ChannelCapability::new(0, channel_id, ChannelRights::all(), pid));
+    }
+
+    let required_right = match access {
+        ChannelAccess::Send => Rights::CHANNEL_SEND,
+        ChannelAccess::Receive => Rights::CHANNEL_RECEIVE,
+        ChannelAccess::Close => Rights::CHANNEL_SEND | Rights::CHANNEL_RECEIVE,
+    };
+
+    // Run full capability/security policy check once (includes predictive revocation,
+    // rate limiting, local+remote capability validation, and audit logging).
+    if !check_capability(
+        pid,
+        channel_id.0 as u64,
+        CapabilityType::Channel,
+        Rights::new(required_right),
+    ) {
+        return Err("No channel capability");
+    }
+
+    let tables = CAPABILITY_MANAGER.tables.lock();
+    if let Some(table) = tables[pid.0 as usize].as_ref() {
+        for entry in &table.entries {
+            let cap = match entry {
+                Some(cap) => cap,
+                None => continue,
+            };
+            if cap.cap_type != CapabilityType::Channel {
+                continue;
+            }
+            if cap.object_id != 0 && cap.object_id != channel_id.0 as u64 {
+                continue;
+            }
+            if !cap.verify_token(table.owner) {
+                security::security().log_event(
+                    AuditEntry::new(SecurityEvent::InvalidCapability, pid, cap.cap_id)
+                        .with_context(cap.object_id),
+                );
+                continue;
+            }
+            if !cap.has_right(required_right) {
+                continue;
+            }
+
+            let mut rights_bits = 0u32;
+            if cap.has_right(Rights::CHANNEL_SEND) {
+                rights_bits |= ChannelRights::SEND;
+            }
+            if cap.has_right(Rights::CHANNEL_RECEIVE) {
+                rights_bits |= ChannelRights::RECEIVE;
+            }
+            if (rights_bits & (ChannelRights::SEND | ChannelRights::RECEIVE))
+                == (ChannelRights::SEND | ChannelRights::RECEIVE)
+            {
+                rights_bits |= ChannelRights::CLOSE;
+            }
+
+            let rights = ChannelRights::new(rights_bits);
+            let allow = match access {
+                ChannelAccess::Send => rights.has(ChannelRights::SEND),
+                ChannelAccess::Receive => rights.has(ChannelRights::RECEIVE),
+                ChannelAccess::Close => rights.has(ChannelRights::CLOSE),
+            };
+            if !allow {
+                continue;
+            }
+
+            return Ok(ChannelCapability::new(cap.cap_id, channel_id, rights, pid));
+        }
+    }
+
+    // Authorized via remote lease without local mapping; return an ephemeral cap.
+    let rights = match access {
+        ChannelAccess::Send => ChannelRights::send_only(),
+        ChannelAccess::Receive => ChannelRights::receive_only(),
+        ChannelAccess::Close => ChannelRights::full(),
+    };
+    Ok(ChannelCapability::new(0, channel_id, rights, pid))
+}
+
 /// Check if a process has a specific capability (syscall helper)
 pub fn check_capability(
     pid: ProcessId,
@@ -989,15 +1406,44 @@ pub fn check_capability(
     if pid.0 == 0 {
         return true;
     }
-    
-    // Rate limit check via SecurityManager
-    if security::security().validate_capability(pid, required_rights.bits, required_rights.bits).is_err() {
+
+    // Opportunistically restore quarantined capabilities whose cooldown expired.
+    let _ = CAPABILITY_MANAGER.restore_quarantined_capabilities(pid);
+
+    let sec = security::security();
+    sec.intent_capability_probe(pid, cap_type, required_rights.bits, object_id);
+
+    if sec.is_predictively_restricted(pid, cap_type, required_rights.bits) {
+        let restore_at = sec.restriction_until_tick(pid);
+        let revoked = CAPABILITY_MANAGER.predictive_revoke_capabilities(
+            pid,
+            cap_type,
+            required_rights.bits,
+            restore_at,
+        );
+        sec.intent_capability_denied(pid, cap_type, required_rights.bits, object_id);
+        sec.log_event(
+            AuditEntry::new(SecurityEvent::CapabilityRevoked, pid, 0)
+                .with_context(revoked as u64),
+        );
+        sec.log_event(
+            AuditEntry::new(SecurityEvent::PermissionDenied, pid, 0).with_context(object_id),
+        );
         return false;
     }
-    
+
+    // Rate limit check via SecurityManager
+    if sec
+        .validate_capability(pid, required_rights.bits, required_rights.bits)
+        .is_err()
+    {
+        sec.intent_capability_denied(pid, cap_type, required_rights.bits, object_id);
+        return false;
+    }
+
     // Look up capability in process capability table
     let tables = CAPABILITY_MANAGER.tables.lock();
-    
+
     if let Some(table) = tables[pid.0 as usize].as_ref() {
         // Iterate through all capabilities to find matching one
         for entry in &table.entries {
@@ -1021,7 +1467,13 @@ pub fn check_capability(
                     ) {
                         RemoteLeaseDecision::Allow => return true,
                         RemoteLeaseDecision::Deny => {
-                            security::security().log_event(
+                            sec.intent_invalid_capability(
+                                pid,
+                                cap_type,
+                                required_rights.bits,
+                                cap.object_id,
+                            );
+                            sec.log_event(
                                 AuditEntry::new(SecurityEvent::InvalidCapability, pid, cap.cap_id)
                                     .with_context(cap.object_id),
                             );
@@ -1029,7 +1481,7 @@ pub fn check_capability(
                         }
                         RemoteLeaseDecision::NotMapped => {
                             // Audit successful capability use
-                            security::security().log_event(
+                            sec.log_event(
                                 AuditEntry::new(SecurityEvent::CapabilityUsed, pid, cap.cap_id)
                                     .with_context(cap.object_id)
                             );
@@ -1038,7 +1490,13 @@ pub fn check_capability(
                     }
                 }
                 if matches!(access, Err(CapabilityError::InvalidCapability)) {
-                    security::security().log_event(
+                    sec.intent_invalid_capability(
+                        pid,
+                        cap_type,
+                        required_rights.bits,
+                        cap.object_id,
+                    );
+                    sec.log_event(
                         AuditEntry::new(SecurityEvent::InvalidCapability, pid, cap.cap_id)
                             .with_context(cap.object_id),
                     );
@@ -1046,13 +1504,17 @@ pub fn check_capability(
             }
         }
     }
-    
+
     // Fallback to active remote leases installed from validated CapNet tokens.
     if check_remote_capability_access(pid, object_id, cap_type, required_rights) {
         return true;
     }
 
     // No matching local capability or remote lease found
+    sec.intent_capability_denied(pid, cap_type, required_rights.bits, object_id);
+    sec.log_event(
+        AuditEntry::new(SecurityEvent::PermissionDenied, pid, 0).with_context(object_id),
+    );
     false
 }
 
@@ -1203,16 +1665,27 @@ pub fn formal_capability_self_check() -> Result<(), &'static str> {
 
 /// Revoke a capability (syscall wrapper)
 impl CapabilityManager {
-    pub fn revoke_capability(&self, _pid: ProcessId, _cap_id: u32) -> Result<(), &'static str> {
-        // TODO: Implement capability revocation via capability table
-        // For now, just return success
-        Ok(())
+    pub fn revoke_capability(&self, pid: ProcessId, cap_id: u32) -> Result<(), &'static str> {
+        let idx = pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return Err("Task not found");
+        }
+
+        let mut tables = self.tables.lock();
+        let table = tables[idx].as_mut().ok_or("Task not found")?;
+        table.remove(cap_id).map(|_| ()).map_err(|e| e.as_str())
     }
     
     /// Query capability information (syscall wrapper)
-    pub fn query_capability(&self, _pid: ProcessId, _cap_id: u32) -> Result<(u32, u64), &'static str> {
-        // TODO: Look up capability and return (type, object_id)
-        // For now, just return dummy data
-        Ok((0, 0))
+    pub fn query_capability(&self, pid: ProcessId, cap_id: u32) -> Result<(u32, u64), &'static str> {
+        let idx = pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return Err("Task not found");
+        }
+
+        let tables = self.tables.lock();
+        let table = tables[idx].as_ref().ok_or("Task not found")?;
+        let cap = table.lookup(cap_id).map_err(|e| e.as_str())?;
+        Ok((cap.cap_type as u32, cap.object_id))
     }
 }

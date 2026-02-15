@@ -13,7 +13,9 @@
 
 use core::fmt;
 use spin::Mutex;
+use crate::capability;
 use crate::ipc::ChannelCapability;
+use crate::security;
 
 /// Maximum number of processes
 pub const MAX_PROCESSES: usize = 64;
@@ -502,12 +504,26 @@ impl ProcessManager {
 
     /// Spawn a new process
     pub fn spawn(&self, name: &str, parent: Option<Pid>) -> Result<Pid, ProcessError> {
-        self.table.lock().spawn(name, parent)
+        let pid = self.table.lock().spawn(name, parent)?;
+
+        // Bind process lifecycle to security/capability subsystems.
+        security::security().init_process(pid);
+        capability::capability_manager().init_task(pid);
+
+        Ok(pid)
     }
 
     /// Terminate a process
     pub fn terminate(&self, pid: Pid) -> Result<(), ProcessError> {
-        self.table.lock().terminate(pid)
+        self.table.lock().terminate(pid)?;
+
+        // Tear down capability/security state to prevent stale restrictions,
+        // quotas, and authority from surviving process termination.
+        let _ = crate::ipc::purge_channels_for_process(pid);
+        capability::capability_manager().deinit_task(pid);
+        security::security().terminate_process(pid);
+
+        Ok(())
     }
 
     /// Get current running process

@@ -1813,6 +1813,7 @@ impl WasmInstance {
 
         let msg_bytes = self.memory.read(msg_ptr, msg_len)?;
         let func_id: u16 = 0;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
         let mut args_hash = replay::fnv1a64_init();
         args_hash = replay::hash_u16(args_hash, func_id);
         args_hash = replay::hash_u32(args_hash, msg_len as u32);
@@ -1866,6 +1867,7 @@ impl WasmInstance {
         // Read key from memory
         let key_bytes = self.memory.read(key_ptr, key_len)?;
         let func_id: u16 = 1;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
         let mut args_hash = replay::fnv1a64_init();
         args_hash = replay::hash_u16(args_hash, func_id);
         args_hash = replay::hash_u32(args_hash, cap_handle.0);
@@ -1895,6 +1897,7 @@ impl WasmInstance {
             .map_err(|_| WasmError::SyscallFailed)?;
 
         // Call filesystem
+        crate::security::security().intent_fs_read(self.process_id, fs_cap.cap_id as u64);
         let request = fs::Request::read(key, fs_cap);
         let response = fs::filesystem().handle_request(request);
 
@@ -1953,6 +1956,7 @@ impl WasmInstance {
         let key_bytes = self.memory.read(key_ptr, key_len)?;
         let data = self.memory.read(data_ptr, data_len)?;
         let func_id: u16 = 2;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
         let mut args_hash = replay::fnv1a64_init();
         args_hash = replay::hash_u16(args_hash, func_id);
         args_hash = replay::hash_u32(args_hash, cap_handle.0);
@@ -1977,6 +1981,7 @@ impl WasmInstance {
             .map_err(|_| WasmError::SyscallFailed)?;
 
         // Call filesystem
+        crate::security::security().intent_fs_write(self.process_id, fs_cap.cap_id as u64);
         let request = fs::Request::write(key, data, fs_cap)
             .map_err(|_| WasmError::SyscallFailed)?;
         let response = fs::filesystem().handle_request(request);
@@ -2030,6 +2035,7 @@ impl WasmInstance {
         // Read message from memory
         let msg_data = self.memory.read(msg_ptr, msg_len)?;
         let func_id: u16 = 3;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
         let mut args_hash = replay::fnv1a64_init();
         args_hash = replay::hash_u16(args_hash, func_id);
         args_hash = replay::hash_u32(args_hash, cap_handle.0);
@@ -2102,6 +2108,7 @@ impl WasmInstance {
         };
 
         let func_id: u16 = 4;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
         let mut args_hash = replay::fnv1a64_init();
         args_hash = replay::hash_u16(args_hash, func_id);
         args_hash = replay::hash_u32(args_hash, cap_handle.0);
@@ -2180,6 +2187,7 @@ impl WasmInstance {
         // Read URL from memory
         let url_bytes = self.memory.read(url_ptr, url_len)?;
         let func_id: u16 = 5;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
         let mut args_hash = replay::fnv1a64_init();
         args_hash = replay::hash_u16(args_hash, func_id);
         args_hash = replay::hash_u32(args_hash, url_len as u32);
@@ -2256,6 +2264,7 @@ impl WasmInstance {
         // Read host from memory
         let host_bytes = self.memory.read(host_ptr, host_len)?;
         let func_id: u16 = 6;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
         let mut args_hash = replay::fnv1a64_init();
         args_hash = replay::hash_u16(args_hash, func_id);
         args_hash = replay::hash_u32(args_hash, host_len as u32);
@@ -2299,6 +2308,7 @@ impl WasmInstance {
         // Read domain from memory
         let domain_bytes = self.memory.read(domain_ptr, domain_len)?;
         let func_id: u16 = 7;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
         let mut args_hash = replay::fnv1a64_init();
         args_hash = replay::hash_u16(args_hash, func_id);
         args_hash = replay::hash_u32(args_hash, domain_len as u32);

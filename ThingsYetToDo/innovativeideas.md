@@ -3,7 +3,7 @@ Kernel-Level "Capability Tokens" as a Universal API for Devices:
 New Twist: Turn capabilities into portable "tokens" (e.g., signed WASM blobs) that devices can exchange over your network stack. A thin client could "lend" camera access to another device via tokens, with the kernel enforcing trust without a central authority.
 Why Truly Inventive?: Like OAuth for hardware, but decentralized and kernel-enforced. Builds vaguely on distributed systems but invents a "capability internet" for IoT—nothing like this exists in kernels.
 Alignment: Extends your IPC and networking; perfect for multi-tenant appliances.
-Implementation: Serialize capabilities as tokens in your Network Stack, with crypto verification.
+Implementation: Serialize capabilities as tokens in your Network Stack, with crypto verification. COMPLETED 
 
 Capability-Based "Intent Graphs" with Predictive Revocation:
 

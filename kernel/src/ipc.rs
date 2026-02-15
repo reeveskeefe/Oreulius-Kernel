@@ -434,12 +434,70 @@ impl Channel {
 
     /// Send a message through the channel
     pub fn send(&mut self, msg: Message, capability: &ChannelCapability) -> Result<(), IpcError> {
+        let sec = crate::security::security();
+        if sec.is_predictively_restricted(
+            capability.owner,
+            crate::capability::CapabilityType::Channel,
+            crate::capability::Rights::CHANNEL_SEND,
+        ) {
+            let restore_at = sec.restriction_until_tick(capability.owner);
+            let _ = crate::capability::capability_manager().predictive_revoke_capabilities(
+                capability.owner,
+                crate::capability::CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_SEND,
+                restore_at,
+            );
+            sec.intent_capability_denied(
+                capability.owner,
+                crate::capability::CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_SEND,
+                self.id.0 as u64,
+            );
+            sec.log_event(
+                crate::security::AuditEntry::new(
+                    crate::security::SecurityEvent::PermissionDenied,
+                    capability.owner,
+                    capability.cap_id,
+                )
+                .with_context(self.id.0 as u64),
+            );
+            return Err(IpcError::PermissionDenied);
+        }
+
         // Check permission
         if !capability.can_send() {
+            sec.intent_capability_denied(
+                capability.owner,
+                crate::capability::CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_SEND,
+                self.id.0 as u64,
+            );
+            sec.log_event(
+                crate::security::AuditEntry::new(
+                    crate::security::SecurityEvent::PermissionDenied,
+                    capability.owner,
+                    capability.cap_id,
+                )
+                .with_context(self.id.0 as u64),
+            );
             return Err(IpcError::PermissionDenied);
         }
 
         if capability.channel_id != self.id {
+            sec.intent_invalid_capability(
+                capability.owner,
+                crate::capability::CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_SEND,
+                self.id.0 as u64,
+            );
+            sec.log_event(
+                crate::security::AuditEntry::new(
+                    crate::security::SecurityEvent::InvalidCapability,
+                    capability.owner,
+                    capability.cap_id,
+                )
+                .with_context(self.id.0 as u64),
+            );
             return Err(IpcError::InvalidCap);
         }
 
@@ -453,17 +511,79 @@ impl Channel {
             return Err(IpcError::WouldBlock);
         }
 
-        self.buffer.push(msg)
+        let result = self.buffer.push(msg);
+        if result.is_ok() {
+            sec.intent_ipc_send(capability.owner, self.id.0 as u64);
+        }
+        result
     }
 
     /// Try to receive a message (non-blocking)
     pub fn try_recv(&mut self, capability: &ChannelCapability) -> Result<Message, IpcError> {
+        let sec = crate::security::security();
+        if sec.is_predictively_restricted(
+            capability.owner,
+            crate::capability::CapabilityType::Channel,
+            crate::capability::Rights::CHANNEL_RECEIVE,
+        ) {
+            let restore_at = sec.restriction_until_tick(capability.owner);
+            let _ = crate::capability::capability_manager().predictive_revoke_capabilities(
+                capability.owner,
+                crate::capability::CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_RECEIVE,
+                restore_at,
+            );
+            sec.intent_capability_denied(
+                capability.owner,
+                crate::capability::CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_RECEIVE,
+                self.id.0 as u64,
+            );
+            sec.log_event(
+                crate::security::AuditEntry::new(
+                    crate::security::SecurityEvent::PermissionDenied,
+                    capability.owner,
+                    capability.cap_id,
+                )
+                .with_context(self.id.0 as u64),
+            );
+            return Err(IpcError::PermissionDenied);
+        }
+
         // Check permission
         if !capability.can_receive() {
+            sec.intent_capability_denied(
+                capability.owner,
+                crate::capability::CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_RECEIVE,
+                self.id.0 as u64,
+            );
+            sec.log_event(
+                crate::security::AuditEntry::new(
+                    crate::security::SecurityEvent::PermissionDenied,
+                    capability.owner,
+                    capability.cap_id,
+                )
+                .with_context(self.id.0 as u64),
+            );
             return Err(IpcError::PermissionDenied);
         }
 
         if capability.channel_id != self.id {
+            sec.intent_invalid_capability(
+                capability.owner,
+                crate::capability::CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_RECEIVE,
+                self.id.0 as u64,
+            );
+            sec.log_event(
+                crate::security::AuditEntry::new(
+                    crate::security::SecurityEvent::InvalidCapability,
+                    capability.owner,
+                    capability.cap_id,
+                )
+                .with_context(self.id.0 as u64),
+            );
             return Err(IpcError::InvalidCap);
         }
 
@@ -471,7 +591,13 @@ impl Channel {
             return Err(IpcError::Closed);
         }
 
-        self.buffer.pop().ok_or(IpcError::WouldBlock)
+        match self.buffer.pop() {
+            Some(msg) => {
+                sec.intent_ipc_recv(capability.owner, self.id.0 as u64);
+                Ok(msg)
+            }
+            None => Err(IpcError::WouldBlock),
+        }
     }
 
     /// Receive a message (blocking - simplified for v0)
@@ -483,11 +609,24 @@ impl Channel {
 
     /// Close the channel
     pub fn close(&mut self, capability: &ChannelCapability) -> Result<(), IpcError> {
+        let sec = crate::security::security();
         if !capability.can_close() {
+            sec.intent_capability_denied(
+                capability.owner,
+                crate::capability::CapabilityType::Channel,
+                crate::capability::Rights::ALL,
+                self.id.0 as u64,
+            );
             return Err(IpcError::PermissionDenied);
         }
 
         if capability.channel_id != self.id {
+            sec.intent_invalid_capability(
+                capability.owner,
+                crate::capability::CapabilityType::Channel,
+                crate::capability::Rights::ALL,
+                self.id.0 as u64,
+            );
             return Err(IpcError::InvalidCap);
         }
 
@@ -590,6 +729,22 @@ impl ChannelTable {
         }
 
         Err(IpcError::InvalidCap)
+    }
+
+    /// Delete all channels created by a process.
+    pub fn delete_channels_by_creator(&mut self, creator: ProcessId) -> usize {
+        let mut removed = 0usize;
+        for slot in &mut self.channels {
+            let should_remove = match slot.as_ref() {
+                Some(channel) => channel.creator == creator,
+                None => false,
+            };
+            if should_remove {
+                *slot = None;
+                removed = removed.saturating_add(1);
+            }
+        }
+        removed
     }
 
     /// Get channel count
@@ -762,10 +917,9 @@ pub fn init() {
     // IPC is statically initialized, nothing to do for v0
 }
 
-/// Create a new channel (syscall stub)
+/// Create a new channel for the current kernel process context.
 pub fn create_channel() -> Result<usize, &'static str> {
-    // TODO: Implement channel creation
-    Err("Channel creation not yet implemented")
+    create_channel_for_process(ProcessId::KERNEL)
 }
 
 /// Create a new channel for a specific process (syscall implementation)
@@ -780,8 +934,23 @@ pub fn create_channel_for_process_with_flags(creator: ProcessId, flags: ChannelF
     // Create channel in the table with custom flags
     match channels.create_channel_with_flags(creator, flags, priority) {
         Ok(channel_id) => {
-            // TODO: Add capability to process's capability table
-            // For now, just return the channel ID
+            let rights = crate::capability::Rights::new(
+                crate::capability::Rights::CHANNEL_SEND
+                    | crate::capability::Rights::CHANNEL_RECEIVE
+                    | crate::capability::Rights::CHANNEL_CLONE_SENDER
+                    | crate::capability::Rights::CHANNEL_CREATE,
+            );
+            let cap_result = crate::capability::capability_manager().grant_capability(
+                creator,
+                channel_id.0 as u64,
+                crate::capability::CapabilityType::Channel,
+                rights,
+                creator,
+            );
+            if cap_result.is_err() {
+                let _ = channels.delete_channel(channel_id);
+                return Err("Failed to grant channel capability");
+            }
             Ok(channel_id.0 as usize)
         }
         Err(_) => Err("Failed to create channel")
@@ -790,36 +959,51 @@ pub fn create_channel_for_process_with_flags(creator: ProcessId, flags: ChannelF
 
 /// Send message to channel (syscall wrapper)
 pub fn send_message(channel_id: ChannelId, data: &[u8]) -> Result<(), &'static str> {
+    send_message_for_process(ProcessId(0), channel_id, data)
+}
+
+/// Send message to channel on behalf of a process (syscall path).
+pub fn send_message_for_process(
+    source: ProcessId,
+    channel_id: ChannelId,
+    data: &[u8],
+) -> Result<(), &'static str> {
     // Create message from data
-    let msg = Message::with_data(ProcessId(0), data).map_err(|_| "Message too large")?;
+    let msg = Message::with_data(source, data).map_err(|_| "Message too large")?;
     
-    // TODO: Get capability from caller's process
-    // For now, create a temporary capability
-    let cap = ChannelCapability::new(
-        0,
+    let cap = crate::capability::resolve_channel_capability(
+        source,
         channel_id,
-        ChannelRights::send_only(),
-        msg.source,
-    );
+        crate::capability::ChannelAccess::Send,
+    )
+    .map_err(|_| "Missing channel capability")?;
     
     ipc().send(msg, &cap).map_err(|_| "Failed to send message")
 }
 
 /// Receive message from channel (syscall wrapper)
-pub fn receive_message(channel_id: ChannelId, _buffer: &mut [u8]) -> Result<usize, &'static str> {
-    // TODO: Get capability from caller's process
-    // For now, create a temporary capability
-    let cap = ChannelCapability::new(
-        0,
+pub fn receive_message(channel_id: ChannelId, buffer: &mut [u8]) -> Result<usize, &'static str> {
+    receive_message_for_process(ProcessId(0), channel_id, buffer)
+}
+
+/// Receive message from channel on behalf of a process (syscall path).
+pub fn receive_message_for_process(
+    owner: ProcessId,
+    channel_id: ChannelId,
+    buffer: &mut [u8],
+) -> Result<usize, &'static str> {
+    let cap = crate::capability::resolve_channel_capability(
+        owner,
         channel_id,
-        ChannelRights::receive_only(),
-        ProcessId(0),
-    );
+        crate::capability::ChannelAccess::Receive,
+    )
+    .map_err(|_| "Missing channel capability")?;
     
     match ipc().try_recv(&cap) {
         Ok(msg) => {
-            // TODO: Copy message to buffer
-            Ok(msg.payload().len())
+            let copy_len = msg.payload_len.min(buffer.len());
+            crate::asm_bindings::fast_memcpy(&mut buffer[..copy_len], &msg.payload[..copy_len]);
+            Ok(copy_len)
         }
         Err(_) => Err("No message available")
     }
@@ -827,16 +1011,24 @@ pub fn receive_message(channel_id: ChannelId, _buffer: &mut [u8]) -> Result<usiz
 
 /// Close channel (syscall wrapper)
 pub fn close_channel(channel_id: ChannelId) -> Result<(), &'static str> {
-    // TODO: Get capability from caller's process
-    // For now, create a temporary capability
-    let cap = ChannelCapability::new(
-        0,
+    close_channel_for_process(ProcessId(0), channel_id)
+}
+
+/// Close channel on behalf of a process (syscall path).
+pub fn close_channel_for_process(owner: ProcessId, channel_id: ChannelId) -> Result<(), &'static str> {
+    let cap = crate::capability::resolve_channel_capability(
+        owner,
         channel_id,
-        ChannelRights::full(),
-        ProcessId(0),
-    );
+        crate::capability::ChannelAccess::Close,
+    )
+    .map_err(|_| "Missing channel capability")?;
     
     ipc().close(&cap).map_err(|_| "Failed to close channel")
+}
+
+/// Remove IPC channels owned by a terminating process.
+pub fn purge_channels_for_process(owner: ProcessId) -> usize {
+    ipc().channels.lock().delete_channels_by_creator(owner)
 }
 
 // ============================================================================

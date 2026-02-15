@@ -142,11 +142,14 @@ impl SyscallResult {
 pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let syscall = SyscallNumber::from(args.number);
     
-    // Security: audit syscall
-    // TODO: Implement audit_syscall in security module
-    // crate::security::audit_syscall(caller_pid, syscall, args);
-    
-    match syscall {
+    let sec = crate::security::security();
+    let syscall_args = [args.arg1, args.arg2, args.arg3, args.arg4, args.arg5];
+    sec.audit_syscall(caller_pid, args.number, syscall_args);
+    if sec.syscall_policy_blocked(caller_pid, args.number, syscall_args) {
+        return SyscallResult::err(EACCES);
+    }
+
+    let result = match syscall {
         SyscallNumber::Exit => sys_exit(args, caller_pid),
         SyscallNumber::Fork => sys_fork(args, caller_pid),
         SyscallNumber::Yield => sys_yield(args, caller_pid),
@@ -183,7 +186,19 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
         SyscallNumber::JitReturn => sys_jit_return(args, caller_pid),
         
         SyscallNumber::Invalid => SyscallResult::err(ENOSYS),
+    };
+
+    // Escalation stage: repeated predictive restrictions can request termination.
+    if syscall != SyscallNumber::Exit
+        && sec.take_intent_termination_recommendation(caller_pid)
+    {
+        let _ = crate::process::process_manager().terminate(crate::process::Pid(caller_pid.0));
+        let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+        let _ = scheduler.remove_process(caller_pid);
+        return SyscallResult::err(EACCES);
     }
+
+    result
 }
 
 // ============================================================================
@@ -200,7 +215,10 @@ fn sys_exit(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
     crate::commands::print_u32(exit_code as u32);
     vga::print_str("\n");
     
-    // Remove from scheduler (process cleanup)
+    // Remove process from process/security/capability subsystems.
+    let _ = crate::process::process_manager().terminate(crate::process::Pid(caller_pid.0));
+
+    // Remove from runtime scheduler.
     let mut scheduler = crate::quantum_scheduler::scheduler().lock();
     let _ = scheduler.remove_process(caller_pid);
     
@@ -367,11 +385,6 @@ fn sys_channel_send(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
     let msg_ptr = args.arg2 as usize;
     let msg_len = args.arg3 as usize;
     
-    // Check capability: process must have WRITE right on channel
-    if !check_capability(caller_pid, channel_id as u64, CapabilityType::Channel, Rights::new(Rights::CHANNEL_SEND)) {
-        return SyscallResult::err(EACCES);
-    }
-    
     // Validate message length
     if msg_len == 0 || msg_len > 4096 {
         return SyscallResult::err(EINVAL);
@@ -388,9 +401,19 @@ fn sys_channel_send(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
     };
     
     // Send via IPC
-    match crate::ipc::send_message(crate::ipc::ChannelId(channel_id as u32), message) {
+    match crate::ipc::send_message_for_process(
+        crate::ipc::ProcessId(caller_pid.0),
+        crate::ipc::ChannelId(channel_id as u32),
+        message,
+    ) {
         Ok(_) => SyscallResult::ok(msg_len as i32),
-        Err(_) => SyscallResult::err(EIO),
+        Err(e) => {
+            if e == "Missing channel capability" {
+                SyscallResult::err(EACCES)
+            } else {
+                SyscallResult::err(EIO)
+            }
+        }
     }
 }
 
@@ -398,11 +421,6 @@ fn sys_channel_recv(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
     let channel_id = args.arg1 as usize;
     let buf_ptr = args.arg2 as usize;
     let buf_len = args.arg3 as usize;
-    
-    // Check capability: process must have READ right on channel
-    if !check_capability(caller_pid, channel_id as u64, CapabilityType::Channel, Rights::new(Rights::CHANNEL_RECEIVE)) {
-        return SyscallResult::err(EACCES);
-    }
     
     // Validate buffer
     if buf_len == 0 || buf_len > 4096 {
@@ -418,28 +436,42 @@ fn sys_channel_recv(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
         core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len)
     };
     
-    match crate::ipc::receive_message(crate::ipc::ChannelId(channel_id as u32), buffer) {
+    match crate::ipc::receive_message_for_process(
+        crate::ipc::ProcessId(caller_pid.0),
+        crate::ipc::ChannelId(channel_id as u32),
+        buffer,
+    ) {
         Ok(bytes_received) => SyscallResult::ok(bytes_received as i32),
-        Err(_) => SyscallResult::err(EAGAIN), // No message available
+        Err(e) => {
+            if e == "Missing channel capability" {
+                SyscallResult::err(EACCES)
+            } else {
+                SyscallResult::err(EAGAIN) // No message available
+            }
+        }
     }
 }
 
 fn sys_channel_close(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let channel_id = args.arg1 as usize;
     
-    // Check capability
-    if !check_capability(caller_pid, channel_id as u64, CapabilityType::Channel, Rights::new(Rights::ALL)) {
-        return SyscallResult::err(EACCES);
-    }
-    
     // Close the channel
-    match crate::ipc::close_channel(crate::ipc::ChannelId(channel_id as u32)) {
+    match crate::ipc::close_channel_for_process(
+        crate::ipc::ProcessId(caller_pid.0),
+        crate::ipc::ChannelId(channel_id as u32),
+    ) {
         Ok(_) => {
             // Revoke capability
             capability::capability_manager().revoke_capability(caller_pid, channel_id as u32).ok();
             SyscallResult::ok(0)
         }
-        Err(_) => SyscallResult::err(EBADF),
+        Err(e) => {
+            if e == "Missing channel capability" {
+                SyscallResult::err(EACCES)
+            } else {
+                SyscallResult::err(EBADF)
+            }
+        }
     }
 }
 
@@ -484,6 +516,14 @@ fn sys_file_open(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
     if !check_capability(caller_pid, 0, CapabilityType::Filesystem, Rights::new(required_rights)) {
         return SyscallResult::err(EACCES);
     }
+
+    let path_hash = crate::security::hash_data(path.as_bytes());
+    if (required_rights & Rights::FS_READ) != 0 {
+        crate::security::security().intent_fs_read(caller_pid, path_hash);
+    }
+    if (required_rights & Rights::FS_WRITE) != 0 {
+        crate::security::security().intent_fs_write(caller_pid, path_hash);
+    }
     
     // Open file via filesystem
     match crate::fs::open(path) {
@@ -512,6 +552,7 @@ fn sys_file_read(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
     }
     
     // Read from file
+    crate::security::security().intent_fs_read(caller_pid, fd as u64);
     let buffer = unsafe {
         core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count)
     };
@@ -542,6 +583,7 @@ fn sys_file_write(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysca
     }
     
     // Write to file
+    crate::security::security().intent_fs_write(caller_pid, fd as u64);
     let buffer = unsafe {
         core::slice::from_raw_parts(buf_ptr as *const u8, count)
     };
@@ -555,8 +597,24 @@ fn sys_file_write(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysca
 fn sys_file_close(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let fd = args.arg1 as usize;
     
-    // Check capability
-    if !check_capability(caller_pid, fd as u64, CapabilityType::Filesystem, Rights::new(Rights::ALL)) {
+    // Require at least one filesystem right on this descriptor.
+    let has_read = check_capability(
+        caller_pid,
+        fd as u64,
+        CapabilityType::Filesystem,
+        Rights::new(Rights::FS_READ),
+    );
+    let has_write = if has_read {
+        true
+    } else {
+        check_capability(
+            caller_pid,
+            fd as u64,
+            CapabilityType::Filesystem,
+            Rights::new(Rights::FS_WRITE),
+        )
+    };
+    if !has_read && !has_write {
         return SyscallResult::err(EACCES);
     }
     
@@ -595,6 +653,7 @@ fn sys_file_delete(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysc
     }
     
     let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("");
+    crate::security::security().intent_fs_write(caller_pid, crate::security::hash_data(path.as_bytes()));
     
     // Delete file
     match crate::fs::delete(path) {
@@ -631,6 +690,7 @@ fn sys_dir_list(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscall
         }
     }
     let path = core::str::from_utf8(&path_buf[..path_len]).unwrap_or("/");
+    crate::security::security().intent_fs_read(caller_pid, crate::security::hash_data(path.as_bytes()));
     
     // List directory
     let buffer = unsafe {
