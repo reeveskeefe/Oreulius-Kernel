@@ -166,68 +166,146 @@ Define anomaly score:
 
 ## 5. Theorems and Corollaries
 
-### Theorem 1 (No Executable Writable JIT State)
-Given transition automaton:
+### 5.1 Lemma 1: Temporal W^X Safety
 
-`RW -> RX -> NONE`
+**Statement.** Under the JIT page-permission transition system, executable pages are never writable at the same instant.
 
-and no transition to `RWX`, then `WXSafe` holds for JIT pages.
+Permission automaton:
 
-Proof sketch:
-- Base: allocation starts in `RW` without execute.
-- Step: legal transitions preserve `not (W and X)`.
-- Closure: no transition introduces `RWX`.
+`RW -> RX -> NONE`  `(Eq.5.1)`
 
-#### Corollary 1.1
-Any write primitive against JIT pages after publication cannot directly produce executable payload mutation.
+State predicate:
 
-### Theorem 2 (Guard Equivalence)
-Define:
+`WXSafe_t(p) := not (W(p,t) and X(p,t))`  `(Eq.5.2)`
 
-`G_l(addr,off,size,L) := checked_add(addr,off)=e and e <= L-size`
+Global safety:
 
-`G_s(addr,off,size,L) := checked_add(addr,off)=e and checked_add(e,size)=end and end <= L`
+`forall t, forall p in JitPages: WXSafe_t(p)`  `(Eq.5.3)`
 
-Then for unsigned finite domains used by JIT linear memory checks:
+**Proof.**
+Initialization places JIT pages in `RW` with `X=0`. The only publication transition sets `X=1` while clearing `W`. Reclamation removes both permissions. No transition introduces `RWX` or toggles `W=1` while `X=1`; therefore the invariant is inductive over transition closure.
 
-`G_l <=> G_s`.
+**Corollary 1.1.**
+Post-publication self-modifying code on JIT execute pages is disallowed by construction.
 
-Proof sketch:
-- `G_s => G_l` by algebraic rearrangement.
-- `G_l => G_s` since `e <= L-size` implies `e+size <= L` with checked arithmetic.
+### 5.2 Lemma 2: Guard Predicate Equivalence
 
-#### Corollary 2.1
-If all memory ops satisfy `G_l`, no in-bounds check can be bypassed by `addr+off` wraparound.
+**Statement.** The implemented low-level bounds guard is equivalent to the high-level memory-safety specification for JIT linear-memory operations.
 
-### Theorem 3 (Capability Attenuation Monotonicity)
-If attenuation is accepted only when `R_c subseteq R_p`, then no attenuation step can add authority.
+Low-level guard:
 
-Proof sketch:
-- Set difference `R_c \ R_p` is empty by acceptance condition.
-- Therefore every granted right in child existed in parent.
+`G_l(a,o,s,L) := checked_add(a,o)=e and e <= L-s`  `(Eq.5.4)`
 
-#### Corollary 3.1
-Privilege escalation via attenuation alone is impossible under the acceptance predicate.
+Spec guard:
 
-### Theorem 4 (Deterministic Gate Soundness for Exercised Corpus)
-If CI gate enforces `mismatches=0` and `compile_errors=0` on required corpus seeds/rounds, any regression affecting those traces is rejected pre-merge.
+`G_s(a,o,s,L) := checked_add(a,o)=e and checked_add(e,s)=u and u <= L`  `(Eq.5.5)`
 
-Proof sketch:
-- Contradiction: suppose changed behavior exists on required set but gate passes.
-- Then either mismatch or compile error would be non-zero, violating pass condition.
+Equivalence:
 
-#### Corollary 4.1
-Replay/soak gate converts observed corpus equivalence into a merge-time safety invariant.
+`forall a,o,s,L: G_l(a,o,s,L) <=> G_s(a,o,s,L)`  `(Eq.5.6)`
 
-### Theorem 5 (Compositional Exploit Requirement)
-Let `F = {Mem, CFI, Cap, Iso, Attest, Det, RunObs}` be control families. For critical threat classes with at least dual-family coverage, successful exploitation requires simultaneous bypass in at least two families.
+**Proof.**
+`G_s => G_l` follows from `u=e+s<=L`, implying `e<=L-s`.  
+`G_l => G_s` follows from `e<=L-s`, so `e+s<=L`; with checked addition, overflow is excluded. Thus both predicates admit exactly the same safe states.
 
-Proof sketch:
-- By construction, each critical threat has `mu(theta)>=2` traceability.
-- Single-family bypass leaves at least one independent blocking predicate true.
+**Corollary 2.1.**
+Overflow-style bypasses of `addr+offset` cannot produce accepted out-of-bounds memory access if guard checks are enforced on all paths.
 
-#### Corollary 5.1
-The architecture removes single-point fail-open behavior for critical JIT paradox threat classes.
+### 5.3 Lemma 3: CFI Admissibility
+
+**Statement.** If all indirect transfers are constrained to a validated target set and returns are shadow-stack checked, control-flow hijack via arbitrary target injection is blocked.
+
+Target admissibility:
+
+`forall e in IndirectEdges(B): target(e) in T_valid`  `(Eq.5.7)`
+
+Return consistency:
+
+`forall k in Returns(B): Ret_arch(k) = Ret_shadow(k)`  `(Eq.5.8)`
+
+**Proof.**
+Any indirect edge with `target notin T_valid` is rejected by verifier/runtime checks; any return mismatch is rejected by shadow-stack equality checks. Therefore a forged edge must violate either `(Eq.5.7)` or `(Eq.5.8)`, both fail-closed.
+
+**Corollary 3.1.**
+ROP/JOP chains requiring arbitrary dynamic targets are reduced to attacks that must first violate CFI/return invariants.
+
+### 5.4 Lemma 4: Capability Authenticity and Monotonicity
+
+**Statement.** Capability forgery and authority amplification are prevented when token validity and rights-subset attenuation are jointly enforced.
+
+Token verification:
+
+`Verify(P,tau) := [tau = SipHash_k(P)]`  `(Eq.5.9)`
+
+Attenuation law:
+
+`AttenuationValid(R_p,R_c) := [R_c subseteq R_p]`  `(Eq.5.10)`
+
+Access admission:
+
+`Allow := Verify(P,tau) and TypeMatch and ObjectMatch and RightsSatisfy`  `(Eq.5.11)`
+
+**Proof.**
+Without key `k`, token forgery is computationally bounded. Even for valid tokens, accepted attenuation cannot increase rights because `(Eq.5.10)` enforces subset monotonicity. Therefore accepted authority cannot exceed authenticated parent authority.
+
+**Corollary 4.1.**
+Privilege escalation by capability replay/forgery/attenuation composition is blocked unless both authenticity and monotonicity checks fail.
+
+### 5.5 Lemma 5: Deterministic Regression Gate Soundness (Exercised Set)
+
+**Statement.** For the required seed/round set, CI replay/soak gates reject all observed semantic regressions.
+
+Gate condition:
+
+`GatePass := [mismatches=0 and compile_errors=0 and required_set_passed]`  `(Eq.5.12)`
+
+**Proof.**
+Suppose a behavioral regression exists on the required set while `GatePass` is true. Then by definition a mismatch or compile error would be non-zero, contradicting `(Eq.5.12)`. Hence observed regressions on the exercised set are rejected.
+
+**Corollary 5.1.**
+Replay and soak convert corpus semantics into merge-time invariants for covered programs.
+
+### 5.6 Theorem 1: Compositional Exploit Requirement
+
+**Statement.** Let control families be:
+
+`F = {Mem, CFI, Cap, Iso, Attest, Det, RunObs}`  `(Eq.5.13)`
+
+For each critical threat `theta`, define mitigation multiplicity:
+
+`mu(theta) := sum_{f in F} M(theta,f)`  `(Eq.5.14)`
+
+where `M(theta,f)=1` iff family `f` mitigates `theta`.  
+If `mu(theta) >= 2` for all critical `theta`, single-family bypass is insufficient for critical threat success.
+
+**Proof.**
+Given `mu(theta)>=2`, at least two independent acceptance predicates must be violated. A single-family bypass leaves at least one active mitigation predicate, so attack progression remains blocked/fail-closed.
+
+**Corollary 6.1.**
+Critical threat classes no longer possess single-point fail-open paths under the defined matrix.
+
+### 5.7 Formal Threat-Control Matrix
+
+The matrix below defines `M(theta,f)` from `(Eq.5.14)`.
+
+| Threat Class `theta` | Mem | CFI | Cap | Iso | Attest | Det | RunObs | `mu(theta)` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `theta_1`: JIT code injection / executable mutation | 1 | 0 | 0 | 1 | 0 | 1 | 1 | 4 |
+| `theta_2`: OOB linear-memory access via overflow | 1 | 0 | 0 | 1 | 0 | 1 | 1 | 4 |
+| `theta_3`: Indirect branch / return hijack | 0 | 1 | 0 | 1 | 0 | 1 | 1 | 4 |
+| `theta_4`: Capability forgery / replay | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 3 |
+| `theta_5`: Capability rights amplification | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 3 |
+| `theta_6`: Sandbox-escape via privilege/map misuse | 1 | 1 | 0 | 1 | 0 | 1 | 1 | 5 |
+| `theta_7`: Attestation substitution / verifier spoof | 0 | 0 | 1 | 1 | 1 | 1 | 1 | 5 |
+| `theta_8`: Nondeterministic semantic regression | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 2 |
+| `theta_9`: Stealth abuse under runtime noise | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 3 |
+| `theta_10`: Scheduler/network instability masking security signals | 0 | 0 | 0 | 1 | 0 | 1 | 1 | 3 |
+
+Dual-coverage criterion:
+
+`forall theta in CriticalThreats: mu(theta) >= 2`  `(Eq.5.15)`
+
+The matrix satisfies `(Eq.5.15)` for all listed critical classes.
 
 ## 6. Proof Obligations
 
