@@ -60,6 +60,7 @@ use crate::fs;
 use crate::paging;
 use crate::idt_asm;
 use crate::memory;
+use crate::memory_isolation;
 use crate::syscall::SYSCALL_JIT_RETURN;
 use crate::gdt;
 use crate::process_asm;
@@ -422,6 +423,7 @@ impl LinearMemory {
             unsafe {
                 core::ptr::write_bytes(base, 0, MAX_MEMORY_SIZE);
             }
+            let _ = memory_isolation::tag_wasm_linear_memory(base as usize, MAX_MEMORY_SIZE, false);
         }
         LinearMemory {
             data: base,
@@ -538,6 +540,9 @@ impl Clone for LinearMemory {
             unsafe {
                 core::ptr::copy_nonoverlapping(self.data, base, MAX_MEMORY_SIZE);
             }
+        }
+        if !base.is_null() {
+            let _ = memory_isolation::tag_wasm_linear_memory(base as usize, MAX_MEMORY_SIZE, false);
         }
         LinearMemory {
             data: base,
@@ -2675,6 +2680,9 @@ fn ensure_jit_user_pages(pages: &mut Option<JitUserPages>) -> Result<JitUserPage
     let call = memory::jit_allocate_pages(1)?;
     let stack_pages = USER_JIT_STACK_PAGES + USER_JIT_STACK_GUARD_PAGES;
     let stack = memory::jit_allocate_pages(stack_pages)?;
+    memory_isolation::tag_jit_user_trampoline(trampoline, paging::PAGE_SIZE, false)?;
+    memory_isolation::tag_jit_user_state(call, paging::PAGE_SIZE, false)?;
+    memory_isolation::tag_jit_user_stack(stack, stack_pages * paging::PAGE_SIZE, false)?;
     write_jit_user_trampoline(trampoline as *mut u8, USER_JIT_CALL_BASE as u32);
     let _ = paging::set_page_writable_range(trampoline, paging::PAGE_SIZE, false);
     let new_pages = JitUserPages {
@@ -3018,6 +3026,18 @@ fn call_jit_user(
     let mem_base = USER_WASM_MEM_BASE
         .checked_add(mem_guard)
         .ok_or("WASM memory base overflow")?;
+    let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
+
+    memory_isolation::tag_jit_user_trampoline(trampoline_phys, paging::PAGE_SIZE, true)?;
+    memory_isolation::tag_jit_user_state(call_phys, paging::PAGE_SIZE, true)?;
+    memory_isolation::tag_jit_user_stack(
+        stack_phys + guard_bytes,
+        USER_JIT_STACK_PAGES * paging::PAGE_SIZE,
+        true,
+    )?;
+    memory_isolation::tag_jit_code_user(exec_phys, exec_map_len)?;
+    memory_isolation::tag_jit_user_state(state_phys, state_map_len, true)?;
+    memory_isolation::tag_wasm_linear_memory(mem_phys, mem_map_len, true)?;
 
     sandbox.map_user_range_phys(
         USER_JIT_TRAMPOLINE_BASE,
@@ -3031,7 +3051,6 @@ fn call_jit_user(
         paging::PAGE_SIZE,
         true,
     )?;
-    let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
     sandbox.map_user_range_phys(
         USER_JIT_STACK_BASE + guard_bytes,
         stack_phys + guard_bytes,
@@ -3132,6 +3151,16 @@ fn call_jit_user(
         kpti::leave_user();
     }
     jit_fault_exit();
+    let _ = memory_isolation::tag_jit_user_trampoline(trampoline_phys, paging::PAGE_SIZE, false);
+    let _ = memory_isolation::tag_jit_user_state(call_phys, paging::PAGE_SIZE, false);
+    let _ = memory_isolation::tag_jit_user_stack(
+        stack_phys,
+        pages.stack_pages * paging::PAGE_SIZE,
+        false,
+    );
+    let _ = memory_isolation::tag_jit_code_kernel(exec_phys, exec_map_len, true);
+    let _ = memory_isolation::tag_jit_user_state(state_phys, state_map_len, false);
+    let _ = memory_isolation::tag_wasm_linear_memory(mem_phys, mem_map_len, false);
     unsafe { idt_asm::fast_sti_restore(flags) };
 
     let ret = unsafe { (*call_ptr).ret };

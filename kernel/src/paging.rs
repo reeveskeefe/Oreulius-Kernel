@@ -549,6 +549,14 @@ impl AddressSpace {
         if user_accessible && virt_aligned >= USER_TOP {
             return Err("User mapping into kernel space");
         }
+        if user_accessible {
+            crate::memory_isolation::validate_mapping_request(
+                phys_aligned,
+                PAGE_SIZE,
+                writable,
+                true,
+            )?;
+        }
 
         let table = unsafe {
             if page_dir.entry(virt_aligned).is_present() {
@@ -701,6 +709,14 @@ impl AddressSpace {
         
         if user_accessible && virt_aligned >= USER_TOP {
             return Err("User mapping into kernel space");
+        }
+        if user_accessible {
+            crate::memory_isolation::validate_mapping_request(
+                phys_aligned,
+                PAGE_SIZE,
+                writable,
+                true,
+            )?;
         }
 
         // Get or create page table

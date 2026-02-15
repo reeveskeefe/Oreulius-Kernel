@@ -25,6 +25,7 @@ pub mod ipc;
 pub mod keyboard;
 pub mod memory;
 pub mod memopt_asm;
+pub mod memory_isolation;
 pub mod net;
 pub mod net_reactor;
 pub mod netstack;
@@ -158,6 +159,7 @@ pub extern "C" fn rust_main() -> ! {
         vga::print_str(e);
         vga::print_str("\n");
     }
+    memory_isolation::init();
     
     // Initialize syscall interface
     vga::print_str("[SYSCALL] Setting up system call interface...\n");

@@ -5671,6 +5671,42 @@ fn cmd_cpu_info() {
     } else {
         vga::print_str("✗ Disabled\n");
     }
+
+    let iso = crate::memory_isolation::status();
+    vga::print_str("  MemTag:  ");
+    if iso.tagging_enabled {
+        vga::print_str("✓ Enabled\n");
+    } else {
+        vga::print_str("✗ Disabled\n");
+    }
+    vga::print_str("  SGX:     ");
+    if iso.sgx_supported {
+        vga::print_str("✓ Yes");
+        if iso.sgx1_supported {
+            vga::print_str(" (SGX1");
+            if iso.sgx2_supported {
+                vga::print_str("+SGX2");
+            }
+            vga::print_str(")");
+        }
+        if iso.sgx_launch_control {
+            vga::print_str(" LC");
+        }
+        vga::print_str("\n");
+    } else {
+        vga::print_str("✗ No\n");
+    }
+    vga::print_str("  TrustZone: ");
+    if iso.trustzone_supported {
+        vga::print_str("✓ Yes\n");
+    } else {
+        vga::print_str("✗ No\n");
+    }
+    vga::print_str("  Tagged ranges: ");
+    print_usize(iso.tagged_ranges);
+    vga::print_str("\n  Denied user maps: ");
+    print_u32(iso.denied_user_mappings);
+    vga::print_str("\n");
     
     // Other Features
     vga::print_str("\nOther Features:\n");

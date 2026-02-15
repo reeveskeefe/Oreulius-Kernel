@@ -31,13 +31,14 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - **Per-instance JIT user pages + wipe between runs**: per-instance JIT trampoline/call/stack pages are wiped and re-sealed on each run.
 - **Full CFI (shadow stack + valid target sets)**: return checks run on all exits; verifier restricts indirect/branch targets to trap stubs.
 - **SMEP/SMAP/KPTI**: CR4 protections enabled when supported; KPTI uses user IDT + trampolines, CR3 switching on entry/exit, and minimal kernel mappings.
+- **Memory tagging + hardware isolation capability layer**: software-tagged physical ranges now enforce fail-closed user mappings; SGX capability detection and TrustZone architecture gating are surfaced at runtime.
 - **Scheduler/context-switch hardening**: first-run kernel thread contexts start with IF cleared, context-switch preserves raw saved EFLAGS, and resumed threads restore prior interrupt state.
 - **Keyboard IRQ recovery under preemption**: cooperative switch paths now restore interrupt state on resume, preventing latent IRQ starvation after yields/blocks.
 - **Translation validation (per-block certificate)**: each compiled function now carries a per-op translation trace and per-block digest; cache/integrity checks re-validate WASM-to-x86 block coverage, fuel-check insertion, and memory-guard shape before execution.
 
 ### **Remaining TODOs**
 - **Formal verification of critical JIT paths and capability checks**
-- **Memory tagging / hardware isolation (SGX/TrustZone)**
+- **Hardware enclave backend**: full SGX enclave execution flow or TrustZone secure-world monitor integration (platform-dependent)
 - **External fuzzing + coverage-guided regression**
 - **Anomaly detection / audit hardening beyond current logs**
 - **Long-run scheduler/network stress verification**: continue soak testing preemptive shell/network switching to close intermittent runtime-fault reports.
@@ -62,6 +63,8 @@ This creates a philosophical and practical dilemma for achieving "provably secur
 - Per-instance JIT user pages wiped/resealed on each run.
 - Full CFI enforcement: shadow stack checks on all exits + verifier target validation.
 - Per-block translation certificates with runtime integrity re-validation of WASM->x86 trace coverage.
+- Software memory tagging with fail-closed user-mapping policy checks in paging.
+- SGX capability detection + TrustZone architecture gating surfaced via boot logs and `cpu-info`.
 - Scheduler bootstrap race fix: initial kernel-thread IF handling and resumed interrupt-state restoration.
 - Cooperative context-switch interrupt hygiene: per-thread IRQ state preserved and restored across `yield`/`block`.
 
@@ -174,6 +177,8 @@ impl JitVerifier {
 - ✅ **Per-instance JIT user pages**: trampoline/call/stack pages are per instance and wiped between runs.
 - ✅ **CFI (shadow stack + valid target sets)**: return checks on all exits + verifier-enforced trap targets.
 - ✅ **SMEP/SMAP/KPTI**: CR4 protections + user IDT trampolines + CR3 isolation.
+- ✅ **Memory tagging policy**: user mappings are validated against tagged physical ranges (fail-closed for untagged/supervisor-only ranges).
+- ✅ **Hardware isolation capability reporting**: SGX/TrustZone availability is detected and exposed for policy decisions.
 - ✅ **Translation validation**: per-block translation certificates are generated and re-validated (WASM trace coverage + opcode guard obligations + block digests).
 
 **Benefits:**
@@ -752,9 +757,9 @@ impl AnomalyDetector {
 |-------|------------------|----------|-----------------|
 | **1** | Ring 3 JIT Execution + Sandbox | Kernel compromise via JIT bug | ~5% overhead |
 | **2** | Formal Verification | Logic errors in security code | 0% (compile-time) |
-| **3** | SGX/TrustZone | Hardware-level isolation | ~10% overhead |
+| **3** | SGX/TrustZone capability layer | Hardware isolation discovery + policy gate | ~0% overhead (detection) |
 | **4** | Control Flow Integrity | ROP/JOP attacks | ~2% overhead |
-| **5** | Memory Tagging | Use-after-free, overflow | ~3% overhead (hardware) |
+| **5** | Software Memory Tagging | Unauthorized user mappings / cross-domain remap | ~1-3% overhead |
 | **6** | W^X Enforcement | Code injection | ~1% overhead |
 | **7** | IPC Capability MACs (SipHash) | Capability forgery in transfers | ~1% overhead |
 | **8** | Tamper-Proof Audit | Evidence destruction | ~2% overhead |
@@ -787,7 +792,7 @@ impl AnomalyDetector {
 
 ### **Phase 3 (Advanced - Long-term):**
 1. 🔶 Formal verification of JIT translation + capability checks
-2. 🔶 Memory tagging / SGX/TrustZone-class isolation
+2. 🔶 Full enclave backend (SGX enclaves / TrustZone secure-world monitor)
 3. 🔶 Tamper-proof audit chaining + anomaly detection
 
 ---
@@ -818,7 +823,7 @@ impl AnomalyDetector {
 
 ---
 
-**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, SMEP/SMAP/KPTI, fuel limits, integrity checks, shadow validation, capability MACs in IPC + core tables, a complete decoder/whitelist, expanded SFI, and in-kernel fuzzing). The remaining gap to "provably secure" is **formal verification + coverage-guided fuzzing**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
+**Bottom Line:** Oreulia now has real, enforceable hardening (W^X, ring 3 JIT execution path, sandboxed address space, SMEP/SMAP/KPTI, fuel limits, integrity checks, shadow validation, capability MACs in IPC + core tables, complete decoder/whitelist, expanded SFI, software memory-tag policy enforcement with fail-closed user mappings, SGX/TrustZone capability detection, and in-kernel fuzzing). The remaining gap to "provably secure" is **formal verification + coverage-guided fuzzing + platform enclave backend work**. Once those are complete, the system can credibly claim production-grade, defense-in-depth security.
 
 # 🔬 **Mathematical Problems to Make Oreulia Provably Impenetrable**
 

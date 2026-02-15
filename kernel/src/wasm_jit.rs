@@ -41,7 +41,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::wasm::{Opcode, MAX_STACK_DEPTH, MAX_INSTRUCTIONS_PER_CALL, MAX_LOCALS};
-use crate::{memory, paging};
+use crate::{memory, memory_isolation, paging};
 
 pub type JitFn = unsafe extern "C" fn(
     *mut i32,
@@ -122,6 +122,7 @@ impl JitExecBuffer {
             .ok_or("Size overflow")?
             / paging::PAGE_SIZE;
         let base = memory::jit_allocate_pages(pages)?;
+        let _ = memory_isolation::tag_jit_code_kernel(base, pages * paging::PAGE_SIZE, false);
         Ok(JitExecBuffer {
             ptr: base as *mut u8,
             len,
@@ -140,6 +141,7 @@ impl JitExecBuffer {
         }
         // Seal pages (read-only policy)
         paging::set_page_writable_range(self.ptr as usize, self.len, false)?;
+        memory_isolation::tag_jit_code_kernel(self.ptr as usize, self.len, true)?;
         self.sealed = true;
         Ok(())
     }
