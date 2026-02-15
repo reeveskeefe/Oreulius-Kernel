@@ -3545,7 +3545,9 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         let ops = 8 + (rng.next_u32() % 32) as usize;
 
         for _ in 0..ops {
-            if code.len() + 8 >= MAX_FUZZ_CODE_SIZE {
+            // Keep enough headroom for the largest generated opcode sequence:
+            // i32.store + 2x uleb32 (1 + 5 + 5 bytes) plus trailing End.
+            if code.len() + 16 >= MAX_FUZZ_CODE_SIZE {
                 break;
             }
             let choice = rng.next_u32() % 14;
