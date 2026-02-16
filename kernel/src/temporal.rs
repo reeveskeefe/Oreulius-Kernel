@@ -3215,6 +3215,62 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         return Err("temporal object self-check: scheduler payload too short");
     }
 
+    crate::replay::start_record(0, 0x5450_4C59, 0)
+        .map_err(|_| "temporal object self-check: replay start_record failed")?;
+    let replay_latest = latest_version(replay_state_object_key())
+        .map_err(|_| "temporal object self-check: replay history missing")?;
+    let replay_read = read_version(replay_state_object_key(), replay_latest.version_id)
+        .map_err(|_| "temporal object self-check: replay payload unreadable")?;
+    if replay_read.len() < 8 {
+        return Err("temporal object self-check: replay payload too short");
+    }
+    rollback_path(replay_state_object_key(), replay_latest.version_id)
+        .map_err(|_| "temporal object self-check: replay rollback failed")?;
+    crate::replay::clear(0);
+
+    let mut legacy_network_payload = [0u8; 32];
+    legacy_network_payload[0] = TEMPORAL_OBJECT_ENCODING_V1;
+    legacy_network_payload[1] = TEMPORAL_NETWORK_LEGACY_OBJECT;
+    legacy_network_payload[2] = TEMPORAL_NETWORK_LEGACY_EVENT_STATE;
+    legacy_network_payload[3] = 1; // schema v1
+    legacy_network_payload[24..28].copy_from_slice(&1u32.to_le_bytes());
+    record_network_legacy_state_event(&legacy_network_payload)
+        .map_err(|_| "temporal object self-check: legacy network record failed")?;
+    let legacy_latest = latest_version(network_legacy_state_object_key())
+        .map_err(|_| "temporal object self-check: legacy network history missing")?;
+    rollback_path(network_legacy_state_object_key(), legacy_latest.version_id)
+        .map_err(|_| "temporal object self-check: legacy network rollback failed")?;
+
+    let mut wifi_payload = [0u8; 84];
+    wifi_payload[0] = TEMPORAL_OBJECT_ENCODING_V1;
+    wifi_payload[1] = TEMPORAL_WIFI_OBJECT;
+    wifi_payload[2] = TEMPORAL_WIFI_EVENT_STATE;
+    wifi_payload[3] = 1; // schema v1
+    wifi_payload[4] = 0; // no pci device
+    wifi_payload[5] = 0; // disabled
+    wifi_payload[6] = 0; // WifiState::Disabled
+    wifi_payload[7] = 0; // ip not assigned
+    wifi_payload[39] = 0; // WifiSecurity::Open
+    // scan_count at offset 16 remains 0, connection network is zeroed and valid for ssid_len=0
+    record_wifi_state_event(&wifi_payload)
+        .map_err(|_| "temporal object self-check: wifi record failed")?;
+    let wifi_latest = latest_version(wifi_state_object_key())
+        .map_err(|_| "temporal object self-check: wifi history missing")?;
+    rollback_path(wifi_state_object_key(), wifi_latest.version_id)
+        .map_err(|_| "temporal object self-check: wifi rollback failed")?;
+
+    crate::enclave::set_remote_attestation_policy(crate::enclave::RemoteAttestationPolicy::Audit);
+    let enclave_latest = latest_version(enclave_state_object_key())
+        .map_err(|_| "temporal object self-check: enclave history missing")?;
+    let enclave_read = read_version(enclave_state_object_key(), enclave_latest.version_id)
+        .map_err(|_| "temporal object self-check: enclave payload unreadable")?;
+    if enclave_read.len() < 4 {
+        return Err("temporal object self-check: enclave payload too short");
+    }
+    rollback_path(enclave_state_object_key(), enclave_latest.version_id)
+        .map_err(|_| "temporal object self-check: enclave rollback failed")?;
+    crate::enclave::set_remote_attestation_policy(crate::enclave::RemoteAttestationPolicy::Enforce);
+
     Ok(())
 }
 

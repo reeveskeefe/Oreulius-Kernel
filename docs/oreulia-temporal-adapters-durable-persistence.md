@@ -5,7 +5,7 @@
 Oreulia’s **Temporal Objects** subsystem turns mutable kernel state into an explicit, versioned history:
 
 - Every temporal object is keyed by a canonical path (e.g. `/data/file`, `/socket/tcp/conn/7`, `/enclave/state`).
-- Each write/snapshot/rollback/merge produces an **immutable version** with metadata and an integrity hash.
+- Writes and snapshots append **immutable versions** with metadata and integrity hashes. Merges either fast-forward branch heads or materialize a merge version, while rollbacks and branch checkouts apply selected historical payloads via adapters.
 - **Branching and merging** are first-class, Git-like operations inside the kernel.
 - A **universal adapter layer** makes non-file kernel object classes (sockets, IPC, scheduler, WASM runtime tables, replay, WiFi, enclave control-plane state, etc.) participate in the same time-travel semantics without VFS path hacks.
 - **Durable persistence** is integrated: the temporal store periodically serializes itself into the persistence subsystem and recovers on boot when a backing store is present.
@@ -137,6 +137,27 @@ The temporal store is bounded by compile-time constants:
 
 These are not documentation-level “limits”; they are enforced in the core recording and decoding logic.
 
+### 2.4 Version Graph and Ancestor Relation
+
+For a fixed path `p`, the temporal store maintains a directed graph over its versions:
+
+- Nodes: `V_p`
+- Edges: for each `v in V_p`,
+  - if `meta(v).parent_version_id = Some(u)` then include edge `(v -> u)`
+  - if `meta(v).rollback_from_version_id = Some(w)` then include edge `(v -> w)`
+
+This is not restricted to a tree: rollback and merge metadata can introduce a second outgoing edge, yielding a bounded DAG-shaped history graph.
+
+Define reachability:
+
+- `Reach_p(a, b)` iff there exists a directed path from `a` to `b` following the edges above.
+
+Define the ancestor predicate used by merge logic:
+
+- `Ancestor_p(x, y) := Reach_p(y, x)`
+
+This matches the kernel implementation which checks whether `ancestor` is reachable from `descendant` via a bounded DFS that traverses both the `parent_version_id` and `rollback_from_version_id` edges.
+
 ---
 
 ## 3. Integrity Metadata (Hashes + Merkle Root)
@@ -216,6 +237,18 @@ During adapter apply, the kernel enters a “temporal replay” region guarded b
 
 preventing feedback loops where an apply operation would re-trigger capture.
 
+### 4.4 Restore Modes
+
+Adapters receive a `TemporalRestoreMode` hint describing *why* a payload is being applied:
+
+| Mode | Produced By | Meaning |
+|---|---|---|
+| `Rollback` | `rollback_path(...)` | Apply a specific historical version to the live object |
+| `Checkout` | `checkout_branch(...)` | Apply the active branch head payload to the live object |
+| `Merge` | `merge_branch(...)` | Apply the merge-selected payload to the live object |
+
+In the current implementation, most adapters treat these modes identically (decode + assign state), but the mode parameter is intentionally part of the interface so future adapters can implement mode-specific policy (e.g., refusing to “checkout” hardware state unless a device is present).
+
 ---
 
 ## 5. “Universal Coverage” Defined and Proven (Current Kernel Object Classes)
@@ -273,6 +306,37 @@ Therefore each enumerated object class has a concrete adapter restore path. QED.
 **Corollary 1.** For any non-file temporal key in Table 5.2, restoration is performed via its object-specific adapter, not via the generic VFS file write path.
 
 **Proof.** The generic adapter has prefix `/`. Every non-file key/prefix in Table 5.2 is strictly longer than `/`, and the dispatcher selects the longest matching prefix. Therefore the object-specific adapter is chosen. QED.
+
+### 5.5 Coverage Inventory (Key Space)
+
+The temporal key space is intentionally split into:
+
+- **File-backed keys**: arbitrary paths under `/` whose payload is the file bytes.
+- **Keyed object instances**: stable object ids encoded in the key (e.g. `/ipc/channel/17`).
+- **Singleton subsystem state**: a single canonical key per subsystem (e.g. `/scheduler/state`).
+- **Auxiliary objects**: supporting keys used to keep singleton payloads bounded (e.g. replay transcript chunks).
+
+| Domain | Key / Pattern | Category | Notes |
+|---|---|---|---|
+| VFS file bytes | `/<any>` | file-backed | tracked writes produce versions; restore writes bytes untracked |
+| TCP connections | `/socket/tcp/conn/<id>` | keyed | event stream + state snapshots via reactor apply |
+| TCP listeners | `/socket/tcp/listener/<id>` | keyed | listen/accept/state events |
+| IPC channels | `/ipc/channel/<id>` | keyed | bounded mailbox + close semantics |
+| Processes | `/process/<pid>` | keyed | spawn/terminate events |
+| Capabilities | `/capability/<pid>/<type>/<object>` | keyed | grant/revoke events |
+| Registry | `/registry/service/<type>/<ns>` | keyed | register/unregister/state |
+| Console objects | `/console/object/<id>` | keyed | state counters + ownership |
+| Intent policy | `/security/intent/policy` | singleton | runtime-tuned thresholds/durations |
+| CapNet | `/capnet/state` | singleton | peer sessions + revocation epochs |
+| WASM service pointers | `/wasm/service-pointers` | singleton | ref.func-backed service pointer registry |
+| WASM syscall modules | `/wasm/syscall-modules` | singleton | syscall-loaded module table + bytecode |
+| Scheduler | `/scheduler/state` | singleton | runnable state + queues (kernel-specific encoding) |
+| Replay manager | `/replay/state` | singleton | session descriptors + chunk descriptors |
+| Replay transcripts | `/replay/transcript/<slot>/<chunk>` | auxiliary | chunked transcript bytes (keeps `/replay/state` bounded) |
+| Network reactor config | `/network/config` | singleton | netstack/driver configuration plane |
+| Legacy network service | `/network/legacy/state` | singleton | legacy TCP table + DNS cache + scalars |
+| WiFi driver | `/wifi/state` | singleton | control-plane state + scan results |
+| Enclave control-plane | `/enclave/state` | singleton | policy + certs + keys + sessions (sanitized pointers) |
 
 ---
 
@@ -550,6 +614,95 @@ regardless of their values at the time of capture.
 
 In the enclave adapter decode, each restored `EnclaveSession` is constructed with those fields set to `0` as literal constants. No subsequent assignment in the apply path overwrites those fields with decoded payload data. Additionally, the EPC manager is cleared. Therefore the post-apply sessions satisfy the stated equalities. QED.
 
+### 9.7 Lemma: Adapter Apply Cannot Re-record Temporal Versions
+
+**Lemma 8 (No Recursive Recording During Apply).** While `apply_temporal_payload_to_object(path, payload, mode)` is executing an adapter apply, any call into the temporal recording API (e.g. `record_object_write`, `record_object_snapshot`, `record_write`, `snapshot_path`) does not append a new temporal version.
+
+**Proof.**
+
+1. `apply_temporal_payload_to_object` constructs a `TemporalReplayGuard` before calling `adapter.apply(...)`.
+2. `TemporalReplayGuard` increments a global replay depth counter, making `is_replay_active()` return `true` for the duration of the apply.
+3. All public recording entrypoints delegate to `record_object_event(...)`, and `record_object_event(...)` checks `is_replay_active()` first.
+4. If replay is active, `record_object_event(...)` returns `Ok(0)` without calling `record_version_locked(...)`, and therefore without mutating the store or persisting a snapshot.
+
+Thus no temporal version is appended during adapter apply. QED.
+
+### 9.8 Lemma: Fast-Forward Merge Correctness
+
+**Lemma 9 (Fast-Forward Merge Head Update).** Consider a merge on object key `p` where `merge_branch(p, source, target, strategy)` returns `fast_forward = true` and `target_head_after = Some(h_s)`. Then after the merge:
+
+- the target branch head is `h_s`, and
+- if the target branch is the active branch, the object’s live state is eligible to be updated to `payload(h_s)` via adapter apply.
+
+**Proof.**
+
+Fast-forward merge occurs in the merge algorithm only in these cases:
+
+1. `target_head` is `None`, or
+2. `Ancestor_p(target_head, source_head)` holds.
+
+In both cases the implementation updates the target branch head to the source head id `h_s`. If the target branch is active, the merge function returns the bytes `payload(h_s)` for adapter application; if it is not active, it returns `None` and leaves the live object unchanged (since the active branch is different).
+
+Therefore the branch head is updated as stated, and for active targets the adapter apply can restore the live state to the merged head payload. QED.
+
+### 9.9 Lemma: Non-Fast-Forward Merge Materializes a Merge Version
+
+**Lemma 10 (Merge Version Encodes Both Heads).** If a merge is requested with `strategy ∈ {Ours, Theirs}` and neither head is an ancestor of the other, then the merge algorithm appends a new version `v_m` such that:
+
+- `meta(v_m).operation = Merge`
+- `meta(v_m).parent_version_id = target_head_before`
+- `meta(v_m).rollback_from_version_id = Some(source_head_id)`
+
+and the target branch head becomes `version_id(v_m)`.
+
+**Proof.**
+
+In the non-fast-forward case, the implementation:
+
+1. selects a base payload from either the source head (`Theirs`) or the target head (`Ours`);
+2. allocates a fresh `version_id` from `next_version_id`;
+3. constructs `TemporalVersionMeta` with:
+   - `operation = Merge`,
+   - `parent_version_id = target_head`,
+   - `rollback_from_version_id = Some(source_head_id)`;
+4. pushes `TemporalVersionEntry { meta, payload }` into the object’s version list;
+5. updates the target branch head (and active head if applicable) to the new `version_id`.
+
+These steps are exactly the stated properties. QED.
+
+### 9.10 Lemma: Persistent Snapshot Decoding Is Shape-Bounded
+
+**Lemma 11 (Decode Enforces Store Bounds).** `decode_persistent_state(snapshot)` returns `Some(service)` only if the decoded store satisfies the kernel bounds:
+
+- number of objects ≤ `MAX_TEMPORAL_OBJECTS`
+- versions per object ≤ `MAX_VERSIONS_PER_OBJECT`
+- branches per object ≤ `MAX_BRANCHES_PER_OBJECT` (for v2 snapshots)
+- payload byte length per version ≤ `MAX_TEMPORAL_VERSION_BYTES`
+
+**Proof.**
+
+During decoding the implementation checks:
+
+1. `object_count <= MAX_TEMPORAL_OBJECTS` and returns `None` otherwise.
+2. For each object, it checks `version_count <= MAX_VERSIONS_PER_OBJECT` (and for v2 snapshots also `branch_count <= MAX_BRANCHES_PER_OBJECT`) and returns `None` otherwise.
+3. For each version entry, it checks `data_len <= MAX_TEMPORAL_VERSION_BYTES` and that `cursor + data_len` lies within the snapshot buffer; otherwise it returns `None`.
+
+Therefore any successfully decoded store respects the bounds. QED.
+
+### 9.11 Theorem: Version IDs Do Not Collide Across Recovery
+
+**Theorem 2 (Post-Recovery ID Freshness).** After decoding a persisted snapshot, any subsequently recorded version id is strictly greater than every version id present in the recovered store.
+
+**Proof.**
+
+Let `max_id` be the maximum `version_id` observed during snapshot decoding. The decoder sets:
+
+- `next_version_id := max(next_version_id_from_snapshot, max_id + 1, 1)`.
+
+All new versions are allocated by assigning the current `next_version_id` to the new entry, then incrementing `next_version_id`.
+
+Thus, the first new allocation is at least `max_id + 1`, and each subsequent allocation is larger still. No new `version_id` can equal any recovered `version_id`. QED.
+
 ---
 
 ## 10. Extension Guidelines (Adding New Kernel Object Classes)
@@ -574,9 +727,186 @@ Design rules:
 
 ---
 
-## 11. Known Limitations (By Design or Deferred)
+## 11. Algorithms and Semantics
+
+This section describes the operational semantics of Temporal Objects as implemented.
+
+### 11.1 Append Semantics (Write/Snapshot)
+
+All new versions enter the store through a single internal primitive:
+
+```text
+record_version_locked(path, payload, op):
+  require |payload| <= MAX_TEMPORAL_VERSION_BYTES
+  object := ensure_object(path)
+  require object.versions.len < MAX_VERSIONS_PER_OBJECT
+
+  version_id := next_version_id; next_version_id++
+  parent := object.active_branch_head()
+
+  meta := {
+    version_id,
+    parent_version_id = parent,
+    rollback_from_version_id = None,
+    branch_id = object.active_branch_id,
+    tick = PIT.ticks(),
+    data_len = |payload|,
+    hashes = compute_version_hashes(payload),
+    operation = op
+  }
+
+  object.versions.push({meta, payload.copy()})
+  object.head_version_id := version_id
+  branch_head(object.active_branch_id) := version_id
+```
+
+Key properties:
+
+- payload bytes are copied into a new allocation at record time (no aliasing to caller buffers)
+- version ids are monotonically increasing within a boot session
+- branch heads are updated only via store-locked operations
+
+### 11.2 Branch Semantics (Create/List/Checkout)
+
+Branch creation is a metadata operation: it allocates a new `branch_id` and points it at an existing version id (or `None` if the object has no versions yet).
+
+Checkout is a restore operation:
+
+1. update `active_branch_id` and `head_version_id` to the named branch head,
+2. if the head is non-`None`, load its payload and apply it via the adapter for the object key.
+
+### 11.3 Rollback Semantics
+
+Rollback is “restore-by-version-id”:
+
+```text
+rollback_path(path, rollback_to):
+  payload := read_version(path, rollback_to)
+  previous_head := store.head_version_id(path)
+
+  adapter_apply(path, payload, mode=Rollback)
+
+  store.mark_latest_rollback(path, rollback_from=rollback_to, previous_head)
+  persist_state_snapshot()
+```
+
+The store records rollback provenance by setting `rollback_from_version_id = Some(rollback_to)` in the (current) head metadata and may allocate an auto branch name `rollback-<id>` when the rollback target diverges from the prior head.
+
+### 11.4 Merge Semantics
+
+The merge algorithm has two operational modes:
+
+- **Fast-forward merge**: if the target head is `None` or is an ancestor of the source head, then the target head becomes the source head (no new version is appended).
+- **Materialized merge** (`strategy ∈ {Ours, Theirs}`): if heads have diverged, a new merge version is appended whose metadata links both heads:
+  - `parent_version_id = target_head`
+  - `rollback_from_version_id = source_head`
+  - `operation = Merge`
+  - payload is chosen from target (`Ours`) or source (`Theirs`)
+
+This is intentionally not a three-way semantic merge of structured state; it is a bounded, policy-driven choice that preserves both heads in the version graph.
+
+### 11.5 Complexity (Per Operation)
+
+| Operation | Time | Space |
+|---|---:|---:|
+| record write/snapshot | `O(|payload|)` | `O(|payload|)` |
+| list versions | `O(#versions)` | `O(#versions)` |
+| history window | `O(window)` | `O(window)` |
+| rollback apply | `O(|payload| + adapter)` | `O(|payload|)` |
+| merge (ff-only) | `O(reachability)` | `O(reachability)` |
+| merge (materialized) | `O(reachability + |payload|)` | `O(|payload|)` |
+
+Reachability in merges uses the bounded DFS described in Section 2.4 and is bounded above by the number of versions for that key.
+
+---
+
+## 12. Audit and Intent Graph Integration
+
+Temporal operations are security-significant. The temporal service emits audit events and intent signals for both reads and writes.
+
+### 12.1 Audit Context Encoding
+
+Each temporal audit event encodes an action, an object hint, and a success bit into a 64-bit context value:
+
+```text
+ctx = (action << 56) | (object_hint mod 2^56)
+ctx = ctx OR (success << 55)
+```
+
+where:
+
+- `action` is a small enumeration (`TemporalAuditAction`)
+- `object_hint` is a stable hash of the path bytes
+- the `success` bit is written into bit 55 (so that bit is reserved for success signaling)
+
+### 12.2 Action Codes
+
+| Action | Code | Intent |
+|---|---:|---|
+| Snapshot | 1 | write |
+| Write | 2 | write |
+| Rollback | 3 | write |
+| BranchCreate | 4 | write |
+| BranchCheckout | 5 | write |
+| Merge | 6 | write |
+| ReadVersion | 7 | read |
+| ListVersions | 8 | read |
+| LatestVersion | 9 | read |
+| HistoryWindow | 10 | read |
+| ListBranches | 11 | read |
+| Recover | 12 | write |
+
+### 12.3 Intent Signaling
+
+Before recording or reading temporal data, the kernel emits an intent signal to the security manager:
+
+- “write intent” for operations that mutate temporal history or apply restores
+- “read intent” for operations that observe temporal history
+
+This makes temporal time-travel auditable and eligible for policy-based rate limiting or anomaly detection (e.g., intent-graph predictive revocation).
+
+---
+
+## 13. Validation and Self-Checks
+
+Oreulia includes kernel self-checks that exercise both persistence and universal adapter coverage.
+
+### 13.1 Shell Entry Point
+
+The kernel command surface includes:
+
+- `temporal-abi-selftest`
+
+which runs a bundle of regression checks covering:
+
+- WASM temporal ABI encode/decode paths
+- VFS fd-write temporal capture
+- non-file object adapter scope restore (`object_scope_self_check`)
+- persistence snapshot encode/decode and recovery (`persistence_recovery_self_check`)
+- branch + merge semantics (`branch_merge_self_check`)
+- audit emission (`audit_emission_self_check`)
+- temporal IPC framed service checks (binary protocol v1)
+
+### 13.2 Universal Object Scope Coverage
+
+`object_scope_self_check()` specifically validates that non-file object keys can be recorded and restored via adapter dispatch, including (at minimum):
+
+- `/wasm/service-pointers`
+- `/wasm/syscall-modules`
+- `/scheduler/state`
+- `/replay/state`
+- `/network/legacy/state`
+- `/wifi/state`
+- `/enclave/state`
+
+This is the practical regression harness that guards “universal coverage” against drift as new subsystems are added.
+
+---
+
+## 14. Known Limitations (By Design or Deferred)
 
 - **Not cryptographic integrity.** Hashes are for fast detection and metadata, not adversarial tamper-proofing.
 - **Secret-at-rest policy.** If temporal persistence is backed by durable storage, enclave key material is persisted as bytes; production deployments should add sealing/encryption and policy-driven redaction.
 - **Hardware-coupled resources.** For devices (WiFi/EPC), temporal restore is control-plane restore; actual hardware re-init may still be required on first use.
 - **Global snapshot size.** The persistence snapshot includes full payload bytes for all stored versions; retention/compaction policies are future work.
+- **Merge semantics are policy-driven.** Non-fast-forward merges do not perform a deep structural reconciliation; they choose `Ours` or `Theirs` payloads and preserve both heads via metadata edges.
