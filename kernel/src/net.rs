@@ -42,11 +42,19 @@
 
 #![allow(dead_code)]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use spin::Mutex;
 use crate::ipc::ProcessId;
 use crate::wifi::{WifiNetwork, WifiState};
 use crate::pci::PciDevice;
 use crate::net_reactor;
+
+const TEMPORAL_NETWORK_LEGACY_SCHEMA_V1: u8 = 1;
+const TEMPORAL_NETWORK_LEGACY_HEADER_BYTES: usize = 32;
+const TEMPORAL_NETWORK_LEGACY_TCP_ENTRY_BYTES: usize = 36;
+const TEMPORAL_NETWORK_LEGACY_DNS_ENTRY_BYTES: usize = 80;
 
 // ============================================================================
 // Network Configuration
@@ -290,6 +298,7 @@ impl NetworkService {
         // Initialize WiFi driver
         crate::wifi::init(device)?;
         self.wifi_enabled = true;
+        self.record_temporal_state_snapshot();
         Ok(())
     }
 
@@ -338,6 +347,7 @@ impl NetworkService {
         self.gateway = Ipv4Addr::new(192, 168, 1, 1);
         self.dns_server = Ipv4Addr::new(8, 8, 8, 8);
 
+        self.record_temporal_state_snapshot();
         Ok(())
     }
 
@@ -395,6 +405,7 @@ impl NetworkService {
 
         self.dns_cache[self.dns_cache_count] = entry;
         self.dns_cache_count += 1;
+        self.record_temporal_state_snapshot();
     }
 
     /// Perform HTTP GET request (real implementation)
@@ -455,6 +466,7 @@ impl NetworkService {
         print_u16(port);
         crate::vga::print_str("\n");
 
+        self.record_temporal_state_snapshot();
         Ok(conn_id)
     }
 
@@ -779,6 +791,7 @@ impl NetworkService {
             self.tcp_connections[self.tcp_count - 1] = TcpConnection::new();
             self.tcp_count -= 1;
         }
+        self.record_temporal_state_snapshot();
         Ok(())
     }
 
@@ -791,6 +804,250 @@ impl NetworkService {
             dns_cache_entries: self.dns_cache_count,
         }
     }
+}
+
+fn temporal_tcp_state_to_u8(state: TcpState) -> u8 {
+    match state {
+        TcpState::Closed => 0,
+        TcpState::Listen => 1,
+        TcpState::SynSent => 2,
+        TcpState::SynReceived => 3,
+        TcpState::Established => 4,
+        TcpState::FinWait1 => 5,
+        TcpState::FinWait2 => 6,
+        TcpState::CloseWait => 7,
+        TcpState::Closing => 8,
+        TcpState::LastAck => 9,
+        TcpState::TimeWait => 10,
+    }
+}
+
+fn temporal_tcp_state_from_u8(v: u8) -> Option<TcpState> {
+    match v {
+        0 => Some(TcpState::Closed),
+        1 => Some(TcpState::Listen),
+        2 => Some(TcpState::SynSent),
+        3 => Some(TcpState::SynReceived),
+        4 => Some(TcpState::Established),
+        5 => Some(TcpState::FinWait1),
+        6 => Some(TcpState::FinWait2),
+        7 => Some(TcpState::CloseWait),
+        8 => Some(TcpState::Closing),
+        9 => Some(TcpState::LastAck),
+        10 => Some(TcpState::TimeWait),
+        _ => None,
+    }
+}
+
+fn temporal_append_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn temporal_append_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn temporal_read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > data.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn temporal_read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    if offset.saturating_add(4) > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
+}
+
+impl NetworkService {
+    fn encode_temporal_state_payload(&self, event: u8) -> Option<Vec<u8>> {
+        let tcp_count = core::cmp::min(self.tcp_count, MAX_CONNECTIONS);
+        let dns_count = core::cmp::min(self.dns_cache_count, MAX_DNS_CACHE);
+
+        let total_len = TEMPORAL_NETWORK_LEGACY_HEADER_BYTES
+            .saturating_add(tcp_count.saturating_mul(TEMPORAL_NETWORK_LEGACY_TCP_ENTRY_BYTES))
+            .saturating_add(dns_count.saturating_mul(TEMPORAL_NETWORK_LEGACY_DNS_ENTRY_BYTES));
+        if total_len > crate::temporal::MAX_TEMPORAL_VERSION_BYTES {
+            return None;
+        }
+
+        let mut payload = Vec::with_capacity(total_len);
+        payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
+        payload.push(crate::temporal::TEMPORAL_NETWORK_LEGACY_OBJECT);
+        payload.push(event);
+        payload.push(TEMPORAL_NETWORK_LEGACY_SCHEMA_V1);
+        payload.push(if self.wifi_enabled { 1 } else { 0 });
+        payload.push(0);
+        payload.push(0);
+        payload.push(0);
+        payload.extend_from_slice(&self.ip_address.0);
+        payload.extend_from_slice(&self.gateway.0);
+        payload.extend_from_slice(&self.dns_server.0);
+        temporal_append_u16(&mut payload, tcp_count as u16);
+        temporal_append_u16(&mut payload, dns_count as u16);
+        temporal_append_u32(&mut payload, self.next_conn_id);
+        temporal_append_u32(&mut payload, 0);
+
+        for i in 0..tcp_count {
+            let conn = self.tcp_connections[i];
+            temporal_append_u32(&mut payload, conn.id);
+            payload.extend_from_slice(&conn.local_addr.ip.0);
+            temporal_append_u16(&mut payload, conn.local_addr.port);
+            payload.extend_from_slice(&conn.remote_addr.ip.0);
+            temporal_append_u16(&mut payload, conn.remote_addr.port);
+            payload.push(temporal_tcp_state_to_u8(conn.state));
+            payload.push(0);
+            payload.push(0);
+            payload.push(0);
+            temporal_append_u32(&mut payload, conn.owner.0);
+            temporal_append_u32(&mut payload, conn.seq_num);
+            temporal_append_u32(&mut payload, conn.ack_num);
+            temporal_append_u16(&mut payload, conn.window_size);
+            temporal_append_u16(&mut payload, 0);
+        }
+
+        for i in 0..dns_count {
+            let entry = self.dns_cache[i];
+            payload.push(if entry.valid { 1 } else { 0 });
+            payload.push(entry.domain_len.min(64) as u8);
+            temporal_append_u16(&mut payload, 0);
+            temporal_append_u32(&mut payload, entry.ttl);
+            payload.extend_from_slice(&entry.ip.0);
+            temporal_append_u32(&mut payload, 0);
+            payload.extend_from_slice(&entry.domain);
+        }
+
+        Some(payload)
+    }
+
+    fn record_temporal_state_snapshot(&self) {
+        if crate::temporal::is_replay_active() {
+            return;
+        }
+        let payload = match self.encode_temporal_state_payload(crate::temporal::TEMPORAL_NETWORK_LEGACY_EVENT_STATE) {
+            Some(v) => v,
+            None => return,
+        };
+        let _ = crate::temporal::record_network_legacy_state_event(&payload);
+    }
+}
+
+pub fn temporal_apply_network_service_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() < TEMPORAL_NETWORK_LEGACY_HEADER_BYTES {
+        return Err("temporal legacy network payload too short");
+    }
+    if payload[3] != TEMPORAL_NETWORK_LEGACY_SCHEMA_V1 {
+        return Err("temporal legacy network schema unsupported");
+    }
+
+    let wifi_enabled = payload[4] != 0;
+    let ip_address = Ipv4Addr([payload[8], payload[9], payload[10], payload[11]]);
+    let gateway = Ipv4Addr([payload[12], payload[13], payload[14], payload[15]]);
+    let dns_server = Ipv4Addr([payload[16], payload[17], payload[18], payload[19]]);
+    let tcp_count = temporal_read_u16(payload, 20).ok_or("temporal legacy network tcp count missing")? as usize;
+    let dns_count = temporal_read_u16(payload, 22).ok_or("temporal legacy network dns count missing")? as usize;
+    if tcp_count > MAX_CONNECTIONS || dns_count > MAX_DNS_CACHE {
+        return Err("temporal legacy network count out of range");
+    }
+    let next_conn_id =
+        temporal_read_u32(payload, 24).ok_or("temporal legacy network next conn id missing")?;
+
+    let mut offset = TEMPORAL_NETWORK_LEGACY_HEADER_BYTES;
+    let mut tcp_connections = [TcpConnection::new(); MAX_CONNECTIONS];
+    for i in 0..tcp_count {
+        if offset.saturating_add(TEMPORAL_NETWORK_LEGACY_TCP_ENTRY_BYTES) > payload.len() {
+            return Err("temporal legacy network tcp entry truncated");
+        }
+        let id = temporal_read_u32(payload, offset).ok_or("temporal legacy network conn id missing")?;
+        let local_ip = Ipv4Addr([
+            payload[offset + 4],
+            payload[offset + 5],
+            payload[offset + 6],
+            payload[offset + 7],
+        ]);
+        let local_port =
+            temporal_read_u16(payload, offset + 8).ok_or("temporal legacy network local port missing")?;
+        let remote_ip = Ipv4Addr([
+            payload[offset + 10],
+            payload[offset + 11],
+            payload[offset + 12],
+            payload[offset + 13],
+        ]);
+        let remote_port =
+            temporal_read_u16(payload, offset + 14).ok_or("temporal legacy network remote port missing")?;
+        let state = temporal_tcp_state_from_u8(payload[offset + 16])
+            .ok_or("temporal legacy network state invalid")?;
+        let owner_pid =
+            temporal_read_u32(payload, offset + 20).ok_or("temporal legacy network owner missing")?;
+        let seq_num = temporal_read_u32(payload, offset + 24).ok_or("temporal legacy network seq missing")?;
+        let ack_num = temporal_read_u32(payload, offset + 28).ok_or("temporal legacy network ack missing")?;
+        let window_size =
+            temporal_read_u16(payload, offset + 32).ok_or("temporal legacy network window missing")?;
+
+        let mut conn = TcpConnection::new();
+        conn.id = id;
+        conn.local_addr = SocketAddr::new(local_ip, local_port);
+        conn.remote_addr = SocketAddr::new(remote_ip, remote_port);
+        conn.state = state;
+        conn.owner = ProcessId(owner_pid);
+        conn.seq_num = seq_num;
+        conn.ack_num = ack_num;
+        conn.window_size = window_size;
+        tcp_connections[i] = conn;
+
+        offset = offset.saturating_add(TEMPORAL_NETWORK_LEGACY_TCP_ENTRY_BYTES);
+    }
+
+    let mut dns_cache = [DnsEntry::new(); MAX_DNS_CACHE];
+    for i in 0..dns_count {
+        if offset.saturating_add(TEMPORAL_NETWORK_LEGACY_DNS_ENTRY_BYTES) > payload.len() {
+            return Err("temporal legacy network dns entry truncated");
+        }
+        let valid = payload[offset] != 0;
+        let domain_len = payload[offset + 1] as usize;
+        let ttl = temporal_read_u32(payload, offset + 4).ok_or("temporal legacy network ttl missing")?;
+        let ip = Ipv4Addr([
+            payload[offset + 8],
+            payload[offset + 9],
+            payload[offset + 10],
+            payload[offset + 11],
+        ]);
+        let mut domain = [0u8; 64];
+        domain.copy_from_slice(&payload[offset + 16..offset + 80]);
+
+        let mut entry = DnsEntry::new();
+        entry.valid = valid;
+        entry.domain_len = domain_len.min(64);
+        entry.domain = domain;
+        entry.ip = ip;
+        entry.ttl = ttl;
+        dns_cache[i] = entry;
+
+        offset = offset.saturating_add(TEMPORAL_NETWORK_LEGACY_DNS_ENTRY_BYTES);
+    }
+
+    if offset != payload.len() {
+        return Err("temporal legacy network payload trailing bytes");
+    }
+
+    let mut net = NETWORK.lock();
+    net.wifi_enabled = wifi_enabled;
+    net.ip_address = ip_address;
+    net.gateway = gateway;
+    net.dns_server = dns_server;
+    net.tcp_connections = tcp_connections;
+    net.tcp_count = tcp_count;
+    net.dns_cache = dns_cache;
+    net.dns_cache_count = dns_count;
+    net.next_conn_id = next_conn_id;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]

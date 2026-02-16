@@ -65,6 +65,95 @@ const QUANTUM_LOW: u32 = 5;        // 50ms for low priority
 
 /// Maximum wait queue entries
 const MAX_WAIT_QUEUES: usize = 64;
+const TEMPORAL_SCHEDULER_SCHEMA_V1: u8 = 1;
+const TEMPORAL_SCHEDULER_HEADER_BYTES: usize = 60;
+const TEMPORAL_SCHEDULER_PROCESS_ENTRY_BYTES: usize = 44;
+const TEMPORAL_SCHEDULER_WAIT_QUEUE_HEADER_BYTES: usize = 12;
+
+fn scheduler_process_state_to_u8(state: ProcessState) -> u8 {
+    match state {
+        ProcessState::Ready => 1,
+        ProcessState::Running => 2,
+        ProcessState::Blocked => 3,
+        ProcessState::WaitingOnChannel => 4,
+        ProcessState::Terminated => 5,
+    }
+}
+
+fn scheduler_process_state_from_u8(value: u8) -> Option<ProcessState> {
+    match value {
+        1 => Some(ProcessState::Ready),
+        2 => Some(ProcessState::Running),
+        3 => Some(ProcessState::Blocked),
+        4 => Some(ProcessState::WaitingOnChannel),
+        5 => Some(ProcessState::Terminated),
+        _ => None,
+    }
+}
+
+fn scheduler_priority_to_u8(priority: ProcessPriority) -> u8 {
+    match priority {
+        ProcessPriority::High => 3,
+        ProcessPriority::Normal => 2,
+        ProcessPriority::Low => 1,
+    }
+}
+
+fn scheduler_priority_from_u8(value: u8) -> Option<ProcessPriority> {
+    match value {
+        3 => Some(ProcessPriority::High),
+        2 => Some(ProcessPriority::Normal),
+        1 => Some(ProcessPriority::Low),
+        _ => None,
+    }
+}
+
+fn scheduler_append_u16(buf: &mut Vec<u8>, value: u16) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn scheduler_append_u32(buf: &mut Vec<u8>, value: u32) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn scheduler_append_u64(buf: &mut Vec<u8>, value: u64) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn scheduler_read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > data.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn scheduler_read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    if offset.saturating_add(4) > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
+}
+
+fn scheduler_read_u64(data: &[u8], offset: usize) -> Option<u64> {
+    if offset.saturating_add(8) > data.len() {
+        return None;
+    }
+    Some(u64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]))
+}
 
 /// Scheduler state
 pub struct QuantumScheduler {
@@ -166,6 +255,7 @@ impl QuantumScheduler {
         
         self.processes[idx] = Some(info);
         self.enqueue_ready(pid, priority);
+        self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
         
         Ok(())
     }
@@ -328,6 +418,7 @@ impl QuantumScheduler {
         }
         
         self.current_pid = None;
+        self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
         Ok(self.plan_switch(prev))
     }
 
@@ -341,6 +432,7 @@ impl QuantumScheduler {
                         info.process.state = ProcessState::Ready;
                         let priority = info.process.priority;
                         self.enqueue_ready(pid, priority);
+                        self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
                         return Ok(true);
                     }
                 }
@@ -367,6 +459,9 @@ impl QuantumScheduler {
             }
         }
         
+        if count > 0 {
+            self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
+        }
         Ok(count)
     }
 
@@ -538,6 +633,7 @@ impl QuantumScheduler {
         
         self.processes[pid.0 as usize] = Some(info);
         self.enqueue_ready(pid, priority);
+        self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
         
         crate::vga::print_str("\n");
         // Print stack assignment for debugging
@@ -588,6 +684,7 @@ impl QuantumScheduler {
             
             scheduler.current_pid = Some(next_pid);
             SCHEDULER_STARTED.store(true, Ordering::Release);
+            scheduler.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
             
             if let Some(ref mut info) = scheduler.processes[next_pid.0 as usize] {
                 info.process.state = ProcessState::Running;
@@ -685,6 +782,7 @@ impl QuantumScheduler {
         }
 
         self.processes[idx] = None;
+        self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
         Ok(())
     }
     
@@ -706,6 +804,117 @@ impl QuantumScheduler {
     /// Execute WASM in current process
     pub fn exec_current_wasm(&mut self, _module_id: u32) -> Result<(), &'static str> {
         Err("WASM exec not yet implemented")
+    }
+
+    fn encode_temporal_state_payload_locked(&self, event: u8) -> Option<Vec<u8>> {
+        let mut process_count = 0usize;
+        let mut i = 0usize;
+        while i < self.processes.len() {
+            if self.processes[i].is_some() {
+                process_count += 1;
+            }
+            i += 1;
+        }
+
+        let mut ready_pid_count = 0usize;
+        let mut q = 0usize;
+        while q < self.ready_queues.len() {
+            ready_pid_count = ready_pid_count.saturating_add(self.ready_queues[q].len());
+            q += 1;
+        }
+
+        let mut wait_pid_count = 0usize;
+        let mut wait_idx = 0usize;
+        while wait_idx < self.wait_queue_count {
+            if self.wait_queues[wait_idx].active {
+                wait_pid_count =
+                    wait_pid_count.saturating_add(self.wait_queues[wait_idx].waiting.len());
+            }
+            wait_idx += 1;
+        }
+
+        let total_len = TEMPORAL_SCHEDULER_HEADER_BYTES
+            .saturating_add(process_count.saturating_mul(TEMPORAL_SCHEDULER_PROCESS_ENTRY_BYTES))
+            .saturating_add(ready_pid_count.saturating_mul(4))
+            .saturating_add(
+                self.wait_queue_count
+                    .saturating_mul(TEMPORAL_SCHEDULER_WAIT_QUEUE_HEADER_BYTES),
+            )
+            .saturating_add(wait_pid_count.saturating_mul(4));
+        if total_len > crate::temporal::MAX_TEMPORAL_VERSION_BYTES {
+            return None;
+        }
+
+        let mut payload = Vec::with_capacity(total_len);
+        payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
+        payload.push(crate::temporal::TEMPORAL_SCHEDULER_OBJECT);
+        payload.push(event);
+        payload.push(TEMPORAL_SCHEDULER_SCHEMA_V1);
+        scheduler_append_u16(&mut payload, MAX_PROCESSES as u16);
+        scheduler_append_u16(&mut payload, MAX_WAIT_QUEUES as u16);
+        scheduler_append_u16(&mut payload, process_count as u16);
+        scheduler_append_u16(&mut payload, self.wait_queue_count as u16);
+        scheduler_append_u32(
+            &mut payload,
+            self.current_pid.map(|pid| pid.0).unwrap_or(u32::MAX),
+        );
+        scheduler_append_u32(&mut payload, self.ready_queues[0].len() as u32);
+        scheduler_append_u32(&mut payload, self.ready_queues[1].len() as u32);
+        scheduler_append_u32(&mut payload, self.ready_queues[2].len() as u32);
+        scheduler_append_u64(&mut payload, self.stats.total_switches);
+        scheduler_append_u64(&mut payload, self.stats.preemptions);
+        scheduler_append_u64(&mut payload, self.stats.voluntary_yields);
+        scheduler_append_u64(&mut payload, self.stats.idle_ticks);
+
+        let mut idx = 0usize;
+        while idx < self.processes.len() {
+            if let Some(info) = self.processes[idx].as_ref() {
+                scheduler_append_u32(&mut payload, idx as u32);
+                payload.push(scheduler_process_state_to_u8(info.process.state));
+                payload.push(scheduler_priority_to_u8(info.process.priority));
+                scheduler_append_u16(&mut payload, 0);
+                scheduler_append_u32(&mut payload, info.quantum_remaining);
+                scheduler_append_u64(&mut payload, info.total_cpu_time);
+                scheduler_append_u64(&mut payload, info.total_wait_time);
+                scheduler_append_u64(&mut payload, info.last_scheduled);
+                scheduler_append_u64(&mut payload, info.switches);
+            }
+            idx += 1;
+        }
+
+        let mut queue_idx = 0usize;
+        while queue_idx < self.ready_queues.len() {
+            for pid in self.ready_queues[queue_idx].iter() {
+                scheduler_append_u32(&mut payload, pid.0);
+            }
+            queue_idx += 1;
+        }
+
+        let mut i = 0usize;
+        while i < self.wait_queue_count {
+            let wait = &self.wait_queues[i];
+            scheduler_append_u64(&mut payload, wait.addr as u64);
+            payload.push(if wait.active { 1 } else { 0 });
+            payload.push(0);
+            scheduler_append_u16(&mut payload, wait.waiting.len() as u16);
+            for pid in wait.waiting.iter() {
+                scheduler_append_u32(&mut payload, pid.0);
+            }
+            i += 1;
+        }
+
+        Some(payload)
+    }
+
+    fn record_temporal_state_snapshot_locked(&self, event: u8) {
+        if crate::temporal::is_replay_active() {
+            return;
+        }
+        let payload = match self.encode_temporal_state_payload_locked(event) {
+            Some(v) => v,
+            None => return,
+        };
+        let _ = crate::temporal::record_scheduler_state_event(&payload);
     }
     
     /// Get current PID
@@ -739,6 +948,263 @@ pub fn init() {
 /// Get reference to global scheduler
 pub fn scheduler() -> &'static Mutex<QuantumScheduler> {
     &QUANTUM_SCHEDULER
+}
+
+pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() < TEMPORAL_SCHEDULER_HEADER_BYTES {
+        return Err("temporal scheduler payload too short");
+    }
+    if payload[0] != crate::temporal::TEMPORAL_OBJECT_ENCODING_V1
+        || payload[1] != crate::temporal::TEMPORAL_SCHEDULER_OBJECT
+    {
+        return Err("temporal scheduler payload type mismatch");
+    }
+    if payload[2] != crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE {
+        return Err("temporal scheduler event unsupported");
+    }
+    if payload[3] != TEMPORAL_SCHEDULER_SCHEMA_V1 {
+        return Err("temporal scheduler schema unsupported");
+    }
+
+    let max_processes =
+        scheduler_read_u16(payload, 4).ok_or("temporal scheduler max process missing")? as usize;
+    let max_wait =
+        scheduler_read_u16(payload, 6).ok_or("temporal scheduler max wait missing")? as usize;
+    if max_processes != MAX_PROCESSES || max_wait != MAX_WAIT_QUEUES {
+        return Err("temporal scheduler shape mismatch");
+    }
+
+    let process_count =
+        scheduler_read_u16(payload, 8).ok_or("temporal scheduler process count missing")? as usize;
+    let wait_queue_count =
+        scheduler_read_u16(payload, 10).ok_or("temporal scheduler wait queue count missing")?
+            as usize;
+    if process_count > MAX_PROCESSES || wait_queue_count > MAX_WAIT_QUEUES {
+        return Err("temporal scheduler count out of range");
+    }
+
+    let current_pid_raw =
+        scheduler_read_u32(payload, 12).ok_or("temporal scheduler current pid missing")?;
+    let ready0_len = scheduler_read_u32(payload, 16).ok_or("temporal scheduler q0 len missing")?
+        as usize;
+    let ready1_len = scheduler_read_u32(payload, 20).ok_or("temporal scheduler q1 len missing")?
+        as usize;
+    let ready2_len = scheduler_read_u32(payload, 24).ok_or("temporal scheduler q2 len missing")?
+        as usize;
+
+    let stats_total_switches =
+        scheduler_read_u64(payload, 28).ok_or("temporal scheduler stats switches missing")?;
+    let stats_preemptions =
+        scheduler_read_u64(payload, 36).ok_or("temporal scheduler stats preemptions missing")?;
+    let stats_voluntary =
+        scheduler_read_u64(payload, 44).ok_or("temporal scheduler stats voluntary missing")?;
+    let stats_idle = scheduler_read_u64(payload, 52).ok_or("temporal scheduler stats idle missing")?;
+
+    #[derive(Clone, Copy)]
+    struct ProcessUpdate {
+        pid: u32,
+        state: ProcessState,
+        priority: ProcessPriority,
+        quantum_remaining: u32,
+        total_cpu_time: u64,
+        total_wait_time: u64,
+        last_scheduled: u64,
+        switches: u64,
+    }
+
+    #[derive(Clone)]
+    struct WaitQueueUpdate {
+        addr: usize,
+        active: bool,
+        waiting: Vec<u32>,
+    }
+
+    let mut offset = TEMPORAL_SCHEDULER_HEADER_BYTES;
+    let mut process_updates = Vec::with_capacity(process_count);
+    let mut i = 0usize;
+    while i < process_count {
+        if offset.saturating_add(TEMPORAL_SCHEDULER_PROCESS_ENTRY_BYTES) > payload.len() {
+            return Err("temporal scheduler process entry truncated");
+        }
+        let pid = scheduler_read_u32(payload, offset).ok_or("temporal scheduler process pid missing")?;
+        let state = scheduler_process_state_from_u8(payload[offset + 4])
+            .ok_or("temporal scheduler process state invalid")?;
+        let priority = scheduler_priority_from_u8(payload[offset + 5])
+            .ok_or("temporal scheduler process priority invalid")?;
+        let quantum_remaining = scheduler_read_u32(payload, offset + 8)
+            .ok_or("temporal scheduler process quantum missing")?;
+        let total_cpu_time = scheduler_read_u64(payload, offset + 12)
+            .ok_or("temporal scheduler process cpu missing")?;
+        let total_wait_time = scheduler_read_u64(payload, offset + 20)
+            .ok_or("temporal scheduler process wait missing")?;
+        let last_scheduled = scheduler_read_u64(payload, offset + 28)
+            .ok_or("temporal scheduler process last scheduled missing")?;
+        let switches = scheduler_read_u64(payload, offset + 36)
+            .ok_or("temporal scheduler process switches missing")?;
+        process_updates.push(ProcessUpdate {
+            pid,
+            state,
+            priority,
+            quantum_remaining,
+            total_cpu_time,
+            total_wait_time,
+            last_scheduled,
+            switches,
+        });
+        offset += TEMPORAL_SCHEDULER_PROCESS_ENTRY_BYTES;
+        i += 1;
+    }
+
+    let mut ready0 = Vec::with_capacity(ready0_len);
+    let mut i = 0usize;
+    while i < ready0_len {
+        let pid = scheduler_read_u32(payload, offset).ok_or("temporal scheduler q0 pid missing")?;
+        ready0.push(pid);
+        offset = offset.saturating_add(4);
+        i += 1;
+    }
+
+    let mut ready1 = Vec::with_capacity(ready1_len);
+    let mut i = 0usize;
+    while i < ready1_len {
+        let pid = scheduler_read_u32(payload, offset).ok_or("temporal scheduler q1 pid missing")?;
+        ready1.push(pid);
+        offset = offset.saturating_add(4);
+        i += 1;
+    }
+
+    let mut ready2 = Vec::with_capacity(ready2_len);
+    let mut i = 0usize;
+    while i < ready2_len {
+        let pid = scheduler_read_u32(payload, offset).ok_or("temporal scheduler q2 pid missing")?;
+        ready2.push(pid);
+        offset = offset.saturating_add(4);
+        i += 1;
+    }
+
+    let mut wait_updates = Vec::with_capacity(wait_queue_count);
+    let mut i = 0usize;
+    while i < wait_queue_count {
+        if offset.saturating_add(TEMPORAL_SCHEDULER_WAIT_QUEUE_HEADER_BYTES) > payload.len() {
+            return Err("temporal scheduler wait queue truncated");
+        }
+        let addr = scheduler_read_u64(payload, offset).ok_or("temporal scheduler wait addr missing")?;
+        let active = payload[offset + 8] != 0;
+        let waiting_len = scheduler_read_u16(payload, offset + 10)
+            .ok_or("temporal scheduler wait len missing")? as usize;
+        offset += TEMPORAL_SCHEDULER_WAIT_QUEUE_HEADER_BYTES;
+        let mut waiting = Vec::with_capacity(waiting_len);
+        let mut j = 0usize;
+        while j < waiting_len {
+            let pid =
+                scheduler_read_u32(payload, offset).ok_or("temporal scheduler wait pid missing")?;
+            waiting.push(pid);
+            offset = offset.saturating_add(4);
+            j += 1;
+        }
+        wait_updates.push(WaitQueueUpdate {
+            addr: addr as usize,
+            active,
+            waiting,
+        });
+        i += 1;
+    }
+
+    if offset != payload.len() {
+        return Err("temporal scheduler payload trailing bytes");
+    }
+
+    let mut sched = QUANTUM_SCHEDULER.lock();
+    sched.ready_queues[0].clear();
+    sched.ready_queues[1].clear();
+    sched.ready_queues[2].clear();
+    let mut i = 0usize;
+    while i < MAX_WAIT_QUEUES {
+        sched.wait_queues[i] = WaitQueue::default();
+        i += 1;
+    }
+
+    let mut i = 0usize;
+    while i < process_updates.len() {
+        let update = process_updates[i];
+        let idx = update.pid as usize;
+        if idx < MAX_PROCESSES {
+            if let Some(info) = sched.processes[idx].as_mut() {
+                info.process.state = update.state;
+                info.process.priority = update.priority;
+                info.quantum_remaining = update.quantum_remaining;
+                info.total_cpu_time = update.total_cpu_time;
+                info.total_wait_time = update.total_wait_time;
+                info.last_scheduled = update.last_scheduled;
+                info.switches = update.switches;
+            }
+        }
+        i += 1;
+    }
+
+    for pid in ready0.into_iter() {
+        let idx = pid as usize;
+        if idx < MAX_PROCESSES && sched.processes[idx].is_some() {
+            sched.ready_queues[0].push_back(Pid(pid));
+        }
+    }
+    for pid in ready1.into_iter() {
+        let idx = pid as usize;
+        if idx < MAX_PROCESSES && sched.processes[idx].is_some() {
+            sched.ready_queues[1].push_back(Pid(pid));
+        }
+    }
+    for pid in ready2.into_iter() {
+        let idx = pid as usize;
+        if idx < MAX_PROCESSES && sched.processes[idx].is_some() {
+            sched.ready_queues[2].push_back(Pid(pid));
+        }
+    }
+
+    sched.wait_queue_count = wait_updates.len();
+    let mut i = 0usize;
+    while i < wait_updates.len() {
+        let wait = &wait_updates[i];
+        let mut queue = WaitQueue {
+            addr: wait.addr,
+            waiting: VecDeque::new(),
+            active: wait.active,
+        };
+        let mut j = 0usize;
+        while j < wait.waiting.len() {
+            let pid = wait.waiting[j];
+            let idx = pid as usize;
+            if idx < MAX_PROCESSES && sched.processes[idx].is_some() {
+                queue.waiting.push_back(Pid(pid));
+            }
+            j += 1;
+        }
+        if queue.waiting.is_empty() {
+            queue.active = false;
+        }
+        sched.wait_queues[i] = queue;
+        i += 1;
+    }
+
+    sched.current_pid = if current_pid_raw == u32::MAX {
+        None
+    } else {
+        let idx = current_pid_raw as usize;
+        if idx < MAX_PROCESSES && sched.processes[idx].is_some() {
+            Some(Pid(current_pid_raw))
+        } else {
+            None
+        }
+    };
+
+    sched.stats = SchedulerStats {
+        total_switches: stats_total_switches,
+        preemptions: stats_preemptions,
+        voluntary_yields: stats_voluntary,
+        idle_ticks: stats_idle,
+    };
+
+    Ok(())
 }
 
 /// Kernel stack bounds for diagnostics (start, end) for each kernel thread stack.

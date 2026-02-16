@@ -40,6 +40,9 @@
 
 #![allow(dead_code)]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 
@@ -54,6 +57,13 @@ const INVALID_ID: u32 = 0;
 const PAGE_SIZE: usize = 4096;
 const EPC_POOL_PAGES: usize = 256;
 const REMOTE_TOKEN_TTL_EPOCHS: u32 = 100_000;
+
+const TEMPORAL_ENCLAVE_SCHEMA_V1: u8 = 1;
+const TEMPORAL_ENCLAVE_SHAPE_BYTES: usize = 12;
+const TEMPORAL_ENCLAVE_SESSION_META_BYTES: usize = 64;
+const TEMPORAL_ENCLAVE_CERT_BYTES: usize = 36;
+const TEMPORAL_ENCLAVE_KEY_BYTES: usize = 64;
+const TEMPORAL_ENCLAVE_VERIFIER_BYTES: usize = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -488,6 +498,528 @@ static REMOTE_POLICY: AtomicU32 = AtomicU32::new(RemoteAttestationPolicy::Enforc
 static REMOTE_ATTESTATION_VERIFIED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static REMOTE_ATTESTATION_FAILED_TOTAL: AtomicU32 = AtomicU32::new(0);
 static REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL: AtomicU32 = AtomicU32::new(0);
+
+fn temporal_append_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn temporal_append_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn temporal_append_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn temporal_read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > data.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn temporal_read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    if offset.saturating_add(4) > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
+}
+
+fn temporal_read_u64(data: &[u8], offset: usize) -> Option<u64> {
+    if offset.saturating_add(8) > data.len() {
+        return None;
+    }
+    Some(u64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]))
+}
+
+fn temporal_backend_from_u8(v: u8) -> Option<EnclaveBackend> {
+    match v {
+        0 => Some(EnclaveBackend::None),
+        1 => Some(EnclaveBackend::IntelSgx),
+        2 => Some(EnclaveBackend::ArmTrustZone),
+        _ => None,
+    }
+}
+
+fn temporal_enclave_state_from_u8(v: u8) -> Option<EnclaveState> {
+    match v {
+        0 => Some(EnclaveState::Empty),
+        1 => Some(EnclaveState::Initialized),
+        2 => Some(EnclaveState::Running),
+        _ => None,
+    }
+}
+
+fn temporal_cert_role_from_u8(v: u8) -> Option<CertRole> {
+    match v {
+        0 => Some(CertRole::Root),
+        1 => Some(CertRole::QuoteSigner),
+        2 => Some(CertRole::Platform),
+        _ => None,
+    }
+}
+
+fn temporal_key_state_from_u8(v: u8) -> Option<KeyState> {
+    match v {
+        0 => Some(KeyState::Empty),
+        1 => Some(KeyState::Active),
+        2 => Some(KeyState::Revoked),
+        _ => None,
+    }
+}
+
+fn encode_temporal_enclave_payload(event: u8) -> Option<Vec<u8>> {
+    let (backend, sessions, created_total, failed_total, next_id) = {
+        let mgr = MANAGER.lock();
+        (
+            mgr.backend,
+            mgr.sessions,
+            mgr.created_total,
+            mgr.failed_total,
+            mgr.next_id,
+        )
+    };
+    let enabled = ENABLED.load(Ordering::SeqCst);
+    let active_session = ACTIVE_SESSION.load(Ordering::SeqCst);
+    let backend_ops_total = BACKEND_OPS_TOTAL.load(Ordering::SeqCst);
+    let attestation_reports = ATTESTATION_REPORTS.load(Ordering::SeqCst);
+    let epoch_counter = EPOCH_COUNTER.load(Ordering::SeqCst);
+    let key_provisioned_total = KEY_PROVISIONED_TOTAL.load(Ordering::SeqCst);
+    let key_revoked_total = KEY_REVOKED_TOTAL.load(Ordering::SeqCst);
+    let attestation_verified_total = ATTESTATION_VERIFIED_TOTAL.load(Ordering::SeqCst);
+    let attestation_failed_total = ATTESTATION_FAILED_TOTAL.load(Ordering::SeqCst);
+    let remote_policy = REMOTE_POLICY.load(Ordering::SeqCst);
+    let remote_verified_total = REMOTE_ATTESTATION_VERIFIED_TOTAL.load(Ordering::SeqCst);
+    let remote_failed_total = REMOTE_ATTESTATION_FAILED_TOTAL.load(Ordering::SeqCst);
+    let remote_audit_total = REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL.load(Ordering::SeqCst);
+    let cert_chain_ready = CERT_CHAIN_READY.load(Ordering::SeqCst);
+    let vendor_root_ready = VENDOR_ROOT_READY.load(Ordering::SeqCst);
+    let trustzone = *TRUSTZONE_CONTRACT.lock();
+    let cert_chain = *CERT_CHAIN.lock();
+    let provisioned_keys = *PROVISIONED_KEYS.lock();
+    let remote_verifiers = *REMOTE_VERIFIERS.lock();
+
+    let scalar_bytes = 84usize;
+    let total_len = 4usize
+        .saturating_add(TEMPORAL_ENCLAVE_SHAPE_BYTES)
+        .saturating_add(scalar_bytes)
+        .saturating_add(MAX_ENCLAVE_SESSIONS.saturating_mul(TEMPORAL_ENCLAVE_SESSION_META_BYTES))
+        .saturating_add(MAX_ATTESTATION_CERTS.saturating_mul(TEMPORAL_ENCLAVE_CERT_BYTES))
+        .saturating_add(MAX_PROVISIONED_KEYS.saturating_mul(TEMPORAL_ENCLAVE_KEY_BYTES))
+        .saturating_add(MAX_REMOTE_VERIFIERS.saturating_mul(TEMPORAL_ENCLAVE_VERIFIER_BYTES));
+    if total_len > crate::temporal::MAX_TEMPORAL_VERSION_BYTES {
+        return None;
+    }
+
+    let mut payload = Vec::with_capacity(total_len);
+    payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
+    payload.push(crate::temporal::TEMPORAL_ENCLAVE_OBJECT);
+    payload.push(event);
+    payload.push(TEMPORAL_ENCLAVE_SCHEMA_V1);
+
+    temporal_append_u16(&mut payload, MAX_ENCLAVE_SESSIONS as u16);
+    temporal_append_u16(&mut payload, MAX_ATTESTATION_CERTS as u16);
+    temporal_append_u16(&mut payload, MAX_PROVISIONED_KEYS as u16);
+    temporal_append_u16(&mut payload, MAX_REMOTE_VERIFIERS as u16);
+    temporal_append_u32(&mut payload, 0);
+
+    payload.push(if enabled { 1 } else { 0 });
+    payload.push(backend as u8);
+    temporal_append_u16(&mut payload, 0);
+    temporal_append_u32(&mut payload, active_session);
+    temporal_append_u32(&mut payload, created_total);
+    temporal_append_u32(&mut payload, failed_total);
+    temporal_append_u32(&mut payload, next_id);
+    temporal_append_u32(&mut payload, backend_ops_total);
+    temporal_append_u32(&mut payload, attestation_reports);
+    payload.push(if trustzone.ready { 1 } else { 0 });
+    payload.push(if cert_chain_ready { 1 } else { 0 });
+    payload.push(if vendor_root_ready { 1 } else { 0 });
+    payload.push(0);
+    temporal_append_u16(&mut payload, trustzone.abi_major);
+    temporal_append_u16(&mut payload, trustzone.abi_minor);
+    temporal_append_u32(&mut payload, trustzone.features);
+    temporal_append_u32(&mut payload, trustzone.max_sessions);
+    temporal_append_u32(&mut payload, epoch_counter);
+    temporal_append_u32(&mut payload, remote_policy);
+    temporal_append_u32(&mut payload, key_provisioned_total);
+    temporal_append_u32(&mut payload, key_revoked_total);
+    temporal_append_u32(&mut payload, attestation_verified_total);
+    temporal_append_u32(&mut payload, attestation_failed_total);
+    temporal_append_u32(&mut payload, remote_verified_total);
+    temporal_append_u32(&mut payload, remote_failed_total);
+    temporal_append_u32(&mut payload, remote_audit_total);
+    temporal_append_u32(&mut payload, 0);
+
+    for session in sessions.iter() {
+        temporal_append_u32(&mut payload, session.id);
+        payload.push(session.state as u8);
+        payload.push(if session.attested { 1 } else { 0 });
+        payload.push(if session.remote_attested { 1 } else { 0 });
+        payload.push(0);
+        temporal_append_u64(&mut payload, session.measurement);
+        temporal_append_u32(&mut payload, session.backend_cookie);
+        temporal_append_u64(&mut payload, session.launch_token_mac);
+        temporal_append_u32(&mut payload, session.launch_nonce);
+        temporal_append_u32(&mut payload, session.runtime_key_handle);
+        temporal_append_u32(&mut payload, session.remote_verifier_id);
+        temporal_append_u64(&mut payload, session.remote_quote_nonce);
+        temporal_append_u32(&mut payload, session.remote_attest_issued_epoch);
+        temporal_append_u32(&mut payload, session.remote_attest_expires_epoch);
+        temporal_append_u64(&mut payload, session.remote_attest_mac);
+    }
+
+    for cert in cert_chain.iter() {
+        temporal_append_u32(&mut payload, cert.cert_id);
+        temporal_append_u32(&mut payload, cert.issuer_id);
+        payload.push(cert.role as u8);
+        payload.push(if cert.revoked { 1 } else { 0 });
+        temporal_append_u16(&mut payload, 0);
+        temporal_append_u64(&mut payload, cert.pubkey_fingerprint);
+        temporal_append_u32(&mut payload, cert.not_before_epoch);
+        temporal_append_u32(&mut payload, cert.not_after_epoch);
+        temporal_append_u64(&mut payload, cert.signature);
+    }
+
+    for key in provisioned_keys.iter() {
+        temporal_append_u32(&mut payload, key.handle);
+        temporal_append_u32(&mut payload, key.owner_session);
+        temporal_append_u32(&mut payload, key.purpose);
+        payload.push(key.state as u8);
+        payload.push(0);
+        payload.push(0);
+        payload.push(0);
+        temporal_append_u32(&mut payload, key.created_epoch);
+        temporal_append_u32(&mut payload, key.expires_epoch);
+        temporal_append_u64(&mut payload, key.sealed_mac);
+        payload.extend_from_slice(&key.material);
+    }
+
+    for verifier in remote_verifiers.iter() {
+        temporal_append_u32(&mut payload, verifier.id);
+        payload.push(verifier.backend as u8);
+        payload.push(if verifier.enabled { 1 } else { 0 });
+        temporal_append_u16(&mut payload, 0);
+        temporal_append_u64(&mut payload, verifier.root_fingerprint);
+        temporal_append_u64(&mut payload, verifier.verifier_fingerprint);
+        temporal_append_u64(&mut payload, verifier.shared_secret);
+        temporal_append_u32(&mut payload, verifier.not_before_epoch);
+        temporal_append_u32(&mut payload, verifier.not_after_epoch);
+    }
+
+    Some(payload)
+}
+
+fn record_temporal_enclave_state_snapshot() {
+    if crate::temporal::is_replay_active() {
+        return;
+    }
+    let payload = match encode_temporal_enclave_payload(crate::temporal::TEMPORAL_ENCLAVE_EVENT_STATE) {
+        Some(v) => v,
+        None => return,
+    };
+    let _ = crate::temporal::record_enclave_state_event(&payload);
+}
+
+pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() < 4 + TEMPORAL_ENCLAVE_SHAPE_BYTES + 84 {
+        return Err("temporal enclave payload too short");
+    }
+    if payload[3] != TEMPORAL_ENCLAVE_SCHEMA_V1 {
+        return Err("temporal enclave schema unsupported");
+    }
+
+    let max_sessions =
+        temporal_read_u16(payload, 4).ok_or("temporal enclave max sessions missing")? as usize;
+    let max_certs =
+        temporal_read_u16(payload, 6).ok_or("temporal enclave max certs missing")? as usize;
+    let max_keys =
+        temporal_read_u16(payload, 8).ok_or("temporal enclave max keys missing")? as usize;
+    let max_verifiers =
+        temporal_read_u16(payload, 10).ok_or("temporal enclave max verifiers missing")? as usize;
+    if max_sessions != MAX_ENCLAVE_SESSIONS
+        || max_certs != MAX_ATTESTATION_CERTS
+        || max_keys != MAX_PROVISIONED_KEYS
+        || max_verifiers != MAX_REMOTE_VERIFIERS
+    {
+        return Err("temporal enclave shape mismatch");
+    }
+
+    let mut offset = 4 + TEMPORAL_ENCLAVE_SHAPE_BYTES;
+    let enabled = payload[offset] != 0;
+    let backend = temporal_backend_from_u8(payload[offset + 1]).ok_or("temporal enclave backend invalid")?;
+    let active_session =
+        temporal_read_u32(payload, offset + 4).ok_or("temporal enclave active session missing")?;
+    let created_total =
+        temporal_read_u32(payload, offset + 8).ok_or("temporal enclave created total missing")?;
+    let failed_total =
+        temporal_read_u32(payload, offset + 12).ok_or("temporal enclave failed total missing")?;
+    let next_id = temporal_read_u32(payload, offset + 16).ok_or("temporal enclave next id missing")?;
+    let backend_ops_total =
+        temporal_read_u32(payload, offset + 20).ok_or("temporal enclave backend ops missing")?;
+    let attestation_reports =
+        temporal_read_u32(payload, offset + 24).ok_or("temporal enclave reports missing")?;
+    let trustzone_ready = payload[offset + 28] != 0;
+    let cert_chain_ready = payload[offset + 29] != 0;
+    let vendor_root_ready = payload[offset + 30] != 0;
+    let tz_abi_major =
+        temporal_read_u16(payload, offset + 32).ok_or("temporal enclave tz abi major missing")?;
+    let tz_abi_minor =
+        temporal_read_u16(payload, offset + 34).ok_or("temporal enclave tz abi minor missing")?;
+    let tz_features =
+        temporal_read_u32(payload, offset + 36).ok_or("temporal enclave tz features missing")?;
+    let tz_max_sessions =
+        temporal_read_u32(payload, offset + 40).ok_or("temporal enclave tz max sessions missing")?;
+    let epoch_counter =
+        temporal_read_u32(payload, offset + 44).ok_or("temporal enclave epoch counter missing")?;
+    let remote_policy =
+        temporal_read_u32(payload, offset + 48).ok_or("temporal enclave remote policy missing")?;
+    let key_provisioned_total =
+        temporal_read_u32(payload, offset + 52).ok_or("temporal enclave key provisioned missing")?;
+    let key_revoked_total =
+        temporal_read_u32(payload, offset + 56).ok_or("temporal enclave key revoked missing")?;
+    let attestation_verified_total =
+        temporal_read_u32(payload, offset + 60).ok_or("temporal enclave attest verified missing")?;
+    let attestation_failed_total =
+        temporal_read_u32(payload, offset + 64).ok_or("temporal enclave attest failed missing")?;
+    let remote_verified_total =
+        temporal_read_u32(payload, offset + 68).ok_or("temporal enclave remote verified missing")?;
+    let remote_failed_total =
+        temporal_read_u32(payload, offset + 72).ok_or("temporal enclave remote failed missing")?;
+    let remote_audit_total =
+        temporal_read_u32(payload, offset + 76).ok_or("temporal enclave remote audit missing")?;
+    offset = offset.saturating_add(84);
+
+    let mut sessions = [EnclaveSession::empty(); MAX_ENCLAVE_SESSIONS];
+    for i in 0..MAX_ENCLAVE_SESSIONS {
+        if offset.saturating_add(TEMPORAL_ENCLAVE_SESSION_META_BYTES) > payload.len() {
+            return Err("temporal enclave session truncated");
+        }
+        let id = temporal_read_u32(payload, offset).ok_or("temporal enclave session id missing")?;
+        let state =
+            temporal_enclave_state_from_u8(payload[offset + 4]).ok_or("temporal enclave session state invalid")?;
+        let attested = payload[offset + 5] != 0;
+        let remote_attested = payload[offset + 6] != 0;
+        let measurement =
+            temporal_read_u64(payload, offset + 8).ok_or("temporal enclave measurement missing")?;
+        let backend_cookie =
+            temporal_read_u32(payload, offset + 16).ok_or("temporal enclave cookie missing")?;
+        let launch_token_mac =
+            temporal_read_u64(payload, offset + 20).ok_or("temporal enclave launch mac missing")?;
+        let launch_nonce =
+            temporal_read_u32(payload, offset + 28).ok_or("temporal enclave launch nonce missing")?;
+        let runtime_key_handle =
+            temporal_read_u32(payload, offset + 32).ok_or("temporal enclave key handle missing")?;
+        let remote_verifier_id =
+            temporal_read_u32(payload, offset + 36).ok_or("temporal enclave verifier id missing")?;
+        let remote_quote_nonce =
+            temporal_read_u64(payload, offset + 40).ok_or("temporal enclave quote nonce missing")?;
+        let remote_attest_issued_epoch =
+            temporal_read_u32(payload, offset + 48).ok_or("temporal enclave attest issued missing")?;
+        let remote_attest_expires_epoch =
+            temporal_read_u32(payload, offset + 52).ok_or("temporal enclave attest expires missing")?;
+        let remote_attest_mac =
+            temporal_read_u64(payload, offset + 56).ok_or("temporal enclave attest mac missing")?;
+        sessions[i] = EnclaveSession {
+            id,
+            state,
+            measurement,
+            code_phys: 0,
+            code_len: 0,
+            data_phys: 0,
+            data_len: 0,
+            mem_phys: 0,
+            mem_len: 0,
+            backend_cookie,
+            epc_base: 0,
+            epc_pages: 0,
+            launch_token_mac,
+            launch_nonce,
+            runtime_key_handle,
+            attested,
+            remote_attested,
+            remote_verifier_id,
+            remote_quote_nonce,
+            remote_attest_issued_epoch,
+            remote_attest_expires_epoch,
+            remote_attest_mac,
+        };
+        offset = offset.saturating_add(TEMPORAL_ENCLAVE_SESSION_META_BYTES);
+    }
+
+    let mut cert_chain = [AttestationCertificate::empty(); MAX_ATTESTATION_CERTS];
+    for i in 0..MAX_ATTESTATION_CERTS {
+        if offset.saturating_add(TEMPORAL_ENCLAVE_CERT_BYTES) > payload.len() {
+            return Err("temporal enclave cert truncated");
+        }
+        let cert_id = temporal_read_u32(payload, offset).ok_or("temporal enclave cert id missing")?;
+        let issuer_id =
+            temporal_read_u32(payload, offset + 4).ok_or("temporal enclave issuer id missing")?;
+        let role = temporal_cert_role_from_u8(payload[offset + 8]).ok_or("temporal enclave role invalid")?;
+        let revoked = payload[offset + 9] != 0;
+        let pubkey_fingerprint =
+            temporal_read_u64(payload, offset + 12).ok_or("temporal enclave fingerprint missing")?;
+        let not_before_epoch =
+            temporal_read_u32(payload, offset + 20).ok_or("temporal enclave not before missing")?;
+        let not_after_epoch =
+            temporal_read_u32(payload, offset + 24).ok_or("temporal enclave not after missing")?;
+        let signature =
+            temporal_read_u64(payload, offset + 28).ok_or("temporal enclave signature missing")?;
+        cert_chain[i] = AttestationCertificate {
+            cert_id,
+            issuer_id,
+            role,
+            pubkey_fingerprint,
+            not_before_epoch,
+            not_after_epoch,
+            signature,
+            revoked,
+        };
+        offset = offset.saturating_add(TEMPORAL_ENCLAVE_CERT_BYTES);
+    }
+
+    let mut provisioned_keys = [ProvisionedKey::empty(); MAX_PROVISIONED_KEYS];
+    for i in 0..MAX_PROVISIONED_KEYS {
+        if offset.saturating_add(TEMPORAL_ENCLAVE_KEY_BYTES) > payload.len() {
+            return Err("temporal enclave key truncated");
+        }
+        let handle = temporal_read_u32(payload, offset).ok_or("temporal enclave key handle missing")?;
+        let owner_session =
+            temporal_read_u32(payload, offset + 4).ok_or("temporal enclave key owner missing")?;
+        let purpose = temporal_read_u32(payload, offset + 8).ok_or("temporal enclave key purpose missing")?;
+        let state = temporal_key_state_from_u8(payload[offset + 12]).ok_or("temporal enclave key state invalid")?;
+        let created_epoch =
+            temporal_read_u32(payload, offset + 16).ok_or("temporal enclave key created missing")?;
+        let expires_epoch =
+            temporal_read_u32(payload, offset + 20).ok_or("temporal enclave key expires missing")?;
+        let sealed_mac =
+            temporal_read_u64(payload, offset + 24).ok_or("temporal enclave key mac missing")?;
+        let mut material = [0u8; 32];
+        material.copy_from_slice(&payload[offset + 32..offset + 64]);
+        provisioned_keys[i] = ProvisionedKey {
+            handle,
+            owner_session,
+            purpose,
+            material,
+            created_epoch,
+            expires_epoch,
+            sealed_mac,
+            state,
+        };
+        offset = offset.saturating_add(TEMPORAL_ENCLAVE_KEY_BYTES);
+    }
+
+    let mut remote_verifiers = [RemoteVerifier::empty(); MAX_REMOTE_VERIFIERS];
+    for i in 0..MAX_REMOTE_VERIFIERS {
+        if offset.saturating_add(TEMPORAL_ENCLAVE_VERIFIER_BYTES) > payload.len() {
+            return Err("temporal enclave verifier truncated");
+        }
+        let id = temporal_read_u32(payload, offset).ok_or("temporal enclave verifier id missing")?;
+        let backend =
+            temporal_backend_from_u8(payload[offset + 4]).ok_or("temporal enclave verifier backend invalid")?;
+        let enabled_flag = payload[offset + 5] != 0;
+        let root_fingerprint =
+            temporal_read_u64(payload, offset + 8).ok_or("temporal enclave verifier root missing")?;
+        let verifier_fingerprint =
+            temporal_read_u64(payload, offset + 16).ok_or("temporal enclave verifier fingerprint missing")?;
+        let shared_secret =
+            temporal_read_u64(payload, offset + 24).ok_or("temporal enclave verifier secret missing")?;
+        let not_before_epoch =
+            temporal_read_u32(payload, offset + 32).ok_or("temporal enclave verifier not before missing")?;
+        let not_after_epoch =
+            temporal_read_u32(payload, offset + 36).ok_or("temporal enclave verifier not after missing")?;
+        remote_verifiers[i] = RemoteVerifier {
+            id,
+            backend,
+            root_fingerprint,
+            verifier_fingerprint,
+            shared_secret,
+            not_before_epoch,
+            not_after_epoch,
+            enabled: enabled_flag,
+        };
+        offset = offset.saturating_add(TEMPORAL_ENCLAVE_VERIFIER_BYTES);
+    }
+
+    if offset != payload.len() {
+        return Err("temporal enclave payload trailing bytes");
+    }
+
+    {
+        let mut mgr = MANAGER.lock();
+        mgr.backend = backend;
+        mgr.sessions = sessions;
+        mgr.created_total = created_total;
+        mgr.failed_total = failed_total;
+        mgr.next_id = next_id.max(1);
+    }
+
+    ENABLED.store(enabled && backend != EnclaveBackend::None, Ordering::SeqCst);
+    BACKEND_OPS_TOTAL.store(backend_ops_total, Ordering::SeqCst);
+    ATTESTATION_REPORTS.store(attestation_reports, Ordering::SeqCst);
+    EPOCH_COUNTER.store(epoch_counter.max(1), Ordering::SeqCst);
+    REMOTE_POLICY.store(remote_policy, Ordering::SeqCst);
+    KEY_PROVISIONED_TOTAL.store(key_provisioned_total, Ordering::SeqCst);
+    KEY_REVOKED_TOTAL.store(key_revoked_total, Ordering::SeqCst);
+    ATTESTATION_VERIFIED_TOTAL.store(attestation_verified_total, Ordering::SeqCst);
+    ATTESTATION_FAILED_TOTAL.store(attestation_failed_total, Ordering::SeqCst);
+    REMOTE_ATTESTATION_VERIFIED_TOTAL.store(remote_verified_total, Ordering::SeqCst);
+    REMOTE_ATTESTATION_FAILED_TOTAL.store(remote_failed_total, Ordering::SeqCst);
+    REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL.store(remote_audit_total, Ordering::SeqCst);
+    CERT_CHAIN_READY.store(cert_chain_ready, Ordering::SeqCst);
+    VENDOR_ROOT_READY.store(vendor_root_ready, Ordering::SeqCst);
+
+    let active_valid = {
+        let mgr = MANAGER.lock();
+        mgr.sessions
+            .iter()
+            .any(|s| s.id == active_session && s.state == EnclaveState::Running)
+    };
+    ACTIVE_SESSION.store(if active_valid { active_session } else { INVALID_ID }, Ordering::SeqCst);
+
+    {
+        let mut tz = TRUSTZONE_CONTRACT.lock();
+        *tz = TrustZoneContract {
+            ready: trustzone_ready,
+            abi_major: tz_abi_major,
+            abi_minor: tz_abi_minor,
+            features: tz_features,
+            max_sessions: tz_max_sessions,
+        };
+    }
+    {
+        let mut chain = CERT_CHAIN.lock();
+        *chain = cert_chain;
+    }
+    {
+        let mut keys = PROVISIONED_KEYS.lock();
+        *keys = provisioned_keys;
+    }
+    {
+        let mut verifiers = REMOTE_VERIFIERS.lock();
+        *verifiers = remote_verifiers;
+    }
+    {
+        let mut epc = EPC_MANAGER.lock();
+        epc.clear();
+    }
+
+    Ok(())
+}
 
 #[repr(C, align(4096))]
 struct AlignedPage {
@@ -1260,6 +1792,7 @@ fn validate_remote_attestation(
 
 pub fn set_remote_attestation_policy(policy: RemoteAttestationPolicy) {
     REMOTE_POLICY.store(policy as u32, Ordering::SeqCst);
+    record_temporal_enclave_state_snapshot();
 }
 
 fn key_payload(record: &ProvisionedKey) -> [u8; 64] {
@@ -1523,9 +2056,12 @@ pub fn init() {
     REMOTE_ATTESTATION_FAILED_TOTAL.store(0, Ordering::SeqCst);
     REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL.store(0, Ordering::SeqCst);
 
+    let backend_for_print = mgr.backend;
     crate::vga::print_str("[ENCLAVE] Backend: ");
-    crate::vga::print_str(backend_name(mgr.backend));
+    crate::vga::print_str(backend_name(backend_for_print));
     crate::vga::print_str("\n");
+    drop(mgr);
+    record_temporal_enclave_state_snapshot();
 }
 
 pub fn status() -> EnclaveStatus {
@@ -1641,6 +2177,8 @@ pub fn open_jit_session(
 
     mgr.sessions[slot] = session;
     mgr.created_total = mgr.created_total.saturating_add(1);
+    drop(mgr);
+    record_temporal_enclave_state_snapshot();
     Ok(Some(id))
 }
 
@@ -1692,6 +2230,8 @@ pub fn enter(session_id: u32) -> Result<(), &'static str> {
     enter_res?;
     mgr.sessions[idx].state = EnclaveState::Running;
     ACTIVE_SESSION.store(session_id, Ordering::SeqCst);
+    drop(mgr);
+    record_temporal_enclave_state_snapshot();
     Ok(())
 }
 
@@ -1724,6 +2264,8 @@ pub fn exit(session_id: u32) -> Result<(), &'static str> {
     exit_res?;
     mgr.sessions[idx].state = EnclaveState::Initialized;
     ACTIVE_SESSION.store(INVALID_ID, Ordering::SeqCst);
+    drop(mgr);
+    record_temporal_enclave_state_snapshot();
     Ok(())
 }
 
@@ -1752,17 +2294,20 @@ pub fn close(session_id: u32) -> Result<(), &'static str> {
         ACTIVE_SESSION.store(INVALID_ID, Ordering::SeqCst);
     }
     mgr.sessions[idx] = EnclaveSession::empty();
+    drop(mgr);
+    record_temporal_enclave_state_snapshot();
     Ok(())
 }
 
 pub fn attest_session(session_id: u32, nonce: u64) -> Result<EnclaveAttestationReport, &'static str> {
-    let mgr = MANAGER.lock();
-    let idx = mgr.find_slot(session_id).ok_or("Enclave session not found")?;
-    let s = mgr.sessions[idx];
-
+    let (backend, s) = {
+        let mgr = MANAGER.lock();
+        let idx = mgr.find_slot(session_id).ok_or("Enclave session not found")?;
+        (mgr.backend, mgr.sessions[idx])
+    };
     let mut payload = [0u8; 48];
     payload[0..4].copy_from_slice(&s.id.to_le_bytes());
-    payload[4..8].copy_from_slice(&(mgr.backend as u32).to_le_bytes());
+    payload[4..8].copy_from_slice(&(backend as u32).to_le_bytes());
     payload[8..16].copy_from_slice(&s.measurement.to_le_bytes());
     payload[16..24].copy_from_slice(&nonce.to_le_bytes());
     payload[24..32].copy_from_slice(&s.launch_token_mac.to_le_bytes());
@@ -1772,9 +2317,10 @@ pub fn attest_session(session_id: u32, nonce: u64) -> Result<EnclaveAttestationR
 
     let report_mac = security::security().cap_token_sign(&payload);
     ATTESTATION_REPORTS.fetch_add(1, Ordering::SeqCst);
+    record_temporal_enclave_state_snapshot();
     Ok(EnclaveAttestationReport {
         session_id: s.id,
-        backend: mgr.backend,
+        backend,
         measurement: s.measurement,
         nonce,
         launch_token_mac: s.launch_token_mac,

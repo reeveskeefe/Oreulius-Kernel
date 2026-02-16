@@ -7377,6 +7377,179 @@ struct SyscallLoadedModule {
 
 static SYSCALL_MODULES: Mutex<Vec<SyscallLoadedModule>> = Mutex::new(Vec::new());
 static NEXT_SYSCALL_MODULE_ID: AtomicU32 = AtomicU32::new(1);
+const TEMPORAL_SYSCALL_MODULE_SCHEMA_V1: u8 = 1;
+const TEMPORAL_SYSCALL_MODULE_HEADER_BYTES: usize = 16;
+const TEMPORAL_SYSCALL_MODULE_ENTRY_META_BYTES: usize = 16;
+
+fn temporal_read_u16_at(data: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > data.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn temporal_read_u32_at(data: &[u8], offset: usize) -> Option<u32> {
+    if offset.saturating_add(4) > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
+}
+
+fn encode_temporal_syscall_module_table_payload(event: u8) -> Option<Vec<u8>> {
+    let next_id = NEXT_SYSCALL_MODULE_ID.load(Ordering::Relaxed);
+    let table = SYSCALL_MODULES.lock();
+    let mut total_len = TEMPORAL_SYSCALL_MODULE_HEADER_BYTES;
+    let mut i = 0usize;
+    while i < table.len() {
+        let entry = &table[i];
+        total_len = total_len
+            .saturating_add(TEMPORAL_SYSCALL_MODULE_ENTRY_META_BYTES)
+            .saturating_add(entry.module.bytecode_len);
+        if total_len > crate::temporal::MAX_TEMPORAL_VERSION_BYTES {
+            return None;
+        }
+        i += 1;
+    }
+
+    let mut payload = Vec::with_capacity(total_len);
+    payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
+    payload.push(crate::temporal::TEMPORAL_WASM_SYSCALL_MODULE_TABLE_OBJECT);
+    payload.push(event);
+    payload.push(TEMPORAL_SYSCALL_MODULE_SCHEMA_V1);
+    payload.extend_from_slice(&(MAX_SYSCALL_MODULES as u16).to_le_bytes());
+    payload.extend_from_slice(&(table.len() as u16).to_le_bytes());
+    payload.extend_from_slice(&next_id.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut i = 0usize;
+    while i < table.len() {
+        let slot = &table[i];
+        payload.extend_from_slice(&(slot.module_id as u32).to_le_bytes());
+        payload.extend_from_slice(&slot.owner_pid.0.to_le_bytes());
+        payload.extend_from_slice(&(slot.bound_instance.unwrap_or(usize::MAX) as u32).to_le_bytes());
+        payload.extend_from_slice(&(slot.module.bytecode_len as u32).to_le_bytes());
+        if slot.module.bytecode_len > 0 {
+            payload.extend_from_slice(&slot.module.bytecode[..slot.module.bytecode_len]);
+        }
+        i += 1;
+    }
+    Some(payload)
+}
+
+fn record_temporal_syscall_module_table_snapshot() {
+    if crate::temporal::is_replay_active() {
+        return;
+    }
+    let payload = match encode_temporal_syscall_module_table_payload(
+        crate::temporal::TEMPORAL_WASM_SYSCALL_MODULE_TABLE_EVENT_STATE,
+    ) {
+        Some(v) => v,
+        None => return,
+    };
+    let _ = crate::temporal::record_wasm_syscall_module_table_event(&payload);
+}
+
+pub fn temporal_apply_syscall_module_table_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() < TEMPORAL_SYSCALL_MODULE_HEADER_BYTES {
+        return Err("temporal wasm syscall payload too short");
+    }
+    if payload[0] != crate::temporal::TEMPORAL_OBJECT_ENCODING_V1
+        || payload[1] != crate::temporal::TEMPORAL_WASM_SYSCALL_MODULE_TABLE_OBJECT
+    {
+        return Err("temporal wasm syscall payload type mismatch");
+    }
+    if payload[2] != crate::temporal::TEMPORAL_WASM_SYSCALL_MODULE_TABLE_EVENT_STATE {
+        return Err("temporal wasm syscall event unsupported");
+    }
+    if payload[3] != TEMPORAL_SYSCALL_MODULE_SCHEMA_V1 {
+        return Err("temporal wasm syscall schema unsupported");
+    }
+
+    let max_slots = temporal_read_u16_at(payload, 4).ok_or("temporal wasm syscall max slots missing")?;
+    if max_slots as usize != MAX_SYSCALL_MODULES {
+        return Err("temporal wasm syscall max slots mismatch");
+    }
+    let entry_count = temporal_read_u16_at(payload, 6).ok_or("temporal wasm syscall count missing")? as usize;
+    if entry_count > MAX_SYSCALL_MODULES {
+        return Err("temporal wasm syscall count out of range");
+    }
+    let next_id = temporal_read_u32_at(payload, 8).ok_or("temporal wasm syscall next id missing")?;
+
+    let mut offset = TEMPORAL_SYSCALL_MODULE_HEADER_BYTES;
+    let mut restored = Vec::with_capacity(entry_count);
+    let mut max_module_id = 0usize;
+    let mut i = 0usize;
+    while i < entry_count {
+        if offset.saturating_add(TEMPORAL_SYSCALL_MODULE_ENTRY_META_BYTES) > payload.len() {
+            return Err("temporal wasm syscall entry truncated");
+        }
+        let module_id = temporal_read_u32_at(payload, offset)
+            .ok_or("temporal wasm syscall module id missing")? as usize;
+        let owner_pid = temporal_read_u32_at(payload, offset + 4)
+            .ok_or("temporal wasm syscall owner pid missing")?;
+        let _bound_instance = temporal_read_u32_at(payload, offset + 8)
+            .ok_or("temporal wasm syscall bound instance missing")?;
+        let bytecode_len = temporal_read_u32_at(payload, offset + 12)
+            .ok_or("temporal wasm syscall bytecode len missing")? as usize;
+        offset += TEMPORAL_SYSCALL_MODULE_ENTRY_META_BYTES;
+        if offset.saturating_add(bytecode_len) > payload.len() {
+            return Err("temporal wasm syscall bytecode truncated");
+        }
+        let bytes = &payload[offset..offset + bytecode_len];
+        offset += bytecode_len;
+
+        let mut module = WasmModule::new();
+        module
+            .load_binary(bytes)
+            .map_err(|_| "temporal wasm syscall module decode failed")?;
+
+        if module_id > max_module_id {
+            max_module_id = module_id;
+        }
+        restored.push(SyscallLoadedModule {
+            module_id,
+            owner_pid: ProcessId(owner_pid),
+            module,
+            bound_instance: None,
+        });
+        i += 1;
+    }
+    if offset != payload.len() {
+        return Err("temporal wasm syscall payload trailing bytes");
+    }
+
+    let mut old_instances = [usize::MAX; MAX_SYSCALL_MODULES];
+    let mut old_count = 0usize;
+    {
+        let mut table = SYSCALL_MODULES.lock();
+        let mut i = 0usize;
+        while i < table.len() {
+            if let Some(instance_id) = table[i].bound_instance {
+                if old_count < old_instances.len() {
+                    old_instances[old_count] = instance_id;
+                    old_count += 1;
+                }
+            }
+            i += 1;
+        }
+        *table = restored;
+    }
+
+    let mut i = 0usize;
+    while i < old_count {
+        let _ = wasm_runtime().destroy(old_instances[i]);
+        i += 1;
+    }
+
+    let next_candidate = core::cmp::max(next_id as usize, max_module_id.saturating_add(1)).max(1);
+    NEXT_SYSCALL_MODULE_ID.store(next_candidate as u32, Ordering::Relaxed);
+    Ok(())
+}
 
 fn syscall_caller_pid() -> ProcessId {
     let scheduler = crate::quantum_scheduler::scheduler().lock();
@@ -7430,6 +7603,10 @@ pub fn unload_modules_for_owner(owner_pid: ProcessId) -> usize {
     while idx < destroyed_count {
         let _ = wasm_runtime().destroy(destroyed_instances[idx]);
         idx += 1;
+    }
+
+    if removed > 0 {
+        record_temporal_syscall_module_table_snapshot();
     }
 
     removed
@@ -9985,6 +10162,8 @@ pub fn load_module(bytecode: &[u8]) -> Result<usize, &'static str> {
         module,
         bound_instance: None,
     });
+    drop(table);
+    record_temporal_syscall_module_table_snapshot();
     Ok(module_id)
 }
 
@@ -10019,6 +10198,8 @@ pub fn call_function(module_id: usize, func_idx: usize, args: &[u32]) -> Result<
         } else {
             return Err("Module registry changed");
         }
+        drop(table);
+        record_temporal_syscall_module_table_snapshot();
         new_instance
     };
 

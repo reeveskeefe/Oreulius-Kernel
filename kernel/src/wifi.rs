@@ -36,8 +36,16 @@
 
 #![allow(dead_code)]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use spin::Mutex;
 use crate::pci::PciDevice;
+
+const TEMPORAL_WIFI_SCHEMA_V1: u8 = 1;
+const TEMPORAL_WIFI_HEADER_BYTES: usize = 84;
+const TEMPORAL_WIFI_PCI_BYTES: usize = 16;
+const TEMPORAL_WIFI_NETWORK_BYTES: usize = 48;
 
 // ============================================================================
 // Helper Functions
@@ -241,6 +249,7 @@ impl WifiDriver {
         self.print_mac();
         crate::vga::print_str("\n");
 
+        self.record_temporal_state_snapshot();
         Ok(())
     }
 
@@ -436,6 +445,7 @@ impl WifiDriver {
         print_number(self.scan_count);
         crate::vga::print_str(" networks\n");
 
+        self.record_temporal_state_snapshot();
         Ok(self.scan_count)
     }
 
@@ -787,6 +797,7 @@ impl WifiDriver {
 
         crate::vga::print_str("[WiFi] Connected! IP: 192.168.1.100\n");
 
+        self.record_temporal_state_snapshot();
         Ok(())
     }
 
@@ -1964,6 +1975,7 @@ impl WifiDriver {
 
         crate::vga::print_str("[WiFi] Disconnected\n");
 
+        self.record_temporal_state_snapshot();
         Ok(())
     }
 
@@ -2013,6 +2025,241 @@ impl WifiDriver {
             print_hex_byte(*byte);
         }
     }
+}
+
+fn temporal_wifi_state_to_u8(state: WifiState) -> u8 {
+    match state {
+        WifiState::Disabled => 0,
+        WifiState::Idle => 1,
+        WifiState::Scanning => 2,
+        WifiState::Connecting => 3,
+        WifiState::Authenticating => 4,
+        WifiState::Associated => 5,
+        WifiState::Connected => 6,
+        WifiState::Disconnecting => 7,
+        WifiState::Error => 8,
+    }
+}
+
+fn temporal_wifi_state_from_u8(v: u8) -> Option<WifiState> {
+    match v {
+        0 => Some(WifiState::Disabled),
+        1 => Some(WifiState::Idle),
+        2 => Some(WifiState::Scanning),
+        3 => Some(WifiState::Connecting),
+        4 => Some(WifiState::Authenticating),
+        5 => Some(WifiState::Associated),
+        6 => Some(WifiState::Connected),
+        7 => Some(WifiState::Disconnecting),
+        8 => Some(WifiState::Error),
+        _ => None,
+    }
+}
+
+fn temporal_wifi_security_to_u8(sec: WifiSecurity) -> u8 {
+    match sec {
+        WifiSecurity::Open => 0,
+        WifiSecurity::WEP => 1,
+        WifiSecurity::WPA => 2,
+        WifiSecurity::WPA2 => 3,
+        WifiSecurity::WPA3 => 4,
+    }
+}
+
+fn temporal_wifi_security_from_u8(v: u8) -> Option<WifiSecurity> {
+    match v {
+        0 => Some(WifiSecurity::Open),
+        1 => Some(WifiSecurity::WEP),
+        2 => Some(WifiSecurity::WPA),
+        3 => Some(WifiSecurity::WPA2),
+        4 => Some(WifiSecurity::WPA3),
+        _ => None,
+    }
+}
+
+fn temporal_append_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn temporal_read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > data.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn temporal_encode_pci_device(buf: &mut Vec<u8>, device: Option<PciDevice>) {
+    let mut bytes = [0u8; TEMPORAL_WIFI_PCI_BYTES];
+    if let Some(dev) = device {
+        bytes[0] = dev.bus;
+        bytes[1] = dev.slot;
+        bytes[2] = dev.func;
+        bytes[3] = dev.class_code;
+        bytes[4..6].copy_from_slice(&dev.vendor_id.to_le_bytes());
+        bytes[6..8].copy_from_slice(&dev.device_id.to_le_bytes());
+        bytes[8] = dev.subclass;
+        bytes[9] = dev.prog_if;
+        bytes[10] = dev.revision;
+        bytes[11] = dev.interrupt_line;
+        bytes[12] = dev.interrupt_pin;
+    }
+    buf.extend_from_slice(&bytes);
+}
+
+fn temporal_decode_pci_device(data: &[u8], offset: usize) -> Option<PciDevice> {
+    if offset.saturating_add(TEMPORAL_WIFI_PCI_BYTES) > data.len() {
+        return None;
+    }
+    let vendor_id = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
+    let device_id = u16::from_le_bytes([data[offset + 6], data[offset + 7]]);
+    Some(PciDevice {
+        bus: data[offset],
+        slot: data[offset + 1],
+        func: data[offset + 2],
+        vendor_id,
+        device_id,
+        class_code: data[offset + 3],
+        subclass: data[offset + 8],
+        prog_if: data[offset + 9],
+        revision: data[offset + 10],
+        interrupt_line: data[offset + 11],
+        interrupt_pin: data[offset + 12],
+    })
+}
+
+fn temporal_encode_wifi_network(buf: &mut Vec<u8>, net: &WifiNetwork) {
+    buf.push(net.ssid_len.min(MAX_SSID_LEN) as u8);
+    buf.push(net.channel);
+    buf.push(net.signal_strength as u8);
+    buf.push(temporal_wifi_security_to_u8(net.security));
+    temporal_append_u16(buf, net.frequency);
+    temporal_append_u16(buf, 0);
+    buf.extend_from_slice(&net.bssid);
+    temporal_append_u16(buf, 0);
+    buf.extend_from_slice(&net.ssid);
+}
+
+fn temporal_decode_wifi_network(data: &[u8], offset: usize) -> Option<WifiNetwork> {
+    if offset.saturating_add(TEMPORAL_WIFI_NETWORK_BYTES) > data.len() {
+        return None;
+    }
+    let ssid_len = data[offset] as usize;
+    if ssid_len > MAX_SSID_LEN {
+        return None;
+    }
+    let channel = data[offset + 1];
+    let signal_strength = data[offset + 2] as i8;
+    let security = temporal_wifi_security_from_u8(data[offset + 3])?;
+    let frequency =
+        temporal_read_u16(data, offset + 4).unwrap_or(0);
+    let mut bssid = [0u8; 6];
+    bssid.copy_from_slice(&data[offset + 8..offset + 14]);
+    let mut ssid = [0u8; MAX_SSID_LEN];
+    ssid.copy_from_slice(&data[offset + 16..offset + 48]);
+
+    Some(WifiNetwork {
+        ssid,
+        ssid_len,
+        bssid,
+        channel,
+        signal_strength,
+        security,
+        frequency,
+    })
+}
+
+impl WifiDriver {
+    fn encode_temporal_state_payload(&self, event: u8) -> Option<Vec<u8>> {
+        let scan_count = core::cmp::min(self.scan_count, MAX_SCAN_RESULTS);
+        let total_len = TEMPORAL_WIFI_HEADER_BYTES
+            .saturating_add(scan_count.saturating_mul(TEMPORAL_WIFI_NETWORK_BYTES));
+        if total_len > crate::temporal::MAX_TEMPORAL_VERSION_BYTES {
+            return None;
+        }
+
+        let mut payload = Vec::with_capacity(total_len);
+        payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
+        payload.push(crate::temporal::TEMPORAL_WIFI_OBJECT);
+        payload.push(event);
+        payload.push(TEMPORAL_WIFI_SCHEMA_V1);
+        payload.push(if self.pci_device.is_some() { 1 } else { 0 });
+        payload.push(if self.enabled { 1 } else { 0 });
+        payload.push(temporal_wifi_state_to_u8(self.connection.state));
+        payload.push(if self.connection.ip_assigned { 1 } else { 0 });
+        payload.extend_from_slice(&self.mac_address);
+        temporal_append_u16(&mut payload, 0);
+        temporal_append_u16(&mut payload, scan_count as u16);
+        temporal_append_u16(&mut payload, 0);
+        temporal_encode_pci_device(&mut payload, self.pci_device);
+        temporal_encode_wifi_network(&mut payload, &self.connection.network);
+        for i in 0..scan_count {
+            temporal_encode_wifi_network(&mut payload, &self.scan_results[i]);
+        }
+        Some(payload)
+    }
+
+    fn record_temporal_state_snapshot(&self) {
+        if crate::temporal::is_replay_active() {
+            return;
+        }
+        let payload = match self.encode_temporal_state_payload(crate::temporal::TEMPORAL_WIFI_EVENT_STATE) {
+            Some(v) => v,
+            None => return,
+        };
+        let _ = crate::temporal::record_wifi_state_event(&payload);
+    }
+}
+
+pub fn temporal_apply_wifi_driver_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() < TEMPORAL_WIFI_HEADER_BYTES {
+        return Err("temporal wifi payload too short");
+    }
+    if payload[3] != TEMPORAL_WIFI_SCHEMA_V1 {
+        return Err("temporal wifi schema unsupported");
+    }
+    let pci_present = payload[4] != 0;
+    let enabled = payload[5] != 0;
+    let state = temporal_wifi_state_from_u8(payload[6]).ok_or("temporal wifi state invalid")?;
+    let ip_assigned = payload[7] != 0;
+    let mut mac_address = [0u8; 6];
+    mac_address.copy_from_slice(&payload[8..14]);
+    let scan_count =
+        temporal_read_u16(payload, 16).ok_or("temporal wifi scan count missing")? as usize;
+    if scan_count > MAX_SCAN_RESULTS {
+        return Err("temporal wifi scan count out of range");
+    }
+
+    let pci_device = if pci_present {
+        Some(temporal_decode_pci_device(payload, 20).ok_or("temporal wifi pci decode failed")?)
+    } else {
+        None
+    };
+    let connection_network =
+        temporal_decode_wifi_network(payload, 36).ok_or("temporal wifi network decode failed")?;
+
+    let mut offset = TEMPORAL_WIFI_HEADER_BYTES;
+    let mut scan_results = [WifiNetwork::new(); MAX_SCAN_RESULTS];
+    for i in 0..scan_count {
+        let net = temporal_decode_wifi_network(payload, offset).ok_or("temporal wifi scan entry invalid")?;
+        scan_results[i] = net;
+        offset = offset.saturating_add(TEMPORAL_WIFI_NETWORK_BYTES);
+    }
+    if offset != payload.len() {
+        return Err("temporal wifi payload trailing bytes");
+    }
+
+    let mut wifi = WIFI.lock();
+    wifi.pci_device = pci_device;
+    wifi.enabled = enabled;
+    wifi.connection = WifiConnection {
+        state,
+        network: connection_network,
+        ip_assigned,
+    };
+    wifi.scan_results = scan_results;
+    wifi.scan_count = scan_count;
+    wifi.mac_address = mac_address;
+    Ok(())
 }
 
 // ============================================================================

@@ -38,6 +38,12 @@ pub const TEMPORAL_SECURITY_OBJECT: u8 = 8;
 pub const TEMPORAL_CAPNET_OBJECT: u8 = 9;
 pub const TEMPORAL_WASM_SERVICE_POINTER_OBJECT: u8 = 10;
 pub const TEMPORAL_NETWORK_CONFIG_OBJECT: u8 = 11;
+pub const TEMPORAL_WASM_SYSCALL_MODULE_TABLE_OBJECT: u8 = 12;
+pub const TEMPORAL_SCHEDULER_OBJECT: u8 = 13;
+pub const TEMPORAL_REPLAY_MANAGER_OBJECT: u8 = 14;
+pub const TEMPORAL_NETWORK_LEGACY_OBJECT: u8 = 15;
+pub const TEMPORAL_WIFI_OBJECT: u8 = 16;
+pub const TEMPORAL_ENCLAVE_OBJECT: u8 = 17;
 pub const TEMPORAL_SOCKET_EVENT_LISTEN: u8 = 1;
 pub const TEMPORAL_SOCKET_EVENT_ACCEPT: u8 = 2;
 pub const TEMPORAL_SOCKET_EVENT_CONNECT: u8 = 3;
@@ -60,6 +66,12 @@ pub const TEMPORAL_SECURITY_EVENT_INTENT_POLICY: u8 = 1;
 pub const TEMPORAL_CAPNET_EVENT_STATE: u8 = 1;
 pub const TEMPORAL_WASM_SERVICE_POINTER_EVENT_STATE: u8 = 1;
 pub const TEMPORAL_NETWORK_CONFIG_EVENT_STATE: u8 = 1;
+pub const TEMPORAL_WASM_SYSCALL_MODULE_TABLE_EVENT_STATE: u8 = 1;
+pub const TEMPORAL_SCHEDULER_EVENT_STATE: u8 = 1;
+pub const TEMPORAL_REPLAY_MANAGER_EVENT_STATE: u8 = 1;
+pub const TEMPORAL_NETWORK_LEGACY_EVENT_STATE: u8 = 1;
+pub const TEMPORAL_WIFI_EVENT_STATE: u8 = 1;
+pub const TEMPORAL_ENCLAVE_EVENT_STATE: u8 = 1;
 pub const TEMPORAL_SOCKET_PAYLOAD_PREVIEW_BYTES: usize = 192;
 const TEMPORAL_PERSIST_MAGIC: u32 = 0x5450_5354; // "TPST"
 const TEMPORAL_PERSIST_VERSION: u16 = 2;
@@ -68,7 +80,7 @@ const TEMPORAL_PERSIST_SENTINEL_U64: u64 = u64::MAX;
 const DEFAULT_BRANCH_NAME: &str = "main";
 const MAX_BRANCHES_PER_OBJECT: usize = 32;
 const MAX_BRANCH_NAME_BYTES: usize = 48;
-const MAX_TEMPORAL_ADAPTERS: usize = 16;
+const MAX_TEMPORAL_ADAPTERS: usize = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -1750,6 +1762,128 @@ fn temporal_apply_network_config_payload(
     crate::net_reactor::temporal_apply_network_config_payload(payload)
 }
 
+fn temporal_apply_wasm_syscall_module_table_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != "/wasm/syscall-modules" {
+        return Err("temporal wasm syscall key mismatch");
+    }
+    if payload.len() < 4 {
+        return Err("temporal wasm syscall payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1
+        || payload[1] != TEMPORAL_WASM_SYSCALL_MODULE_TABLE_OBJECT
+    {
+        return Err("temporal wasm syscall payload type mismatch");
+    }
+    if payload[2] != TEMPORAL_WASM_SYSCALL_MODULE_TABLE_EVENT_STATE {
+        return Err("temporal wasm syscall event unsupported");
+    }
+    crate::wasm::temporal_apply_syscall_module_table_payload(payload)
+}
+
+fn temporal_apply_scheduler_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != "/scheduler/state" {
+        return Err("temporal scheduler key mismatch");
+    }
+    if payload.len() < 4 {
+        return Err("temporal scheduler payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_SCHEDULER_OBJECT {
+        return Err("temporal scheduler payload type mismatch");
+    }
+    if payload[2] != TEMPORAL_SCHEDULER_EVENT_STATE {
+        return Err("temporal scheduler event unsupported");
+    }
+    crate::quantum_scheduler::temporal_apply_scheduler_payload(payload)
+}
+
+fn temporal_apply_replay_manager_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != "/replay/state" {
+        return Err("temporal replay key mismatch");
+    }
+    if payload.len() < 4 {
+        return Err("temporal replay payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_REPLAY_MANAGER_OBJECT {
+        return Err("temporal replay payload type mismatch");
+    }
+    if payload[2] != TEMPORAL_REPLAY_MANAGER_EVENT_STATE {
+        return Err("temporal replay event unsupported");
+    }
+    crate::replay::temporal_apply_replay_manager_payload(payload)
+}
+
+fn temporal_apply_network_legacy_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != "/network/legacy/state" {
+        return Err("temporal legacy network key mismatch");
+    }
+    if payload.len() < 4 {
+        return Err("temporal legacy network payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_NETWORK_LEGACY_OBJECT {
+        return Err("temporal legacy network payload type mismatch");
+    }
+    if payload[2] != TEMPORAL_NETWORK_LEGACY_EVENT_STATE {
+        return Err("temporal legacy network event unsupported");
+    }
+    crate::net::temporal_apply_network_service_payload(payload)
+}
+
+fn temporal_apply_wifi_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != "/wifi/state" {
+        return Err("temporal wifi key mismatch");
+    }
+    if payload.len() < 4 {
+        return Err("temporal wifi payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_WIFI_OBJECT {
+        return Err("temporal wifi payload type mismatch");
+    }
+    if payload[2] != TEMPORAL_WIFI_EVENT_STATE {
+        return Err("temporal wifi event unsupported");
+    }
+    crate::wifi::temporal_apply_wifi_driver_payload(payload)
+}
+
+fn temporal_apply_enclave_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != "/enclave/state" {
+        return Err("temporal enclave key mismatch");
+    }
+    if payload.len() < 4 {
+        return Err("temporal enclave payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_ENCLAVE_OBJECT {
+        return Err("temporal enclave payload type mismatch");
+    }
+    if payload[2] != TEMPORAL_ENCLAVE_EVENT_STATE {
+        return Err("temporal enclave event unsupported");
+    }
+    crate::enclave::temporal_apply_enclave_state_payload(payload)
+}
+
 fn register_object_adapter_internal(
     prefix: &'static str,
     apply: TemporalObjectAdapterFn,
@@ -1802,6 +1936,18 @@ fn ensure_object_adapters_initialized() {
             temporal_apply_wasm_service_pointer_payload,
         );
         let _ = register_object_adapter_internal("/network/config", temporal_apply_network_config_payload);
+        let _ = register_object_adapter_internal(
+            "/wasm/syscall-modules",
+            temporal_apply_wasm_syscall_module_table_payload,
+        );
+        let _ = register_object_adapter_internal("/scheduler/state", temporal_apply_scheduler_payload);
+        let _ = register_object_adapter_internal("/replay/state", temporal_apply_replay_manager_payload);
+        let _ = register_object_adapter_internal(
+            "/network/legacy/state",
+            temporal_apply_network_legacy_payload,
+        );
+        let _ = register_object_adapter_internal("/wifi/state", temporal_apply_wifi_payload);
+        let _ = register_object_adapter_internal("/enclave/state", temporal_apply_enclave_payload);
     });
 }
 
@@ -2099,6 +2245,30 @@ pub fn network_config_object_key() -> &'static str {
     "/network/config"
 }
 
+pub fn wasm_syscall_module_table_object_key() -> &'static str {
+    "/wasm/syscall-modules"
+}
+
+pub fn scheduler_state_object_key() -> &'static str {
+    "/scheduler/state"
+}
+
+pub fn replay_state_object_key() -> &'static str {
+    "/replay/state"
+}
+
+pub fn network_legacy_state_object_key() -> &'static str {
+    "/network/legacy/state"
+}
+
+pub fn wifi_state_object_key() -> &'static str {
+    "/wifi/state"
+}
+
+pub fn enclave_state_object_key() -> &'static str {
+    "/enclave/state"
+}
+
 pub fn record_object_event(
     object_key: &str,
     operation: TemporalOperation,
@@ -2371,6 +2541,30 @@ pub fn record_wasm_service_pointer_event(payload: &[u8]) -> Result<u64, Temporal
 
 pub fn record_network_config_event(payload: &[u8]) -> Result<u64, TemporalError> {
     record_object_write(network_config_object_key(), payload)
+}
+
+pub fn record_wasm_syscall_module_table_event(payload: &[u8]) -> Result<u64, TemporalError> {
+    record_object_write(wasm_syscall_module_table_object_key(), payload)
+}
+
+pub fn record_scheduler_state_event(payload: &[u8]) -> Result<u64, TemporalError> {
+    record_object_write(scheduler_state_object_key(), payload)
+}
+
+pub fn record_replay_state_event(payload: &[u8]) -> Result<u64, TemporalError> {
+    record_object_write(replay_state_object_key(), payload)
+}
+
+pub fn record_network_legacy_state_event(payload: &[u8]) -> Result<u64, TemporalError> {
+    record_object_write(network_legacy_state_object_key(), payload)
+}
+
+pub fn record_wifi_state_event(payload: &[u8]) -> Result<u64, TemporalError> {
+    record_object_write(wifi_state_object_key(), payload)
+}
+
+pub fn record_enclave_state_event(payload: &[u8]) -> Result<u64, TemporalError> {
+    record_object_write(enclave_state_object_key(), payload)
 }
 
 pub fn record_write(path: &str, payload: &[u8]) -> Result<u64, TemporalError> {
@@ -2986,6 +3180,39 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         .map_err(|_| "temporal object self-check: network config payload unreadable")?;
     if network_read.len() < 4 {
         return Err("temporal object self-check: network config payload too short");
+    }
+
+    let wasm_syscall_payload = [
+        TEMPORAL_OBJECT_ENCODING_V1,
+        TEMPORAL_WASM_SYSCALL_MODULE_TABLE_OBJECT,
+        TEMPORAL_WASM_SYSCALL_MODULE_TABLE_EVENT_STATE,
+        0,
+    ];
+    record_wasm_syscall_module_table_event(&wasm_syscall_payload)
+        .map_err(|_| "temporal object self-check: wasm syscall module record failed")?;
+    let wasm_syscall_latest = latest_version(wasm_syscall_module_table_object_key())
+        .map_err(|_| "temporal object self-check: wasm syscall module history missing")?;
+    let wasm_syscall_read =
+        read_version(wasm_syscall_module_table_object_key(), wasm_syscall_latest.version_id)
+            .map_err(|_| "temporal object self-check: wasm syscall module payload unreadable")?;
+    if wasm_syscall_read.len() < 4 {
+        return Err("temporal object self-check: wasm syscall module payload too short");
+    }
+
+    let scheduler_payload = [
+        TEMPORAL_OBJECT_ENCODING_V1,
+        TEMPORAL_SCHEDULER_OBJECT,
+        TEMPORAL_SCHEDULER_EVENT_STATE,
+        0,
+    ];
+    record_scheduler_state_event(&scheduler_payload)
+        .map_err(|_| "temporal object self-check: scheduler record failed")?;
+    let scheduler_latest = latest_version(scheduler_state_object_key())
+        .map_err(|_| "temporal object self-check: scheduler history missing")?;
+    let scheduler_read = read_version(scheduler_state_object_key(), scheduler_latest.version_id)
+        .map_err(|_| "temporal object self-check: scheduler payload unreadable")?;
+    if scheduler_read.len() < 4 {
+        return Err("temporal object self-check: scheduler payload too short");
     }
 
     Ok(())

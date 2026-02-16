@@ -42,6 +42,7 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -112,6 +113,77 @@ impl ReplayManager {
 
 static REPLAY: Mutex<ReplayManager> = Mutex::new(ReplayManager::new());
 
+const TEMPORAL_REPLAY_SCHEMA_V1: u8 = 1;
+const TEMPORAL_REPLAY_CHUNK_BYTES: usize = 240 * 1024;
+
+fn temporal_replay_mode_to_u8(mode: ReplayMode) -> u8 {
+    match mode {
+        ReplayMode::Off => 0,
+        ReplayMode::Record => 1,
+        ReplayMode::Replay => 2,
+    }
+}
+
+fn temporal_replay_mode_from_u8(v: u8) -> Option<ReplayMode> {
+    match v {
+        0 => Some(ReplayMode::Off),
+        1 => Some(ReplayMode::Record),
+        2 => Some(ReplayMode::Replay),
+        _ => None,
+    }
+}
+
+fn temporal_append_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn temporal_append_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn temporal_append_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn temporal_read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > data.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn temporal_read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    if offset.saturating_add(4) > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
+}
+
+fn temporal_read_u64(data: &[u8], offset: usize) -> Option<u64> {
+    if offset.saturating_add(8) > data.len() {
+        return None;
+    }
+    Some(u64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]))
+}
+
+fn temporal_transcript_chunk_key(instance_id: usize, chunk_index: usize) -> String {
+    alloc::format!("/replay/transcript/{}/{}", instance_id, chunk_index)
+}
+
 pub fn mode(instance_id: usize) -> ReplayMode {
     let mgr = REPLAY.lock();
     if instance_id >= mgr.sessions.len() {
@@ -138,6 +210,7 @@ pub fn start_record(instance_id: usize, module_hash: u64, module_len: usize) -> 
         total_bytes: 0,
     };
     mgr.sessions[instance_id] = Some(session);
+    record_temporal_replay_manager_snapshot_locked(&mgr);
     Ok(())
 }
 
@@ -151,6 +224,7 @@ pub fn stop(instance_id: usize) -> Result<(), &'static str> {
         .ok_or("No replay session")?;
     session.mode = ReplayMode::Off;
     session.cursor = 0;
+    record_temporal_replay_manager_snapshot_locked(&mgr);
     Ok(())
 }
 
@@ -159,6 +233,7 @@ pub fn clear(instance_id: usize) {
     if instance_id < mgr.sessions.len() {
         mgr.sessions[instance_id] = None;
     }
+    record_temporal_replay_manager_snapshot_locked(&mgr);
 }
 
 pub fn status(instance_id: usize) -> Option<ReplayStatus> {
@@ -221,6 +296,9 @@ pub fn record_host_call(
         result,
         data: data.to_vec(),
     });
+    if session.events.len() % 32 == 0 {
+        record_temporal_replay_manager_snapshot_locked(&mgr);
+    }
     Ok(())
 }
 
@@ -230,28 +308,61 @@ pub fn replay_host_call(
     args_hash: u64,
 ) -> Result<ReplayOutput, &'static str> {
     let mut mgr = REPLAY.lock();
-    let session = mgr
-        .sessions
-        .get_mut(instance_id)
-        .ok_or("Invalid instance id")?
-        .as_mut()
-        .ok_or("No replay session")?;
-    if session.mode != ReplayMode::Replay {
-        return Err("Replay not active");
+    let (output, snapshot) = {
+        let session = mgr
+            .sessions
+            .get_mut(instance_id)
+            .ok_or("Invalid instance id")?
+            .as_mut()
+            .ok_or("No replay session")?;
+        if session.mode != ReplayMode::Replay {
+            return Err("Replay not active");
+        }
+        if session.cursor >= session.events.len() {
+            return Err("Replay exhausted");
+        }
+        let (status, result, data) = {
+            let event = &session.events[session.cursor];
+            if event.func_idx != func_idx || event.args_hash != args_hash {
+                return Err("Replay mismatch");
+            }
+            (event.status, event.result, event.data.clone())
+        };
+        session.cursor += 1;
+        let snapshot = session.cursor == session.events.len() || session.cursor % 64 == 0;
+        (
+            ReplayOutput {
+                status,
+                result,
+                data,
+            },
+            snapshot,
+        )
+    };
+    if snapshot {
+        record_temporal_replay_manager_snapshot_locked(&mgr);
     }
-    if session.cursor >= session.events.len() {
-        return Err("Replay exhausted");
+    Ok(output)
+}
+
+fn export_transcript_from_session(session: &ReplaySession) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.reserve(HEADER_LEN + session.total_bytes);
+
+    buf.extend_from_slice(&MAGIC);
+    buf.push(VERSION);
+    buf.push(0);
+    buf.extend_from_slice(&0u16.to_le_bytes());
+    buf.extend_from_slice(&session.module_hash.to_le_bytes());
+    buf.extend_from_slice(&(session.module_len).to_le_bytes());
+    buf.extend_from_slice(&(session.events.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&session.event_hash.to_le_bytes());
+
+    for event in session.events.iter() {
+        encode_event(&mut buf, event);
     }
-    let event = &session.events[session.cursor];
-    if event.func_idx != func_idx || event.args_hash != args_hash {
-        return Err("Replay mismatch");
-    }
-    session.cursor += 1;
-    Ok(ReplayOutput {
-        status: event.status,
-        result: event.result,
-        data: event.data.clone(),
-    })
+
+    buf
 }
 
 pub fn export_transcript(instance_id: usize) -> Result<Vec<u8>, &'static str> {
@@ -262,35 +373,14 @@ pub fn export_transcript(instance_id: usize) -> Result<Vec<u8>, &'static str> {
         .ok_or("Invalid instance id")?
         .as_ref()
         .ok_or("No replay session")?;
-    let mut buf = Vec::new();
-    buf.reserve(HEADER_LEN + session.total_bytes);
-
-    // Header
-    buf.extend_from_slice(&MAGIC);
-    buf.push(VERSION);
-    buf.push(0);
-    buf.extend_from_slice(&0u16.to_le_bytes());
-    buf.extend_from_slice(&session.module_hash.to_le_bytes());
-    buf.extend_from_slice(&(session.module_len).to_le_bytes());
-    buf.extend_from_slice(&(session.events.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&session.event_hash.to_le_bytes());
-
-    // Events
-    for event in session.events.iter() {
-        encode_event(&mut buf, event);
-    }
-    Ok(buf)
+    Ok(export_transcript_from_session(session))
 }
 
-pub fn load_transcript(
-    instance_id: usize,
+fn decode_transcript_checked(
     module_hash: u64,
     module_len: usize,
     data: &[u8],
-) -> Result<(), &'static str> {
-    if instance_id >= 8 {
-        return Err("Invalid instance id");
-    }
+) -> Result<(Vec<HostCallEvent>, u64, usize), &'static str> {
     if data.len() < HEADER_LEN {
         return Err("Transcript too short");
     }
@@ -339,17 +429,251 @@ pub fn load_transcript(
         return Err("Transcript has trailing data");
     }
 
+    Ok((events, header_event_hash, total_bytes))
+}
+
+pub fn load_transcript(
+    instance_id: usize,
+    module_hash: u64,
+    module_len: usize,
+    data: &[u8],
+) -> Result<(), &'static str> {
+    if instance_id >= 8 {
+        return Err("Invalid instance id");
+    }
+    let (events, event_hash, total_bytes) = decode_transcript_checked(module_hash, module_len, data)?;
+
     let session = ReplaySession {
         mode: ReplayMode::Replay,
         module_hash,
         module_len: module_len as u32,
         events,
         cursor: 0,
-        event_hash: header_event_hash,
+        event_hash,
         total_bytes,
     };
     let mut mgr = REPLAY.lock();
     mgr.sessions[instance_id] = Some(session);
+    record_temporal_replay_manager_snapshot_locked(&mgr);
+    Ok(())
+}
+
+fn record_temporal_replay_manager_snapshot_locked(mgr: &ReplayManager) {
+    if crate::temporal::is_replay_active() {
+        return;
+    }
+
+    #[derive(Clone, Copy)]
+    struct ChunkDesc {
+        idx: u16,
+        len: u32,
+        version_id: u64,
+    }
+
+    struct SessionDesc {
+        present: bool,
+        mode: ReplayMode,
+        module_hash: u64,
+        module_len: u32,
+        cursor: u32,
+        event_hash: u64,
+        event_count: u32,
+        transcript_len: u32,
+        chunks: Vec<ChunkDesc>,
+    }
+
+    let slots = mgr.sessions.len();
+    let mut descs: Vec<SessionDesc> = Vec::with_capacity(slots);
+
+    for instance_id in 0..slots {
+        let Some(session) = mgr.sessions[instance_id].as_ref() else {
+            descs.push(SessionDesc {
+                present: false,
+                mode: ReplayMode::Off,
+                module_hash: 0,
+                module_len: 0,
+                cursor: 0,
+                event_hash: 0,
+                event_count: 0,
+                transcript_len: 0,
+                chunks: Vec::new(),
+            });
+            continue;
+        };
+
+        let transcript = export_transcript_from_session(session);
+        let mut chunks: Vec<ChunkDesc> = Vec::new();
+        let mut chunk_index = 0usize;
+        for chunk in transcript.chunks(TEMPORAL_REPLAY_CHUNK_BYTES) {
+            let key = temporal_transcript_chunk_key(instance_id, chunk_index);
+            let version_id = match crate::temporal::record_object_write(&key, chunk) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            if chunk_index > u16::MAX as usize {
+                return;
+            }
+            chunks.push(ChunkDesc {
+                idx: chunk_index as u16,
+                len: chunk.len() as u32,
+                version_id,
+            });
+            chunk_index += 1;
+        }
+
+        descs.push(SessionDesc {
+            present: true,
+            mode: session.mode,
+            module_hash: session.module_hash,
+            module_len: session.module_len,
+            cursor: session.cursor.min(u32::MAX as usize) as u32,
+            event_hash: session.event_hash,
+            event_count: session.events.len().min(u32::MAX as usize) as u32,
+            transcript_len: transcript.len().min(u32::MAX as usize) as u32,
+            chunks,
+        });
+    }
+
+    let mut total_len = 8usize.saturating_add(slots.saturating_mul(40));
+    for desc in descs.iter() {
+        total_len = total_len.saturating_add(desc.chunks.len().saturating_mul(16));
+    }
+    if total_len > crate::temporal::MAX_TEMPORAL_VERSION_BYTES {
+        return;
+    }
+
+    let mut payload = Vec::with_capacity(total_len);
+    payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
+    payload.push(crate::temporal::TEMPORAL_REPLAY_MANAGER_OBJECT);
+    payload.push(crate::temporal::TEMPORAL_REPLAY_MANAGER_EVENT_STATE);
+    payload.push(TEMPORAL_REPLAY_SCHEMA_V1);
+    temporal_append_u16(&mut payload, slots as u16);
+    temporal_append_u16(&mut payload, 0);
+
+    for desc in descs.iter() {
+        payload.push(if desc.present { 1 } else { 0 });
+        payload.push(temporal_replay_mode_to_u8(desc.mode));
+        temporal_append_u16(&mut payload, 0);
+        temporal_append_u64(&mut payload, desc.module_hash);
+        temporal_append_u32(&mut payload, desc.module_len);
+        temporal_append_u32(&mut payload, desc.cursor);
+        temporal_append_u64(&mut payload, desc.event_hash);
+        temporal_append_u32(&mut payload, desc.event_count);
+        temporal_append_u32(&mut payload, desc.transcript_len);
+        temporal_append_u16(&mut payload, desc.chunks.len() as u16);
+        temporal_append_u16(&mut payload, 0);
+
+        for chunk in desc.chunks.iter() {
+            temporal_append_u16(&mut payload, chunk.idx);
+            temporal_append_u16(&mut payload, 0);
+            temporal_append_u32(&mut payload, chunk.len);
+            temporal_append_u64(&mut payload, chunk.version_id);
+        }
+    }
+
+    let _ = crate::temporal::record_replay_state_event(&payload);
+}
+
+pub fn temporal_apply_replay_manager_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() < 8 {
+        return Err("temporal replay payload too short");
+    }
+    if payload[3] != TEMPORAL_REPLAY_SCHEMA_V1 {
+        return Err("temporal replay schema unsupported");
+    }
+    let slots = temporal_read_u16(payload, 4).ok_or("temporal replay slots missing")? as usize;
+    if slots != 8 {
+        return Err("temporal replay slots mismatch");
+    }
+
+    let mut offset = 8usize;
+    let mut restored: Vec<Option<ReplaySession>> = Vec::with_capacity(slots);
+    for instance_id in 0..slots {
+        if offset.saturating_add(40) > payload.len() {
+            return Err("temporal replay entry truncated");
+        }
+
+        let present = payload[offset] != 0;
+        let mode_raw = payload[offset + 1];
+        let mode = temporal_replay_mode_from_u8(mode_raw).ok_or("temporal replay mode invalid")?;
+        let module_hash = temporal_read_u64(payload, offset + 4).ok_or("temporal replay module hash missing")?;
+        let module_len = temporal_read_u32(payload, offset + 12).ok_or("temporal replay module len missing")?;
+        let cursor = temporal_read_u32(payload, offset + 16).ok_or("temporal replay cursor missing")?;
+        let event_hash = temporal_read_u64(payload, offset + 20).ok_or("temporal replay event hash missing")?;
+        let event_count = temporal_read_u32(payload, offset + 28).ok_or("temporal replay event count missing")?;
+        let transcript_len = temporal_read_u32(payload, offset + 32).ok_or("temporal replay transcript len missing")?;
+        let chunk_count = temporal_read_u16(payload, offset + 36).ok_or("temporal replay chunk count missing")?
+            as usize;
+        offset = offset.saturating_add(40);
+
+        if chunk_count > 64 {
+            return Err("temporal replay chunk count out of range");
+        }
+
+        let mut chunks: Vec<(u16, u32, u64)> = Vec::with_capacity(chunk_count);
+        for _ in 0..chunk_count {
+            if offset.saturating_add(16) > payload.len() {
+                return Err("temporal replay chunk truncated");
+            }
+            let chunk_idx = temporal_read_u16(payload, offset).ok_or("temporal replay chunk idx missing")?;
+            let chunk_len =
+                temporal_read_u32(payload, offset + 4).ok_or("temporal replay chunk len missing")?;
+            let version_id =
+                temporal_read_u64(payload, offset + 8).ok_or("temporal replay chunk version missing")?;
+            chunks.push((chunk_idx, chunk_len, version_id));
+            offset = offset.saturating_add(16);
+        }
+
+        if !present {
+            restored.push(None);
+            continue;
+        }
+
+        let mut transcript = Vec::new();
+        transcript.reserve(transcript_len as usize);
+        for (chunk_idx, chunk_len, version_id) in chunks.iter().copied() {
+            let key = temporal_transcript_chunk_key(instance_id, chunk_idx as usize);
+            let data = crate::temporal::read_version(&key, version_id).map_err(|_| "temporal replay chunk read failed")?;
+            if data.len() != chunk_len as usize {
+                return Err("temporal replay chunk length mismatch");
+            }
+            transcript.extend_from_slice(&data);
+        }
+        if transcript.len() != transcript_len as usize {
+            return Err("temporal replay transcript length mismatch");
+        }
+
+        let (events, decoded_hash, total_bytes) =
+            decode_transcript_checked(module_hash, module_len as usize, &transcript)?;
+        if decoded_hash != event_hash {
+            return Err("temporal replay event hash mismatch");
+        }
+        if events.len() != event_count as usize {
+            return Err("temporal replay event count mismatch");
+        }
+        if cursor as usize > events.len() {
+            return Err("temporal replay cursor out of range");
+        }
+
+        restored.push(Some(ReplaySession {
+            mode,
+            module_hash,
+            module_len,
+            events,
+            cursor: cursor as usize,
+            event_hash: decoded_hash,
+            total_bytes,
+        }));
+    }
+
+    if offset != payload.len() {
+        return Err("temporal replay payload trailing bytes");
+    }
+
+    let mut mgr = REPLAY.lock();
+    for i in 0..slots {
+        mgr.sessions[i] = restored[i].take();
+    }
     Ok(())
 }
 
