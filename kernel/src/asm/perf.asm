@@ -40,14 +40,14 @@ asm_rdtsc_begin:
 ; Use after the code you want to measure
 asm_rdtsc_end:
     push ebx
-    
-    rdtscp               ; Read timestamp counter and processor ID
-    mov ecx, eax         ; Save low 32 bits
-    mov eax, edx         ; Move high 32 bits to EAX temporarily
+
+    ; RDTSCP is not universally available on older x86 CPUs (and raises #UD when absent).
+    ; Use CPUID+RDTSC for compatibility. This is sufficient for entropy seeding and
+    ; coarse timing in the kernel.
     xor eax, eax
-    cpuid                ; Serialize execution
-    mov eax, ecx         ; Restore timestamp
-    
+    cpuid
+    rdtsc
+
     pop ebx
     ret                  ; Returns EDX:EAX (64-bit timestamp)
 
@@ -100,7 +100,11 @@ asm_benchmark_nop:
     jnz .loop
     
     ; End timing
-    rdtscp
+    push ebx             ; Preserve start low across CPUID clobber
+    xor eax, eax
+    cpuid
+    rdtsc
+    pop ebx
     sub eax, ebx         ; Calculate cycles (low)
     sbb edx, esi         ; Calculate cycles (high) with borrow
     
@@ -128,7 +132,11 @@ asm_benchmark_add:
     dec ecx
     jnz .loop
     
-    rdtscp
+    push ebx
+    xor eax, eax
+    cpuid
+    rdtsc
+    pop ebx
     sub eax, ebx
     sbb edx, esi
     
@@ -158,7 +166,11 @@ asm_benchmark_mul:
     dec ecx
     jnz .loop
     
-    rdtscp
+    push ebx
+    xor eax, eax
+    cpuid
+    rdtsc
+    pop ebx
     sub eax, ebx
     sbb edx, esi
     
@@ -180,17 +192,22 @@ asm_benchmark_div:
     mov ebx, eax
     mov esi, edx
     
-    mov edi, 1000        ; Dividend
+    mov ebp, 1000        ; Dividend (keep EBX for start time)
+    mov edi, 3           ; Divisor
 .loop:
-    mov eax, edi
+    mov eax, ebp
     xor edx, edx
-    mov ebx, 3           ; Divisor
-    div ebx              ; DIV operation
+    div edi              ; DIV operation
     dec ecx
     jnz .loop
     
-    mov ebx, [esp + 12]  ; Restore for timing calc
-    rdtscp
+    ; End timing: keep original start low/high (in EBX/ESI).
+    ; Use EDI as divisor to avoid clobbering EBX.
+    push ebx
+    xor eax, eax
+    cpuid
+    rdtsc
+    pop ebx
     sub eax, ebx
     sbb edx, esi
     
@@ -219,7 +236,11 @@ asm_benchmark_load:
     dec ecx
     jnz .loop
     
-    rdtscp
+    push ebx
+    xor eax, eax
+    cpuid
+    rdtsc
+    pop ebx
     pop esi              ; Restore start high
     sub eax, ebx
     sbb edx, esi
@@ -250,7 +271,11 @@ asm_benchmark_store:
     dec ecx
     jnz .loop
     
-    rdtscp
+    push ebx
+    xor eax, eax
+    cpuid
+    rdtsc
+    pop ebx
     pop esi
     sub eax, ebx
     sbb edx, esi
@@ -281,7 +306,11 @@ asm_benchmark_lock:
     dec ecx
     jnz .loop
     
-    rdtscp
+    push ebx
+    xor eax, eax
+    cpuid
+    rdtsc
+    pop ebx
     pop esi
     sub eax, ebx
     sbb edx, esi

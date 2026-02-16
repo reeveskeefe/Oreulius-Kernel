@@ -700,7 +700,10 @@ impl IntentGraph {
                     signal.rights_mask
                 };
 
-                let severity = ((score - policy.restrict_score) / (policy.severity_step_score as u32)) as u64;
+                // Policy is validated on updates, but keep this path panic-free even if
+                // memory corruption or partial restores ever yield an invalid policy.
+                let step = (policy.severity_step_score as u32).max(1);
+                let severity = ((score - policy.restrict_score) / step) as u64;
                 let duration_sec = (policy.restrict_base_seconds as u64)
                     .saturating_add(severity)
                     .min(policy.restrict_max_seconds as u64);
