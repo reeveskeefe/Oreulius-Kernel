@@ -90,6 +90,14 @@ pub const MAX_SERVICE_POINTERS: usize = 64;
 /// Maximum argument count accepted by a service-pointer invocation.
 pub const MAX_SERVICE_CALL_ARGS: usize = 16;
 
+const SERVICE_TYPED_SLOT_BYTES: usize = 9;
+const SERVICE_TYPED_KIND_I32: u8 = 0;
+const SERVICE_TYPED_KIND_I64: u8 = 1;
+const SERVICE_TYPED_KIND_F32: u8 = 2;
+const SERVICE_TYPED_KIND_F64: u8 = 3;
+const SERVICE_TYPED_KIND_FUNCREF: u8 = 4;
+const SERVICE_TYPED_KIND_EXTERNREF: u8 = 5;
+
 /// Maximum module size (16 KiB - reduced to shrink kernel)
 pub const MAX_MODULE_SIZE: usize = 16 * 1024;
 
@@ -757,6 +765,31 @@ fn resolve_host_import(
     }
     let field = core::str::from_utf8(field_name).map_err(|_| WasmError::InvalidModule)?;
 
+    if field == "service_register_ref" || field == "oreulia_service_register_ref" {
+        if signature.param_count == 2
+            && signature.result_count == 1
+            && signature.param_types[0] == ValueType::FuncRef
+            && signature.param_types[1] == ValueType::I32
+            && signature.result_types[0] == ValueType::I32
+        {
+            return Ok(9);
+        }
+        return Err(WasmError::InvalidModule);
+    }
+
+    if field == "service_register" || field == "oreulia_service_register" {
+        let valid = signature.param_count == 2
+            && signature.result_count == 1
+            && signature.param_types[1] == ValueType::I32
+            && signature.result_types[0] == ValueType::I32
+            && (signature.param_types[0] == ValueType::I32
+                || signature.param_types[0] == ValueType::FuncRef);
+        if valid {
+            return Ok(9);
+        }
+        return Err(WasmError::InvalidModule);
+    }
+
     let (host_id, params, results) = match field {
         "debug_log" | "oreulia_log" => (0usize, 2usize, 0usize),
         "fs_read" | "oreulia_fs_read" => (1, 5, 1),
@@ -767,9 +800,9 @@ fn resolve_host_import(
         "net_connect" | "oreulia_net_connect" => (6, 3, 1),
         "dns_resolve" | "oreulia_dns_resolve" => (7, 2, 1),
         "service_invoke" | "oreulia_service_invoke" => (8, 3, 1),
-        "service_register" | "oreulia_service_register" => (9, 2, 1),
         "channel_send_cap" | "oreulia_channel_send_cap" => (10, 4, 1),
         "last_service_cap" | "oreulia_last_service_cap" => (11, 0, 1),
+        "service_invoke_typed" | "oreulia_service_invoke_typed" => (12, 5, 1),
         _ => return Err(WasmError::InvalidModule),
     };
 
@@ -1132,6 +1165,42 @@ pub struct ServicePointerRegistration {
     pub function_index: usize,
 }
 
+#[derive(Clone, Copy)]
+pub struct ServicePointerInvokeResult {
+    pub value_count: usize,
+    pub values: [Value; MAX_WASM_TYPE_ARITY],
+}
+
+impl ServicePointerInvokeResult {
+    const fn empty() -> Self {
+        Self {
+            value_count: 0,
+            values: [Value::I32(0); MAX_WASM_TYPE_ARITY],
+        }
+    }
+}
+
+fn parsed_signature_equal(a: ParsedFunctionType, b: ParsedFunctionType) -> bool {
+    if a.param_count != b.param_count || a.result_count != b.result_count {
+        return false;
+    }
+    let mut i = 0usize;
+    while i < a.param_count {
+        if a.param_types[i] != b.param_types[i] {
+            return false;
+        }
+        i += 1;
+    }
+    let mut r = 0usize;
+    while r < a.result_count {
+        if a.result_types[r] != b.result_types[r] {
+            return false;
+        }
+        r += 1;
+    }
+    true
+}
+
 /// Capability types that can be injected into WASM
 #[derive(Debug, Clone, Copy)]
 pub enum WasmCapability {
@@ -1193,7 +1262,7 @@ struct ServicePointerEntry {
     owner_pid: ProcessId,
     target_instance: usize,
     function_index: usize,
-    expected_args: u8,
+    signature: ParsedFunctionType,
     max_calls_per_window: u16,
     window_ticks: u64,
     window_start_tick: u64,
@@ -1208,7 +1277,13 @@ impl ServicePointerEntry {
             owner_pid: ProcessId(0),
             target_instance: 0,
             function_index: 0,
-            expected_args: 0,
+            signature: ParsedFunctionType {
+                param_count: 0,
+                result_count: 0,
+                param_types: [ValueType::I32; MAX_WASM_TYPE_ARITY],
+                result_types: [ValueType::I32; MAX_WASM_TYPE_ARITY],
+                all_i32: true,
+            },
             max_calls_per_window: 0,
             window_ticks: 0,
             window_start_tick: 0,
@@ -1260,25 +1335,12 @@ impl ServicePointerRegistry {
         false
     }
 
-    fn remove_for_instance(&mut self, instance_id: usize) -> usize {
-        let mut removed = 0usize;
-        let mut i = 0usize;
-        while i < self.entries.len() {
-            if self.entries[i].active && self.entries[i].target_instance == instance_id {
-                self.entries[i] = ServicePointerEntry::empty();
-                removed = removed.saturating_add(1);
-            }
-            i += 1;
-        }
-        removed
-    }
-
     fn resolve_for_invoke(
         &mut self,
         object_id: u64,
-        argc: usize,
+        args: &[Value],
         now_tick: u64,
-    ) -> Result<(usize, usize, ProcessId), &'static str> {
+    ) -> Result<ServicePointerEntry, &'static str> {
         let idx = self
             .find_index(object_id)
             .ok_or("Service pointer not found")?;
@@ -1286,8 +1348,15 @@ impl ServicePointerRegistry {
         if !entry.active {
             return Err("Service pointer inactive");
         }
-        if argc != entry.expected_args as usize {
+        if args.len() != entry.signature.param_count {
             return Err("Service pointer argument mismatch");
+        }
+        let mut i = 0usize;
+        while i < args.len() {
+            if !args[i].matches_type(entry.signature.param_types[i]) {
+                return Err("Service pointer argument type mismatch");
+            }
+            i += 1;
         }
 
         if entry.max_calls_per_window > 0 {
@@ -1305,7 +1374,7 @@ impl ServicePointerRegistry {
             self.entries[idx] = entry;
         }
 
-        Ok((entry.target_instance, entry.function_index, entry.owner_pid))
+        Ok(entry)
     }
 }
 
@@ -1316,25 +1385,67 @@ pub fn service_pointer_exists(object_id: u64) -> bool {
 }
 
 fn revoke_service_pointers_for_instance(instance_id: usize) -> usize {
-    let mut object_ids = [0u64; MAX_SERVICE_POINTERS];
-    let mut object_count = 0usize;
-    let removed = {
-        let mut registry = SERVICE_POINTERS.lock();
-        let mut removed = 0usize;
+    let mut observed = [ServicePointerEntry::empty(); MAX_SERVICE_POINTERS];
+    let mut observed_count = 0usize;
+    {
+        let registry = SERVICE_POINTERS.lock();
         let mut i = 0usize;
         while i < registry.entries.len() {
             let entry = registry.entries[i];
             if entry.active && entry.target_instance == instance_id {
-                if object_count < object_ids.len() {
-                    object_ids[object_count] = entry.object_id;
-                    object_count += 1;
+                if observed_count < observed.len() {
+                    observed[observed_count] = entry;
+                    observed_count += 1;
                 }
-                registry.entries[i] = ServicePointerEntry::empty();
-                removed = removed.saturating_add(1);
             }
             i += 1;
         }
-        removed
+    }
+
+    let mut rebind_target = [usize::MAX; MAX_SERVICE_POINTERS];
+    let mut i = 0usize;
+    while i < observed_count {
+        rebind_target[i] = wasm_runtime()
+            .find_service_pointer_rebind_target(
+                observed[i].owner_pid,
+                instance_id,
+                observed[i].function_index,
+                observed[i].signature,
+            )
+            .unwrap_or(usize::MAX);
+        i += 1;
+    }
+
+    let mut object_ids = [0u64; MAX_SERVICE_POINTERS];
+    let mut object_count = 0usize;
+    let mut rebound = 0usize;
+    let removed = {
+        let mut registry = SERVICE_POINTERS.lock();
+        let mut i = 0usize;
+        while i < observed_count {
+            let object_id = observed[i].object_id;
+            if let Some(idx) = registry.find_index(object_id) {
+                let live = registry.entries[idx];
+                if live.active && live.target_instance == instance_id {
+                    if rebind_target[i] != usize::MAX {
+                        let mut updated = live;
+                        updated.target_instance = rebind_target[i];
+                        updated.window_start_tick = crate::pit::get_ticks();
+                        updated.calls_in_window = 0;
+                        registry.entries[idx] = updated;
+                        rebound = rebound.saturating_add(1);
+                    } else {
+                        if object_count < object_ids.len() {
+                            object_ids[object_count] = live.object_id;
+                            object_count += 1;
+                        }
+                        registry.entries[idx] = ServicePointerEntry::empty();
+                    }
+                }
+            }
+            i += 1;
+        }
+        object_count
     };
 
     let mut i = 0usize;
@@ -1345,7 +1456,7 @@ fn revoke_service_pointers_for_instance(instance_id: usize) -> usize {
         );
         i += 1;
     }
-    removed
+    rebound.saturating_add(removed)
 }
 
 pub fn register_service_pointer(
@@ -1354,30 +1465,44 @@ pub fn register_service_pointer(
     function_index: usize,
     allow_delegate: bool,
 ) -> Result<ServicePointerRegistration, &'static str> {
-    let (actual_owner, expected_args, result_count) = wasm_runtime()
-        .get_instance_mut(target_instance, |instance| {
-            match instance.module.get_function(function_index) {
-                Ok(func) => (
-                    instance.process_id,
-                    func.param_count,
-                    func.result_count,
-                ),
-                Err(_) => (instance.process_id, usize::MAX, usize::MAX),
+    let metadata = wasm_runtime()
+        .get_instance_mut(target_instance, |instance| -> Result<(ProcessId, usize, ParsedFunctionType), WasmError> {
+            let mut resolved = function_index;
+            let mut call_target = instance.module.resolve_call_target(resolved);
+            if !matches!(call_target, Ok(CallTarget::Function(_)))
+                && function_index < instance.module.function_count
+            {
+                resolved = instance
+                    .module
+                    .import_function_count
+                    .checked_add(function_index)
+                    .ok_or(WasmError::InvalidModule)?;
+                call_target = instance.module.resolve_call_target(resolved);
+            }
+
+            match call_target? {
+                CallTarget::Function(_) => {
+                    let signature = instance.module.signature_for_combined(resolved)?;
+                    Ok((instance.process_id, resolved, signature))
+                }
+                CallTarget::Host(_) => Err(WasmError::PermissionDenied),
             }
         })
         .map_err(|_| "Target instance not available")?;
+    let (actual_owner, function_index, signature) = match metadata {
+        Ok(v) => v,
+        Err(WasmError::FunctionNotFound) => return Err("Target function not found"),
+        Err(WasmError::PermissionDenied) => {
+            return Err("Service pointers cannot target host imports");
+        }
+        Err(_) => return Err("Target function metadata unavailable"),
+    };
 
     if actual_owner != owner_pid {
         return Err("Cannot register pointer for foreign instance");
     }
-    if expected_args == usize::MAX {
-        return Err("Target function not found");
-    }
-    if expected_args > MAX_SERVICE_CALL_ARGS {
-        return Err("Service pointer function exceeds max argument count");
-    }
-    if result_count > 1 {
-        return Err("Service pointer function must return <= 1 value");
+    if signature.param_count > MAX_WASM_TYPE_ARITY || signature.result_count > MAX_WASM_TYPE_ARITY {
+        return Err("Service pointer signature exceeds runtime limits");
     }
 
     let object_id = capability::capability_manager().create_object();
@@ -1388,7 +1513,7 @@ pub fn register_service_pointer(
         owner_pid,
         target_instance,
         function_index,
-        expected_args: expected_args as u8,
+        signature,
         max_calls_per_window: 128,
         window_ticks: hz,
         window_start_tick: crate::pit::get_ticks(),
@@ -1474,12 +1599,12 @@ pub fn revoke_service_pointers_for_owner(owner_pid: ProcessId) -> usize {
     removed
 }
 
-pub fn invoke_service_pointer(
+pub fn invoke_service_pointer_typed(
     caller_pid: ProcessId,
     object_id: u64,
-    args: &[u32],
-) -> Result<u32, &'static str> {
-    if args.len() > MAX_SERVICE_CALL_ARGS {
+    args: &[Value],
+) -> Result<ServicePointerInvokeResult, &'static str> {
+    if args.len() > MAX_WASM_TYPE_ARITY {
         return Err("Too many service call arguments");
     }
     if !capability::check_capability(
@@ -1492,44 +1617,91 @@ pub fn invoke_service_pointer(
     }
 
     let now = crate::pit::get_ticks();
-    let (target_instance, function_index, _owner) =
-        SERVICE_POINTERS.lock().resolve_for_invoke(object_id, args.len(), now)?;
+    let entry = SERVICE_POINTERS
+        .lock()
+        .resolve_for_invoke(object_id, args, now)?;
 
     let call = wasm_runtime()
-        .get_instance_mut(target_instance, |instance| -> Result<u32, WasmError> {
-            let func = instance.module.get_function(function_index)?;
-            if func.param_count != args.len() {
+        .with_instance_exclusive(entry.target_instance, |instance| -> Result<ServicePointerInvokeResult, WasmError> {
+            if instance.process_id != entry.owner_pid {
+                return Err(WasmError::PermissionDenied);
+            }
+            let runtime_sig = instance.module.signature_for_combined(entry.function_index)?;
+            if !parsed_signature_equal(runtime_sig, entry.signature) {
                 return Err(WasmError::TypeMismatch);
             }
 
             instance.stack.clear();
             let mut i = 0usize;
             while i < args.len() {
-                instance.stack.push(Value::I32(args[i] as i32))?;
+                instance.stack.push(args[i])?;
                 i += 1;
             }
 
-            if let Err(e) = instance.call(function_index) {
+            if let Err(e) = instance.invoke_combined_function(entry.function_index) {
                 instance.stack.clear();
                 return Err(e);
             }
-            let result = if func.result_count == 0 {
-                0u32
-            } else {
-                instance.stack.pop()?.as_u32()?
-            };
+
+            if instance.stack.len() != entry.signature.result_count {
+                instance.stack.clear();
+                return Err(WasmError::TypeMismatch);
+            }
+            let mut out = ServicePointerInvokeResult::empty();
+            out.value_count = entry.signature.result_count;
+            let mut r = 0usize;
+            while r < entry.signature.result_count {
+                let value = instance.stack.get(r)?;
+                if !value.matches_type(entry.signature.result_types[r]) {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+                out.values[r] = value;
+                r += 1;
+            }
             instance.stack.clear();
-            Ok(result)
+            Ok(out)
         })
-        .map_err(|_| "Service pointer target unavailable")?;
+        .map_err(|e| match e {
+            WasmError::InstanceBusy => "Service pointer target busy",
+            _ => "Service pointer target unavailable",
+        })?;
 
     match call {
         Ok(ret) => {
-            crate::security::security().intent_wasm_call(caller_pid, 0x5300 + function_index as u64);
+            crate::security::security()
+                .intent_wasm_call(caller_pid, 0x5300 + entry.function_index as u64);
             Ok(ret)
         }
+        Err(WasmError::TypeMismatch) => Err("Service pointer invocation type mismatch"),
         Err(_) => Err("Service pointer invocation failed"),
     }
+}
+
+pub fn invoke_service_pointer(
+    caller_pid: ProcessId,
+    object_id: u64,
+    args: &[u32],
+) -> Result<u32, &'static str> {
+    if args.len() > MAX_SERVICE_CALL_ARGS {
+        return Err("Too many service call arguments");
+    }
+    let mut typed = [Value::I32(0); MAX_SERVICE_CALL_ARGS];
+    let mut i = 0usize;
+    while i < args.len() {
+        typed[i] = Value::I32(args[i] as i32);
+        i += 1;
+    }
+    let result = invoke_service_pointer_typed(caller_pid, object_id, &typed[..args.len()])?;
+    if result.value_count == 0 {
+        return Ok(0);
+    }
+    if result.value_count != 1 {
+        return Err("Legacy service pointer ABI expects <=1 result");
+    }
+    result.values[0]
+        .as_u32()
+        .map_err(|_| "Legacy service pointer ABI requires i32 result")
 }
 
 pub fn inject_service_pointer_capability(
@@ -4542,6 +4714,7 @@ impl WasmInstance {
             9 => self.host_service_register(),
             10 => self.host_channel_send_with_cap(),
             11 => self.host_last_service_handle(),
+            12 => self.host_service_invoke_typed(),
             _ => Err(WasmError::UnknownHostFunction),
         }
     }
@@ -5155,6 +5328,49 @@ impl WasmInstance {
         }
     }
 
+    fn decode_typed_service_value(tag: u8, payload: u64) -> Result<Value, WasmError> {
+        match tag {
+            SERVICE_TYPED_KIND_I32 => Ok(Value::I32(payload as u32 as i32)),
+            SERVICE_TYPED_KIND_I64 => Ok(Value::I64(payload as i64)),
+            SERVICE_TYPED_KIND_F32 => Ok(Value::F32(f32::from_bits(payload as u32))),
+            SERVICE_TYPED_KIND_F64 => Ok(Value::F64(f64::from_bits(payload))),
+            SERVICE_TYPED_KIND_FUNCREF => {
+                if payload == u64::MAX {
+                    Ok(Value::FuncRef(None))
+                } else {
+                    Ok(Value::FuncRef(Some(payload as usize)))
+                }
+            }
+            SERVICE_TYPED_KIND_EXTERNREF => {
+                if payload == u64::MAX {
+                    Ok(Value::ExternRef(None))
+                } else {
+                    Ok(Value::ExternRef(Some(payload as u32)))
+                }
+            }
+            _ => Err(WasmError::TypeMismatch),
+        }
+    }
+
+    fn encode_typed_service_value(value: Value, out: &mut [u8]) -> Result<(), WasmError> {
+        if out.len() < SERVICE_TYPED_SLOT_BYTES {
+            return Err(WasmError::SyscallFailed);
+        }
+        let (tag, payload) = match value {
+            Value::I32(v) => (SERVICE_TYPED_KIND_I32, v as u32 as u64),
+            Value::I64(v) => (SERVICE_TYPED_KIND_I64, v as u64),
+            Value::F32(v) => (SERVICE_TYPED_KIND_F32, v.to_bits() as u64),
+            Value::F64(v) => (SERVICE_TYPED_KIND_F64, v.to_bits()),
+            Value::FuncRef(Some(idx)) => (SERVICE_TYPED_KIND_FUNCREF, idx as u64),
+            Value::FuncRef(None) => (SERVICE_TYPED_KIND_FUNCREF, u64::MAX),
+            Value::ExternRef(Some(id)) => (SERVICE_TYPED_KIND_EXTERNREF, id as u64),
+            Value::ExternRef(None) => (SERVICE_TYPED_KIND_EXTERNREF, u64::MAX),
+        };
+        out[0] = tag;
+        out[1..9].copy_from_slice(&payload.to_le_bytes());
+        Ok(())
+    }
+
     /// oreulia_service_invoke(cap: i32, args_ptr: i32, args_count: i32) -> i32
     fn host_service_invoke(&mut self) -> Result<(), WasmError> {
         let args_count = self.stack.pop()?.as_i32()? as usize;
@@ -5228,15 +5444,135 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_service_register(func_idx: i32, delegate: i32) -> i32
+    /// oreulia_service_invoke_typed(cap: i32, args_ptr: i32, args_count: i32, results_ptr: i32, results_capacity: i32) -> i32
+    fn host_service_invoke_typed(&mut self) -> Result<(), WasmError> {
+        let results_capacity = self.stack.pop()?.as_i32()? as usize;
+        let results_ptr = self.stack.pop()?.as_i32()? as usize;
+        let args_count = self.stack.pop()?.as_i32()? as usize;
+        let args_ptr = self.stack.pop()?.as_i32()? as usize;
+        let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
+
+        if args_count > MAX_WASM_TYPE_ARITY || results_capacity > MAX_WASM_TYPE_ARITY {
+            return Err(WasmError::SyscallFailed);
+        }
+
+        let svc_ptr = match self.capabilities.get(cap_handle)? {
+            WasmCapability::ServicePointer(ptr) => ptr,
+            _ => return Err(WasmError::InvalidCapability),
+        };
+
+        let func_id: u16 = 12;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, args_count as u32);
+        args_hash = replay::hash_u32(args_hash, results_capacity as u32);
+        args_hash = replay::hash_u32(args_hash, (svc_ptr.object_id >> 32) as u32);
+        args_hash = replay::hash_u32(args_hash, svc_ptr.object_id as u32);
+
+        let mut typed_args: Vec<Value> = Vec::new();
+        let encoded_arg_len = args_count
+            .checked_mul(SERVICE_TYPED_SLOT_BYTES)
+            .ok_or(WasmError::SyscallFailed)?;
+        if encoded_arg_len > 0 {
+            let encoded = self.memory.read(args_ptr, encoded_arg_len)?;
+            args_hash = replay::hash_bytes(args_hash, encoded);
+            typed_args.reserve(args_count);
+            let mut i = 0usize;
+            while i < args_count {
+                let base = i * SERVICE_TYPED_SLOT_BYTES;
+                let payload = u64::from_le_bytes([
+                    encoded[base + 1],
+                    encoded[base + 2],
+                    encoded[base + 3],
+                    encoded[base + 4],
+                    encoded[base + 5],
+                    encoded[base + 6],
+                    encoded[base + 7],
+                    encoded[base + 8],
+                ]);
+                typed_args.push(Self::decode_typed_service_value(encoded[base], payload)?);
+                i += 1;
+            }
+        }
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            let result_count = out.result as usize;
+            if result_count > results_capacity {
+                return Err(WasmError::DeterminismViolation);
+            }
+            let expected_len = result_count
+                .checked_mul(SERVICE_TYPED_SLOT_BYTES)
+                .ok_or(WasmError::DeterminismViolation)?;
+            if out.data.len() != expected_len {
+                return Err(WasmError::DeterminismViolation);
+            }
+            if !out.data.is_empty() {
+                self.memory.write(results_ptr, &out.data)?;
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
+
+        let result = invoke_service_pointer_typed(self.process_id, svc_ptr.object_id, &typed_args)
+            .map_err(|_| WasmError::SyscallFailed)?;
+        if result.value_count > results_capacity {
+            return Err(WasmError::SyscallFailed);
+        }
+        let result_len = result
+            .value_count
+            .checked_mul(SERVICE_TYPED_SLOT_BYTES)
+            .ok_or(WasmError::SyscallFailed)?;
+        let mut encoded_results: Vec<u8> = Vec::with_capacity(result_len);
+        encoded_results.resize(result_len, 0);
+        let mut i = 0usize;
+        while i < result.value_count {
+            let base = i * SERVICE_TYPED_SLOT_BYTES;
+            Self::encode_typed_service_value(result.values[i], &mut encoded_results[base..base + SERVICE_TYPED_SLOT_BYTES])?;
+            i += 1;
+        }
+        if !encoded_results.is_empty() {
+            self.memory.write(results_ptr, &encoded_results)?;
+        }
+        self.stack.push(Value::I32(result.value_count as i32))?;
+
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                result.value_count as i32,
+                &encoded_results,
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_service_register(func: i32|funcref, delegate: i32) -> i32
     fn host_service_register(&mut self) -> Result<(), WasmError> {
         let delegate = self.stack.pop()?.as_i32()? != 0;
-        let func_idx = self.stack.pop()?.as_i32()? as usize;
+        let selector = self.stack.pop()?;
+        let (selector_kind, func_idx) = match selector {
+            Value::I32(v) if v >= 0 => (0u32, v as usize),
+            Value::FuncRef(Some(idx)) => (1u32, idx),
+            _ => return Err(WasmError::TypeMismatch),
+        };
 
         let func_id: u16 = 9;
         crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
         let mut args_hash = replay::fnv1a64_init();
         args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, selector_kind);
         args_hash = replay::hash_u32(args_hash, func_idx as u32);
         args_hash = replay::hash_u32(args_hash, if delegate { 1 } else { 0 });
 
@@ -5423,6 +5759,7 @@ pub enum WasmError {
     DivisionByZero,
     ExecutionLimitExceeded,
     PermissionDenied,
+    InstanceBusy,
     
     // Memory errors
     MemoryOutOfBounds,
@@ -5456,6 +5793,7 @@ impl fmt::Display for WasmError {
             WasmError::DivisionByZero => write!(f, "Division by zero"),
             WasmError::ExecutionLimitExceeded => write!(f, "Execution limit exceeded"),
             WasmError::PermissionDenied => write!(f, "Permission denied"),
+            WasmError::InstanceBusy => write!(f, "Instance busy"),
             WasmError::SyscallFailed => write!(f, "Syscall failed"),
             WasmError::DeterminismViolation => write!(f, "Determinism violation"),
             WasmError::ReplayError => write!(f, "Replay error"),
@@ -5496,6 +5834,7 @@ impl WasmError {
             WasmError::ControlFlowViolation => "Control flow violation",
             WasmError::ExecutionLimitExceeded => "Execution limit exceeded",
             WasmError::PermissionDenied => "Permission denied",
+            WasmError::InstanceBusy => "Instance busy",
         }
     }
 }
@@ -5504,15 +5843,30 @@ impl WasmError {
 // Global WASM Runtime
 // ============================================================================
 
+enum RuntimeInstanceSlot {
+    Empty,
+    Busy(ProcessId),
+    Ready(WasmInstance),
+}
+
 /// Global WASM runtime (manages instances)
 pub struct WasmRuntime {
-    instances: Mutex<[Option<WasmInstance>; 8]>,
+    instances: Mutex<[RuntimeInstanceSlot; 8]>,
 }
 
 impl WasmRuntime {
     pub const fn new() -> Self {
         WasmRuntime {
-            instances: Mutex::new([None, None, None, None, None, None, None, None]),
+            instances: Mutex::new([
+                RuntimeInstanceSlot::Empty,
+                RuntimeInstanceSlot::Empty,
+                RuntimeInstanceSlot::Empty,
+                RuntimeInstanceSlot::Empty,
+                RuntimeInstanceSlot::Empty,
+                RuntimeInstanceSlot::Empty,
+                RuntimeInstanceSlot::Empty,
+                RuntimeInstanceSlot::Empty,
+            ]),
         }
     }
 
@@ -5529,12 +5883,12 @@ impl WasmRuntime {
         let mut module_opt = Some(module);
         let mut instances = self.instances.lock();
         for (i, slot) in instances.iter_mut().enumerate() {
-            if slot.is_none() {
+            if matches!(slot, RuntimeInstanceSlot::Empty) {
                 let module = module_opt.take().ok_or(WasmError::InvalidModule)?;
                 let mut instance = WasmInstance::new(module, process_id, i);
                 instance.initialize_from_module()?;
                 instance.run_start_if_present()?;
-                *slot = Some(instance);
+                *slot = RuntimeInstanceSlot::Ready(instance);
                 return Ok(i);
             }
         }
@@ -5553,9 +5907,91 @@ impl WasmRuntime {
         }
         
         match &mut instances[instance_id] {
-            Some(instance) => Ok(f(instance)),
-            None => Err(WasmError::InvalidModule),
+            RuntimeInstanceSlot::Ready(instance) => Ok(f(instance)),
+            RuntimeInstanceSlot::Busy(_) => Err(WasmError::InstanceBusy),
+            RuntimeInstanceSlot::Empty => Err(WasmError::InvalidModule),
         }
+    }
+
+    pub fn with_instance_exclusive<F, R>(&self, instance_id: usize, f: F) -> Result<R, WasmError>
+    where
+        F: FnOnce(&mut WasmInstance) -> R,
+    {
+        let mut instance = {
+            let mut instances = self.instances.lock();
+            if instance_id >= 8 {
+                return Err(WasmError::InvalidModule);
+            }
+            let owner = match &instances[instance_id] {
+                RuntimeInstanceSlot::Ready(inst) => inst.process_id,
+                RuntimeInstanceSlot::Busy(_) => return Err(WasmError::InstanceBusy),
+                RuntimeInstanceSlot::Empty => return Err(WasmError::InvalidModule),
+            };
+            match core::mem::replace(
+                &mut instances[instance_id],
+                RuntimeInstanceSlot::Busy(owner),
+            ) {
+                RuntimeInstanceSlot::Ready(inst) => inst,
+                RuntimeInstanceSlot::Busy(owner) => {
+                    instances[instance_id] = RuntimeInstanceSlot::Busy(owner);
+                    return Err(WasmError::InstanceBusy);
+                }
+                RuntimeInstanceSlot::Empty => {
+                    instances[instance_id] = RuntimeInstanceSlot::Empty;
+                    return Err(WasmError::InvalidModule);
+                }
+            }
+        };
+
+        let result = f(&mut instance);
+
+        let mut instances = self.instances.lock();
+        if instance_id >= 8 {
+            return Err(WasmError::InvalidModule);
+        }
+        match core::mem::replace(&mut instances[instance_id], RuntimeInstanceSlot::Empty) {
+            RuntimeInstanceSlot::Busy(_) => {
+                instances[instance_id] = RuntimeInstanceSlot::Ready(instance);
+                Ok(result)
+            }
+            other => {
+                instances[instance_id] = other;
+                Err(WasmError::Trap)
+            }
+        }
+    }
+
+    fn find_service_pointer_rebind_target(
+        &self,
+        owner_pid: ProcessId,
+        retiring_instance: usize,
+        function_index: usize,
+        signature: ParsedFunctionType,
+    ) -> Option<usize> {
+        let instances = self.instances.lock();
+        let mut idx = 0usize;
+        while idx < instances.len() {
+            if idx != retiring_instance {
+                if let RuntimeInstanceSlot::Ready(instance) = &instances[idx] {
+                    if instance.process_id == owner_pid {
+                        if matches!(
+                            instance.module.resolve_call_target(function_index),
+                            Ok(CallTarget::Function(_))
+                        ) {
+                            if let Ok(runtime_sig) =
+                                instance.module.signature_for_combined(function_index)
+                            {
+                                if parsed_signature_equal(runtime_sig, signature) {
+                                    return Some(idx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            idx += 1;
+        }
+        None
     }
 
     /// Destroy an instance
@@ -5564,7 +6000,13 @@ impl WasmRuntime {
         if instance_id >= 8 {
             return Err(WasmError::InvalidModule);
         }
-        instances[instance_id] = None;
+        match &instances[instance_id] {
+            RuntimeInstanceSlot::Busy(_) => return Err(WasmError::InstanceBusy),
+            RuntimeInstanceSlot::Empty => return Err(WasmError::InvalidModule),
+            RuntimeInstanceSlot::Ready(_) => {}
+        }
+        instances[instance_id] = RuntimeInstanceSlot::Empty;
+        drop(instances);
         let _ = revoke_service_pointers_for_instance(instance_id);
         crate::replay::clear(instance_id);
         Ok(())
@@ -5577,8 +6019,9 @@ impl WasmRuntime {
         
         for (i, instance) in instances.iter().enumerate() {
             result[i] = match instance {
-                Some(inst) => (i, inst.process_id, true),
-                None => (i, ProcessId(0), false),
+                RuntimeInstanceSlot::Ready(inst) => (i, inst.process_id, true),
+                RuntimeInstanceSlot::Busy(pid) => (i, *pid, true),
+                RuntimeInstanceSlot::Empty => (i, ProcessId(0), false),
             };
         }
         
@@ -7875,9 +8318,11 @@ pub fn call_function(module_id: usize, func_idx: usize, args: &[u32]) -> Result<
     let (table_idx, module, bound_instance) = lookup_syscall_module(module_id, caller_pid)?;
 
     let reuse = if let Some(instance_id) = bound_instance {
-        wasm_runtime()
-            .get_instance_mut(instance_id, |instance| instance.process_id == caller_pid)
-            .unwrap_or(false)
+        match wasm_runtime().get_instance_mut(instance_id, |instance| instance.process_id == caller_pid) {
+            Ok(same_owner) => same_owner,
+            Err(WasmError::InstanceBusy) => return Err("WASM instance busy"),
+            Err(_) => false,
+        }
     } else {
         false
     };
@@ -7898,7 +8343,7 @@ pub fn call_function(module_id: usize, func_idx: usize, args: &[u32]) -> Result<
     };
 
     let call = wasm_runtime()
-        .get_instance_mut(instance_id, |instance| -> Result<u32, WasmError> {
+        .with_instance_exclusive(instance_id, |instance| -> Result<u32, WasmError> {
             if instance.process_id != caller_pid && caller_pid.0 != 0 {
                 return Err(WasmError::PermissionDenied);
             }
@@ -7935,7 +8380,10 @@ pub fn call_function(module_id: usize, func_idx: usize, args: &[u32]) -> Result<
             instance.stack.clear();
             Ok(result)
         })
-        .map_err(|_| "WASM instance unavailable")?;
+        .map_err(|e| match e {
+            WasmError::InstanceBusy => "WASM instance busy",
+            _ => "WASM instance unavailable",
+        })?;
 
     match call {
         Ok(value) => {

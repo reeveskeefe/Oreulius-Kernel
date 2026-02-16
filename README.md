@@ -6,7 +6,7 @@
 
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Written in assembly](https://img.shields.io/badge/written%20in-Assembly-brown.svg)](https://en.wikipedia.org/wiki/Assembly_language)
-[![License: Oreulius](docs/oreulius-license-badge.svg)](OreuliusLiscence.md)
+[![License: Oreulius](docs/oreulius-license-badge.svg)](LICENCE)
 [![Platform](https://img.shields.io/badge/platform-i686-lightgrey.svg)](https://en.wikipedia.org/wiki/I686)
 <br>
 [![Canada Badge](docs/Made-In-Canada-Badge.svg)](https://en.wikipedia.org/wiki/Canada)
@@ -366,7 +366,7 @@ Oreulia is an experimental research project. Contributions, ideas, and feedback 
 
 ## License
 
-This project is licensed under the OREULIUS LISCENCE - see the [liscence](OreuliusLiscence.md) for details.
+This project is licensed under the OREULIUS LISCENCE - see the [liscence](LICENSE) for details.
 
 ## Contact
 

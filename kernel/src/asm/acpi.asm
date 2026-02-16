@@ -1,3 +1,5 @@
+
+
 ; Advanced Configuration and Power Interface (ACPI) Assembly
 ; Power management, thermal monitoring, and system control
 ; x86 32-bit architecture

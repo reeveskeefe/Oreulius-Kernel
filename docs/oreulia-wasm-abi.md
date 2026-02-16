@@ -97,16 +97,24 @@ The following host functions are available to Wasm modules:
 - `console_write(ptr: i32, len: i32)`: Write to serial/vga (if capability held).
 
 ### 4.5 Service Pointer Capabilities
-- `service_register(func_idx: i32, delegate: i32) -> i32`:
-  register an exported function as a directly callable capability and return a cap handle.
+- `service_register(func: i32|funcref, delegate: i32) -> i32`:
+  register a directly callable capability and return a cap handle.
+  - `func` may be a legacy numeric function index (`i32`) or a direct `ref.func` value (`funcref`).
   - `delegate != 0` grants transfer right.
 - `service_invoke(cap_handle: i32, args_ptr: i32, args_count: i32) -> i32`:
-  invoke a service-pointer capability directly (no conventional syscall trampoline).
+  legacy invoke path (`i32` arguments only, `i32` or empty result).
+- `service_invoke_typed(cap_handle: i32, args_ptr: i32, args_count: i32, results_ptr: i32, results_capacity: i32) -> i32`:
+  typed invoke path. Arguments and results are encoded as fixed 9-byte slots in linear memory:
+  - byte 0: kind (`0=i32,1=i64,2=f32,3=f64,4=funcref,5=externref`)
+  - bytes 1..8: payload (`little-endian`; null refs use all-ones payload).
+  - return value is the number of result slots written.
 
 Notes:
 - Service-pointer capabilities are typed kernel capabilities (`ServicePointer`), not raw pointers.
 - Invocation is authorized by capability rights (`SERVICE_INVOKE`) and per-pointer rate policy.
+- Runtime enforces full registered function signatures (arity + value types) on every service-pointer call.
 - Transfer authorization is enforced by `SERVICE_DELEGATE`.
+- On instance teardown, service pointers attempt hot-swap rebinding to compatible live replacement instances; unmatched pointers are revoked.
 
 ---
 
