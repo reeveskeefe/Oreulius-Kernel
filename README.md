@@ -262,7 +262,7 @@ Once Oreulia boots, you'll see the shell prompt (`>`). Try these commands:
 - `svcptr-demo-crosspid` - Cross-PID transfer/invoke proof demo
 - `svcptr-typed-demo` - Mixed-type typed invoke host-path demo (`i64/f32/f64/funcref`)
 - `temporal-abi-selftest` - Temporal-object ABI host-path + VFS fd-write capture self-check
-- `temporal-ipc-demo` - Temporal-object IPC service demo (`SNAPSHOT/LATEST/HISTORY/STATS`)
+- `temporal-ipc-demo` - Temporal-object IPC binary-frame demo (`SNAPSHOT/LATEST/HISTORY/STATS`)
 - `wasm-jit-on` / `wasm-jit-off` - Enable/Disable JIT compilation
 - `wasm-jit-bench` - Benchmark JIT vs Interpreter
 - `wasm-jit-stats` - Show JIT statistics

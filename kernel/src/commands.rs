@@ -1377,10 +1377,238 @@ fn cmd_temporal_stats() {
     vga::print_str("\n");
 }
 
+const TEMPORAL_IPC_MAGIC: u32 = 0x3150_4D54; // "TMP1" in little-endian byte order
+const TEMPORAL_IPC_VERSION: u8 = 1;
+const TEMPORAL_IPC_REQUEST_HEADER_BYTES: usize = 16;
+const TEMPORAL_IPC_RESPONSE_HEADER_BYTES: usize = 20;
+
+const TEMPORAL_IPC_OP_SNAPSHOT: u8 = 1;
+const TEMPORAL_IPC_OP_LATEST: u8 = 2;
+const TEMPORAL_IPC_OP_READ: u8 = 3;
+const TEMPORAL_IPC_OP_ROLLBACK: u8 = 4;
+const TEMPORAL_IPC_OP_HISTORY: u8 = 5;
+const TEMPORAL_IPC_OP_STATS: u8 = 6;
+
+const TEMPORAL_IPC_STATUS_OK: i32 = 0;
+const TEMPORAL_IPC_STATUS_INVALID_FRAME: i32 = -1;
+const TEMPORAL_IPC_STATUS_UNSUPPORTED_VERSION: i32 = -2;
+const TEMPORAL_IPC_STATUS_UNSUPPORTED_OPCODE: i32 = -3;
+const TEMPORAL_IPC_STATUS_INVALID_PAYLOAD: i32 = -4;
+const TEMPORAL_IPC_STATUS_MISSING_CAPABILITY: i32 = -5;
+const TEMPORAL_IPC_STATUS_PERMISSION_DENIED: i32 = -6;
+const TEMPORAL_IPC_STATUS_NOT_FOUND: i32 = -7;
+const TEMPORAL_IPC_STATUS_INTERNAL: i32 = -8;
+
+const TEMPORAL_IPC_META_BYTES: usize = 32;
+const TEMPORAL_IPC_ROLLBACK_BYTES: usize = 16;
+const TEMPORAL_IPC_STATS_BYTES: usize = 20;
+const TEMPORAL_IPC_HISTORY_RECORD_BYTES: usize = 64;
+const TEMPORAL_IPC_MAX_HISTORY_ENTRIES: usize = 128;
+
+fn temporal_ipc_append_u16(buf: &mut alloc::vec::Vec<u8>, value: u16) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn temporal_ipc_append_u32(buf: &mut alloc::vec::Vec<u8>, value: u32) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn temporal_ipc_read_u16(buf: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > buf.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([buf[offset], buf[offset + 1]]))
+}
+
+fn temporal_ipc_read_u32(buf: &[u8], offset: usize) -> Option<u32> {
+    if offset.saturating_add(4) > buf.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+    ]))
+}
+
+fn temporal_ipc_read_u64(buf: &[u8], offset: usize) -> Option<u64> {
+    if offset.saturating_add(8) > buf.len() {
+        return None;
+    }
+    Some(u64::from_le_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+        buf[offset + 4],
+        buf[offset + 5],
+        buf[offset + 6],
+        buf[offset + 7],
+    ]))
+}
+
+fn temporal_ipc_build_request_frame(
+    opcode: u8,
+    flags: u16,
+    request_id: u32,
+    payload: &[u8],
+) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    if payload.len() > u16::MAX as usize {
+        return Err("temporal IPC request payload too large");
+    }
+    let total_len = TEMPORAL_IPC_REQUEST_HEADER_BYTES.saturating_add(payload.len());
+    if total_len > ipc::MAX_MESSAGE_SIZE {
+        return Err("temporal IPC request frame exceeds IPC message limit");
+    }
+
+    let mut out = alloc::vec::Vec::new();
+    out.reserve(total_len);
+    temporal_ipc_append_u32(&mut out, TEMPORAL_IPC_MAGIC);
+    out.push(TEMPORAL_IPC_VERSION);
+    out.push(opcode);
+    temporal_ipc_append_u16(&mut out, flags);
+    temporal_ipc_append_u32(&mut out, request_id);
+    temporal_ipc_append_u16(&mut out, payload.len() as u16);
+    temporal_ipc_append_u16(&mut out, 0); // reserved
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
+fn temporal_ipc_parse_request_frame(frame: &[u8]) -> Result<(u8, u16, u32, &[u8]), i32> {
+    if frame.len() < TEMPORAL_IPC_REQUEST_HEADER_BYTES {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_FRAME);
+    }
+    let magic = temporal_ipc_read_u32(frame, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_FRAME)?;
+    if magic != TEMPORAL_IPC_MAGIC {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_FRAME);
+    }
+    let version = frame[4];
+    if version != TEMPORAL_IPC_VERSION {
+        return Err(TEMPORAL_IPC_STATUS_UNSUPPORTED_VERSION);
+    }
+    let opcode = frame[5];
+    let flags = temporal_ipc_read_u16(frame, 6).ok_or(TEMPORAL_IPC_STATUS_INVALID_FRAME)?;
+    let request_id = temporal_ipc_read_u32(frame, 8).ok_or(TEMPORAL_IPC_STATUS_INVALID_FRAME)?;
+    let payload_len =
+        temporal_ipc_read_u16(frame, 12).ok_or(TEMPORAL_IPC_STATUS_INVALID_FRAME)? as usize;
+    let expected_len = TEMPORAL_IPC_REQUEST_HEADER_BYTES.saturating_add(payload_len);
+    if frame.len() != expected_len {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_FRAME);
+    }
+    Ok((opcode, flags, request_id, &frame[TEMPORAL_IPC_REQUEST_HEADER_BYTES..]))
+}
+
+fn temporal_ipc_build_response_frame(
+    opcode: u8,
+    flags: u16,
+    request_id: u32,
+    status: i32,
+    payload: &[u8],
+) -> ipc::Message {
+    let mut response = ipc::Message::new(ipc::ProcessId(1));
+    let max_payload = response
+        .payload
+        .len()
+        .saturating_sub(TEMPORAL_IPC_RESPONSE_HEADER_BYTES);
+    let use_payload = if payload.len() > max_payload {
+        &payload[..max_payload]
+    } else {
+        payload
+    };
+
+    let mut frame = alloc::vec::Vec::new();
+    frame.reserve(TEMPORAL_IPC_RESPONSE_HEADER_BYTES.saturating_add(use_payload.len()));
+    temporal_ipc_append_u32(&mut frame, TEMPORAL_IPC_MAGIC);
+    frame.push(TEMPORAL_IPC_VERSION);
+    frame.push(opcode);
+    temporal_ipc_append_u16(&mut frame, flags);
+    temporal_ipc_append_u32(&mut frame, request_id);
+    frame.extend_from_slice(&status.to_le_bytes());
+    temporal_ipc_append_u16(&mut frame, use_payload.len() as u16);
+    temporal_ipc_append_u16(&mut frame, 0); // reserved
+    frame.extend_from_slice(use_payload);
+
+    response.payload[..frame.len()].copy_from_slice(&frame);
+    response.payload_len = frame.len();
+    response
+}
+
+fn temporal_ipc_parse_response_frame(
+    frame: &[u8],
+) -> Result<(u8, u16, u32, i32, &[u8]), &'static str> {
+    if frame.len() < TEMPORAL_IPC_RESPONSE_HEADER_BYTES {
+        return Err("temporal IPC response frame too short");
+    }
+    let magic = temporal_ipc_read_u32(frame, 0).ok_or("temporal IPC response missing magic")?;
+    if magic != TEMPORAL_IPC_MAGIC {
+        return Err("temporal IPC response magic mismatch");
+    }
+    if frame[4] != TEMPORAL_IPC_VERSION {
+        return Err("temporal IPC response version mismatch");
+    }
+    let opcode = frame[5];
+    let flags = temporal_ipc_read_u16(frame, 6).ok_or("temporal IPC response missing flags")?;
+    let request_id =
+        temporal_ipc_read_u32(frame, 8).ok_or("temporal IPC response missing request id")?;
+    let status = i32::from_le_bytes([
+        frame[12], frame[13], frame[14], frame[15],
+    ]);
+    let payload_len = temporal_ipc_read_u16(frame, 16)
+        .ok_or("temporal IPC response missing payload length")? as usize;
+    let expected_len = TEMPORAL_IPC_RESPONSE_HEADER_BYTES.saturating_add(payload_len);
+    if frame.len() != expected_len {
+        return Err("temporal IPC response length mismatch");
+    }
+    Ok((opcode, flags, request_id, status, &frame[TEMPORAL_IPC_RESPONSE_HEADER_BYTES..]))
+}
+
+fn temporal_ipc_opcode_name(opcode: u8) -> &'static str {
+    match opcode {
+        TEMPORAL_IPC_OP_SNAPSHOT => "SNAPSHOT",
+        TEMPORAL_IPC_OP_LATEST => "LATEST",
+        TEMPORAL_IPC_OP_READ => "READ",
+        TEMPORAL_IPC_OP_ROLLBACK => "ROLLBACK",
+        TEMPORAL_IPC_OP_HISTORY => "HISTORY",
+        TEMPORAL_IPC_OP_STATS => "STATS",
+        _ => "UNKNOWN",
+    }
+}
+
+fn temporal_ipc_build_path_payload(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    let path_bytes = path.as_bytes();
+    if path_bytes.len() > u16::MAX as usize {
+        return Err("temporal IPC path is too long");
+    }
+    let mut payload = alloc::vec::Vec::new();
+    payload.reserve(2usize.saturating_add(path_bytes.len()));
+    temporal_ipc_append_u16(&mut payload, path_bytes.len() as u16);
+    payload.extend_from_slice(path_bytes);
+    Ok(payload)
+}
+
+fn temporal_ipc_build_history_payload(
+    path: &str,
+    start_from_newest: u32,
+    max_entries: u16,
+) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    let path_bytes = path.as_bytes();
+    if path_bytes.len() > u16::MAX as usize {
+        return Err("temporal IPC path is too long");
+    }
+    let mut payload = alloc::vec::Vec::new();
+    payload.reserve(8usize.saturating_add(path_bytes.len()));
+    temporal_ipc_append_u32(&mut payload, start_from_newest);
+    temporal_ipc_append_u16(&mut payload, max_entries);
+    temporal_ipc_append_u16(&mut payload, path_bytes.len() as u16);
+    payload.extend_from_slice(path_bytes);
+    Ok(payload)
+}
+
 fn temporal_ipc_roundtrip(
-    request: &str,
+    request_frame: &[u8],
     fs_cap: Option<fs::FilesystemCapability>,
-) -> Result<alloc::string::String, &'static str> {
+) -> Result<alloc::vec::Vec<u8>, &'static str> {
     let channel_id = ipc::ChannelId::new(0x544D_5001); // TMP1
     let owner = ipc::ProcessId(1);
     let mut channel = ipc::Channel::new(channel_id, owner);
@@ -1398,7 +1626,7 @@ fn temporal_ipc_roundtrip(
         owner,
     );
 
-    let mut msg = ipc::Message::with_data(owner, request.as_bytes())
+    let mut msg = ipc::Message::with_data(owner, request_frame)
         .map_err(|_| "temporal IPC request too large")?;
     if let Some(cap) = fs_cap {
         msg.add_capability(cap.to_ipc_capability())
@@ -1420,9 +1648,18 @@ fn temporal_ipc_roundtrip(
         .try_recv(&recv_cap)
         .map_err(|_| "failed to dequeue temporal IPC response")?;
 
-    let response_text = core::str::from_utf8(client_resp.payload())
-        .map_err(|_| "temporal IPC response is not valid UTF-8")?;
-    Ok(alloc::string::String::from(response_text))
+    let mut out = alloc::vec::Vec::new();
+    out.extend_from_slice(client_resp.payload());
+    Ok(out)
+}
+
+fn temporal_ipc_extract_version(payload: &[u8]) -> Option<u64> {
+    if payload.len() < TEMPORAL_IPC_META_BYTES {
+        return None;
+    }
+    let lo = temporal_ipc_read_u32(payload, 0)?;
+    let hi = temporal_ipc_read_u32(payload, 4)?;
+    Some(((hi as u64) << 32) | (lo as u64))
 }
 
 fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
@@ -1435,30 +1672,138 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
         None,
     );
 
-    let snapshot_req = alloc::format!("SNAPSHOT {}", PATH);
+    let snapshot_payload = temporal_ipc_build_path_payload(PATH)?;
+    let snapshot_req = temporal_ipc_build_request_frame(
+        TEMPORAL_IPC_OP_SNAPSHOT,
+        0,
+        1,
+        &snapshot_payload,
+    )?;
     let snapshot_resp = temporal_ipc_roundtrip(&snapshot_req, Some(fs_cap))?;
-    if !snapshot_resp.starts_with("OK: Snapshot") {
+    let (snapshot_opcode, _snapshot_flags, snapshot_request_id, snapshot_status, snapshot_payload) =
+        temporal_ipc_parse_response_frame(&snapshot_resp)?;
+    if snapshot_opcode != TEMPORAL_IPC_OP_SNAPSHOT || snapshot_request_id != 1 {
+        return Err("temporal IPC snapshot response header mismatch");
+    }
+    if snapshot_status != TEMPORAL_IPC_STATUS_OK || snapshot_payload.len() != TEMPORAL_IPC_META_BYTES {
         return Err("temporal IPC snapshot request failed");
     }
+    let snapshot_version =
+        temporal_ipc_extract_version(snapshot_payload).ok_or("snapshot version decode failed")?;
 
-    let latest_req = alloc::format!("LATEST {}", PATH);
+    let latest_payload = temporal_ipc_build_path_payload(PATH)?;
+    let latest_req = temporal_ipc_build_request_frame(
+        TEMPORAL_IPC_OP_LATEST,
+        0,
+        2,
+        &latest_payload,
+    )?;
     let latest_resp = temporal_ipc_roundtrip(&latest_req, Some(fs_cap))?;
-    if !latest_resp.starts_with("OK: Latest") {
+    let (latest_opcode, _latest_flags, latest_request_id, latest_status, latest_payload) =
+        temporal_ipc_parse_response_frame(&latest_resp)?;
+    if latest_opcode != TEMPORAL_IPC_OP_LATEST || latest_request_id != 2 {
+        return Err("temporal IPC latest response header mismatch");
+    }
+    if latest_status != TEMPORAL_IPC_STATUS_OK || latest_payload.len() != TEMPORAL_IPC_META_BYTES {
         return Err("temporal IPC latest request failed");
     }
-
-    let history_req = alloc::format!("HISTORY {} 0 4", PATH);
-    let history_resp = temporal_ipc_roundtrip(&history_req, Some(fs_cap))?;
-    if !history_resp.starts_with("OK: History") {
-        return Err("temporal IPC history request failed");
+    let latest_version =
+        temporal_ipc_extract_version(latest_payload).ok_or("latest version decode failed")?;
+    if latest_version < snapshot_version {
+        return Err("temporal IPC latest version regressed");
     }
 
-    let stats_resp = temporal_ipc_roundtrip("STATS", None)?;
-    if !stats_resp.starts_with("OK: Temporal stats") {
+    let history_payload = temporal_ipc_build_history_payload(PATH, 0, 4)?;
+    let history_req = temporal_ipc_build_request_frame(
+        TEMPORAL_IPC_OP_HISTORY,
+        0,
+        3,
+        &history_payload,
+    )?;
+    let history_resp = temporal_ipc_roundtrip(&history_req, Some(fs_cap))?;
+    let (history_opcode, _history_flags, history_request_id, history_status, history_payload) =
+        temporal_ipc_parse_response_frame(&history_resp)?;
+    if history_opcode != TEMPORAL_IPC_OP_HISTORY || history_request_id != 3 {
+        return Err("temporal IPC history response header mismatch");
+    }
+    if history_status != TEMPORAL_IPC_STATUS_OK || history_payload.len() < 4 {
+        return Err("temporal IPC history request failed");
+    }
+    let history_count = temporal_ipc_read_u16(history_payload, 0).ok_or("history count missing")?;
+    if history_count == 0 {
+        return Err("temporal IPC history response was empty");
+    }
+
+    let stats_req = temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_STATS, 0, 4, &[])?;
+    let stats_resp = temporal_ipc_roundtrip(&stats_req, None)?;
+    let (stats_opcode, _stats_flags, stats_request_id, stats_status, stats_payload) =
+        temporal_ipc_parse_response_frame(&stats_resp)?;
+    if stats_opcode != TEMPORAL_IPC_OP_STATS || stats_request_id != 4 {
+        return Err("temporal IPC stats response header mismatch");
+    }
+    if stats_status != TEMPORAL_IPC_STATUS_OK || stats_payload.len() != TEMPORAL_IPC_STATS_BYTES {
         return Err("temporal IPC stats request failed");
+    }
+    let objects = temporal_ipc_read_u32(stats_payload, 0).ok_or("stats objects missing")?;
+    if objects == 0 {
+        return Err("temporal IPC stats objects unexpectedly zero");
     }
 
     Ok(())
+}
+
+fn print_temporal_ipc_response(label: &str, frame: &[u8]) {
+    vga::print_str(label);
+    vga::print_str(": ");
+    match temporal_ipc_parse_response_frame(frame) {
+        Ok((opcode, _flags, request_id, status, payload)) => {
+            vga::print_str("op=");
+            vga::print_str(temporal_ipc_opcode_name(opcode));
+            vga::print_str(" req=");
+            print_u32(request_id);
+            vga::print_str(" status=");
+            print_i32(status);
+            vga::print_str(" payload=");
+            print_number(payload.len());
+            vga::print_str(" bytes");
+
+            if status == TEMPORAL_IPC_STATUS_OK {
+                match opcode {
+                    TEMPORAL_IPC_OP_STATS if payload.len() >= TEMPORAL_IPC_STATS_BYTES => {
+                        let objects = temporal_ipc_read_u32(payload, 0).unwrap_or(0);
+                        let versions = temporal_ipc_read_u32(payload, 4).unwrap_or(0);
+                        vga::print_str(" objects=");
+                        print_u32(objects);
+                        vga::print_str(" versions=");
+                        print_u32(versions);
+                    }
+                    TEMPORAL_IPC_OP_SNAPSHOT | TEMPORAL_IPC_OP_LATEST
+                        if payload.len() >= TEMPORAL_IPC_META_BYTES =>
+                    {
+                        if let Some(version) = temporal_ipc_extract_version(payload) {
+                            let branch = temporal_ipc_read_u32(payload, 8).unwrap_or(0);
+                            vga::print_str(" version=");
+                            print_u64(version);
+                            vga::print_str(" branch=");
+                            print_u32(branch);
+                        }
+                    }
+                    TEMPORAL_IPC_OP_HISTORY if payload.len() >= 4 => {
+                        let count = temporal_ipc_read_u16(payload, 0).unwrap_or(0);
+                        vga::print_str(" entries=");
+                        print_u32(count as u32);
+                    }
+                    _ => {}
+                }
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("decode-error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
 }
 
 fn cmd_temporal_ipc_demo() {
@@ -1481,34 +1826,121 @@ fn cmd_temporal_ipc_demo() {
         None,
     );
 
-    let requests = [
-        alloc::string::String::from("STATS"),
-        alloc::format!("SNAPSHOT {}", PATH),
-        alloc::format!("LATEST {}", PATH),
-        alloc::format!("HISTORY {} 0 4", PATH),
-    ];
+    let stats_req = match temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_STATS, 0, 101, &[]) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Failed to build STATS request: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
+    match temporal_ipc_roundtrip(&stats_req, None) {
+        Ok(resp) => print_temporal_ipc_response("STATS", &resp),
+        Err(e) => {
+            vga::print_str("STATS transport error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
 
-    for request in requests.iter() {
-        let use_cap = if request.starts_with("STATS") {
-            None
-        } else {
-            Some(fs_cap)
-        };
+    let snapshot_payload = match temporal_ipc_build_path_payload(PATH) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Failed to build SNAPSHOT payload: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
+    let snapshot_req = match temporal_ipc_build_request_frame(
+        TEMPORAL_IPC_OP_SNAPSHOT,
+        0,
+        102,
+        &snapshot_payload,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Failed to build SNAPSHOT request: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
+    match temporal_ipc_roundtrip(&snapshot_req, Some(fs_cap)) {
+        Ok(resp) => print_temporal_ipc_response("SNAPSHOT", &resp),
+        Err(e) => {
+            vga::print_str("SNAPSHOT transport error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
 
-        vga::print_str("> ");
-        vga::print_str(request);
-        vga::print_str("\n");
+    let latest_payload = match temporal_ipc_build_path_payload(PATH) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Failed to build LATEST payload: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
+    let latest_req = match temporal_ipc_build_request_frame(
+        TEMPORAL_IPC_OP_LATEST,
+        0,
+        103,
+        &latest_payload,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Failed to build LATEST request: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
+    match temporal_ipc_roundtrip(&latest_req, Some(fs_cap)) {
+        Ok(resp) => print_temporal_ipc_response("LATEST", &resp),
+        Err(e) => {
+            vga::print_str("LATEST transport error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
 
-        match temporal_ipc_roundtrip(request.as_str(), use_cap) {
-            Ok(resp) => {
-                vga::print_str(resp.as_str());
-                vga::print_str("\n");
-            }
-            Err(e) => {
-                vga::print_str("ERROR: ");
-                vga::print_str(e);
-                vga::print_str("\n");
-            }
+    let history_payload = match temporal_ipc_build_history_payload(PATH, 0, 4) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Failed to build HISTORY payload: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
+    let history_req = match temporal_ipc_build_request_frame(
+        TEMPORAL_IPC_OP_HISTORY,
+        0,
+        104,
+        &history_payload,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            vga::print_str("Failed to build HISTORY request: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
+    match temporal_ipc_roundtrip(&history_req, Some(fs_cap)) {
+        Ok(resp) => print_temporal_ipc_response("HISTORY", &resp),
+        Err(e) => {
+            vga::print_str("HISTORY transport error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
         }
     }
     vga::print_str("\n");
@@ -2398,13 +2830,6 @@ fn handle_persistence_request(message: &ipc::Message) -> ipc::Message {
     response
 }
 
-fn set_ipc_response_text(response: &mut ipc::Message, text: &str) {
-    let bytes = text.as_bytes();
-    let copy_len = bytes.len().min(response.payload.len());
-    response.payload[..copy_len].copy_from_slice(&bytes[..copy_len]);
-    response.payload_len = copy_len;
-}
-
 fn normalize_temporal_path(path: &str) -> Option<alloc::string::String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -2419,359 +2844,390 @@ fn normalize_temporal_path(path: &str) -> Option<alloc::string::String> {
     }
 }
 
-fn temporal_cap_from_message(message: &ipc::Message) -> Result<fs::FilesystemCapability, &'static str> {
+fn temporal_cap_from_message(message: &ipc::Message) -> Result<fs::FilesystemCapability, i32> {
     let ipc_cap = message
         .capabilities()
         .next()
-        .ok_or("filesystem capability attachment required")?;
+        .ok_or(TEMPORAL_IPC_STATUS_MISSING_CAPABILITY)?;
     fs::FilesystemCapability::from_ipc_capability(ipc_cap)
-        .map_err(|_| "invalid filesystem capability attachment")
+        .map_err(|_| TEMPORAL_IPC_STATUS_MISSING_CAPABILITY)
 }
 
 fn authorize_temporal_path(
     cap: &fs::FilesystemCapability,
     normalized_path: &str,
     required_rights: u32,
-) -> Result<(), &'static str> {
+) -> Result<(), i32> {
     if !cap.rights.has(required_rights) {
-        return Err("filesystem capability rights are insufficient");
+        return Err(TEMPORAL_IPC_STATUS_PERMISSION_DENIED);
     }
 
-    let key = fs::FileKey::new(normalized_path).map_err(|_| "invalid temporal path")?;
+    let key = fs::FileKey::new(normalized_path).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     if !cap.can_access(&key) {
-        return Err("path is outside filesystem capability scope");
+        return Err(TEMPORAL_IPC_STATUS_PERMISSION_DENIED);
     }
 
     Ok(())
 }
 
-/// Handle temporal service requests.
-/// Supported commands:
-/// - SNAPSHOT <path>
-/// - LATEST <path>
-/// - READ <path> <version_id> [preview_bytes]
-/// - ROLLBACK <path> <version_id>
-/// - HISTORY <path> [start_from_newest] [max_entries]
-/// - STATS
-fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
-    let mut response = ipc::Message::new(ipc::ProcessId(1));
+fn temporal_error_to_status(error: crate::temporal::TemporalError) -> i32 {
+    match error {
+        crate::temporal::TemporalError::InvalidPath => TEMPORAL_IPC_STATUS_INVALID_PAYLOAD,
+        crate::temporal::TemporalError::ObjectNotFound
+        | crate::temporal::TemporalError::VersionNotFound => TEMPORAL_IPC_STATUS_NOT_FOUND,
+        _ => TEMPORAL_IPC_STATUS_INTERNAL,
+    }
+}
 
-    let request = match core::str::from_utf8(&message.payload[..message.payload_len]) {
-        Ok(r) => r.trim(),
-        Err(_) => {
-            set_ipc_response_text(&mut response, "ERROR: Invalid temporal request format");
-            return response;
+fn temporal_ipc_decode_path_payload(payload: &[u8]) -> Result<alloc::string::String, i32> {
+    if payload.len() < 2 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let path_len = temporal_ipc_read_u16(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    if payload.len() != 2usize.saturating_add(path_len) {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let path_bytes = &payload[2..];
+    let path_str = core::str::from_utf8(path_bytes).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    normalize_temporal_path(path_str).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)
+}
+
+fn temporal_ipc_decode_read_payload(payload: &[u8]) -> Result<(alloc::string::String, u64, usize), i32> {
+    if payload.len() < 12 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let version_id = temporal_ipc_read_u64(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let preview_len = temporal_ipc_read_u16(payload, 8).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let path_len = temporal_ipc_read_u16(payload, 10).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    if payload.len() != 12usize.saturating_add(path_len) {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let path_str = core::str::from_utf8(&payload[12..]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path = normalize_temporal_path(path_str).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    Ok((path, version_id, preview_len))
+}
+
+fn temporal_ipc_decode_rollback_payload(payload: &[u8]) -> Result<(alloc::string::String, u64), i32> {
+    if payload.len() < 10 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let version_id = temporal_ipc_read_u64(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path_len = temporal_ipc_read_u16(payload, 8).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    if payload.len() != 10usize.saturating_add(path_len) {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let path_str = core::str::from_utf8(&payload[10..]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path = normalize_temporal_path(path_str).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    Ok((path, version_id))
+}
+
+fn temporal_ipc_decode_history_payload(
+    payload: &[u8],
+) -> Result<(alloc::string::String, usize, usize), i32> {
+    if payload.len() < 8 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let start_from_newest =
+        temporal_ipc_read_u32(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let max_entries =
+        temporal_ipc_read_u16(payload, 4).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let path_len = temporal_ipc_read_u16(payload, 6).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    if payload.len() != 8usize.saturating_add(path_len) {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let path_str = core::str::from_utf8(&payload[8..]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path = normalize_temporal_path(path_str).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    Ok((path, start_from_newest, max_entries))
+}
+
+fn temporal_ipc_split_u64(value: u64) -> (u32, u32) {
+    (value as u32, (value >> 32) as u32)
+}
+
+fn temporal_ipc_encode_meta(meta: &crate::temporal::TemporalVersionMeta) -> [u8; TEMPORAL_IPC_META_BYTES] {
+    let mut out = [0u8; TEMPORAL_IPC_META_BYTES];
+    let (version_lo, version_hi) = temporal_ipc_split_u64(meta.version_id);
+    let words = [
+        version_lo,
+        version_hi,
+        meta.branch_id,
+        meta.data_len as u32,
+        meta.leaf_count,
+        meta.content_hash,
+        meta.merkle_root,
+        meta.operation as u32,
+    ];
+    let mut i = 0usize;
+    while i < words.len() {
+        let base = i * 4;
+        out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+        i += 1;
+    }
+    out
+}
+
+fn temporal_ipc_encode_rollback(
+    result: &crate::temporal::TemporalRollbackResult,
+) -> [u8; TEMPORAL_IPC_ROLLBACK_BYTES] {
+    let mut out = [0u8; TEMPORAL_IPC_ROLLBACK_BYTES];
+    let (version_lo, version_hi) = temporal_ipc_split_u64(result.new_version_id);
+    let words = [version_lo, version_hi, result.branch_id, result.restored_len as u32];
+    let mut i = 0usize;
+    while i < words.len() {
+        let base = i * 4;
+        out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+        i += 1;
+    }
+    out
+}
+
+fn temporal_ipc_encode_stats(stats: crate::temporal::TemporalStats) -> [u8; TEMPORAL_IPC_STATS_BYTES] {
+    let mut out = [0u8; TEMPORAL_IPC_STATS_BYTES];
+    let bytes = stats.bytes as u64;
+    let words = [
+        stats.objects as u32,
+        stats.versions as u32,
+        bytes as u32,
+        (bytes >> 32) as u32,
+        stats.active_branches as u32,
+    ];
+    let mut i = 0usize;
+    while i < words.len() {
+        let base = i * 4;
+        out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+        i += 1;
+    }
+    out
+}
+
+fn temporal_ipc_encode_history_record(
+    meta: &crate::temporal::TemporalVersionMeta,
+) -> [u8; TEMPORAL_IPC_HISTORY_RECORD_BYTES] {
+    let mut out = [0u8; TEMPORAL_IPC_HISTORY_RECORD_BYTES];
+
+    let (version_lo, version_hi) = temporal_ipc_split_u64(meta.version_id);
+    let parent = meta.parent_version_id.unwrap_or(u64::MAX);
+    let rollback = meta.rollback_from_version_id.unwrap_or(u64::MAX);
+    let (parent_lo, parent_hi) = temporal_ipc_split_u64(parent);
+    let (rollback_lo, rollback_hi) = temporal_ipc_split_u64(rollback);
+    let (tick_lo, tick_hi) = temporal_ipc_split_u64(meta.tick);
+
+    let mut flags = 0u32;
+    if meta.parent_version_id.is_some() {
+        flags |= 1;
+    }
+    if meta.rollback_from_version_id.is_some() {
+        flags |= 1 << 1;
+    }
+
+    let words = [
+        version_lo,
+        version_hi,
+        parent_lo,
+        parent_hi,
+        rollback_lo,
+        rollback_hi,
+        meta.branch_id,
+        meta.data_len as u32,
+        meta.leaf_count,
+        meta.content_hash,
+        meta.merkle_root,
+        meta.operation as u32,
+        tick_lo,
+        tick_hi,
+        flags,
+        1u32, // record format version
+    ];
+
+    let mut i = 0usize;
+    while i < words.len() {
+        let base = i * 4;
+        out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+        i += 1;
+    }
+    out
+}
+
+fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
+    let frame = &message.payload[..message.payload_len];
+    let (opcode, flags, request_id, payload) = match temporal_ipc_parse_request_frame(frame) {
+        Ok(parsed) => parsed,
+        Err(status) => {
+            return temporal_ipc_build_response_frame(0, 0, 0, status, &[]);
         }
     };
 
-    let mut parts = request.split_whitespace();
-    let command = parts.next().unwrap_or("");
-
-    match command {
-        "SNAPSHOT" => {
-            let path_raw = match parts.next() {
-                Some(p) => p,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Usage SNAPSHOT <path>");
-                    return response;
-                }
-            };
-            let path = match normalize_temporal_path(path_raw) {
-                Some(p) => p,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Invalid path");
-                    return response;
-                }
-            };
-
+    let mut response_payload = alloc::vec::Vec::new();
+    let status = match opcode {
+        TEMPORAL_IPC_OP_SNAPSHOT => {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
-                Err(e) => {
-                    let msg = alloc::format!("ERROR: {}", e);
-                    set_ipc_response_text(&mut response, &msg);
-                    return response;
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
                 }
             };
-            if let Err(e) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
-                let msg = alloc::format!("ERROR: {}", e);
-                set_ipc_response_text(&mut response, &msg);
-                return response;
+            let path = match temporal_ipc_decode_path_payload(payload) {
+                Ok(path) => path,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
-
-            match crate::temporal::snapshot_path(&path)
-                .and_then(|_| crate::temporal::latest_version(&path))
-            {
+            match crate::temporal::snapshot_path(&path).and_then(|_| crate::temporal::latest_version(&path)) {
                 Ok(meta) => {
-                    let msg = alloc::format!(
-                        "OK: Snapshot path={} version={} branch={} root=0x{:08X}",
-                        path,
-                        meta.version_id,
-                        meta.branch_id,
-                        meta.merkle_root
-                    );
-                    set_ipc_response_text(&mut response, &msg);
+                    response_payload.extend_from_slice(&temporal_ipc_encode_meta(&meta));
+                    TEMPORAL_IPC_STATUS_OK
                 }
-                Err(e) => {
-                    let msg = alloc::format!("ERROR: Snapshot failed ({})", e.as_str());
-                    set_ipc_response_text(&mut response, &msg);
-                }
+                Err(e) => temporal_error_to_status(e),
             }
         }
-        "LATEST" => {
-            let path_raw = match parts.next() {
-                Some(p) => p,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Usage LATEST <path>");
-                    return response;
-                }
-            };
-            let path = match normalize_temporal_path(path_raw) {
-                Some(p) => p,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Invalid path");
-                    return response;
-                }
-            };
-
+        TEMPORAL_IPC_OP_LATEST => {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
-                Err(e) => {
-                    let msg = alloc::format!("ERROR: {}", e);
-                    set_ipc_response_text(&mut response, &msg);
-                    return response;
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
                 }
             };
-            if let Err(e) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
-                let msg = alloc::format!("ERROR: {}", e);
-                set_ipc_response_text(&mut response, &msg);
-                return response;
+            let path = match temporal_ipc_decode_path_payload(payload) {
+                Ok(path) => path,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
-
             match crate::temporal::latest_version(&path) {
                 Ok(meta) => {
-                    let msg = alloc::format!(
-                        "OK: Latest path={} version={} op={} branch={} len={} root=0x{:08X}",
-                        path,
-                        meta.version_id,
-                        meta.operation.as_str(),
-                        meta.branch_id,
-                        meta.data_len,
-                        meta.merkle_root
-                    );
-                    set_ipc_response_text(&mut response, &msg);
+                    response_payload.extend_from_slice(&temporal_ipc_encode_meta(&meta));
+                    TEMPORAL_IPC_STATUS_OK
                 }
-                Err(e) => {
-                    let msg = alloc::format!("ERROR: Latest failed ({})", e.as_str());
-                    set_ipc_response_text(&mut response, &msg);
-                }
+                Err(e) => temporal_error_to_status(e),
             }
         }
-        "READ" => {
-            let path_raw = match parts.next() {
-                Some(p) => p,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Usage READ <path> <version_id> [preview_bytes]");
-                    return response;
-                }
-            };
-            let version_id = match parts.next().and_then(|v| v.parse::<u64>().ok()) {
-                Some(v) => v,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Invalid version_id");
-                    return response;
-                }
-            };
-            let preview_bytes = parts
-                .next()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(96)
-                .min(256);
-            let path = match normalize_temporal_path(path_raw) {
-                Some(p) => p,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Invalid path");
-                    return response;
-                }
-            };
-
+        TEMPORAL_IPC_OP_READ => {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
-                Err(e) => {
-                    let msg = alloc::format!("ERROR: {}", e);
-                    set_ipc_response_text(&mut response, &msg);
-                    return response;
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
                 }
             };
-            if let Err(e) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
-                let msg = alloc::format!("ERROR: {}", e);
-                set_ipc_response_text(&mut response, &msg);
-                return response;
+            let (path, version_id, preview_len) = match temporal_ipc_decode_read_payload(payload) {
+                Ok(v) => v,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
-
             match crate::temporal::read_version(&path, version_id) {
-                Ok(payload) => {
-                    let preview_len = payload.len().min(preview_bytes);
-                    let preview = &payload[..preview_len];
-                    let preview_text = match core::str::from_utf8(preview) {
-                        Ok(t) => t,
-                        Err(_) => "<binary>",
-                    };
-                    let suffix = if payload.len() > preview_len { "..." } else { "" };
-                    let msg = alloc::format!(
-                        "OK: Read path={} version={} bytes={} preview=\"{}{}\"",
-                        path,
-                        version_id,
-                        payload.len(),
-                        preview_text,
-                        suffix
-                    );
-                    set_ipc_response_text(&mut response, &msg);
+                Ok(data) => {
+                    let max_blob = ipc::MAX_MESSAGE_SIZE
+                        .saturating_sub(TEMPORAL_IPC_RESPONSE_HEADER_BYTES)
+                        .saturating_sub(8);
+                    let returned_len = core::cmp::min(core::cmp::min(data.len(), preview_len), max_blob);
+                    temporal_ipc_append_u32(&mut response_payload, data.len() as u32);
+                    temporal_ipc_append_u32(&mut response_payload, returned_len as u32);
+                    response_payload.extend_from_slice(&data[..returned_len]);
+                    TEMPORAL_IPC_STATUS_OK
                 }
-                Err(e) => {
-                    let msg = alloc::format!("ERROR: Read failed ({})", e.as_str());
-                    set_ipc_response_text(&mut response, &msg);
-                }
+                Err(e) => temporal_error_to_status(e),
             }
         }
-        "ROLLBACK" => {
-            let path_raw = match parts.next() {
-                Some(p) => p,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Usage ROLLBACK <path> <version_id>");
-                    return response;
-                }
-            };
-            let version_id = match parts.next().and_then(|v| v.parse::<u64>().ok()) {
-                Some(v) => v,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Invalid version_id");
-                    return response;
-                }
-            };
-            let path = match normalize_temporal_path(path_raw) {
-                Some(p) => p,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Invalid path");
-                    return response;
-                }
-            };
-
+        TEMPORAL_IPC_OP_ROLLBACK => {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
-                Err(e) => {
-                    let msg = alloc::format!("ERROR: {}", e);
-                    set_ipc_response_text(&mut response, &msg);
-                    return response;
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
                 }
             };
-            if let Err(e) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE) {
-                let msg = alloc::format!("ERROR: {}", e);
-                set_ipc_response_text(&mut response, &msg);
-                return response;
+            let (path, version_id) = match temporal_ipc_decode_rollback_payload(payload) {
+                Ok(v) => v,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE) {
+                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
-
             match crate::temporal::rollback_path(&path, version_id) {
                 Ok(result) => {
-                    let msg = alloc::format!(
-                        "OK: Rollback path={} source_version={} new_version={} branch={} restored_bytes={}",
-                        path,
-                        version_id,
-                        result.new_version_id,
-                        result.branch_id,
-                        result.restored_len
-                    );
-                    set_ipc_response_text(&mut response, &msg);
+                    response_payload.extend_from_slice(&temporal_ipc_encode_rollback(&result));
+                    TEMPORAL_IPC_STATUS_OK
                 }
-                Err(e) => {
-                    let msg = alloc::format!("ERROR: Rollback failed ({})", e.as_str());
-                    set_ipc_response_text(&mut response, &msg);
-                }
+                Err(e) => temporal_error_to_status(e),
             }
         }
-        "HISTORY" => {
-            let path_raw = match parts.next() {
-                Some(p) => p,
-                None => {
-                    set_ipc_response_text(
-                        &mut response,
-                        "ERROR: Usage HISTORY <path> [start_from_newest] [max_entries]",
-                    );
-                    return response;
-                }
-            };
-            let start = parts
-                .next()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(0);
-            let max_entries = parts
-                .next()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(8)
-                .min(16);
-            let path = match normalize_temporal_path(path_raw) {
-                Some(p) => p,
-                None => {
-                    set_ipc_response_text(&mut response, "ERROR: Invalid path");
-                    return response;
-                }
-            };
-
+        TEMPORAL_IPC_OP_HISTORY => {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
-                Err(e) => {
-                    let msg = alloc::format!("ERROR: {}", e);
-                    set_ipc_response_text(&mut response, &msg);
-                    return response;
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
                 }
             };
-            if let Err(e) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
-                let msg = alloc::format!("ERROR: {}", e);
-                set_ipc_response_text(&mut response, &msg);
-                return response;
-            }
-
-            match crate::temporal::history_window(&path, start, max_entries) {
-                Ok(history) => {
-                    let mut msg = alloc::format!("OK: History path={} count={}\n", path, history.len());
-                    for meta in history.iter() {
-                        let line = alloc::format!(
-                            "v={} op={} branch={} len={} root=0x{:08X}\n",
-                            meta.version_id,
-                            meta.operation.as_str(),
-                            meta.branch_id,
-                            meta.data_len,
-                            meta.merkle_root
-                        );
-                        msg.push_str(&line);
+            let (path, start_from_newest, max_entries) =
+                match temporal_ipc_decode_history_payload(payload) {
+                    Ok(v) => v,
+                    Err(status) => {
+                        return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
                     }
-                    set_ipc_response_text(&mut response, &msg);
+                };
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+            }
+            if max_entries > TEMPORAL_IPC_MAX_HISTORY_ENTRIES {
+                return temporal_ipc_build_response_frame(
+                    opcode,
+                    flags,
+                    request_id,
+                    TEMPORAL_IPC_STATUS_INVALID_PAYLOAD,
+                    &[],
+                );
+            }
+            match crate::temporal::history_window(&path, start_from_newest, max_entries) {
+                Ok(history) => {
+                    let max_records_by_frame = ipc::MAX_MESSAGE_SIZE
+                        .saturating_sub(TEMPORAL_IPC_RESPONSE_HEADER_BYTES)
+                        .saturating_sub(4)
+                        / TEMPORAL_IPC_HISTORY_RECORD_BYTES;
+                    let write_count = core::cmp::min(
+                        core::cmp::min(history.len(), max_entries),
+                        max_records_by_frame,
+                    );
+                    temporal_ipc_append_u16(&mut response_payload, write_count as u16);
+                    temporal_ipc_append_u16(&mut response_payload, 0);
+                    let mut i = 0usize;
+                    while i < write_count {
+                        response_payload
+                            .extend_from_slice(&temporal_ipc_encode_history_record(&history[i]));
+                        i += 1;
+                    }
+                    TEMPORAL_IPC_STATUS_OK
                 }
-                Err(e) => {
-                    let msg = alloc::format!("ERROR: History failed ({})", e.as_str());
-                    set_ipc_response_text(&mut response, &msg);
-                }
+                Err(e) => temporal_error_to_status(e),
             }
         }
-        "STATS" => {
+        TEMPORAL_IPC_OP_STATS => {
+            if !payload.is_empty() {
+                return temporal_ipc_build_response_frame(
+                    opcode,
+                    flags,
+                    request_id,
+                    TEMPORAL_IPC_STATUS_INVALID_PAYLOAD,
+                    &[],
+                );
+            }
             let stats = crate::temporal::stats();
-            let msg = alloc::format!(
-                "OK: Temporal stats objects={} versions={} bytes={} branches={}",
-                stats.objects,
-                stats.versions,
-                stats.bytes,
-                stats.active_branches
-            );
-            set_ipc_response_text(&mut response, &msg);
+            response_payload.extend_from_slice(&temporal_ipc_encode_stats(stats));
+            TEMPORAL_IPC_STATUS_OK
         }
-        _ => {
-            set_ipc_response_text(
-                &mut response,
-                "ERROR: Unknown temporal command. Use: SNAPSHOT, LATEST, READ, ROLLBACK, HISTORY, STATS",
-            );
-        }
-    }
+        _ => TEMPORAL_IPC_STATUS_UNSUPPORTED_OPCODE,
+    };
 
-    response
+    temporal_ipc_build_response_frame(opcode, flags, request_id, status, &response_payload)
 }
 
 /// Handle network service requests

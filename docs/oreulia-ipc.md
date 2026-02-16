@@ -76,6 +76,71 @@ For directly callable function/service capabilities:
 
 ---
 
+## 4. Temporal IPC Binary Protocol (v1)
+
+Temporal service traffic is now a binary framed protocol (no text parsing).
+
+### 4.1 Request frame
+
+Little-endian, fixed 16-byte header:
+
+| Offset | Size | Field |
+|---|---:|---|
+| 0 | 4 | `magic = 0x31504D54` (`"TMP1"`) |
+| 4 | 1 | `version = 1` |
+| 5 | 1 | `opcode` |
+| 6 | 2 | `flags` (reserved, currently `0`) |
+| 8 | 4 | `request_id` (echoed by response) |
+| 12 | 2 | `payload_len` |
+| 14 | 2 | `reserved` |
+
+Payload follows immediately and must match `payload_len` exactly.
+
+### 4.2 Response frame
+
+Little-endian, fixed 20-byte header:
+
+| Offset | Size | Field |
+|---|---:|---|
+| 0 | 4 | `magic = 0x31504D54` |
+| 4 | 1 | `version = 1` |
+| 5 | 1 | `opcode` (echoed) |
+| 6 | 2 | `flags` (echoed) |
+| 8 | 4 | `request_id` (echoed) |
+| 12 | 4 | `status` (`0` success, negative error) |
+| 16 | 2 | `payload_len` |
+| 18 | 2 | `reserved` |
+
+### 4.3 Opcodes and payload schemas
+
+- `1 SNAPSHOT`: request payload `u16 path_len + path_bytes`; response payload `TemporalMeta[32]`.
+- `2 LATEST`: request payload `u16 path_len + path_bytes`; response payload `TemporalMeta[32]`.
+- `3 READ`: request payload `u64 version_id + u16 preview_len + u16 path_len + path_bytes`; response payload `u32 total_len + u32 returned_len + returned_bytes`.
+- `4 ROLLBACK`: request payload `u64 version_id + u16 path_len + path_bytes`; response payload `RollbackMeta[16]`.
+- `5 HISTORY`: request payload `u32 start_from_newest + u16 max_entries + u16 path_len + path_bytes`; response payload `u16 count + u16 reserved + count * HistoryRecord[64]`.
+- `6 STATS`: request payload empty; response payload `TemporalStats[20]`.
+
+### 4.4 Capability policy
+
+- `SNAPSHOT`, `LATEST`, `READ`, `HISTORY` require attached filesystem capability with `READ`.
+- `ROLLBACK` requires attached filesystem capability with `WRITE`.
+- Path-scoped filesystem capabilities are enforced against requested temporal path.
+- `STATS` requires no filesystem capability.
+
+### 4.5 Status codes
+
+- `0`: success
+- `-1`: invalid frame
+- `-2`: unsupported protocol version
+- `-3`: unsupported opcode
+- `-4`: invalid payload
+- `-5`: missing/invalid capability attachment
+- `-6`: permission denied (rights/scope)
+- `-7`: object/version not found
+- `-8`: internal/service failure
+
+---
+
 ## 5. IPC patterns (conventions)
 
 Kernel provides only channels; user space standardizes higher-level patterns.

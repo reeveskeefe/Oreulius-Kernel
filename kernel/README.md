@@ -317,7 +317,7 @@ Use these commands from the Oreulia shell to validate current security posture:
 - `temporal-abi-selftest`
   - Temporal-object ABI host-path verification plus VFS FD-write capture and temporal IPC service consistency checks.
 - `temporal-ipc-demo`
-  - Demonstrates `SNAPSHOT/LATEST/HISTORY/STATS` temporal-object operations over the IPC service dispatcher path.
+  - Demonstrates binary-framed `SNAPSHOT/LATEST/HISTORY/STATS` temporal-object operations over the IPC service dispatcher path.
 
 ---
 
