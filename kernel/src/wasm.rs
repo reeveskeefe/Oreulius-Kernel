@@ -93,6 +93,15 @@ pub const MAX_SERVICE_CALL_ARGS: usize = 16;
 /// Maximum module size (16 KiB - reduced to shrink kernel)
 pub const MAX_MODULE_SIZE: usize = 16 * 1024;
 
+/// Maximum global variables per module.
+pub const MAX_WASM_GLOBALS: usize = 64;
+
+/// Maximum table entries in the function table.
+pub const MAX_WASM_TABLE_ENTRIES: usize = 256;
+
+/// Maximum parameter/result arity tracked per function or block type.
+pub const MAX_WASM_TYPE_ARITY: usize = 64;
+
 /// Maximum number of syscall-loaded modules tracked in the kernel.
 pub const MAX_SYSCALL_MODULES: usize = 32;
 
@@ -104,6 +113,12 @@ pub const MAX_MEMORY_OPS_PER_CALL: usize = 10_000;
 
 /// Maximum syscalls per execution
 pub const MAX_SYSCALLS_PER_CALL: usize = 100;
+
+/// Maximum nested WASM function call depth.
+pub const MAX_CALL_DEPTH: usize = 64;
+
+/// Maximum structured control frames active in one function body.
+pub const MAX_CONTROL_STACK: usize = 128;
 
 /// Number of initial JIT calls to validate against interpreter
 pub const JIT_VALIDATE_CALLS: u8 = 2;
@@ -235,6 +250,8 @@ pub enum ValueType {
 pub enum Value {
     I32(i32),
     I64(i64),
+    F32(f32),
+    F64(f64),
 }
 
 impl Value {
@@ -252,8 +269,41 @@ impl Value {
         }
     }
 
+    pub fn as_f32(&self) -> Result<f32, WasmError> {
+        match self {
+            Value::F32(v) => Ok(*v),
+            _ => Err(WasmError::TypeMismatch),
+        }
+    }
+
+    pub fn as_f64(&self) -> Result<f64, WasmError> {
+        match self {
+            Value::F64(v) => Ok(*v),
+            _ => Err(WasmError::TypeMismatch),
+        }
+    }
+
     pub fn as_u32(&self) -> Result<u32, WasmError> {
         Ok(self.as_i32()? as u32)
+    }
+
+    pub fn matches_type(&self, ty: ValueType) -> bool {
+        matches!(
+            (self, ty),
+            (Value::I32(_), ValueType::I32)
+                | (Value::I64(_), ValueType::I64)
+                | (Value::F32(_), ValueType::F32)
+                | (Value::F64(_), ValueType::F64)
+        )
+    }
+
+    pub fn zero_for_type(ty: ValueType) -> Self {
+        match ty {
+            ValueType::I32 => Value::I32(0),
+            ValueType::I64 => Value::I64(0),
+            ValueType::F32 => Value::F32(0.0),
+            ValueType::F64 => Value::F64(0.0),
+        }
     }
 }
 
@@ -276,6 +326,7 @@ pub enum Opcode {
     BrIf = 0x0D,
     Return = 0x0F,
     Call = 0x10,
+    CallIndirect = 0x11,
     
     // Parametric
     Drop = 0x1A,
@@ -299,6 +350,8 @@ pub enum Opcode {
     // Constants
     I32Const = 0x41,
     I64Const = 0x42,
+    F32Const = 0x43,
+    F64Const = 0x44,
     
     // i32 operations
     I32Eqz = 0x45,
@@ -326,6 +379,24 @@ pub enum Opcode {
     I32Shl = 0x74,
     I32ShrS = 0x75,
     I32ShrU = 0x76,
+
+    // i64 operations
+    I64Add = 0x7C,
+    I64Sub = 0x7D,
+    I64Mul = 0x7E,
+    I64DivS = 0x7F,
+
+    // f32 operations
+    F32Add = 0x92,
+    F32Sub = 0x93,
+    F32Mul = 0x94,
+    F32Div = 0x95,
+
+    // f64 operations
+    F64Add = 0xA0,
+    F64Sub = 0xA1,
+    F64Mul = 0xA2,
+    F64Div = 0xA3,
 }
 
 impl Opcode {
@@ -333,18 +404,33 @@ impl Opcode {
         match b {
             0x00 => Some(Opcode::Unreachable),
             0x01 => Some(Opcode::Nop),
+            0x02 => Some(Opcode::Block),
+            0x03 => Some(Opcode::Loop),
+            0x04 => Some(Opcode::If),
+            0x05 => Some(Opcode::Else),
             0x0B => Some(Opcode::End),
+            0x0C => Some(Opcode::Br),
+            0x0D => Some(Opcode::BrIf),
             0x0F => Some(Opcode::Return),
             0x10 => Some(Opcode::Call),
+            0x11 => Some(Opcode::CallIndirect),
             0x1A => Some(Opcode::Drop),
+            0x1B => Some(Opcode::Select),
             0x20 => Some(Opcode::LocalGet),
             0x21 => Some(Opcode::LocalSet),
+            0x22 => Some(Opcode::LocalTee),
+            0x23 => Some(Opcode::GlobalGet),
+            0x24 => Some(Opcode::GlobalSet),
             0x28 => Some(Opcode::I32Load),
+            0x29 => Some(Opcode::I64Load),
             0x36 => Some(Opcode::I32Store),
+            0x37 => Some(Opcode::I64Store),
             0x3F => Some(Opcode::MemorySize),
             0x40 => Some(Opcode::MemoryGrow),
             0x41 => Some(Opcode::I32Const),
             0x42 => Some(Opcode::I64Const),
+            0x43 => Some(Opcode::F32Const),
+            0x44 => Some(Opcode::F64Const),
             0x45 => Some(Opcode::I32Eqz),
             0x46 => Some(Opcode::I32Eq),
             0x47 => Some(Opcode::I32Ne),
@@ -355,6 +441,18 @@ impl Opcode {
             0x71 => Some(Opcode::I32And),
             0x72 => Some(Opcode::I32Or),
             0x73 => Some(Opcode::I32Xor),
+            0x7C => Some(Opcode::I64Add),
+            0x7D => Some(Opcode::I64Sub),
+            0x7E => Some(Opcode::I64Mul),
+            0x7F => Some(Opcode::I64DivS),
+            0x92 => Some(Opcode::F32Add),
+            0x93 => Some(Opcode::F32Sub),
+            0x94 => Some(Opcode::F32Mul),
+            0x95 => Some(Opcode::F32Div),
+            0xA0 => Some(Opcode::F64Add),
+            0xA1 => Some(Opcode::F64Sub),
+            0xA2 => Some(Opcode::F64Mul),
+            0xA3 => Some(Opcode::F64Div),
             _ => None,
         }
     }
@@ -452,6 +550,20 @@ fn validate_bytecode(code: &[u8]) -> Result<(), WasmError> {
                 let (_v, n) = read_sleb128_i64_validate(code, pc)?;
                 pc += n;
             }
+            Opcode::F32Const => {
+                let end = pc.checked_add(4).ok_or(WasmError::InvalidModule)?;
+                if end > code.len() {
+                    return Err(WasmError::UnexpectedEndOfCode);
+                }
+                pc = end;
+            }
+            Opcode::F64Const => {
+                let end = pc.checked_add(8).ok_or(WasmError::InvalidModule)?;
+                if end > code.len() {
+                    return Err(WasmError::UnexpectedEndOfCode);
+                }
+                pc = end;
+            }
             Opcode::LocalGet
             | Opcode::LocalSet
             | Opcode::LocalTee
@@ -463,6 +575,12 @@ fn validate_bytecode(code: &[u8]) -> Result<(), WasmError> {
                 let (_v, n) = read_uleb128_validate(code, pc)?;
                 pc += n;
             }
+            Opcode::CallIndirect => {
+                let (_type_idx, n1) = read_uleb128_validate(code, pc)?;
+                pc += n1;
+                let (_table_idx, n2) = read_uleb128_validate(code, pc)?;
+                pc += n2;
+            }
             Opcode::I32Load | Opcode::I64Load | Opcode::I32Store | Opcode::I64Store => {
                 let (_align, n1) = read_uleb128_validate(code, pc)?;
                 pc += n1;
@@ -470,7 +588,7 @@ fn validate_bytecode(code: &[u8]) -> Result<(), WasmError> {
                 pc += n2;
             }
             Opcode::Block | Opcode::Loop | Opcode::If => {
-                let (_ty, n) = read_sleb128_i32_validate(code, pc)?;
+                let n = read_blocktype_width_validate(code, pc)?;
                 pc += n;
             }
             Opcode::MemorySize | Opcode::MemoryGrow => {
@@ -487,6 +605,184 @@ fn validate_bytecode(code: &[u8]) -> Result<(), WasmError> {
         }
     }
     Ok(())
+}
+
+fn read_blocktype_width_validate(bytes: &[u8], offset: usize) -> Result<usize, WasmError> {
+    if offset >= bytes.len() {
+        return Err(WasmError::UnexpectedEndOfCode);
+    }
+    let b = bytes[offset];
+    if b == 0x40 || b == 0x7F || b == 0x7E || b == 0x7D || b == 0x7C {
+        return Ok(1);
+    }
+    let (_idx, n) = read_uleb128_validate(bytes, offset)?;
+    Ok(n)
+}
+
+#[derive(Clone, Copy)]
+struct ParsedFunctionType {
+    param_count: usize,
+    result_count: usize,
+    param_types: [ValueType; MAX_WASM_TYPE_ARITY],
+    result_types: [ValueType; MAX_WASM_TYPE_ARITY],
+    all_i32: bool,
+}
+
+fn read_byte_at(bytes: &[u8], offset: &mut usize) -> Result<u8, WasmError> {
+    if *offset >= bytes.len() {
+        return Err(WasmError::UnexpectedEndOfCode);
+    }
+    let byte = bytes[*offset];
+    *offset += 1;
+    Ok(byte)
+}
+
+fn read_uleb128_at(bytes: &[u8], offset: &mut usize) -> Result<u32, WasmError> {
+    let (value, width) = read_uleb128_validate(bytes, *offset)?;
+    *offset = offset
+        .checked_add(width)
+        .ok_or(WasmError::InvalidModule)?;
+    Ok(value)
+}
+
+fn parse_valtype(bytes: &[u8], offset: &mut usize) -> Result<ValueType, WasmError> {
+    match read_byte_at(bytes, offset)? {
+        0x7F => Ok(ValueType::I32),
+        0x7E => Ok(ValueType::I64),
+        0x7D => Ok(ValueType::F32),
+        0x7C => Ok(ValueType::F64),
+        _ => Err(WasmError::InvalidModule),
+    }
+}
+
+fn read_name_slice<'a>(
+    bytes: &'a [u8],
+    offset: &mut usize,
+    section_end: usize,
+) -> Result<&'a [u8], WasmError> {
+    let len = read_uleb128_at(bytes, offset)? as usize;
+    let end = offset.checked_add(len).ok_or(WasmError::InvalidModule)?;
+    if end > section_end {
+        return Err(WasmError::InvalidModule);
+    }
+    let name = &bytes[*offset..end];
+    *offset = end;
+    Ok(name)
+}
+
+fn resolve_host_import(
+    module_name: &[u8],
+    field_name: &[u8],
+    signature: ParsedFunctionType,
+) -> Result<usize, WasmError> {
+    let module = core::str::from_utf8(module_name).map_err(|_| WasmError::InvalidModule)?;
+    if module != "oreulia" {
+        return Err(WasmError::InvalidModule);
+    }
+    let field = core::str::from_utf8(field_name).map_err(|_| WasmError::InvalidModule)?;
+
+    let (host_id, params, results) = match field {
+        "debug_log" | "oreulia_log" => (0usize, 2usize, 0usize),
+        "fs_read" | "oreulia_fs_read" => (1, 5, 1),
+        "fs_write" | "oreulia_fs_write" => (2, 5, 1),
+        "channel_send" | "oreulia_channel_send" => (3, 3, 1),
+        "channel_recv" | "oreulia_channel_recv" => (4, 3, 1),
+        "net_http_get" | "oreulia_net_http_get" => (5, 4, 1),
+        "net_connect" | "oreulia_net_connect" => (6, 3, 1),
+        "dns_resolve" | "oreulia_dns_resolve" => (7, 2, 1),
+        "service_invoke" | "oreulia_service_invoke" => (8, 3, 1),
+        "service_register" | "oreulia_service_register" => (9, 2, 1),
+        "channel_send_cap" | "oreulia_channel_send_cap" => (10, 4, 1),
+        "last_service_cap" | "oreulia_last_service_cap" => (11, 0, 1),
+        _ => return Err(WasmError::InvalidModule),
+    };
+
+    if signature.param_count != params || signature.result_count != results {
+        return Err(WasmError::InvalidModule);
+    }
+    if !signature.all_i32 {
+        return Err(WasmError::InvalidModule);
+    }
+    Ok(host_id)
+}
+
+fn parse_init_expr(
+    bytes: &[u8],
+    offset: &mut usize,
+    section_end: usize,
+    globals: &[Option<GlobalTemplate>; MAX_WASM_GLOBALS],
+) -> Result<Value, WasmError> {
+    if *offset >= section_end {
+        return Err(WasmError::UnexpectedEndOfCode);
+    }
+    let opcode = read_byte_at(bytes, offset)?;
+    let value = match opcode {
+        0x41 => Value::I32(read_sleb128_i32_validate(bytes, *offset).map(|(v, n)| {
+            *offset += n;
+            v
+        })?),
+        0x42 => Value::I64(read_sleb128_i64_validate(bytes, *offset).map(|(v, n)| {
+            *offset += n;
+            v
+        })?),
+        0x43 => {
+            let end = (*offset).checked_add(4).ok_or(WasmError::InvalidModule)?;
+            if end > section_end {
+                return Err(WasmError::UnexpectedEndOfCode);
+            }
+            let bits = u32::from_le_bytes([
+                bytes[*offset],
+                bytes[*offset + 1],
+                bytes[*offset + 2],
+                bytes[*offset + 3],
+            ]);
+            *offset = end;
+            Value::F32(f32::from_bits(bits))
+        }
+        0x44 => {
+            let end = (*offset).checked_add(8).ok_or(WasmError::InvalidModule)?;
+            if end > section_end {
+                return Err(WasmError::UnexpectedEndOfCode);
+            }
+            let bits = u64::from_le_bytes([
+                bytes[*offset],
+                bytes[*offset + 1],
+                bytes[*offset + 2],
+                bytes[*offset + 3],
+                bytes[*offset + 4],
+                bytes[*offset + 5],
+                bytes[*offset + 6],
+                bytes[*offset + 7],
+            ]);
+            *offset = end;
+            Value::F64(f64::from_bits(bits))
+        }
+        0x23 => {
+            let idx = read_uleb128_at(bytes, offset)? as usize;
+            let slot = globals
+                .get(idx)
+                .and_then(|g| *g)
+                .ok_or(WasmError::InvalidModule)?;
+            if slot.mutable {
+                return Err(WasmError::InvalidModule);
+            }
+            slot.init
+        }
+        _ => return Err(WasmError::InvalidModule),
+    };
+
+    if read_byte_at(bytes, offset)? != 0x0B {
+        return Err(WasmError::InvalidModule);
+    }
+    Ok(value)
+}
+
+fn init_expr_offset(value: Value) -> Result<usize, WasmError> {
+    let raw = value.as_i32()?;
+    if raw < 0 {
+        return Err(WasmError::InvalidModule);
+    }
+    Ok(raw as usize)
 }
 
 // ============================================================================
@@ -699,6 +995,14 @@ impl Stack {
 
     pub fn clear(&mut self) {
         self.len = 0;
+    }
+
+    pub fn truncate(&mut self, new_len: usize) -> Result<(), WasmError> {
+        if new_len > self.len {
+            return Err(WasmError::StackUnderflow);
+        }
+        self.len = new_len;
+        Ok(())
     }
 
     pub fn get(&self, idx: usize) -> Result<Value, WasmError> {
@@ -1190,6 +1494,25 @@ pub struct Function {
 // WASM Module
 // ============================================================================
 
+#[derive(Clone, Copy)]
+struct GlobalTemplate {
+    value_type: ValueType,
+    mutable: bool,
+    init: Value,
+}
+
+#[derive(Clone)]
+struct DataSegment {
+    offset: usize,
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+enum CallTarget {
+    Host(usize),
+    Function(usize),
+}
+
 /// A loaded WASM module
 #[derive(Clone)]
 pub struct WasmModule {
@@ -1201,6 +1524,30 @@ pub struct WasmModule {
     functions: [Option<Function>; 64],
     /// Number of functions
     function_count: usize,
+    /// Number of imported functions (prefix in combined index space).
+    import_function_count: usize,
+    /// Imported host function IDs (combined index space).
+    imported_host_functions: [Option<usize>; 64],
+    /// Function type index by combined index (imports + defined).
+    function_type_index: [Option<usize>; 64],
+    /// Signature arity by type index.
+    type_signatures: [Option<ParsedFunctionType>; 64],
+    /// Number of parsed type entries.
+    type_count: usize,
+    /// Optional start function index in combined index space.
+    start_function: Option<usize>,
+    /// Global templates copied into each instance at instantiation.
+    global_templates: [Option<GlobalTemplate>; MAX_WASM_GLOBALS],
+    /// Number of globals.
+    global_count: usize,
+    /// Function table entries (combined function index space).
+    table_entries: [Option<usize>; MAX_WASM_TABLE_ENTRIES],
+    /// Current table size.
+    table_size: usize,
+    /// Active data segments applied at instantiation.
+    data_segments: Vec<DataSegment>,
+    /// Backward-compat path for hand-crafted bytecode using call >=1000 as host.
+    legacy_host_call_encoding: bool,
 }
 
 impl WasmModule {
@@ -1211,16 +1558,22 @@ impl WasmModule {
             bytecode_len: 0,
             functions: [None; 64],
             function_count: 0,
+            import_function_count: 0,
+            imported_host_functions: [None; 64],
+            function_type_index: [None; 64],
+            type_signatures: [None; 64],
+            type_count: 0,
+            start_function: None,
+            global_templates: [None; MAX_WASM_GLOBALS],
+            global_count: 0,
+            table_entries: [None; MAX_WASM_TABLE_ENTRIES],
+            table_size: 0,
+            data_segments: Vec::new(),
+            legacy_host_call_encoding: true,
         }
     }
 
-    /// Load bytecode into module (simplified - no full WASM parsing)
-    pub fn load(&mut self, bytecode: &[u8]) -> Result<(), WasmError> {
-        if bytecode.len() > MAX_MODULE_SIZE {
-            return Err(WasmError::ModuleTooLarge);
-        }
-        validate_bytecode(bytecode)?;
-
+    fn replace_bytecode(&mut self, bytecode: &[u8]) {
         self.bytecode.clear();
         // Reserve only the missing capacity; reserve_exact takes "additional",
         // not "target capacity". Over-reserving here every iteration causes
@@ -1231,9 +1584,579 @@ impl WasmModule {
         }
         self.bytecode.extend_from_slice(bytecode);
         self.bytecode_len = bytecode.len();
+    }
 
-        // For v0, we'll use a simplified function format
-        // Real implementation would parse WASM binary format
+    fn reset_binary_metadata(&mut self) {
+        self.import_function_count = 0;
+        self.imported_host_functions = [None; 64];
+        self.function_type_index = [None; 64];
+        self.type_signatures = [None; 64];
+        self.type_count = 0;
+        self.start_function = None;
+        self.global_templates = [None; MAX_WASM_GLOBALS];
+        self.global_count = 0;
+        self.table_entries = [None; MAX_WASM_TABLE_ENTRIES];
+        self.table_size = 0;
+        self.data_segments.clear();
+    }
+
+    /// Load raw function bytecode (legacy/internal path).
+    pub fn load(&mut self, bytecode: &[u8]) -> Result<(), WasmError> {
+        if bytecode.len() > MAX_MODULE_SIZE {
+            return Err(WasmError::ModuleTooLarge);
+        }
+        validate_bytecode(bytecode)?;
+        self.replace_bytecode(bytecode);
+        self.reset_binary_metadata();
+        self.reset_functions();
+        self.legacy_host_call_encoding = true;
+        Ok(())
+    }
+
+    /// Load and validate a binary WASM module (strict syscall path).
+    pub fn load_binary(&mut self, bytecode: &[u8]) -> Result<(), WasmError> {
+        if bytecode.len() > MAX_MODULE_SIZE {
+            return Err(WasmError::ModuleTooLarge);
+        }
+        if bytecode.len() < 8 {
+            return Err(WasmError::InvalidModule);
+        }
+        if &bytecode[0..4] != b"\0asm" {
+            return Err(WasmError::InvalidModule);
+        }
+        if bytecode[4..8] != [0x01, 0x00, 0x00, 0x00] {
+            return Err(WasmError::InvalidModule);
+        }
+
+        self.replace_bytecode(bytecode);
+        self.reset_binary_metadata();
+        self.reset_functions();
+        self.legacy_host_call_encoding = false;
+
+        let bytes = &self.bytecode[..self.bytecode_len];
+        let mut offset = 8usize;
+        let mut last_non_custom_section = 0u8;
+        let mut saw_type = false;
+        let mut saw_import = false;
+        let mut saw_function = false;
+        let mut saw_table = false;
+        let mut saw_code = false;
+        let mut saw_global = false;
+        let mut saw_memory = false;
+        let mut saw_export = false;
+        let mut saw_start = false;
+        let mut saw_element = false;
+        let mut saw_data = false;
+        let mut saw_data_count = false;
+
+        let mut defined_type_indices: Vec<usize> = Vec::new();
+        let mut function_bodies: Vec<(usize, usize, usize)> = Vec::new();
+        let mut globals = [None; MAX_WASM_GLOBALS];
+        let mut global_count = 0usize;
+        let mut table_size = 0usize;
+        let mut element_inits: Vec<(usize, Vec<usize>)> = Vec::new();
+        let mut data_segments: Vec<DataSegment> = Vec::new();
+        let mut data_count_hint: Option<usize> = None;
+
+        while offset < bytes.len() {
+            let section_id = read_byte_at(bytes, &mut offset)?;
+            let section_size = read_uleb128_at(bytes, &mut offset)? as usize;
+            let section_end = offset
+                .checked_add(section_size)
+                .ok_or(WasmError::InvalidModule)?;
+            if section_end > bytes.len() {
+                return Err(WasmError::InvalidModule);
+            }
+
+            if section_id != 0 {
+                if section_id <= last_non_custom_section {
+                    return Err(WasmError::InvalidModule);
+                }
+                last_non_custom_section = section_id;
+            }
+
+            let mut cursor = offset;
+            match section_id {
+                0 => {
+                    // Custom section (ignored for execution).
+                }
+                1 => {
+                    if saw_type {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_type = true;
+                    let type_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    if type_count > 64 {
+                        return Err(WasmError::TooManyFunctions);
+                    }
+                    self.type_count = type_count;
+                    let mut i = 0usize;
+                    while i < type_count {
+                        let form = read_byte_at(bytes, &mut cursor)?;
+                        if form != 0x60 {
+                            return Err(WasmError::InvalidModule);
+                        }
+
+                        let param_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                        if param_count > MAX_WASM_TYPE_ARITY || param_count > MAX_LOCALS {
+                            return Err(WasmError::InvalidLocalIndex);
+                        }
+                        let mut all_i32 = true;
+                        let mut param_types = [ValueType::I32; MAX_WASM_TYPE_ARITY];
+                        let mut p = 0usize;
+                        while p < param_count {
+                            let ty = parse_valtype(bytes, &mut cursor)?;
+                            param_types[p] = ty;
+                            if ty != ValueType::I32 {
+                                all_i32 = false;
+                            }
+                            p += 1;
+                        }
+
+                        let result_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                        if result_count > MAX_WASM_TYPE_ARITY {
+                            return Err(WasmError::InvalidLocalIndex);
+                        }
+                        let mut result_types = [ValueType::I32; MAX_WASM_TYPE_ARITY];
+                        let mut r = 0usize;
+                        while r < result_count {
+                            let ty = parse_valtype(bytes, &mut cursor)?;
+                            result_types[r] = ty;
+                            if ty != ValueType::I32 {
+                                all_i32 = false;
+                            }
+                            r += 1;
+                        }
+                        self.type_signatures[i] = Some(ParsedFunctionType {
+                            param_count,
+                            result_count,
+                            param_types,
+                            result_types,
+                            all_i32,
+                        });
+                        i += 1;
+                    }
+                }
+                2 => {
+                    if saw_import {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_import = true;
+                    let import_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    let mut i = 0usize;
+                    while i < import_count {
+                        let module_name = read_name_slice(bytes, &mut cursor, section_end)?;
+                        let field_name = read_name_slice(bytes, &mut cursor, section_end)?;
+                        let kind = read_byte_at(bytes, &mut cursor)?;
+                        match kind {
+                            0x00 => {
+                                let ty_idx = read_uleb128_at(bytes, &mut cursor)? as usize;
+                                if ty_idx >= self.type_count {
+                                    return Err(WasmError::InvalidModule);
+                                }
+                                let sig = self.type_signatures[ty_idx]
+                                    .ok_or(WasmError::InvalidModule)?;
+                                let host_id = resolve_host_import(module_name, field_name, sig)?;
+                                let combined_idx = self.import_function_count;
+                                if combined_idx >= 64 {
+                                    return Err(WasmError::TooManyFunctions);
+                                }
+                                self.imported_host_functions[combined_idx] = Some(host_id);
+                                self.function_type_index[combined_idx] = Some(ty_idx);
+                                self.import_function_count += 1;
+                            }
+                            _ => {
+                                return Err(WasmError::InvalidModule);
+                            }
+                        }
+                        i += 1;
+                    }
+                }
+                3 => {
+                    if saw_function {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_function = true;
+                    let function_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    if function_count > 64 {
+                        return Err(WasmError::TooManyFunctions);
+                    }
+                    let mut i = 0usize;
+                    while i < function_count {
+                        let ty_idx = read_uleb128_at(bytes, &mut cursor)? as usize;
+                        if ty_idx >= self.type_count {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        defined_type_indices.push(ty_idx);
+                        i += 1;
+                    }
+                }
+                4 => {
+                    if saw_table {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_table = true;
+                    let table_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    if table_count > 1 {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    let mut i = 0usize;
+                    while i < table_count {
+                        let ref_type = read_byte_at(bytes, &mut cursor)?;
+                        if ref_type != 0x70 {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        let flags = read_uleb128_at(bytes, &mut cursor)?;
+                        if (flags & !0x1) != 0 {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        let min = read_uleb128_at(bytes, &mut cursor)? as usize;
+                        if min > MAX_WASM_TABLE_ENTRIES {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        let max = if (flags & 0x1) != 0 {
+                            let max = read_uleb128_at(bytes, &mut cursor)? as usize;
+                            if max < min || max > MAX_WASM_TABLE_ENTRIES {
+                                return Err(WasmError::InvalidModule);
+                            }
+                            max
+                        } else {
+                            MAX_WASM_TABLE_ENTRIES
+                        };
+                        let _ = max;
+                        table_size = min;
+                        i += 1;
+                    }
+                }
+                5 => {
+                    if saw_memory {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_memory = true;
+                    let mem_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    if mem_count > 1 {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    let mut i = 0usize;
+                    while i < mem_count {
+                        let flags = read_uleb128_at(bytes, &mut cursor)?;
+                        if (flags & !0x1) != 0 {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        let min_pages = read_uleb128_at(bytes, &mut cursor)?;
+                        if min_pages > 1 {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        if (flags & 0x1) != 0 {
+                            let max_pages = read_uleb128_at(bytes, &mut cursor)?;
+                            if max_pages > 1 || max_pages < min_pages {
+                                return Err(WasmError::InvalidModule);
+                            }
+                        }
+                        i += 1;
+                    }
+                }
+                6 => {
+                    if saw_global {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_global = true;
+                    let global_total = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    if global_total > MAX_WASM_GLOBALS {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    let mut i = 0usize;
+                    while i < global_total {
+                        let value_type = parse_valtype(bytes, &mut cursor)?;
+                        let mutable_flag = read_byte_at(bytes, &mut cursor)?;
+                        if mutable_flag > 1 {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        let init = parse_init_expr(bytes, &mut cursor, section_end, &globals)?;
+                        if !init.matches_type(value_type) {
+                            return Err(WasmError::TypeMismatch);
+                        }
+                        globals[global_count] = Some(GlobalTemplate {
+                            value_type,
+                            mutable: mutable_flag != 0,
+                            init,
+                        });
+                        global_count += 1;
+                        i += 1;
+                    }
+                }
+                7 => {
+                    if saw_export {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_export = true;
+                    // Export section (parsed for structure/bounds only).
+                    let export_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    let mut i = 0usize;
+                    while i < export_count {
+                        let _name = read_name_slice(bytes, &mut cursor, section_end)?;
+                        let kind = read_byte_at(bytes, &mut cursor)?;
+                        let index = read_uleb128_at(bytes, &mut cursor)? as usize;
+                        match kind {
+                            0x00 => {
+                                if index >= self.import_function_count + defined_type_indices.len() {
+                                    return Err(WasmError::InvalidModule);
+                                }
+                            }
+                            0x01 => {
+                                if !saw_table || index != 0 {
+                                    return Err(WasmError::InvalidModule);
+                                }
+                            }
+                            0x02 => {
+                                if !saw_memory || index != 0 {
+                                    return Err(WasmError::InvalidModule);
+                                }
+                            }
+                            0x03 => {
+                                if index >= global_count {
+                                    return Err(WasmError::InvalidModule);
+                                }
+                            }
+                            _ => return Err(WasmError::InvalidModule),
+                        }
+                        i += 1;
+                    }
+                }
+                8 => {
+                    if saw_start {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_start = true;
+                    let start_idx = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    self.start_function = Some(start_idx);
+                }
+                9 => {
+                    if saw_element {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_element = true;
+                    let segment_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    let mut i = 0usize;
+                    while i < segment_count {
+                        let flags = read_uleb128_at(bytes, &mut cursor)?;
+                        let table_idx = match flags {
+                            0 => 0usize,
+                            2 => read_uleb128_at(bytes, &mut cursor)? as usize,
+                            _ => return Err(WasmError::InvalidModule),
+                        };
+                        if table_idx != 0 {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        let offset_expr =
+                            parse_init_expr(bytes, &mut cursor, section_end, &globals)?;
+                        let base = init_expr_offset(offset_expr)?;
+                        if flags == 2 {
+                            let elem_kind = read_byte_at(bytes, &mut cursor)?;
+                            if elem_kind != 0x00 {
+                                return Err(WasmError::InvalidModule);
+                            }
+                        }
+                        let elem_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                        let mut funcs = Vec::with_capacity(elem_count);
+                        let mut j = 0usize;
+                        while j < elem_count {
+                            funcs.push(read_uleb128_at(bytes, &mut cursor)? as usize);
+                            j += 1;
+                        }
+                        element_inits.push((base, funcs));
+                        i += 1;
+                    }
+                }
+                10 => {
+                    if saw_code {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_code = true;
+                    if !saw_function {
+                        return Err(WasmError::InvalidModule);
+                    }
+
+                    let code_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    if code_count != defined_type_indices.len() {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    let mut i = 0usize;
+                    while i < code_count {
+                        let body_size = read_uleb128_at(bytes, &mut cursor)? as usize;
+                        let body_end = cursor.checked_add(body_size).ok_or(WasmError::InvalidModule)?;
+                        if body_end > section_end {
+                            return Err(WasmError::InvalidModule);
+                        }
+
+                        let mut body_cursor = cursor;
+                        let local_decl_count = read_uleb128_at(bytes, &mut body_cursor)? as usize;
+                        let mut local_count = 0usize;
+                        let mut d = 0usize;
+                        while d < local_decl_count {
+                            let repeat = read_uleb128_at(bytes, &mut body_cursor)? as usize;
+                            let _local_ty = parse_valtype(bytes, &mut body_cursor)?;
+                            local_count = local_count
+                                .checked_add(repeat)
+                                .ok_or(WasmError::InvalidModule)?;
+                            if local_count > MAX_LOCALS {
+                                return Err(WasmError::InvalidLocalIndex);
+                            }
+                            d += 1;
+                        }
+
+                        if body_cursor >= body_end {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        validate_bytecode(&bytes[body_cursor..body_end])?;
+                        function_bodies.push((body_cursor, body_end - body_cursor, local_count));
+                        cursor = body_end;
+                        i += 1;
+                    }
+                }
+                11 => {
+                    if saw_data {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_data = true;
+                    let segment_count = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    let mut i = 0usize;
+                    while i < segment_count {
+                        let flags = read_uleb128_at(bytes, &mut cursor)?;
+                        let mem_idx = match flags {
+                            0 => 0usize,
+                            2 => read_uleb128_at(bytes, &mut cursor)? as usize,
+                            _ => return Err(WasmError::InvalidModule),
+                        };
+                        if mem_idx != 0 {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        let offset_expr =
+                            parse_init_expr(bytes, &mut cursor, section_end, &globals)?;
+                        let base = init_expr_offset(offset_expr)?;
+                        let data_len = read_uleb128_at(bytes, &mut cursor)? as usize;
+                        let end = cursor.checked_add(data_len).ok_or(WasmError::InvalidModule)?;
+                        if end > section_end {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        data_segments.push(DataSegment {
+                            offset: base,
+                            bytes: bytes[cursor..end].to_vec(),
+                        });
+                        cursor = end;
+                        i += 1;
+                    }
+                }
+                12 => {
+                    if saw_data_count {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_data_count = true;
+                    data_count_hint = Some(read_uleb128_at(bytes, &mut cursor)? as usize);
+                }
+                _ => {
+                    return Err(WasmError::InvalidModule);
+                }
+            }
+
+            if cursor != section_end {
+                return Err(WasmError::InvalidModule);
+            }
+            offset = section_end;
+        }
+
+        if !saw_type || !saw_function || !saw_code {
+            return Err(WasmError::InvalidModule);
+        }
+        if defined_type_indices.len() != function_bodies.len() {
+            return Err(WasmError::InvalidModule);
+        }
+        if self.import_function_count + function_bodies.len() > 64 {
+            return Err(WasmError::TooManyFunctions);
+        }
+        if function_bodies.len() > 64 {
+            return Err(WasmError::TooManyFunctions);
+        }
+
+        if !saw_table && !element_inits.is_empty() {
+            return Err(WasmError::InvalidModule);
+        }
+        if !saw_memory && !data_segments.is_empty() {
+            return Err(WasmError::InvalidModule);
+        }
+        if let Some(expected) = data_count_hint {
+            if expected != data_segments.len() {
+                return Err(WasmError::InvalidModule);
+            }
+        }
+
+        let mut i = 0usize;
+        while i < function_bodies.len() {
+            let type_idx = defined_type_indices[i];
+            if type_idx >= self.type_count {
+                return Err(WasmError::InvalidModule);
+            }
+            let sig = self.type_signatures[type_idx].ok_or(WasmError::InvalidModule)?;
+            let (code_offset, code_len, local_count) = function_bodies[i];
+            let total_locals = sig
+                .param_count
+                .checked_add(local_count)
+                .ok_or(WasmError::InvalidModule)?;
+            if total_locals > MAX_LOCALS {
+                return Err(WasmError::InvalidLocalIndex);
+            }
+            let defined_idx = self.add_function(Function {
+                code_offset,
+                code_len,
+                param_count: sig.param_count,
+                result_count: sig.result_count,
+                local_count,
+            })?;
+            let combined_idx = self
+                .import_function_count
+                .checked_add(defined_idx)
+                .ok_or(WasmError::InvalidModule)?;
+            self.function_type_index[combined_idx] = Some(type_idx);
+            i += 1;
+        }
+
+        self.global_templates = globals;
+        self.global_count = global_count;
+
+        self.table_size = table_size;
+        let mut seg_idx = 0usize;
+        while seg_idx < element_inits.len() {
+            let (base, funcs) = &element_inits[seg_idx];
+            let mut j = 0usize;
+            while j < funcs.len() {
+                let slot = base.checked_add(j).ok_or(WasmError::InvalidModule)?;
+                if slot >= self.table_size {
+                    return Err(WasmError::InvalidModule);
+                }
+                if funcs[j] >= self.total_function_count() {
+                    return Err(WasmError::InvalidModule);
+                }
+                self.table_entries[slot] = Some(funcs[j]);
+                j += 1;
+            }
+            seg_idx += 1;
+        }
+
+        self.data_segments = data_segments;
+
+        if let Some(start_idx) = self.start_function {
+            if start_idx >= self.total_function_count() {
+                return Err(WasmError::InvalidModule);
+            }
+            let (params, results) = self.function_arity(start_idx)?;
+            if params != 0 || results != 0 {
+                return Err(WasmError::InvalidModule);
+            }
+            if !matches!(self.resolve_call_target(start_idx), Ok(CallTarget::Function(_))) {
+                return Err(WasmError::InvalidModule);
+            }
+        }
+
         Ok(())
     }
 
@@ -1249,6 +2172,7 @@ impl WasmModule {
     pub fn reset_functions(&mut self) {
         self.functions = [None; 64];
         self.function_count = 0;
+        self.function_type_index = [None; 64];
     }
 
     /// Add a function (for testing/demo)
@@ -1269,6 +2193,85 @@ impl WasmModule {
             return Err(WasmError::FunctionNotFound);
         }
         self.functions[idx].ok_or(WasmError::FunctionNotFound)
+    }
+
+    pub fn total_function_count(&self) -> usize {
+        self.import_function_count.saturating_add(self.function_count)
+    }
+
+    fn resolve_call_target(&self, func_idx: usize) -> Result<CallTarget, WasmError> {
+        if self.legacy_host_call_encoding && func_idx >= 1000 {
+            return Ok(CallTarget::Host(func_idx - 1000));
+        }
+
+        if func_idx < self.import_function_count {
+            if let Some(host_id) = self.imported_host_functions[func_idx] {
+                return Ok(CallTarget::Host(host_id));
+            }
+            return Err(WasmError::FunctionNotFound);
+        }
+
+        let defined_idx = func_idx
+            .checked_sub(self.import_function_count)
+            .ok_or(WasmError::FunctionNotFound)?;
+        if defined_idx >= self.function_count {
+            return Err(WasmError::FunctionNotFound);
+        }
+        Ok(CallTarget::Function(defined_idx))
+    }
+
+    fn function_arity(&self, func_idx: usize) -> Result<(usize, usize), WasmError> {
+        match self.resolve_call_target(func_idx)? {
+            CallTarget::Host(_) => {
+                let sig = self.signature_for_combined(func_idx)?;
+                Ok((sig.param_count, sig.result_count))
+            }
+            CallTarget::Function(defined_idx) => {
+                let func = self.get_function(defined_idx)?;
+                Ok((func.param_count, func.result_count))
+            }
+        }
+    }
+
+    fn function_matches_type(&self, func_idx: usize, type_idx: usize) -> bool {
+        if type_idx >= self.type_count {
+            return false;
+        }
+        self.function_type_index
+            .get(func_idx)
+            .and_then(|x| *x)
+            .map(|idx| idx == type_idx)
+            .unwrap_or(false)
+    }
+
+    fn function_all_i32(&self, func_idx: usize) -> Result<bool, WasmError> {
+        let sig = self.signature_for_combined(func_idx)?;
+        Ok(sig.all_i32)
+    }
+
+    fn signature_for_type(&self, type_idx: usize) -> Result<ParsedFunctionType, WasmError> {
+        if type_idx >= self.type_count {
+            return Err(WasmError::FunctionNotFound);
+        }
+        self.type_signatures
+            .get(type_idx)
+            .and_then(|x| *x)
+            .ok_or(WasmError::FunctionNotFound)
+    }
+
+    fn signature_for_combined(&self, func_idx: usize) -> Result<ParsedFunctionType, WasmError> {
+        let ty_idx = self
+            .function_type_index
+            .get(func_idx)
+            .and_then(|x| *x)
+            .ok_or(WasmError::FunctionNotFound)?;
+        self.signature_for_type(ty_idx)
+    }
+
+    fn signature_for_defined(&self, defined_idx: usize) -> Option<ParsedFunctionType> {
+        let combined = self.import_function_count.checked_add(defined_idx)?;
+        let ty_idx = self.function_type_index.get(combined).and_then(|x| *x)?;
+        self.type_signatures.get(ty_idx).and_then(|x| *x)
     }
 }
 
@@ -1317,6 +2320,33 @@ struct JitUserCall {
     ret: i32,
 }
 
+#[derive(Clone, Copy)]
+struct GlobalSlot {
+    value_type: ValueType,
+    mutable: bool,
+    value: Value,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlKind {
+    Block,
+    Loop,
+    If,
+}
+
+#[derive(Clone, Copy)]
+struct ControlFrame {
+    kind: ControlKind,
+    start_pc: usize,
+    end_pc: usize,
+    else_pc: Option<usize>,
+    stack_height: usize,
+    param_count: usize,
+    result_count: usize,
+    param_types: [ValueType; MAX_WASM_TYPE_ARITY],
+    result_types: [ValueType; MAX_WASM_TYPE_ARITY],
+}
+
 /// A running WASM instance
 pub struct WasmInstance {
     /// The module being executed
@@ -1327,6 +2357,13 @@ pub struct WasmInstance {
     pub stack: Stack,
     /// Local variables
     locals: [Value; MAX_LOCALS],
+    /// Global variables (instance-local state).
+    globals: [Option<GlobalSlot>; MAX_WASM_GLOBALS],
+    /// Active structured control frames for current function.
+    control_stack: [Option<ControlFrame>; MAX_CONTROL_STACK],
+    control_depth: usize,
+    /// Inclusive upper bound for current function code (used by control scan).
+    current_func_end: usize,
     /// Program counter
     pc: usize,
     /// Capability table
@@ -1341,6 +2378,7 @@ pub struct WasmInstance {
     instruction_count: usize,
     memory_op_count: usize,
     syscall_count: usize,
+    call_depth: usize,
     /// JIT cache (per-function hash)
     jit_hash: [Option<u64>; 64],
     /// JIT user state (stack/locals/fuel/trap)
@@ -1384,6 +2422,285 @@ impl WasmInstance {
         Ok(unsafe { &*self.jit_state })
     }
 
+    fn initialize_from_module(&mut self) -> Result<(), WasmError> {
+        self.globals = [None; MAX_WASM_GLOBALS];
+        let mut g = 0usize;
+        while g < self.module.global_count {
+            let template = self.module.global_templates[g].ok_or(WasmError::InvalidModule)?;
+            self.globals[g] = Some(GlobalSlot {
+                value_type: template.value_type,
+                mutable: template.mutable,
+                value: template.init,
+            });
+            g += 1;
+        }
+
+        let mut seg = 0usize;
+        while seg < self.module.data_segments.len() {
+            let data = &self.module.data_segments[seg];
+            self.memory.write(data.offset, &data.bytes)?;
+            seg += 1;
+        }
+        Ok(())
+    }
+
+    fn invoke_combined_function(&mut self, func_idx: usize) -> Result<(), WasmError> {
+        match self.module.resolve_call_target(func_idx)? {
+            CallTarget::Host(host_idx) => self.call_host_function(host_idx),
+            CallTarget::Function(internal_idx) => self.call(internal_idx),
+        }
+    }
+
+    fn run_start_if_present(&mut self) -> Result<(), WasmError> {
+        let start = match self.module.start_function {
+            Some(idx) => idx,
+            None => return Ok(()),
+        };
+        self.stack.clear();
+        self.invoke_combined_function(start)?;
+        if !self.stack.is_empty() {
+            self.stack.clear();
+            return Err(WasmError::TypeMismatch);
+        }
+        Ok(())
+    }
+
+    fn push_control_frame(&mut self, frame: ControlFrame) -> Result<(), WasmError> {
+        if self.control_depth >= MAX_CONTROL_STACK {
+            return Err(WasmError::ExecutionLimitExceeded);
+        }
+        self.control_stack[self.control_depth] = Some(frame);
+        self.control_depth += 1;
+        Ok(())
+    }
+
+    fn truncate_to_height(&mut self, height: usize) -> Result<(), WasmError> {
+        self.stack.truncate(height)
+    }
+
+    fn read_block_signature(
+        &mut self,
+    ) -> Result<
+        (
+            usize,
+            [ValueType; MAX_WASM_TYPE_ARITY],
+            usize,
+            [ValueType; MAX_WASM_TYPE_ARITY],
+        ),
+        WasmError,
+    > {
+        if self.pc >= self.current_func_end {
+            return Err(WasmError::UnexpectedEndOfCode);
+        }
+        let first = self.module.bytecode[self.pc];
+        self.pc += 1;
+
+        let mut params = [ValueType::I32; MAX_WASM_TYPE_ARITY];
+        let mut results = [ValueType::I32; MAX_WASM_TYPE_ARITY];
+
+        match first {
+            0x40 => Ok((0, params, 0, results)),
+            0x7F => {
+                results[0] = ValueType::I32;
+                Ok((0, params, 1, results))
+            }
+            0x7E => {
+                results[0] = ValueType::I64;
+                Ok((0, params, 1, results))
+            }
+            0x7D => {
+                results[0] = ValueType::F32;
+                Ok((0, params, 1, results))
+            }
+            0x7C => {
+                results[0] = ValueType::F64;
+                Ok((0, params, 1, results))
+            }
+            _ => {
+                self.pc = self.pc.saturating_sub(1);
+                let ty_idx = self.read_uleb128()? as usize;
+                let sig = self.module.signature_for_type(ty_idx)?;
+                let mut i = 0usize;
+                while i < sig.param_count {
+                    params[i] = sig.param_types[i];
+                    i += 1;
+                }
+                let mut r = 0usize;
+                while r < sig.result_count {
+                    results[r] = sig.result_types[r];
+                    r += 1;
+                }
+                Ok((sig.param_count, params, sig.result_count, results))
+            }
+        }
+    }
+
+    fn collect_typed_suffix(
+        &self,
+        types: &[ValueType; MAX_WASM_TYPE_ARITY],
+        count: usize,
+    ) -> Result<Vec<Value>, WasmError> {
+        if count > MAX_WASM_TYPE_ARITY || self.stack.len() < count {
+            return Err(WasmError::StackUnderflow);
+        }
+        let start = self.stack.len() - count;
+        let mut values = Vec::with_capacity(count);
+        let mut i = 0usize;
+        while i < count {
+            let value = self.stack.get(start + i)?;
+            if !value.matches_type(types[i]) {
+                return Err(WasmError::TypeMismatch);
+            }
+            values.push(value);
+            i += 1;
+        }
+        Ok(values)
+    }
+
+    fn enforce_frame_exit_values(&mut self, frame: ControlFrame) -> Result<(), WasmError> {
+        let values = self.collect_typed_suffix(&frame.result_types, frame.result_count)?;
+        self.truncate_to_height(frame.stack_height)?;
+        let mut i = 0usize;
+        while i < values.len() {
+            self.stack.push(values[i])?;
+            i += 1;
+        }
+        Ok(())
+    }
+
+    fn skip_opcode_immediate_scan(&self, mut pc: usize, opcode: Opcode) -> Result<usize, WasmError> {
+        match opcode {
+            Opcode::I32Const => {
+                let (_v, n) = read_sleb128_i32_validate(&self.module.bytecode, pc)?;
+                pc = pc.checked_add(n).ok_or(WasmError::InvalidModule)?;
+            }
+            Opcode::I64Const => {
+                let (_v, n) = read_sleb128_i64_validate(&self.module.bytecode, pc)?;
+                pc = pc.checked_add(n).ok_or(WasmError::InvalidModule)?;
+            }
+            Opcode::F32Const => {
+                pc = pc.checked_add(4).ok_or(WasmError::InvalidModule)?;
+            }
+            Opcode::F64Const => {
+                pc = pc.checked_add(8).ok_or(WasmError::InvalidModule)?;
+            }
+            Opcode::LocalGet
+            | Opcode::LocalSet
+            | Opcode::LocalTee
+            | Opcode::GlobalGet
+            | Opcode::GlobalSet
+            | Opcode::Br
+            | Opcode::BrIf
+            | Opcode::Call => {
+                let (_v, n) = read_uleb128_validate(&self.module.bytecode, pc)?;
+                pc = pc.checked_add(n).ok_or(WasmError::InvalidModule)?;
+            }
+            Opcode::CallIndirect => {
+                let (_v1, n1) = read_uleb128_validate(&self.module.bytecode, pc)?;
+                pc = pc.checked_add(n1).ok_or(WasmError::InvalidModule)?;
+                let (_v2, n2) = read_uleb128_validate(&self.module.bytecode, pc)?;
+                pc = pc.checked_add(n2).ok_or(WasmError::InvalidModule)?;
+            }
+            Opcode::I32Load | Opcode::I64Load | Opcode::I32Store | Opcode::I64Store => {
+                let (_a, n1) = read_uleb128_validate(&self.module.bytecode, pc)?;
+                pc = pc.checked_add(n1).ok_or(WasmError::InvalidModule)?;
+                let (_o, n2) = read_uleb128_validate(&self.module.bytecode, pc)?;
+                pc = pc.checked_add(n2).ok_or(WasmError::InvalidModule)?;
+            }
+            Opcode::Block | Opcode::Loop | Opcode::If => {
+                let n = read_blocktype_width_validate(&self.module.bytecode, pc)?;
+                pc = pc.checked_add(n).ok_or(WasmError::InvalidModule)?;
+            }
+            Opcode::MemorySize | Opcode::MemoryGrow => {
+                pc = pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
+            }
+            _ => {}
+        }
+
+        if pc > self.current_func_end {
+            return Err(WasmError::UnexpectedEndOfCode);
+        }
+        Ok(pc)
+    }
+
+    fn scan_control_structure(
+        &self,
+        kind: ControlKind,
+        body_start_pc: usize,
+    ) -> Result<(Option<usize>, usize), WasmError> {
+        let mut pc = body_start_pc;
+        let mut depth = 1usize;
+        let mut else_pc = None;
+
+        while pc < self.current_func_end {
+            let op_pos = pc;
+            let op_byte = self.module.bytecode[pc];
+            pc += 1;
+            let opcode = Opcode::from_byte(op_byte).ok_or(WasmError::UnknownOpcode(op_byte))?;
+            pc = self.skip_opcode_immediate_scan(pc, opcode)?;
+
+            match opcode {
+                Opcode::Block | Opcode::Loop | Opcode::If => {
+                    depth = depth.saturating_add(1);
+                }
+                Opcode::Else => {
+                    if depth == 1 {
+                        if kind != ControlKind::If || else_pc.is_some() {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        else_pc = Some(op_pos);
+                    }
+                }
+                Opcode::End => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Ok((else_pc, op_pos));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err(WasmError::UnexpectedEndOfCode)
+    }
+
+    fn branch_to_label(&mut self, label_depth: usize) -> Result<(), WasmError> {
+        if label_depth >= self.control_depth {
+            return Err(WasmError::Trap);
+        }
+        let target_idx = self
+            .control_depth
+            .checked_sub(1 + label_depth)
+            .ok_or(WasmError::Trap)?;
+        let target = self.control_stack[target_idx].ok_or(WasmError::InvalidModule)?;
+
+        let (label_count, label_types) = match target.kind {
+            ControlKind::Loop => (target.param_count, target.param_types),
+            ControlKind::Block | ControlKind::If => (target.result_count, target.result_types),
+        };
+        let values = self.collect_typed_suffix(&label_types, label_count)?;
+        self.truncate_to_height(target.stack_height)?;
+        let mut i = 0usize;
+        while i < values.len() {
+            self.stack.push(values[i])?;
+            i += 1;
+        }
+
+        match target.kind {
+            ControlKind::Loop => {
+                self.control_depth = target_idx + 1;
+                self.pc = target.start_pc;
+            }
+            ControlKind::Block | ControlKind::If => {
+                self.control_depth = target_idx;
+                self.pc = target
+                    .end_pc
+                    .checked_add(1)
+                    .ok_or(WasmError::InvalidModule)?;
+            }
+        }
+        Ok(())
+    }
+
     fn prepare_fuzz(&mut self) {
         self.module.reserve_bytecode(MAX_FUZZ_CODE_SIZE);
     }
@@ -1403,10 +2720,15 @@ impl WasmInstance {
         })?;
         self.stack.clear();
         self.locals = [Value::I32(0); MAX_LOCALS];
+        self.globals = [None; MAX_WASM_GLOBALS];
+        self.control_stack = [None; MAX_CONTROL_STACK];
+        self.control_depth = 0;
+        self.current_func_end = 0;
         self.pc = 0;
         self.instruction_count = 0;
         self.memory_op_count = 0;
         self.syscall_count = 0;
+        self.call_depth = 0;
         self.jit_hash = [None; 64];
         self.jit_hot = [0; 64];
         self.jit_validate_remaining = [0; 64];
@@ -1532,6 +2854,10 @@ impl WasmInstance {
             memory: LinearMemory::new(1), // 1 page = 64 KiB
             stack: Stack::new(),
             locals: [Value::I32(0); MAX_LOCALS],
+            globals: [None; MAX_WASM_GLOBALS],
+            control_stack: [None; MAX_CONTROL_STACK],
+            control_depth: 0,
+            current_func_end: 0,
             pc: 0,
             capabilities: CapabilityTable::new(),
             process_id,
@@ -1540,6 +2866,7 @@ impl WasmInstance {
             instruction_count: 0,
             memory_op_count: 0,
             syscall_count: 0,
+            call_depth: 0,
             jit_hash: [None; 64],
             jit_state,
             jit_state_pages,
@@ -1600,6 +2927,11 @@ impl WasmInstance {
         }
         if self.stack.len() < func.param_count {
             return Ok(false);
+        }
+        if let Some(sig) = self.module.signature_for_defined(func_idx) {
+            if !sig.all_i32 {
+                return Ok(false);
+            }
         }
 
         if func_idx >= self.jit_hash.len() {
@@ -1803,6 +3135,10 @@ impl WasmInstance {
             memory: self.memory.clone(),
             stack: self.stack.clone(),
             locals: self.locals,
+            globals: self.globals,
+            control_stack: self.control_stack,
+            control_depth: self.control_depth,
+            current_func_end: self.current_func_end,
             pc: self.pc,
             capabilities: self.capabilities.clone(),
             process_id: self.process_id,
@@ -1811,6 +3147,7 @@ impl WasmInstance {
             instruction_count: 0,
             memory_op_count: 0,
             syscall_count: 0,
+            call_depth: self.call_depth,
             jit_hash: [None; 64],
             jit_state,
             jit_state_pages,
@@ -1826,10 +3163,15 @@ impl WasmInstance {
         self.memory = shadow.memory;
         self.stack = shadow.stack;
         self.locals = shadow.locals;
+        self.globals = shadow.globals;
+        self.control_stack = shadow.control_stack;
+        self.control_depth = shadow.control_depth;
+        self.current_func_end = shadow.current_func_end;
         self.pc = shadow.pc;
         self.instruction_count = shadow.instruction_count;
         self.memory_op_count = shadow.memory_op_count;
         self.syscall_count = shadow.syscall_count;
+        self.call_depth = shadow.call_depth;
         self.last_received_service_handle = shadow.last_received_service_handle;
         if let Ok(state) = self.jit_state_mut() {
             state.sp = 0;
@@ -1904,39 +3246,97 @@ impl WasmInstance {
         // Reset execution limits for this call
         self.reset_limits();
 
-        // Check rate limiting and security
-        if !crate::security::security().validate_capability(
-            self.process_id,
-            1, // Execute permission
-            1,
-        ).is_ok() {
-            return Err(WasmError::PermissionDenied);
+        if self.call_depth >= MAX_CALL_DEPTH {
+            return Err(WasmError::ExecutionLimitExceeded);
         }
+        self.call_depth += 1;
+        let saved_control_stack = self.control_stack;
+        let saved_control_depth = self.control_depth;
+        let saved_func_end = self.current_func_end;
 
-        let func = self.module.get_function(func_idx)?;
+        let result = (|| -> Result<(), WasmError> {
+            self.control_stack = [None; MAX_CONTROL_STACK];
+            self.control_depth = 0;
+            self.current_func_end = 0;
 
-        if self.try_jit(func, func_idx)? {
-            return Ok(());
-        }
-        
-        // Set up locals from stack parameters
-        for i in (0..func.param_count).rev() {
-            self.locals[i] = self.stack.pop()?;
-        }
-
-        // Execute function body
-        let (code_start, end_pc) = self.function_code_range(func)?;
-        self.pc = code_start;
-
-        while self.pc < end_pc {
-            let should_continue = self.step()?;
-            if !should_continue {
-                // Return or End encountered
-                break;
+            // Check rate limiting and security
+            if !crate::security::security().validate_capability(
+                self.process_id,
+                1, // Execute permission
+                1,
+            ).is_ok() {
+                return Err(WasmError::PermissionDenied);
             }
-        }
 
-        Ok(())
+            let func = self.module.get_function(func_idx)?;
+            let locals_total = func
+                .param_count
+                .checked_add(func.local_count)
+                .ok_or(WasmError::InvalidModule)?;
+            if locals_total > MAX_LOCALS {
+                return Err(WasmError::InvalidLocalIndex);
+            }
+            if self.stack.len() < func.param_count {
+                return Err(WasmError::StackUnderflow);
+            }
+            let stack_height_before_call = self.stack.len().saturating_sub(func.param_count);
+            let signature = self.module.signature_for_defined(func_idx);
+
+            if self.try_jit(func, func_idx)? {
+                return Ok(());
+            }
+
+            // Set up locals from stack parameters
+            for i in (0..func.param_count).rev() {
+                self.locals[i] = self.stack.pop()?;
+            }
+            for i in func.param_count..locals_total {
+                self.locals[i] = Value::I32(0);
+            }
+
+            // Execute function body
+            let (code_start, end_pc) = self.function_code_range(func)?;
+            self.pc = code_start;
+            self.current_func_end = end_pc;
+
+            while self.pc < end_pc {
+                let should_continue = self.step()?;
+                if !should_continue {
+                    // Return or End encountered
+                    break;
+                }
+            }
+
+            // Enforce function stack shape at exit: preserve only declared results.
+            let values = if let Some(sig) = signature {
+                self.collect_typed_suffix(&sig.result_types, sig.result_count)?
+            } else {
+                if self.stack.len() < func.result_count {
+                    return Err(WasmError::StackUnderflow);
+                }
+                let start = self.stack.len() - func.result_count;
+                let mut out = Vec::with_capacity(func.result_count);
+                let mut i = 0usize;
+                while i < func.result_count {
+                    out.push(self.stack.get(start + i)?);
+                    i += 1;
+                }
+                out
+            };
+            self.truncate_to_height(stack_height_before_call)?;
+            let mut i = 0usize;
+            while i < values.len() {
+                self.stack.push(values[i])?;
+                i += 1;
+            }
+
+            Ok(())
+        })();
+        self.control_stack = saved_control_stack;
+        self.control_depth = saved_control_depth;
+        self.current_func_end = saved_func_end;
+        self.call_depth = self.call_depth.saturating_sub(1);
+        result
     }
 
     /// Execute one instruction
@@ -1963,18 +3363,145 @@ impl WasmInstance {
                 return Err(WasmError::Trap);
             }
 
+            Opcode::Block => {
+                let (param_count, param_types, result_count, result_types) =
+                    self.read_block_signature()?;
+                let body_start = self.pc;
+                let (_else_pc, end_pc) = self.scan_control_structure(ControlKind::Block, body_start)?;
+                let stack_len = self.stack.len();
+                if stack_len < param_count {
+                    return Err(WasmError::StackUnderflow);
+                }
+                let _ = self.collect_typed_suffix(&param_types, param_count)?;
+                self.push_control_frame(ControlFrame {
+                    kind: ControlKind::Block,
+                    start_pc: body_start,
+                    end_pc,
+                    else_pc: None,
+                    stack_height: stack_len - param_count,
+                    param_count,
+                    result_count,
+                    param_types,
+                    result_types,
+                })?;
+            }
+
+            Opcode::Loop => {
+                let (param_count, param_types, result_count, result_types) =
+                    self.read_block_signature()?;
+                let body_start = self.pc;
+                let (_else_pc, end_pc) = self.scan_control_structure(ControlKind::Loop, body_start)?;
+                let stack_len = self.stack.len();
+                if stack_len < param_count {
+                    return Err(WasmError::StackUnderflow);
+                }
+                let _ = self.collect_typed_suffix(&param_types, param_count)?;
+                self.push_control_frame(ControlFrame {
+                    kind: ControlKind::Loop,
+                    start_pc: body_start,
+                    end_pc,
+                    else_pc: None,
+                    stack_height: stack_len - param_count,
+                    param_count,
+                    result_count,
+                    param_types,
+                    result_types,
+                })?;
+            }
+
+            Opcode::If => {
+                let (param_count, param_types, result_count, result_types) =
+                    self.read_block_signature()?;
+                let body_start = self.pc;
+                let (else_pc, end_pc) = self.scan_control_structure(ControlKind::If, body_start)?;
+                let cond = self.stack.pop()?.as_i32()?;
+                let stack_len = self.stack.len();
+                if stack_len < param_count {
+                    return Err(WasmError::StackUnderflow);
+                }
+                let _ = self.collect_typed_suffix(&param_types, param_count)?;
+                self.push_control_frame(ControlFrame {
+                    kind: ControlKind::If,
+                    start_pc: body_start,
+                    end_pc,
+                    else_pc,
+                    stack_height: stack_len - param_count,
+                    param_count,
+                    result_count,
+                    param_types,
+                    result_types,
+                })?;
+
+                if cond == 0 {
+                    if let Some(else_pos) = else_pc {
+                        self.pc = else_pos.checked_add(1).ok_or(WasmError::InvalidModule)?;
+                    } else {
+                        // Route through End so the control frame exit typing is enforced.
+                        self.pc = end_pc;
+                    }
+                }
+            }
+
+            Opcode::Else => {
+                if self.control_depth == 0 {
+                    return Err(WasmError::InvalidModule);
+                }
+                let idx = self.control_depth - 1;
+                let frame = self.control_stack[idx].ok_or(WasmError::InvalidModule)?;
+                if frame.kind != ControlKind::If || frame.else_pc != Some(self.pc - 1) {
+                    return Err(WasmError::InvalidModule);
+                }
+                self.enforce_frame_exit_values(frame)?;
+                self.control_depth = idx;
+                self.pc = frame.end_pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
+            }
+
             Opcode::End => {
-                // End of block/function - stop execution
-                return Ok(false);
+                if self.control_depth == 0 {
+                    // End of function body.
+                    return Ok(false);
+                }
+                let idx = self.control_depth - 1;
+                let frame = self.control_stack[idx].ok_or(WasmError::InvalidModule)?;
+                if frame.end_pc != self.pc - 1 {
+                    return Err(WasmError::InvalidModule);
+                }
+                self.enforce_frame_exit_values(frame)?;
+                self.control_depth = idx;
             }
 
             Opcode::Return => {
                 // Return from function - stop execution
+                self.control_depth = 0;
+                self.pc = self.current_func_end;
                 return Ok(false);
+            }
+
+            Opcode::Br => {
+                let label_depth = self.read_uleb128()? as usize;
+                self.branch_to_label(label_depth)?;
+            }
+
+            Opcode::BrIf => {
+                let label_depth = self.read_uleb128()? as usize;
+                let cond = self.stack.pop()?.as_i32()?;
+                if cond != 0 {
+                    self.branch_to_label(label_depth)?;
+                }
             }
 
             Opcode::Drop => {
                 self.stack.pop()?;
+            }
+
+            Opcode::Select => {
+                let cond = self.stack.pop()?.as_i32()?;
+                let val2 = self.stack.pop()?;
+                let val1 = self.stack.pop()?;
+                if core::mem::discriminant(&val1) != core::mem::discriminant(&val2) {
+                    return Err(WasmError::TypeMismatch);
+                }
+                self.stack.push(if cond != 0 { val1 } else { val2 })?;
             }
 
             Opcode::LocalGet => {
@@ -1993,9 +3520,60 @@ impl WasmInstance {
                 self.locals[local_idx] = self.stack.pop()?;
             }
 
+            Opcode::LocalTee => {
+                let local_idx = self.read_uleb128()? as usize;
+                if local_idx >= MAX_LOCALS {
+                    return Err(WasmError::InvalidLocalIndex);
+                }
+                let value = self.stack.pop()?;
+                self.locals[local_idx] = value;
+                self.stack.push(value)?;
+            }
+
+            Opcode::GlobalGet => {
+                let global_idx = self.read_uleb128()? as usize;
+                if global_idx >= self.module.global_count {
+                    return Err(WasmError::InvalidModule);
+                }
+                let slot = self.globals[global_idx].ok_or(WasmError::InvalidModule)?;
+                self.stack.push(slot.value)?;
+            }
+
+            Opcode::GlobalSet => {
+                let global_idx = self.read_uleb128()? as usize;
+                if global_idx >= self.module.global_count {
+                    return Err(WasmError::InvalidModule);
+                }
+                let mut slot = self.globals[global_idx].ok_or(WasmError::InvalidModule)?;
+                if !slot.mutable {
+                    return Err(WasmError::PermissionDenied);
+                }
+                let value = self.stack.pop()?;
+                if !value.matches_type(slot.value_type) {
+                    return Err(WasmError::TypeMismatch);
+                }
+                slot.value = value;
+                self.globals[global_idx] = Some(slot);
+            }
+
             Opcode::I32Const => {
                 let value = self.read_sleb128_i32()?;
                 self.stack.push(Value::I32(value))?;
+            }
+
+            Opcode::I64Const => {
+                let value = self.read_sleb128_i64()?;
+                self.stack.push(Value::I64(value))?;
+            }
+
+            Opcode::F32Const => {
+                let bits = self.read_u32_immediate()?;
+                self.stack.push(Value::F32(f32::from_bits(bits)))?;
+            }
+
+            Opcode::F64Const => {
+                let bits = self.read_u64_immediate()?;
+                self.stack.push(Value::F64(f64::from_bits(bits)))?;
             }
 
             Opcode::I32Add => {
@@ -2043,6 +3621,81 @@ impl WasmInstance {
                 self.stack.push(Value::I32(a ^ b))?;
             }
 
+            Opcode::I64Add => {
+                let b = self.stack.pop()?.as_i64()?;
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I64(a.wrapping_add(b)))?;
+            }
+
+            Opcode::I64Sub => {
+                let b = self.stack.pop()?.as_i64()?;
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I64(a.wrapping_sub(b)))?;
+            }
+
+            Opcode::I64Mul => {
+                let b = self.stack.pop()?.as_i64()?;
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I64(a.wrapping_mul(b)))?;
+            }
+
+            Opcode::I64DivS => {
+                let b = self.stack.pop()?.as_i64()?;
+                let a = self.stack.pop()?.as_i64()?;
+                if b == 0 {
+                    return Err(WasmError::DivisionByZero);
+                }
+                self.stack.push(Value::I64(a.wrapping_div(b)))?;
+            }
+
+            Opcode::F32Add => {
+                let b = self.stack.pop()?.as_f32()?;
+                let a = self.stack.pop()?.as_f32()?;
+                self.stack.push(Value::F32(a + b))?;
+            }
+
+            Opcode::F32Sub => {
+                let b = self.stack.pop()?.as_f32()?;
+                let a = self.stack.pop()?.as_f32()?;
+                self.stack.push(Value::F32(a - b))?;
+            }
+
+            Opcode::F32Mul => {
+                let b = self.stack.pop()?.as_f32()?;
+                let a = self.stack.pop()?.as_f32()?;
+                self.stack.push(Value::F32(a * b))?;
+            }
+
+            Opcode::F32Div => {
+                let b = self.stack.pop()?.as_f32()?;
+                let a = self.stack.pop()?.as_f32()?;
+                self.stack.push(Value::F32(a / b))?;
+            }
+
+            Opcode::F64Add => {
+                let b = self.stack.pop()?.as_f64()?;
+                let a = self.stack.pop()?.as_f64()?;
+                self.stack.push(Value::F64(a + b))?;
+            }
+
+            Opcode::F64Sub => {
+                let b = self.stack.pop()?.as_f64()?;
+                let a = self.stack.pop()?.as_f64()?;
+                self.stack.push(Value::F64(a - b))?;
+            }
+
+            Opcode::F64Mul => {
+                let b = self.stack.pop()?.as_f64()?;
+                let a = self.stack.pop()?.as_f64()?;
+                self.stack.push(Value::F64(a * b))?;
+            }
+
+            Opcode::F64Div => {
+                let b = self.stack.pop()?.as_f64()?;
+                let a = self.stack.pop()?.as_f64()?;
+                self.stack.push(Value::F64(a / b))?;
+            }
+
             Opcode::I32Eq => {
                 let b = self.stack.pop()?.as_i32()?;
                 let a = self.stack.pop()?.as_i32()?;
@@ -2071,6 +3724,17 @@ impl WasmInstance {
                 self.stack.push(Value::I32(value))?;
             }
 
+            Opcode::I64Load => {
+                self.check_memory_limit()?;
+                let _align = self.read_uleb128()?; // Alignment hint (ignored for now)
+                let offset = self.read_uleb128()? as usize;
+                let addr = self.stack.pop()?.as_u32()? as usize;
+                let effective_addr = addr.checked_add(offset)
+                    .ok_or(WasmError::MemoryOutOfBounds)?;
+                let value = self.memory.read_i64(effective_addr)?;
+                self.stack.push(Value::I64(value))?;
+            }
+
             Opcode::I32Store => {
                 self.check_memory_limit()?;
                 let _align = self.read_uleb128()?;
@@ -2080,6 +3744,17 @@ impl WasmInstance {
                 let effective_addr = addr.checked_add(offset)
                     .ok_or(WasmError::MemoryOutOfBounds)?;
                 self.memory.write_i32(effective_addr, value)?;
+            }
+
+            Opcode::I64Store => {
+                self.check_memory_limit()?;
+                let _align = self.read_uleb128()?;
+                let offset = self.read_uleb128()? as usize;
+                let value = self.stack.pop()?.as_i64()?;
+                let addr = self.stack.pop()?.as_u32()? as usize;
+                let effective_addr = addr.checked_add(offset)
+                    .ok_or(WasmError::MemoryOutOfBounds)?;
+                self.memory.write_i64(effective_addr, value)?;
             }
 
             Opcode::MemorySize => {
@@ -2096,14 +3771,29 @@ impl WasmInstance {
 
             Opcode::Call => {
                 let func_idx = self.read_uleb128()? as usize;
-                
-                // Check if it's a host function (syscall)
-                if func_idx >= 1000 {
-                    // Host function call
-                    self.call_host_function(func_idx - 1000)?;
-                } else {
-                    // Regular WASM function
-                    self.call(func_idx)?;
+                match self.module.resolve_call_target(func_idx)? {
+                    CallTarget::Host(host_idx) => self.call_host_function(host_idx)?,
+                    CallTarget::Function(internal_idx) => self.call(internal_idx)?,
+                }
+            }
+
+            Opcode::CallIndirect => {
+                let type_idx = self.read_uleb128()? as usize;
+                let table_idx = self.read_uleb128()? as usize;
+                if table_idx != 0 {
+                    return Err(WasmError::InvalidModule);
+                }
+                let elem_idx = self.stack.pop()?.as_u32()? as usize;
+                if elem_idx >= self.module.table_size {
+                    return Err(WasmError::Trap);
+                }
+                let target = self.module.table_entries[elem_idx].ok_or(WasmError::Trap)?;
+                if !self.module.function_matches_type(target, type_idx) {
+                    return Err(WasmError::TypeMismatch);
+                }
+                match self.module.resolve_call_target(target)? {
+                    CallTarget::Host(host_idx) => self.call_host_function(host_idx)?,
+                    CallTarget::Function(internal_idx) => self.call(internal_idx)?,
                 }
             }
 
@@ -2177,6 +3867,63 @@ impl WasmInstance {
         }
 
         Ok(result)
+    }
+
+    /// Read signed LEB128 (i64)
+    fn read_sleb128_i64(&mut self) -> Result<i64, WasmError> {
+        let mut result = 0i64;
+        let mut shift = 0;
+        let mut byte;
+        let bytecode_len = self.bytecode_len_clamped();
+
+        loop {
+            if self.pc >= bytecode_len {
+                return Err(WasmError::UnexpectedEndOfCode);
+            }
+
+            byte = self.module.bytecode[self.pc];
+            self.pc += 1;
+
+            result |= ((byte & 0x7F) as i64) << shift;
+            shift += 7;
+
+            if (byte & 0x80) == 0 {
+                break;
+            }
+
+            if shift > 63 {
+                return Err(WasmError::Leb128Overflow);
+            }
+        }
+
+        if shift < 64 && (byte & 0x40) != 0 {
+            result |= !0i64 << shift;
+        }
+        Ok(result)
+    }
+
+    fn read_u32_immediate(&mut self) -> Result<u32, WasmError> {
+        let end = self.pc.checked_add(4).ok_or(WasmError::InvalidModule)?;
+        let bytecode_len = self.bytecode_len_clamped();
+        if end > bytecode_len {
+            return Err(WasmError::UnexpectedEndOfCode);
+        }
+        let bytes = &self.module.bytecode[self.pc..end];
+        self.pc = end;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn read_u64_immediate(&mut self) -> Result<u64, WasmError> {
+        let end = self.pc.checked_add(8).ok_or(WasmError::InvalidModule)?;
+        let bytecode_len = self.bytecode_len_clamped();
+        if end > bytecode_len {
+            return Err(WasmError::UnexpectedEndOfCode);
+        }
+        let bytes = &self.module.bytecode[self.pc..end];
+        self.pc = end;
+        Ok(u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
     }
 
     /// Call a host function (Oreulia syscall)
@@ -3186,7 +4933,10 @@ impl WasmRuntime {
         for (i, slot) in instances.iter_mut().enumerate() {
             if slot.is_none() {
                 let module = module_opt.take().ok_or(WasmError::InvalidModule)?;
-                *slot = Some(WasmInstance::new(module, process_id, i));
+                let mut instance = WasmInstance::new(module, process_id, i);
+                instance.initialize_from_module()?;
+                instance.run_start_if_present()?;
+                *slot = Some(instance);
                 return Ok(i);
             }
         }
@@ -3263,21 +5013,6 @@ static NEXT_SYSCALL_MODULE_ID: AtomicU32 = AtomicU32::new(1);
 fn syscall_caller_pid() -> ProcessId {
     let scheduler = crate::quantum_scheduler::scheduler().lock();
     scheduler.get_current_pid().unwrap_or(ProcessId(0))
-}
-
-fn ensure_syscall_entry_function(module: &mut WasmModule) -> Result<(), WasmError> {
-    if module.function_count > 0 {
-        return Ok(());
-    }
-
-    module.add_function(Function {
-        code_offset: 0,
-        code_len: module.bytecode_len,
-        param_count: 0,
-        result_count: 0,
-        local_count: 0,
-    })?;
-    Ok(())
 }
 
 fn lookup_syscall_module(
@@ -5160,6 +6895,245 @@ pub fn formal_service_pointer_self_check() -> Result<(), &'static str> {
     Ok(())
 }
 
+pub struct WasmBinaryFuzzStats {
+    pub iterations: u32,
+    pub accepted: u32,
+    pub rejected: u32,
+}
+
+pub fn wasm_control_flow_self_check() -> Result<(), &'static str> {
+    let mut module = WasmModule::new();
+    let code: [u8; 50] = [
+        // i32.const 7
+        0x41, 0x07,
+        // block
+        0x02, 0x40,
+        // loop
+        0x03, 0x40,
+        // br 1
+        0x0C, 0x01,
+        // dead code
+        0x41, 0x63, 0x1A,
+        // end loop, end block
+        0x0B, 0x0B,
+        // verify br worked
+        0x41, 0x07, 0x46,
+        // select path check -> bool
+        0x41, 0x0A, 0x41, 0x14, 0x41, 0x00, 0x1B, 0x41, 0x14, 0x46, 0x71,
+        // br_if block check
+        0x02, 0x40, 0x41, 0x01, 0x0D, 0x00, 0x41, 0x00, 0x1A, 0x0B,
+        // if/else structured flow check
+        0x41, 0x01, 0x04, 0x40, 0x41, 0x03, 0x1A, 0x05, 0x41, 0x09, 0x1A, 0x0B,
+        // end function
+        0x0B,
+    ];
+    module.load(&code).map_err(|_| "control-flow self-check: code load failed")?;
+    let _ = module
+        .add_function(Function {
+            code_offset: 0,
+            code_len: code.len(),
+            param_count: 0,
+            result_count: 1,
+            local_count: 0,
+        })
+        .map_err(|_| "control-flow self-check: add function failed")?;
+
+    let instance_id = wasm_runtime()
+        .instantiate_module(module, ProcessId(1))
+        .map_err(|_| "control-flow self-check: instantiate failed")?;
+
+    let run = wasm_runtime().get_instance_mut(instance_id, |instance| -> Result<i32, WasmError> {
+        instance.call(0)?;
+        instance.stack.pop()?.as_i32()
+    });
+    let _ = wasm_runtime().destroy(instance_id);
+
+    match run {
+        Ok(Ok(v)) if v == 1 => Ok(()),
+        _ => Err("control-flow self-check: unexpected result"),
+    }
+}
+
+const WASM_CONFORMANCE_MODULE_RET42: [u8; 27] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7F, // type: () -> i32
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2A, 0x0B, // code: i32.const 42; end
+];
+
+const WASM_CONFORMANCE_MODULE_IMPORT: [u8; 58] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x09, 0x02, 0x60, 0x02, 0x7F, 0x7F, 0x00, 0x60, 0x00, 0x00, // types
+    0x02, 0x15, 0x01, 0x07, 0x6F, 0x72, 0x65, 0x75, 0x6C, 0x69, 0x61, // import section
+    0x09, 0x64, 0x65, 0x62, 0x75, 0x67, 0x5F, 0x6C, 0x6F, 0x67, 0x00, 0x00,
+    0x03, 0x02, 0x01, 0x01, // function section
+    0x0A, 0x0A, 0x01, 0x08, 0x00, 0x41, 0x00, 0x41, 0x00, 0x10, 0x00, 0x0B, // code
+];
+
+const WASM_CONFORMANCE_MODULE_STATEFUL: [u8; 69] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type: () -> ()
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x04, 0x04, 0x01, 0x70, 0x00, 0x01, // table section
+    0x05, 0x03, 0x01, 0x00, 0x01, // memory section
+    0x06, 0x06, 0x01, 0x7F, 0x01, 0x41, 0x07, 0x0B, // global section
+    0x08, 0x01, 0x00, // start section (function 0)
+    0x09, 0x07, 0x01, 0x00, 0x41, 0x00, 0x0B, 0x01, 0x00, // element section
+    0x0A, 0x07, 0x01, 0x05, 0x00, 0x23, 0x00, 0x1A, 0x0B, // code section
+    0x0B, 0x09, 0x01, 0x00, 0x41, 0x00, 0x0B, 0x03, 0x61, 0x62, 0x63, // data section
+];
+
+const WASM_CONFORMANCE_MODULE_TYPED_BLOCK: [u8; 39] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x0B, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F, // types
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x0C, 0x01, 0x0A, 0x00, 0x41, 0x0A, 0x41, 0x20, 0x02, 0x01, 0x6A, 0x0B, 0x0B, // code
+];
+
+const WASM_CONFORMANCE_MODULE_TYPED_IF_IMPLICIT_ELSE: [u8; 37] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x0A, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x01, 0x7F, 0x01, 0x7F, // types
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x0B, 0x01, 0x09, 0x00, 0x41, 0x2A, 0x41, 0x00, 0x04, 0x01, 0x0B, 0x0B, // code
+];
+
+pub fn wasm_binary_conformance_self_check() -> Result<(), &'static str> {
+    let corpus: [&[u8]; 5] = [
+        &WASM_CONFORMANCE_MODULE_RET42,
+        &WASM_CONFORMANCE_MODULE_IMPORT,
+        &WASM_CONFORMANCE_MODULE_STATEFUL,
+        &WASM_CONFORMANCE_MODULE_TYPED_BLOCK,
+        &WASM_CONFORMANCE_MODULE_TYPED_IF_IMPLICIT_ELSE,
+    ];
+
+    let mut i = 0usize;
+    while i < corpus.len() {
+        let mut module = WasmModule::new();
+        module
+            .load_binary(corpus[i])
+            .map_err(|_| "WASM binary conformance: parse failed")?;
+        let instance_id = wasm_runtime()
+            .instantiate_module(module.clone(), ProcessId(1))
+            .map_err(|_| "WASM binary conformance: instantiate failed")?;
+
+        if i == 0 || i == 3 || i == 4 {
+            let result = wasm_runtime()
+                .get_instance_mut(instance_id, |instance| -> Result<i32, WasmError> {
+                    instance.call(0)?;
+                    instance.stack.pop()?.as_i32()
+                })
+                .map_err(|_| "WASM binary conformance: execution failed")?
+                .map_err(|_| "WASM binary conformance: execution trapped")?;
+            if result != 42 {
+                let _ = wasm_runtime().destroy(instance_id);
+                return Err("WASM binary conformance: typed control result mismatch");
+            }
+        }
+
+        if i == 2 {
+            let state_ok = wasm_runtime()
+                .get_instance_mut(instance_id, |instance| -> bool {
+                    let data_ok = instance
+                        .memory
+                        .read(0, 3)
+                        .map(|bytes| bytes == b"abc")
+                        .unwrap_or(false);
+                    let global_ok = instance
+                        .globals
+                        .get(0)
+                        .and_then(|slot| *slot)
+                        .and_then(|slot| slot.value.as_i32().ok())
+                        .map(|v| v == 7)
+                        .unwrap_or(false);
+                    data_ok && global_ok
+                })
+                .map_err(|_| "WASM binary conformance: state query failed")?;
+            if !state_ok {
+                let _ = wasm_runtime().destroy(instance_id);
+                return Err("WASM binary conformance: state initialization mismatch");
+            }
+        }
+
+        let _ = wasm_runtime().destroy(instance_id);
+        i += 1;
+    }
+    Ok(())
+}
+
+pub fn wasm_binary_negative_fuzz(
+    iterations: u32,
+    seed: u64,
+) -> Result<WasmBinaryFuzzStats, &'static str> {
+    let corpus: [&[u8]; 5] = [
+        &WASM_CONFORMANCE_MODULE_RET42,
+        &WASM_CONFORMANCE_MODULE_IMPORT,
+        &WASM_CONFORMANCE_MODULE_STATEFUL,
+        &WASM_CONFORMANCE_MODULE_TYPED_BLOCK,
+        &WASM_CONFORMANCE_MODULE_TYPED_IF_IMPLICIT_ELSE,
+    ];
+    let mut stats = WasmBinaryFuzzStats {
+        iterations,
+        accepted: 0,
+        rejected: 0,
+    };
+    if iterations == 0 {
+        return Ok(stats);
+    }
+
+    let mut state = if seed == 0 {
+        0xA5A5_5A5A_1234_5678u64
+    } else {
+        seed
+    };
+
+    let mut i = 0u32;
+    while i < iterations {
+        state ^= state << 7;
+        state ^= state >> 9;
+        state = state.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+
+        let base = corpus[(state as usize) % corpus.len()];
+        let mut mutant = base.to_vec();
+        if mutant.is_empty() {
+            mutant.push(0);
+        }
+
+        let selector = ((state >> 32) as u32) % 4;
+        match selector {
+            0 => {
+                let idx = (state as usize) % mutant.len();
+                mutant[idx] ^= 0x80;
+            }
+            1 => {
+                let new_len = ((state >> 16) as usize) % mutant.len();
+                mutant.truncate(new_len);
+            }
+            2 => {
+                let idx = if mutant.len() > 8 {
+                    8 + (((state >> 8) as usize) % (mutant.len() - 8))
+                } else {
+                    0
+                };
+                if idx < mutant.len() {
+                    mutant[idx] = 0xFF;
+                }
+            }
+            _ => {
+                mutant.push((state >> 40) as u8);
+                mutant.push((state >> 48) as u8);
+            }
+        }
+
+        let mut module = WasmModule::new();
+        match module.load_binary(&mutant) {
+            Ok(()) => stats.accepted = stats.accepted.saturating_add(1),
+            Err(_) => stats.rejected = stats.rejected.saturating_add(1),
+        }
+        i += 1;
+    }
+    Ok(stats)
+}
+
 // ============================================================================
 // Syscall Wrapper Functions
 // ============================================================================
@@ -5169,8 +7143,7 @@ pub fn load_module(bytecode: &[u8]) -> Result<usize, &'static str> {
     let caller_pid = syscall_caller_pid();
 
     let mut module = WasmModule::new();
-    module.load(bytecode).map_err(|e| e.as_str())?;
-    ensure_syscall_entry_function(&mut module).map_err(|e| e.as_str())?;
+    module.load_binary(bytecode).map_err(|e| e.as_str())?;
 
     let module_id = NEXT_SYSCALL_MODULE_ID.fetch_add(1, Ordering::Relaxed) as usize;
     if module_id == 0 {
@@ -5228,13 +7201,11 @@ pub fn call_function(module_id: usize, func_idx: usize, args: &[u32]) -> Result<
                 return Err(WasmError::PermissionDenied);
             }
 
-            let mut func = instance.module.get_function(func_idx)?;
-            // Syscall-loaded modules default to a single synthetic entry function.
-            // Allow its parameter count to track each call's argument vector.
-            if func_idx == 0 && func.param_count != args.len() {
-                func.param_count = args.len();
-                instance.module.functions[0] = Some(func);
-            } else if func.param_count != args.len() {
+            let (param_count, result_count) = instance.module.function_arity(func_idx)?;
+            if !instance.module.function_all_i32(func_idx)? {
+                return Err(WasmError::TypeMismatch);
+            }
+            if param_count != args.len() {
                 return Err(WasmError::TypeMismatch);
             }
 
@@ -5245,12 +7216,16 @@ pub fn call_function(module_id: usize, func_idx: usize, args: &[u32]) -> Result<
                 i += 1;
             }
 
-            if let Err(e) = instance.call(func_idx) {
+            if let Err(e) = instance.invoke_combined_function(func_idx) {
                 instance.stack.clear();
                 return Err(e);
             }
 
-            let result = if instance.stack.is_empty() {
+            if instance.stack.len() != result_count {
+                instance.stack.clear();
+                return Err(WasmError::TypeMismatch);
+            }
+            let result = if result_count == 0 {
                 0
             } else {
                 instance.stack.pop()?.as_u32()?

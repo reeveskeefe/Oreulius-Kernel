@@ -35,6 +35,28 @@ Modules import kernel functionality from the `oreulia` namespace.
 A module **must** export an entry point:
 - `_start` or `oreulia_main`: The function called by the supervisor after instantiation.
 
+### 2.3 Syscall Loader Profile (Current)
+For `WasmLoad`/`WasmCall` syscall execution, the kernel now enforces strict binary-module validation:
+- Requires standard WASM header/version (`\0asm`, `0x01`).
+- Requires canonical section ordering.
+- Parses and binds function signatures from `type` + `import` + `function` + `code` sections.
+- Enforces immutable function signatures at call time (no dynamic arity mutation).
+- Rejects malformed section bounds, invalid LEB encodings, and local overflows.
+- Supports host import dispatch by namespace/name (`oreulia` imports map to kernel host functions).
+- Supports one-time safe `start` execution at instantiation.
+- Supports `table` + `element`, `global`, and `data` section initialization semantics in the current runtime profile.
+- Supports structured control-flow execution (`block`, `loop`, `if`, `else`, `br`, `br_if`, `select`) with runtime label resolution.
+- Enforces typed block signatures at runtime, including blocktype type-index forms with multi-value signatures.
+- Enforces label typing at branch targets (`br`/`br_if`): loop labels consume block parameters, block/if labels consume declared results.
+- Enforces typed frame exits for `else` and `end`, including implicit-`else` `if` paths.
+- Enforces function exit stack shaping: only declared function results survive call return.
+- Supports `i32`/`i64`/`f32`/`f64` value types in signatures and interpreter arithmetic coverage for core add/sub/mul/div paths.
+- Includes binary conformance corpus coverage for typed control-flow modules, plus negative parser fuzzing.
+
+Current profile explicitly does **not** yet implement exception-handling/reference-type proposal opcodes end-to-end.
+
+This means `WasmLoad` now admits only modules compatible with the hardened interpreter profile and rejects malformed binaries early.
+
 ---
 
 ## 3. Capability Representation

@@ -2942,6 +2942,12 @@ fn cmd_wasm_demo() {
                                 print_u32(result as u32);
                                 vga::print_str("\n");
                             }
+                            Ok(wasm::Value::F32(_)) => {
+                                vga::print_str("Result (f32)\n");
+                            }
+                            Ok(wasm::Value::F64(_)) => {
+                                vga::print_str("Result (f64)\n");
+                            }
                             Err(e) => {
                                 vga::print_str("Error: Failed to get result: ");
                                 vga::print_str(e.as_str());
@@ -3949,7 +3955,7 @@ fn cmd_wasm_jit_selftest() {
 
 fn cmd_formal_verify() {
     vga::print_str("\n===== Formal Verification =====\n\n");
-    vga::print_str("[1/5] JIT translation proof obligations...\n");
+    vga::print_str("[1/7] JIT translation proof obligations...\n");
     match crate::wasm_jit::formal_translation_self_check() {
         Ok(()) => vga::print_str("  ✓ JIT translation verification passed\n"),
         Err(e) => {
@@ -3960,7 +3966,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[2/5] Capability proof obligations...\n");
+    vga::print_str("[2/7] Capability proof obligations...\n");
     match crate::capability::formal_capability_self_check() {
         Ok(()) => vga::print_str("  ✓ Capability verification passed\n"),
         Err(e) => {
@@ -3971,7 +3977,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[3/5] CapNet proof obligations...\n");
+    vga::print_str("[3/7] CapNet proof obligations...\n");
     match crate::capnet::formal_capnet_self_check() {
         Ok(()) => vga::print_str("  ✓ CapNet verification passed\n"),
         Err(e) => {
@@ -3982,7 +3988,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[4/5] Service pointer proof obligations...\n");
+    vga::print_str("[4/7] Service pointer proof obligations...\n");
     match crate::wasm::formal_service_pointer_self_check() {
         Ok(()) => vga::print_str("  ✓ Service pointer verification passed\n"),
         Err(e) => {
@@ -3993,7 +3999,46 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[5/5] Mechanized backend model checks...\n");
+    vga::print_str("[5/7] WASM control-flow semantics...\n");
+    match crate::wasm::wasm_control_flow_self_check() {
+        Ok(()) => vga::print_str("  ✓ WASM control-flow self-check passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ WASM control-flow self-check failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    vga::print_str("[6/7] WASM binary conformance + parser fuzz...\n");
+    match crate::wasm::wasm_binary_conformance_self_check() {
+        Ok(()) => vga::print_str("  ✓ WASM binary conformance corpus passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ WASM binary conformance failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+    match crate::wasm::wasm_binary_negative_fuzz(256, 0xC0DEC0DE) {
+        Ok(stats) => {
+            vga::print_str("  ✓ Parser negative fuzz completed (iters=");
+            print_u32(stats.iterations);
+            vga::print_str(", rejected=");
+            print_u32(stats.rejected);
+            vga::print_str(", accepted=");
+            print_u32(stats.accepted);
+            vga::print_str(")\n");
+        }
+        Err(e) => {
+            vga::print_str("  ✗ Parser negative fuzz failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    vga::print_str("[7/7] Mechanized backend model checks...\n");
     match crate::formal::run_mechanized_backend_check() {
         Ok(summary) => {
             vga::print_str("  ✓ Mechanized checks passed (obligations=");
