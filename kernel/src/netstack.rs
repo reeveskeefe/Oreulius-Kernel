@@ -1049,6 +1049,92 @@ impl NetworkStack {
         (self.tcp.active_count(), self.tcp.listener_count())
     }
 
+    pub fn temporal_apply_tcp_listener_event(
+        &mut self,
+        listener_id: u16,
+        port: u16,
+        event: u8,
+    ) -> Result<(), &'static str> {
+        match event {
+            crate::temporal::TEMPORAL_SOCKET_EVENT_LISTEN
+            | crate::temporal::TEMPORAL_SOCKET_EVENT_ACCEPT
+            | crate::temporal::TEMPORAL_SOCKET_EVENT_STATE => {
+                let listener = self.tcp.ensure_listener_slot(listener_id)?;
+                listener.in_use = true;
+                listener.port = port;
+            }
+            crate::temporal::TEMPORAL_SOCKET_EVENT_CLOSE => {
+                self.tcp.clear_listener_slot(listener_id);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn temporal_apply_tcp_connection_event(
+        &mut self,
+        conn_id: u16,
+        state_raw: u8,
+        local_ip: Ipv4Addr,
+        local_port: u16,
+        remote_ip: Ipv4Addr,
+        remote_port: u16,
+        event: u8,
+        aux: u32,
+        preview: &[u8],
+    ) -> Result<(), &'static str> {
+        let state = tcp_state_from_temporal(state_raw);
+        if event == crate::temporal::TEMPORAL_SOCKET_EVENT_CLOSE || state == TcpState::Closed {
+            if let Some(conn) = self.tcp.find_conn_id_mut(conn_id) {
+                conn.state = TcpState::Closed;
+                conn.recv_len = 0;
+                conn.in_use = false;
+            }
+            return Ok(());
+        }
+
+        let mut enqueue_listener: Option<usize> = None;
+        {
+            let conn = self.tcp.ensure_conn_with_id(conn_id)?;
+            conn.in_use = true;
+            conn.state = state;
+            conn.local_ip = local_ip;
+            conn.local_port = local_port;
+            conn.remote_ip = remote_ip;
+            conn.remote_port = remote_port;
+            conn.http_pending = false;
+
+            if event == crate::temporal::TEMPORAL_SOCKET_EVENT_ACCEPT {
+                let listener_idx = aux as usize;
+                conn.listener_idx = listener_idx as u8;
+                enqueue_listener = Some(listener_idx);
+            }
+
+            if event == crate::temporal::TEMPORAL_SOCKET_EVENT_RECV {
+                let copy_len = core::cmp::min(preview.len(), conn.recv_buf.len());
+                if copy_len > 0 {
+                    conn.recv_buf[..copy_len].copy_from_slice(&preview[..copy_len]);
+                }
+                conn.recv_len = copy_len;
+            } else if event == crate::temporal::TEMPORAL_SOCKET_EVENT_SEND {
+                let copy_len = core::cmp::min(preview.len(), conn.last_payload.len());
+                if copy_len > 0 {
+                    conn.last_payload[..copy_len].copy_from_slice(&preview[..copy_len]);
+                }
+                conn.last_payload_len = copy_len;
+                conn.last_send_tick = crate::pit::get_ticks();
+            }
+        }
+
+        if let Some(listener_idx) = enqueue_listener {
+            if listener_idx < self.tcp.listeners.len() {
+                let _ = self.tcp.listeners[listener_idx].push(conn_id);
+            }
+        }
+
+        Ok(())
+    }
+
     // ========================================================================
     // HTTP Server Demo
     // ========================================================================
@@ -1255,6 +1341,21 @@ impl TcpManager {
         self.listeners[idx].pop()
     }
 
+    fn ensure_listener_slot(&mut self, listener_id: u16) -> Result<&mut TcpListener, &'static str> {
+        let idx = listener_id as usize;
+        if idx >= self.listeners.len() {
+            return Err("Invalid listener id");
+        }
+        Ok(&mut self.listeners[idx])
+    }
+
+    fn clear_listener_slot(&mut self, listener_id: u16) {
+        let idx = listener_id as usize;
+        if idx < self.listeners.len() {
+            self.listeners[idx] = TcpListener::empty();
+        }
+    }
+
     fn alloc_conn(&mut self) -> Result<&mut TcpConn, &'static str> {
         for conn in &mut self.conns {
             if !conn.in_use {
@@ -1278,6 +1379,35 @@ impl TcpManager {
 
     fn find_conn_id(&self, conn_id: u16) -> Option<&TcpConn> {
         self.conns.iter().find(|c| c.in_use && c.id == conn_id)
+    }
+
+    fn ensure_conn_with_id(&mut self, conn_id: u16) -> Result<&mut TcpConn, &'static str> {
+        if let Some(idx) = self
+            .conns
+            .iter()
+            .position(|c| c.in_use && c.id == conn_id)
+        {
+            return Ok(&mut self.conns[idx]);
+        }
+
+        let mut slot_idx = None;
+        let mut i = 0usize;
+        while i < self.conns.len() {
+            if !self.conns[i].in_use {
+                slot_idx = Some(i);
+                break;
+            }
+            i += 1;
+        }
+        let idx = slot_idx.ok_or("No connection slots")?;
+
+        self.conns[idx] = TcpConn::empty();
+        self.conns[idx].in_use = true;
+        self.conns[idx].id = conn_id;
+        if self.next_id <= conn_id {
+            self.next_id = conn_id.wrapping_add(1).max(1);
+        }
+        Ok(&mut self.conns[idx])
     }
 
     fn find_conn_index(&self, local_port: u16, remote_ip: Ipv4Addr, remote_port: u16) -> Option<usize> {
@@ -1396,6 +1526,20 @@ const TCP_FLAG_SYN: u16 = 0x02;
 const TCP_FLAG_RST: u16 = 0x04;
 const TCP_FLAG_PSH: u16 = 0x08;
 const TCP_FLAG_ACK: u16 = 0x10;
+
+fn tcp_state_from_temporal(state: u8) -> TcpState {
+    match state {
+        1 => TcpState::Listen,
+        2 => TcpState::SynSent,
+        3 => TcpState::SynReceived,
+        4 => TcpState::Established,
+        5 => TcpState::FinWait1,
+        6 => TcpState::FinWait2,
+        7 => TcpState::CloseWait,
+        8 => TcpState::LastAck,
+        _ => TcpState::Closed,
+    }
+}
 
 #[derive(Clone, Copy)]
 struct TcpEndpoint {

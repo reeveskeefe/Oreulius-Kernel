@@ -384,6 +384,13 @@ impl RingBuffer {
     fn len(&self) -> usize {
         self.count
     }
+
+    fn clear(&mut self) {
+        self.buffer = [None; CHANNEL_CAPACITY];
+        self.head = 0;
+        self.tail = 0;
+        self.count = 0;
+    }
 }
 
 // ============================================================================
@@ -722,6 +729,32 @@ impl Channel {
     pub fn is_full(&self) -> bool {
         self.buffer.is_full()
     }
+
+    fn temporal_restore_queue(
+        &mut self,
+        owner: ProcessId,
+        queue_depth: usize,
+        payload_len_hint: usize,
+        closed: bool,
+    ) {
+        self.closed = closed;
+        self.buffer.clear();
+        if closed {
+            return;
+        }
+
+        // Temporal channel captures do not include full queued messages.
+        // We restore queue depth with bounded synthetic placeholders.
+        let synth_depth = core::cmp::min(queue_depth, CHANNEL_CAPACITY);
+        let synth_payload_len = core::cmp::min(payload_len_hint, MAX_MESSAGE_SIZE);
+        let mut remaining = synth_depth;
+        while remaining > 0 {
+            let mut msg = Message::new(owner);
+            msg.payload_len = synth_payload_len;
+            let _ = self.buffer.push(msg);
+            remaining -= 1;
+        }
+    }
 }
 
 // ============================================================================
@@ -760,6 +793,34 @@ impl ChannelTable {
         }
 
         Err(IpcError::TooManyChannels)
+    }
+
+    fn find_slot_index(&self, id: ChannelId) -> Option<usize> {
+        self.channels
+            .iter()
+            .position(|slot| slot.as_ref().map_or(false, |ch| ch.id == id))
+    }
+
+    fn find_empty_slot_index(&self) -> Option<usize> {
+        self.channels.iter().position(|slot| slot.is_none())
+    }
+
+    fn ensure_channel_with_id(
+        &mut self,
+        id: ChannelId,
+        creator: ProcessId,
+    ) -> Result<&mut Channel, IpcError> {
+        let idx = if let Some(existing_idx) = self.find_slot_index(id) {
+            existing_idx
+        } else {
+            let slot_idx = self.find_empty_slot_index().ok_or(IpcError::TooManyChannels)?;
+            self.channels[slot_idx] = Some(Channel::new(id, creator));
+            if self.next_id <= id.0 {
+                self.next_id = id.0.saturating_add(1);
+            }
+            slot_idx
+        };
+        self.channels[idx].as_mut().ok_or(IpcError::TooManyChannels)
     }
 
     /// Get a mutable reference to a channel
@@ -1167,6 +1228,47 @@ pub fn close_channel_for_process(owner: ProcessId, channel_id: ChannelId) -> Res
 /// Remove IPC channels owned by a terminating process.
 pub fn purge_channels_for_process(owner: ProcessId) -> usize {
     ipc().channels.lock().delete_channels_by_creator(owner)
+}
+
+pub fn temporal_apply_channel_event(
+    channel_id: u32,
+    event: u8,
+    owner_pid: u32,
+    payload_len: usize,
+    _caps_len: usize,
+    queue_depth: usize,
+) -> Result<(), &'static str> {
+    let channel_id = ChannelId(channel_id);
+    let owner = ProcessId(owner_pid);
+    let closed = event == crate::temporal::TEMPORAL_CHANNEL_EVENT_CLOSE;
+
+    let mut table = ipc().channels.lock();
+    let channel = table
+        .ensure_channel_with_id(channel_id, owner)
+        .map_err(|_| "Failed to ensure temporal channel")?;
+    channel.temporal_restore_queue(owner, queue_depth, payload_len, closed);
+    Ok(())
+}
+
+pub fn temporal_apply_channel_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() < 28 {
+        return Err("Temporal channel payload too short");
+    }
+    if payload[0] != crate::temporal::TEMPORAL_OBJECT_ENCODING_V1 {
+        return Err("Temporal channel payload encoding mismatch");
+    }
+    if payload[1] != crate::temporal::TEMPORAL_CHANNEL_OBJECT {
+        return Err("Temporal channel payload object mismatch");
+    }
+
+    let event = payload[2];
+    let channel_id = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+    let owner_pid = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+    let payload_len = u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]) as usize;
+    let caps_len = u16::from_le_bytes([payload[16], payload[17]]) as usize;
+    let queue_depth = u16::from_le_bytes([payload[18], payload[19]]) as usize;
+
+    temporal_apply_channel_event(channel_id, event, owner_pid, payload_len, caps_len, queue_depth)
 }
 
 // ============================================================================

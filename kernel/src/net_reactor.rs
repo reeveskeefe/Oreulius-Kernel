@@ -44,6 +44,7 @@ use crate::netstack::{Ipv4Addr, NetworkStack};
 const MAX_STR: usize = 128;
 const RX_BUDGET: usize = 16;
 const MAX_TCP_IO: usize = 1024;
+const MAX_TEMPORAL_SOCKET_PREVIEW: usize = crate::temporal::TEMPORAL_SOCKET_PAYLOAD_PREVIEW_BYTES;
 
 #[derive(Clone, Copy)]
 enum NetRequest {
@@ -53,6 +54,23 @@ enum NetRequest {
     TcpSend { conn_id: u16, len: u16, data: [u8; MAX_TCP_IO] },
     TcpRecv { conn_id: u16, max_len: u16 },
     TcpClose { conn_id: u16 },
+    TemporalApplyTcpListener {
+        listener_id: u16,
+        port: u16,
+        event: u8,
+    },
+    TemporalApplyTcpConnection {
+        conn_id: u16,
+        state: u8,
+        local_ip: Ipv4Addr,
+        local_port: u16,
+        remote_ip: Ipv4Addr,
+        remote_port: u16,
+        event: u8,
+        aux: u32,
+        preview_len: u16,
+        preview: [u8; MAX_TEMPORAL_SOCKET_PREVIEW],
+    },
     HttpServerStart { port: u16 },
     HttpServerStop,
     GetInfo,
@@ -192,6 +210,42 @@ fn handle_request(stack: &mut NetworkStack) {
             Ok(()) => NetResponse::Ok,
             Err(e) => NetResponse::Err(e),
         },
+        NetRequest::TemporalApplyTcpListener {
+            listener_id,
+            port,
+            event,
+        } => match stack.temporal_apply_tcp_listener_event(listener_id, port, event) {
+            Ok(()) => NetResponse::Ok,
+            Err(e) => NetResponse::Err(e),
+        },
+        NetRequest::TemporalApplyTcpConnection {
+            conn_id,
+            state,
+            local_ip,
+            local_port,
+            remote_ip,
+            remote_port,
+            event,
+            aux,
+            preview_len,
+            preview,
+        } => {
+            let preview_len = core::cmp::min(preview_len as usize, preview.len());
+            match stack.temporal_apply_tcp_connection_event(
+                conn_id,
+                state,
+                local_ip,
+                local_port,
+                remote_ip,
+                remote_port,
+                event,
+                aux,
+                &preview[..preview_len],
+            ) {
+                Ok(()) => NetResponse::Ok,
+                Err(e) => NetResponse::Err(e),
+            }
+        }
         NetRequest::HttpServerStart { port } => match stack.http_server_start(port) {
             Ok(()) => NetResponse::Ok,
             Err(e) => NetResponse::Err(e),
@@ -399,6 +453,61 @@ pub fn tcp_recv(conn_id: u16, out: &mut [u8]) -> Result<usize, &'static str> {
 
 pub fn tcp_close(conn_id: u16) -> Result<(), &'static str> {
     match request(NetRequest::TcpClose { conn_id })? {
+        NetResponse::Ok => Ok(()),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn temporal_apply_tcp_listener_event(
+    listener_id: u32,
+    port: u16,
+    event: u8,
+) -> Result<(), &'static str> {
+    if listener_id > u16::MAX as u32 {
+        return Err("Temporal listener id out of range");
+    }
+    match request(NetRequest::TemporalApplyTcpListener {
+        listener_id: listener_id as u16,
+        port,
+        event,
+    })? {
+        NetResponse::Ok => Ok(()),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn temporal_apply_tcp_connection_event(
+    conn_id: u32,
+    state: u8,
+    local_ip: [u8; 4],
+    local_port: u16,
+    remote_ip: [u8; 4],
+    remote_port: u16,
+    event: u8,
+    aux: u32,
+    preview: &[u8],
+) -> Result<(), &'static str> {
+    if conn_id > u16::MAX as u32 {
+        return Err("Temporal connection id out of range");
+    }
+    let mut preview_buf = [0u8; MAX_TEMPORAL_SOCKET_PREVIEW];
+    let preview_len = core::cmp::min(preview.len(), preview_buf.len());
+    preview_buf[..preview_len].copy_from_slice(&preview[..preview_len]);
+
+    match request(NetRequest::TemporalApplyTcpConnection {
+        conn_id: conn_id as u16,
+        state,
+        local_ip: Ipv4Addr(local_ip),
+        local_port,
+        remote_ip: Ipv4Addr(remote_ip),
+        remote_port,
+        event,
+        aux,
+        preview_len: preview_len as u16,
+        preview: preview_buf,
+    })? {
         NetResponse::Ok => Ok(()),
         NetResponse::Err(e) => Err(e),
         _ => Err("Unexpected response"),

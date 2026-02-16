@@ -15,7 +15,7 @@ extern crate alloc;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use spin::Mutex;
+use spin::{Mutex, Once};
 
 use crate::temporal_asm;
 
@@ -47,6 +47,7 @@ const TEMPORAL_PERSIST_SENTINEL_U64: u64 = u64::MAX;
 const DEFAULT_BRANCH_NAME: &str = "main";
 const MAX_BRANCHES_PER_OBJECT: usize = 32;
 const MAX_BRANCH_NAME_BYTES: usize = 48;
+const MAX_TEMPORAL_ADAPTERS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -55,6 +56,13 @@ pub enum TemporalOperation {
     Write = 2,
     Rollback = 3,
     Merge = 4,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TemporalRestoreMode {
+    Rollback,
+    Checkout,
+    Merge,
 }
 
 impl TemporalOperation {
@@ -205,6 +213,8 @@ pub enum TemporalError {
     MergeConflict,
     VfsReadFailed,
     VfsWriteFailed,
+    AdapterRegistryFull,
+    AdapterApplyFailed,
 }
 
 impl TemporalError {
@@ -223,6 +233,8 @@ impl TemporalError {
             TemporalError::MergeConflict => "merge conflict",
             TemporalError::VfsReadFailed => "failed to read path from VFS",
             TemporalError::VfsWriteFailed => "failed to write path to VFS",
+            TemporalError::AdapterRegistryFull => "temporal adapter registry full",
+            TemporalError::AdapterApplyFailed => "temporal object apply failed",
         }
     }
 }
@@ -1299,6 +1311,210 @@ impl TemporalService {
 }
 
 static TEMPORAL: Mutex<TemporalService> = Mutex::new(TemporalService::new());
+pub type TemporalObjectAdapterFn =
+    fn(path: &str, payload: &[u8], mode: TemporalRestoreMode) -> Result<(), &'static str>;
+
+#[derive(Clone, Copy)]
+struct TemporalObjectAdapter {
+    prefix: &'static str,
+    apply: TemporalObjectAdapterFn,
+}
+
+static TEMPORAL_OBJECT_ADAPTERS: Mutex<[Option<TemporalObjectAdapter>; MAX_TEMPORAL_ADAPTERS]> =
+    Mutex::new([None; MAX_TEMPORAL_ADAPTERS]);
+static TEMPORAL_OBJECT_ADAPTERS_INIT: Once<()> = Once::new();
+
+fn parse_object_id_from_key(path: &str, prefix: &str) -> Option<u32> {
+    if !path.starts_with(prefix) {
+        return None;
+    }
+    path[prefix.len()..].parse::<u32>().ok()
+}
+
+fn temporal_apply_vfs_file_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    crate::vfs::write_path(path, payload).map(|_| ())
+}
+
+fn temporal_apply_tcp_listener_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if payload.len() < 20 {
+        return Err("temporal tcp listener payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_SOCKET_OBJECT_TCP_LISTENER {
+        return Err("temporal tcp listener payload type mismatch");
+    }
+    let listener_id = read_u32(payload, 4).ok_or("temporal tcp listener payload missing id")?;
+    let key_id = parse_object_id_from_key(path, "/socket/tcp/listener/")
+        .ok_or("temporal tcp listener key parse failed")?;
+    if listener_id != key_id {
+        return Err("temporal tcp listener payload/key mismatch");
+    }
+    let port = read_u16(payload, 8).ok_or("temporal tcp listener payload missing port")?;
+    let event = payload[2];
+    crate::net_reactor::temporal_apply_tcp_listener_event(listener_id, port, event)
+}
+
+fn temporal_apply_tcp_conn_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if payload.len() < 32 {
+        return Err("temporal tcp connection payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_SOCKET_OBJECT_TCP_CONN {
+        return Err("temporal tcp connection payload type mismatch");
+    }
+    let conn_id = read_u32(payload, 4).ok_or("temporal tcp connection payload missing id")?;
+    let key_id = parse_object_id_from_key(path, "/socket/tcp/conn/")
+        .ok_or("temporal tcp connection key parse failed")?;
+    if conn_id != key_id {
+        return Err("temporal tcp connection payload/key mismatch");
+    }
+
+    let event = payload[2];
+    let state = payload[3];
+    let local_ip = [payload[8], payload[9], payload[10], payload[11]];
+    let local_port = read_u16(payload, 12).ok_or("temporal tcp connection missing local port")?;
+    let remote_ip = [payload[14], payload[15], payload[16], payload[17]];
+    let remote_port = read_u16(payload, 18).ok_or("temporal tcp connection missing remote port")?;
+
+    let (aux, preview) = if event == TEMPORAL_SOCKET_EVENT_SEND || event == TEMPORAL_SOCKET_EVENT_RECV {
+        if payload.len() < 36 {
+            return Err("temporal tcp data payload malformed");
+        }
+        let preview_len = read_u16(payload, 24).ok_or("temporal tcp data preview missing")? as usize;
+        let preview_start = 36usize;
+        if preview_start > payload.len() {
+            return Err("temporal tcp data preview offset invalid");
+        }
+        let preview_end = core::cmp::min(preview_start.saturating_add(preview_len), payload.len());
+        let payload_len = read_u32(payload, 20).unwrap_or(0);
+        (payload_len, &payload[preview_start..preview_end])
+    } else {
+        (read_u32(payload, 20).unwrap_or(0), &payload[0..0])
+    };
+
+    crate::net_reactor::temporal_apply_tcp_connection_event(
+        conn_id,
+        state,
+        local_ip,
+        local_port,
+        remote_ip,
+        remote_port,
+        event,
+        aux,
+        preview,
+    )
+}
+
+fn temporal_apply_ipc_channel_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if payload.len() < 28 {
+        return Err("temporal ipc channel payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_CHANNEL_OBJECT {
+        return Err("temporal ipc channel payload type mismatch");
+    }
+    let channel_id = read_u32(payload, 4).ok_or("temporal ipc channel payload missing id")?;
+    let key_id = parse_object_id_from_key(path, "/ipc/channel/")
+        .ok_or("temporal ipc channel key parse failed")?;
+    if channel_id != key_id {
+        return Err("temporal ipc channel payload/key mismatch");
+    }
+    crate::ipc::temporal_apply_channel_payload(payload)
+}
+
+fn register_object_adapter_internal(
+    prefix: &'static str,
+    apply: TemporalObjectAdapterFn,
+) -> Result<(), TemporalError> {
+    if prefix.is_empty() || !prefix.starts_with('/') {
+        return Err(TemporalError::InvalidPath);
+    }
+    let mut adapters = TEMPORAL_OBJECT_ADAPTERS.lock();
+
+    let mut i = 0usize;
+    while i < adapters.len() {
+        if let Some(existing) = adapters[i] {
+            if existing.prefix == prefix {
+                adapters[i] = Some(TemporalObjectAdapter { prefix, apply });
+                return Ok(());
+            }
+        }
+        i += 1;
+    }
+
+    let mut i = 0usize;
+    while i < adapters.len() {
+        if adapters[i].is_none() {
+            adapters[i] = Some(TemporalObjectAdapter { prefix, apply });
+            return Ok(());
+        }
+        i += 1;
+    }
+
+    Err(TemporalError::AdapterRegistryFull)
+}
+
+fn ensure_object_adapters_initialized() {
+    TEMPORAL_OBJECT_ADAPTERS_INIT.call_once(|| {
+        let _ = register_object_adapter_internal("/", temporal_apply_vfs_file_payload);
+        let _ = register_object_adapter_internal(
+            "/socket/tcp/listener/",
+            temporal_apply_tcp_listener_payload,
+        );
+        let _ = register_object_adapter_internal("/socket/tcp/conn/", temporal_apply_tcp_conn_payload);
+        let _ = register_object_adapter_internal("/ipc/channel/", temporal_apply_ipc_channel_payload);
+    });
+}
+
+pub fn register_object_adapter(
+    prefix: &'static str,
+    apply: TemporalObjectAdapterFn,
+) -> Result<(), TemporalError> {
+    ensure_object_adapters_initialized();
+    register_object_adapter_internal(prefix, apply)
+}
+
+fn find_object_adapter(path: &str) -> Option<TemporalObjectAdapter> {
+    ensure_object_adapters_initialized();
+    let adapters = TEMPORAL_OBJECT_ADAPTERS.lock();
+    let mut best: Option<TemporalObjectAdapter> = None;
+    let mut best_len = 0usize;
+
+    let mut i = 0usize;
+    while i < adapters.len() {
+        if let Some(adapter) = adapters[i] {
+            let prefix_len = adapter.prefix.len();
+            if prefix_len >= best_len && path.starts_with(adapter.prefix) {
+                best = Some(adapter);
+                best_len = prefix_len;
+            }
+        }
+        i += 1;
+    }
+    best
+}
+
+fn apply_temporal_payload_to_object(
+    path: &str,
+    payload: &[u8],
+    mode: TemporalRestoreMode,
+) -> Result<(), TemporalError> {
+    let adapter = find_object_adapter(path).ok_or(TemporalError::AdapterApplyFailed)?;
+    (adapter.apply)(path, payload, mode).map_err(|_| TemporalError::AdapterApplyFailed)
+}
 
 fn temporal_current_pid() -> crate::ipc::ProcessId {
     crate::process::current_pid().unwrap_or(crate::ipc::ProcessId(0))
@@ -1359,10 +1575,6 @@ fn normalize_path(path: &str) -> Result<String, TemporalError> {
         normalized.push_str(trimmed);
         Ok(normalized)
     }
-}
-
-fn should_sync_vfs_path(path: &str) -> bool {
-    !(path.starts_with("/socket/") || path.starts_with("/ipc/channel/"))
 }
 
 fn append_u16(buf: &mut Vec<u8>, value: u16) {
@@ -1472,6 +1684,7 @@ fn persist_state_snapshot() {
 }
 
 pub fn init() {
+    ensure_object_adapters_initialized();
     let _ = recover_from_persistence();
 }
 
@@ -1854,9 +2067,10 @@ pub fn rollback_path(path: &str, rollback_to_version_id: u64) -> Result<Temporal
         (payload, previous_head)
     };
 
-    if crate::vfs::write_path(&normalized, &payload).is_err() {
+    if apply_temporal_payload_to_object(&normalized, &payload, TemporalRestoreMode::Rollback).is_err()
+    {
         emit_temporal_audit(TemporalAuditAction::Rollback, &normalized, 0, false, true);
-        return Err(TemporalError::VfsWriteFailed);
+        return Err(TemporalError::AdapterApplyFailed);
     }
 
     let result = {
@@ -1959,12 +2173,11 @@ pub fn checkout_branch(path: &str, branch_name: &str) -> Result<(u32, Option<u64
         }
     };
 
-    if should_sync_vfs_path(&normalized) {
-        if let Some(data) = payload {
-            if crate::vfs::write_path(&normalized, &data).is_err() {
-                emit_temporal_audit(TemporalAuditAction::BranchCheckout, &normalized, 0, false, true);
-                return Err(TemporalError::VfsWriteFailed);
-            }
+    if let Some(data) = payload {
+        if apply_temporal_payload_to_object(&normalized, &data, TemporalRestoreMode::Checkout).is_err()
+        {
+            emit_temporal_audit(TemporalAuditAction::BranchCheckout, &normalized, 0, false, true);
+            return Err(TemporalError::AdapterApplyFailed);
         }
     }
 
@@ -2003,12 +2216,11 @@ pub fn merge_branch(
         }
     };
 
-    if should_sync_vfs_path(&normalized) {
-        if let Some(data) = payload {
-            if crate::vfs::write_path(&normalized, &data).is_err() {
-                emit_temporal_audit(TemporalAuditAction::Merge, &normalized, 0, false, true);
-                return Err(TemporalError::VfsWriteFailed);
-            }
+    if let Some(data) = payload {
+        if apply_temporal_payload_to_object(&normalized, &data, TemporalRestoreMode::Merge).is_err()
+        {
+            emit_temporal_audit(TemporalAuditAction::Merge, &normalized, 0, false, true);
+            return Err(TemporalError::AdapterApplyFailed);
         }
     }
 

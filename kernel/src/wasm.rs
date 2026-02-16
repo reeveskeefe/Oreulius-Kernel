@@ -101,7 +101,13 @@ const TEMPORAL_META_BYTES: usize = 32;
 const TEMPORAL_ROLLBACK_BYTES: usize = 16;
 const TEMPORAL_STATS_BYTES: usize = 20;
 const TEMPORAL_HISTORY_RECORD_BYTES: usize = 64;
+const TEMPORAL_BRANCH_ID_BYTES: usize = 4;
+const TEMPORAL_BRANCH_CHECKOUT_BYTES: usize = 16;
+const TEMPORAL_BRANCH_NAME_BYTES: usize = 48;
+const TEMPORAL_BRANCH_RECORD_BYTES: usize = 20 + TEMPORAL_BRANCH_NAME_BYTES;
+const TEMPORAL_MERGE_RESULT_BYTES: usize = 40;
 const MAX_TEMPORAL_HISTORY_ENTRIES: usize = 128;
+const MAX_TEMPORAL_BRANCH_ENTRIES: usize = 64;
 
 /// Maximum module size (16 KiB - reduced to shrink kernel)
 pub const MAX_MODULE_SIZE: usize = 16 * 1024;
@@ -814,6 +820,10 @@ fn resolve_host_import(
         "temporal_rollback" | "oreulia_temporal_rollback" => (16, 6, 1),
         "temporal_stats" | "oreulia_temporal_stats" => (17, 1, 1),
         "temporal_history" | "oreulia_temporal_history" => (18, 7, 1),
+        "temporal_branch_create" | "oreulia_temporal_branch_create" => (19, 8, 1),
+        "temporal_branch_checkout" | "oreulia_temporal_branch_checkout" => (20, 6, 1),
+        "temporal_branch_list" | "oreulia_temporal_branch_list" => (21, 5, 1),
+        "temporal_merge" | "oreulia_temporal_merge" => (22, 9, 1),
         _ => return Err(WasmError::InvalidModule),
     };
 
@@ -4732,6 +4742,10 @@ impl WasmInstance {
             16 => self.host_temporal_rollback(),
             17 => self.host_temporal_stats(),
             18 => self.host_temporal_history(),
+            19 => self.host_temporal_branch_create(),
+            20 => self.host_temporal_branch_checkout(),
+            21 => self.host_temporal_branch_list(),
+            22 => self.host_temporal_merge(),
             _ => Err(WasmError::UnknownHostFunction),
         }
     }
@@ -5467,6 +5481,100 @@ impl WasmInstance {
             | ((meta.rollback_from_version_id.is_some() as u32) << 1);
         words[15] = 1; // record format version
 
+        let mut i = 0usize;
+        while i < words.len() {
+            let base = i * 4;
+            out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+            i += 1;
+        }
+        out
+    }
+
+    fn encode_temporal_branch_checkout(
+        branch_id: u32,
+        head_version: Option<u64>,
+    ) -> [u8; TEMPORAL_BRANCH_CHECKOUT_BYTES] {
+        let mut out = [0u8; TEMPORAL_BRANCH_CHECKOUT_BYTES];
+        let head = head_version.unwrap_or(u64::MAX);
+        let (head_lo, head_hi) = Self::split_u64(head);
+        let words = [
+            branch_id,
+            if head_version.is_some() { 1 } else { 0 },
+            head_lo,
+            head_hi,
+        ];
+        let mut i = 0usize;
+        while i < words.len() {
+            let base = i * 4;
+            out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+            i += 1;
+        }
+        out
+    }
+
+    fn encode_temporal_branch_record(
+        branch: &crate::temporal::TemporalBranchInfo,
+    ) -> [u8; TEMPORAL_BRANCH_RECORD_BYTES] {
+        let mut out = [0u8; TEMPORAL_BRANCH_RECORD_BYTES];
+        let head = branch.head_version_id.unwrap_or(u64::MAX);
+        let (head_lo, head_hi) = Self::split_u64(head);
+        let mut flags = 0u32;
+        if branch.active {
+            flags |= 1;
+        }
+        if branch.head_version_id.is_some() {
+            flags |= 1 << 1;
+        }
+        let words = [branch.branch_id, head_lo, head_hi, flags];
+        let mut i = 0usize;
+        while i < words.len() {
+            let base = i * 4;
+            out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+            i += 1;
+        }
+        let name_bytes = branch.name.as_bytes();
+        let use_len = core::cmp::min(name_bytes.len(), TEMPORAL_BRANCH_NAME_BYTES);
+        out[16..18].copy_from_slice(&(use_len as u16).to_le_bytes());
+        out[18..20].copy_from_slice(&0u16.to_le_bytes());
+        out[20..20 + use_len].copy_from_slice(&name_bytes[..use_len]);
+        out
+    }
+
+    fn encode_temporal_merge_result(
+        result: &crate::temporal::TemporalMergeResult,
+    ) -> [u8; TEMPORAL_MERGE_RESULT_BYTES] {
+        let mut out = [0u8; TEMPORAL_MERGE_RESULT_BYTES];
+        let mut flags = 0u32;
+        if result.fast_forward {
+            flags |= 1;
+        }
+        if result.new_version_id.is_some() {
+            flags |= 1 << 1;
+        }
+        if result.target_head_before.is_some() {
+            flags |= 1 << 2;
+        }
+        if result.target_head_after.is_some() {
+            flags |= 1 << 3;
+        }
+        let new_version = result.new_version_id.unwrap_or(u64::MAX);
+        let before = result.target_head_before.unwrap_or(u64::MAX);
+        let after = result.target_head_after.unwrap_or(u64::MAX);
+        let (new_lo, new_hi) = Self::split_u64(new_version);
+        let (before_lo, before_hi) = Self::split_u64(before);
+        let (after_lo, after_hi) = Self::split_u64(after);
+        let words = [
+            flags,
+            result.target_branch_id,
+            result.source_branch_id,
+            0,
+            new_lo,
+            new_hi,
+            before_lo,
+            before_hi,
+            after_lo,
+            after_hi,
+        ];
         let mut i = 0usize;
         while i < words.len() {
             let base = i * 4;
@@ -6301,6 +6409,401 @@ impl WasmInstance {
                 ReplayEventStatus::Ok,
                 result_code,
                 &encoded,
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_temporal_branch_create(cap, path_ptr, path_len, branch_ptr, branch_len, from_lo, from_hi, out_ptr) -> i32
+    fn host_temporal_branch_create(&mut self) -> Result<(), WasmError> {
+        let out_ptr = self.pop_nonneg_i32_as_usize()?;
+        let from_hi = self.stack.pop()?.as_u32()?;
+        let from_lo = self.stack.pop()?.as_u32()?;
+        let branch_len = self.pop_nonneg_i32_as_usize()?;
+        let branch_ptr = self.pop_nonneg_i32_as_usize()?;
+        let path_len = self.pop_nonneg_i32_as_usize()?;
+        let path_ptr = self.pop_nonneg_i32_as_usize()?;
+        let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
+        let fs_cap = match self.capabilities.get(cap_handle)? {
+            WasmCapability::Filesystem(cap) => cap,
+            _ => return Err(WasmError::InvalidCapability),
+        };
+
+        let path_bytes = self.memory.read(path_ptr, path_len)?.to_vec();
+        let branch_bytes = self.memory.read(branch_ptr, branch_len)?.to_vec();
+        let from_version = if from_lo == u32::MAX && from_hi == u32::MAX {
+            None
+        } else {
+            Some(Self::compose_u64(from_lo, from_hi))
+        };
+
+        let func_id: u16 = 19;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, path_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &path_bytes);
+        args_hash = replay::hash_u32(args_hash, branch_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &branch_bytes);
+        args_hash = replay::hash_u32(args_hash, from_lo);
+        args_hash = replay::hash_u32(args_hash, from_hi);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.result == 0 {
+                if out.data.len() != TEMPORAL_BRANCH_ID_BYTES {
+                    return Err(WasmError::DeterminismViolation);
+                }
+                self.memory.write(out_ptr, &out.data)?;
+            } else if !out.data.is_empty() {
+                return Err(WasmError::DeterminismViolation);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
+
+        let mut result_code = -1i32;
+        let mut encoded = [0u8; TEMPORAL_BRANCH_ID_BYTES];
+        let mut encoded_len = 0usize;
+
+        if branch_len > 0 {
+            if let (Ok(path), Ok(branch)) = (
+                core::str::from_utf8(&path_bytes),
+                core::str::from_utf8(&branch_bytes),
+            ) {
+                if let Ok(key) = fs::FileKey::new(path) {
+                    if fs_cap.rights.has(fs::FilesystemRights::WRITE) && fs_cap.can_access(&key) {
+                        if let Ok(branch_id) =
+                            crate::temporal::create_branch(path, branch, from_version)
+                        {
+                            encoded.copy_from_slice(&branch_id.to_le_bytes());
+                            self.memory.write(out_ptr, &encoded)?;
+                            encoded_len = TEMPORAL_BRANCH_ID_BYTES;
+                            result_code = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.stack.push(Value::I32(result_code))?;
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                result_code,
+                &encoded[..encoded_len],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_temporal_branch_checkout(cap, path_ptr, path_len, branch_ptr, branch_len, out_ptr) -> i32
+    fn host_temporal_branch_checkout(&mut self) -> Result<(), WasmError> {
+        let out_ptr = self.pop_nonneg_i32_as_usize()?;
+        let branch_len = self.pop_nonneg_i32_as_usize()?;
+        let branch_ptr = self.pop_nonneg_i32_as_usize()?;
+        let path_len = self.pop_nonneg_i32_as_usize()?;
+        let path_ptr = self.pop_nonneg_i32_as_usize()?;
+        let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
+        let fs_cap = match self.capabilities.get(cap_handle)? {
+            WasmCapability::Filesystem(cap) => cap,
+            _ => return Err(WasmError::InvalidCapability),
+        };
+
+        let path_bytes = self.memory.read(path_ptr, path_len)?.to_vec();
+        let branch_bytes = self.memory.read(branch_ptr, branch_len)?.to_vec();
+
+        let func_id: u16 = 20;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, path_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &path_bytes);
+        args_hash = replay::hash_u32(args_hash, branch_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &branch_bytes);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.result == 0 {
+                if out.data.len() != TEMPORAL_BRANCH_CHECKOUT_BYTES {
+                    return Err(WasmError::DeterminismViolation);
+                }
+                self.memory.write(out_ptr, &out.data)?;
+            } else if !out.data.is_empty() {
+                return Err(WasmError::DeterminismViolation);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
+
+        let mut result_code = -1i32;
+        let mut encoded = [0u8; TEMPORAL_BRANCH_CHECKOUT_BYTES];
+        let mut encoded_len = 0usize;
+
+        if branch_len > 0 {
+            if let (Ok(path), Ok(branch)) = (
+                core::str::from_utf8(&path_bytes),
+                core::str::from_utf8(&branch_bytes),
+            ) {
+                if let Ok(key) = fs::FileKey::new(path) {
+                    if fs_cap.rights.has(fs::FilesystemRights::WRITE) && fs_cap.can_access(&key) {
+                        if let Ok((branch_id, head_version)) =
+                            crate::temporal::checkout_branch(path, branch)
+                        {
+                            encoded = Self::encode_temporal_branch_checkout(branch_id, head_version);
+                            self.memory.write(out_ptr, &encoded)?;
+                            encoded_len = TEMPORAL_BRANCH_CHECKOUT_BYTES;
+                            result_code = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.stack.push(Value::I32(result_code))?;
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                result_code,
+                &encoded[..encoded_len],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_temporal_branch_list(cap, path_ptr, path_len, out_ptr, out_capacity) -> i32
+    fn host_temporal_branch_list(&mut self) -> Result<(), WasmError> {
+        let out_capacity = self.pop_nonneg_i32_as_usize()?;
+        let out_ptr = self.pop_nonneg_i32_as_usize()?;
+        let path_len = self.pop_nonneg_i32_as_usize()?;
+        let path_ptr = self.pop_nonneg_i32_as_usize()?;
+        let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
+        let fs_cap = match self.capabilities.get(cap_handle)? {
+            WasmCapability::Filesystem(cap) => cap,
+            _ => return Err(WasmError::InvalidCapability),
+        };
+
+        if out_capacity > MAX_TEMPORAL_BRANCH_ENTRIES {
+            return Err(WasmError::SyscallFailed);
+        }
+
+        let path_bytes = self.memory.read(path_ptr, path_len)?.to_vec();
+
+        let func_id: u16 = 21;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, path_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &path_bytes);
+        args_hash = replay::hash_u32(args_hash, out_capacity as u32);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            let count = out.result;
+            if count < 0 {
+                if !out.data.is_empty() {
+                    return Err(WasmError::DeterminismViolation);
+                }
+                self.stack.push(Value::I32(count))?;
+                return Ok(());
+            }
+            let count_usize = count as usize;
+            if count_usize > out_capacity {
+                return Err(WasmError::DeterminismViolation);
+            }
+            let expected_len = count_usize
+                .checked_mul(TEMPORAL_BRANCH_RECORD_BYTES)
+                .ok_or(WasmError::DeterminismViolation)?;
+            if out.data.len() != expected_len {
+                return Err(WasmError::DeterminismViolation);
+            }
+            if expected_len > 0 {
+                self.memory.write(out_ptr, &out.data)?;
+            }
+            self.stack.push(Value::I32(count))?;
+            return Ok(());
+        }
+
+        let mut result_code = -1i32;
+        let mut encoded: Vec<u8> = Vec::new();
+
+        if let Ok(path) = core::str::from_utf8(&path_bytes) {
+            if let Ok(key) = fs::FileKey::new(path) {
+                if fs_cap.rights.has(fs::FilesystemRights::READ) && fs_cap.can_access(&key) {
+                    if let Ok(branches) = crate::temporal::list_branches(path) {
+                        let write_count = core::cmp::min(branches.len(), out_capacity);
+                        let total_len = write_count
+                            .checked_mul(TEMPORAL_BRANCH_RECORD_BYTES)
+                            .ok_or(WasmError::SyscallFailed)?;
+                        encoded.resize(total_len, 0);
+                        let mut i = 0usize;
+                        while i < write_count {
+                            let record = Self::encode_temporal_branch_record(&branches[i]);
+                            let base = i * TEMPORAL_BRANCH_RECORD_BYTES;
+                            encoded[base..base + TEMPORAL_BRANCH_RECORD_BYTES]
+                                .copy_from_slice(&record);
+                            i += 1;
+                        }
+                        if total_len > 0 {
+                            self.memory.write(out_ptr, &encoded)?;
+                        }
+                        result_code = write_count as i32;
+                    }
+                }
+            }
+        }
+
+        self.stack.push(Value::I32(result_code))?;
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                result_code,
+                &encoded,
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_temporal_merge(cap, path_ptr, path_len, source_ptr, source_len, target_ptr, target_len, strategy, out_ptr) -> i32
+    fn host_temporal_merge(&mut self) -> Result<(), WasmError> {
+        let out_ptr = self.pop_nonneg_i32_as_usize()?;
+        let strategy_raw = self.stack.pop()?.as_i32()?;
+        let target_len = self.pop_nonneg_i32_as_usize()?;
+        let target_ptr = self.pop_nonneg_i32_as_usize()?;
+        let source_len = self.pop_nonneg_i32_as_usize()?;
+        let source_ptr = self.pop_nonneg_i32_as_usize()?;
+        let path_len = self.pop_nonneg_i32_as_usize()?;
+        let path_ptr = self.pop_nonneg_i32_as_usize()?;
+        let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
+        let fs_cap = match self.capabilities.get(cap_handle)? {
+            WasmCapability::Filesystem(cap) => cap,
+            _ => return Err(WasmError::InvalidCapability),
+        };
+
+        let strategy = match strategy_raw {
+            0 => Some(crate::temporal::TemporalMergeStrategy::FastForwardOnly),
+            1 => Some(crate::temporal::TemporalMergeStrategy::Ours),
+            2 => Some(crate::temporal::TemporalMergeStrategy::Theirs),
+            _ => None,
+        };
+
+        let path_bytes = self.memory.read(path_ptr, path_len)?.to_vec();
+        let source_bytes = self.memory.read(source_ptr, source_len)?.to_vec();
+        let target_bytes = if target_len > 0 {
+            self.memory.read(target_ptr, target_len)?.to_vec()
+        } else {
+            Vec::new()
+        };
+
+        let func_id: u16 = 22;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, path_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &path_bytes);
+        args_hash = replay::hash_u32(args_hash, source_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &source_bytes);
+        args_hash = replay::hash_u32(args_hash, target_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &target_bytes);
+        args_hash = replay::hash_u32(args_hash, strategy_raw as u32);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.result == 0 {
+                if out.data.len() != TEMPORAL_MERGE_RESULT_BYTES {
+                    return Err(WasmError::DeterminismViolation);
+                }
+                self.memory.write(out_ptr, &out.data)?;
+            } else if !out.data.is_empty() {
+                return Err(WasmError::DeterminismViolation);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
+
+        let mut result_code = -1i32;
+        let mut encoded = [0u8; TEMPORAL_MERGE_RESULT_BYTES];
+        let mut encoded_len = 0usize;
+
+        if let Some(strategy) = strategy {
+            if source_len > 0 {
+                if let (Ok(path), Ok(source)) = (
+                    core::str::from_utf8(&path_bytes),
+                    core::str::from_utf8(&source_bytes),
+                ) {
+                    let target = if target_len > 0 {
+                        core::str::from_utf8(&target_bytes).ok()
+                    } else {
+                        None
+                    };
+                    if target_len == 0 || target.is_some() {
+                        if let Ok(key) = fs::FileKey::new(path) {
+                            if fs_cap.rights.has(fs::FilesystemRights::WRITE) && fs_cap.can_access(&key) {
+                                if let Ok(result) =
+                                    crate::temporal::merge_branch(path, source, target, strategy)
+                                {
+                                    encoded = Self::encode_temporal_merge_result(&result);
+                                    self.memory.write(out_ptr, &encoded)?;
+                                    encoded_len = TEMPORAL_MERGE_RESULT_BYTES;
+                                    result_code = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.stack.push(Value::I32(result_code))?;
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                result_code,
+                &encoded[..encoded_len],
             )
             .map_err(|_| WasmError::ReplayError)?;
         }
