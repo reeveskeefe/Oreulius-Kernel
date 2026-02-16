@@ -44,7 +44,10 @@ use spin::Mutex;
 use crate::pci::PciDevice;
 
 const TEMPORAL_WIFI_SCHEMA_V1: u8 = 1;
-const TEMPORAL_WIFI_HEADER_BYTES: usize = 84;
+const TEMPORAL_WIFI_SCHEMA_V2: u8 = 2;
+const TEMPORAL_WIFI_HEADER_V1_BYTES: usize = 84;
+const TEMPORAL_WIFI_REJOIN_BYTES: usize = 68;
+const TEMPORAL_WIFI_HEADER_BYTES: usize = TEMPORAL_WIFI_HEADER_V1_BYTES + TEMPORAL_WIFI_REJOIN_BYTES;
 const TEMPORAL_WIFI_PCI_BYTES: usize = 16;
 const TEMPORAL_WIFI_NETWORK_BYTES: usize = 48;
 
@@ -250,6 +253,7 @@ impl WifiConnection {
 // WiFi Driver
 // ============================================================================
 
+#[derive(Clone, Copy)]
 pub struct WifiDriver {
     pci_device: Option<PciDevice>,
     enabled: bool,
@@ -257,6 +261,10 @@ pub struct WifiDriver {
     scan_results: [WifiNetwork; MAX_SCAN_RESULTS],
     scan_count: usize,
     mac_address: [u8; 6],
+    temporal_cached_pmk: [u8; 32],
+    temporal_cached_pmk_valid: bool,
+    temporal_cached_ssid: [u8; MAX_SSID_LEN],
+    temporal_cached_ssid_len: usize,
 }
 
 impl WifiDriver {
@@ -268,6 +276,10 @@ impl WifiDriver {
             scan_results: [WifiNetwork::new(); MAX_SCAN_RESULTS],
             scan_count: 0,
             mac_address: [0; 6],
+            temporal_cached_pmk: [0; 32],
+            temporal_cached_pmk_valid: false,
+            temporal_cached_ssid: [0; MAX_SSID_LEN],
+            temporal_cached_ssid_len: 0,
         }
     }
 
@@ -847,6 +859,42 @@ impl WifiDriver {
         Ok(())
     }
 
+    fn temporal_cached_pmk_matches_current_network(&self) -> bool {
+        if !self.temporal_cached_pmk_valid {
+            return false;
+        }
+        if self.connection.network.ssid_len != self.temporal_cached_ssid_len {
+            return false;
+        }
+        let len = self.connection.network.ssid_len;
+        self.connection.network.ssid[..len] == self.temporal_cached_ssid[..len]
+    }
+
+    fn temporal_cache_pmk_for_current_network(&mut self, pmk: &[u8; 32]) {
+        self.temporal_cached_pmk.copy_from_slice(pmk);
+        self.temporal_cached_pmk_valid = true;
+        self.temporal_cached_ssid_len = self.connection.network.ssid_len.min(MAX_SSID_LEN);
+        self.temporal_cached_ssid.fill(0);
+        let len = self.temporal_cached_ssid_len;
+        self.temporal_cached_ssid[..len]
+            .copy_from_slice(&self.connection.network.ssid[..len]);
+    }
+
+    fn temporal_resume_live_connection(&mut self) -> Result<(), WifiError> {
+        if !self.enabled {
+            return Err(WifiError::NotEnabled);
+        }
+        if self.connection.network.ssid_len == 0 {
+            return Err(WifiError::NetworkNotFound);
+        }
+
+        self.connection.state = WifiState::Connecting;
+        self.perform_connection(None)?;
+        self.connection.state = WifiState::Connected;
+        self.connection.ip_assigned = true;
+        Ok(())
+    }
+
     /// Perform actual connection (authentication + association)
     fn perform_connection(&mut self, password: Option<&str>) -> Result<(), WifiError> {
         // Real WiFi station connection flow (high level):
@@ -899,9 +947,18 @@ impl WifiDriver {
 
         // Step 3: WPA2 4-way handshake (after association)
         if self.connection.network.security == WifiSecurity::WPA2 {
-            let password = password.ok_or(WifiError::NoPassword)?;
+            let pmk = if let Some(password) = password {
+                let ssid = &self.connection.network.ssid[..self.connection.network.ssid_len];
+                self.pbkdf2_sha1(password.as_bytes(), ssid, 4096)?
+            } else if self.temporal_cached_pmk_matches_current_network() {
+                self.temporal_cached_pmk
+            } else {
+                return Err(WifiError::NoPassword);
+            };
+
             crate::vga::print_str("[WiFi] Starting WPA2 4-way handshake...\n");
-            self.wpa2_four_way_handshake(password)?;
+            self.wpa2_four_way_handshake_with_pmk(&pmk)?;
+            self.temporal_cache_pmk_for_current_network(&pmk);
         }
 
         Ok(())
@@ -1030,7 +1087,10 @@ impl WifiDriver {
         // PMK = PBKDF2(password, ssid, 4096 iterations, 256 bits)
         let ssid = &self.connection.network.ssid[..self.connection.network.ssid_len];
         let pmk = self.pbkdf2_sha1(password.as_bytes(), ssid, 4096)?;
-        
+        self.wpa2_four_way_handshake_with_pmk(&pmk)
+    }
+
+    fn wpa2_four_way_handshake_with_pmk(&mut self, pmk: &[u8; 32]) -> Result<(), WifiError> {
         // Step 2: Wait for Message 1 from AP (contains ANonce + replay counter)
         crate::vga::print_str("[WiFi] Waiting for Message 1 (ANonce)...\n");
         let (anonce, replay_counter) = self.receive_eapol_msg1()?;
@@ -1041,7 +1101,7 @@ impl WifiDriver {
         // Step 4: Derive PTK (Pairwise Transient Key)
         // PTK = PRF(PMK, "Pairwise key expansion", 
         //           min(AA, SPA) || max(AA, SPA) || min(ANonce, SNonce) || max(ANonce, SNonce))
-        let ptk = self.derive_ptk(&pmk, &anonce, &snonce)?;
+        let ptk = self.derive_ptk(pmk, &anonce, &snonce)?;
         
         // Step 5: Send Message 2 to AP (contains SNonce + MIC + replay counter)
         crate::vga::print_str("[WiFi] Sending Message 2 (SNonce + MIC)...\n");
@@ -2482,7 +2542,7 @@ impl WifiDriver {
         payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
         payload.push(crate::temporal::TEMPORAL_WIFI_OBJECT);
         payload.push(event);
-        payload.push(TEMPORAL_WIFI_SCHEMA_V1);
+        payload.push(TEMPORAL_WIFI_SCHEMA_V2);
         payload.push(if self.pci_device.is_some() { 1 } else { 0 });
         payload.push(if self.enabled { 1 } else { 0 });
         payload.push(temporal_wifi_state_to_u8(self.connection.state));
@@ -2493,6 +2553,14 @@ impl WifiDriver {
         temporal_append_u16(&mut payload, 0);
         temporal_encode_pci_device(&mut payload, self.pci_device);
         temporal_encode_wifi_network(&mut payload, &self.connection.network);
+
+        payload.push(if self.temporal_cached_pmk_valid { 1 } else { 0 });
+        payload.push(self.temporal_cached_ssid_len.min(MAX_SSID_LEN) as u8);
+        payload.push(0);
+        payload.push(0);
+        payload.extend_from_slice(&self.temporal_cached_ssid);
+        payload.extend_from_slice(&self.temporal_cached_pmk);
+
         for i in 0..scan_count {
             temporal_encode_wifi_network(&mut payload, &self.scan_results[i]);
         }
@@ -2512,16 +2580,17 @@ impl WifiDriver {
 }
 
 pub fn temporal_apply_wifi_driver_payload(payload: &[u8]) -> Result<(), &'static str> {
-    if payload.len() < TEMPORAL_WIFI_HEADER_BYTES {
+    if payload.len() < TEMPORAL_WIFI_HEADER_V1_BYTES {
         return Err("temporal wifi payload too short");
     }
-    if payload[3] != TEMPORAL_WIFI_SCHEMA_V1 {
+    let schema = payload[3];
+    if schema != TEMPORAL_WIFI_SCHEMA_V1 && schema != TEMPORAL_WIFI_SCHEMA_V2 {
         return Err("temporal wifi schema unsupported");
     }
     let pci_present = payload[4] != 0;
     let enabled = payload[5] != 0;
-    let _state = temporal_wifi_state_from_u8(payload[6]).ok_or("temporal wifi state invalid")?;
-    let _ip_assigned = payload[7] != 0;
+    let prior_state = temporal_wifi_state_from_u8(payload[6]).ok_or("temporal wifi state invalid")?;
+    let prior_ip_assigned = payload[7] != 0;
     let mut mac_address = [0u8; 6];
     mac_address.copy_from_slice(&payload[8..14]);
     let scan_count =
@@ -2538,7 +2607,27 @@ pub fn temporal_apply_wifi_driver_payload(payload: &[u8]) -> Result<(), &'static
     let connection_network =
         temporal_decode_wifi_network(payload, 36).ok_or("temporal wifi network decode failed")?;
 
-    let mut offset = TEMPORAL_WIFI_HEADER_BYTES;
+    let mut cached_pmk_valid = false;
+    let mut cached_pmk = [0u8; 32];
+    let mut cached_ssid = [0u8; MAX_SSID_LEN];
+    let mut cached_ssid_len = 0usize;
+    let mut offset = TEMPORAL_WIFI_HEADER_V1_BYTES;
+    if schema == TEMPORAL_WIFI_SCHEMA_V2 {
+        if payload.len() < TEMPORAL_WIFI_HEADER_BYTES {
+            return Err("temporal wifi v2 payload too short");
+        }
+        cached_pmk_valid = payload[offset] != 0;
+        cached_ssid_len = (payload[offset + 1] as usize).min(MAX_SSID_LEN);
+        cached_ssid.copy_from_slice(&payload[offset + 4..offset + 4 + MAX_SSID_LEN]);
+        cached_pmk.copy_from_slice(
+            &payload[offset + 4 + MAX_SSID_LEN..offset + 4 + MAX_SSID_LEN + 32],
+        );
+        if cached_ssid_len == 0 {
+            cached_pmk_valid = false;
+        }
+        offset = TEMPORAL_WIFI_HEADER_BYTES;
+    }
+
     let mut scan_results = [WifiNetwork::new(); MAX_SCAN_RESULTS];
     for i in 0..scan_count {
         let net = temporal_decode_wifi_network(payload, offset).ok_or("temporal wifi scan entry invalid")?;
@@ -2555,7 +2644,7 @@ pub fn temporal_apply_wifi_driver_payload(payload: &[u8]) -> Result<(), &'static
     wifi.pci_device = None;
     wifi.enabled = enabled;
     wifi.connection = WifiConnection {
-        // Hardware sessions cannot be time-traveled. Preserve intent/config, not link state.
+        // Restore intent/config immediately; live link state is rehydrated below.
         state: if enabled { WifiState::Idle } else { WifiState::Disabled },
         network: connection_network,
         ip_assigned: false,
@@ -2563,18 +2652,73 @@ pub fn temporal_apply_wifi_driver_payload(payload: &[u8]) -> Result<(), &'static
     wifi.scan_results = scan_results;
     wifi.scan_count = scan_count;
     wifi.mac_address = mac_address;
+    wifi.temporal_cached_pmk = cached_pmk;
+    wifi.temporal_cached_pmk_valid = cached_pmk_valid;
+    wifi.temporal_cached_ssid = cached_ssid;
+    wifi.temporal_cached_ssid_len = cached_ssid_len;
 
-    // Best-effort hardware restore: if state said we previously had a device, attempt re-detect.
-    // Failure should not abort temporal restore (control-plane state remains valid).
+    let should_resume = enabled
+        && (matches!(prior_state, WifiState::Connected | WifiState::Associated) || prior_ip_assigned);
+
+    // Hardware restore: if state said we previously had a device, attempt re-detect and reconnect.
     if enabled && pci_present {
         drop(wifi);
         let mut scanner = crate::pci::PciScanner::new();
         scanner.scan();
-        if let Some(device) = scanner.find_wifi_device() {
-            let _ = init(device);
+        let device = scanner
+            .find_wifi_device()
+            .ok_or("temporal wifi restore: device not found")?;
+        init(device).map_err(|_| "temporal wifi restore: init failed")?;
+        if should_resume {
+            let mut wifi = WIFI.lock();
+            wifi.temporal_resume_live_connection()
+                .map_err(|_| "temporal wifi restore: live reconnect failed")?;
         }
+    } else if should_resume {
+        return Err("temporal wifi restore: no hardware hint for live reconnect");
     }
     Ok(())
+}
+
+pub fn temporal_required_reconnect_failure_self_check() -> Result<(), &'static str> {
+    let backup = {
+        let wifi = WIFI.lock();
+        *wifi
+    };
+
+    let mut payload = [0u8; TEMPORAL_WIFI_HEADER_BYTES];
+    payload[0] = crate::temporal::TEMPORAL_OBJECT_ENCODING_V1;
+    payload[1] = crate::temporal::TEMPORAL_WIFI_OBJECT;
+    payload[2] = crate::temporal::TEMPORAL_WIFI_EVENT_STATE;
+    payload[3] = TEMPORAL_WIFI_SCHEMA_V2;
+    payload[4] = 0; // no PCI hint
+    payload[5] = 1; // enabled
+    payload[6] = temporal_wifi_state_to_u8(WifiState::Connected);
+    payload[7] = 1; // prior ip_assigned
+
+    // Connection network entry at offset 36.
+    let net_off = 36usize;
+    payload[net_off] = 4; // ssid len
+    payload[net_off + 1] = 6; // channel
+    payload[net_off + 2] = (-45i8) as u8; // signal
+    payload[net_off + 3] = temporal_wifi_security_to_u8(WifiSecurity::Open);
+    payload[net_off + 4..net_off + 6].copy_from_slice(&2437u16.to_le_bytes()); // freq
+    payload[net_off + 16..net_off + 20].copy_from_slice(b"test");
+
+    let result = (|| -> Result<(), &'static str> {
+        match temporal_apply_wifi_driver_payload(&payload) {
+            Ok(()) => Err("temporal wifi reconnect self-check expected failure"),
+            Err("temporal wifi restore: no hardware hint for live reconnect") => Ok(()),
+            Err(_) => Err("temporal wifi reconnect self-check wrong failure mode"),
+        }
+    })();
+
+    {
+        let mut wifi = WIFI.lock();
+        *wifi = backup;
+    }
+
+    result
 }
 
 // ============================================================================

@@ -59,8 +59,10 @@ const EPC_POOL_PAGES: usize = 256;
 const REMOTE_TOKEN_TTL_EPOCHS: u32 = 100_000;
 
 const TEMPORAL_ENCLAVE_SCHEMA_V1: u8 = 1;
+const TEMPORAL_ENCLAVE_SCHEMA_V2: u8 = 2;
 const TEMPORAL_ENCLAVE_SHAPE_BYTES: usize = 12;
-const TEMPORAL_ENCLAVE_SESSION_META_BYTES: usize = 64;
+const TEMPORAL_ENCLAVE_SESSION_META_BYTES_V1: usize = 64;
+const TEMPORAL_ENCLAVE_SESSION_META_BYTES_V2: usize = 96;
 const TEMPORAL_ENCLAVE_CERT_BYTES: usize = 36;
 const TEMPORAL_ENCLAVE_KEY_BYTES: usize = 64;
 const TEMPORAL_ENCLAVE_VERIFIER_BYTES: usize = 40;
@@ -641,7 +643,7 @@ fn encode_temporal_enclave_payload(event: u8) -> Option<Vec<u8>> {
     let total_len = 4usize
         .saturating_add(TEMPORAL_ENCLAVE_SHAPE_BYTES)
         .saturating_add(scalar_bytes)
-        .saturating_add(MAX_ENCLAVE_SESSIONS.saturating_mul(TEMPORAL_ENCLAVE_SESSION_META_BYTES))
+        .saturating_add(MAX_ENCLAVE_SESSIONS.saturating_mul(TEMPORAL_ENCLAVE_SESSION_META_BYTES_V2))
         .saturating_add(MAX_ATTESTATION_CERTS.saturating_mul(TEMPORAL_ENCLAVE_CERT_BYTES))
         .saturating_add(MAX_PROVISIONED_KEYS.saturating_mul(TEMPORAL_ENCLAVE_KEY_BYTES))
         .saturating_add(MAX_REMOTE_VERIFIERS.saturating_mul(TEMPORAL_ENCLAVE_VERIFIER_BYTES));
@@ -653,7 +655,7 @@ fn encode_temporal_enclave_payload(event: u8) -> Option<Vec<u8>> {
     payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
     payload.push(crate::temporal::TEMPORAL_ENCLAVE_OBJECT);
     payload.push(event);
-    payload.push(TEMPORAL_ENCLAVE_SCHEMA_V1);
+    payload.push(TEMPORAL_ENCLAVE_SCHEMA_V2);
 
     temporal_append_u16(&mut payload, MAX_ENCLAVE_SESSIONS as u16);
     temporal_append_u16(&mut payload, MAX_ATTESTATION_CERTS as u16);
@@ -710,6 +712,14 @@ fn encode_temporal_enclave_payload(event: u8) -> Option<Vec<u8>> {
         temporal_append_u32(&mut payload, session.remote_attest_issued_epoch);
         temporal_append_u32(&mut payload, session.remote_attest_expires_epoch);
         temporal_append_u64(&mut payload, session.remote_attest_mac);
+        temporal_append_u32(&mut payload, session.code_phys as u32);
+        temporal_append_u32(&mut payload, session.code_len as u32);
+        temporal_append_u32(&mut payload, session.data_phys as u32);
+        temporal_append_u32(&mut payload, session.data_len as u32);
+        temporal_append_u32(&mut payload, session.mem_phys as u32);
+        temporal_append_u32(&mut payload, session.mem_len as u32);
+        temporal_append_u32(&mut payload, session.epc_base as u32);
+        temporal_append_u32(&mut payload, session.epc_pages as u32);
     }
 
     for cert in cert_chain.iter() {
@@ -783,7 +793,8 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
     if payload.len() < 4 + TEMPORAL_ENCLAVE_SHAPE_BYTES + 84 {
         return Err("temporal enclave payload too short");
     }
-    if payload[3] != TEMPORAL_ENCLAVE_SCHEMA_V1 {
+    let schema = payload[3];
+    if schema != TEMPORAL_ENCLAVE_SCHEMA_V1 && schema != TEMPORAL_ENCLAVE_SCHEMA_V2 {
         return Err("temporal enclave schema unsupported");
     }
 
@@ -850,9 +861,15 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
         temporal_read_u32(payload, offset + 80).ok_or("temporal enclave persist flags missing")?;
     offset = offset.saturating_add(84);
 
-    let mut _sessions = [EnclaveSession::empty(); MAX_ENCLAVE_SESSIONS];
+    let session_meta_bytes = if schema == TEMPORAL_ENCLAVE_SCHEMA_V2 {
+        TEMPORAL_ENCLAVE_SESSION_META_BYTES_V2
+    } else {
+        TEMPORAL_ENCLAVE_SESSION_META_BYTES_V1
+    };
+
+    let mut decoded_sessions = [EnclaveSession::empty(); MAX_ENCLAVE_SESSIONS];
     for i in 0..MAX_ENCLAVE_SESSIONS {
-        if offset.saturating_add(TEMPORAL_ENCLAVE_SESSION_META_BYTES) > payload.len() {
+        if offset.saturating_add(session_meta_bytes) > payload.len() {
             return Err("temporal enclave session truncated");
         }
         let id = temporal_read_u32(payload, offset).ok_or("temporal enclave session id missing")?;
@@ -880,19 +897,43 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
             temporal_read_u32(payload, offset + 52).ok_or("temporal enclave attest expires missing")?;
         let remote_attest_mac =
             temporal_read_u64(payload, offset + 56).ok_or("temporal enclave attest mac missing")?;
-        _sessions[i] = EnclaveSession {
+        let (code_phys, code_len, data_phys, data_len, mem_phys, mem_len, epc_base, epc_pages) =
+            if schema == TEMPORAL_ENCLAVE_SCHEMA_V2 {
+                (
+                    temporal_read_u32(payload, offset + 64)
+                        .ok_or("temporal enclave code phys missing")? as usize,
+                    temporal_read_u32(payload, offset + 68)
+                        .ok_or("temporal enclave code len missing")? as usize,
+                    temporal_read_u32(payload, offset + 72)
+                        .ok_or("temporal enclave data phys missing")? as usize,
+                    temporal_read_u32(payload, offset + 76)
+                        .ok_or("temporal enclave data len missing")? as usize,
+                    temporal_read_u32(payload, offset + 80)
+                        .ok_or("temporal enclave mem phys missing")? as usize,
+                    temporal_read_u32(payload, offset + 84)
+                        .ok_or("temporal enclave mem len missing")? as usize,
+                    temporal_read_u32(payload, offset + 88)
+                        .ok_or("temporal enclave epc base missing")? as usize,
+                    temporal_read_u32(payload, offset + 92)
+                        .ok_or("temporal enclave epc pages missing")? as usize,
+                )
+            } else {
+                (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize)
+            };
+
+        decoded_sessions[i] = EnclaveSession {
             id,
             state,
             measurement,
-            code_phys: 0,
-            code_len: 0,
-            data_phys: 0,
-            data_len: 0,
-            mem_phys: 0,
-            mem_len: 0,
+            code_phys,
+            code_len,
+            data_phys,
+            data_len,
+            mem_phys,
+            mem_len,
             backend_cookie,
-            epc_base: 0,
-            epc_pages: 0,
+            epc_base,
+            epc_pages,
             launch_token_mac,
             launch_nonce,
             runtime_key_handle,
@@ -904,7 +945,7 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
             remote_attest_expires_epoch,
             remote_attest_mac,
         };
-        offset = offset.saturating_add(TEMPORAL_ENCLAVE_SESSION_META_BYTES);
+        offset = offset.saturating_add(session_meta_bytes);
     }
 
     let mut cert_chain = [AttestationCertificate::empty(); MAX_ATTESTATION_CERTS];
@@ -1017,8 +1058,7 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
         Ordering::SeqCst,
     );
 
-    // Hardware-backed enclaves cannot be time-traveled across reboot. Re-detect backend and
-    // sanitize all runtime session state (phys addrs, EPC reservations, live keys).
+    // Re-detect backend and attempt session rehydration for temporal continuity.
     let detected_backend = detect_backend();
     let use_backend = if enabled && detected_backend != EnclaveBackend::None {
         detected_backend
@@ -1027,22 +1067,79 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
     };
     let use_enabled = enabled && use_backend != EnclaveBackend::None;
 
-    let sanitized_sessions = [EnclaveSession::empty(); MAX_ENCLAVE_SESSIONS];
-    let mut sanitized_keys = provisioned_keys;
-    for rec in sanitized_keys.iter_mut() {
-        if rec.state == KeyState::Active {
-            rec.state = KeyState::Revoked;
-            rec.sealed_mac = seal_key_record(rec);
+    let mut restored_keys = provisioned_keys;
+    let redact_keys =
+        (persist_flags & TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_KEYS) != 0 || !use_enabled;
+    if redact_keys {
+        for rec in restored_keys.iter_mut() {
+            if rec.state == KeyState::Active {
+                rec.state = KeyState::Revoked;
+                rec.sealed_mac = seal_key_record(rec);
+            }
         }
     }
 
+    let mut restored_active_session = INVALID_ID;
     {
         let mut mgr = MANAGER.lock();
         mgr.backend = use_backend;
-        mgr.sessions = sanitized_sessions;
         mgr.created_total = created_total;
         mgr.failed_total = failed_total;
         mgr.next_id = next_id.max(1);
+
+        mgr.sessions = [EnclaveSession::empty(); MAX_ENCLAVE_SESSIONS];
+        if use_enabled {
+            for i in 0..MAX_ENCLAVE_SESSIONS {
+                let mut session = decoded_sessions[i];
+                if session.state == EnclaveState::Empty || session.id == INVALID_ID {
+                    continue;
+                }
+
+                // Running state cannot be resumed exactly; resume as initialized.
+                session.state = EnclaveState::Initialized;
+                session.attested = false;
+                clear_remote_attestation(&mut session);
+                session.runtime_key_handle = 0;
+
+                // Persisted backend cookie/EPC handles cannot be trusted across temporal jumps.
+                session.backend_cookie = 0;
+                session.epc_base = 0;
+                session.epc_pages = 0;
+
+                // Rehydrate only if we have enough memory context to reopen.
+                let has_memory_context =
+                    session.code_len != 0 || session.data_len != 0 || session.mem_len != 0;
+                if !has_memory_context {
+                    continue;
+                }
+
+                if backend_open(use_backend, &mut session, &mut mgr).is_err() {
+                    mgr.failed_total = mgr.failed_total.saturating_add(1);
+                    continue;
+                }
+
+                let _ = provision_runtime_key(&mut session, use_backend);
+                mgr.sessions[i] = session;
+            }
+        }
+
+        if use_enabled && active_session != INVALID_ID {
+            if let Some(active_idx) = mgr.find_slot(active_session) {
+                let backend = mgr.backend;
+                let enter_ok = {
+                    let session = &mut mgr.sessions[active_idx];
+                    if session.state != EnclaveState::Initialized {
+                        false
+                    } else {
+                        backend_enter(backend, session).is_ok()
+                    }
+                };
+                if enter_ok {
+                    mgr.sessions[active_idx].state = EnclaveState::Running;
+                    restored_active_session = active_session;
+                }
+            }
+        }
     }
 
     ENABLED.store(use_enabled, Ordering::SeqCst);
@@ -1060,8 +1157,8 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
     CERT_CHAIN_READY.store(cert_chain_ready && use_enabled, Ordering::SeqCst);
     VENDOR_ROOT_READY.store(vendor_root_ready && use_enabled, Ordering::SeqCst);
 
-    let _ = (active_session, backend);
-    ACTIVE_SESSION.store(INVALID_ID, Ordering::SeqCst);
+    let _ = backend;
+    ACTIVE_SESSION.store(restored_active_session, Ordering::SeqCst);
 
     {
         let mut tz = TRUSTZONE_CONTRACT.lock();
@@ -1079,7 +1176,7 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
     }
     {
         let mut keys = PROVISIONED_KEYS.lock();
-        *keys = sanitized_keys;
+        *keys = restored_keys;
     }
     {
         let mut verifiers = REMOTE_VERIFIERS.lock();
@@ -1091,6 +1188,60 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
     }
 
     Ok(())
+}
+
+pub fn temporal_active_session_reentry_self_check() -> Result<(), &'static str> {
+    let backup = encode_temporal_enclave_payload(crate::temporal::TEMPORAL_ENCLAVE_EVENT_STATE)
+        .ok_or("temporal enclave re-entry self-check backup encode failed")?;
+
+    let mut probe = backup.clone();
+    let scalar_offset = 4usize.saturating_add(TEMPORAL_ENCLAVE_SHAPE_BYTES);
+    if probe.len()
+        < scalar_offset
+            .saturating_add(84)
+            .saturating_add(TEMPORAL_ENCLAVE_SESSION_META_BYTES_V2)
+    {
+        return Err("temporal enclave re-entry self-check probe payload too short");
+    }
+
+    let requested_active_session = 0xE11u32;
+    probe[scalar_offset] = 1; // enabled
+    probe[scalar_offset + 4..scalar_offset + 8]
+        .copy_from_slice(&requested_active_session.to_le_bytes());
+
+    let session_off = scalar_offset + 84;
+    probe[session_off..session_off + 4].copy_from_slice(&requested_active_session.to_le_bytes());
+    probe[session_off + 4] = EnclaveState::Initialized as u8;
+    probe[session_off + 64..session_off + 68].copy_from_slice(&0x0010_0000u32.to_le_bytes());
+    probe[session_off + 68..session_off + 72].copy_from_slice(&16u32.to_le_bytes());
+    probe[session_off + 72..session_off + 76].copy_from_slice(&0x0011_0000u32.to_le_bytes());
+    probe[session_off + 76..session_off + 80].copy_from_slice(&16u32.to_le_bytes());
+    probe[session_off + 80..session_off + 84].copy_from_slice(&0x0012_0000u32.to_le_bytes());
+    probe[session_off + 84..session_off + 88].copy_from_slice(&16u32.to_le_bytes());
+
+    let result = (|| -> Result<(), &'static str> {
+        temporal_apply_enclave_state_payload(&probe)
+            .map_err(|_| "temporal enclave re-entry self-check apply failed")?;
+
+        let st = status();
+        if !st.enabled || st.backend == EnclaveBackend::None {
+            if st.active_session != INVALID_ID {
+                return Err("temporal enclave re-entry self-check expected inactive session");
+            }
+            return Ok(());
+        }
+
+        if st.active_session != INVALID_ID && st.active_session != requested_active_session {
+            return Err("temporal enclave re-entry self-check unexpected active session id");
+        }
+        if st.active_session == requested_active_session && st.open_sessions == 0 {
+            return Err("temporal enclave re-entry self-check active session not rehydrated");
+        }
+        Ok(())
+    })();
+
+    let _ = temporal_apply_enclave_state_payload(&backup);
+    result
 }
 
 #[repr(C, align(4096))]

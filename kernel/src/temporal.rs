@@ -74,7 +74,8 @@ pub const TEMPORAL_WIFI_EVENT_STATE: u8 = 1;
 pub const TEMPORAL_ENCLAVE_EVENT_STATE: u8 = 1;
 pub const TEMPORAL_SOCKET_PAYLOAD_PREVIEW_BYTES: usize = 192;
 const TEMPORAL_PERSIST_MAGIC: u32 = 0x5450_5354; // "TPST"
-const TEMPORAL_PERSIST_VERSION: u16 = 2;
+const TEMPORAL_PERSIST_VERSION: u16 = 3;
+const TEMPORAL_PERSIST_VERSION_V2: u16 = 2;
 const TEMPORAL_PERSIST_VERSION_V1: u16 = 1;
 const TEMPORAL_PERSIST_SENTINEL_U64: u64 = u64::MAX;
 const DEFAULT_BRANCH_NAME: &str = "main";
@@ -145,6 +146,7 @@ pub struct TemporalVersionMeta {
     pub leaf_count: u32,
     pub content_hash: u32,
     pub merkle_root: u32,
+    pub integrity_tag: u64,
     pub operation: TemporalOperation,
 }
 
@@ -354,7 +356,7 @@ impl TemporalService {
             }
             for entry in &object.versions {
                 size = size
-                    .saturating_add(56)
+                    .saturating_add(64)
                     .saturating_add(entry.payload.len());
             }
         }
@@ -601,17 +603,32 @@ impl TemporalService {
         let mut data = Vec::new();
         data.resize(payload.len(), 0);
         temporal_asm::copy_bytes(&mut data, payload);
+        let tick = crate::pit::get_ticks();
+        let integrity_tag = compute_temporal_integrity_tag(
+            version_id,
+            parent_version_id,
+            None,
+            object.active_branch_id,
+            tick,
+            data.len(),
+            leaf_count,
+            content_hash,
+            merkle_root,
+            operation,
+            &data,
+        );
 
         let meta = TemporalVersionMeta {
             version_id,
             parent_version_id,
             rollback_from_version_id: None,
             branch_id: object.active_branch_id,
-            tick: crate::pit::get_ticks(),
+            tick,
             data_len: data.len(),
             leaf_count,
             content_hash,
             merkle_root,
+            integrity_tag,
             operation,
         };
 
@@ -718,6 +735,37 @@ impl TemporalService {
     ) -> Option<&[u8]> {
         let idx = Self::find_version_index_locked(object, version_id)?;
         Some(object.versions.get(idx)?.payload.as_slice())
+    }
+
+    fn version_meta_locked(
+        object: &TemporalObjectHistory,
+        version_id: u64,
+    ) -> Option<&TemporalVersionMeta> {
+        let idx = Self::find_version_index_locked(object, version_id)?;
+        object.versions.get(idx).map(|entry| &entry.meta)
+    }
+
+    fn deterministic_conflict_resolution_payload(
+        ours: &[u8],
+        theirs: &[u8],
+        ours_tick: u64,
+        theirs_tick: u64,
+    ) -> Vec<u8> {
+        if ours_tick > theirs_tick {
+            return ours.to_vec();
+        }
+        if theirs_tick > ours_tick {
+            return theirs.to_vec();
+        }
+
+        // Stable tie-breaker when both heads have equal temporal tick.
+        let ours_hash = crate::crypto::sha256(ours);
+        let theirs_hash = crate::crypto::sha256(theirs);
+        if ours_hash >= theirs_hash {
+            ours.to_vec()
+        } else {
+            theirs.to_vec()
+        }
     }
 
     fn create_branch_locked(
@@ -1289,6 +1337,45 @@ impl TemporalService {
         Some(out)
     }
 
+    fn try_three_way_byte_merge(
+        base: &[u8],
+        ours: &[u8],
+        theirs: &[u8],
+        strategy: TemporalMergeStrategy,
+    ) -> Option<Vec<u8>> {
+        let max_len = core::cmp::max(base.len(), core::cmp::max(ours.len(), theirs.len()));
+        let mut out = Vec::with_capacity(max_len);
+
+        let mut i = 0usize;
+        while i < max_len {
+            let b = base.get(i).copied();
+            let o = ours.get(i).copied();
+            let t = theirs.get(i).copied();
+
+            let selected = if o == t {
+                o
+            } else if o == b {
+                t
+            } else if t == b {
+                o
+            } else {
+                match strategy {
+                    TemporalMergeStrategy::Ours => o,
+                    TemporalMergeStrategy::Theirs => t,
+                    TemporalMergeStrategy::FastForwardOnly => None,
+                }
+            };
+
+            if let Some(v) = selected {
+                out.push(v);
+            }
+
+            i = i.saturating_add(1);
+        }
+
+        Some(out)
+    }
+
     fn merge_branch_locked(
         &mut self,
         path: &str,
@@ -1399,6 +1486,12 @@ impl TemporalService {
             .ok_or(TemporalError::VersionNotFound)?;
         let theirs = Self::version_payload_locked(object, source_head_id)
             .ok_or(TemporalError::VersionNotFound)?;
+        let ours_tick = Self::version_meta_locked(object, ours_head_id)
+            .map(|meta| meta.tick)
+            .unwrap_or(0);
+        let theirs_tick = Self::version_meta_locked(object, source_head_id)
+            .map(|meta| meta.tick)
+            .unwrap_or(0);
 
         let base_id = Self::common_ancestor_parent_chain_locked(object, ours_head_id, source_head_id);
         let base = base_id.and_then(|id| Self::version_payload_locked(object, id));
@@ -1416,30 +1509,50 @@ impl TemporalService {
                 if merged.is_none() {
                     merged = Self::try_three_way_line_merge(base, ours, theirs);
                 }
+                if merged.is_none() {
+                    merged = Self::try_three_way_byte_merge(base, ours, theirs, strategy);
+                }
             }
         }
 
         let payload = match merged {
             Some(v) => v,
-            None => match strategy {
-                TemporalMergeStrategy::Theirs => theirs.to_vec(),
-                TemporalMergeStrategy::Ours | TemporalMergeStrategy::FastForwardOnly => ours.to_vec(),
-            },
+            None => Self::deterministic_conflict_resolution_payload(
+                ours,
+                theirs,
+                ours_tick,
+                theirs_tick,
+            ),
         };
 
         let version_id = self.next_version_id;
         self.next_version_id = self.next_version_id.saturating_add(1);
         let (content_hash, merkle_root, leaf_count) = compute_version_hashes(&payload);
+        let tick = crate::pit::get_ticks();
+        let integrity_tag = compute_temporal_integrity_tag(
+            version_id,
+            target_head,
+            Some(source_head_id),
+            target_branch.branch_id,
+            tick,
+            payload.len(),
+            leaf_count,
+            content_hash,
+            merkle_root,
+            TemporalOperation::Merge,
+            &payload,
+        );
         let meta = TemporalVersionMeta {
             version_id,
             parent_version_id: target_head,
             rollback_from_version_id: Some(source_head_id),
             branch_id: target_branch.branch_id,
-            tick: crate::pit::get_ticks(),
+            tick,
             data_len: payload.len(),
             leaf_count,
             content_hash,
             merkle_root,
+            integrity_tag,
             operation: TemporalOperation::Merge,
         };
         object.versions.push(TemporalVersionEntry { meta, payload: payload.clone() });
@@ -1645,6 +1758,7 @@ impl TemporalService {
                 append_u32(&mut out, meta.leaf_count);
                 append_u32(&mut out, meta.content_hash);
                 append_u32(&mut out, meta.merkle_root);
+                append_u64(&mut out, meta.integrity_tag);
                 out.push(meta.operation as u8);
                 out.extend_from_slice(&[0u8; 3]);
                 out.extend_from_slice(&entry.payload);
@@ -1666,9 +1780,10 @@ impl TemporalService {
         if version == TEMPORAL_PERSIST_VERSION_V1 {
             return Self::decode_persistent_state_v1(data);
         }
-        if version != TEMPORAL_PERSIST_VERSION {
+        if version != TEMPORAL_PERSIST_VERSION && version != TEMPORAL_PERSIST_VERSION_V2 {
             return None;
         }
+        let has_integrity_tag = version >= TEMPORAL_PERSIST_VERSION;
 
         let mut cursor = 8usize;
         let mut next_version_id = read_u64(data, cursor)?;
@@ -1773,6 +1888,13 @@ impl TemporalService {
                 cursor = cursor.saturating_add(4);
                 let merkle_root = read_u32(data, cursor)?;
                 cursor = cursor.saturating_add(4);
+                let persisted_integrity_tag = if has_integrity_tag {
+                    let tag = read_u64(data, cursor)?;
+                    cursor = cursor.saturating_add(8);
+                    Some(tag)
+                } else {
+                    None
+                };
                 if cursor >= data.len() {
                     return None;
                 }
@@ -1791,6 +1913,33 @@ impl TemporalService {
                     payload.copy_from_slice(&data[cursor..cursor + data_len]);
                 }
                 cursor = cursor.saturating_add(data_len);
+
+                let expected_integrity_tag = compute_temporal_integrity_tag(
+                    version_id,
+                    if parent_raw == TEMPORAL_PERSIST_SENTINEL_U64 {
+                        None
+                    } else {
+                        Some(parent_raw)
+                    },
+                    if rollback_raw == TEMPORAL_PERSIST_SENTINEL_U64 {
+                        None
+                    } else {
+                        Some(rollback_raw)
+                    },
+                    branch_id,
+                    tick,
+                    data_len,
+                    leaf_count,
+                    content_hash,
+                    merkle_root,
+                    op,
+                    &payload,
+                );
+                if let Some(tag) = persisted_integrity_tag {
+                    if tag != expected_integrity_tag {
+                        return None;
+                    }
+                }
 
                 observed_max_version = observed_max_version.max(version_id);
 
@@ -1812,6 +1961,7 @@ impl TemporalService {
                     leaf_count,
                     content_hash,
                     merkle_root,
+                    integrity_tag: expected_integrity_tag,
                     operation: op,
                 };
                 object.versions.push(TemporalVersionEntry { meta, payload });
@@ -1945,6 +2095,28 @@ impl TemporalService {
                 }
                 cursor = cursor.saturating_add(data_len);
 
+                let expected_integrity_tag = compute_temporal_integrity_tag(
+                    version_id,
+                    if parent_raw == TEMPORAL_PERSIST_SENTINEL_U64 {
+                        None
+                    } else {
+                        Some(parent_raw)
+                    },
+                    if rollback_raw == TEMPORAL_PERSIST_SENTINEL_U64 {
+                        None
+                    } else {
+                        Some(rollback_raw)
+                    },
+                    branch_id,
+                    tick,
+                    data_len,
+                    leaf_count,
+                    content_hash,
+                    merkle_root,
+                    op,
+                    &payload,
+                );
+
                 if !branch_ids.iter().any(|id| *id == branch_id) {
                     branch_ids.push(branch_id);
                 }
@@ -1967,6 +2139,7 @@ impl TemporalService {
                     leaf_count,
                     content_hash,
                     merkle_root,
+                    integrity_tag: expected_integrity_tag,
                     operation: op,
                 };
                 object.versions.push(TemporalVersionEntry { meta, payload });
@@ -2783,6 +2956,45 @@ fn op_from_u8(value: u8) -> Option<TemporalOperation> {
         4 => Some(TemporalOperation::Merge),
         _ => None,
     }
+}
+
+fn compute_temporal_integrity_tag(
+    version_id: u64,
+    parent_version_id: Option<u64>,
+    rollback_from_version_id: Option<u64>,
+    branch_id: u32,
+    tick: u64,
+    data_len: usize,
+    leaf_count: u32,
+    content_hash: u32,
+    merkle_root: u32,
+    operation: TemporalOperation,
+    payload: &[u8],
+) -> u64 {
+    let mut input = Vec::with_capacity(72usize.saturating_add(payload.len()));
+    append_u64(&mut input, version_id);
+    append_u64(
+        &mut input,
+        parent_version_id.unwrap_or(TEMPORAL_PERSIST_SENTINEL_U64),
+    );
+    append_u64(
+        &mut input,
+        rollback_from_version_id.unwrap_or(TEMPORAL_PERSIST_SENTINEL_U64),
+    );
+    append_u32(&mut input, branch_id);
+    append_u64(&mut input, tick);
+    append_u32(&mut input, data_len as u32);
+    append_u32(&mut input, leaf_count);
+    append_u32(&mut input, content_hash);
+    append_u32(&mut input, merkle_root);
+    input.push(operation as u8);
+    input.extend_from_slice(payload);
+
+    let key = crate::security::persistence_seal_key();
+    let mac = crate::crypto::hmac_sha256(&key, &input);
+    u64::from_le_bytes([
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], mac[6], mac[7],
+    ])
 }
 
 fn is_valid_branch_name(name: &str) -> bool {
@@ -4142,5 +4354,328 @@ pub fn audit_emission_self_check() -> Result<(), &'static str> {
         return Err("temporal audit self-check did not observe temporal audit event");
     }
 
+    Ok(())
+}
+
+fn downgrade_v3_snapshot_to_v2_for_self_check(snapshot: &[u8]) -> Option<Vec<u8>> {
+    if snapshot.len() < 24 {
+        return None;
+    }
+    if read_u32(snapshot, 0)? != TEMPORAL_PERSIST_MAGIC {
+        return None;
+    }
+    if read_u16(snapshot, 4)? != TEMPORAL_PERSIST_VERSION {
+        return None;
+    }
+
+    let mut cursor = 8usize;
+    let next_version_id = read_u64(snapshot, cursor)?;
+    cursor = cursor.saturating_add(8);
+    let object_count = read_u32(snapshot, cursor)? as usize;
+    cursor = cursor.saturating_add(4);
+    cursor = cursor.saturating_add(4); // reserved
+
+    let mut out = Vec::with_capacity(snapshot.len());
+    append_u32(&mut out, TEMPORAL_PERSIST_MAGIC);
+    append_u16(&mut out, TEMPORAL_PERSIST_VERSION_V2);
+    append_u16(&mut out, 0);
+    append_u64(&mut out, next_version_id);
+    append_u32(&mut out, object_count as u32);
+    append_u32(&mut out, 0);
+
+    for _ in 0..object_count {
+        let path_len = read_u16(snapshot, cursor)? as usize;
+        cursor = cursor.saturating_add(2);
+        let version_count = read_u16(snapshot, cursor)? as usize;
+        cursor = cursor.saturating_add(2);
+        let branch_count = read_u16(snapshot, cursor)? as usize;
+        cursor = cursor.saturating_add(2);
+        let reserved = read_u16(snapshot, cursor)?;
+        cursor = cursor.saturating_add(2);
+        let head_raw = read_u64(snapshot, cursor)?;
+        cursor = cursor.saturating_add(8);
+        let active_branch_id = read_u32(snapshot, cursor)?;
+        cursor = cursor.saturating_add(4);
+        let next_branch_id = read_u32(snapshot, cursor)?;
+        cursor = cursor.saturating_add(4);
+        let object_reserved = read_u32(snapshot, cursor)?;
+        cursor = cursor.saturating_add(4);
+        if cursor.saturating_add(path_len) > snapshot.len() {
+            return None;
+        }
+
+        append_u16(&mut out, path_len as u16);
+        append_u16(&mut out, version_count as u16);
+        append_u16(&mut out, branch_count as u16);
+        append_u16(&mut out, reserved);
+        append_u64(&mut out, head_raw);
+        append_u32(&mut out, active_branch_id);
+        append_u32(&mut out, next_branch_id);
+        append_u32(&mut out, object_reserved);
+        out.extend_from_slice(&snapshot[cursor..cursor + path_len]);
+        cursor = cursor.saturating_add(path_len);
+
+        for _ in 0..branch_count {
+            let branch_id = read_u32(snapshot, cursor)?;
+            cursor = cursor.saturating_add(4);
+            let branch_head = read_u64(snapshot, cursor)?;
+            cursor = cursor.saturating_add(8);
+            let name_len = read_u16(snapshot, cursor)? as usize;
+            cursor = cursor.saturating_add(2);
+            let branch_reserved = read_u16(snapshot, cursor)?;
+            cursor = cursor.saturating_add(2);
+            if cursor.saturating_add(name_len) > snapshot.len() {
+                return None;
+            }
+
+            append_u32(&mut out, branch_id);
+            append_u64(&mut out, branch_head);
+            append_u16(&mut out, name_len as u16);
+            append_u16(&mut out, branch_reserved);
+            out.extend_from_slice(&snapshot[cursor..cursor + name_len]);
+            cursor = cursor.saturating_add(name_len);
+        }
+
+        for _ in 0..version_count {
+            let version_id = read_u64(snapshot, cursor)?;
+            cursor = cursor.saturating_add(8);
+            let parent_raw = read_u64(snapshot, cursor)?;
+            cursor = cursor.saturating_add(8);
+            let rollback_raw = read_u64(snapshot, cursor)?;
+            cursor = cursor.saturating_add(8);
+            let branch_id = read_u32(snapshot, cursor)?;
+            cursor = cursor.saturating_add(4);
+            let tick = read_u64(snapshot, cursor)?;
+            cursor = cursor.saturating_add(8);
+            let data_len = read_u32(snapshot, cursor)? as usize;
+            cursor = cursor.saturating_add(4);
+            let leaf_count = read_u32(snapshot, cursor)?;
+            cursor = cursor.saturating_add(4);
+            let content_hash = read_u32(snapshot, cursor)?;
+            cursor = cursor.saturating_add(4);
+            let merkle_root = read_u32(snapshot, cursor)?;
+            cursor = cursor.saturating_add(4);
+            let _integrity_tag = read_u64(snapshot, cursor)?;
+            cursor = cursor.saturating_add(8);
+            if cursor >= snapshot.len() {
+                return None;
+            }
+            let op = snapshot[cursor];
+            cursor = cursor.saturating_add(4); // op + reserved
+
+            if cursor.saturating_add(data_len) > snapshot.len() {
+                return None;
+            }
+
+            append_u64(&mut out, version_id);
+            append_u64(&mut out, parent_raw);
+            append_u64(&mut out, rollback_raw);
+            append_u32(&mut out, branch_id);
+            append_u64(&mut out, tick);
+            append_u32(&mut out, data_len as u32);
+            append_u32(&mut out, leaf_count);
+            append_u32(&mut out, content_hash);
+            append_u32(&mut out, merkle_root);
+            out.push(op);
+            out.extend_from_slice(&[0u8; 3]);
+            out.extend_from_slice(&snapshot[cursor..cursor + data_len]);
+            cursor = cursor.saturating_add(data_len);
+        }
+    }
+
+    if cursor != snapshot.len() {
+        return None;
+    }
+    Some(out)
+}
+
+fn locate_first_v3_version_offsets(snapshot: &[u8]) -> Option<(usize, usize, usize)> {
+    if snapshot.len() < 24 {
+        return None;
+    }
+    if read_u32(snapshot, 0)? != TEMPORAL_PERSIST_MAGIC {
+        return None;
+    }
+    if read_u16(snapshot, 4)? != TEMPORAL_PERSIST_VERSION {
+        return None;
+    }
+
+    let mut cursor = 8usize;
+    let _next_version_id = read_u64(snapshot, cursor)?;
+    cursor = cursor.saturating_add(8);
+    let object_count = read_u32(snapshot, cursor)? as usize;
+    cursor = cursor.saturating_add(4);
+    cursor = cursor.saturating_add(4); // reserved
+    if object_count == 0 {
+        return None;
+    }
+
+    let path_len = read_u16(snapshot, cursor)? as usize;
+    cursor = cursor.saturating_add(2);
+    let version_count = read_u16(snapshot, cursor)? as usize;
+    cursor = cursor.saturating_add(2);
+    let branch_count = read_u16(snapshot, cursor)? as usize;
+    cursor = cursor.saturating_add(2);
+    cursor = cursor.saturating_add(2); // reserved
+    cursor = cursor.saturating_add(8 + 4 + 4 + 4); // head + active + next + reserved
+    if cursor.saturating_add(path_len) > snapshot.len() {
+        return None;
+    }
+    cursor = cursor.saturating_add(path_len);
+
+    for _ in 0..branch_count {
+        let _branch_id = read_u32(snapshot, cursor)?;
+        cursor = cursor.saturating_add(4);
+        let _head = read_u64(snapshot, cursor)?;
+        cursor = cursor.saturating_add(8);
+        let name_len = read_u16(snapshot, cursor)? as usize;
+        cursor = cursor.saturating_add(2);
+        cursor = cursor.saturating_add(2); // reserved
+        if cursor.saturating_add(name_len) > snapshot.len() {
+            return None;
+        }
+        cursor = cursor.saturating_add(name_len);
+    }
+
+    if version_count == 0 {
+        return None;
+    }
+
+    cursor = cursor.saturating_add(8 + 8 + 8 + 4 + 8); // id + parent + rollback + branch + tick
+    let data_len = read_u32(snapshot, cursor)? as usize;
+    cursor = cursor.saturating_add(4);
+    cursor = cursor.saturating_add(4 + 4 + 4); // leaf + content + merkle
+
+    let tag_offset = cursor;
+    cursor = cursor.saturating_add(8);
+    if cursor >= snapshot.len() {
+        return None;
+    }
+    cursor = cursor.saturating_add(4); // op + reserved
+    let payload_offset = cursor;
+    if payload_offset.saturating_add(data_len) > snapshot.len() {
+        return None;
+    }
+
+    Some((tag_offset, payload_offset, data_len))
+}
+
+pub fn hardening_v2_decode_compat_self_check() -> Result<(), &'static str> {
+    const PATH: &str = "/temporal-hardening-v2-decode";
+    const PAYLOAD: &[u8] = b"temporal-hardening-v2-payload";
+
+    let mut svc = TemporalService::new();
+    svc.record_version_locked(PATH, PAYLOAD, TemporalOperation::Snapshot)
+        .map_err(|_| "temporal hardening v2 decode self-check record failed")?;
+    let expected_meta = svc
+        .latest_meta_locked(PATH)
+        .map_err(|_| "temporal hardening v2 decode self-check meta failed")?;
+    let encoded_v3 = svc
+        .encode_persistent_state_locked()
+        .ok_or("temporal hardening v2 decode self-check encode failed")?;
+    let encoded_v2 = downgrade_v3_snapshot_to_v2_for_self_check(&encoded_v3)
+        .ok_or("temporal hardening v2 decode self-check downgrade failed")?;
+    let decoded = TemporalService::decode_persistent_state(&encoded_v2)
+        .ok_or("temporal hardening v2 decode self-check decode failed")?;
+    let decoded_meta = decoded
+        .latest_meta_locked(PATH)
+        .map_err(|_| "temporal hardening v2 decode self-check latest meta missing")?;
+    if decoded_meta.version_id != expected_meta.version_id {
+        return Err("temporal hardening v2 decode self-check version mismatch");
+    }
+    if decoded_meta.integrity_tag != expected_meta.integrity_tag {
+        return Err("temporal hardening v2 decode self-check integrity tag mismatch");
+    }
+    let decoded_payload = decoded
+        .read_version_payload_locked(PATH, decoded_meta.version_id)
+        .map_err(|_| "temporal hardening v2 decode self-check payload read failed")?;
+    if decoded_payload != PAYLOAD {
+        return Err("temporal hardening v2 decode self-check payload mismatch");
+    }
+    Ok(())
+}
+
+pub fn hardening_integrity_tamper_self_check() -> Result<(), &'static str> {
+    const PATH: &str = "/temporal-hardening-tamper";
+    const PAYLOAD: &[u8] = b"temporal-hardening-integrity";
+
+    let mut svc = TemporalService::new();
+    svc.record_version_locked(PATH, PAYLOAD, TemporalOperation::Snapshot)
+        .map_err(|_| "temporal hardening tamper self-check record failed")?;
+    let encoded_v3 = svc
+        .encode_persistent_state_locked()
+        .ok_or("temporal hardening tamper self-check encode failed")?;
+    let (tag_offset, payload_offset, payload_len) = locate_first_v3_version_offsets(&encoded_v3)
+        .ok_or("temporal hardening tamper self-check version parse failed")?;
+    if payload_len == 0 {
+        return Err("temporal hardening tamper self-check payload unexpectedly empty");
+    }
+
+    let mut payload_tampered = encoded_v3.clone();
+    payload_tampered[payload_offset] ^= 0x01;
+    if TemporalService::decode_persistent_state(&payload_tampered).is_some() {
+        return Err("temporal hardening tamper self-check payload tamper accepted");
+    }
+
+    let mut tag_tampered = encoded_v3.clone();
+    tag_tampered[tag_offset] ^= 0x80;
+    if TemporalService::decode_persistent_state(&tag_tampered).is_some() {
+        return Err("temporal hardening tamper self-check tag tamper accepted");
+    }
+
+    Ok(())
+}
+
+pub fn hardening_deterministic_merge_self_check() -> Result<(), &'static str> {
+    const PATH: &str = "/temporal-hardening-merge";
+    const FEATURE_BRANCH: &str = "hardening-feature";
+
+    let mut seed = TemporalService::new();
+    let root = seed
+        .record_version_locked(PATH, b"merge-root", TemporalOperation::Snapshot)
+        .map_err(|_| "temporal hardening merge self-check root write failed")?;
+    seed.create_branch_locked(PATH, FEATURE_BRANCH, Some(root))
+        .map_err(|_| "temporal hardening merge self-check branch create failed")?;
+    seed.record_version_locked(PATH, b"main-divergence", TemporalOperation::Write)
+        .map_err(|_| "temporal hardening merge self-check main divergence failed")?;
+    seed.checkout_branch_locked(PATH, FEATURE_BRANCH)
+        .map_err(|_| "temporal hardening merge self-check checkout feature failed")?;
+    seed.record_version_locked(PATH, b"feature-divergence", TemporalOperation::Write)
+        .map_err(|_| "temporal hardening merge self-check feature divergence failed")?;
+    seed.checkout_branch_locked(PATH, DEFAULT_BRANCH_NAME)
+        .map_err(|_| "temporal hardening merge self-check checkout main failed")?;
+
+    let baseline = seed
+        .encode_persistent_state_locked()
+        .ok_or("temporal hardening merge self-check baseline encode failed")?;
+
+    let run_once = |state: &[u8]| -> Result<Vec<u8>, &'static str> {
+        let mut svc = TemporalService::decode_persistent_state(state)
+            .ok_or("temporal hardening merge self-check baseline decode failed")?;
+        let (result, _) = svc
+            .merge_branch_locked(
+                PATH,
+                FEATURE_BRANCH,
+                Some(DEFAULT_BRANCH_NAME),
+                TemporalMergeStrategy::Ours,
+            )
+            .map_err(|_| "temporal hardening merge self-check merge failed")?;
+        if result.fast_forward {
+            return Err("temporal hardening merge self-check expected non-fast-forward");
+        }
+        let merged_id = result
+            .new_version_id
+            .ok_or("temporal hardening merge self-check missing merge version")?;
+        let merged = svc
+            .read_version_payload_locked(PATH, merged_id)
+            .map_err(|_| "temporal hardening merge self-check payload read failed")?;
+        Ok(merged.to_vec())
+    };
+
+    let merged_a = run_once(&baseline)?;
+    let merged_b = run_once(&baseline)?;
+    if merged_a != merged_b {
+        return Err("temporal hardening merge self-check non-deterministic payload");
+    }
     Ok(())
 }

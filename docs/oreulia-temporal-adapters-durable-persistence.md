@@ -205,7 +205,9 @@ Then:
 
 FNV-1a and the Merkle construction here provide **fast local corruption detection** and deterministic replay metadata. They are intentionally *not* cryptographic.
 
-Cryptographic integrity and confidentiality are enforced at the **persistence snapshot layer** when a durable backend is present: persistence snapshots are sealed (AES-CTR encryption + HMAC-SHA256 authentication) so any tampering of the persisted bytes is detected on recovery.
+Cryptographic integrity and confidentiality are enforced at the persistence and version layers:
+- persistence snapshots are sealed (AES-CTR + HMAC-SHA256) so tampering is detected on recovery,
+- each temporal version carries a keyed `integrity_tag` over metadata + payload, validated for v3 persisted records.
 
 ---
 
@@ -698,7 +700,7 @@ and the target branch head becomes `version_id(v_m)`.
 
 In the non-fast-forward case, the implementation:
 
-1. selects a base payload from either the source head (`Theirs`) or the target head (`Ours`);
+1. computes merge payload bytes via staged deterministic merge (span/line/byte merge, then deterministic whole-payload resolver when needed);
 2. allocates a fresh `version_id` from `next_version_id`;
 3. constructs `TemporalVersionMeta` with:
    - `operation = Merge`,
@@ -840,9 +842,13 @@ The merge algorithm has two operational modes:
   - `parent_version_id = target_head`
   - `rollback_from_version_id = source_head`
   - `operation = Merge`
-  - payload is chosen from target (`Ours`) or source (`Theirs`)
+  - payload is selected by deterministic merge stages:
+    - non-overlapping span 3-way merge,
+    - UTF-8 bounded diff3 line merge,
+    - byte-wise base-aware 3-way merge,
+    - deterministic whole-payload resolver by `(tick, sha256(payload))` when no common-base merge is available.
 
-This is intentionally not a three-way semantic merge of structured state; it is a bounded, policy-driven choice that preserves both heads in the version graph.
+The result is total: non-fast-forward merges always materialize a merge payload deterministically (except `FastForwardOnly`, which intentionally rejects divergent heads).
 
 ### 11.5 Complexity (Per Operation)
 
@@ -915,8 +921,9 @@ Oreulia includes kernel self-checks that exercise both persistence and universal
 The kernel command surface includes:
 
 - `temporal-abi-selftest`
+- `temporal-hardening-selftest`
 
-which runs a bundle of regression checks covering:
+`temporal-abi-selftest` runs a baseline regression bundle covering:
 
 - WASM temporal ABI encode/decode paths
 - VFS fd-write temporal capture
@@ -925,6 +932,14 @@ which runs a bundle of regression checks covering:
 - branch + merge semantics (`branch_merge_self_check`)
 - audit emission (`audit_emission_self_check`)
 - temporal IPC framed service checks (binary protocol v1)
+
+`temporal-hardening-selftest` runs hardening-focused checks covering:
+
+- v2->v3 temporal decode compatibility (`hardening_v2_decode_compat_self_check`)
+- cryptographic integrity-tag tamper rejection (`hardening_integrity_tamper_self_check`)
+- deterministic divergent merge materialization (`hardening_deterministic_merge_self_check`)
+- WiFi required-reconnect failure-path enforcement (`temporal_required_reconnect_failure_self_check`)
+- enclave active-session re-entry-path behavior (`temporal_active_session_reentry_self_check`)
 
 ### 13.2 Universal Object Scope Coverage
 
@@ -940,42 +955,57 @@ which runs a bundle of regression checks covering:
 
 This is the practical regression harness that guards “universal coverage” against drift as new subsystems are added.
 
+### 13.3 Completion Status for Declared Scope
+
+For the declared Oreulia temporal scope in this document, the implementation is complete:
+
+- universal adapter-backed temporal coverage for registered kernel object classes,
+- durable persistence with confidentiality and integrity,
+- backward-compatible v1/v2 decode with strict v3 integrity validation,
+- deterministic merge completion semantics,
+- explicit hardware precondition enforcement for live restore paths.
+
+Operationally, "complete" still means subject to runtime environment constraints (for example, hardware availability and backend support) rather than guaranteed live-state resurrection on unsupported hardware.
+
 ---
 
-## 14. Known Limitations (By Design or Deferred)
+## 14. Hardening Status and Operational Bounds
 
-### 14.1 On-Disk Integrity and Confidentiality (Resolved for Persistence Snapshots)
+### 14.1 Cryptographic Integrity (Implemented End-to-End)
 
-- Persistence snapshot v2 is **sealed** (AES-CTR + HMAC-SHA256) and verified on recovery.
-- Inner `content_hash` / `merkle_root` fields remain **non-cryptographic** fast metadata; the seal provides adversarial tamper detection for the persisted bytes as a whole.
+- Persistence snapshots are sealed with AES-CTR + HMAC-SHA256 and verified on recovery.
+- Each temporal version now carries a cryptographic `integrity_tag` (HMAC-SHA256-derived, keyed by the persistence seal key) over metadata + payload bytes.
+- Decoder behavior is strict:
+  - v3 records: integrity tag must match or decode fails,
+  - v1/v2 records: accepted for backward compatibility and upgraded in-memory with computed tags.
 
 ### 14.2 Secret-at-Rest Policy (Implemented)
 
-- Snapshot sealing encrypts all persisted temporal bytes, including enclave payloads, when a durable backend is used.
-- Enclave temporal payloads also support **policy-driven redaction**: when enabled, provisioned key material is zeroed and active keys are revoked; remote verifier shared secrets are zeroed and verifiers are disabled.
-  - Shell control: `enclave-secret-policy set on|off`
+- Snapshot sealing encrypts persisted temporal bytes, including enclave temporal state.
+- Enclave temporal payloads support policy-driven redaction:
+  - provisioned key material can be zeroed and active keys revoked,
+  - remote verifier shared secrets can be zeroed and verifiers disabled.
+- Shell control: `enclave-secret-policy set on|off`.
 
-### 14.3 Hardware-Coupled Resources (Improved, Not “Resurrection”)
+### 14.3 Hardware-Coupled Live Restore (Implemented with Explicit Preconditions)
 
-- `/wifi/state` restore sanitizes link state (restores intent/config) and performs best-effort PCI re-detect + driver init.
-- `/enclave/state` restore re-detects the enclave backend and **sanitizes all live session state** (physical pointers, EPC reservations, runtime key handles), preventing unsafe resurrection across reboot.
-
-Time-travel of *live* hardware sessions (802.11 association, SGX enclave execution contexts, etc.) remains intentionally unsupported; restore is a control-plane reconstruction plus safe re-init.
+- `/wifi/state` restore performs PCI re-detect + driver init and, when prior state was connected, attempts live reconnect (including cached PMK reuse for WPA2).
+- `/enclave/state` restore re-detects backend, reopens restorable sessions from persisted memory context, reprovisions runtime keys, and re-enters the prior active session when possible.
+- Restore now fails explicitly when live resurrection is requested but required hardware/state preconditions are absent.
 
 ### 14.4 Global Snapshot Size and Retention (Implemented)
 
-- Before persistence encoding, the temporal store enforces a bounded retention policy:
-  - `max_versions_per_object` default `64`
-  - `max_persist_bytes` default `persistence::MAX_SNAPSHOT_SIZE`
-- The retention algorithm preferentially drops **oldest unpinned** history (versions not referenced by active heads), unpins inactive branch heads if needed, and finally squashes to active heads as a last resort.
-- Runtime tuning is exposed via the shell command `temporal-retention` (show/set/reset/gc).
+- Before persistence encoding, the temporal store enforces bounded retention:
+  - `max_versions_per_object` default `64`,
+  - `max_persist_bytes` default `persistence::MAX_SNAPSHOT_SIZE`.
+- Retention drops oldest unpinned history first, can unpin inactive branch heads, and applies head-only squash as a bounded final compaction step.
+- Runtime controls: `temporal-retention show|set|reset|gc`.
 
-### 14.5 Merge Semantics (Improved Beyond Ours/Theirs)
+### 14.5 Deterministic Merge Completion (Implemented)
 
-- Non-fast-forward merges attempt a deterministic **3-way merge**:
-  - base is selected from a common ancestor along the parent chain,
-  - non-overlapping byte edit spans are merged automatically,
-  - if that fails and payloads are valid UTF-8, a bounded **diff3-style line merge** is attempted (multi-hunk, conflict-detecting),
-  - remaining conflicts fall back to the requested `Ours`/`Theirs` strategy while still encoding both heads via metadata edges.
-
-For binary payloads (or large texts beyond the bounded merge profile), merges remain policy-driven: the system preserves both heads in metadata and applies the chosen conflict strategy.
+- Divergent branch merge uses deterministic staged reconciliation:
+  - span-level 3-way merge,
+  - diff3-style bounded line merge for UTF-8 payloads,
+  - base-aware byte 3-way merge.
+- If no common-base merge can be materialized, merge still resolves deterministically using `(tick, sha256(payload))` ordering and records both lineage edges.
+- `FastForwardOnly` remains a strict rejection mode for divergent heads.

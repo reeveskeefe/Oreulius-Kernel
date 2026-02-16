@@ -26,8 +26,7 @@ Persistent/Versioned Kernel State Objects ("Temporal Objects")
 Concept: Kernel objects (files, sockets) are versioned like Git—clients can snapshot, branch, or time-travel state (e.g., rollback a filesystem to a pre-attack version).
 Why Inventive?: Provenance isn't an add-on; it's fundamental, turning kernel state into a "time machine." This originates versioned OS primitives, not just journaling.
 Alignment: Ties into your VFS and audit trails; WASM's determinism makes serialization easy for edge recovery.
-Implementation Starter: Add versioning to your Filesystem Service using Merkle trees; expose via IPC for WASM apps. [in progress]
-
+Implementation Starter: Add versioning to your Filesystem Service using Merkle trees; expose via IPC for WASM apps. [completed]
 
 Decentralized “Kernel Mesh” (Multi-Kernel, Multi-Host)
 

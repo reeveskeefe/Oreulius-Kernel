@@ -144,6 +144,7 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-fs-demo - Demo WASM filesystem syscalls\n");
             vga::print_str("  wasm-log-demo - Demo WASM logging syscall\n");
             vga::print_str("  temporal-abi-selftest - Run WASM temporal-object ABI self-check\n");
+            vga::print_str("  temporal-hardening-selftest - Run temporal hardening validation suite\n");
             vga::print_str("  wasm-list    - List loaded WASM instances\n");
             vga::print_str("  svcptr-register - Register service pointer (svcptr-register <instance_id> <func_idx> [delegate])\n");
             vga::print_str("  svcptr-invoke   - Invoke service pointer (svcptr-invoke <object_id> [arg ...])\n");
@@ -384,6 +385,9 @@ pub fn execute(input: &str) {
         }
         "temporal-abi-selftest" => {
             cmd_temporal_abi_selftest();
+        }
+        "temporal-hardening-selftest" => {
+            cmd_temporal_hardening_selftest();
         }
         "wasm-list" => {
             cmd_wasm_list();
@@ -5506,6 +5510,57 @@ fn cmd_temporal_abi_selftest() {
             vga::print_str("\n");
         }
     }
+    vga::print_str("\n");
+}
+
+fn cmd_temporal_hardening_selftest() {
+    vga::print_str("\n===== Temporal Hardening Self-Test =====\n\n");
+
+    match crate::temporal::hardening_v2_decode_compat_self_check() {
+        Ok(()) => vga::print_str("Temporal v2->v3 decode compatibility self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal v2->v3 decode compatibility self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+
+    match crate::temporal::hardening_integrity_tamper_self_check() {
+        Ok(()) => vga::print_str("Temporal integrity-tag tamper rejection self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal integrity-tag tamper rejection self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+
+    match crate::temporal::hardening_deterministic_merge_self_check() {
+        Ok(()) => vga::print_str("Temporal deterministic divergent merge self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal deterministic divergent merge self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+
+    match crate::wifi::temporal_required_reconnect_failure_self_check() {
+        Ok(()) => vga::print_str("Temporal WiFi required-reconnect failure-path self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal WiFi required-reconnect failure-path self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+
+    match crate::enclave::temporal_active_session_reentry_self_check() {
+        Ok(()) => vga::print_str("Temporal enclave active-session re-entry-path self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal enclave active-session re-entry-path self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+
     vga::print_str("\n");
 }
 
