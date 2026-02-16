@@ -76,6 +76,9 @@ const ARP_OP_REPLY: u16 = 2;
 const CAPNET_MAX_RETX: usize = 8;
 const CAPNET_RETX_INTERVAL_TICKS: u64 = 25;
 const CAPNET_RETX_MAX_RETRIES: u8 = 4;
+const TEMPORAL_NETWORK_CONFIG_BYTES: usize = 32;
+const TEMPORAL_NETWORK_CONFIG_FLAG_DHCP: u8 = 1 << 0;
+const TEMPORAL_NETWORK_CONFIG_FLAG_HAS_INTERFACE: u8 = 1 << 1;
 
 // ============================================================================
 // Network Types
@@ -231,9 +234,16 @@ impl NetworkStack {
     
     /// Mark interface as available
     pub fn mark_ready(&mut self) {
+        let prev_has_interface = self.has_interface;
+        let prev_mac = self.my_mac;
         self.has_interface = true;
         if let Some(mac) = crate::e1000::get_mac_address() {
             self.my_mac = MacAddr(mac);
+        }
+        if self.has_interface != prev_has_interface || self.my_mac != prev_mac {
+            self.record_temporal_network_config_event(
+                crate::temporal::TEMPORAL_NETWORK_CONFIG_EVENT_STATE,
+            );
         }
     }
     
@@ -913,7 +923,58 @@ impl NetworkStack {
     }
     
     pub fn set_dns_server(&mut self, dns: Ipv4Addr) {
+        if self.dns_server == dns {
+            return;
+        }
         self.dns_server = dns;
+        self.record_temporal_network_config_event(
+            crate::temporal::TEMPORAL_NETWORK_CONFIG_EVENT_STATE,
+        );
+    }
+
+    fn record_temporal_network_config_event(&self, event: u8) {
+        if crate::temporal::is_replay_active() {
+            return;
+        }
+        let mut payload = [0u8; TEMPORAL_NETWORK_CONFIG_BYTES];
+        payload[0] = crate::temporal::TEMPORAL_OBJECT_ENCODING_V1;
+        payload[1] = crate::temporal::TEMPORAL_NETWORK_CONFIG_OBJECT;
+        payload[2] = event;
+        let mut flags = 0u8;
+        if self.dhcp_enabled {
+            flags |= TEMPORAL_NETWORK_CONFIG_FLAG_DHCP;
+        }
+        if self.has_interface {
+            flags |= TEMPORAL_NETWORK_CONFIG_FLAG_HAS_INTERFACE;
+        }
+        payload[3] = flags;
+        payload[4..8].copy_from_slice(&self.my_ip.0);
+        payload[8..14].copy_from_slice(&self.my_mac.0);
+        payload[14..18].copy_from_slice(&self.gateway_ip.0);
+        payload[18..22].copy_from_slice(&self.dns_server.0);
+        payload[22..30].copy_from_slice(&crate::pit::get_ticks().to_le_bytes());
+        let _ = crate::temporal::record_network_config_event(&payload);
+    }
+
+    pub fn temporal_apply_network_config_event(
+        &mut self,
+        my_ip: Ipv4Addr,
+        my_mac: MacAddr,
+        gateway_ip: Ipv4Addr,
+        dns_server: Ipv4Addr,
+        flags: u8,
+        event: u8,
+    ) -> Result<(), &'static str> {
+        if event != crate::temporal::TEMPORAL_NETWORK_CONFIG_EVENT_STATE {
+            return Err("Temporal network config event unsupported");
+        }
+        self.my_ip = my_ip;
+        self.my_mac = my_mac;
+        self.gateway_ip = gateway_ip;
+        self.dns_server = dns_server;
+        self.dhcp_enabled = (flags & TEMPORAL_NETWORK_CONFIG_FLAG_DHCP) != 0;
+        self.has_interface = (flags & TEMPORAL_NETWORK_CONFIG_FLAG_HAS_INTERFACE) != 0;
+        Ok(())
     }
 
     // ========================================================================

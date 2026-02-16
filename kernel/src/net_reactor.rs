@@ -39,12 +39,13 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::capnet::CapabilityTokenV1;
-use crate::netstack::{Ipv4Addr, NetworkStack};
+use crate::netstack::{Ipv4Addr, MacAddr, NetworkStack};
 
 const MAX_STR: usize = 128;
 const RX_BUDGET: usize = 16;
 const MAX_TCP_IO: usize = 1024;
 const MAX_TEMPORAL_SOCKET_PREVIEW: usize = crate::temporal::TEMPORAL_SOCKET_PAYLOAD_PREVIEW_BYTES;
+const TEMPORAL_NETWORK_CONFIG_BYTES: usize = 32;
 
 #[derive(Clone, Copy)]
 enum NetRequest {
@@ -70,6 +71,14 @@ enum NetRequest {
         aux: u32,
         preview_len: u16,
         preview: [u8; MAX_TEMPORAL_SOCKET_PREVIEW],
+    },
+    TemporalApplyNetworkConfig {
+        my_ip: Ipv4Addr,
+        my_mac: [u8; 6],
+        gateway_ip: Ipv4Addr,
+        dns_server: Ipv4Addr,
+        flags: u8,
+        event: u8,
     },
     HttpServerStart { port: u16 },
     HttpServerStop,
@@ -246,6 +255,24 @@ fn handle_request(stack: &mut NetworkStack) {
                 Err(e) => NetResponse::Err(e),
             }
         }
+        NetRequest::TemporalApplyNetworkConfig {
+            my_ip,
+            my_mac,
+            gateway_ip,
+            dns_server,
+            flags,
+            event,
+        } => match stack.temporal_apply_network_config_event(
+            my_ip,
+            MacAddr(my_mac),
+            gateway_ip,
+            dns_server,
+            flags,
+            event,
+        ) {
+            Ok(()) => NetResponse::Ok,
+            Err(e) => NetResponse::Err(e),
+        },
         NetRequest::HttpServerStart { port } => match stack.http_server_start(port) {
             Ok(()) => NetResponse::Ok,
             Err(e) => NetResponse::Err(e),
@@ -507,6 +534,31 @@ pub fn temporal_apply_tcp_connection_event(
         aux,
         preview_len: preview_len as u16,
         preview: preview_buf,
+    })? {
+        NetResponse::Ok => Ok(()),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn temporal_apply_network_config_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() < TEMPORAL_NETWORK_CONFIG_BYTES {
+        return Err("Temporal network payload too short");
+    }
+    if payload[0] != crate::temporal::TEMPORAL_OBJECT_ENCODING_V1
+        || payload[1] != crate::temporal::TEMPORAL_NETWORK_CONFIG_OBJECT
+    {
+        return Err("Temporal network payload type mismatch");
+    }
+    let mut my_mac = [0u8; 6];
+    my_mac.copy_from_slice(&payload[8..14]);
+    match request(NetRequest::TemporalApplyNetworkConfig {
+        my_ip: Ipv4Addr([payload[4], payload[5], payload[6], payload[7]]),
+        my_mac,
+        gateway_ip: Ipv4Addr([payload[14], payload[15], payload[16], payload[17]]),
+        dns_server: Ipv4Addr([payload[18], payload[19], payload[20], payload[21]]),
+        flags: payload[3],
+        event: payload[2],
     })? {
         NetResponse::Ok => Ok(()),
         NetResponse::Err(e) => Err(e),

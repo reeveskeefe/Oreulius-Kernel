@@ -35,6 +35,9 @@ pub const TEMPORAL_CAPABILITY_OBJECT: u8 = 5;
 pub const TEMPORAL_REGISTRY_OBJECT: u8 = 6;
 pub const TEMPORAL_CONSOLE_OBJECT: u8 = 7;
 pub const TEMPORAL_SECURITY_OBJECT: u8 = 8;
+pub const TEMPORAL_CAPNET_OBJECT: u8 = 9;
+pub const TEMPORAL_WASM_SERVICE_POINTER_OBJECT: u8 = 10;
+pub const TEMPORAL_NETWORK_CONFIG_OBJECT: u8 = 11;
 pub const TEMPORAL_SOCKET_EVENT_LISTEN: u8 = 1;
 pub const TEMPORAL_SOCKET_EVENT_ACCEPT: u8 = 2;
 pub const TEMPORAL_SOCKET_EVENT_CONNECT: u8 = 3;
@@ -54,6 +57,9 @@ pub const TEMPORAL_REGISTRY_EVENT_UNREGISTER: u8 = 2;
 pub const TEMPORAL_CONSOLE_EVENT_CREATE: u8 = 1;
 pub const TEMPORAL_CONSOLE_EVENT_STATE: u8 = 2;
 pub const TEMPORAL_SECURITY_EVENT_INTENT_POLICY: u8 = 1;
+pub const TEMPORAL_CAPNET_EVENT_STATE: u8 = 1;
+pub const TEMPORAL_WASM_SERVICE_POINTER_EVENT_STATE: u8 = 1;
+pub const TEMPORAL_NETWORK_CONFIG_EVENT_STATE: u8 = 1;
 pub const TEMPORAL_SOCKET_PAYLOAD_PREVIEW_BYTES: usize = 192;
 const TEMPORAL_PERSIST_MAGIC: u32 = 0x5450_5354; // "TPST"
 const TEMPORAL_PERSIST_VERSION: u16 = 2;
@@ -1682,6 +1688,68 @@ fn temporal_apply_security_payload(
     crate::security::temporal_apply_intent_policy(policy)
 }
 
+fn temporal_apply_capnet_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != "/capnet/state" {
+        return Err("temporal capnet key mismatch");
+    }
+    if payload.len() < 4 {
+        return Err("temporal capnet payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_CAPNET_OBJECT {
+        return Err("temporal capnet payload type mismatch");
+    }
+    if payload[2] != TEMPORAL_CAPNET_EVENT_STATE {
+        return Err("temporal capnet event unsupported");
+    }
+    crate::capnet::temporal_apply_state_payload(payload)
+}
+
+fn temporal_apply_wasm_service_pointer_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != "/wasm/service-pointers" {
+        return Err("temporal wasm key mismatch");
+    }
+    if payload.len() < 4 {
+        return Err("temporal wasm payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1
+        || payload[1] != TEMPORAL_WASM_SERVICE_POINTER_OBJECT
+    {
+        return Err("temporal wasm payload type mismatch");
+    }
+    if payload[2] != TEMPORAL_WASM_SERVICE_POINTER_EVENT_STATE {
+        return Err("temporal wasm event unsupported");
+    }
+    crate::wasm::temporal_apply_service_pointer_registry_payload(payload)
+}
+
+fn temporal_apply_network_config_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != "/network/config" {
+        return Err("temporal network key mismatch");
+    }
+    if payload.len() < 4 {
+        return Err("temporal network payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_NETWORK_CONFIG_OBJECT {
+        return Err("temporal network payload type mismatch");
+    }
+    if payload[2] != TEMPORAL_NETWORK_CONFIG_EVENT_STATE {
+        return Err("temporal network event unsupported");
+    }
+    crate::net_reactor::temporal_apply_network_config_payload(payload)
+}
+
 fn register_object_adapter_internal(
     prefix: &'static str,
     apply: TemporalObjectAdapterFn,
@@ -1728,6 +1796,12 @@ fn ensure_object_adapters_initialized() {
         let _ = register_object_adapter_internal("/registry/service/", temporal_apply_registry_payload);
         let _ = register_object_adapter_internal("/console/object/", temporal_apply_console_payload);
         let _ = register_object_adapter_internal("/security/intent/policy", temporal_apply_security_payload);
+        let _ = register_object_adapter_internal("/capnet/state", temporal_apply_capnet_payload);
+        let _ = register_object_adapter_internal(
+            "/wasm/service-pointers",
+            temporal_apply_wasm_service_pointer_payload,
+        );
+        let _ = register_object_adapter_internal("/network/config", temporal_apply_network_config_payload);
     });
 }
 
@@ -2013,6 +2087,18 @@ pub fn security_intent_policy_object_key() -> &'static str {
     "/security/intent/policy"
 }
 
+pub fn capnet_state_object_key() -> &'static str {
+    "/capnet/state"
+}
+
+pub fn wasm_service_pointer_object_key() -> &'static str {
+    "/wasm/service-pointers"
+}
+
+pub fn network_config_object_key() -> &'static str {
+    "/network/config"
+}
+
 pub fn record_object_event(
     object_key: &str,
     operation: TemporalOperation,
@@ -2273,6 +2359,18 @@ pub fn record_intent_policy_event(policy: &crate::intent_graph::IntentPolicy) ->
     append_u16(&mut payload, policy.alert_cooldown_ms);
     append_u16(&mut payload, policy.restrict_cooldown_ms);
     record_object_write(security_intent_policy_object_key(), &payload)
+}
+
+pub fn record_capnet_state_event(payload: &[u8]) -> Result<u64, TemporalError> {
+    record_object_write(capnet_state_object_key(), payload)
+}
+
+pub fn record_wasm_service_pointer_event(payload: &[u8]) -> Result<u64, TemporalError> {
+    record_object_write(wasm_service_pointer_object_key(), payload)
+}
+
+pub fn record_network_config_event(payload: &[u8]) -> Result<u64, TemporalError> {
+    record_object_write(network_config_object_key(), payload)
 }
 
 pub fn record_write(path: &str, payload: &[u8]) -> Result<u64, TemporalError> {
@@ -2840,6 +2938,54 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         .map_err(|_| "temporal object self-check: security payload unreadable")?;
     if sec_payload.len() < 36 {
         return Err("temporal object self-check: security payload too short");
+    }
+
+    let capnet_payload = [
+        TEMPORAL_OBJECT_ENCODING_V1,
+        TEMPORAL_CAPNET_OBJECT,
+        TEMPORAL_CAPNET_EVENT_STATE,
+        0,
+    ];
+    record_capnet_state_event(&capnet_payload)
+        .map_err(|_| "temporal object self-check: capnet record failed")?;
+    let capnet_latest = latest_version(capnet_state_object_key())
+        .map_err(|_| "temporal object self-check: capnet history missing")?;
+    let capnet_read = read_version(capnet_state_object_key(), capnet_latest.version_id)
+        .map_err(|_| "temporal object self-check: capnet payload unreadable")?;
+    if capnet_read.len() < 4 {
+        return Err("temporal object self-check: capnet payload too short");
+    }
+
+    let wasm_payload = [
+        TEMPORAL_OBJECT_ENCODING_V1,
+        TEMPORAL_WASM_SERVICE_POINTER_OBJECT,
+        TEMPORAL_WASM_SERVICE_POINTER_EVENT_STATE,
+        0,
+    ];
+    record_wasm_service_pointer_event(&wasm_payload)
+        .map_err(|_| "temporal object self-check: wasm service pointer record failed")?;
+    let wasm_latest = latest_version(wasm_service_pointer_object_key())
+        .map_err(|_| "temporal object self-check: wasm service pointer history missing")?;
+    let wasm_read = read_version(wasm_service_pointer_object_key(), wasm_latest.version_id)
+        .map_err(|_| "temporal object self-check: wasm service pointer payload unreadable")?;
+    if wasm_read.len() < 4 {
+        return Err("temporal object self-check: wasm service pointer payload too short");
+    }
+
+    let network_payload = [
+        TEMPORAL_OBJECT_ENCODING_V1,
+        TEMPORAL_NETWORK_CONFIG_OBJECT,
+        TEMPORAL_NETWORK_CONFIG_EVENT_STATE,
+        0,
+    ];
+    record_network_config_event(&network_payload)
+        .map_err(|_| "temporal object self-check: network config record failed")?;
+    let network_latest = latest_version(network_config_object_key())
+        .map_err(|_| "temporal object self-check: network config history missing")?;
+    let network_read = read_version(network_config_object_key(), network_latest.version_id)
+        .map_err(|_| "temporal object self-check: network config payload unreadable")?;
+    if network_read.len() < 4 {
+        return Err("temporal object self-check: network config payload too short");
     }
 
     Ok(())

@@ -1400,6 +1400,245 @@ impl ServicePointerRegistry {
 }
 
 static SERVICE_POINTERS: Mutex<ServicePointerRegistry> = Mutex::new(ServicePointerRegistry::new());
+const SERVICE_POINTER_TEMPORAL_SCHEMA_V1: u8 = 1;
+const SERVICE_POINTER_TEMPORAL_HEADER_BYTES: usize = 12;
+const SERVICE_POINTER_TEMPORAL_ENTRY_BYTES: usize = 40 + (MAX_WASM_TYPE_ARITY * 2);
+
+fn service_pointer_temporal_value_type_tag(ty: ValueType) -> u8 {
+    match ty {
+        ValueType::I32 => 0x7F,
+        ValueType::I64 => 0x7E,
+        ValueType::F32 => 0x7D,
+        ValueType::F64 => 0x7C,
+        ValueType::FuncRef => 0x70,
+        ValueType::ExternRef => 0x6F,
+    }
+}
+
+fn service_pointer_temporal_tag_to_value_type(tag: u8) -> Option<ValueType> {
+    match tag {
+        0x7F => Some(ValueType::I32),
+        0x7E => Some(ValueType::I64),
+        0x7D => Some(ValueType::F32),
+        0x7C => Some(ValueType::F64),
+        0x70 => Some(ValueType::FuncRef),
+        0x6F => Some(ValueType::ExternRef),
+        _ => None,
+    }
+}
+
+fn service_pointer_temporal_read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > data.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn service_pointer_temporal_read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    if offset.saturating_add(4) > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
+}
+
+fn service_pointer_temporal_read_u64(data: &[u8], offset: usize) -> Option<u64> {
+    if offset.saturating_add(8) > data.len() {
+        return None;
+    }
+    Some(u64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]))
+}
+
+fn encode_temporal_service_pointer_registry_payload(event: u8) -> Vec<u8> {
+    let mut active_count = 0usize;
+    {
+        let registry = SERVICE_POINTERS.lock();
+        let mut i = 0usize;
+        while i < registry.entries.len() {
+            if registry.entries[i].active {
+                active_count += 1;
+            }
+            i += 1;
+        }
+    }
+
+    let mut payload = Vec::new();
+    payload.reserve(
+        SERVICE_POINTER_TEMPORAL_HEADER_BYTES
+            .saturating_add(active_count.saturating_mul(SERVICE_POINTER_TEMPORAL_ENTRY_BYTES)),
+    );
+    payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
+    payload.push(crate::temporal::TEMPORAL_WASM_SERVICE_POINTER_OBJECT);
+    payload.push(event);
+    payload.push(SERVICE_POINTER_TEMPORAL_SCHEMA_V1);
+    payload.extend_from_slice(&(MAX_SERVICE_POINTERS as u16).to_le_bytes());
+    payload.extend_from_slice(&(active_count as u16).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+
+    let registry = SERVICE_POINTERS.lock();
+    let mut i = 0usize;
+    while i < registry.entries.len() {
+        let entry = registry.entries[i];
+        if entry.active {
+            payload.extend_from_slice(&entry.object_id.to_le_bytes());
+            payload.extend_from_slice(&entry.owner_pid.0.to_le_bytes());
+            payload.extend_from_slice(&(entry.target_instance as u32).to_le_bytes());
+            payload.extend_from_slice(&(entry.function_index as u32).to_le_bytes());
+            payload.extend_from_slice(&entry.max_calls_per_window.to_le_bytes());
+            payload.extend_from_slice(&entry.calls_in_window.to_le_bytes());
+            payload.extend_from_slice(&entry.window_ticks.to_le_bytes());
+            payload.extend_from_slice(&entry.window_start_tick.to_le_bytes());
+            payload.push(entry.signature.param_count as u8);
+            payload.push(entry.signature.result_count as u8);
+            payload.push(if entry.signature.all_i32 { 1 } else { 0 });
+            payload.push(0);
+
+            let mut p = 0usize;
+            while p < MAX_WASM_TYPE_ARITY {
+                payload.push(service_pointer_temporal_value_type_tag(
+                    entry.signature.param_types[p],
+                ));
+                p += 1;
+            }
+            let mut r = 0usize;
+            while r < MAX_WASM_TYPE_ARITY {
+                payload.push(service_pointer_temporal_value_type_tag(
+                    entry.signature.result_types[r],
+                ));
+                r += 1;
+            }
+        }
+        i += 1;
+    }
+    payload
+}
+
+fn record_temporal_service_pointer_registry_snapshot() {
+    if crate::temporal::is_replay_active() {
+        return;
+    }
+    let payload = encode_temporal_service_pointer_registry_payload(
+        crate::temporal::TEMPORAL_WASM_SERVICE_POINTER_EVENT_STATE,
+    );
+    let _ = crate::temporal::record_wasm_service_pointer_event(&payload);
+}
+
+pub fn temporal_apply_service_pointer_registry_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() < SERVICE_POINTER_TEMPORAL_HEADER_BYTES {
+        return Err("temporal wasm service pointer payload too short");
+    }
+    if payload[0] != crate::temporal::TEMPORAL_OBJECT_ENCODING_V1
+        || payload[1] != crate::temporal::TEMPORAL_WASM_SERVICE_POINTER_OBJECT
+    {
+        return Err("temporal wasm service pointer payload type mismatch");
+    }
+    if payload[2] != crate::temporal::TEMPORAL_WASM_SERVICE_POINTER_EVENT_STATE {
+        return Err("temporal wasm service pointer event unsupported");
+    }
+    if payload[3] != SERVICE_POINTER_TEMPORAL_SCHEMA_V1 {
+        return Err("temporal wasm service pointer schema unsupported");
+    }
+
+    let slot_count = service_pointer_temporal_read_u16(payload, 4)
+        .ok_or("temporal wasm service pointer slots missing")? as usize;
+    if slot_count != MAX_SERVICE_POINTERS {
+        return Err("temporal wasm service pointer slot mismatch");
+    }
+    let entry_count = service_pointer_temporal_read_u16(payload, 6)
+        .ok_or("temporal wasm service pointer count missing")? as usize;
+    if entry_count > MAX_SERVICE_POINTERS {
+        return Err("temporal wasm service pointer entry count out of range");
+    }
+
+    let expected_len = SERVICE_POINTER_TEMPORAL_HEADER_BYTES
+        .saturating_add(entry_count.saturating_mul(SERVICE_POINTER_TEMPORAL_ENTRY_BYTES));
+    if payload.len() != expected_len {
+        return Err("temporal wasm service pointer payload length mismatch");
+    }
+
+    let mut new_entries = [ServicePointerEntry::empty(); MAX_SERVICE_POINTERS];
+    let mut offset = SERVICE_POINTER_TEMPORAL_HEADER_BYTES;
+    let mut i = 0usize;
+    while i < entry_count {
+        let object_id = service_pointer_temporal_read_u64(payload, offset)
+            .ok_or("temporal wasm service pointer object missing")?;
+        let owner_pid = service_pointer_temporal_read_u32(payload, offset + 8)
+            .ok_or("temporal wasm service pointer owner missing")?;
+        let target_instance = service_pointer_temporal_read_u32(payload, offset + 12)
+            .ok_or("temporal wasm service pointer target missing")?;
+        let function_index = service_pointer_temporal_read_u32(payload, offset + 16)
+            .ok_or("temporal wasm service pointer function missing")?;
+        let max_calls_per_window = service_pointer_temporal_read_u16(payload, offset + 20)
+            .ok_or("temporal wasm service pointer max calls missing")?;
+        let calls_in_window = service_pointer_temporal_read_u16(payload, offset + 22)
+            .ok_or("temporal wasm service pointer calls missing")?;
+        let window_ticks = service_pointer_temporal_read_u64(payload, offset + 24)
+            .ok_or("temporal wasm service pointer window ticks missing")?;
+        let window_start_tick = service_pointer_temporal_read_u64(payload, offset + 32)
+            .ok_or("temporal wasm service pointer window start missing")?;
+        let param_count = payload[offset + 40] as usize;
+        let result_count = payload[offset + 41] as usize;
+        let all_i32 = payload[offset + 42] != 0;
+        if param_count > MAX_WASM_TYPE_ARITY || result_count > MAX_WASM_TYPE_ARITY {
+            return Err("temporal wasm service pointer arity out of range");
+        }
+
+        let mut param_types = [ValueType::I32; MAX_WASM_TYPE_ARITY];
+        let mut result_types = [ValueType::I32; MAX_WASM_TYPE_ARITY];
+        let mut p = 0usize;
+        while p < MAX_WASM_TYPE_ARITY {
+            param_types[p] = service_pointer_temporal_tag_to_value_type(payload[offset + 44 + p])
+                .ok_or("temporal wasm service pointer param type invalid")?;
+            p += 1;
+        }
+        let mut r = 0usize;
+        let result_base = offset + 44 + MAX_WASM_TYPE_ARITY;
+        while r < MAX_WASM_TYPE_ARITY {
+            result_types[r] =
+                service_pointer_temporal_tag_to_value_type(payload[result_base + r])
+                    .ok_or("temporal wasm service pointer result type invalid")?;
+            r += 1;
+        }
+
+        new_entries[i] = ServicePointerEntry {
+            active: true,
+            object_id,
+            owner_pid: ProcessId(owner_pid),
+            target_instance: target_instance as usize,
+            function_index: function_index as usize,
+            signature: ParsedFunctionType {
+                param_count,
+                result_count,
+                param_types,
+                result_types,
+                all_i32,
+            },
+            max_calls_per_window,
+            window_ticks,
+            window_start_tick,
+            calls_in_window,
+        };
+        offset += SERVICE_POINTER_TEMPORAL_ENTRY_BYTES;
+        i += 1;
+    }
+
+    let mut registry = SERVICE_POINTERS.lock();
+    registry.entries = new_entries;
+    Ok(())
+}
 
 pub fn service_pointer_exists(object_id: u64) -> bool {
     SERVICE_POINTERS.lock().find_index(object_id).is_some()
@@ -1477,7 +1716,11 @@ fn revoke_service_pointers_for_instance(instance_id: usize) -> usize {
         );
         i += 1;
     }
-    rebound.saturating_add(removed)
+    let changed = rebound.saturating_add(removed);
+    if changed > 0 {
+        record_temporal_service_pointer_registry_snapshot();
+    }
+    changed
 }
 
 pub fn register_service_pointer(
@@ -1562,12 +1805,14 @@ pub fn register_service_pointer(
         }
     };
 
-    Ok(ServicePointerRegistration {
+    let registration = ServicePointerRegistration {
         object_id,
         cap_id,
         target_instance,
         function_index,
-    })
+    };
+    record_temporal_service_pointer_registry_snapshot();
+    Ok(registration)
 }
 
 pub fn revoke_service_pointer(owner_pid: ProcessId, object_id: u64) -> Result<(), &'static str> {
@@ -1584,6 +1829,7 @@ pub fn revoke_service_pointer(owner_pid: ProcessId, object_id: u64) -> Result<()
         CapabilityType::ServicePointer,
         object_id,
     );
+    record_temporal_service_pointer_registry_snapshot();
     Ok(())
 }
 
@@ -1616,6 +1862,9 @@ pub fn revoke_service_pointers_for_owner(owner_pid: ProcessId) -> usize {
             object_ids[i],
         );
         i += 1;
+    }
+    if removed > 0 {
+        record_temporal_service_pointer_registry_snapshot();
     }
     removed
 }

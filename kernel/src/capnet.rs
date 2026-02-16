@@ -41,6 +41,9 @@
 
 #![allow(dead_code)]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use crate::ipc::ProcessId;
 use crate::security::{self, AuditEntry, SecurityEvent};
 use spin::Mutex;
@@ -80,6 +83,15 @@ const CAPNET_MAX_REVOCATION_TOMBSTONES: usize = 256;
 const CAPNET_REVOKE_LOG_MAGIC: u32 = 0x4B56_5243; // "CRVK"
 const CAPNET_REVOKE_LOG_VERSION: u8 = 1;
 const CAPNET_REVOKE_LOG_PAYLOAD_LEN: usize = 36;
+const CAPNET_TEMPORAL_STATE_SCHEMA_V1: u8 = 1;
+const CAPNET_TEMPORAL_HEADER_BYTES: usize = 28;
+const CAPNET_TEMPORAL_PEER_BYTES: usize = 84;
+const CAPNET_TEMPORAL_DELEGATION_BYTES: usize = 80;
+const CAPNET_TEMPORAL_TOMBSTONE_BYTES: usize = 36;
+const CAPNET_TEMPORAL_PAYLOAD_BYTES: usize = CAPNET_TEMPORAL_HEADER_BYTES
+    + CAPNET_MAX_PEERS * CAPNET_TEMPORAL_PEER_BYTES
+    + CAPNET_MAX_DELEGATION_RECORDS * CAPNET_TEMPORAL_DELEGATION_BYTES
+    + CAPNET_MAX_REVOCATION_TOMBSTONES * CAPNET_TEMPORAL_TOMBSTONE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -376,6 +388,321 @@ static CAPNET_DELEGATION_RECORDS: Mutex<[DelegationRecord; CAPNET_MAX_DELEGATION
 static CAPNET_REVOCATION_TOMBSTONES: Mutex<[RevocationTombstone; CAPNET_MAX_REVOCATION_TOMBSTONES]> =
     Mutex::new([RevocationTombstone::empty(); CAPNET_MAX_REVOCATION_TOMBSTONES]);
 static CAPNET_NEXT_REVOCATION_EPOCH: Mutex<u32> = Mutex::new(1);
+
+fn capnet_append_u16(buf: &mut Vec<u8>, value: u16) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn capnet_append_u32(buf: &mut Vec<u8>, value: u32) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn capnet_append_u64(buf: &mut Vec<u8>, value: u64) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn capnet_read_u16_at(data: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > data.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn capnet_read_u32_at(data: &[u8], offset: usize) -> Option<u32> {
+    if offset.saturating_add(4) > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
+}
+
+fn capnet_read_u64_at(data: &[u8], offset: usize) -> Option<u64> {
+    if offset.saturating_add(8) > data.len() {
+        return None;
+    }
+    Some(u64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]))
+}
+
+fn encode_temporal_state_payload(event: u8) -> Vec<u8> {
+    let local_device_id = *CAPNET_LOCAL_DEVICE_ID.lock();
+    let next_revocation_epoch = *CAPNET_NEXT_REVOCATION_EPOCH.lock();
+
+    let mut payload = Vec::new();
+    payload.reserve(CAPNET_TEMPORAL_PAYLOAD_BYTES);
+    payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
+    payload.push(crate::temporal::TEMPORAL_CAPNET_OBJECT);
+    payload.push(event);
+    payload.push(CAPNET_TEMPORAL_STATE_SCHEMA_V1);
+    capnet_append_u16(&mut payload, CAPNET_MAX_PEERS as u16);
+    capnet_append_u16(&mut payload, CAPNET_MAX_DELEGATION_RECORDS as u16);
+    capnet_append_u16(&mut payload, CAPNET_MAX_REVOCATION_TOMBSTONES as u16);
+    capnet_append_u16(&mut payload, 0);
+    capnet_append_u64(&mut payload, local_device_id);
+    capnet_append_u32(&mut payload, next_revocation_epoch);
+    capnet_append_u32(&mut payload, 0);
+
+    {
+        let peers = CAPNET_PEERS.lock();
+        let mut i = 0usize;
+        while i < peers.len() {
+            let peer = peers[i];
+            payload.push(if peer.active { 1 } else { 0 });
+            payload.push(peer.trust as u8);
+            capnet_append_u16(&mut payload, 0);
+            capnet_append_u64(&mut payload, peer.peer_device_id);
+            capnet_append_u64(&mut payload, peer.measurement_hash);
+            capnet_append_u32(&mut payload, peer.key_epoch);
+            capnet_append_u32(&mut payload, 0);
+            capnet_append_u64(&mut payload, peer.key_k0);
+            capnet_append_u64(&mut payload, peer.key_k1);
+            capnet_append_u64(&mut payload, peer.replay_high_nonce);
+            capnet_append_u64(&mut payload, peer.replay_bitmap);
+            capnet_append_u32(&mut payload, peer.ctrl_rx_high_seq);
+            capnet_append_u32(&mut payload, peer.ctrl_tx_next_seq);
+            capnet_append_u64(&mut payload, peer.ctrl_rx_bitmap);
+            capnet_append_u64(&mut payload, peer.last_seen_epoch);
+            i += 1;
+        }
+    }
+
+    {
+        let records = CAPNET_DELEGATION_RECORDS.lock();
+        let mut i = 0usize;
+        while i < records.len() {
+            let rec = records[i];
+            payload.push(if rec.active { 1 } else { 0 });
+            payload.push(rec.cap_type);
+            capnet_append_u16(&mut payload, rec.delegation_depth);
+            capnet_append_u16(&mut payload, rec.max_uses);
+            capnet_append_u16(&mut payload, 0);
+            capnet_append_u32(&mut payload, rec.rights);
+            capnet_append_u32(&mut payload, rec.constraints_flags);
+            capnet_append_u32(&mut payload, rec.max_bytes);
+            capnet_append_u32(&mut payload, rec.revoked_epoch);
+            capnet_append_u64(&mut payload, rec.token_id);
+            capnet_append_u64(&mut payload, rec.issuer_device_id);
+            capnet_append_u64(&mut payload, rec.parent_token_hash);
+            capnet_append_u64(&mut payload, rec.object_id);
+            capnet_append_u64(&mut payload, rec.not_before);
+            capnet_append_u64(&mut payload, rec.expires_at);
+            capnet_append_u64(&mut payload, rec.accepted_at);
+            i += 1;
+        }
+    }
+
+    {
+        let tombstones = CAPNET_REVOCATION_TOMBSTONES.lock();
+        let mut i = 0usize;
+        while i < tombstones.len() {
+            let tomb = tombstones[i];
+            payload.push(if tomb.active { 1 } else { 0 });
+            payload.push(0);
+            payload.push(0);
+            payload.push(0);
+            capnet_append_u64(&mut payload, tomb.token_id);
+            capnet_append_u64(&mut payload, tomb.issuer_device_id);
+            capnet_append_u32(&mut payload, tomb.revocation_epoch);
+            capnet_append_u32(&mut payload, 0);
+            capnet_append_u64(&mut payload, tomb.revoked_at);
+            i += 1;
+        }
+    }
+
+    payload
+}
+
+fn record_temporal_state_snapshot() {
+    if crate::temporal::is_replay_active() {
+        return;
+    }
+    let payload = encode_temporal_state_payload(crate::temporal::TEMPORAL_CAPNET_EVENT_STATE);
+    let _ = crate::temporal::record_capnet_state_event(&payload);
+}
+
+pub fn temporal_apply_state_payload(payload: &[u8]) -> Result<(), &'static str> {
+    if payload.len() != CAPNET_TEMPORAL_PAYLOAD_BYTES {
+        return Err("temporal capnet payload length mismatch");
+    }
+    if payload[0] != crate::temporal::TEMPORAL_OBJECT_ENCODING_V1
+        || payload[1] != crate::temporal::TEMPORAL_CAPNET_OBJECT
+    {
+        return Err("temporal capnet payload type mismatch");
+    }
+    if payload[2] != crate::temporal::TEMPORAL_CAPNET_EVENT_STATE {
+        return Err("temporal capnet event unsupported");
+    }
+    if payload[3] != CAPNET_TEMPORAL_STATE_SCHEMA_V1 {
+        return Err("temporal capnet schema unsupported");
+    }
+
+    let peer_slots = capnet_read_u16_at(payload, 4).ok_or("temporal capnet peers missing")?;
+    let record_slots = capnet_read_u16_at(payload, 6).ok_or("temporal capnet records missing")?;
+    let tomb_slots = capnet_read_u16_at(payload, 8).ok_or("temporal capnet tombstones missing")?;
+    if peer_slots as usize != CAPNET_MAX_PEERS
+        || record_slots as usize != CAPNET_MAX_DELEGATION_RECORDS
+        || tomb_slots as usize != CAPNET_MAX_REVOCATION_TOMBSTONES
+    {
+        return Err("temporal capnet slot mismatch");
+    }
+    let local_device_id = capnet_read_u64_at(payload, 12).ok_or("temporal capnet local missing")?;
+    let next_revocation_epoch =
+        capnet_read_u32_at(payload, 20).ok_or("temporal capnet epoch missing")?;
+
+    let mut offset = CAPNET_TEMPORAL_HEADER_BYTES;
+    {
+        let mut peers = CAPNET_PEERS.lock();
+        let mut i = 0usize;
+        while i < peers.len() {
+            let active = payload[offset] != 0;
+            let trust = PeerTrustPolicy::from_u8(payload[offset + 1]);
+            let peer_device_id =
+                capnet_read_u64_at(payload, offset + 4).ok_or("temporal capnet peer id missing")?;
+            let measurement_hash = capnet_read_u64_at(payload, offset + 12)
+                .ok_or("temporal capnet measurement missing")?;
+            let key_epoch =
+                capnet_read_u32_at(payload, offset + 20).ok_or("temporal capnet epoch missing")?;
+            let key_k0 =
+                capnet_read_u64_at(payload, offset + 28).ok_or("temporal capnet key0 missing")?;
+            let key_k1 =
+                capnet_read_u64_at(payload, offset + 36).ok_or("temporal capnet key1 missing")?;
+            let replay_high_nonce = capnet_read_u64_at(payload, offset + 44)
+                .ok_or("temporal capnet replay nonce missing")?;
+            let replay_bitmap = capnet_read_u64_at(payload, offset + 52)
+                .ok_or("temporal capnet replay bitmap missing")?;
+            let ctrl_rx_high_seq = capnet_read_u32_at(payload, offset + 60)
+                .ok_or("temporal capnet ctrl seq missing")?;
+            let ctrl_tx_next_seq = capnet_read_u32_at(payload, offset + 64)
+                .ok_or("temporal capnet tx seq missing")?;
+            let ctrl_rx_bitmap = capnet_read_u64_at(payload, offset + 68)
+                .ok_or("temporal capnet ctrl bitmap missing")?;
+            let last_seen_epoch = capnet_read_u64_at(payload, offset + 76)
+                .ok_or("temporal capnet last seen missing")?;
+            peers[i] = PeerSession {
+                active,
+                peer_device_id,
+                trust,
+                measurement_hash,
+                key_epoch,
+                key_k0,
+                key_k1,
+                replay_high_nonce,
+                replay_bitmap,
+                ctrl_rx_high_seq,
+                ctrl_rx_bitmap,
+                ctrl_tx_next_seq,
+                last_seen_epoch,
+            };
+            offset += CAPNET_TEMPORAL_PEER_BYTES;
+            i += 1;
+        }
+    }
+
+    {
+        let mut records = CAPNET_DELEGATION_RECORDS.lock();
+        let mut i = 0usize;
+        while i < records.len() {
+            let active = payload[offset] != 0;
+            let cap_type = payload[offset + 1];
+            let delegation_depth = capnet_read_u16_at(payload, offset + 2)
+                .ok_or("temporal capnet delegation depth missing")?;
+            let max_uses = capnet_read_u16_at(payload, offset + 4)
+                .ok_or("temporal capnet max uses missing")?;
+            let rights =
+                capnet_read_u32_at(payload, offset + 8).ok_or("temporal capnet rights missing")?;
+            let constraints_flags = capnet_read_u32_at(payload, offset + 12)
+                .ok_or("temporal capnet constraints missing")?;
+            let max_bytes = capnet_read_u32_at(payload, offset + 16)
+                .ok_or("temporal capnet max bytes missing")?;
+            let revoked_epoch = capnet_read_u32_at(payload, offset + 20)
+                .ok_or("temporal capnet revoked epoch missing")?;
+            let token_id =
+                capnet_read_u64_at(payload, offset + 24).ok_or("temporal capnet token id missing")?;
+            let issuer_device_id = capnet_read_u64_at(payload, offset + 32)
+                .ok_or("temporal capnet issuer missing")?;
+            let parent_token_hash = capnet_read_u64_at(payload, offset + 40)
+                .ok_or("temporal capnet parent missing")?;
+            let object_id =
+                capnet_read_u64_at(payload, offset + 48).ok_or("temporal capnet object missing")?;
+            let not_before = capnet_read_u64_at(payload, offset + 56)
+                .ok_or("temporal capnet not_before missing")?;
+            let expires_at = capnet_read_u64_at(payload, offset + 64)
+                .ok_or("temporal capnet expires_at missing")?;
+            let accepted_at = capnet_read_u64_at(payload, offset + 72)
+                .ok_or("temporal capnet accepted_at missing")?;
+            records[i] = DelegationRecord {
+                active,
+                token_id,
+                issuer_device_id,
+                parent_token_hash,
+                cap_type,
+                delegation_depth,
+                rights,
+                constraints_flags,
+                max_uses,
+                max_bytes,
+                object_id,
+                not_before,
+                expires_at,
+                accepted_at,
+                revoked_epoch,
+            };
+            offset += CAPNET_TEMPORAL_DELEGATION_BYTES;
+            i += 1;
+        }
+    }
+
+    {
+        let mut tombstones = CAPNET_REVOCATION_TOMBSTONES.lock();
+        let mut i = 0usize;
+        while i < tombstones.len() {
+            let active = payload[offset] != 0;
+            let token_id =
+                capnet_read_u64_at(payload, offset + 4).ok_or("temporal capnet tomb token missing")?;
+            let issuer_device_id = capnet_read_u64_at(payload, offset + 12)
+                .ok_or("temporal capnet tomb issuer missing")?;
+            let revocation_epoch = capnet_read_u32_at(payload, offset + 20)
+                .ok_or("temporal capnet tomb epoch missing")?;
+            let revoked_at = capnet_read_u64_at(payload, offset + 28)
+                .ok_or("temporal capnet tomb time missing")?;
+            tombstones[i] = RevocationTombstone {
+                active,
+                token_id,
+                issuer_device_id,
+                revocation_epoch,
+                revoked_at,
+            };
+            offset += CAPNET_TEMPORAL_TOMBSTONE_BYTES;
+            i += 1;
+        }
+    }
+
+    if offset != payload.len() {
+        return Err("temporal capnet payload trailing bytes");
+    }
+
+    {
+        let mut local = CAPNET_LOCAL_DEVICE_ID.lock();
+        *local = if local_device_id == 0 { 1 } else { local_device_id };
+    }
+    {
+        let mut next = CAPNET_NEXT_REVOCATION_EPOCH.lock();
+        *next = next_revocation_epoch.max(1);
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapNetError {
@@ -850,12 +1177,15 @@ fn build_control_frame_for_peer(
     frame.frame_mac = compute_control_mac(peer.key_k0, peer.key_k1, &frame)?;
     peer.last_seen_epoch = crate::pit::get_ticks() as u64;
     let (bytes, len) = encode_control_frame(&frame)?;
-    Ok(EncodedControlFrame {
+    let out = EncodedControlFrame {
         len,
         bytes,
         seq,
         token_id,
-    })
+    };
+    drop(peers);
+    record_temporal_state_snapshot();
+    Ok(out)
 }
 
 pub fn build_hello_frame(peer_device_id: u64, ack: u32) -> Result<EncodedControlFrame, CapNetError> {
@@ -1324,14 +1654,16 @@ pub fn process_incoming_control_payload(
         }
     }
 
-    Ok(ControlRxResult {
+    let out = ControlRxResult {
         msg_type: frame.msg_type,
         peer_device_id: frame.issuer_device_id,
         seq: frame.seq,
         ack: frame.ack,
         token_id: frame.token_id,
         ack_only: (frame.flags & CAPNET_CTRL_FLAG_ACK_ONLY) != 0,
-    })
+    };
+    record_temporal_state_snapshot();
+    Ok(out)
 }
 
 pub fn init() {
@@ -1353,6 +1685,7 @@ pub fn init() {
     // Load persisted revocation tombstones so revoked token IDs remain denied
     // after reboot/restart.
     rebuild_revocation_journal();
+    record_temporal_state_snapshot();
 }
 
 pub fn local_device_id() -> Option<u64> {
@@ -1381,6 +1714,8 @@ pub fn register_peer(
         if entry.active && entry.peer_device_id == peer_device_id {
             entry.trust = trust;
             entry.measurement_hash = measurement_hash;
+            drop(peers);
+            record_temporal_state_snapshot();
             return Ok(());
         }
         if !entry.active && empty_idx.is_none() {
@@ -1405,6 +1740,8 @@ pub fn register_peer(
             ctrl_tx_next_seq: 0,
             last_seen_epoch: 0,
         };
+        drop(peers);
+        record_temporal_state_snapshot();
         Ok(())
     } else {
         Err(CapNetError::PeerTableFull)
@@ -1450,6 +1787,8 @@ pub fn establish_peer_session(
     peer.ctrl_rx_bitmap = 0;
     peer.ctrl_tx_next_seq = 0;
     peer.last_seen_epoch = crate::pit::get_ticks() as u64;
+    drop(peers);
+    record_temporal_state_snapshot();
     Ok(next_epoch)
 }
 
@@ -1479,6 +1818,8 @@ pub fn install_peer_session_key(
     peer.ctrl_rx_bitmap = 0;
     peer.ctrl_tx_next_seq = 0;
     peer.last_seen_epoch = crate::pit::get_ticks() as u64;
+    drop(peers);
+    record_temporal_state_snapshot();
     Ok(())
 }
 
