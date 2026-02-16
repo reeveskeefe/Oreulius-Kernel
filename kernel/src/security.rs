@@ -934,7 +934,11 @@ impl SecurityManager {
     }
 
     pub fn set_intent_policy(&self, policy: IntentPolicy) -> Result<(), IntentPolicyError> {
-        self.intent_graph.lock().set_policy(policy)
+        self.intent_graph.lock().set_policy(policy)?;
+        if !crate::temporal::is_replay_active() {
+            let _ = crate::temporal::record_intent_policy_event(&policy);
+        }
+        Ok(())
     }
 
     pub fn reset_intent_policy(&self) {
@@ -1319,6 +1323,12 @@ static SECURITY: SecurityManager = SecurityManager::new();
 /// Get global security manager
 pub fn security() -> &'static SecurityManager {
     &SECURITY
+}
+
+pub fn temporal_apply_intent_policy(policy: IntentPolicy) -> Result<(), &'static str> {
+    security()
+        .set_intent_policy(policy)
+        .map_err(|e| e.as_str())
 }
 
 /// Initialize security subsystem

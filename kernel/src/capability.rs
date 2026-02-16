@@ -800,7 +800,19 @@ impl CapabilityManager {
         
         if let Some(table) = tables[pid.0 as usize].as_mut() {
             let cap = OreuliaCapability::new(0, object_id, cap_type, rights, origin);
-            table.install(cap)
+            let cap_id = table.install(cap)?;
+            if !crate::temporal::is_replay_active() {
+                let _ = crate::temporal::record_capability_event(
+                    pid.0,
+                    cap_type as u8,
+                    object_id,
+                    rights.bits(),
+                    origin.0,
+                    crate::temporal::TEMPORAL_CAPABILITY_EVENT_GRANT,
+                    cap_id,
+                );
+            }
+            Ok(cap_id)
         } else {
             Err(CapabilityError::TaskNotFound)
         }
@@ -1357,6 +1369,35 @@ pub fn init() {
     CAPABILITY_MANAGER.init_task(kernel_pid);
 }
 
+pub fn temporal_apply_capability_event(
+    pid_raw: u32,
+    cap_type_raw: u8,
+    object_id: u64,
+    rights_bits: u32,
+    origin_pid_raw: u32,
+    event: u8,
+    cap_id_hint: u32,
+) -> Result<(), &'static str> {
+    let pid = ProcessId(pid_raw);
+    let origin = ProcessId(origin_pid_raw);
+    let cap_type = CapabilityType::from_raw(cap_type_raw).ok_or("Invalid capability type")?;
+
+    match event {
+        crate::temporal::TEMPORAL_CAPABILITY_EVENT_GRANT => capability_manager()
+            .grant_capability(pid, object_id, cap_type, Rights::new(rights_bits), origin)
+            .map(|_| ())
+            .map_err(|e| e.as_str()),
+        crate::temporal::TEMPORAL_CAPABILITY_EVENT_REVOKE => {
+            if cap_id_hint != 0 {
+                let _ = capability_manager().revoke_capability(pid, cap_id_hint);
+            }
+            let _ = capability_manager().revoke_matching_for_pid(pid, cap_type, object_id);
+            Ok(())
+        }
+        _ => Err("Unsupported capability temporal event"),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelAccess {
     Send,
@@ -1723,7 +1764,20 @@ impl CapabilityManager {
 
         let mut tables = self.tables.lock();
         let table = tables[idx].as_mut().ok_or("Task not found")?;
-        table.remove(cap_id).map(|_| ()).map_err(|e| e.as_str())
+        let cap = *table.lookup(cap_id).map_err(|e| e.as_str())?;
+        table.remove(cap_id).map_err(|e| e.as_str())?;
+        if !crate::temporal::is_replay_active() {
+            let _ = crate::temporal::record_capability_event(
+                pid.0,
+                cap.cap_type as u8,
+                cap.object_id,
+                cap.rights.bits(),
+                cap.origin.0,
+                crate::temporal::TEMPORAL_CAPABILITY_EVENT_REVOKE,
+                cap_id,
+            );
+        }
+        Ok(())
     }
     
     /// Query capability information (syscall wrapper)
@@ -1777,6 +1831,50 @@ impl CapabilityManager {
                 }
                 i += 1;
             }
+        }
+        revoked
+    }
+
+    pub fn revoke_matching_for_pid(
+        &self,
+        pid: ProcessId,
+        cap_type: CapabilityType,
+        object_id: u64,
+    ) -> usize {
+        let idx = pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return 0;
+        }
+
+        let mut tables = self.tables.lock();
+        let table = match tables[idx].as_mut() {
+            Some(t) => t,
+            None => return 0,
+        };
+
+        let mut revoke_ids = [0u32; MAX_CAPABILITIES];
+        let mut revoke_count = 0usize;
+        for entry in table.entries.iter() {
+            let cap = match entry {
+                Some(c) => c,
+                None => continue,
+            };
+            if cap.cap_type != cap_type || cap.object_id != object_id {
+                continue;
+            }
+            if revoke_count < revoke_ids.len() {
+                revoke_ids[revoke_count] = cap.cap_id;
+                revoke_count += 1;
+            }
+        }
+
+        let mut revoked = 0usize;
+        let mut i = 0usize;
+        while i < revoke_count {
+            if table.remove(revoke_ids[i]).is_ok() {
+                revoked = revoked.saturating_add(1);
+            }
+            i += 1;
         }
         revoked
     }

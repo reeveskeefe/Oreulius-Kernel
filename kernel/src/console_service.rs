@@ -110,6 +110,13 @@ impl ConsoleRegistry {
             .find(|c| c.as_ref().map_or(false, |con| con.object_id == object_id))
             .and_then(|c| c.as_mut())
     }
+
+    fn ensure(&mut self, object_id: u64, owner: ProcessId) -> Result<&mut Console, ConsoleError> {
+        if self.lookup_mut(object_id).is_none() {
+            self.register(Console::new(object_id, owner))?;
+        }
+        self.lookup_mut(object_id).ok_or(ConsoleError::InvalidConsole)
+    }
 }
 
 static CONSOLE_REGISTRY: Mutex<ConsoleRegistry> = Mutex::new(ConsoleRegistry::new());
@@ -138,6 +145,16 @@ pub fn create_console(owner: ProcessId) -> Result<u32, ConsoleError> {
         .grant_capability(owner, object_id, CapabilityType::Console, rights, owner)
         .map_err(|_| ConsoleError::CapabilityFailed)?;
     vga::print_str("[CONSOLE-DEBUG] capability granted\n");
+
+    if !crate::temporal::is_replay_active() {
+        let _ = crate::temporal::record_console_event(
+            object_id,
+            owner.0,
+            0,
+            0,
+            crate::temporal::TEMPORAL_CONSOLE_EVENT_CREATE,
+        );
+    }
     
     Ok(cap_id)
 }
@@ -172,6 +189,15 @@ pub fn console_write(
     
     // Update statistics
     console.write_count += data.len() as u64;
+    if !crate::temporal::is_replay_active() {
+        let _ = crate::temporal::record_console_event(
+            console.object_id,
+            console.owner.0,
+            console.write_count,
+            console.read_count,
+            crate::temporal::TEMPORAL_CONSOLE_EVENT_STATE,
+        );
+    }
     
     Ok(data.len())
 }
@@ -207,6 +233,30 @@ pub fn console_stats(pid: ProcessId, cap_id: u32) -> Result<(u64, u64), ConsoleE
         .ok_or(ConsoleError::InvalidConsole)?;
     
     Ok((console.write_count, console.read_count))
+}
+
+pub fn temporal_apply_console_event(
+    object_id: u64,
+    owner_pid: u32,
+    write_count: u64,
+    read_count: u64,
+    event: u8,
+) -> Result<(), &'static str> {
+    let owner = ProcessId(owner_pid);
+    let mut registry = CONSOLE_REGISTRY.lock();
+    let console = registry
+        .ensure(object_id, owner)
+        .map_err(|e| e.as_str())?;
+    console.owner = owner;
+    if event == crate::temporal::TEMPORAL_CONSOLE_EVENT_CREATE
+        || event == crate::temporal::TEMPORAL_CONSOLE_EVENT_STATE
+    {
+        console.write_count = write_count;
+        console.read_count = read_count;
+    } else {
+        return Err("Unsupported console temporal event");
+    }
+    Ok(())
 }
 
 /// Validate a capability structure (used for IPC capability transfer)

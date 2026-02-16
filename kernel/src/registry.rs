@@ -641,7 +641,20 @@ impl RegistryService {
 
     /// Register a service
     pub fn register_service(&self, offer: ServiceOffer) -> Result<(), RegistryError> {
-        self.registry.lock().register_service(offer)
+        self.registry.lock().register_service(offer)?;
+        if !crate::temporal::is_replay_active() {
+            let _ = crate::temporal::record_registry_service_event(
+                offer.service_type.as_u32(),
+                offer.namespace.as_u32(),
+                offer.channel.0,
+                offer.metadata.provider_pid.0,
+                offer.metadata.version,
+                offer.metadata.max_connections as u32,
+                offer.active_connections as u32,
+                crate::temporal::TEMPORAL_REGISTRY_EVENT_REGISTER,
+            );
+        }
+        Ok(())
     }
 
     /// Unregister a service
@@ -650,7 +663,22 @@ impl RegistryService {
         service_type: ServiceType,
         namespace: ServiceNamespace,
     ) -> Result<(), RegistryError> {
-        self.registry.lock().unregister_service(service_type, namespace)
+        self.registry
+            .lock()
+            .unregister_service(service_type, namespace)?;
+        if !crate::temporal::is_replay_active() {
+            let _ = crate::temporal::record_registry_service_event(
+                service_type.as_u32(),
+                namespace.as_u32(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                crate::temporal::TEMPORAL_REGISTRY_EVENT_UNREGISTER,
+            );
+        }
+        Ok(())
     }
 
     /// Create a root introducer
@@ -749,6 +777,64 @@ static REGISTRY: RegistryService = RegistryService::new();
 /// Get the global service registry
 pub fn registry() -> &'static RegistryService {
     &REGISTRY
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn temporal_apply_service_event(
+    service_type_raw: u32,
+    namespace_raw: u32,
+    channel_raw: u32,
+    provider_pid_raw: u32,
+    version: u32,
+    max_connections: u32,
+    active_connections: u32,
+    event: u8,
+) -> Result<(), &'static str> {
+    fn registry_err(e: RegistryError) -> &'static str {
+        match e {
+            RegistryError::ServiceAlreadyRegistered => "Service already registered",
+            RegistryError::ServiceNotFound => "Service not found",
+            RegistryError::RegistryFull => "Registry full",
+            RegistryError::TooManyIntroducers => "Too many introducers",
+        }
+    }
+
+    let service_type =
+        ServiceType::from_u32(service_type_raw).ok_or("Invalid service type for temporal apply")?;
+    let namespace = ServiceNamespace::from_u32(namespace_raw);
+
+    match event {
+        crate::temporal::TEMPORAL_REGISTRY_EVENT_REGISTER => {
+            let metadata =
+                ServiceMetadata::new(version, max_connections as usize, ProcessId(provider_pid_raw));
+            let mut offer = ServiceOffer::new(
+                service_type,
+                ChannelId(channel_raw),
+                namespace,
+                metadata,
+            );
+            offer.active_connections = core::cmp::min(
+                active_connections as usize,
+                metadata.max_connections,
+            );
+
+            match registry().register_service(offer) {
+                Ok(()) => Ok(()),
+                Err(RegistryError::ServiceAlreadyRegistered) => {
+                    let _ = registry().unregister_service(service_type, namespace);
+                    registry()
+                        .register_service(offer)
+                        .map_err(registry_err)
+                }
+                Err(e) => Err(registry_err(e)),
+            }
+        }
+        crate::temporal::TEMPORAL_REGISTRY_EVENT_UNREGISTER => {
+            let _ = registry().unregister_service(service_type, namespace);
+            Ok(())
+        }
+        _ => Err("Unsupported registry temporal event"),
+    }
 }
 
 /// Initialize the service registry

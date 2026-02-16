@@ -19,7 +19,8 @@ The result is a temporal replay system that is:
 - prefix-routed and type-aware,
 - fail-closed on unsafe partial backend payloads,
 - non-recursive with respect to temporal history generation during replay,
-- no longer hard-gated on VirtIO presence for snapshot persistence logic.
+- no longer hard-gated on VirtIO presence for snapshot persistence logic,
+- extended to core kernel object classes (process, capability, registry service, console object, intent-policy object) in addition to file/network/IPC classes.
 
 ## 2. Scope and Completion Statement
 
@@ -32,12 +33,13 @@ The result is a temporal replay system that is:
 | Temporal replay avoids recording another temporal write | Complete | `write_path_untracked` path used for replay writes |
 | Durability not strictly dependent on VirtIO presence | Complete | Durable backend chain (`disk -> external -> file`) |
 | Runtime pluggability of persistence backend | Complete | `SnapshotBackend` registration API |
+| Core kernel object class replay coverage | Complete | Process/Capability/Registry/Console/Security intent-policy adapters and apply hooks |
 
 ### 2.2 Explicit boundaries (still true)
 
 | Boundary | Current state |
 |---|---|
-| Universal kernel object coverage | Not universal; concrete replay handlers exist for files, TCP listener/conn, IPC channel, and mounted raw block backend write payloads |
+| Universal future extension | New classes still require explicit payload schema + apply hook registration, but dispatcher no longer needs core rewrite |
 | Physical durability guarantee with no durable medium | Impossible by construction; if all durable media fail/unavailable, persistence cannot survive power loss |
 
 ## 3. Formal Model
@@ -99,6 +101,11 @@ where \(a \triangleright b\) means "use \(a\) if successful/present, else fallba
 | `/socket/tcp/listener/` | TCP listeners | net reactor temporal apply |
 | `/socket/tcp/conn/` | TCP connections | net reactor temporal apply |
 | `/ipc/channel/` | IPC channels | IPC temporal apply |
+| `/process/` | Process table objects | process temporal apply (spawn/terminate semantics) |
+| `/capability/` | Capability table objects | capability temporal apply (grant/revoke semantics) |
+| `/registry/service/` | Service registry offers | registry temporal apply (register/unregister) |
+| `/console/object/` | Console objects | console temporal apply |
+| `/security/intent/policy` | Predictive revocation policy object | security temporal apply |
 
 ### 4.2 Concrete object payload formats
 
@@ -108,6 +115,11 @@ where \(a \triangleright b\) means "use \(a\) if successful/present, else fallba
 | TCP listener | temporal object V1 | object type, listener id, port, event, tick |
 | TCP connection | temporal object V1 | object type, conn id, state, local/remote endpoint, event, aux, optional preview |
 | IPC channel | temporal object V1 | object type, channel id, owner pid, payload/cap lengths, queue depth, tick |
+| Process object | temporal object V1 | pid, parent pid, event, name |
+| Capability object | temporal object V1 | pid, cap type, object id, rights, origin, event |
+| Registry service object | temporal object V1 | service type, namespace, channel, provider metadata, event |
+| Console object | temporal object V1 | object id, owner pid, read/write counters, event |
+| Intent policy object | temporal object V1 | full intent-policy scalar fields |
 | Mounted raw backend write | device payload V1/V2 | encoding, object type, event, flags, offset, write length, stored length, tick, data |
 
 ## 5. Backend Replay Semantics (Mounted Raw Device)
@@ -224,4 +236,3 @@ In short: the architecture is now operationally closer to a production-grade tem
 2. Add authenticated encryption for file-fallback snapshots if threat model requires at-rest confidentiality/integrity beyond CRC.
 3. Add end-to-end recovery telemetry counters for backend selection outcomes.
 4. Add fault-injection tests for all fallback transitions (`disk -> ext -> file`) under CI.
-

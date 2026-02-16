@@ -378,6 +378,35 @@ impl ProcessTable {
         Err(ProcessError::TooManyProcesses)
     }
 
+    /// Spawn a process with a caller-specified PID (temporal restore path).
+    pub fn spawn_with_pid(
+        &mut self,
+        pid: Pid,
+        name: &str,
+        parent: Option<Pid>,
+    ) -> Result<(), ProcessError> {
+        if self.get(pid).is_some() {
+            return Ok(());
+        }
+        if self.count >= MAX_PROCESSES {
+            return Err(ProcessError::TooManyProcesses);
+        }
+
+        let process = Process::new(pid, name, parent);
+        for slot in &mut self.processes {
+            if slot.is_none() {
+                *slot = Some(process);
+                self.count += 1;
+                if self.next_pid <= pid.0 {
+                    self.next_pid = pid.0.saturating_add(1);
+                }
+                return Ok(());
+            }
+        }
+
+        Err(ProcessError::TooManyProcesses)
+    }
+
     /// Get a process by PID
     pub fn get(&self, pid: Pid) -> Option<&Process> {
         self.processes.iter().find_map(|p| {
@@ -542,6 +571,15 @@ impl ProcessManager {
         security::security().init_process(pid);
         capability::capability_manager().init_task(pid);
 
+        if !crate::temporal::is_replay_active() {
+            let _ = crate::temporal::record_process_event(
+                pid.0,
+                parent.map(|p| p.0),
+                crate::temporal::TEMPORAL_PROCESS_EVENT_SPAWN,
+                name,
+            );
+        }
+
         Ok(pid)
     }
 
@@ -557,6 +595,27 @@ impl ProcessManager {
         capability::capability_manager().deinit_task(pid);
         security::security().terminate_process(pid);
 
+        if !crate::temporal::is_replay_active() {
+            let _ = crate::temporal::record_process_event(
+                pid.0,
+                None,
+                crate::temporal::TEMPORAL_PROCESS_EVENT_TERMINATE,
+                "",
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn temporal_spawn_with_pid(
+        &self,
+        pid: Pid,
+        name: &str,
+        parent: Option<Pid>,
+    ) -> Result<(), ProcessError> {
+        self.table.lock().spawn_with_pid(pid, name, parent)?;
+        security::security().init_process(pid);
+        capability::capability_manager().init_task(pid);
         Ok(())
     }
 
@@ -749,6 +808,35 @@ pub fn yield_now() {
 /// Get current process ID
 pub fn current_pid() -> Option<Pid> {
     process_manager().current()
+}
+
+pub fn temporal_apply_process_event(
+    pid_raw: u32,
+    parent_raw: u32,
+    event: u8,
+    name_bytes: &[u8],
+) -> Result<(), &'static str> {
+    let pid = Pid::new(pid_raw);
+    match event {
+        crate::temporal::TEMPORAL_PROCESS_EVENT_SPAWN => {
+            let name = core::str::from_utf8(name_bytes).map_err(|_| "Invalid process name")?;
+            let parent = if parent_raw == u32::MAX {
+                None
+            } else {
+                Some(Pid::new(parent_raw))
+            };
+            process_manager()
+                .temporal_spawn_with_pid(pid, name, parent)
+                .map_err(|e| e.as_str())
+        }
+        crate::temporal::TEMPORAL_PROCESS_EVENT_TERMINATE => {
+            if process_manager().get(pid).is_none() {
+                return Ok(());
+            }
+            process_manager().terminate(pid).map_err(|e| e.as_str())
+        }
+        _ => Err("Unsupported process temporal event"),
+    }
 }
 
 // ============================================================================

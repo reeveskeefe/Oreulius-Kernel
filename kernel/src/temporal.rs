@@ -15,6 +15,7 @@ extern crate alloc;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
 use crate::temporal_asm;
@@ -29,6 +30,11 @@ pub const TEMPORAL_OBJECT_ENCODING_V1: u8 = 1;
 pub const TEMPORAL_SOCKET_OBJECT_TCP_CONN: u8 = 1;
 pub const TEMPORAL_SOCKET_OBJECT_TCP_LISTENER: u8 = 2;
 pub const TEMPORAL_CHANNEL_OBJECT: u8 = 3;
+pub const TEMPORAL_PROCESS_OBJECT: u8 = 4;
+pub const TEMPORAL_CAPABILITY_OBJECT: u8 = 5;
+pub const TEMPORAL_REGISTRY_OBJECT: u8 = 6;
+pub const TEMPORAL_CONSOLE_OBJECT: u8 = 7;
+pub const TEMPORAL_SECURITY_OBJECT: u8 = 8;
 pub const TEMPORAL_SOCKET_EVENT_LISTEN: u8 = 1;
 pub const TEMPORAL_SOCKET_EVENT_ACCEPT: u8 = 2;
 pub const TEMPORAL_SOCKET_EVENT_CONNECT: u8 = 3;
@@ -39,6 +45,15 @@ pub const TEMPORAL_SOCKET_EVENT_STATE: u8 = 7;
 pub const TEMPORAL_CHANNEL_EVENT_SEND: u8 = 1;
 pub const TEMPORAL_CHANNEL_EVENT_RECV: u8 = 2;
 pub const TEMPORAL_CHANNEL_EVENT_CLOSE: u8 = 3;
+pub const TEMPORAL_PROCESS_EVENT_SPAWN: u8 = 1;
+pub const TEMPORAL_PROCESS_EVENT_TERMINATE: u8 = 2;
+pub const TEMPORAL_CAPABILITY_EVENT_GRANT: u8 = 1;
+pub const TEMPORAL_CAPABILITY_EVENT_REVOKE: u8 = 2;
+pub const TEMPORAL_REGISTRY_EVENT_REGISTER: u8 = 1;
+pub const TEMPORAL_REGISTRY_EVENT_UNREGISTER: u8 = 2;
+pub const TEMPORAL_CONSOLE_EVENT_CREATE: u8 = 1;
+pub const TEMPORAL_CONSOLE_EVENT_STATE: u8 = 2;
+pub const TEMPORAL_SECURITY_EVENT_INTENT_POLICY: u8 = 1;
 pub const TEMPORAL_SOCKET_PAYLOAD_PREVIEW_BYTES: usize = 192;
 const TEMPORAL_PERSIST_MAGIC: u32 = 0x5450_5354; // "TPST"
 const TEMPORAL_PERSIST_VERSION: u16 = 2;
@@ -1323,12 +1338,68 @@ struct TemporalObjectAdapter {
 static TEMPORAL_OBJECT_ADAPTERS: Mutex<[Option<TemporalObjectAdapter>; MAX_TEMPORAL_ADAPTERS]> =
     Mutex::new([None; MAX_TEMPORAL_ADAPTERS]);
 static TEMPORAL_OBJECT_ADAPTERS_INIT: Once<()> = Once::new();
+static TEMPORAL_REPLAY_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+struct TemporalReplayGuard;
+
+impl TemporalReplayGuard {
+    fn new() -> Self {
+        TEMPORAL_REPLAY_DEPTH.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for TemporalReplayGuard {
+    fn drop(&mut self) {
+        TEMPORAL_REPLAY_DEPTH.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub fn is_replay_active() -> bool {
+    TEMPORAL_REPLAY_DEPTH.load(Ordering::Relaxed) > 0
+}
 
 fn parse_object_id_from_key(path: &str, prefix: &str) -> Option<u32> {
     if !path.starts_with(prefix) {
         return None;
     }
     path[prefix.len()..].parse::<u32>().ok()
+}
+
+fn parse_object_id_u64_from_key(path: &str, prefix: &str) -> Option<u64> {
+    if !path.starts_with(prefix) {
+        return None;
+    }
+    path[prefix.len()..].parse::<u64>().ok()
+}
+
+fn parse_capability_key(path: &str) -> Option<(u32, u8, u64)> {
+    let prefix = "/capability/";
+    if !path.starts_with(prefix) {
+        return None;
+    }
+    let mut parts = path[prefix.len()..].split('/');
+    let pid = parts.next()?.parse::<u32>().ok()?;
+    let cap_type = parts.next()?.parse::<u8>().ok()?;
+    let object_id = parts.next()?.parse::<u64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((pid, cap_type, object_id))
+}
+
+fn parse_registry_key(path: &str) -> Option<(u32, u32)> {
+    let prefix = "/registry/service/";
+    if !path.starts_with(prefix) {
+        return None;
+    }
+    let mut parts = path[prefix.len()..].split('/');
+    let service_type = parts.next()?.parse::<u32>().ok()?;
+    let namespace = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((service_type, namespace))
 }
 
 fn temporal_apply_vfs_file_payload(
@@ -1439,6 +1510,178 @@ fn temporal_apply_ipc_channel_payload(
     crate::ipc::temporal_apply_channel_payload(payload)
 }
 
+fn temporal_apply_process_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if payload.len() < 16 {
+        return Err("temporal process payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_PROCESS_OBJECT {
+        return Err("temporal process payload type mismatch");
+    }
+    let event = payload[2];
+    let pid = read_u32(payload, 4).ok_or("temporal process payload missing pid")?;
+    let key_pid =
+        parse_object_id_from_key(path, "/process/").ok_or("temporal process key parse failed")?;
+    if pid != key_pid {
+        return Err("temporal process payload/key mismatch");
+    }
+    let parent_pid = read_u32(payload, 8).ok_or("temporal process payload missing parent")?;
+    let name_len = read_u16(payload, 12).ok_or("temporal process payload missing name length")? as usize;
+    let name_start = 16usize;
+    let name_end = name_start.saturating_add(name_len);
+    if name_end > payload.len() {
+        return Err("temporal process payload truncated");
+    }
+    crate::process::temporal_apply_process_event(pid, parent_pid, event, &payload[name_start..name_end])
+}
+
+fn temporal_apply_capability_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if payload.len() < 32 {
+        return Err("temporal capability payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_CAPABILITY_OBJECT {
+        return Err("temporal capability payload type mismatch");
+    }
+    let (key_pid, key_cap_type, key_object_id) =
+        parse_capability_key(path).ok_or("temporal capability key parse failed")?;
+    let event = payload[2];
+    let pid = read_u32(payload, 4).ok_or("temporal capability payload missing pid")?;
+    let cap_type = payload[8];
+    let object_id = read_u64(payload, 12).ok_or("temporal capability payload missing object id")?;
+    if pid != key_pid || cap_type != key_cap_type || object_id != key_object_id {
+        return Err("temporal capability payload/key mismatch");
+    }
+    let rights = read_u32(payload, 20).ok_or("temporal capability payload missing rights")?;
+    let origin_pid = read_u32(payload, 24).ok_or("temporal capability payload missing origin")?;
+    let cap_id_hint = read_u32(payload, 28).ok_or("temporal capability payload missing cap id")?;
+    crate::capability::temporal_apply_capability_event(
+        pid,
+        cap_type,
+        object_id,
+        rights,
+        origin_pid,
+        event,
+        cap_id_hint,
+    )
+}
+
+fn temporal_apply_registry_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if payload.len() < 32 {
+        return Err("temporal registry payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_REGISTRY_OBJECT {
+        return Err("temporal registry payload type mismatch");
+    }
+    let (key_service_type, key_namespace) =
+        parse_registry_key(path).ok_or("temporal registry key parse failed")?;
+    let event = payload[2];
+    let service_type = read_u32(payload, 4).ok_or("temporal registry payload missing service type")?;
+    let namespace = read_u32(payload, 8).ok_or("temporal registry payload missing namespace")?;
+    if service_type != key_service_type || namespace != key_namespace {
+        return Err("temporal registry payload/key mismatch");
+    }
+    let channel_id = read_u32(payload, 12).ok_or("temporal registry payload missing channel")?;
+    let provider_pid = read_u32(payload, 16).ok_or("temporal registry payload missing provider")?;
+    let version = read_u32(payload, 20).ok_or("temporal registry payload missing version")?;
+    let max_connections =
+        read_u32(payload, 24).ok_or("temporal registry payload missing max connections")?;
+    let active_connections =
+        read_u32(payload, 28).ok_or("temporal registry payload missing active connections")?;
+    crate::registry::temporal_apply_service_event(
+        service_type,
+        namespace,
+        channel_id,
+        provider_pid,
+        version,
+        max_connections,
+        active_connections,
+        event,
+    )
+}
+
+fn temporal_apply_console_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if payload.len() < 32 {
+        return Err("temporal console payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_CONSOLE_OBJECT {
+        return Err("temporal console payload type mismatch");
+    }
+    let object_id = read_u64(payload, 4).ok_or("temporal console payload missing object id")?;
+    let key_id = parse_object_id_u64_from_key(path, "/console/object/")
+        .ok_or("temporal console key parse failed")?;
+    if object_id != key_id {
+        return Err("temporal console payload/key mismatch");
+    }
+    let event = payload[2];
+    let owner_pid = read_u32(payload, 12).ok_or("temporal console payload missing owner")?;
+    let write_count = read_u64(payload, 16).ok_or("temporal console payload missing write count")?;
+    let read_count = read_u64(payload, 24).ok_or("temporal console payload missing read count")?;
+    crate::console_service::temporal_apply_console_event(
+        object_id,
+        owner_pid,
+        write_count,
+        read_count,
+        event,
+    )
+}
+
+fn temporal_apply_security_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != "/security/intent/policy" {
+        return Err("temporal security key mismatch");
+    }
+    if payload.len() < 36 {
+        return Err("temporal security payload too short");
+    }
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_SECURITY_OBJECT {
+        return Err("temporal security payload type mismatch");
+    }
+    if payload[2] != TEMPORAL_SECURITY_EVENT_INTENT_POLICY {
+        return Err("temporal security event unsupported");
+    }
+    let policy = crate::intent_graph::IntentPolicy {
+        window_seconds: read_u64(payload, 4).ok_or("temporal security payload missing window")?,
+        alert_score: read_u32(payload, 12).ok_or("temporal security payload missing alert score")?,
+        restrict_score: read_u32(payload, 16)
+            .ok_or("temporal security payload missing restrict score")?,
+        isolate_restrictions: read_u16(payload, 20)
+            .ok_or("temporal security payload missing isolate restrictions")?,
+        terminate_restrictions: read_u16(payload, 22)
+            .ok_or("temporal security payload missing terminate restrictions")?,
+        restrict_base_seconds: read_u16(payload, 24)
+            .ok_or("temporal security payload missing restrict base seconds")?,
+        restrict_max_seconds: read_u16(payload, 26)
+            .ok_or("temporal security payload missing restrict max seconds")?,
+        isolate_extension_seconds: read_u16(payload, 28)
+            .ok_or("temporal security payload missing isolate extension")?,
+        severity_step_score: read_u16(payload, 30)
+            .ok_or("temporal security payload missing severity step")?,
+        alert_cooldown_ms: read_u16(payload, 32)
+            .ok_or("temporal security payload missing alert cooldown")?,
+        restrict_cooldown_ms: read_u16(payload, 34)
+            .ok_or("temporal security payload missing restrict cooldown")?,
+    };
+    crate::security::temporal_apply_intent_policy(policy)
+}
+
 fn register_object_adapter_internal(
     prefix: &'static str,
     apply: TemporalObjectAdapterFn,
@@ -1480,6 +1723,11 @@ fn ensure_object_adapters_initialized() {
         );
         let _ = register_object_adapter_internal("/socket/tcp/conn/", temporal_apply_tcp_conn_payload);
         let _ = register_object_adapter_internal("/ipc/channel/", temporal_apply_ipc_channel_payload);
+        let _ = register_object_adapter_internal("/process/", temporal_apply_process_payload);
+        let _ = register_object_adapter_internal("/capability/", temporal_apply_capability_payload);
+        let _ = register_object_adapter_internal("/registry/service/", temporal_apply_registry_payload);
+        let _ = register_object_adapter_internal("/console/object/", temporal_apply_console_payload);
+        let _ = register_object_adapter_internal("/security/intent/policy", temporal_apply_security_payload);
     });
 }
 
@@ -1517,6 +1765,7 @@ fn apply_temporal_payload_to_object(
     mode: TemporalRestoreMode,
 ) -> Result<(), TemporalError> {
     let adapter = find_object_adapter(path).ok_or(TemporalError::AdapterApplyFailed)?;
+    let _replay_guard = TemporalReplayGuard::new();
     (adapter.apply)(path, payload, mode).map_err(|_| TemporalError::AdapterApplyFailed)
 }
 
@@ -1744,11 +1993,34 @@ pub fn ipc_channel_object_key(channel_id: u32) -> String {
     alloc::format!("/ipc/channel/{}", channel_id)
 }
 
+pub fn process_object_key(pid: u32) -> String {
+    alloc::format!("/process/{}", pid)
+}
+
+pub fn capability_object_key(pid: u32, cap_type_raw: u8, object_id: u64) -> String {
+    alloc::format!("/capability/{}/{}/{}", pid, cap_type_raw, object_id)
+}
+
+pub fn registry_service_object_key(service_type_raw: u32, namespace_raw: u32) -> String {
+    alloc::format!("/registry/service/{}/{}", service_type_raw, namespace_raw)
+}
+
+pub fn console_object_key(object_id: u64) -> String {
+    alloc::format!("/console/object/{}", object_id)
+}
+
+pub fn security_intent_policy_object_key() -> &'static str {
+    "/security/intent/policy"
+}
+
 pub fn record_object_event(
     object_key: &str,
     operation: TemporalOperation,
     payload: &[u8],
 ) -> Result<u64, TemporalError> {
+    if is_replay_active() {
+        return Ok(0);
+    }
     let action = audit_action_for_operation(operation);
     let normalized = match normalize_path(object_key) {
         Ok(path) => path,
@@ -1879,6 +2151,128 @@ pub fn record_ipc_channel_event(
     append_u16(&mut payload, queue_depth as u16);
     append_u64(&mut payload, crate::pit::get_ticks());
     record_object_write(&key, &payload)
+}
+
+pub fn record_process_event(
+    pid: u32,
+    parent_pid: Option<u32>,
+    event: u8,
+    name: &str,
+) -> Result<u64, TemporalError> {
+    let key = process_object_key(pid);
+    let name_bytes = name.as_bytes();
+    let capped_len = core::cmp::min(name_bytes.len(), u16::MAX as usize);
+    let mut payload = Vec::new();
+    payload.reserve(16usize.saturating_add(capped_len));
+    payload.push(TEMPORAL_OBJECT_ENCODING_V1);
+    payload.push(TEMPORAL_PROCESS_OBJECT);
+    payload.push(event);
+    payload.push(0);
+    append_u32(&mut payload, pid);
+    append_u32(&mut payload, parent_pid.unwrap_or(u32::MAX));
+    append_u16(&mut payload, capped_len as u16);
+    payload.push(0);
+    payload.push(0);
+    payload.extend_from_slice(&name_bytes[..capped_len]);
+    record_object_write(&key, &payload)
+}
+
+pub fn record_capability_event(
+    pid: u32,
+    cap_type_raw: u8,
+    object_id: u64,
+    rights: u32,
+    origin_pid: u32,
+    event: u8,
+    cap_id_hint: u32,
+) -> Result<u64, TemporalError> {
+    let key = capability_object_key(pid, cap_type_raw, object_id);
+    let mut payload = Vec::new();
+    payload.reserve(32);
+    payload.push(TEMPORAL_OBJECT_ENCODING_V1);
+    payload.push(TEMPORAL_CAPABILITY_OBJECT);
+    payload.push(event);
+    payload.push(0);
+    append_u32(&mut payload, pid);
+    payload.push(cap_type_raw);
+    payload.push(0);
+    payload.push(0);
+    payload.push(0);
+    append_u64(&mut payload, object_id);
+    append_u32(&mut payload, rights);
+    append_u32(&mut payload, origin_pid);
+    append_u32(&mut payload, cap_id_hint);
+    record_object_write(&key, &payload)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_registry_service_event(
+    service_type_raw: u32,
+    namespace_raw: u32,
+    channel_id: u32,
+    provider_pid: u32,
+    version: u32,
+    max_connections: u32,
+    active_connections: u32,
+    event: u8,
+) -> Result<u64, TemporalError> {
+    let key = registry_service_object_key(service_type_raw, namespace_raw);
+    let mut payload = Vec::new();
+    payload.reserve(32);
+    payload.push(TEMPORAL_OBJECT_ENCODING_V1);
+    payload.push(TEMPORAL_REGISTRY_OBJECT);
+    payload.push(event);
+    payload.push(0);
+    append_u32(&mut payload, service_type_raw);
+    append_u32(&mut payload, namespace_raw);
+    append_u32(&mut payload, channel_id);
+    append_u32(&mut payload, provider_pid);
+    append_u32(&mut payload, version);
+    append_u32(&mut payload, max_connections);
+    append_u32(&mut payload, active_connections);
+    record_object_write(&key, &payload)
+}
+
+pub fn record_console_event(
+    object_id: u64,
+    owner_pid: u32,
+    write_count: u64,
+    read_count: u64,
+    event: u8,
+) -> Result<u64, TemporalError> {
+    let key = console_object_key(object_id);
+    let mut payload = Vec::new();
+    payload.reserve(32);
+    payload.push(TEMPORAL_OBJECT_ENCODING_V1);
+    payload.push(TEMPORAL_CONSOLE_OBJECT);
+    payload.push(event);
+    payload.push(0);
+    append_u64(&mut payload, object_id);
+    append_u32(&mut payload, owner_pid);
+    append_u64(&mut payload, write_count);
+    append_u64(&mut payload, read_count);
+    record_object_write(&key, &payload)
+}
+
+pub fn record_intent_policy_event(policy: &crate::intent_graph::IntentPolicy) -> Result<u64, TemporalError> {
+    let mut payload = Vec::new();
+    payload.reserve(36);
+    payload.push(TEMPORAL_OBJECT_ENCODING_V1);
+    payload.push(TEMPORAL_SECURITY_OBJECT);
+    payload.push(TEMPORAL_SECURITY_EVENT_INTENT_POLICY);
+    payload.push(0);
+    append_u64(&mut payload, policy.window_seconds);
+    append_u32(&mut payload, policy.alert_score);
+    append_u32(&mut payload, policy.restrict_score);
+    append_u16(&mut payload, policy.isolate_restrictions);
+    append_u16(&mut payload, policy.terminate_restrictions);
+    append_u16(&mut payload, policy.restrict_base_seconds);
+    append_u16(&mut payload, policy.restrict_max_seconds);
+    append_u16(&mut payload, policy.isolate_extension_seconds);
+    append_u16(&mut payload, policy.severity_step_score);
+    append_u16(&mut payload, policy.alert_cooldown_ms);
+    append_u16(&mut payload, policy.restrict_cooldown_ms);
+    record_object_write(security_intent_policy_object_key(), &payload)
 }
 
 pub fn record_write(path: &str, payload: &[u8]) -> Result<u64, TemporalError> {
@@ -2362,6 +2756,90 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         .map_err(|_| "temporal object self-check: channel payload unreadable")?;
     if channel_payload.len() < 24 {
         return Err("temporal object self-check: channel payload too short");
+    }
+
+    let proc_id = 0x4400_0000u32 | seed;
+    record_process_event(proc_id, Some(1), TEMPORAL_PROCESS_EVENT_SPAWN, "temporal-selfcheck")
+        .map_err(|_| "temporal object self-check: process record failed")?;
+    let proc_key = process_object_key(proc_id);
+    let proc_latest = latest_version(&proc_key)
+        .map_err(|_| "temporal object self-check: process history missing")?;
+    let proc_payload = read_version(&proc_key, proc_latest.version_id)
+        .map_err(|_| "temporal object self-check: process payload unreadable")?;
+    if proc_payload.len() < 16 {
+        return Err("temporal object self-check: process payload too short");
+    }
+
+    let cap_object = 0x55AA_1100u64 | (seed as u64);
+    record_capability_event(
+        1,
+        crate::capability::CapabilityType::Console as u8,
+        cap_object,
+        crate::capability::Rights::CONSOLE_WRITE,
+        0,
+        TEMPORAL_CAPABILITY_EVENT_GRANT,
+        7,
+    )
+    .map_err(|_| "temporal object self-check: capability record failed")?;
+    let cap_key =
+        capability_object_key(1, crate::capability::CapabilityType::Console as u8, cap_object);
+    let cap_latest = latest_version(&cap_key)
+        .map_err(|_| "temporal object self-check: capability history missing")?;
+    let cap_payload = read_version(&cap_key, cap_latest.version_id)
+        .map_err(|_| "temporal object self-check: capability payload unreadable")?;
+    if cap_payload.len() < 32 {
+        return Err("temporal object self-check: capability payload too short");
+    }
+
+    record_registry_service_event(
+        crate::registry::ServiceType::Temporal.as_u32(),
+        crate::registry::ServiceNamespace::Production.as_u32(),
+        10,
+        1,
+        1,
+        8,
+        0,
+        TEMPORAL_REGISTRY_EVENT_REGISTER,
+    )
+    .map_err(|_| "temporal object self-check: registry record failed")?;
+    let reg_key = registry_service_object_key(
+        crate::registry::ServiceType::Temporal.as_u32(),
+        crate::registry::ServiceNamespace::Production.as_u32(),
+    );
+    let reg_latest = latest_version(&reg_key)
+        .map_err(|_| "temporal object self-check: registry history missing")?;
+    let reg_payload = read_version(&reg_key, reg_latest.version_id)
+        .map_err(|_| "temporal object self-check: registry payload unreadable")?;
+    if reg_payload.len() < 32 {
+        return Err("temporal object self-check: registry payload too short");
+    }
+
+    let console_object = 0x6600_0000u64 | (seed as u64);
+    record_console_event(
+        console_object,
+        0,
+        12,
+        0,
+        TEMPORAL_CONSOLE_EVENT_CREATE,
+    )
+    .map_err(|_| "temporal object self-check: console record failed")?;
+    let console_key = console_object_key(console_object);
+    let console_latest = latest_version(&console_key)
+        .map_err(|_| "temporal object self-check: console history missing")?;
+    let console_payload = read_version(&console_key, console_latest.version_id)
+        .map_err(|_| "temporal object self-check: console payload unreadable")?;
+    if console_payload.len() < 32 {
+        return Err("temporal object self-check: console payload too short");
+    }
+
+    record_intent_policy_event(&crate::intent_graph::IntentPolicy::baseline())
+        .map_err(|_| "temporal object self-check: security policy record failed")?;
+    let sec_latest = latest_version(security_intent_policy_object_key())
+        .map_err(|_| "temporal object self-check: security policy history missing")?;
+    let sec_payload = read_version(security_intent_policy_object_key(), sec_latest.version_id)
+        .map_err(|_| "temporal object self-check: security payload unreadable")?;
+    if sec_payload.len() < 36 {
+        return Err("temporal object self-check: security payload too short");
     }
 
     Ok(())
