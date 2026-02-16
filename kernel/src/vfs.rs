@@ -366,6 +366,14 @@ pub fn create_file(path: &str) -> Result<InodeId, &'static str> {
 }
 
 pub fn write_path(path: &str, data: &[u8]) -> Result<usize, &'static str> {
+    write_path_internal(path, data, true)
+}
+
+pub fn write_path_untracked(path: &str, data: &[u8]) -> Result<usize, &'static str> {
+    write_path_internal(path, data, false)
+}
+
+fn write_path_internal(path: &str, data: &[u8], track_temporal: bool) -> Result<usize, &'static str> {
     let normalized_path = normalize_path(path)?;
     let mount_target = {
         let mut vfs = VFS.lock();
@@ -374,7 +382,9 @@ pub fn write_path(path: &str, data: &[u8]) -> Result<usize, &'static str> {
     };
     if let Some((backend, sub)) = mount_target {
         let written = mount_write(backend, &sub, data)?;
-        capture_temporal_backend_write(&normalized_path, 0, data, written);
+        if track_temporal {
+            capture_temporal_backend_write(&normalized_path, 0, data, written);
+        }
         return Ok(written);
     }
 
@@ -394,7 +404,9 @@ pub fn write_path(path: &str, data: &[u8]) -> Result<usize, &'static str> {
             inode.data.extend_from_slice(data);
             inode.meta.size = inode.data.len() as u64;
             inode.meta.mtime = 0;
-            let _ = crate::temporal::record_write(&normalized_path, data);
+            if track_temporal {
+                let _ = crate::temporal::record_write(&normalized_path, data);
+            }
             return Ok(data.len());
         }
     }
@@ -415,7 +427,9 @@ pub fn write_path(path: &str, data: &[u8]) -> Result<usize, &'static str> {
     inode.data.extend_from_slice(data);
     inode.meta.size = inode.data.len() as u64;
     inode.meta.mtime = 0;
-    let _ = crate::temporal::record_write(&normalized_path, data);
+    if track_temporal {
+        let _ = crate::temporal::record_write(&normalized_path, data);
+    }
     Ok(data.len())
 }
 
@@ -765,38 +779,124 @@ fn mount_read(backend: MountBackend, subpath: &str, out: &mut [u8]) -> Result<us
 }
 
 fn mount_write(backend: MountBackend, subpath: &str, data: &[u8]) -> Result<usize, &'static str> {
+    mount_write_at(backend, subpath, 0, data)
+}
+
+fn mount_write_at(
+    backend: MountBackend,
+    subpath: &str,
+    offset: usize,
+    data: &[u8],
+) -> Result<usize, &'static str> {
     match backend {
         MountBackend::VirtioBlock => {
             let sub = normalize_subpath(subpath);
             match sub.as_str() {
-                "/raw" => virtio_write_at(0, data),
+                "/raw" => virtio_write_at(offset, data),
                 _ => Err("Invalid path"),
             }
         }
     }
 }
 
-const TEMPORAL_DEVICE_ENCODING_V1: u8 = 1;
-const TEMPORAL_DEVICE_OBJECT_VIRTIO_RAW: u8 = 1;
-const TEMPORAL_DEVICE_EVENT_WRITE: u8 = 1;
-const TEMPORAL_DEVICE_PREVIEW_BYTES: usize = 192;
+pub const TEMPORAL_DEVICE_ENCODING_V1: u8 = 1;
+pub const TEMPORAL_DEVICE_ENCODING_V2: u8 = 2;
+pub const TEMPORAL_DEVICE_OBJECT_VIRTIO_RAW: u8 = 1;
+pub const TEMPORAL_DEVICE_EVENT_WRITE: u8 = 1;
+pub const TEMPORAL_DEVICE_FLAG_PARTIAL_CAPTURE: u8 = 1 << 0;
+const TEMPORAL_DEVICE_CAPTURE_MAX_BYTES: usize = 240 * 1024;
 
 fn capture_temporal_backend_write(path: &str, offset: usize, data: &[u8], written: usize) {
     let effective = min(written, data.len());
-    let preview_len = min(effective, TEMPORAL_DEVICE_PREVIEW_BYTES);
+    let encoded_write_len = min(effective, u32::MAX as usize);
+    let stored_len = min(encoded_write_len, TEMPORAL_DEVICE_CAPTURE_MAX_BYTES);
+    let flags = if stored_len < effective {
+        TEMPORAL_DEVICE_FLAG_PARTIAL_CAPTURE
+    } else {
+        0
+    };
     let mut payload = Vec::new();
-    payload.reserve(28usize.saturating_add(preview_len));
-    payload.push(TEMPORAL_DEVICE_ENCODING_V1);
+    payload.reserve(28usize.saturating_add(stored_len));
+    payload.push(TEMPORAL_DEVICE_ENCODING_V2);
     payload.push(TEMPORAL_DEVICE_OBJECT_VIRTIO_RAW);
     payload.push(TEMPORAL_DEVICE_EVENT_WRITE);
-    payload.push(0);
+    payload.push(flags);
     payload.extend_from_slice(&(offset as u64).to_le_bytes());
-    payload.extend_from_slice(&(effective as u32).to_le_bytes());
-    payload.extend_from_slice(&(preview_len as u16).to_le_bytes());
-    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&(encoded_write_len as u32).to_le_bytes());
+    payload.extend_from_slice(&(stored_len as u32).to_le_bytes());
     payload.extend_from_slice(&crate::pit::get_ticks().to_le_bytes());
-    payload.extend_from_slice(&data[..preview_len]);
+    payload.extend_from_slice(&data[..stored_len]);
     let _ = crate::temporal::record_object_write(path, &payload);
+}
+
+pub fn temporal_try_apply_backend_payload(
+    path: &str,
+    payload: &[u8],
+) -> Result<bool, &'static str> {
+    let normalized_path = normalize_path(path)?;
+    let (backend, sub) = {
+        let mut vfs = VFS.lock();
+        vfs.init();
+        match vfs.find_mount(&normalized_path) {
+            Some(v) => v,
+            None => return Ok(false),
+        }
+    };
+
+    if normalize_subpath(&sub) != "/raw" {
+        return Ok(false);
+    }
+
+    let (offset, write_len, stored_len, data_offset, flags) =
+        decode_temporal_backend_payload(payload)?;
+
+    if (flags & TEMPORAL_DEVICE_FLAG_PARTIAL_CAPTURE) != 0 {
+        return Err("Temporal backend payload is partial");
+    }
+    if stored_len != write_len {
+        return Err("Temporal backend payload length mismatch");
+    }
+    if data_offset.saturating_add(stored_len) > payload.len() {
+        return Err("Temporal backend payload truncated");
+    }
+
+    let write_data = &payload[data_offset..data_offset + stored_len];
+    let offset_usize = usize::try_from(offset).map_err(|_| "Temporal backend offset overflow")?;
+    let written = mount_write_at(backend, &sub, offset_usize, write_data)?;
+    if written != write_data.len() {
+        return Err("Temporal backend short write");
+    }
+    Ok(true)
+}
+
+fn decode_temporal_backend_payload(
+    payload: &[u8],
+) -> Result<(u64, usize, usize, usize, u8), &'static str> {
+    if payload.len() < 28 {
+        return Err("Temporal backend payload too short");
+    }
+    if payload[1] != TEMPORAL_DEVICE_OBJECT_VIRTIO_RAW {
+        return Err("Temporal backend object mismatch");
+    }
+    if payload[2] != TEMPORAL_DEVICE_EVENT_WRITE {
+        return Err("Temporal backend event mismatch");
+    }
+
+    let flags = payload[3];
+    let offset = read_u64(payload, 4).ok_or("Temporal backend offset missing")?;
+    match payload[0] {
+        TEMPORAL_DEVICE_ENCODING_V1 => {
+            let write_len = read_u32(payload, 12).ok_or("Temporal backend write length missing")? as usize;
+            let stored_len = read_u16(payload, 16).ok_or("Temporal backend stored length missing")? as usize;
+            Ok((offset, write_len, stored_len, 28, flags))
+        }
+        TEMPORAL_DEVICE_ENCODING_V2 => {
+            let write_len = read_u32(payload, 12).ok_or("Temporal backend write length missing")? as usize;
+            let stored_len = read_u32(payload, 16).ok_or("Temporal backend stored length missing")? as usize;
+            Ok((offset, write_len, stored_len, 28, flags))
+        }
+        _ => Err("Temporal backend encoding unsupported"),
+    }
 }
 
 fn generate_partition_text() -> Result<String, &'static str> {
@@ -909,6 +1009,41 @@ fn virtio_write_at(offset: usize, data: &[u8]) -> Result<usize, &'static str> {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > data.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    if offset.saturating_add(4) > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
+}
+
+fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
+    if offset.saturating_add(8) > data.len() {
+        return None;
+    }
+    Some(u64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]))
+}
 
 fn normalize_path(path: &str) -> Result<String, &'static str> {
     if !path.starts_with('/') {

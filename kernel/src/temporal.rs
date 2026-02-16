@@ -1336,7 +1336,11 @@ fn temporal_apply_vfs_file_payload(
     payload: &[u8],
     _mode: TemporalRestoreMode,
 ) -> Result<(), &'static str> {
-    crate::vfs::write_path(path, payload).map(|_| ())
+    match crate::vfs::temporal_try_apply_backend_payload(path, payload) {
+        Ok(true) => Ok(()),
+        Ok(false) => crate::vfs::write_path_untracked(path, payload).map(|_| ()),
+        Err(e) => Err(e),
+    }
 }
 
 fn temporal_apply_tcp_listener_payload(

@@ -248,6 +248,8 @@ const SNAPSHOT_DISK_HEADER_BYTES: usize = 64;
 const SNAPSHOT_DISK_SLOT_GENERIC: u16 = 1;
 const SNAPSHOT_DISK_SLOT_TEMPORAL: u16 = 2;
 const SNAPSHOT_DISK_SECTOR_BYTES: usize = 512;
+const SNAPSHOT_FILE_PATH_GENERIC: &str = "/.oreulia_snapshot_generic";
+const SNAPSHOT_FILE_PATH_TEMPORAL: &str = "/.oreulia_snapshot_temporal";
 
 /// A snapshot captures point-in-time state
 pub struct Snapshot {
@@ -290,6 +292,12 @@ impl Snapshot {
     pub fn read(&self) -> (&[u8], usize) {
         (&self.data[..self.data_len], self.last_offset)
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct SnapshotBackend {
+    pub write: fn(slot_id: u16, snapshot: &Snapshot) -> Result<(), PersistenceError>,
+    pub read: fn(slot_id: u16) -> Result<Option<Snapshot>, PersistenceError>,
 }
 
 #[derive(Clone, Copy)]
@@ -462,8 +470,8 @@ pub struct PersistenceService {
     snapshot: Snapshot,
     /// Dedicated temporal-object snapshot state
     temporal_snapshot: Snapshot,
-    /// True once we have attempted disk snapshot recovery with a block device.
-    disk_recovery_attempted: bool,
+    /// True once we have attempted snapshot recovery from all durable backends.
+    durable_recovery_attempted: bool,
 }
 
 impl PersistenceService {
@@ -473,7 +481,7 @@ impl PersistenceService {
             log: AppendLog::new(),
             snapshot: Snapshot::new(),
             temporal_snapshot: Snapshot::new(),
-            disk_recovery_attempted: false,
+            durable_recovery_attempted: false,
         }
     }
 
@@ -502,7 +510,7 @@ impl PersistenceService {
         }
 
         self.snapshot.write(data, last_offset)?;
-        let _ = Self::write_snapshot_to_disk(SNAPSHOT_DISK_SLOT_GENERIC, &self.snapshot);
+        let _ = Self::write_snapshot_to_durable(SNAPSHOT_DISK_SLOT_GENERIC, &self.snapshot);
         Ok(())
     }
 
@@ -526,7 +534,7 @@ impl PersistenceService {
             return Err(PersistenceError::PermissionDenied);
         }
         self.temporal_snapshot.write(data, last_offset)?;
-        let _ = Self::write_snapshot_to_disk(SNAPSHOT_DISK_SLOT_TEMPORAL, &self.temporal_snapshot);
+        let _ = Self::write_snapshot_to_durable(SNAPSHOT_DISK_SLOT_TEMPORAL, &self.temporal_snapshot);
         Ok(())
     }
 
@@ -546,9 +554,48 @@ impl PersistenceService {
         (self.log.count(), MAX_LOG_RECORDS)
     }
 
+    fn write_snapshot_to_durable(slot_id: u16, snapshot: &Snapshot) -> Result<(), PersistenceError> {
+        match Self::write_snapshot_to_disk(slot_id, snapshot) {
+            Ok(()) => Ok(()),
+            Err(PersistenceError::BackendUnavailable) => {
+                match Self::write_snapshot_to_external(slot_id, snapshot) {
+                    Ok(()) => Ok(()),
+                    Err(PersistenceError::BackendUnavailable) => {
+                        Self::write_snapshot_to_file(slot_id, snapshot)
+                    }
+                    Err(_) => Self::write_snapshot_to_file(slot_id, snapshot),
+                }
+            }
+            Err(primary_err) => match Self::write_snapshot_to_file(slot_id, snapshot) {
+                Ok(()) => Ok(()),
+                Err(_) => Err(primary_err),
+            },
+        }
+    }
+
+    fn read_snapshot_from_durable(slot_id: u16) -> Result<Option<Snapshot>, PersistenceError> {
+        match Self::read_snapshot_from_disk(slot_id) {
+            Ok(Some(snapshot)) => Ok(Some(snapshot)),
+            Ok(None) | Err(PersistenceError::BackendUnavailable) => {
+                match Self::read_snapshot_from_external(slot_id) {
+                    Ok(Some(snapshot)) => Ok(Some(snapshot)),
+                    Ok(None) | Err(PersistenceError::BackendUnavailable) => {
+                        Self::read_snapshot_from_file(slot_id)
+                    }
+                    Err(_) => Self::read_snapshot_from_file(slot_id),
+                }
+            }
+            Err(primary_err) => match Self::read_snapshot_from_file(slot_id) {
+                Ok(Some(snapshot)) => Ok(Some(snapshot)),
+                Ok(None) => Err(primary_err),
+                Err(_) => Err(primary_err),
+            },
+        }
+    }
+
     fn write_snapshot_to_disk(slot_id: u16, snapshot: &Snapshot) -> Result<(), PersistenceError> {
         if !crate::virtio_blk::is_present() {
-            return Ok(());
+            return Err(PersistenceError::BackendUnavailable);
         }
 
         let base_lba = snapshot_slot_base_lba(slot_id).ok_or(PersistenceError::InvalidRecord)?;
@@ -593,7 +640,7 @@ impl PersistenceService {
 
     fn read_snapshot_from_disk(slot_id: u16) -> Result<Option<Snapshot>, PersistenceError> {
         if !crate::virtio_blk::is_present() {
-            return Ok(None);
+            return Err(PersistenceError::BackendUnavailable);
         }
 
         let base_lba = match snapshot_slot_base_lba(slot_id) {
@@ -652,21 +699,144 @@ impl PersistenceService {
         Ok(Some(snapshot))
     }
 
-    fn recover_snapshots_from_disk(&mut self) {
-        if self.disk_recovery_attempted || !crate::virtio_blk::is_present() {
+    fn snapshot_file_path(slot_id: u16) -> Option<&'static str> {
+        match slot_id {
+            SNAPSHOT_DISK_SLOT_GENERIC => Some(SNAPSHOT_FILE_PATH_GENERIC),
+            SNAPSHOT_DISK_SLOT_TEMPORAL => Some(SNAPSHOT_FILE_PATH_TEMPORAL),
+            _ => None,
+        }
+    }
+
+    fn write_snapshot_to_file(slot_id: u16, snapshot: &Snapshot) -> Result<(), PersistenceError> {
+        let path = Self::snapshot_file_path(slot_id).ok_or(PersistenceError::InvalidRecord)?;
+        let total_bytes = SNAPSHOT_DISK_HEADER_BYTES.saturating_add(snapshot.data_len);
+        if total_bytes > MAX_SNAPSHOT_SIZE.saturating_add(SNAPSHOT_DISK_HEADER_BYTES) {
+            return Err(PersistenceError::SnapshotTooLarge);
+        }
+
+        let data = &snapshot.data[..snapshot.data_len];
+        let header = SnapshotDiskHeader {
+            magic: SNAPSHOT_DISK_MAGIC,
+            version: SNAPSHOT_DISK_VERSION,
+            slot_id,
+            data_len: snapshot.data_len as u32,
+            last_offset: snapshot.last_offset as u64,
+            timestamp: snapshot.timestamp,
+            crc32: LogRecord::compute_crc32(data),
+        };
+        let header_bytes = encode_snapshot_header(header);
+
+        let mut image = Vec::new();
+        image.resize(total_bytes, 0);
+        image[..SNAPSHOT_DISK_HEADER_BYTES].copy_from_slice(&header_bytes);
+        if !data.is_empty() {
+            image[SNAPSHOT_DISK_HEADER_BYTES..SNAPSHOT_DISK_HEADER_BYTES + data.len()]
+                .copy_from_slice(data);
+        }
+
+        crate::vfs::write_path_untracked(path, &image)
+            .map(|_| ())
+            .map_err(|_| PersistenceError::InvalidRecord)
+    }
+
+    fn write_snapshot_to_external(
+        slot_id: u16,
+        snapshot: &Snapshot,
+    ) -> Result<(), PersistenceError> {
+        let backend = {
+            let guard = EXTERNAL_SNAPSHOT_BACKEND.lock();
+            *guard
+        };
+        match backend {
+            Some(backend) => (backend.write)(slot_id, snapshot),
+            None => Err(PersistenceError::BackendUnavailable),
+        }
+    }
+
+    fn read_snapshot_from_file(slot_id: u16) -> Result<Option<Snapshot>, PersistenceError> {
+        let path = match Self::snapshot_file_path(slot_id) {
+            Some(path) => path,
+            None => return Ok(None),
+        };
+
+        let mut image = Vec::new();
+        image.resize(
+            SNAPSHOT_DISK_HEADER_BYTES.saturating_add(MAX_SNAPSHOT_SIZE),
+            0,
+        );
+        let read = match crate::vfs::read_path(path, &mut image) {
+            Ok(n) => n,
+            Err(_) => return Ok(None),
+        };
+        if read < SNAPSHOT_DISK_HEADER_BYTES {
+            return Ok(None);
+        }
+        image.truncate(read);
+
+        let header = match decode_snapshot_header(&image[..SNAPSHOT_DISK_HEADER_BYTES]) {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+        if header.magic != SNAPSHOT_DISK_MAGIC
+            || header.version != SNAPSHOT_DISK_VERSION
+            || header.slot_id != slot_id
+        {
+            return Ok(None);
+        }
+
+        let data_len = header.data_len as usize;
+        if data_len > MAX_SNAPSHOT_SIZE {
+            return Err(PersistenceError::SnapshotTooLarge);
+        }
+        let payload_off = SNAPSHOT_DISK_HEADER_BYTES;
+        let payload_end = payload_off.saturating_add(data_len);
+        if payload_end > image.len() {
+            return Err(PersistenceError::InvalidRecord);
+        }
+        let payload = &image[payload_off..payload_end];
+        if LogRecord::compute_crc32(payload) != header.crc32 {
+            return Err(PersistenceError::CrcMismatch);
+        }
+
+        let mut snapshot = Snapshot::new();
+        if !payload.is_empty() {
+            snapshot.data[..payload.len()].copy_from_slice(payload);
+        }
+        snapshot.data_len = payload.len();
+        snapshot.last_offset = header.last_offset as usize;
+        snapshot.timestamp = header.timestamp;
+        Ok(Some(snapshot))
+    }
+
+    fn read_snapshot_from_external(slot_id: u16) -> Result<Option<Snapshot>, PersistenceError> {
+        let backend = {
+            let guard = EXTERNAL_SNAPSHOT_BACKEND.lock();
+            *guard
+        };
+        match backend {
+            Some(backend) => (backend.read)(slot_id),
+            None => Err(PersistenceError::BackendUnavailable),
+        }
+    }
+
+    fn recover_snapshots_from_durable(&mut self) {
+        if self.durable_recovery_attempted {
             return;
         }
         if self.snapshot.data_len == 0 {
-            if let Ok(Some(restored)) = Self::read_snapshot_from_disk(SNAPSHOT_DISK_SLOT_GENERIC) {
+            if let Ok(Some(restored)) = Self::read_snapshot_from_durable(SNAPSHOT_DISK_SLOT_GENERIC)
+            {
                 self.snapshot = restored;
             }
         }
         if self.temporal_snapshot.data_len == 0 {
-            if let Ok(Some(restored)) = Self::read_snapshot_from_disk(SNAPSHOT_DISK_SLOT_TEMPORAL) {
+            if let Ok(Some(restored)) =
+                Self::read_snapshot_from_durable(SNAPSHOT_DISK_SLOT_TEMPORAL)
+            {
                 self.temporal_snapshot = restored;
             }
         }
-        self.disk_recovery_attempted = true;
+        self.durable_recovery_attempted = true;
     }
 }
 
@@ -689,6 +859,8 @@ pub enum PersistenceError {
     InvalidRecord,
     /// CRC mismatch
     CrcMismatch,
+    /// Durable backend unavailable
+    BackendUnavailable,
 }
 
 impl fmt::Display for PersistenceError {
@@ -700,6 +872,7 @@ impl fmt::Display for PersistenceError {
             PersistenceError::PermissionDenied => write!(f, "Permission denied"),
             PersistenceError::InvalidRecord => write!(f, "Invalid record"),
             PersistenceError::CrcMismatch => write!(f, "CRC mismatch"),
+            PersistenceError::BackendUnavailable => write!(f, "Durable backend unavailable"),
         }
     }
 }
@@ -712,14 +885,25 @@ use spin::Mutex;
 
 /// Global persistence service instance
 static PERSISTENCE: Mutex<PersistenceService> = Mutex::new(PersistenceService::new());
+static EXTERNAL_SNAPSHOT_BACKEND: Mutex<Option<SnapshotBackend>> = Mutex::new(None);
 
 /// Get a reference to the global persistence service
 pub fn persistence() -> &'static Mutex<PersistenceService> {
     &PERSISTENCE
 }
 
+pub fn register_snapshot_backend(backend: SnapshotBackend) {
+    let mut slot = EXTERNAL_SNAPSHOT_BACKEND.lock();
+    *slot = Some(backend);
+}
+
+pub fn clear_snapshot_backend() {
+    let mut slot = EXTERNAL_SNAPSHOT_BACKEND.lock();
+    *slot = None;
+}
+
 /// Initialize the persistence service
 pub fn init() {
     let mut svc = PERSISTENCE.lock();
-    svc.recover_snapshots_from_disk();
+    svc.recover_snapshots_from_durable();
 }
