@@ -444,6 +444,25 @@ impl PageDirectory {
     }
 }
 
+impl Drop for PageDirectory {
+    fn drop(&mut self) {
+        let mut i = 0usize;
+        while i < PAGE_ENTRIES {
+            let entry = self.entries[i];
+            if entry.is_present() {
+                let table_addr = entry.table_addr();
+                if table_addr != 0 {
+                    unsafe {
+                        drop(Box::from_raw(table_addr as *mut PageTable));
+                    }
+                    self.entries[i] = PageDirEntry::empty();
+                }
+            }
+            i += 1;
+        }
+    }
+}
+
 impl PageTable {
     pub const fn new() -> Self {
         PageTable {

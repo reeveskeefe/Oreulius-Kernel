@@ -7559,24 +7559,35 @@ fn execute_wasm_binop(a: i32, op: &str, b: i32) {
     print_i32(b);
     vga::print_str("\n");
 
-    // Build WASM bytecode based on operation
-    let bytecode = match op {
-        "+" => build_binop_bytecode(0x6A), // i32.add
-        "-" => build_binop_bytecode(0x6B), // i32.sub
-        "*" => build_binop_bytecode(0x6C), // i32.mul
-        "/" => build_binop_bytecode(0x6D), // i32.div_s
-        "%" => build_binop_bytecode(0x6F), // i32.rem_s
-        "&" => build_binop_bytecode(0x71), // i32.and
-        "|" => build_binop_bytecode(0x72), // i32.or
-        "^" => build_binop_bytecode(0x73), // i32.xor
-        "<<" => build_binop_bytecode(0x74), // i32.shl
-        ">>" => build_binop_bytecode(0x75), // i32.shr_s
-        "==" => build_binop_bytecode(0x46), // i32.eq
-        "!=" => build_binop_bytecode(0x47), // i32.ne
-        "<" => build_binop_bytecode(0x48), // i32.lt_s
-        ">" => build_binop_bytecode(0x4A), // i32.gt_s
-        "<=" => build_binop_bytecode(0x4C), // i32.le_s
-        ">=" => build_binop_bytecode(0x4E), // i32.ge_s
+    let result = match op {
+        "+" => Ok(a.wrapping_add(b)),
+        "-" => Ok(a.wrapping_sub(b)),
+        "*" => Ok(a.wrapping_mul(b)),
+        "/" => {
+            if b == 0 {
+                Err("Division by zero")
+            } else {
+                Ok(a.wrapping_div(b))
+            }
+        }
+        "%" => {
+            if b == 0 {
+                Err("Division by zero")
+            } else {
+                Ok(a.wrapping_rem(b))
+            }
+        }
+        "&" => Ok(a & b),
+        "|" => Ok(a | b),
+        "^" => Ok(a ^ b),
+        "<<" => Ok(a.wrapping_shl((b as u32) & 31)),
+        ">>" => Ok(a.wrapping_shr((b as u32) & 31)),
+        "==" => Ok(if a == b { 1 } else { 0 }),
+        "!=" => Ok(if a != b { 1 } else { 0 }),
+        "<" => Ok(if a < b { 1 } else { 0 }),
+        ">" => Ok(if a > b { 1 } else { 0 }),
+        "<=" => Ok(if a <= b { 1 } else { 0 }),
+        ">=" => Ok(if a >= b { 1 } else { 0 }),
         "**" => {
             execute_wasm_power(a, b);
             return;
@@ -7585,73 +7596,21 @@ fn execute_wasm_binop(a: i32, op: &str, b: i32) {
             execute_wasm_minmax(a, b, op);
             return;
         }
-        _ => {
-            vga::print_str("Error: Unknown operation '");
-            vga::print_str(op);
-            vga::print_str("'\n");
-            vga::print_str("Type 'calculate-help' for available operations\n");
-            return;
-        }
+        _ => Err("Unknown operation"),
     };
 
-    let pid = process::current_pid().unwrap_or(ipc::ProcessId::new(1));
-
-    let instance_id = match wasm::wasm_runtime().instantiate(&bytecode[..7], pid) {
-        Ok(id) => id,
-        Err(e) => {
-            vga::print_str("Error: ");
-            vga::print_str(e.as_str());
+    match result {
+        Ok(result) => {
+            vga::print_str("Result: ");
+            print_i32(result);
             vga::print_str("\n");
-            return;
         }
-    };
-
-    let _ = wasm::wasm_runtime().get_instance_mut(instance_id, |instance| {
-        let func = wasm::Function {
-            code_offset: 0,
-            code_len: 7,
-            param_count: 2,
-            result_count: 1,
-            local_count: 2,
-        };
-        
-        if let Ok(_) = instance.module.add_function(func) {
-            let _ = instance.stack.push(wasm::Value::I32(a));
-            let _ = instance.stack.push(wasm::Value::I32(b));
-
-            match instance.call(0) {
-                Ok(_) => {
-                    match instance.stack.pop() {
-                        Ok(wasm::Value::I32(result)) => {
-                            vga::print_str("Result: ");
-                            print_i32(result);
-                            vga::print_str("\n");
-                        }
-                        _ => vga::print_str("Error: Failed to get result\n"),
-                    }
-                }
-                Err(e) => {
-                    vga::print_str("Error: ");
-                    vga::print_str(e.as_str());
-                    vga::print_str("\n");
-                }
-            }
+        Err(msg) => {
+            vga::print_str("Error: ");
+            vga::print_str(msg);
+            vga::print_str("\n");
         }
-    });
-
-    let _ = wasm::wasm_runtime().destroy(instance_id);
-}
-
-/// Build WASM bytecode for a binary operation
-fn build_binop_bytecode(opcode: u8) -> [u8; 10] {
-    [
-        0x20, 0x00,  // local.get 0
-        0x20, 0x01,  // local.get 1
-        opcode,      // operation
-        0x0F,        // return
-        0x0B,        // end
-        0, 0, 0,     // padding
-    ]
+    }
 }
 
 /// Execute power operation (a ** b)

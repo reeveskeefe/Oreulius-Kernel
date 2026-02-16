@@ -3704,7 +3704,18 @@ impl WasmInstance {
             let _ = self.stack.pop()?;
         }
 
-        let ret = {
+        let jit_state_base = self.jit_state as *mut u8;
+        let jit_state_pages = self.jit_state_pages;
+        let (
+            stack_ptr,
+            sp_ptr,
+            locals_ptr,
+            instr_fuel,
+            mem_fuel,
+            trap_code,
+            shadow_stack_ptr,
+            shadow_sp_ptr,
+        ) = {
             let state = self.jit_state_mut()?;
             for i in 0..locals_total {
                 state.locals[i] = locals_buf[i];
@@ -3714,27 +3725,33 @@ impl WasmInstance {
             state.mem_fuel = MAX_MEMORY_OPS_PER_CALL as u32;
             state.trap_code = 0;
             state.shadow_sp = 0;
-            let locals_ptr = state.locals.as_mut_ptr();
-            let instr_fuel = &mut state.instr_fuel as *mut u32;
-            let mem_fuel = &mut state.mem_fuel as *mut u32;
-            let trap_code = &mut state.trap_code as *mut i32;
-            let shadow_stack_ptr = state.shadow_stack.as_mut_ptr();
-            let shadow_sp_ptr = &mut state.shadow_sp as *mut usize;
-            // Fuzz harness: call directly without per-iteration sandbox allocation.
-            call_jit_direct(
-                jit_entry,
+            (
                 state.stack.as_mut_ptr(),
                 &mut state.sp as *mut usize,
-                mem_ptr,
-                mem_len,
-                locals_ptr,
-                instr_fuel,
-                mem_fuel,
-                trap_code,
-                shadow_stack_ptr,
-                shadow_sp_ptr,
+                state.locals.as_mut_ptr(),
+                &mut state.instr_fuel as *mut u32,
+                &mut state.mem_fuel as *mut u32,
+                &mut state.trap_code as *mut i32,
+                state.shadow_stack.as_mut_ptr(),
+                &mut state.shadow_sp as *mut usize,
             )
         };
+        let ret = call_jit_sandboxed(
+            jit_entry,
+            stack_ptr,
+            sp_ptr,
+            mem_ptr,
+            mem_len,
+            locals_ptr,
+            instr_fuel,
+            mem_fuel,
+            trap_code,
+            shadow_stack_ptr,
+            shadow_sp_ptr,
+            jit_state_base,
+            jit_state_pages,
+            &mut self.jit_user_pages,
+        );
         let (trap_code_val, instr_left, mem_left) = {
             let state = self.jit_state()?;
             (state.trap_code, state.instr_fuel, state.mem_fuel)
@@ -4225,25 +4242,41 @@ impl WasmInstance {
                 }
             }
 
-            // Enforce function stack shape at exit: preserve only declared results.
-            let values = if let Some(sig) = signature {
-                self.collect_typed_suffix(&sig.result_types, sig.result_count)?
+            // Enforce function stack shape at exit without heap allocation.
+            if func.result_count > MAX_WASM_TYPE_ARITY {
+                return Err(WasmError::InvalidModule);
+            }
+            let mut values = [Value::I32(0); MAX_WASM_TYPE_ARITY];
+            let values_len = if let Some(sig) = signature {
+                if sig.result_count > MAX_WASM_TYPE_ARITY || self.stack.len() < sig.result_count {
+                    return Err(WasmError::StackUnderflow);
+                }
+                let start = self.stack.len() - sig.result_count;
+                let mut i = 0usize;
+                while i < sig.result_count {
+                    let value = self.stack.get(start + i)?;
+                    if !value.matches_type(sig.result_types[i]) {
+                        return Err(WasmError::TypeMismatch);
+                    }
+                    values[i] = value;
+                    i += 1;
+                }
+                sig.result_count
             } else {
                 if self.stack.len() < func.result_count {
                     return Err(WasmError::StackUnderflow);
                 }
                 let start = self.stack.len() - func.result_count;
-                let mut out = Vec::with_capacity(func.result_count);
                 let mut i = 0usize;
                 while i < func.result_count {
-                    out.push(self.stack.get(start + i)?);
+                    values[i] = self.stack.get(start + i)?;
                     i += 1;
                 }
-                out
+                func.result_count
             };
             self.truncate_to_height(stack_height_before_call)?;
             let mut i = 0usize;
-            while i < values.len() {
+            while i < values_len {
                 self.stack.push(values[i])?;
                 i += 1;
             }
@@ -8020,40 +8053,6 @@ fn call_jit_kernel(
         )
     };
     unsafe { paging::set_page_directory(old_cr3) };
-    jit_fault_exit();
-    unsafe { idt_asm::fast_sti_restore(flags) };
-    ret
-}
-
-fn call_jit_direct(
-    jit_entry: JitExecInfo,
-    stack_ptr: *mut i32,
-    sp_ptr: *mut usize,
-    mem_ptr: *mut u8,
-    mem_len: usize,
-    locals_ptr: *mut i32,
-    instr_fuel: *mut u32,
-    mem_fuel: *mut u32,
-    trap_code: *mut i32,
-    shadow_stack_ptr: *mut u32,
-    shadow_sp_ptr: *mut usize,
-) -> i32 {
-    let flags = unsafe { idt_asm::fast_cli_save() };
-    jit_fault_enter(trap_code);
-    let ret = unsafe {
-        (jit_entry.entry)(
-            stack_ptr,
-            sp_ptr,
-            mem_ptr,
-            mem_len,
-            locals_ptr,
-            instr_fuel,
-            mem_fuel,
-            trap_code,
-            shadow_stack_ptr,
-            shadow_sp_ptr,
-        )
-    };
     jit_fault_exit();
     unsafe { idt_asm::fast_sti_restore(flags) };
     ret
