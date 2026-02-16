@@ -51,9 +51,9 @@ For `WasmLoad`/`WasmCall` syscall execution, the kernel now enforces strict bina
 - Enforces typed frame exits for `else` and `end`, including implicit-`else` `if` paths.
 - Enforces function exit stack shaping: only declared function results survive call return.
 - Supports `i32`/`i64`/`f32`/`f64` value types in signatures and interpreter arithmetic coverage for core add/sub/mul/div paths.
-- Includes binary conformance corpus coverage for typed control-flow modules, plus negative parser fuzzing.
-
-Current profile explicitly does **not** yet implement exception-handling/reference-type proposal opcodes end-to-end.
+- Supports reference-types profile semantics with type plumbing (`funcref`/`externref`) and MVP opcodes (`ref.null`, `ref.is_null`, `ref.func`).
+- Supports exception-handling profile semantics with tags + typed payloads (`try`, `catch`, `catch_all`, `throw`, `rethrow`, `delegate`) and structured unwind.
+- Includes proposal-level binary conformance corpus coverage for typed control-flow, reference-types MVP, and exception-handling paths, plus negative parser fuzzing.
 
 This means `WasmLoad` now admits only modules compatible with the hardened interpreter profile and rejects malformed binaries early.
 

@@ -102,6 +102,12 @@ pub const MAX_WASM_TABLE_ENTRIES: usize = 256;
 /// Maximum parameter/result arity tracked per function or block type.
 pub const MAX_WASM_TYPE_ARITY: usize = 64;
 
+/// Maximum number of exception tags per module (EH profile).
+pub const MAX_WASM_TAGS: usize = 32;
+
+/// Maximum exception payload arity tracked by EH runtime.
+pub const MAX_EXCEPTION_ARITY: usize = 8;
+
 /// Maximum number of syscall-loaded modules tracked in the kernel.
 pub const MAX_SYSCALL_MODULES: usize = 32;
 
@@ -119,6 +125,9 @@ pub const MAX_CALL_DEPTH: usize = 64;
 
 /// Maximum structured control frames active in one function body.
 pub const MAX_CONTROL_STACK: usize = 128;
+
+/// Maximum catch clauses tracked per try frame.
+pub const MAX_TRY_CATCHES: usize = 8;
 
 /// Number of initial JIT calls to validate against interpreter
 pub const JIT_VALIDATE_CALLS: u8 = 2;
@@ -243,6 +252,8 @@ pub enum ValueType {
     I64,
     F32,  // Not implemented in v0
     F64,  // Not implemented in v0
+    FuncRef,
+    ExternRef,
 }
 
 /// WASM values on the stack
@@ -252,6 +263,8 @@ pub enum Value {
     I64(i64),
     F32(f32),
     F64(f64),
+    FuncRef(Option<usize>),
+    ExternRef(Option<u32>),
 }
 
 impl Value {
@@ -287,6 +300,28 @@ impl Value {
         Ok(self.as_i32()? as u32)
     }
 
+    pub fn as_funcref(&self) -> Result<Option<usize>, WasmError> {
+        match self {
+            Value::FuncRef(v) => Ok(*v),
+            _ => Err(WasmError::TypeMismatch),
+        }
+    }
+
+    pub fn as_externref(&self) -> Result<Option<u32>, WasmError> {
+        match self {
+            Value::ExternRef(v) => Ok(*v),
+            _ => Err(WasmError::TypeMismatch),
+        }
+    }
+
+    pub fn is_null_ref(&self) -> Result<bool, WasmError> {
+        match self {
+            Value::FuncRef(v) => Ok(v.is_none()),
+            Value::ExternRef(v) => Ok(v.is_none()),
+            _ => Err(WasmError::TypeMismatch),
+        }
+    }
+
     pub fn matches_type(&self, ty: ValueType) -> bool {
         matches!(
             (self, ty),
@@ -294,6 +329,8 @@ impl Value {
                 | (Value::I64(_), ValueType::I64)
                 | (Value::F32(_), ValueType::F32)
                 | (Value::F64(_), ValueType::F64)
+                | (Value::FuncRef(_), ValueType::FuncRef)
+                | (Value::ExternRef(_), ValueType::ExternRef)
         )
     }
 
@@ -303,6 +340,8 @@ impl Value {
             ValueType::I64 => Value::I64(0),
             ValueType::F32 => Value::F32(0.0),
             ValueType::F64 => Value::F64(0.0),
+            ValueType::FuncRef => Value::FuncRef(None),
+            ValueType::ExternRef => Value::ExternRef(None),
         }
     }
 }
@@ -321,12 +360,18 @@ pub enum Opcode {
     Loop = 0x03,
     If = 0x04,
     Else = 0x05,
+    Try = 0x06,
+    Catch = 0x07,
+    Throw = 0x08,
+    Rethrow = 0x09,
     End = 0x0B,
     Br = 0x0C,
     BrIf = 0x0D,
     Return = 0x0F,
     Call = 0x10,
     CallIndirect = 0x11,
+    Delegate = 0x18,
+    CatchAll = 0x19,
     
     // Parametric
     Drop = 0x1A,
@@ -397,6 +442,11 @@ pub enum Opcode {
     F64Sub = 0xA1,
     F64Mul = 0xA2,
     F64Div = 0xA3,
+
+    // Reference types
+    RefNull = 0xD0,
+    RefIsNull = 0xD1,
+    RefFunc = 0xD2,
 }
 
 impl Opcode {
@@ -408,12 +458,18 @@ impl Opcode {
             0x03 => Some(Opcode::Loop),
             0x04 => Some(Opcode::If),
             0x05 => Some(Opcode::Else),
+            0x06 => Some(Opcode::Try),
+            0x07 => Some(Opcode::Catch),
+            0x08 => Some(Opcode::Throw),
+            0x09 => Some(Opcode::Rethrow),
             0x0B => Some(Opcode::End),
             0x0C => Some(Opcode::Br),
             0x0D => Some(Opcode::BrIf),
             0x0F => Some(Opcode::Return),
             0x10 => Some(Opcode::Call),
             0x11 => Some(Opcode::CallIndirect),
+            0x18 => Some(Opcode::Delegate),
+            0x19 => Some(Opcode::CatchAll),
             0x1A => Some(Opcode::Drop),
             0x1B => Some(Opcode::Select),
             0x20 => Some(Opcode::LocalGet),
@@ -453,6 +509,9 @@ impl Opcode {
             0xA1 => Some(Opcode::F64Sub),
             0xA2 => Some(Opcode::F64Mul),
             0xA3 => Some(Opcode::F64Div),
+            0xD0 => Some(Opcode::RefNull),
+            0xD1 => Some(Opcode::RefIsNull),
+            0xD2 => Some(Opcode::RefFunc),
             _ => None,
         }
     }
@@ -571,7 +630,12 @@ fn validate_bytecode(code: &[u8]) -> Result<(), WasmError> {
             | Opcode::GlobalSet
             | Opcode::Br
             | Opcode::BrIf
-            | Opcode::Call => {
+            | Opcode::Call
+            | Opcode::Catch
+            | Opcode::Throw
+            | Opcode::Rethrow
+            | Opcode::Delegate
+            | Opcode::RefFunc => {
                 let (_v, n) = read_uleb128_validate(code, pc)?;
                 pc += n;
             }
@@ -587,7 +651,7 @@ fn validate_bytecode(code: &[u8]) -> Result<(), WasmError> {
                 let (_off, n2) = read_uleb128_validate(code, pc)?;
                 pc += n2;
             }
-            Opcode::Block | Opcode::Loop | Opcode::If => {
+            Opcode::Block | Opcode::Loop | Opcode::If | Opcode::Try => {
                 let n = read_blocktype_width_validate(code, pc)?;
                 pc += n;
             }
@@ -598,6 +662,16 @@ fn validate_bytecode(code: &[u8]) -> Result<(), WasmError> {
                 let zero = code[pc];
                 pc += 1;
                 if zero != 0 {
+                    return Err(WasmError::InvalidModule);
+                }
+            }
+            Opcode::RefNull => {
+                if pc >= code.len() {
+                    return Err(WasmError::UnexpectedEndOfCode);
+                }
+                let ty = code[pc];
+                pc += 1;
+                if ty != 0x70 && ty != 0x6F {
                     return Err(WasmError::InvalidModule);
                 }
             }
@@ -612,7 +686,7 @@ fn read_blocktype_width_validate(bytes: &[u8], offset: usize) -> Result<usize, W
         return Err(WasmError::UnexpectedEndOfCode);
     }
     let b = bytes[offset];
-    if b == 0x40 || b == 0x7F || b == 0x7E || b == 0x7D || b == 0x7C {
+    if b == 0x40 || b == 0x7F || b == 0x7E || b == 0x7D || b == 0x7C || b == 0x70 || b == 0x6F {
         return Ok(1);
     }
     let (_idx, n) = read_uleb128_validate(bytes, offset)?;
@@ -651,6 +725,8 @@ fn parse_valtype(bytes: &[u8], offset: &mut usize) -> Result<ValueType, WasmErro
         0x7E => Ok(ValueType::I64),
         0x7D => Ok(ValueType::F32),
         0x7C => Ok(ValueType::F64),
+        0x70 => Ok(ValueType::FuncRef),
+        0x6F => Ok(ValueType::ExternRef),
         _ => Err(WasmError::InvalidModule),
     }
 }
@@ -767,6 +843,18 @@ fn parse_init_expr(
                 return Err(WasmError::InvalidModule);
             }
             slot.init
+        }
+        0xD0 => {
+            let ref_type = read_byte_at(bytes, offset)?;
+            match ref_type {
+                0x70 => Value::FuncRef(None),
+                0x6F => Value::ExternRef(None),
+                _ => return Err(WasmError::InvalidModule),
+            }
+        }
+        0xD2 => {
+            let idx = read_uleb128_at(bytes, offset)? as usize;
+            Value::FuncRef(Some(idx))
         }
         _ => return Err(WasmError::InvalidModule),
     };
@@ -1501,6 +1589,13 @@ struct GlobalTemplate {
     init: Value,
 }
 
+#[derive(Clone, Copy)]
+struct ExceptionTagType {
+    type_index: usize,
+    param_count: usize,
+    param_types: [ValueType; MAX_EXCEPTION_ARITY],
+}
+
 #[derive(Clone)]
 struct DataSegment {
     offset: usize,
@@ -1544,6 +1639,10 @@ pub struct WasmModule {
     table_entries: [Option<usize>; MAX_WASM_TABLE_ENTRIES],
     /// Current table size.
     table_size: usize,
+    /// Exception tag signatures.
+    tag_types: [Option<ExceptionTagType>; MAX_WASM_TAGS],
+    /// Number of tags.
+    tag_count: usize,
     /// Active data segments applied at instantiation.
     data_segments: Vec<DataSegment>,
     /// Backward-compat path for hand-crafted bytecode using call >=1000 as host.
@@ -1568,6 +1667,8 @@ impl WasmModule {
             global_count: 0,
             table_entries: [None; MAX_WASM_TABLE_ENTRIES],
             table_size: 0,
+            tag_types: [None; MAX_WASM_TAGS],
+            tag_count: 0,
             data_segments: Vec::new(),
             legacy_host_call_encoding: true,
         }
@@ -1597,6 +1698,8 @@ impl WasmModule {
         self.global_count = 0;
         self.table_entries = [None; MAX_WASM_TABLE_ENTRIES];
         self.table_size = 0;
+        self.tag_types = [None; MAX_WASM_TAGS];
+        self.tag_count = 0;
         self.data_segments.clear();
     }
 
@@ -1648,6 +1751,7 @@ impl WasmModule {
         let mut saw_element = false;
         let mut saw_data = false;
         let mut saw_data_count = false;
+        let mut saw_tag = false;
 
         let mut defined_type_indices: Vec<usize> = Vec::new();
         let mut function_bodies: Vec<(usize, usize, usize)> = Vec::new();
@@ -2054,6 +2158,47 @@ impl WasmModule {
                     saw_data_count = true;
                     data_count_hint = Some(read_uleb128_at(bytes, &mut cursor)? as usize);
                 }
+                13 => {
+                    if saw_tag {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_tag = true;
+                    let tag_total = read_uleb128_at(bytes, &mut cursor)? as usize;
+                    if tag_total > MAX_WASM_TAGS {
+                        return Err(WasmError::InvalidModule);
+                    }
+                    let mut i = 0usize;
+                    while i < tag_total {
+                        let attr = read_uleb128_at(bytes, &mut cursor)?;
+                        if attr != 0 {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        let type_idx = read_uleb128_at(bytes, &mut cursor)? as usize;
+                        if type_idx >= self.type_count {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        let sig = self.type_signatures[type_idx].ok_or(WasmError::InvalidModule)?;
+                        if sig.result_count != 0 {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        if sig.param_count > MAX_EXCEPTION_ARITY {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        let mut params = [ValueType::I32; MAX_EXCEPTION_ARITY];
+                        let mut p = 0usize;
+                        while p < sig.param_count {
+                            params[p] = sig.param_types[p];
+                            p += 1;
+                        }
+                        self.tag_types[i] = Some(ExceptionTagType {
+                            type_index: type_idx,
+                            param_count: sig.param_count,
+                            param_types: params,
+                        });
+                        i += 1;
+                    }
+                    self.tag_count = tag_total;
+                }
                 _ => {
                     return Err(WasmError::InvalidModule);
                 }
@@ -2143,6 +2288,18 @@ impl WasmModule {
         }
 
         self.data_segments = data_segments;
+
+        let mut g = 0usize;
+        while g < self.global_count {
+            if let Some(global) = self.global_templates[g] {
+                if let Value::FuncRef(Some(func_idx)) = global.init {
+                    if func_idx >= self.total_function_count() {
+                        return Err(WasmError::InvalidModule);
+                    }
+                }
+            }
+            g += 1;
+        }
 
         if let Some(start_idx) = self.start_function {
             if start_idx >= self.total_function_count() {
@@ -2273,6 +2430,16 @@ impl WasmModule {
         let ty_idx = self.function_type_index.get(combined).and_then(|x| *x)?;
         self.type_signatures.get(ty_idx).and_then(|x| *x)
     }
+
+    fn tag_signature(&self, tag_idx: usize) -> Result<ExceptionTagType, WasmError> {
+        if tag_idx >= self.tag_count {
+            return Err(WasmError::InvalidModule);
+        }
+        self.tag_types
+            .get(tag_idx)
+            .and_then(|x| *x)
+            .ok_or(WasmError::InvalidModule)
+    }
 }
 
 // ============================================================================
@@ -2332,6 +2499,24 @@ enum ControlKind {
     Block,
     Loop,
     If,
+    Try,
+}
+
+#[derive(Clone, Copy)]
+struct TryScanInfo {
+    end_pc: usize,
+    catch_count: usize,
+    catch_tags: [Option<usize>; MAX_TRY_CATCHES],
+    catch_pcs: [usize; MAX_TRY_CATCHES],
+    catch_all_pc: Option<usize>,
+    delegate_depth: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct ThrownException {
+    tag_idx: usize,
+    value_count: usize,
+    values: [Value; MAX_EXCEPTION_ARITY],
 }
 
 #[derive(Clone, Copy)]
@@ -2345,6 +2530,15 @@ struct ControlFrame {
     result_count: usize,
     param_types: [ValueType; MAX_WASM_TYPE_ARITY],
     result_types: [ValueType; MAX_WASM_TYPE_ARITY],
+    catch_count: usize,
+    catch_tags: [Option<usize>; MAX_TRY_CATCHES],
+    catch_pcs: [usize; MAX_TRY_CATCHES],
+    catch_all_pc: Option<usize>,
+    delegate_depth: Option<usize>,
+    in_exception_handler: bool,
+    active_exception_tag: Option<usize>,
+    active_exception_count: usize,
+    active_exception_values: [Value; MAX_EXCEPTION_ARITY],
 }
 
 /// A running WASM instance
@@ -2516,6 +2710,14 @@ impl WasmInstance {
                 results[0] = ValueType::F64;
                 Ok((0, params, 1, results))
             }
+            0x70 => {
+                results[0] = ValueType::FuncRef;
+                Ok((0, params, 1, results))
+            }
+            0x6F => {
+                results[0] = ValueType::ExternRef;
+                Ok((0, params, 1, results))
+            }
             _ => {
                 self.pc = self.pc.saturating_sub(1);
                 let ty_idx = self.read_uleb128()? as usize;
@@ -2568,6 +2770,190 @@ impl WasmInstance {
         Ok(())
     }
 
+    fn parse_reftype_immediate(byte: u8) -> Result<ValueType, WasmError> {
+        match byte {
+            0x70 => Ok(ValueType::FuncRef),
+            0x6F => Ok(ValueType::ExternRef),
+            _ => Err(WasmError::InvalidModule),
+        }
+    }
+
+    fn default_control_frame(
+        &self,
+        kind: ControlKind,
+        start_pc: usize,
+        end_pc: usize,
+        else_pc: Option<usize>,
+        stack_height: usize,
+        param_count: usize,
+        result_count: usize,
+        param_types: [ValueType; MAX_WASM_TYPE_ARITY],
+        result_types: [ValueType; MAX_WASM_TYPE_ARITY],
+    ) -> ControlFrame {
+        ControlFrame {
+            kind,
+            start_pc,
+            end_pc,
+            else_pc,
+            stack_height,
+            param_count,
+            result_count,
+            param_types,
+            result_types,
+            catch_count: 0,
+            catch_tags: [None; MAX_TRY_CATCHES],
+            catch_pcs: [0; MAX_TRY_CATCHES],
+            catch_all_pc: None,
+            delegate_depth: None,
+            in_exception_handler: false,
+            active_exception_tag: None,
+            active_exception_count: 0,
+            active_exception_values: [Value::I32(0); MAX_EXCEPTION_ARITY],
+        }
+    }
+
+    fn default_thrown_exception(&self, tag_idx: usize) -> ThrownException {
+        ThrownException {
+            tag_idx,
+            value_count: 0,
+            values: [Value::I32(0); MAX_EXCEPTION_ARITY],
+        }
+    }
+
+    fn collect_exception_payload(&mut self, tag_idx: usize) -> Result<ThrownException, WasmError> {
+        let tag = self.module.tag_signature(tag_idx)?;
+        let mut typed = [ValueType::I32; MAX_WASM_TYPE_ARITY];
+        let mut i = 0usize;
+        while i < tag.param_count {
+            typed[i] = tag.param_types[i];
+            i += 1;
+        }
+        let values = self.collect_typed_suffix(&typed, tag.param_count)?;
+        self.truncate_to_height(self.stack.len().saturating_sub(tag.param_count))?;
+        let mut exn = self.default_thrown_exception(tag_idx);
+        exn.value_count = tag.param_count;
+        let mut v = 0usize;
+        while v < values.len() {
+            exn.values[v] = values[v];
+            v += 1;
+        }
+        Ok(exn)
+    }
+
+    fn find_exception_handler(
+        &self,
+        frame: ControlFrame,
+        tag_idx: usize,
+    ) -> Option<(usize, bool)> {
+        let mut i = 0usize;
+        while i < frame.catch_count {
+            if frame.catch_tags[i] == Some(tag_idx) {
+                return Some((frame.catch_pcs[i], true));
+            }
+            i += 1;
+        }
+        frame.catch_all_pc.map(|pc| (pc, false))
+    }
+
+    fn activate_exception_on_frame(
+        &mut self,
+        frame_idx: usize,
+        handler_pc: usize,
+        push_payload: bool,
+        thrown: ThrownException,
+    ) -> Result<(), WasmError> {
+        let mut frame = self.control_stack[frame_idx].ok_or(WasmError::InvalidModule)?;
+        frame.in_exception_handler = true;
+        frame.active_exception_tag = Some(thrown.tag_idx);
+        frame.active_exception_count = thrown.value_count;
+        frame.active_exception_values = [Value::I32(0); MAX_EXCEPTION_ARITY];
+        let mut i = 0usize;
+        while i < thrown.value_count {
+            frame.active_exception_values[i] = thrown.values[i];
+            i += 1;
+        }
+        self.control_stack[frame_idx] = Some(frame);
+        self.control_depth = frame_idx + 1;
+        self.truncate_to_height(frame.stack_height)?;
+        if push_payload {
+            let mut j = 0usize;
+            while j < thrown.value_count {
+                self.stack.push(thrown.values[j])?;
+                j += 1;
+            }
+        }
+        self.pc = handler_pc;
+        Ok(())
+    }
+
+    fn unwind_exception(
+        &mut self,
+        thrown: ThrownException,
+        mut search_depth: usize,
+    ) -> Result<(), WasmError> {
+        while search_depth > 0 {
+            let idx = search_depth - 1;
+            let frame = self.control_stack[idx].ok_or(WasmError::InvalidModule)?;
+            self.truncate_to_height(frame.stack_height)?;
+
+            if frame.kind == ControlKind::Try {
+                if let Some(delegate_depth) = frame.delegate_depth {
+                    self.control_stack[idx] = None;
+                    let target_plus_one = idx
+                        .checked_sub(delegate_depth)
+                        .ok_or(WasmError::Trap)?;
+                    let mut pop_idx = idx;
+                    while pop_idx > target_plus_one {
+                        pop_idx -= 1;
+                        let popped = self.control_stack[pop_idx].ok_or(WasmError::InvalidModule)?;
+                        self.truncate_to_height(popped.stack_height)?;
+                        self.control_stack[pop_idx] = None;
+                    }
+                    self.control_depth = target_plus_one;
+                    search_depth = target_plus_one;
+                    continue;
+                }
+
+                if let Some((handler_pc, push_payload)) =
+                    self.find_exception_handler(frame, thrown.tag_idx)
+                {
+                    return self.activate_exception_on_frame(idx, handler_pc, push_payload, thrown);
+                }
+            }
+
+            self.control_stack[idx] = None;
+            self.control_depth = idx;
+            search_depth = idx;
+        }
+        Err(WasmError::Trap)
+    }
+
+    fn rethrow_exception(&mut self, label_depth: usize) -> Result<(), WasmError> {
+        if label_depth >= self.control_depth {
+            return Err(WasmError::Trap);
+        }
+        let target_idx = self
+            .control_depth
+            .checked_sub(1 + label_depth)
+            .ok_or(WasmError::Trap)?;
+        let frame = self.control_stack[target_idx].ok_or(WasmError::InvalidModule)?;
+        if frame.kind != ControlKind::Try || !frame.in_exception_handler {
+            return Err(WasmError::Trap);
+        }
+        let tag_idx = frame.active_exception_tag.ok_or(WasmError::Trap)?;
+        let mut thrown = self.default_thrown_exception(tag_idx);
+        thrown.value_count = frame.active_exception_count;
+        let mut i = 0usize;
+        while i < thrown.value_count {
+            thrown.values[i] = frame.active_exception_values[i];
+            i += 1;
+        }
+        self.truncate_to_height(frame.stack_height)?;
+        self.control_stack[target_idx] = None;
+        self.control_depth = target_idx;
+        self.unwind_exception(thrown, target_idx)
+    }
+
     fn skip_opcode_immediate_scan(&self, mut pc: usize, opcode: Opcode) -> Result<usize, WasmError> {
         match opcode {
             Opcode::I32Const => {
@@ -2591,7 +2977,12 @@ impl WasmInstance {
             | Opcode::GlobalSet
             | Opcode::Br
             | Opcode::BrIf
-            | Opcode::Call => {
+            | Opcode::Call
+            | Opcode::Catch
+            | Opcode::Throw
+            | Opcode::Rethrow
+            | Opcode::Delegate
+            | Opcode::RefFunc => {
                 let (_v, n) = read_uleb128_validate(&self.module.bytecode, pc)?;
                 pc = pc.checked_add(n).ok_or(WasmError::InvalidModule)?;
             }
@@ -2607,11 +2998,14 @@ impl WasmInstance {
                 let (_o, n2) = read_uleb128_validate(&self.module.bytecode, pc)?;
                 pc = pc.checked_add(n2).ok_or(WasmError::InvalidModule)?;
             }
-            Opcode::Block | Opcode::Loop | Opcode::If => {
+            Opcode::Block | Opcode::Loop | Opcode::If | Opcode::Try => {
                 let n = read_blocktype_width_validate(&self.module.bytecode, pc)?;
                 pc = pc.checked_add(n).ok_or(WasmError::InvalidModule)?;
             }
             Opcode::MemorySize | Opcode::MemoryGrow => {
+                pc = pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
+            }
+            Opcode::RefNull => {
                 pc = pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
             }
             _ => {}
@@ -2640,7 +3034,7 @@ impl WasmInstance {
             pc = self.skip_opcode_immediate_scan(pc, opcode)?;
 
             match opcode {
-                Opcode::Block | Opcode::Loop | Opcode::If => {
+                Opcode::Block | Opcode::Loop | Opcode::If | Opcode::Try => {
                     depth = depth.saturating_add(1);
                 }
                 Opcode::Else => {
@@ -2663,6 +3057,86 @@ impl WasmInstance {
         Err(WasmError::UnexpectedEndOfCode)
     }
 
+    fn scan_try_structure(&self, body_start_pc: usize) -> Result<TryScanInfo, WasmError> {
+        let mut pc = body_start_pc;
+        let mut depth = 1usize;
+        let mut catch_count = 0usize;
+        let mut catch_tags = [None; MAX_TRY_CATCHES];
+        let mut catch_pcs = [0usize; MAX_TRY_CATCHES];
+        let mut catch_all_pc = None;
+        let mut delegate_depth = None;
+
+        while pc < self.current_func_end {
+            let op_pos = pc;
+            let op_byte = self.module.bytecode[pc];
+            pc += 1;
+            let opcode = Opcode::from_byte(op_byte).ok_or(WasmError::UnknownOpcode(op_byte))?;
+
+            let immediate_pos = pc;
+            pc = self.skip_opcode_immediate_scan(pc, opcode)?;
+
+            match opcode {
+                Opcode::Block | Opcode::Loop | Opcode::If | Opcode::Try => {
+                    depth = depth.saturating_add(1);
+                }
+                Opcode::Catch => {
+                    let (tag_idx, _n) = read_uleb128_validate(&self.module.bytecode, immediate_pos)?;
+                    if depth == 1 {
+                        if delegate_depth.is_some() || catch_all_pc.is_some() {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        if catch_count >= MAX_TRY_CATCHES {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        if tag_idx as usize >= self.module.tag_count {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        catch_tags[catch_count] = Some(tag_idx as usize);
+                        catch_pcs[catch_count] = pc;
+                        catch_count += 1;
+                    }
+                }
+                Opcode::CatchAll => {
+                    if depth == 1 {
+                        if delegate_depth.is_some() || catch_all_pc.is_some() {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        catch_all_pc = Some(pc);
+                    }
+                }
+                Opcode::Delegate => {
+                    let (label_depth, _n) =
+                        read_uleb128_validate(&self.module.bytecode, immediate_pos)?;
+                    if depth == 1 {
+                        if catch_count != 0 || catch_all_pc.is_some() || delegate_depth.is_some() {
+                            return Err(WasmError::InvalidModule);
+                        }
+                        delegate_depth = Some(label_depth as usize);
+                    }
+                }
+                Opcode::End => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        if catch_count == 0 && catch_all_pc.is_none() && delegate_depth.is_none() {
+                            // try with no handlers/delegate is invalid under EH encoding.
+                            return Err(WasmError::InvalidModule);
+                        }
+                        return Ok(TryScanInfo {
+                            end_pc: op_pos,
+                            catch_count,
+                            catch_tags,
+                            catch_pcs,
+                            catch_all_pc,
+                            delegate_depth,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err(WasmError::UnexpectedEndOfCode)
+    }
+
     fn branch_to_label(&mut self, label_depth: usize) -> Result<(), WasmError> {
         if label_depth >= self.control_depth {
             return Err(WasmError::Trap);
@@ -2675,7 +3149,9 @@ impl WasmInstance {
 
         let (label_count, label_types) = match target.kind {
             ControlKind::Loop => (target.param_count, target.param_types),
-            ControlKind::Block | ControlKind::If => (target.result_count, target.result_types),
+            ControlKind::Block | ControlKind::If | ControlKind::Try => {
+                (target.result_count, target.result_types)
+            }
         };
         let values = self.collect_typed_suffix(&label_types, label_count)?;
         self.truncate_to_height(target.stack_height)?;
@@ -2690,7 +3166,7 @@ impl WasmInstance {
                 self.control_depth = target_idx + 1;
                 self.pc = target.start_pc;
             }
-            ControlKind::Block | ControlKind::If => {
+            ControlKind::Block | ControlKind::If | ControlKind::Try => {
                 self.control_depth = target_idx;
                 self.pc = target
                     .end_pc
@@ -3373,17 +3849,17 @@ impl WasmInstance {
                     return Err(WasmError::StackUnderflow);
                 }
                 let _ = self.collect_typed_suffix(&param_types, param_count)?;
-                self.push_control_frame(ControlFrame {
-                    kind: ControlKind::Block,
-                    start_pc: body_start,
+                self.push_control_frame(self.default_control_frame(
+                    ControlKind::Block,
+                    body_start,
                     end_pc,
-                    else_pc: None,
-                    stack_height: stack_len - param_count,
+                    None,
+                    stack_len - param_count,
                     param_count,
                     result_count,
                     param_types,
                     result_types,
-                })?;
+                ))?;
             }
 
             Opcode::Loop => {
@@ -3396,17 +3872,17 @@ impl WasmInstance {
                     return Err(WasmError::StackUnderflow);
                 }
                 let _ = self.collect_typed_suffix(&param_types, param_count)?;
-                self.push_control_frame(ControlFrame {
-                    kind: ControlKind::Loop,
-                    start_pc: body_start,
+                self.push_control_frame(self.default_control_frame(
+                    ControlKind::Loop,
+                    body_start,
                     end_pc,
-                    else_pc: None,
-                    stack_height: stack_len - param_count,
+                    None,
+                    stack_len - param_count,
                     param_count,
                     result_count,
                     param_types,
                     result_types,
-                })?;
+                ))?;
             }
 
             Opcode::If => {
@@ -3420,17 +3896,17 @@ impl WasmInstance {
                     return Err(WasmError::StackUnderflow);
                 }
                 let _ = self.collect_typed_suffix(&param_types, param_count)?;
-                self.push_control_frame(ControlFrame {
-                    kind: ControlKind::If,
-                    start_pc: body_start,
+                self.push_control_frame(self.default_control_frame(
+                    ControlKind::If,
+                    body_start,
                     end_pc,
                     else_pc,
-                    stack_height: stack_len - param_count,
+                    stack_len - param_count,
                     param_count,
                     result_count,
                     param_types,
                     result_types,
-                })?;
+                ))?;
 
                 if cond == 0 {
                     if let Some(else_pos) = else_pc {
@@ -3440,6 +3916,97 @@ impl WasmInstance {
                         self.pc = end_pc;
                     }
                 }
+            }
+
+            Opcode::Try => {
+                let (param_count, param_types, result_count, result_types) =
+                    self.read_block_signature()?;
+                let body_start = self.pc;
+                let scan = self.scan_try_structure(body_start)?;
+                let stack_len = self.stack.len();
+                if stack_len < param_count {
+                    return Err(WasmError::StackUnderflow);
+                }
+                let _ = self.collect_typed_suffix(&param_types, param_count)?;
+                let mut frame = self.default_control_frame(
+                    ControlKind::Try,
+                    body_start,
+                    scan.end_pc,
+                    None,
+                    stack_len - param_count,
+                    param_count,
+                    result_count,
+                    param_types,
+                    result_types,
+                );
+                frame.catch_count = scan.catch_count;
+                frame.catch_tags = scan.catch_tags;
+                frame.catch_pcs = scan.catch_pcs;
+                frame.catch_all_pc = scan.catch_all_pc;
+                frame.delegate_depth = scan.delegate_depth;
+                self.push_control_frame(frame)?;
+            }
+
+            Opcode::Catch => {
+                let tag_idx = self.read_uleb128()? as usize;
+                if tag_idx >= self.module.tag_count {
+                    return Err(WasmError::InvalidModule);
+                }
+                if self.control_depth == 0 {
+                    return Err(WasmError::InvalidModule);
+                }
+                let idx = self.control_depth - 1;
+                let frame = self.control_stack[idx].ok_or(WasmError::InvalidModule)?;
+                if frame.kind != ControlKind::Try {
+                    return Err(WasmError::InvalidModule);
+                }
+                // Falling into a catch marker means try body completed without exception.
+                self.enforce_frame_exit_values(frame)?;
+                self.control_stack[idx] = None;
+                self.control_depth = idx;
+                self.pc = frame.end_pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
+            }
+
+            Opcode::CatchAll => {
+                if self.control_depth == 0 {
+                    return Err(WasmError::InvalidModule);
+                }
+                let idx = self.control_depth - 1;
+                let frame = self.control_stack[idx].ok_or(WasmError::InvalidModule)?;
+                if frame.kind != ControlKind::Try {
+                    return Err(WasmError::InvalidModule);
+                }
+                self.enforce_frame_exit_values(frame)?;
+                self.control_stack[idx] = None;
+                self.control_depth = idx;
+                self.pc = frame.end_pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
+            }
+
+            Opcode::Delegate => {
+                let _label_depth = self.read_uleb128()? as usize;
+                if self.control_depth == 0 {
+                    return Err(WasmError::InvalidModule);
+                }
+                let idx = self.control_depth - 1;
+                let frame = self.control_stack[idx].ok_or(WasmError::InvalidModule)?;
+                if frame.kind != ControlKind::Try {
+                    return Err(WasmError::InvalidModule);
+                }
+                self.enforce_frame_exit_values(frame)?;
+                self.control_stack[idx] = None;
+                self.control_depth = idx;
+                self.pc = frame.end_pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
+            }
+
+            Opcode::Throw => {
+                let tag_idx = self.read_uleb128()? as usize;
+                let thrown = self.collect_exception_payload(tag_idx)?;
+                self.unwind_exception(thrown, self.control_depth)?;
+            }
+
+            Opcode::Rethrow => {
+                let label_depth = self.read_uleb128()? as usize;
+                self.rethrow_exception(label_depth)?;
             }
 
             Opcode::Else => {
@@ -3452,6 +4019,7 @@ impl WasmInstance {
                     return Err(WasmError::InvalidModule);
                 }
                 self.enforce_frame_exit_values(frame)?;
+                self.control_stack[idx] = None;
                 self.control_depth = idx;
                 self.pc = frame.end_pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
             }
@@ -3467,11 +4035,17 @@ impl WasmInstance {
                     return Err(WasmError::InvalidModule);
                 }
                 self.enforce_frame_exit_values(frame)?;
+                self.control_stack[idx] = None;
                 self.control_depth = idx;
             }
 
             Opcode::Return => {
                 // Return from function - stop execution
+                let mut i = 0usize;
+                while i < self.control_depth {
+                    self.control_stack[i] = None;
+                    i += 1;
+                }
                 self.control_depth = 0;
                 self.pc = self.current_func_end;
                 return Ok(false);
@@ -3574,6 +4148,30 @@ impl WasmInstance {
             Opcode::F64Const => {
                 let bits = self.read_u64_immediate()?;
                 self.stack.push(Value::F64(f64::from_bits(bits)))?;
+            }
+
+            Opcode::RefNull => {
+                let bytecode_len = self.bytecode_len_clamped();
+                if self.pc >= bytecode_len {
+                    return Err(WasmError::UnexpectedEndOfCode);
+                }
+                let reftype = Self::parse_reftype_immediate(self.module.bytecode[self.pc])?;
+                self.pc += 1;
+                self.stack.push(Value::zero_for_type(reftype))?;
+            }
+
+            Opcode::RefIsNull => {
+                let value = self.stack.pop()?;
+                self.stack
+                    .push(Value::I32(if value.is_null_ref()? { 1 } else { 0 }))?;
+            }
+
+            Opcode::RefFunc => {
+                let func_idx = self.read_uleb128()? as usize;
+                if func_idx >= self.module.total_function_count() {
+                    return Err(WasmError::FunctionNotFound);
+                }
+                self.stack.push(Value::FuncRef(Some(func_idx)))?;
             }
 
             Opcode::I32Add => {
@@ -6997,13 +7595,85 @@ const WASM_CONFORMANCE_MODULE_TYPED_IF_IMPLICIT_ELSE: [u8; 37] = [
     0x0A, 0x0B, 0x01, 0x09, 0x00, 0x41, 0x2A, 0x41, 0x00, 0x04, 0x01, 0x0B, 0x0B, // code
 ];
 
+const WASM_CONFORMANCE_MODULE_REFTYPE_MVP: [u8; 36] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7F, // type: () -> i32
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x0F, 0x01, 0x0D, 0x00, // code section header + local decls
+    0x02, 0x70, // block (result funcref)
+    0xD0, 0x70, // ref.null funcref
+    0x0B, // end block
+    0xD1, // ref.is_null -> 1
+    0xD2, 0x00, // ref.func 0
+    0xD1, // ref.is_null -> 0
+    0x45, // i32.eqz -> 1
+    0x71, // i32.and
+    0x0B, // end function
+];
+
+const WASM_CONFORMANCE_MODULE_EH_THROW_CATCH: [u8; 45] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x09, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x01, 0x7F, 0x00, // types
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x0F, 0x01, 0x0D, 0x00, // code section header + local decls
+    0x06, 0x7F, // try (result i32)
+    0x41, 0x2A, // i32.const 42
+    0x08, 0x00, // throw tag 0
+    0x07, 0x00, // catch tag 0
+    0x41, 0x2A, // i32.const 42
+    0x0B, // end try
+    0x0B, // end function
+    0x0D, 0x03, 0x01, 0x00, 0x01, // tag section
+];
+
+const WASM_CONFORMANCE_MODULE_EH_RETHROW_CATCH_ALL: [u8; 51] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x09, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x01, 0x7F, 0x00, // types
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x15, 0x01, 0x13, 0x00, // code section header + local decls
+    0x06, 0x7F, // outer try (result i32)
+    0x06, 0x7F, // inner try (result i32)
+    0x41, 0x11, // i32.const 17
+    0x08, 0x00, // throw tag 0
+    0x07, 0x00, // catch tag 0
+    0x09, 0x00, // rethrow 0
+    0x0B, // end inner try
+    0x19, // catch_all
+    0x41, 0x11, // i32.const 17
+    0x0B, // end outer try
+    0x0B, // end function
+    0x0D, 0x03, 0x01, 0x00, 0x01, // tag section
+];
+
+const WASM_CONFORMANCE_MODULE_EH_DELEGATE: [u8; 50] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x09, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x01, 0x7F, 0x00, // types
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x14, 0x01, 0x12, 0x00, // code section header + local decls
+    0x06, 0x7F, // outer try (result i32)
+    0x06, 0x7F, // inner try (result i32)
+    0x41, 0x05, // i32.const 5
+    0x08, 0x00, // throw tag 0
+    0x18, 0x00, // delegate 0
+    0x0B, // end inner try
+    0x07, 0x00, // catch tag 0
+    0x41, 0x05, // i32.const 5
+    0x0B, // end outer try
+    0x0B, // end function
+    0x0D, 0x03, 0x01, 0x00, 0x01, // tag section
+];
+
 pub fn wasm_binary_conformance_self_check() -> Result<(), &'static str> {
-    let corpus: [&[u8]; 5] = [
+    let corpus: [&[u8]; 9] = [
         &WASM_CONFORMANCE_MODULE_RET42,
         &WASM_CONFORMANCE_MODULE_IMPORT,
         &WASM_CONFORMANCE_MODULE_STATEFUL,
         &WASM_CONFORMANCE_MODULE_TYPED_BLOCK,
         &WASM_CONFORMANCE_MODULE_TYPED_IF_IMPLICIT_ELSE,
+        &WASM_CONFORMANCE_MODULE_REFTYPE_MVP,
+        &WASM_CONFORMANCE_MODULE_EH_THROW_CATCH,
+        &WASM_CONFORMANCE_MODULE_EH_RETHROW_CATCH_ALL,
+        &WASM_CONFORMANCE_MODULE_EH_DELEGATE,
     ];
 
     let mut i = 0usize;
@@ -7016,7 +7686,7 @@ pub fn wasm_binary_conformance_self_check() -> Result<(), &'static str> {
             .instantiate_module(module.clone(), ProcessId(1))
             .map_err(|_| "WASM binary conformance: instantiate failed")?;
 
-        if i == 0 || i == 3 || i == 4 {
+        if i == 0 || i == 3 || i == 4 || i == 5 || i == 6 {
             let result = wasm_runtime()
                 .get_instance_mut(instance_id, |instance| -> Result<i32, WasmError> {
                     instance.call(0)?;
@@ -7027,6 +7697,34 @@ pub fn wasm_binary_conformance_self_check() -> Result<(), &'static str> {
             if result != 42 {
                 let _ = wasm_runtime().destroy(instance_id);
                 return Err("WASM binary conformance: typed control result mismatch");
+            }
+        }
+
+        if i == 7 {
+            let result = wasm_runtime()
+                .get_instance_mut(instance_id, |instance| -> Result<i32, WasmError> {
+                    instance.call(0)?;
+                    instance.stack.pop()?.as_i32()
+                })
+                .map_err(|_| "WASM binary conformance: execution failed")?
+                .map_err(|_| "WASM binary conformance: execution trapped")?;
+            if result != 17 {
+                let _ = wasm_runtime().destroy(instance_id);
+                return Err("WASM binary conformance: EH rethrow mismatch");
+            }
+        }
+
+        if i == 8 {
+            let result = wasm_runtime()
+                .get_instance_mut(instance_id, |instance| -> Result<i32, WasmError> {
+                    instance.call(0)?;
+                    instance.stack.pop()?.as_i32()
+                })
+                .map_err(|_| "WASM binary conformance: execution failed")?
+                .map_err(|_| "WASM binary conformance: execution trapped")?;
+            if result != 5 {
+                let _ = wasm_runtime().destroy(instance_id);
+                return Err("WASM binary conformance: EH delegate mismatch");
             }
         }
 
@@ -7064,12 +7762,16 @@ pub fn wasm_binary_negative_fuzz(
     iterations: u32,
     seed: u64,
 ) -> Result<WasmBinaryFuzzStats, &'static str> {
-    let corpus: [&[u8]; 5] = [
+    let corpus: [&[u8]; 9] = [
         &WASM_CONFORMANCE_MODULE_RET42,
         &WASM_CONFORMANCE_MODULE_IMPORT,
         &WASM_CONFORMANCE_MODULE_STATEFUL,
         &WASM_CONFORMANCE_MODULE_TYPED_BLOCK,
         &WASM_CONFORMANCE_MODULE_TYPED_IF_IMPLICIT_ELSE,
+        &WASM_CONFORMANCE_MODULE_REFTYPE_MVP,
+        &WASM_CONFORMANCE_MODULE_EH_THROW_CATCH,
+        &WASM_CONFORMANCE_MODULE_EH_RETHROW_CATCH_ALL,
+        &WASM_CONFORMANCE_MODULE_EH_DELEGATE,
     ];
     let mut stats = WasmBinaryFuzzStats {
         iterations,

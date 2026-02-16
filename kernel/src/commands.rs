@@ -2948,6 +2948,12 @@ fn cmd_wasm_demo() {
                             Ok(wasm::Value::F64(_)) => {
                                 vga::print_str("Result (f64)\n");
                             }
+                            Ok(wasm::Value::FuncRef(_)) => {
+                                vga::print_str("Result (funcref)\n");
+                            }
+                            Ok(wasm::Value::ExternRef(_)) => {
+                                vga::print_str("Result (externref)\n");
+                            }
                             Err(e) => {
                                 vga::print_str("Error: Failed to get result: ");
                                 vga::print_str(e.as_str());
