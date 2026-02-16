@@ -10,17 +10,18 @@ A security-hardened, bare-metal operating system kernel implementing advanced sy
 
 ## Formal Security Papers
 
-Oreulia's formal security records are documented in three companion papers:
+Oreulia's formal security records are documented in four companion papers:
 
 - [`../docs/oreulia-jit-security-resolution.md`](../docs/oreulia-jit-security-resolution.md)
 - [`../docs/capnet.md`](../docs/capnet.md)
 - [`../docs/oreulia-intent-graph-predictive-revocation.md`](../docs/oreulia-intent-graph-predictive-revocation.md)
+- [`../docs/oreulia-service-pointer-capabilities.md`](../docs/oreulia-service-pointer-capabilities.md)
 
 These papers include:
 - formal model, assumptions, definitions, lemmas/theorems/corollaries
 - proof-obligation structure and release-gate equations
 - threat-control matrix and compositional security arguments
-- implementation-to-invariant mappings for JIT hardening, networked capability transfer, and behavior-aware predictive capability control
+- implementation-to-invariant mappings for JIT hardening, networked capability transfer, behavior-aware predictive capability control, and directly callable WASM service-pointer capabilities
 
 ---
 
@@ -40,6 +41,9 @@ The kernel has moved beyond baseline JIT and capability hardening into a fully l
 - Mechanized bounded formal backend checks for capability attenuation and memory-guard equivalence
 - Intent graph telemetry over IPC/capability activity with per-process behavioral scoring
 - Predictive restriction and capability quarantine with escalation to isolate/terminate recommendations
+- Function/service-pointer capability objects with direct callable dispatch, `ref.func` selector support, typed invoke ABI (`service_invoke_typed`), and delegate-gated IPC transfer
+- Runtime lock hardening via exclusive instance execution (`Ready/Busy/Empty` state model) to avoid re-entry deadlock patterns
+- Hot-swap continuity semantics: destroy-time service-pointer rebinding to compatible live instances, fail-closed revoke otherwise
 - Scheduler/network soak verification command path for long-run stability and security-signal integrity
 - CI admission gating for regression corpus replay and soak checks
 
@@ -113,6 +117,8 @@ Oreulia implements a **capability-oriented kernel architecture** with explicit i
 - **Revocation**: Central authority can invalidate capability groups instantly
 - **Prevents confused deputy**: System services validate caps on every operation
 - **Predictive gating**: Intent graph risk state can preemptively restrict or quarantine capabilities before escalation
+- **Direct callable service pointers**: Service capabilities can target live WASM functions with full signature checks at invoke time
+- **Typed service ABI**: Mixed-type invocation (`i32/i64/f32/f64/funcref/externref`) encoded and validated through `service_invoke_typed`
 
 #### **CapNet: Decentralized Capability Networking**
 - **Portable authority objects**: `CapabilityTokenV1` encodes capability semantics into a fixed-width network token
@@ -302,6 +308,12 @@ Use these commands from the Oreulia shell to validate current security posture:
   - Repeats full corpus replay to detect residual non-determinism and long-run drift.
 - `capnet-demo`
   - Runs an end-to-end lend/use/revoke loopback verification path.
+- `svcptr-demo`
+  - End-to-end service-pointer register/transfer/invoke verification path.
+- `svcptr-demo-crosspid`
+  - Cross-process transfer/invoke proof path.
+- `svcptr-typed-demo`
+  - Mixed-type typed invoke host-path verification (`i64`, `f32`, `f64`, `funcref`).
 
 ---
 
@@ -385,6 +397,7 @@ This kernel demonstrates several novel implementations:
 4. **Assembly-accelerated cryptography**: AES-NI integration with CPUID detection and fallback paths
 5. **Decentralized kernel capability networking**: CapNet portable token protocol with attestation-bound sessions, replay-safe control frames, lease bridging, and persistent revocation semantics
 6. **Kernel-native behavior-aware capability control**: Intent graph scoring and predictive revocation integrated directly into capability enforcement
+7. **Directly callable capability composition model**: Function/service pointer capabilities for typed WASM service dispatch with delegate-safe transfer, runtime lock hardening, and hot-swap continuity
 
 The codebase serves as educational reference for:
 - Systems programming in Rust without `std` library

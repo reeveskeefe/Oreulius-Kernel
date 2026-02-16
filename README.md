@@ -32,18 +32,20 @@ Oreulieus is an experimental operating system that rethinks traditional OS desig
 
 ## Formal Security Papers
 
-Oreulia's formal security records are documented in three companion papers:
+Oreulia's formal security records are documented in four companion papers:
 
 - **[Oreulia JIT Security Resolution](docs/oreulia-jit-security-resolution.md)**
 - **[CapNet Scientific Resolution](docs/capnet.md)**
 - **[Intent Graph Predictive Revocation](docs/oreulia-intent-graph-predictive-revocation.md)**
+- **[Function/Service Pointer Capabilities](docs/oreulia-service-pointer-capabilities.md)**
 
-Together they cover theorem-backed hardening for in-kernel JIT execution, decentralized capability transfer over the network control plane, and behavior-aware predictive capability control in kernel space.
+Together they cover theorem-backed hardening for in-kernel JIT execution, decentralized capability transfer over the network control plane, behavior-aware predictive capability control in kernel space, and directly callable capability semantics for WASM service composition.
 
 ### Key Features
 
 - **Capability-Based Security** - No ambient authority; all access is explicitly granted through capabilities
 - **Intent Graph Predictive Revocation** - Per-process behavioral graph scoring with predictive restriction, quarantine/restore, isolation escalation, and termination recommendation
+- **Function/Service Pointer Capabilities** - Directly callable capability objects for typed WASM-to-WASM service invocation with delegate-gated transfer
 - **CapNet Capability Network** - Portable capability tokens with session-key MAC verification, replay windows, delegation-chain constraints, and persistent revocation
 - **WebAssembly Native** - First-class support for WASM execution with sandboxed module isolation
 - **JIT Hardening Pipeline** - W^X sealing, decoder whitelist validation, SFI/CFI constraints, and translation certificates
@@ -66,6 +68,7 @@ Oreulieus is built on several core subsystems:
 - **IPC System** - Typed message channels with capability-based access control
 - **Filesystem Service** - Virtual filesystem with quota management
 - **WASM Runtime** - Sandboxed execution environment for WebAssembly modules
+- **Service Pointer Dispatch Layer** - Capability-mediated direct invocation path (`service_register`, `service_invoke`, `service_invoke_typed`) with hot-swap continuity
 - **Network Stack** - Ethernet (E1000/RTL8139) and WiFi support with ARP/ICMP/UDP/TCP + DNS paths
 - **CapNet Control Plane** - Authenticated capability-token exchange (`HELLO/ATTEST/TOKEN_OFFER/TOKEN_ACCEPT/TOKEN_REVOKE/HEARTBEAT`) with attestation-bound peer policy
 
@@ -251,6 +254,13 @@ Once Oreulia boots, you'll see the shell prompt (`>`). Try these commands:
 - `wasm-fs-demo` - Demo WASM filesystem access
 - `wasm-log-demo` - Demo WASM logging
 - `wasm-list` - List loaded WASM instances
+- `svcptr-register <instance_id> <func_idx> [delegate]` - Register function/service pointer capability
+- `svcptr-invoke <object_id> [arg ...]` - Invoke service pointer via legacy i32 ABI
+- `svcptr-send <channel_id> <cap_id>` / `svcptr-recv <channel_id>` - Transfer/import service pointer capability over IPC
+- `svcptr-inject <instance_id> <cap_id>` - Inject service-pointer capability into WASM instance table
+- `svcptr-demo` - End-to-end single-PID service-pointer transfer/invoke demo
+- `svcptr-demo-crosspid` - Cross-PID transfer/invoke proof demo
+- `svcptr-typed-demo` - Mixed-type typed invoke host-path demo (`i64/f32/f64/funcref`)
 - `wasm-jit-on` / `wasm-jit-off` - Enable/Disable JIT compilation
 - `wasm-jit-bench` - Benchmark JIT vs Interpreter
 - `wasm-jit-stats` - Show JIT statistics
@@ -302,6 +312,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[Persistence](docs/oreulia-persistence.md)** - Logging, snapshots, and recovery
 - **[Filesystem](docs/oreulia-filesystem.md)** - Virtual filesystem implementation
 - **[WASM ABI](docs/oreulia-wasm-abi.md)** - WebAssembly host interface
+- **[Function/Service Pointer Capabilities](docs/oreulia-service-pointer-capabilities.md)** - Formal model and implementation details for directly callable capability objects
 - **[Assembly Quick Reference](docs/assembly-quick-reference.md)** - Low-level assembly interfaces and notes
 - **[JIT Security Resolution](docs/oreulia-jit-security-resolution.md)** - Formal security model and implementation proof obligations
 - **[CapNet Scientific Resolution](docs/capnet.md)** - Formal model and implementation analysis for decentralized capability networking

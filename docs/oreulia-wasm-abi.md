@@ -115,6 +115,7 @@ Notes:
 - Runtime enforces full registered function signatures (arity + value types) on every service-pointer call.
 - Transfer authorization is enforced by `SERVICE_DELEGATE`.
 - On instance teardown, service pointers attempt hot-swap rebinding to compatible live replacement instances; unmatched pointers are revoked.
+- Formal technical deep dive: `docs/oreulia-service-pointer-capabilities.md`.
 
 ---
 

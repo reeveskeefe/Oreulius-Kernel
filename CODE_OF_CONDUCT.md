@@ -38,9 +38,11 @@ This Code of Conduct applies within all project spaces, and also applies when an
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainers at:
 
-**Contact:** keefe.reeves@gmail.com
+```bash
+reeveskeefe@gmail.com
+```
 
-All complaints will be reviewed and investigated promptly and fairly.
+All complaints will be reviewed and investigated promptly and fairly. Please provide sufficient data to make a decision. Forgery of data, will result in an immediate lifetime ban, and blacklisting posted within this repository for forging data in regards of evidence of another users behaviour in your complaint.   from the project, and the revocation of the ability to use our open source aspects of our community project in your own github projects.
 
 All project maintainers are obligated to respect the privacy and security of the reporter of any incident.
 

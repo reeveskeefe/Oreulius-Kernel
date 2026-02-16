@@ -18,7 +18,7 @@ Function/Service Pointer Capabilities (Directly Callable Capabilities)
 Concept: Capabilities as "opaque pointers" to live WASM functions/objects (not just handles). Services invoke each other directly via these pointers, bypassing traditional syscalls for composable, message-passing APIs.
 Why Inventive?: Traditional kernels use IDs or handles; this makes capabilities executable and first-class, enabling agile, cross-module calls in a secure, pointer-like way— a new model for kernel composition.
 Alignment: Leverages your IPC System and WASM Runtime; keeps modularity and hot-swapping for edge devices.
-Implementation Starter: Extend your IPC to pass WASM function references as capabilities. Use Rust's type safety to ensure sandboxing. [in progress]
+Implementation Starter: Extend your IPC to pass WASM function references as capabilities. Use Rust's type safety to ensure sandboxing. complted
 
 
 Persistent/Versioned Kernel State Objects ("Temporal Objects")
