@@ -138,6 +138,7 @@ pub fn execute(input: &str) {
             vga::print_str("  svcptr-inject   - Inject service pointer cap into WASM instance (svcptr-inject <instance_id> <cap_id>)\n");
             vga::print_str("  svcptr-demo     - End-to-end service pointer transfer/invoke demo\n");
             vga::print_str("  svcptr-demo-crosspid - Cross-PID transfer/invoke proof demo\n");
+            vga::print_str("  svcptr-typed-demo - Mixed-type typed invoke host-path demo\n");
             vga::print_str("  wasm-jit-bench - Benchmark WASM JIT vs interpreter\n");
             vga::print_str("  wasm-jit-selftest - Run WASM JIT bounds self-test\n");
             vga::print_str("  wasm-jit-fuzz  - Coverage-guided JIT fuzz (wasm-jit-fuzz <iters> [seed])\n");
@@ -353,6 +354,9 @@ pub fn execute(input: &str) {
         }
         "svcptr-demo-crosspid" => {
             cmd_svcptr_demo_crosspid();
+        }
+        "svcptr-typed-demo" => {
+            cmd_svcptr_typed_demo();
         }
         "wasm-jit-bench" => {
             cmd_wasm_jit_bench();
@@ -3711,6 +3715,25 @@ fn cmd_svcptr_demo() {
     let _ = wasm::wasm_runtime().destroy(provider_instance);
     let _ = ipc::close_channel_for_process(pid, ipc::ChannelId(channel_id));
     vga::print_str("=== Demo Complete ===\n\n");
+}
+
+fn cmd_svcptr_typed_demo() {
+    vga::print_str("\n=== Service Pointer Typed Host-Path Demo ===\n");
+    vga::print_str("Exercising service_invoke_typed with mixed args/results:\n");
+    vga::print_str("  args:    i64, f32, f64, funcref\n");
+    vga::print_str("  results: i64, f32, f64, funcref\n");
+
+    match wasm::service_pointer_typed_hostpath_self_check() {
+        Ok(()) => {
+            vga::print_str("PASS: typed service-pointer invoke path is working end-to-end\n");
+        }
+        Err(e) => {
+            vga::print_str("FAIL: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    vga::print_str("=== Typed Demo Complete ===\n\n");
 }
 
 fn cmd_svcptr_demo_crosspid() {

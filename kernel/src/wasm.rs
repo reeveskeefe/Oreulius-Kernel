@@ -7936,6 +7936,177 @@ pub fn formal_service_pointer_self_check() -> Result<(), &'static str> {
     Ok(())
 }
 
+pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
+    let provider = ProcessId(74);
+    let consumer = ProcessId(75);
+    capability::capability_manager().init_task(provider);
+    capability::capability_manager().init_task(consumer);
+
+    let mut provider_instance: Option<usize> = None;
+    let mut consumer_instance: Option<usize> = None;
+    let mut object_id: Option<u64> = None;
+
+    let result = (|| -> Result<(), &'static str> {
+        // Provider module:
+        // (func (param i64 f32 f64 funcref) (result i64 f32 f64 funcref)
+        //   i64.const 9
+        //   f32.const 1.5
+        //   f64.const 1.0
+        //   ref.func 0)
+        const PROVIDER_MODULE: [u8; 50] = [
+            0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+            0x01, 0x0C, 0x01, 0x60, 0x04, 0x7E, 0x7D, 0x7C, 0x70, 0x04, 0x7E, 0x7D, 0x7C, 0x70, // type section
+            0x03, 0x02, 0x01, 0x00, // function section
+            0x0A, 0x16, 0x01, 0x14, // code section header
+            0x00, // local decl count
+            0x42, 0x09, // i64.const 9
+            0x43, 0x00, 0x00, 0xC0, 0x3F, // f32.const 1.5
+            0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, // f64.const 1.0
+            0xD2, 0x00, // ref.func 0
+            0x0B, // end
+        ];
+
+        let mut provider_module = WasmModule::new();
+        provider_module
+            .load_binary(&PROVIDER_MODULE)
+            .map_err(|_| "Typed service demo: provider module parse failed")?;
+        let provider_id = wasm_runtime()
+            .instantiate_module(provider_module, provider)
+            .map_err(|_| "Typed service demo: provider instantiate failed")?;
+        provider_instance = Some(provider_id);
+
+        let registration = register_service_pointer(provider, provider_id, 0, true)
+            .map_err(|_| "Typed service demo: service register failed")?;
+        object_id = Some(registration.object_id);
+
+        let exported = capability::export_capability_to_ipc(provider, registration.cap_id)
+            .map_err(|_| "Typed service demo: export failed")?;
+        let imported_cap_id =
+            capability::import_capability_from_ipc(consumer, &exported, provider)
+                .map_err(|_| "Typed service demo: import failed")?;
+        let (imported_cap_type, imported_object) = capability::capability_manager()
+            .query_capability(consumer, imported_cap_id)
+            .map_err(|_| "Typed service demo: imported capability missing")?;
+        if imported_cap_type != CapabilityType::ServicePointer as u32 {
+            return Err("Typed service demo: imported capability type mismatch");
+        }
+        if imported_object != registration.object_id {
+            return Err("Typed service demo: imported object mismatch");
+        }
+
+        // Consumer instance only needs memory + capability table.
+        let consumer_code: [u8; 1] = [0x0B];
+        let consumer_id = wasm_runtime()
+            .instantiate(&consumer_code, consumer)
+            .map_err(|_| "Typed service demo: consumer instantiate failed")?;
+        consumer_instance = Some(consumer_id);
+
+        let invoke = wasm_runtime()
+            .with_instance_exclusive(consumer_id, |instance| -> Result<(), WasmError> {
+                let handle = instance.inject_capability(WasmCapability::ServicePointer(
+                    ServicePointerCapability {
+                        object_id: imported_object,
+                        cap_id: imported_cap_id,
+                    },
+                ))?;
+
+                const ARGS_COUNT: usize = 4;
+                const RESULTS_CAPACITY: usize = 4;
+                const ARGS_PTR: usize = 0x120;
+                const RESULTS_PTR: usize = 0x280;
+                const SLOT: usize = SERVICE_TYPED_SLOT_BYTES;
+
+                let mut encoded_args = [0u8; ARGS_COUNT * SLOT];
+                WasmInstance::encode_typed_service_value(
+                    Value::I64(0x1122_3344_5566_7788),
+                    &mut encoded_args[0..SLOT],
+                )?;
+                WasmInstance::encode_typed_service_value(
+                    Value::F32(6.25),
+                    &mut encoded_args[SLOT..2 * SLOT],
+                )?;
+                WasmInstance::encode_typed_service_value(
+                    Value::F64(-7.5),
+                    &mut encoded_args[2 * SLOT..3 * SLOT],
+                )?;
+                WasmInstance::encode_typed_service_value(
+                    Value::FuncRef(Some(0)),
+                    &mut encoded_args[3 * SLOT..4 * SLOT],
+                )?;
+                instance.memory.write(ARGS_PTR, &encoded_args)?;
+
+                instance.stack.clear();
+                instance.stack.push(Value::I32(handle.0 as i32))?;
+                instance.stack.push(Value::I32(ARGS_PTR as i32))?;
+                instance.stack.push(Value::I32(ARGS_COUNT as i32))?;
+                instance.stack.push(Value::I32(RESULTS_PTR as i32))?;
+                instance
+                    .stack
+                    .push(Value::I32(RESULTS_CAPACITY as i32))?;
+                instance.host_service_invoke_typed()?;
+
+                let written = instance.stack.pop()?.as_i32()? as usize;
+                if written != RESULTS_CAPACITY {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+
+                let encoded_results = instance
+                    .memory
+                    .read(RESULTS_PTR, written.saturating_mul(SLOT))?;
+                let decode_slot = |slot: usize| -> Result<Value, WasmError> {
+                    let base = slot.saturating_mul(SLOT);
+                    let payload = u64::from_le_bytes([
+                        encoded_results[base + 1],
+                        encoded_results[base + 2],
+                        encoded_results[base + 3],
+                        encoded_results[base + 4],
+                        encoded_results[base + 5],
+                        encoded_results[base + 6],
+                        encoded_results[base + 7],
+                        encoded_results[base + 8],
+                    ]);
+                    WasmInstance::decode_typed_service_value(encoded_results[base], payload)
+                };
+
+                if decode_slot(0)?.as_i64()? != 9 {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+                if decode_slot(1)?.as_f32()?.to_bits() != 1.5f32.to_bits() {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+                if decode_slot(2)?.as_f64()?.to_bits() != 1.0f64.to_bits() {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+                if decode_slot(3)?.as_funcref()? != Some(0) {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+                instance.stack.clear();
+                Ok(())
+            })
+            .map_err(|_| "Typed service demo: consumer execution unavailable")?;
+
+        invoke.map_err(|_| "Typed service demo: typed host invoke failed")
+    })();
+
+    if let Some(id) = object_id {
+        let _ = revoke_service_pointer(provider, id);
+    }
+    if let Some(id) = consumer_instance {
+        let _ = wasm_runtime().destroy(id);
+    }
+    if let Some(id) = provider_instance {
+        let _ = wasm_runtime().destroy(id);
+    }
+    capability::capability_manager().deinit_task(consumer);
+    capability::capability_manager().deinit_task(provider);
+    result
+}
+
 pub struct WasmBinaryFuzzStats {
     pub iterations: u32,
     pub accepted: u32,
