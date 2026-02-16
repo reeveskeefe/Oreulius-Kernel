@@ -18,7 +18,7 @@ Function/Service Pointer Capabilities (Directly Callable Capabilities)
 Concept: Capabilities as "opaque pointers" to live WASM functions/objects (not just handles). Services invoke each other directly via these pointers, bypassing traditional syscalls for composable, message-passing APIs.
 Why Inventive?: Traditional kernels use IDs or handles; this makes capabilities executable and first-class, enabling agile, cross-module calls in a secure, pointer-like way— a new model for kernel composition.
 Alignment: Leverages your IPC System and WASM Runtime; keeps modularity and hot-swapping for edge devices.
-Implementation Starter: Extend your IPC to pass WASM function references as capabilities. Use Rust's type safety to ensure sandboxing. complted
+Implementation Starter: Extend your IPC to pass WASM function references as capabilities. Use Rust's type safety to ensure sandboxing. [complted]
 
 
 Persistent/Versioned Kernel State Objects ("Temporal Objects")
@@ -26,7 +26,7 @@ Persistent/Versioned Kernel State Objects ("Temporal Objects")
 Concept: Kernel objects (files, sockets) are versioned like Git—clients can snapshot, branch, or time-travel state (e.g., rollback a filesystem to a pre-attack version).
 Why Inventive?: Provenance isn't an add-on; it's fundamental, turning kernel state into a "time machine." This originates versioned OS primitives, not just journaling.
 Alignment: Ties into your VFS and audit trails; WASM's determinism makes serialization easy for edge recovery.
-Implementation Starter: Add versioning to your Filesystem Service using Merkle trees; expose via IPC for WASM apps.
+Implementation Starter: Add versioning to your Filesystem Service using Merkle trees; expose via IPC for WASM apps. [in progress]
 
 
 Decentralized “Kernel Mesh” (Multi-Kernel, Multi-Host)

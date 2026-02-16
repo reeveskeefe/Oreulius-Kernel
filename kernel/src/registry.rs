@@ -73,6 +73,8 @@ pub enum ServiceType {
     Timer = 4,
     /// Console/terminal service
     Console = 5,
+    /// Temporal/versioned state service
+    Temporal = 6,
     /// Custom user service (extensible)
     Custom(u32) = 1000,
 }
@@ -85,6 +87,7 @@ impl ServiceType {
             3 => Some(ServiceType::Network),
             4 => Some(ServiceType::Timer),
             5 => Some(ServiceType::Console),
+            6 => Some(ServiceType::Temporal),
             v if v >= 1000 => Some(ServiceType::Custom(v)),
             _ => None,
         }
@@ -97,6 +100,7 @@ impl ServiceType {
             ServiceType::Network => 3,
             ServiceType::Timer => 4,
             ServiceType::Console => 5,
+            ServiceType::Temporal => 6,
             ServiceType::Custom(v) => *v,
         }
     }
@@ -108,6 +112,7 @@ impl ServiceType {
             ServiceType::Network => "Network",
             ServiceType::Timer => "Timer",
             ServiceType::Console => "Console",
+            ServiceType::Temporal => "Temporal",
             ServiceType::Custom(_) => "Custom",
         }
     }

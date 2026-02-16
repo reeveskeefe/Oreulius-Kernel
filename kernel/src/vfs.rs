@@ -156,9 +156,9 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum HandleKind {
-    MemFile { inode: InodeId },
+    MemFile { inode: InodeId, path: String },
     MemDir { inode: InodeId },
     VirtioRaw,
     VirtioPartitions,
@@ -385,6 +385,7 @@ pub fn write_path(path: &str, data: &[u8]) -> Result<usize, &'static str> {
             inode.data.extend_from_slice(data);
             inode.meta.size = inode.data.len() as u64;
             inode.meta.mtime = 0;
+            let _ = crate::temporal::record_write(path, data);
             return Ok(data.len());
         }
     }
@@ -405,6 +406,7 @@ pub fn write_path(path: &str, data: &[u8]) -> Result<usize, &'static str> {
     inode.data.extend_from_slice(data);
     inode.meta.size = inode.data.len() as u64;
     inode.meta.mtime = 0;
+    let _ = crate::temporal::record_write(path, data);
     Ok(data.len())
 }
 
@@ -489,16 +491,21 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
                 .map_err(|e| e.as_str());
         }
 
-        if let Ok(inode_id) = vfs.resolve_path(path) {
+        let normalized_path = normalize_path(path)?;
+        if let Ok(inode_id) = vfs.resolve_path(&normalized_path) {
             let inode = vfs.get_inode_mut(inode_id).ok_or("File not found")?;
             match inode.kind {
                 InodeKind::File => {
                     if flags.contains(OpenFlags::TRUNC) {
                         inode.data.clear();
                         inode.meta.size = 0;
+                        let _ = crate::temporal::record_write(&normalized_path, &[]);
                     }
                     let handle = Handle {
-                        kind: HandleKind::MemFile { inode: inode_id },
+                        kind: HandleKind::MemFile {
+                            inode: inode_id,
+                            path: normalized_path.clone(),
+                        },
                         pos: if flags.contains(OpenFlags::APPEND) { inode.data.len() } else { 0 },
                         flags,
                         owner: pid,
@@ -533,16 +540,21 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
 
     let mut vfs = VFS.lock();
     vfs.init();
-    let inode_id = vfs.resolve_path(path)?;
+    let normalized_path = normalize_path(path)?;
+    let inode_id = vfs.resolve_path(&normalized_path)?;
     let inode = vfs.get_inode_mut(inode_id).ok_or("File not found")?;
     match inode.kind {
         InodeKind::File => {
             if flags.contains(OpenFlags::TRUNC) {
                 inode.data.clear();
                 inode.meta.size = 0;
+                let _ = crate::temporal::record_write(&normalized_path, &[]);
             }
             let handle = Handle {
-                kind: HandleKind::MemFile { inode: inode_id },
+                kind: HandleKind::MemFile {
+                    inode: inode_id,
+                    path: normalized_path,
+                },
                 pos: if flags.contains(OpenFlags::APPEND) { inode.data.len() } else { 0 },
                 flags,
                 owner: pid,
@@ -578,10 +590,10 @@ pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static st
         if handle.owner != pid {
             return Err("Handle ownership mismatch");
         }
-        (handle.kind, handle.pos)
+        (handle.kind.clone(), handle.pos)
     };
     let read_len = match kind {
-        HandleKind::MemFile { inode } => {
+        HandleKind::MemFile { inode, .. } => {
             let inode = vfs.get_inode(inode).ok_or("File not found")?;
             let data = &inode.data;
             let start = pos;
@@ -623,13 +635,14 @@ pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str>
         if handle.owner != pid {
             return Err("Handle ownership mismatch");
         }
-        (handle.kind, handle.pos, handle.flags)
+        (handle.kind.clone(), handle.pos, handle.flags)
     };
     if !flags.contains(OpenFlags::WRITE) {
         return Err("File not opened for write");
     }
+    let mut temporal_capture: Option<(String, Vec<u8>)> = None;
     let written = match kind {
-        HandleKind::MemFile { inode } => {
+        HandleKind::MemFile { inode, path } => {
             let inode = vfs.get_inode_mut(inode).ok_or("File not found")?;
             if pos + data.len() > MAX_VFS_FILE_SIZE {
                 return Err("File too large");
@@ -643,6 +656,7 @@ pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str>
             inode.data[pos..pos + data.len()].copy_from_slice(data);
             inode.meta.size = inode.data.len() as u64;
             inode.meta.mtime = 0;
+            temporal_capture = Some((path, inode.data.clone()));
             Ok(data.len())
         }
         HandleKind::MemDir { .. } => Err("Cannot write directory"),
@@ -652,6 +666,11 @@ pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str>
 
     if let Some(handle) = vfs.get_handle_mut(handle_id) {
         handle.pos = handle.pos.saturating_add(written);
+    }
+    drop(vfs);
+
+    if let Some((path, payload)) = temporal_capture {
+        let _ = crate::temporal::record_write(&path, &payload);
     }
     Ok(written)
 }

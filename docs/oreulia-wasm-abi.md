@@ -117,6 +117,75 @@ Notes:
 - On instance teardown, service pointers attempt hot-swap rebinding to compatible live replacement instances; unmatched pointers are revoked.
 - Formal technical deep dive: `docs/oreulia-service-pointer-capabilities.md`.
 
+### 4.6 Temporal Objects ABI
+- `temporal_snapshot(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32`:
+  captures a snapshot for `path` and writes latest version metadata.
+- `temporal_latest(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32`:
+  returns metadata for the latest version of `path`.
+- `temporal_read(cap: i32, path_ptr: i32, path_len: i32, version_lo: i32, version_hi: i32, buf_ptr: i32, buf_len: i32) -> i32`:
+  reads a specific version payload into `buf_ptr`; returns copied byte count.
+- `temporal_rollback(cap: i32, path_ptr: i32, path_len: i32, version_lo: i32, version_hi: i32, out_ptr: i32) -> i32`:
+  rolls `path` back to a specific version and emits rollback result.
+- `temporal_stats(out_ptr: i32) -> i32`:
+  returns global temporal-object counters.
+- `temporal_history(cap: i32, path_ptr: i32, path_len: i32, start_from_newest: i32, max_entries: i32, out_ptr: i32, out_capacity: i32) -> i32`:
+  exports a newest-first history window. Returns the number of records written.
+
+All functions return `0` for control-plane success or `-1` on failure, except `temporal_read`, which returns `>=0` copied bytes or `-1`.
+
+Capability policy:
+- `temporal_snapshot`, `temporal_latest`, `temporal_read` require a valid filesystem capability with `READ`.
+- `temporal_rollback` requires a valid filesystem capability with `WRITE`.
+- Scoped filesystem capabilities enforce prefix checks on temporal paths as well.
+
+Capture policy (current kernel profile):
+- Temporal `write` versions are emitted for memory-backed file mutations through both path and FD APIs:
+  `vfs::write_path`, `vfs::write_fd`, and `open(..., TRUNC)`.
+- This keeps ABI-visible history (`temporal_history`) aligned with ordinary shell/process write paths.
+
+`u64` version IDs are passed as `(version_lo, version_hi)` little-endian words.
+
+`out_meta_ptr` layout (32 bytes, little-endian `u32` words):
+1. `version_lo`
+2. `version_hi`
+3. `branch_id`
+4. `data_len`
+5. `leaf_count`
+6. `content_hash`
+7. `merkle_root`
+8. `operation` (`1=snapshot,2=write,3=rollback`)
+
+`out_ptr` for `temporal_rollback` layout (16 bytes):
+1. `new_version_lo`
+2. `new_version_hi`
+3. `branch_id`
+4. `restored_len`
+
+`out_ptr` for `temporal_stats` layout (20 bytes):
+1. `objects`
+2. `versions`
+3. `bytes_lo`
+4. `bytes_hi`
+5. `active_branches`
+
+`out_ptr` for `temporal_history` record layout (64 bytes each, little-endian):
+1. `version_lo`
+2. `version_hi`
+3. `parent_lo` (`0xFFFF_FFFF` if none)
+4. `parent_hi`
+5. `rollback_from_lo` (`0xFFFF_FFFF` if none)
+6. `rollback_from_hi`
+7. `branch_id`
+8. `data_len`
+9. `leaf_count`
+10. `content_hash`
+11. `merkle_root`
+12. `operation`
+13. `tick_lo`
+14. `tick_hi`
+15. `flags` bit0=`has_parent`, bit1=`has_rollback_from`
+16. `record_format_version` (`1`)
+
 ---
 
 ## 5. Memory Model

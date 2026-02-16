@@ -97,6 +97,11 @@ const SERVICE_TYPED_KIND_F32: u8 = 2;
 const SERVICE_TYPED_KIND_F64: u8 = 3;
 const SERVICE_TYPED_KIND_FUNCREF: u8 = 4;
 const SERVICE_TYPED_KIND_EXTERNREF: u8 = 5;
+const TEMPORAL_META_BYTES: usize = 32;
+const TEMPORAL_ROLLBACK_BYTES: usize = 16;
+const TEMPORAL_STATS_BYTES: usize = 20;
+const TEMPORAL_HISTORY_RECORD_BYTES: usize = 64;
+const MAX_TEMPORAL_HISTORY_ENTRIES: usize = 128;
 
 /// Maximum module size (16 KiB - reduced to shrink kernel)
 pub const MAX_MODULE_SIZE: usize = 16 * 1024;
@@ -803,6 +808,12 @@ fn resolve_host_import(
         "channel_send_cap" | "oreulia_channel_send_cap" => (10, 4, 1),
         "last_service_cap" | "oreulia_last_service_cap" => (11, 0, 1),
         "service_invoke_typed" | "oreulia_service_invoke_typed" => (12, 5, 1),
+        "temporal_snapshot" | "oreulia_temporal_snapshot" => (13, 4, 1),
+        "temporal_latest" | "oreulia_temporal_latest" => (14, 4, 1),
+        "temporal_read" | "oreulia_temporal_read" => (15, 7, 1),
+        "temporal_rollback" | "oreulia_temporal_rollback" => (16, 6, 1),
+        "temporal_stats" | "oreulia_temporal_stats" => (17, 1, 1),
+        "temporal_history" | "oreulia_temporal_history" => (18, 7, 1),
         _ => return Err(WasmError::InvalidModule),
     };
 
@@ -4715,6 +4726,12 @@ impl WasmInstance {
             10 => self.host_channel_send_with_cap(),
             11 => self.host_last_service_handle(),
             12 => self.host_service_invoke_typed(),
+            13 => self.host_temporal_snapshot(),
+            14 => self.host_temporal_latest(),
+            15 => self.host_temporal_read(),
+            16 => self.host_temporal_rollback(),
+            17 => self.host_temporal_stats(),
+            18 => self.host_temporal_history(),
             _ => Err(WasmError::UnknownHostFunction),
         }
     }
@@ -5371,6 +5388,94 @@ impl WasmInstance {
         Ok(())
     }
 
+    fn compose_u64(lo: u32, hi: u32) -> u64 {
+        ((hi as u64) << 32) | (lo as u64)
+    }
+
+    fn split_u64(value: u64) -> (u32, u32) {
+        (value as u32, (value >> 32) as u32)
+    }
+
+    fn pop_nonneg_i32_as_usize(&mut self) -> Result<usize, WasmError> {
+        let value = self.stack.pop()?.as_i32()?;
+        if value < 0 {
+            return Err(WasmError::SyscallFailed);
+        }
+        Ok(value as usize)
+    }
+
+    fn encode_temporal_meta(meta: &crate::temporal::TemporalVersionMeta) -> [u8; TEMPORAL_META_BYTES] {
+        let mut out = [0u8; TEMPORAL_META_BYTES];
+        out[0..4].copy_from_slice(&(meta.version_id as u32).to_le_bytes());
+        out[4..8].copy_from_slice(&((meta.version_id >> 32) as u32).to_le_bytes());
+        out[8..12].copy_from_slice(&meta.branch_id.to_le_bytes());
+        out[12..16].copy_from_slice(&(meta.data_len as u32).to_le_bytes());
+        out[16..20].copy_from_slice(&meta.leaf_count.to_le_bytes());
+        out[20..24].copy_from_slice(&meta.content_hash.to_le_bytes());
+        out[24..28].copy_from_slice(&meta.merkle_root.to_le_bytes());
+        out[28..32].copy_from_slice(&(meta.operation as u32).to_le_bytes());
+        out
+    }
+
+    fn encode_temporal_rollback(
+        result: &crate::temporal::TemporalRollbackResult,
+    ) -> [u8; TEMPORAL_ROLLBACK_BYTES] {
+        let mut out = [0u8; TEMPORAL_ROLLBACK_BYTES];
+        out[0..4].copy_from_slice(&(result.new_version_id as u32).to_le_bytes());
+        out[4..8].copy_from_slice(&((result.new_version_id >> 32) as u32).to_le_bytes());
+        out[8..12].copy_from_slice(&result.branch_id.to_le_bytes());
+        out[12..16].copy_from_slice(&(result.restored_len as u32).to_le_bytes());
+        out
+    }
+
+    fn encode_temporal_stats(stats: crate::temporal::TemporalStats) -> [u8; TEMPORAL_STATS_BYTES] {
+        let mut out = [0u8; TEMPORAL_STATS_BYTES];
+        let bytes = stats.bytes as u64;
+        out[0..4].copy_from_slice(&(stats.objects as u32).to_le_bytes());
+        out[4..8].copy_from_slice(&(stats.versions as u32).to_le_bytes());
+        out[8..12].copy_from_slice(&(bytes as u32).to_le_bytes());
+        out[12..16].copy_from_slice(&((bytes >> 32) as u32).to_le_bytes());
+        out[16..20].copy_from_slice(&(stats.active_branches as u32).to_le_bytes());
+        out
+    }
+
+    fn encode_temporal_history_record(meta: &crate::temporal::TemporalVersionMeta) -> [u8; TEMPORAL_HISTORY_RECORD_BYTES] {
+        let mut out = [0u8; TEMPORAL_HISTORY_RECORD_BYTES];
+        let (version_lo, version_hi) = Self::split_u64(meta.version_id);
+        let parent = meta.parent_version_id.unwrap_or(u64::MAX);
+        let rollback = meta.rollback_from_version_id.unwrap_or(u64::MAX);
+        let (parent_lo, parent_hi) = Self::split_u64(parent);
+        let (rollback_lo, rollback_hi) = Self::split_u64(rollback);
+        let (tick_lo, tick_hi) = Self::split_u64(meta.tick);
+
+        let mut words = [0u32; 16];
+        words[0] = version_lo;
+        words[1] = version_hi;
+        words[2] = parent_lo;
+        words[3] = parent_hi;
+        words[4] = rollback_lo;
+        words[5] = rollback_hi;
+        words[6] = meta.branch_id;
+        words[7] = meta.data_len as u32;
+        words[8] = meta.leaf_count;
+        words[9] = meta.content_hash;
+        words[10] = meta.merkle_root;
+        words[11] = meta.operation as u32;
+        words[12] = tick_lo;
+        words[13] = tick_hi;
+        words[14] = (meta.parent_version_id.is_some() as u32)
+            | ((meta.rollback_from_version_id.is_some() as u32) << 1);
+        words[15] = 1; // record format version
+
+        let mut i = 0usize;
+        while i < words.len() {
+            let base = i * 4;
+            out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+            i += 1;
+        }
+        out
+    }
+
     /// oreulia_service_invoke(cap: i32, args_ptr: i32, args_count: i32) -> i32
     fn host_service_invoke(&mut self) -> Result<(), WasmError> {
         let args_count = self.stack.pop()?.as_i32()? as usize;
@@ -5726,6 +5831,476 @@ impl WasmInstance {
                 ReplayEventStatus::Ok,
                 handle,
                 &[],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_temporal_snapshot(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32
+    fn host_temporal_snapshot(&mut self) -> Result<(), WasmError> {
+        let out_meta_ptr = self.pop_nonneg_i32_as_usize()?;
+        let path_len = self.pop_nonneg_i32_as_usize()?;
+        let path_ptr = self.pop_nonneg_i32_as_usize()?;
+        let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
+        let fs_cap = match self.capabilities.get(cap_handle)? {
+            WasmCapability::Filesystem(cap) => cap,
+            _ => return Err(WasmError::InvalidCapability),
+        };
+        let path_bytes = self.memory.read(path_ptr, path_len)?.to_vec();
+
+        let func_id: u16 = 13;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, path_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &path_bytes);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.result == 0 {
+                if out.data.len() != TEMPORAL_META_BYTES {
+                    return Err(WasmError::DeterminismViolation);
+                }
+                self.memory.write(out_meta_ptr, &out.data)?;
+            } else if !out.data.is_empty() {
+                return Err(WasmError::DeterminismViolation);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
+
+        let mut result_code = -1i32;
+        let mut encoded = [0u8; TEMPORAL_META_BYTES];
+        let mut encoded_len = 0usize;
+
+        if let Ok(path) = core::str::from_utf8(&path_bytes) {
+            if let Ok(key) = fs::FileKey::new(path) {
+                if fs_cap.rights.has(fs::FilesystemRights::READ) && fs_cap.can_access(&key) {
+                    if crate::temporal::snapshot_path(path).is_ok() {
+                        if let Ok(meta) = crate::temporal::latest_version(path) {
+                            encoded = Self::encode_temporal_meta(&meta);
+                            self.memory.write(out_meta_ptr, &encoded)?;
+                            encoded_len = TEMPORAL_META_BYTES;
+                            result_code = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.stack.push(Value::I32(result_code))?;
+
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                result_code,
+                &encoded[..encoded_len],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_temporal_latest(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32
+    fn host_temporal_latest(&mut self) -> Result<(), WasmError> {
+        let out_meta_ptr = self.pop_nonneg_i32_as_usize()?;
+        let path_len = self.pop_nonneg_i32_as_usize()?;
+        let path_ptr = self.pop_nonneg_i32_as_usize()?;
+        let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
+        let fs_cap = match self.capabilities.get(cap_handle)? {
+            WasmCapability::Filesystem(cap) => cap,
+            _ => return Err(WasmError::InvalidCapability),
+        };
+        let path_bytes = self.memory.read(path_ptr, path_len)?.to_vec();
+
+        let func_id: u16 = 14;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, path_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &path_bytes);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.result == 0 {
+                if out.data.len() != TEMPORAL_META_BYTES {
+                    return Err(WasmError::DeterminismViolation);
+                }
+                self.memory.write(out_meta_ptr, &out.data)?;
+            } else if !out.data.is_empty() {
+                return Err(WasmError::DeterminismViolation);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
+
+        let mut result_code = -1i32;
+        let mut encoded = [0u8; TEMPORAL_META_BYTES];
+        let mut encoded_len = 0usize;
+
+        if let Ok(path) = core::str::from_utf8(&path_bytes) {
+            if let Ok(key) = fs::FileKey::new(path) {
+                if fs_cap.rights.has(fs::FilesystemRights::READ) && fs_cap.can_access(&key) {
+                    if let Ok(meta) = crate::temporal::latest_version(path) {
+                        encoded = Self::encode_temporal_meta(&meta);
+                        self.memory.write(out_meta_ptr, &encoded)?;
+                        encoded_len = TEMPORAL_META_BYTES;
+                        result_code = 0;
+                    }
+                }
+            }
+        }
+
+        self.stack.push(Value::I32(result_code))?;
+
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                result_code,
+                &encoded[..encoded_len],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_temporal_read(cap: i32, path_ptr: i32, path_len: i32, version_lo: i32, version_hi: i32, buf_ptr: i32, buf_len: i32) -> i32
+    fn host_temporal_read(&mut self) -> Result<(), WasmError> {
+        let buf_len = self.pop_nonneg_i32_as_usize()?;
+        let buf_ptr = self.pop_nonneg_i32_as_usize()?;
+        let version_hi = self.stack.pop()?.as_u32()?;
+        let version_lo = self.stack.pop()?.as_u32()?;
+        let path_len = self.pop_nonneg_i32_as_usize()?;
+        let path_ptr = self.pop_nonneg_i32_as_usize()?;
+        let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
+        let fs_cap = match self.capabilities.get(cap_handle)? {
+            WasmCapability::Filesystem(cap) => cap,
+            _ => return Err(WasmError::InvalidCapability),
+        };
+        let path_bytes = self.memory.read(path_ptr, path_len)?.to_vec();
+        let version_id = Self::compose_u64(version_lo, version_hi);
+
+        let func_id: u16 = 15;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, path_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &path_bytes);
+        args_hash = replay::hash_u32(args_hash, version_lo);
+        args_hash = replay::hash_u32(args_hash, version_hi);
+        args_hash = replay::hash_u32(args_hash, buf_len as u32);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.result >= 0 {
+                let expected = out.result as usize;
+                if expected > buf_len || expected != out.data.len() {
+                    return Err(WasmError::DeterminismViolation);
+                }
+                if expected > 0 {
+                    self.memory.write(buf_ptr, &out.data)?;
+                }
+            } else if !out.data.is_empty() {
+                return Err(WasmError::DeterminismViolation);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
+
+        let mut result_code = -1i32;
+        let mut recorded: Vec<u8> = Vec::new();
+
+        if let Ok(path) = core::str::from_utf8(&path_bytes) {
+            if let Ok(key) = fs::FileKey::new(path) {
+                if fs_cap.rights.has(fs::FilesystemRights::READ) && fs_cap.can_access(&key) {
+                    if let Ok(payload) = crate::temporal::read_version(path, version_id) {
+                        let copy_len = core::cmp::min(buf_len, payload.len());
+                        if copy_len > 0 {
+                            self.memory.write(buf_ptr, &payload[..copy_len])?;
+                            recorded.extend_from_slice(&payload[..copy_len]);
+                        }
+                        result_code = copy_len as i32;
+                    }
+                }
+            }
+        }
+
+        self.stack.push(Value::I32(result_code))?;
+
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                result_code,
+                &recorded,
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_temporal_rollback(cap: i32, path_ptr: i32, path_len: i32, version_lo: i32, version_hi: i32, out_ptr: i32) -> i32
+    fn host_temporal_rollback(&mut self) -> Result<(), WasmError> {
+        let out_ptr = self.pop_nonneg_i32_as_usize()?;
+        let version_hi = self.stack.pop()?.as_u32()?;
+        let version_lo = self.stack.pop()?.as_u32()?;
+        let path_len = self.pop_nonneg_i32_as_usize()?;
+        let path_ptr = self.pop_nonneg_i32_as_usize()?;
+        let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
+        let fs_cap = match self.capabilities.get(cap_handle)? {
+            WasmCapability::Filesystem(cap) => cap,
+            _ => return Err(WasmError::InvalidCapability),
+        };
+        let path_bytes = self.memory.read(path_ptr, path_len)?.to_vec();
+        let version_id = Self::compose_u64(version_lo, version_hi);
+
+        let func_id: u16 = 16;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, path_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &path_bytes);
+        args_hash = replay::hash_u32(args_hash, version_lo);
+        args_hash = replay::hash_u32(args_hash, version_hi);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.result == 0 {
+                if out.data.len() != TEMPORAL_ROLLBACK_BYTES {
+                    return Err(WasmError::DeterminismViolation);
+                }
+                self.memory.write(out_ptr, &out.data)?;
+            } else if !out.data.is_empty() {
+                return Err(WasmError::DeterminismViolation);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
+
+        let mut result_code = -1i32;
+        let mut encoded = [0u8; TEMPORAL_ROLLBACK_BYTES];
+        let mut encoded_len = 0usize;
+
+        if let Ok(path) = core::str::from_utf8(&path_bytes) {
+            if let Ok(key) = fs::FileKey::new(path) {
+                if fs_cap.rights.has(fs::FilesystemRights::WRITE) && fs_cap.can_access(&key) {
+                    if let Ok(rollback) = crate::temporal::rollback_path(path, version_id) {
+                        encoded = Self::encode_temporal_rollback(&rollback);
+                        self.memory.write(out_ptr, &encoded)?;
+                        encoded_len = TEMPORAL_ROLLBACK_BYTES;
+                        result_code = 0;
+                    }
+                }
+            }
+        }
+
+        self.stack.push(Value::I32(result_code))?;
+
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                result_code,
+                &encoded[..encoded_len],
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_temporal_stats(out_ptr: i32) -> i32
+    fn host_temporal_stats(&mut self) -> Result<(), WasmError> {
+        let out_ptr = self.pop_nonneg_i32_as_usize()?;
+
+        let func_id: u16 = 17;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            if out.result == 0 {
+                if out.data.len() != TEMPORAL_STATS_BYTES {
+                    return Err(WasmError::DeterminismViolation);
+                }
+                self.memory.write(out_ptr, &out.data)?;
+            } else if !out.data.is_empty() {
+                return Err(WasmError::DeterminismViolation);
+            }
+            self.stack.push(Value::I32(out.result))?;
+            return Ok(());
+        }
+
+        let stats = crate::temporal::stats();
+        let encoded = Self::encode_temporal_stats(stats);
+        self.memory.write(out_ptr, &encoded)?;
+        self.stack.push(Value::I32(0))?;
+
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                0,
+                &encoded,
+            )
+            .map_err(|_| WasmError::ReplayError)?;
+        }
+        Ok(())
+    }
+
+    /// oreulia_temporal_history(cap: i32, path_ptr: i32, path_len: i32, start_from_newest: i32, max_entries: i32, out_ptr: i32, out_capacity: i32) -> i32
+    fn host_temporal_history(&mut self) -> Result<(), WasmError> {
+        let out_capacity = self.pop_nonneg_i32_as_usize()?;
+        let out_ptr = self.pop_nonneg_i32_as_usize()?;
+        let max_entries = self.pop_nonneg_i32_as_usize()?;
+        let start_from_newest = self.pop_nonneg_i32_as_usize()?;
+        let path_len = self.pop_nonneg_i32_as_usize()?;
+        let path_ptr = self.pop_nonneg_i32_as_usize()?;
+        let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
+        let fs_cap = match self.capabilities.get(cap_handle)? {
+            WasmCapability::Filesystem(cap) => cap,
+            _ => return Err(WasmError::InvalidCapability),
+        };
+
+        if max_entries > MAX_TEMPORAL_HISTORY_ENTRIES || out_capacity > MAX_TEMPORAL_HISTORY_ENTRIES {
+            return Err(WasmError::SyscallFailed);
+        }
+
+        let path_bytes = self.memory.read(path_ptr, path_len)?.to_vec();
+
+        let func_id: u16 = 18;
+        crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
+
+        let mut args_hash = replay::fnv1a64_init();
+        args_hash = replay::hash_u16(args_hash, func_id);
+        args_hash = replay::hash_u32(args_hash, cap_handle.0);
+        args_hash = replay::hash_u32(args_hash, path_len as u32);
+        args_hash = replay::hash_bytes(args_hash, &path_bytes);
+        args_hash = replay::hash_u32(args_hash, start_from_newest as u32);
+        args_hash = replay::hash_u32(args_hash, max_entries as u32);
+        args_hash = replay::hash_u32(args_hash, out_capacity as u32);
+
+        let mode = self.replay_mode();
+        if mode == ReplayMode::Replay {
+            let out = replay::replay_host_call(self.instance_id, func_id, args_hash)
+                .map_err(|_| WasmError::DeterminismViolation)?;
+            if out.status == ReplayEventStatus::Err {
+                return Err(WasmError::SyscallFailed);
+            }
+            let count = out.result;
+            if count < 0 {
+                if !out.data.is_empty() {
+                    return Err(WasmError::DeterminismViolation);
+                }
+                self.stack.push(Value::I32(count))?;
+                return Ok(());
+            }
+
+            let count_usize = count as usize;
+            if count_usize > out_capacity || count_usize > max_entries {
+                return Err(WasmError::DeterminismViolation);
+            }
+            let expected_len = count_usize
+                .checked_mul(TEMPORAL_HISTORY_RECORD_BYTES)
+                .ok_or(WasmError::DeterminismViolation)?;
+            if out.data.len() != expected_len {
+                return Err(WasmError::DeterminismViolation);
+            }
+            if expected_len > 0 {
+                self.memory.write(out_ptr, &out.data)?;
+            }
+            self.stack.push(Value::I32(count))?;
+            return Ok(());
+        }
+
+        let mut result_code = -1i32;
+        let mut encoded: Vec<u8> = Vec::new();
+
+        if let Ok(path) = core::str::from_utf8(&path_bytes) {
+            if let Ok(key) = fs::FileKey::new(path) {
+                if fs_cap.rights.has(fs::FilesystemRights::READ) && fs_cap.can_access(&key) {
+                    if let Ok(history) =
+                        crate::temporal::history_window(path, start_from_newest, max_entries)
+                    {
+                        let write_count = core::cmp::min(history.len(), out_capacity);
+                        let total_len = write_count
+                            .checked_mul(TEMPORAL_HISTORY_RECORD_BYTES)
+                            .ok_or(WasmError::SyscallFailed)?;
+                        encoded.resize(total_len, 0);
+                        let mut i = 0usize;
+                        while i < write_count {
+                            let record = Self::encode_temporal_history_record(&history[i]);
+                            let base = i * TEMPORAL_HISTORY_RECORD_BYTES;
+                            encoded[base..base + TEMPORAL_HISTORY_RECORD_BYTES]
+                                .copy_from_slice(&record);
+                            i += 1;
+                        }
+                        if total_len > 0 {
+                            self.memory.write(out_ptr, &encoded)?;
+                        }
+                        result_code = write_count as i32;
+                    }
+                }
+            }
+        }
+
+        self.stack.push(Value::I32(result_code))?;
+
+        if mode == ReplayMode::Record {
+            replay::record_host_call(
+                self.instance_id,
+                func_id,
+                args_hash,
+                ReplayEventStatus::Ok,
+                result_code,
+                &encoded,
             )
             .map_err(|_| WasmError::ReplayError)?;
         }
@@ -8104,6 +8679,188 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
     }
     capability::capability_manager().deinit_task(consumer);
     capability::capability_manager().deinit_task(provider);
+    result
+}
+
+pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
+    let pid = ProcessId(76);
+    capability::capability_manager().init_task(pid);
+
+    const PATH: &str = "/temporal-selfcheck";
+    const INITIAL: &[u8] = b"alpha-temporal";
+    const UPDATED: &[u8] = b"beta-temporal";
+
+    crate::vfs::write_path(PATH, INITIAL).map_err(|_| "Temporal self-check: initial write failed")?;
+
+    let mut instance_id: Option<usize> = None;
+    let result = (|| -> Result<(), &'static str> {
+        let code: [u8; 1] = [0x0B];
+        let id = wasm_runtime()
+            .instantiate(&code, pid)
+            .map_err(|_| "Temporal self-check: instance creation failed")?;
+        instance_id = Some(id);
+
+        let invoke = wasm_runtime()
+            .with_instance_exclusive(id, |instance| -> Result<(), WasmError> {
+                const PATH_PTR: usize = 0x100;
+                const META0_PTR: usize = 0x200;
+                const META1_PTR: usize = 0x240;
+                const HISTORY_PTR: usize = 0x300;
+                const READ_PTR: usize = 0x600;
+                const ROLLBACK_PTR: usize = 0x680;
+                const STATS_PTR: usize = 0x700;
+                const HISTORY_CAPACITY: usize = 4;
+
+                let fs_cap = fs::filesystem().create_capability(
+                    900,
+                    fs::FilesystemRights::all(),
+                    None,
+                );
+                let fs_handle = instance.inject_capability(WasmCapability::Filesystem(fs_cap))?;
+                instance.memory.write(PATH_PTR, PATH.as_bytes())?;
+
+                // Snapshot current file state.
+                instance.stack.clear();
+                instance.stack.push(Value::I32(fs_handle.0 as i32))?;
+                instance.stack.push(Value::I32(PATH_PTR as i32))?;
+                instance.stack.push(Value::I32(PATH.len() as i32))?;
+                instance.stack.push(Value::I32(META0_PTR as i32))?;
+                instance.host_temporal_snapshot()?;
+                if instance.stack.pop()?.as_i32()? != 0 {
+                    instance.stack.clear();
+                    return Err(WasmError::SyscallFailed);
+                }
+
+                let meta0 = instance.memory.read(META0_PTR, TEMPORAL_META_BYTES)?;
+                let v0_lo = u32::from_le_bytes([meta0[0], meta0[1], meta0[2], meta0[3]]);
+                let v0_hi = u32::from_le_bytes([meta0[4], meta0[5], meta0[6], meta0[7]]);
+                let version0 = ((v0_hi as u64) << 32) | (v0_lo as u64);
+
+                crate::vfs::write_path(PATH, UPDATED).map_err(|_| WasmError::SyscallFailed)?;
+
+                // Snapshot updated state.
+                instance.stack.clear();
+                instance.stack.push(Value::I32(fs_handle.0 as i32))?;
+                instance.stack.push(Value::I32(PATH_PTR as i32))?;
+                instance.stack.push(Value::I32(PATH.len() as i32))?;
+                instance.stack.push(Value::I32(META1_PTR as i32))?;
+                instance.host_temporal_snapshot()?;
+                if instance.stack.pop()?.as_i32()? != 0 {
+                    instance.stack.clear();
+                    return Err(WasmError::SyscallFailed);
+                }
+
+                let meta1 = instance.memory.read(META1_PTR, TEMPORAL_META_BYTES)?;
+                let v1_lo = u32::from_le_bytes([meta1[0], meta1[1], meta1[2], meta1[3]]);
+                let v1_hi = u32::from_le_bytes([meta1[4], meta1[5], meta1[6], meta1[7]]);
+                let version1 = ((v1_hi as u64) << 32) | (v1_lo as u64);
+                if version1 == version0 {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+
+                // Pull newest-first history.
+                instance.stack.clear();
+                instance.stack.push(Value::I32(fs_handle.0 as i32))?;
+                instance.stack.push(Value::I32(PATH_PTR as i32))?;
+                instance.stack.push(Value::I32(PATH.len() as i32))?;
+                instance.stack.push(Value::I32(0))?; // start_from_newest
+                instance.stack.push(Value::I32(HISTORY_CAPACITY as i32))?;
+                instance.stack.push(Value::I32(HISTORY_PTR as i32))?;
+                instance
+                    .stack
+                    .push(Value::I32(HISTORY_CAPACITY as i32))?;
+                instance.host_temporal_history()?;
+                let written = instance.stack.pop()?.as_i32()? as usize;
+                if written < 2 {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+
+                let history_bytes = instance
+                    .memory
+                    .read(HISTORY_PTR, written.saturating_mul(TEMPORAL_HISTORY_RECORD_BYTES))?;
+                let newest_lo = u32::from_le_bytes([
+                    history_bytes[0],
+                    history_bytes[1],
+                    history_bytes[2],
+                    history_bytes[3],
+                ]);
+                let newest_hi = u32::from_le_bytes([
+                    history_bytes[4],
+                    history_bytes[5],
+                    history_bytes[6],
+                    history_bytes[7],
+                ]);
+                let newest_version = ((newest_hi as u64) << 32) | (newest_lo as u64);
+                if newest_version != version1 {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+
+                // Roll back to the first snapshot version.
+                instance.stack.clear();
+                instance.stack.push(Value::I32(fs_handle.0 as i32))?;
+                instance.stack.push(Value::I32(PATH_PTR as i32))?;
+                instance.stack.push(Value::I32(PATH.len() as i32))?;
+                instance.stack.push(Value::I32(v0_lo as i32))?;
+                instance.stack.push(Value::I32(v0_hi as i32))?;
+                instance.stack.push(Value::I32(ROLLBACK_PTR as i32))?;
+                instance.host_temporal_rollback()?;
+                if instance.stack.pop()?.as_i32()? != 0 {
+                    instance.stack.clear();
+                    return Err(WasmError::SyscallFailed);
+                }
+
+                // Read back rolled version through ABI.
+                instance.stack.clear();
+                instance.stack.push(Value::I32(fs_handle.0 as i32))?;
+                instance.stack.push(Value::I32(PATH_PTR as i32))?;
+                instance.stack.push(Value::I32(PATH.len() as i32))?;
+                instance.stack.push(Value::I32(v0_lo as i32))?;
+                instance.stack.push(Value::I32(v0_hi as i32))?;
+                instance.stack.push(Value::I32(READ_PTR as i32))?;
+                instance.stack.push(Value::I32(64))?;
+                instance.host_temporal_read()?;
+                let read_len = instance.stack.pop()?.as_i32()? as usize;
+                if read_len != INITIAL.len() {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+                let read_back = instance.memory.read(READ_PTR, read_len)?;
+                if read_back != INITIAL {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+
+                // Query stats.
+                instance.stack.clear();
+                instance.stack.push(Value::I32(STATS_PTR as i32))?;
+                instance.host_temporal_stats()?;
+                if instance.stack.pop()?.as_i32()? != 0 {
+                    instance.stack.clear();
+                    return Err(WasmError::SyscallFailed);
+                }
+                let stats = instance.memory.read(STATS_PTR, TEMPORAL_STATS_BYTES)?;
+                let objects = u32::from_le_bytes([stats[0], stats[1], stats[2], stats[3]]);
+                let versions = u32::from_le_bytes([stats[4], stats[5], stats[6], stats[7]]);
+                if objects == 0 || versions == 0 {
+                    instance.stack.clear();
+                    return Err(WasmError::TypeMismatch);
+                }
+
+                instance.stack.clear();
+                Ok(())
+            })
+            .map_err(|_| "Temporal self-check: execution unavailable")?;
+
+        invoke.map_err(|_| "Temporal self-check: host ABI path failed")
+    })();
+
+    if let Some(id) = instance_id {
+        let _ = wasm_runtime().destroy(id);
+    }
+    capability::capability_manager().deinit_task(pid);
     result
 }
 

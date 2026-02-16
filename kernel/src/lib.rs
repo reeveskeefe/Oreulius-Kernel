@@ -80,6 +80,8 @@ pub mod security;
 pub mod serial;
 pub mod syscall;
 pub mod terminal;
+pub mod temporal;
+pub mod temporal_asm;
 pub mod vga;
 pub mod vfs;
 pub mod virtio_blk;
@@ -215,6 +217,8 @@ pub extern "C" fn rust_main() -> ! {
     vfs::init();
     vga::print_str("[DEBUG] About to init persistence...\n");
     persistence::init();
+    vga::print_str("[DEBUG] About to init temporal...\n");
+    temporal::init();
     vga::print_str("[DEBUG] About to init ipc...\n");
     ipc::init();
     vga::print_str("[DEBUG] About to init registry...\n");

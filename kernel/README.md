@@ -314,6 +314,10 @@ Use these commands from the Oreulia shell to validate current security posture:
   - Cross-process transfer/invoke proof path.
 - `svcptr-typed-demo`
   - Mixed-type typed invoke host-path verification (`i64`, `f32`, `f64`, `funcref`).
+- `temporal-abi-selftest`
+  - Temporal-object ABI host-path verification plus VFS FD-write capture and temporal IPC service consistency checks.
+- `temporal-ipc-demo`
+  - Demonstrates `SNAPSHOT/LATEST/HISTORY/STATS` temporal-object operations over the IPC service dispatcher path.
 
 ---
 

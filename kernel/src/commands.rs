@@ -109,6 +109,13 @@ pub fn execute(input: &str) {
             vga::print_str("  vfs-readfd - Read via fd (vfs-readfd <fd> [n])\n");
             vga::print_str("  vfs-writefd - Write via fd (vfs-writefd <fd> <data>)\n");
             vga::print_str("  vfs-close  - Close fd (vfs-close <fd>)\n");
+            vga::print_str("  temporal-write - Write + version file (temporal-write <path> <data>)\n");
+            vga::print_str("  temporal-snapshot - Snapshot current file state (temporal-snapshot <path>)\n");
+            vga::print_str("  temporal-history - Show version history (temporal-history <path>)\n");
+            vga::print_str("  temporal-read - Read specific version (temporal-read <path> <version_id>)\n");
+            vga::print_str("  temporal-rollback - Roll back file to version (temporal-rollback <path> <version_id>)\n");
+            vga::print_str("  temporal-stats - Show temporal object stats\n");
+            vga::print_str("  temporal-ipc-demo - Run temporal IPC service demo\n");
             vga::print_str("  ipc-create - Create a new channel\n");
             vga::print_str("  ipc-send   - Send a message (usage: ipc-send <chan> <msg>)\n");
             vga::print_str("  ipc-recv   - Receive a message (usage: ipc-recv <chan>)\n");
@@ -130,6 +137,7 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-demo    - Run WASM demo (simple math)\n");
             vga::print_str("  wasm-fs-demo - Demo WASM filesystem syscalls\n");
             vga::print_str("  wasm-log-demo - Demo WASM logging syscall\n");
+            vga::print_str("  temporal-abi-selftest - Run WASM temporal-object ABI self-check\n");
             vga::print_str("  wasm-list    - List loaded WASM instances\n");
             vga::print_str("  svcptr-register - Register service pointer (svcptr-register <instance_id> <func_idx> [delegate])\n");
             vga::print_str("  svcptr-invoke   - Invoke service pointer (svcptr-invoke <object_id> [arg ...])\n");
@@ -277,6 +285,27 @@ pub fn execute(input: &str) {
         "vfs-close" => {
             cmd_vfs_close(parts);
         }
+        "temporal-write" => {
+            cmd_temporal_write(parts);
+        }
+        "temporal-snapshot" => {
+            cmd_temporal_snapshot(parts);
+        }
+        "temporal-history" => {
+            cmd_temporal_history(parts);
+        }
+        "temporal-read" => {
+            cmd_temporal_read(parts);
+        }
+        "temporal-rollback" => {
+            cmd_temporal_rollback(parts);
+        }
+        "temporal-stats" => {
+            cmd_temporal_stats();
+        }
+        "temporal-ipc-demo" => {
+            cmd_temporal_ipc_demo();
+        }
         "ipc-create" => {
             cmd_ipc_create();
         }
@@ -330,6 +359,9 @@ pub fn execute(input: &str) {
         }
         "wasm-log-demo" => {
             cmd_wasm_log_demo();
+        }
+        "temporal-abi-selftest" => {
+            cmd_temporal_abi_selftest();
         }
         "wasm-list" => {
             cmd_wasm_list();
@@ -842,6 +874,23 @@ fn cmd_vfs_mkdir(mut parts: core::str::SplitWhitespace) {
     }
 }
 
+fn join_tail_parts(parts: &mut core::str::SplitWhitespace) -> Option<alloc::string::String> {
+    let mut out = alloc::string::String::new();
+    let mut saw_any = false;
+    while let Some(part) = parts.next() {
+        if saw_any {
+            out.push(' ');
+        }
+        out.push_str(part);
+        saw_any = true;
+    }
+    if saw_any {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 fn cmd_vfs_write(mut parts: core::str::SplitWhitespace) {
     let path = match parts.next() {
         Some(p) => p,
@@ -850,7 +899,7 @@ fn cmd_vfs_write(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    let data = match parts.next() {
+    let data = match join_tail_parts(&mut parts) {
         Some(d) => d,
         None => {
             vga::print_str("Usage: vfs-write <path> <data>\n");
@@ -1088,6 +1137,381 @@ fn cmd_vfs_close(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\n");
         }
     }
+}
+
+fn cmd_temporal_write(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: temporal-write <path> <data>\n");
+            return;
+        }
+    };
+
+    let data = match join_tail_parts(&mut parts) {
+        Some(d) => d,
+        None => {
+            vga::print_str("Usage: temporal-write <path> <data>\n");
+            return;
+        }
+    };
+
+    match vfs::write_path(path, data.as_bytes()) {
+        Ok(written) => {
+            vga::print_str("Wrote ");
+            print_number(written);
+            vga::print_str(" bytes to ");
+            vga::print_str(path);
+            vga::print_str("\n");
+
+            match crate::temporal::latest_version(path) {
+                Ok(meta) => {
+                    vga::print_str("Temporal version: ");
+                    print_u64(meta.version_id);
+                    vga::print_str(" op=");
+                    vga::print_str(meta.operation.as_str());
+                    vga::print_str(" branch=");
+                    print_u32(meta.branch_id);
+                    vga::print_str(" root=0x");
+                    print_hex_u32(meta.merkle_root);
+                    vga::print_str("\n");
+                }
+                Err(e) => {
+                    vga::print_str("Temporal note: write succeeded, version capture failed (");
+                    vga::print_str(e.as_str());
+                    vga::print_str(")\n");
+                }
+            }
+        }
+        Err(e) => {
+            vga::print_str("Error: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_temporal_snapshot(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: temporal-snapshot <path>\n");
+            return;
+        }
+    };
+
+    match crate::temporal::snapshot_path(path) {
+        Ok(version_id) => {
+            vga::print_str("Snapshot captured for ");
+            vga::print_str(path);
+            vga::print_str(" at version ");
+            print_u64(version_id);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Temporal snapshot error: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_temporal_history(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: temporal-history <path>\n");
+            return;
+        }
+    };
+
+    match crate::temporal::list_versions(path) {
+        Ok(history) => {
+            if history.is_empty() {
+                vga::print_str("No temporal history for path.\n");
+                return;
+            }
+
+            vga::print_str("Temporal history for ");
+            vga::print_str(path);
+            vga::print_str(" (newest first)\n");
+
+            for meta in history.iter().rev() {
+                vga::print_str("  v");
+                print_u64(meta.version_id);
+                vga::print_str(" op=");
+                vga::print_str(meta.operation.as_str());
+                vga::print_str(" branch=");
+                print_u32(meta.branch_id);
+                vga::print_str(" parent=");
+                if let Some(parent) = meta.parent_version_id {
+                    print_u64(parent);
+                } else {
+                    vga::print_str("-");
+                }
+                vga::print_str(" rollback_from=");
+                if let Some(src) = meta.rollback_from_version_id {
+                    print_u64(src);
+                } else {
+                    vga::print_str("-");
+                }
+                vga::print_str(" len=");
+                print_number(meta.data_len);
+                vga::print_str(" leafs=");
+                print_u32(meta.leaf_count);
+                vga::print_str(" hash=0x");
+                print_hex_u32(meta.content_hash);
+                vga::print_str(" root=0x");
+                print_hex_u32(meta.merkle_root);
+                vga::print_str(" tick=");
+                print_u64(meta.tick);
+                vga::print_str("\n");
+            }
+        }
+        Err(e) => {
+            vga::print_str("Temporal history error: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_temporal_read(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: temporal-read <path> <version_id>\n");
+            return;
+        }
+    };
+
+    let version_id = match parts.next().and_then(parse_number) {
+        Some(v) => v as u64,
+        None => {
+            vga::print_str("Usage: temporal-read <path> <version_id>\n");
+            return;
+        }
+    };
+
+    match crate::temporal::read_version(path, version_id) {
+        Ok(payload) => {
+            vga::print_str("Version ");
+            print_u64(version_id);
+            vga::print_str(" bytes=");
+            print_number(payload.len());
+            vga::print_str("\n");
+
+            let preview_len = core::cmp::min(payload.len(), 256);
+            if let Ok(text) = core::str::from_utf8(&payload[..preview_len]) {
+                vga::print_str(text);
+                if payload.len() > preview_len {
+                    vga::print_str("...<truncated>");
+                }
+                vga::print_str("\n");
+            } else {
+                vga::print_str("<binary payload>\n");
+            }
+        }
+        Err(e) => {
+            vga::print_str("Temporal read error: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_temporal_rollback(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: temporal-rollback <path> <version_id>\n");
+            return;
+        }
+    };
+
+    let version_id = match parts.next().and_then(parse_number) {
+        Some(v) => v as u64,
+        None => {
+            vga::print_str("Usage: temporal-rollback <path> <version_id>\n");
+            return;
+        }
+    };
+
+    match crate::temporal::rollback_path(path, version_id) {
+        Ok(result) => {
+            vga::print_str("Rollback applied for ");
+            vga::print_str(path);
+            vga::print_str(" <- version ");
+            print_u64(version_id);
+            vga::print_str("\n");
+            vga::print_str("  New head version: ");
+            print_u64(result.new_version_id);
+            vga::print_str("\n");
+            vga::print_str("  Branch: ");
+            print_u32(result.branch_id);
+            vga::print_str("\n");
+            vga::print_str("  Restored bytes: ");
+            print_number(result.restored_len);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Temporal rollback error: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_temporal_stats() {
+    let stats = crate::temporal::stats();
+    vga::print_str("Temporal Objects Stats\n");
+    vga::print_str("=====================\n");
+    vga::print_str("Objects: ");
+    print_number(stats.objects);
+    vga::print_str("\nVersions: ");
+    print_number(stats.versions);
+    vga::print_str("\nVersion bytes: ");
+    print_number(stats.bytes);
+    vga::print_str("\nActive branches (sum): ");
+    print_number(stats.active_branches);
+    vga::print_str("\n");
+}
+
+fn temporal_ipc_roundtrip(
+    request: &str,
+    fs_cap: Option<fs::FilesystemCapability>,
+) -> Result<alloc::string::String, &'static str> {
+    let channel_id = ipc::ChannelId::new(0x544D_5001); // TMP1
+    let owner = ipc::ProcessId(1);
+    let mut channel = ipc::Channel::new(channel_id, owner);
+
+    let send_cap = ipc::ChannelCapability::new(
+        1,
+        channel_id,
+        ipc::ChannelRights::send_only(),
+        owner,
+    );
+    let recv_cap = ipc::ChannelCapability::new(
+        2,
+        channel_id,
+        ipc::ChannelRights::receive_only(),
+        owner,
+    );
+
+    let mut msg = ipc::Message::with_data(owner, request.as_bytes())
+        .map_err(|_| "temporal IPC request too large")?;
+    if let Some(cap) = fs_cap {
+        msg.add_capability(cap.to_ipc_capability())
+            .map_err(|_| "failed to attach filesystem capability")?;
+    }
+
+    channel
+        .send(msg, &send_cap)
+        .map_err(|_| "failed to enqueue temporal IPC request")?;
+    let service_req = channel
+        .try_recv(&recv_cap)
+        .map_err(|_| "failed to dequeue temporal IPC request")?;
+
+    let service_resp = dispatch_ipc_service(SERVICE_TEMPORAL, &service_req);
+    channel
+        .send(service_resp, &send_cap)
+        .map_err(|_| "failed to enqueue temporal IPC response")?;
+    let client_resp = channel
+        .try_recv(&recv_cap)
+        .map_err(|_| "failed to dequeue temporal IPC response")?;
+
+    let response_text = core::str::from_utf8(client_resp.payload())
+        .map_err(|_| "temporal IPC response is not valid UTF-8")?;
+    Ok(alloc::string::String::from(response_text))
+}
+
+fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
+    const PATH: &str = "/temporal-ipc-selfcheck";
+    vfs::write_path(PATH, b"temporal-ipc-alpha").map_err(|_| "IPC self-check seed write failed")?;
+
+    let fs_cap = fs::filesystem().create_capability(
+        911,
+        fs::FilesystemRights::all(),
+        None,
+    );
+
+    let snapshot_req = alloc::format!("SNAPSHOT {}", PATH);
+    let snapshot_resp = temporal_ipc_roundtrip(&snapshot_req, Some(fs_cap))?;
+    if !snapshot_resp.starts_with("OK: Snapshot") {
+        return Err("temporal IPC snapshot request failed");
+    }
+
+    let latest_req = alloc::format!("LATEST {}", PATH);
+    let latest_resp = temporal_ipc_roundtrip(&latest_req, Some(fs_cap))?;
+    if !latest_resp.starts_with("OK: Latest") {
+        return Err("temporal IPC latest request failed");
+    }
+
+    let history_req = alloc::format!("HISTORY {} 0 4", PATH);
+    let history_resp = temporal_ipc_roundtrip(&history_req, Some(fs_cap))?;
+    if !history_resp.starts_with("OK: History") {
+        return Err("temporal IPC history request failed");
+    }
+
+    let stats_resp = temporal_ipc_roundtrip("STATS", None)?;
+    if !stats_resp.starts_with("OK: Temporal stats") {
+        return Err("temporal IPC stats request failed");
+    }
+
+    Ok(())
+}
+
+fn cmd_temporal_ipc_demo() {
+    const PATH: &str = "/temporal-ipc-demo";
+    vga::print_str("\n===== Temporal IPC Demo =====\n");
+
+    match vfs::write_path(PATH, b"temporal-ipc-seed") {
+        Ok(_) => {}
+        Err(e) => {
+            vga::print_str("Seed write failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    let fs_cap = fs::filesystem().create_capability(
+        910,
+        fs::FilesystemRights::all(),
+        None,
+    );
+
+    let requests = [
+        alloc::string::String::from("STATS"),
+        alloc::format!("SNAPSHOT {}", PATH),
+        alloc::format!("LATEST {}", PATH),
+        alloc::format!("HISTORY {} 0 4", PATH),
+    ];
+
+    for request in requests.iter() {
+        let use_cap = if request.starts_with("STATS") {
+            None
+        } else {
+            Some(fs_cap)
+        };
+
+        vga::print_str("> ");
+        vga::print_str(request);
+        vga::print_str("\n");
+
+        match temporal_ipc_roundtrip(request.as_str(), use_cap) {
+            Ok(resp) => {
+                vga::print_str(resp.as_str());
+                vga::print_str("\n");
+            }
+            Err(e) => {
+                vga::print_str("ERROR: ");
+                vga::print_str(e);
+                vga::print_str("\n");
+            }
+        }
+    }
+    vga::print_str("\n");
 }
 
 // ============================================================================
@@ -1683,6 +2107,7 @@ const SERVICE_CONSOLE: u32 = 1;
 const SERVICE_TIMER: u32 = 2;
 const SERVICE_PERSISTENCE: u32 = 3;
 const SERVICE_NETWORK: u32 = 4;
+const SERVICE_TEMPORAL: u32 = 5;
 
 /// Central IPC service dispatcher
 /// Routes IPC messages to appropriate service handlers based on service ID
@@ -1692,6 +2117,7 @@ pub fn dispatch_ipc_service(service_id: u32, message: &ipc::Message) -> ipc::Mes
         SERVICE_TIMER => handle_timer_request(message),
         SERVICE_PERSISTENCE => handle_persistence_request(message),
         SERVICE_NETWORK => handle_network_request(message),
+        SERVICE_TEMPORAL => handle_temporal_request(message),
         _ => {
             let mut err = ipc::Message::new(ipc::ProcessId(1));
             let msg = b"ERROR: Unknown service ID";
@@ -1711,6 +2137,7 @@ pub fn get_service_name(service_id: u32) -> &'static str {
         SERVICE_TIMER => "Timer",
         SERVICE_PERSISTENCE => "Persistence",
         SERVICE_NETWORK => "Network",
+        SERVICE_TEMPORAL => "Temporal",
         _ => "Unknown",
     }
 }
@@ -1971,6 +2398,382 @@ fn handle_persistence_request(message: &ipc::Message) -> ipc::Message {
     response
 }
 
+fn set_ipc_response_text(response: &mut ipc::Message, text: &str) {
+    let bytes = text.as_bytes();
+    let copy_len = bytes.len().min(response.payload.len());
+    response.payload[..copy_len].copy_from_slice(&bytes[..copy_len]);
+    response.payload_len = copy_len;
+}
+
+fn normalize_temporal_path(path: &str) -> Option<alloc::string::String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('/') {
+        Some(alloc::string::String::from(trimmed))
+    } else {
+        let mut normalized = alloc::string::String::from("/");
+        normalized.push_str(trimmed);
+        Some(normalized)
+    }
+}
+
+fn temporal_cap_from_message(message: &ipc::Message) -> Result<fs::FilesystemCapability, &'static str> {
+    let ipc_cap = message
+        .capabilities()
+        .next()
+        .ok_or("filesystem capability attachment required")?;
+    fs::FilesystemCapability::from_ipc_capability(ipc_cap)
+        .map_err(|_| "invalid filesystem capability attachment")
+}
+
+fn authorize_temporal_path(
+    cap: &fs::FilesystemCapability,
+    normalized_path: &str,
+    required_rights: u32,
+) -> Result<(), &'static str> {
+    if !cap.rights.has(required_rights) {
+        return Err("filesystem capability rights are insufficient");
+    }
+
+    let key = fs::FileKey::new(normalized_path).map_err(|_| "invalid temporal path")?;
+    if !cap.can_access(&key) {
+        return Err("path is outside filesystem capability scope");
+    }
+
+    Ok(())
+}
+
+/// Handle temporal service requests.
+/// Supported commands:
+/// - SNAPSHOT <path>
+/// - LATEST <path>
+/// - READ <path> <version_id> [preview_bytes]
+/// - ROLLBACK <path> <version_id>
+/// - HISTORY <path> [start_from_newest] [max_entries]
+/// - STATS
+fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
+    let mut response = ipc::Message::new(ipc::ProcessId(1));
+
+    let request = match core::str::from_utf8(&message.payload[..message.payload_len]) {
+        Ok(r) => r.trim(),
+        Err(_) => {
+            set_ipc_response_text(&mut response, "ERROR: Invalid temporal request format");
+            return response;
+        }
+    };
+
+    let mut parts = request.split_whitespace();
+    let command = parts.next().unwrap_or("");
+
+    match command {
+        "SNAPSHOT" => {
+            let path_raw = match parts.next() {
+                Some(p) => p,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Usage SNAPSHOT <path>");
+                    return response;
+                }
+            };
+            let path = match normalize_temporal_path(path_raw) {
+                Some(p) => p,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Invalid path");
+                    return response;
+                }
+            };
+
+            let fs_cap = match temporal_cap_from_message(message) {
+                Ok(cap) => cap,
+                Err(e) => {
+                    let msg = alloc::format!("ERROR: {}", e);
+                    set_ipc_response_text(&mut response, &msg);
+                    return response;
+                }
+            };
+            if let Err(e) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+                let msg = alloc::format!("ERROR: {}", e);
+                set_ipc_response_text(&mut response, &msg);
+                return response;
+            }
+
+            match crate::temporal::snapshot_path(&path)
+                .and_then(|_| crate::temporal::latest_version(&path))
+            {
+                Ok(meta) => {
+                    let msg = alloc::format!(
+                        "OK: Snapshot path={} version={} branch={} root=0x{:08X}",
+                        path,
+                        meta.version_id,
+                        meta.branch_id,
+                        meta.merkle_root
+                    );
+                    set_ipc_response_text(&mut response, &msg);
+                }
+                Err(e) => {
+                    let msg = alloc::format!("ERROR: Snapshot failed ({})", e.as_str());
+                    set_ipc_response_text(&mut response, &msg);
+                }
+            }
+        }
+        "LATEST" => {
+            let path_raw = match parts.next() {
+                Some(p) => p,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Usage LATEST <path>");
+                    return response;
+                }
+            };
+            let path = match normalize_temporal_path(path_raw) {
+                Some(p) => p,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Invalid path");
+                    return response;
+                }
+            };
+
+            let fs_cap = match temporal_cap_from_message(message) {
+                Ok(cap) => cap,
+                Err(e) => {
+                    let msg = alloc::format!("ERROR: {}", e);
+                    set_ipc_response_text(&mut response, &msg);
+                    return response;
+                }
+            };
+            if let Err(e) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+                let msg = alloc::format!("ERROR: {}", e);
+                set_ipc_response_text(&mut response, &msg);
+                return response;
+            }
+
+            match crate::temporal::latest_version(&path) {
+                Ok(meta) => {
+                    let msg = alloc::format!(
+                        "OK: Latest path={} version={} op={} branch={} len={} root=0x{:08X}",
+                        path,
+                        meta.version_id,
+                        meta.operation.as_str(),
+                        meta.branch_id,
+                        meta.data_len,
+                        meta.merkle_root
+                    );
+                    set_ipc_response_text(&mut response, &msg);
+                }
+                Err(e) => {
+                    let msg = alloc::format!("ERROR: Latest failed ({})", e.as_str());
+                    set_ipc_response_text(&mut response, &msg);
+                }
+            }
+        }
+        "READ" => {
+            let path_raw = match parts.next() {
+                Some(p) => p,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Usage READ <path> <version_id> [preview_bytes]");
+                    return response;
+                }
+            };
+            let version_id = match parts.next().and_then(|v| v.parse::<u64>().ok()) {
+                Some(v) => v,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Invalid version_id");
+                    return response;
+                }
+            };
+            let preview_bytes = parts
+                .next()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(96)
+                .min(256);
+            let path = match normalize_temporal_path(path_raw) {
+                Some(p) => p,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Invalid path");
+                    return response;
+                }
+            };
+
+            let fs_cap = match temporal_cap_from_message(message) {
+                Ok(cap) => cap,
+                Err(e) => {
+                    let msg = alloc::format!("ERROR: {}", e);
+                    set_ipc_response_text(&mut response, &msg);
+                    return response;
+                }
+            };
+            if let Err(e) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+                let msg = alloc::format!("ERROR: {}", e);
+                set_ipc_response_text(&mut response, &msg);
+                return response;
+            }
+
+            match crate::temporal::read_version(&path, version_id) {
+                Ok(payload) => {
+                    let preview_len = payload.len().min(preview_bytes);
+                    let preview = &payload[..preview_len];
+                    let preview_text = match core::str::from_utf8(preview) {
+                        Ok(t) => t,
+                        Err(_) => "<binary>",
+                    };
+                    let suffix = if payload.len() > preview_len { "..." } else { "" };
+                    let msg = alloc::format!(
+                        "OK: Read path={} version={} bytes={} preview=\"{}{}\"",
+                        path,
+                        version_id,
+                        payload.len(),
+                        preview_text,
+                        suffix
+                    );
+                    set_ipc_response_text(&mut response, &msg);
+                }
+                Err(e) => {
+                    let msg = alloc::format!("ERROR: Read failed ({})", e.as_str());
+                    set_ipc_response_text(&mut response, &msg);
+                }
+            }
+        }
+        "ROLLBACK" => {
+            let path_raw = match parts.next() {
+                Some(p) => p,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Usage ROLLBACK <path> <version_id>");
+                    return response;
+                }
+            };
+            let version_id = match parts.next().and_then(|v| v.parse::<u64>().ok()) {
+                Some(v) => v,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Invalid version_id");
+                    return response;
+                }
+            };
+            let path = match normalize_temporal_path(path_raw) {
+                Some(p) => p,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Invalid path");
+                    return response;
+                }
+            };
+
+            let fs_cap = match temporal_cap_from_message(message) {
+                Ok(cap) => cap,
+                Err(e) => {
+                    let msg = alloc::format!("ERROR: {}", e);
+                    set_ipc_response_text(&mut response, &msg);
+                    return response;
+                }
+            };
+            if let Err(e) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE) {
+                let msg = alloc::format!("ERROR: {}", e);
+                set_ipc_response_text(&mut response, &msg);
+                return response;
+            }
+
+            match crate::temporal::rollback_path(&path, version_id) {
+                Ok(result) => {
+                    let msg = alloc::format!(
+                        "OK: Rollback path={} source_version={} new_version={} branch={} restored_bytes={}",
+                        path,
+                        version_id,
+                        result.new_version_id,
+                        result.branch_id,
+                        result.restored_len
+                    );
+                    set_ipc_response_text(&mut response, &msg);
+                }
+                Err(e) => {
+                    let msg = alloc::format!("ERROR: Rollback failed ({})", e.as_str());
+                    set_ipc_response_text(&mut response, &msg);
+                }
+            }
+        }
+        "HISTORY" => {
+            let path_raw = match parts.next() {
+                Some(p) => p,
+                None => {
+                    set_ipc_response_text(
+                        &mut response,
+                        "ERROR: Usage HISTORY <path> [start_from_newest] [max_entries]",
+                    );
+                    return response;
+                }
+            };
+            let start = parts
+                .next()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            let max_entries = parts
+                .next()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(8)
+                .min(16);
+            let path = match normalize_temporal_path(path_raw) {
+                Some(p) => p,
+                None => {
+                    set_ipc_response_text(&mut response, "ERROR: Invalid path");
+                    return response;
+                }
+            };
+
+            let fs_cap = match temporal_cap_from_message(message) {
+                Ok(cap) => cap,
+                Err(e) => {
+                    let msg = alloc::format!("ERROR: {}", e);
+                    set_ipc_response_text(&mut response, &msg);
+                    return response;
+                }
+            };
+            if let Err(e) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+                let msg = alloc::format!("ERROR: {}", e);
+                set_ipc_response_text(&mut response, &msg);
+                return response;
+            }
+
+            match crate::temporal::history_window(&path, start, max_entries) {
+                Ok(history) => {
+                    let mut msg = alloc::format!("OK: History path={} count={}\n", path, history.len());
+                    for meta in history.iter() {
+                        let line = alloc::format!(
+                            "v={} op={} branch={} len={} root=0x{:08X}\n",
+                            meta.version_id,
+                            meta.operation.as_str(),
+                            meta.branch_id,
+                            meta.data_len,
+                            meta.merkle_root
+                        );
+                        msg.push_str(&line);
+                    }
+                    set_ipc_response_text(&mut response, &msg);
+                }
+                Err(e) => {
+                    let msg = alloc::format!("ERROR: History failed ({})", e.as_str());
+                    set_ipc_response_text(&mut response, &msg);
+                }
+            }
+        }
+        "STATS" => {
+            let stats = crate::temporal::stats();
+            let msg = alloc::format!(
+                "OK: Temporal stats objects={} versions={} bytes={} branches={}",
+                stats.objects,
+                stats.versions,
+                stats.bytes,
+                stats.active_branches
+            );
+            set_ipc_response_text(&mut response, &msg);
+        }
+        _ => {
+            set_ipc_response_text(
+                &mut response,
+                "ERROR: Unknown temporal command. Use: SNAPSHOT, LATEST, READ, ROLLBACK, HISTORY, STATS",
+            );
+        }
+    }
+
+    response
+}
+
 /// Handle network service requests
 /// Supported commands:
 /// - WIFI_SCAN - Scan for WiFi networks
@@ -2187,7 +2990,7 @@ fn cmd_svc_register(mut parts: core::str::SplitWhitespace) {
         Some(t) => t,
         None => {
             vga::print_str("Usage: svc-register <type>\n");
-            vga::print_str("Types: fs, persist, network, timer, console\n");
+            vga::print_str("Types: fs, persist, network, timer, console, temporal\n");
             return;
         }
     };
@@ -2198,6 +3001,7 @@ fn cmd_svc_register(mut parts: core::str::SplitWhitespace) {
         "network" => ServiceType::Network,
         "timer" => ServiceType::Timer,
         "console" => ServiceType::Console,
+        "temporal" => ServiceType::Temporal,
         _ => {
             vga::print_str("Unknown service type: ");
             vga::print_str(type_str);
@@ -2304,7 +3108,7 @@ fn cmd_svc_request(mut parts: core::str::SplitWhitespace) {
         Some(t) => t,
         None => {
             vga::print_str("Usage: svc-request <type>\n");
-            vga::print_str("Types: fs, persist, network, timer, console\n");
+            vga::print_str("Types: fs, persist, network, timer, console, temporal\n");
             return;
         }
     };
@@ -2315,6 +3119,7 @@ fn cmd_svc_request(mut parts: core::str::SplitWhitespace) {
         "network" => ServiceType::Network,
         "timer" => ServiceType::Timer,
         "console" => ServiceType::Console,
+        "temporal" => ServiceType::Temporal,
         _ => {
             vga::print_str("Unknown service type: ");
             vga::print_str(type_str);
@@ -3274,6 +4079,35 @@ fn cmd_wasm_log_demo() {
     vga::print_str("\n✓ Demo complete\n");
 }
 
+fn cmd_temporal_abi_selftest() {
+    vga::print_str("\n===== Temporal ABI Self-Test =====\n\n");
+    match crate::wasm::temporal_hostpath_self_check() {
+        Ok(()) => vga::print_str("Temporal WASM ABI self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal WASM ABI self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    match crate::temporal::vfs_fd_capture_self_check() {
+        Ok(()) => vga::print_str("Temporal VFS fd-write capture self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal VFS fd-write capture self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    match temporal_ipc_service_self_check() {
+        Ok(()) => vga::print_str("Temporal IPC service self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal IPC service self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    vga::print_str("\n");
+}
+
 /// List all loaded WASM instances
 fn cmd_wasm_list() {
     vga::print_str("WASM Instances:\n");
@@ -4016,7 +4850,7 @@ fn cmd_wasm_jit_selftest() {
 
 fn cmd_formal_verify() {
     vga::print_str("\n===== Formal Verification =====\n\n");
-    vga::print_str("[1/7] JIT translation proof obligations...\n");
+    vga::print_str("[1/8] JIT translation proof obligations...\n");
     match crate::wasm_jit::formal_translation_self_check() {
         Ok(()) => vga::print_str("  ✓ JIT translation verification passed\n"),
         Err(e) => {
@@ -4027,7 +4861,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[2/7] Capability proof obligations...\n");
+    vga::print_str("[2/8] Capability proof obligations...\n");
     match crate::capability::formal_capability_self_check() {
         Ok(()) => vga::print_str("  ✓ Capability verification passed\n"),
         Err(e) => {
@@ -4038,7 +4872,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[3/7] CapNet proof obligations...\n");
+    vga::print_str("[3/8] CapNet proof obligations...\n");
     match crate::capnet::formal_capnet_self_check() {
         Ok(()) => vga::print_str("  ✓ CapNet verification passed\n"),
         Err(e) => {
@@ -4049,7 +4883,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[4/7] Service pointer proof obligations...\n");
+    vga::print_str("[4/8] Service pointer proof obligations...\n");
     match crate::wasm::formal_service_pointer_self_check() {
         Ok(()) => vga::print_str("  ✓ Service pointer verification passed\n"),
         Err(e) => {
@@ -4060,7 +4894,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[5/7] WASM control-flow semantics...\n");
+    vga::print_str("[5/8] WASM control-flow semantics...\n");
     match crate::wasm::wasm_control_flow_self_check() {
         Ok(()) => vga::print_str("  ✓ WASM control-flow self-check passed\n"),
         Err(e) => {
@@ -4071,7 +4905,36 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[6/7] WASM binary conformance + parser fuzz...\n");
+    vga::print_str("[6/8] Temporal object ABI + VFS capture path...\n");
+    match crate::wasm::temporal_hostpath_self_check() {
+        Ok(()) => vga::print_str("  ✓ Temporal object ABI self-check passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ Temporal object ABI self-check failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+    match crate::temporal::vfs_fd_capture_self_check() {
+        Ok(()) => vga::print_str("  ✓ Temporal VFS fd-write capture self-check passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ Temporal VFS fd-write capture self-check failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+    match temporal_ipc_service_self_check() {
+        Ok(()) => vga::print_str("  ✓ Temporal IPC service self-check passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ Temporal IPC service self-check failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    vga::print_str("[7/8] WASM binary conformance + parser fuzz...\n");
     match crate::wasm::wasm_binary_conformance_self_check() {
         Ok(()) => vga::print_str("  ✓ WASM binary conformance corpus passed\n"),
         Err(e) => {
@@ -4099,7 +4962,7 @@ fn cmd_formal_verify() {
         }
     }
 
-    vga::print_str("[7/7] Mechanized backend model checks...\n");
+    vga::print_str("[8/8] Mechanized backend model checks...\n");
     match crate::formal::run_mechanized_backend_check() {
         Ok(summary) => {
             vga::print_str("  ✓ Mechanized checks passed (obligations=");

@@ -72,10 +72,11 @@ nasm -f elf32 src/asm/gdt.asm -o target/gdt.o
 nasm -f elf32 src/asm/sysenter.asm -o target/sysenter.o
 nasm -f elf32 src/asm/syscall_entry.asm -o target/syscall_entry.o
 nasm -f elf32 src/asm/sgx.asm -o target/sgx.o
+nasm -f elf32 src/asm/temporal.asm -o target/temporal.o
 
 echo "  ✓ context_switch.o, memory.o, interrupt.o, network.o, crypto.o"
 echo "  ✓ cpu_features.o, atomic.o, perf.o, cow.o, process.o, idt.o"
-echo "  ✓ dma.o, acpi.o, memopt.o, gdt.o, sysenter.o, syscall_entry.o, sgx.o"
+echo "  ✓ dma.o, acpi.o, memopt.o, gdt.o, sysenter.o, syscall_entry.o, sgx.o, temporal.o"
 
 echo "[2/6] Building Rust kernel (staticlib, i686)..."
 cargo ${TOOLCHAIN} build --release --lib --target "${RUST_TARGET}" \
@@ -116,6 +117,7 @@ echo "[4/6] Linking kernel (boot.o + asm/*.o + liboreulia_kernel.a)..."
   target/sysenter.o \
   target/syscall_entry.o \
   target/sgx.o \
+  target/temporal.o \
   --whole-archive "${RUST_LIB}" --no-whole-archive
 
 echo "[5/6] Creating ISO..."
