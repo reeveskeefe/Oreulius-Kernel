@@ -272,6 +272,15 @@ pub extern "C" fn rust_main() -> ! {
             vga::print_str("\n");
         } else {
             vga::print_str("[BLOCK] VirtIO block ready\n");
+            persistence::init();
+            match temporal::recover_from_persistence() {
+                Ok(()) => vga::print_str("[TEMPORAL] Recovery check complete\n"),
+                Err(e) => {
+                    vga::print_str("[TEMPORAL] Recovery skipped: ");
+                    vga::print_str(e);
+                    vga::print_str("\n");
+                }
+            }
         }
     } else {
         vga::print_str("[BLOCK] No VirtIO block device found\n");

@@ -116,6 +116,8 @@ pub enum SecurityEvent {
     ProcessSpawned,
     /// Process terminated
     ProcessTerminated,
+    /// Temporal object operation observed
+    TemporalOperation,
 }
 
 impl SecurityEvent {
@@ -134,6 +136,7 @@ impl SecurityEvent {
             SecurityEvent::SyscallObserved => "Syscall",
             SecurityEvent::ProcessSpawned => "ProcSpawned",
             SecurityEvent::ProcessTerminated => "ProcTerminated",
+            SecurityEvent::TemporalOperation => "TemporalOp",
         }
     }
 }

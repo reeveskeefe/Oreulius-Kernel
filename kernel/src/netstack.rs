@@ -872,6 +872,16 @@ impl NetworkStack {
                 if conn.retries >= 5 {
                     conn.state = TcpState::Closed;
                     conn.in_use = false;
+                    let _ = crate::temporal::record_tcp_socket_state_event(
+                        conn.id as u32,
+                        conn.state as u8,
+                        conn.local_ip.0,
+                        conn.local_port,
+                        conn.remote_ip.0,
+                        conn.remote_port,
+                        crate::temporal::TEMPORAL_SOCKET_EVENT_CLOSE,
+                        conn.retries as u32,
+                    );
                     continue;
                 }
                 let mut payload = [0u8; 256];
@@ -911,34 +921,126 @@ impl NetworkStack {
     // ========================================================================
 
     pub fn tcp_listen(&mut self, port: u16) -> Result<u16, &'static str> {
-        self.tcp.listen(port)
+        let result = self.tcp.listen(port);
+        if let Ok(listener_id) = result {
+            let _ = crate::temporal::record_tcp_socket_listener_event(
+                listener_id as u32,
+                port,
+                crate::temporal::TEMPORAL_SOCKET_EVENT_LISTEN,
+            );
+        }
+        result
     }
 
     pub fn tcp_accept(&mut self, listener: u16) -> Option<u16> {
-        self.tcp.accept(listener)
+        let accepted = self.tcp.accept(listener);
+        if let Some(conn_id) = accepted {
+            if let Some(conn) = self.tcp.find_conn_id(conn_id) {
+                let _ = crate::temporal::record_tcp_socket_state_event(
+                    conn.id as u32,
+                    conn.state as u8,
+                    conn.local_ip.0,
+                    conn.local_port,
+                    conn.remote_ip.0,
+                    conn.remote_port,
+                    crate::temporal::TEMPORAL_SOCKET_EVENT_ACCEPT,
+                    listener as u32,
+                );
+            }
+        }
+        accepted
     }
 
     pub fn tcp_connect(&mut self, remote_ip: Ipv4Addr, remote_port: u16) -> Result<u16, &'static str> {
         let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
         let res = tcp.connect(self, remote_ip, remote_port);
         self.tcp = tcp;
+        if let Ok(conn_id) = res {
+            if let Some(conn) = self.tcp.find_conn_id(conn_id) {
+                let _ = crate::temporal::record_tcp_socket_state_event(
+                    conn.id as u32,
+                    conn.state as u8,
+                    conn.local_ip.0,
+                    conn.local_port,
+                    conn.remote_ip.0,
+                    conn.remote_port,
+                    crate::temporal::TEMPORAL_SOCKET_EVENT_CONNECT,
+                    0,
+                );
+            }
+        }
         res
     }
 
     pub fn tcp_send(&mut self, conn_id: u16, data: &[u8]) -> Result<usize, &'static str> {
         let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
         let res = tcp.send(self, conn_id, data);
+        if let Ok(sent) = res {
+            if sent > 0 {
+                if let Some(conn) = tcp.find_conn_id(conn_id) {
+                    let _ = crate::temporal::record_tcp_socket_data_event(
+                        conn.id as u32,
+                        conn.state as u8,
+                        conn.local_ip.0,
+                        conn.local_port,
+                        conn.remote_ip.0,
+                        conn.remote_port,
+                        crate::temporal::TEMPORAL_SOCKET_EVENT_SEND,
+                        &data[..sent],
+                    );
+                }
+            }
+        }
         self.tcp = tcp;
         res
     }
 
     pub fn tcp_recv(&mut self, conn_id: u16, out: &mut [u8]) -> Result<usize, &'static str> {
-        self.tcp.recv(conn_id, out)
+        let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
+        let res = tcp.recv(conn_id, out);
+        if let Ok(read_len) = res {
+            if read_len > 0 {
+                if let Some(conn) = tcp.find_conn_id(conn_id) {
+                    let _ = crate::temporal::record_tcp_socket_data_event(
+                        conn.id as u32,
+                        conn.state as u8,
+                        conn.local_ip.0,
+                        conn.local_port,
+                        conn.remote_ip.0,
+                        conn.remote_port,
+                        crate::temporal::TEMPORAL_SOCKET_EVENT_RECV,
+                        &out[..read_len],
+                    );
+                }
+            }
+        }
+        self.tcp = tcp;
+        res
     }
 
     pub fn tcp_close(&mut self, conn_id: u16) -> Result<(), &'static str> {
+        let pre_close_snapshot = self.tcp.find_conn_id(conn_id).copied();
         let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
         let res = tcp.close(self, conn_id);
+        if res.is_ok() {
+            if let Some(mut conn) = pre_close_snapshot {
+                if let Some(updated) = tcp.find_conn_id(conn_id) {
+                    conn = *updated;
+                } else {
+                    conn.state = TcpState::Closed;
+                }
+                let _ = crate::temporal::record_tcp_socket_state_event(
+                    conn.id as u32,
+                    conn.state as u8,
+                    conn.local_ip.0,
+                    conn.local_port,
+                    conn.remote_ip.0,
+                    conn.remote_port,
+                    crate::temporal::TEMPORAL_SOCKET_EVENT_CLOSE,
+                    0,
+                );
+            }
+        }
         self.tcp = tcp;
         res
     }
@@ -1174,6 +1276,10 @@ impl TcpManager {
         self.conns.iter_mut().find(|c| c.in_use && c.id == conn_id)
     }
 
+    fn find_conn_id(&self, conn_id: u16) -> Option<&TcpConn> {
+        self.conns.iter().find(|c| c.in_use && c.id == conn_id)
+    }
+
     fn find_conn_index(&self, local_port: u16, remote_ip: Ipv4Addr, remote_port: u16) -> Option<usize> {
         self.conns
             .iter()
@@ -1197,7 +1303,11 @@ impl TcpManager {
         conn.rto_ticks = (crate::pit::get_frequency() as u64) * 3;
         conn.rtt_start = crate::pit::get_ticks();
         let ep = tcp_endpoint(conn);
-        send_tcp_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_SYN, &[])?;
+        if let Err(e) = send_tcp_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_SYN, &[]) {
+            conn.state = TcpState::Closed;
+            conn.in_use = false;
+            return Err(e);
+        }
         record_last(conn, TCP_FLAG_SYN, conn.snd_nxt, conn.rcv_nxt, &[]);
         conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
         Ok(conn.id)
@@ -1578,6 +1688,16 @@ impl NetworkStack {
                 if flags & TCP_FLAG_RST != 0 {
                     conn.state = TcpState::Closed;
                     conn.in_use = false;
+                    let _ = crate::temporal::record_tcp_socket_state_event(
+                        conn.id as u32,
+                        conn.state as u8,
+                        conn.local_ip.0,
+                        conn.local_port,
+                        conn.remote_ip.0,
+                        conn.remote_port,
+                        crate::temporal::TEMPORAL_SOCKET_EVENT_CLOSE,
+                        flags as u32,
+                    );
                     return Ok(());
                 }
                 if flags & TCP_FLAG_ACK != 0 && ack > conn.snd_una {
@@ -1600,11 +1720,31 @@ impl NetworkStack {
                     conn.irs = seq;
                     conn.rcv_nxt = seq.wrapping_add(1);
                     conn.snd_una = ack;
+                    let _ = crate::temporal::record_tcp_socket_state_event(
+                        conn.id as u32,
+                        conn.state as u8,
+                        conn.local_ip.0,
+                        conn.local_port,
+                        conn.remote_ip.0,
+                        conn.remote_port,
+                        crate::temporal::TEMPORAL_SOCKET_EVENT_STATE,
+                        flags as u32,
+                    );
                     ack_action = Some((tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt));
                 }
 
                 if conn.state == TcpState::SynReceived && (flags & TCP_FLAG_ACK != 0) {
                     conn.state = TcpState::Established;
+                    let _ = crate::temporal::record_tcp_socket_state_event(
+                        conn.id as u32,
+                        conn.state as u8,
+                        conn.local_ip.0,
+                        conn.local_port,
+                        conn.remote_ip.0,
+                        conn.remote_port,
+                        crate::temporal::TEMPORAL_SOCKET_EVENT_ACCEPT,
+                        flags as u32,
+                    );
                     if conn.listener_idx != 0xFF {
                         established_from_listen = Some((conn.listener_idx, conn.id));
                     }
@@ -1615,6 +1755,16 @@ impl NetworkStack {
                     conn.recv_buf[..copy_len].copy_from_slice(&payload[..copy_len]);
                     conn.recv_len = copy_len;
                     conn.rcv_nxt = conn.rcv_nxt.wrapping_add(payload.len() as u32);
+                    let _ = crate::temporal::record_tcp_socket_data_event(
+                        conn.id as u32,
+                        conn.state as u8,
+                        conn.local_ip.0,
+                        conn.local_port,
+                        conn.remote_ip.0,
+                        conn.remote_port,
+                        crate::temporal::TEMPORAL_SOCKET_EVENT_RECV,
+                        payload,
+                    );
                     ack_action = Some((tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt));
                     if self.http_server.running && payload.windows(4).any(|w| w == b"\r\n\r\n") {
                         conn.http_pending = true;
@@ -1627,9 +1777,29 @@ impl NetworkStack {
                     ack_action = Some((tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt));
                     if conn.state == TcpState::Established {
                         conn.state = TcpState::CloseWait;
+                        let _ = crate::temporal::record_tcp_socket_state_event(
+                            conn.id as u32,
+                            conn.state as u8,
+                            conn.local_ip.0,
+                            conn.local_port,
+                            conn.remote_ip.0,
+                            conn.remote_port,
+                            crate::temporal::TEMPORAL_SOCKET_EVENT_STATE,
+                            flags as u32,
+                        );
                     } else if conn.state == TcpState::FinWait1 {
                         conn.state = TcpState::Closed;
                         conn.in_use = false;
+                        let _ = crate::temporal::record_tcp_socket_state_event(
+                            conn.id as u32,
+                            conn.state as u8,
+                            conn.local_ip.0,
+                            conn.local_port,
+                            conn.remote_ip.0,
+                            conn.remote_port,
+                            crate::temporal::TEMPORAL_SOCKET_EVENT_CLOSE,
+                            flags as u32,
+                        );
                     }
                 }
 
@@ -1639,6 +1809,16 @@ impl NetworkStack {
                 if conn.state == TcpState::LastAck && (flags & TCP_FLAG_ACK != 0) {
                     conn.state = TcpState::Closed;
                     conn.in_use = false;
+                    let _ = crate::temporal::record_tcp_socket_state_event(
+                        conn.id as u32,
+                        conn.state as u8,
+                        conn.local_ip.0,
+                        conn.local_port,
+                        conn.remote_ip.0,
+                        conn.remote_port,
+                        crate::temporal::TEMPORAL_SOCKET_EVENT_CLOSE,
+                        flags as u32,
+                    );
                 }
             }
 
@@ -1674,6 +1854,16 @@ impl NetworkStack {
                     conn.rcv_nxt = seq.wrapping_add(1);
                     conn.listener_idx = idx as u8;
                     conn.rto_ticks = (crate::pit::get_frequency() as u64) * 3;
+                    let _ = crate::temporal::record_tcp_socket_state_event(
+                        conn.id as u32,
+                        conn.state as u8,
+                        conn.local_ip.0,
+                        conn.local_port,
+                        conn.remote_ip.0,
+                        conn.remote_port,
+                        crate::temporal::TEMPORAL_SOCKET_EVENT_CONNECT,
+                        flags as u32,
+                    );
                     let ep = tcp_endpoint(conn);
                     let seq_out = conn.snd_nxt;
                     let ack_out = conn.rcv_nxt;

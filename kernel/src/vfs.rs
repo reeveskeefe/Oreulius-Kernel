@@ -160,7 +160,7 @@ bitflags::bitflags! {
 enum HandleKind {
     MemFile { inode: InodeId, path: String },
     MemDir { inode: InodeId },
-    VirtioRaw,
+    VirtioRaw { path: String },
     VirtioPartitions,
 }
 
@@ -366,14 +366,23 @@ pub fn create_file(path: &str) -> Result<InodeId, &'static str> {
 }
 
 pub fn write_path(path: &str, data: &[u8]) -> Result<usize, &'static str> {
+    let normalized_path = normalize_path(path)?;
+    let mount_target = {
+        let mut vfs = VFS.lock();
+        vfs.init();
+        vfs.find_mount(&normalized_path)
+    };
+    if let Some((backend, sub)) = mount_target {
+        let written = mount_write(backend, &sub, data)?;
+        capture_temporal_backend_write(&normalized_path, 0, data, written);
+        return Ok(written);
+    }
+
     {
         let mut vfs = VFS.lock();
         vfs.init();
-        if let Some((backend, sub)) = vfs.find_mount(path) {
-            return mount_write(backend, &sub, data);
-        }
 
-        if let Ok(inode_id) = vfs.resolve_path(path) {
+        if let Ok(inode_id) = vfs.resolve_path(&normalized_path) {
             let inode = vfs.get_inode_mut(inode_id).ok_or("File not found")?;
             if inode.kind != InodeKind::File {
                 return Err("Not a file");
@@ -385,16 +394,16 @@ pub fn write_path(path: &str, data: &[u8]) -> Result<usize, &'static str> {
             inode.data.extend_from_slice(data);
             inode.meta.size = inode.data.len() as u64;
             inode.meta.mtime = 0;
-            let _ = crate::temporal::record_write(path, data);
+            let _ = crate::temporal::record_write(&normalized_path, data);
             return Ok(data.len());
         }
     }
 
-    create_file(path)?;
+    create_file(&normalized_path)?;
 
     let mut vfs = VFS.lock();
     vfs.init();
-    let inode_id = vfs.resolve_path(path)?;
+    let inode_id = vfs.resolve_path(&normalized_path)?;
     let inode = vfs.get_inode_mut(inode_id).ok_or("File not found")?;
     if inode.kind != InodeKind::File {
         return Err("Not a file");
@@ -406,7 +415,7 @@ pub fn write_path(path: &str, data: &[u8]) -> Result<usize, &'static str> {
     inode.data.extend_from_slice(data);
     inode.meta.size = inode.data.len() as u64;
     inode.meta.mtime = 0;
-    let _ = crate::temporal::record_write(path, data);
+    let _ = crate::temporal::record_write(&normalized_path, data);
     Ok(data.len())
 }
 
@@ -479,11 +488,12 @@ pub fn open_for_current(path: &str, flags: OpenFlags) -> Result<usize, &'static 
 }
 
 pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'static str> {
+    let normalized_path = normalize_path(path)?;
     {
         let mut vfs = VFS.lock();
         vfs.init();
-        if let Some((backend, sub)) = vfs.find_mount(path) {
-            let kind = mount_open_kind(backend, &sub, flags)?;
+        if let Some((backend, sub)) = vfs.find_mount(&normalized_path) {
+            let kind = mount_open_kind(backend, &sub, flags, &normalized_path)?;
             let handle = Handle { kind, pos: 0, flags, owner: pid };
             let handle_id = vfs.alloc_handle(handle);
             return process::process_manager()
@@ -491,7 +501,6 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
                 .map_err(|e| e.as_str());
         }
 
-        let normalized_path = normalize_path(path)?;
         if let Ok(inode_id) = vfs.resolve_path(&normalized_path) {
             let inode = vfs.get_inode_mut(inode_id).ok_or("File not found")?;
             match inode.kind {
@@ -536,11 +545,10 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
         return Err("File not found");
     }
 
-    create_file(path)?;
+    create_file(&normalized_path)?;
 
     let mut vfs = VFS.lock();
     vfs.init();
-    let normalized_path = normalize_path(path)?;
     let inode_id = vfs.resolve_path(&normalized_path)?;
     let inode = vfs.get_inode_mut(inode_id).ok_or("File not found")?;
     match inode.kind {
@@ -605,7 +613,7 @@ pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static st
             Ok(len)
         }
         HandleKind::MemDir { .. } => Err("Cannot read directory"),
-        HandleKind::VirtioRaw => virtio_read_at(pos, out),
+        HandleKind::VirtioRaw { .. } => virtio_read_at(pos, out),
         HandleKind::VirtioPartitions => {
             let text = generate_partition_text()?;
             let bytes = text.as_bytes();
@@ -660,7 +668,11 @@ pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str>
             Ok(data.len())
         }
         HandleKind::MemDir { .. } => Err("Cannot write directory"),
-        HandleKind::VirtioRaw => virtio_write_at(pos, data),
+        HandleKind::VirtioRaw { path } => {
+            let written = virtio_write_at(pos, data)?;
+            capture_temporal_backend_write(&path, pos, data, written);
+            Ok(written)
+        }
         HandleKind::VirtioPartitions => Err("Partitions file is read-only"),
     }?;
 
@@ -690,13 +702,20 @@ pub fn close_fd(pid: Pid, fd: usize) -> Result<(), &'static str> {
 // VirtIO Mount Backend
 // ============================================================================
 
-fn mount_open_kind(backend: MountBackend, subpath: &str, flags: OpenFlags) -> Result<HandleKind, &'static str> {
+fn mount_open_kind(
+    backend: MountBackend,
+    subpath: &str,
+    flags: OpenFlags,
+    full_path: &str,
+) -> Result<HandleKind, &'static str> {
     match backend {
         MountBackend::VirtioBlock => {
             let sub = normalize_subpath(subpath);
             match sub.as_str() {
                 "/" => Err("Cannot open mount root"),
-                "/raw" => Ok(HandleKind::VirtioRaw),
+                "/raw" => Ok(HandleKind::VirtioRaw {
+                    path: full_path.to_string(),
+                }),
                 "/partitions" => {
                     if flags.contains(OpenFlags::WRITE) {
                         Err("Partitions file is read-only")
@@ -755,6 +774,29 @@ fn mount_write(backend: MountBackend, subpath: &str, data: &[u8]) -> Result<usiz
             }
         }
     }
+}
+
+const TEMPORAL_DEVICE_ENCODING_V1: u8 = 1;
+const TEMPORAL_DEVICE_OBJECT_VIRTIO_RAW: u8 = 1;
+const TEMPORAL_DEVICE_EVENT_WRITE: u8 = 1;
+const TEMPORAL_DEVICE_PREVIEW_BYTES: usize = 192;
+
+fn capture_temporal_backend_write(path: &str, offset: usize, data: &[u8], written: usize) {
+    let effective = min(written, data.len());
+    let preview_len = min(effective, TEMPORAL_DEVICE_PREVIEW_BYTES);
+    let mut payload = Vec::new();
+    payload.reserve(28usize.saturating_add(preview_len));
+    payload.push(TEMPORAL_DEVICE_ENCODING_V1);
+    payload.push(TEMPORAL_DEVICE_OBJECT_VIRTIO_RAW);
+    payload.push(TEMPORAL_DEVICE_EVENT_WRITE);
+    payload.push(0);
+    payload.extend_from_slice(&(offset as u64).to_le_bytes());
+    payload.extend_from_slice(&(effective as u32).to_le_bytes());
+    payload.extend_from_slice(&(preview_len as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&crate::pit::get_ticks().to_le_bytes());
+    payload.extend_from_slice(&data[..preview_len]);
+    let _ = crate::temporal::record_object_write(path, &payload);
 }
 
 fn generate_partition_text() -> Result<String, &'static str> {

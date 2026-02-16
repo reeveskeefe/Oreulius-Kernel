@@ -46,6 +46,7 @@ use spin::Mutex;
 use crate::ipc::ProcessId;
 use crate::wifi::{WifiNetwork, WifiState};
 use crate::pci::PciDevice;
+use crate::net_reactor;
 
 // ============================================================================
 // Network Configuration
@@ -55,6 +56,8 @@ pub const MAX_CONNECTIONS: usize = 64;
 pub const MAX_DNS_CACHE: usize = 32;
 pub const MTU: usize = 1500;
 pub const TCP_BUFFER_SIZE: usize = 8192;
+const HTTP_IO_CHUNK: usize = 1024;
+const HTTP_HEADER_MAX: usize = 2048;
 
 // ============================================================================
 // IP Address Types
@@ -372,28 +375,8 @@ impl NetworkService {
 
     /// Perform actual DNS query
     fn perform_dns_query(&self, domain: &str) -> Result<Ipv4Addr, NetworkError> {
-        // In production, this would:
-        // 1. Build DNS query packet (UDP port 53)
-        // 2. Send to DNS server (8.8.8.8 or configured)
-        // 3. Parse DNS response
-        // 4. Return A record IP address
-
-        // For v1, return known IPs for common domains
-        let ip = match domain {
-            "example.com" => Ipv4Addr::new(93, 184, 216, 34),
-            "google.com" => Ipv4Addr::new(142, 250, 185, 46),
-            "github.com" => Ipv4Addr::new(140, 82, 121, 4),
-            "localhost" => Ipv4Addr::new(127, 0, 0, 1),
-            _ => {
-                // Simulate DNS lookup
-                crate::vga::print_str("[DNS] Querying ");
-                crate::vga::print_str(domain);
-                crate::vga::print_str("...\n");
-                Ipv4Addr::new(10, 0, 2, 2) // Default to gateway
-            }
-        };
-
-        Ok(ip)
+        let resolved = net_reactor::dns_resolve(domain).map_err(|_| NetworkError::DnsResolutionFailed)?;
+        Ok(Ipv4Addr::from_bytes(resolved.0))
     }
 
     /// Cache DNS entry
@@ -449,25 +432,22 @@ impl NetworkService {
             return Err(NetworkError::TooManyConnections);
         }
 
-        let conn_id = self.next_conn_id;
-        self.next_conn_id += 1;
+        let conn_id = net_reactor::tcp_connect(crate::netstack::Ipv4Addr(ip.0), port)
+            .map_err(|_| NetworkError::ConnectionFailed)? as u32;
 
         let mut conn = TcpConnection::new();
         conn.id = conn_id;
-        conn.local_addr = SocketAddr::new(self.ip_address, 50000 + (conn_id as u16 % 10000));
+        conn.local_addr = SocketAddr::new(self.ip_address, 0);
         conn.remote_addr = SocketAddr::new(ip, port);
-        conn.state = TcpState::SynSent;
-        conn.owner = ProcessId(0);
-        conn.seq_num = 1000; // Initial sequence number
-        conn.window_size = 65535;
-
-        // Perform TCP 3-way handshake
-        self.tcp_handshake(&mut conn)?;
-
         conn.state = TcpState::Established;
+        conn.owner = ProcessId(0);
+        conn.seq_num = 0;
+        conn.ack_num = 0;
+        conn.window_size = 65535;
 
         self.tcp_connections[self.tcp_count] = conn;
         self.tcp_count += 1;
+        self.next_conn_id = self.next_conn_id.max(conn_id.saturating_add(1));
 
         crate::vga::print_str("[TCP] Connected to ");
         print_ipv4(ip);
@@ -478,18 +458,6 @@ impl NetworkService {
         Ok(conn_id)
     }
 
-    /// Perform TCP 3-way handshake
-    fn tcp_handshake(&self, conn: &mut TcpConnection) -> Result<(), NetworkError> {
-        // In production:
-        // 1. Send SYN packet
-        // 2. Wait for SYN-ACK
-        // 3. Send ACK
-        
-        // For v1, simulate successful handshake
-        conn.ack_num = 5000; // Simulated server seq
-        Ok(())
-    }
-
     /// Send HTTP request over TCP connection
     fn http_send_request(&self, conn_id: u32, method: HttpMethod, host: &str, path: &str) -> Result<HttpResponse, NetworkError> {
         // Find connection
@@ -498,18 +466,18 @@ impl NetworkService {
             .ok_or(NetworkError::ConnectionNotFound)?;
 
         // Build HTTP request
-        let request = self.build_http_request(method, host, path);
-
-        // Calculate actual request length (up to null terminator)
-        let request_len = request.iter().position(|&b| b == 0).unwrap_or(request.len());
+        let (request, request_len) = self.build_http_request(method, host, path, conn.remote_addr.port);
+        if request_len == 0 {
+            return Err(NetworkError::SendFailed);
+        }
 
         // Send HTTP request through real TCP/IP stack
         crate::vga::print_str("[HTTP] Sending request...\n");
-        
-        // Send via low-level TCP packet construction
+
+        // Send via network reactor (single-owner TCP stack)
         self.send_tcp_data(conn, &request[..request_len])?;
-        
-        crate::serial_println!("[HTTP] Sent {} bytes via TCP to {}:{}", 
+
+        crate::serial_println!("[HTTP] Sent {} bytes via TCP to {}:{}",
             request_len, conn.remote_addr.ip.0[0], conn.remote_addr.port);
 
         // Receive and parse HTTP response
@@ -520,25 +488,39 @@ impl NetworkService {
     
     /// Send TCP data to connection
     fn send_tcp_data(&self, conn: &TcpConnection, data: &[u8]) -> Result<(), NetworkError> {
-        // In a full implementation, this would:
-        // 1. Fragment data into TCP segments (MSS typically 1460 bytes)
-        // 2. Build TCP headers with correct seq/ack numbers
-        // 3. Wrap in IP packets with checksums
-        // 4. Send via network interface (WiFi/E1000/etc)
-        // 5. Handle retransmission on timeout
-        // 6. Update connection state (seq numbers, window, etc)
-        
-        // For now, interface with WiFi or E1000 driver to send raw packets
-        let segments_needed = (data.len() + 1459) / 1460; // Round up
-        
-        for i in 0..segments_needed {
-            let start = i * 1460;
-            let end = core::cmp::min(start + 1460, data.len());
-            let segment = &data[start..end];
-            
-            // Build and send TCP segment
-            let packet = self.build_tcp_segment(conn, segment, i == segments_needed - 1)?;
-            self.send_raw_packet(&packet)?;
+        let conn_id = conn.id as u16;
+        let timeout_ticks = (crate::pit::get_frequency() as u64).saturating_mul(10).max(1);
+        let start_ticks = crate::pit::get_ticks();
+        let mut sent_total = 0usize;
+
+        while sent_total < data.len() {
+            match net_reactor::tcp_send(conn_id, &data[sent_total..]) {
+                Ok(sent_now) => {
+                    if sent_now == 0 {
+                        if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                            return Err(NetworkError::Timeout);
+                        }
+                        crate::quantum_scheduler::yield_now();
+                        continue;
+                    }
+                    sent_total = sent_total.saturating_add(sent_now);
+                }
+                Err(e) => {
+                    // SYN/SYN-ACK progression can race with immediate send attempts.
+                    if e == "Connection not established" {
+                        if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                            return Err(NetworkError::Timeout);
+                        }
+                        crate::quantum_scheduler::yield_now();
+                        continue;
+                    }
+                    return Err(NetworkError::SendFailed);
+                }
+            }
+
+            if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                return Err(NetworkError::Timeout);
+            }
         }
         
         Ok(())
@@ -548,145 +530,256 @@ impl NetworkService {
     fn build_tcp_segment(&self, conn: &TcpConnection, data: &[u8], is_last: bool) -> Result<[u8; 1514], NetworkError> {
         let mut packet = [0u8; 1514];
         let mut offset = 0;
-        
-        // Ethernet header (14 bytes) - would need MAC addresses from ARP
-        // For now, placeholder - in production would resolve via ARP
-        offset += 14;
-        
-        // IPv4 header (20 bytes)
-        packet[offset] = 0x45; // Version 4, IHL 5
-        packet[offset + 1] = 0; // DSCP/ECN
-        let total_len = 20 + 20 + data.len(); // IP header + TCP header + data
-        packet[offset + 2..offset + 4].copy_from_slice(&(total_len as u16).to_be_bytes());
-        packet[offset + 8] = 64; // TTL
-        packet[offset + 9] = 6; // Protocol: TCP
+
+        let ip_header_len = 20usize;
+        let tcp_header_len = 20usize;
+        let frame_len = 14usize
+            .saturating_add(ip_header_len)
+            .saturating_add(tcp_header_len)
+            .saturating_add(data.len());
+        if frame_len > packet.len() || frame_len > (MTU + 14) {
+            return Err(NetworkError::SendFailed);
+        }
+
+        let dest_mac = [0xFFu8; 6];
+        let src_mac = crate::e1000::get_mac_address().unwrap_or([0, 0, 0, 0, 0, 0]);
+        packet[offset..offset + 6].copy_from_slice(&dest_mac);
+        offset += 6;
+        packet[offset..offset + 6].copy_from_slice(&src_mac);
+        offset += 6;
+        packet[offset..offset + 2].copy_from_slice(&0x0800u16.to_be_bytes());
+        offset += 2;
+
+        let ip_start = offset;
+        packet[offset] = 0x45;
+        packet[offset + 1] = 0;
+        let total_len = (ip_header_len + tcp_header_len + data.len()) as u16;
+        packet[offset + 2..offset + 4].copy_from_slice(&total_len.to_be_bytes());
+        let ip_id = (crate::pit::get_ticks() as u16).to_be_bytes();
+        packet[offset + 4..offset + 6].copy_from_slice(&ip_id);
+        packet[offset + 6..offset + 8].copy_from_slice(&0x4000u16.to_be_bytes()); // DF
+        packet[offset + 8] = 64;
+        packet[offset + 9] = 6;
+        packet[offset + 10..offset + 12].copy_from_slice(&0u16.to_be_bytes());
         packet[offset + 12..offset + 16].copy_from_slice(&conn.local_addr.ip.0);
         packet[offset + 16..offset + 20].copy_from_slice(&conn.remote_addr.ip.0);
-        offset += 20;
-        
-        // TCP header (20 bytes minimum)
+        let ip_checksum = checksum16(&packet[ip_start..ip_start + ip_header_len]);
+        packet[offset + 10..offset + 12].copy_from_slice(&ip_checksum.to_be_bytes());
+        offset += ip_header_len;
+
+        let tcp_start = offset;
         packet[offset..offset + 2].copy_from_slice(&conn.local_addr.port.to_be_bytes());
         packet[offset + 2..offset + 4].copy_from_slice(&conn.remote_addr.port.to_be_bytes());
         packet[offset + 4..offset + 8].copy_from_slice(&conn.seq_num.to_be_bytes());
         packet[offset + 8..offset + 12].copy_from_slice(&conn.ack_num.to_be_bytes());
-        packet[offset + 12] = 0x50; // Data offset: 5 (20 bytes)
-        packet[offset + 13] = if is_last { 0x18 } else { 0x10 }; // Flags: PSH+ACK or ACK
+        packet[offset + 12] = ((tcp_header_len / 4) as u8) << 4;
+        packet[offset + 13] = if is_last { 0x18 } else { 0x10 };
         packet[offset + 14..offset + 16].copy_from_slice(&conn.window_size.to_be_bytes());
-        offset += 20;
-        
-        // Copy payload
+        packet[offset + 16..offset + 18].copy_from_slice(&0u16.to_be_bytes());
+        packet[offset + 18..offset + 20].copy_from_slice(&0u16.to_be_bytes());
+        offset += tcp_header_len;
+
         packet[offset..offset + data.len()].copy_from_slice(data);
-        
+        let tcp_len = (tcp_header_len + data.len()) as u16;
+        let tcp_checksum = tcp_checksum(
+            &conn.local_addr.ip.0,
+            &conn.remote_addr.ip.0,
+            6,
+            tcp_len,
+            &packet[tcp_start..tcp_start + tcp_header_len + data.len()],
+        );
+        packet[tcp_start + 16..tcp_start + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
+
         Ok(packet)
     }
     
     /// Send raw packet via network interface
-    fn send_raw_packet(&self, _packet: &[u8]) -> Result<(), NetworkError> {
-        // In production, would send via WiFi or E1000 driver
-        // For now, just acknowledge the send operation
-        Ok(())
+    fn send_raw_packet(&self, packet: &[u8]) -> Result<(), NetworkError> {
+        if packet.len() < 34 {
+            return Err(NetworkError::SendFailed);
+        }
+        let frame_len = if packet.len() >= 18 {
+            let ethertype = u16::from_be_bytes([packet[12], packet[13]]);
+            if ethertype == 0x0800 {
+                let ip_total = u16::from_be_bytes([packet[16], packet[17]]) as usize;
+                core::cmp::min(packet.len(), 14usize.saturating_add(ip_total))
+            } else {
+                packet.len()
+            }
+        } else {
+            packet.len()
+        };
+        let mut driver = crate::e1000::E1000_DRIVER.lock();
+        let nic = driver.as_mut().ok_or(NetworkError::SendFailed)?;
+        nic.send_frame(&packet[..frame_len]).map_err(|_| NetworkError::SendFailed)
     }
     
     /// Receive and parse HTTP response
-    fn receive_and_parse_http_response(&self, _conn: &TcpConnection) -> Result<HttpResponse, NetworkError> {
-        // In production, this would:
-        // 1. Wait for TCP segments from remote server
-        // 2. Reassemble segments in order (handle out-of-order)
-        // 3. Send ACKs for received data
-        // 4. Parse HTTP response headers and body
-        // 5. Handle chunked encoding if present
-        
-        // For now, return a simulated response
+    fn receive_and_parse_http_response(&self, conn: &TcpConnection) -> Result<HttpResponse, NetworkError> {
         let mut response = HttpResponse::new();
-        response.status_code = 200;
-        
-        // Simulated response body
-        let body = b"HTTP response received via TCP/IP stack";
-        let len = core::cmp::min(body.len(), response.body.len());
-        response.body[..len].copy_from_slice(&body[..len]);
-        response.body_len = len;
+        let conn_id = conn.id as u16;
+        let timeout_ticks = (crate::pit::get_frequency() as u64).saturating_mul(12).max(1);
+        let start_ticks = crate::pit::get_ticks();
+        let mut chunk = [0u8; HTTP_IO_CHUNK];
+        let mut headers = [0u8; HTTP_HEADER_MAX];
+        let mut headers_len = 0usize;
+        let mut headers_done = false;
+        let mut body_len = 0usize;
+        let mut content_length: Option<usize> = None;
+        let mut chunked = false;
+
+        while crate::pit::get_ticks().saturating_sub(start_ticks) <= timeout_ticks {
+            let read = net_reactor::tcp_recv(conn_id, &mut chunk).map_err(|_| NetworkError::ReceiveFailed)?;
+            if read == 0 {
+                if headers_done {
+                    break;
+                }
+                crate::quantum_scheduler::yield_now();
+                continue;
+            }
+
+            if !headers_done {
+                let available = headers.len().saturating_sub(headers_len);
+                if available == 0 {
+                    return Err(NetworkError::ReceiveFailed);
+                }
+                let to_copy = core::cmp::min(read, available);
+                headers[headers_len..headers_len + to_copy].copy_from_slice(&chunk[..to_copy]);
+                headers_len += to_copy;
+                if let Some(end) = find_http_header_end(&headers[..headers_len]) {
+                    headers_done = true;
+                    response.status_code = parse_http_status_code(&headers[..end]).unwrap_or(200);
+                    content_length = parse_http_content_length(&headers[..end]);
+                    chunked = http_transfer_chunked(&headers[..end]);
+                    let payload_start = end.saturating_add(4);
+                    if payload_start < headers_len {
+                        let rem = headers_len - payload_start;
+                        let copy_len = core::cmp::min(rem, response.body.len());
+                        response.body[..copy_len]
+                            .copy_from_slice(&headers[payload_start..payload_start + copy_len]);
+                        body_len = copy_len;
+                    }
+                    if let Some(expected) = content_length {
+                        if body_len >= expected {
+                            break;
+                        }
+                    }
+                } else if to_copy < read {
+                    return Err(NetworkError::ReceiveFailed);
+                }
+            } else {
+                let space = response.body.len().saturating_sub(body_len);
+                if space == 0 {
+                    break;
+                }
+                let to_copy = core::cmp::min(read, space);
+                response.body[body_len..body_len + to_copy].copy_from_slice(&chunk[..to_copy]);
+                body_len += to_copy;
+                if let Some(expected) = content_length {
+                    if body_len >= expected {
+                        break;
+                    }
+                } else if chunked && has_chunked_terminator(&response.body[..body_len]) {
+                    break;
+                }
+            }
+            crate::quantum_scheduler::yield_now();
+        }
+
+        if !headers_done {
+            return Err(NetworkError::ReceiveFailed);
+        }
+
+        if chunked {
+            response.body_len =
+                decode_chunked_body_in_place(&mut response.body, body_len).map_err(|_| NetworkError::ReceiveFailed)?;
+        } else if let Some(expected) = content_length {
+            response.body_len = core::cmp::min(body_len, core::cmp::min(expected, response.body.len()));
+        } else {
+            response.body_len = body_len;
+        }
+
+        let _ = crate::temporal::record_tcp_socket_data_event(
+            conn.id,
+            conn.state as u8,
+            conn.local_addr.ip.0,
+            conn.local_addr.port,
+            conn.remote_addr.ip.0,
+            conn.remote_addr.port,
+            crate::temporal::TEMPORAL_SOCKET_EVENT_RECV,
+            &response.body[..response.body_len],
+        );
         
         Ok(response)
     }
 
     /// Build HTTP/1.1 request
-    fn build_http_request(&self, method: HttpMethod, host: &str, path: &str) -> [u8; 512] {
+    fn build_http_request(&self, method: HttpMethod, host: &str, path: &str, port: u16) -> ([u8; 512], usize) {
         let mut buf = [0u8; 512];
         let mut pos = 0;
+        let mut push = |bytes: &[u8]| {
+            let remain = buf.len().saturating_sub(pos);
+            if remain == 0 {
+                return;
+            }
+            let len = core::cmp::min(remain, bytes.len());
+            buf[pos..pos + len].copy_from_slice(&bytes[..len]);
+            pos += len;
+        };
 
-        // Method and path
-        let method_str = method.as_str().as_bytes();
-        buf[pos..pos + method_str.len()].copy_from_slice(method_str);
-        pos += method_str.len();
-        buf[pos] = b' ';
-        pos += 1;
+        let request_path = if path.is_empty() { "/" } else { path };
+        push(method.as_str().as_bytes());
+        push(b" ");
+        if request_path.starts_with('/') {
+            push(request_path.as_bytes());
+        } else {
+            push(b"/");
+            push(request_path.as_bytes());
+        }
+        push(b" HTTP/1.1\r\nHost: ");
+        push(host.as_bytes());
+        if port != 80 && port != 443 {
+            push(b":");
+            let mut port_digits = [0u8; 5];
+            let port_len = u16_to_ascii(port, &mut port_digits);
+            push(&port_digits[..port_len]);
+        }
+        push(b"\r\nConnection: close\r\nUser-Agent: Oreulia/1.0\r\nAccept: */*\r\n\r\n");
 
-        let path_bytes = path.as_bytes();
-        let path_len = path_bytes.len().min(128);
-        buf[pos..pos + path_len].copy_from_slice(&path_bytes[..path_len]);
-        pos += path_len;
-
-        let http_ver = b" HTTP/1.1\r\n";
-        buf[pos..pos + http_ver.len()].copy_from_slice(http_ver);
-        pos += http_ver.len();
-
-        // Host header
-        let host_header = b"Host: ";
-        buf[pos..pos + host_header.len()].copy_from_slice(host_header);
-        pos += host_header.len();
-
-        let host_bytes = host.as_bytes();
-        let host_len = host_bytes.len().min(64);
-        buf[pos..pos + host_len].copy_from_slice(&host_bytes[..host_len]);
-        pos += host_len;
-
-        let crlf = b"\r\n";
-        buf[pos..pos + 2].copy_from_slice(crlf);
-        pos += 2;
-
-        // Connection header
-        let conn_header = b"Connection: close\r\n";
-        buf[pos..pos + conn_header.len()].copy_from_slice(conn_header);
-        pos += conn_header.len();
-
-        // User-Agent
-        let ua = b"User-Agent: Oreulia/1.0\r\n";
-        buf[pos..pos + ua.len()].copy_from_slice(ua);
-        pos += ua.len();
-
-        // End headers
-        buf[pos..pos + 2].copy_from_slice(crlf);
-
-        buf
+        (buf, pos)
     }
 
     /// Receive HTTP response
     fn receive_http_response(&self) -> Result<HttpResponse, NetworkError> {
-        // In production: reassemble TCP segments and parse HTTP response
-        
-        let mut response = HttpResponse::new();
-        response.status_code = 200;
-
-        // Simulate response body
-        let body = b"<!DOCTYPE html>\n<html>\n<head><title>Oreulia Network Response</title></head>\n<body>\n<h1>Real Network Stack</h1>\n<p>This is a REAL HTTP response from Oreulia's production network stack!</p>\n<p>Features:</p>\n<ul>\n<li>WiFi scanning and connection</li>\n<li>Real DNS resolution</li>\n<li>TCP/IP stack with 3-way handshake</li>\n<li>HTTP/1.1 client</li>\n<li>Packet I/O over WiFi</li>\n</ul>\n<p>Status: Connected and operational!</p>\n</body>\n</html>";
-        
-        response.body_len = body.len().min(4096);
-        response.body[..response.body_len].copy_from_slice(&body[..response.body_len]);
-
-        Ok(response)
+        if self.tcp_count == 0 {
+            return Err(NetworkError::ConnectionNotFound);
+        }
+        let conn = &self.tcp_connections[0];
+        if conn.id == 0 {
+            return Err(NetworkError::ConnectionNotFound);
+        }
+        self.receive_and_parse_http_response(conn)
     }
 
     /// Close TCP connection
     fn tcp_close(&mut self, conn_id: u32) -> Result<(), NetworkError> {
-        // Find and remove connection
+        let mut found_idx = None;
         for i in 0..self.tcp_count {
             if self.tcp_connections[i].id == conn_id {
-                self.tcp_connections[i].state = TcpState::Closed;
-                // In production: send FIN, wait for ACK
-                return Ok(());
+                found_idx = Some(i);
+                break;
             }
         }
-        Err(NetworkError::ConnectionNotFound)
+        let idx = found_idx.ok_or(NetworkError::ConnectionNotFound)?;
+        net_reactor::tcp_close(conn_id as u16).map_err(|_| NetworkError::ConnectionFailed)?;
+        for j in idx..self.tcp_count.saturating_sub(1) {
+            self.tcp_connections[j] = self.tcp_connections[j + 1];
+        }
+        if self.tcp_count > 0 {
+            self.tcp_connections[self.tcp_count - 1] = TcpConnection::new();
+            self.tcp_count -= 1;
+        }
+        Ok(())
     }
 
     /// Get network statistics
@@ -783,21 +876,268 @@ pub fn init(wifi_device: Option<PciDevice>) {
 // ============================================================================
 
 fn parse_http_url(url: &str) -> (&str, &str, u16) {
-    // Remove protocol
-    let url = if url.starts_with("http://") {
-        (&url[7..], 80)
+    let (rest, default_port) = if url.starts_with("http://") {
+        (&url[7..], 80u16)
     } else if url.starts_with("https://") {
-        (&url[8..], 443)
+        (&url[8..], 443u16)
     } else {
-        (url, 80)
+        (url, 80u16)
     };
 
-    // Split host and path
-    if let Some(slash_pos) = url.0.find('/') {
-        (&url.0[..slash_pos], &url.0[slash_pos..], url.1)
+    let (host_port, path) = if let Some(slash_pos) = rest.find('/') {
+        (&rest[..slash_pos], &rest[slash_pos..])
     } else {
-        (url.0, "/", url.1)
+        (rest, "/")
+    };
+
+    if let Some(colon_pos) = host_port.rfind(':') {
+        let host = &host_port[..colon_pos];
+        let port_str = &host_port[colon_pos + 1..];
+        if !host.is_empty() {
+            if let Some(port) = parse_u16_decimal(port_str.as_bytes()) {
+                return (host, path, port);
+            }
+        }
     }
+
+    (host_port, path, default_port)
+}
+
+fn parse_u16_decimal(bytes: &[u8]) -> Option<u16> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut value = 0u32;
+    for &b in bytes {
+        if b < b'0' || b > b'9' {
+            return None;
+        }
+        value = value.saturating_mul(10).saturating_add((b - b'0') as u32);
+        if value > u16::MAX as u32 {
+            return None;
+        }
+    }
+    Some(value as u16)
+}
+
+fn u16_to_ascii(mut value: u16, out: &mut [u8; 5]) -> usize {
+    if value == 0 {
+        out[0] = b'0';
+        return 1;
+    }
+    let mut tmp = [0u8; 5];
+    let mut i = 0usize;
+    while value > 0 {
+        tmp[i] = (value % 10) as u8 + b'0';
+        value /= 10;
+        i += 1;
+    }
+    let mut written = 0usize;
+    while i > 0 {
+        i -= 1;
+        out[written] = tmp[i];
+        written += 1;
+    }
+    written
+}
+
+fn checksum16(data: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut i = 0usize;
+    while i + 1 < data.len() {
+        let word = u16::from_be_bytes([data[i], data[i + 1]]) as u32;
+        sum = sum.wrapping_add(word);
+        i += 2;
+    }
+    if i < data.len() {
+        sum = sum.wrapping_add((data[i] as u32) << 8);
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF).wrapping_add(sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn tcp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], proto: u8, length: u16, segment: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    sum = sum
+        .wrapping_add(u16::from_be_bytes([src_ip[0], src_ip[1]]) as u32)
+        .wrapping_add(u16::from_be_bytes([src_ip[2], src_ip[3]]) as u32)
+        .wrapping_add(u16::from_be_bytes([dst_ip[0], dst_ip[1]]) as u32)
+        .wrapping_add(u16::from_be_bytes([dst_ip[2], dst_ip[3]]) as u32)
+        .wrapping_add(proto as u32)
+        .wrapping_add(length as u32);
+
+    let mut i = 0usize;
+    while i + 1 < segment.len() {
+        sum = sum.wrapping_add(u16::from_be_bytes([segment[i], segment[i + 1]]) as u32);
+        i += 2;
+    }
+    if i < segment.len() {
+        sum = sum.wrapping_add((segment[i] as u32) << 8);
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF).wrapping_add(sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn find_http_header_end(data: &[u8]) -> Option<usize> {
+    if data.len() < 4 {
+        return None;
+    }
+    for i in 0..=data.len() - 4 {
+        if data[i..i + 4] == *b"\r\n\r\n" {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn parse_http_status_code(headers: &[u8]) -> Option<u16> {
+    let line_end = headers.windows(2).position(|w| w == b"\r\n").unwrap_or(headers.len());
+    let line = &headers[..line_end];
+    if line.len() < 12 || &line[..5] != b"HTTP/" {
+        return None;
+    }
+    let mut spaces = 0usize;
+    let mut i = 0usize;
+    while i < line.len() {
+        if line[i] == b' ' {
+            spaces += 1;
+            if spaces == 1 {
+                break;
+            }
+        }
+        i += 1;
+    }
+    if i + 4 > line.len() {
+        return None;
+    }
+    parse_u16_decimal(&line[i + 1..i + 4])
+}
+
+fn eq_ascii_case(a: u8, b: u8) -> bool {
+    let al = if (b'A'..=b'Z').contains(&a) { a + 32 } else { a };
+    let bl = if (b'A'..=b'Z').contains(&b) { b + 32 } else { b };
+    al == bl
+}
+
+fn starts_with_ascii_nocase(hay: &[u8], needle: &[u8]) -> bool {
+    if hay.len() < needle.len() {
+        return false;
+    }
+    for i in 0..needle.len() {
+        if !eq_ascii_case(hay[i], needle[i]) {
+            return false;
+        }
+    }
+    true
+}
+
+fn parse_http_content_length(headers: &[u8]) -> Option<usize> {
+    for line in headers.split(|&b| b == b'\n') {
+        let line = if !line.is_empty() && line[line.len() - 1] == b'\r' {
+            &line[..line.len() - 1]
+        } else {
+            line
+        };
+        if starts_with_ascii_nocase(line, b"content-length:") {
+            let value = &line[b"content-length:".len()..];
+            let mut start = 0usize;
+            while start < value.len() && (value[start] == b' ' || value[start] == b'\t') {
+                start += 1;
+            }
+            let mut end = start;
+            while end < value.len() && value[end].is_ascii_digit() {
+                end += 1;
+            }
+            let mut parsed = 0usize;
+            for &b in &value[start..end] {
+                parsed = parsed.saturating_mul(10).saturating_add((b - b'0') as usize);
+            }
+            return Some(parsed);
+        }
+    }
+    None
+}
+
+fn http_transfer_chunked(headers: &[u8]) -> bool {
+    for line in headers.split(|&b| b == b'\n') {
+        let line = if !line.is_empty() && line[line.len() - 1] == b'\r' {
+            &line[..line.len() - 1]
+        } else {
+            line
+        };
+        if starts_with_ascii_nocase(line, b"transfer-encoding:")
+            && line.windows(7).any(|w| starts_with_ascii_nocase(w, b"chunked"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_chunked_terminator(body: &[u8]) -> bool {
+    if body.len() < 5 {
+        return false;
+    }
+    body.windows(5).any(|w| w == b"0\r\n\r\n")
+}
+
+fn decode_hex_size(line: &[u8]) -> Option<usize> {
+    let mut value = 0usize;
+    let mut saw_digit = false;
+    for &b in line {
+        if b == b';' {
+            break;
+        }
+        let digit = match b {
+            b'0'..=b'9' => (b - b'0') as usize,
+            b'a'..=b'f' => (b - b'a' + 10) as usize,
+            b'A'..=b'F' => (b - b'A' + 10) as usize,
+            _ => return None,
+        };
+        saw_digit = true;
+        value = value.saturating_mul(16).saturating_add(digit);
+    }
+    if saw_digit { Some(value) } else { None }
+}
+
+fn decode_chunked_body_in_place(body: &mut [u8], src_len: usize) -> Result<usize, ()> {
+    let mut src = 0usize;
+    let mut dst = 0usize;
+    while src < src_len {
+        let mut line_end = None;
+        let mut i = src;
+        while i + 1 < src_len {
+            if body[i] == b'\r' && body[i + 1] == b'\n' {
+                line_end = Some(i);
+                break;
+            }
+            i += 1;
+        }
+        let line_end = line_end.ok_or(())?;
+        let chunk_size = decode_hex_size(&body[src..line_end]).ok_or(())?;
+        src = line_end + 2;
+        if chunk_size == 0 {
+            break;
+        }
+        if src + chunk_size > src_len {
+            return Err(());
+        }
+        let copy_len = core::cmp::min(chunk_size, body.len().saturating_sub(dst));
+        if copy_len > 0 {
+            body.copy_within(src..src + copy_len, dst);
+            dst += copy_len;
+        }
+        src += chunk_size;
+        if src + 1 >= src_len || body[src] != b'\r' || body[src + 1] != b'\n' {
+            return Err(());
+        }
+        src += 2;
+    }
+    Ok(dst)
 }
 
 fn print_ipv4(ip: Ipv4Addr) {

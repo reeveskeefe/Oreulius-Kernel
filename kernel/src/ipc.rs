@@ -43,7 +43,8 @@
 #![allow(dead_code)]
 
 use core::fmt;
-use spin::Mutex;
+use core::sync::atomic::{AtomicU32, Ordering};
+use spin::{Mutex, Once};
 
 /// Maximum message data size (512 bytes - reduced to shrink kernel binary)
 pub const MAX_MESSAGE_SIZE: usize = 512;
@@ -547,6 +548,14 @@ impl Channel {
 
         let result = self.buffer.push(msg);
         if result.is_ok() {
+            let _ = crate::temporal::record_ipc_channel_event(
+                self.id.0,
+                crate::temporal::TEMPORAL_CHANNEL_EVENT_SEND,
+                capability.owner.0,
+                msg.payload_len,
+                msg.caps_len,
+                self.buffer.len(),
+            );
             sec.intent_ipc_send(capability.owner, self.id.0 as u64);
         }
         result
@@ -627,6 +636,14 @@ impl Channel {
 
         match self.buffer.pop() {
             Some(msg) => {
+                let _ = crate::temporal::record_ipc_channel_event(
+                    self.id.0,
+                    crate::temporal::TEMPORAL_CHANNEL_EVENT_RECV,
+                    capability.owner.0,
+                    msg.payload_len,
+                    msg.caps_len,
+                    self.buffer.len(),
+                );
                 sec.intent_ipc_recv(capability.owner, self.id.0 as u64);
                 Ok(msg)
             }
@@ -665,6 +682,14 @@ impl Channel {
         }
 
         self.closed = true;
+        let _ = crate::temporal::record_ipc_channel_event(
+            self.id.0,
+            crate::temporal::TEMPORAL_CHANNEL_EVENT_CLOSE,
+            capability.owner.0,
+            0,
+            0,
+            self.buffer.len(),
+        );
         Ok(())
     }
 
@@ -794,12 +819,24 @@ impl ChannelTable {
 /// The main IPC service
 pub struct IpcService {
     channels: Mutex<ChannelTable>,
+    next_cap_id: AtomicU32,
 }
 
 impl IpcService {
     pub const fn new() -> Self {
         IpcService {
             channels: Mutex::new(ChannelTable::new()),
+            next_cap_id: AtomicU32::new(1),
+        }
+    }
+
+    fn alloc_channel_cap_id(&self) -> u32 {
+        // Reserve 0 as invalid/ephemeral and allocate monotonically.
+        let id = self.next_cap_id.fetch_add(1, Ordering::Relaxed);
+        if id == 0 {
+            self.next_cap_id.fetch_add(1, Ordering::Relaxed)
+        } else {
+            id
         }
     }
 
@@ -807,17 +844,19 @@ impl IpcService {
     pub fn create_channel(&self, creator: ProcessId) -> Result<(ChannelCapability, ChannelCapability), IpcError> {
         let mut table = self.channels.lock();
         let channel_id = table.create_channel(creator)?;
+        let send_cap_id = self.alloc_channel_cap_id();
+        let recv_cap_id = self.alloc_channel_cap_id();
 
         // Create send and receive capabilities
         let send_cap = ChannelCapability::new(
-            1, // cap_id - in real impl, this would be from capability table
+            send_cap_id,
             channel_id,
             ChannelRights::send_only(),
             creator,
         );
 
         let recv_cap = ChannelCapability::new(
-            2, // cap_id - in real impl, this would be from capability table
+            recv_cap_id,
             channel_id,
             ChannelRights::receive_only(),
             creator,
@@ -939,16 +978,20 @@ impl fmt::Display for IpcError {
 // ============================================================================
 
 /// Global IPC service instance
-static IPC: IpcService = IpcService::new();
+static IPC: Once<IpcService> = Once::new();
 
 /// Get a reference to the global IPC service
 pub fn ipc() -> &'static IpcService {
-    &IPC
+    if let Some(ipc) = IPC.get() {
+        ipc
+    } else {
+        IPC.call_once(IpcService::new)
+    }
 }
 
 /// Initialize the IPC service
 pub fn init() {
-    // IPC is statically initialized, nothing to do for v0
+    let _ = IPC.call_once(IpcService::new);
 }
 
 /// Create a new channel for the current kernel process context.

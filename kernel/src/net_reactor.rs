@@ -43,11 +43,16 @@ use crate::netstack::{Ipv4Addr, NetworkStack};
 
 const MAX_STR: usize = 128;
 const RX_BUDGET: usize = 16;
+const MAX_TCP_IO: usize = 1024;
 
 #[derive(Clone, Copy)]
 enum NetRequest {
     None,
     DnsResolve { len: u8, data: [u8; MAX_STR] },
+    TcpConnect { remote_ip: Ipv4Addr, remote_port: u16 },
+    TcpSend { conn_id: u16, len: u16, data: [u8; MAX_TCP_IO] },
+    TcpRecv { conn_id: u16, max_len: u16 },
+    TcpClose { conn_id: u16 },
     HttpServerStart { port: u16 },
     HttpServerStop,
     GetInfo,
@@ -99,6 +104,7 @@ enum NetResponse {
     None,
     Ok,
     U64(u64),
+    TcpData { len: u16, data: [u8; MAX_TCP_IO] },
     Err(&'static str),
     DnsResult(Ipv4Addr),
     Info(NetInfo),
@@ -158,6 +164,34 @@ fn handle_request(stack: &mut NetworkStack) {
                 Err(e) => NetResponse::Err(e),
             }
         }
+        NetRequest::TcpConnect { remote_ip, remote_port } => {
+            match stack.tcp_connect(remote_ip, remote_port) {
+                Ok(conn_id) => NetResponse::U64(conn_id as u64),
+                Err(e) => NetResponse::Err(e),
+            }
+        }
+        NetRequest::TcpSend { conn_id, len, data } => {
+            let len = core::cmp::min(len as usize, data.len());
+            match stack.tcp_send(conn_id, &data[..len]) {
+                Ok(sent) => NetResponse::U64(sent as u64),
+                Err(e) => NetResponse::Err(e),
+            }
+        }
+        NetRequest::TcpRecv { conn_id, max_len } => {
+            let mut out = [0u8; MAX_TCP_IO];
+            let limit = core::cmp::min(max_len as usize, out.len());
+            match stack.tcp_recv(conn_id, &mut out[..limit]) {
+                Ok(read_len) => NetResponse::TcpData {
+                    len: read_len as u16,
+                    data: out,
+                },
+                Err(e) => NetResponse::Err(e),
+            }
+        }
+        NetRequest::TcpClose { conn_id } => match stack.tcp_close(conn_id) {
+            Ok(()) => NetResponse::Ok,
+            Err(e) => NetResponse::Err(e),
+        },
         NetRequest::HttpServerStart { port } => match stack.http_server_start(port) {
             Ok(()) => NetResponse::Ok,
             Err(e) => NetResponse::Err(e),
@@ -299,6 +333,73 @@ pub fn dns_resolve(domain: &str) -> Result<Ipv4Addr, &'static str> {
         data,
     })? {
         NetResponse::DnsResult(ip) => Ok(ip),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn tcp_connect(remote_ip: Ipv4Addr, remote_port: u16) -> Result<u16, &'static str> {
+    match request(NetRequest::TcpConnect {
+        remote_ip,
+        remote_port,
+    })? {
+        NetResponse::U64(v) => Ok(v as u16),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn tcp_send(conn_id: u16, data: &[u8]) -> Result<usize, &'static str> {
+    let mut sent_total = 0usize;
+    while sent_total < data.len() {
+        let remain = data.len() - sent_total;
+        let chunk_len = core::cmp::min(remain, MAX_TCP_IO);
+        let mut chunk = [0u8; MAX_TCP_IO];
+        chunk[..chunk_len].copy_from_slice(&data[sent_total..sent_total + chunk_len]);
+        match request(NetRequest::TcpSend {
+            conn_id,
+            len: chunk_len as u16,
+            data: chunk,
+        })? {
+            NetResponse::U64(sent) => {
+                let sent = sent as usize;
+                if sent == 0 {
+                    break;
+                }
+                sent_total = sent_total.saturating_add(sent);
+                if sent < chunk_len {
+                    break;
+                }
+            }
+            NetResponse::Err(e) => return Err(e),
+            _ => return Err("Unexpected response"),
+        }
+    }
+    Ok(sent_total)
+}
+
+pub fn tcp_recv(conn_id: u16, out: &mut [u8]) -> Result<usize, &'static str> {
+    if out.is_empty() {
+        return Ok(0);
+    }
+    let request_len = core::cmp::min(out.len(), MAX_TCP_IO);
+    match request(NetRequest::TcpRecv {
+        conn_id,
+        max_len: request_len as u16,
+    })? {
+        NetResponse::TcpData { len, data } => {
+            let len = core::cmp::min(len as usize, request_len);
+            out[..len].copy_from_slice(&data[..len]);
+            Ok(len)
+        }
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
+}
+
+pub fn tcp_close(conn_id: u16) -> Result<(), &'static str> {
+    match request(NetRequest::TcpClose { conn_id })? {
+        NetResponse::Ok => Ok(()),
         NetResponse::Err(e) => Err(e),
         _ => Err("Unexpected response"),
     }

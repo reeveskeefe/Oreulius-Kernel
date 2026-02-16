@@ -112,8 +112,13 @@ pub fn execute(input: &str) {
             vga::print_str("  temporal-write - Write + version file (temporal-write <path> <data>)\n");
             vga::print_str("  temporal-snapshot - Snapshot current file state (temporal-snapshot <path>)\n");
             vga::print_str("  temporal-history - Show version history (temporal-history <path>)\n");
+            vga::print_str("    path can be file or object key: /socket/tcp/conn/<id>, /ipc/channel/<id>\n");
             vga::print_str("  temporal-read - Read specific version (temporal-read <path> <version_id>)\n");
             vga::print_str("  temporal-rollback - Roll back file to version (temporal-rollback <path> <version_id>)\n");
+            vga::print_str("  temporal-branch-create - Create named branch (temporal-branch-create <path> <branch> [from_version])\n");
+            vga::print_str("  temporal-branch-list - List named branches (temporal-branch-list <path>)\n");
+            vga::print_str("  temporal-branch-checkout - Checkout branch head (temporal-branch-checkout <path> <branch>)\n");
+            vga::print_str("  temporal-merge - Merge branch into target (temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs])\n");
             vga::print_str("  temporal-stats - Show temporal object stats\n");
             vga::print_str("  temporal-ipc-demo - Run temporal IPC service demo\n");
             vga::print_str("  ipc-create - Create a new channel\n");
@@ -299,6 +304,18 @@ pub fn execute(input: &str) {
         }
         "temporal-rollback" => {
             cmd_temporal_rollback(parts);
+        }
+        "temporal-branch-create" => {
+            cmd_temporal_branch_create(parts);
+        }
+        "temporal-branch-list" => {
+            cmd_temporal_branch_list(parts);
+        }
+        "temporal-branch-checkout" => {
+            cmd_temporal_branch_checkout(parts);
+        }
+        "temporal-merge" => {
+            cmd_temporal_merge(parts);
         }
         "temporal-stats" => {
             cmd_temporal_stats();
@@ -1362,6 +1379,236 @@ fn cmd_temporal_rollback(mut parts: core::str::SplitWhitespace) {
     }
 }
 
+fn temporal_merge_strategy_from_str(value: &str) -> Option<crate::temporal::TemporalMergeStrategy> {
+    match value {
+        "ff-only" | "fast-forward" | "fastforward" => {
+            Some(crate::temporal::TemporalMergeStrategy::FastForwardOnly)
+        }
+        "ours" => Some(crate::temporal::TemporalMergeStrategy::Ours),
+        "theirs" => Some(crate::temporal::TemporalMergeStrategy::Theirs),
+        _ => None,
+    }
+}
+
+fn cmd_temporal_branch_create(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: temporal-branch-create <path> <branch> [from_version]\n");
+            return;
+        }
+    };
+    let branch_name = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: temporal-branch-create <path> <branch> [from_version]\n");
+            return;
+        }
+    };
+    let from_version = match parts.next() {
+        Some(v) => match parse_number(v) {
+            Some(n) => Some(n as u64),
+            None => {
+                vga::print_str("Usage: temporal-branch-create <path> <branch> [from_version]\n");
+                return;
+            }
+        },
+        None => None,
+    };
+
+    match crate::temporal::create_branch(path, branch_name, from_version) {
+        Ok(branch_id) => {
+            vga::print_str("Created branch '");
+            vga::print_str(branch_name);
+            vga::print_str("' id=");
+            print_u32(branch_id);
+            vga::print_str(" for ");
+            vga::print_str(path);
+            if let Some(v) = from_version {
+                vga::print_str(" @v");
+                print_u64(v);
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Temporal branch-create error: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_temporal_branch_list(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: temporal-branch-list <path>\n");
+            return;
+        }
+    };
+
+    match crate::temporal::list_branches(path) {
+        Ok(branches) => {
+            if branches.is_empty() {
+                vga::print_str("No temporal branches for path.\n");
+                return;
+            }
+            vga::print_str("Temporal branches for ");
+            vga::print_str(path);
+            vga::print_str("\n");
+            for branch in branches {
+                vga::print_str("  ");
+                if branch.active {
+                    vga::print_str("*");
+                } else {
+                    vga::print_str(" ");
+                }
+                vga::print_str(" id=");
+                print_u32(branch.branch_id);
+                vga::print_str(" name=");
+                vga::print_str(&branch.name);
+                vga::print_str(" head=");
+                if let Some(head) = branch.head_version_id {
+                    print_u64(head);
+                } else {
+                    vga::print_str("-");
+                }
+                vga::print_str("\n");
+            }
+        }
+        Err(e) => {
+            vga::print_str("Temporal branch-list error: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_temporal_branch_checkout(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: temporal-branch-checkout <path> <branch>\n");
+            return;
+        }
+    };
+    let branch = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str("Usage: temporal-branch-checkout <path> <branch>\n");
+            return;
+        }
+    };
+
+    match crate::temporal::checkout_branch(path, branch) {
+        Ok((branch_id, head)) => {
+            vga::print_str("Checked out branch '");
+            vga::print_str(branch);
+            vga::print_str("' id=");
+            print_u32(branch_id);
+            vga::print_str(" head=");
+            if let Some(v) = head {
+                print_u64(v);
+            } else {
+                vga::print_str("-");
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Temporal checkout error: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
+fn cmd_temporal_merge(mut parts: core::str::SplitWhitespace) {
+    let path = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str(
+                "Usage: temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs]\n",
+            );
+            return;
+        }
+    };
+    let source_branch = match parts.next() {
+        Some(v) => v,
+        None => {
+            vga::print_str(
+                "Usage: temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs]\n",
+            );
+            return;
+        }
+    };
+    let third = parts.next();
+    let fourth = parts.next();
+    if parts.next().is_some() {
+        vga::print_str(
+            "Usage: temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs]\n",
+        );
+        return;
+    }
+
+    let mut target_branch: Option<&str> = None;
+    let mut strategy = crate::temporal::TemporalMergeStrategy::FastForwardOnly;
+    if let Some(arg) = third {
+        if let Some(parsed) = temporal_merge_strategy_from_str(arg) {
+            strategy = parsed;
+        } else {
+            target_branch = Some(arg);
+        }
+    }
+    if let Some(arg) = fourth {
+        strategy = match temporal_merge_strategy_from_str(arg) {
+            Some(v) => v,
+            None => {
+                vga::print_str("Merge strategy must be one of: ff-only, ours, theirs\n");
+                return;
+            }
+        };
+    }
+
+    match crate::temporal::merge_branch(path, source_branch, target_branch, strategy) {
+        Ok(result) => {
+            vga::print_str("Merge completed for ");
+            vga::print_str(path);
+            vga::print_str(": source=");
+            print_u32(result.source_branch_id);
+            vga::print_str(" -> target=");
+            print_u32(result.target_branch_id);
+            vga::print_str(" mode=");
+            if result.fast_forward {
+                vga::print_str("fast-forward");
+            } else {
+                vga::print_str("merge-commit");
+            }
+            vga::print_str(" head_before=");
+            if let Some(v) = result.target_head_before {
+                print_u64(v);
+            } else {
+                vga::print_str("-");
+            }
+            vga::print_str(" head_after=");
+            if let Some(v) = result.target_head_after {
+                print_u64(v);
+            } else {
+                vga::print_str("-");
+            }
+            if let Some(v) = result.new_version_id {
+                vga::print_str(" new_version=");
+                print_u64(v);
+            }
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("Temporal merge error: ");
+            vga::print_str(e.as_str());
+            vga::print_str("\n");
+        }
+    }
+}
+
 fn cmd_temporal_stats() {
     let stats = crate::temporal::stats();
     vga::print_str("Temporal Objects Stats\n");
@@ -1388,6 +1635,10 @@ const TEMPORAL_IPC_OP_READ: u8 = 3;
 const TEMPORAL_IPC_OP_ROLLBACK: u8 = 4;
 const TEMPORAL_IPC_OP_HISTORY: u8 = 5;
 const TEMPORAL_IPC_OP_STATS: u8 = 6;
+const TEMPORAL_IPC_OP_BRANCH_CREATE: u8 = 7;
+const TEMPORAL_IPC_OP_BRANCH_CHECKOUT: u8 = 8;
+const TEMPORAL_IPC_OP_BRANCH_LIST: u8 = 9;
+const TEMPORAL_IPC_OP_MERGE: u8 = 10;
 
 const TEMPORAL_IPC_STATUS_OK: i32 = 0;
 const TEMPORAL_IPC_STATUS_INVALID_FRAME: i32 = -1;
@@ -1398,12 +1649,19 @@ const TEMPORAL_IPC_STATUS_MISSING_CAPABILITY: i32 = -5;
 const TEMPORAL_IPC_STATUS_PERMISSION_DENIED: i32 = -6;
 const TEMPORAL_IPC_STATUS_NOT_FOUND: i32 = -7;
 const TEMPORAL_IPC_STATUS_INTERNAL: i32 = -8;
+const TEMPORAL_IPC_STATUS_CONFLICT: i32 = -9;
 
 const TEMPORAL_IPC_META_BYTES: usize = 32;
 const TEMPORAL_IPC_ROLLBACK_BYTES: usize = 16;
 const TEMPORAL_IPC_STATS_BYTES: usize = 20;
 const TEMPORAL_IPC_HISTORY_RECORD_BYTES: usize = 64;
 const TEMPORAL_IPC_MAX_HISTORY_ENTRIES: usize = 128;
+const TEMPORAL_IPC_BRANCH_ID_BYTES: usize = 4;
+const TEMPORAL_IPC_BRANCH_CHECKOUT_BYTES: usize = 16;
+const TEMPORAL_IPC_MERGE_RESULT_BYTES: usize = 40;
+const TEMPORAL_IPC_MAX_BRANCH_ENTRIES: usize = 64;
+const TEMPORAL_IPC_BRANCH_NAME_BYTES: usize = 48;
+const TEMPORAL_IPC_BRANCH_RECORD_BYTES: usize = 20 + TEMPORAL_IPC_BRANCH_NAME_BYTES;
 
 fn temporal_ipc_append_u16(buf: &mut alloc::vec::Vec<u8>, value: u16) {
     buf.extend_from_slice(&value.to_le_bytes());
@@ -1571,6 +1829,10 @@ fn temporal_ipc_opcode_name(opcode: u8) -> &'static str {
         TEMPORAL_IPC_OP_ROLLBACK => "ROLLBACK",
         TEMPORAL_IPC_OP_HISTORY => "HISTORY",
         TEMPORAL_IPC_OP_STATS => "STATS",
+        TEMPORAL_IPC_OP_BRANCH_CREATE => "BRANCH_CREATE",
+        TEMPORAL_IPC_OP_BRANCH_CHECKOUT => "BRANCH_CHECKOUT",
+        TEMPORAL_IPC_OP_BRANCH_LIST => "BRANCH_LIST",
+        TEMPORAL_IPC_OP_MERGE => "MERGE",
         _ => "UNKNOWN",
     }
 }
@@ -1602,6 +1864,90 @@ fn temporal_ipc_build_history_payload(
     temporal_ipc_append_u16(&mut payload, max_entries);
     temporal_ipc_append_u16(&mut payload, path_bytes.len() as u16);
     payload.extend_from_slice(path_bytes);
+    Ok(payload)
+}
+
+fn temporal_ipc_build_branch_create_payload(
+    path: &str,
+    branch_name: &str,
+    from_version: Option<u64>,
+) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    let path_bytes = path.as_bytes();
+    let branch_bytes = branch_name.as_bytes();
+    if path_bytes.len() > u16::MAX as usize || branch_bytes.is_empty() || branch_bytes.len() > u16::MAX as usize {
+        return Err("temporal IPC branch-create payload bounds invalid");
+    }
+    let mut payload = alloc::vec::Vec::new();
+    payload.reserve(14usize.saturating_add(path_bytes.len()).saturating_add(branch_bytes.len()));
+    let base_version = from_version.unwrap_or(u64::MAX);
+    payload.extend_from_slice(&base_version.to_le_bytes());
+    temporal_ipc_append_u16(&mut payload, path_bytes.len() as u16);
+    temporal_ipc_append_u16(&mut payload, branch_bytes.len() as u16);
+    temporal_ipc_append_u16(&mut payload, 0);
+    payload.extend_from_slice(path_bytes);
+    payload.extend_from_slice(branch_bytes);
+    Ok(payload)
+}
+
+fn temporal_ipc_build_branch_checkout_payload(
+    path: &str,
+    branch_name: &str,
+) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    let path_bytes = path.as_bytes();
+    let branch_bytes = branch_name.as_bytes();
+    if path_bytes.len() > u16::MAX as usize || branch_bytes.is_empty() || branch_bytes.len() > u16::MAX as usize {
+        return Err("temporal IPC branch-checkout payload bounds invalid");
+    }
+    let mut payload = alloc::vec::Vec::new();
+    payload.reserve(6usize.saturating_add(path_bytes.len()).saturating_add(branch_bytes.len()));
+    temporal_ipc_append_u16(&mut payload, path_bytes.len() as u16);
+    temporal_ipc_append_u16(&mut payload, branch_bytes.len() as u16);
+    temporal_ipc_append_u16(&mut payload, 0);
+    payload.extend_from_slice(path_bytes);
+    payload.extend_from_slice(branch_bytes);
+    Ok(payload)
+}
+
+fn temporal_ipc_build_merge_payload(
+    path: &str,
+    source_branch: &str,
+    target_branch: Option<&str>,
+    strategy: crate::temporal::TemporalMergeStrategy,
+) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    let path_bytes = path.as_bytes();
+    let source_bytes = source_branch.as_bytes();
+    let target_bytes = target_branch.unwrap_or("").as_bytes();
+    if path_bytes.len() > u16::MAX as usize
+        || source_bytes.is_empty()
+        || source_bytes.len() > u16::MAX as usize
+        || target_bytes.len() > u16::MAX as usize
+    {
+        return Err("temporal IPC merge payload bounds invalid");
+    }
+    let strategy_byte = match strategy {
+        crate::temporal::TemporalMergeStrategy::FastForwardOnly => 0u8,
+        crate::temporal::TemporalMergeStrategy::Ours => 1u8,
+        crate::temporal::TemporalMergeStrategy::Theirs => 2u8,
+    };
+    let mut flags = 0u8;
+    if target_branch.is_some() {
+        flags |= 1;
+    }
+    let mut payload = alloc::vec::Vec::new();
+    payload.reserve(
+        8usize
+            .saturating_add(path_bytes.len())
+            .saturating_add(source_bytes.len())
+            .saturating_add(target_bytes.len()),
+    );
+    payload.push(strategy_byte);
+    payload.push(flags);
+    temporal_ipc_append_u16(&mut payload, path_bytes.len() as u16);
+    temporal_ipc_append_u16(&mut payload, source_bytes.len() as u16);
+    temporal_ipc_append_u16(&mut payload, target_bytes.len() as u16);
+    payload.extend_from_slice(path_bytes);
+    payload.extend_from_slice(source_bytes);
+    payload.extend_from_slice(target_bytes);
     Ok(payload)
 }
 
@@ -1749,6 +2095,105 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
         return Err("temporal IPC stats objects unexpectedly zero");
     }
 
+    vfs::write_path(PATH, b"temporal-ipc-beta").map_err(|_| "IPC self-check second write failed")?;
+    let latest_after_write = crate::temporal::latest_version(PATH)
+        .map_err(|_| "IPC self-check latest lookup after write failed")?
+        .version_id;
+
+    let branch_create_payload = temporal_ipc_build_branch_create_payload(
+        PATH,
+        "ipc-alt",
+        Some(snapshot_version),
+    )?;
+    let branch_create_req = temporal_ipc_build_request_frame(
+        TEMPORAL_IPC_OP_BRANCH_CREATE,
+        0,
+        5,
+        &branch_create_payload,
+    )?;
+    let branch_create_resp = temporal_ipc_roundtrip(&branch_create_req, Some(fs_cap))?;
+    let (
+        branch_create_opcode,
+        _branch_create_flags,
+        branch_create_request_id,
+        branch_create_status,
+        branch_create_payload,
+    ) = temporal_ipc_parse_response_frame(&branch_create_resp)?;
+    if branch_create_opcode != TEMPORAL_IPC_OP_BRANCH_CREATE || branch_create_request_id != 5 {
+        return Err("temporal IPC branch-create response header mismatch");
+    }
+    if branch_create_status != TEMPORAL_IPC_STATUS_OK
+        || branch_create_payload.len() != TEMPORAL_IPC_BRANCH_ID_BYTES
+    {
+        return Err("temporal IPC branch-create request failed");
+    }
+    let ipc_alt_branch = temporal_ipc_read_u32(branch_create_payload, 0)
+        .ok_or("branch-create payload missing branch id")?;
+
+    let branch_list_payload = temporal_ipc_build_path_payload(PATH)?;
+    let branch_list_req = temporal_ipc_build_request_frame(
+        TEMPORAL_IPC_OP_BRANCH_LIST,
+        0,
+        6,
+        &branch_list_payload,
+    )?;
+    let branch_list_resp = temporal_ipc_roundtrip(&branch_list_req, Some(fs_cap))?;
+    let (
+        branch_list_opcode,
+        _branch_list_flags,
+        branch_list_request_id,
+        branch_list_status,
+        branch_list_payload,
+    ) = temporal_ipc_parse_response_frame(&branch_list_resp)?;
+    if branch_list_opcode != TEMPORAL_IPC_OP_BRANCH_LIST || branch_list_request_id != 6 {
+        return Err("temporal IPC branch-list response header mismatch");
+    }
+    if branch_list_status != TEMPORAL_IPC_STATUS_OK || branch_list_payload.len() < 4 {
+        return Err("temporal IPC branch-list request failed");
+    }
+    let branch_count = temporal_ipc_read_u16(branch_list_payload, 0).ok_or("branch-list count missing")?;
+    if branch_count < 2 {
+        return Err("temporal IPC branch-list expected at least 2 branches");
+    }
+
+    let merge_payload = temporal_ipc_build_merge_payload(
+        PATH,
+        "main",
+        Some("ipc-alt"),
+        crate::temporal::TemporalMergeStrategy::FastForwardOnly,
+    )?;
+    let merge_req = temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_MERGE, 0, 7, &merge_payload)?;
+    let merge_resp = temporal_ipc_roundtrip(&merge_req, Some(fs_cap))?;
+    let (merge_opcode, _merge_flags, merge_request_id, merge_status, merge_payload) =
+        temporal_ipc_parse_response_frame(&merge_resp)?;
+    if merge_opcode != TEMPORAL_IPC_OP_MERGE || merge_request_id != 7 {
+        return Err("temporal IPC merge response header mismatch");
+    }
+    if merge_status != TEMPORAL_IPC_STATUS_OK || merge_payload.len() != TEMPORAL_IPC_MERGE_RESULT_BYTES {
+        return Err("temporal IPC merge request failed");
+    }
+    let merge_target_branch = temporal_ipc_read_u32(merge_payload, 4).ok_or("merge target branch missing")?;
+    if merge_target_branch != ipc_alt_branch {
+        return Err("temporal IPC merge target branch mismatch");
+    }
+
+    let checkout_payload = temporal_ipc_build_branch_checkout_payload(PATH, "ipc-alt")?;
+    let checkout_req =
+        temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_BRANCH_CHECKOUT, 0, 8, &checkout_payload)?;
+    let checkout_resp = temporal_ipc_roundtrip(&checkout_req, Some(fs_cap))?;
+    let (checkout_opcode, _checkout_flags, checkout_request_id, checkout_status, checkout_payload) =
+        temporal_ipc_parse_response_frame(&checkout_resp)?;
+    if checkout_opcode != TEMPORAL_IPC_OP_BRANCH_CHECKOUT || checkout_request_id != 8 {
+        return Err("temporal IPC branch-checkout response header mismatch");
+    }
+    if checkout_status != TEMPORAL_IPC_STATUS_OK || checkout_payload.len() != TEMPORAL_IPC_BRANCH_CHECKOUT_BYTES {
+        return Err("temporal IPC branch-checkout request failed");
+    }
+    let checkout_head = temporal_ipc_read_u64(checkout_payload, 8).ok_or("branch-checkout head missing")?;
+    if checkout_head != latest_after_write {
+        return Err("temporal IPC branch-checkout head mismatch after merge");
+    }
+
     Ok(())
 }
 
@@ -1792,6 +2237,44 @@ fn print_temporal_ipc_response(label: &str, frame: &[u8]) {
                         let count = temporal_ipc_read_u16(payload, 0).unwrap_or(0);
                         vga::print_str(" entries=");
                         print_u32(count as u32);
+                    }
+                    TEMPORAL_IPC_OP_BRANCH_CREATE if payload.len() >= TEMPORAL_IPC_BRANCH_ID_BYTES => {
+                        let branch = temporal_ipc_read_u32(payload, 0).unwrap_or(0);
+                        vga::print_str(" branch=");
+                        print_u32(branch);
+                    }
+                    TEMPORAL_IPC_OP_BRANCH_CHECKOUT if payload.len() >= TEMPORAL_IPC_BRANCH_CHECKOUT_BYTES => {
+                        let branch = temporal_ipc_read_u32(payload, 0).unwrap_or(0);
+                        let has_head = temporal_ipc_read_u32(payload, 4).unwrap_or(0) != 0;
+                        let head = temporal_ipc_read_u64(payload, 8).unwrap_or(u64::MAX);
+                        vga::print_str(" branch=");
+                        print_u32(branch);
+                        vga::print_str(" head=");
+                        if has_head {
+                            print_u64(head);
+                        } else {
+                            vga::print_str("-");
+                        }
+                    }
+                    TEMPORAL_IPC_OP_BRANCH_LIST if payload.len() >= 4 => {
+                        let count = temporal_ipc_read_u16(payload, 0).unwrap_or(0);
+                        vga::print_str(" branches=");
+                        print_u32(count as u32);
+                    }
+                    TEMPORAL_IPC_OP_MERGE if payload.len() >= TEMPORAL_IPC_MERGE_RESULT_BYTES => {
+                        let flags = temporal_ipc_read_u32(payload, 0).unwrap_or(0);
+                        let target = temporal_ipc_read_u32(payload, 4).unwrap_or(0);
+                        let source = temporal_ipc_read_u32(payload, 8).unwrap_or(0);
+                        vga::print_str(" source=");
+                        print_u32(source);
+                        vga::print_str(" target=");
+                        print_u32(target);
+                        vga::print_str(" ff=");
+                        if (flags & 1) != 0 {
+                            vga::print_str("1");
+                        } else {
+                            vga::print_str("0");
+                        }
                     }
                     _ => {}
                 }
@@ -2872,9 +3355,14 @@ fn authorize_temporal_path(
 
 fn temporal_error_to_status(error: crate::temporal::TemporalError) -> i32 {
     match error {
-        crate::temporal::TemporalError::InvalidPath => TEMPORAL_IPC_STATUS_INVALID_PAYLOAD,
+        crate::temporal::TemporalError::InvalidPath
+        | crate::temporal::TemporalError::InvalidBranchName
+        | crate::temporal::TemporalError::PayloadTooLarge => TEMPORAL_IPC_STATUS_INVALID_PAYLOAD,
+        crate::temporal::TemporalError::BranchAlreadyExists
+        | crate::temporal::TemporalError::MergeConflict => TEMPORAL_IPC_STATUS_CONFLICT,
         crate::temporal::TemporalError::ObjectNotFound
-        | crate::temporal::TemporalError::VersionNotFound => TEMPORAL_IPC_STATUS_NOT_FOUND,
+        | crate::temporal::TemporalError::VersionNotFound
+        | crate::temporal::TemporalError::BranchNotFound => TEMPORAL_IPC_STATUS_NOT_FOUND,
         _ => TEMPORAL_IPC_STATUS_INTERNAL,
     }
 }
@@ -2940,6 +3428,122 @@ fn temporal_ipc_decode_history_payload(
     Ok((path, start_from_newest, max_entries))
 }
 
+fn temporal_ipc_decode_branch_create_payload(
+    payload: &[u8],
+) -> Result<(alloc::string::String, alloc::string::String, Option<u64>), i32> {
+    if payload.len() < 14 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let from_version_raw = temporal_ipc_read_u64(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path_len = temporal_ipc_read_u16(payload, 8).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let branch_len = temporal_ipc_read_u16(payload, 10).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let _reserved = temporal_ipc_read_u16(payload, 12).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    if branch_len == 0 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let expected = 14usize.saturating_add(path_len).saturating_add(branch_len);
+    if payload.len() != expected {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let path_raw = core::str::from_utf8(&payload[14..14 + path_len])
+        .map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let branch_raw = core::str::from_utf8(&payload[14 + path_len..expected])
+        .map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path = normalize_temporal_path(path_raw).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let branch = alloc::string::String::from(branch_raw);
+    let from_version = if from_version_raw == u64::MAX {
+        None
+    } else {
+        Some(from_version_raw)
+    };
+    Ok((path, branch, from_version))
+}
+
+fn temporal_ipc_decode_branch_checkout_payload(
+    payload: &[u8],
+) -> Result<(alloc::string::String, alloc::string::String), i32> {
+    if payload.len() < 6 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let path_len = temporal_ipc_read_u16(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let branch_len = temporal_ipc_read_u16(payload, 2).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let _reserved = temporal_ipc_read_u16(payload, 4).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    if branch_len == 0 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let expected = 6usize.saturating_add(path_len).saturating_add(branch_len);
+    if payload.len() != expected {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let path_raw = core::str::from_utf8(&payload[6..6 + path_len]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let branch_raw = core::str::from_utf8(&payload[6 + path_len..expected])
+        .map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path = normalize_temporal_path(path_raw).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let branch = alloc::string::String::from(branch_raw);
+    Ok((path, branch))
+}
+
+fn temporal_ipc_decode_merge_payload(
+    payload: &[u8],
+) -> Result<
+    (
+        alloc::string::String,
+        alloc::string::String,
+        Option<alloc::string::String>,
+        crate::temporal::TemporalMergeStrategy,
+    ),
+    i32,
+> {
+    if payload.len() < 8 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let strategy = match payload[0] {
+        0 => crate::temporal::TemporalMergeStrategy::FastForwardOnly,
+        1 => crate::temporal::TemporalMergeStrategy::Ours,
+        2 => crate::temporal::TemporalMergeStrategy::Theirs,
+        _ => return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD),
+    };
+    let flags = payload[1];
+    let target_present = (flags & 1) != 0;
+    let path_len = temporal_ipc_read_u16(payload, 2).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let source_len = temporal_ipc_read_u16(payload, 4).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let target_len = temporal_ipc_read_u16(payload, 6).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    if source_len == 0 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    if target_present && target_len == 0 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    if !target_present && target_len != 0 {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let expected = 8usize
+        .saturating_add(path_len)
+        .saturating_add(source_len)
+        .saturating_add(target_len);
+    if payload.len() != expected {
+        return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
+    }
+    let path_off = 8usize;
+    let source_off = path_off.saturating_add(path_len);
+    let target_off = source_off.saturating_add(source_len);
+
+    let path_raw = core::str::from_utf8(&payload[path_off..source_off]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let source_raw =
+        core::str::from_utf8(&payload[source_off..target_off]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path = normalize_temporal_path(path_raw).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let source = alloc::string::String::from(source_raw);
+    let target = if target_present {
+        let target_raw = core::str::from_utf8(&payload[target_off..expected])
+            .map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+        Some(alloc::string::String::from(target_raw))
+    } else {
+        None
+    };
+
+    Ok((path, source, target, strategy))
+}
+
 fn temporal_ipc_split_u64(value: u64) -> (u32, u32) {
     (value as u32, (value >> 32) as u32)
 }
@@ -2990,6 +3594,104 @@ fn temporal_ipc_encode_stats(stats: crate::temporal::TemporalStats) -> [u8; TEMP
         bytes as u32,
         (bytes >> 32) as u32,
         stats.active_branches as u32,
+    ];
+    let mut i = 0usize;
+    while i < words.len() {
+        let base = i * 4;
+        out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+        i += 1;
+    }
+    out
+}
+
+fn temporal_ipc_encode_branch_id(branch_id: u32) -> [u8; TEMPORAL_IPC_BRANCH_ID_BYTES] {
+    branch_id.to_le_bytes()
+}
+
+fn temporal_ipc_encode_branch_checkout(
+    branch_id: u32,
+    head_version: Option<u64>,
+) -> [u8; TEMPORAL_IPC_BRANCH_CHECKOUT_BYTES] {
+    let mut out = [0u8; TEMPORAL_IPC_BRANCH_CHECKOUT_BYTES];
+    let head = head_version.unwrap_or(u64::MAX);
+    let (head_lo, head_hi) = temporal_ipc_split_u64(head);
+    let words = [
+        branch_id,
+        if head_version.is_some() { 1 } else { 0 },
+        head_lo,
+        head_hi,
+    ];
+    let mut i = 0usize;
+    while i < words.len() {
+        let base = i * 4;
+        out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+        i += 1;
+    }
+    out
+}
+
+fn temporal_ipc_encode_branch_record(
+    branch: &crate::temporal::TemporalBranchInfo,
+) -> [u8; TEMPORAL_IPC_BRANCH_RECORD_BYTES] {
+    let mut out = [0u8; TEMPORAL_IPC_BRANCH_RECORD_BYTES];
+    let head = branch.head_version_id.unwrap_or(u64::MAX);
+    let (head_lo, head_hi) = temporal_ipc_split_u64(head);
+    let mut flags = 0u32;
+    if branch.active {
+        flags |= 1;
+    }
+    if branch.head_version_id.is_some() {
+        flags |= 1 << 1;
+    }
+    let words = [branch.branch_id, head_lo, head_hi, flags];
+    let mut i = 0usize;
+    while i < words.len() {
+        let base = i * 4;
+        out[base..base + 4].copy_from_slice(&words[i].to_le_bytes());
+        i += 1;
+    }
+    let name_bytes = branch.name.as_bytes();
+    let use_len = core::cmp::min(name_bytes.len(), TEMPORAL_IPC_BRANCH_NAME_BYTES);
+    out[16..18].copy_from_slice(&(use_len as u16).to_le_bytes());
+    out[18..20].copy_from_slice(&0u16.to_le_bytes());
+    out[20..20 + use_len].copy_from_slice(&name_bytes[..use_len]);
+    out
+}
+
+fn temporal_ipc_encode_merge_result(
+    result: &crate::temporal::TemporalMergeResult,
+) -> [u8; TEMPORAL_IPC_MERGE_RESULT_BYTES] {
+    let mut out = [0u8; TEMPORAL_IPC_MERGE_RESULT_BYTES];
+    let mut flags = 0u32;
+    if result.fast_forward {
+        flags |= 1;
+    }
+    if result.new_version_id.is_some() {
+        flags |= 1 << 1;
+    }
+    if result.target_head_before.is_some() {
+        flags |= 1 << 2;
+    }
+    if result.target_head_after.is_some() {
+        flags |= 1 << 3;
+    }
+    let new_version = result.new_version_id.unwrap_or(u64::MAX);
+    let before = result.target_head_before.unwrap_or(u64::MAX);
+    let after = result.target_head_after.unwrap_or(u64::MAX);
+    let (new_lo, new_hi) = temporal_ipc_split_u64(new_version);
+    let (before_lo, before_hi) = temporal_ipc_split_u64(before);
+    let (after_lo, after_hi) = temporal_ipc_split_u64(after);
+    let words = [
+        flags,
+        result.target_branch_id,
+        result.source_branch_id,
+        0,
+        new_lo,
+        new_hi,
+        before_lo,
+        before_hi,
+        after_lo,
+        after_hi,
     ];
     let mut i = 0usize;
     while i < words.len() {
@@ -3205,6 +3907,120 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
                             .extend_from_slice(&temporal_ipc_encode_history_record(&history[i]));
                         i += 1;
                     }
+                    TEMPORAL_IPC_STATUS_OK
+                }
+                Err(e) => temporal_error_to_status(e),
+            }
+        }
+        TEMPORAL_IPC_OP_BRANCH_CREATE => {
+            let fs_cap = match temporal_cap_from_message(message) {
+                Ok(cap) => cap,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            let (path, branch, from_version) = match temporal_ipc_decode_branch_create_payload(payload) {
+                Ok(v) => v,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE) {
+                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+            }
+            match crate::temporal::create_branch(&path, &branch, from_version) {
+                Ok(branch_id) => {
+                    response_payload.extend_from_slice(&temporal_ipc_encode_branch_id(branch_id));
+                    TEMPORAL_IPC_STATUS_OK
+                }
+                Err(e) => temporal_error_to_status(e),
+            }
+        }
+        TEMPORAL_IPC_OP_BRANCH_CHECKOUT => {
+            let fs_cap = match temporal_cap_from_message(message) {
+                Ok(cap) => cap,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            let (path, branch) = match temporal_ipc_decode_branch_checkout_payload(payload) {
+                Ok(v) => v,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE) {
+                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+            }
+            match crate::temporal::checkout_branch(&path, &branch) {
+                Ok((branch_id, head_version)) => {
+                    response_payload.extend_from_slice(&temporal_ipc_encode_branch_checkout(
+                        branch_id,
+                        head_version,
+                    ));
+                    TEMPORAL_IPC_STATUS_OK
+                }
+                Err(e) => temporal_error_to_status(e),
+            }
+        }
+        TEMPORAL_IPC_OP_BRANCH_LIST => {
+            let fs_cap = match temporal_cap_from_message(message) {
+                Ok(cap) => cap,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            let path = match temporal_ipc_decode_path_payload(payload) {
+                Ok(path) => path,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+            }
+            match crate::temporal::list_branches(&path) {
+                Ok(branches) => {
+                    let max_records_by_frame = ipc::MAX_MESSAGE_SIZE
+                        .saturating_sub(TEMPORAL_IPC_RESPONSE_HEADER_BYTES)
+                        .saturating_sub(4)
+                        / TEMPORAL_IPC_BRANCH_RECORD_BYTES;
+                    let write_count = core::cmp::min(
+                        core::cmp::min(branches.len(), TEMPORAL_IPC_MAX_BRANCH_ENTRIES),
+                        max_records_by_frame,
+                    );
+                    temporal_ipc_append_u16(&mut response_payload, write_count as u16);
+                    temporal_ipc_append_u16(&mut response_payload, 0);
+                    let mut i = 0usize;
+                    while i < write_count {
+                        response_payload
+                            .extend_from_slice(&temporal_ipc_encode_branch_record(&branches[i]));
+                        i += 1;
+                    }
+                    TEMPORAL_IPC_STATUS_OK
+                }
+                Err(e) => temporal_error_to_status(e),
+            }
+        }
+        TEMPORAL_IPC_OP_MERGE => {
+            let fs_cap = match temporal_cap_from_message(message) {
+                Ok(cap) => cap,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            let (path, source, target, strategy) = match temporal_ipc_decode_merge_payload(payload) {
+                Ok(v) => v,
+                Err(status) => {
+                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                }
+            };
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE) {
+                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+            }
+            match crate::temporal::merge_branch(&path, &source, target.as_deref(), strategy) {
+                Ok(result) => {
+                    response_payload.extend_from_slice(&temporal_ipc_encode_merge_result(&result));
                     TEMPORAL_IPC_STATUS_OK
                 }
                 Err(e) => temporal_error_to_status(e),
@@ -4553,6 +5369,38 @@ fn cmd_temporal_abi_selftest() {
             vga::print_str("\n");
         }
     }
+    match crate::temporal::object_scope_self_check() {
+        Ok(()) => vga::print_str("Temporal non-file object scope self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal non-file object scope self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    match crate::temporal::persistence_recovery_self_check() {
+        Ok(()) => vga::print_str("Temporal persistence recovery self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal persistence recovery self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    match crate::temporal::branch_merge_self_check() {
+        Ok(()) => vga::print_str("Temporal branch/merge self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal branch/merge self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    match crate::temporal::audit_emission_self_check() {
+        Ok(()) => vga::print_str("Temporal audit emission self-check: PASS\n"),
+        Err(e) => {
+            vga::print_str("Temporal audit emission self-check: FAIL - ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
     match temporal_ipc_service_self_check() {
         Ok(()) => vga::print_str("Temporal IPC service self-check: PASS\n"),
         Err(e) => {
@@ -5375,6 +6223,42 @@ fn cmd_formal_verify() {
         Ok(()) => vga::print_str("  ✓ Temporal VFS fd-write capture self-check passed\n"),
         Err(e) => {
             vga::print_str("  ✗ Temporal VFS fd-write capture self-check failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+    match crate::temporal::object_scope_self_check() {
+        Ok(()) => vga::print_str("  ✓ Temporal non-file object scope self-check passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ Temporal non-file object scope self-check failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+    match crate::temporal::persistence_recovery_self_check() {
+        Ok(()) => vga::print_str("  ✓ Temporal persistence recovery self-check passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ Temporal persistence recovery self-check failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+    match crate::temporal::branch_merge_self_check() {
+        Ok(()) => vga::print_str("  ✓ Temporal branch/merge self-check passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ Temporal branch/merge self-check failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+    match crate::temporal::audit_emission_self_check() {
+        Ok(()) => vga::print_str("  ✓ Temporal audit emission self-check passed\n"),
+        Err(e) => {
+            vga::print_str("  ✗ Temporal audit emission self-check failed: ");
             vga::print_str(e);
             vga::print_str("\n");
             return;

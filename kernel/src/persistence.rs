@@ -37,6 +37,9 @@
 
 #![allow(dead_code)]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use core::fmt;
 
 /// Maximum log record size (64 KiB)
@@ -239,6 +242,12 @@ impl AppendLog {
 
 /// Maximum snapshot size (1 MiB for v0)
 pub const MAX_SNAPSHOT_SIZE: usize = 1024 * 1024;
+const SNAPSHOT_DISK_MAGIC: u32 = 0x4F_52_53_50; // "ORSP"
+const SNAPSHOT_DISK_VERSION: u16 = 1;
+const SNAPSHOT_DISK_HEADER_BYTES: usize = 64;
+const SNAPSHOT_DISK_SLOT_GENERIC: u16 = 1;
+const SNAPSHOT_DISK_SLOT_TEMPORAL: u16 = 2;
+const SNAPSHOT_DISK_SECTOR_BYTES: usize = 512;
 
 /// A snapshot captures point-in-time state
 pub struct Snapshot {
@@ -281,6 +290,120 @@ impl Snapshot {
     pub fn read(&self) -> (&[u8], usize) {
         (&self.data[..self.data_len], self.last_offset)
     }
+}
+
+#[derive(Clone, Copy)]
+struct SnapshotDiskHeader {
+    magic: u32,
+    version: u16,
+    slot_id: u16,
+    data_len: u32,
+    last_offset: u64,
+    timestamp: u64,
+    crc32: u32,
+}
+
+fn snapshot_slot_sectors() -> u64 {
+    let bytes = SNAPSHOT_DISK_HEADER_BYTES.saturating_add(MAX_SNAPSHOT_SIZE);
+    ((bytes + SNAPSHOT_DISK_SECTOR_BYTES - 1) / SNAPSHOT_DISK_SECTOR_BYTES) as u64
+}
+
+fn snapshot_slot_base_lba(slot_id: u16) -> Option<u64> {
+    let capacity = crate::virtio_blk::capacity_sectors()?;
+    let slot_sectors = snapshot_slot_sectors();
+    let total_reserved = slot_sectors.saturating_mul(2).saturating_add(1);
+    if capacity <= total_reserved {
+        return None;
+    }
+    let base = capacity.saturating_sub(slot_sectors.saturating_mul(2));
+    match slot_id {
+        SNAPSHOT_DISK_SLOT_GENERIC => Some(base),
+        SNAPSHOT_DISK_SLOT_TEMPORAL => Some(base.saturating_add(slot_sectors)),
+        _ => None,
+    }
+}
+
+fn append_u16(buf: &mut Vec<u8>, value: u16) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn append_u32(buf: &mut Vec<u8>, value: u32) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn append_u64(buf: &mut Vec<u8>, value: u64) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    if offset.saturating_add(2) > data.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    if offset.saturating_add(4) > data.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]))
+}
+
+fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
+    if offset.saturating_add(8) > data.len() {
+        return None;
+    }
+    Some(u64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]))
+}
+
+fn encode_snapshot_header(header: SnapshotDiskHeader) -> [u8; SNAPSHOT_DISK_HEADER_BYTES] {
+    let mut out = [0u8; SNAPSHOT_DISK_HEADER_BYTES];
+    let mut encoded = Vec::new();
+    encoded.reserve(SNAPSHOT_DISK_HEADER_BYTES);
+    append_u32(&mut encoded, header.magic);
+    append_u16(&mut encoded, header.version);
+    append_u16(&mut encoded, header.slot_id);
+    append_u32(&mut encoded, header.data_len);
+    append_u64(&mut encoded, header.last_offset);
+    append_u64(&mut encoded, header.timestamp);
+    append_u32(&mut encoded, header.crc32);
+    append_u32(&mut encoded, 0);
+    append_u64(&mut encoded, 0);
+    append_u64(&mut encoded, 0);
+    append_u64(&mut encoded, 0);
+    if encoded.len() <= out.len() {
+        out[..encoded.len()].copy_from_slice(&encoded);
+    }
+    out
+}
+
+fn decode_snapshot_header(data: &[u8]) -> Option<SnapshotDiskHeader> {
+    if data.len() < SNAPSHOT_DISK_HEADER_BYTES {
+        return None;
+    }
+    Some(SnapshotDiskHeader {
+        magic: read_u32(data, 0)?,
+        version: read_u16(data, 4)?,
+        slot_id: read_u16(data, 6)?,
+        data_len: read_u32(data, 8)?,
+        last_offset: read_u64(data, 12)?,
+        timestamp: read_u64(data, 20)?,
+        crc32: read_u32(data, 28)?,
+    })
 }
 
 // ============================================================================
@@ -337,6 +460,10 @@ pub struct PersistenceService {
     log: AppendLog,
     /// The current snapshot
     snapshot: Snapshot,
+    /// Dedicated temporal-object snapshot state
+    temporal_snapshot: Snapshot,
+    /// True once we have attempted disk snapshot recovery with a block device.
+    disk_recovery_attempted: bool,
 }
 
 impl PersistenceService {
@@ -345,6 +472,8 @@ impl PersistenceService {
         PersistenceService {
             log: AppendLog::new(),
             snapshot: Snapshot::new(),
+            temporal_snapshot: Snapshot::new(),
+            disk_recovery_attempted: false,
         }
     }
 
@@ -372,7 +501,9 @@ impl PersistenceService {
             return Err(PersistenceError::PermissionDenied);
         }
 
-        self.snapshot.write(data, last_offset)
+        self.snapshot.write(data, last_offset)?;
+        let _ = Self::write_snapshot_to_disk(SNAPSHOT_DISK_SLOT_GENERIC, &self.snapshot);
+        Ok(())
     }
 
     /// Read the current snapshot
@@ -384,9 +515,158 @@ impl PersistenceService {
         Ok(self.snapshot.read())
     }
 
+    /// Write temporal-object snapshot bytes.
+    pub fn write_temporal_snapshot(
+        &mut self,
+        capability: &StoreCapability,
+        data: &[u8],
+        last_offset: usize,
+    ) -> Result<(), PersistenceError> {
+        if !capability.rights.has(StoreRights::WRITE_SNAPSHOT) {
+            return Err(PersistenceError::PermissionDenied);
+        }
+        self.temporal_snapshot.write(data, last_offset)?;
+        let _ = Self::write_snapshot_to_disk(SNAPSHOT_DISK_SLOT_TEMPORAL, &self.temporal_snapshot);
+        Ok(())
+    }
+
+    /// Read temporal-object snapshot bytes.
+    pub fn read_temporal_snapshot(
+        &self,
+        capability: &StoreCapability,
+    ) -> Result<(&[u8], usize), PersistenceError> {
+        if !capability.rights.has(StoreRights::READ_SNAPSHOT) {
+            return Err(PersistenceError::PermissionDenied);
+        }
+        Ok(self.temporal_snapshot.read())
+    }
+
     /// Get log statistics
     pub fn log_stats(&self) -> (usize, usize) {
         (self.log.count(), MAX_LOG_RECORDS)
+    }
+
+    fn write_snapshot_to_disk(slot_id: u16, snapshot: &Snapshot) -> Result<(), PersistenceError> {
+        if !crate::virtio_blk::is_present() {
+            return Ok(());
+        }
+
+        let base_lba = snapshot_slot_base_lba(slot_id).ok_or(PersistenceError::InvalidRecord)?;
+        let max_slot_bytes =
+            (snapshot_slot_sectors() as usize).saturating_mul(SNAPSHOT_DISK_SECTOR_BYTES);
+        let total_bytes = SNAPSHOT_DISK_HEADER_BYTES.saturating_add(snapshot.data_len);
+        if total_bytes > max_slot_bytes {
+            return Err(PersistenceError::SnapshotTooLarge);
+        }
+
+        let data = &snapshot.data[..snapshot.data_len];
+        let header = SnapshotDiskHeader {
+            magic: SNAPSHOT_DISK_MAGIC,
+            version: SNAPSHOT_DISK_VERSION,
+            slot_id,
+            data_len: snapshot.data_len as u32,
+            last_offset: snapshot.last_offset as u64,
+            timestamp: snapshot.timestamp,
+            crc32: LogRecord::compute_crc32(data),
+        };
+        let header_bytes = encode_snapshot_header(header);
+        let sectors = (total_bytes + SNAPSHOT_DISK_SECTOR_BYTES - 1) / SNAPSHOT_DISK_SECTOR_BYTES;
+        let image_len = sectors.saturating_mul(SNAPSHOT_DISK_SECTOR_BYTES);
+        let mut image = Vec::new();
+        image.resize(image_len, 0);
+        image[..SNAPSHOT_DISK_HEADER_BYTES].copy_from_slice(&header_bytes);
+        if !data.is_empty() {
+            let off = SNAPSHOT_DISK_HEADER_BYTES;
+            image[off..off + data.len()].copy_from_slice(data);
+        }
+
+        let mut i = 0usize;
+        while i < sectors {
+            let start = i * SNAPSHOT_DISK_SECTOR_BYTES;
+            let end = start + SNAPSHOT_DISK_SECTOR_BYTES;
+            crate::virtio_blk::write_sector(base_lba + i as u64, &image[start..end])
+                .map_err(|_| PersistenceError::InvalidRecord)?;
+            i += 1;
+        }
+        Ok(())
+    }
+
+    fn read_snapshot_from_disk(slot_id: u16) -> Result<Option<Snapshot>, PersistenceError> {
+        if !crate::virtio_blk::is_present() {
+            return Ok(None);
+        }
+
+        let base_lba = match snapshot_slot_base_lba(slot_id) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let mut first_sector = [0u8; SNAPSHOT_DISK_SECTOR_BYTES];
+        crate::virtio_blk::read_sector(base_lba, &mut first_sector)
+            .map_err(|_| PersistenceError::InvalidRecord)?;
+        let header = match decode_snapshot_header(&first_sector) {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+        if header.magic != SNAPSHOT_DISK_MAGIC
+            || header.version != SNAPSHOT_DISK_VERSION
+            || header.slot_id != slot_id
+        {
+            return Ok(None);
+        }
+
+        let data_len = header.data_len as usize;
+        if data_len > MAX_SNAPSHOT_SIZE {
+            return Err(PersistenceError::SnapshotTooLarge);
+        }
+
+        let total_bytes = SNAPSHOT_DISK_HEADER_BYTES.saturating_add(data_len);
+        let sectors = (total_bytes + SNAPSHOT_DISK_SECTOR_BYTES - 1) / SNAPSHOT_DISK_SECTOR_BYTES;
+        let mut image = Vec::new();
+        image.resize(sectors.saturating_mul(SNAPSHOT_DISK_SECTOR_BYTES), 0);
+        image[..SNAPSHOT_DISK_SECTOR_BYTES].copy_from_slice(&first_sector);
+
+        let mut i = 1usize;
+        while i < sectors {
+            let start = i * SNAPSHOT_DISK_SECTOR_BYTES;
+            let end = start + SNAPSHOT_DISK_SECTOR_BYTES;
+            crate::virtio_blk::read_sector(base_lba + i as u64, &mut image[start..end])
+                .map_err(|_| PersistenceError::InvalidRecord)?;
+            i += 1;
+        }
+
+        let payload_off = SNAPSHOT_DISK_HEADER_BYTES;
+        let payload_end = payload_off.saturating_add(data_len);
+        let payload = &image[payload_off..payload_end];
+        if LogRecord::compute_crc32(payload) != header.crc32 {
+            return Err(PersistenceError::CrcMismatch);
+        }
+
+        let mut snapshot = Snapshot::new();
+        if !payload.is_empty() {
+            snapshot.data[..payload.len()].copy_from_slice(payload);
+        }
+        snapshot.data_len = payload.len();
+        snapshot.last_offset = header.last_offset as usize;
+        snapshot.timestamp = header.timestamp;
+        Ok(Some(snapshot))
+    }
+
+    fn recover_snapshots_from_disk(&mut self) {
+        if self.disk_recovery_attempted || !crate::virtio_blk::is_present() {
+            return;
+        }
+        if self.snapshot.data_len == 0 {
+            if let Ok(Some(restored)) = Self::read_snapshot_from_disk(SNAPSHOT_DISK_SLOT_GENERIC) {
+                self.snapshot = restored;
+            }
+        }
+        if self.temporal_snapshot.data_len == 0 {
+            if let Ok(Some(restored)) = Self::read_snapshot_from_disk(SNAPSHOT_DISK_SLOT_TEMPORAL) {
+                self.temporal_snapshot = restored;
+            }
+        }
+        self.disk_recovery_attempted = true;
     }
 }
 
@@ -440,9 +720,6 @@ pub fn persistence() -> &'static Mutex<PersistenceService> {
 
 /// Initialize the persistence service
 pub fn init() {
-    // In v0, persistence is RAM-backed and statically initialized
-    // In future versions, this would:
-    // - Mount storage device (virtio block)
-    // - Load snapshots from disk
-    // - Replay logs for recovery
+    let mut svc = PERSISTENCE.lock();
+    svc.recover_snapshots_from_disk();
 }
