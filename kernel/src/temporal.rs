@@ -304,9 +304,35 @@ enum TemporalAuditAction {
     Recover = 12,
 }
 
+#[derive(Clone, Copy)]
+struct TemporalRetentionPolicy {
+    max_persist_bytes: usize,
+    max_versions_per_object: usize,
+}
+
+impl TemporalRetentionPolicy {
+    const fn default() -> Self {
+        Self {
+            // Persistence snapshot payload is capped by `persistence::MAX_SNAPSHOT_SIZE`.
+            max_persist_bytes: crate::persistence::MAX_SNAPSHOT_SIZE,
+            // Keep a meaningful history by default, but bounded for durability.
+            max_versions_per_object: 64,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TemporalLineHunk {
+    base_start: usize,
+    base_end: usize,
+    other_start: usize,
+    other_end: usize,
+}
+
 struct TemporalService {
     objects: Vec<TemporalObjectHistory>,
     next_version_id: u64,
+    retention: TemporalRetentionPolicy,
 }
 
 impl TemporalService {
@@ -314,6 +340,218 @@ impl TemporalService {
         Self {
             objects: Vec::new(),
             next_version_id: 1,
+            retention: TemporalRetentionPolicy::default(),
+        }
+    }
+
+    fn estimate_persist_size_locked(&self) -> usize {
+        // Must match `encode_persistent_state_locked` encoding layout.
+        let mut size = 24usize; // global header
+        for object in &self.objects {
+            size = size.saturating_add(28).saturating_add(object.path.len());
+            for branch in &object.branches {
+                size = size.saturating_add(16).saturating_add(branch.name.len());
+            }
+            for entry in &object.versions {
+                size = size
+                    .saturating_add(56)
+                    .saturating_add(entry.payload.len());
+            }
+        }
+        size
+    }
+
+    fn object_pinned_version_ids(object: &TemporalObjectHistory) -> Vec<u64> {
+        let mut pinned = Vec::new();
+        if let Some(id) = object.head_version_id {
+            pinned.push(id);
+        }
+        for branch in &object.branches {
+            if let Some(id) = branch.head_version_id {
+                pinned.push(id);
+            }
+        }
+        pinned
+    }
+
+    fn clear_one_inactive_branch_head(object: &mut TemporalObjectHistory) -> bool {
+        let active = object.active_branch_id;
+        let head = object.head_version_id;
+        let active_head = object.active_branch_head();
+        let mut best_idx: Option<usize> = None;
+        let mut best_tick = u64::MAX;
+
+        for (idx, branch) in object.branches.iter().enumerate() {
+            if branch.branch_id == active {
+                continue;
+            }
+            let head_id = match branch.head_version_id {
+                Some(v) => v,
+                None => continue,
+            };
+            if Some(head_id) == head || Some(head_id) == active_head {
+                continue;
+            }
+            let tick = object
+                .versions
+                .iter()
+                .find(|e| e.meta.version_id == head_id)
+                .map(|e| e.meta.tick)
+                .unwrap_or(0);
+            if tick < best_tick {
+                best_tick = tick;
+                best_idx = Some(idx);
+            }
+        }
+
+        if let Some(idx) = best_idx {
+            if let Some(branch) = object.branches.get_mut(idx) {
+                branch.head_version_id = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn remove_version_rewire_locked(object: &mut TemporalObjectHistory, remove_idx: usize) -> bool {
+        if remove_idx >= object.versions.len() {
+            return false;
+        }
+
+        let removed_meta = object.versions[remove_idx].meta.clone();
+        let removed_id = removed_meta.version_id;
+        let replacement_parent = removed_meta.parent_version_id;
+        let replacement_rollback = removed_meta.rollback_from_version_id.or(replacement_parent);
+
+        for entry in object.versions.iter_mut() {
+            if entry.meta.parent_version_id == Some(removed_id) {
+                entry.meta.parent_version_id = replacement_parent;
+            }
+            if entry.meta.rollback_from_version_id == Some(removed_id) {
+                entry.meta.rollback_from_version_id = replacement_rollback;
+            }
+        }
+
+        if object.head_version_id == Some(removed_id) {
+            object.head_version_id = replacement_parent;
+        }
+        for branch in object.branches.iter_mut() {
+            if branch.head_version_id == Some(removed_id) {
+                branch.head_version_id = replacement_parent;
+            }
+        }
+
+        object.versions.remove(remove_idx);
+        true
+    }
+
+    fn apply_retention_for_persistence_locked(&mut self) {
+        let max_bytes = self
+            .retention
+            .max_persist_bytes
+            .min(crate::persistence::MAX_SNAPSHOT_SIZE);
+        let max_versions_per_object = self
+            .retention
+            .max_versions_per_object
+            .min(MAX_VERSIONS_PER_OBJECT)
+            .max(1);
+
+        // First, cap history per object by count, preserving pinned heads when possible.
+        for object in &mut self.objects {
+            while object.versions.len() > max_versions_per_object {
+                let pinned = Self::object_pinned_version_ids(object);
+                let mut remove_idx = None;
+                for (idx, entry) in object.versions.iter().enumerate() {
+                    if !pinned.iter().any(|v| *v == entry.meta.version_id) {
+                        remove_idx = Some(idx);
+                        break;
+                    }
+                }
+                match remove_idx {
+                    Some(idx) => {
+                        let _ = Self::remove_version_rewire_locked(object, idx);
+                    }
+                    None => {
+                        if !Self::clear_one_inactive_branch_head(object) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Then, enforce global persistence budget. Drop oldest unpinned versions first; if we
+        // cannot find any, clear inactive branch heads to unpin more history.
+        let mut guard = 0usize;
+        while self.estimate_persist_size_locked() > max_bytes && guard < 100_000 {
+            guard = guard.saturating_add(1);
+
+            let mut best_obj: Option<usize> = None;
+            let mut best_ver: Option<usize> = None;
+            let mut best_tick = u64::MAX;
+
+            for (oi, object) in self.objects.iter().enumerate() {
+                let pinned = Self::object_pinned_version_ids(object);
+                for (vi, entry) in object.versions.iter().enumerate() {
+                    if pinned.iter().any(|v| *v == entry.meta.version_id) {
+                        continue;
+                    }
+                    if entry.meta.tick < best_tick {
+                        best_tick = entry.meta.tick;
+                        best_obj = Some(oi);
+                        best_ver = Some(vi);
+                    }
+                }
+            }
+
+            if let (Some(oi), Some(vi)) = (best_obj, best_ver) {
+                if let Some(object) = self.objects.get_mut(oi) {
+                    if vi < object.versions.len() {
+                        let _ = Self::remove_version_rewire_locked(object, vi);
+                        continue;
+                    }
+                }
+            }
+
+            // No removable versions. Try unpinning an inactive branch head somewhere.
+            let mut unpinned = false;
+            for object in &mut self.objects {
+                if Self::clear_one_inactive_branch_head(object) {
+                    unpinned = true;
+                    break;
+                }
+            }
+            if !unpinned {
+                break;
+            }
+        }
+
+        // Last-resort compaction: if we still exceed the budget, squash each object down to its
+        // active head (or latest), clearing inactive branch heads.
+        if self.estimate_persist_size_locked() > max_bytes {
+            for object in &mut self.objects {
+                let keep_id = object
+                    .active_branch_head()
+                    .or(object.head_version_id)
+                    .or_else(|| object.versions.last().map(|v| v.meta.version_id));
+                if let Some(keep_id) = keep_id {
+                    object.versions.retain(|v| v.meta.version_id == keep_id);
+                    object.head_version_id = Some(keep_id);
+                    for branch in &mut object.branches {
+                        if branch.branch_id == object.active_branch_id {
+                            branch.head_version_id = Some(keep_id);
+                        } else {
+                            branch.head_version_id = None;
+                        }
+                    }
+                } else {
+                    object.versions.clear();
+                    object.head_version_id = None;
+                    for branch in &mut object.branches {
+                        branch.head_version_id = None;
+                    }
+                }
+            }
         }
     }
 
@@ -634,6 +872,423 @@ impl TemporalService {
         false
     }
 
+    fn common_ancestor_parent_chain_locked(
+        object: &TemporalObjectHistory,
+        a: u64,
+        b: u64,
+    ) -> Option<u64> {
+        if a == b {
+            return Some(a);
+        }
+
+        let mut a_chain: Vec<u64> = Vec::new();
+        let mut current = Some(a);
+        let mut guard = 0usize;
+        while let Some(id) = current {
+            a_chain.push(id);
+            guard = guard.saturating_add(1);
+            if guard > MAX_VERSIONS_PER_OBJECT.saturating_add(4) {
+                break;
+            }
+            current = Self::find_version_index_locked(object, id)
+                .and_then(|idx| object.versions.get(idx))
+                .and_then(|entry| entry.meta.parent_version_id);
+        }
+
+        let mut current = Some(b);
+        let mut guard = 0usize;
+        while let Some(id) = current {
+            if a_chain.iter().any(|v| *v == id) {
+                return Some(id);
+            }
+            guard = guard.saturating_add(1);
+            if guard > MAX_VERSIONS_PER_OBJECT.saturating_add(4) {
+                break;
+            }
+            current = Self::find_version_index_locked(object, id)
+                .and_then(|idx| object.versions.get(idx))
+                .and_then(|entry| entry.meta.parent_version_id);
+        }
+
+        None
+    }
+
+    fn diff_span(base: &[u8], other: &[u8]) -> (usize, usize, usize) {
+        let mut start = 0usize;
+        while start < base.len() && start < other.len() {
+            if base[start] != other[start] {
+                break;
+            }
+            start = start.saturating_add(1);
+        }
+
+        let mut base_end = base.len();
+        let mut other_end = other.len();
+        while base_end > start && other_end > start {
+            if base[base_end - 1] != other[other_end - 1] {
+                break;
+            }
+            base_end = base_end.saturating_sub(1);
+            other_end = other_end.saturating_sub(1);
+        }
+
+        (start, base_end, other_end)
+    }
+
+    fn try_three_way_span_merge(
+        base: &[u8],
+        ours: &[u8],
+        theirs: &[u8],
+    ) -> Option<Vec<u8>> {
+        let (s1, be1, oe1) = Self::diff_span(base, ours);
+        let (s2, be2, oe2) = Self::diff_span(base, theirs);
+
+        // Non-overlapping edits (relative to base) can be merged deterministically.
+        if be1 <= s2 {
+            let mut out = Vec::new();
+            out.extend_from_slice(&base[..s1]);
+            out.extend_from_slice(&ours[s1..oe1]);
+            out.extend_from_slice(&base[be1..s2]);
+            out.extend_from_slice(&theirs[s2..oe2]);
+            out.extend_from_slice(&base[be2..]);
+            return Some(out);
+        }
+        if be2 <= s1 {
+            let mut out = Vec::new();
+            out.extend_from_slice(&base[..s2]);
+            out.extend_from_slice(&theirs[s2..oe2]);
+            out.extend_from_slice(&base[be2..s1]);
+            out.extend_from_slice(&ours[s1..oe1]);
+            out.extend_from_slice(&base[be1..]);
+            return Some(out);
+        }
+
+        None
+    }
+
+    fn split_lines_inclusive<'a>(s: &'a str, max_lines: usize) -> Option<Vec<&'a str>> {
+        let mut lines = Vec::new();
+        if s.is_empty() {
+            return Some(lines);
+        }
+
+        let bytes = s.as_bytes();
+        let mut start = 0usize;
+        for (idx, b) in bytes.iter().enumerate() {
+            if *b == b'\n' {
+                let end = idx.saturating_add(1);
+                if end <= s.len() && start <= end {
+                    lines.push(&s[start..end]);
+                }
+                start = end;
+                if lines.len() > max_lines {
+                    return None;
+                }
+            }
+        }
+
+        if start < s.len() {
+            lines.push(&s[start..]);
+            if lines.len() > max_lines {
+                return None;
+            }
+        }
+
+        Some(lines)
+    }
+
+    fn diff_lines_to_hunks(
+        base_lines: &[&str],
+        other_lines: &[&str],
+    ) -> Option<Vec<TemporalLineHunk>> {
+        let n = base_lines.len();
+        let m = other_lines.len();
+
+        // Keep CPU/memory bounded. This is a kernel merge helper, not a full diff engine.
+        const MAX_LINES: usize = 256;
+        if n > MAX_LINES || m > MAX_LINES {
+            return None;
+        }
+
+        let cols = m.saturating_add(1);
+        let rows = n.saturating_add(1);
+        let mut dp: Vec<u16> = Vec::new();
+        dp.resize(rows.saturating_mul(cols), 0);
+
+        let mut i = n;
+        while i > 0 {
+            i = i.saturating_sub(1);
+            let mut j = m;
+            while j > 0 {
+                j = j.saturating_sub(1);
+                let idx = i.saturating_mul(cols).saturating_add(j);
+                let down = dp[(i + 1).saturating_mul(cols).saturating_add(j)];
+                let right = dp[i.saturating_mul(cols).saturating_add(j + 1)];
+                dp[idx] = if base_lines[i] == other_lines[j] {
+                    dp[(i + 1).saturating_mul(cols).saturating_add(j + 1)].saturating_add(1)
+                } else if down >= right {
+                    down
+                } else {
+                    right
+                };
+            }
+        }
+
+        let mut hunks: Vec<TemporalLineHunk> = Vec::new();
+        let mut bi = 0usize;
+        let mut oi = 0usize;
+        while bi < n || oi < m {
+            if bi < n && oi < m && base_lines[bi] == other_lines[oi] {
+                bi = bi.saturating_add(1);
+                oi = oi.saturating_add(1);
+                continue;
+            }
+
+            let base_start = bi;
+            let other_start = oi;
+
+            while bi < n || oi < m {
+                if bi < n && oi < m && base_lines[bi] == other_lines[oi] {
+                    break;
+                }
+
+                if bi == n {
+                    oi = oi.saturating_add(1);
+                    continue;
+                }
+                if oi == m {
+                    bi = bi.saturating_add(1);
+                    continue;
+                }
+
+                let down = dp[(bi + 1).saturating_mul(cols).saturating_add(oi)];
+                let right = dp[bi.saturating_mul(cols).saturating_add(oi + 1)];
+                if down >= right {
+                    bi = bi.saturating_add(1);
+                } else {
+                    oi = oi.saturating_add(1);
+                }
+            }
+
+            let base_end = bi;
+            let other_end = oi;
+            if base_start != base_end || other_start != other_end {
+                hunks.push(TemporalLineHunk {
+                    base_start,
+                    base_end,
+                    other_start,
+                    other_end,
+                });
+            }
+        }
+
+        Some(hunks)
+    }
+
+    fn hunk_overlaps_region(h: &TemporalLineHunk, region_start: usize, region_end: usize) -> bool {
+        if region_start == region_end {
+            // Point-region: used for pure insertions. Any edit that crosses this point overlaps.
+            if h.base_start == h.base_end {
+                return h.base_start == region_start;
+            }
+            return h.base_start <= region_start && h.base_end > region_start;
+        }
+
+        if h.base_start == h.base_end {
+            // Insertions overlap iff they are inside [start, end).
+            return h.base_start >= region_start && h.base_start < region_end;
+        }
+
+        h.base_start < region_end && h.base_end > region_start
+    }
+
+    fn append_line_range_bytes(out: &mut Vec<u8>, lines: &[&str], start: usize, end: usize) {
+        let mut i = start;
+        while i < end && i < lines.len() {
+            out.extend_from_slice(lines[i].as_bytes());
+            i = i.saturating_add(1);
+        }
+    }
+
+    fn apply_line_hunks_range_bytes(
+        base_lines: &[&str],
+        other_lines: &[&str],
+        hunks: &[TemporalLineHunk],
+        region_start: usize,
+        region_end: usize,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut base_pos = region_start;
+
+        for h in hunks {
+            if h.base_start < region_start || h.base_start > region_end {
+                continue;
+            }
+            if h.base_end > region_end {
+                break;
+            }
+
+            Self::append_line_range_bytes(&mut out, base_lines, base_pos, h.base_start);
+            Self::append_line_range_bytes(&mut out, other_lines, h.other_start, h.other_end);
+            base_pos = h.base_end;
+        }
+
+        Self::append_line_range_bytes(&mut out, base_lines, base_pos, region_end);
+        out
+    }
+
+    fn try_three_way_line_merge(base: &[u8], ours: &[u8], theirs: &[u8]) -> Option<Vec<u8>> {
+        // Only attempt diff3-style merge for reasonably small UTF-8 payloads.
+        let base_str = core::str::from_utf8(base).ok()?;
+        let ours_str = core::str::from_utf8(ours).ok()?;
+        let theirs_str = core::str::from_utf8(theirs).ok()?;
+
+        const MAX_LINES: usize = 256;
+        let base_lines = Self::split_lines_inclusive(base_str, MAX_LINES)?;
+        let ours_lines = Self::split_lines_inclusive(ours_str, MAX_LINES)?;
+        let theirs_lines = Self::split_lines_inclusive(theirs_str, MAX_LINES)?;
+
+        let ours_hunks = Self::diff_lines_to_hunks(&base_lines, &ours_lines)?;
+        let theirs_hunks = Self::diff_lines_to_hunks(&base_lines, &theirs_lines)?;
+
+        let base_len = base_lines.len();
+        let mut out: Vec<u8> = Vec::new();
+        let mut base_pos = 0usize;
+        let mut o_idx = 0usize;
+        let mut t_idx = 0usize;
+
+        loop {
+            let next_o = ours_hunks.get(o_idx).map(|h| h.base_start).unwrap_or(usize::MAX);
+            let next_t = theirs_hunks
+                .get(t_idx)
+                .map(|h| h.base_start)
+                .unwrap_or(usize::MAX);
+            let next_start = if next_o < next_t { next_o } else { next_t };
+
+            if next_start == usize::MAX {
+                Self::append_line_range_bytes(&mut out, &base_lines, base_pos, base_len);
+                break;
+            }
+
+            if base_pos < next_start {
+                Self::append_line_range_bytes(&mut out, &base_lines, base_pos, next_start);
+            }
+
+            let region_start = next_start;
+            let mut region_end = region_start;
+            if let Some(h) = ours_hunks.get(o_idx) {
+                if h.base_start == region_start {
+                    region_end = region_end.max(h.base_end);
+                }
+            }
+            if let Some(h) = theirs_hunks.get(t_idx) {
+                if h.base_start == region_start {
+                    region_end = region_end.max(h.base_end);
+                }
+            }
+
+            // Expand the region to include all overlapping edits from either side.
+            let mut changed = true;
+            while changed {
+                changed = false;
+
+                let mut k = o_idx;
+                while let Some(h) = ours_hunks.get(k) {
+                    if region_start < region_end && h.base_start >= region_end {
+                        break;
+                    }
+                    if region_start == region_end && h.base_start > region_start {
+                        break;
+                    }
+                    if Self::hunk_overlaps_region(h, region_start, region_end) {
+                        let new_end = region_end.max(h.base_end);
+                        if new_end != region_end {
+                            region_end = new_end;
+                            changed = true;
+                        }
+                    }
+                    k = k.saturating_add(1);
+                }
+
+                let mut k = t_idx;
+                while let Some(h) = theirs_hunks.get(k) {
+                    if region_start < region_end && h.base_start >= region_end {
+                        break;
+                    }
+                    if region_start == region_end && h.base_start > region_start {
+                        break;
+                    }
+                    if Self::hunk_overlaps_region(h, region_start, region_end) {
+                        let new_end = region_end.max(h.base_end);
+                        if new_end != region_end {
+                            region_end = new_end;
+                            changed = true;
+                        }
+                    }
+                    k = k.saturating_add(1);
+                }
+            }
+
+            // Gather hunks for this region.
+            let o_start = o_idx;
+            while let Some(h) = ours_hunks.get(o_idx) {
+                if region_start == region_end {
+                    if h.base_start != region_start {
+                        break;
+                    }
+                } else if h.base_start >= region_end {
+                    break;
+                }
+                o_idx = o_idx.saturating_add(1);
+            }
+            let o_end = o_idx;
+
+            let t_start = t_idx;
+            while let Some(h) = theirs_hunks.get(t_idx) {
+                if region_start == region_end {
+                    if h.base_start != region_start {
+                        break;
+                    }
+                } else if h.base_start >= region_end {
+                    break;
+                }
+                t_idx = t_idx.saturating_add(1);
+            }
+            let t_end = t_idx;
+
+            let mut base_bytes = Vec::new();
+            Self::append_line_range_bytes(&mut base_bytes, &base_lines, region_start, region_end);
+            let ours_bytes = Self::apply_line_hunks_range_bytes(
+                &base_lines,
+                &ours_lines,
+                &ours_hunks[o_start..o_end],
+                region_start,
+                region_end,
+            );
+            let theirs_bytes = Self::apply_line_hunks_range_bytes(
+                &base_lines,
+                &theirs_lines,
+                &theirs_hunks[t_start..t_end],
+                region_start,
+                region_end,
+            );
+
+            if ours_bytes == theirs_bytes {
+                out.extend_from_slice(&ours_bytes);
+            } else if ours_bytes == base_bytes {
+                out.extend_from_slice(&theirs_bytes);
+            } else if theirs_bytes == base_bytes {
+                out.extend_from_slice(&ours_bytes);
+            } else {
+                return None;
+            }
+
+            base_pos = region_end;
+        }
+
+        Some(out)
+    }
+
     fn merge_branch_locked(
         &mut self,
         path: &str,
@@ -739,15 +1394,38 @@ impl TemporalService {
             return Err(TemporalError::VersionLimit);
         }
 
-        let choose_source = matches!(strategy, TemporalMergeStrategy::Theirs);
-        let base_version = if choose_source {
-            source_head_id
-        } else {
-            target_head.unwrap_or(source_head_id)
+        let ours_head_id = target_head.ok_or(TemporalError::VersionNotFound)?;
+        let ours = Self::version_payload_locked(object, ours_head_id)
+            .ok_or(TemporalError::VersionNotFound)?;
+        let theirs = Self::version_payload_locked(object, source_head_id)
+            .ok_or(TemporalError::VersionNotFound)?;
+
+        let base_id = Self::common_ancestor_parent_chain_locked(object, ours_head_id, source_head_id);
+        let base = base_id.and_then(|id| Self::version_payload_locked(object, id));
+
+        let mut merged: Option<Vec<u8>> = None;
+        if ours == theirs {
+            merged = Some(ours.to_vec());
+        } else if let Some(base) = base {
+            if ours == base {
+                merged = Some(theirs.to_vec());
+            } else if theirs == base {
+                merged = Some(ours.to_vec());
+            } else {
+                merged = Self::try_three_way_span_merge(base, ours, theirs);
+                if merged.is_none() {
+                    merged = Self::try_three_way_line_merge(base, ours, theirs);
+                }
+            }
+        }
+
+        let payload = match merged {
+            Some(v) => v,
+            None => match strategy {
+                TemporalMergeStrategy::Theirs => theirs.to_vec(),
+                TemporalMergeStrategy::Ours | TemporalMergeStrategy::FastForwardOnly => ours.to_vec(),
+            },
         };
-        let payload = Self::version_payload_locked(object, base_version)
-            .ok_or(TemporalError::VersionNotFound)?
-            .to_vec();
 
         let version_id = self.next_version_id;
         self.next_version_id = self.next_version_id.saturating_add(1);
@@ -2143,7 +2821,8 @@ fn temporal_store_cap() -> crate::persistence::StoreCapability {
 
 fn persist_state_snapshot() {
     let encoded = {
-        let service = TEMPORAL.lock();
+        let mut service = TEMPORAL.lock();
+        service.apply_retention_for_persistence_locked();
         match service.encode_persistent_state_locked() {
             Some(data) => data,
             None => return,
@@ -2930,6 +3609,34 @@ pub fn stats() -> TemporalStats {
     TEMPORAL.lock().stats_locked()
 }
 
+pub fn retention_policy() -> (usize, usize) {
+    let svc = TEMPORAL.lock();
+    (svc.retention.max_versions_per_object, svc.retention.max_persist_bytes)
+}
+
+pub fn set_retention_policy(max_versions_per_object: usize, max_persist_bytes: usize) -> (usize, usize) {
+    let mut svc = TEMPORAL.lock();
+    svc.retention.max_versions_per_object =
+        max_versions_per_object.clamp(1, MAX_VERSIONS_PER_OBJECT);
+    svc.retention.max_persist_bytes = max_persist_bytes
+        .clamp(256, crate::persistence::MAX_SNAPSHOT_SIZE);
+    (svc.retention.max_versions_per_object, svc.retention.max_persist_bytes)
+}
+
+pub fn reset_retention_policy() -> (usize, usize) {
+    let mut svc = TEMPORAL.lock();
+    svc.retention = TemporalRetentionPolicy::default();
+    (svc.retention.max_versions_per_object, svc.retention.max_persist_bytes)
+}
+
+pub fn gc_for_persistence_budget() -> (usize, usize) {
+    let mut svc = TEMPORAL.lock();
+    let before = svc.estimate_persist_size_locked();
+    svc.apply_retention_for_persistence_locked();
+    let after = svc.estimate_persist_size_locked();
+    (before, after)
+}
+
 pub fn vfs_fd_capture_self_check() -> Result<(), &'static str> {
     let pid = crate::process::process_manager()
         .spawn("temporal-fd-selfcheck", None)
@@ -3279,7 +3986,8 @@ pub fn persistence_recovery_self_check() -> Result<(), &'static str> {
     const PAYLOAD: &[u8] = b"temporal-persist-recovery";
 
     let backup = {
-        let service = TEMPORAL.lock();
+        let mut service = TEMPORAL.lock();
+        service.apply_retention_for_persistence_locked();
         service
             .encode_persistent_state_locked()
             .ok_or("temporal persistence self-check backup encode failed")?

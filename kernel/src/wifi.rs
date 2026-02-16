@@ -39,6 +39,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use alloc::vec;
 use spin::Mutex;
 use crate::pci::PciDevice;
 
@@ -78,6 +79,15 @@ fn print_number(n: usize) {
     }
 }
 
+fn ticks_from_ms(ms: u32) -> u64 {
+    let hz = crate::pit::get_frequency() as u64;
+    // Round up so small non-zero timeouts don't become 0 ticks.
+    (ms as u64)
+        .saturating_mul(hz)
+        .saturating_add(999)
+        / 1000
+}
+
 // ============================================================================
 // WiFi Configuration
 // ============================================================================
@@ -85,6 +95,13 @@ fn print_number(n: usize) {
 pub const MAX_SCAN_RESULTS: usize = 32;
 pub const MAX_SSID_LEN: usize = 32;
 pub const MAX_KEY_LEN: usize = 64;
+
+// Connection timing (PIT ticks are 100 Hz by default)
+const WIFI_AUTH_TIMEOUT_MS: u32 = 500;
+const WIFI_ASSOC_TIMEOUT_MS: u32 = 500;
+const WIFI_AUTH_RETRIES: u8 = 3;
+const WIFI_ASSOC_RETRIES: u8 = 3;
+const WIFI_EAPOL_TIMEOUT_MS: u32 = 1500;
 
 // ============================================================================
 // 802.11 Frame Types
@@ -107,6 +124,38 @@ pub enum ManagementSubtype {
     Reassociation = 0x02,
     Disassociation = 0x0A,
     Deauthentication = 0x0C,
+}
+
+// ============================================================================
+// WPA2 / EAPOL-Key (802.11i)
+// ============================================================================
+
+// LLC/SNAP header for EAPOL (Ethertype 0x888E)
+const LLC_SNAP_EAPOL: [u8; 8] = [0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E];
+
+// Key Information bitfield (IEEE 802.11i / WPA2)
+const KI_VERSION_MASK: u16 = 0x0007;
+const KI_DESCRIPTOR_V2: u16 = 0x0002; // AES (CCMP) / HMAC-SHA1 MIC profile
+const KI_PAIRWISE: u16 = 1 << 3;
+const KI_INSTALL: u16 = 1 << 6;
+const KI_ACK: u16 = 1 << 7;
+const KI_MIC: u16 = 1 << 8;
+const KI_SECURE: u16 = 1 << 9;
+const KI_ERROR: u16 = 1 << 10;
+const KI_REQUEST: u16 = 1 << 11;
+const KI_ENCRYPTED_DATA: u16 = 1 << 12;
+
+#[derive(Debug, Clone, Copy)]
+struct ParsedEapolKeyFrame {
+    eapol_offset: usize,
+    eapol_len: usize,
+    eapol_end: usize,
+    key_info: u16,
+    replay_counter: u64,
+    nonce_offset: usize,
+    mic_offset: usize,
+    key_data_len: usize,
+    key_data_offset: usize,
 }
 
 // ============================================================================
@@ -521,11 +570,8 @@ impl WifiDriver {
         }
         pos += 6;
         
-        // Source: our MAC (get from hardware or use default)
-        let our_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        for i in 0..6 {
-            frame[pos + i] = our_mac[i];
-        }
+        // Source: our MAC
+        frame[pos..pos + 6].copy_from_slice(&self.mac_address);
         pos += 6;
         
         // BSSID: broadcast
@@ -803,33 +849,60 @@ impl WifiDriver {
 
     /// Perform actual connection (authentication + association)
     fn perform_connection(&mut self, password: Option<&str>) -> Result<(), WifiError> {
-        // Full WPA2 4-way handshake implementation
-        // Steps:
-        // 1. Send Open System authentication frame
-        // 2. Perform WPA2 4-way handshake if secured
-        // 3. Send association request
-        // 4. Wait for association response
+        // Real WiFi station connection flow (high level):
+        // 1. Tune to target channel.
+        // 2. Open System authentication.
+        // 3. Association (includes RSN IE for WPA2).
+        // 4. WPA2 4-way handshake (if secured).
         
         crate::vga::print_str("[WiFi] Authenticating...\n");
         self.connection.state = WifiState::Authenticating;
+
+        // Ensure we are tuned to the target channel before auth/assoc/EAPOL.
+        self.set_channel(self.connection.network.channel)?;
         
         // Step 1: Open System Authentication (802.11 authentication)
-        self.send_auth_request()?;
-        self.wait_for_auth_response()?;
+        let mut authed = false;
+        for attempt in 0..WIFI_AUTH_RETRIES {
+            self.send_auth_request()?;
+            match self.wait_for_auth_response() {
+                Ok(()) => {
+                    authed = true;
+                    break;
+                }
+                Err(WifiError::Timeout) if attempt + 1 < WIFI_AUTH_RETRIES => {}
+                Err(e) => return Err(e),
+            }
+        }
+        if !authed {
+            return Err(WifiError::AuthenticationFailed);
+        }
         
-        // Step 2: WPA2 4-way handshake (if network is secured)
+        crate::vga::print_str("[WiFi] Associating...\n");
+        // Step 2: Association
+        let mut associated = false;
+        for attempt in 0..WIFI_ASSOC_RETRIES {
+            self.send_association_request()?;
+            match self.wait_for_association_response() {
+                Ok(()) => {
+                    associated = true;
+                    break;
+                }
+                Err(WifiError::Timeout) if attempt + 1 < WIFI_ASSOC_RETRIES => {}
+                Err(e) => return Err(e),
+            }
+        }
+        if !associated {
+            return Err(WifiError::AssociationFailed);
+        }
+        self.connection.state = WifiState::Associated;
+
+        // Step 3: WPA2 4-way handshake (after association)
         if self.connection.network.security == WifiSecurity::WPA2 {
             let password = password.ok_or(WifiError::NoPassword)?;
             crate::vga::print_str("[WiFi] Starting WPA2 4-way handshake...\n");
             self.wpa2_four_way_handshake(password)?;
         }
-        
-        crate::vga::print_str("[WiFi] Associating...\n");
-        self.connection.state = WifiState::Associated;
-        
-        // Step 3: Send Association Request
-        self.send_association_request()?;
-        self.wait_for_association_response()?;
 
         Ok(())
     }
@@ -897,12 +970,57 @@ impl WifiDriver {
     
     /// Wait for authentication response
     fn wait_for_auth_response(&mut self) -> Result<(), WifiError> {
-        // In a real implementation, this would:
-        // - Poll RX queue for management frames
-        // - Parse authentication response
-        // - Check status code
-        // For now, we simulate successful auth
-        Ok(())
+        let start = crate::pit::get_ticks();
+        let deadline = start.saturating_add(ticks_from_ms(WIFI_AUTH_TIMEOUT_MS));
+
+        let mut buf = [0u8; 512];
+        while crate::pit::get_ticks() < deadline {
+            if let Some(len) = self.try_receive_frame(&mut buf)? {
+                if self.is_auth_response_frame(&buf[..len])? {
+                    return Ok(());
+                }
+            }
+            core::hint::spin_loop();
+        }
+
+        Err(WifiError::Timeout)
+    }
+
+    fn is_auth_response_frame(&self, frame: &[u8]) -> Result<bool, WifiError> {
+        if frame.len() < 24 + 6 {
+            return Ok(false);
+        }
+
+        let fc = u16::from_le_bytes([frame[0], frame[1]]);
+        let frame_type = (fc >> 2) & 0x3;
+        let subtype = (fc >> 4) & 0xF;
+
+        // Management / Authentication (subtype 0x0B)
+        if frame_type != 0 || subtype != (ManagementSubtype::Authentication as u16) {
+            return Ok(false);
+        }
+
+        // Addressing checks: to STA (addr1) from AP (addr2)
+        let addr1 = &frame[4..10];
+        let addr2 = &frame[10..16];
+        if addr1 != &self.mac_address || addr2 != &self.connection.network.bssid {
+            return Ok(false);
+        }
+
+        let body = &frame[24..];
+        let algorithm = u16::from_le_bytes([body[0], body[1]]);
+        let seq = u16::from_le_bytes([body[2], body[3]]);
+        let status = u16::from_le_bytes([body[4], body[5]]);
+
+        // Open System auth: algorithm=0, response seq=2, status=0
+        if algorithm != 0 || seq != 2 {
+            return Ok(false);
+        }
+        if status != 0 {
+            return Err(WifiError::AuthenticationFailed);
+        }
+
+        Ok(true)
     }
     
     /// WPA2 4-way handshake implementation
@@ -913,9 +1031,9 @@ impl WifiDriver {
         let ssid = &self.connection.network.ssid[..self.connection.network.ssid_len];
         let pmk = self.pbkdf2_sha1(password.as_bytes(), ssid, 4096)?;
         
-        // Step 2: Wait for Message 1 from AP (contains ANonce)
+        // Step 2: Wait for Message 1 from AP (contains ANonce + replay counter)
         crate::vga::print_str("[WiFi] Waiting for Message 1 (ANonce)...\n");
-        let anonce = self.receive_eapol_msg1()?;
+        let (anonce, replay_counter) = self.receive_eapol_msg1()?;
         
         // Step 3: Generate our nonce (SNonce)
         let snonce = self.generate_nonce();
@@ -925,17 +1043,17 @@ impl WifiDriver {
         //           min(AA, SPA) || max(AA, SPA) || min(ANonce, SNonce) || max(ANonce, SNonce))
         let ptk = self.derive_ptk(&pmk, &anonce, &snonce)?;
         
-        // Step 5: Send Message 2 to AP (contains SNonce and MIC)
+        // Step 5: Send Message 2 to AP (contains SNonce + MIC + replay counter)
         crate::vga::print_str("[WiFi] Sending Message 2 (SNonce + MIC)...\n");
-        self.send_eapol_msg2(&snonce, &ptk)?;
+        self.send_eapol_msg2(&snonce, &ptk, replay_counter)?;
         
-        // Step 6: Wait for Message 3 from AP (contains GTK and MIC)
+        // Step 6: Wait for Message 3 from AP (contains encrypted key data incl. GTK KDE + MIC)
         crate::vga::print_str("[WiFi] Waiting for Message 3 (GTK + MIC)...\n");
-        let gtk = self.receive_eapol_msg3(&ptk)?;
+        let (gtk, replay_counter_3) = self.receive_eapol_msg3(&ptk, replay_counter, &anonce)?;
         
-        // Step 7: Send Message 4 to AP (ACK with MIC)
+        // Step 7: Send Message 4 to AP (ACK with MIC + replay counter)
         crate::vga::print_str("[WiFi] Sending Message 4 (ACK)...\n");
-        self.send_eapol_msg4(&ptk)?;
+        self.send_eapol_msg4(&ptk, replay_counter_3)?;
         
         // Step 8: Install PTK and GTK for encryption
         self.install_keys(&ptk, &gtk)?;
@@ -1141,16 +1259,250 @@ impl WifiDriver {
         output[12..16].copy_from_slice(&h3.to_be_bytes());
         output[16..20].copy_from_slice(&h4.to_be_bytes());
     }
+
+    fn is_frame_from_ap_to_station(&self, frame: &[u8]) -> bool {
+        if frame.len() < 24 {
+            return false;
+        }
+        // For AP->STA unicast frames, addr1 is our MAC, addr2 is AP BSSID.
+        &frame[4..10] == &self.mac_address && &frame[10..16] == &self.connection.network.bssid
+    }
+
+    fn parse_eapol_key_frame(&self, frame: &[u8]) -> Option<ParsedEapolKeyFrame> {
+        // Locate the LLC/SNAP header for EAPOL and return the EAPOL header offset.
+        let mut llc_pos = None;
+        if frame.len() >= LLC_SNAP_EAPOL.len() {
+            for i in 0..=frame.len() - LLC_SNAP_EAPOL.len() {
+                if frame[i..i + LLC_SNAP_EAPOL.len()] == LLC_SNAP_EAPOL {
+                    llc_pos = Some(i);
+                    break;
+                }
+            }
+        }
+
+        let eapol_offset = llc_pos?.saturating_add(LLC_SNAP_EAPOL.len());
+        if eapol_offset.saturating_add(4 + 95) > frame.len() {
+            return None;
+        }
+
+        let version = frame[eapol_offset];
+        let packet_type = frame[eapol_offset + 1];
+        if packet_type != 0x03 {
+            return None;
+        }
+        // Accept EAPOL version 1 or 2 for interoperability.
+        if version != 0x01 && version != 0x02 {
+            return None;
+        }
+
+        let eapol_len =
+            u16::from_be_bytes([frame[eapol_offset + 2], frame[eapol_offset + 3]]) as usize;
+        if eapol_len < 95 {
+            return None;
+        }
+
+        let eapol_end = eapol_offset.saturating_add(4).saturating_add(eapol_len);
+        if eapol_end > frame.len() {
+            return None;
+        }
+
+        let key_desc_offset = eapol_offset + 4;
+        if frame[key_desc_offset] != 0x02 {
+            // RSN EAPOL-Key descriptor (WPA2)
+            return None;
+        }
+
+        let key_info =
+            u16::from_be_bytes([frame[key_desc_offset + 1], frame[key_desc_offset + 2]]);
+        let replay_counter = u64::from_be_bytes([
+            frame[key_desc_offset + 5],
+            frame[key_desc_offset + 6],
+            frame[key_desc_offset + 7],
+            frame[key_desc_offset + 8],
+            frame[key_desc_offset + 9],
+            frame[key_desc_offset + 10],
+            frame[key_desc_offset + 11],
+            frame[key_desc_offset + 12],
+        ]);
+
+        let nonce_offset = key_desc_offset + 13;
+        let mic_offset = key_desc_offset + 77;
+        let key_data_len =
+            u16::from_be_bytes([frame[key_desc_offset + 93], frame[key_desc_offset + 94]]) as usize;
+        let key_data_offset = key_desc_offset + 95;
+
+        if nonce_offset.saturating_add(32) > eapol_end {
+            return None;
+        }
+        if mic_offset.saturating_add(16) > eapol_end {
+            return None;
+        }
+        if key_data_offset.saturating_add(key_data_len) > eapol_end {
+            return None;
+        }
+
+        Some(ParsedEapolKeyFrame {
+            eapol_offset,
+            eapol_len,
+            eapol_end,
+            key_info,
+            replay_counter,
+            nonce_offset,
+            mic_offset,
+            key_data_len,
+            key_data_offset,
+        })
+    }
+
+    fn verify_eapol_mic(
+        &self,
+        frame: &[u8],
+        parsed: &ParsedEapolKeyFrame,
+        kck: &[u8],
+    ) -> Result<(), WifiError> {
+        let received_mic = &frame[parsed.mic_offset..parsed.mic_offset + 16];
+        let eapol_total_len = 4usize.saturating_add(parsed.eapol_len);
+
+        if parsed.eapol_offset.saturating_add(eapol_total_len) > frame.len() {
+            return Err(WifiError::AuthenticationFailed);
+        }
+
+        let mut eapol_buf = vec![0u8; eapol_total_len];
+        eapol_buf.copy_from_slice(&frame[parsed.eapol_offset..parsed.eapol_offset + eapol_total_len]);
+
+        let mic_rel = parsed.mic_offset.saturating_sub(parsed.eapol_offset);
+        if mic_rel.saturating_add(16) > eapol_buf.len() {
+            return Err(WifiError::AuthenticationFailed);
+        }
+        eapol_buf[mic_rel..mic_rel + 16].fill(0);
+
+        let mut computed_mic = [0u8; 20];
+        self.hmac_sha1(kck, &eapol_buf, &mut computed_mic);
+
+        let mut diff = 0u8;
+        for i in 0..16 {
+            diff |= received_mic[i] ^ computed_mic[i];
+        }
+
+        if diff != 0 {
+            crate::vga::print_str("[WiFi] MIC verification failed!\n");
+            return Err(WifiError::AuthenticationFailed);
+        }
+
+        Ok(())
+    }
+
+    fn extract_gtk_from_key_data(&self, key_data: &[u8]) -> Result<[u8; 32], WifiError> {
+        let mut pos = 0usize;
+        while pos + 2 <= key_data.len() {
+            let id = key_data[pos];
+            let len = key_data[pos + 1] as usize;
+            pos += 2;
+
+            if pos.saturating_add(len) > key_data.len() {
+                break;
+            }
+
+            if id == 0xDD && len >= 6 {
+                // Vendor specific KDE: OUI (3) + type (1) + keyid/reserved (2) + GTK
+                let payload = &key_data[pos..pos + len];
+                if payload[0..3] == [0x00, 0x0F, 0xAC] && payload[3] == 0x01 {
+                    if payload.len() < 6 {
+                        return Err(WifiError::AuthenticationFailed);
+                    }
+                    let gtk_bytes = &payload[6..];
+                    let mut gtk = [0u8; 32];
+                    let copy_len = gtk_bytes.len().min(gtk.len());
+                    gtk[..copy_len].copy_from_slice(&gtk_bytes[..copy_len]);
+                    return Ok(gtk);
+                }
+            }
+
+            pos += len;
+        }
+
+        Err(WifiError::AuthenticationFailed)
+    }
+
+    fn aes_key_unwrap(&self, kek: &[u8; 16], wrapped: &[u8]) -> Result<Vec<u8>, WifiError> {
+        // RFC 3394 AES Key Unwrap (default IV A6A6A6A6A6A6A6A6).
+        if wrapped.len() < 16 || (wrapped.len() % 8) != 0 {
+            return Err(WifiError::AuthenticationFailed);
+        }
+
+        let n = wrapped.len() / 8 - 1;
+        if n < 2 {
+            return Err(WifiError::AuthenticationFailed);
+        }
+
+        let round_keys = aes128_expand_key(kek);
+
+        let mut a = [0u8; 8];
+        a.copy_from_slice(&wrapped[0..8]);
+        let mut r = wrapped[8..].to_vec(); // n*8 bytes
+
+        for j in (0..6usize).rev() {
+            for i in (1..=n).rev() {
+                let t = (n * j + i) as u64;
+                let a_u64 = u64::from_be_bytes(a);
+                let a_xor = a_u64 ^ t;
+
+                let mut block = [0u8; 16];
+                block[0..8].copy_from_slice(&a_xor.to_be_bytes());
+                let r_off = (i - 1) * 8;
+                block[8..16].copy_from_slice(&r[r_off..r_off + 8]);
+
+                aes128_decrypt_block_in_place(&mut block, &round_keys);
+
+                a.copy_from_slice(&block[0..8]);
+                r[r_off..r_off + 8].copy_from_slice(&block[8..16]);
+            }
+        }
+
+        if a != [0xA6u8; 8] {
+            return Err(WifiError::AuthenticationFailed);
+        }
+
+        Ok(r)
+    }
     
     /// Receive EAPOL Message 1 (ANonce from AP)
-    fn receive_eapol_msg1(&mut self) -> Result<[u8; 32], WifiError> {
-        // In a real implementation, this would:
-        // - Poll RX queue for EAPOL frames
-        // - Parse EAPOL key frame
-        // - Extract ANonce (32 bytes)
-        // For now, return a simulated ANonce
-        let anonce = [0x41u8; 32]; // Simulated ANonce from AP
-        Ok(anonce)
+    fn receive_eapol_msg1(&mut self) -> Result<([u8; 32], u64), WifiError> {
+        let start = crate::pit::get_ticks();
+        let deadline = start.saturating_add(ticks_from_ms(WIFI_EAPOL_TIMEOUT_MS));
+
+        let mut buf = [0u8; 1536];
+        while crate::pit::get_ticks() < deadline {
+            if let Some(len) = self.try_receive_frame(&mut buf)? {
+                let frame = &buf[..len];
+                if !self.is_frame_from_ap_to_station(frame) {
+                    continue;
+                }
+
+                let Some(parsed) = self.parse_eapol_key_frame(frame) else {
+                    continue;
+                };
+
+                // Message 1: Pairwise + ACK (no MIC, no Secure, no Install).
+                if (parsed.key_info & (KI_VERSION_MASK | KI_PAIRWISE | KI_ACK))
+                    != (KI_DESCRIPTOR_V2 | KI_PAIRWISE | KI_ACK)
+                {
+                    continue;
+                }
+                if (parsed.key_info & (KI_MIC | KI_SECURE | KI_INSTALL | KI_ENCRYPTED_DATA | KI_ERROR | KI_REQUEST))
+                    != 0
+                {
+                    continue;
+                }
+
+                let mut anonce = [0u8; 32];
+                anonce.copy_from_slice(&frame[parsed.nonce_offset..parsed.nonce_offset + 32]);
+                return Ok((anonce, parsed.replay_counter));
+            }
+            core::hint::spin_loop();
+        }
+
+        Err(WifiError::Timeout)
     }
     
     /// Generate nonce (SNonce) using secure random
@@ -1233,436 +1585,278 @@ impl WifiDriver {
     }
     
     /// Send EAPOL Message 2 (SNonce + MIC)
-    fn send_eapol_msg2(&mut self, snonce: &[u8; 32], ptk: &[u8; 64]) -> Result<(), WifiError> {
+    fn send_eapol_msg2(
+        &mut self,
+        snonce: &[u8; 32],
+        ptk: &[u8; 64],
+        replay_counter: u64,
+    ) -> Result<(), WifiError> {
         // EAPOL Message 2 structure:
         // - 802.11 data frame header
-        // - LLC header
+        // - LLC/SNAP header (EAPOL ethertype)
         // - EAPOL header
         // - Key descriptor (contains SNonce and MIC)
-        
+
         let mut frame = [0u8; 256];
         let mut pos = 0;
-        
-        // 802.11 Data frame header
-        frame[pos] = 0x08; // Data frame
-        frame[pos + 1] = 0x02; // To AP
+
+        // 802.11 Data frame header (24 bytes)
+        frame[pos] = 0x08; // Data
+        frame[pos + 1] = 0x02; // To DS (STA -> AP)
         pos += 2;
-        
+
         // Duration
-        frame[pos] = 0x00;
-        frame[pos + 1] = 0x00;
+        frame[pos..pos + 2].copy_from_slice(&0u16.to_le_bytes());
         pos += 2;
-        
-        // Destination: AP BSSID
+
+        // Addr1 = BSSID (AP), Addr2 = STA (us), Addr3 = DA (AP/BSSID for EAPOL)
         frame[pos..pos + 6].copy_from_slice(&self.connection.network.bssid);
         pos += 6;
-        
-        // Source: our MAC
         frame[pos..pos + 6].copy_from_slice(&self.mac_address);
         pos += 6;
-        
-        // BSSID
         frame[pos..pos + 6].copy_from_slice(&self.connection.network.bssid);
         pos += 6;
-        
+
         // Sequence control
-        frame[pos] = 0x00;
-        frame[pos + 1] = 0x00;
+        frame[pos..pos + 2].copy_from_slice(&0u16.to_le_bytes());
         pos += 2;
-        
-        // LLC header (802.2)
-        frame[pos] = 0xAA; // DSAP
-        frame[pos + 1] = 0xAA; // SSAP
-        frame[pos + 2] = 0x03; // Control
-        frame[pos + 3] = 0x00; // OUI
-        frame[pos + 4] = 0x00;
-        frame[pos + 5] = 0x00;
-        frame[pos + 6] = 0x88; // EtherType: EAPOL (0x888E)
-        frame[pos + 7] = 0x8E;
-        pos += 8;
-        
-        // EAPOL header
-        frame[pos] = 0x02; // Version 2 (WPA2)
-        frame[pos + 1] = 0x03; // Packet type: Key
-        frame[pos + 2] = 0x00; // Length (high)
-        frame[pos + 3] = 0x5F; // Length (low) = 95 bytes
+
+        // LLC/SNAP (EAPOL ethertype)
+        frame[pos..pos + LLC_SNAP_EAPOL.len()].copy_from_slice(&LLC_SNAP_EAPOL);
+        pos += LLC_SNAP_EAPOL.len();
+
+        let eapol_start = pos;
+
+        // EAPOL header (version, type, length filled later)
+        frame[pos] = 0x02;
+        frame[pos + 1] = 0x03; // Key
+        frame[pos + 2] = 0x00;
+        frame[pos + 3] = 0x00;
         pos += 4;
-        
-        // Key descriptor
-        frame[pos] = 0x02; // Descriptor type: EAPOL-Key (RSN)
+
+        // Key descriptor type: RSN (WPA2)
+        frame[pos] = 0x02;
         pos += 1;
-        
-        // Key information
-        frame[pos] = 0x01; // Key MIC flag
-        frame[pos + 1] = 0x0A; // Pairwise, Install, Ack
+
+        // Key information (big-endian): descriptor v2 + pairwise + MIC
+        let key_info = KI_DESCRIPTOR_V2 | KI_PAIRWISE | KI_MIC;
+        frame[pos..pos + 2].copy_from_slice(&key_info.to_be_bytes());
         pos += 2;
-        
-        // Key length
-        frame[pos] = 0x00;
-        frame[pos + 1] = 0x00;
+
+        // Key length (CCMP = 16)
+        frame[pos..pos + 2].copy_from_slice(&(16u16).to_be_bytes());
         pos += 2;
-        
-        // Replay counter (8 bytes)
-        for _ in 0..8 {
-            frame[pos] = 0x00;
-            pos += 1;
-        }
-        
-        // Key nonce (SNonce - 32 bytes)
+
+        // Replay counter (must match message 1)
+        frame[pos..pos + 8].copy_from_slice(&replay_counter.to_be_bytes());
+        pos += 8;
+
+        // Key nonce (SNonce)
         frame[pos..pos + 32].copy_from_slice(snonce);
         pos += 32;
-        
-        // Key IV (16 bytes - zeroed for Message 2)
-        for _ in 0..16 {
-            frame[pos] = 0x00;
-            pos += 1;
-        }
-        
-        // Key RSC (8 bytes - zeroed)
-        for _ in 0..8 {
-            frame[pos] = 0x00;
-            pos += 1;
-        }
-        
-        // Reserved (8 bytes)
-        for _ in 0..8 {
-            frame[pos] = 0x00;
-            pos += 1;
-        }
-        
-        // Key MIC (16 bytes) - computed using KCK (first 16 bytes of PTK)
-        let kck = &ptk[0..16]; // Key Confirmation Key
+
+        // Key IV (16 bytes) - zero
+        frame[pos..pos + 16].fill(0);
+        pos += 16;
+
+        // Key RSC (8 bytes) - zero
+        frame[pos..pos + 8].fill(0);
+        pos += 8;
+
+        // Key ID / Reserved (8 bytes) - zero
+        frame[pos..pos + 8].fill(0);
+        pos += 8;
+
+        // Key MIC (16 bytes) - computed using KCK (PTK[0..16])
+        let kck = &ptk[0..16];
         let mic_start = pos;
-        for _ in 0..16 {
-            frame[pos] = 0x00; // Placeholder
-            pos += 1;
-        }
-        
-        // Compute MIC over the entire EAPOL frame (with MIC field zeroed)
-        let eapol_start = 30; // Start of EAPOL header in frame
+        frame[pos..pos + 16].fill(0);
+        pos += 16;
+
+        // Key data length (2 bytes) - none for Message 2 in this profile
+        let key_data_len = 0u16;
+        frame[pos..pos + 2].copy_from_slice(&key_data_len.to_be_bytes());
+        pos += 2;
+
+        // Fill EAPOL length (payload length excluding the 4-byte EAPOL header)
+        let eapol_payload_len = 95usize + key_data_len as usize;
+        frame[eapol_start + 2..eapol_start + 4]
+            .copy_from_slice(&(eapol_payload_len as u16).to_be_bytes());
+
+        // Compute MIC over the EAPOL header + payload with MIC field zeroed.
         let mut mic = [0u8; 20];
         self.hmac_sha1(kck, &frame[eapol_start..pos], &mut mic);
         frame[mic_start..mic_start + 16].copy_from_slice(&mic[..16]);
-        
-        // Key data length (2 bytes)
-        frame[pos] = 0x00;
-        frame[pos + 1] = 0x00;
-        pos += 2;
-        
-        let frame_len = pos;
-        
-        // Transmit EAPOL Message 2
-        self.transmit_data_frame(&frame[..frame_len])?;
-        
+
+        self.transmit_data_frame(&frame[..pos])?;
         Ok(())
     }
     
     /// Receive EAPOL Message 3 (GTK from AP)
-    fn receive_eapol_msg3(&mut self, ptk: &[u8; 64]) -> Result<[u8; 32], WifiError> {
-        // Full EAPOL Message 3 reception and parsing
-        let mut frame = [0u8; 512];
-        let frame_len = self.receive_data_frame(&mut frame)?;
-        
-        if frame_len < 30 + 4 + 95 {
-            return Err(WifiError::AuthenticationFailed);
-        }
-        
-        // Parse 802.11 data frame header (30 bytes)
-        let eapol_start = 30;
-        
-        // Verify EAPOL header
-        if frame[eapol_start] != 0x02 || frame[eapol_start + 1] != 0x03 {
-            return Err(WifiError::AuthenticationFailed);
-        }
-        
-        // Extract EAPOL key descriptor
-        let key_desc_start = eapol_start + 4;
-        
-        // Verify this is Message 3 (Key Info has Install + Ack + MIC + Secure + Encrypted)
-        let key_info = u16::from_be_bytes([frame[key_desc_start + 1], frame[key_desc_start + 2]]);
-        if (key_info & 0x13C8) != 0x13C8 {
-            return Err(WifiError::AuthenticationFailed);
-        }
-        
-        // Extract MIC from frame (at offset key_desc_start + 77)
-        let mic_offset = key_desc_start + 77;
-        let received_mic = &frame[mic_offset..mic_offset + 16];
-        
-        // Verify MIC using KCK (first 16 bytes of PTK)
+    fn receive_eapol_msg3(
+        &mut self,
+        ptk: &[u8; 64],
+        expected_replay_counter: u64,
+        expected_anonce: &[u8; 32],
+    ) -> Result<([u8; 32], u64), WifiError> {
+        let start = crate::pit::get_ticks();
+        let deadline = start.saturating_add(ticks_from_ms(WIFI_EAPOL_TIMEOUT_MS));
+
         let kck = &ptk[0..16];
-        
-        // Zero out MIC field for verification
-        let mut frame_copy = [0u8; 512];
-        frame_copy[..frame_len].copy_from_slice(&frame[..frame_len]);
-        for i in 0..16 {
-            frame_copy[mic_offset + i] = 0x00;
-        }
-        
-        // Compute expected MIC
-        let mut computed_mic = [0u8; 20];
-        self.hmac_sha1(kck, &frame_copy[eapol_start..frame_len], &mut computed_mic);
-        
-        // Compare MICs (first 16 bytes)
-        for i in 0..16 {
-            if received_mic[i] != computed_mic[i] {
-                crate::vga::print_str("[WiFi] MIC verification failed!\n");
-                return Err(WifiError::AuthenticationFailed);
-            }
-        }
-        
-        crate::vga::print_str("[WiFi] MIC verified successfully\n");
-        
-        // Extract encrypted GTK from key data
-        // Key data starts at key_desc_start + 97
-        let key_data_len_offset = key_desc_start + 95;
-        let key_data_len = u16::from_be_bytes([
-            frame[key_data_len_offset],
-            frame[key_data_len_offset + 1]
-        ]) as usize;
-        
-        if key_data_len < 8 {
-            return Err(WifiError::AuthenticationFailed);
-        }
-        
-        let key_data_start = key_desc_start + 97;
-        
-        // Parse GTK KDE (Key Data Encapsulation)
-        // Format: Type (0xDD) | Length | OUI (00-0F-AC) | Data Type (01 for GTK) | KeyID | GTK
-        let mut gtk = [0u8; 32];
-        let mut pos = 0;
-        
-        while pos + 2 <= key_data_len {
-            let kde_type = frame[key_data_start + pos];
-            let kde_len = frame[key_data_start + pos + 1] as usize;
-            
-            if kde_type == 0xDD && kde_len >= 6 {
-                // Check for GTK KDE (OUI 00-0F-AC, type 01)
-                let oui_check = frame[key_data_start + pos + 2] == 0x00
-                    && frame[key_data_start + pos + 3] == 0x0F
-                    && frame[key_data_start + pos + 4] == 0xAC
-                    && frame[key_data_start + pos + 5] == 0x01;
-                    
-                if oui_check {
-                    // Extract encrypted GTK (after KeyID byte)
-                    let gtk_offset = pos + 8;
-                    let gtk_len = (kde_len - 6).min(32);
-                    
-                    if key_data_start + gtk_offset + gtk_len <= frame_len {
-                        // Decrypt GTK using KEK (bytes 16-31 of PTK)
-                        let kek = &ptk[16..32];
-                        
-                        // GTK is encrypted using AES Key Wrap (RFC 3394)
-                        // For simplicity, we'll do a direct AES-128 ECB decrypt
-                        // In production, use proper AES Key Wrap algorithm
-                        let encrypted_gtk = &frame[key_data_start + gtk_offset..key_data_start + gtk_offset + gtk_len];
-                        
-                        // Decrypt using AES-NI if available
-                        // Enhanced with CPU feature detection and cryptographic validation
-                        
-                        // Validate KEK length (must be exactly 16 bytes for AES-128)
-                        if kek.len() != 16 {
-                            crate::vga::print_str("[WiFi] ERROR: Invalid KEK length\n");
-                            return Err(WifiError::AuthenticationFailed);
-                        }
-                        
-                        for i in (0..gtk_len).step_by(16) {
-                            let block_len = 16.min(gtk_len - i);
-                            if block_len == 16 {
-                                // Use AES-NI for hardware-accelerated decryption
-                                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                                {
-                                    use crate::memopt_asm::AesNi;
-                                    
-                                    // Verify AES-NI support via CPUID (bit 25 of ECX in CPUID.01H)
-                                    let has_aesni: u8;
-                                    unsafe {
-                                        core::arch::asm!(
-                                            "push ebx",      // Save EBX (callee-saved)
-                                            "push edx",      // Save EDX
-                                            "mov eax, 1",
-                                            "cpuid",
-                                            "bt ecx, 25",
-                                            "setc {0}",
-                                            "pop edx",       // Restore EDX
-                                            "pop ebx",       // Restore EBX
-                                            out(reg_byte) has_aesni,
-                                            lateout("eax") _,
-                                            lateout("ecx") _,
-                                            options(preserves_flags)
-                                        );
-                                    }
-                                    
-                                    if has_aesni == 0 {
-                                        crate::vga::print_str("[WiFi] WARNING: AES-NI not supported, using fallback\n");
-                                    } else {
-                                        crate::vga::print_str("[WiFi] Using hardware AES-NI for GTK decryption\n");
-                                    }
-                                    
-                                    let mut input_block = [0u8; 16];
-                                    let mut output_block = [0u8; 16];
-                                    input_block.copy_from_slice(&encrypted_gtk[i..i+16]);
-                                    
-                                    // Perform AES-128 decryption (10 rounds for 128-bit key)
-                                    AesNi::decrypt_block(&mut output_block, &input_block, kek, 10);
-                                    
-                                    gtk[i..i+16].copy_from_slice(&output_block);
-                                    
-                                    // Constant-time operation complete - no timing information leaked
-                                    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-                                }
-                                
-                                #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-                                {
-                                    // Fallback: simple XOR (not secure, for compilation only)
-                                    for j in 0..block_len {
-                                        gtk[i + j] = encrypted_gtk[i + j] ^ kek[j % 16];
-                                    }
-                                }
-                            } else {
-                                // Handle partial block
-                                for j in 0..block_len {
-                                    gtk[i + j] = encrypted_gtk[i + j] ^ kek[j % 16];
-                                }
-                            }
-                        }
-                        
-                        crate::vga::print_str("[WiFi] GTK decrypted successfully\n");
-                        return Ok(gtk);
-                    }
+        let mut kek = [0u8; 16];
+        kek.copy_from_slice(&ptk[16..32]);
+
+        let mut buf = [0u8; 1536];
+        while crate::pit::get_ticks() < deadline {
+            if let Some(len) = self.try_receive_frame(&mut buf)? {
+                let frame = &buf[..len];
+                if !self.is_frame_from_ap_to_station(frame) {
+                    continue;
                 }
+
+                let Some(parsed) = self.parse_eapol_key_frame(frame) else {
+                    continue;
+                };
+
+                // Message 3: Pairwise + ACK + MIC + Secure + Encrypted (Install often set).
+                let required =
+                    KI_DESCRIPTOR_V2 | KI_PAIRWISE | KI_ACK | KI_MIC | KI_SECURE | KI_ENCRYPTED_DATA;
+                let required_mask = KI_VERSION_MASK | KI_PAIRWISE | KI_ACK | KI_MIC | KI_SECURE | KI_ENCRYPTED_DATA;
+                if (parsed.key_info & required_mask) != required {
+                    continue;
+                }
+                if (parsed.key_info & (KI_ERROR | KI_REQUEST)) != 0 {
+                    continue;
+                }
+
+                if parsed.replay_counter != expected_replay_counter {
+                    continue;
+                }
+
+                // ANonce must match message 1.
+                if &frame[parsed.nonce_offset..parsed.nonce_offset + 32] != expected_anonce {
+                    continue;
+                }
+
+                self.verify_eapol_mic(frame, &parsed, kck)?;
+
+                let key_data_cipher =
+                    &frame[parsed.key_data_offset..parsed.key_data_offset + parsed.key_data_len];
+                let key_data_plain = if (parsed.key_info & KI_ENCRYPTED_DATA) != 0 {
+                    self.aes_key_unwrap(&kek, key_data_cipher)?
+                } else {
+                    key_data_cipher.to_vec()
+                };
+
+                let gtk = self.extract_gtk_from_key_data(&key_data_plain)?;
+                return Ok((gtk, parsed.replay_counter));
             }
-            
-            pos += 2 + kde_len;
+            core::hint::spin_loop();
         }
-        
-        Err(WifiError::AuthenticationFailed)
+
+        Err(WifiError::Timeout)
     }
     
     /// Send EAPOL Message 4 (ACK)
-    fn send_eapol_msg4(&mut self, ptk: &[u8; 64]) -> Result<(), WifiError> {
-        // Complete EAPOL Message 4 construction
+    fn send_eapol_msg4(&mut self, ptk: &[u8; 64], replay_counter: u64) -> Result<(), WifiError> {
+        // EAPOL Message 4 structure:
+        // - 802.11 data frame header
+        // - LLC/SNAP header (EAPOL ethertype)
+        // - EAPOL header
+        // - Key descriptor (no key data, MIC set)
+
         let mut frame = [0u8; 256];
         let mut pos = 0;
-        
-        // 802.11 Data frame header
-        frame[pos] = 0x08; // Data frame
-        frame[pos + 1] = 0x02; // To AP
+
+        // 802.11 Data frame header (24 bytes)
+        frame[pos] = 0x08; // Data
+        frame[pos + 1] = 0x02; // To DS (STA -> AP)
         pos += 2;
-        
+
         // Duration
-        frame[pos] = 0x00;
-        frame[pos + 1] = 0x00;
+        frame[pos..pos + 2].copy_from_slice(&0u16.to_le_bytes());
         pos += 2;
-        
-        // Destination: AP BSSID
+
+        // Addr1 = BSSID (AP), Addr2 = STA (us), Addr3 = DA (AP/BSSID for EAPOL)
         frame[pos..pos + 6].copy_from_slice(&self.connection.network.bssid);
         pos += 6;
-        
-        // Source: our MAC
         frame[pos..pos + 6].copy_from_slice(&self.mac_address);
         pos += 6;
-        
-        // BSSID
         frame[pos..pos + 6].copy_from_slice(&self.connection.network.bssid);
         pos += 6;
-        
+
         // Sequence control
-        frame[pos] = 0x00;
-        frame[pos + 1] = 0x00;
+        frame[pos..pos + 2].copy_from_slice(&0u16.to_le_bytes());
         pos += 2;
-        
-        // LLC header (802.2)
-        frame[pos] = 0xAA; // DSAP
-        frame[pos + 1] = 0xAA; // SSAP
-        frame[pos + 2] = 0x03; // Control
-        frame[pos + 3] = 0x00; // OUI
-        frame[pos + 4] = 0x00;
-        frame[pos + 5] = 0x00;
-        frame[pos + 6] = 0x88; // EtherType: EAPOL (0x888E)
-        frame[pos + 7] = 0x8E;
-        pos += 8;
-        
+
+        // LLC/SNAP (EAPOL ethertype)
+        frame[pos..pos + LLC_SNAP_EAPOL.len()].copy_from_slice(&LLC_SNAP_EAPOL);
+        pos += LLC_SNAP_EAPOL.len();
+
         let eapol_start = pos;
-        
-        // EAPOL header
-        frame[pos] = 0x02; // Version 2 (WPA2)
-        frame[pos + 1] = 0x03; // Packet type: Key
-        frame[pos + 2] = 0x00; // Length (high)
-        frame[pos + 3] = 0x5F; // Length (low) = 95 bytes
+
+        // EAPOL header (version, type, length filled later)
+        frame[pos] = 0x02;
+        frame[pos + 1] = 0x03; // Key
+        frame[pos + 2] = 0x00;
+        frame[pos + 3] = 0x00;
         pos += 4;
-        
-        // Key descriptor
-        frame[pos] = 0x02; // Descriptor type: EAPOL-Key (RSN)
+
+        // Key descriptor type: RSN (WPA2)
+        frame[pos] = 0x02;
         pos += 1;
-        
-        // Key information: MIC | Secure (no Install, no Ack for Message 4)
-        frame[pos] = 0x01; // Key MIC flag
-        frame[pos + 1] = 0x03; // Pairwise, Secure
+
+        // Key information (big-endian): descriptor v2 + pairwise + MIC + secure
+        let key_info = KI_DESCRIPTOR_V2 | KI_PAIRWISE | KI_MIC | KI_SECURE;
+        frame[pos..pos + 2].copy_from_slice(&key_info.to_be_bytes());
         pos += 2;
-        
-        // Key length
-        frame[pos] = 0x00;
-        frame[pos + 1] = 0x00;
+
+        // Key length (unused for message 4)
+        frame[pos..pos + 2].copy_from_slice(&0u16.to_be_bytes());
         pos += 2;
-        
-        // Replay counter (8 bytes) - must match Message 3's replay counter
-        // In production, extract from Message 3 and increment
-        for i in 0..8 {
-            frame[pos + i] = 0x00;
-        }
+
+        // Replay counter (must match message 3)
+        frame[pos..pos + 8].copy_from_slice(&replay_counter.to_be_bytes());
         pos += 8;
-        
-        // Key nonce (32 bytes - all zeros for Message 4)
-        for _ in 0..32 {
-            frame[pos] = 0x00;
-            pos += 1;
-        }
-        
-        // Key IV (16 bytes - zeroed)
-        for _ in 0..16 {
-            frame[pos] = 0x00;
-            pos += 1;
-        }
-        
-        // Key RSC (8 bytes - zeroed)
-        for _ in 0..8 {
-            frame[pos] = 0x00;
-            pos += 1;
-        }
-        
-        // Reserved (8 bytes)
-        for _ in 0..8 {
-            frame[pos] = 0x00;
-            pos += 1;
-        }
-        
-        // Key MIC (16 bytes) - computed using KCK
-        let kck = &ptk[0..16]; // Key Confirmation Key
+
+        // Key nonce (32 bytes) - zero
+        frame[pos..pos + 32].fill(0);
+        pos += 32;
+
+        // Key IV (16 bytes) - zero
+        frame[pos..pos + 16].fill(0);
+        pos += 16;
+
+        // Key RSC (8 bytes) - zero
+        frame[pos..pos + 8].fill(0);
+        pos += 8;
+
+        // Key ID / Reserved (8 bytes) - zero
+        frame[pos..pos + 8].fill(0);
+        pos += 8;
+
+        // Key MIC (16 bytes) - computed using KCK (PTK[0..16])
+        let kck = &ptk[0..16];
         let mic_start = pos;
-        for _ in 0..16 {
-            frame[pos] = 0x00; // Placeholder for MIC
-            pos += 1;
-        }
-        
-        // Key data length (2 bytes) - no key data in Message 4
-        frame[pos] = 0x00;
-        frame[pos + 1] = 0x00;
+        frame[pos..pos + 16].fill(0);
+        pos += 16;
+
+        // Key data length (2 bytes) - none for message 4
+        let key_data_len = 0u16;
+        frame[pos..pos + 2].copy_from_slice(&key_data_len.to_be_bytes());
         pos += 2;
-        
-        let frame_len = pos;
-        
-        // Compute MIC over entire EAPOL frame (with MIC field zeroed)
+
+        // Fill EAPOL length (payload length excluding the 4-byte EAPOL header)
+        let eapol_payload_len = 95usize + key_data_len as usize;
+        frame[eapol_start + 2..eapol_start + 4]
+            .copy_from_slice(&(eapol_payload_len as u16).to_be_bytes());
+
+        // Compute MIC over the EAPOL header + payload with MIC field zeroed.
         let mut mic = [0u8; 20];
-        self.hmac_sha1(kck, &frame[eapol_start..frame_len], &mut mic);
-        
-        // Write MIC into frame
+        self.hmac_sha1(kck, &frame[eapol_start..pos], &mut mic);
         frame[mic_start..mic_start + 16].copy_from_slice(&mic[..16]);
-        
-        crate::vga::print_str("[WiFi] Message 4 constructed with MIC\n");
-        
-        // Transmit EAPOL Message 4
-        self.transmit_data_frame(&frame[..frame_len])?;
-        
+
+        self.transmit_data_frame(&frame[..pos])?;
         Ok(())
     }
     
@@ -1818,8 +2012,101 @@ impl WifiDriver {
     
     /// Wait for association response
     fn wait_for_association_response(&mut self) -> Result<(), WifiError> {
-        // In a real implementation, poll for and parse association response
-        Ok(())
+        let start = crate::pit::get_ticks();
+        let deadline = start.saturating_add(ticks_from_ms(WIFI_ASSOC_TIMEOUT_MS));
+
+        let mut buf = [0u8; 512];
+        while crate::pit::get_ticks() < deadline {
+            if let Some(len) = self.try_receive_frame(&mut buf)? {
+                if self.is_association_response_frame(&buf[..len])? {
+                    return Ok(());
+                }
+            }
+            core::hint::spin_loop();
+        }
+
+        Err(WifiError::Timeout)
+    }
+
+    fn is_association_response_frame(&self, frame: &[u8]) -> Result<bool, WifiError> {
+        if frame.len() < 24 + 6 {
+            return Ok(false);
+        }
+
+        let fc = u16::from_le_bytes([frame[0], frame[1]]);
+        let frame_type = (fc >> 2) & 0x3;
+        let subtype = (fc >> 4) & 0xF;
+
+        // Management / Association Response (subtype 0x01)
+        if frame_type != 0 || subtype != 0x01 {
+            return Ok(false);
+        }
+
+        // Addressing checks: to STA (addr1) from AP (addr2)
+        let addr1 = &frame[4..10];
+        let addr2 = &frame[10..16];
+        if addr1 != &self.mac_address || addr2 != &self.connection.network.bssid {
+            return Ok(false);
+        }
+
+        let body = &frame[24..];
+        let _capability = u16::from_le_bytes([body[0], body[1]]);
+        let status = u16::from_le_bytes([body[2], body[3]]);
+        let _aid = u16::from_le_bytes([body[4], body[5]]);
+
+        if status != 0 {
+            return Err(WifiError::AssociationFailed);
+        }
+
+        Ok(true)
+    }
+
+    fn set_channel(&mut self, channel: u8) -> Result<(), WifiError> {
+        if let Some(device) = self.pci_device {
+            let bar0 = unsafe { device.read_bar(0) };
+            if bar0 != 0 {
+                unsafe {
+                    let base_addr = bar0 as *mut u32;
+                    // Channel control register (device-specific; matches existing scan path)
+                    core::ptr::write_volatile(base_addr.add(0x100 / 4), channel as u32);
+                }
+                return Ok(());
+            }
+        }
+        Err(WifiError::HardwareError)
+    }
+
+    fn try_receive_frame(&mut self, buffer: &mut [u8]) -> Result<Option<usize>, WifiError> {
+        if let Some(device) = self.pci_device {
+            unsafe {
+                let bar0 = device.read_bar(0);
+                if bar0 != 0 {
+                    let base_addr = bar0 as *mut u32;
+                    let rx_status = core::ptr::read_volatile(base_addr.add(0x300 / 4));
+                    if (rx_status & 0x01) == 0 {
+                        return Ok(None);
+                    }
+
+                    let frame_len =
+                        (core::ptr::read_volatile(base_addr.add(0x304 / 4)) & 0xFFFF) as usize;
+                    if frame_len == 0 || frame_len > buffer.len() {
+                        // Acknowledge and treat as hardware error.
+                        core::ptr::write_volatile(base_addr.add(0x300 / 4), 0x01);
+                        return Err(WifiError::HardwareError);
+                    }
+
+                    let rx_buffer = (bar0 as usize + 0x2000) as *const u8;
+                    for i in 0..frame_len {
+                        buffer[i] = core::ptr::read_volatile(rx_buffer.add(i));
+                    }
+
+                    // Acknowledge frame received
+                    core::ptr::write_volatile(base_addr.add(0x300 / 4), 0x01);
+                    return Ok(Some(frame_len));
+                }
+            }
+        }
+        Err(WifiError::HardwareError)
     }
     
     /// Transmit management frame
@@ -2011,9 +2298,23 @@ impl WifiDriver {
 
     /// Generate MAC address (from hardware or simulated)
     fn generate_mac_address(&self) -> [u8; 6] {
-        // In production, read from EEPROM/OTP
-        // For v1, generate locally-administered MAC
-        [0x02, 0x00, 0x00, 0xAB, 0xCD, 0xEF]
+        // If we don't have chipset-specific EEPROM/OTP plumbing yet, generate a
+        // locally administered unicast MAC address.
+        let mut mac = [0u8; 6];
+
+        #[cfg(target_arch = "x86")]
+        let seed = unsafe { core::arch::x86::_rdtsc() as u64 };
+        #[cfg(target_arch = "x86_64")]
+        let seed = unsafe { core::arch::x86_64::_rdtsc() as u64 };
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        let seed = 0xC0DEC0DE12345678u64;
+
+        let mut rng = crate::security::SecureRandom::new(seed);
+        rng.fill_bytes(&mut mac);
+
+        // Clear multicast bit; set locally administered bit.
+        mac[0] = (mac[0] & 0xFE) | 0x02;
+        mac
     }
 
     /// Print MAC address
@@ -2219,8 +2520,8 @@ pub fn temporal_apply_wifi_driver_payload(payload: &[u8]) -> Result<(), &'static
     }
     let pci_present = payload[4] != 0;
     let enabled = payload[5] != 0;
-    let state = temporal_wifi_state_from_u8(payload[6]).ok_or("temporal wifi state invalid")?;
-    let ip_assigned = payload[7] != 0;
+    let _state = temporal_wifi_state_from_u8(payload[6]).ok_or("temporal wifi state invalid")?;
+    let _ip_assigned = payload[7] != 0;
     let mut mac_address = [0u8; 6];
     mac_address.copy_from_slice(&payload[8..14]);
     let scan_count =
@@ -2249,17 +2550,219 @@ pub fn temporal_apply_wifi_driver_payload(payload: &[u8]) -> Result<(), &'static
     }
 
     let mut wifi = WIFI.lock();
-    wifi.pci_device = pci_device;
+    // Never trust persisted PCI BARs/interrupts across reboot. Treat them as a hint only.
+    let _ = pci_device;
+    wifi.pci_device = None;
     wifi.enabled = enabled;
     wifi.connection = WifiConnection {
-        state,
+        // Hardware sessions cannot be time-traveled. Preserve intent/config, not link state.
+        state: if enabled { WifiState::Idle } else { WifiState::Disabled },
         network: connection_network,
-        ip_assigned,
+        ip_assigned: false,
     };
     wifi.scan_results = scan_results;
     wifi.scan_count = scan_count;
     wifi.mac_address = mac_address;
+
+    // Best-effort hardware restore: if state said we previously had a device, attempt re-detect.
+    // Failure should not abort temporal restore (control-plane state remains valid).
+    if enabled && pci_present {
+        drop(wifi);
+        let mut scanner = crate::pci::PciScanner::new();
+        scanner.scan();
+        if let Some(device) = scanner.find_wifi_device() {
+            let _ = init(device);
+        }
+    }
     Ok(())
+}
+
+// ============================================================================
+// AES-128 (Software) + RFC 3394 Key Unwrap
+// ============================================================================
+
+const AES128_ROUNDS: usize = 10;
+const AES128_EXPANDED_KEY_BYTES: usize = 16 * (AES128_ROUNDS + 1);
+
+// AES S-box (FIPS-197)
+const AES_SBOX: [u8; 256] = [
+    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7,
+    0xab, 0x76, 0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf,
+    0x9c, 0xa4, 0x72, 0xc0, 0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5,
+    0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15, 0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a,
+    0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75, 0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e,
+    0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84, 0x53, 0xd1, 0x00, 0xed,
+    0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf, 0xd0, 0xef,
+    0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff,
+    0xf3, 0xd2, 0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d,
+    0x64, 0x5d, 0x19, 0x73, 0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee,
+    0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb, 0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c,
+    0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79, 0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5,
+    0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08, 0xba, 0x78, 0x25, 0x2e,
+    0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a, 0x70, 0x3e,
+    0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55,
+    0x28, 0xdf, 0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f,
+    0xb0, 0x54, 0xbb, 0x16,
+];
+
+// AES inverse S-box (FIPS-197)
+const AES_INV_SBOX: [u8; 256] = [
+    0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3,
+    0xd7, 0xfb, 0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44,
+    0xc4, 0xde, 0xe9, 0xcb, 0x54, 0x7b, 0x94, 0x32, 0xa6, 0xc2, 0x23, 0x3d, 0xee, 0x4c,
+    0x95, 0x0b, 0x42, 0xfa, 0xc3, 0x4e, 0x08, 0x2e, 0xa1, 0x66, 0x28, 0xd9, 0x24, 0xb2,
+    0x76, 0x5b, 0xa2, 0x49, 0x6d, 0x8b, 0xd1, 0x25, 0x72, 0xf8, 0xf6, 0x64, 0x86, 0x68,
+    0x98, 0x16, 0xd4, 0xa4, 0x5c, 0xcc, 0x5d, 0x65, 0xb6, 0x92, 0x6c, 0x70, 0x48, 0x50,
+    0xfd, 0xed, 0xb9, 0xda, 0x5e, 0x15, 0x46, 0x57, 0xa7, 0x8d, 0x9d, 0x84, 0x90, 0xd8,
+    0xab, 0x00, 0x8c, 0xbc, 0xd3, 0x0a, 0xf7, 0xe4, 0x58, 0x05, 0xb8, 0xb3, 0x45, 0x06,
+    0xd0, 0x2c, 0x1e, 0x8f, 0xca, 0x3f, 0x0f, 0x02, 0xc1, 0xaf, 0xbd, 0x03, 0x01, 0x13,
+    0x8a, 0x6b, 0x3a, 0x91, 0x11, 0x41, 0x4f, 0x67, 0xdc, 0xea, 0x97, 0xf2, 0xcf, 0xce,
+    0xf0, 0xb4, 0xe6, 0x73, 0x96, 0xac, 0x74, 0x22, 0xe7, 0xad, 0x35, 0x85, 0xe2, 0xf9,
+    0x37, 0xe8, 0x1c, 0x75, 0xdf, 0x6e, 0x47, 0xf1, 0x1a, 0x71, 0x1d, 0x29, 0xc5, 0x89,
+    0x6f, 0xb7, 0x62, 0x0e, 0xaa, 0x18, 0xbe, 0x1b, 0xfc, 0x56, 0x3e, 0x4b, 0xc6, 0xd2,
+    0x79, 0x20, 0x9a, 0xdb, 0xc0, 0xfe, 0x78, 0xcd, 0x5a, 0xf4, 0x1f, 0xdd, 0xa8, 0x33,
+    0x88, 0x07, 0xc7, 0x31, 0xb1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xec, 0x5f, 0x60, 0x51,
+    0x7f, 0xa9, 0x19, 0xb5, 0x4a, 0x0d, 0x2d, 0xe5, 0x7a, 0x9f, 0x93, 0xc9, 0x9c, 0xef,
+    0xa0, 0xe0, 0x3b, 0x4d, 0xae, 0x2a, 0xf5, 0xb0, 0xc8, 0xeb, 0xbb, 0x3c, 0x83, 0x53,
+    0x99, 0x61, 0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63,
+    0x55, 0x21, 0x0c, 0x7d,
+];
+
+const AES_RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36];
+
+fn aes128_expand_key(key: &[u8; 16]) -> [u8; AES128_EXPANDED_KEY_BYTES] {
+    let mut expanded = [0u8; AES128_EXPANDED_KEY_BYTES];
+    expanded[..16].copy_from_slice(key);
+
+    let mut bytes_generated = 16usize;
+    let mut rcon_idx = 0usize;
+    let mut temp = [0u8; 4];
+
+    while bytes_generated < AES128_EXPANDED_KEY_BYTES {
+        temp.copy_from_slice(&expanded[bytes_generated - 4..bytes_generated]);
+
+        if (bytes_generated % 16) == 0 {
+            // RotWord
+            let t0 = temp[0];
+            temp[0] = temp[1];
+            temp[1] = temp[2];
+            temp[2] = temp[3];
+            temp[3] = t0;
+
+            // SubWord
+            for b in temp.iter_mut() {
+                *b = AES_SBOX[*b as usize];
+            }
+
+            // Rcon
+            temp[0] ^= AES_RCON[rcon_idx];
+            rcon_idx += 1;
+        }
+
+        for i in 0..4 {
+            expanded[bytes_generated] = expanded[bytes_generated - 16] ^ temp[i];
+            bytes_generated += 1;
+        }
+    }
+
+    expanded
+}
+
+#[inline]
+fn gf_mul(mut a: u8, mut b: u8) -> u8 {
+    let mut p = 0u8;
+    for _ in 0..8 {
+        if (b & 1) != 0 {
+            p ^= a;
+        }
+        let hi = a & 0x80;
+        a <<= 1;
+        if hi != 0 {
+            a ^= 0x1B;
+        }
+        b >>= 1;
+    }
+    p
+}
+
+#[inline]
+fn aes_add_round_key(state: &mut [u8; 16], round_keys: &[u8; AES128_EXPANDED_KEY_BYTES], round: usize) {
+    let start = round * 16;
+    for i in 0..16 {
+        state[i] ^= round_keys[start + i];
+    }
+}
+
+#[inline]
+fn aes_inv_sub_bytes(state: &mut [u8; 16]) {
+    for b in state.iter_mut() {
+        *b = AES_INV_SBOX[*b as usize];
+    }
+}
+
+#[inline]
+fn aes_inv_shift_rows(state: &mut [u8; 16]) {
+    let tmp = *state;
+
+    // Row 0 (no shift)
+    state[0] = tmp[0];
+    state[4] = tmp[4];
+    state[8] = tmp[8];
+    state[12] = tmp[12];
+
+    // Row 1 (shift right 1)
+    state[1] = tmp[13];
+    state[5] = tmp[1];
+    state[9] = tmp[5];
+    state[13] = tmp[9];
+
+    // Row 2 (shift right 2)
+    state[2] = tmp[10];
+    state[6] = tmp[14];
+    state[10] = tmp[2];
+    state[14] = tmp[6];
+
+    // Row 3 (shift right 3)
+    state[3] = tmp[7];
+    state[7] = tmp[11];
+    state[11] = tmp[15];
+    state[15] = tmp[3];
+}
+
+#[inline]
+fn aes_inv_mix_columns(state: &mut [u8; 16]) {
+    for c in 0..4 {
+        let i = c * 4;
+        let a0 = state[i];
+        let a1 = state[i + 1];
+        let a2 = state[i + 2];
+        let a3 = state[i + 3];
+
+        state[i] = gf_mul(a0, 0x0e) ^ gf_mul(a1, 0x0b) ^ gf_mul(a2, 0x0d) ^ gf_mul(a3, 0x09);
+        state[i + 1] =
+            gf_mul(a0, 0x09) ^ gf_mul(a1, 0x0e) ^ gf_mul(a2, 0x0b) ^ gf_mul(a3, 0x0d);
+        state[i + 2] =
+            gf_mul(a0, 0x0d) ^ gf_mul(a1, 0x09) ^ gf_mul(a2, 0x0e) ^ gf_mul(a3, 0x0b);
+        state[i + 3] =
+            gf_mul(a0, 0x0b) ^ gf_mul(a1, 0x0d) ^ gf_mul(a2, 0x09) ^ gf_mul(a3, 0x0e);
+    }
+}
+
+fn aes128_decrypt_block_in_place(block: &mut [u8; 16], round_keys: &[u8; AES128_EXPANDED_KEY_BYTES]) {
+    aes_add_round_key(block, round_keys, AES128_ROUNDS);
+
+    for round in (1..AES128_ROUNDS).rev() {
+        aes_inv_shift_rows(block);
+        aes_inv_sub_bytes(block);
+        aes_add_round_key(block, round_keys, round);
+        aes_inv_mix_columns(block);
+    }
+
+    aes_inv_shift_rows(block);
+    aes_inv_sub_bytes(block);
+    aes_add_round_key(block, round_keys, 0);
 }
 
 // ============================================================================
@@ -2279,6 +2782,7 @@ pub enum WifiError {
     AssociationFailed,
     DHCPFailed,
     HardwareError,
+    Timeout,
 }
 
 impl WifiError {
@@ -2295,6 +2799,7 @@ impl WifiError {
             WifiError::AssociationFailed => "Association failed",
             WifiError::DHCPFailed => "DHCP failed",
             WifiError::HardwareError => "Hardware error",
+            WifiError::Timeout => "Timeout",
         }
     }
 }

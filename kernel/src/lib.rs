@@ -46,6 +46,7 @@ pub mod capnet;
 pub mod commands;
 pub mod console_service;
 pub mod cpu_security;
+pub mod crypto;
 pub mod dma_asm;
 pub mod disk;
 pub mod enclave;

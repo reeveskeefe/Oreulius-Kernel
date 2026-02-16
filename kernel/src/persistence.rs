@@ -243,13 +243,50 @@ impl AppendLog {
 /// Maximum snapshot size (1 MiB for v0)
 pub const MAX_SNAPSHOT_SIZE: usize = 1024 * 1024;
 const SNAPSHOT_DISK_MAGIC: u32 = 0x4F_52_53_50; // "ORSP"
-const SNAPSHOT_DISK_VERSION: u16 = 1;
+const SNAPSHOT_DISK_VERSION_V1: u16 = 1;
+const SNAPSHOT_DISK_VERSION_V2: u16 = 2;
 const SNAPSHOT_DISK_HEADER_BYTES: usize = 64;
 const SNAPSHOT_DISK_SLOT_GENERIC: u16 = 1;
 const SNAPSHOT_DISK_SLOT_TEMPORAL: u16 = 2;
 const SNAPSHOT_DISK_SECTOR_BYTES: usize = 512;
 const SNAPSHOT_FILE_PATH_GENERIC: &str = "/.oreulia_snapshot_generic";
 const SNAPSHOT_FILE_PATH_TEMPORAL: &str = "/.oreulia_snapshot_temporal";
+
+const SNAPSHOT_V2_FLAG_SEALED: u32 = 1 << 0;
+const SNAPSHOT_V2_FLAG_ENCRYPTED: u32 = 1 << 1;
+
+// Monotonic nonce used for AES-CTR. Updated on recovery to avoid nonce reuse across reboots.
+static NEXT_SNAPSHOT_NONCE: spin::Mutex<u64> = spin::Mutex::new(1);
+
+fn seed_snapshot_nonce() {
+    // Mix hardware RNG (if present) with cycle counter to avoid nonce reuse across reboot even
+    // when no prior snapshot is readable (e.g., corruption).
+    let mut seed = 0xA5A5_5A5A_F00D_CAFE_u64;
+    seed ^= crate::asm_bindings::rdtsc_begin();
+    if let Some(r) = crate::asm_bindings::try_rdrand() {
+        seed ^= ((r as u64) << 32) | (r as u64);
+    }
+    seed ^= crate::asm_bindings::rdtsc_end();
+
+    let mut slot = NEXT_SNAPSHOT_NONCE.lock();
+    let mixed = (*slot) ^ seed;
+    *slot = mixed.max(1);
+}
+
+fn next_snapshot_nonce() -> u64 {
+    let mut slot = NEXT_SNAPSHOT_NONCE.lock();
+    let current = (*slot).max(1);
+    *slot = current.saturating_add(1).max(1);
+    current
+}
+
+fn observe_snapshot_nonce(observed: u64) {
+    let next = observed.max(1).saturating_add(1).max(1);
+    let mut slot = NEXT_SNAPSHOT_NONCE.lock();
+    if *slot < next {
+        *slot = next;
+    }
+}
 
 /// A snapshot captures point-in-time state
 pub struct Snapshot {
@@ -309,6 +346,19 @@ struct SnapshotDiskHeader {
     last_offset: u64,
     timestamp: u64,
     crc32: u32,
+}
+
+#[derive(Clone, Copy)]
+struct SnapshotDiskHeaderV2 {
+    magic: u32,
+    version: u16,
+    slot_id: u16,
+    data_len: u32,
+    last_offset: u64,
+    timestamp: u64,
+    flags: u32,
+    nonce: u64,
+    mac16: [u8; 16],
 }
 
 fn snapshot_slot_sectors() -> u64 {
@@ -378,7 +428,7 @@ fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
     ]))
 }
 
-fn encode_snapshot_header(header: SnapshotDiskHeader) -> [u8; SNAPSHOT_DISK_HEADER_BYTES] {
+fn encode_snapshot_header_v1(header: SnapshotDiskHeader) -> [u8; SNAPSHOT_DISK_HEADER_BYTES] {
     let mut out = [0u8; SNAPSHOT_DISK_HEADER_BYTES];
     let mut encoded = Vec::new();
     encoded.reserve(SNAPSHOT_DISK_HEADER_BYTES);
@@ -399,7 +449,7 @@ fn encode_snapshot_header(header: SnapshotDiskHeader) -> [u8; SNAPSHOT_DISK_HEAD
     out
 }
 
-fn decode_snapshot_header(data: &[u8]) -> Option<SnapshotDiskHeader> {
+fn decode_snapshot_header_v1(data: &[u8]) -> Option<SnapshotDiskHeader> {
     if data.len() < SNAPSHOT_DISK_HEADER_BYTES {
         return None;
     }
@@ -412,6 +462,66 @@ fn decode_snapshot_header(data: &[u8]) -> Option<SnapshotDiskHeader> {
         timestamp: read_u64(data, 20)?,
         crc32: read_u32(data, 28)?,
     })
+}
+
+fn encode_snapshot_header_v2(header: SnapshotDiskHeaderV2) -> [u8; SNAPSHOT_DISK_HEADER_BYTES] {
+    let mut out = [0u8; SNAPSHOT_DISK_HEADER_BYTES];
+    out[0..4].copy_from_slice(&header.magic.to_le_bytes());
+    out[4..6].copy_from_slice(&header.version.to_le_bytes());
+    out[6..8].copy_from_slice(&header.slot_id.to_le_bytes());
+    out[8..12].copy_from_slice(&header.data_len.to_le_bytes());
+    out[12..20].copy_from_slice(&header.last_offset.to_le_bytes());
+    out[20..28].copy_from_slice(&header.timestamp.to_le_bytes());
+    out[28..32].copy_from_slice(&header.flags.to_le_bytes());
+    out[32..40].copy_from_slice(&header.nonce.to_le_bytes());
+    out[40..56].copy_from_slice(&header.mac16);
+    out
+}
+
+fn decode_snapshot_header_v2(data: &[u8]) -> Option<SnapshotDiskHeaderV2> {
+    if data.len() < SNAPSHOT_DISK_HEADER_BYTES {
+        return None;
+    }
+    let mut mac16 = [0u8; 16];
+    mac16.copy_from_slice(&data[40..56]);
+    Some(SnapshotDiskHeaderV2 {
+        magic: read_u32(data, 0)?,
+        version: read_u16(data, 4)?,
+        slot_id: read_u16(data, 6)?,
+        data_len: read_u32(data, 8)?,
+        last_offset: read_u64(data, 12)?,
+        timestamp: read_u64(data, 20)?,
+        flags: read_u32(data, 28)?,
+        nonce: read_u64(data, 32)?,
+        mac16,
+    })
+}
+
+fn derive_snapshot_seal_keys(slot_id: u16) -> ([u8; 16], [u8; 32]) {
+    let master = crate::security::persistence_seal_key();
+
+    let mut enc = crate::crypto::Sha256::new();
+    enc.update(b"oreulia:persist:enc:");
+    enc.update(&slot_id.to_le_bytes());
+    enc.update(&master);
+    let enc_digest = enc.finalize();
+    let mut enc_key = [0u8; 16];
+    enc_key.copy_from_slice(&enc_digest[..16]);
+
+    let mut mac = crate::crypto::Sha256::new();
+    mac.update(b"oreulia:persist:mac:");
+    mac.update(&slot_id.to_le_bytes());
+    mac.update(&master);
+    let mac_key = mac.finalize();
+
+    (enc_key, mac_key)
+}
+
+fn compute_snapshot_mac_v2(mac_key: &[u8; 32], header_bytes: &[u8; SNAPSHOT_DISK_HEADER_BYTES], payload: &[u8]) -> [u8; 16] {
+    let mut h = crate::crypto::HmacSha256::new(mac_key);
+    h.update(header_bytes);
+    h.update(payload);
+    h.finalize_trunc16()
 }
 
 // ============================================================================
@@ -609,25 +719,39 @@ impl PersistenceService {
             return Err(PersistenceError::SnapshotTooLarge);
         }
 
-        let data = &snapshot.data[..snapshot.data_len];
-        let header = SnapshotDiskHeader {
+        let data_len = snapshot.data_len;
+        let total_bytes = SNAPSHOT_DISK_HEADER_BYTES.saturating_add(data_len);
+
+        let (enc_key, mac_key) = derive_snapshot_seal_keys(slot_id);
+        let nonce = next_snapshot_nonce();
+        let mut header_bytes = encode_snapshot_header_v2(SnapshotDiskHeaderV2 {
             magic: SNAPSHOT_DISK_MAGIC,
-            version: SNAPSHOT_DISK_VERSION,
+            version: SNAPSHOT_DISK_VERSION_V2,
             slot_id,
-            data_len: snapshot.data_len as u32,
+            data_len: data_len as u32,
             last_offset: snapshot.last_offset as u64,
             timestamp: snapshot.timestamp,
-            crc32: LogRecord::compute_crc32(data),
-        };
-        let header_bytes = encode_snapshot_header(header);
+            flags: SNAPSHOT_V2_FLAG_SEALED | SNAPSHOT_V2_FLAG_ENCRYPTED,
+            nonce,
+            mac16: [0u8; 16],
+        });
+
         let sectors = (total_bytes + SNAPSHOT_DISK_SECTOR_BYTES - 1) / SNAPSHOT_DISK_SECTOR_BYTES;
         let image_len = sectors.saturating_mul(SNAPSHOT_DISK_SECTOR_BYTES);
         let mut image = Vec::new();
         image.resize(image_len, 0);
         image[..SNAPSHOT_DISK_HEADER_BYTES].copy_from_slice(&header_bytes);
-        if !data.is_empty() {
+        if data_len != 0 {
             let off = SNAPSHOT_DISK_HEADER_BYTES;
-            image[off..off + data.len()].copy_from_slice(data);
+            image[off..off + data_len].copy_from_slice(&snapshot.data[..data_len]);
+            crate::crypto::aes128_ctr_xor(&enc_key, nonce, &mut image[off..off + data_len]);
+            let mac = compute_snapshot_mac_v2(&mac_key, &header_bytes, &image[off..off + data_len]);
+            image[40..56].copy_from_slice(&mac);
+            header_bytes[40..56].copy_from_slice(&mac);
+        } else {
+            let mac = compute_snapshot_mac_v2(&mac_key, &header_bytes, &[]);
+            image[40..56].copy_from_slice(&mac);
+            header_bytes[40..56].copy_from_slice(&mac);
         }
 
         let mut i = 0usize;
@@ -657,15 +781,77 @@ impl PersistenceService {
         let mut first_sector = [0u8; SNAPSHOT_DISK_SECTOR_BYTES];
         crate::virtio_blk::read_sector(base_lba, &mut first_sector)
             .map_err(|_| PersistenceError::InvalidRecord)?;
-        let header = match decode_snapshot_header(&first_sector) {
+        let magic = match read_u32(&first_sector, 0) {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+        let version = match read_u16(&first_sector, 4) {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+        if magic != SNAPSHOT_DISK_MAGIC {
+            return Ok(false);
+        }
+
+        if version == SNAPSHOT_DISK_VERSION_V1 {
+            let header = match decode_snapshot_header_v1(&first_sector) {
+                Some(h) => h,
+                None => return Ok(false),
+            };
+            if header.slot_id != slot_id {
+                return Ok(false);
+            }
+
+            let data_len = header.data_len as usize;
+            if data_len > MAX_SNAPSHOT_SIZE {
+                return Err(PersistenceError::SnapshotTooLarge);
+            }
+
+            let total_bytes = SNAPSHOT_DISK_HEADER_BYTES.saturating_add(data_len);
+            let sectors =
+                (total_bytes + SNAPSHOT_DISK_SECTOR_BYTES - 1) / SNAPSHOT_DISK_SECTOR_BYTES;
+            let mut image = Vec::new();
+            image.resize(sectors.saturating_mul(SNAPSHOT_DISK_SECTOR_BYTES), 0);
+            image[..SNAPSHOT_DISK_SECTOR_BYTES].copy_from_slice(&first_sector);
+
+            let mut i = 1usize;
+            while i < sectors {
+                let start = i * SNAPSHOT_DISK_SECTOR_BYTES;
+                let end = start + SNAPSHOT_DISK_SECTOR_BYTES;
+                crate::virtio_blk::read_sector(base_lba + i as u64, &mut image[start..end])
+                    .map_err(|_| PersistenceError::InvalidRecord)?;
+                i += 1;
+            }
+
+            let payload_off = SNAPSHOT_DISK_HEADER_BYTES;
+            let payload_end = payload_off.saturating_add(data_len);
+            let payload = &image[payload_off..payload_end];
+            if LogRecord::compute_crc32(payload) != header.crc32 {
+                return Err(PersistenceError::CrcMismatch);
+            }
+
+            if !payload.is_empty() {
+                out.data[..payload.len()].copy_from_slice(payload);
+            }
+            out.data_len = payload.len();
+            out.last_offset = header.last_offset as usize;
+            out.timestamp = header.timestamp;
+            return Ok(true);
+        }
+
+        if version != SNAPSHOT_DISK_VERSION_V2 {
+            return Ok(false);
+        }
+
+        let header = match decode_snapshot_header_v2(&first_sector) {
             Some(h) => h,
             None => return Ok(false),
         };
-        if header.magic != SNAPSHOT_DISK_MAGIC
-            || header.version != SNAPSHOT_DISK_VERSION
-            || header.slot_id != slot_id
-        {
+        if header.slot_id != slot_id {
             return Ok(false);
+        }
+        if (header.flags & SNAPSHOT_V2_FLAG_SEALED) == 0 {
+            return Err(PersistenceError::InvalidRecord);
         }
 
         let data_len = header.data_len as usize;
@@ -691,14 +877,26 @@ impl PersistenceService {
         let payload_off = SNAPSHOT_DISK_HEADER_BYTES;
         let payload_end = payload_off.saturating_add(data_len);
         let payload = &image[payload_off..payload_end];
-        if LogRecord::compute_crc32(payload) != header.crc32 {
-            return Err(PersistenceError::CrcMismatch);
+
+        let (_, mac_key) = derive_snapshot_seal_keys(slot_id);
+        let mut header_mac_input = [0u8; SNAPSHOT_DISK_HEADER_BYTES];
+        header_mac_input.copy_from_slice(&image[..SNAPSHOT_DISK_HEADER_BYTES]);
+        header_mac_input[40..56].fill(0);
+        let expected_mac = compute_snapshot_mac_v2(&mac_key, &header_mac_input, payload);
+        if !crate::crypto::ct_eq(&expected_mac, &header.mac16) {
+            return Err(PersistenceError::IntegrityMismatch);
         }
 
-        if !payload.is_empty() {
-            out.data[..payload.len()].copy_from_slice(payload);
+        observe_snapshot_nonce(header.nonce);
+
+        if data_len != 0 {
+            out.data[..data_len].copy_from_slice(payload);
+            if (header.flags & SNAPSHOT_V2_FLAG_ENCRYPTED) != 0 {
+                let (enc_key, _) = derive_snapshot_seal_keys(slot_id);
+                crate::crypto::aes128_ctr_xor(&enc_key, header.nonce, &mut out.data[..data_len]);
+            }
         }
-        out.data_len = payload.len();
+        out.data_len = data_len;
         out.last_offset = header.last_offset as usize;
         out.timestamp = header.timestamp;
         Ok(true)
@@ -718,25 +916,35 @@ impl PersistenceService {
         if total_bytes > MAX_SNAPSHOT_SIZE.saturating_add(SNAPSHOT_DISK_HEADER_BYTES) {
             return Err(PersistenceError::SnapshotTooLarge);
         }
-
-        let data = &snapshot.data[..snapshot.data_len];
-        let header = SnapshotDiskHeader {
+        let data_len = snapshot.data_len;
+        let (enc_key, mac_key) = derive_snapshot_seal_keys(slot_id);
+        let nonce = next_snapshot_nonce();
+        let mut header_bytes = encode_snapshot_header_v2(SnapshotDiskHeaderV2 {
             magic: SNAPSHOT_DISK_MAGIC,
-            version: SNAPSHOT_DISK_VERSION,
+            version: SNAPSHOT_DISK_VERSION_V2,
             slot_id,
-            data_len: snapshot.data_len as u32,
+            data_len: data_len as u32,
             last_offset: snapshot.last_offset as u64,
             timestamp: snapshot.timestamp,
-            crc32: LogRecord::compute_crc32(data),
-        };
-        let header_bytes = encode_snapshot_header(header);
+            flags: SNAPSHOT_V2_FLAG_SEALED | SNAPSHOT_V2_FLAG_ENCRYPTED,
+            nonce,
+            mac16: [0u8; 16],
+        });
 
         let mut image = Vec::new();
         image.resize(total_bytes, 0);
         image[..SNAPSHOT_DISK_HEADER_BYTES].copy_from_slice(&header_bytes);
-        if !data.is_empty() {
-            image[SNAPSHOT_DISK_HEADER_BYTES..SNAPSHOT_DISK_HEADER_BYTES + data.len()]
-                .copy_from_slice(data);
+        if data_len != 0 {
+            let off = SNAPSHOT_DISK_HEADER_BYTES;
+            image[off..off + data_len].copy_from_slice(&snapshot.data[..data_len]);
+            crate::crypto::aes128_ctr_xor(&enc_key, nonce, &mut image[off..off + data_len]);
+            let mac = compute_snapshot_mac_v2(&mac_key, &header_bytes, &image[off..off + data_len]);
+            image[40..56].copy_from_slice(&mac);
+            header_bytes[40..56].copy_from_slice(&mac);
+        } else {
+            let mac = compute_snapshot_mac_v2(&mac_key, &header_bytes, &[]);
+            image[40..56].copy_from_slice(&mac);
+            header_bytes[40..56].copy_from_slice(&mac);
         }
 
         crate::vfs::write_path_untracked(path, &image)
@@ -781,15 +989,63 @@ impl PersistenceService {
         }
         image.truncate(read);
 
-        let header = match decode_snapshot_header(&image[..SNAPSHOT_DISK_HEADER_BYTES]) {
+        let magic = match read_u32(&image, 0) {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+        let version = match read_u16(&image, 4) {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+        if magic != SNAPSHOT_DISK_MAGIC {
+            return Ok(false);
+        }
+
+        if version == SNAPSHOT_DISK_VERSION_V1 {
+            let header = match decode_snapshot_header_v1(&image[..SNAPSHOT_DISK_HEADER_BYTES]) {
+                Some(h) => h,
+                None => return Ok(false),
+            };
+            if header.slot_id != slot_id {
+                return Ok(false);
+            }
+
+            let data_len = header.data_len as usize;
+            if data_len > MAX_SNAPSHOT_SIZE {
+                return Err(PersistenceError::SnapshotTooLarge);
+            }
+            let payload_off = SNAPSHOT_DISK_HEADER_BYTES;
+            let payload_end = payload_off.saturating_add(data_len);
+            if payload_end > image.len() {
+                return Err(PersistenceError::InvalidRecord);
+            }
+            let payload = &image[payload_off..payload_end];
+            if LogRecord::compute_crc32(payload) != header.crc32 {
+                return Err(PersistenceError::CrcMismatch);
+            }
+
+            if data_len != 0 {
+                out.data[..data_len].copy_from_slice(payload);
+            }
+            out.data_len = data_len;
+            out.last_offset = header.last_offset as usize;
+            out.timestamp = header.timestamp;
+            return Ok(true);
+        }
+
+        if version != SNAPSHOT_DISK_VERSION_V2 {
+            return Ok(false);
+        }
+
+        let header = match decode_snapshot_header_v2(&image[..SNAPSHOT_DISK_HEADER_BYTES]) {
             Some(h) => h,
             None => return Ok(false),
         };
-        if header.magic != SNAPSHOT_DISK_MAGIC
-            || header.version != SNAPSHOT_DISK_VERSION
-            || header.slot_id != slot_id
-        {
+        if header.slot_id != slot_id {
             return Ok(false);
+        }
+        if (header.flags & SNAPSHOT_V2_FLAG_SEALED) == 0 {
+            return Err(PersistenceError::InvalidRecord);
         }
 
         let data_len = header.data_len as usize;
@@ -802,14 +1058,26 @@ impl PersistenceService {
             return Err(PersistenceError::InvalidRecord);
         }
         let payload = &image[payload_off..payload_end];
-        if LogRecord::compute_crc32(payload) != header.crc32 {
-            return Err(PersistenceError::CrcMismatch);
+
+        let (_, mac_key) = derive_snapshot_seal_keys(slot_id);
+        let mut header_mac_input = [0u8; SNAPSHOT_DISK_HEADER_BYTES];
+        header_mac_input.copy_from_slice(&image[..SNAPSHOT_DISK_HEADER_BYTES]);
+        header_mac_input[40..56].fill(0);
+        let expected_mac = compute_snapshot_mac_v2(&mac_key, &header_mac_input, payload);
+        if !crate::crypto::ct_eq(&expected_mac, &header.mac16) {
+            return Err(PersistenceError::IntegrityMismatch);
         }
 
-        if !payload.is_empty() {
-            out.data[..payload.len()].copy_from_slice(payload);
+        observe_snapshot_nonce(header.nonce);
+
+        if data_len != 0 {
+            out.data[..data_len].copy_from_slice(payload);
+            if (header.flags & SNAPSHOT_V2_FLAG_ENCRYPTED) != 0 {
+                let (enc_key, _) = derive_snapshot_seal_keys(slot_id);
+                crate::crypto::aes128_ctr_xor(&enc_key, header.nonce, &mut out.data[..data_len]);
+            }
         }
-        out.data_len = payload.len();
+        out.data_len = data_len;
         out.last_offset = header.last_offset as usize;
         out.timestamp = header.timestamp;
         Ok(true)
@@ -865,6 +1133,8 @@ pub enum PersistenceError {
     InvalidRecord,
     /// CRC mismatch
     CrcMismatch,
+    /// Cryptographic integrity check failed
+    IntegrityMismatch,
     /// Durable backend unavailable
     BackendUnavailable,
 }
@@ -878,6 +1148,7 @@ impl fmt::Display for PersistenceError {
             PersistenceError::PermissionDenied => write!(f, "Permission denied"),
             PersistenceError::InvalidRecord => write!(f, "Invalid record"),
             PersistenceError::CrcMismatch => write!(f, "CRC mismatch"),
+            PersistenceError::IntegrityMismatch => write!(f, "Integrity mismatch"),
             PersistenceError::BackendUnavailable => write!(f, "Durable backend unavailable"),
         }
     }
@@ -910,6 +1181,7 @@ pub fn clear_snapshot_backend() {
 
 /// Initialize the persistence service
 pub fn init() {
+    seed_snapshot_nonce();
     let mut svc = PERSISTENCE.lock();
     svc.recover_snapshots_from_durable();
 }

@@ -69,6 +69,28 @@ pub const RATE_LIMIT_OPS_PER_SEC: u32 = 1000;
 /// Maximum capability lifetime in milliseconds (0 = unlimited)
 pub const MAX_CAPABILITY_LIFETIME_MS: u64 = 0;
 
+/// Persistent sealing key bytes used for at-rest protection of snapshots.
+pub const PERSISTENCE_SEAL_KEY_BYTES: usize = 32;
+
+// Default sealing key for development environments without a hardware root-of-trust.
+// Production deployments should override this via attested provisioning.
+const DEFAULT_PERSISTENCE_SEAL_KEY: [u8; PERSISTENCE_SEAL_KEY_BYTES] = [
+    0x6f, 0x72, 0x65, 0x75, 0x6c, 0x69, 0x61, 0x2d, 0x70, 0x65, 0x72, 0x73, 0x69, 0x73,
+    0x74, 0x2d, 0x73, 0x65, 0x61, 0x6c, 0x2d, 0x6b, 0x65, 0x79, 0x2d, 0x76, 0x31, 0x00,
+    0x01, 0x23, 0x45, 0x67,
+];
+
+static PERSISTENCE_SEAL_KEY: Mutex<[u8; PERSISTENCE_SEAL_KEY_BYTES]> =
+    Mutex::new(DEFAULT_PERSISTENCE_SEAL_KEY);
+
+pub fn persistence_seal_key() -> [u8; PERSISTENCE_SEAL_KEY_BYTES] {
+    *PERSISTENCE_SEAL_KEY.lock()
+}
+
+pub fn set_persistence_seal_key(key: [u8; PERSISTENCE_SEAL_KEY_BYTES]) {
+    *PERSISTENCE_SEAL_KEY.lock() = key;
+}
+
 /// Sliding anomaly window width (seconds).
 pub const ANOMALY_WINDOW_SECONDS: u64 = 10;
 /// Alert threshold for anomaly score.

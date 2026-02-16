@@ -203,7 +203,9 @@ Then:
 
 ### 3.4 Security Note
 
-FNV-1a and the Merkle construction here provide **fast corruption detection** and stable replay metadata. They do not provide cryptographic tamper-proofing against an adversary with write access to the persistence medium.
+FNV-1a and the Merkle construction here provide **fast local corruption detection** and deterministic replay metadata. They are intentionally *not* cryptographic.
+
+Cryptographic integrity and confidentiality are enforced at the **persistence snapshot layer** when a durable backend is present: persistence snapshots are sealed (AES-CTR encryption + HMAC-SHA256 authentication) so any tampering of the persisted bytes is detected on recovery.
 
 ---
 
@@ -480,6 +482,43 @@ Durability depends on the configured persistence backend:
 
 The temporal store still works and remains useful for *in-session* branching/rollback and auditing even without durable storage.
 
+### 7.4 Sealed Snapshot Format (Persistence Snapshot v2)
+
+When the persistence backend is durable, the snapshot image stored to disk/file is:
+
+```text
+image = header64 || ciphertext
+```
+
+where:
+
+- `ciphertext = AES-128-CTR(enc_key, nonce, plaintext_snapshot_bytes)`
+- `mac16 = HMAC-SHA256(mac_key, header64_with_zeroed_mac || ciphertext)[0..16]`
+
+Keys are derived from the kernel’s stable persistence seal key using SHA-256 domain separation:
+
+```text
+enc_key = SHA256("oreulia:persist:enc:" || slot_id || master)[0..16]
+mac_key = SHA256("oreulia:persist:mac:" || slot_id || master)
+```
+
+The header is fixed-size (64 bytes). Offsets are little-endian:
+
+| Offset | Size | Field | Meaning |
+|---:|---:|---|---|
+| 0 | 4 | `magic` | `"ORSP"` |
+| 4 | 2 | `version` | `2` |
+| 6 | 2 | `slot_id` | snapshot slot selector |
+| 8 | 4 | `data_len` | plaintext length |
+| 12 | 8 | `last_offset` | last log offset included |
+| 20 | 8 | `timestamp` | snapshot timestamp |
+| 28 | 4 | `flags` | sealed/encrypted flags |
+| 32 | 8 | `nonce` | AES-CTR nonce |
+| 40 | 16 | `mac16` | truncated HMAC |
+| 56 | 8 | reserved | future |
+
+Recovery verifies `mac16` before decrypting. A monotonic nonce counter is advanced on recovery to avoid CTR keystream reuse across reboot.
+
 ---
 
 ## 8. APIs Exposed to Services (WASM + IPC)
@@ -511,7 +550,7 @@ Temporal traffic over IPC uses a binary framed protocol (see `docs/oreulia-ipc.m
 
 ## 9. Correctness Lemmas, Corollaries, and Proofs
 
-All proofs below are with respect to the implemented algorithms and their stated preconditions. Where the hardware or persistence medium may be adversarial, additional cryptographic measures are required (outside this document).
+All proofs below are with respect to the implemented algorithms and their stated preconditions. Persisted snapshots are cryptographically sealed (integrity + confidentiality) when written to a durable backend; threats where an attacker controls the running kernel or extracts sealing keys remain outside the scope of these proofs.
 
 ### 9.1 Lemma: Payload Size Bound Is Preserved
 
@@ -905,8 +944,38 @@ This is the practical regression harness that guards “universal coverage” ag
 
 ## 14. Known Limitations (By Design or Deferred)
 
-- **Not cryptographic integrity.** Hashes are for fast detection and metadata, not adversarial tamper-proofing.
-- **Secret-at-rest policy.** If temporal persistence is backed by durable storage, enclave key material is persisted as bytes; production deployments should add sealing/encryption and policy-driven redaction.
-- **Hardware-coupled resources.** For devices (WiFi/EPC), temporal restore is control-plane restore; actual hardware re-init may still be required on first use.
-- **Global snapshot size.** The persistence snapshot includes full payload bytes for all stored versions; retention/compaction policies are future work.
-- **Merge semantics are policy-driven.** Non-fast-forward merges do not perform a deep structural reconciliation; they choose `Ours` or `Theirs` payloads and preserve both heads via metadata edges.
+### 14.1 On-Disk Integrity and Confidentiality (Resolved for Persistence Snapshots)
+
+- Persistence snapshot v2 is **sealed** (AES-CTR + HMAC-SHA256) and verified on recovery.
+- Inner `content_hash` / `merkle_root` fields remain **non-cryptographic** fast metadata; the seal provides adversarial tamper detection for the persisted bytes as a whole.
+
+### 14.2 Secret-at-Rest Policy (Implemented)
+
+- Snapshot sealing encrypts all persisted temporal bytes, including enclave payloads, when a durable backend is used.
+- Enclave temporal payloads also support **policy-driven redaction**: when enabled, provisioned key material is zeroed and active keys are revoked; remote verifier shared secrets are zeroed and verifiers are disabled.
+  - Shell control: `enclave-secret-policy set on|off`
+
+### 14.3 Hardware-Coupled Resources (Improved, Not “Resurrection”)
+
+- `/wifi/state` restore sanitizes link state (restores intent/config) and performs best-effort PCI re-detect + driver init.
+- `/enclave/state` restore re-detects the enclave backend and **sanitizes all live session state** (physical pointers, EPC reservations, runtime key handles), preventing unsafe resurrection across reboot.
+
+Time-travel of *live* hardware sessions (802.11 association, SGX enclave execution contexts, etc.) remains intentionally unsupported; restore is a control-plane reconstruction plus safe re-init.
+
+### 14.4 Global Snapshot Size and Retention (Implemented)
+
+- Before persistence encoding, the temporal store enforces a bounded retention policy:
+  - `max_versions_per_object` default `64`
+  - `max_persist_bytes` default `persistence::MAX_SNAPSHOT_SIZE`
+- The retention algorithm preferentially drops **oldest unpinned** history (versions not referenced by active heads), unpins inactive branch heads if needed, and finally squashes to active heads as a last resort.
+- Runtime tuning is exposed via the shell command `temporal-retention` (show/set/reset/gc).
+
+### 14.5 Merge Semantics (Improved Beyond Ours/Theirs)
+
+- Non-fast-forward merges attempt a deterministic **3-way merge**:
+  - base is selected from a common ancestor along the parent chain,
+  - non-overlapping byte edit spans are merged automatically,
+  - if that fails and payloads are valid UTF-8, a bounded **diff3-style line merge** is attempted (multi-hunk, conflict-detecting),
+  - remaining conflicts fall back to the requested `Ours`/`Theirs` strategy while still encoding both heads via metadata edges.
+
+For binary payloads (or large texts beyond the bounded merge profile), merges remain policy-driven: the system preserves both heads in metadata and applies the chosen conflict strategy.

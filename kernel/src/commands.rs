@@ -120,6 +120,7 @@ pub fn execute(input: &str) {
             vga::print_str("  temporal-branch-checkout - Checkout branch head (temporal-branch-checkout <path> <branch>)\n");
             vga::print_str("  temporal-merge - Merge branch into target (temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs])\n");
             vga::print_str("  temporal-stats - Show temporal object stats\n");
+            vga::print_str("  temporal-retention - Show/set retention policy (temporal-retention [show|set|reset|gc])\n");
             vga::print_str("  temporal-ipc-demo - Run temporal IPC service demo\n");
             vga::print_str("  ipc-create - Create a new channel\n");
             vga::print_str("  ipc-send   - Send a message (usage: ipc-send <chan> <msg>)\n");
@@ -209,6 +210,7 @@ pub fn execute(input: &str) {
             vga::print_str("  security-intent - Show intent graph state (security-intent [pid])\n");
             vga::print_str("  security-intent-clear - Clear intent restriction for PID (security-intent-clear <pid>)\n");
             vga::print_str("  security-intent-policy - Show/set runtime intent policy (security-intent-policy [show|set|reset])\n");
+            vga::print_str("  enclave-secret-policy - Show/set enclave temporal secret redaction (enclave-secret-policy [show|set on|off])\n");
             vga::print_str("  security-audit - Show recent security events (security-audit [count])\n");
             vga::print_str("  security-test  - Run security test suite\n");
             vga::print_str("  cap-list       - List capability table\n");
@@ -319,6 +321,9 @@ pub fn execute(input: &str) {
         }
         "temporal-stats" => {
             cmd_temporal_stats();
+        }
+        "temporal-retention" => {
+            cmd_temporal_retention(parts);
         }
         "temporal-ipc-demo" => {
             cmd_temporal_ipc_demo();
@@ -586,6 +591,9 @@ pub fn execute(input: &str) {
         }
         "security-intent-policy" => {
             cmd_security_intent_policy(parts);
+        }
+        "enclave-secret-policy" => {
+            cmd_enclave_secret_policy(parts);
         }
         "security-audit" => {
             cmd_security_audit(parts);
@@ -1622,6 +1630,95 @@ fn cmd_temporal_stats() {
     vga::print_str("\nActive branches (sum): ");
     print_number(stats.active_branches);
     vga::print_str("\n");
+}
+
+fn print_temporal_retention_usage() {
+    vga::print_str("Usage:\n");
+    vga::print_str("  temporal-retention\n");
+    vga::print_str("  temporal-retention show\n");
+    vga::print_str("  temporal-retention reset\n");
+    vga::print_str("  temporal-retention gc\n");
+    vga::print_str("  temporal-retention set <max_versions_per_object> <max_persist_kib>\n");
+}
+
+fn cmd_temporal_retention(mut parts: core::str::SplitWhitespace) {
+    let op = parts.next();
+    match op {
+        None | Some("show") => {
+            let (max_versions, max_bytes) = crate::temporal::retention_policy();
+            vga::print_str("Temporal retention policy:\n");
+            vga::print_str("  max_versions_per_object: ");
+            print_number(max_versions);
+            vga::print_str("\n  max_persist_bytes: ");
+            print_number(max_bytes);
+            vga::print_str("\n");
+        }
+        Some("reset") => {
+            let (max_versions, max_bytes) = crate::temporal::reset_retention_policy();
+            vga::print_str("Reset temporal retention policy.\n");
+            vga::print_str("  max_versions_per_object: ");
+            print_number(max_versions);
+            vga::print_str("\n  max_persist_bytes: ");
+            print_number(max_bytes);
+            vga::print_str("\n");
+        }
+        Some("gc") => {
+            let (before, after) = crate::temporal::gc_for_persistence_budget();
+            vga::print_str("Temporal GC (persistence budget):\n");
+            vga::print_str("  before_bytes: ");
+            print_number(before);
+            vga::print_str("\n  after_bytes: ");
+            print_number(after);
+            vga::print_str("\n");
+        }
+        Some("set") => {
+            let max_versions_raw = match parts.next() {
+                Some(v) => v,
+                None => {
+                    print_temporal_retention_usage();
+                    return;
+                }
+            };
+            let max_kib_raw = match parts.next() {
+                Some(v) => v,
+                None => {
+                    print_temporal_retention_usage();
+                    return;
+                }
+            };
+
+            let max_versions = match parse_number(max_versions_raw) {
+                Some(v) => v,
+                None => {
+                    vga::print_str("Invalid max_versions_per_object: ");
+                    vga::print_str(max_versions_raw);
+                    vga::print_str("\n");
+                    return;
+                }
+            };
+            let max_kib = match parse_number(max_kib_raw) {
+                Some(v) => v,
+                None => {
+                    vga::print_str("Invalid max_persist_kib: ");
+                    vga::print_str(max_kib_raw);
+                    vga::print_str("\n");
+                    return;
+                }
+            };
+
+            let max_bytes = max_kib.saturating_mul(1024);
+            let (use_versions, use_bytes) = crate::temporal::set_retention_policy(max_versions, max_bytes);
+            vga::print_str("Updated temporal retention policy.\n");
+            vga::print_str("  max_versions_per_object: ");
+            print_number(use_versions);
+            vga::print_str("\n  max_persist_bytes: ");
+            print_number(use_bytes);
+            vga::print_str("\n");
+        }
+        _ => {
+            print_temporal_retention_usage();
+        }
+    }
 }
 
 const TEMPORAL_IPC_MAGIC: u32 = 0x3150_4D54; // "TMP1" in little-endian byte order
@@ -10339,6 +10436,62 @@ fn cmd_sched_net_soak(mut parts: core::str::SplitWhitespace) {
         vga::print_str("PASS\n\n");
     } else {
         vga::print_str("REVIEW REQUIRED\n\n");
+    }
+}
+
+fn print_enclave_secret_policy_usage() {
+    vga::print_str("Usage:\n");
+    vga::print_str("  enclave-secret-policy\n");
+    vga::print_str("  enclave-secret-policy show\n");
+    vga::print_str("  enclave-secret-policy set on\n");
+    vga::print_str("  enclave-secret-policy set off\n");
+}
+
+fn cmd_enclave_secret_policy(mut parts: core::str::SplitWhitespace) {
+    let op = parts.next();
+    match op {
+        None | Some("show") => {
+            vga::print_str("Enclave temporal secret redaction: ");
+            if crate::enclave::temporal_secret_redaction_enabled() {
+                vga::print_str("on\n");
+            } else {
+                vga::print_str("off\n");
+            }
+        }
+        Some("set") => {
+            let value = match parts.next() {
+                Some(v) => v,
+                None => {
+                    print_enclave_secret_policy_usage();
+                    return;
+                }
+            };
+            match value {
+                "on" | "true" | "1" | "enable" | "enabled" => {
+                    crate::enclave::temporal_set_secret_redaction_enabled(true);
+                }
+                "off" | "false" | "0" | "disable" | "disabled" => {
+                    crate::enclave::temporal_set_secret_redaction_enabled(false);
+                }
+                _ => {
+                    vga::print_str("Invalid value: ");
+                    vga::print_str(value);
+                    vga::print_str("\n");
+                    print_enclave_secret_policy_usage();
+                    return;
+                }
+            }
+            vga::print_str("Enclave temporal secret redaction updated.\n");
+            vga::print_str("Now: ");
+            if crate::enclave::temporal_secret_redaction_enabled() {
+                vga::print_str("on\n");
+            } else {
+                vga::print_str("off\n");
+            }
+        }
+        _ => {
+            print_enclave_secret_policy_usage();
+        }
     }
 }
 

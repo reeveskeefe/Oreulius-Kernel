@@ -65,6 +65,29 @@ const TEMPORAL_ENCLAVE_CERT_BYTES: usize = 36;
 const TEMPORAL_ENCLAVE_KEY_BYTES: usize = 64;
 const TEMPORAL_ENCLAVE_VERIFIER_BYTES: usize = 40;
 
+const TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_KEYS: u32 = 1 << 0;
+const TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_REMOTE_SECRETS: u32 = 1 << 1;
+
+const TEMPORAL_SECRET_POLICY_PERSIST: u32 = 0;
+const TEMPORAL_SECRET_POLICY_REDACT: u32 = 1;
+static TEMPORAL_SECRET_POLICY: AtomicU32 = AtomicU32::new(TEMPORAL_SECRET_POLICY_PERSIST);
+
+pub fn temporal_set_secret_redaction_enabled(enabled: bool) {
+    TEMPORAL_SECRET_POLICY.store(
+        if enabled {
+            TEMPORAL_SECRET_POLICY_REDACT
+        } else {
+            TEMPORAL_SECRET_POLICY_PERSIST
+        },
+        Ordering::SeqCst,
+    );
+    record_temporal_enclave_state_snapshot();
+}
+
+pub fn temporal_secret_redaction_enabled() -> bool {
+    TEMPORAL_SECRET_POLICY.load(Ordering::SeqCst) == TEMPORAL_SECRET_POLICY_REDACT
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum EnclaveBackend {
@@ -612,6 +635,7 @@ fn encode_temporal_enclave_payload(event: u8) -> Option<Vec<u8>> {
     let cert_chain = *CERT_CHAIN.lock();
     let provisioned_keys = *PROVISIONED_KEYS.lock();
     let remote_verifiers = *REMOTE_VERIFIERS.lock();
+    let redact_secrets = temporal_secret_redaction_enabled();
 
     let scalar_bytes = 84usize;
     let total_len = 4usize
@@ -663,7 +687,12 @@ fn encode_temporal_enclave_payload(event: u8) -> Option<Vec<u8>> {
     temporal_append_u32(&mut payload, remote_verified_total);
     temporal_append_u32(&mut payload, remote_failed_total);
     temporal_append_u32(&mut payload, remote_audit_total);
-    temporal_append_u32(&mut payload, 0);
+    let mut persist_flags = 0u32;
+    if redact_secrets {
+        persist_flags |= TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_KEYS;
+        persist_flags |= TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_REMOTE_SECRETS;
+    }
+    temporal_append_u32(&mut payload, persist_flags);
 
     for session in sessions.iter() {
         temporal_append_u32(&mut payload, session.id);
@@ -696,29 +725,44 @@ fn encode_temporal_enclave_payload(event: u8) -> Option<Vec<u8>> {
     }
 
     for key in provisioned_keys.iter() {
-        temporal_append_u32(&mut payload, key.handle);
-        temporal_append_u32(&mut payload, key.owner_session);
-        temporal_append_u32(&mut payload, key.purpose);
-        payload.push(key.state as u8);
+        let mut record = *key;
+        if redact_secrets {
+            record.material = [0u8; 32];
+            if record.state == KeyState::Active {
+                record.state = KeyState::Revoked;
+            }
+            record.sealed_mac = seal_key_record(&record);
+        }
+
+        temporal_append_u32(&mut payload, record.handle);
+        temporal_append_u32(&mut payload, record.owner_session);
+        temporal_append_u32(&mut payload, record.purpose);
+        payload.push(record.state as u8);
         payload.push(0);
         payload.push(0);
         payload.push(0);
-        temporal_append_u32(&mut payload, key.created_epoch);
-        temporal_append_u32(&mut payload, key.expires_epoch);
-        temporal_append_u64(&mut payload, key.sealed_mac);
-        payload.extend_from_slice(&key.material);
+        temporal_append_u32(&mut payload, record.created_epoch);
+        temporal_append_u32(&mut payload, record.expires_epoch);
+        temporal_append_u64(&mut payload, record.sealed_mac);
+        payload.extend_from_slice(&record.material);
     }
 
     for verifier in remote_verifiers.iter() {
-        temporal_append_u32(&mut payload, verifier.id);
-        payload.push(verifier.backend as u8);
-        payload.push(if verifier.enabled { 1 } else { 0 });
+        let mut record = *verifier;
+        if redact_secrets {
+            record.shared_secret = 0;
+            record.enabled = false;
+        }
+
+        temporal_append_u32(&mut payload, record.id);
+        payload.push(record.backend as u8);
+        payload.push(if record.enabled { 1 } else { 0 });
         temporal_append_u16(&mut payload, 0);
-        temporal_append_u64(&mut payload, verifier.root_fingerprint);
-        temporal_append_u64(&mut payload, verifier.verifier_fingerprint);
-        temporal_append_u64(&mut payload, verifier.shared_secret);
-        temporal_append_u32(&mut payload, verifier.not_before_epoch);
-        temporal_append_u32(&mut payload, verifier.not_after_epoch);
+        temporal_append_u64(&mut payload, record.root_fingerprint);
+        temporal_append_u64(&mut payload, record.verifier_fingerprint);
+        temporal_append_u64(&mut payload, record.shared_secret);
+        temporal_append_u32(&mut payload, record.not_before_epoch);
+        temporal_append_u32(&mut payload, record.not_after_epoch);
     }
 
     Some(payload)
@@ -802,9 +846,11 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
         temporal_read_u32(payload, offset + 72).ok_or("temporal enclave remote failed missing")?;
     let remote_audit_total =
         temporal_read_u32(payload, offset + 76).ok_or("temporal enclave remote audit missing")?;
+    let persist_flags =
+        temporal_read_u32(payload, offset + 80).ok_or("temporal enclave persist flags missing")?;
     offset = offset.saturating_add(84);
 
-    let mut sessions = [EnclaveSession::empty(); MAX_ENCLAVE_SESSIONS];
+    let mut _sessions = [EnclaveSession::empty(); MAX_ENCLAVE_SESSIONS];
     for i in 0..MAX_ENCLAVE_SESSIONS {
         if offset.saturating_add(TEMPORAL_ENCLAVE_SESSION_META_BYTES) > payload.len() {
             return Err("temporal enclave session truncated");
@@ -834,7 +880,7 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
             temporal_read_u32(payload, offset + 52).ok_or("temporal enclave attest expires missing")?;
         let remote_attest_mac =
             temporal_read_u64(payload, offset + 56).ok_or("temporal enclave attest mac missing")?;
-        sessions[i] = EnclaveSession {
+        _sessions[i] = EnclaveSession {
             id,
             state,
             measurement,
@@ -959,16 +1005,47 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
         return Err("temporal enclave payload trailing bytes");
     }
 
+    TEMPORAL_SECRET_POLICY.store(
+        if (persist_flags & (TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_KEYS
+            | TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_REMOTE_SECRETS))
+            != 0
+        {
+            TEMPORAL_SECRET_POLICY_REDACT
+        } else {
+            TEMPORAL_SECRET_POLICY_PERSIST
+        },
+        Ordering::SeqCst,
+    );
+
+    // Hardware-backed enclaves cannot be time-traveled across reboot. Re-detect backend and
+    // sanitize all runtime session state (phys addrs, EPC reservations, live keys).
+    let detected_backend = detect_backend();
+    let use_backend = if enabled && detected_backend != EnclaveBackend::None {
+        detected_backend
+    } else {
+        EnclaveBackend::None
+    };
+    let use_enabled = enabled && use_backend != EnclaveBackend::None;
+
+    let sanitized_sessions = [EnclaveSession::empty(); MAX_ENCLAVE_SESSIONS];
+    let mut sanitized_keys = provisioned_keys;
+    for rec in sanitized_keys.iter_mut() {
+        if rec.state == KeyState::Active {
+            rec.state = KeyState::Revoked;
+            rec.sealed_mac = seal_key_record(rec);
+        }
+    }
+
     {
         let mut mgr = MANAGER.lock();
-        mgr.backend = backend;
-        mgr.sessions = sessions;
+        mgr.backend = use_backend;
+        mgr.sessions = sanitized_sessions;
         mgr.created_total = created_total;
         mgr.failed_total = failed_total;
         mgr.next_id = next_id.max(1);
     }
 
-    ENABLED.store(enabled && backend != EnclaveBackend::None, Ordering::SeqCst);
+    ENABLED.store(use_enabled, Ordering::SeqCst);
     BACKEND_OPS_TOTAL.store(backend_ops_total, Ordering::SeqCst);
     ATTESTATION_REPORTS.store(attestation_reports, Ordering::SeqCst);
     EPOCH_COUNTER.store(epoch_counter.max(1), Ordering::SeqCst);
@@ -980,21 +1057,16 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
     REMOTE_ATTESTATION_VERIFIED_TOTAL.store(remote_verified_total, Ordering::SeqCst);
     REMOTE_ATTESTATION_FAILED_TOTAL.store(remote_failed_total, Ordering::SeqCst);
     REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL.store(remote_audit_total, Ordering::SeqCst);
-    CERT_CHAIN_READY.store(cert_chain_ready, Ordering::SeqCst);
-    VENDOR_ROOT_READY.store(vendor_root_ready, Ordering::SeqCst);
+    CERT_CHAIN_READY.store(cert_chain_ready && use_enabled, Ordering::SeqCst);
+    VENDOR_ROOT_READY.store(vendor_root_ready && use_enabled, Ordering::SeqCst);
 
-    let active_valid = {
-        let mgr = MANAGER.lock();
-        mgr.sessions
-            .iter()
-            .any(|s| s.id == active_session && s.state == EnclaveState::Running)
-    };
-    ACTIVE_SESSION.store(if active_valid { active_session } else { INVALID_ID }, Ordering::SeqCst);
+    let _ = (active_session, backend);
+    ACTIVE_SESSION.store(INVALID_ID, Ordering::SeqCst);
 
     {
         let mut tz = TRUSTZONE_CONTRACT.lock();
         *tz = TrustZoneContract {
-            ready: trustzone_ready,
+            ready: trustzone_ready && use_backend == EnclaveBackend::ArmTrustZone,
             abi_major: tz_abi_major,
             abi_minor: tz_abi_minor,
             features: tz_features,
@@ -1007,7 +1079,7 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
     }
     {
         let mut keys = PROVISIONED_KEYS.lock();
-        *keys = provisioned_keys;
+        *keys = sanitized_keys;
     }
     {
         let mut verifiers = REMOTE_VERIFIERS.lock();
