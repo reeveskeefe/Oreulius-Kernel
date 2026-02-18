@@ -420,6 +420,13 @@ pub fn tag_range(
     domain: IsolationDomain,
     policy: AccessPolicy,
 ) -> Result<(), &'static str> {
+    struct IrqGuard(u32);
+    impl Drop for IrqGuard {
+        fn drop(&mut self) {
+            unsafe { crate::idt_asm::fast_sti_restore(self.0) };
+        }
+    }
+
     if !TAGGING_ENABLED.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -427,7 +434,12 @@ pub fn tag_range(
         return Err("Invalid runtime tag range");
     }
     let end = start.checked_add(len).ok_or("Runtime tag overflow")?;
-    TAG_TABLE.lock().insert(start, end, domain, policy, false)
+    let mut table = TAG_TABLE.lock();
+    // Prevent interrupt-path register/context perturbation while mutating the
+    // compact tag table metadata.
+    let irq_flags = unsafe { crate::idt_asm::fast_cli_save() };
+    let _irq_guard = IrqGuard(irq_flags);
+    table.insert(start, end, domain, policy, false)
 }
 
 pub fn tag_jit_code_kernel(start: usize, len: usize, sealed_rx: bool) -> Result<(), &'static str> {
