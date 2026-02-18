@@ -1,7 +1,7 @@
 /*!
  * Oreulia Kernel Project
  *
- * SPDX-License-Identifier: MIT
+ *License-Identifier: Oreulius License (see LICENSE)
  *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
  */

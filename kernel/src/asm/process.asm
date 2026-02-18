@@ -214,9 +214,10 @@ jit_user_enter:
     mov cx, [ebp + 16]      ; User CS
     mov dx, [ebp + 20]      ; User DS
 
-    ; Enter user mode with IF enabled so timer preemption can still run.
-    ; With KPTI + per-thread esp0 handling fixed, this avoids hard hangs when
-    ; fuzzed JIT code spins and would otherwise block all scheduling.
+    ; Enter user mode with IF cleared for deterministic JIT sandbox execution.
+    ; The JIT subset used by the fuzz/runtime path here has no supported
+    ; backward control-flow, so calls are bounded by instruction fuel and
+    ; return via int 0x80 without requiring timer preemption inside user mode.
     cli
     mov ax, dx
     mov ds, ax
@@ -230,7 +231,7 @@ jit_user_enter:
 
     pushfd
     pop eax
-    or eax, 0x00000200      ; Set IF
+    and eax, 0xFFFFFDFF     ; Clear IF
     push eax
 
     movzx eax, cx

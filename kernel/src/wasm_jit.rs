@@ -1,7 +1,7 @@
 /*!
  * Oreulia Kernel Project
  * 
- * SPDX-License-Identifier: MIT
+ *License-Identifier: Oreulius License (see LICENSE)
  * 
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
  * 
@@ -547,6 +547,21 @@ fn validate_translation_per_block_into(
     native_code: &[u8],
     block_hashes: &mut Vec<u64>,
 ) -> Result<(), &'static str> {
+    // First-principles safety invariant:
+    // every span we index must refer to kernel-mapped memory for its full byte length.
+    if !slice_is_kernel_mapped(wasm_code) {
+        return Err("Unmapped WASM translation buffer");
+    }
+    if !slice_is_kernel_mapped(blocks) {
+        return Err("Unmapped block metadata");
+    }
+    if !slice_is_kernel_mapped(traces) {
+        return Err("Unmapped translation trace metadata");
+    }
+    if !slice_is_kernel_mapped(native_code) {
+        return Err("Unmapped native translation buffer");
+    }
+
     block_hashes.clear();
     if wasm_code.is_empty() {
         if !blocks.is_empty() || !traces.is_empty() {
@@ -653,6 +668,18 @@ fn build_translation_proof(
     traces: &[TranslationRecord],
     native_code: &[u8],
 ) -> Result<TranslationProof, &'static str> {
+    // First-principles safety invariant:
+    // all proof inputs must be fully mapped before any byte-level hashing walk.
+    if !slice_is_kernel_mapped(wasm_code) {
+        return Err("Trace proof unmapped WASM buffer");
+    }
+    if !slice_is_kernel_mapped(traces) {
+        return Err("Trace proof unmapped metadata");
+    }
+    if !slice_is_kernel_mapped(native_code) {
+        return Err("Trace proof unmapped native buffer");
+    }
+
     if wasm_code.is_empty() {
         if !traces.is_empty() {
             return Err("Non-empty translation for empty WASM");
@@ -722,6 +749,19 @@ fn build_translation_proof(
     })
 }
 
+#[inline]
+fn slice_is_kernel_mapped<T>(slice: &[T]) -> bool {
+    let elem = core::mem::size_of::<T>();
+    if elem == 0 || slice.is_empty() {
+        return true;
+    }
+    let bytes = match elem.checked_mul(slice.len()) {
+        Some(v) => v,
+        None => return false,
+    };
+    crate::paging::is_kernel_range_mapped(slice.as_ptr() as usize, bytes)
+}
+
 pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static str> {
     let blocks = analyze_basic_blocks(code);
     let mut emitter = Emitter::new();
@@ -758,6 +798,7 @@ pub struct FuzzCompiler {
     traces: Vec<TranslationRecord>,
     blocks: Vec<BasicBlock>,
     block_hashes: Vec<u64>,
+    exec_code_len: usize,
 }
 
 impl FuzzCompiler {
@@ -777,10 +818,18 @@ impl FuzzCompiler {
             traces,
             blocks,
             block_hashes,
+            exec_code_len: 0,
         })
     }
 
     pub fn compile(&mut self, code: &[u8], locals_total: usize) -> Result<JitFn, &'static str> {
+        // Reuse allocations across fuzz iterations, but always compile from a
+        // clean emitter/trace state so stale machine code cannot be executed.
+        self.emitter.reset();
+        self.traces.clear();
+        self.blocks.clear();
+        self.block_hashes.clear();
+
         emit_code_into(code, locals_total, &mut self.emitter, &mut self.traces)?;
         analyze_basic_blocks_into(code, &mut self.blocks);
         validate_translation_per_block_into(
@@ -795,6 +844,7 @@ impl FuzzCompiler {
             return Err("JIT code too large for fuzz buffer");
         }
         self.exec.write_and_seal(&self.emitter.code)?;
+        self.exec_code_len = self.emitter.code.len();
         let entry = unsafe { core::mem::transmute::<*const u8, JitFn>(self.exec.as_ptr()) };
         Ok(entry)
     }
@@ -804,7 +854,7 @@ impl FuzzCompiler {
     }
 
     pub fn exec_len(&self) -> usize {
-        self.exec.len
+        self.exec_code_len
     }
 
     pub fn emitted_code(&self) -> &[u8] {
