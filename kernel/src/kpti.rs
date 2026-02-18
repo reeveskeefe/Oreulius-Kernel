@@ -292,13 +292,13 @@ pub fn map_user_support(
 
     // Map GDT + TSS pages (supervisor only)
     let (gdt_start, gdt_end) = gdt::gdt_range();
-    map_kernel_range(space, kernel_space, gdt_start, gdt_end)?;
+    map_kernel_range(space, kernel_space, gdt_start, gdt_end, false)?;
     let (tss_start, tss_end) = gdt::tss_range();
-    map_kernel_range(space, kernel_space, tss_start, tss_end)?;
+    map_kernel_range(space, kernel_space, tss_start, tss_end, true)?;
 
     // Map SYSENTER stack page
     let (sys_start, sys_end) = gdt::sysenter_stack_range();
-    map_kernel_range(space, kernel_space, sys_start, sys_end)?;
+    map_kernel_range(space, kernel_space, sys_start, sys_end, true)?;
 
     // Map current kernel stack page (TSS.esp0)
     let esp0 = gdt::kernel_stack_ptr() as usize;
@@ -307,11 +307,12 @@ pub fn map_user_support(
         kernel_space,
         esp0.saturating_sub(paging::PAGE_SIZE),
         esp0 + paging::PAGE_SIZE,
+        true,
     )?;
 
     // Map KPTI globals used by trampolines
     let (kpti_start, kpti_end) = kpti_globals_range();
-    map_kernel_range(space, kernel_space, kpti_start, kpti_end)?;
+    map_kernel_range(space, kernel_space, kpti_start, kpti_end, true)?;
 
     Ok(())
 }
@@ -329,6 +330,7 @@ fn map_kernel_range(
     kernel_space: &paging::AddressSpace,
     start: usize,
     end: usize,
+    writable: bool,
 ) -> Result<(), &'static str> {
     if end <= start {
         return Ok(());
@@ -339,7 +341,7 @@ fn map_kernel_range(
         let phys = kernel_space
             .virt_to_phys(addr)
             .ok_or("Kernel range not mapped")?;
-        space.map_page(addr, phys, false, false)?;
+        space.map_page(addr, phys, writable, false)?;
         addr += paging::PAGE_SIZE;
     }
     Ok(())

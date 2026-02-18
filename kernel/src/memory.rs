@@ -153,6 +153,11 @@ pub fn jit_arena_range() -> (usize, usize) {
     )
 }
 
+pub fn heap_range() -> (usize, usize) {
+    let alloc = ALLOCATOR.0.lock();
+    (alloc.heap_start, alloc.heap_end)
+}
+
 pub fn jit_allocate(size: usize, align: usize) -> Result<usize, &'static str> {
     if size == 0 {
         return Err("Invalid allocation size");

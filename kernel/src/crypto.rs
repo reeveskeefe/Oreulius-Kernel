@@ -13,6 +13,9 @@
 #![allow(dead_code)]
 
 extern crate alloc;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+static AES128_CTR_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // =============================================================================
 // Constant-Time Helpers
@@ -531,6 +534,39 @@ pub fn aes128_encrypt_block_in_place(block: &mut [u8; 16], round_keys: &[u8; AES
 }
 
 pub fn aes128_ctr_xor(key: &[u8; 16], nonce: u64, data: &mut [u8]) {
+    struct IrqGuard(u32);
+    impl Drop for IrqGuard {
+        fn drop(&mut self) {
+            unsafe { crate::idt_asm::fast_sti_restore(self.0) };
+        }
+    }
+
+    let call_idx = AES128_CTR_TRACE_COUNT
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1);
+    if call_idx <= 64 || data.len() > (1024 * 1024) {
+        crate::serial::_print(format_args!(
+            "[CRYPTO-DBG] aes128_ctr_xor call={} ptr=0x{:08x} len={} nonce=0x{:016x}\n",
+            call_idx,
+            data.as_ptr() as u32,
+            data.len(),
+            nonce,
+        ));
+    }
+
+    if !crate::paging::is_kernel_range_mapped(data.as_ptr() as usize, data.len()) {
+        crate::serial::_print(format_args!(
+            "[CRYPTO-DBG] aes128_ctr_xor invalid-buffer call={} ptr=0x{:08x} len={}\n",
+            call_idx,
+            data.as_ptr() as u32,
+            data.len(),
+        ));
+        return;
+    }
+
+    let irq_flags = unsafe { crate::idt_asm::fast_cli_save() };
+    let _irq_guard = IrqGuard(irq_flags);
+
     let mut round_keys = aes128_expand_key(key);
 
     let mut counter = 0u64;

@@ -50,13 +50,15 @@ use crate::pit;
 use crate::paging;
 
 // FIX #1: Module-level stacks (properly placed in BSS by linker)
+const KERNEL_THREAD_STACK_BYTES: usize = 1024 * 1024;
+
 #[repr(align(4096))]
 struct AlignedStack {
-    data: [u8; 65536],
+    data: [u8; KERNEL_THREAD_STACK_BYTES],
 }
-static mut KERNEL_STACK_0: AlignedStack = AlignedStack { data: [0; 65536] };
-static mut KERNEL_STACK_1: AlignedStack = AlignedStack { data: [0; 65536] };
-static mut KERNEL_STACK_2: AlignedStack = AlignedStack { data: [0; 65536] };
+static mut KERNEL_STACK_0: AlignedStack = AlignedStack { data: [0; KERNEL_THREAD_STACK_BYTES] };
+static mut KERNEL_STACK_1: AlignedStack = AlignedStack { data: [0; KERNEL_THREAD_STACK_BYTES] };
+static mut KERNEL_STACK_2: AlignedStack = AlignedStack { data: [0; KERNEL_THREAD_STACK_BYTES] };
 
 /// Quantum in ticks (100 Hz = 10ms per tick)
 const QUANTUM_HIGH: u32 = 20;      // 200ms for high priority
@@ -69,6 +71,62 @@ const TEMPORAL_SCHEDULER_SCHEMA_V1: u8 = 1;
 const TEMPORAL_SCHEDULER_HEADER_BYTES: usize = 60;
 const TEMPORAL_SCHEDULER_PROCESS_ENTRY_BYTES: usize = 44;
 const TEMPORAL_SCHEDULER_WAIT_QUEUE_HEADER_BYTES: usize = 12;
+const READY_QUEUE_LEVELS: usize = 3;
+
+#[derive(Clone, Copy)]
+struct ReadyQueue {
+    entries: [Pid; MAX_PROCESSES],
+    head: usize,
+    len: usize,
+}
+
+impl ReadyQueue {
+    const fn new() -> Self {
+        ReadyQueue {
+            entries: [Pid(0); MAX_PROCESSES],
+            head: 0,
+            len: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn push_back(&mut self, pid: Pid) -> bool {
+        if self.len >= MAX_PROCESSES {
+            return false;
+        }
+        let tail = (self.head + self.len) % MAX_PROCESSES;
+        self.entries[tail] = pid;
+        self.len += 1;
+        true
+    }
+
+    fn pop_front(&mut self) -> Option<Pid> {
+        if self.len == 0 {
+            return None;
+        }
+        let pid = self.entries[self.head];
+        self.head = (self.head + 1) % MAX_PROCESSES;
+        self.len -= 1;
+        Some(pid)
+    }
+
+    fn for_each<F: FnMut(Pid)>(&self, mut f: F) {
+        let mut i = 0usize;
+        while i < self.len {
+            let idx = (self.head + i) % MAX_PROCESSES;
+            f(self.entries[idx]);
+            i += 1;
+        }
+    }
+}
 
 fn scheduler_process_state_to_u8(state: ProcessState) -> u8 {
     match state {
@@ -162,7 +220,7 @@ pub struct QuantumScheduler {
     /// Currently running process
     current_pid: Option<Pid>,
     /// Ready queues (multi-level)
-    ready_queues: [VecDeque<Pid>; 3],
+    ready_queues: [ReadyQueue; READY_QUEUE_LEVELS],
     /// Wait queues for blocking operations
     wait_queues: [WaitQueue; MAX_WAIT_QUEUES],
     wait_queue_count: usize,
@@ -210,7 +268,7 @@ impl QuantumScheduler {
         QuantumScheduler {
             processes: [NONE_PROC; MAX_PROCESSES],
             current_pid: None,
-            ready_queues: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
+            ready_queues: [ReadyQueue::new(); READY_QUEUE_LEVELS],
             wait_queues,
             wait_queue_count: 0,
             stats: SchedulerStats {
@@ -365,8 +423,8 @@ impl QuantumScheduler {
             ProcessPriority::Normal => 1,
             ProcessPriority::Low => 2,
         };
-        
-        self.ready_queues[queue_idx].push_back(pid);
+
+        let _ = self.ready_queues[queue_idx].push_back(pid);
     }
 
     /// Dequeue next process from ready queues (priority order)
@@ -757,7 +815,7 @@ impl QuantumScheduler {
             for _ in 0..len {
                 if let Some(queued_pid) = queue.pop_front() {
                     if queued_pid != pid {
-                        queue.push_back(queued_pid);
+                        let _ = queue.push_back(queued_pid);
                     }
                 }
             }
@@ -884,9 +942,7 @@ impl QuantumScheduler {
 
         let mut queue_idx = 0usize;
         while queue_idx < self.ready_queues.len() {
-            for pid in self.ready_queues[queue_idx].iter() {
-                scheduler_append_u32(&mut payload, pid.0);
-            }
+            self.ready_queues[queue_idx].for_each(|pid| scheduler_append_u32(&mut payload, pid.0));
             queue_idx += 1;
         }
 
@@ -1145,19 +1201,19 @@ pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static s
     for pid in ready0.into_iter() {
         let idx = pid as usize;
         if idx < MAX_PROCESSES && sched.processes[idx].is_some() {
-            sched.ready_queues[0].push_back(Pid(pid));
+            let _ = sched.ready_queues[0].push_back(Pid(pid));
         }
     }
     for pid in ready1.into_iter() {
         let idx = pid as usize;
         if idx < MAX_PROCESSES && sched.processes[idx].is_some() {
-            sched.ready_queues[1].push_back(Pid(pid));
+            let _ = sched.ready_queues[1].push_back(Pid(pid));
         }
     }
     for pid in ready2.into_iter() {
         let idx = pid as usize;
         if idx < MAX_PROCESSES && sched.processes[idx].is_some() {
-            sched.ready_queues[2].push_back(Pid(pid));
+            let _ = sched.ready_queues[2].push_back(Pid(pid));
         }
     }
 

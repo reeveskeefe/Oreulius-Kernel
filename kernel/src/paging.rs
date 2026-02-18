@@ -1203,6 +1203,41 @@ pub fn set_page_writable_range(virt_addr: usize, size: usize, writable: bool) ->
     Ok(())
 }
 
+/// Best-effort validation that a kernel virtual range is currently mapped.
+/// Returns `false` if paging is not initialized, overflow is detected, or any page is unmapped.
+pub fn is_kernel_range_mapped(virt_addr: usize, size: usize) -> bool {
+    if size == 0 {
+        return true;
+    }
+    let last = match virt_addr.checked_add(size - 1) {
+        Some(v) => v,
+        None => return false,
+    };
+    let start_page = virt_addr & !(PAGE_SIZE - 1);
+    let end_page = last & !(PAGE_SIZE - 1);
+
+    let guard = KERNEL_ADDRESS_SPACE.lock();
+    let space = match guard.as_ref() {
+        Some(space) => space,
+        None => return false,
+    };
+
+    let mut page = start_page;
+    loop {
+        if !space.is_mapped(page) {
+            return false;
+        }
+        if page == end_page {
+            break;
+        }
+        page = match page.checked_add(PAGE_SIZE) {
+            Some(next) => next,
+            None => return false,
+        };
+    }
+    true
+}
+
 /// Handle page fault interrupt
 pub fn handle_page_fault(virt_addr: usize, error_code: u32) -> Result<(), &'static str> {
     let error = PageFaultError::from_code(error_code);

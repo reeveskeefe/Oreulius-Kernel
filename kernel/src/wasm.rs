@@ -2900,13 +2900,14 @@ struct JitUserState {
     shadow_sp: usize,
 }
 
-const USER_JIT_TRAMPOLINE_BASE: usize = 0x0040_0000;
+// Keep JIT user mappings well away from low-memory kernel/KPTI support pages.
+const USER_JIT_TRAMPOLINE_BASE: usize = 0x2000_0000;
 const USER_JIT_TRAMPOLINE_FAULT_OFFSET: usize = 0x0000_0100;
-const USER_JIT_CALL_BASE: usize = 0x0041_0000;
-const USER_JIT_STACK_BASE: usize = 0x0042_0000;
-const USER_JIT_CODE_BASE: usize = 0x0043_0000;
-const USER_JIT_DATA_BASE: usize = 0x0044_0000;
-const USER_WASM_MEM_BASE: usize = 0x0050_0000;
+const USER_JIT_CALL_BASE: usize = 0x2001_0000;
+const USER_JIT_STACK_BASE: usize = 0x2002_0000;
+const USER_JIT_CODE_BASE: usize = 0x2003_0000;
+const USER_JIT_DATA_BASE: usize = 0x2004_0000;
+const USER_WASM_MEM_BASE: usize = 0x2010_0000;
 const USER_JIT_STACK_GUARD_PAGES: usize = 1;
 const USER_JIT_STACK_PAGES: usize = 1;
 const USER_JIT_CODE_GUARD_PAGES: usize = 1;
@@ -2914,6 +2915,7 @@ const USER_JIT_DATA_GUARD_PAGES: usize = 1;
 const USER_WASM_MEM_GUARD_PAGES: usize = 1;
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct JitUserCall {
     entry: u32,
     stack_ptr: u32,
@@ -3751,11 +3753,23 @@ impl WasmInstance {
             jit_state_base,
             jit_state_pages,
             &mut self.jit_user_pages,
+            self.process_id.0,
+            self.instance_id as u32,
+            func_idx as u32,
         );
-        let (trap_code_val, instr_left, mem_left) = {
+        let (trap_code_val, instr_left, mem_left, sp_val, shadow_sp_val) = {
             let state = self.jit_state()?;
-            (state.trap_code, state.instr_fuel, state.mem_fuel)
+            (
+                state.trap_code,
+                state.instr_fuel,
+                state.mem_fuel,
+                state.sp,
+                state.shadow_sp,
+            )
         };
+        // Prefer explicit trap reasons from the JIT runtime first. In user-mode
+        // sandbox fault paths, stack cursors can be left non-zero at abort time;
+        // classification should still reflect the originating trap.
         if trap_code_val == -1 {
             return Err(WasmError::MemoryOutOfBounds);
         }
@@ -3770,6 +3784,15 @@ impl WasmInstance {
         }
         if trap_code_val != 0 {
             return Err(WasmError::Trap);
+        }
+        if sp_val > MAX_STACK_DEPTH {
+            return Err(WasmError::Trap);
+        }
+        if shadow_sp_val > MAX_STACK_DEPTH {
+            return Err(WasmError::ControlFlowViolation);
+        }
+        if sp_val != 0 || shadow_sp_val != 0 {
+            return Err(WasmError::ControlFlowViolation);
         }
         if func.result_count == 1 {
             self.stack.push(Value::I32(ret))?;
@@ -3995,11 +4018,21 @@ impl WasmInstance {
             jit_state_base,
             jit_state_pages,
             &mut self.jit_user_pages,
+            self.process_id.0,
+            self.instance_id as u32,
+            func_idx as u32,
         );
-        let (trap_code_val, instr_left, mem_left) = {
+        let (trap_code_val, instr_left, mem_left, sp_val, shadow_sp_val) = {
             let state = self.jit_state()?;
-            (state.trap_code, state.instr_fuel, state.mem_fuel)
+            (
+                state.trap_code,
+                state.instr_fuel,
+                state.mem_fuel,
+                state.sp,
+                state.shadow_sp,
+            )
         };
+        // Match run_jit_entry classification order: honor trap_code first.
         if trap_code_val == -1 {
             if let Some(shadow_inst) = shadow {
                 self.restore_from_shadow(shadow_inst);
@@ -4039,6 +4072,22 @@ impl WasmInstance {
                 return Ok(true);
             }
             return Err(WasmError::Trap);
+        }
+        if sp_val > MAX_STACK_DEPTH {
+            if let Some(shadow_inst) = shadow {
+                self.restore_from_shadow(shadow_inst);
+                self.disable_jit_for_function(func_idx);
+                return Ok(true);
+            }
+            return Err(WasmError::Trap);
+        }
+        if shadow_sp_val > MAX_STACK_DEPTH || sp_val != 0 || shadow_sp_val != 0 {
+            if let Some(shadow_inst) = shadow {
+                self.restore_from_shadow(shadow_inst);
+                self.disable_jit_for_function(func_idx);
+                return Ok(true);
+            }
+            return Err(WasmError::ControlFlowViolation);
         }
         if func.result_count == 1 {
             self.stack.push(Value::I32(ret))?;
@@ -7718,8 +7767,16 @@ static JIT_FUZZ_SCRATCH: Mutex<Option<JitFuzzScratch>> = Mutex::new(None);
 static JIT_FUZZ_COMPILER: Mutex<Option<crate::wasm_jit::FuzzCompiler>> = Mutex::new(None);
 static JIT_FUZZ_INSTANCES: Mutex<Option<(usize, usize)>> = Mutex::new(None);
 static JIT_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
+static JIT_FAULT_EXEC_START: AtomicU32 = AtomicU32::new(0);
+static JIT_FAULT_EXEC_END: AtomicU32 = AtomicU32::new(0);
 static mut JIT_FAULT_TRAP_PTR: *mut i32 = core::ptr::null_mut();
 static JIT_USER_LOCK: Mutex<()> = Mutex::new(());
+static JIT_USER_SANDBOX: Mutex<Option<paging::AddressSpace>> = Mutex::new(None);
+static JIT_KERNEL_CALL_LOCK: Mutex<()> = Mutex::new(());
+static JIT_USER_DEBUG_STAGE: AtomicU32 = AtomicU32::new(0);
+static JIT_USER_FAULT_LOGGED: AtomicBool = AtomicBool::new(false);
+static JIT_USER_ENTER_TICK: AtomicU32 = AtomicU32::new(0);
+static JIT_USER_HANDOFF_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy)]
 struct JitUserPages {
@@ -7737,8 +7794,63 @@ pub static JIT_USER_RETURN_PENDING: AtomicU32 = AtomicU32::new(0);
 pub static JIT_USER_RETURN_EIP: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
 pub static JIT_USER_RETURN_ESP: AtomicU32 = AtomicU32::new(0);
+#[no_mangle]
+pub static JIT_USER_SYSCALL_VIOLATION: AtomicU32 = AtomicU32::new(0);
+#[no_mangle]
+pub static JIT_USER_DBG_CALL_SEQ: AtomicU32 = AtomicU32::new(0);
+#[no_mangle]
+pub static mut JIT_USER_DBG_CALL_ENTRY: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_CALL_STACK_PTR: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_CALL_SP_PTR: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_CALL_MEM_PTR: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_CALL_MEM_LEN: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_CALL_TRAP_PTR: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_CALL_PID: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_CALL_INSTANCE: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_CALL_FUNC: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SAVE_ESP: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SAVE_EIP: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SAVE_SEQ: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SYSCALL_ESP: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SYSCALL_EIP: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SYSCALL_SEQ: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SYSCALL_PATH: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SYSCALL_FLAGS: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SYSCALL_NR: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SYSCALL_FROM_EIP: u32 = 0;
+#[no_mangle]
+pub static mut JIT_USER_DBG_SYSCALL_FROM_CS: u32 = 0;
 
 const TRAP_MEM: i32 = -1;
+const JIT_USER_TIMEOUT_TICKS: u32 = 25; // 250ms @ 100Hz
+
+#[inline]
+fn jit_user_debug_set_stage(stage: u32) {
+    JIT_USER_DEBUG_STAGE.store(stage, Ordering::SeqCst);
+}
+
+#[inline]
+fn jit_user_debug_log(msg: &str) {
+    crate::serial::_print(format_args!("[JIT-DBG] {}\n", msg));
+}
 
 pub fn jit_config() -> &'static Mutex<JitConfig> {
     &JIT_CONFIG
@@ -7748,7 +7860,137 @@ pub fn jit_stats() -> &'static Mutex<JitStats> {
     &JIT_STATS
 }
 
-fn jit_fault_enter(trap_ptr: *mut i32) {
+/// Force-reset transient JIT state after stress/fuzz commands.
+pub fn jit_runtime_recover() {
+    let stale_pending = JIT_USER_RETURN_PENDING.load(Ordering::SeqCst);
+    let stale_active = JIT_USER_ACTIVE.load(Ordering::SeqCst);
+    let stale_ret_eip = JIT_USER_RETURN_EIP.load(Ordering::SeqCst);
+    let stale_ret_esp = JIT_USER_RETURN_ESP.load(Ordering::SeqCst);
+    let stale_save_seq = unsafe { JIT_USER_DBG_SAVE_SEQ };
+    let stale_sys_seq = unsafe { JIT_USER_DBG_SYSCALL_SEQ };
+    if stale_pending != 0
+        || stale_active != 0
+        || stale_ret_eip != 0
+        || stale_ret_esp != 0
+        || stale_save_seq != 0
+        || stale_sys_seq != 0
+    {
+        crate::serial::_print(format_args!(
+            "[JIT-DBG] recover stale pending={} active={} ret_eip=0x{:08x} ret_esp=0x{:08x} save_seq={} sys_seq={}\n",
+            stale_pending,
+            stale_active,
+            stale_ret_eip,
+            stale_ret_esp,
+            stale_save_seq,
+            stale_sys_seq,
+        ));
+    }
+
+    JIT_USER_RETURN_PENDING.store(0, Ordering::SeqCst);
+    JIT_USER_ACTIVE.store(0, Ordering::SeqCst);
+    JIT_USER_RETURN_EIP.store(0, Ordering::SeqCst);
+    JIT_USER_RETURN_ESP.store(0, Ordering::SeqCst);
+    JIT_USER_SYSCALL_VIOLATION.store(0, Ordering::SeqCst);
+
+    JIT_FAULT_ACTIVE.store(false, Ordering::SeqCst);
+    JIT_FAULT_EXEC_START.store(0, Ordering::SeqCst);
+    JIT_FAULT_EXEC_END.store(0, Ordering::SeqCst);
+    JIT_USER_DEBUG_STAGE.store(0, Ordering::SeqCst);
+    JIT_USER_FAULT_LOGGED.store(false, Ordering::SeqCst);
+    JIT_USER_ENTER_TICK.store(0, Ordering::SeqCst);
+    JIT_USER_HANDOFF_LOG_COUNT.store(0, Ordering::SeqCst);
+    JIT_USER_DBG_CALL_SEQ.store(0, Ordering::SeqCst);
+    unsafe {
+        JIT_USER_DBG_CALL_ENTRY = 0;
+        JIT_USER_DBG_CALL_STACK_PTR = 0;
+        JIT_USER_DBG_CALL_SP_PTR = 0;
+        JIT_USER_DBG_CALL_MEM_PTR = 0;
+        JIT_USER_DBG_CALL_MEM_LEN = 0;
+        JIT_USER_DBG_CALL_TRAP_PTR = 0;
+        JIT_USER_DBG_CALL_PID = 0;
+        JIT_USER_DBG_CALL_INSTANCE = 0;
+        JIT_USER_DBG_CALL_FUNC = 0;
+        JIT_USER_DBG_SAVE_ESP = 0;
+        JIT_USER_DBG_SAVE_EIP = 0;
+        JIT_USER_DBG_SAVE_SEQ = 0;
+        JIT_USER_DBG_SYSCALL_ESP = 0;
+        JIT_USER_DBG_SYSCALL_EIP = 0;
+        JIT_USER_DBG_SYSCALL_SEQ = 0;
+        JIT_USER_DBG_SYSCALL_PATH = 0;
+        JIT_USER_DBG_SYSCALL_FLAGS = 0;
+        JIT_USER_DBG_SYSCALL_NR = 0;
+        JIT_USER_DBG_SYSCALL_FROM_EIP = 0;
+        JIT_USER_DBG_SYSCALL_FROM_CS = 0;
+    }
+    unsafe {
+        JIT_FAULT_TRAP_PTR = core::ptr::null_mut();
+    }
+
+    // Drop potentially corrupted fuzz instances/compilers between stress runs.
+    let stale_instances = {
+        let mut slots = JIT_FUZZ_INSTANCES.lock();
+        let prev = *slots;
+        *slots = None;
+        prev
+    };
+    if let Some((interp_id, jit_id)) = stale_instances {
+        let _ = wasm_runtime().destroy(interp_id);
+        if jit_id != interp_id {
+            let _ = wasm_runtime().destroy(jit_id);
+        }
+    }
+    {
+        let mut compiler = JIT_FUZZ_COMPILER.lock();
+        *compiler = None;
+    }
+
+    if kpti::enabled() {
+        kpti::leave_user();
+    } else {
+        idt_asm::reload();
+    }
+
+    if let Some(kernel_cr3) = paging::kernel_page_directory_addr() {
+        unsafe {
+            paging::set_page_directory(kernel_cr3);
+        }
+    }
+
+    unsafe { idt_asm::fast_sti() };
+}
+
+struct JitFaultScope;
+
+impl JitFaultScope {
+    fn enter(trap_ptr: *mut i32, exec_start: usize, exec_len: usize) -> Self {
+        jit_fault_enter(trap_ptr, exec_start, exec_len);
+        JitFaultScope
+    }
+}
+
+impl Drop for JitFaultScope {
+    fn drop(&mut self) {
+        jit_fault_exit();
+    }
+}
+
+fn jit_fault_enter(trap_ptr: *mut i32, exec_start: usize, exec_len: usize) {
+    let (start, end) = if exec_len == 0 {
+        (0u32, 0u32)
+    } else {
+        let start = exec_start as u32;
+        let end = exec_start
+            .checked_add(exec_len)
+            .unwrap_or(exec_start)
+            .min(u32::MAX as usize) as u32;
+        if end <= start {
+            (0u32, 0u32)
+        } else {
+            (start, end)
+        }
+    };
+    JIT_FAULT_EXEC_START.store(start, Ordering::SeqCst);
+    JIT_FAULT_EXEC_END.store(end, Ordering::SeqCst);
     unsafe {
         JIT_FAULT_TRAP_PTR = trap_ptr;
     }
@@ -7757,9 +7999,21 @@ fn jit_fault_enter(trap_ptr: *mut i32) {
 
 fn jit_fault_exit() {
     JIT_FAULT_ACTIVE.store(false, Ordering::SeqCst);
+    JIT_FAULT_EXEC_START.store(0, Ordering::SeqCst);
+    JIT_FAULT_EXEC_END.store(0, Ordering::SeqCst);
     unsafe {
         JIT_FAULT_TRAP_PTR = core::ptr::null_mut();
     }
+}
+
+fn jit_select_kernel_esp0(current_esp: usize) -> u32 {
+    for (start, end) in crate::quantum_scheduler::kernel_stack_bounds() {
+        if current_esp >= start && current_esp < end {
+            return (end as u32).saturating_sub(16);
+        }
+    }
+    let page_top = (current_esp + paging::PAGE_SIZE) & !(paging::PAGE_SIZE - 1);
+    (page_top as u32).saturating_sub(16)
 }
 
 fn write_jit_user_trampoline(trampoline: *mut u8, call_addr: u32) {
@@ -7846,10 +8100,9 @@ fn write_jit_user_trampoline(trampoline: *mut u8, call_addr: u32) {
         // int 0x80
         write_u8!(0xCD);
         write_u8!(0x80);
-        // hlt; jmp $
-        write_u8!(0xF4);
+        // If return handoff does not happen, keep retrying JIT return syscall.
         write_u8!(0xEB);
-        write_u8!(0xFE);
+        write_u8!(0xFC);
         let _ = idx;
 
         // Fault stub at fixed offset
@@ -7874,10 +8127,9 @@ fn write_jit_user_trampoline(trampoline: *mut u8, call_addr: u32) {
         // int 0x80
         f_write_u8!(0xCD);
         f_write_u8!(0x80);
-        // hlt; jmp $
-        f_write_u8!(0xF4);
+        // If return handoff does not happen, keep retrying JIT return syscall.
         f_write_u8!(0xEB);
-        f_write_u8!(0xFE);
+        f_write_u8!(0xFC);
         let _ = fidx;
     }
 }
@@ -7927,10 +8179,15 @@ pub fn jit_user_mark_returned() -> bool {
     false
 }
 
+#[inline]
+pub fn jit_user_active() -> bool {
+    JIT_USER_ACTIVE.load(Ordering::SeqCst) != 0
+}
+
 pub fn jit_handle_page_fault(
     frame: &mut crate::idt_asm::InterruptFrame,
-    _fault_addr: usize,
-    _error_code: u32,
+    fault_addr: usize,
+    error_code: u32,
 ) -> bool {
     if !JIT_FAULT_ACTIVE.load(Ordering::SeqCst) {
         return false;
@@ -7942,6 +8199,17 @@ pub fn jit_handle_page_fault(
     }
     if (frame.cs & 0x3) == 3 {
         if JIT_USER_ACTIVE.load(Ordering::SeqCst) != 0 {
+            if !JIT_USER_FAULT_LOGGED.swap(true, Ordering::SeqCst) {
+                let stage = JIT_USER_DEBUG_STAGE.load(Ordering::SeqCst);
+                crate::serial::_print(format_args!(
+                    "[JIT-DBG] user fault stage={} addr=0x{:08x} err=0x{:08x} eip=0x{:08x} esp=0x{:08x}\n",
+                    stage,
+                    fault_addr as u32,
+                    error_code,
+                    frame.eip,
+                    frame.user_esp
+                ));
+            }
             let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
             frame.eax = 0;
             frame.eip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u32;
@@ -7952,8 +8220,107 @@ pub fn jit_handle_page_fault(
             return true;
         }
     }
+    let start = JIT_FAULT_EXEC_START.load(Ordering::SeqCst) as usize;
+    let end = JIT_FAULT_EXEC_END.load(Ordering::SeqCst) as usize;
+    let eip = frame.eip as usize;
+    if start == 0 || end <= start || eip < start || eip >= end {
+        return false;
+    }
     frame.eax = 0;
     frame.eip = crate::asm_bindings::asm_jit_fault_resume as u32;
+    true
+}
+
+pub fn jit_handle_exception(frame: &mut crate::idt_asm::InterruptFrame) -> bool {
+    if frame.int_no == crate::idt_asm::Exception::PageFault as u32 {
+        return false;
+    }
+    if !JIT_FAULT_ACTIVE.load(Ordering::SeqCst) {
+        return false;
+    }
+    if (frame.cs & 0x3) != 3 || JIT_USER_ACTIVE.load(Ordering::SeqCst) == 0 {
+        return false;
+    }
+
+    // Only absorb CPU faults expected from user JIT execution.
+    match frame.int_no {
+        x if x == crate::idt_asm::Exception::InvalidOpcode as u32 => {}
+        x if x == crate::idt_asm::Exception::DeviceNotAvailable as u32 => {}
+        x if x == crate::idt_asm::Exception::InvalidTSS as u32 => {}
+        x if x == crate::idt_asm::Exception::SegmentNotPresent as u32 => {}
+        x if x == crate::idt_asm::Exception::StackSegmentFault as u32 => {}
+        x if x == crate::idt_asm::Exception::GeneralProtectionFault as u32 => {}
+        x if x == crate::idt_asm::Exception::X87FloatingPoint as u32 => {}
+        x if x == crate::idt_asm::Exception::AlignmentCheck as u32 => {}
+        x if x == crate::idt_asm::Exception::SimdFloatingPoint as u32 => {}
+        x if x == crate::idt_asm::Exception::ControlProtection as u32 => {}
+        _ => return false,
+    }
+
+    unsafe {
+        if !JIT_FAULT_TRAP_PTR.is_null() {
+            *JIT_FAULT_TRAP_PTR = TRAP_MEM;
+        }
+    }
+
+    if !JIT_USER_FAULT_LOGGED.swap(true, Ordering::SeqCst) {
+        let stage = JIT_USER_DEBUG_STAGE.load(Ordering::SeqCst);
+        crate::serial::_print(format_args!(
+            "[JIT-DBG] user exception stage={} vector={} err=0x{:08x} eip=0x{:08x} esp=0x{:08x}\n",
+            stage,
+            frame.int_no,
+            frame.err_code,
+            frame.eip,
+            frame.user_esp
+        ));
+    }
+
+    let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
+    frame.eax = 0;
+    frame.eip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u32;
+    frame.user_esp = (USER_JIT_STACK_BASE
+        + guard_bytes
+        + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE)
+        - 4) as u32;
+    true
+}
+
+pub fn jit_handle_timer_interrupt(frame: &mut crate::idt_asm::InterruptFrame) -> bool {
+    if (frame.cs & 0x3) != 3 || JIT_USER_ACTIVE.load(Ordering::SeqCst) == 0 {
+        return false;
+    }
+    let start_tick = JIT_USER_ENTER_TICK.load(Ordering::SeqCst);
+    if start_tick == 0 {
+        return false;
+    }
+    let now = crate::pit::get_ticks() as u32;
+    if now.wrapping_sub(start_tick) < JIT_USER_TIMEOUT_TICKS {
+        return false;
+    }
+
+    unsafe {
+        if !JIT_FAULT_TRAP_PTR.is_null() {
+            *JIT_FAULT_TRAP_PTR = TRAP_MEM;
+        }
+    }
+    if !JIT_USER_FAULT_LOGGED.swap(true, Ordering::SeqCst) {
+        let stage = JIT_USER_DEBUG_STAGE.load(Ordering::SeqCst);
+        crate::serial::_print(format_args!(
+            "[JIT-DBG] user timeout stage={} start_tick={} now_tick={} eip=0x{:08x} esp=0x{:08x}\n",
+            stage,
+            start_tick,
+            now,
+            frame.eip,
+            frame.user_esp
+        ));
+    }
+    let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
+    frame.eax = 0;
+    frame.eip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u32;
+    frame.user_esp = (USER_JIT_STACK_BASE
+        + guard_bytes
+        + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE)
+        - 4) as u32;
     true
 }
 
@@ -7972,9 +8339,12 @@ fn call_jit_sandboxed(
     jit_state_base: *mut u8,
     jit_state_pages: usize,
     jit_user_pages: &mut Option<JitUserPages>,
+    process_id: u32,
+    instance_id: u32,
+    func_idx: u32,
 ) -> i32 {
     if jit_config().lock().user_mode {
-        if let Ok(ret) = call_jit_user(
+        match call_jit_user(
             jit_entry,
             stack_ptr,
             sp_ptr,
@@ -7989,8 +8359,19 @@ fn call_jit_sandboxed(
             jit_state_base,
             jit_state_pages,
             jit_user_pages,
+            process_id,
+            instance_id,
+            func_idx,
         ) {
-            return ret;
+            Ok(ret) => return ret,
+            Err(_) => {
+                unsafe {
+                    if !trap_code.is_null() {
+                        *trap_code = TRAP_MEM;
+                    }
+                }
+                return 0;
+            }
         }
     }
     call_jit_kernel(
@@ -8021,23 +8402,13 @@ fn call_jit_kernel(
     shadow_stack_ptr: *mut u32,
     shadow_sp_ptr: *mut usize,
 ) -> i32 {
+    let _call_guard = JIT_KERNEL_CALL_LOCK.lock();
     let flags = unsafe { idt_asm::fast_cli_save() };
-    let old_cr3 = paging::current_page_directory_addr();
-    let sandbox = match paging::AddressSpace::new_jit_sandbox() {
-        Ok(space) => space,
-        Err(_) => {
-            unsafe {
-                if !trap_code.is_null() {
-                    *trap_code = TRAP_MEM;
-                }
-            }
-            unsafe { idt_asm::fast_sti_restore(flags) };
-            return 0;
-        }
-    };
-    let pd = sandbox.phys_addr() as u32;
-    jit_fault_enter(trap_code);
-    unsafe { paging::set_page_directory(pd) };
+    let _fault_guard = JitFaultScope::enter(
+        trap_code,
+        jit_entry.exec_ptr as usize,
+        jit_entry.exec_len,
+    );
     let ret = unsafe {
         (jit_entry.entry)(
             stack_ptr,
@@ -8052,8 +8423,6 @@ fn call_jit_kernel(
             shadow_sp_ptr,
         )
     };
-    unsafe { paging::set_page_directory(old_cr3) };
-    jit_fault_exit();
     unsafe { idt_asm::fast_sti_restore(flags) };
     ret
 }
@@ -8073,7 +8442,11 @@ fn call_jit_user(
     jit_state_base: *mut u8,
     jit_state_pages: usize,
     jit_user_pages: &mut Option<JitUserPages>,
+    process_id: u32,
+    instance_id: u32,
+    func_idx: u32,
 ) -> Result<i32, &'static str> {
+    jit_user_debug_set_stage(1);
     let _guard = JIT_USER_LOCK.lock();
     let _ = instr_fuel;
     let _ = mem_fuel;
@@ -8087,26 +8460,44 @@ fn call_jit_user(
     if JIT_USER_ACTIVE.load(Ordering::SeqCst) != 0 {
         return Err("JIT user mode already active");
     }
+    JIT_USER_FAULT_LOGGED.store(false, Ordering::SeqCst);
     JIT_USER_RETURN_PENDING.store(0, Ordering::SeqCst);
+    JIT_USER_SYSCALL_VIOLATION.store(0, Ordering::SeqCst);
 
+    jit_user_debug_set_stage(2);
     let pages = ensure_jit_user_pages(jit_user_pages)?;
     wipe_jit_user_pages(&pages);
 
-    let mut sandbox = if kpti::enabled() {
-        paging::AddressSpace::new_user_minimal()?
-    } else {
-        paging::AddressSpace::new_jit_sandbox()?
-    };
+    jit_user_debug_set_stage(3);
+    // Always use the JIT sandbox kernel map profile here.
+    // Even with KPTI enabled, this function must continue executing kernel
+    // Rust/asm after loading sandbox CR3 (until user entry and on return path).
+    // `new_user_minimal()` omits kernel text/data, which can fault immediately
+    // after CR3 switch while still in ring0.
+    let mut sandbox_slot = JIT_USER_SANDBOX.lock();
+    if sandbox_slot.is_none() {
+        *sandbox_slot = Some(paging::AddressSpace::new_jit_sandbox()?);
+    }
+    let sandbox = sandbox_slot
+        .as_mut()
+        .ok_or("JIT sandbox unavailable")?;
 
     let kernel_guard = paging::kernel_space().lock();
     let kernel_space = kernel_guard
         .as_ref()
         .ok_or("Kernel address space not initialized")?;
 
+    // Ensure user->kernel transitions land on the active scheduler stack.
+    let stack_probe = 0u32;
+    let current_esp = (&stack_probe as *const u32) as usize;
+    let esp0 = jit_select_kernel_esp0(current_esp);
+    crate::gdt::update_kernel_stack(esp0);
+
     if kpti::enabled() {
-        kpti::map_user_support(&mut sandbox, kernel_space)?;
+        kpti::map_user_support(sandbox, kernel_space)?;
     }
 
+    jit_user_debug_set_stage(4);
     let trampoline_phys = kernel_space
         .virt_to_phys(pages.trampoline)
         .ok_or("Trampoline not mapped")?;
@@ -8193,6 +8584,7 @@ fn call_jit_user(
         return Err("WASM memory mapping exceeds window");
     }
 
+    jit_user_debug_set_stage(5);
     let code_base = USER_JIT_CODE_BASE
         .checked_add(code_guard)
         .ok_or("JIT code base overflow")?;
@@ -8215,6 +8607,7 @@ fn call_jit_user(
     memory_isolation::tag_jit_user_state(state_phys, state_map_len, true)?;
     memory_isolation::tag_wasm_linear_memory(mem_phys, mem_map_len, true)?;
 
+    jit_user_debug_set_stage(6);
     sandbox.map_user_range_phys(
         USER_JIT_TRAMPOLINE_BASE,
         trampoline_phys,
@@ -8264,6 +8657,7 @@ fn call_jit_user(
     let sandbox_pd = sandbox.phys_addr() as u32;
     drop(kernel_guard);
 
+    jit_user_debug_set_stage(7);
     let entry_offset = (jit_entry.entry as usize)
         .checked_sub(exec_ptr)
         .ok_or("Invalid JIT entry")?;
@@ -8292,6 +8686,11 @@ fn call_jit_user(
 
     let user_mem_ptr = mem_base + mem_offset;
 
+    // Harden against stale RX flags in the shared JIT arena before staging
+    // user-call metadata and trap/fuel state.
+    paging::set_page_writable_range(pages.call, paging::PAGE_SIZE, true)?;
+    paging::set_page_writable_range(state_ptr as usize, state_map_len, true)?;
+
     let call_ptr = pages.call as *mut JitUserCall;
     unsafe {
         (*call_ptr).entry = user_entry as u32;
@@ -8307,9 +8706,74 @@ fn call_jit_user(
         (*call_ptr).shadow_sp_ptr = (user_state_base + shadow_sp_off) as u32;
         (*call_ptr).ret = 0;
     }
+    let call_seq = JIT_USER_DBG_CALL_SEQ
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1);
+    let call_snapshot = unsafe { *call_ptr };
+    let code_limit = code_base
+        .checked_add(exec_map_len)
+        .ok_or("JIT code limit overflow")?;
+    let data_limit = data_base
+        .checked_add(state_map_len)
+        .ok_or("JIT data limit overflow")?;
+    let mem_limit = mem_base
+        .checked_add(mem_map_len)
+        .ok_or("WASM memory limit overflow")?;
+    let call_meta_valid = (call_snapshot.entry as usize) >= code_base
+        && (call_snapshot.entry as usize) < code_limit
+        && (call_snapshot.stack_ptr as usize) >= data_base
+        && (call_snapshot.stack_ptr as usize) < data_limit
+        && (call_snapshot.sp_ptr as usize) >= data_base
+        && (call_snapshot.sp_ptr as usize) < data_limit
+        && (call_snapshot.locals_ptr as usize) >= data_base
+        && (call_snapshot.locals_ptr as usize) < data_limit
+        && (call_snapshot.instr_fuel_ptr as usize) >= data_base
+        && (call_snapshot.instr_fuel_ptr as usize) < data_limit
+        && (call_snapshot.mem_fuel_ptr as usize) >= data_base
+        && (call_snapshot.mem_fuel_ptr as usize) < data_limit
+        && (call_snapshot.trap_ptr as usize) >= data_base
+        && (call_snapshot.trap_ptr as usize) < data_limit
+        && (call_snapshot.shadow_stack_ptr as usize) >= data_base
+        && (call_snapshot.shadow_stack_ptr as usize) < data_limit
+        && (call_snapshot.shadow_sp_ptr as usize) >= data_base
+        && (call_snapshot.shadow_sp_ptr as usize) < data_limit
+        && (call_snapshot.mem_ptr as usize) >= mem_base
+        && (call_snapshot.mem_ptr as usize) < mem_limit;
+    unsafe {
+        JIT_USER_DBG_CALL_ENTRY = call_snapshot.entry;
+        JIT_USER_DBG_CALL_STACK_PTR = call_snapshot.stack_ptr;
+        JIT_USER_DBG_CALL_SP_PTR = call_snapshot.sp_ptr;
+        JIT_USER_DBG_CALL_MEM_PTR = call_snapshot.mem_ptr;
+        JIT_USER_DBG_CALL_MEM_LEN = call_snapshot.mem_len;
+        JIT_USER_DBG_CALL_TRAP_PTR = call_snapshot.trap_ptr;
+        JIT_USER_DBG_CALL_PID = process_id;
+        JIT_USER_DBG_CALL_INSTANCE = instance_id;
+        JIT_USER_DBG_CALL_FUNC = func_idx;
+    }
+    if call_seq <= 32 {
+        crate::serial::_print(format_args!(
+            "[JIT-DBG] call-desc seq={} pid={} inst={} func={} entry=0x{:08x} stack=0x{:08x} sp=0x{:08x} trap=0x{:08x} shadow_sp=0x{:08x} mem=0x{:08x}+{} valid={}\n",
+            call_seq,
+            process_id,
+            instance_id,
+            func_idx,
+            call_snapshot.entry,
+            call_snapshot.stack_ptr,
+            call_snapshot.sp_ptr,
+            call_snapshot.trap_ptr,
+            call_snapshot.shadow_sp_ptr,
+            call_snapshot.mem_ptr,
+            call_snapshot.mem_len,
+            if call_meta_valid { 1 } else { 0 },
+        ));
+    }
+    if !call_meta_valid {
+        return Err("JIT user call metadata invalid");
+    }
 
     // Ensure trap pointers are set for fault handling.
-    jit_fault_enter(trap_code);
+    jit_user_debug_set_stage(8);
+    let _fault_guard = JitFaultScope::enter(trap_code, 0, 0);
 
     if let Some(session_id) = enclave_session {
         if let Err(e) = crate::enclave::enter(session_id) {
@@ -8323,12 +8787,14 @@ fn call_jit_user(
     if kpti::enabled() {
         let _ = kpti::enter_user(sandbox_pd);
     }
+    jit_user_debug_set_stage(9);
     unsafe { paging::set_page_directory(sandbox_pd) };
 
     let user_stack_top = USER_JIT_STACK_BASE
         + guard_bytes
         + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE)
         - 16;
+    JIT_USER_ENTER_TICK.store(crate::pit::get_ticks() as u32, Ordering::SeqCst);
     unsafe {
         process_asm::jit_user_enter(
             user_stack_top as u32,
@@ -8338,11 +8804,97 @@ fn call_jit_user(
         );
     }
 
+    jit_user_debug_set_stage(10);
+    let mut handoff_ok = true;
+    let (save_seq, save_esp, save_eip, sys_seq, sys_path, sys_flags, sys_esp, sys_eip, sys_nr, sys_from_eip, sys_from_cs) = unsafe {
+        (
+            JIT_USER_DBG_SAVE_SEQ,
+            JIT_USER_DBG_SAVE_ESP,
+            JIT_USER_DBG_SAVE_EIP,
+            JIT_USER_DBG_SYSCALL_SEQ,
+            JIT_USER_DBG_SYSCALL_PATH,
+            JIT_USER_DBG_SYSCALL_FLAGS,
+            JIT_USER_DBG_SYSCALL_ESP,
+            JIT_USER_DBG_SYSCALL_EIP,
+            JIT_USER_DBG_SYSCALL_NR,
+            JIT_USER_DBG_SYSCALL_FROM_EIP,
+            JIT_USER_DBG_SYSCALL_FROM_CS,
+        )
+    };
+    if save_seq == 0
+        || sys_seq == 0
+        || save_esp == 0
+        || save_eip == 0
+        || sys_esp == 0
+        || sys_eip == 0
+        || sys_path == 0
+        || sys_flags != 0
+        || sys_nr != SYSCALL_JIT_RETURN
+        || save_esp != sys_esp
+        || save_eip != sys_eip
+    {
+        handoff_ok = false;
+    }
+    if call_snapshot.entry != user_entry as u32 {
+        handoff_ok = false;
+    }
+    if !handoff_ok || call_seq <= 32 {
+        let log_idx = JIT_USER_HANDOFF_LOG_COUNT
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        if !handoff_ok || log_idx <= 64 {
+            crate::serial::_print(format_args!(
+                "[JIT-DBG] handoff seq={} ok={} pid={} inst={} func={} save_seq={} sys_seq={} path={} flags=0x{:08x} nr={} from=0x{:08x}/0x{:08x} save=0x{:08x}/0x{:08x} sys=0x{:08x}/0x{:08x} entry=0x{:08x}\n",
+                call_seq,
+                if handoff_ok { 1 } else { 0 },
+                process_id,
+                instance_id,
+                func_idx,
+                save_seq,
+                sys_seq,
+                sys_path,
+                sys_flags,
+                sys_nr,
+                sys_from_eip,
+                sys_from_cs,
+                save_esp,
+                save_eip,
+                sys_esp,
+                sys_eip,
+                call_snapshot.entry,
+            ));
+        }
+    }
+
+    // Always consume one-shot return handoff state before re-enabling interrupts.
+    // Otherwise, an unrelated later syscall can observe stale `RETURN_PENDING`
+    // and jump into an old kernel frame.
+    let stale_pending = JIT_USER_RETURN_PENDING.swap(0, Ordering::SeqCst);
+    let stale_active = JIT_USER_ACTIVE.swap(0, Ordering::SeqCst);
+    let stale_ret_eip = JIT_USER_RETURN_EIP.swap(0, Ordering::SeqCst);
+    let stale_ret_esp = JIT_USER_RETURN_ESP.swap(0, Ordering::SeqCst);
+    if stale_pending != 0 || stale_active != 0 {
+        let clear_anomaly = stale_active != 0
+            || stale_pending != 1
+            || stale_ret_esp != save_esp
+            || stale_ret_eip != save_eip;
+        if clear_anomaly || call_seq <= 32 {
+        crate::serial::_print(format_args!(
+            "[JIT-DBG] handoff-clear seq={} pending={} active={} ret=0x{:08x}/0x{:08x}\n",
+            call_seq,
+            stale_pending,
+            stale_active,
+            stale_ret_esp,
+            stale_ret_eip,
+        ));
+        }
+    }
+
+    JIT_USER_ENTER_TICK.store(0, Ordering::SeqCst);
     unsafe { paging::set_page_directory(old_cr3) };
     if kpti::enabled() {
         kpti::leave_user();
     }
-    jit_fault_exit();
     if let Some(session_id) = enclave_session {
         let _ = crate::enclave::exit(session_id);
         let _ = crate::enclave::close(session_id);
@@ -8359,7 +8911,18 @@ fn call_jit_user(
     let _ = memory_isolation::tag_wasm_linear_memory(mem_phys, mem_map_len, false);
     unsafe { idt_asm::fast_sti_restore(flags) };
 
+    if JIT_USER_SYSCALL_VIOLATION.swap(0, Ordering::SeqCst) != 0 {
+        unsafe {
+            if !trap_code.is_null() {
+                *trap_code = TRAP_MEM;
+            }
+        }
+        return Ok(0);
+    }
+
+    jit_user_debug_set_stage(11);
     let ret = unsafe { (*call_ptr).ret };
+    jit_user_debug_set_stage(12);
     Ok(ret)
 }
 
@@ -8619,16 +9182,24 @@ pub fn jit_bounds_self_test() -> Result<(), &'static str> {
 
 /// JIT fuzzing harness (generates random programs and compares interpreter vs JIT).
 fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
-    let mut slots = JIT_FUZZ_INSTANCES.lock();
-    if let Some((interp_id, jit_id)) = *slots {
+    let existing = { *JIT_FUZZ_INSTANCES.lock() };
+    if let Some((interp_id, jit_id)) = existing {
         let interp_ok = wasm_runtime().get_instance_mut(interp_id, |_| ()).is_ok();
         let jit_ok = wasm_runtime().get_instance_mut(jit_id, |_| ()).is_ok();
         if interp_ok && jit_ok {
             return Ok((interp_id, jit_id));
         }
+        if interp_ok {
+            let _ = wasm_runtime().destroy(interp_id);
+        }
+        if jit_ok && jit_id != interp_id {
+            let _ = wasm_runtime().destroy(jit_id);
+        }
+        let mut slots = JIT_FUZZ_INSTANCES.lock();
         *slots = None;
     }
 
+    jit_user_debug_log("fuzz stage: instances-create");
     let mut base_module = WasmModule::new();
     base_module.reserve_bytecode(MAX_FUZZ_CODE_SIZE);
     base_module
@@ -8647,9 +9218,14 @@ fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
     let interp_id = wasm_runtime()
         .instantiate_module(base_module.clone(), ProcessId(1))
         .map_err(|_| "Instance create failed")?;
-    let jit_id = wasm_runtime()
-        .instantiate_module(base_module, ProcessId(1))
-        .map_err(|_| "Instance create failed")?;
+    let jit_id = match wasm_runtime().instantiate_module(base_module, ProcessId(1)) {
+        Ok(id) => id,
+        Err(_) => {
+            let _ = wasm_runtime().destroy(interp_id);
+            return Err("Instance create failed");
+        }
+    };
+    let mut slots = JIT_FUZZ_INSTANCES.lock();
     *slots = Some((interp_id, jit_id));
     Ok((interp_id, jit_id))
 }
@@ -8769,9 +9345,11 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         };
         cfg.enabled = true;
         cfg.hot_threshold = 0;
-        cfg.user_mode = false;
+        // Preserve caller-selected sandbox policy (shell command forces user mode).
+        cfg.user_mode = guard.user_mode;
         guard
     };
+    jit_user_debug_log("fuzz stage: config-ready");
     let _rate_guard = {
         struct RateLimitGuard {
             enabled: bool,
@@ -8786,12 +9364,14 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         sec.set_rate_limit_enabled(false);
         RateLimitGuard { enabled: prev }
     };
+    jit_user_debug_log("fuzz stage: rate-limit-off");
 
     let mut scratch_slot = JIT_FUZZ_SCRATCH.lock();
     if scratch_slot.is_none() {
         *scratch_slot = Some(JitFuzzScratch::new());
     }
     let scratch = scratch_slot.as_mut().ok_or("Fuzz scratch init failed")?;
+    jit_user_debug_log("fuzz stage: scratch-ready");
     let code = &mut scratch.code;
     let interp_mem_snapshot = &mut scratch.interp_mem_snapshot;
     let choice_trace = &mut scratch.choice_trace;
@@ -8799,13 +9379,15 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     let mut compiler_slot = JIT_FUZZ_COMPILER.lock();
     if compiler_slot.is_none() {
         *compiler_slot = Some(
-            crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE)
+            crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
                 .map_err(|_| "Fuzz compiler init failed")?,
         );
     }
     let compiler = compiler_slot.as_mut().ok_or("Fuzz compiler init failed")?;
+    jit_user_debug_log("fuzz stage: compiler-ready");
 
     let (interp_id, jit_id) = ensure_fuzz_instances()?;
+    jit_user_debug_log("fuzz stage: instances-ready");
 
     let _ = wasm_runtime().get_instance_mut(interp_id, |instance| {
         instance.prepare_fuzz();
@@ -8832,6 +9414,9 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     let mut edge_seen = [false; JIT_FUZZ_OPCODE_BINS * JIT_FUZZ_OPCODE_BINS];
 
     for iter in 0..iterations {
+        if iter == 0 {
+            jit_user_debug_log("fuzz stage: iteration-0-start");
+        }
         let locals_total = (rng.next_u32() % 4) as usize;
         code.clear();
         choice_trace.clear();
@@ -8840,8 +9425,8 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
 
         for _ in 0..ops {
             // Keep enough headroom for the largest generated opcode sequence:
-            // i32.store + 2x uleb32 (1 + 5 + 5 bytes) plus trailing End.
-            if code.len() + 16 >= MAX_FUZZ_CODE_SIZE {
+            // bounded i32.store rewrite with local temp and immediates.
+            if code.len() + 40 >= MAX_FUZZ_CODE_SIZE {
                 break;
             }
             let choice = choose_guided_choice(&mut rng, &opcode_hits);
@@ -8921,17 +9506,38 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 }
                 10 => {
                     if stack_depth >= 1 {
+                        // Keep memory accesses bounded and deterministic:
+                        // mask address to <= 0xFFFC before load.
+                        code.push(Opcode::I32Const as u8);
+                        push_sleb128_i32(code, 0xFFFC);
+                        stack_depth += 1;
+                        code.push(Opcode::I32And as u8);
+                        stack_depth -= 1;
                         code.push(Opcode::I32Load as u8);
                         push_uleb128(code, 0);
-                        push_uleb128(code, rng.next_u32());
+                        push_uleb128(code, 0);
                         emitted_choice = Some(10);
                     }
                 }
                 11 => {
-                    if stack_depth >= 2 {
+                    if stack_depth >= 2 && locals_total > 0 {
+                        // Store needs stack order [..., addr, value].
+                        // Save value in a local, bound addr, reload value, then store.
+                        let tmp_idx = (rng.next_u32() as usize % locals_total) as u32;
+                        code.push(Opcode::LocalSet as u8);
+                        push_uleb128(code, tmp_idx);
+                        stack_depth -= 1;
+                        code.push(Opcode::I32Const as u8);
+                        push_sleb128_i32(code, 0xFFFC);
+                        stack_depth += 1;
+                        code.push(Opcode::I32And as u8);
+                        stack_depth -= 1;
+                        code.push(Opcode::LocalGet as u8);
+                        push_uleb128(code, tmp_idx);
+                        stack_depth += 1;
                         code.push(Opcode::I32Store as u8);
                         push_uleb128(code, 0);
-                        push_uleb128(code, rng.next_u32());
+                        push_uleb128(code, 0);
                         stack_depth -= 2;
                         emitted_choice = Some(11);
                     }
@@ -9007,6 +9613,9 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         }
 
         let interp = match wasm_runtime().get_instance_mut(interp_id, |instance| {
+            if iter == 0 {
+                jit_user_debug_log("fuzz stage: iteration-0-interp");
+            }
             instance.load_fuzz_program(&code, locals_total)?;
             instance.enable_jit(false);
             let mut res = instance.call(0);
@@ -9065,7 +9674,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 match compiler.compile(&code, locals_total) {
                     Ok(entry) => entry,
                     Err(second_err) => {
-                        match crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE) {
+                        match crate::wasm_jit::FuzzCompiler::new(
+                            MAX_FUZZ_JIT_CODE_SIZE,
+                            MAX_FUZZ_CODE_SIZE,
+                        ) {
                             Ok(mut fresh_compiler) => match fresh_compiler.compile(&code, locals_total) {
                                 Ok(entry) => {
                                     *compiler = fresh_compiler;
@@ -9121,6 +9733,9 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         };
 
         let jit = match wasm_runtime().get_instance_mut(jit_id, |instance| {
+            if iter == 0 {
+                jit_user_debug_log("fuzz stage: iteration-0-jit");
+            }
             instance.load_fuzz_program(&code, locals_total)?;
             let res = instance.run_jit_entry(0, jit_entry);
             let value = instance
@@ -9196,20 +9811,25 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             }
         }
 
-        if mismatch && stats.first_mismatch.is_none() {
-            stats.first_mismatch = Some(JitFuzzMismatch {
-                iteration: iter,
-                locals_total: locals_total as u32,
-                code: code.clone(),
-                interp: interp_res,
-                jit: jit_res,
-                interp_mem_hash: interp_mem,
-                jit_mem_hash: jit_mem,
-                interp_mem_len,
-                jit_mem_len,
-                interp_first_nonzero,
-                jit_first_nonzero,
-            });
+        if mismatch {
+            if stats.first_mismatch.is_none() {
+                stats.first_mismatch = Some(JitFuzzMismatch {
+                    iteration: iter,
+                    locals_total: locals_total as u32,
+                    code: code.clone(),
+                    interp: interp_res,
+                    jit: jit_res,
+                    interp_mem_hash: interp_mem,
+                    jit_mem_hash: jit_mem,
+                    interp_mem_len,
+                    jit_mem_len,
+                    interp_first_nonzero,
+                    jit_first_nonzero,
+                });
+            }
+            // Fail fast after first mismatch: continuing JIT execution can amplify
+            // divergence into unstable runtime state and obscure root cause.
+            break;
         }
     }
 

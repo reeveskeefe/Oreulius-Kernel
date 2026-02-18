@@ -231,7 +231,31 @@ fn collect_dynamic(phdrs: &[Elf32Phdr], bytes: &[u8], base: u32) -> Result<Optio
     Ok(Some(out))
 }
 
-fn apply_relocations(space: &AddressSpace, dyns: &[Elf32Dyn], base: u32) -> Result<(), &'static str> {
+fn addr_in_load_ranges(phdrs: &[Elf32Phdr], base: u32, addr: u32, len: u32) -> bool {
+    let req_start = addr as u64;
+    let req_end = req_start.saturating_add(len as u64);
+    if req_end <= req_start {
+        return false;
+    }
+    for ph in phdrs {
+        if ph.p_type != PT_LOAD || ph.p_memsz == 0 {
+            continue;
+        }
+        let seg_start = (base as u64).saturating_add(ph.p_vaddr as u64);
+        let seg_end = seg_start.saturating_add(ph.p_memsz as u64);
+        if req_start >= seg_start && req_end <= seg_end {
+            return true;
+        }
+    }
+    false
+}
+
+fn apply_relocations(
+    space: &AddressSpace,
+    dyns: &[Elf32Dyn],
+    phdrs: &[Elf32Phdr],
+    base: u32,
+) -> Result<(), &'static str> {
     let mut rel_addr = 0u32;
     let mut rel_size = 0u32;
     let mut rel_ent = size_of::<Elf32Rel>() as u32;
@@ -257,17 +281,42 @@ fn apply_relocations(space: &AddressSpace, dyns: &[Elf32Dyn], base: u32) -> Resu
     if rel_ent as usize != size_of::<Elf32Rel>() {
         return Err("Invalid REL entry size");
     }
+    let rel_table_start = base
+        .checked_add(rel_addr)
+        .ok_or("REL table address overflow")?;
+    if !addr_in_load_ranges(phdrs, base, rel_table_start, rel_size) {
+        return Err("REL table outside load segments");
+    }
 
     let old = paging::current_page_directory_addr();
     unsafe { space.activate(); }
 
     let count = rel_size / rel_ent;
     for i in 0..count {
-        let rel_ptr = (base + rel_addr + i * rel_ent) as *const Elf32Rel;
+        let rel_entry_addr = rel_table_start
+            .checked_add(i.saturating_mul(rel_ent))
+            .ok_or("REL entry address overflow")?;
+        if !addr_in_load_ranges(
+            phdrs,
+            base,
+            rel_entry_addr,
+            size_of::<Elf32Rel>() as u32,
+        ) {
+            unsafe { paging::set_page_directory(old); }
+            return Err("REL entry outside load segments");
+        }
+        let rel_ptr = rel_entry_addr as *const Elf32Rel;
         let rel = unsafe { ptr::read_unaligned(rel_ptr) };
         let r_type = rel.r_info & 0xFF;
         if r_type == R_386_RELATIVE {
-            let reloc_addr = (base + rel.r_offset) as *mut u32;
+            let reloc_u32 = base
+                .checked_add(rel.r_offset)
+                .ok_or("Relocation address overflow")?;
+            if !addr_in_load_ranges(phdrs, base, reloc_u32, size_of::<u32>() as u32) {
+                unsafe { paging::set_page_directory(old); }
+                return Err("Relocation target outside load segments");
+            }
+            let reloc_addr = reloc_u32 as *mut u32;
             let val = unsafe { ptr::read_unaligned(reloc_addr) };
             unsafe { ptr::write_unaligned(reloc_addr, val.wrapping_add(base)) };
         }
@@ -333,7 +382,7 @@ pub fn load_elf32(bytes: &[u8]) -> Result<LoadedElf, &'static str> {
     }
 
     if let Some(dyns) = collect_dynamic(&phdrs, bytes, base)? {
-        apply_relocations(&space, &dyns, base)?;
+        apply_relocations(&space, &dyns, &phdrs, base)?;
     }
 
     let stack_base = (USER_TOP - (DEFAULT_STACK_PAGES * PAGE_SIZE)) as u32;

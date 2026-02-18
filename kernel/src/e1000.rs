@@ -188,6 +188,9 @@ impl E1000Driver {
         }
         
         self.mmio_base = bar0 & !0xF;  // Clear flag bits
+        if self.mmio_base < 0x0010_0000 {
+            return Err("E1000: MMIO base below minimum");
+        }
         E1000_MMIO_BASE.store(self.mmio_base, Ordering::Release);
         
         // Reset the device
@@ -197,7 +200,7 @@ impl E1000Driver {
         self.read_mac_address();
         
         // Initialize multicast table
-        self.init_multicast_table();
+        self.init_multicast_table()?;
         
         // Initialize RX/TX
         self.init_rx();
@@ -210,7 +213,17 @@ impl E1000Driver {
         Ok(())
     }
 
+    #[inline(never)]
+    fn mmio_addr(&self, reg: u32) -> Option<u32> {
+        let addr = self.mmio_base.checked_add(reg)?;
+        if addr < 0x0010_0000 {
+            return None;
+        }
+        Some(addr)
+    }
+
     /// Reset the E1000 device
+    #[inline(never)]
     fn reset(&mut self) {
         // Set reset bit
         self.write_reg(E1000_REG_CTRL, E1000_CTRL_RST);
@@ -225,6 +238,7 @@ impl E1000Driver {
     }
 
     /// Read MAC address from EEPROM
+    #[inline(never)]
     fn read_mac_address(&mut self) {
         // Read MAC address from EEPROM using E1000_REG_EEPROM
         // MAC is stored in EEPROM words 0-2 (6 bytes total)
@@ -241,6 +255,7 @@ impl E1000Driver {
     }
     
     /// Read a 16-bit word from EEPROM
+    #[inline(never)]
     fn read_eeprom(&mut self, addr: u16) -> u16 {
         // Write EEPROM read request: address | start bit
         self.write_reg(E1000_REG_EEPROM, 0x00000001 | ((addr as u32) << 8));
@@ -263,14 +278,17 @@ impl E1000Driver {
     }
 
     /// Initialize multicast table array (128 entries)
-    fn init_multicast_table(&mut self) {
+    #[inline(never)]
+    fn init_multicast_table(&mut self) -> Result<(), &'static str> {
         // Clear all multicast table entries using E1000_REG_MTA
         for i in 0..128 {
             self.write_reg(E1000_REG_MTA + (i * 4), 0);
         }
+        Ok(())
     }
 
     /// Initialize receive descriptors
+    #[inline(never)]
     fn init_rx(&mut self) {
         unsafe {
             let rx_phys = RX_BUFFERS.data.as_ptr() as u32;
@@ -305,6 +323,7 @@ impl E1000Driver {
     }
 
     /// Initialize transmit descriptors
+    #[inline(never)]
     fn init_tx(&mut self) {
         unsafe {
             let tx_phys = TX_BUFFERS.data.as_ptr() as u32;
@@ -339,6 +358,7 @@ impl E1000Driver {
     }
 
     /// Enable the device
+    #[inline(never)]
     fn enable(&mut self) {
         let ctrl = E1000_CTRL_ASDE | E1000_CTRL_SLU;
         self.write_reg(E1000_REG_CTRL, ctrl);
@@ -348,19 +368,24 @@ impl E1000Driver {
     }
 
     /// Write to an E1000 register
+    #[inline(never)]
     fn write_reg(&mut self, reg: u32, value: u32) {
-        unsafe {
-            let addr = (self.mmio_base + reg) as *mut u32;
-            core::ptr::write_volatile(addr, value);
+        if let Some(addr) = self.mmio_addr(reg) {
+            unsafe {
+                core::ptr::write_volatile(addr as *mut u32, value);
+            }
         }
     }
 
     /// Read from an E1000 register
+    #[inline(never)]
     fn read_reg(&self, reg: u32) -> u32 {
-        unsafe {
-            let addr = (self.mmio_base + reg) as *const u32;
-            core::ptr::read_volatile(addr)
+        if let Some(addr) = self.mmio_addr(reg) {
+            unsafe {
+                return core::ptr::read_volatile(addr as *const u32);
+            }
         }
+        0
     }
 
     /// Handle E1000 interrupt (clears ICR and processes events)

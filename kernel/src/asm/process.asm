@@ -147,36 +147,40 @@ global jit_user_enter
 extern JIT_USER_RETURN_EIP
 extern JIT_USER_RETURN_ESP
 extern JIT_USER_ACTIVE
+extern JIT_USER_DBG_SAVE_ESP
+extern JIT_USER_DBG_SAVE_EIP
+extern JIT_USER_DBG_SAVE_SEQ
 ; void enter_user_mode(u32 esp, u32 eip, u16 cs, u16 ds)
 ; Transitions from kernel to user mode
 ; Prepares for IRET to user space
 enter_user_mode:
     cli                     ; Disable interrupts
-    
+
+    ; Capture arguments before building the IRET frame.
+    ; Args: [esp+4]=user_esp, [esp+8]=user_eip, [esp+12]=user_cs, [esp+16]=user_ds
+    mov edx, [esp + 4]      ; User ESP
+    mov ecx, [esp + 8]      ; User EIP
+    movzx ebx, word [esp + 12] ; User CS
+    movzx eax, word [esp + 16] ; User DS
+
     mov ax, [esp + 16]      ; User data segment
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
-    
+
     ; Build IRET frame
-    mov eax, [esp + 16]     ; User DS
-    push eax                ; SS
-    
-    mov eax, [esp + 4]      ; User ESP
-    push eax
-    
+    push eax                ; SS (user DS selector)
+    push edx                ; User ESP
+
     pushfd                  ; EFLAGS
     pop eax
     or eax, 0x200           ; Enable interrupts in user mode
     push eax
-    
-    mov eax, [esp + 16]     ; User CS
-    push eax
-    
-    mov eax, [esp + 12]     ; User EIP
-    push eax
-    
+
+    push ebx                ; User CS
+    push ecx                ; User EIP
+
     iretd                   ; Return to user mode
 
 ; ============================================================================
@@ -194,25 +198,46 @@ jit_user_enter:
     ; Save kernel return context
     mov eax, esp
     mov [JIT_USER_RETURN_ESP], eax
+    mov [JIT_USER_DBG_SAVE_ESP], eax
     mov eax, .return
     mov [JIT_USER_RETURN_EIP], eax
+    mov [JIT_USER_DBG_SAVE_EIP], eax
+    mov eax, [JIT_USER_DBG_SAVE_SEQ]
+    add eax, 1
+    mov [JIT_USER_DBG_SAVE_SEQ], eax
     mov eax, 1
     xchg eax, [JIT_USER_ACTIVE]
 
     ; Load args
-    mov eax, [ebp + 8]      ; User ESP
+    mov esi, [ebp + 8]      ; User ESP
     mov ebx, [ebp + 12]     ; User EIP
     mov cx, [ebp + 16]      ; User CS
     mov dx, [ebp + 20]      ; User DS
 
+    ; Enter user mode with IF enabled so timer preemption can still run.
+    ; With KPTI + per-thread esp0 handling fixed, this avoids hard hangs when
+    ; fuzzed JIT code spins and would otherwise block all scheduling.
+    cli
+    mov ax, dx
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+
     movzx eax, dx
+    push eax                ; SS (user DS selector)
+    push esi                ; User ESP
+
+    pushfd
+    pop eax
+    or eax, 0x00000200      ; Set IF
     push eax
+
     movzx eax, cx
-    push eax
-    push ebx
-    push eax
-    call enter_user_mode
-    add esp, 16
+    push eax                ; User CS
+    push ebx                ; User EIP
+
+    iretd
 
 .return:
     xor eax, eax

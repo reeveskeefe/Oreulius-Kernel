@@ -172,8 +172,8 @@ impl JitExecBuffer {
     }
 }
 
-pub fn analyze_basic_blocks(code: &[u8]) -> Vec<BasicBlock> {
-    let mut blocks = Vec::new();
+fn analyze_basic_blocks_into(code: &[u8], blocks: &mut Vec<BasicBlock>) {
+    blocks.clear();
     let mut start = 0usize;
     let mut pc = 0usize;
     while pc < code.len() {
@@ -202,21 +202,27 @@ pub fn analyze_basic_blocks(code: &[u8]) -> Vec<BasicBlock> {
     if start < code.len() {
         blocks.push(BasicBlock { start, end: code.len() });
     }
+}
+
+pub fn analyze_basic_blocks(code: &[u8]) -> Vec<BasicBlock> {
+    let mut blocks = Vec::new();
+    analyze_basic_blocks_into(code, &mut blocks);
     blocks
 }
 
-fn emit_code(
+fn emit_code_into(
     code: &[u8],
     locals_total: usize,
     emitter: &mut Emitter,
-) -> Result<Vec<TranslationRecord>, &'static str> {
+    traces: &mut Vec<TranslationRecord>,
+) -> Result<(), &'static str> {
     if locals_total > MAX_LOCALS {
         return Err("Too many locals");
     }
     emitter.reset();
     emitter.emit_prologue();
 
-    let mut traces = Vec::new();
+    traces.clear();
     let mut pc = 0usize;
     let mut stack_depth: i32 = 0;
     let mut max_depth: i32 = 0;
@@ -418,6 +424,16 @@ fn emit_code(
         trap_cfi_pos,
     ];
     verify_x86_subset(&emitter.code, locals_total, &trap_targets)?;
+    Ok(())
+}
+
+fn emit_code(
+    code: &[u8],
+    locals_total: usize,
+    emitter: &mut Emitter,
+) -> Result<Vec<TranslationRecord>, &'static str> {
+    let mut traces = Vec::new();
+    emit_code_into(code, locals_total, emitter, &mut traces)?;
     Ok(traces)
 }
 
@@ -524,17 +540,19 @@ fn validate_trace_shape(opcode: Opcode, code: &[u8]) -> Result<(), &'static str>
     Ok(())
 }
 
-fn validate_translation_per_block(
+fn validate_translation_per_block_into(
     wasm_code: &[u8],
     blocks: &[BasicBlock],
     traces: &[TranslationRecord],
     native_code: &[u8],
-) -> Result<Vec<u64>, &'static str> {
+    block_hashes: &mut Vec<u64>,
+) -> Result<(), &'static str> {
+    block_hashes.clear();
     if wasm_code.is_empty() {
         if !blocks.is_empty() || !traces.is_empty() {
             return Err("Empty WASM with non-empty translation metadata");
         }
-        return Ok(Vec::new());
+        return Ok(());
     }
     if blocks.is_empty() {
         return Err("Missing basic block metadata");
@@ -543,7 +561,6 @@ fn validate_translation_per_block(
         return Err("Missing translation traces");
     }
 
-    let mut block_hashes = Vec::with_capacity(blocks.len());
     let mut trace_idx = 0usize;
     let mut expected_x86 = traces[0].x86_start;
 
@@ -611,6 +628,23 @@ fn validate_translation_per_block(
         return Err("Orphan translation traces");
     }
 
+    Ok(())
+}
+
+fn validate_translation_per_block(
+    wasm_code: &[u8],
+    blocks: &[BasicBlock],
+    traces: &[TranslationRecord],
+    native_code: &[u8],
+) -> Result<Vec<u64>, &'static str> {
+    let mut block_hashes = Vec::new();
+    validate_translation_per_block_into(
+        wasm_code,
+        blocks,
+        traces,
+        native_code,
+        &mut block_hashes,
+    )?;
     Ok(block_hashes)
 }
 
@@ -721,21 +755,42 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
 pub struct FuzzCompiler {
     emitter: Emitter,
     exec: JitExecBuffer,
+    traces: Vec<TranslationRecord>,
+    blocks: Vec<BasicBlock>,
+    block_hashes: Vec<u64>,
 }
 
 impl FuzzCompiler {
-    pub fn new(max_code_size: usize) -> Result<Self, &'static str> {
+    pub fn new(max_code_size: usize, max_wasm_code_size: usize) -> Result<Self, &'static str> {
         let mut emitter = Emitter::new();
         emitter.reserve(max_code_size, 128);
+        let mut traces = Vec::new();
+        traces.reserve_exact(max_wasm_code_size);
+        let mut blocks = Vec::new();
+        blocks.reserve_exact(max_wasm_code_size);
+        let mut block_hashes = Vec::new();
+        block_hashes.reserve_exact(max_wasm_code_size);
         let exec = JitExecBuffer::new(max_code_size)?;
-        Ok(FuzzCompiler { emitter, exec })
+        Ok(FuzzCompiler {
+            emitter,
+            exec,
+            traces,
+            blocks,
+            block_hashes,
+        })
     }
 
     pub fn compile(&mut self, code: &[u8], locals_total: usize) -> Result<JitFn, &'static str> {
-        let traces = emit_code(code, locals_total, &mut self.emitter)?;
-        let blocks = analyze_basic_blocks(code);
-        let _ = validate_translation_per_block(code, &blocks, &traces, &self.emitter.code)?;
-        let _ = build_translation_proof(code, &traces, &self.emitter.code)?;
+        emit_code_into(code, locals_total, &mut self.emitter, &mut self.traces)?;
+        analyze_basic_blocks_into(code, &mut self.blocks);
+        validate_translation_per_block_into(
+            code,
+            &self.blocks,
+            &self.traces,
+            &self.emitter.code,
+            &mut self.block_hashes,
+        )?;
+        let _ = build_translation_proof(code, &self.traces, &self.emitter.code)?;
         if self.emitter.code.len() > self.exec.len {
             return Err("JIT code too large for fuzz buffer");
         }
@@ -1144,8 +1199,12 @@ impl Emitter {
         self.emit_pop_to_ebx();
         // pop addr -> eax (preserves ebx value via helper scratch)
         self.emit_pop_to_eax();
+        // Preserve the store value because bounds checking uses ebx as scratch.
+        self.emit(&[0x89, 0x5D, 0xE4]);
         // bounds check address in eax
         self.emit_bounds_check(off, 4);
+        // Restore store value.
+        self.emit(&[0x8B, 0x5D, 0xE4]);
         // mov [edx + eax], ebx
         self.emit(&[0x89, 0x1C, 0x02]);
     }

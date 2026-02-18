@@ -6475,6 +6475,26 @@ fn cmd_formal_verify() {
 }
 
 fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
+    struct ScopedJitUserMode {
+        prev: bool,
+    }
+
+    impl ScopedJitUserMode {
+        fn enter(user_mode: bool) -> Self {
+            let mut cfg = crate::wasm::jit_config().lock();
+            let prev = cfg.user_mode;
+            cfg.user_mode = user_mode;
+            ScopedJitUserMode { prev }
+        }
+    }
+
+    impl Drop for ScopedJitUserMode {
+        fn drop(&mut self) {
+            let mut cfg = crate::wasm::jit_config().lock();
+            cfg.user_mode = self.prev;
+        }
+    }
+
     let iters = match parts.next().and_then(parse_number) {
         Some(v) => v as u32,
         None => {
@@ -6499,7 +6519,11 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
     print_u32(iters);
     vga::print_str("\nSeed: ");
     print_u64(seed);
-    vga::print_str("\nMode: kernel (user-mode disabled)\n\n");
+    vga::print_str("\nMode: user sandbox (forced for stability)\n\n");
+
+    // Defensive reset so prior JIT runs cannot leak transient state into fuzz.
+    crate::wasm::jit_runtime_recover();
+    let _jit_mode_guard = ScopedJitUserMode::enter(true);
 
     match crate::wasm::jit_fuzz(iters, seed) {
         Ok(stats) => {
@@ -6636,10 +6660,31 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\n");
         }
     }
+    crate::wasm::jit_runtime_recover();
     vga::print_str("\n");
 }
 
 fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
+    struct ScopedJitUserMode {
+        prev: bool,
+    }
+
+    impl ScopedJitUserMode {
+        fn enter(user_mode: bool) -> Self {
+            let mut cfg = crate::wasm::jit_config().lock();
+            let prev = cfg.user_mode;
+            cfg.user_mode = user_mode;
+            ScopedJitUserMode { prev }
+        }
+    }
+
+    impl Drop for ScopedJitUserMode {
+        fn drop(&mut self) {
+            let mut cfg = crate::wasm::jit_config().lock();
+            cfg.user_mode = self.prev;
+        }
+    }
+
     let iters = parts
         .next()
         .and_then(parse_number)
@@ -6657,7 +6702,11 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     print_u32(crate::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
     vga::print_str("\nIterations per seed: ");
     print_u32(iters);
+    vga::print_str("\nMode: user sandbox (forced for stability)");
     vga::print_str("\n\n");
+
+    crate::wasm::jit_runtime_recover();
+    let _jit_mode_guard = ScopedJitUserMode::enter(true);
 
     match crate::wasm::jit_fuzz_regression_default(iters) {
         Ok(stats) => {
@@ -6784,10 +6833,31 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\n");
         }
     }
+    crate::wasm::jit_runtime_recover();
     vga::print_str("\n");
 }
 
 fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
+    struct ScopedJitUserMode {
+        prev: bool,
+    }
+
+    impl ScopedJitUserMode {
+        fn enter(user_mode: bool) -> Self {
+            let mut cfg = crate::wasm::jit_config().lock();
+            let prev = cfg.user_mode;
+            cfg.user_mode = user_mode;
+            ScopedJitUserMode { prev }
+        }
+    }
+
+    impl Drop for ScopedJitUserMode {
+        fn drop(&mut self) {
+            let mut cfg = crate::wasm::jit_config().lock();
+            cfg.user_mode = self.prev;
+        }
+    }
+
     let iters = match parts.next().and_then(parse_number) {
         Some(v) => v as u32,
         None => {
@@ -6820,7 +6890,11 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     print_u32(iters);
     vga::print_str("\nSeeds per round: ");
     print_u32(crate::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
+    vga::print_str("\nMode: user sandbox (forced for stability)");
     vga::print_str("\n\n");
+
+    crate::wasm::jit_runtime_recover();
+    let _jit_mode_guard = ScopedJitUserMode::enter(true);
 
     match crate::wasm::jit_fuzz_regression_soak_default(iters, rounds) {
         Ok(stats) => {
@@ -6872,6 +6946,7 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
         }
     }
 
+    crate::wasm::jit_runtime_recover();
     vga::print_str("\n");
 }
 

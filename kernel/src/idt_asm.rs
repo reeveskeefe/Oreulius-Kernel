@@ -570,6 +570,10 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
         );
         return;
     }
+
+    if crate::wasm::jit_handle_exception(frame) {
+        return;
+    }
     
     if let Some(exc) = Exception::from_u8(frame.int_no as u8) {
         crate::serial::_print(format_args!(
@@ -624,7 +628,7 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
     // Debug entry
     // unsafe { crate::advanced_commands::print_hex(frame as usize); crate::vga::print_char('I'); }
     
-    let frame = unsafe { &*frame };
+    let frame = unsafe { &mut *(frame as *const _ as *mut InterruptFrame) };
 
     // VISUAL DEBUG: Every time IRQ 33 (Keyboard) fires, increment a counter on screen at (0, 70)
     // We use a raw VGA write to avoid locks or dependencies.
@@ -641,9 +645,19 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
     unsafe { increment_interrupt_count(frame.int_no as u8) }
     
     if let Some(irq) = Irq::from_vector(frame.int_no as u8) {
+        let jit_user_active = crate::wasm::jit_user_active();
+
+        // While user-JIT is running under sandbox CR3, avoid servicing device IRQ
+        // paths that may require MMIO regions absent from the sandbox mapping.
+        if jit_user_active && irq != Irq::Timer {
+            Pic::send_eoi(irq);
+            return;
+        }
+
         // Handle specific IRQs
         match irq {
             Irq::Timer => {
+                let jit_timed_out = crate::wasm::jit_handle_timer_interrupt(frame);
                 // Acknowledge before preemptive scheduling
                 Pic::send_eoi(irq);
                 crate::pit::tick();
@@ -653,8 +667,10 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
                 // if let Some(mut stack) = crate::netstack::NETWORK_STACK.try_lock() {
                 //     stack.tick();
                 // }
-                
-                crate::quantum_scheduler::on_timer_tick();
+
+                if !jit_user_active && !jit_timed_out {
+                    crate::quantum_scheduler::on_timer_tick();
+                }
                 return;
             }
             Irq::Keyboard => {
