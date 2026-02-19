@@ -1,406 +1,385 @@
-# The Oreulius Kernel
+# Oreulia Kernel
 
 <div align="center">
 
-**A capability-oriented, WebAssembly-native kernel built from the ground up**
+**A capability-native, WebAssembly-first kernel with temporal state and in-kernel verification**
 
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Written in assembly](https://img.shields.io/badge/written%20in-Assembly-brown.svg)](https://en.wikipedia.org/wiki/Assembly_language)
-[![License: Oreulius](docs/oreulius-license-badge.svg)](LICENCE)
+[![License: Oreulia](docs/oreulius-license-badge.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-i686-lightgrey.svg)](https://en.wikipedia.org/wiki/I686)
-<br>
-[![Canada Badge](docs/Made-In-Canada-Badge.svg)](https://en.wikipedia.org/wiki/Canada)
 
-[Features](#key-features) • [Architecture](#architecture) • [Building](#building) • [Running](#running) • [Commands](#commands) • [Documentation](#documentation)
+[Why It Is Different](#why-it-is-different) • [Architecture](#architecture) • [Temporal Universality](#temporal-universality) • [Verification](#verification-and-hardening) • [Build](#build-and-run) • [Commands](#command-taxonomy) • [Docs](#documentation-map)
 
 </div>
 
----
 <div align="center">
-<img src="oreuliuswhitebackground.png" border-radius="10%" width="600" alt="the logo for the kernel oreulius">
-
+<img src="oreuliuswhitebackground.png" width="640" alt="Oreulia kernel logo">
 </div>
 
 ## Overview
 
-Oreulieus is an experimental operating system that rethinks traditional OS design principles. Built in Rust with a focus on security and modern execution models, it provides a foundation for exploring capability-based security, WebAssembly execution, strict privilege transitions, and deterministic system behavior.
+Oreulia is an experimental kernel that treats capabilities, temporal/versioned kernel state, and WebAssembly execution as first-order primitives.
+
+It is designed for technical audiences who care about:
+
+- Authority minimization (no ambient access).
+- Deterministic replay and versioned kernel object history.
+- Tight privilege boundaries for JIT-enabled workloads.
+- Built-in verification and fuzz workflows runnable from the shell.
 
 <div align="center">
-<img src="opencommandlineinterface.png" width="600" alt="the oreulius command line interface once the kernel is booted">
-
+<img src="opencommandlineinterface.png" width="640" alt="Oreulia shell interface">
 </div>
 
-## Formal Security Papers
+## Why It Is Different
 
-Oreulia's formal security records are documented in four companion papers:
+| Area | What Oreulia Does | Why It Matters |
+|---|---|---|
+| Capability model | Access is explicitly delegated via capabilities, not global privilege assumptions. | Reduces blast radius and makes authority flow auditable. |
+| Temporal objects | Kernel objects are versioned with rollback, branching, and merge semantics. | Enables recovery, provenance, and deterministic investigation. |
+| WASM execution | Interpreter + JIT path with hardening and differential validation. | High execution flexibility with safety-focused guardrails. |
+| CapNet control plane | Capability delegation extends over network peers with attestation and replay guards. | Portable authority transfer without ambient trust. |
+| In-kernel verification | Shell commands run formal checks, targeted hardening tests, and fuzz corpus replay. | Reproducible evidence of invariants at runtime. |
 
-- **[Oreulia JIT Security Resolution](docs/oreulia-jit-security-resolution.md)**
-- **[CapNet Scientific Resolution](docs/capnet.md)**
-- **[Intent Graph Predictive Revocation](docs/oreulia-intent-graph-predictive-revocation.md)**
-- **[Function/Service Pointer Capabilities](docs/oreulia-service-pointer-capabilities.md)**
+## Feature Snapshot
 
-Together they cover theorem-backed hardening for in-kernel JIT execution, decentralized capability transfer over the network control plane, behavior-aware predictive capability control in kernel space, and directly callable capability semantics for WASM service composition.
-
-### Key Features
-
-- **Capability-Based Security** - No ambient authority; all access is explicitly granted through capabilities
-- **Intent Graph Predictive Revocation** - Per-process behavioral graph scoring with predictive restriction, quarantine/restore, isolation escalation, and termination recommendation
-- **Function/Service Pointer Capabilities** - Directly callable capability objects for typed WASM-to-WASM service invocation with delegate-gated transfer
-- **CapNet Capability Network** - Portable capability tokens with session-key MAC verification, replay windows, delegation-chain constraints, and persistent revocation
-- **WebAssembly Native** - First-class support for WASM execution with sandboxed module isolation
-- **JIT Hardening Pipeline** - W^X sealing, decoder whitelist validation, SFI/CFI constraints, and translation certificates
-- **Message-Passing IPC** - Dataflow channels for inter-process communication
-- **Persistence-First Design** - Built-in snapshotting and deterministic replay
-- **High-Performance Assembly** - Optimized low-level operations for context switching, memory management, and crypto
-- **Formal + Fuzz Verification** - In-kernel `formal-verify`, coverage-guided fuzzing, corpus replay, and soak checks
-- **QEMU-Ready** - Designed for easy testing and development in virtualized environments
-
----
+- Capability-based security and explicit authority flow.
+- Intent graph predictive revocation and runtime policy control.
+- Service/function pointer capabilities for typed WASM invocation.
+- CapNet tokenized cross-peer capability delegation.
+- Temporal object persistence, branching, rollback, and merge.
+- WebAssembly runtime with JIT toggle, threshold tuning, and fuzz tooling.
+- IPC channels, service registry, VFS, scheduler, network stack, and enclave state integration.
+- Formal verification and corpus-driven fuzzing commands available in shell.
 
 ## Architecture
 
-Oreulieus is built on several core subsystems:
+### System Shape
 
-- **Security Manager** - Audit logging and security policy enforcement
-- **Intent Graph Engine** - Behavioral telemetry, risk scoring, and escalation policy for predictive capability control
-- **Capability Manager** - Authority model with fine-grained permissions
-- **Process Scheduler** - Preemptive multitasking with 100Hz timer
-- **IPC System** - Typed message channels with capability-based access control
-- **Filesystem Service** - Virtual filesystem with quota management
-- **WASM Runtime** - Sandboxed execution environment for WebAssembly modules
-- **Service Pointer Dispatch Layer** - Capability-mediated direct invocation path (`service_register`, `service_invoke`, `service_invoke_typed`) with hot-swap continuity
-- **Network Stack** - Ethernet (E1000/RTL8139) and WiFi support with ARP/ICMP/UDP/TCP + DNS paths
-- **CapNet Control Plane** - Authenticated capability-token exchange (`HELLO/ATTEST/TOKEN_OFFER/TOKEN_ACCEPT/TOKEN_REVOKE/HEARTBEAT`) with attestation-bound peer policy
+```text
++--------------------------------------------------------------+
+| Shell / Command Plane                                        |
+|  help, formal-verify, temporal-*, wasm-jit-*, capnet-*      |
++-------------------------------+------------------------------+
+                                |
++-------------------------------v------------------------------+
+| Capability, Security, Intent, Registry, IPC                 |
+| authority checks, policy, channels, service discovery       |
++-------------------------------+------------------------------+
+                                |
++-------------------------------v------------------------------+
+| WASM Runtime + JIT + Service Pointers                       |
+| interpreted + compiled paths, typed calls, replay hooks     |
++-------------------------------+------------------------------+
+                                |
++-------------------------------v------------------------------+
+| Temporal + Persistence Layer                                  |
+| object adapters, version DAG, rollback/merge, snapshots     |
++-------------------------------+------------------------------+
+                                |
++-------------------------------v------------------------------+
+| Process/Scheduler + VM + Syscall + Network/WiFi/E1000       |
+| context switch, paging, user transitions, protocol stack    |
++--------------------------------------------------------------+
+```
 
-### CapNet Capability Networking
+### Subsystem Map
 
-CapNet extends Oreulia's local capability semantics to cross-device delegation without introducing ambient trust. Tokens are fixed-size, signed capability objects accepted only when all invariants hold:
+| Subsystem | Primary Responsibility | Operational Surface |
+|---|---|---|
+| Capability manager | Fine-grained authority definition and transfer | `cap-list`, `cap-arch`, `cap-test-*` |
+| Security + intent graph | Audit stream, anomaly tracking, predictive policy | `security-*` commands |
+| Process + scheduler | Preemptive scheduling, process lifecycle, context handoff | `spawn`, `ps`, `kill`, `sched-stats`, `quantum-stats` |
+| IPC + registry | Typed channels and service discovery | `ipc-*`, `svc-*`, `intro-demo` |
+| WASM runtime + JIT | Sandboxed execution + optional compilation path | `wasm-*`, `svcptr-*` |
+| Temporal service | Versioned object history, branch/merge/rollback | `temporal-*` |
+| Persistence | Durable snapshot read/write for temporal state | Used by temporal self-checks and restore path |
+| Network + CapNet | Ethernet/WiFi stack and capability network control plane | `net-*`, `wifi-*`, `capnet-*`, `http-*`, `dns-resolve` |
+| Assembly paths | Low-level context, syscall, memory, and perf primitives | `asm-test`, `cpu-bench`, VM/syscall tests |
 
-\[
-\text{Accept}(\tau, p) = \text{MAC}_{k_p}(\tau) \land \text{FreshSeq}(p) \land \text{FreshNonce}(p) \land \text{SubsetRights}(\tau) \land \text{NotRevoked}(\tau)
-\]
+## Temporal Universality
 
-Implementation properties:
+Oreulia's temporal subsystem is adapter-based. Each object class is represented by a stable key prefix and an apply adapter. This is why the model is universal across currently integrated kernel object domains.
 
-- **Token Integrity** - `CapabilityTokenV1` uses deterministic encoding and SipHash MAC under per-peer session keys (boot-key fallback for local diagnostics).
-- **Attestation-Bound Session Keys** - `enclave.rs` installs CapNet peer sessions after attestation policy checks; peer trust policy (`disabled`/`audit`/`enforce`) gates acceptance strictness.
-- **Delegation Safety** - token acceptance enforces parent hash linkage, bounded depth, and rights attenuation before creating a local remote-capability lease.
-- **Replay Resistance** - both control-frame sequence numbers and token nonces use high-watermark + bitmap windows for deterministic stale/duplicate rejection.
-- **Revocation Durability** - token revocations are stored as epoch-ordered tombstones and replayed at initialization to prevent post-reboot replay.
-- **Deterministic Validation** - shell commands expose `capnet-fuzz`, corpus replay, and soak loops for reproducible parser/enforcer regression checks.
+### Object-Class Coverage Matrix
 
-### Assembly-Optimized Components
+| Object Key / Prefix | Object Class | Apply Adapter | Restore Style |
+|---|---|---|---|
+| `/` (VFS path roots) | Filesystem objects | `temporal_apply_vfs_file_payload` | Payload restore into VFS object |
+| `/socket/tcp/listener/<id>` | TCP listener state | `temporal_apply_tcp_listener_payload` | Control-plane state restore |
+| `/socket/tcp/conn/<id>` | TCP connection state | `temporal_apply_tcp_conn_payload` | Control-plane state restore |
+| `/ipc/channel/<id>` | IPC channel state | `temporal_apply_ipc_channel_payload` | Channel metadata/message state restore |
+| `/process/<pid>` | Process metadata state | `temporal_apply_process_payload` | Process state projection restore |
+| `/capability/<pid>/<type>/<obj>` | Capability events/state | `temporal_apply_capability_payload` | Capability graph/state replay |
+| `/registry/service/<type>/<ns>` | Service registry state | `temporal_apply_registry_payload` | Registry entry reconciliation |
+| `/console/object/<id>` | Console service state | `temporal_apply_console_payload` | Console control-plane restore |
+| `/security/intent/policy` | Security intent policy state | `temporal_apply_security_payload` | Policy object restore |
+| `/capnet/state` | CapNet state | `temporal_apply_capnet_payload` | Control-plane restore |
+| `/wasm/service-pointers` | WASM service pointer registry | `temporal_apply_wasm_service_pointer_payload` | Registry/table restore |
+| `/network/config` | Network configuration state | `temporal_apply_network_config_payload` | Config restore |
+| `/wasm/syscall-modules` | WASM syscall module table | `temporal_apply_wasm_syscall_module_table_payload` | Module mapping restore |
+| `/scheduler/state` | Scheduler state snapshot | `temporal_apply_scheduler_payload` | Scheduler metadata restore |
+| `/replay/state` | Replay manager state | `temporal_apply_replay_manager_payload` | Replay control-plane restore |
+| `/network/legacy/state` | Legacy network service state | `temporal_apply_network_legacy_payload` | Legacy service restore |
+| `/wifi/state` | WiFi driver state | `temporal_apply_wifi_payload` | Driver control-plane restore |
+| `/enclave/state` | Enclave/session policy state | `temporal_apply_enclave_payload` | Enclave control-plane restore |
 
-Oreulieus includes hand-written x86 assembly modules for critical operations:
+### Why This Is "Universal" in Practice
 
-- **CPU Features** - CPUID detection and runtime capability gating
-- **Atomic Operations** - Lock-free synchronization primitives with spinlocks
-- **Performance Tools** - RDTSC timing, instruction benchmarking, cache control
-- **Context Switching** - Register/EFLAGS save-restore and thread trampoline transitions
-- **Memory Operations** - Optimized copy/zero paths for hot memory routines
-- **Cryptography** - Assembly-assisted primitives and secure wipe/compare paths
-- **Privilege Entry Paths** - INT 0x80 and SYSENTER with KPTI-aware CR3 transitions
-- **SGX Primitives** - `ECREATE/EADD/EEXTEND/EINIT/EENTER` wiring on supported targets
+- Coverage is key-driven, not special-cased per command.
+- The adapter registry allows additional object classes via `register_object_adapter`.
+- Snapshot decoding supports schema evolution (`v1`, `v2`, `v3`) with integrity validation on decode.
+- Merge path includes deterministic three-way strategies with bounded behavior.
 
----
+## Verification And Hardening
 
-## Building
+### Formal Verification Pipeline (`formal-verify`)
+
+`formal-verify` runs an 8-stage in-kernel verification pipeline:
+
+1. JIT translation proof obligations.
+2. Capability proof obligations.
+3. CapNet proof obligations.
+4. Service pointer proof obligations.
+5. WASM control-flow semantics self-check.
+6. Temporal ABI/VFS/object/persistence/branch/audit/IPC checks.
+7. WASM binary conformance + negative parser fuzz.
+8. Mechanized backend model checks.
+
+### Temporal Hardening Suite (`temporal-hardening-selftest`)
+
+| Check | Purpose |
+|---|---|
+| v2 -> v3 decode compatibility | Validates backward-compatible temporal snapshot decode semantics. |
+| Integrity-tag tamper rejection | Ensures corrupted persisted metadata is rejected. |
+| Deterministic divergent merge | Ensures repeatable merge output for equivalent inputs. |
+| WiFi required-reconnect failure path | Verifies explicit failure behavior for reconnect-required restore conditions. |
+| Enclave active-session re-entry path | Verifies enclave/session hardening behavior across temporal transitions. |
+
+### Differential And Fuzz Validation
+
+- `wasm-jit-fuzz <iters> [seed]`.
+- `wasm-jit-fuzz-corpus <iters>`.
+- `wasm-jit-fuzz-soak <iters> <rounds>`.
+- `capnet-fuzz <iters> [seed]`.
+- `capnet-fuzz-corpus <iters>`.
+- `capnet-fuzz-soak <iters> <rounds>`.
+
+## Build And Run
 
 ### Prerequisites
 
-Make sure you have the following tools installed:
-
 ```bash
-# Rust toolchain (kernel-pinned nightly)
+# Kernel-pinned toolchain
 rustup toolchain install nightly-2023-11-01
-rustup component add rust-src
+rustup component add rust-src --toolchain nightly-2023-11-01
 
-# Build tools (macOS example)
-brew install nasm qemu xorriso
-
-# GRUB tooling
-brew install grub
+# macOS example
+brew install nasm qemu xorriso grub
 ```
 
-### Build Steps
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/reeveskeefe/oreulieus-kernel.git
-   cd oreulieus-kernel/kernel
-   ```
-
-2. **Build the kernel**
-   ```bash
-   ./build.sh
-   ```
-
-   This will:
-   - Compile the Rust kernel (`cargo build --release`)
-   - Assemble boot stub and assembly modules (NASM)
-   - Link everything into a multiboot-compliant kernel
-   - Generate `oreulia.iso` bootable image
-
-3. **Verify the build**
-   ```bash
-   # Check for the ISO file
-   ls -lh oreulia.iso
-   ```
-
----
-
-## Running
-
-### Launch with QEMU
+### Build
 
 ```bash
-# Recommended launcher (uses project defaults)
+git clone https://github.com/reeveskeefe/oreulieus-kernel.git
+cd oreulieus-kernel/kernel
+./build.sh
+```
+
+### Run
+
+```bash
 ./run.sh
-
-# Manual launch with serial output
+# or
 qemu-system-i386 -cdrom oreulia.iso -serial stdio
-
-# Headless mode
-QEMU_EXTRA_ARGS="-display none -nographic -no-reboot -no-shutdown" ./run.sh
 ```
 
-### Quick Rebuild Script
-
-For rapid development cycles:
+### Quick Rebuild Loop
 
 ```bash
-chmod +x quick-rebuild.sh
 ./quick-rebuild.sh
 ```
 
----
+## Command Taxonomy
 
-## Commands
+Use `help` in-kernel for the exhaustive, source-of-truth command list. The taxonomy below highlights the most important command clusters.
 
-Once Oreulia boots, you'll see the shell prompt (`>`). Try these commands:
+### Core System
 
-### System & General
-- `help` - Display available commands
-- `clear` - Clear the screen
-- `echo <text>` - Echo text back to screen
-- `uptime` - Show system uptime
-- `sleep <ms>` - Sleep for N milliseconds
-- `calculate <a> <op> <b>` - Scientific calculator
-- `cpu-info` - Show CPU features and capabilities
-- `cpu-bench` - Benchmark CPU instructions
-- `pci-list` - List PCI devices (hardware detection)
+- `help`, `clear`, `echo`, `uptime`, `sleep`, `calculate`, `cpu-info`, `cpu-bench`, `pci-list`.
 
-### Process Management
-- `spawn <name>` - Spawn a new process
-- `ps` - List all processes
-- `kill <pid>` - Terminate a process
-- `yield` - Yield current process
-- `whoami` - Show current process info
-- `sched-stats` - Show scheduler statistics
-- `elf-run <path>` - Load and run ELF executable from VFS
-- `user-test` - Enter user mode (INT 0x80 test)
+### Process And Scheduling
 
-### Filesystem (VFS & Block)
-- `vfs-ls <path>` - List directory
-- `vfs-mkdir <path>` - Create directory
-- `vfs-write <path> <data>` - Write file
-- `vfs-read <path>` - Read file
-- `vfs-open <path>` - Open file to get fd
-- `vfs-readfd <fd> [n]` - Read via file descriptor
-- `vfs-writefd <fd> <data>` - Write via file descriptor
-- `vfs-close <fd>` - Close file descriptor
-- `vfs-mount-virtio` - Mount VirtIO block device
-- `blk-info` - Show VirtIO block device info
-- `blk-partitions` - List disk partitions
-- `fs-write/read/delete/list` - Key-value filesystem commands (legacy)
+- `spawn`, `ps`, `kill`, `yield`, `whoami`, `sched-stats`, `quantum-stats`, `sched-net-soak`.
 
-### IPC & Services
-- `ipc-create` - Create a new channel
-- `ipc-send <chan> <msg>` - Send a message to channel
-- `ipc-recv <chan>` - Receive a message from channel
-- `svc-register <type>` - Register a service
-- `svc-request <type>` - Request a service
-- `svc-list` - List all services
-- `cap-demo <key>` - Demo capability passing
-- `intro-demo` - Demo introduction protocol
+### Filesystem And VFS
 
-### Networking
-- `net-info` / `eth-info` - Show network/ethernet status
-- `wifi-scan` - Scan for WiFi networks
-- `wifi-connect <ssid>` - Connect to WiFi
-- `http-get <url>` - Perform HTTP GET request
-- `http-server-start [port]` - Start built-in HTTP server
-- `dns-resolve <domain>` - Resolve domain name
-- `netstack-info` - Show TCP/IP stack status
+- `vfs-mkdir`, `vfs-write`, `vfs-read`, `vfs-ls`, `vfs-open`, `vfs-readfd`, `vfs-writefd`, `vfs-close`.
+- `vfs-mount-virtio`, `blk-info`, `blk-partitions`, `blk-read`, `blk-write`.
+- Legacy KV commands: `fs-write`, `fs-read`, `fs-delete`, `fs-list`, `fs-stats`.
 
-### CapNet (Capability Network)
-- `capnet-local` - Show local CapNet device identity
-- `capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]` - Register/update peer trust state
-- `capnet-peer-show <peer_id>` / `capnet-peer-list` - Inspect peer session and trust metadata
-- `capnet-lease-list` - Show active remote capability leases
-- `capnet-hello <ip> <port> <peer_id>` - Send HELLO control frame
-- `capnet-heartbeat <ip> <port> <peer_id> [ack] [ack_only]` - Send heartbeat/ack control frame
-- `capnet-lend <ip> <port> <peer_id> <cap_type> <object_id> <rights> <ttl_ticks> [context_pid] [max_uses] [max_bytes] [measurement] [session_id]` - Send delegated capability token
-- `capnet-accept <ip> <port> <peer_id> <token_id> [ack]` - Acknowledge accepted delegated token
-- `capnet-revoke <ip> <port> <peer_id> <token_id>` - Revoke a delegated token
-- `capnet-stats` - Report peer/lease/journal counters
-- `capnet-demo` - End-to-end lend/use/revoke verification loop
-- `capnet-fuzz <iters> [seed]` - CapNet parser/enforcer fuzzing
-- `capnet-fuzz-corpus <iters>` - Replay deterministic CapNet seed corpus
-- `capnet-fuzz-soak <iters> <rounds>` - Multi-round CapNet corpus soak test
+### Temporal Object Operations
 
-### WebAssembly
-- `wasm-demo` - Run simple WASM math demo
-- `wasm-fs-demo` - Demo WASM filesystem access
-- `wasm-log-demo` - Demo WASM logging
-- `wasm-list` - List loaded WASM instances
-- `svcptr-register <instance_id> <func_idx> [delegate]` - Register function/service pointer capability
-- `svcptr-invoke <object_id> [arg ...]` - Invoke service pointer via legacy i32 ABI
-- `svcptr-send <channel_id> <cap_id>` / `svcptr-recv <channel_id>` - Transfer/import service pointer capability over IPC
-- `svcptr-inject <instance_id> <cap_id>` - Inject service-pointer capability into WASM instance table
-- `svcptr-demo` - End-to-end single-PID service-pointer transfer/invoke demo
-- `svcptr-demo-crosspid` - Cross-PID transfer/invoke proof demo
-- `svcptr-typed-demo` - Mixed-type typed invoke host-path demo (`i64/f32/f64/funcref`)
-- `temporal-abi-selftest` - Temporal-object ABI host-path + VFS fd-write capture self-check
-- `temporal-ipc-demo` - Temporal-object IPC binary-frame demo (`SNAPSHOT/LATEST/HISTORY/STATS`)
-- `wasm-jit-on` / `wasm-jit-off` - Enable/Disable JIT compilation
-- `wasm-jit-bench` - Benchmark JIT vs Interpreter
-- `wasm-jit-stats` - Show JIT statistics
-- `wasm-jit-fuzz <iters> [seed]` - Coverage-guided differential JIT fuzzing
-- `wasm-jit-fuzz-corpus <iters>` - Replay external seed corpus
-- `wasm-jit-fuzz-soak <iters> <rounds>` - Multi-round corpus replay for non-determinism checks
-- `formal-verify` - Run formal verification obligations for JIT translation, capability logic, CapNet model checks, and intent policy checks
+- `temporal-write`, `temporal-snapshot`, `temporal-history`, `temporal-read`, `temporal-rollback`.
+- `temporal-branch-create`, `temporal-branch-list`, `temporal-branch-checkout`, `temporal-merge`.
+- `temporal-stats`, `temporal-retention`, `temporal-ipc-demo`, `temporal-abi-selftest`, `temporal-hardening-selftest`.
 
-### Security & Capabilities
-- `security-audit [count]` - Show security audit log
-- `security-stats` - Show security subsystem statistics
-- `security-anomaly` - Show anomaly detector score/window state
-- `security-intent [pid]` - Show intent-graph process snapshot (scores, counters, restrictions, escalation state)
-- `security-intent-clear <pid>` - Clear intent restriction/recommendation and force-restore quarantined capabilities
-- `security-intent-policy [show|set|reset]` - View or tune runtime intent thresholds/cooldowns/durations without rebuilds
-- `cap-list` - List capabilities
-- `cap-arch` - Show capability architecture
-- `cap-test-atten/cons` - Test capability mechanisms
+### WASM And Service Pointer Capabilities
 
-### Advanced / Debug / Performance
-- `alloc-stats` - Show allocator statistics
-- `leak-check` - Check for memory leaks
-- `quantum-stats` - Process quantum scheduler stats
-- `sched-net-soak <seconds> [probe_ms]` - Scheduler/network soak verification
-- `paging-test` - Test virtual memory paging
-- `atomic-test` - Test atomic operations
-- `spinlock-test` - Measure spinlock overhead
-- `syscall-test` - Verify system call interface
-- `test-div0` / `test-pf` - Trigger exceptions (div0, page fault)
+- `wasm-demo`, `wasm-fs-demo`, `wasm-log-demo`, `wasm-list`.
+- `svcptr-register`, `svcptr-invoke`, `svcptr-send`, `svcptr-recv`, `svcptr-inject`.
+- `svcptr-demo`, `svcptr-demo-crosspid`, `svcptr-typed-demo`.
+- `wasm-jit-on`, `wasm-jit-off`, `wasm-jit-bench`, `wasm-jit-selftest`, `wasm-jit-stats`, `wasm-jit-threshold`.
+- `wasm-jit-fuzz`, `wasm-jit-fuzz-corpus`, `wasm-jit-fuzz-soak`.
+- `wasm-replay-record`, `wasm-replay-stop`, `wasm-replay-save`, `wasm-replay-load`, `wasm-replay-status`, `wasm-replay-clear`, `wasm-replay-verify`.
 
----
+### Networking And CapNet
 
-## Commercial Use Cases
+- `net-info`, `eth-info`, `eth-status`, `netstack-info`, `dns-resolve`.
+- `wifi-scan`, `wifi-connect`, `wifi-status`.
+- `http-get`, `http-server-start`, `http-server-stop`.
+- `capnet-local`, `capnet-peer-add`, `capnet-peer-show`, `capnet-peer-list`, `capnet-lease-list`.
+- `capnet-hello`, `capnet-heartbeat`, `capnet-lend`, `capnet-accept`, `capnet-revoke`, `capnet-stats`, `capnet-demo`.
+- `capnet-fuzz`, `capnet-fuzz-corpus`, `capnet-fuzz-soak`.
 
-Oreulieus is built for secure, programmable edge systems where dynamic logic must run safely at high speed. The commercial vision covers embedded/edge appliances, multi-tenant IoT gateways, security/network appliances, and AI thin-client edge nodes.
+### Security And Capability Introspection
 
-Read the full overview here: **[Commercial Use Cases](docs/CommercialUseCases.md)**.
+- `security-audit`, `security-stats`, `security-anomaly`.
+- `security-intent`, `security-intent-clear`, `security-intent-policy`.
+- `enclave-secret-policy`.
+- `cap-list`, `cap-arch`, `cap-test-atten`, `cap-test-cons`, `cap-demo`.
 
----
+### Low-Level Validation
 
-## Documentation
+- `formal-verify`.
+- `paging-test`, `syscall-test`, `atomic-test`, `spinlock-test`, `asm-test`.
+- `test-div0`, `test-pf`, `user-test`, `elf-run`.
 
-Comprehensive documentation is available in the `docs/` directory:
+## Reproducible Evaluation Flows
 
-- **[Vision](docs/oreulia-vision.md)** - Project goals and philosophy
-- **[MVP Specification](docs/oreulia-mvp.md)** - QEMU-first minimum viable product
-- **[Capabilities](docs/oreulia-capabilities.md)** - Capability-based security model
-- **[IPC System](docs/oreulia-ipc.md)** - Inter-process communication and dataflow
-- **[Persistence](docs/oreulia-persistence.md)** - Logging, snapshots, and recovery
-- **[Filesystem](docs/oreulia-filesystem.md)** - Virtual filesystem implementation
-- **[WASM ABI](docs/oreulia-wasm-abi.md)** - WebAssembly host interface
-- **[Function/Service Pointer Capabilities](docs/oreulia-service-pointer-capabilities.md)** - Formal model and implementation details for directly callable capability objects
-- **[Assembly Quick Reference](docs/assembly-quick-reference.md)** - Low-level assembly interfaces and notes
-- **[JIT Security Resolution](docs/oreulia-jit-security-resolution.md)** - Formal security model and implementation proof obligations
-- **[CapNet Scientific Resolution](docs/capnet.md)** - Formal model and implementation analysis for decentralized capability networking
-- **[Intent Graph Predictive Revocation](docs/oreulia-intent-graph-predictive-revocation.md)** - Formal specification of behavioral scoring, escalation thresholds, quarantine automaton, and correctness lemmas
-- **[Commercial Use Cases](docs/CommercialUseCases.md)** - Market targets and product vision
-- **[Contributing](docs/CONTRIBUTING.md)** - Contribution guidelines and process
+### 1) End-to-End Verification Sweep
 
----
-
-## Project Structure
-
+```text
+formal-verify
+temporal-hardening-selftest
+wasm-jit-selftest
 ```
+
+### 2) JIT Differential Stress
+
+```text
+wasm-jit-on
+wasm-jit-fuzz 1000 0
+wasm-jit-fuzz-corpus 500
+wasm-jit-fuzz-soak 500 5
+```
+
+### 3) CapNet Parser/Enforcer Stress
+
+```text
+capnet-fuzz 1000 0
+capnet-fuzz-corpus 1000
+capnet-fuzz-soak 500 10
+```
+
+### 4) Temporal Lifecycle Demo
+
+```text
+temporal-write /tmp/demo alpha
+temporal-snapshot /tmp/demo
+temporal-write /tmp/demo beta
+temporal-history /tmp/demo
+```
+
+## Threat Model And Non-Goals
+
+### Threat Model Focus
+
+- Unauthorized authority escalation in kernel services.
+- Replay and stale-state acceptance in delegated control paths.
+- Unsafe JIT transitions and uncontrolled executable memory behavior.
+- State corruption or silent divergence in temporal restore/merge paths.
+
+### Explicit Non-Goals
+
+- Drop-in POSIX/Linux compatibility.
+- Production product claims without workload-specific benchmarking.
+- Universal semantic merge for arbitrary binary object payloads.
+
+## Performance Positioning
+
+Oreulia is engineered around bounded and inspectable control paths:
+
+- Fixed-level scheduler behavior with preemptive operation.
+- Explicit syscall entry paths (`INT 0x80`, `SYSENTER`).
+- Descriptor-ring networking on supported NICs.
+- Differential JIT/interpreter tooling to catch semantic drift.
+- Bounded protocol and parser workflows in CapNet and WASM paths.
+
+Suggested measurement commands for reproducible local baselines:
+
+- `cpu-bench`
+- `wasm-jit-bench`
+- `sched-net-soak <seconds> [probe_ms]`
+- `capnet-fuzz-soak <iters> <rounds>`
+- `wasm-jit-fuzz-soak <iters> <rounds>`
+
+## Documentation Map
+
+- [Vision](docs/oreulia-vision.md)
+- [MVP Specification](docs/oreulia-mvp.md)
+- [Capabilities](docs/oreulia-capabilities.md)
+- [IPC](docs/oreulia-ipc.md)
+- [Persistence](docs/oreulia-persistence.md)
+- [Filesystem](docs/oreulia-filesystem.md)
+- [WASM ABI](docs/oreulia-wasm-abi.md)
+- [Temporal Adapters + Durable Persistence](docs/oreulia-temporal-adapters-durable-persistence.md)
+- [JIT Security Resolution](docs/oreulia-jit-security-resolution.md)
+- [CapNet Scientific Resolution](docs/capnet.md)
+- [Intent Graph Predictive Revocation](docs/oreulia-intent-graph-predictive-revocation.md)
+- [Function/Service Pointer Capabilities](docs/oreulia-service-pointer-capabilities.md)
+- [Commercial Use Cases](docs/CommercialUseCases.md)
+- [Contributing Guide](docs/CONTRIBUTING.md)
+
+## Project Layout
+
+```text
 oreulia/
-├── kernel/              # Kernel workspace
-│   ├── .cargo/          # Cargo config
-│   ├── Cargo.toml       # Kernel crate manifest
-│   ├── Cargo.lock       # Dependency lockfile
-│   ├── README.md        # Kernel-specific docs
-│   ├── build.sh         # Build script
-│   ├── build-iso.sh     # ISO build script
-│   ├── run.sh           # QEMU run script
-│   ├── quick-rebuild.sh # Fast rebuild helper
-│   ├── kernel.ld        # Linker script
-│   ├── i686-oreulia.json# Target spec
-│   ├── src/             # Rust kernel modules
-│   │   └── asm/         # x86 assembly modules
-│   ├── iso/             # ISO staging
-│   ├── iso_check/       # ISO validation
-│   ├── target/          # Cargo build output
-│   ├── oreulia.iso      # Build artifact
-│   └── run*.log         # Runtime logs (qemu/run/output)
-├── docs/                # Documentation
-├── services/            # User-space services (planned)
-└── wasm/                # WASM modules (planned)
+├── kernel/              # Kernel source, asm, linker, build/run scripts
+├── docs/                # Formal and technical documentation
+├── services/            # Service prototypes / planned expansions
+├── wasm/                # WASM modules and examples
+├── README.md            # This file
+└── LICENSE
 ```
-
----
-
-
-### Performance Characteristics
-
-- Scheduler dispatch path is O(1) over fixed MLFQ levels.
-- Syscall entry supports both INT 0x80 and SYSENTER/SYSEXIT fast paths.
-- Memory hot paths use optimized assembly primitives.
-- Networking uses descriptor-ring DMA on supported NICs.
-- JIT and interpreter dual paths support differential validation and replay.
-- CapNet control-path parsing and token verification are fixed-width and bounded by protocol constants.
-- Absolute throughput/latency depends on host CPU, QEMU mode, and runtime workload.
-
----
 
 ## Contributing
 
-Oreulia is an experimental research project. Contributions, ideas, and feedback are welcome!
+Contributions are welcome for architecture, verification, runtime hardening, and subsystem correctness.
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
----
+1. Fork the repository.
+2. Create a branch.
+3. Implement and test.
+4. Open a pull request with rationale and evidence.
 
 ## License
 
-This project is licensed under the OREULIUS LISCENCE - see the [liscence](LICENSE) for details.
+Licensed under the terms in [LICENSE](LICENSE).
 
 ## Contact
 
-**Email**
-```bash
-reeveskeefe@gmail.com
-```
-
----
+`reeveskeefe@gmail.com`
 
 ## Acknowledgments
 
 - Built with [Rust](https://www.rust-lang.org/) and [NASM](https://www.nasm.us/)
 - Bootable with [GRUB](https://www.gnu.org/software/grub/)
-- Tested on [QEMU](https://www.qemu.org/)
-- Inspired by capability-based systems like [seL4](https://sel4.systems/) and [Fuchsia](https://fuchsia.dev/)
-
----
+- Tested with [QEMU](https://www.qemu.org/)
+- Inspired by capability-oriented system design traditions
 
 <div align="center">
 
-**Made by Keefe Reeves and any potential contributors of the Oreulius Community**
+**Made by Keefe Reeves and contributors in the Oreulia community**
 
 </div>
