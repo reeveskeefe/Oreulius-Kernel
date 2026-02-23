@@ -127,6 +127,7 @@ static LAST_GICC_IAR_RAW: AtomicU32 = AtomicU32::new(0);
 static LAST_GICC_HPPIR: AtomicU32 = AtomicU32::new(0);
 static UNKNOWN_IRQ_LOGGED: AtomicU32 = AtomicU32::new(u32::MAX);
 static UART_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
+static UART_LAST_IRQ_TICK: AtomicU64 = AtomicU64::new(0);
 static VIRTIO_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 static VIRTIO_IRQ_ACK_COUNT: AtomicU64 = AtomicU64::new(0);
 static SCHED_TICK_HOOK_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -356,6 +357,7 @@ fn seed_platform_fallbacks() {
     }
     VIRTIO_IRQ_ACK_COUNT.store(0, Ordering::Relaxed);
     UART_IRQ_COUNT.store(0, Ordering::Relaxed);
+    UART_LAST_IRQ_TICK.store(0, Ordering::Relaxed);
     VIRTIO_IRQ_COUNT.store(0, Ordering::Relaxed);
     TIMER_IRQ_COUNT.store(0, Ordering::Relaxed);
     TIMER_TICKS.store(0, Ordering::Relaxed);
@@ -731,10 +733,17 @@ fn shell_try_read_input_byte() -> Option<u8> {
         if STRICT_UART_IRQ_MODE.load(Ordering::Relaxed) {
             return None;
         }
-        // QEMU/firmware combinations may not deliver PL011 RX IRQs reliably yet.
-        // Keep an interrupt-first fallback so the shell stays usable while bring-up
-        // continues.
-        if UART_IRQ_COUNT.load(Ordering::Relaxed) == 0 {
+        // QEMU/firmware combinations may deliver RX IRQs intermittently. Keep an
+        // interrupt-first fallback, but only poll after the UART IRQ path has
+        // been quiet for at least one timer tick to avoid racing/duplicating
+        // bytes while IRQ-driven draining is active.
+        let irq_count = UART_IRQ_COUNT.load(Ordering::Relaxed);
+        if irq_count == 0 {
+            return uart().try_read_byte();
+        }
+        let last_irq_tick = UART_LAST_IRQ_TICK.load(Ordering::Relaxed);
+        let now_ticks = TIMER_TICKS.load(Ordering::Relaxed);
+        if now_ticks.saturating_sub(last_irq_tick) >= 1 {
             return uart().try_read_byte();
         }
         None
@@ -1549,6 +1558,7 @@ pub(crate) fn handle_irq_exception(_slot: u8) {
         }
     } else if discovered_uart_irq_intid() == Some(intid) {
         UART_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
+        UART_LAST_IRQ_TICK.store(TIMER_TICKS.load(Ordering::Relaxed), Ordering::Relaxed);
         let _ = uart().masked_interrupt_status();
         let _ = uart().irq_drain_rx_to_buffer();
         uart().ack_interrupts();

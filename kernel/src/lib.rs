@@ -111,14 +111,13 @@ pub mod pci;
 pub mod persistence;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod pit;
-#[cfg(not(target_arch = "aarch64"))]
 pub mod process;
 pub mod process_platform;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod process_asm;
-#[cfg(not(target_arch = "aarch64"))]
 pub mod quantum_scheduler;
 pub mod scheduler_platform;
+pub mod scheduler_runtime_platform;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod registry;
 #[cfg(not(target_arch = "aarch64"))]
@@ -233,14 +232,15 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
 /// full scheduler module is ported.
 #[inline]
 pub(crate) fn kernel_timer_tick_hook() {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::quantum_scheduler::on_timer_tick();
+        crate::arch::aarch64_virt::scheduler_timer_tick_hook();
+    }
+
     #[cfg(not(target_arch = "aarch64"))]
     {
         crate::quantum_scheduler::on_timer_tick();
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        crate::arch::aarch64_virt::scheduler_timer_tick_hook();
     }
 }
 
@@ -417,6 +417,15 @@ fn aarch64_uart_log_hex_line(prefix: &str, value: usize) {
 }
 
 #[cfg(target_arch = "aarch64")]
+extern "C" fn aarch64_shell_scheduler_task() -> ! {
+    crate::vfs_platform::aarch64_register_default_shared_process_bridge();
+    let _ = crate::vfs_platform::aarch64_set_current_pid(1);
+    let _ = crate::arch::aarch64_virt::scheduler_note_context_switch(1);
+    crate::arch::enable_interrupts();
+    crate::arch::aarch64_virt::run_serial_shell()
+}
+
+#[cfg(target_arch = "aarch64")]
 fn rust_main_aarch64_bringup() -> ! {
     aarch64_uart_log_line("[A64] Early bring-up path");
     aarch64_uart_log_line("[A64] init early platform...");
@@ -449,6 +458,11 @@ fn rust_main_aarch64_bringup() -> ! {
         }
     }
 
+    aarch64_uart_log_line("[A64] init process backend...");
+    crate::process::init();
+    crate::vfs_platform::aarch64_register_default_shared_process_bridge();
+    let _ = crate::arch::aarch64_virt::scheduler_note_context_switch(1);
+
     match boot_info.raw_info_ptr {
         Some(ptr) => match crate::arch::aarch64_dtb::parse_dtb_header(ptr) {
             Some(hdr) => {
@@ -479,8 +493,23 @@ fn rust_main_aarch64_bringup() -> ! {
     aarch64_uart_log_line("[A64] enable interrupts...");
     arch::enable_interrupts();
     crate::arch::aarch64_virt::self_test_sync_exception();
-    aarch64_uart_log_line("[A64] bring-up complete; entering shell");
-    crate::arch::aarch64_virt::run_serial_shell()
+    aarch64_uart_log_line("[A64] bring-up complete; starting shared scheduler");
+
+    crate::quantum_scheduler::init();
+    {
+        let mut sched = crate::quantum_scheduler::scheduler().lock();
+        if let Err(e) = sched.add_kernel_thread(
+            aarch64_shell_scheduler_task,
+            crate::process::ProcessPriority::Normal,
+        ) {
+            let uart = crate::arch::aarch64_pl011::early_uart();
+            uart.write_str("[A64] scheduler add shell task failed: ");
+            uart.write_str(e);
+            uart.write_str("\n");
+            crate::arch::halt_loop();
+        }
+    }
+    crate::quantum_scheduler::QuantumScheduler::start_scheduling()
 }
 
 #[no_mangle]

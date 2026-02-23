@@ -46,6 +46,7 @@ use alloc::collections::VecDeque;
 use alloc::boxed::Box;
 use crate::process::{Process, ProcessState, ProcessPriority, Pid, MAX_PROCESSES};
 use crate::scheduler_platform::{self, ProcessContext};
+use crate::scheduler_runtime_platform as scheduler_rt;
 
 // FIX #1: Module-level stacks (properly placed in BSS by linker)
 const KERNEL_THREAD_STACK_BYTES: usize = 1024 * 1024;
@@ -311,7 +312,7 @@ impl QuantumScheduler {
         
         self.processes[idx] = Some(info);
         self.enqueue_ready(pid, priority);
-        self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
+        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
         
         Ok(())
     }
@@ -474,7 +475,7 @@ impl QuantumScheduler {
         }
         
         self.current_pid = None;
-        self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
+        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
         Ok(self.plan_switch(prev))
     }
 
@@ -488,7 +489,7 @@ impl QuantumScheduler {
                         info.process.state = ProcessState::Ready;
                         let priority = info.process.priority;
                         self.enqueue_ready(pid, priority);
-                        self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
+                        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
                         return Ok(true);
                     }
                 }
@@ -516,7 +517,7 @@ impl QuantumScheduler {
         }
         
         if count > 0 {
-            self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
+            self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
         }
         Ok(count)
     }
@@ -580,29 +581,24 @@ impl QuantumScheduler {
         // Validate process table alignment against the actual type requirement.
         let required_align = core::mem::align_of::<Option<ProcessInfo>>();
         if table_addr % required_align != 0 {
-            crate::serial_println!(
+            scheduler_rt::logf(format_args!(
                 "[SCHED] WARNING: Process table misaligned at {:p} (required align: {})",
                 table_ptr,
                 required_align
-            );
+            ));
         }
         
         // Log comprehensive process table state
         let active_count = self.processes.iter().filter(|p| p.is_some()).count();
-        crate::serial_println!("[SCHED] Process Table: {:p} | Capacity: {} | Active: {} | Available: {}",
-            table_ptr, MAX_PROCESSES, active_count, MAX_PROCESSES - active_count);
-        crate::serial_println!("[SCHED] Memory bounds: {:p} - {:p} ({} bytes)",
+        scheduler_rt::logf(format_args!("[SCHED] Process Table: {:p} | Capacity: {} | Active: {} | Available: {}",
+            table_ptr, MAX_PROCESSES, active_count, MAX_PROCESSES - active_count));
+        scheduler_rt::logf(format_args!("[SCHED] Memory bounds: {:p} - {:p} ({} bytes)",
             table_ptr, 
             (table_addr + core::mem::size_of_val(&self.processes)) as *const u8,
-            core::mem::size_of_val(&self.processes));
+            core::mem::size_of_val(&self.processes)));
         
         // Hardware memory barrier to ensure process table consistency across CPUs
-        unsafe {
-            extern "C" {
-                fn memory_barrier();
-            }
-            memory_barrier();
-        }
+        scheduler_rt::memory_barrier();
         
         // Find available PID
         let pid = (0..MAX_PROCESSES)
@@ -623,7 +619,7 @@ impl QuantumScheduler {
             }
         };
         
-        let stack_top = unsafe { stack_slice.as_mut_ptr().add(stack_slice.len()) as u32 } & !15;
+        let stack_top = (unsafe { stack_slice.as_mut_ptr().add(stack_slice.len()) as usize }) & !15usize;
         
         // Verify stack address is sane and currently mapped.
         // Do not enforce a fixed upper bound: kernel image/heap placement can
@@ -637,20 +633,23 @@ impl QuantumScheduler {
             return Err("Stack address not mapped");
         }
         
-        // Push the entry point (function to call after trampoline)
-        let entry_addr = entry as *const () as u32;
-        let entry_ptr = (stack_top - 4) as *mut u32;
-        unsafe { entry_ptr.write(entry_addr); }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            // x86 trampoline pops the entry pointer from the new stack.
+            let entry_addr = entry as *const () as u32;
+            let entry_ptr = (stack_top - 4) as *mut u32;
+            unsafe { entry_ptr.write(entry_addr); }
+        }
         
         let (ctx, _entry_addr_debug, trampoline_addr) =
             scheduler_platform::init_kernel_thread_context(entry, stack_top)?;
 
-        crate::serial_println!(
-            "[SCHED] kernel_thread ctx init: entry=0x{:08x} tramp=0x{:08x} esp=0x{:08x}",
-            entry_addr,
+        scheduler_rt::logf(format_args!(
+            "[SCHED] kernel_thread ctx init: entry={:#x} tramp={:#x} sp={:#x}",
+            _entry_addr_debug,
             trampoline_addr,
-            ctx.esp
-        );
+            scheduler_platform::context_stack_pointer(&ctx)
+        ));
         
         process.state = ProcessState::Ready;
         
@@ -667,18 +666,23 @@ impl QuantumScheduler {
         
         self.processes[pid.0 as usize] = Some(info);
         self.enqueue_ready(pid, priority);
-        self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
-        
-        crate::vga::print_str("\n");
+        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
+
+        scheduler_rt::vga_print_str("\n");
         // Print stack assignment for debugging
-        crate::serial_println!("[SCHED] Assigned PID {} stack: {:p} - {:p}", pid.0, stack_slice.as_ptr(), unsafe { stack_slice.as_ptr().add(stack_slice.len()) });
+        scheduler_rt::logf(format_args!(
+            "[SCHED] Assigned PID {} stack: {:p} - {:p}",
+            pid.0,
+            stack_slice.as_ptr(),
+            unsafe { stack_slice.as_ptr().add(stack_slice.len()) }
+        ));
         Ok(pid)
     }
     
     /// Start the scheduler (never returns)
     /// Static method to avoid double locking. Caller must NOT hold the lock.
     pub fn start_scheduling() -> ! {
-        crate::vga::print_str("[SCHED] Starting scheduler (safe)\n");
+        scheduler_rt::vga_print_str("[SCHED] Starting scheduler (safe)\n");
 
         let ctx_ptr = {
             let mut scheduler = QUANTUM_SCHEDULER.lock();
@@ -687,7 +691,9 @@ impl QuantumScheduler {
             let next_pid = match scheduler.dequeue_ready() {
                 Some(pid) => pid,
                 None => {
-                    crate::serial_println!("[SCHED] Ready queues empty at scheduler start, scanning process table");
+                    scheduler_rt::logf(format_args!(
+                        "[SCHED] Ready queues empty at scheduler start, scanning process table"
+                    ));
                     let recovered = scheduler
                         .processes
                         .iter()
@@ -702,15 +708,18 @@ impl QuantumScheduler {
                         });
                     match recovered {
                         Some(pid) => {
-                            crate::serial_println!("[SCHED] Recovered runnable PID {} from process table", pid.0);
+                            scheduler_rt::logf(format_args!(
+                                "[SCHED] Recovered runnable PID {} from process table",
+                                pid.0
+                            ));
                             pid
                         }
                         None => {
-                            crate::serial_println!("[SCHED] FATAL: no runnable processes in scheduler");
-                            crate::vga::print_str("[SCHED] FATAL: no runnable processes\n");
-                            loop {
-                                unsafe { core::arch::asm!("hlt") };
-                            }
+                            scheduler_rt::logf(format_args!(
+                                "[SCHED] FATAL: no runnable processes in scheduler"
+                            ));
+                            scheduler_rt::vga_print_str("[SCHED] FATAL: no runnable processes\n");
+                            scheduler_rt::halt_cpu();
                         }
                     }
                 }
@@ -718,7 +727,7 @@ impl QuantumScheduler {
             
             scheduler.current_pid = Some(next_pid);
             SCHEDULER_STARTED.store(true, Ordering::Release);
-            scheduler.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
+            scheduler.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
             
             if let Some(ref mut info) = scheduler.processes[next_pid.0 as usize] {
                 info.process.state = ProcessState::Running;
@@ -729,8 +738,8 @@ impl QuantumScheduler {
             }
         }; // Lock is dropped here
 
-        crate::vga::print_str("[SCHED] Lock dropped, loading context\n");
-        crate::vga::print_str("[SCHED] Jumping to task...\n");
+        scheduler_rt::vga_print_str("[SCHED] Lock dropped, loading context\n");
+        scheduler_rt::vga_print_str("[SCHED] Jumping to task...\n");
         unsafe { scheduler_platform::debug_dump_launch_context(ctx_ptr); }
         
         unsafe { scheduler_platform::load_context(ctx_ptr); }
@@ -785,7 +794,7 @@ impl QuantumScheduler {
         }
 
         self.processes[idx] = None;
-        self.record_temporal_state_snapshot_locked(crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE);
+        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
         Ok(())
     }
     
@@ -844,13 +853,13 @@ impl QuantumScheduler {
                     .saturating_mul(TEMPORAL_SCHEDULER_WAIT_QUEUE_HEADER_BYTES),
             )
             .saturating_add(wait_pid_count.saturating_mul(4));
-        if total_len > crate::temporal::MAX_TEMPORAL_VERSION_BYTES {
+        if total_len > scheduler_rt::MAX_TEMPORAL_VERSION_BYTES {
             return None;
         }
 
         let mut payload = Vec::with_capacity(total_len);
-        payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
-        payload.push(crate::temporal::TEMPORAL_SCHEDULER_OBJECT);
+        payload.push(scheduler_rt::TEMPORAL_OBJECT_ENCODING_V1);
+        payload.push(scheduler_rt::TEMPORAL_SCHEDULER_OBJECT);
         payload.push(event);
         payload.push(TEMPORAL_SCHEDULER_SCHEMA_V1);
         scheduler_append_u16(&mut payload, MAX_PROCESSES as u16);
@@ -908,14 +917,14 @@ impl QuantumScheduler {
     }
 
     fn record_temporal_state_snapshot_locked(&self, event: u8) {
-        if crate::temporal::is_replay_active() {
+        if scheduler_rt::temporal_is_replay_active() {
             return;
         }
         let payload = match self.encode_temporal_state_payload_locked(event) {
             Some(v) => v,
             None => return,
         };
-        let _ = crate::temporal::record_scheduler_state_event(&payload);
+        let _ = scheduler_rt::temporal_record_scheduler_state_event(&payload);
     }
     
     /// Get current PID
@@ -955,12 +964,12 @@ pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static s
     if payload.len() < TEMPORAL_SCHEDULER_HEADER_BYTES {
         return Err("temporal scheduler payload too short");
     }
-    if payload[0] != crate::temporal::TEMPORAL_OBJECT_ENCODING_V1
-        || payload[1] != crate::temporal::TEMPORAL_SCHEDULER_OBJECT
+    if payload[0] != scheduler_rt::TEMPORAL_OBJECT_ENCODING_V1
+        || payload[1] != scheduler_rt::TEMPORAL_SCHEDULER_OBJECT
     {
         return Err("temporal scheduler payload type mismatch");
     }
-    if payload[2] != crate::temporal::TEMPORAL_SCHEDULER_EVENT_STATE {
+    if payload[2] != scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE {
         return Err("temporal scheduler event unsupported");
     }
     if payload[3] != TEMPORAL_SCHEDULER_SCHEMA_V1 {

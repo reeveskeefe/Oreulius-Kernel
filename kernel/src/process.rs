@@ -680,6 +680,19 @@ impl ProcessManager {
         (table.count(), MAX_PROCESSES)
     }
 
+    /// Count active processes and open file descriptors.
+    pub fn fd_stats(&self) -> (usize, usize) {
+        let table = self.table.lock();
+        let proc_count = table.count();
+        let fd_count = table
+            .processes
+            .iter()
+            .filter_map(|p| p.as_ref())
+            .map(|proc| proc.fd_table.iter().filter(|fd| fd.is_some()).count())
+            .sum();
+        (proc_count, fd_count)
+    }
+
     /// Reap terminated processes
     pub fn reap(&self) {
         self.table.lock().reap_terminated();
@@ -693,6 +706,36 @@ impl ProcessManager {
                 proc.tick();
             }
         }
+    }
+
+    /// Bring-up helper for runtimes that need to drive the shared process
+    /// backend before the full scheduler port is enabled.
+    pub fn set_current_runtime_pid(&self, pid: Pid) -> Result<(), ProcessError> {
+        if pid.0 == 0 {
+            return Err(ProcessError::ProcessNotFound);
+        }
+
+        let mut scheduler = self.scheduler.lock();
+        let mut table = self.table.lock();
+
+        if table.get(pid).is_none() {
+            let parent = if pid.0 == 1 { None } else { Some(Pid::new(1)) };
+            table.spawn_with_pid(pid, "a64-task", parent)?;
+        }
+
+        if let Some(prev_pid) = scheduler.current() {
+            if prev_pid != pid {
+                if let Some(prev) = table.get_mut(prev_pid) {
+                    prev.mark_ready();
+                }
+            }
+        }
+
+        if let Some(proc) = table.get_mut(pid) {
+            proc.mark_running();
+        }
+        scheduler.set_current(Some(pid));
+        Ok(())
     }
 }
 
@@ -781,6 +824,20 @@ pub fn current_pid() -> Option<Pid> {
     process_manager().current()
 }
 
+/// Sync the shared process backend's current PID from an external runtime
+/// (AArch64 bring-up shell/timer path) before full scheduler integration exists.
+pub fn set_current_runtime_pid(pid: Pid) -> Result<(), &'static str> {
+    process_manager()
+        .set_current_runtime_pid(pid)
+        .map_err(|e| e.as_str())
+}
+
+/// Return (active process count, open fd count, current pid).
+pub fn runtime_fd_stats() -> (usize, usize, Option<Pid>) {
+    let (proc_count, fd_count) = process_manager().fd_stats();
+    (proc_count, fd_count, current_pid())
+}
+
 pub fn temporal_apply_process_event(
     pid_raw: u32,
     parent_raw: u32,
@@ -789,7 +846,7 @@ pub fn temporal_apply_process_event(
 ) -> Result<(), &'static str> {
     let pid = Pid::new(pid_raw);
     match event {
-        crate::temporal::TEMPORAL_PROCESS_EVENT_SPAWN => {
+        process_platform::TEMPORAL_PROCESS_EVENT_SPAWN => {
             let name = core::str::from_utf8(name_bytes).map_err(|_| "Invalid process name")?;
             let parent = if parent_raw == u32::MAX {
                 None
@@ -800,7 +857,7 @@ pub fn temporal_apply_process_event(
                 .temporal_spawn_with_pid(pid, name, parent)
                 .map_err(|e| e.as_str())
         }
-        crate::temporal::TEMPORAL_PROCESS_EVENT_TERMINATE => {
+        process_platform::TEMPORAL_PROCESS_EVENT_TERMINATE => {
             if process_manager().get(pid).is_none() {
                 return Ok(());
             }

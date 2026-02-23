@@ -14,8 +14,26 @@ pub use crate::ipc::{ChannelCapability, ProcessId as Pid};
 pub struct Pid(pub u32);
 
 #[cfg(target_arch = "aarch64")]
+impl Pid {
+    #[inline]
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 #[derive(Debug, Clone, Copy)]
 pub struct ChannelCapability;
+
+#[cfg(not(target_arch = "aarch64"))]
+pub const TEMPORAL_PROCESS_EVENT_SPAWN: u8 = crate::temporal::TEMPORAL_PROCESS_EVENT_SPAWN;
+#[cfg(not(target_arch = "aarch64"))]
+pub const TEMPORAL_PROCESS_EVENT_TERMINATE: u8 = crate::temporal::TEMPORAL_PROCESS_EVENT_TERMINATE;
+
+#[cfg(target_arch = "aarch64")]
+pub const TEMPORAL_PROCESS_EVENT_SPAWN: u8 = 1;
+#[cfg(target_arch = "aarch64")]
+pub const TEMPORAL_PROCESS_EVENT_TERMINATE: u8 = 2;
 
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
@@ -70,4 +88,3 @@ pub fn on_process_restore_spawn(pid: Pid) {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn on_process_restore_spawn(_pid: Pid) {}
-

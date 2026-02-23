@@ -10,6 +10,12 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+/// Reserve the front of the linker heap for the AArch64 MMU page-table allocator.
+/// The MMU backend currently allocates page tables from `_heap_start.._heap_end`
+/// during bring-up; without this carve-out, general heap allocations can overwrite
+/// page tables and corrupt translations.
+pub(crate) const AARCH64_MMU_PT_RESERVE_BYTES: usize = 1024 * 1024; // 1 MiB
+
 struct AArch64BumpAllocator;
 
 #[global_allocator]
@@ -45,7 +51,11 @@ fn ensure_heap_initialized() {
         return;
     }
 
-    let _ = HEAP_NEXT.compare_exchange(0, start, Ordering::AcqRel, Ordering::Acquire);
+    let alloc_start = start
+        .saturating_add(AARCH64_MMU_PT_RESERVE_BYTES)
+        .min(end);
+    let alloc_start = align_up(alloc_start, 16);
+    let _ = HEAP_NEXT.compare_exchange(0, alloc_start, Ordering::AcqRel, Ordering::Acquire);
     let _ = HEAP_END.compare_exchange(0, end, Ordering::AcqRel, Ordering::Acquire);
 }
 

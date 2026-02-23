@@ -317,3 +317,24 @@ pub(crate) fn aarch64_alloc_debug_page() -> Result<usize, &'static str> {
 pub(crate) fn aarch64_alloc_debug_page() -> Result<usize, &'static str> {
     Err("aarch64 MMU backend not active")
 }
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn aarch64_debug_virt_to_phys(virt_addr: usize) -> Option<usize> {
+    mmu_aarch64::debug_translate_current(virt_addr)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub(crate) fn aarch64_debug_virt_to_phys(_virt_addr: usize) -> Option<usize> {
+    None
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn aarch64_debug_walk(virt_addr: usize) -> (usize, u64, u64, u64, u64, Option<usize>) {
+    let w = mmu_aarch64::debug_walk_current(virt_addr);
+    (w.root_phys, w.l0_desc, w.l1_desc, w.l2_desc, w.l3_desc, w.phys_addr)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub(crate) fn aarch64_debug_walk(_virt_addr: usize) -> (usize, u64, u64, u64, u64, Option<usize>) {
+    (0, 0, 0, 0, 0, None)
+}

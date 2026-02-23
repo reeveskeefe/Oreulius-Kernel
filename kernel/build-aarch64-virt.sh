@@ -11,6 +11,7 @@ RUST_LIB="target/${RUST_TARGET}/release/liboreulia_kernel.a"
 OUT_DIR="target/aarch64-virt"
 BOOT_OBJ="${OUT_DIR}/boot_aarch64_virt.o"
 VECTORS_OBJ="${OUT_DIR}/aarch64_vectors.o"
+SCHED_OBJ="${OUT_DIR}/aarch64_scheduler.o"
 OUT_ELF="${OUT_DIR}/oreulia-kernel-aarch64-virt"
 OUT_IMAGE="${OUT_DIR}/Image"
 
@@ -60,6 +61,7 @@ mkdir -p "${OUT_DIR}"
 echo "[1/4] Assembling AArch64 virt support objects..."
 "${AS_BIN}" "src/asm/boot_aarch64_virt.S" -o "${BOOT_OBJ}"
 "${AS_BIN}" "src/asm/aarch64_vectors.S" -o "${VECTORS_OBJ}"
+"${AS_BIN}" "src/asm/aarch64_scheduler.S" -o "${SCHED_OBJ}"
 
 echo "[2/4] Building Rust kernel staticlib for AArch64..."
 CARGO_TARGET_AARCH64_UNKNOWN_NONE_RUSTFLAGS="${CARGO_TARGET_AARCH64_UNKNOWN_NONE_RUSTFLAGS:--C relocation-model=static}" \
@@ -79,6 +81,7 @@ echo "[3/4] Linking AArch64 kernel ELF..."
   -o "${OUT_ELF}" \
   "${BOOT_OBJ}" \
   "${VECTORS_OBJ}" \
+  "${SCHED_OBJ}" \
   --whole-archive "${RUST_LIB}" --no-whole-archive
 
 echo "Built: ${OUT_ELF}"

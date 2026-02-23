@@ -57,7 +57,7 @@ expect {
 
 send "vfs-open /tmpci/a r\r"
 expect {
-    -re {\[A64-CMD\] vfs-open ok fd=0} {}
+    -re {\[A64-CMD\] vfs-open ok fd=3} {}
     timeout { puts "timeout waiting for AArch64 vfs-open"; exit 1 }
 }
 expect {
@@ -65,9 +65,9 @@ expect {
     timeout { puts "timeout waiting for aarch64 prompt after vfs-open"; exit 1 }
 }
 
-send "vfs-readfd 0 32\r"
+send "vfs-readfd 3 32\r"
 expect {
-    -re {\[A64-CMD\] vfs-readfd fd=0 bytes=8} {}
+    -re {\[A64-CMD\] vfs-readfd fd=3 bytes=8} {}
     timeout { puts "timeout waiting for AArch64 vfs-readfd header"; exit 1 }
 }
 expect {
@@ -79,9 +79,9 @@ expect {
     timeout { puts "timeout waiting for aarch64 prompt after vfs-readfd"; exit 1 }
 }
 
-send "vfs-close 0\r"
+send "vfs-close 3\r"
 expect {
-    -re {\[A64-CMD\] vfs-close ok fd=0} {}
+    -re {\[A64-CMD\] vfs-close ok fd=3} {}
     timeout { puts "timeout waiting for AArch64 vfs-close"; exit 1 }
 }
 expect {

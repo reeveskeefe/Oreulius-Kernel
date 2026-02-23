@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{ArchMmu, PageAttribute};
 use crate::arch::{aarch64_pl011, aarch64_virt};
+use crate::aarch64_alloc::AARCH64_MMU_PT_RESERVE_BYTES;
 
 pub(super) struct AArch64Mmu;
 
@@ -250,7 +251,10 @@ fn init_page_allocator_if_needed() {
         return;
     }
     let start = unsafe { (&_heap_start as *const usize) as usize };
-    let end = unsafe { (&_heap_end as *const usize) as usize };
+    let heap_end = unsafe { (&_heap_end as *const usize) as usize };
+    let end = start
+        .saturating_add(AARCH64_MMU_PT_RESERVE_BYTES)
+        .min(heap_end);
     if start == 0 || end <= start {
         return;
     }
@@ -501,6 +505,79 @@ fn translate(root_phys: usize, virt_addr: usize) -> Option<usize> {
         return None;
     }
     Some(desc_addr(d3) + (virt_addr & PAGE_MASK_4K))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DebugWalk {
+    pub root_phys: usize,
+    pub l0_desc: u64,
+    pub l1_desc: u64,
+    pub l2_desc: u64,
+    pub l3_desc: u64,
+    pub phys_addr: Option<usize>,
+}
+
+pub(crate) fn debug_translate_current(virt_addr: usize) -> Option<usize> {
+    let mut root = ttbr_phys_addr(read_ttbr0_el1());
+    if root == 0 {
+        root = KERNEL_ROOT_PHYS.load(Ordering::Relaxed);
+    }
+    if root == 0 {
+        return None;
+    }
+    translate(root, virt_addr)
+}
+
+pub(crate) fn debug_walk_current(virt_addr: usize) -> DebugWalk {
+    let mut root = ttbr_phys_addr(read_ttbr0_el1());
+    if root == 0 {
+        root = KERNEL_ROOT_PHYS.load(Ordering::Relaxed);
+    }
+    let mut out = DebugWalk {
+        root_phys: root,
+        l0_desc: 0,
+        l1_desc: 0,
+        l2_desc: 0,
+        l3_desc: 0,
+        phys_addr: None,
+    };
+    if root == 0 {
+        return out;
+    }
+    let l0 = table_mut(root);
+    let l0d = l0[l0_index(virt_addr)];
+    out.l0_desc = l0d;
+    if !desc_is_valid(l0d) || !desc_is_table(l0d) {
+        return out;
+    }
+    let l1_phys = desc_addr(l0d);
+    let l1 = table_mut(l1_phys);
+    let l1d = l1[l1_index(virt_addr)];
+    out.l1_desc = l1d;
+    if !desc_is_valid(l1d) || !desc_is_table(l1d) {
+        return out;
+    }
+    let l2_phys = desc_addr(l1d);
+    let l2 = table_mut(l2_phys);
+    let l2d = l2[l2_index(virt_addr)];
+    out.l2_desc = l2d;
+    if !desc_is_valid(l2d) {
+        return out;
+    }
+    if !desc_is_table(l2d) {
+        let block_base = desc_addr(l2d);
+        out.phys_addr = Some(block_base + (virt_addr & L2_BLOCK_MASK));
+        return out;
+    }
+    let l3_phys = desc_addr(l2d);
+    let l3 = table_mut(l3_phys);
+    let l3d = l3[l3_index(virt_addr)];
+    out.l3_desc = l3d;
+    if !desc_is_valid(l3d) {
+        return out;
+    }
+    out.phys_addr = Some(desc_addr(l3d) + (virt_addr & PAGE_MASK_4K));
+    out
 }
 
 fn set_pte_writable(root_phys: usize, virt_addr: usize, writable: bool) -> Result<(), &'static str> {
