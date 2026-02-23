@@ -1,0 +1,132 @@
+#!/usr/bin/expect -f
+set timeout 120
+
+set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
+cd $kernel_dir
+
+spawn ./run-aarch64-virt-image-virtio-blk-mmio.sh
+
+expect {
+    -re {\[A64\] minimal serial shell ready} {}
+    timeout { puts "timeout waiting for aarch64 shell banner"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt"; exit 1 }
+}
+
+send "commands-help\r"
+expect {
+    -re {\[A64-CMD\] commands:} {}
+    timeout { puts "timeout waiting for AArch64 commands-help"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt after commands-help"; exit 1 }
+}
+
+send "blk-info\r"
+expect {
+    -re {\[A64-CMD\] blk present=1 .*} {}
+    timeout { puts "timeout waiting for AArch64 blk-info"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt after blk-info"; exit 1 }
+}
+
+send "vfs-mkdir /tmpci\r"
+expect {
+    -re {\[A64-CMD\] vfs-mkdir ok /tmpci} {}
+    timeout { puts "timeout waiting for AArch64 vfs-mkdir"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt after vfs-mkdir"; exit 1 }
+}
+
+send "vfs-write /tmpci/a hello-ci\r"
+expect {
+    -re {\[A64-CMD\] vfs-write ok path=/tmpci/a bytes=8} {}
+    timeout { puts "timeout waiting for AArch64 vfs-write"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt after vfs-write"; exit 1 }
+}
+
+send "vfs-open /tmpci/a r\r"
+expect {
+    -re {\[A64-CMD\] vfs-open ok fd=0} {}
+    timeout { puts "timeout waiting for AArch64 vfs-open"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt after vfs-open"; exit 1 }
+}
+
+send "vfs-readfd 0 32\r"
+expect {
+    -re {\[A64-CMD\] vfs-readfd fd=0 bytes=8} {}
+    timeout { puts "timeout waiting for AArch64 vfs-readfd header"; exit 1 }
+}
+expect {
+    -re "hello-ci" {}
+    timeout { puts "timeout waiting for AArch64 vfs-readfd payload"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt after vfs-readfd"; exit 1 }
+}
+
+send "vfs-close 0\r"
+expect {
+    -re {\[A64-CMD\] vfs-close ok fd=0} {}
+    timeout { puts "timeout waiting for AArch64 vfs-close"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt after vfs-close"; exit 1 }
+}
+
+send "vfs-mkdir /mnt\r"
+expect {
+    -re {\[A64-CMD\] vfs-mkdir ok /mnt} {}
+    timeout { puts "timeout waiting for AArch64 vfs-mkdir /mnt"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt after vfs-mkdir /mnt"; exit 1 }
+}
+
+send "vfs-mount-virtio /mnt\r"
+expect {
+    -re {\[A64-CMD\] vfs-mount-virtio ok /mnt} {}
+    timeout { puts "timeout waiting for AArch64 vfs-mount-virtio"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt after vfs-mount-virtio"; exit 1 }
+}
+
+send "vfs-ls /mnt\r"
+expect {
+    -re {\[A64-CMD\] vfs-ls /mnt} {}
+    timeout { puts "timeout waiting for AArch64 vfs-ls"; exit 1 }
+}
+expect {
+    -re "raw" {}
+    timeout { puts "timeout waiting for AArch64 mounted raw entry"; exit 1 }
+}
+expect {
+    -re {a64> $} {}
+    timeout { puts "timeout waiting for aarch64 prompt after vfs-ls"; exit 1 }
+}
+
+send "halt\r"
+expect {
+    -re {\[A64\] halting} {}
+    timeout { puts "timeout waiting for AArch64 halt output"; exit 1 }
+}
+send "\003"
+expect eof

@@ -221,12 +221,37 @@ impl Aarch64ProcManager {
 }
 
 #[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub struct Aarch64ProcessBridgeHooks {
+    pub current_pid: fn() -> Option<Pid>,
+    pub alloc_fd: fn(Pid, u64) -> Result<usize, &'static str>,
+    pub get_fd_handle: fn(Pid, usize) -> Result<u64, &'static str>,
+    pub close_fd: fn(Pid, usize) -> Result<(), &'static str>,
+}
+
+#[cfg(target_arch = "aarch64")]
 static AARCH64_CURRENT_PID: AtomicU32 = AtomicU32::new(AARCH64_BOOT_PID);
 #[cfg(target_arch = "aarch64")]
 static AARCH64_PROC_MANAGER: Mutex<Aarch64ProcManager> = Mutex::new(Aarch64ProcManager::new());
+#[cfg(target_arch = "aarch64")]
+static AARCH64_PROCESS_BRIDGE: Mutex<Option<Aarch64ProcessBridgeHooks>> = Mutex::new(None);
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn aarch64_bridge_hooks() -> Option<Aarch64ProcessBridgeHooks> {
+    *AARCH64_PROCESS_BRIDGE.lock()
+}
 
 #[cfg(target_arch = "aarch64")]
 fn aarch64_current_pid() -> Pid {
+    if let Some(hooks) = aarch64_bridge_hooks() {
+        if let Some(pid) = (hooks.current_pid)() {
+            if pid != 0 {
+                return pid;
+            }
+        }
+    }
+
     let pid = match AARCH64_CURRENT_PID.load(Ordering::Relaxed) {
         0 => AARCH64_BOOT_PID,
         pid => pid,
@@ -238,20 +263,49 @@ fn aarch64_current_pid() -> Pid {
 
 #[cfg(target_arch = "aarch64")]
 pub fn alloc_fd(pid: Pid, handle_id: u64) -> Result<usize, &'static str> {
+    if let Some(hooks) = aarch64_bridge_hooks() {
+        return (hooks.alloc_fd)(pid, handle_id);
+    }
     let mut mgr = AARCH64_PROC_MANAGER.lock();
     mgr.alloc_fd(pid, handle_id)
 }
 
 #[cfg(target_arch = "aarch64")]
 pub fn get_fd_handle(pid: Pid, fd: usize) -> Result<u64, &'static str> {
+    if let Some(hooks) = aarch64_bridge_hooks() {
+        return (hooks.get_fd_handle)(pid, fd);
+    }
     let mut mgr = AARCH64_PROC_MANAGER.lock();
     mgr.get_fd_handle(pid, fd)
 }
 
 #[cfg(target_arch = "aarch64")]
 pub fn close_fd(pid: Pid, fd: usize) -> Result<(), &'static str> {
+    if let Some(hooks) = aarch64_bridge_hooks() {
+        return (hooks.close_fd)(pid, fd);
+    }
     let mut mgr = AARCH64_PROC_MANAGER.lock();
     mgr.close_fd(pid, fd)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn aarch64_register_shared_process_bridge(hooks: Aarch64ProcessBridgeHooks) {
+    *AARCH64_PROCESS_BRIDGE.lock() = Some(hooks);
+    if let Some(pid) = (hooks.current_pid)() {
+        if pid != 0 {
+            let _ = aarch64_set_current_pid(pid);
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn aarch64_clear_shared_process_bridge() {
+    *AARCH64_PROCESS_BRIDGE.lock() = None;
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn aarch64_shared_process_bridge_registered() -> bool {
+    AARCH64_PROCESS_BRIDGE.lock().is_some()
 }
 
 #[cfg(target_arch = "aarch64")]

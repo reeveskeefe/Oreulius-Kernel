@@ -1,0 +1,45 @@
+#!/usr/bin/expect -f
+set timeout 120
+
+set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
+cd $kernel_dir
+
+set env(QEMU_EXTRA_ARGS) "-nographic -monitor none -display none -no-reboot -no-shutdown -m 512M"
+spawn ./run-x86_64-mb2-grub.sh
+
+expect {
+    -re {\[X64\] minimal serial shell ready} {}
+    timeout { puts "timeout waiting for x86_64 shell banner"; exit 1 }
+}
+expect {
+    -re {x64> $} {}
+    timeout { puts "timeout waiting for x86_64 prompt"; exit 1 }
+}
+
+send "help\r"
+expect {
+    -re {commands: help .*halt} {}
+    timeout { puts "timeout waiting for x86_64 help output"; exit 1 }
+}
+expect {
+    -re {x64> $} {}
+    timeout { puts "timeout waiting for x86_64 prompt after help"; exit 1 }
+}
+
+send "mmu\r"
+expect {
+    -re {\[X64\] mmu backend=.*} {}
+    timeout { puts "timeout waiting for x86_64 mmu output"; exit 1 }
+}
+expect {
+    -re {x64> $} {}
+    timeout { puts "timeout waiting for x86_64 prompt after mmu"; exit 1 }
+}
+
+send "halt\r"
+expect {
+    -re {\[X64\] halting} {}
+    timeout { puts "timeout waiting for x86_64 halt output"; exit 1 }
+}
+send "\003"
+expect eof

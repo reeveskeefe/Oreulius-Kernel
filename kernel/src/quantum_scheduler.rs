@@ -45,8 +45,7 @@ use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 use alloc::boxed::Box;
 use crate::process::{Process, ProcessState, ProcessPriority, Pid, MAX_PROCESSES};
-use crate::asm_bindings::{ProcessContext, asm_switch_context, asm_load_context};
-use crate::pit;
+use crate::scheduler_platform::{self, ProcessContext};
 
 // FIX #1: Module-level stacks (properly placed in BSS by linker)
 const KERNEL_THREAD_STACK_BYTES: usize = 1024 * 1024;
@@ -301,12 +300,12 @@ impl QuantumScheduler {
         
         let info = ProcessInfo {
             process,
-            context: ProcessContext::new(),
+            context: scheduler_platform::context_new(),
             stack: None,
             quantum_remaining: quantum,
             total_cpu_time: 0,
             total_wait_time: 0,
-            last_scheduled: pit::get_ticks(),
+            last_scheduled: scheduler_platform::ticks_now(),
             switches: 0,
         };
         
@@ -319,7 +318,7 @@ impl QuantumScheduler {
 
     /// Decide the next context to switch to (returns context pointers if switching).
     fn plan_switch(&mut self, prev_pid_override: Option<Pid>) -> Option<(*mut ProcessContext, *const ProcessContext)> {
-        let now = pit::get_ticks();
+        let now = scheduler_platform::ticks_now();
         
         // Capture valid previous PID before it might get cleared
         let mut prev_pid = self.current_pid;
@@ -633,17 +632,7 @@ impl QuantumScheduler {
         if stack_bottom < 0x1000 || stack_top <= stack_bottom {
             return Err("Stack address invalid");
         }
-        let mapped = {
-            let guard = crate::paging::kernel_space().lock();
-            if let Some(space) = guard.as_ref() {
-                let bottom = stack_bottom as usize;
-                let top_byte = (stack_top as usize).saturating_sub(1);
-                space.is_mapped(bottom) && space.is_mapped(top_byte)
-            } else {
-                // During very early boot this may not be initialized yet.
-                true
-            }
-        };
+        let mapped = scheduler_platform::validate_kernel_stack_mapping(stack_bottom, stack_top);
         if !mapped {
             return Err("Stack address not mapped");
         }
@@ -653,20 +642,8 @@ impl QuantumScheduler {
         let entry_ptr = (stack_top - 4) as *mut u32;
         unsafe { entry_ptr.write(entry_addr); }
         
-        let mut ctx = ProcessContext::new();
-
-        // Use actual trampoline address from assembly
-        let trampoline_addr = crate::asm_bindings::thread_start_trampoline as usize as u32;
-        ctx.eip = trampoline_addr;
-        // Start ESP 4 bytes lower because context_switch does 'add esp, 4' to simulate ret
-        // valid entry_addr is at stack_top - 4
-        ctx.esp = stack_top - 8;
-        ctx.ebp = stack_top - 8;
-        ctx.cr3 = crate::arch::mmu::current_page_table_root_addr() as u32;
-        // Keep IF cleared until thread entry explicitly enables interrupts.
-        // This avoids taking an IRQ in the narrow window between context load
-        // and trampoline/entry setup.
-        ctx.eflags = 0x0000_0002;
+        let (ctx, _entry_addr_debug, trampoline_addr) =
+            scheduler_platform::init_kernel_thread_context(entry, stack_top)?;
 
         crate::serial_println!(
             "[SCHED] kernel_thread ctx init: entry=0x{:08x} tramp=0x{:08x} esp=0x{:08x}",
@@ -754,40 +731,9 @@ impl QuantumScheduler {
 
         crate::vga::print_str("[SCHED] Lock dropped, loading context\n");
         crate::vga::print_str("[SCHED] Jumping to task...\n");
-        unsafe {
-            let ctx = &*ctx_ptr;
-            crate::serial_println!(
-                "[SCHED] ctx_ptr={:p} eip=0x{:08x} esp=0x{:08x} ebp=0x{:08x} eflags=0x{:08x} cr3=0x{:08x}",
-                ctx_ptr,
-                ctx.eip,
-                ctx.esp,
-                ctx.ebp,
-                ctx.eflags,
-                ctx.cr3
-            );
-            let slot0 = *(ctx.esp as *const u32);
-            let slot1 = *((ctx.esp + 4) as *const u32);
-            crate::serial_println!(
-                "[SCHED] stack slots: [esp]=0x{:08x} [esp+4]=0x{:08x}",
-                slot0,
-                slot1
-            );
-            let esp: u32;
-            core::arch::asm!(
-                "mov {0:e}, esp",
-                out(reg) esp,
-                options(nomem, nostack, preserves_flags)
-            );
-            let top = *(esp as *const u32);
-            crate::serial_println!(
-                "[SCHED] esp=0x{:08x} top=0x{:08x} ctx_ptr=0x{:08x}",
-                esp,
-                top,
-                ctx_ptr as u32
-            );
-        }
+        unsafe { scheduler_platform::debug_dump_launch_context(ctx_ptr); }
         
-        unsafe { asm_load_context(ctx_ptr); }
+        unsafe { scheduler_platform::load_context(ctx_ptr); }
     }
     
     /// Add a user process (stub for now)
@@ -1281,41 +1227,41 @@ pub fn on_timer_tick() {
 
 /// Yield current process
 pub fn yield_now() {
-    let flags = unsafe { crate::idt_asm::fast_cli_save() };
+    let flags = unsafe { scheduler_platform::irq_save_disable() };
     RESCHED_REQUEST.store(false, Ordering::Release);
     let switch = {
         let mut sched = QUANTUM_SCHEDULER.lock();
         sched.yield_cpu()
     };
     if let Some((from_ptr, to_ptr)) = switch {
-        unsafe { asm_switch_context(from_ptr, to_ptr); }
+        unsafe { scheduler_platform::switch_context(from_ptr, to_ptr); }
         // When this thread is resumed, restore its original interrupt state.
-        unsafe { crate::idt_asm::fast_sti_restore(flags) };
+        unsafe { scheduler_platform::irq_restore(flags) };
     } else {
-        unsafe { crate::idt_asm::fast_sti_restore(flags) };
+        unsafe { scheduler_platform::irq_restore(flags) };
     }
 }
 
 /// Block on address (futex-like)
 pub fn block_on(addr: usize) -> Result<(), &'static str> {
-    let flags = unsafe { crate::idt_asm::fast_cli_save() };
+    let flags = unsafe { scheduler_platform::irq_save_disable() };
     let result = {
         let mut sched = QUANTUM_SCHEDULER.lock();
         sched.block_on(addr)
     };
     match result {
         Ok(Some((from_ptr, to_ptr))) => {
-            unsafe { asm_switch_context(from_ptr, to_ptr); }
+            unsafe { scheduler_platform::switch_context(from_ptr, to_ptr); }
             // When this thread is resumed, restore its original interrupt state.
-            unsafe { crate::idt_asm::fast_sti_restore(flags) };
+            unsafe { scheduler_platform::irq_restore(flags) };
             Ok(())
         }
         Ok(None) => {
-            unsafe { crate::idt_asm::fast_sti_restore(flags) };
+            unsafe { scheduler_platform::irq_restore(flags) };
             Ok(())
         }
         Err(e) => {
-            unsafe { crate::idt_asm::fast_sti_restore(flags) };
+            unsafe { scheduler_platform::irq_restore(flags) };
             Err(e)
         }
     }

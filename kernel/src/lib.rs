@@ -113,10 +113,12 @@ pub mod persistence;
 pub mod pit;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod process;
+pub mod process_platform;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod process_asm;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod quantum_scheduler;
+pub mod scheduler_platform;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod registry;
 #[cfg(not(target_arch = "aarch64"))]

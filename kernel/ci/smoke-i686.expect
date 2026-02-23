@@ -1,0 +1,25 @@
+#!/usr/bin/expect -f
+set timeout 90
+
+set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
+cd $kernel_dir
+
+if {![file exists "oreulia.iso"]} {
+    puts "oreulia.iso not found; run build first"
+    exit 1
+}
+
+spawn qemu-system-i386 -cdrom oreulia.iso -serial stdio -monitor none -display none -no-reboot -no-shutdown
+
+expect {
+    -re {Type 'help' for commands\.} {}
+    timeout { puts "timeout waiting for i686 kernel shell banner"; exit 1 }
+}
+
+expect {
+    -re {> $} {}
+    timeout { puts "timeout waiting for i686 shell prompt"; exit 1 }
+}
+
+send "\003"
+expect eof

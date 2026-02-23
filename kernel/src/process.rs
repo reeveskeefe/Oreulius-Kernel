@@ -45,9 +45,7 @@
 
 use core::fmt;
 use spin::Mutex;
-use crate::capability;
-use crate::ipc::ChannelCapability;
-use crate::security;
+use crate::process_platform::{self, ChannelCapability};
 
 /// Maximum number of processes
 pub const MAX_PROCESSES: usize = 64;
@@ -65,8 +63,8 @@ pub const STACK_SIZE: usize = 64 * 1024;
 // Process ID Management
 // ============================================================================
 
-/// Process ID newtype (re-export from IPC for consistency)
-pub use crate::ipc::ProcessId as Pid;
+/// Process ID newtype (re-exported through process_platform for cross-arch ports)
+pub use crate::process_platform::Pid;
 
 // ============================================================================
 // Process State
@@ -567,18 +565,7 @@ impl ProcessManager {
     pub fn spawn(&self, name: &str, parent: Option<Pid>) -> Result<Pid, ProcessError> {
         let pid = self.table.lock().spawn(name, parent)?;
 
-        // Bind process lifecycle to security/capability subsystems.
-        security::security().init_process(pid);
-        capability::capability_manager().init_task(pid);
-
-        if !crate::temporal::is_replay_active() {
-            let _ = crate::temporal::record_process_event(
-                pid.0,
-                parent.map(|p| p.0),
-                crate::temporal::TEMPORAL_PROCESS_EVENT_SPAWN,
-                name,
-            );
-        }
+        process_platform::on_process_spawn(pid, parent, name);
 
         Ok(pid)
     }
@@ -587,22 +574,7 @@ impl ProcessManager {
     pub fn terminate(&self, pid: Pid) -> Result<(), ProcessError> {
         self.table.lock().terminate(pid)?;
 
-        // Tear down capability/security state to prevent stale restrictions,
-        // quotas, and authority from surviving process termination.
-        let _ = crate::ipc::purge_channels_for_process(pid);
-        let _ = crate::wasm::revoke_service_pointers_for_owner(pid);
-        let _ = crate::wasm::unload_modules_for_owner(pid);
-        capability::capability_manager().deinit_task(pid);
-        security::security().terminate_process(pid);
-
-        if !crate::temporal::is_replay_active() {
-            let _ = crate::temporal::record_process_event(
-                pid.0,
-                None,
-                crate::temporal::TEMPORAL_PROCESS_EVENT_TERMINATE,
-                "",
-            );
-        }
+        process_platform::on_process_terminate(pid);
 
         Ok(())
     }
@@ -614,8 +586,7 @@ impl ProcessManager {
         parent: Option<Pid>,
     ) -> Result<(), ProcessError> {
         self.table.lock().spawn_with_pid(pid, name, parent)?;
-        security::security().init_process(pid);
-        capability::capability_manager().init_task(pid);
+        process_platform::on_process_restore_spawn(pid);
         Ok(())
     }
 

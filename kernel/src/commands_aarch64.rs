@@ -151,7 +151,7 @@ fn cmd_pid_set(args: &str) {
         out.line("[A64-CMD] usage: pid-set <pid>");
         return;
     };
-    match crate::vfs_platform::aarch64_set_current_pid(pid) {
+    match crate::arch::aarch64_virt::scheduler_note_context_switch(pid) {
         Ok(()) => {
             let _ = writeln!(out, "[A64-CMD] pid-set ok pid={}", pid);
         }

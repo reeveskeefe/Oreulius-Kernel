@@ -134,6 +134,7 @@ static HEARTBEAT_COUNT: AtomicU64 = AtomicU64::new(0);
 static AARCH64_SCHED_TICK_TOTAL: AtomicU64 = AtomicU64::new(0);
 static AARCH64_SCHED_RESCHED_PENDING: AtomicBool = AtomicBool::new(false);
 static AARCH64_SCHED_RESCHED_REQUESTS: AtomicU64 = AtomicU64::new(0);
+static AARCH64_SCHED_CONTEXT_SWITCHES: AtomicU64 = AtomicU64::new(0);
 static AARCH64_SCHED_TIMESLICE_TICKS: AtomicU64 = AtomicU64::new(10);
 static AARCH64_SCHED_TIMESLICE_POS: AtomicU64 = AtomicU64::new(0);
 static VIRTIO_MMIO_LAST_IRQ_STATUS: [AtomicU32; MAX_TRACKED_VIRTIO_MMIO] = [
@@ -363,6 +364,7 @@ fn seed_platform_fallbacks() {
     AARCH64_SCHED_TICK_TOTAL.store(0, Ordering::Relaxed);
     AARCH64_SCHED_RESCHED_PENDING.store(false, Ordering::Relaxed);
     AARCH64_SCHED_RESCHED_REQUESTS.store(0, Ordering::Relaxed);
+    AARCH64_SCHED_CONTEXT_SWITCHES.store(0, Ordering::Relaxed);
     AARCH64_SCHED_TIMESLICE_POS.store(0, Ordering::Relaxed);
     STRICT_UART_IRQ_MODE.store(false, Ordering::Relaxed);
     VIRTIO_ACTIVE_SLOT.store(usize::MAX, Ordering::Relaxed);
@@ -589,12 +591,25 @@ pub(crate) fn scheduler_timer_tick_hook() {
     }
 }
 
+/// Scheduler-facing hook for AArch64 bring-up to keep `vfs_platform`'s current
+/// PID in sync with whichever task the scheduler considers running.
+///
+/// Today this is exercised by debug shell commands (`pid-set`) because the full
+/// AArch64 quantum scheduler/context-switch path is not enabled yet.
+pub(crate) fn scheduler_note_context_switch(pid: u32) -> Result<(), &'static str> {
+    crate::vfs_platform::aarch64_set_current_pid(pid)?;
+    AARCH64_SCHED_CONTEXT_SWITCHES.fetch_add(1, Ordering::Relaxed);
+    AARCH64_SCHED_RESCHED_PENDING.store(false, Ordering::Release);
+    Ok(())
+}
+
 #[inline]
-fn scheduler_tick_backend_snapshot() -> (u64, bool, u64, u64, u64) {
+fn scheduler_tick_backend_snapshot() -> (u64, bool, u64, u64, u64, u64) {
     (
         AARCH64_SCHED_TICK_TOTAL.load(Ordering::Relaxed),
         AARCH64_SCHED_RESCHED_PENDING.load(Ordering::Acquire),
         AARCH64_SCHED_RESCHED_REQUESTS.load(Ordering::Relaxed),
+        AARCH64_SCHED_CONTEXT_SWITCHES.load(Ordering::Relaxed),
         AARCH64_SCHED_TIMESLICE_TICKS.load(Ordering::Relaxed),
         AARCH64_SCHED_TIMESLICE_POS.load(Ordering::Relaxed),
     )
@@ -1789,7 +1804,8 @@ fn shell_print_ticks() {
 }
 
 fn shell_print_scheduler_backend() {
-    let (ticks, pending, requests, quantum, pos) = scheduler_tick_backend_snapshot();
+    let (ticks, pending, requests, switches, quantum, pos) = scheduler_tick_backend_snapshot();
+    let (_proc_count, _fd_count, current_pid) = crate::vfs_platform::aarch64_process_fd_stats();
     let u = uart();
     u.write_str("[A64] sched-backend ticks=");
     uart_write_hex_u64(ticks);
@@ -1797,6 +1813,10 @@ fn shell_print_scheduler_backend() {
     u.write_str(if pending { "1" } else { "0" });
     u.write_str(" requests=");
     uart_write_hex_u64(requests);
+    u.write_str(" switches=");
+    uart_write_hex_u64(switches);
+    u.write_str(" pid=");
+    uart_write_hex_u64(current_pid as u64);
     u.write_str(" quantum=");
     uart_write_hex_u64(quantum);
     u.write_str(" pos=");
