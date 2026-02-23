@@ -47,7 +47,6 @@ use alloc::boxed::Box;
 use crate::process::{Process, ProcessState, ProcessPriority, Pid, MAX_PROCESSES};
 use crate::asm_bindings::{ProcessContext, asm_switch_context, asm_load_context};
 use crate::pit;
-use crate::paging;
 
 // FIX #1: Module-level stacks (properly placed in BSS by linker)
 const KERNEL_THREAD_STACK_BYTES: usize = 1024 * 1024;
@@ -663,7 +662,7 @@ impl QuantumScheduler {
         // valid entry_addr is at stack_top - 4
         ctx.esp = stack_top - 8;
         ctx.ebp = stack_top - 8;
-        ctx.cr3 = paging::current_page_directory_addr();
+        ctx.cr3 = crate::arch::mmu::current_page_table_root_addr() as u32;
         // Keep IF cleared until thread entry explicitly enables interrupts.
         // This avoids taking an IRQ in the narrow window between context load
         // and trampoline/entry setup.

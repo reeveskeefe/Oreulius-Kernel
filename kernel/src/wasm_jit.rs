@@ -152,12 +152,12 @@ impl JitExecBuffer {
                 & !(paging::PAGE_SIZE - 1)
         };
         // Ensure writable during copy
-        paging::set_page_writable_range(self.ptr as usize, writable_len, true)?;
+        crate::arch::mmu::set_page_writable_range(self.ptr as usize, writable_len, true)?;
         unsafe {
             core::ptr::copy_nonoverlapping(code.as_ptr(), self.ptr, code.len());
         }
         // Seal pages (read-only policy)
-        paging::set_page_writable_range(self.ptr as usize, writable_len, false)?;
+        crate::arch::mmu::set_page_writable_range(self.ptr as usize, writable_len, false)?;
         memory_isolation::tag_jit_code_kernel(self.ptr as usize, writable_len, true)?;
         self.sealed = true;
         Ok(())

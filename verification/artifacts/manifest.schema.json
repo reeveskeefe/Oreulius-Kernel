@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Oreulia Verification Manifest",
+  "type": "object",
+  "required": [
+    "commit_sha",
+    "generated_at",
+    "theorems",
+    "assumptions_version",
+    "ci_runs",
+    "runtime_evidence"
+  ],
+  "properties": {
+    "commit_sha": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "theorems": { "type": "array" },
+    "assumptions_version": { "type": "string" },
+    "ci_runs": { "type": "array" },
+    "runtime_evidence": { "type": "array" }
+  }
+}

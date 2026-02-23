@@ -11599,7 +11599,7 @@ fn cmd_paging_test() {
     vga::print_str("\n");
     
     vga::print_str("  CR3 value: 0x");
-    print_hex(crate::paging::current_page_directory_addr() as usize);
+    print_hex(crate::arch::mmu::current_page_table_root_addr());
     vga::print_str("\n");
     
     vga::print_str("\n=== Paging Tests Complete ===\n\n");

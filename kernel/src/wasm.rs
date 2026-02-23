@@ -3042,7 +3042,7 @@ impl WasmInstance {
             let span = pages * paging::PAGE_SIZE;
             // JIT code sealing toggles page writability in the shared arena.
             // Reassert RW policy for per-instance mutable JIT state pages.
-            if paging::set_page_writable_range(base as usize, span, true).is_err() {
+            if crate::arch::mmu::set_page_writable_range(base as usize, span, true).is_err() {
                 return (core::ptr::null_mut(), 0);
             }
             let _ = crate::memory_isolation::tag_jit_user_state(base as usize, span, false);
@@ -3638,7 +3638,7 @@ impl WasmInstance {
         }
         if !self.jit_state.is_null() && self.jit_state_pages != 0 {
             let span = self.jit_state_pages * paging::PAGE_SIZE;
-            paging::set_page_writable_range(self.jit_state as usize, span, true)
+            crate::arch::mmu::set_page_writable_range(self.jit_state as usize, span, true)
                 .map_err(|_| WasmError::Trap)?;
             let _ = crate::memory_isolation::tag_jit_user_state(
                 self.jit_state as usize,
@@ -7978,10 +7978,8 @@ pub fn jit_runtime_recover() {
         idt_asm::reload();
     }
 
-    if let Some(kernel_cr3) = paging::kernel_page_directory_addr() {
-        unsafe {
-            paging::set_page_directory(kernel_cr3);
-        }
+    if let Some(kernel_cr3) = crate::arch::mmu::kernel_page_table_root_addr() {
+        let _ = crate::arch::mmu::set_page_table_root(kernel_cr3);
     }
 
     unsafe { idt_asm::fast_sti() };
@@ -8174,7 +8172,7 @@ fn ensure_jit_user_pages(pages: &mut Option<JitUserPages>) -> Result<JitUserPage
     memory_isolation::tag_jit_user_state(call, paging::PAGE_SIZE, false)?;
     memory_isolation::tag_jit_user_stack(stack, stack_pages * paging::PAGE_SIZE, false)?;
     write_jit_user_trampoline(trampoline as *mut u8, USER_JIT_CALL_BASE as u32);
-    let _ = paging::set_page_writable_range(trampoline, paging::PAGE_SIZE, false);
+    let _ = crate::arch::mmu::set_page_writable_range(trampoline, paging::PAGE_SIZE, false);
     let new_pages = JitUserPages {
         trampoline,
         call,
@@ -8186,9 +8184,9 @@ fn ensure_jit_user_pages(pages: &mut Option<JitUserPages>) -> Result<JitUserPage
 }
 
 fn wipe_jit_user_pages(pages: &JitUserPages) {
-    let _ = paging::set_page_writable_range(pages.trampoline, paging::PAGE_SIZE, true);
+    let _ = crate::arch::mmu::set_page_writable_range(pages.trampoline, paging::PAGE_SIZE, true);
     write_jit_user_trampoline(pages.trampoline as *mut u8, USER_JIT_CALL_BASE as u32);
-    let _ = paging::set_page_writable_range(pages.trampoline, paging::PAGE_SIZE, false);
+    let _ = crate::arch::mmu::set_page_writable_range(pages.trampoline, paging::PAGE_SIZE, false);
     unsafe {
         core::ptr::write_bytes(pages.call as *mut u8, 0, paging::PAGE_SIZE);
         core::ptr::write_bytes(
@@ -8716,8 +8714,8 @@ fn call_jit_user(
 
     // Harden against stale RX flags in the shared JIT arena before staging
     // user-call metadata and trap/fuel state.
-    paging::set_page_writable_range(pages.call, paging::PAGE_SIZE, true)?;
-    paging::set_page_writable_range(state_ptr as usize, state_map_len, true)?;
+    crate::arch::mmu::set_page_writable_range(pages.call, paging::PAGE_SIZE, true)?;
+    crate::arch::mmu::set_page_writable_range(state_ptr as usize, state_map_len, true)?;
 
     let call_ptr = pages.call as *mut JitUserCall;
     unsafe {
@@ -8811,12 +8809,12 @@ fn call_jit_user(
     }
 
     let flags = unsafe { idt_asm::fast_cli_save() };
-    let old_cr3 = paging::current_page_directory_addr();
+    let old_cr3 = crate::arch::mmu::current_page_table_root_addr();
     if kpti::enabled() {
         let _ = kpti::enter_user(sandbox_pd);
     }
     jit_user_debug_set_stage(9);
-    unsafe { paging::set_page_directory(sandbox_pd) };
+    let _ = crate::arch::mmu::set_page_table_root(sandbox_pd as usize);
 
     let user_stack_top = USER_JIT_STACK_BASE
         + guard_bytes
@@ -8919,7 +8917,7 @@ fn call_jit_user(
     }
 
     JIT_USER_ENTER_TICK.store(0, Ordering::SeqCst);
-    unsafe { paging::set_page_directory(old_cr3) };
+    let _ = crate::arch::mmu::set_page_table_root(old_cr3);
     if kpti::enabled() {
         kpti::leave_user();
     }

@@ -167,8 +167,8 @@ pub fn enabled() -> bool {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    let kernel_cr3 = paging::kernel_page_directory_addr()
-        .unwrap_or_else(|| paging::current_page_directory_addr());
+    let kernel_cr3 = crate::arch::mmu::kernel_page_table_root_addr()
+        .unwrap_or_else(crate::arch::mmu::current_page_table_root_addr) as u32;
     KPTI_KERNEL_CR3.store(kernel_cr3, Ordering::SeqCst);
 
     let tramp_base = memory::jit_allocate_pages(1)?;
@@ -236,8 +236,8 @@ pub fn init() -> Result<(), &'static str> {
     };
     *KPTI_STATE.lock() = Some(state);
 
-    let _ = paging::set_page_writable_range(tramp_base, paging::PAGE_SIZE, false);
-    let _ = paging::set_page_writable_range(idt_base, paging::PAGE_SIZE, false);
+    let _ = crate::arch::mmu::set_page_writable_range(tramp_base, paging::PAGE_SIZE, false);
+    let _ = crate::arch::mmu::set_page_writable_range(idt_base, paging::PAGE_SIZE, false);
 
     KPTI_ENABLED.store(true, Ordering::SeqCst);
     crate::vga::print_str("[KPTI] Trampoline + user IDT ready\n");

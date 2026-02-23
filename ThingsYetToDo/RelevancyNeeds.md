@@ -24,7 +24,7 @@ Here’s a brutally honest, technical assessment of the current state of the Ore
 #### 1. **Hardware Support Is Narrow**
 - **i686-Only**: The kernel only runs on legacy x86 (i686/32-bit). Modern desktops, servers, laptops, and nearly all edge devices use x86-64 or ARM (often AArch64). Limiting to i686 = narrow audience.
 - **Drivers**: Only basic NICs (E1000, RTL8139), no display/audio, no USB, no NVMe/SATA/SCSI. No support for modern GPUs, Bluetooth, Wi-Fi, or storage controllers.[kernel/src/GPUsupport/README.md#L3-L27](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/kernel/src/GPUsupport/README.md#L3-L27)  
-- **No ARM/x86-64**: High-traction OSes must run everywhere. Porting is substantial: boot, memory, interrupts, privilege separation, and drivers need major revision.[ThingsYetToDo/anyinfrsatructureporting.md#L3-L6](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/ThingsYetToDo/anyinfrsatructureporting.md#L3-L6)
+- **No ARM/x86-64**: High-traction OSes must run everywhere. Porting is substantial: boot, memory, interrupts, privilege separation, and drivers need major revision.[ThingsYetToDo/anyinfrsatructureporting.md#L3-L6](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/ThingsYetToDo/anyinfrsatructureporting.md#L3-L6) [porting foundation in progress,]
 
 #### 2. **Userland & Ecosystem**
 - There is no evidence of a robust user-space (shell, utilities, package system, graphics, scripting, etc.). Modern users expect at least basic console interactivity and a programming environment.

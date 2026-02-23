@@ -12,10 +12,16 @@ align 4
 section .text
 global _start
 extern rust_main
+extern arch_x86_record_boot_handoff
 extern sbss
 extern ebss
 
 _start:
+    ; Preserve multiboot bootloader handoff before clobbering EAX/EBX.
+    ; EAX = boot magic, EBX = multiboot info pointer.
+    mov esi, eax
+    mov edx, ebx
+
     ; Direct VGA write - no BIOS interrupts (we're in protected mode)
     ; Clear screen
     mov edi, 0xb8000
@@ -39,6 +45,13 @@ _start:
     
     ; Set up stack
     mov esp, stack_top
+
+    ; Record bootloader handoff in Rust-side storage (after BSS clear).
+    ; cdecl: push args right-to-left => info_ptr, then magic.
+    push edx
+    push esi
+    call arch_x86_record_boot_handoff
+    add esp, 8
     
     ; Write "CALL" before calling rust_main
     mov word [0xb8008], 0x0743  ; 'C'

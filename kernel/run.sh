@@ -25,12 +25,27 @@ echo "Press Ctrl+C to exit"
 echo ""
 
 QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:-}"
+USE_DEFAULT_SERIAL=1
+if [[ "$QEMU_EXTRA_ARGS" =~ (^|[[:space:]])-nographic($|[[:space:]]) ]]; then
+    USE_DEFAULT_SERIAL=0
+fi
+if [[ "$QEMU_EXTRA_ARGS" =~ (^|[[:space:]])-serial($|[[:space:]]) ]]; then
+    USE_DEFAULT_SERIAL=0
+fi
+
 if [ -n "$QEMU_EXTRA_ARGS" ]; then
-    # shellcheck disable=SC2086
-    qemu-system-i386 \
-        -cdrom "$ISO_PATH" \
-        -serial stdio \
-        $QEMU_EXTRA_ARGS
+    if [ "$USE_DEFAULT_SERIAL" -eq 1 ]; then
+        # shellcheck disable=SC2086
+        qemu-system-i386 \
+            -cdrom "$ISO_PATH" \
+            -serial stdio \
+            $QEMU_EXTRA_ARGS
+    else
+        # shellcheck disable=SC2086
+        qemu-system-i386 \
+            -cdrom "$ISO_PATH" \
+            $QEMU_EXTRA_ARGS
+    fi
 else
     qemu-system-i386 \
         -cdrom "$ISO_PATH" \

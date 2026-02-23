@@ -487,6 +487,12 @@ pub fn set_irq_masks(master: u8, slave: u8) {
 
 /// Initialize IDT, PIC remap, and IRQ masks
 pub fn init() {
+    init_trap_table();
+    init_interrupt_controller();
+}
+
+/// Initialize the trap/interrupt vector table and load the IDT.
+pub fn init_trap_table() {
     unsafe {
         let idt = &mut IDT;
         idt.init_exceptions(KERNEL_CODE_SELECTOR);
@@ -497,17 +503,20 @@ pub fn init() {
             fn syscall_entry();
         }
         idt.set_handler(0x80, syscall_entry as usize, KERNEL_CODE_SELECTOR, FLAG_PRESENT | GATE_INTERRUPT_32 | FLAG_DPL3);
-        
-        // Remap PIC to 32-47 to avoid conflicts with CPU exceptions
-        Pic::remap(32, 40);
-        
-        // DEBUG: Unmask Timer(0) and Keyboard(1) IMMEDIATELY to test interrupts
-        let master_mask = 0xFC; // 11111100b
-        let slave_mask = 0xFF;  // 11111111b
-        set_pic_masks(master_mask, slave_mask);
-        
+
         idt.load();
     }
+}
+
+/// Initialize the legacy interrupt controller (PIC remap + masks).
+pub fn init_interrupt_controller() {
+    // Remap PIC to 32-47 to avoid conflicts with CPU exceptions
+    Pic::remap(32, 40);
+
+    // DEBUG: Unmask Timer(0) and Keyboard(1) IMMEDIATELY to test interrupts
+    let master_mask = 0xFC; // 11111100b
+    let slave_mask = 0xFF;  // 11111111b
+    set_pic_masks(master_mask, slave_mask);
 }
 
 /// Reload the current kernel IDT (used after temporary user IDT loads).
@@ -536,11 +545,14 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
     let frame = unsafe { &mut *(frame as *const _ as *mut InterruptFrame) };
     
     if frame.int_no == Exception::PageFault as u32 {
-        let fault_addr: u32;
+        let fault_addr: usize;
         unsafe {
+            #[cfg(target_arch = "x86")]
             core::arch::asm!("mov {0:e}, cr2", out(reg) fault_addr);
+            #[cfg(target_arch = "x86_64")]
+            core::arch::asm!("mov {}, cr2", out(reg) fault_addr);
         }
-        if crate::wasm::jit_handle_page_fault(frame, fault_addr as usize, frame.err_code) {
+        if crate::wasm::jit_handle_page_fault(frame, fault_addr, frame.err_code) {
             return;
         }
         let dbg_ctx_ptr = unsafe { asm_dbg_ctx_ptr };
@@ -564,7 +576,7 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
         ));
         crate::paging::rust_page_fault_handler_ex(
             frame.err_code,
-            fault_addr as usize,
+            fault_addr,
             frame.eip as usize,
             frame.esp as usize,
         );

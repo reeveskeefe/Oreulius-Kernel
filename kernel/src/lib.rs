@@ -40,6 +40,7 @@ use alloc::boxed::Box;
 
 pub mod advanced_commands;
 pub mod acpi_asm;
+pub mod arch;
 pub mod asm_bindings;
 pub mod capability;
 pub mod capnet;
@@ -121,9 +122,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // Try normal printing if locks aren't held (might deadlock, but we tried)
     // vga::print_str("[PANIC] Kernel panic\n");
 
-    loop {
-        unsafe { core::arch::asm!("hlt") };
-    }
+    crate::arch::halt_loop()
 }
 
 #[alloc_error_handler]
@@ -140,13 +139,154 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
             *vga.add(i) = 0x4F00 | (b as u16);
         }
     }
-    loop {
-        unsafe { core::arch::asm!("hlt") };
+    crate::arch::halt_loop()
+}
+
+#[cfg(target_arch = "x86_64")]
+fn x86_64_read_rflags() -> u64 {
+    let flags: u64;
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
     }
+    flags
+}
+
+#[cfg(target_arch = "x86_64")]
+fn x86_64_read_ctrl_regs() -> (u64, u64, u64) {
+    let cr0: u64;
+    let cr3: u64;
+    let cr4: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+        core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+    }
+    (cr0, cr3, cr4)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn x86_64_read_efer() -> u64 {
+    let low: u32;
+    let high: u32;
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") 0xC000_0080u32,
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack),
+        );
+    }
+    ((high as u64) << 32) | (low as u64)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn rust_main_x86_64_bringup() -> ! {
+    unsafe {
+        let vga = 0xb8000 as *mut u16;
+        *(vga.add(8)) = 0x0E58; // 'X'
+        *(vga.add(9)) = 0x0E36; // '6'
+        *(vga.add(10)) = 0x0E34; // '4'
+    }
+
+    crate::serial_println!("[X64] Early bring-up path");
+
+    let boot_info = arch::boot_info();
+    let protocol = match boot_info.protocol {
+        arch::BootProtocol::Unknown => "unknown",
+        arch::BootProtocol::Multiboot1 => "multiboot1",
+        arch::BootProtocol::Multiboot2 => "multiboot2",
+    };
+
+    crate::serial_println!("[X64] platform={}", arch::platform_name());
+    crate::serial_println!("[X64] boot protocol={}", protocol);
+    crate::serial_println!(
+        "[X64] raw magic={:#010x} info_ptr={:#018x}",
+        boot_info.raw_boot_magic.unwrap_or(0),
+        boot_info.raw_info_ptr.unwrap_or(0)
+    );
+    crate::serial_println!(
+        "[X64] cmdline ptr={:#018x} text={}",
+        boot_info.cmdline_ptr.unwrap_or(0),
+        boot_info.cmdline_str().unwrap_or("<none>")
+    );
+    crate::serial_println!(
+        "[X64] loader  ptr={:#018x} text={}",
+        boot_info.boot_loader_name_ptr.unwrap_or(0),
+        boot_info.boot_loader_name_str().unwrap_or("<none>")
+    );
+    crate::serial_println!("[X64] acpi rsdp={:#018x}", boot_info.acpi_rsdp_ptr.unwrap_or(0));
+
+    memory::init();
+    crate::serial_println!("[X64] heap allocator initialized");
+
+    if let Err(e) = arch::mmu::init() {
+        crate::serial_println!("[X64] mmu init failed: {}", e);
+        crate::arch::halt_loop();
+    }
+    crate::serial_println!(
+        "[X64] mmu backend={} root={:#018x}",
+        arch::mmu::backend_name(),
+        arch::mmu::current_page_table_root_addr()
+    );
+
+    let (cr0, cr3, cr4) = crate::arch::x86_64_runtime::read_ctrl_regs();
+    let efer = crate::arch::x86_64_runtime::read_efer();
+    crate::serial_println!(
+        "[X64] cr0={:#018x} cr3={:#018x} cr4={:#018x} efer={:#018x}",
+        cr0, cr3, cr4, efer
+    );
+    crate::serial_println!(
+        "[X64] paging sanity pg={} pae={} lme={} lma={}",
+        (cr0 >> 31) & 1,
+        (cr4 >> 5) & 1,
+        (efer >> 8) & 1,
+        (efer >> 10) & 1
+    );
+
+    let rflags_before = x86_64_read_rflags();
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+    }
+    let rflags_after = x86_64_read_rflags();
+    crate::serial_println!(
+        "[X64] irq flag sanity IF {} -> {}",
+        (rflags_before >> 9) & 1,
+        (rflags_after >> 9) & 1
+    );
+
+    crate::serial_println!("[X64] init gdt/tss...");
+    arch::init_cpu_tables();
+    crate::serial_println!("[X64] init idt/traps...");
+    arch::init_trap_table();
+    crate::serial_println!("[X64] init pic...");
+    arch::init_interrupt_controller();
+    crate::serial_println!("[X64] init pit...");
+    arch::init_timer();
+    crate::serial_println!("[X64] enabling interrupts...");
+    arch::enable_interrupts();
+    crate::serial_println!("[X64] interrupts enabled");
+
+    crate::arch::x86_64_runtime::self_test_traps_and_timer();
+
+    unsafe {
+        let vga = 0xb8000 as *mut u16;
+        *(vga.add(11)) = 0x0E48; // 'H'
+        *(vga.add(12)) = 0x0E4C; // 'L'
+        *(vga.add(13)) = 0x0E53; // 'S'
+        *(vga.add(14)) = 0x0E48; // 'H'
+    }
+    crate::serial_println!("[X64] Bring-up diagnostics complete; entering shell");
+    crate::arch::x86_64_runtime::run_serial_shell()
 }
 
 #[no_mangle]
 pub extern "C" fn rust_main() -> ! {
+    #[cfg(target_arch = "x86_64")]
+    {
+        return rust_main_x86_64_bringup();
+    }
+
     // IMMEDIATE VGA WRITE to confirm we reached Rust code
     unsafe {
         let vga = 0xb8000 as *mut u16;
@@ -163,6 +303,43 @@ pub extern "C" fn rust_main() -> ! {
     
     // Now we can use VGA (and everything else)
     vga::print_str("[MEMORY] Heap allocator initialized\n");
+    let boot_info = arch::boot_info();
+    vga::print_str("[ARCH] Platform: ");
+    vga::print_str(arch::platform_name());
+    vga::print_str("\n");
+    vga::print_str("[BOOT] Protocol: ");
+    match boot_info.protocol {
+        arch::BootProtocol::Unknown => vga::print_str("unknown"),
+        arch::BootProtocol::Multiboot1 => vga::print_str("multiboot1"),
+        arch::BootProtocol::Multiboot2 => vga::print_str("multiboot2"),
+    }
+    vga::print_str("\n");
+    vga::print_str("[BOOT] Cmdline ptr: 0x");
+    advanced_commands::print_hex(boot_info.cmdline_ptr.unwrap_or(0));
+    vga::print_str("\n");
+    vga::print_str("[BOOT] Cmdline: ");
+    if let Some(cmdline) = boot_info.cmdline_str() {
+        vga::print_str(cmdline);
+    } else {
+        vga::print_str("<none>");
+    }
+    vga::print_str("\n");
+    vga::print_str("[BOOT] Loader ptr: 0x");
+    advanced_commands::print_hex(boot_info.boot_loader_name_ptr.unwrap_or(0));
+    vga::print_str("\n");
+    vga::print_str("[BOOT] Loader: ");
+    if let Some(loader) = boot_info.boot_loader_name_str() {
+        vga::print_str(loader);
+    } else {
+        vga::print_str("<none>");
+    }
+    vga::print_str("\n");
+    vga::print_str("[BOOT] ACPI RSDP ptr: 0x");
+    advanced_commands::print_hex(boot_info.acpi_rsdp_ptr.unwrap_or(0));
+    vga::print_str("\n");
+    vga::print_str("[MMU] Backend: ");
+    vga::print_str(arch::mmu::backend_name());
+    vga::print_str("\n");
     
     // Test heap allocation
     if ensure_heap_available().is_some() {
@@ -171,26 +348,32 @@ pub extern "C" fn rust_main() -> ! {
     
     // Initialize GDT/TSS for ring transitions
     vga::print_str("[GDT] Initializing GDT/TSS...\n");
-    gdt::init();
+    arch::init_cpu_tables();
     vga::print_str("[GDT] GDT loaded, TSS ready\n");
     
     // Initialize IDT and PIC before enabling paging/interrupts
     vga::print_str("[IDT] Initializing interrupt descriptor table...\n");
-    idt_asm::init();
-    vga::print_str("[IDT] IDT loaded, PIC remapped\n");
+    arch::init_trap_table();
+    vga::print_str("[IDT] IDT loaded\n");
+    vga::print_str("[IRQCTL] Initializing interrupt controller...\n");
+    arch::init_interrupt_controller();
+    vga::print_str("[IRQCTL] Controller initialized\n");
 
     // Initialize Keyboard (specifically PS/2 configuration)
     keyboard::init();
     
     // Initialize virtual memory management (must be early, after physical memory)
     vga::print_str("[PAGING] Enabling virtual memory...\n");
-    if let Err(e) = paging::init() {
+    if let Err(e) = arch::mmu::init() {
         vga::print_str("[PAGING] Failed to initialize: ");
         vga::print_str(e);
         vga::print_str("\n");
         loop { core::hint::spin_loop(); }
     }
     vga::print_str("[PAGING] Virtual memory enabled (4KB pages, user/kernel separation)\n");
+    vga::print_str("[PAGING] Kernel root addr: 0x");
+    advanced_commands::print_hex(arch::mmu::kernel_page_table_root_addr().unwrap_or(0));
+    vga::print_str("\n");
 
     // Enable CPU hardening features (SMEP/SMAP) if supported.
     cpu_security::init();
@@ -250,12 +433,12 @@ pub extern "C" fn rust_main() -> ! {
     
     // Initialize timer for preemptive scheduling
     vga::print_str("[TIMER] Initializing PIT (100 Hz)...\n");
-    pit::init();
+    arch::init_timer();
     vga::print_str("[SCHED] Preemptive scheduler ready\n");
     
     // Enable CPU interrupts now that IDT/PIC/PIT are configured
     vga::print_str("[IRQ] Enabling interrupts...\n");
-    asm_bindings::enable_interrupts();
+    arch::enable_interrupts();
     vga::print_str("[IRQ] Interrupts enabled\n");
     
     vga::print_str("[DEBUG] Timer initialized successfully\n");

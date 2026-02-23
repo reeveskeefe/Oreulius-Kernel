@@ -172,30 +172,26 @@ fn map_segment(space: &mut AddressSpace, vaddr: u32, memsz: u32, writable: bool)
 }
 
 fn copy_to_user(space: &AddressSpace, vaddr: u32, data: &[u8]) -> Result<(), &'static str> {
-    let old = paging::current_page_directory_addr();
+    let old = crate::arch::mmu::current_page_table_root_addr();
     unsafe {
         space.activate();
     }
     unsafe {
         ptr::copy_nonoverlapping(data.as_ptr(), vaddr as *mut u8, data.len());
     }
-    unsafe {
-        paging::set_page_directory(old);
-    }
+    crate::arch::mmu::set_page_table_root(old)?;
     Ok(())
 }
 
 fn zero_user(space: &AddressSpace, vaddr: u32, len: usize) -> Result<(), &'static str> {
-    let old = paging::current_page_directory_addr();
+    let old = crate::arch::mmu::current_page_table_root_addr();
     unsafe {
         space.activate();
     }
     unsafe {
         ptr::write_bytes(vaddr as *mut u8, 0, len);
     }
-    unsafe {
-        paging::set_page_directory(old);
-    }
+    crate::arch::mmu::set_page_table_root(old)?;
     Ok(())
 }
 
@@ -288,7 +284,7 @@ fn apply_relocations(
         return Err("REL table outside load segments");
     }
 
-    let old = paging::current_page_directory_addr();
+    let old = crate::arch::mmu::current_page_table_root_addr();
     unsafe { space.activate(); }
 
     let count = rel_size / rel_ent;
@@ -302,7 +298,7 @@ fn apply_relocations(
             rel_entry_addr,
             size_of::<Elf32Rel>() as u32,
         ) {
-            unsafe { paging::set_page_directory(old); }
+            let _ = crate::arch::mmu::set_page_table_root(old);
             return Err("REL entry outside load segments");
         }
         let rel_ptr = rel_entry_addr as *const Elf32Rel;
@@ -313,7 +309,7 @@ fn apply_relocations(
                 .checked_add(rel.r_offset)
                 .ok_or("Relocation address overflow")?;
             if !addr_in_load_ranges(phdrs, base, reloc_u32, size_of::<u32>() as u32) {
-                unsafe { paging::set_page_directory(old); }
+                let _ = crate::arch::mmu::set_page_table_root(old);
                 return Err("Relocation target outside load segments");
             }
             let reloc_addr = reloc_u32 as *mut u32;
@@ -322,7 +318,7 @@ fn apply_relocations(
         }
     }
 
-    unsafe { paging::set_page_directory(old); }
+    crate::arch::mmu::set_page_table_root(old)?;
     Ok(())
 }
 

@@ -1,0 +1,14 @@
+name: proof-check
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  proof-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Baseline verification structure
+        run: bash verification/scripts/proof_check.sh

@@ -45,8 +45,11 @@ where
 {
     let flags: usize;
     unsafe {
-        // Save EFLAGS
+        // Save flags (EFLAGS/RFLAGS depending on target).
+        #[cfg(target_arch = "x86")]
         core::arch::asm!("pushfd; pop {}", out(reg) flags, options(nomem, preserves_flags));
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
         // Disable interrupts
         core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
     }
