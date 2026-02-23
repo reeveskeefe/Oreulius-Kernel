@@ -33,7 +33,6 @@
 #![no_std]
 #![feature(alloc_error_handler)]
 
-#[cfg(not(target_arch = "aarch64"))]
 extern crate alloc;
 #[cfg(not(target_arch = "aarch64"))]
 use alloc::boxed::Box;
@@ -41,6 +40,8 @@ use alloc::boxed::Box;
 // use alloc::string::String;
 
 pub mod arch;
+#[cfg(target_arch = "aarch64")]
+mod aarch64_alloc;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod advanced_commands;
 #[cfg(not(target_arch = "aarch64"))]
@@ -52,6 +53,9 @@ pub mod capability;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod capnet;
 #[cfg(not(target_arch = "aarch64"))]
+pub mod commands;
+#[cfg(target_arch = "aarch64")]
+#[path = "commands_aarch64.rs"]
 pub mod commands;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod console_service;
@@ -133,8 +137,8 @@ pub mod temporal;
 pub mod temporal_asm;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod vga;
-#[cfg(not(target_arch = "aarch64"))]
 pub mod vfs;
+pub mod vfs_platform;
 pub mod virtio_blk;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod wasm_jit;

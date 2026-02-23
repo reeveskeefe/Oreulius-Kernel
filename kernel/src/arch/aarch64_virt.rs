@@ -2592,6 +2592,12 @@ fn shell_cmd_vfs_blk_write(cmd: &str) {
 }
 
 fn shell_exec_command(cmd: &str) -> bool {
+    // Give the AArch64 commands module precedence for overlapping names so the
+    // selectively un-gated VFS/block command path is the default on this shell.
+    if crate::commands::try_execute(cmd) {
+        return true;
+    }
+
     if cmd == "uartirq" {
         shell_print_uart_irq_diag();
         return true;

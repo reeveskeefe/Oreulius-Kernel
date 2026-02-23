@@ -46,7 +46,7 @@ use core::cmp::min;
 use core::fmt::Write;
 use spin::Mutex;
 
-use crate::process::{self, Pid};
+use crate::vfs_platform::{self, Pid};
 use crate::virtio_blk;
 
 pub type InodeId = u64;
@@ -405,7 +405,7 @@ fn write_path_internal(path: &str, data: &[u8], track_temporal: bool) -> Result<
             inode.meta.size = inode.data.len() as u64;
             inode.meta.mtime = 0;
             if track_temporal {
-                let _ = crate::temporal::record_write(&normalized_path, data);
+                let _ = vfs_platform::temporal_record_write(&normalized_path, data);
             }
             return Ok(data.len());
         }
@@ -428,7 +428,7 @@ fn write_path_internal(path: &str, data: &[u8], track_temporal: bool) -> Result<
     inode.meta.size = inode.data.len() as u64;
     inode.meta.mtime = 0;
     if track_temporal {
-        let _ = crate::temporal::record_write(&normalized_path, data);
+        let _ = vfs_platform::temporal_record_write(&normalized_path, data);
     }
     Ok(data.len())
 }
@@ -497,7 +497,7 @@ pub fn mount_virtio(path: &str) -> Result<(), &'static str> {
 // ============================================================================
 
 pub fn open_for_current(path: &str, flags: OpenFlags) -> Result<usize, &'static str> {
-    let pid = process::current_pid().ok_or("No current process")?;
+    let pid = vfs_platform::current_pid().ok_or("No current process")?;
     open_for_pid(pid, path, flags)
 }
 
@@ -510,9 +510,7 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
             let kind = mount_open_kind(backend, &sub, flags, &normalized_path)?;
             let handle = Handle { kind, pos: 0, flags, owner: pid };
             let handle_id = vfs.alloc_handle(handle);
-            return process::process_manager()
-                .alloc_fd(pid, handle_id)
-                .map_err(|e| e.as_str());
+            return vfs_platform::alloc_fd(pid, handle_id);
         }
 
         if let Ok(inode_id) = vfs.resolve_path(&normalized_path) {
@@ -522,7 +520,7 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
                     if flags.contains(OpenFlags::TRUNC) {
                         inode.data.clear();
                         inode.meta.size = 0;
-                        let _ = crate::temporal::record_write(&normalized_path, &[]);
+                        let _ = vfs_platform::temporal_record_write(&normalized_path, &[]);
                     }
                     let handle = Handle {
                         kind: HandleKind::MemFile {
@@ -534,9 +532,7 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
                         owner: pid,
                     };
                     let handle_id = vfs.alloc_handle(handle);
-                    return process::process_manager()
-                        .alloc_fd(pid, handle_id)
-                        .map_err(|e| e.as_str());
+                    return vfs_platform::alloc_fd(pid, handle_id);
                 }
                 InodeKind::Directory => {
                     let handle = Handle {
@@ -546,9 +542,7 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
                         owner: pid,
                     };
                     let handle_id = vfs.alloc_handle(handle);
-                    return process::process_manager()
-                        .alloc_fd(pid, handle_id)
-                        .map_err(|e| e.as_str());
+                    return vfs_platform::alloc_fd(pid, handle_id);
                 }
                 InodeKind::Symlink => return Err("Symlink open not supported"),
             }
@@ -570,7 +564,7 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
             if flags.contains(OpenFlags::TRUNC) {
                 inode.data.clear();
                 inode.meta.size = 0;
-                let _ = crate::temporal::record_write(&normalized_path, &[]);
+                let _ = vfs_platform::temporal_record_write(&normalized_path, &[]);
             }
             let handle = Handle {
                 kind: HandleKind::MemFile {
@@ -582,9 +576,7 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
                 owner: pid,
             };
             let handle_id = vfs.alloc_handle(handle);
-            process::process_manager()
-                .alloc_fd(pid, handle_id)
-                .map_err(|e| e.as_str())
+            vfs_platform::alloc_fd(pid, handle_id)
         }
         InodeKind::Directory => {
             let handle = Handle {
@@ -594,18 +586,14 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
                 owner: pid,
             };
             let handle_id = vfs.alloc_handle(handle);
-            process::process_manager()
-                .alloc_fd(pid, handle_id)
-                .map_err(|e| e.as_str())
+            vfs_platform::alloc_fd(pid, handle_id)
         }
         InodeKind::Symlink => Err("Symlink open not supported"),
     }
 }
 
 pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static str> {
-    let handle_id = process::process_manager()
-        .get_fd_handle(pid, fd)
-        .map_err(|e| e.as_str())?;
+    let handle_id = vfs_platform::get_fd_handle(pid, fd)?;
     let mut vfs = VFS.lock();
     let (kind, pos) = {
         let handle = vfs.get_handle_mut(handle_id).ok_or("Invalid handle")?;
@@ -648,9 +636,7 @@ pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static st
 }
 
 pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str> {
-    let handle_id = process::process_manager()
-        .get_fd_handle(pid, fd)
-        .map_err(|e| e.as_str())?;
+    let handle_id = vfs_platform::get_fd_handle(pid, fd)?;
     let mut vfs = VFS.lock();
     let (kind, pos, flags) = {
         let handle = vfs.get_handle_mut(handle_id).ok_or("Invalid handle")?;
@@ -696,20 +682,16 @@ pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str>
     drop(vfs);
 
     if let Some((path, payload)) = temporal_capture {
-        let _ = crate::temporal::record_write(&path, &payload);
+        let _ = vfs_platform::temporal_record_write(&path, &payload);
     }
     Ok(written)
 }
 
 pub fn close_fd(pid: Pid, fd: usize) -> Result<(), &'static str> {
-    let handle_id = process::process_manager()
-        .get_fd_handle(pid, fd)
-        .map_err(|e| e.as_str())?;
+    let handle_id = vfs_platform::get_fd_handle(pid, fd)?;
     let mut vfs = VFS.lock();
     vfs.remove_handle(handle_id);
-    process::process_manager()
-        .close_fd(pid, fd)
-        .map_err(|e| e.as_str())
+    vfs_platform::close_fd(pid, fd)
 }
 
 // ============================================================================
@@ -824,9 +806,9 @@ fn capture_temporal_backend_write(path: &str, offset: usize, data: &[u8], writte
     payload.extend_from_slice(&(offset as u64).to_le_bytes());
     payload.extend_from_slice(&(encoded_write_len as u32).to_le_bytes());
     payload.extend_from_slice(&(stored_len as u32).to_le_bytes());
-    payload.extend_from_slice(&crate::pit::get_ticks().to_le_bytes());
+    payload.extend_from_slice(&vfs_platform::ticks_now().to_le_bytes());
     payload.extend_from_slice(&data[..stored_len]);
-    let _ = crate::temporal::record_object_write(path, &payload);
+    let _ = vfs_platform::temporal_record_object_write(path, &payload);
 }
 
 pub fn temporal_try_apply_backend_payload(
