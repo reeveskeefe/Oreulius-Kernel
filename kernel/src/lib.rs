@@ -135,7 +135,6 @@ pub mod temporal_asm;
 pub mod vga;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod vfs;
-#[cfg(not(target_arch = "aarch64"))]
 pub mod virtio_blk;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod wasm_jit;

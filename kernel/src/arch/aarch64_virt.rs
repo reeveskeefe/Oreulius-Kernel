@@ -11,6 +11,7 @@ use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{
     AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
+use spin::Mutex;
 
 use super::{ArchPlatform, BootInfo};
 use super::aarch64_vectors::VectorSlot;
@@ -74,8 +75,11 @@ const VIRTIO_QUEUE_SIZE_TARGET: u16 = 8;
 const VIRTIO_BLK_CONFIG_CAPACITY_LO: usize = 0x100;
 const VIRTIO_BLK_CONFIG_CAPACITY_HI: usize = 0x104;
 const VIRTIO_BLK_T_IN: u32 = 0;
+const VIRTIO_BLK_T_OUT: u32 = 1;
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
+const VIRTIO_BLK_SECTOR_SIZE: usize = 512;
+const VIRTIO_BLK_SYNC_WAIT_SPINS: usize = 2_000_000;
 
 static BOOT_DTB_PTR: AtomicUsize = AtomicUsize::new(0);
 static BOOT_CMDLINE_PTR: AtomicUsize = AtomicUsize::new(0);
@@ -216,8 +220,10 @@ static VIRTIO_BLK_CAPACITY_SECTORS: AtomicU64 = AtomicU64::new(0);
 static VIRTIO_BLK_REQ_POSTED: AtomicU64 = AtomicU64::new(0);
 static VIRTIO_BLK_REQ_COMPLETED: AtomicU64 = AtomicU64::new(0);
 static VIRTIO_BLK_REQ_POST_FAILS: AtomicU64 = AtomicU64::new(0);
+static VIRTIO_BLK_REQ_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 static VIRTIO_BLK_REQ_LAST_STATUS: AtomicU32 = AtomicU32::new(0xFF);
 static VIRTIO_BLK_REQ_LAST_USED_LEN: AtomicU32 = AtomicU32::new(0);
+static VIRTIO_BLK_REQ_LOCK: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 struct VirtioBlkReqHeader {
@@ -250,6 +256,46 @@ impl VirtioBlkReqState {
 }
 
 static VIRTIO_BLK_REQ: VirtioBlkReqState = VirtioBlkReqState::new();
+
+const A64_VFS_MOUNT_PATH_MAX: usize = 64;
+
+#[derive(Clone, Copy)]
+struct A64VfsMountState {
+    mounted: bool,
+    path_len: usize,
+    path: [u8; A64_VFS_MOUNT_PATH_MAX],
+    mbr: [Option<crate::virtio_blk::MbrPartition>; 4],
+    gpt: [Option<crate::virtio_blk::GptPartition>; 4],
+}
+
+impl A64VfsMountState {
+    const fn new() -> Self {
+        Self {
+            mounted: false,
+            path_len: 0,
+            path: [0; A64_VFS_MOUNT_PATH_MAX],
+            mbr: [None, None, None, None],
+            gpt: [None, None, None, None],
+        }
+    }
+
+    fn path_str(&self) -> Option<&str> {
+        core::str::from_utf8(&self.path[..self.path_len]).ok()
+    }
+
+    fn set_path(&mut self, p: &str) -> Result<(), &'static str> {
+        let bytes = p.as_bytes();
+        if bytes.is_empty() || bytes.len() >= A64_VFS_MOUNT_PATH_MAX {
+            return Err("mount path length");
+        }
+        self.path[..bytes.len()].copy_from_slice(bytes);
+        self.path[bytes.len()..].fill(0);
+        self.path_len = bytes.len();
+        Ok(())
+    }
+}
+
+static A64_VFS_MOUNT: Mutex<A64VfsMountState> = Mutex::new(A64VfsMountState::new());
 
 #[inline]
 fn nonzero_ptr(ptr: usize) -> Option<usize> {
@@ -336,8 +382,10 @@ fn seed_platform_fallbacks() {
     VIRTIO_BLK_REQ_POSTED.store(0, Ordering::Relaxed);
     VIRTIO_BLK_REQ_COMPLETED.store(0, Ordering::Relaxed);
     VIRTIO_BLK_REQ_POST_FAILS.store(0, Ordering::Relaxed);
+    VIRTIO_BLK_REQ_TIMEOUTS.store(0, Ordering::Relaxed);
     VIRTIO_BLK_REQ_LAST_STATUS.store(0xFF, Ordering::Relaxed);
     VIRTIO_BLK_REQ_LAST_USED_LEN.store(0, Ordering::Relaxed);
+    VIRTIO_BLK_REQ_LOCK.store(false, Ordering::Relaxed);
 }
 
 fn discover_from_dtb_if_needed() {
@@ -644,6 +692,12 @@ fn uart_write_hex_u64(value: u64) {
     uart_write_hex_usize(value as usize);
 }
 
+fn uart_write_hex_u8(value: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    uart().write_byte(HEX[((value >> 4) & 0x0F) as usize]);
+    uart().write_byte(HEX[(value & 0x0F) as usize]);
+}
+
 #[inline]
 fn uart_newline() {
     uart().write_str("\n");
@@ -792,20 +846,9 @@ fn virtio_mmio_handle_irq(intid: u32) -> bool {
             && VIRTIO_ACTIVE_SLOT.load(Ordering::Relaxed) == idx
         {
             if let Some(cur_used_idx) = virtio_active_used_idx() {
-                let prev = VIRTIO_ACTIVE_USED_IDX_LAST.load(Ordering::Relaxed) as u16;
-                let delta = cur_used_idx.wrapping_sub(prev) as u64;
-                if delta != 0 {
-                    VIRTIO_ACTIVE_USED_ADVANCES.fetch_add(delta, Ordering::Relaxed);
-                    if VIRTIO_ACTIVE_DEVICE_ID.load(Ordering::Relaxed) == VIRTIO_MMIO_DEVICE_ID_BLOCK {
-                        let status = unsafe { read_volatile(VIRTIO_BLK_REQ.status.get() as *const u8) };
-                        VIRTIO_BLK_REQ_LAST_STATUS.store(status as u32, Ordering::Relaxed);
-                        if let Some(used_len) = virtio_active_used_len() {
-                            VIRTIO_BLK_REQ_LAST_USED_LEN.store(used_len, Ordering::Relaxed);
-                        }
-                        VIRTIO_BLK_REQ_COMPLETED.fetch_add(delta, Ordering::Relaxed);
-                    }
+                if !VIRTIO_BLK_REQ_LOCK.load(Ordering::Acquire) {
+                    let _ = virtio_blk_harvest_completions_from_used_idx(cur_used_idx);
                 }
-                VIRTIO_ACTIVE_USED_IDX_LAST.store(cur_used_idx as u32, Ordering::Relaxed);
             }
         }
         return true;
@@ -891,7 +934,7 @@ fn virtio_active_used_idx() -> Option<u16> {
     Some(unsafe { read_volatile(ptr) })
 }
 
-fn virtio_active_used_len() -> Option<u32> {
+fn virtio_active_last_used_len_for_idx(used_idx: u16) -> Option<u32> {
     if !VIRTIO_ACTIVE_INIT_OK.load(Ordering::Acquire) {
         return None;
     }
@@ -901,11 +944,221 @@ fn virtio_active_used_len() -> Option<u32> {
     if base == 0 || qsize == 0 {
         return None;
     }
-    let cur = VIRTIO_ACTIVE_USED_IDX_LAST.load(Ordering::Relaxed) as usize;
-    let elem_idx = cur.wrapping_sub(1) % qsize;
+    let elem_idx = (used_idx.wrapping_sub(1) as usize) % qsize;
     let elem_ptr = (base + used_off + 4 + elem_idx * 8) as *const u32;
     let len = unsafe { read_volatile(elem_ptr.add(1)) };
     Some(len)
+}
+
+fn virtio_blk_harvest_completions_from_used_idx(cur_used_idx: u16) -> u64 {
+    if VIRTIO_ACTIVE_DEVICE_ID.load(Ordering::Relaxed) != VIRTIO_MMIO_DEVICE_ID_BLOCK {
+        VIRTIO_ACTIVE_USED_IDX_LAST.store(cur_used_idx as u32, Ordering::Relaxed);
+        return 0;
+    }
+
+    let prev = VIRTIO_ACTIVE_USED_IDX_LAST.load(Ordering::Relaxed) as u16;
+    let delta = cur_used_idx.wrapping_sub(prev) as u64;
+    if delta == 0 {
+        return 0;
+    }
+
+    VIRTIO_ACTIVE_USED_ADVANCES.fetch_add(delta, Ordering::Relaxed);
+    let status = unsafe { read_volatile(VIRTIO_BLK_REQ.status.get() as *const u8) };
+    VIRTIO_BLK_REQ_LAST_STATUS.store(status as u32, Ordering::Relaxed);
+    if let Some(used_len) = virtio_active_last_used_len_for_idx(cur_used_idx) {
+        VIRTIO_BLK_REQ_LAST_USED_LEN.store(used_len, Ordering::Relaxed);
+    }
+    VIRTIO_BLK_REQ_COMPLETED.fetch_add(delta, Ordering::Relaxed);
+    VIRTIO_ACTIVE_USED_IDX_LAST.store(cur_used_idx as u32, Ordering::Relaxed);
+    delta
+}
+
+fn virtio_blk_harvest_completions_if_any() -> u64 {
+    let Some(cur_used_idx) = virtio_active_used_idx() else {
+        return 0;
+    };
+    virtio_blk_harvest_completions_from_used_idx(cur_used_idx)
+}
+
+fn virtio_blk_try_lock() -> bool {
+    VIRTIO_BLK_REQ_LOCK
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+}
+
+fn virtio_blk_unlock() {
+    VIRTIO_BLK_REQ_LOCK.store(false, Ordering::Release);
+}
+
+fn virtio_blk_active_transport() -> Result<(usize, usize, usize, u16), &'static str> {
+    if !VIRTIO_ACTIVE_INIT_OK.load(Ordering::Acquire) {
+        return Err("virtio-mmio not initialized");
+    }
+    if VIRTIO_ACTIVE_DEVICE_ID.load(Ordering::Relaxed) != VIRTIO_MMIO_DEVICE_ID_BLOCK {
+        return Err("active virtio-mmio device is not block");
+    }
+    let slot = VIRTIO_ACTIVE_SLOT.load(Ordering::Relaxed);
+    if slot == usize::MAX || slot >= MAX_TRACKED_VIRTIO_MMIO {
+        return Err("no active virtio-mmio slot");
+    }
+    let base = DISCOVERED_VIRTIO_MMIO_BASES[slot].load(Ordering::Relaxed);
+    if base == 0 {
+        return Err("active virtio-mmio base missing");
+    }
+    let queue_base = VIRTIO_ACTIVE_QUEUE_BASE.load(Ordering::Relaxed);
+    let qsize = VIRTIO_ACTIVE_QUEUE_SIZE.load(Ordering::Relaxed) as u16;
+    if queue_base == 0 || qsize == 0 {
+        return Err("virtio queue not configured");
+    }
+    Ok((slot, base, queue_base, qsize))
+}
+
+fn virtio_blk_wait_until_idle() -> Result<(), &'static str> {
+    for _ in 0..VIRTIO_BLK_SYNC_WAIT_SPINS {
+        let posted = VIRTIO_BLK_REQ_POSTED.load(Ordering::Relaxed);
+        let done = VIRTIO_BLK_REQ_COMPLETED.load(Ordering::Relaxed);
+        if done >= posted {
+            return Ok(());
+        }
+        let _ = virtio_blk_harvest_completions_if_any();
+        core::hint::spin_loop();
+    }
+    VIRTIO_BLK_REQ_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+    Err("virtio-blk queue idle wait timeout")
+}
+
+fn virtio_blk_submit_sync(req_type: u32, lba: u64, buf: &mut [u8; VIRTIO_BLK_SECTOR_SIZE]) -> Result<(), &'static str> {
+    if !virtio_blk_try_lock() {
+        return Err("virtio-blk busy");
+    }
+
+    let result = (|| {
+        let (_slot, base, queue_base, qsize) = virtio_blk_active_transport()?;
+        if qsize < 3 {
+            VIRTIO_BLK_REQ_POST_FAILS.fetch_add(1, Ordering::Relaxed);
+            return Err("virtio-blk queue too small");
+        }
+        let layout = virtqueue_layout_legacy(qsize).ok_or("virtqueue layout invalid")?;
+
+        let _ = virtio_blk_harvest_completions_if_any();
+        virtio_blk_wait_until_idle()?;
+
+        unsafe {
+            (*VIRTIO_BLK_REQ.hdr.get()).req_type = req_type;
+            (*VIRTIO_BLK_REQ.hdr.get()).ioprio = 0;
+            (*VIRTIO_BLK_REQ.hdr.get()).sector = lba;
+            if req_type == VIRTIO_BLK_T_OUT {
+                (*VIRTIO_BLK_REQ.data.get()).copy_from_slice(buf);
+            } else {
+                core::ptr::write_bytes((*VIRTIO_BLK_REQ.data.get()).as_mut_ptr(), 0, VIRTIO_BLK_SECTOR_SIZE);
+            }
+            *VIRTIO_BLK_REQ.status.get() = 0xFF;
+        }
+
+        let hdr_addr = VIRTIO_BLK_REQ.hdr.get() as usize;
+        let data_addr = VIRTIO_BLK_REQ.data.get() as usize;
+        let status_addr = VIRTIO_BLK_REQ.status.get() as usize;
+
+        virtio_queue_write_desc(
+            queue_base,
+            layout,
+            0,
+            hdr_addr,
+            core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+            VIRTQ_DESC_F_NEXT,
+            1,
+        );
+        virtio_queue_write_desc(
+            queue_base,
+            layout,
+            1,
+            data_addr,
+            VIRTIO_BLK_SECTOR_SIZE as u32,
+            if req_type == VIRTIO_BLK_T_OUT {
+                VIRTQ_DESC_F_NEXT
+            } else {
+                VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE
+            },
+            2,
+        );
+        virtio_queue_write_desc(
+            queue_base,
+            layout,
+            2,
+            status_addr,
+            1,
+            VIRTQ_DESC_F_WRITE,
+            0,
+        );
+
+        let completed_before = VIRTIO_BLK_REQ_COMPLETED.load(Ordering::Relaxed);
+        virtio_queue_submit_head(base, queue_base, layout, qsize, 0);
+        VIRTIO_BLK_REQ_POSTED.fetch_add(1, Ordering::Relaxed);
+
+        for _ in 0..VIRTIO_BLK_SYNC_WAIT_SPINS {
+            let done = VIRTIO_BLK_REQ_COMPLETED.load(Ordering::Relaxed);
+            if done > completed_before {
+                let status = unsafe { read_volatile(VIRTIO_BLK_REQ.status.get() as *const u8) };
+                VIRTIO_BLK_REQ_LAST_STATUS.store(status as u32, Ordering::Relaxed);
+                if status != 0 {
+                    return Err("virtio-blk I/O status error");
+                }
+                if req_type == VIRTIO_BLK_T_IN {
+                    unsafe { buf.copy_from_slice(&*VIRTIO_BLK_REQ.data.get()) };
+                }
+                return Ok(());
+            }
+            let _ = virtio_blk_harvest_completions_if_any();
+            core::hint::spin_loop();
+        }
+
+        VIRTIO_BLK_REQ_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+        Err("virtio-blk request timeout")
+    })();
+
+    virtio_blk_unlock();
+    result
+}
+
+fn virtio_blk_read_sector_sync(lba: u64, buf: &mut [u8; VIRTIO_BLK_SECTOR_SIZE]) -> Result<(), &'static str> {
+    virtio_blk_submit_sync(VIRTIO_BLK_T_IN, lba, buf)
+}
+
+fn virtio_blk_write_sector_sync(lba: u64, buf: &[u8; VIRTIO_BLK_SECTOR_SIZE]) -> Result<(), &'static str> {
+    let mut tmp = [0u8; VIRTIO_BLK_SECTOR_SIZE];
+    tmp.copy_from_slice(buf);
+    virtio_blk_submit_sync(VIRTIO_BLK_T_OUT, lba, &mut tmp)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn virtio_blk_shared_present() -> bool {
+    VIRTIO_ACTIVE_INIT_OK.load(Ordering::Acquire)
+        && VIRTIO_ACTIVE_DEVICE_ID.load(Ordering::Relaxed) == VIRTIO_MMIO_DEVICE_ID_BLOCK
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn virtio_blk_shared_capacity_sectors() -> Option<u64> {
+    if virtio_blk_shared_present() {
+        Some(VIRTIO_BLK_CAPACITY_SECTORS.load(Ordering::Relaxed))
+    } else {
+        None
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn virtio_blk_shared_read_sector(
+    lba: u64,
+    buf: &mut [u8; VIRTIO_BLK_SECTOR_SIZE],
+) -> Result<(), &'static str> {
+    virtio_blk_read_sector_sync(lba, buf)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn virtio_blk_shared_write_sector(
+    lba: u64,
+    buf: &[u8; VIRTIO_BLK_SECTOR_SIZE],
+) -> Result<(), &'static str> {
+    virtio_blk_write_sector_sync(lba, buf)
 }
 
 fn virtio_queue_write_desc(
@@ -1184,6 +1437,7 @@ impl ArchPlatform for AArch64QemuVirtPlatform {
         gicv2_init();
         virtio_mmio_probe_all();
         virtio_mmio_bringup_one();
+        let _ = crate::virtio_blk::init_mmio_active();
         let u = uart();
         u.write_str("[A64] GICv2 init dist=");
         uart_write_hex_usize(gicd_base());
@@ -1743,6 +1997,600 @@ fn parse_u64_decimal(s: &str) -> Option<u64> {
     Some(value)
 }
 
+fn parse_u64_auto(s: &str) -> Option<u64> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        if hex.is_empty() {
+            return None;
+        }
+        let mut value = 0u64;
+        for b in hex.bytes() {
+            let digit = match b {
+                b'0'..=b'9' => (b - b'0') as u64,
+                b'a'..=b'f' => (b - b'a' + 10) as u64,
+                b'A'..=b'F' => (b - b'A' + 10) as u64,
+                _ => return None,
+            };
+            value = value.checked_mul(16)?;
+            value = value.checked_add(digit)?;
+        }
+        Some(value)
+    } else {
+        parse_u64_decimal(s)
+    }
+}
+
+fn parse_u8_auto(s: &str) -> Option<u8> {
+    let v = parse_u64_auto(s)?;
+    if v <= u8::MAX as u64 {
+        Some(v as u8)
+    } else {
+        None
+    }
+}
+
+fn shell_dump_sector_preview(lba: u64, sector: &[u8; VIRTIO_BLK_SECTOR_SIZE]) {
+    let u = uart();
+    u.write_str("[A64] blk-read lba=");
+    uart_write_hex_u64(lba);
+    u.write_str(" sig=");
+    uart_write_hex_u8(sector[510]);
+    uart_write_hex_u8(sector[511]);
+    uart_newline();
+
+    for row in 0..4 {
+        let off = row * 16;
+        u.write_str("[A64] ");
+        uart_write_hex_u64(off as u64);
+        u.write_str(": ");
+        for i in 0..16 {
+            uart_write_hex_u8(sector[off + i]);
+            if i != 15 {
+                u.write_byte(b' ');
+            }
+        }
+        u.write_str("  |");
+        for i in 0..16 {
+            let b = sector[off + i];
+            let ch = if (0x20..=0x7e).contains(&b) { b } else { b'.' };
+            u.write_byte(ch);
+        }
+        u.write_str("|\n");
+    }
+}
+
+fn shell_cmd_blk_info() {
+    let u = uart();
+    u.write_str("[A64] blk present=");
+    let ready = crate::virtio_blk::is_present();
+    u.write_str(if ready { "1" } else { "0" });
+    u.write_str(" cap-sectors=");
+    let sectors = crate::virtio_blk::capacity_sectors().unwrap_or(0);
+    uart_write_hex_u64(sectors);
+    let bytes = sectors.saturating_mul(VIRTIO_BLK_SECTOR_SIZE as u64);
+    u.write_str(" cap-bytes=");
+    uart_write_hex_u64(bytes);
+    u.write_str(" posted=");
+    uart_write_hex_u64(VIRTIO_BLK_REQ_POSTED.load(Ordering::Relaxed));
+    u.write_str(" done=");
+    uart_write_hex_u64(VIRTIO_BLK_REQ_COMPLETED.load(Ordering::Relaxed));
+    u.write_str(" timeouts=");
+    uart_write_hex_u64(VIRTIO_BLK_REQ_TIMEOUTS.load(Ordering::Relaxed));
+    uart_newline();
+}
+
+fn shell_cmd_blk_read(cmd: &str) {
+    let mut parts = cmd.split_whitespace();
+    let _ = parts.next();
+    let Some(lba_str) = parts.next() else {
+        early_log("[A64] usage: blk-read <lba>\n");
+        return;
+    };
+    let Some(lba) = parse_u64_auto(lba_str) else {
+        early_log("[A64] blk-read: invalid lba\n");
+        return;
+    };
+    let mut sector = [0u8; VIRTIO_BLK_SECTOR_SIZE];
+    match crate::virtio_blk::read_sector(lba, &mut sector) {
+        Ok(()) => shell_dump_sector_preview(lba, &sector),
+        Err(e) => {
+            let u = uart();
+            u.write_str("[A64] blk-read failed: ");
+            u.write_str(e);
+            uart_newline();
+        }
+    }
+}
+
+fn shell_cmd_blk_write(cmd: &str) {
+    let mut parts = cmd.split_whitespace();
+    let _ = parts.next();
+    let Some(lba_str) = parts.next() else {
+        early_log("[A64] usage: blk-write <lba> <byte>\n");
+        return;
+    };
+    let Some(byte_str) = parts.next() else {
+        early_log("[A64] usage: blk-write <lba> <byte>\n");
+        return;
+    };
+    let Some(lba) = parse_u64_auto(lba_str) else {
+        early_log("[A64] blk-write: invalid lba\n");
+        return;
+    };
+    let Some(value) = parse_u8_auto(byte_str) else {
+        early_log("[A64] blk-write: invalid byte\n");
+        return;
+    };
+    let sector = [value; VIRTIO_BLK_SECTOR_SIZE];
+    match crate::virtio_blk::write_sector(lba, &sector) {
+        Ok(()) => {
+            let u = uart();
+            u.write_str("[A64] blk-write ok lba=");
+            uart_write_hex_u64(lba);
+            u.write_str(" byte=0x");
+            uart_write_hex_u8(value);
+            uart_newline();
+        }
+        Err(e) => {
+            let u = uart();
+            u.write_str("[A64] blk-write failed: ");
+            u.write_str(e);
+            uart_newline();
+        }
+    }
+}
+
+fn shell_cmd_blk_rwtest(cmd: &str) {
+    let mut parts = cmd.split_whitespace();
+    let _ = parts.next();
+    let capacity = crate::virtio_blk::capacity_sectors().unwrap_or(0);
+    if capacity == 0 {
+        early_log("[A64] blk-rwtest: no blk capacity\n");
+        return;
+    }
+    let default_lba = capacity.saturating_sub(1);
+    let lba = parts.next().and_then(parse_u64_auto).unwrap_or(default_lba);
+    let pattern = parts.next().and_then(parse_u8_auto).unwrap_or(0xA5);
+
+    let mut original = [0u8; VIRTIO_BLK_SECTOR_SIZE];
+    let mut verify = [0u8; VIRTIO_BLK_SECTOR_SIZE];
+    let mut test_sector = [pattern; VIRTIO_BLK_SECTOR_SIZE];
+    test_sector[0] = 0x4f;
+    test_sector[1] = 0x52;
+    test_sector[2] = 0x45;
+    test_sector[3] = 0x55;
+    test_sector[4] = 0x4c;
+    test_sector[5] = 0x49;
+    test_sector[6] = 0x41;
+    test_sector[7] = pattern;
+
+    let result = (|| {
+        crate::virtio_blk::read_sector(lba, &mut original)?;
+        crate::virtio_blk::write_sector(lba, &test_sector)?;
+        crate::virtio_blk::read_sector(lba, &mut verify)?;
+        if verify != test_sector {
+            return Err("verify mismatch");
+        }
+        crate::virtio_blk::write_sector(lba, &original)?;
+        Ok::<(), &'static str>(())
+    })();
+
+    match result {
+        Ok(()) => {
+            let u = uart();
+            u.write_str("[A64] blk-rwtest ok lba=");
+            uart_write_hex_u64(lba);
+            u.write_str(" pattern=0x");
+            uart_write_hex_u8(pattern);
+            uart_newline();
+        }
+        Err(e) => {
+            let u = uart();
+            u.write_str("[A64] blk-rwtest failed: ");
+            u.write_str(e);
+            u.write_str(" lba=");
+            uart_write_hex_u64(lba);
+            uart_newline();
+        }
+    }
+}
+
+fn parse_usize_auto(s: &str) -> Option<usize> {
+    let v = parse_u64_auto(s)?;
+    usize::try_from(v).ok()
+}
+
+fn shell_cmd_blk_partitions() {
+    let mut mbr = [None; 4];
+    let mut gpt = [None; 4];
+    match crate::virtio_blk::read_partitions(&mut mbr, &mut gpt) {
+        Ok(()) => {
+            let u = uart();
+            u.write_str("[A64] blk-partitions\n");
+            for (idx, entry) in mbr.iter().enumerate() {
+                if let Some(p) = entry {
+                    u.write_str("[A64]   mbr");
+                    uart_write_hex_u64(idx as u64);
+                    u.write_str(" type=");
+                    uart_write_hex_u64(p.part_type as u64);
+                    u.write_str(" start=");
+                    uart_write_hex_u64(p.lba_start as u64);
+                    u.write_str(" sectors=");
+                    uart_write_hex_u64(p.sectors as u64);
+                    u.write_str(" boot=");
+                    u.write_str(if p.bootable { "1" } else { "0" });
+                    uart_newline();
+                }
+            }
+            for (idx, entry) in gpt.iter().enumerate() {
+                if let Some(p) = entry {
+                    u.write_str("[A64]   gpt");
+                    uart_write_hex_u64(idx as u64);
+                    u.write_str(" first=");
+                    uart_write_hex_u64(p.first_lba);
+                    u.write_str(" last=");
+                    uart_write_hex_u64(p.last_lba);
+                    u.write_str(" name=");
+                    for &b in &p.name {
+                        if b == 0 {
+                            break;
+                        }
+                        let ch = if (0x20..=0x7e).contains(&b) { b } else { b'.' };
+                        u.write_byte(ch);
+                    }
+                    uart_newline();
+                }
+            }
+        }
+        Err(e) => {
+            let u = uart();
+            u.write_str("[A64] blk-partitions failed: ");
+            u.write_str(e);
+            uart_newline();
+        }
+    }
+}
+
+fn shell_cmd_blk_readn(cmd: &str) {
+    let mut parts = cmd.split_whitespace();
+    let _ = parts.next();
+    let Some(lba_str) = parts.next() else {
+        early_log("[A64] usage: blk-readn <lba> <count>\n");
+        return;
+    };
+    let Some(count_str) = parts.next() else {
+        early_log("[A64] usage: blk-readn <lba> <count>\n");
+        return;
+    };
+    let Some(lba) = parse_u64_auto(lba_str) else {
+        early_log("[A64] blk-readn: invalid lba\n");
+        return;
+    };
+    let Some(count) = parse_usize_auto(count_str) else {
+        early_log("[A64] blk-readn: invalid count\n");
+        return;
+    };
+    if count == 0 || count > 8 {
+        early_log("[A64] blk-readn: count must be 1..8\n");
+        return;
+    }
+    let mut buf = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
+    match crate::virtio_blk::read_sectors(lba, count, &mut buf[..count * VIRTIO_BLK_SECTOR_SIZE]) {
+        Ok(()) => {
+            let u = uart();
+            u.write_str("[A64] blk-readn ok lba=");
+            uart_write_hex_u64(lba);
+            u.write_str(" count=");
+            uart_write_hex_u64(count as u64);
+            uart_newline();
+            for i in 0..count {
+                let sector: &[u8; VIRTIO_BLK_SECTOR_SIZE] =
+                    (&buf[i * VIRTIO_BLK_SECTOR_SIZE..(i + 1) * VIRTIO_BLK_SECTOR_SIZE])
+                        .try_into()
+                        .expect("slice length exact");
+                shell_dump_sector_preview(lba + i as u64, sector);
+            }
+        }
+        Err(e) => {
+            let u = uart();
+            u.write_str("[A64] blk-readn failed: ");
+            u.write_str(e);
+            uart_newline();
+        }
+    }
+}
+
+fn shell_cmd_blk_writen(cmd: &str) {
+    let mut parts = cmd.split_whitespace();
+    let _ = parts.next();
+    let (Some(lba_str), Some(count_str), Some(byte_str)) = (parts.next(), parts.next(), parts.next()) else {
+        early_log("[A64] usage: blk-writen <lba> <count> <byte>\n");
+        return;
+    };
+    let Some(lba) = parse_u64_auto(lba_str) else {
+        early_log("[A64] blk-writen: invalid lba\n");
+        return;
+    };
+    let Some(count) = parse_usize_auto(count_str) else {
+        early_log("[A64] blk-writen: invalid count\n");
+        return;
+    };
+    let Some(value) = parse_u8_auto(byte_str) else {
+        early_log("[A64] blk-writen: invalid byte\n");
+        return;
+    };
+    if count == 0 || count > 8 {
+        early_log("[A64] blk-writen: count must be 1..8\n");
+        return;
+    }
+    let mut data = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
+    data[..count * VIRTIO_BLK_SECTOR_SIZE].fill(value);
+    match crate::virtio_blk::write_sectors(lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE]) {
+        Ok(()) => {
+            let u = uart();
+            u.write_str("[A64] blk-writen ok lba=");
+            uart_write_hex_u64(lba);
+            u.write_str(" count=");
+            uart_write_hex_u64(count as u64);
+            u.write_str(" byte=0x");
+            uart_write_hex_u8(value);
+            uart_newline();
+        }
+        Err(e) => {
+            let u = uart();
+            u.write_str("[A64] blk-writen failed: ");
+            u.write_str(e);
+            uart_newline();
+        }
+    }
+}
+
+fn shell_cmd_vfs_mount_virtio(cmd: &str) {
+    let mut parts = cmd.split_whitespace();
+    let _ = parts.next();
+    let Some(path) = parts.next() else {
+        early_log("[A64] usage: vfs-mount-virtio <path>\n");
+        return;
+    };
+    if !path.starts_with('/') {
+        early_log("[A64] vfs-mount-virtio: path must start with '/'\n");
+        return;
+    }
+    if !crate::virtio_blk::is_present() {
+        early_log("[A64] vfs-mount-virtio: no virtio-blk device\n");
+        return;
+    }
+    let mut mbr = [None; 4];
+    let mut gpt = [None; 4];
+    let _ = crate::virtio_blk::read_partitions(&mut mbr, &mut gpt);
+    let mut state = A64_VFS_MOUNT.lock();
+    if let Err(e) = state.set_path(path) {
+        let u = uart();
+        u.write_str("[A64] vfs-mount-virtio failed: ");
+        u.write_str(e);
+        uart_newline();
+        return;
+    }
+    state.mounted = true;
+    state.mbr = mbr;
+    state.gpt = gpt;
+    let u = uart();
+    u.write_str("[A64] vfs mounted virtio-blk at ");
+    u.write_str(path);
+    uart_newline();
+}
+
+fn shell_cmd_vfs_ls(cmd: &str) {
+    let arg = cmd.split_whitespace().nth(1);
+    let state = A64_VFS_MOUNT.lock();
+    if !state.mounted {
+        early_log("[A64] vfs-ls: no AArch64 shell mount (use vfs-mount-virtio)\n");
+        return;
+    }
+    let mount_path = state.path_str().unwrap_or("/");
+    let target = arg.unwrap_or(mount_path);
+    if target != mount_path {
+        let u = uart();
+        u.write_str("[A64] vfs-ls: only mount root is supported in AArch64 shell shim: ");
+        u.write_str(mount_path);
+        uart_newline();
+        return;
+    }
+    let u = uart();
+    u.write_str("[A64] vfs-ls ");
+    u.write_str(mount_path);
+    u.write_str("\n[A64]   info\n[A64]   partitions\n[A64]   raw\n");
+    for (idx, p) in state.mbr.iter().enumerate() {
+        if p.is_some() {
+            u.write_str("[A64]   mbr");
+            uart_write_hex_u64(idx as u64);
+            uart_newline();
+        }
+    }
+    for (idx, p) in state.gpt.iter().enumerate() {
+        if p.is_some() {
+            u.write_str("[A64]   gpt");
+            uart_write_hex_u64(idx as u64);
+            uart_newline();
+        }
+    }
+}
+
+fn shell_cmd_vfs_read(cmd: &str) {
+    let Some(path) = cmd.split_whitespace().nth(1) else {
+        early_log("[A64] usage: vfs-read <path>\n");
+        return;
+    };
+    let state = A64_VFS_MOUNT.lock();
+    if !state.mounted {
+        early_log("[A64] vfs-read: no AArch64 shell mount (use vfs-mount-virtio)\n");
+        return;
+    }
+    let mount_path = state.path_str().unwrap_or("/");
+    if let Some(suffix) = path.strip_prefix(mount_path) {
+        match suffix {
+            "/info" => {
+                let u = uart();
+                u.write_str("[A64] vfs info path=");
+                u.write_str(mount_path);
+                u.write_str(" cap-sectors=");
+                uart_write_hex_u64(crate::virtio_blk::capacity_sectors().unwrap_or(0));
+                uart_newline();
+            }
+            "/partitions" => {
+                drop(state);
+                shell_cmd_blk_partitions();
+            }
+            _ => early_log("[A64] vfs-read: supported pseudo files are /info and /partitions\n"),
+        }
+    } else {
+        early_log("[A64] vfs-read: path is outside mounted root\n");
+    }
+}
+
+fn resolve_vfs_partition_base_and_limit(spec: &str) -> Result<(u64, Option<u64>), &'static str> {
+    if spec == "raw" {
+        return Ok((0, None));
+    }
+    let state = A64_VFS_MOUNT.lock();
+    if !state.mounted {
+        return Err("no AArch64 shell mount");
+    }
+    if let Some(rest) = spec.strip_prefix("mbr") {
+        let idx = parse_usize_auto(rest).ok_or("invalid mbr partition index")?;
+        let Some(p) = state.mbr.get(idx).and_then(|e| *e) else {
+            return Err("mbr partition missing");
+        };
+        return Ok((p.lba_start as u64, Some(p.sectors as u64)));
+    }
+    if let Some(rest) = spec.strip_prefix("gpt") {
+        let idx = parse_usize_auto(rest).ok_or("invalid gpt partition index")?;
+        let Some(p) = state.gpt.get(idx).and_then(|e| *e) else {
+            return Err("gpt partition missing");
+        };
+        let len = p.last_lba.saturating_sub(p.first_lba).saturating_add(1);
+        return Ok((p.first_lba, Some(len)));
+    }
+    Err("partition spec must be raw|mbrN|gptN")
+}
+
+fn shell_cmd_vfs_blk_read(cmd: &str) {
+    let mut parts = cmd.split_whitespace();
+    let _ = parts.next();
+    let (Some(spec), Some(rel_lba_str)) = (parts.next(), parts.next()) else {
+        early_log("[A64] usage: vfs-blk-read <raw|mbrN|gptN> <lba> [count]\n");
+        return;
+    };
+    let count = parts.next().and_then(parse_usize_auto).unwrap_or(1);
+    if count == 0 || count > 8 {
+        early_log("[A64] vfs-blk-read: count must be 1..8\n");
+        return;
+    }
+    let Some(rel_lba) = parse_u64_auto(rel_lba_str) else {
+        early_log("[A64] vfs-blk-read: invalid lba\n");
+        return;
+    };
+    let (base, limit) = match resolve_vfs_partition_base_and_limit(spec) {
+        Ok(v) => v,
+        Err(e) => {
+            let u = uart();
+            u.write_str("[A64] vfs-blk-read failed: ");
+            u.write_str(e);
+            uart_newline();
+            return;
+        }
+    };
+    if let Some(limit_sectors) = limit {
+        if rel_lba >= limit_sectors || rel_lba.saturating_add(count as u64) > limit_sectors {
+            early_log("[A64] vfs-blk-read: out of partition range\n");
+            return;
+        }
+    }
+    let abs_lba = base.saturating_add(rel_lba);
+    let mut buf = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
+    match crate::virtio_blk::read_sectors(abs_lba, count, &mut buf[..count * VIRTIO_BLK_SECTOR_SIZE]) {
+        Ok(()) => {
+            for i in 0..count {
+                let sector: &[u8; VIRTIO_BLK_SECTOR_SIZE] = (&buf[i * VIRTIO_BLK_SECTOR_SIZE..(i + 1) * VIRTIO_BLK_SECTOR_SIZE])
+                    .try_into()
+                    .expect("slice length exact");
+                shell_dump_sector_preview(abs_lba + i as u64, sector);
+            }
+        }
+        Err(e) => {
+            let u = uart();
+            u.write_str("[A64] vfs-blk-read failed: ");
+            u.write_str(e);
+            uart_newline();
+        }
+    }
+}
+
+fn shell_cmd_vfs_blk_write(cmd: &str) {
+    let mut parts = cmd.split_whitespace();
+    let _ = parts.next();
+    let (Some(spec), Some(rel_lba_str), Some(count_str), Some(byte_str)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        early_log("[A64] usage: vfs-blk-write <raw|mbrN|gptN> <lba> <count> <byte>\n");
+        return;
+    };
+    let Some(rel_lba) = parse_u64_auto(rel_lba_str) else {
+        early_log("[A64] vfs-blk-write: invalid lba\n");
+        return;
+    };
+    let Some(count) = parse_usize_auto(count_str) else {
+        early_log("[A64] vfs-blk-write: invalid count\n");
+        return;
+    };
+    let Some(value) = parse_u8_auto(byte_str) else {
+        early_log("[A64] vfs-blk-write: invalid byte\n");
+        return;
+    };
+    if count == 0 || count > 8 {
+        early_log("[A64] vfs-blk-write: count must be 1..8\n");
+        return;
+    }
+    let (base, limit) = match resolve_vfs_partition_base_and_limit(spec) {
+        Ok(v) => v,
+        Err(e) => {
+            let u = uart();
+            u.write_str("[A64] vfs-blk-write failed: ");
+            u.write_str(e);
+            uart_newline();
+            return;
+        }
+    };
+    if let Some(limit_sectors) = limit {
+        if rel_lba >= limit_sectors || rel_lba.saturating_add(count as u64) > limit_sectors {
+            early_log("[A64] vfs-blk-write: out of partition range\n");
+            return;
+        }
+    }
+    let abs_lba = base.saturating_add(rel_lba);
+    let mut data = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
+    data[..count * VIRTIO_BLK_SECTOR_SIZE].fill(value);
+    match crate::virtio_blk::write_sectors(abs_lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE]) {
+        Ok(()) => {
+            let u = uart();
+            u.write_str("[A64] vfs-blk-write ok ");
+            u.write_str(spec);
+            u.write_str(" abs-lba=");
+            uart_write_hex_u64(abs_lba);
+            u.write_str(" count=");
+            uart_write_hex_u64(count as u64);
+            u.write_str(" byte=0x");
+            uart_write_hex_u8(value);
+            uart_newline();
+        }
+        Err(e) => {
+            let u = uart();
+            u.write_str("[A64] vfs-blk-write failed: ");
+            u.write_str(e);
+            uart_newline();
+        }
+    }
+}
+
 fn shell_exec_command(cmd: &str) -> bool {
     if cmd == "uartirq" {
         shell_print_uart_irq_diag();
@@ -1800,14 +2648,83 @@ fn shell_exec_command(cmd: &str) -> bool {
     if cmd == "virtio init" || cmd == "virtio reinit" {
         virtio_mmio_probe_all();
         virtio_mmio_bringup_one();
+        let _ = crate::virtio_blk::init_mmio_active();
         shell_print_virtio_runtime();
+        return true;
+    }
+    if cmd == "blk-info" {
+        shell_cmd_blk_info();
+        return true;
+    }
+    if cmd == "blk-partitions" {
+        shell_cmd_blk_partitions();
+        return true;
+    }
+    if cmd.starts_with("blk-readn ") {
+        shell_cmd_blk_readn(cmd);
+        return true;
+    }
+    if cmd.starts_with("blk-writen ") {
+        shell_cmd_blk_writen(cmd);
+        return true;
+    }
+    if cmd.starts_with("blk-read ") {
+        shell_cmd_blk_read(cmd);
+        return true;
+    }
+    if cmd.starts_with("blk-write ") {
+        shell_cmd_blk_write(cmd);
+        return true;
+    }
+    if cmd == "blk-read" {
+        early_log("[A64] usage: blk-read <lba>\n");
+        return true;
+    }
+    if cmd == "blk-write" {
+        early_log("[A64] usage: blk-write <lba> <byte>\n");
+        return true;
+    }
+    if cmd == "blk-readn" {
+        early_log("[A64] usage: blk-readn <lba> <count>\n");
+        return true;
+    }
+    if cmd == "blk-writen" {
+        early_log("[A64] usage: blk-writen <lba> <count> <byte>\n");
+        return true;
+    }
+    if cmd == "blk-rwtest" || cmd.starts_with("blk-rwtest ") {
+        shell_cmd_blk_rwtest(cmd);
+        return true;
+    }
+    if cmd.starts_with("vfs-mount-virtio ") {
+        shell_cmd_vfs_mount_virtio(cmd);
+        return true;
+    }
+    if cmd == "vfs-mount-virtio" {
+        early_log("[A64] usage: vfs-mount-virtio <path>\n");
+        return true;
+    }
+    if cmd == "vfs-ls" || cmd.starts_with("vfs-ls ") {
+        shell_cmd_vfs_ls(cmd);
+        return true;
+    }
+    if cmd == "vfs-read" || cmd.starts_with("vfs-read ") {
+        shell_cmd_vfs_read(cmd);
+        return true;
+    }
+    if cmd == "vfs-blk-read" || cmd.starts_with("vfs-blk-read ") {
+        shell_cmd_vfs_blk_read(cmd);
+        return true;
+    }
+    if cmd == "vfs-blk-write" || cmd.starts_with("vfs-blk-write ") {
+        shell_cmd_vfs_blk_write(cmd);
         return true;
     }
 
     match cmd {
         "" => {}
         "help" => {
-            early_log("[A64] commands: help boot dtb mmu regs traps irqs uartirq strict-uart-irq ticks sched virtio brk vectors vmtest halt\n");
+            early_log("[A64] commands: help boot dtb mmu regs traps irqs uartirq strict-uart-irq ticks sched virtio blk-info blk-partitions blk-read blk-readn blk-write blk-writen blk-rwtest vfs-mount-virtio vfs-ls vfs-read vfs-blk-read vfs-blk-write brk vectors vmtest halt\n");
         }
         "boot" => shell_print_boot_info(),
         "dtb" => shell_print_dtb_info(),

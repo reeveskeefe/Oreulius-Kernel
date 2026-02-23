@@ -36,45 +36,70 @@
 
 #![allow(dead_code)]
 
+#[cfg(not(target_arch = "aarch64"))]
 use core::mem::size_of;
+#[cfg(not(target_arch = "aarch64"))]
 use core::ptr::{read_volatile, write_volatile};
+#[cfg(not(target_arch = "aarch64"))]
 use core::sync::atomic::{compiler_fence, Ordering};
 use spin::Mutex;
 
+#[cfg(not(target_arch = "aarch64"))]
 use crate::pci::PciDevice;
 
+#[cfg(not(target_arch = "aarch64"))]
 // VirtIO PCI legacy IDs
 const VIRTIO_PCI_VENDOR: u16 = 0x1AF4;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_BLK_LEGACY_ID: u16 = 0x1001;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_BLK_MODERN_ID: u16 = 0x1042;
 
+#[cfg(not(target_arch = "aarch64"))]
 // VirtIO PCI I/O register offsets (legacy)
 const VIRTIO_PCI_HOST_FEATURES: u16 = 0x00;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_PCI_GUEST_FEATURES: u16 = 0x04;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_PCI_QUEUE_PFN: u16 = 0x08;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_PCI_QUEUE_SIZE: u16 = 0x0C;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_PCI_QUEUE_SELECT: u16 = 0x0E;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_PCI_QUEUE_NOTIFY: u16 = 0x10;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_PCI_STATUS: u16 = 0x12;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_PCI_ISR: u16 = 0x13;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_PCI_CONFIG: u16 = 0x14;
 
+#[cfg(not(target_arch = "aarch64"))]
 // VirtIO status bits
 const STATUS_ACKNOWLEDGE: u8 = 1;
+#[cfg(not(target_arch = "aarch64"))]
 const STATUS_DRIVER: u8 = 2;
+#[cfg(not(target_arch = "aarch64"))]
 const STATUS_DRIVER_OK: u8 = 4;
+#[cfg(not(target_arch = "aarch64"))]
 const STATUS_FAILED: u8 = 0x80;
 
+#[cfg(not(target_arch = "aarch64"))]
 // Virtqueue descriptor flags
 const VIRTQ_DESC_F_NEXT: u16 = 1;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTQ_DESC_F_WRITE: u16 = 2;
 
+#[cfg(not(target_arch = "aarch64"))]
 // Block request types
 const VIRTIO_BLK_T_IN: u32 = 0;
+#[cfg(not(target_arch = "aarch64"))]
 const VIRTIO_BLK_T_OUT: u32 = 1;
 
 const SECTOR_SIZE: usize = 512;
 
+#[cfg(not(target_arch = "aarch64"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct VirtqDesc {
@@ -84,6 +109,7 @@ struct VirtqDesc {
     next: u16,
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[repr(C)]
 struct VirtqAvail {
     flags: u16,
@@ -91,6 +117,7 @@ struct VirtqAvail {
     ring: [u16; 0],
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct VirtqUsedElem {
@@ -98,6 +125,7 @@ struct VirtqUsedElem {
     len: u32,
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[repr(C)]
 struct VirtqUsed {
     flags: u16,
@@ -105,6 +133,7 @@ struct VirtqUsed {
     ring: [VirtqUsedElem; 0],
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct VirtioBlkReq {
@@ -113,6 +142,7 @@ struct VirtioBlkReq {
     sector: u64,
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 struct VirtQueue {
     size: u16,
     mem: *mut u8,
@@ -123,6 +153,7 @@ struct VirtQueue {
     last_used: u16,
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 impl VirtQueue {
     fn new(size: u16) -> Result<Self, &'static str> {
         let qsize = size as usize;
@@ -241,6 +272,15 @@ impl BlockCache {
 
     fn put(&mut self, sector: u64, data: &[u8]) {
         self.tick = self.tick.wrapping_add(1);
+
+        for entry in &mut self.entries {
+            if entry.valid && entry.sector == sector {
+                entry.data.copy_from_slice(&data[..SECTOR_SIZE]);
+                entry.last_used = self.tick;
+                return;
+            }
+        }
+
         let mut victim = 0;
         let mut oldest_time = u64::MAX;
         
@@ -265,6 +305,7 @@ impl BlockCache {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub struct VirtioBlk {
     pci: PciDevice,
     io_base: u16,
@@ -276,8 +317,10 @@ pub struct VirtioBlk {
 }
 
 // Safe because access is serialized through the global spin::Mutex.
+#[cfg(not(target_arch = "aarch64"))]
 unsafe impl Send for VirtioBlk {}
 
+#[cfg(not(target_arch = "aarch64"))]
 impl VirtioBlk {
     fn io_read_u32(&self, offset: u16) -> u32 {
         unsafe { inl(self.io_base + offset) }
@@ -392,8 +435,10 @@ impl VirtioBlk {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 static VIRTIO_BLK: Mutex<Option<VirtioBlk>> = Mutex::new(None);
 
+#[cfg(not(target_arch = "aarch64"))]
 pub fn init(device: PciDevice) -> Result<(), &'static str> {
     if device.vendor_id != VIRTIO_PCI_VENDOR {
         return Err("Not virtio");
@@ -463,24 +508,111 @@ pub fn init(device: PciDevice) -> Result<(), &'static str> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub fn is_present() -> bool {
     VIRTIO_BLK.lock().is_some()
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub fn capacity_sectors() -> Option<u64> {
     VIRTIO_BLK.lock().as_ref().map(|d| d.capacity_sectors)
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub fn read_sector(lba: u64, buf: &mut [u8]) -> Result<(), &'static str> {
     let mut guard = VIRTIO_BLK.lock();
     let dev = guard.as_mut().ok_or("No virtio block device")?;
     dev.read_sector_cached(lba, buf)
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub fn write_sector(lba: u64, buf: &[u8]) -> Result<(), &'static str> {
     let mut guard = VIRTIO_BLK.lock();
     let dev = guard.as_mut().ok_or("No virtio block device")?;
     dev.write_sector_cached(lba, buf)
+}
+
+#[cfg(target_arch = "aarch64")]
+static VIRTIO_BLK_CACHE_AARCH64: Mutex<BlockCache> = Mutex::new(BlockCache::new());
+
+#[cfg(target_arch = "aarch64")]
+pub fn init_mmio_active() -> Result<(), &'static str> {
+    if crate::arch::aarch64_virt::virtio_blk_shared_present() {
+        *VIRTIO_BLK_CACHE_AARCH64.lock() = BlockCache::new();
+        Ok(())
+    } else {
+        Err("No active virtio-mmio block device")
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn is_present() -> bool {
+    crate::arch::aarch64_virt::virtio_blk_shared_present()
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn capacity_sectors() -> Option<u64> {
+    crate::arch::aarch64_virt::virtio_blk_shared_capacity_sectors()
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn read_sector(lba: u64, buf: &mut [u8]) -> Result<(), &'static str> {
+    if buf.len() < SECTOR_SIZE {
+        return Err("buffer too small");
+    }
+    let mut cache = VIRTIO_BLK_CACHE_AARCH64.lock();
+    if cache.get(lba, buf) {
+        return Ok(());
+    }
+    let sector_buf: &mut [u8; SECTOR_SIZE] = (&mut buf[..SECTOR_SIZE])
+        .try_into()
+        .map_err(|_| "buffer too small")?;
+    crate::arch::aarch64_virt::virtio_blk_shared_read_sector(lba, sector_buf)?;
+    cache.put(lba, sector_buf);
+    Ok(())
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn write_sector(lba: u64, buf: &[u8]) -> Result<(), &'static str> {
+    if buf.len() < SECTOR_SIZE {
+        return Err("buffer too small");
+    }
+    let sector_buf: &[u8; SECTOR_SIZE] = buf[..SECTOR_SIZE]
+        .try_into()
+        .map_err(|_| "buffer too small")?;
+    crate::arch::aarch64_virt::virtio_blk_shared_write_sector(lba, sector_buf)?;
+    VIRTIO_BLK_CACHE_AARCH64.lock().put(lba, sector_buf);
+    Ok(())
+}
+
+pub fn read_sectors(start_lba: u64, count: usize, out: &mut [u8]) -> Result<(), &'static str> {
+    if count == 0 {
+        return Ok(());
+    }
+    let needed = count.checked_mul(SECTOR_SIZE).ok_or("sector count overflow")?;
+    if out.len() < needed {
+        return Err("buffer too small");
+    }
+    for i in 0..count {
+        let off = i * SECTOR_SIZE;
+        read_sector(start_lba + i as u64, &mut out[off..off + SECTOR_SIZE])?;
+    }
+    Ok(())
+}
+
+pub fn write_sectors(start_lba: u64, count: usize, data: &[u8]) -> Result<(), &'static str> {
+    if count == 0 {
+        return Ok(());
+    }
+    let needed = count.checked_mul(SECTOR_SIZE).ok_or("sector count overflow")?;
+    if data.len() < needed {
+        return Err("buffer too small");
+    }
+    for i in 0..count {
+        let off = i * SECTOR_SIZE;
+        write_sector(start_lba + i as u64, &data[off..off + SECTOR_SIZE])?;
+    }
+    Ok(())
 }
 
 // --------------------------------------------------------------------------
@@ -585,21 +717,25 @@ pub fn read_partitions(mbr_out: &mut [Option<MbrPartition>; 4], gpt_out: &mut [O
 // Low-level I/O
 // --------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 unsafe fn outb(port: u16, value: u8) {
     core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 unsafe fn outw(port: u16, value: u16) {
     core::arch::asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack, preserves_flags));
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 unsafe fn outl(port: u16, value: u32) {
     core::arch::asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack, preserves_flags));
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 unsafe fn inb(port: u16) -> u8 {
     let value: u8;
@@ -607,6 +743,7 @@ unsafe fn inb(port: u16) -> u8 {
     value
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 unsafe fn inw(port: u16) -> u16 {
     let value: u16;
@@ -614,6 +751,7 @@ unsafe fn inw(port: u16) -> u16 {
     value
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 unsafe fn inl(port: u16) -> u32 {
     let value: u32;
@@ -621,6 +759,7 @@ unsafe fn inl(port: u16) -> u32 {
     value
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 const fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
