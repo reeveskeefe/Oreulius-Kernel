@@ -33,68 +33,125 @@
 #![no_std]
 #![feature(alloc_error_handler)]
 
+#[cfg(not(target_arch = "aarch64"))]
 extern crate alloc;
+#[cfg(not(target_arch = "aarch64"))]
 use alloc::boxed::Box;
 // use alloc::vec::Vec;
 // use alloc::string::String;
 
-pub mod advanced_commands;
-pub mod acpi_asm;
 pub mod arch;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod advanced_commands;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod acpi_asm;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod asm_bindings;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod capability;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod capnet;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod commands;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod console_service;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod cpu_security;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod crypto;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod dma_asm;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod disk;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod enclave;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod elf;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod gdt;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod e1000;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod fs;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod formal;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod hardened_allocator;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod idt_asm;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod ipc;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod intent_graph;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod intent_wasm;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod keyboard;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod memory;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod memopt_asm;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod memory_isolation;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod net;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod net_reactor;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod netstack;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod paging;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod pci;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod persistence;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod pit;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod process;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod process_asm;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod quantum_scheduler;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod registry;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod replay;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod scheduler;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod security;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod serial;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod syscall;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod terminal;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod temporal;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod temporal_asm;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod vga;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod vfs;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod virtio_blk;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod wasm_jit;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod wasm;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod wifi;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod kpti;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod usermode;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod tasks;
 
 /// Helper to ensure Box is available for heap allocations across modules
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 pub fn ensure_heap_available() -> Option<Box<u32>> {
     // Try to allocate on heap to verify allocator is working
@@ -103,6 +160,16 @@ pub fn ensure_heap_available() -> Option<Box<u32>> {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let uart = crate::arch::aarch64_pl011::early_uart();
+        uart.init_early();
+        let _ = info;
+        uart.write_str("[PANIC]\n");
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
     // Attempt to print to serial port first (best effort, no locks if possible)
     use core::fmt::Write;
     if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
@@ -121,12 +188,23 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     
     // Try normal printing if locks aren't held (might deadlock, but we tried)
     // vga::print_str("[PANIC] Kernel panic\n");
+    }
 
     crate::arch::halt_loop()
 }
 
 #[alloc_error_handler]
 fn alloc_error(layout: core::alloc::Layout) -> ! {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = layout;
+        let uart = crate::arch::aarch64_pl011::early_uart();
+        uart.init_early();
+        uart.write_str("[ALLOC ERROR]\n");
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
     use core::fmt::Write;
     if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
         let _ = writeln!(serial, "[ALLOC ERROR] Layout: {:?}", layout);
@@ -139,7 +217,26 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
             *vga.add(i) = 0x4F00 | (b as u16);
         }
     }
+    }
     crate::arch::halt_loop()
+}
+
+/// Arch-neutral timer tick hook.
+///
+/// On x86/x86_64 this feeds the existing quantum scheduler tick path.
+/// On AArch64 bring-up it routes to the AArch64 runtime hook until the
+/// full scheduler module is ported.
+#[inline]
+pub(crate) fn kernel_timer_tick_hook() {
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::quantum_scheduler::on_timer_tick();
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch::aarch64_virt::scheduler_timer_tick_hook();
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -280,13 +377,121 @@ fn rust_main_x86_64_bringup() -> ! {
     crate::arch::x86_64_runtime::run_serial_shell()
 }
 
+#[cfg(target_arch = "aarch64")]
+fn aarch64_uart_write_hex(value: usize) {
+    let uart = crate::arch::aarch64_pl011::early_uart();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut buf = [0u8; 2 + (core::mem::size_of::<usize>() * 2)];
+    buf[0] = b'0';
+    buf[1] = b'x';
+    let digits = core::mem::size_of::<usize>() * 2;
+    for i in 0..digits {
+        let shift = (digits - 1 - i) * 4;
+        buf[2 + i] = HEX[((value >> shift) & 0xF) as usize];
+    }
+    for &b in &buf {
+        uart.write_byte(b);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_uart_log_line(msg: &str) {
+    let uart = crate::arch::aarch64_pl011::early_uart();
+    uart.init_early();
+    uart.write_str(msg);
+    uart.write_str("\n");
+}
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_uart_log_hex_line(prefix: &str, value: usize) {
+    let uart = crate::arch::aarch64_pl011::early_uart();
+    uart.init_early();
+    uart.write_str(prefix);
+    aarch64_uart_write_hex(value);
+    uart.write_str("\n");
+}
+
+#[cfg(target_arch = "aarch64")]
+fn rust_main_aarch64_bringup() -> ! {
+    aarch64_uart_log_line("[A64] Early bring-up path");
+    aarch64_uart_log_line("[A64] init early platform...");
+    arch::init_cpu_tables();
+
+    let boot_info = arch::boot_info();
+    {
+        let uart = crate::arch::aarch64_pl011::early_uart();
+        uart.write_str("[A64] platform=");
+        uart.write_str(arch::platform_name());
+        uart.write_str("\n");
+    }
+    aarch64_uart_log_hex_line("[A64] boot raw_info_ptr=", boot_info.raw_info_ptr.unwrap_or(0));
+    aarch64_uart_log_hex_line("[A64] boot dtb_ptr=", boot_info.dtb_ptr.unwrap_or(0));
+
+    aarch64_uart_log_line("[A64] mmu init...");
+    match arch::mmu::init() {
+        Ok(()) => {
+            let uart = crate::arch::aarch64_pl011::early_uart();
+            uart.write_str("[A64] mmu backend=");
+            uart.write_str(arch::mmu::backend_name());
+            uart.write_str("\n");
+        }
+        Err(e) => {
+            let uart = crate::arch::aarch64_pl011::early_uart();
+            uart.write_str("[A64] mmu init failed: ");
+            uart.write_str(e);
+            uart.write_str("\n");
+            crate::arch::halt_loop();
+        }
+    }
+
+    match boot_info.raw_info_ptr {
+        Some(ptr) => match crate::arch::aarch64_dtb::parse_dtb_header(ptr) {
+            Some(hdr) => {
+                aarch64_uart_log_line("[A64] DTB header parse: ok");
+                aarch64_uart_log_hex_line("[A64] dtb total_size=", hdr.total_size);
+                aarch64_uart_log_hex_line("[A64] dtb off_dt_struct=", hdr.off_dt_struct);
+                aarch64_uart_log_hex_line("[A64] dtb off_dt_strings=", hdr.off_dt_strings);
+                aarch64_uart_log_hex_line("[A64] dtb off_mem_rsvmap=", hdr.off_mem_rsvmap);
+                aarch64_uart_log_hex_line("[A64] dtb version=", hdr.version as usize);
+                aarch64_uart_log_hex_line(
+                    "[A64] dtb last_comp_version=",
+                    hdr.last_comp_version as usize,
+                );
+                aarch64_uart_log_hex_line("[A64] dtb size_dt_struct=", hdr.size_dt_struct);
+                aarch64_uart_log_hex_line("[A64] dtb size_dt_strings=", hdr.size_dt_strings);
+            }
+            None => aarch64_uart_log_line("[A64] DTB header parse: invalid"),
+        },
+        None => aarch64_uart_log_line("[A64] DTB header parse: no pointer"),
+    }
+
+    aarch64_uart_log_line("[A64] init vectors...");
+    arch::init_trap_table();
+    aarch64_uart_log_line("[A64] init GIC...");
+    arch::init_interrupt_controller();
+    aarch64_uart_log_line("[A64] init timer...");
+    arch::init_timer();
+    aarch64_uart_log_line("[A64] enable interrupts...");
+    arch::enable_interrupts();
+    crate::arch::aarch64_virt::self_test_sync_exception();
+    aarch64_uart_log_line("[A64] bring-up complete; entering shell");
+    crate::arch::aarch64_virt::run_serial_shell()
+}
+
 #[no_mangle]
 pub extern "C" fn rust_main() -> ! {
+    #[cfg(target_arch = "aarch64")]
+    {
+        return rust_main_aarch64_bringup();
+    }
+
     #[cfg(target_arch = "x86_64")]
     {
         return rust_main_x86_64_bringup();
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
+    {
     // IMMEDIATE VGA WRITE to confirm we reached Rust code
     unsafe {
         let vga = 0xb8000 as *mut u16;
@@ -521,13 +726,18 @@ pub extern "C" fn rust_main() -> ! {
     
     vga::print_str("\n[INIT] Initialization complete, starting scheduler...\n");
     tasks::start();
+    }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 static mut SHELL_HISTORY: [[u8; 256]; 16] = [[0; 256]; 16];
+#[cfg(not(target_arch = "aarch64"))]
 static mut SHELL_HISTORY_LENS: [usize; 16] = [0; 16];
+#[cfg(not(target_arch = "aarch64"))]
 static mut SHELL_HISTORY_COUNT: usize = 0;
 
 /// Shell loop (runs as init process)
+#[cfg(not(target_arch = "aarch64"))]
 pub fn shell_loop() -> ! {
     // Add debug print before touching terminal
     vga::print_str("[SHELL] Starting shell loop...\n");
@@ -818,6 +1028,7 @@ pub fn shell_loop() -> ! {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn redraw_line(input: &[u8; 256], len: usize, cursor: usize, prompt_pos: (usize, usize)) {
     terminal::set_cursor(prompt_pos.0, prompt_pos.1);
     terminal::clear_line_from_cursor();

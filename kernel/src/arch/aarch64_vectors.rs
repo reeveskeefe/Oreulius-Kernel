@@ -1,0 +1,281 @@
+/*!
+ * Oreulia Kernel Project
+ * 
+ *License-Identifier: Oreulius License (see LICENSE)
+ * 
+ * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ */
+
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+pub(crate) const VECTOR_TABLE_BYTES: usize = 2048;
+const VECTOR_SLOT_COUNT: usize = 16;
+
+const ESR_EC_SHIFT: u64 = 26;
+const ESR_EC_MASK: u64 = 0x3F;
+const EC_SVC64: u8 = 0x15;
+const EC_HVC64: u8 = 0x16;
+const EC_SMC64: u8 = 0x17;
+const EC_BRK64: u8 = 0x3C;
+const EC_FP_ASIMD_TRAP: u8 = 0x07;
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) enum VectorSlot {
+    CurrentElSp0Sync = 0,
+    CurrentElSp0Irq = 1,
+    CurrentElSp0Fiq = 2,
+    CurrentElSp0Serror = 3,
+    CurrentElSpxSync = 4,
+    CurrentElSpxIrq = 5,
+    CurrentElSpxFiq = 6,
+    CurrentElSpxSerror = 7,
+    LowerElA64Sync = 8,
+    LowerElA64Irq = 9,
+    LowerElA64Fiq = 10,
+    LowerElA64Serror = 11,
+    LowerElA32Sync = 12,
+    LowerElA32Irq = 13,
+    LowerElA32Fiq = 14,
+    LowerElA32Serror = 15,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LastExceptionSnapshot {
+    pub slot: u8,
+    pub esr_el1: u64,
+    pub elr_el1: u64,
+    pub spsr_el1: u64,
+    pub far_el1: u64,
+}
+
+static VECTORS_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+static LAST_SLOT: AtomicU64 = AtomicU64::new(0);
+static LAST_ESR_EL1: AtomicU64 = AtomicU64::new(0);
+static LAST_ELR_EL1: AtomicU64 = AtomicU64::new(0);
+static LAST_SPSR_EL1: AtomicU64 = AtomicU64::new(0);
+static LAST_FAR_EL1: AtomicU64 = AtomicU64::new(0);
+static LAST_EC: AtomicU64 = AtomicU64::new(0);
+static SYNC_EXCEPTION_COUNT: AtomicU64 = AtomicU64::new(0);
+static VECTOR_COUNTS: [AtomicU64; VECTOR_SLOT_COUNT] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+
+extern "C" {
+    static __oreulia_aarch64_vectors_start: u8;
+}
+
+#[inline]
+pub(crate) fn vector_base() -> usize {
+    unsafe { (&__oreulia_aarch64_vectors_start as *const u8) as usize }
+}
+
+#[inline]
+fn is_sync_slot(slot: u8) -> bool {
+    (slot & 0b11) == 0
+}
+
+#[inline]
+fn is_irq_slot(slot: u8) -> bool {
+    (slot & 0b11) == 1
+}
+
+#[inline]
+fn slot_name(slot: u8) -> &'static str {
+    match slot {
+        0 => "cur-el-sp0-sync",
+        1 => "cur-el-sp0-irq",
+        2 => "cur-el-sp0-fiq",
+        3 => "cur-el-sp0-serror",
+        4 => "cur-el-spx-sync",
+        5 => "cur-el-spx-irq",
+        6 => "cur-el-spx-fiq",
+        7 => "cur-el-spx-serror",
+        8 => "lower-el-a64-sync",
+        9 => "lower-el-a64-irq",
+        10 => "lower-el-a64-fiq",
+        11 => "lower-el-a64-serror",
+        12 => "lower-el-a32-sync",
+        13 => "lower-el-a32-irq",
+        14 => "lower-el-a32-fiq",
+        15 => "lower-el-a32-serror",
+        _ => "unknown",
+    }
+}
+
+#[inline]
+fn ec_name(ec: u8) -> &'static str {
+    match ec {
+        EC_SVC64 => "SVC64",
+        EC_HVC64 => "HVC64",
+        EC_SMC64 => "SMC64",
+        EC_BRK64 => "BRK64",
+        EC_FP_ASIMD_TRAP => "FP_ASIMD_TRAP",
+        0b100100 => "DATA_ABORT_LOWER_EL",
+        0b100101 => "DATA_ABORT_SAME_EL",
+        0b100000 => "INST_ABORT_LOWER_EL",
+        0b100001 => "INST_ABORT_SAME_EL",
+        _ => "other",
+    }
+}
+
+fn uart_write_hex_u64(mut value: u64) {
+    let uart = super::aarch64_pl011::early_uart();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut buf = [0u8; 18];
+    buf[0] = b'0';
+    buf[1] = b'x';
+    for i in 0..16 {
+        let shift = (15 - i) * 4;
+        buf[2 + i] = HEX[((value >> shift) & 0xF) as usize];
+    }
+    for &b in &buf {
+        uart.write_byte(b);
+    }
+    value = 0;
+    let _ = value;
+}
+
+fn log_sync_exception(slot: u8, esr_el1: u64, elr_el1: u64, spsr_el1: u64, far_el1: u64) {
+    let ec = ((esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK) as u8;
+    let uart = super::aarch64_pl011::early_uart();
+    uart.init_early();
+    uart.write_str("[A64-EXC] slot=");
+    uart.write_str(slot_name(slot));
+    uart.write_str(" ec=");
+    uart.write_str(ec_name(ec));
+    uart.write_str(" (");
+    uart_write_hex_u64(ec as u64);
+    uart.write_str(") esr=");
+    uart_write_hex_u64(esr_el1);
+    uart.write_str(" elr=");
+    uart_write_hex_u64(elr_el1);
+    uart.write_str(" spsr=");
+    uart_write_hex_u64(spsr_el1);
+    uart.write_str(" far=");
+    uart_write_hex_u64(far_el1);
+    uart.write_str("\n");
+}
+
+pub(crate) fn install_stub_vectors() {
+    let base = vector_base();
+    unsafe {
+        core::arch::asm!(
+            "msr VBAR_EL1, {base}",
+            "isb",
+            base = in(reg) base,
+            options(nostack),
+        );
+    }
+    VECTORS_INSTALLED.store(true, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn vectors_installed() -> bool {
+    VECTORS_INSTALLED.load(Ordering::Relaxed)
+}
+
+#[no_mangle]
+pub extern "C" fn oreulia_aarch64_vector_dispatch(
+    slot: u64,
+    esr_el1: u64,
+    elr_el1: u64,
+    spsr_el1: u64,
+    far_el1: u64,
+    _sp_at_exception: u64,
+) -> u64 {
+    let slot_u8 = slot as u8;
+    if let Some(counter) = VECTOR_COUNTS.get(slot as usize) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    LAST_SLOT.store(slot, Ordering::Relaxed);
+    LAST_ESR_EL1.store(esr_el1, Ordering::Relaxed);
+    LAST_ELR_EL1.store(elr_el1, Ordering::Relaxed);
+    LAST_SPSR_EL1.store(spsr_el1, Ordering::Relaxed);
+    LAST_FAR_EL1.store(far_el1, Ordering::Relaxed);
+
+    let ec = ((esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK) as u8;
+    LAST_EC.store(ec as u64, Ordering::Relaxed);
+
+    if is_sync_slot(slot_u8) {
+        SYNC_EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
+        log_sync_exception(slot_u8, esr_el1, elr_el1, spsr_el1, far_el1);
+
+        if ec == EC_FP_ASIMD_TRAP {
+            super::aarch64_virt::enable_fp_simd_access();
+            return 0;
+        }
+
+        if matches!(ec, EC_BRK64 | EC_SVC64 | EC_HVC64 | EC_SMC64) {
+            return 4;
+        }
+    }
+
+    if is_irq_slot(slot_u8) {
+        super::aarch64_virt::handle_irq_exception(slot_u8);
+    }
+
+    0
+}
+
+#[inline]
+pub(crate) fn trigger_breakpoint() {
+    unsafe {
+        core::arch::asm!("brk #0", options(nomem, nostack));
+    }
+}
+
+#[inline]
+pub(crate) fn sync_exception_count() -> u64 {
+    SYNC_EXCEPTION_COUNT.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub(crate) fn vector_count(slot: u8) -> u64 {
+    VECTOR_COUNTS
+        .get(slot as usize)
+        .map(|v| v.load(Ordering::Relaxed))
+        .unwrap_or(0)
+}
+
+#[inline]
+pub(crate) fn last_exception_snapshot() -> LastExceptionSnapshot {
+    LastExceptionSnapshot {
+        slot: LAST_SLOT.load(Ordering::Relaxed) as u8,
+        esr_el1: LAST_ESR_EL1.load(Ordering::Relaxed),
+        elr_el1: LAST_ELR_EL1.load(Ordering::Relaxed),
+        spsr_el1: LAST_SPSR_EL1.load(Ordering::Relaxed),
+        far_el1: LAST_FAR_EL1.load(Ordering::Relaxed),
+    }
+}
+
+#[inline]
+pub(crate) fn last_exception_ec() -> u8 {
+    LAST_EC.load(Ordering::Relaxed) as u8
+}
+
+pub(crate) fn dump_last_exception() {
+    let snap = last_exception_snapshot();
+    let ec = last_exception_ec();
+    let uart = super::aarch64_pl011::early_uart();
+    uart.init_early();
+    uart.write_str("[A64-EXC] last slot=");
+    uart.write_str(slot_name(snap.slot));
+    uart.write_str(" ec=");
+    uart.write_str(ec_name(ec));
+    uart.write_str(" esr=");
+    uart_write_hex_u64(snap.esr_el1);
+    uart.write_str(" elr=");
+    uart_write_hex_u64(snap.elr_el1);
+    uart.write_str(" spsr=");
+    uart_write_hex_u64(snap.spsr_el1);
+    uart.write_str(" far=");
+    uart_write_hex_u64(snap.far_el1);
+    uart.write_str("\n");
+}

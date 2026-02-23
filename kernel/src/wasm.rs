@@ -58,6 +58,7 @@ use spin::Mutex;
 use crate::capability::{self, CapabilityType, Rights};
 use crate::ipc::{ProcessId, ChannelId};
 use crate::fs;
+use crate::arch::mmu as arch_mmu;
 use crate::paging;
 use crate::idt_asm;
 use crate::memory;
@@ -7799,7 +7800,9 @@ static JIT_FAULT_EXEC_START: AtomicU32 = AtomicU32::new(0);
 static JIT_FAULT_EXEC_END: AtomicU32 = AtomicU32::new(0);
 static mut JIT_FAULT_TRAP_PTR: *mut i32 = core::ptr::null_mut();
 static JIT_USER_LOCK: Mutex<()> = Mutex::new(());
-static JIT_USER_SANDBOX: Mutex<Option<paging::AddressSpace>> = Mutex::new(None);
+static JIT_USER_SANDBOX: Mutex<Option<arch_mmu::AddressSpace>> = Mutex::new(None);
+static JIT_USER_PREFLIGHT_PAGES: Mutex<Option<JitUserPages>> = Mutex::new(None);
+static JIT_USER_PREFLIGHT_AUX_PAGES: Mutex<Option<JitUserPreflightAuxPages>> = Mutex::new(None);
 static JIT_KERNEL_CALL_LOCK: Mutex<()> = Mutex::new(());
 static JIT_USER_DEBUG_STAGE: AtomicU32 = AtomicU32::new(0);
 static JIT_USER_FAULT_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -7812,6 +7815,13 @@ struct JitUserPages {
     call: usize,
     stack: usize,
     stack_pages: usize,
+}
+
+#[derive(Clone, Copy)]
+struct JitUserPreflightAuxPages {
+    code: usize,
+    state: usize,
+    mem: usize,
 }
 
 #[no_mangle]
@@ -8197,6 +8207,251 @@ fn wipe_jit_user_pages(pages: &JitUserPages) {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+fn ensure_jit_user_preflight_aux_pages(
+    aux: &mut Option<JitUserPreflightAuxPages>,
+) -> Result<JitUserPreflightAuxPages, &'static str> {
+    if let Some(existing) = *aux {
+        return Ok(existing);
+    }
+    let new_pages = JitUserPreflightAuxPages {
+        code: memory::jit_allocate_pages(1)?,
+        state: memory::jit_allocate_pages(1)?,
+        mem: memory::jit_allocate_pages(1)?,
+    };
+    *aux = Some(new_pages);
+    Ok(new_pages)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn jit_x86_64_sandbox_preflight_with_pages(
+    pages_cache: &mut Option<JitUserPages>,
+    source: &'static str,
+) -> Result<(), &'static str> {
+    let pages = ensure_jit_user_pages(pages_cache)?;
+    wipe_jit_user_pages(&pages);
+
+    let mut sandbox_slot = JIT_USER_SANDBOX.lock();
+    if sandbox_slot.is_none() {
+        *sandbox_slot = Some(arch_mmu::new_jit_sandbox()?);
+    }
+    let sandbox = sandbox_slot.as_mut().ok_or("JIT sandbox unavailable")?;
+
+    let mut aux_pages_slot = JIT_USER_PREFLIGHT_AUX_PAGES.lock();
+    let aux_pages = ensure_jit_user_preflight_aux_pages(&mut *aux_pages_slot)?;
+    let code_page = aux_pages.code;
+    let state_page = aux_pages.state;
+    let mem_page = aux_pages.mem;
+
+    unsafe {
+        core::ptr::write_volatile(code_page as *mut u8, 0xC3); // ret
+        core::ptr::write_volatile(state_page as *mut u8, 0x5A);
+        core::ptr::write_volatile(mem_page as *mut u8, 0xA5);
+    }
+
+    let trampoline_phys = arch_mmu::x86_64_debug_virt_to_phys(pages.trampoline)
+        .ok_or("Preflight trampoline phys lookup failed")?;
+    let call_phys = arch_mmu::x86_64_debug_virt_to_phys(pages.call)
+        .ok_or("Preflight call-page phys lookup failed")?;
+    let stack_phys = arch_mmu::x86_64_debug_virt_to_phys(pages.stack)
+        .ok_or("Preflight stack phys lookup failed")?;
+    let code_phys = arch_mmu::x86_64_debug_virt_to_phys(code_page)
+        .ok_or("Preflight code phys lookup failed")?;
+    let state_phys = arch_mmu::x86_64_debug_virt_to_phys(state_page)
+        .ok_or("Preflight state phys lookup failed")?;
+    let mem_phys = arch_mmu::x86_64_debug_virt_to_phys(mem_page)
+        .ok_or("Preflight mem phys lookup failed")?;
+
+    let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
+    let code_guard = USER_JIT_CODE_GUARD_PAGES * paging::PAGE_SIZE;
+    let data_guard = USER_JIT_DATA_GUARD_PAGES * paging::PAGE_SIZE;
+    let mem_guard = USER_WASM_MEM_GUARD_PAGES * paging::PAGE_SIZE;
+    let code_base = USER_JIT_CODE_BASE
+        .checked_add(code_guard)
+        .ok_or("JIT code base overflow")?;
+    let data_base = USER_JIT_DATA_BASE
+        .checked_add(data_guard)
+        .ok_or("JIT data base overflow")?;
+    let mem_base = USER_WASM_MEM_BASE
+        .checked_add(mem_guard)
+        .ok_or("WASM memory base overflow")?;
+
+    memory_isolation::tag_jit_user_trampoline(trampoline_phys, paging::PAGE_SIZE, true)?;
+    memory_isolation::tag_jit_user_state(call_phys, paging::PAGE_SIZE, true)?;
+    memory_isolation::tag_jit_user_stack(
+        stack_phys + guard_bytes,
+        USER_JIT_STACK_PAGES * paging::PAGE_SIZE,
+        true,
+    )?;
+    memory_isolation::tag_jit_code_user(code_phys, paging::PAGE_SIZE)?;
+    memory_isolation::tag_jit_user_state(state_phys, paging::PAGE_SIZE, true)?;
+    memory_isolation::tag_wasm_linear_memory(mem_phys, paging::PAGE_SIZE, true)?;
+
+    sandbox.map_user_range_phys(USER_JIT_TRAMPOLINE_BASE, trampoline_phys, paging::PAGE_SIZE, false)?;
+    sandbox.map_user_range_phys(USER_JIT_CALL_BASE, call_phys, paging::PAGE_SIZE, true)?;
+    sandbox.map_user_range_phys(
+        USER_JIT_STACK_BASE + guard_bytes,
+        stack_phys + guard_bytes,
+        USER_JIT_STACK_PAGES * paging::PAGE_SIZE,
+        true,
+    )?;
+    sandbox.map_user_range_phys(code_base, code_phys, paging::PAGE_SIZE, false)?;
+    sandbox.map_user_range_phys(data_base, state_phys, paging::PAGE_SIZE, true)?;
+    sandbox.map_user_range_phys(mem_base, mem_phys, paging::PAGE_SIZE, true)?;
+
+    let old_cr3 = arch_mmu::current_page_table_root_addr();
+    unsafe { sandbox.activate(); }
+    let verify = (|| -> Result<(), &'static str> {
+        let tramp_b = unsafe { core::ptr::read_volatile(USER_JIT_TRAMPOLINE_BASE as *const u8) };
+        let call_b = unsafe { core::ptr::read_volatile(USER_JIT_CALL_BASE as *const u8) };
+        let stack_user_top = USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 1;
+        unsafe {
+            core::ptr::write_volatile(USER_JIT_CALL_BASE as *mut u8, 0x11);
+            core::ptr::write_volatile((USER_JIT_STACK_BASE + guard_bytes) as *mut u8, 0x22);
+            core::ptr::write_volatile(data_base as *mut u8, 0x33);
+            core::ptr::write_volatile(mem_base as *mut u8, 0x44);
+        }
+        let code_b = unsafe { core::ptr::read_volatile(code_base as *const u8) };
+        let data_b = unsafe { core::ptr::read_volatile(data_base as *const u8) };
+        let mem_b = unsafe { core::ptr::read_volatile(mem_base as *const u8) };
+        let stack_b = unsafe { core::ptr::read_volatile((USER_JIT_STACK_BASE + guard_bytes) as *const u8) };
+        let stack_top_b = unsafe { core::ptr::read_volatile(stack_user_top as *const u8) };
+        crate::serial::_print(format_args!(
+            "[JIT-DBG] x64 preflight({}) map cr3=0x{:08x} tramp=0x{:02x} call=0x{:02x} code=0x{:02x} data=0x{:02x} mem=0x{:02x} stack=0x{:02x} top=0x{:02x}\n",
+            source,
+            sandbox.phys_addr() as u32,
+            tramp_b,
+            call_b,
+            code_b,
+            data_b,
+            mem_b,
+            stack_b,
+            stack_top_b,
+        ));
+        if code_b != 0xC3 || data_b != 0x33 || mem_b != 0x44 || stack_b != 0x22 {
+            return Err("Sandbox CR3 verification mismatch");
+        }
+        Ok(())
+    })();
+    let _ = arch_mmu::set_page_table_root(old_cr3);
+    verify?;
+
+    let pre_unmap_call = sandbox.is_mapped(USER_JIT_CALL_BASE);
+    let pre_unmap_code = sandbox.is_mapped(code_base);
+    sandbox.unmap_page(USER_JIT_CALL_BASE)?;
+    sandbox.unmap_page(code_base)?;
+    sandbox.unmap_page(data_base)?;
+    sandbox.unmap_page(mem_base)?;
+    sandbox.unmap_page(USER_JIT_STACK_BASE + guard_bytes)?;
+    sandbox.unmap_page(USER_JIT_TRAMPOLINE_BASE)?;
+
+    let post_unmap_ok = !sandbox.is_mapped(USER_JIT_CALL_BASE)
+        && !sandbox.is_mapped(code_base)
+        && !sandbox.is_mapped(data_base)
+        && !sandbox.is_mapped(mem_base)
+        && !sandbox.is_mapped(USER_JIT_STACK_BASE + guard_bytes)
+        && !sandbox.is_mapped(USER_JIT_TRAMPOLINE_BASE);
+    if !pre_unmap_call || !pre_unmap_code || !post_unmap_ok {
+        return Err("Sandbox unmap verification failed");
+    }
+
+    // Restore kernel-only visibility tags for the reusable trampoline/call/stack pages.
+    memory_isolation::tag_jit_user_trampoline(trampoline_phys, paging::PAGE_SIZE, false)?;
+    memory_isolation::tag_jit_user_state(call_phys, paging::PAGE_SIZE, false)?;
+    memory_isolation::tag_jit_user_stack(
+        stack_phys,
+        pages.stack_pages * paging::PAGE_SIZE,
+        false,
+    )?;
+
+    Ok(())
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn jit_x86_64_sandbox_preflight() -> Result<(), &'static str> {
+    Err("x86_64 JIT sandbox preflight only")
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn jit_x86_64_sandbox_preflight() -> Result<(), &'static str> {
+    let _guard = JIT_USER_LOCK.lock();
+    let mut preflight_pages = JIT_USER_PREFLIGHT_PAGES.lock();
+    jit_x86_64_sandbox_preflight_with_pages(&mut *preflight_pages, "shell")
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn jit_x86_64_call_user_path_probe() -> Result<&'static str, &'static str> {
+    unsafe extern "C" fn dummy_jit_entry(
+        _stack_ptr: *mut i32,
+        _sp_ptr: *mut usize,
+        _mem_ptr: *mut u8,
+        _mem_len: usize,
+        _locals_ptr: *mut i32,
+        _instr_fuel: *mut u32,
+        _mem_fuel: *mut u32,
+        _trap_code: *mut i32,
+        _shadow_stack_ptr: *mut u32,
+        _shadow_sp_ptr: *mut usize,
+    ) -> i32 {
+        0
+    }
+
+    let jit_entry = JitExecInfo {
+        entry: dummy_jit_entry,
+        exec_ptr: 0x1000 as *mut u8,
+        exec_len: paging::PAGE_SIZE,
+    };
+
+    let mut stack = [0i32; 4];
+    let mut sp = 0usize;
+    let mut locals = [0i32; 4];
+    let mut instr_fuel = 1u32;
+    let mut mem_fuel = 1u32;
+    let mut trap_code = 0i32;
+    let mut shadow_stack = [0u32; 4];
+    let mut shadow_sp = 0usize;
+    let mut jit_user_pages: Option<JitUserPages> = None;
+
+    let mem_ptr = memory::jit_allocate_pages(1)? as *mut u8;
+    let jit_state_base = memory::jit_allocate_pages(1)? as *mut u8;
+
+    let result = call_jit_user(
+        jit_entry,
+        stack.as_mut_ptr(),
+        &mut sp as *mut usize,
+        mem_ptr,
+        paging::PAGE_SIZE,
+        locals.as_mut_ptr(),
+        &mut instr_fuel as *mut u32,
+        &mut mem_fuel as *mut u32,
+        &mut trap_code as *mut i32,
+        shadow_stack.as_mut_ptr(),
+        &mut shadow_sp as *mut usize,
+        jit_state_base,
+        1,
+        &mut jit_user_pages,
+        1,
+        1,
+        0,
+    );
+
+    match result {
+        Err(e)
+            if e
+                == "x86_64 JIT user entry/trampoline path not yet ported (preflight stage completed)" =>
+        {
+            Ok(e)
+        }
+        Err(e) => Err(e),
+        Ok(_) => Err("x86_64 JIT user path unexpectedly reached entry/returned"),
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn jit_x86_64_call_user_path_probe() -> Result<&'static str, &'static str> {
+    Err("x86_64 JIT user path probe only")
+}
+
 pub fn jit_user_mark_returned() -> bool {
     if JIT_USER_ACTIVE.load(Ordering::SeqCst) != 0 {
         JIT_USER_RETURN_PENDING.store(1, Ordering::SeqCst);
@@ -8453,6 +8708,19 @@ fn call_jit_kernel(
     ret
 }
 
+#[cfg(target_arch = "x86_64")]
+fn call_jit_user_x86_64_preflight_stage(
+    jit_user_pages: &mut Option<JitUserPages>,
+) -> Result<(), &'static str> {
+    jit_user_debug_set_stage(2);
+    jit_x86_64_sandbox_preflight_with_pages(jit_user_pages, "call")
+}
+
+#[cfg(target_arch = "x86_64")]
+fn call_jit_user_x86_64_entry_stage() -> Result<i32, &'static str> {
+    Err("x86_64 JIT user entry/trampoline path not yet ported (preflight stage completed)")
+}
+
 fn call_jit_user(
     jit_entry: JitExecInfo,
     _stack_ptr: *mut i32,
@@ -8490,6 +8758,24 @@ fn call_jit_user(
     JIT_USER_RETURN_PENDING.store(0, Ordering::SeqCst);
     JIT_USER_SYSCALL_VIOLATION.store(0, Ordering::SeqCst);
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = (
+            jit_entry,
+            mem_ptr,
+            mem_len,
+            trap_code,
+            jit_state_base,
+            jit_state_pages,
+            process_id,
+            instance_id,
+            func_idx,
+        );
+        call_jit_user_x86_64_preflight_stage(jit_user_pages)?;
+        jit_user_debug_set_stage(10);
+        return call_jit_user_x86_64_entry_stage();
+    }
+
     jit_user_debug_set_stage(2);
     let pages = ensure_jit_user_pages(jit_user_pages)?;
     wipe_jit_user_pages(&pages);
@@ -8502,7 +8788,7 @@ fn call_jit_user(
     // after CR3 switch while still in ring0.
     let mut sandbox_slot = JIT_USER_SANDBOX.lock();
     if sandbox_slot.is_none() {
-        *sandbox_slot = Some(paging::AddressSpace::new_jit_sandbox()?);
+        *sandbox_slot = Some(arch_mmu::new_jit_sandbox()?);
     }
     let sandbox = sandbox_slot
         .as_mut()

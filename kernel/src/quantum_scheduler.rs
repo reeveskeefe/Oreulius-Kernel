@@ -791,7 +791,7 @@ impl QuantumScheduler {
     }
     
     /// Add a user process (stub for now)
-    pub fn add_user_process(&mut self, _process: Process, _space: Box<crate::paging::AddressSpace>, _entry: u32, _user_stack: u32) -> Result<Pid, &'static str> {
+    pub fn add_user_process(&mut self, _process: Process, _space: Box<crate::arch::mmu::AddressSpace>, _entry: u32, _user_stack: u32) -> Result<Pid, &'static str> {
         Err("User processes not yet implemented")
     }
     

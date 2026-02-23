@@ -1,3 +1,36 @@
+/*!
+ * Oreulia Kernel Project
+ * 
+ *License-Identifier: Oreulius License (see LICENSE)
+ * 
+ * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * 
+ * Contributing:
+ * - By contributing to this file, you agree to license your work under the same terms.
+ * - Please see CONTRIBUTING.md for code style and review guidelines.
+ * 
+ * ---------------------------------------------------------------------------
+ */
+
+
 use core::ptr;
 use core::sync::atomic::{compiler_fence, AtomicU64, AtomicUsize, Ordering};
 
@@ -22,8 +55,6 @@ const PTE_NX: u64 = 1 << 63;
 
 const PF_ERR_PRESENT: u64 = 1 << 0;
 const PF_ERR_WRITE: u64 = 1 << 1;
-
-const MAX_LOW32: u64 = u32::MAX as u64;
 
 #[repr(C, align(4096))]
 #[derive(Clone, Copy)]
@@ -87,6 +118,10 @@ unsafe fn alloc_boot_pt_page() -> Option<*mut PageTablePage> {
     Some(page)
 }
 
+fn alloc_runtime_pt_page() -> Result<usize, &'static str> {
+    crate::memory::allocate_frame()
+}
+
 impl X86_64Mmu {
     #[inline]
     fn read_cr3(&self) -> usize {
@@ -99,6 +134,10 @@ impl X86_64Mmu {
 
     unsafe fn pml4_ptr(&self) -> *mut u64 {
         (self.read_cr3() as u64 & PTE_ADDR_MASK) as *mut u64
+    }
+
+    unsafe fn pml4_ptr_from_root(root_phys: usize) -> *mut u64 {
+        ((root_phys as u64) & PTE_ADDR_MASK) as *mut u64
     }
 
     unsafe fn split_2m_page(pd_entry_ptr: *mut u64) -> Result<*mut u64, &'static str> {
@@ -125,6 +164,42 @@ impl X86_64Mmu {
         ptr::write_volatile(pd_entry_ptr, new_pd_entry);
         MMU.flush_tlb_all();
 
+        Ok(pt_ptr)
+    }
+
+    unsafe fn split_2m_page_runtime(
+        pd_entry_ptr: *mut u64,
+        force_user_accessible: bool,
+    ) -> Result<*mut u64, &'static str> {
+        let pd_entry = ptr::read_volatile(pd_entry_ptr);
+        if !is_huge_2m(pd_entry) {
+            return Err("not a 2MiB page");
+        }
+
+        let pt_phys = alloc_runtime_pt_page()?;
+        let pt_ptr = pt_phys as *mut u64;
+        ptr::write_bytes(pt_ptr as *mut u8, 0, PAGE_SIZE);
+
+        let base_phys = pd_entry & PTE_ADDR_MASK;
+        let mut pte_flags = (pd_entry & PTE_FLAGS_LOW_MASK) | (pd_entry & PTE_NX);
+        pte_flags &= !PTE_PS;
+        pte_flags |= PTE_PRESENT;
+        if force_user_accessible {
+            pte_flags |= PTE_USER | PTE_WRITABLE;
+        }
+
+        for i in 0..ENTRIES_PER_TABLE {
+            let phys = base_phys + ((i * PAGE_SIZE) as u64);
+            ptr::write(pt_ptr.add(i), (phys & PTE_ADDR_MASK) | pte_flags);
+        }
+
+        let mut pd_flags = (pd_entry & PTE_FLAGS_LOW_MASK) & !PTE_PS;
+        pd_flags |= PTE_PRESENT;
+        if force_user_accessible {
+            pd_flags |= PTE_USER | PTE_WRITABLE;
+        }
+        let new_pd_entry = ((pt_phys as u64) & PTE_ADDR_MASK) | pd_flags;
+        ptr::write_volatile(pd_entry_ptr, new_pd_entry);
         Ok(pt_ptr)
     }
 
@@ -178,6 +253,110 @@ impl X86_64Mmu {
         Ok(pt.add(i1))
     }
 
+    unsafe fn ensure_table_entry(
+        entry_ptr: *mut u64,
+        user_accessible: bool,
+    ) -> Result<*mut u64, &'static str> {
+        let mut entry = ptr::read_volatile(entry_ptr);
+        if !is_present(entry) {
+            let table_phys = alloc_runtime_pt_page()?;
+            ptr::write_bytes(table_phys as *mut u8, 0, PAGE_SIZE);
+            let mut flags = PTE_PRESENT | PTE_WRITABLE;
+            if user_accessible {
+                flags |= PTE_USER;
+            }
+            entry = ((table_phys as u64) & PTE_ADDR_MASK) | flags;
+            ptr::write_volatile(entry_ptr, entry);
+            return Ok(table_phys as *mut u64);
+        }
+
+        if (entry & PTE_PS) != 0 {
+            return Err("unexpected huge page at upper page-table level");
+        }
+
+        if user_accessible && (entry & PTE_USER) == 0 {
+            entry |= PTE_USER | PTE_WRITABLE;
+            ptr::write_volatile(entry_ptr, entry);
+        }
+
+        Ok(entry_addr(entry) as *mut u64)
+    }
+
+    unsafe fn pte_ptr_for_root(
+        root_phys: usize,
+        virt: usize,
+        split_huge_pages: bool,
+        create_missing: bool,
+        user_accessible: bool,
+    ) -> Result<*mut u64, &'static str> {
+        let (i4, i3, i2, i1) = indices_for(virt);
+
+        let pml4 = Self::pml4_ptr_from_root(root_phys);
+        let pml4e_ptr = pml4.add(i4);
+        let pdpt = if create_missing {
+            Self::ensure_table_entry(pml4e_ptr, user_accessible)?
+        } else {
+            let entry = ptr::read_volatile(pml4e_ptr);
+            if !is_present(entry) {
+                return Err("PML4 entry not present");
+            }
+            if user_accessible && (entry & PTE_USER) == 0 {
+                let updated = entry | PTE_USER | PTE_WRITABLE;
+                ptr::write_volatile(pml4e_ptr, updated);
+            }
+            entry_addr(entry) as *mut u64
+        };
+
+        let pdpte_ptr = pdpt.add(i3);
+        let pd = if create_missing {
+            Self::ensure_table_entry(pdpte_ptr, user_accessible)?
+        } else {
+            let entry = ptr::read_volatile(pdpte_ptr);
+            if !is_present(entry) {
+                return Err("PDPT entry not present");
+            }
+            if (entry & PTE_PS) != 0 {
+                return Err("1GiB pages not supported");
+            }
+            if user_accessible && (entry & PTE_USER) == 0 {
+                let updated = entry | PTE_USER | PTE_WRITABLE;
+                ptr::write_volatile(pdpte_ptr, updated);
+            }
+            entry_addr(entry) as *mut u64
+        };
+
+        let pde_ptr = pd.add(i2);
+        let mut pde = ptr::read_volatile(pde_ptr);
+        if !is_present(pde) {
+            if !create_missing {
+                return Err("PD entry not present");
+            }
+            let pt_phys = alloc_runtime_pt_page()?;
+            ptr::write_bytes(pt_phys as *mut u8, 0, PAGE_SIZE);
+            let mut flags = PTE_PRESENT | PTE_WRITABLE;
+            if user_accessible {
+                flags |= PTE_USER;
+            }
+            pde = ((pt_phys as u64) & PTE_ADDR_MASK) | flags;
+            ptr::write_volatile(pde_ptr, pde);
+        } else if is_huge_2m(pde) {
+            if !split_huge_pages {
+                return Err("virt maps through 2MiB page");
+            }
+            let _ = Self::split_2m_page_runtime(pde_ptr, user_accessible)?;
+            pde = ptr::read_volatile(pde_ptr);
+        } else if user_accessible && (pde & PTE_USER) == 0 {
+            pde |= PTE_USER | PTE_WRITABLE;
+            ptr::write_volatile(pde_ptr, pde);
+        }
+
+        if !is_present(pde) || (pde & PTE_PS) != 0 {
+            return Err("PDE did not resolve to PT");
+        }
+        let pt = entry_addr(pde) as *mut u64;
+        Ok(pt.add(i1))
+    }
+
     unsafe fn update_entry_low_flags(
         entry_low_ptr: *mut u32,
         set_mask: u32,
@@ -198,6 +377,220 @@ impl X86_64Mmu {
         entry &= !clear_mask;
         ptr::write_volatile(entry_ptr, entry);
         entry
+    }
+
+    unsafe fn virt_to_phys_with_root(root_phys: usize, virt_addr: usize) -> Option<usize> {
+        let virt_page = align_down(virt_addr, PAGE_SIZE);
+        let page_off = virt_addr & (PAGE_SIZE - 1);
+        let (i4, i3, i2, i1) = indices_for(virt_page);
+
+        let pml4 = Self::pml4_ptr_from_root(root_phys);
+        let pml4e = ptr::read_volatile(pml4.add(i4));
+        if !is_present(pml4e) {
+            return None;
+        }
+
+        let pdpt = entry_addr(pml4e) as *mut u64;
+        let pdpte = ptr::read_volatile(pdpt.add(i3));
+        if !is_present(pdpte) {
+            return None;
+        }
+        if (pdpte & PTE_PS) != 0 {
+            return None;
+        }
+
+        let pd = entry_addr(pdpte) as *mut u64;
+        let pde = ptr::read_volatile(pd.add(i2));
+        if !is_present(pde) {
+            return None;
+        }
+        if is_huge_2m(pde) {
+            let base = entry_addr(pde);
+            let off = virt_addr & (HUGE_PAGE_SIZE_2M - 1);
+            return Some(base + off);
+        }
+
+        let pt = entry_addr(pde) as *mut u64;
+        let pte = ptr::read_volatile(pt.add(i1));
+        if !is_present(pte) {
+            return None;
+        }
+        Some(entry_addr(pte) + page_off)
+    }
+}
+
+pub struct AddressSpace {
+    cr3_phys: usize,
+}
+
+impl AddressSpace {
+    pub fn new() -> Result<Self, &'static str> {
+        let current_root = MMU.read_cr3();
+        let new_root = alloc_runtime_pt_page()?;
+
+        unsafe {
+            ptr::copy_nonoverlapping(current_root as *const u8, new_root as *mut u8, PAGE_SIZE);
+
+            let new_pml4 = X86_64Mmu::pml4_ptr_from_root(new_root);
+            let pml4e0 = ptr::read_volatile(new_pml4.add(0));
+            if is_present(pml4e0) {
+                let old_pdpt_phys = entry_addr(pml4e0);
+                let new_pdpt_phys = alloc_runtime_pt_page()?;
+                ptr::copy_nonoverlapping(old_pdpt_phys as *const u8, new_pdpt_phys as *mut u8, PAGE_SIZE);
+                let pml4e0_new = (pml4e0 & !PTE_ADDR_MASK) | ((new_pdpt_phys as u64) & PTE_ADDR_MASK);
+                ptr::write_volatile(new_pml4.add(0), pml4e0_new);
+
+                let new_pdpt = new_pdpt_phys as *mut u64;
+                let pdpte0 = ptr::read_volatile(new_pdpt.add(0));
+                if is_present(pdpte0) && (pdpte0 & PTE_PS) == 0 {
+                    let old_pd_phys = entry_addr(pdpte0);
+                    let new_pd_phys = alloc_runtime_pt_page()?;
+                    ptr::copy_nonoverlapping(old_pd_phys as *const u8, new_pd_phys as *mut u8, PAGE_SIZE);
+                    let pdpte0_new = (pdpte0 & !PTE_ADDR_MASK) | ((new_pd_phys as u64) & PTE_ADDR_MASK);
+                    ptr::write_volatile(new_pdpt.add(0), pdpte0_new);
+                }
+            }
+        }
+
+        Ok(Self { cr3_phys: new_root })
+    }
+
+    pub fn new_jit_sandbox() -> Result<Self, &'static str> {
+        // For x86_64 bring-up, cloning the active root preserves the kernel
+        // mappings needed to continue executing Rust after the sandbox CR3 switch.
+        Self::new()
+    }
+
+    pub fn page_table_root_addr(&self) -> usize {
+        self.cr3_phys
+    }
+
+    pub fn phys_addr(&self) -> usize {
+        self.cr3_phys
+    }
+
+    pub unsafe fn activate(&self) {
+        let _ = MMU.set_page_table_root(self.cr3_phys);
+    }
+
+    pub fn virt_to_phys(&self, virt_addr: usize) -> Option<usize> {
+        unsafe { X86_64Mmu::virt_to_phys_with_root(self.cr3_phys, virt_addr) }
+    }
+
+    pub fn is_mapped(&self, virt_addr: usize) -> bool {
+        self.virt_to_phys(virt_addr).is_some()
+    }
+
+    pub fn map_user_range_phys(
+        &mut self,
+        virt_start: usize,
+        phys_start: usize,
+        size: usize,
+        writable: bool,
+    ) -> Result<(), &'static str> {
+        if size == 0 {
+            return Ok(());
+        }
+        let mut virt = align_down(virt_start, PAGE_SIZE);
+        let mut phys = align_down(phys_start, PAGE_SIZE);
+        let end = virt_start
+            .checked_add(size)
+            .and_then(|v| v.checked_add(PAGE_SIZE - 1))
+            .map(|v| align_down(v, PAGE_SIZE))
+            .ok_or("range overflow")?;
+        while virt < end {
+            self.map_page(virt, phys, writable, true)?;
+            virt = virt.saturating_add(PAGE_SIZE);
+            phys = phys.saturating_add(PAGE_SIZE);
+        }
+        Ok(())
+    }
+
+    pub fn alloc_user_pages(
+        &mut self,
+        virt_addr: usize,
+        count: usize,
+        writable: bool,
+    ) -> Result<(), &'static str> {
+        if count == 0 {
+            return Ok(());
+        }
+        if virt_addr >= crate::paging::USER_TOP {
+            return Err("User mapping into kernel space");
+        }
+        for i in 0..count {
+            let vaddr = virt_addr
+                .checked_add(i.checked_mul(PAGE_SIZE).ok_or("virt overflow")?)
+                .ok_or("virt overflow")?;
+            if vaddr >= crate::paging::USER_TOP {
+                return Err("User mapping into kernel space");
+            }
+            let phys = crate::memory::allocate_frame()?;
+            self.map_page(vaddr, phys, writable, true)?;
+        }
+        Ok(())
+    }
+
+    pub fn map_page(
+        &mut self,
+        virt_addr: usize,
+        phys_addr: usize,
+        writable: bool,
+        user_accessible: bool,
+    ) -> Result<(), &'static str> {
+        let virt_aligned = align_down(virt_addr, PAGE_SIZE);
+        let phys_aligned = align_down(phys_addr, PAGE_SIZE);
+
+        if user_accessible && virt_aligned >= crate::paging::USER_TOP {
+            return Err("User mapping into kernel space");
+        }
+        if user_accessible {
+            crate::memory_isolation::validate_mapping_request(
+                phys_aligned,
+                PAGE_SIZE,
+                writable,
+                true,
+            )?;
+        }
+
+        let pte_ptr = unsafe {
+            X86_64Mmu::pte_ptr_for_root(self.cr3_phys, virt_aligned, true, true, user_accessible)?
+        };
+
+        let mut flags = PTE_PRESENT;
+        if writable {
+            flags |= PTE_WRITABLE;
+        }
+        if user_accessible {
+            flags |= PTE_USER;
+        }
+
+        unsafe {
+            ptr::write_volatile(pte_ptr, ((phys_aligned as u64) & PTE_ADDR_MASK) | flags);
+        }
+
+        if MMU.read_cr3() == self.cr3_phys {
+            MMU.flush_tlb_page(virt_aligned);
+        }
+        Ok(())
+    }
+
+    pub fn unmap_page(&mut self, virt_addr: usize) -> Result<(), &'static str> {
+        let virt_aligned = align_down(virt_addr, PAGE_SIZE);
+        let pte_ptr = unsafe {
+            X86_64Mmu::pte_ptr_for_root(self.cr3_phys, virt_aligned, false, false, false)?
+        };
+        let pte = unsafe { ptr::read_volatile(pte_ptr) };
+        if !is_present(pte) {
+            return Err("Page not mapped");
+        }
+        unsafe {
+            ptr::write_volatile(pte_ptr, 0);
+        }
+        if MMU.read_cr3() == self.cr3_phys {
+            MMU.flush_tlb_page(virt_aligned);
+        }
+        Ok(())
     }
 }
 
@@ -290,26 +683,7 @@ impl ArchMmu for X86_64Mmu {
 }
 
 pub(crate) fn debug_virt_to_phys(virt_addr: usize) -> Option<usize> {
-    let virt_page = align_down(virt_addr, PAGE_SIZE);
-    let page_off = virt_addr & (PAGE_SIZE - 1);
-    unsafe {
-        let pd_entry_ptr = MMU.get_pd_entry_ptr(virt_page).ok()?;
-        let pd_entry = ptr::read_volatile(pd_entry_ptr);
-        if !is_present(pd_entry) {
-            return None;
-        }
-        if is_huge_2m(pd_entry) {
-            let base = entry_addr(pd_entry);
-            let off = virt_addr & (HUGE_PAGE_SIZE_2M - 1);
-            return Some(base + off);
-        }
-        let pte_ptr = MMU.pte_ptr_for_virt(virt_page, false).ok()?;
-        let pte = ptr::read_volatile(pte_ptr);
-        if !is_present(pte) {
-            return None;
-        }
-        Some(entry_addr(pte) + page_off)
-    }
+    unsafe { X86_64Mmu::virt_to_phys_with_root(MMU.read_cr3(), virt_addr) }
 }
 
 pub(crate) fn debug_mark_page_cow(virt_addr: usize) -> Result<(), &'static str> {

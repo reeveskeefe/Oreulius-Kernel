@@ -1,3 +1,36 @@
+/*!
+ * Oreulia Kernel Project
+ * 
+ *License-Identifier: Oreulius License (see LICENSE)
+ * 
+ * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * 
+ * Contributing:
+ * - By contributing to this file, you agree to license your work under the same terms.
+ * - Please see CONTRIBUTING.md for code style and review guidelines.
+ * 
+ * ---------------------------------------------------------------------------
+ */
+
+
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use crate::asm_bindings;
@@ -378,7 +411,7 @@ fn serial_exec_command(cmd: &str) -> bool {
     match cmd {
         "" => {}
         "help" => {
-            crate::serial_println!("commands: help ticks irq0 int3 traps mmu regs halt");
+            crate::serial_println!("commands: help ticks irq0 int3 traps pfstats cowtest vmtest jitpre jitcall mmu regs halt");
         }
         "ticks" => {
             crate::serial_println!("[X64] ticks={}", crate::pit::get_ticks());
@@ -432,6 +465,24 @@ fn serial_exec_command(cmd: &str) -> bool {
             match cow_self_test() {
                 Ok(()) => crate::serial_println!("[X64] cowtest ok"),
                 Err(e) => crate::serial_println!("[X64] cowtest failed: {}", e),
+            }
+        }
+        "vmtest" => {
+            match vm_map_self_test() {
+                Ok(()) => crate::serial_println!("[X64] vmtest ok"),
+                Err(e) => crate::serial_println!("[X64] vmtest failed: {}", e),
+            }
+        }
+        "jitpre" => {
+            match crate::wasm::jit_x86_64_sandbox_preflight() {
+                Ok(()) => crate::serial_println!("[X64] jitpre ok"),
+                Err(e) => crate::serial_println!("[X64] jitpre failed: {}", e),
+            }
+        }
+        "jitcall" => {
+            match crate::wasm::jit_x86_64_call_user_path_probe() {
+                Ok(msg) => crate::serial_println!("[X64] jitcall ok: {}", msg),
+                Err(e) => crate::serial_println!("[X64] jitcall failed: {}", e),
             }
         }
         "halt" | "exit" => {
@@ -490,6 +541,56 @@ fn cow_self_test() -> Result<(), &'static str> {
     if cow_after <= cow_before || copies_after <= copies_before {
         return Err("COW/page-copy counters did not advance");
     }
+    Ok(())
+}
+
+fn vm_map_self_test() -> Result<(), &'static str> {
+    let mut space = crate::arch::mmu::AddressSpace::new()?;
+
+    let code_va = 0x0040_0000usize;
+    let stack_va = crate::paging::USER_TOP - crate::paging::PAGE_SIZE;
+    let phys_map_va = 0x0080_0000usize;
+
+    crate::arch::mmu::alloc_user_pages(&mut space, code_va, 1, true)?;
+    crate::arch::mmu::alloc_user_pages(&mut space, stack_va, 1, true)?;
+
+    let phys_page = crate::memory::allocate_frame()?;
+    crate::arch::mmu::map_user_range_phys(&mut space, phys_map_va, phys_page, crate::paging::PAGE_SIZE, true)?;
+
+    if !space.is_mapped(code_va) || !space.is_mapped(stack_va) || !space.is_mapped(phys_map_va) {
+        return Err("mapped pages not visible in new address space");
+    }
+
+    let old_root = crate::arch::mmu::current_page_table_root_addr();
+    unsafe { space.activate(); }
+    unsafe {
+        (code_va as *mut u8).write(0xC3);
+        (stack_va as *mut u8).write(0x5A);
+        (phys_map_va as *mut u8).write(0xA5);
+    }
+    let code_byte = unsafe { (code_va as *const u8).read() };
+    let stack_byte = unsafe { (stack_va as *const u8).read() };
+    let phys_byte = unsafe { (phys_map_va as *const u8).read() };
+    crate::arch::mmu::set_page_table_root(old_root)?;
+
+    crate::serial_println!(
+        "[X64] vmtest root={:#x} bytes code={:#x} stack={:#x} physmap={:#x}",
+        space.page_table_root_addr(),
+        code_byte,
+        stack_byte,
+        phys_byte,
+    );
+
+    if code_byte != 0xC3 || stack_byte != 0x5A || phys_byte != 0xA5 {
+        return Err("write/read verification failed");
+    }
+
+    crate::arch::mmu::unmap_page(&mut space, code_va)?;
+    crate::arch::mmu::unmap_page(&mut space, phys_map_va)?;
+    if space.is_mapped(code_va) || space.is_mapped(phys_map_va) {
+        return Err("unmap verification failed");
+    }
+
     Ok(())
 }
 

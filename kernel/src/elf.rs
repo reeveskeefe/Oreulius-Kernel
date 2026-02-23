@@ -42,7 +42,8 @@ use alloc::vec::Vec;
 use core::mem::{size_of, MaybeUninit};
 use core::ptr;
 
-use crate::paging::{self, AddressSpace, PAGE_SIZE, USER_TOP};
+use crate::arch::mmu::{self as arch_mmu, AddressSpace};
+use crate::paging::{PAGE_SIZE, USER_TOP};
 use crate::process::{self, ProcessPriority};
 use crate::quantum_scheduler;
 
@@ -167,7 +168,7 @@ fn map_segment(space: &mut AddressSpace, vaddr: u32, memsz: u32, writable: bool)
         return Err("Segment exceeds user space");
     }
     let pages = ((end - start) as usize) / PAGE_SIZE;
-    paging::alloc_user_pages(space, start as usize, pages, writable)?;
+    arch_mmu::alloc_user_pages(space, start as usize, pages, writable)?;
     Ok(())
 }
 
@@ -382,7 +383,7 @@ pub fn load_elf32(bytes: &[u8]) -> Result<LoadedElf, &'static str> {
     }
 
     let stack_base = (USER_TOP - (DEFAULT_STACK_PAGES * PAGE_SIZE)) as u32;
-    paging::alloc_user_pages(&mut space, stack_base as usize, DEFAULT_STACK_PAGES, true)?;
+    arch_mmu::alloc_user_pages(&mut space, stack_base as usize, DEFAULT_STACK_PAGES, true)?;
     let user_stack = (USER_TOP as u32) - 4;
 
     let entry = base + hdr.e_entry;

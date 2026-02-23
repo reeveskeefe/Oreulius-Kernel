@@ -269,7 +269,7 @@ pub fn leave_user() {
 }
 
 pub fn map_user_support(
-    space: &mut paging::AddressSpace,
+    space: &mut crate::arch::mmu::AddressSpace,
     kernel_space: &paging::AddressSpace,
 ) -> Result<(), &'static str> {
     if !enabled() {
@@ -326,7 +326,7 @@ fn kpti_globals_range() -> (usize, usize) {
 }
 
 fn map_kernel_range(
-    space: &mut paging::AddressSpace,
+    space: &mut crate::arch::mmu::AddressSpace,
     kernel_space: &paging::AddressSpace,
     start: usize,
     end: usize,

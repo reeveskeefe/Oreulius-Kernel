@@ -7,9 +7,12 @@
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Written in assembly](https://img.shields.io/badge/written%20in-Assembly-brown.svg)](https://en.wikipedia.org/wiki/Assembly_language)
 [![License: Oreulia](docs/oreulius-license-badge.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-i686-lightgrey.svg)](https://en.wikipedia.org/wiki/I686)
+[![i686](https://img.shields.io/badge/i686-legacy%20runtime-success)](https://en.wikipedia.org/wiki/I686)
+[![x86_64](https://img.shields.io/badge/x86__64-Multiboot2%20QEMU%20bringup-blue)](https://en.wikipedia.org/wiki/X86-64)
+[![AArch64](https://img.shields.io/badge/AArch64-QEMU%20virt%20bringup-blue)](https://en.wikipedia.org/wiki/AArch64)
+[![Boot Handoff](https://img.shields.io/badge/boot%20handoff-MB1%20%7C%20MB2%20%7C%20DTB-informational)](#platform-and-portability-status)
 
-[Why It Is Different](#why-it-is-different) • [Architecture](#architecture) • [Temporal Universality](#temporal-universality) • [Verification](#verification-and-hardening) • [Build](#build-and-run) • [Commands](#command-taxonomy) • [Docs](#documentation-map)
+[Why It Is Different](#why-it-is-different) • [Portability](#platform-and-portability-status) • [Architecture](#architecture) • [Cross-Arch Internals](#cross-architecture-implementation) • [Verification](#verification-and-hardening) • [Build](#build-and-run) • [Commands](#command-taxonomy) • [Docs](#documentation-map)
 
 </div>
 
@@ -20,6 +23,12 @@
 ## Overview
 
 Oreulia is an experimental kernel that treats capabilities, temporal/versioned kernel state, and WebAssembly execution as first-order primitives.
+
+It now has active bring-up/build paths for three architectures:
+
+- `i686` (legacy/full runtime path)
+- `x86_64` (Multiboot2 + GRUB + QEMU bring-up shell path)
+- `AArch64` (QEMU `virt` raw `Image` + DTB bring-up shell path)
 
 It is designed for technical audiences who care about:
 
@@ -52,6 +61,22 @@ It is designed for technical audiences who care about:
 - WebAssembly runtime with JIT toggle, threshold tuning, and fuzz tooling.
 - IPC channels, service registry, VFS, scheduler, network stack, and enclave state integration.
 - Formal verification and corpus-driven fuzzing commands available in shell.
+
+## Platform And Portability Status
+
+Oreulia is now cross-compatible at the boot/runtime abstraction layer across `i686`, `x86_64`, and `AArch64`, but feature parity is intentionally uneven:
+
+- `i686` remains the most complete/runtime-rich path.
+- `x86_64` is a real QEMU bring-up path with working boot, traps, timer IRQs, MMU backend, and serial shell, but many legacy asm/runtime subsystems are still being ported.
+- `AArch64` is a real QEMU `virt` bring-up path with DTB parsing, PL011, exception vectors, GICv2 timer IRQs, MMU backend, serial shell, and virtio-mmio bring-up tests; broader driver/runtime parity is still in progress.
+
+### Compatibility Matrix
+
+| Arch | Boot Path | Current Status | Console / Bring-up Surface |
+|---|---|---|---|
+| `i686` | Multiboot1 + GRUB (`build.sh`, `run.sh`) | Most complete runtime path | VGA + serial shell, core kernel services |
+| `x86_64` | Multiboot2 + GRUB ISO (`build-x86_64-full.sh`) | Real QEMU bring-up (serial shell, traps, timer, MMU) | Serial bring-up shell and diagnostics |
+| `AArch64` | QEMU `virt` raw `Image` + DTB (`build-aarch64-virt.sh`) | Real QEMU `virt` bring-up (PL011, vectors, GICv2, MMU, virtio-mmio tests) | PL011 serial shell and diagnostics |
 
 ## Architecture
 
@@ -97,6 +122,105 @@ It is designed for technical audiences who care about:
 | Persistence | Durable snapshot read/write for temporal state | Used by temporal self-checks and restore path |
 | Network + CapNet | Ethernet/WiFi stack and capability network control plane | `net-*`, `wifi-*`, `capnet-*`, `http-*`, `dns-resolve` |
 | Assembly paths | Low-level context, syscall, memory, and perf primitives | `asm-test`, `cpu-bench`, VM/syscall tests |
+
+## Cross-Architecture Implementation
+
+Oreulia's multi-arch work is not a separate fork or "second kernel." The same kernel crate is compiled for different targets, with architecture-specific boot/runtime/MMU backends selected behind stable interfaces in `kernel/src/arch/`.
+
+### 1) Unified Boot Handoff (`BootInfo`)
+
+The boot protocols are different, but the Rust entry side is normalized:
+
+- `i686`: Multiboot1 handoff (legacy path)
+- `x86_64`: Multiboot2 handoff via GRUB (MB2 boot stub + long-mode transition)
+- `AArch64`: raw `Image` entry with DTB pointer in `x0` (QEMU `virt`)
+
+`BootInfo` acts as the cross-arch handoff struct so early init code in `lib.rs` can log/use:
+
+- boot protocol (`unknown` / `multiboot1` / `multiboot2` / DTB-backed platform handoff)
+- raw handoff pointers/magic
+- cmdline and bootloader strings (safe bounded C-string helpers)
+- ACPI/DTB pointers when present
+
+This keeps early Rust initialization mostly architecture-agnostic while each boot stub remains free to implement the platform-specific ABI.
+
+### 2) Split Trap Table vs Interrupt Controller Initialization
+
+Interrupt bring-up was split so architecture differences do not leak into common boot sequencing:
+
+- `init_trap_table()`: IDT/vector table programming (`x86_64` IDT vs `AArch64` VBAR/vector table)
+- `init_interrupt_controller()`: PIC/APIC/GIC setup and routing
+- `init_timer()`: PIT / generic timer setup
+
+That split is what allows `lib.rs` to call a consistent sequence while `x86` and `AArch64` do fundamentally different work underneath.
+
+### 3) `arch::mmu` Abstraction (Per-Arch MMU Backends)
+
+The major portability step was moving MMU-sensitive call sites behind `kernel/src/arch/mmu.rs`, with backends:
+
+- `mmu_x86_legacy.rs` (legacy i686 paging integration)
+- `mmu_x86_64.rs` (x86_64 long-mode page tables, CR3/TLB ops, page attributes/COW, map/unmap path)
+- `mmu_aarch64.rs` (AArch64 4KB translation tables, TTBR/TCR/MAIR setup, map/unmap path)
+- `mmu_unsupported.rs` (safe placeholder backend for unported targets)
+
+The abstraction intentionally covers more than "turn paging on":
+
+- page-table root get/set
+- TLB invalidation ops
+- page attribute updates (e.g. writable/device mappings)
+- per-address-space allocation/map/unmap operations
+- `AddressSpace` usage in higher-level code (ELF loader, JIT sandbox plumbing)
+
+This is how the same `elf.rs` and JIT sandbox setup code can now compile against x86 and AArch64 without hardcoding `paging.rs` assumptions.
+
+### 4) Runtime Bring-up Per Architecture (Same Kernel, Different Low-Level Paths)
+
+`i686` path (legacy)
+
+- Existing `gdt.rs`, `idt_asm.rs`, `paging.rs`, PIT, and legacy asm bindings remain the primary full-runtime path.
+
+`x86_64` path (QEMU bring-up)
+
+- Dedicated Multiboot2 boot stub and linker script
+- Long-mode handoff into the same Rust kernel crate
+- Real x86_64 GDT/TSS, IDT/traps, PIT IRQs, and CR3/TLB-backed MMU runtime path
+- Bring-up serial shell for trap/MMU/JIT sandbox preflight diagnostics while legacy x86-only subsystems continue to be ported
+
+`AArch64` path (QEMU `virt` bring-up)
+
+- Raw `Image` boot stub + DTB handoff (`x0`)
+- PL011 serial console
+- Real `VBAR_EL1` vector table entries + synchronous exception logging
+- GICv2 + generic timer IRQ handling
+- AArch64 MMU backend with page-table map/unmap support for shell/runtime bring-up
+- DTB-driven discovery of memory/UART/GIC/virtio-mmio instead of hardcoded addresses
+
+### 5) Device Discovery And Driver Bring-up Strategy
+
+Cross-compatibility is being implemented by separating:
+
+- platform discovery (`BootInfo`, DTB parsing, future ACPI normalization)
+- interrupt routing (PIC/APIC/GIC)
+- MMU mapping semantics (normal memory vs device memory)
+- driver/protocol logic (e.g. virtio-mmio queue bring-up)
+
+Recent AArch64 work follows this pattern:
+
+- DTB parser extracts UART/GIC/timer/virtio-mmio info
+- MMU maps DTB-discovered MMIO windows as device memory
+- GIC routes timer/UART/virtio interrupts
+- shell-level diagnostics validate IRQ delivery and queue completion before full driver integration
+
+### 6) Build/Launch Compatibility (Target-Specific Entrypoints)
+
+The repo now contains target-specific build/run scripts rather than pretending one boot flow works everywhere:
+
+- `kernel/build.sh` + `kernel/run.sh` for legacy `i686`
+- `kernel/build-x86_64-full.sh` for `x86_64` MB2 full-link path
+- `kernel/build-aarch64-virt.sh` + `kernel/run-aarch64-virt-image.sh` for AArch64 QEMU `virt`
+- `kernel/run-aarch64-virt-image-virtio-blk-mmio.sh` for AArch64 virtio-mmio block transport testing
+
+That split is deliberate: it keeps boot/link/firmware details per-target while preserving shared Rust kernel logic above the architecture layer.
 
 ## Temporal Universality
 
@@ -184,16 +308,75 @@ brew install nasm qemu xorriso grub
 ```bash
 git clone https://github.com/reeveskeefe/oreulieus-kernel.git
 cd oreulieus-kernel/kernel
-./build.sh
 ```
 
-### Run
+### i686 (Legacy Runtime Path)
 
 ```bash
+./build.sh
 ./run.sh
 # or
 qemu-system-i386 -cdrom oreulia.iso -serial stdio
 ```
+
+### x86_64 (Multiboot2 + GRUB + QEMU)
+
+Build the x86_64 Multiboot2 kernel ELF:
+
+```bash
+./build-x86_64-full.sh
+```
+
+Create a GRUB ISO and boot in QEMU (BIOS path):
+
+```bash
+mkdir -p iso-x86_64/boot/grub
+cp target/x86_64-mb2/oreulia-kernel-x86_64 iso-x86_64/boot/
+cat > iso-x86_64/boot/grub/grub.cfg <<'EOF'
+set timeout=0
+set default=0
+terminal_output console
+menuentry "Oreulia x86_64" {
+    multiboot2 /boot/oreulia-kernel-x86_64
+    boot
+}
+EOF
+
+# On many hosts, i686-elf-grub-mkrescue produces a BIOS-bootable ISO for this flow.
+i686-elf-grub-mkrescue -o oreulia-x86_64.iso iso-x86_64
+qemu-system-x86_64 -cdrom oreulia-x86_64.iso -serial stdio -m 512M
+```
+
+Notes:
+
+- `./build-x86_64-full.sh` validates the Multiboot2 header when `grub-file` is available.
+- Some host toolchains produce UEFI-only ISOs with `x86_64-elf-grub-mkrescue`; the BIOS QEMU flow above is known-good with `i686-elf-grub-mkrescue`.
+
+### AArch64 (QEMU `virt` Raw `Image`)
+
+Build the AArch64 QEMU `virt` image:
+
+```bash
+./build-aarch64-virt.sh
+```
+
+Run the basic AArch64 `virt` bring-up shell:
+
+```bash
+./run-aarch64-virt-image.sh
+```
+
+Run the AArch64 `virt` variant with an explicit DTB-visible `virtio-mmio` block device binding:
+
+```bash
+./run-aarch64-virt-image-virtio-blk-mmio.sh
+```
+
+Optional launcher parameters:
+
+- `BUS_SLOT` (default `0`) to choose `virtio-mmio-bus.N`
+- `DISK_IMAGE` (default `target/aarch64-virt/virtio-blk-mmio-test.img`)
+- `DISK_SIZE` (default `16M`)
 
 ### Quick Rebuild Loop
 
