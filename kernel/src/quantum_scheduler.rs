@@ -231,6 +231,7 @@ pub struct QuantumScheduler {
 pub struct ProcessInfo {
     pub process: Process,
     pub context: ProcessContext,
+    pub shared_runtime_pid: Option<Pid>,
     pub stack: Option<Box<[u8; crate::process::STACK_SIZE]>>,
     pub quantum_remaining: u32,
     pub total_cpu_time: u64,      // Total ticks this process ran
@@ -302,6 +303,7 @@ impl QuantumScheduler {
         let info = ProcessInfo {
             process,
             context: scheduler_platform::context_new(),
+            shared_runtime_pid: Some(pid),
             stack: None,
             quantum_remaining: quantum,
             total_cpu_time: 0,
@@ -571,6 +573,22 @@ impl QuantumScheduler {
         }
         result
     }
+
+    #[inline]
+    fn runtime_pid_for_scheduler_pid(&self, sched_pid: Pid) -> Option<Pid> {
+        self.processes
+            .get(sched_pid.0 as usize)
+            .and_then(|slot| slot.as_ref())
+            .and_then(|info| info.shared_runtime_pid)
+            .or(Some(sched_pid))
+    }
+
+    #[inline]
+    fn current_runtime_pid_raw(&self) -> Option<u32> {
+        self.current_pid
+            .and_then(|pid| self.runtime_pid_for_scheduler_pid(pid))
+            .map(|pid| pid.0)
+    }
     
     /// Add a kernel thread to the scheduler
     pub fn add_kernel_thread(&mut self, entry: extern "C" fn() -> !, priority: ProcessPriority) -> Result<Pid, &'static str> {
@@ -650,12 +668,36 @@ impl QuantumScheduler {
             trampoline_addr,
             scheduler_platform::context_stack_pointer(&ctx)
         ));
+
+        #[cfg(target_arch = "aarch64")]
+        let shared_runtime_pid = {
+            if !crate::vfs_platform::aarch64_shared_process_bridge_registered() {
+                crate::vfs_platform::aarch64_register_default_shared_process_bridge();
+            }
+            let parent = Some(1u32);
+            let spawned = crate::vfs_platform::aarch64_spawn_process(parent)
+                .map_err(|e| {
+                    scheduler_rt::logf(format_args!(
+                        "[SCHED] AArch64 shared process spawn failed for kernel thread PID {}: {}",
+                        pid.0, e
+                    ));
+                    e
+                })?;
+            scheduler_rt::logf(format_args!(
+                "[SCHED] AArch64 scheduler PID {} mapped to shared PID {}",
+                pid.0, spawned
+            ));
+            Some(Pid::new(spawned))
+        };
+        #[cfg(not(target_arch = "aarch64"))]
+        let shared_runtime_pid = None;
         
         process.state = ProcessState::Ready;
         
         let info = ProcessInfo {
             process,
             context: ctx,
+            shared_runtime_pid,
             stack: None,  // Stack is static, not heap-allocated
             quantum_remaining: QUANTUM_NORMAL,
             total_cpu_time: 0,
@@ -684,7 +726,7 @@ impl QuantumScheduler {
     pub fn start_scheduling() -> ! {
         scheduler_rt::vga_print_str("[SCHED] Starting scheduler (safe)\n");
 
-        let ctx_ptr = {
+        let (ctx_ptr, runtime_pid_raw) = {
             let mut scheduler = QUANTUM_SCHEDULER.lock();
             
             // Find next process (prefer ready queues, recover from process table if needed).
@@ -732,7 +774,10 @@ impl QuantumScheduler {
             if let Some(ref mut info) = scheduler.processes[next_pid.0 as usize] {
                 info.process.state = ProcessState::Running;
                 // Return pointer relative to the heap allocation (stable address)
-                &info.context as *const ProcessContext
+                (
+                    &info.context as *const ProcessContext,
+                    scheduler.current_runtime_pid_raw().unwrap_or(next_pid.0),
+                )
             } else {
                 panic!("Process data missing");
             }
@@ -741,6 +786,7 @@ impl QuantumScheduler {
         scheduler_rt::vga_print_str("[SCHED] Lock dropped, loading context\n");
         scheduler_rt::vga_print_str("[SCHED] Jumping to task...\n");
         unsafe { scheduler_platform::debug_dump_launch_context(ctx_ptr); }
+        scheduler_platform::runtime_pid_sync(runtime_pid_raw);
         
         unsafe { scheduler_platform::load_context(ctx_ptr); }
     }
@@ -790,6 +836,13 @@ impl QuantumScheduler {
             }
             if wait.waiting.is_empty() {
                 wait.active = false;
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        if let Some(info) = self.processes[idx].as_ref() {
+            if let Some(shared_pid) = info.shared_runtime_pid {
+                let _ = crate::vfs_platform::aarch64_destroy_process(shared_pid.0);
             }
         }
 
@@ -1238,11 +1291,16 @@ pub fn on_timer_tick() {
 pub fn yield_now() {
     let flags = unsafe { scheduler_platform::irq_save_disable() };
     RESCHED_REQUEST.store(false, Ordering::Release);
-    let switch = {
+    let (switch, next_runtime_pid) = {
         let mut sched = QUANTUM_SCHEDULER.lock();
-        sched.yield_cpu()
+        let switch = sched.yield_cpu();
+        let next_runtime_pid = sched.current_runtime_pid_raw();
+        (switch, next_runtime_pid)
     };
     if let Some((from_ptr, to_ptr)) = switch {
+        if let Some(pid_raw) = next_runtime_pid {
+            scheduler_platform::runtime_pid_sync(pid_raw);
+        }
         unsafe { scheduler_platform::switch_context(from_ptr, to_ptr); }
         // When this thread is resumed, restore its original interrupt state.
         unsafe { scheduler_platform::irq_restore(flags) };
@@ -1254,12 +1312,17 @@ pub fn yield_now() {
 /// Block on address (futex-like)
 pub fn block_on(addr: usize) -> Result<(), &'static str> {
     let flags = unsafe { scheduler_platform::irq_save_disable() };
-    let result = {
+    let (result, next_runtime_pid) = {
         let mut sched = QUANTUM_SCHEDULER.lock();
-        sched.block_on(addr)
+        let result = sched.block_on(addr);
+        let next_runtime_pid = sched.current_runtime_pid_raw();
+        (result, next_runtime_pid)
     };
     match result {
         Ok(Some((from_ptr, to_ptr))) => {
+            if let Some(pid_raw) = next_runtime_pid {
+                scheduler_platform::runtime_pid_sync(pid_raw);
+            }
             unsafe { scheduler_platform::switch_context(from_ptr, to_ptr); }
             // When this thread is resumed, restore its original interrupt state.
             unsafe { scheduler_platform::irq_restore(flags) };

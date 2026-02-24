@@ -1,0 +1,35 @@
+#!/usr/bin/expect -f
+set timeout 180
+
+set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
+cd $kernel_dir
+
+if {![file exists "oreulia.iso"]} {
+    puts "oreulia.iso not found; run build first"
+    exit 1
+}
+
+set soak_seconds 20
+if {[info exists env(I686_SOAK_SECONDS)]} {
+    set soak_seconds $env(I686_SOAK_SECONDS)
+}
+set soak_ms [expr {$soak_seconds * 1000}]
+
+spawn qemu-system-i386 -cdrom oreulia.iso -serial stdio -monitor none -display none -no-reboot -no-shutdown
+
+expect {
+    -re {Type 'help' for commands\.} {}
+    timeout { puts "timeout waiting for i686 kernel shell banner"; exit 1 }
+}
+
+expect {
+    -re {> $} {}
+    timeout { puts "timeout waiting for i686 shell prompt"; exit 1 }
+}
+
+puts "i686 soak: holding at prompt for ${soak_seconds}s"
+after $soak_ms
+
+send "\003"
+expect eof
+

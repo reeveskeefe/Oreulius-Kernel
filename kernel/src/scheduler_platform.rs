@@ -189,6 +189,16 @@ pub unsafe fn switch_context(from: *mut ProcessContext, to: *const ProcessContex
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[inline]
+pub fn runtime_pid_sync(_pid_raw: u32) {}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn runtime_pid_sync(pid_raw: u32) {
+    let _ = crate::arch::aarch64_virt::scheduler_note_context_switch(pid_raw);
+}
+
+#[cfg(not(target_arch = "aarch64"))]
 pub unsafe fn irq_save_disable() -> IrqFlags {
     crate::idt_asm::fast_cli_save()
 }

@@ -37,7 +37,9 @@ use crate::asm_bindings;
 
 pub const KERNEL_CS: u16 = 0x08;
 pub const KERNEL_DS: u16 = 0x10;
-const TSS_SELECTOR: u16 = 0x18;
+pub const USER_CS: u16 = 0x1B;
+pub const USER_DS: u16 = 0x23;
+const TSS_SELECTOR: u16 = 0x28;
 
 const PIC1_CMD: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
@@ -50,6 +52,7 @@ const COM_LSR: u16 = COM1_BASE + 5;
 const COM_DATA: u16 = COM1_BASE;
 
 const IDT_TYPE_INTERRUPT_GATE: u8 = 0x8E;
+const IDT_TYPE_INTERRUPT_GATE_DPL3: u8 = 0xEE;
 
 static LAST_VECTOR: AtomicU8 = AtomicU8::new(0);
 static LAST_ERROR: AtomicU64 = AtomicU64::new(0);
@@ -119,8 +122,17 @@ pub(crate) struct TrapFrameHead64 {
     rflags: u64,
 }
 
+#[repr(C)]
+struct TrapFrameUser64 {
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
 static mut IDT: [IdtEntry64; 256] = [IdtEntry64::missing(); 256];
-static mut GDT: [u64; 5] = [0; 5];
+static mut GDT: [u64; 7] = [0; 7];
 static mut TSS64_BYTES: [u8; 104] = [0; 104];
 static mut IRQ_STACK: [u8; 16 * 1024] = [0; 16 * 1024];
 
@@ -146,6 +158,7 @@ extern "C" {
     fn idt_load(ptr: *const DescriptorTablePtr64);
     fn tss_load(selector: u16);
     fn tss_set_kernel_stack(tss_addr: *mut u32, esp0: u32, ss0: u16);
+    fn syscall_entry();
 }
 
 #[inline]
@@ -186,6 +199,10 @@ fn tss_set_rsp0(rsp0: u64) {
     }
 }
 
+pub fn update_jit_kernel_stack_top(rsp0: usize) {
+    tss_set_rsp0(rsp0 as u64);
+}
+
 pub fn init_cpu_tables() {
     unsafe {
         let irq_stack_top =
@@ -198,11 +215,13 @@ pub fn init_cpu_tables() {
 
         let tss_base = core::ptr::addr_of!(TSS64_BYTES) as u64;
         let (tss_low, tss_high) = build_tss_descriptor(tss_base, (TSS64_BYTES.len() - 1) as u32);
-        GDT[3] = tss_low;
-        GDT[4] = tss_high;
+        GDT[3] = 0x00AFFA000000FFFF; // user code (64-bit, DPL3)
+        GDT[4] = 0x00AFF2000000FFFF; // user data (DPL3)
+        GDT[5] = tss_low;
+        GDT[6] = tss_high;
 
         let gdt_ptr = DescriptorTablePtr64 {
-            limit: (core::mem::size_of::<[u64; 5]>() - 1) as u16,
+            limit: (core::mem::size_of::<[u64; 7]>() - 1) as u16,
             base: core::ptr::addr_of!(GDT) as *const _ as u64,
         };
         gdt_load(&gdt_ptr);
@@ -225,6 +244,12 @@ pub fn init_cpu_tables() {
 fn idt_set(vector: u8, handler: usize) {
     unsafe {
         IDT[vector as usize].set_handler(handler, KERNEL_CS, IDT_TYPE_INTERRUPT_GATE);
+    }
+}
+
+fn idt_set_with_attr(vector: u8, handler: usize, type_attr: u8) {
+    unsafe {
+        IDT[vector as usize].set_handler(handler, KERNEL_CS, type_attr);
     }
 }
 
@@ -252,6 +277,7 @@ pub fn init_trap_table() {
     for (i, &h) in irqs.iter().enumerate() {
         idt_set((32 + i) as u8, h);
     }
+    idt_set_with_attr(0x80, syscall_entry as usize, IDT_TYPE_INTERRUPT_GATE_DPL3);
 
     unsafe {
         let idt_ptr = DescriptorTablePtr64 {
@@ -319,7 +345,7 @@ fn is_error_code_vector(vector: u8) -> bool {
 }
 
 #[no_mangle]
-pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *const TrapFrameHead64) {
+pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut TrapFrameHead64) {
     let vector = vector as u8;
     LAST_VECTOR.store(vector, Ordering::Relaxed);
     LAST_ERROR.store(error, Ordering::Relaxed);
@@ -327,10 +353,37 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *const Tr
     if vector < 32 {
         EXC_COUNTS[vector as usize].fetch_add(1, Ordering::Relaxed);
 
+        let mut frame_rip = 0u64;
+        let mut frame_cs = 0u64;
+        let mut frame_rsp = 0u64;
+        let mut have_user_frame = false;
+        if !frame.is_null() {
+            let f = unsafe { &mut *frame };
+            frame_rip = f.rip;
+            frame_cs = f.cs;
+            if (f.cs & 0x3) == 0x3 {
+                let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
+                frame_rsp = uf.rsp;
+                have_user_frame = true;
+            }
+        }
+
         if vector == 14 {
             let fault_addr: usize;
             unsafe {
                 core::arch::asm!("mov {}, cr2", out(reg) fault_addr, options(nomem, nostack, preserves_flags));
+            }
+            if have_user_frame && !frame.is_null() {
+                let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
+                if crate::wasm::jit_handle_page_fault_x86_64(
+                    fault_addr,
+                    error,
+                    &mut uf.rip,
+                    uf.cs,
+                    &mut uf.rsp,
+                ) {
+                    return;
+                }
             }
             if crate::arch::mmu::handle_page_fault(fault_addr, error) {
                 return;
@@ -340,6 +393,19 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *const Tr
                 fault_addr,
                 error
             );
+        }
+
+        if vector != 14 && have_user_frame && !frame.is_null() {
+            let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
+            if crate::wasm::jit_handle_exception_x86_64(
+                vector as u64,
+                error,
+                &mut uf.rip,
+                uf.cs,
+                &mut uf.rsp,
+            ) {
+                return;
+            }
         }
 
         // Log a subset of exceptions during bring-up to validate the trap path.
@@ -366,6 +432,17 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *const Tr
         IRQ_COUNTS[irq as usize].fetch_add(1, Ordering::Relaxed);
         if irq == 0 {
             crate::pit::tick();
+            if !frame.is_null() {
+                let f = unsafe { &*frame };
+                if (f.cs & 0x3) == 0x3 {
+                    let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
+                    let _ = crate::wasm::jit_handle_timer_interrupt_x86_64(
+                        &mut uf.rip,
+                        uf.cs,
+                        &mut uf.rsp,
+                    );
+                }
+            }
         }
         pic_eoi(irq);
     }
@@ -411,7 +488,7 @@ fn serial_exec_command(cmd: &str) -> bool {
     match cmd {
         "" => {}
         "help" => {
-            crate::serial_println!("commands: help ticks irq0 int3 traps pfstats cowtest vmtest jitpre jitcall mmu regs halt");
+            crate::serial_println!("commands: help ticks irq0 int3 traps pfstats cowtest vmtest jitpre jitcall jitbench jitfuzz jitfuzzreg mmu regs halt");
         }
         "ticks" => {
             crate::serial_println!("[X64] ticks={}", crate::pit::get_ticks());
@@ -485,6 +562,34 @@ fn serial_exec_command(cmd: &str) -> bool {
                 Err(e) => crate::serial_println!("[X64] jitcall failed: {}", e),
             }
         }
+        "jitbench" => {
+            match crate::wasm::jit_bounds_self_test() {
+                Ok(()) => crate::serial_println!("[X64] jitbench ok: wasm-jit-bounds-selftest"),
+                Err(e) => crate::serial_println!("[X64] jitbench failed: {}", e),
+            }
+        }
+        "jitfuzz" => {
+            match jit_fuzz_smoke_self_test() {
+                Ok((iters, ok, traps)) => crate::serial_println!(
+                    "[X64] jitfuzz ok: iters={} ok={} traps={}",
+                    iters, ok, traps
+                ),
+                Err(e) => crate::serial_println!("[X64] jitfuzz failed: {}", e),
+            }
+        }
+        "jitfuzzreg" => {
+            crate::serial_println!("[X64] jitfuzzreg begin: regression dry-run");
+            match crate::wasm::jit_fuzz_regression_default(1) {
+                Ok(stats) => crate::serial_println!(
+                    "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={}",
+                    stats.seeds_passed,
+                    stats.seeds_failed,
+                    stats.total_mismatches,
+                    stats.total_compile_errors
+                ),
+                Err(e) => crate::serial_println!("[X64] jitfuzzreg failed: {}", e),
+            }
+        }
         "halt" | "exit" => {
             crate::serial_println!("[X64] halting");
             return false;
@@ -542,6 +647,220 @@ fn cow_self_test() -> Result<(), &'static str> {
         return Err("COW/page-copy counters did not advance");
     }
     Ok(())
+}
+
+fn native_jit_exec_self_test() -> Result<(), &'static str> {
+    // x86_64: mov eax, 0x12345678 ; ret
+    const CODE: [u8; 6] = [0xB8, 0x78, 0x56, 0x34, 0x12, 0xC3];
+    let exec = crate::memory::jit_allocate_pages(1)?;
+    let _ = crate::memory_isolation::tag_jit_code_kernel(exec, crate::paging::PAGE_SIZE, false);
+    crate::arch::mmu::set_page_writable_range(exec, crate::paging::PAGE_SIZE, true)?;
+    unsafe {
+        core::ptr::copy_nonoverlapping(CODE.as_ptr(), exec as *mut u8, CODE.len());
+    }
+    crate::arch::mmu::set_page_writable_range(exec, crate::paging::PAGE_SIZE, false)?;
+    let _ = crate::memory_isolation::tag_jit_code_kernel(exec, crate::paging::PAGE_SIZE, true);
+
+    let f: extern "C" fn() -> u32 = unsafe { core::mem::transmute(exec) };
+    let ret = f();
+    if ret != 0x1234_5678 {
+        return Err("native JIT exec returned wrong value");
+    }
+    Ok(())
+}
+
+fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
+    use alloc::vec::Vec;
+    use crate::wasm::{Opcode, MAX_INSTRUCTIONS_PER_CALL};
+
+    const ITERS: usize = 32;
+
+    #[derive(Clone, Copy)]
+    struct Rng(u64);
+    impl Rng {
+        fn new(seed: u64) -> Self { Self(seed) }
+        fn next_u32(&mut self) -> u32 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            (x as u32) ^ ((x >> 32) as u32)
+        }
+    }
+
+    fn push_uleb128(buf: &mut Vec<u8>, mut value: u32) {
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 { byte |= 0x80; }
+            buf.push(byte);
+            if value == 0 { break; }
+        }
+    }
+
+    fn push_sleb128_i32(buf: &mut Vec<u8>, mut value: i32) {
+        let mut more = true;
+        while more {
+            let mut byte = (value & 0x7F) as u8;
+            let sign = (byte & 0x40) != 0;
+            value >>= 7;
+            if (value == 0 && !sign) || (value == -1 && sign) {
+                more = false;
+            } else {
+                byte |= 0x80;
+            }
+            buf.push(byte);
+        }
+    }
+
+    fn emit_i32_const(code: &mut Vec<u8>, v: i32) { code.push(Opcode::I32Const as u8); push_sleb128_i32(code, v); }
+    fn emit_local_get(code: &mut Vec<u8>, idx: u32) { code.push(Opcode::LocalGet as u8); push_uleb128(code, idx); }
+    fn emit_local_set(code: &mut Vec<u8>, idx: u32) { code.push(Opcode::LocalSet as u8); push_uleb128(code, idx); }
+    fn emit_local_tee(code: &mut Vec<u8>, idx: u32) { code.push(Opcode::LocalTee as u8); push_uleb128(code, idx); }
+    fn emit_i32_load(code: &mut Vec<u8>, off: u32) { code.push(Opcode::I32Load as u8); push_uleb128(code, 0); push_uleb128(code, off); }
+    fn emit_i32_store(code: &mut Vec<u8>, off: u32) { code.push(Opcode::I32Store as u8); push_uleb128(code, 0); push_uleb128(code, off); }
+
+    let mut rng = Rng::new(0x5846_554A_4954_0002);
+    let mut code: Vec<u8> = Vec::with_capacity(128);
+
+    let state_bytes = core::mem::size_of::<crate::wasm::JitUserState>();
+    let state_pages = state_bytes
+        .checked_add(crate::paging::PAGE_SIZE - 1)
+        .ok_or("jitfuzz state size overflow")?
+        / crate::paging::PAGE_SIZE;
+    let state_base = crate::memory::jit_allocate_pages(state_pages)? as *mut crate::wasm::JitUserState;
+    if state_base.is_null() {
+        return Err("jitfuzz state alloc failed");
+    }
+    unsafe {
+        core::ptr::write_bytes(state_base as *mut u8, 0, state_pages * crate::paging::PAGE_SIZE);
+    }
+
+    let mem_pages = 1usize;
+    let mem_len = crate::paging::PAGE_SIZE;
+    let mem_base = crate::memory::jit_allocate_pages(mem_pages)? as *mut u8;
+    if mem_base.is_null() {
+        return Err("jitfuzz mem alloc failed");
+    }
+    unsafe {
+        core::ptr::write_bytes(mem_base, 0, mem_pages * crate::paging::PAGE_SIZE);
+    }
+
+    let state = unsafe { &mut *state_base };
+
+    let mut ok = 0u32;
+    let mut traps = 0u32;
+    let mut compile_errors = 0u32;
+
+    for iter in 0..ITERS {
+        code.clear();
+        let locals_total = 2usize;
+        let mut stack_depth = 0i32;
+        let mut used_store = false;
+        let mut used_local = false;
+        let mut used_arith = false;
+
+        emit_i32_const(&mut code, (rng.next_u32() as i32) & 0xFF);
+        stack_depth += 1;
+        emit_i32_const(&mut code, (rng.next_u32() as i32) & 0xFF);
+        stack_depth += 1;
+        if (rng.next_u32() & 1) == 0 {
+            code.push(Opcode::I32Add as u8);
+        } else {
+            code.push(Opcode::I32Xor as u8);
+        }
+        used_arith = true;
+        stack_depth -= 1;
+
+        emit_local_set(&mut code, 0);
+        stack_depth -= 1;
+        used_local = true;
+
+        emit_i32_const(&mut code, ((rng.next_u32() & 0x3FF) as i32) & !3);
+        stack_depth += 1;
+        emit_local_get(&mut code, 0);
+        stack_depth += 1;
+        emit_i32_store(&mut code, 0);
+        stack_depth -= 2;
+        used_store = true;
+
+        emit_i32_const(&mut code, ((rng.next_u32() & 0x3FF) as i32) & !3);
+        stack_depth += 1;
+        emit_i32_load(&mut code, 0);
+
+        if (rng.next_u32() % 3) == 0 {
+            emit_local_tee(&mut code, 1);
+            used_local = true;
+        }
+        if (rng.next_u32() % 2) == 0 {
+            code.push(Opcode::I32Eqz as u8);
+        } else {
+            emit_i32_const(&mut code, 0);
+            code.push(Opcode::I32Ne as u8);
+        }
+        used_arith = true;
+
+        if stack_depth <= 0 {
+            emit_i32_const(&mut code, iter as i32);
+        }
+        code.push(Opcode::End as u8);
+
+        if !used_store || !used_local || !used_arith || code.len() > MAX_INSTRUCTIONS_PER_CALL {
+            return Err("jitfuzz internal program shape failure");
+        }
+
+        let jit = match crate::wasm_jit::compile(&code, locals_total) {
+            Ok(j) => j,
+            Err(_) => {
+                compile_errors = compile_errors.saturating_add(1);
+                continue;
+            }
+        };
+        let jit_entry = crate::wasm::JitExecInfo {
+            entry: jit.entry,
+            exec_ptr: jit.exec.ptr,
+            exec_len: jit.exec.len,
+        };
+
+        unsafe {
+            core::ptr::write_bytes(mem_base, 0, mem_len);
+        }
+        state.sp = 0;
+        state.shadow_sp = 0;
+        state.instr_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
+        state.mem_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
+        state.trap_code = 0;
+        for local in state.locals.iter_mut() { *local = 0; }
+
+        let _ret = crate::wasm::call_jit_kernel(
+            jit_entry,
+            state.stack.as_mut_ptr(),
+            &mut state.sp as *mut usize,
+            mem_base,
+            mem_len,
+            state.locals.as_mut_ptr(),
+            &mut state.instr_fuel as *mut u32,
+            &mut state.mem_fuel as *mut u32,
+            &mut state.trap_code as *mut i32,
+            state.shadow_stack.as_mut_ptr(),
+            &mut state.shadow_sp as *mut usize,
+        );
+
+        if state.trap_code == 0 {
+            ok = ok.saturating_add(1);
+        } else {
+            traps = traps.saturating_add(1);
+        }
+    }
+
+    if compile_errors != 0 {
+        return Err("x86_64 jitfuzz compile-errors");
+    }
+    if ok == 0 {
+        return Err("x86_64 jitfuzz no-successful-runs");
+    }
+    Ok((ITERS as u32, ok, traps))
 }
 
 fn vm_map_self_test() -> Result<(), &'static str> {

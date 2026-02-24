@@ -7,6 +7,22 @@
 default rel
 
 extern x86_64_trap_dispatch
+extern JIT_USER_RETURN_PENDING
+extern JIT_USER_RETURN_EIP
+extern JIT_USER_RETURN_ESP
+extern JIT_USER_ACTIVE
+extern JIT_USER_SYSCALL_VIOLATION
+extern JIT_USER_DBG_SAVE_ESP
+extern JIT_USER_DBG_SAVE_EIP
+extern JIT_USER_DBG_SAVE_SEQ
+extern JIT_USER_DBG_SYSCALL_ESP
+extern JIT_USER_DBG_SYSCALL_EIP
+extern JIT_USER_DBG_SYSCALL_SEQ
+extern JIT_USER_DBG_SYSCALL_PATH
+extern JIT_USER_DBG_SYSCALL_FLAGS
+extern JIT_USER_DBG_SYSCALL_NR
+extern JIT_USER_DBG_SYSCALL_FROM_EIP
+extern JIT_USER_DBG_SYSCALL_FROM_CS
 
 %macro STUB_ZERO 1
     global %1
@@ -228,6 +244,159 @@ tss_set_kernel_stack:
     mov dword [rdi + 8], 0
     ret
 
+; Execute a JIT user-call descriptor (x86_64 SysV ABI) from a 32-bit-addressed
+; call page used by the current x86-style JIT metadata layout.
+; Signature: i32 x64_jit_callpage_exec(u32 call_ptr)
+global x64_jit_callpage_exec
+x64_jit_callpage_exec:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    sub rsp, 8                      ; keep 16-byte alignment before nested call
+
+    mov ebx, edi                    ; call-page pointer (low 32 bits)
+    mov r10d, [rbx + 0]             ; entry
+
+    ; First 6 args in registers (SysV x86_64 ABI)
+    mov edi, [rbx + 4]              ; stack_ptr
+    mov esi, [rbx + 8]              ; sp_ptr
+    mov edx, [rbx + 12]             ; mem_ptr
+    mov ecx, [rbx + 16]             ; mem_len
+    mov r8d, [rbx + 20]             ; locals_ptr
+    mov r9d, [rbx + 24]             ; instr_fuel_ptr
+
+    ; Remaining args on stack (right-to-left): mem_fuel, trap, shadow_stack, shadow_sp
+    mov eax, [rbx + 40]             ; shadow_sp_ptr
+    push rax
+    mov eax, [rbx + 36]             ; shadow_stack_ptr
+    push rax
+    mov eax, [rbx + 32]             ; trap_ptr
+    push rax
+    mov eax, [rbx + 28]             ; mem_fuel_ptr
+    push rax
+
+    call r10
+    add rsp, 32
+
+    mov [rbx + 44], eax             ; store return value into call page
+
+    add rsp, 8
+    pop rbx
+    pop rbp
+    ret
+
+; Enter long-mode ring3 using an iretq frame.
+; Signature compatibility with legacy path:
+;   void jit_user_enter(u32 esp, u32 eip, u16 cs, u16 ds)
+global jit_user_enter
+jit_user_enter:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+
+    mov eax, esp
+    mov dword [rel JIT_USER_RETURN_ESP], eax
+    mov dword [rel JIT_USER_DBG_SAVE_ESP], eax
+    lea rax, [rel .jit_return]
+    mov dword [rel JIT_USER_RETURN_EIP], eax
+    mov dword [rel JIT_USER_DBG_SAVE_EIP], eax
+    mov eax, dword [rel JIT_USER_DBG_SAVE_SEQ]
+    add eax, 1
+    mov dword [rel JIT_USER_DBG_SAVE_SEQ], eax
+    mov eax, 1
+    xchg eax, dword [rel JIT_USER_ACTIVE]
+
+    mov r12d, edi                ; user rsp
+    mov r13d, esi                ; user rip
+    movzx ebx, dx                ; user cs
+    movzx eax, cx                ; user ds/ss
+
+    cli
+    mov ds, ax
+    mov es, ax
+
+    push rax                     ; SS
+    push r12                     ; RSP
+    pushfq
+    pop rax
+    and eax, 0xFFFFFDFF          ; clear IF for deterministic JIT sandbox execution
+    push rax                     ; RFLAGS
+    push rbx                     ; CS
+    push r13                     ; RIP
+    iretq
+
+.jit_return:
+    xor eax, eax
+    xchg eax, dword [rel JIT_USER_ACTIVE]
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+; Generic user entry helper used by usermode.rs tests (same ABI/signature).
+global enter_user_mode
+enter_user_mode:
+    movzx r8d, dx                ; CS
+    movzx r9d, cx                ; DS/SS
+    cli
+    mov ax, r9w
+    mov ds, ax
+    mov es, ax
+    push r9                      ; SS
+    mov r10d, edi
+    push r10                     ; RSP
+    pushfq
+    pop rax
+    or eax, 0x200                ; enable IF
+    push rax
+    push r8                      ; CS
+    mov r11d, esi
+    push r11                     ; RIP
+    iretq
+
+; x86_64 INT 0x80 handler for JIT return path (minimal bring-up implementation).
+; On JIT return/violation, jump directly back to the saved kernel continuation.
+global syscall_entry
+syscall_entry:
+    mov edx, dword [rsp + 0]     ; user RIP (low32)
+    mov dword [rel JIT_USER_DBG_SYSCALL_FROM_EIP], edx
+    mov edx, dword [rsp + 8]     ; user CS (low32)
+    mov dword [rel JIT_USER_DBG_SYSCALL_FROM_CS], edx
+
+    mov ecx, dword [rel JIT_USER_ACTIVE]
+    test ecx, ecx
+    je .sysret_iret
+    cmp eax, 250
+    je .jit_return_now
+    mov dword [rel JIT_USER_SYSCALL_VIOLATION], 1
+    mov dword [rel JIT_USER_DBG_SYSCALL_PATH], 2
+    jmp .jit_handoff
+
+.jit_return_now:
+    mov dword [rel JIT_USER_DBG_SYSCALL_PATH], 1
+
+.jit_handoff:
+    mov dword [rel JIT_USER_RETURN_PENDING], 1
+    xor ecx, ecx
+    xchg ecx, dword [rel JIT_USER_ACTIVE]
+    mov edx, dword [rel JIT_USER_RETURN_ESP]
+    mov ecx, dword [rel JIT_USER_RETURN_EIP]
+    mov dword [rel JIT_USER_DBG_SYSCALL_ESP], edx
+    mov dword [rel JIT_USER_DBG_SYSCALL_EIP], ecx
+    mov dword [rel JIT_USER_DBG_SYSCALL_NR], eax
+    mov dword [rel JIT_USER_DBG_SYSCALL_FLAGS], 0
+    mov ebx, dword [rel JIT_USER_DBG_SYSCALL_SEQ]
+    add ebx, 1
+    mov dword [rel JIT_USER_DBG_SYSCALL_SEQ], ebx
+    mov rsp, rdx
+    jmp rcx
+
+.sysret_iret:
+    iretq
+
 ; ---- Real x86_64 exception/IRQ stubs for bring-up ----
 
 global x64_interrupt_common
@@ -365,15 +534,12 @@ STUB_ZERO asm_switch_context
 STUB_ZERO asm_xsave_supported
 STUB_ZERO atomic_dec_refcount
 STUB_ZERO atomic_inc_refcount
-STUB_ZERO enter_user_mode
 STUB_ZERO get_interrupt_count
 STUB_ZERO increment_interrupt_count
-STUB_ZERO jit_user_enter
 STUB_ZERO pic_remap
 STUB_ZERO pic_send_eoi
 STUB_ZERO sgx_encls
 STUB_ZERO sgx_enclu
-STUB_ZERO syscall_entry
 STUB_ZERO sysenter_entry
 STUB_ZERO temporal_copy_bytes
 STUB_ZERO temporal_fnv1a32

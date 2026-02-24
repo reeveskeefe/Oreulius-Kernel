@@ -1,0 +1,101 @@
+name: multiarch-qemu-extended
+
+on:
+  workflow_dispatch:
+    inputs:
+      x64_loops:
+        description: "x86_64 extended loop count"
+        required: false
+        default: "5"
+      a64_loops:
+        description: "AArch64 extended loop count"
+        required: false
+        default: "4"
+      a64_include_vmtest:
+        description: "Run AArch64 vmtest in extended suite"
+        required: false
+        default: "1"
+      a64_include_strict_uart_irq:
+        description: "Run strict-uart-irq shell validation (can be flaky depending on QEMU UART IRQ delivery timing)"
+        required: false
+        default: "0"
+      i686_soak_seconds:
+        description: "i686 boot soak seconds"
+        required: false
+        default: "20"
+  schedule:
+    - cron: "35 3 * * *"
+
+jobs:
+  extended:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [i686, x86_64, aarch64]
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: kernel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            nasm \
+            expect \
+            xorriso \
+            grub-pc-bin \
+            grub-common \
+            mtools \
+            qemu-system-x86 \
+            qemu-system-arm \
+            binutils-aarch64-linux-gnu
+
+      - name: Install Rust nightly (kernel toolchain)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2023-11-01
+
+      - name: Make scripts executable
+        run: chmod +x ./build*.sh ./run*.sh ./ci/*.sh
+
+      - name: Run i686 boot soak
+        if: matrix.arch == 'i686'
+        env:
+          QEMU_AUDIO_DRV: none
+          I686_SOAK_SECONDS: ${{ github.event.inputs.i686_soak_seconds || '20' }}
+        run: ./ci/soak-i686.sh
+
+      - name: Run x86_64 extended shell regression
+        if: matrix.arch == 'x86_64'
+        env:
+          QEMU_AUDIO_DRV: none
+          X64_EXT_LOOPS: ${{ github.event.inputs.x64_loops || '5' }}
+        run: ./ci/extended-x86_64.sh
+
+      - name: Run AArch64 extended shell regression
+        if: matrix.arch == 'aarch64'
+        env:
+          AS_BIN: aarch64-linux-gnu-as
+          LD_BIN: aarch64-linux-gnu-ld
+          OBJCOPY_BIN: aarch64-linux-gnu-objcopy
+          QEMU_AUDIO_DRV: none
+          A64_EXT_LOOPS: ${{ github.event.inputs.a64_loops || '4' }}
+          A64_INCLUDE_VMTEST: ${{ github.event.inputs.a64_include_vmtest || '1' }}
+          A64_INCLUDE_STRICT_UART_IRQ: ${{ github.event.inputs.a64_include_strict_uart_irq || '0' }}
+        run: ./ci/extended-aarch64.sh
+
+      - name: Upload extended logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiarch-qemu-extended-${{ matrix.arch }}
+          path: kernel/ci/logs/*.log
+          if-no-files-found: ignore

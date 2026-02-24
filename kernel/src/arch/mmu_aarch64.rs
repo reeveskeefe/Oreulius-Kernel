@@ -61,6 +61,7 @@ const TCR_VALUE: u64 =
     | (TCR_SH_INNER << 28)
     | (TCR_TG1_4K << 30)
     | (TCR_IPS_40BIT << 32);
+const MAX_LIVE_PT_SCAN_TABLES: usize = 2048;
 
 static MMU_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static KERNEL_ROOT_PHYS: AtomicUsize = AtomicUsize::new(0);
@@ -73,17 +74,42 @@ pub struct AddressSpace {
 }
 
 impl AddressSpace {
-    pub fn new() -> Result<Self, &'static str> {
-        let mut root = ttbr_phys_addr(read_ttbr0_el1());
-        if root == 0 {
-            root = KERNEL_ROOT_PHYS.load(Ordering::Relaxed);
-        }
+    fn clone_from_root_phys(root: usize) -> Result<Self, &'static str> {
         if root == 0 {
             return Err("AArch64 TTBR0_EL1 is not initialized");
         }
         init_page_allocator_if_needed();
         let cloned = clone_table_recursive(root, 0)?;
         Ok(Self { ttbr0_el1: cloned })
+    }
+
+    pub fn new() -> Result<Self, &'static str> {
+        let mut root = ttbr_phys_addr(read_ttbr0_el1());
+        if root == 0 {
+            root = KERNEL_ROOT_PHYS.load(Ordering::Relaxed);
+        }
+        Self::clone_from_root_phys(root)
+    }
+
+    pub fn new_from_kernel_root() -> Result<Self, &'static str> {
+        let mut root = KERNEL_ROOT_PHYS.load(Ordering::Relaxed);
+        if root == 0 {
+            root = ttbr_phys_addr(read_ttbr1_el1());
+        }
+        if root == 0 {
+            root = ttbr_phys_addr(read_ttbr0_el1());
+        }
+        if root != 0 && KERNEL_ROOT_PHYS.load(Ordering::Relaxed) == 0 {
+            KERNEL_ROOT_PHYS.store(root, Ordering::Relaxed);
+        }
+        Self::clone_from_root_phys(root)
+    }
+
+    pub fn new_kernel_template() -> Result<Self, &'static str> {
+        init_page_allocator_if_needed();
+        let root = alloc_page_raw()?;
+        populate_kernel_mappings(root)?;
+        Ok(Self { ttbr0_el1: root })
     }
 
     pub fn new_jit_sandbox() -> Result<Self, &'static str> {
@@ -214,7 +240,96 @@ fn table_mut(table_phys: usize) -> &'static mut [u64; ENTRIES_PER_TABLE] {
 }
 
 #[inline]
+fn table_ref(table_phys: usize) -> &'static [u64; ENTRIES_PER_TABLE] {
+    unsafe { &*(table_phys as *const [u64; ENTRIES_PER_TABLE]) }
+}
+
+fn scan_live_table_tree_max(
+    table_phys: usize,
+    level: usize,
+    seen: &mut [usize; MAX_LIVE_PT_SCAN_TABLES],
+    seen_len: &mut usize,
+    max_phys: &mut usize,
+) {
+    if table_phys == 0 || level > 3 {
+        return;
+    }
+    for i in 0..*seen_len {
+        if seen[i] == table_phys {
+            return;
+        }
+    }
+    if *seen_len < MAX_LIVE_PT_SCAN_TABLES {
+        seen[*seen_len] = table_phys;
+        *seen_len += 1;
+    } else {
+        return;
+    }
+    if table_phys > *max_phys {
+        *max_phys = table_phys;
+    }
+    if level == 3 {
+        return;
+    }
+    let table = table_ref(table_phys);
+    for &desc in table.iter() {
+        if desc_is_table(desc) {
+            scan_live_table_tree_max(desc_addr(desc), level + 1, seen, seen_len, max_phys);
+        }
+    }
+}
+
+fn live_page_table_high_water() -> usize {
+    let mut seen = [0usize; MAX_LIVE_PT_SCAN_TABLES];
+    let mut seen_len = 0usize;
+    let mut max_phys = 0usize;
+
+    let mut roots = [0usize; 3];
+    roots[0] = KERNEL_ROOT_PHYS.load(Ordering::Relaxed);
+    roots[1] = ttbr_phys_addr(read_ttbr0_el1());
+    roots[2] = ttbr_phys_addr(read_ttbr1_el1());
+
+    for root in roots {
+        if root != 0 {
+            scan_live_table_tree_max(root, 0, &mut seen, &mut seen_len, &mut max_phys);
+        }
+    }
+    max_phys
+}
+
+fn repair_page_allocator_cursor_if_stale() {
+    let end = PAGE_ALLOC_END.load(Ordering::Relaxed);
+    if end == 0 {
+        return;
+    }
+    let high_water = live_page_table_high_water();
+    if high_water == 0 {
+        return;
+    }
+    let min_next = high_water
+        .saturating_add(PAGE_SIZE_4K)
+        .saturating_add(PAGE_MASK_4K)
+        & !PAGE_MASK_4K;
+    if min_next == 0 || min_next > end {
+        return;
+    }
+    loop {
+        let cur = PAGE_ALLOC_NEXT.load(Ordering::Relaxed);
+        if cur >= min_next && cur != 0 {
+            break;
+        }
+        if PAGE_ALLOC_NEXT
+            .compare_exchange(cur, min_next, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
+        {
+            break;
+        }
+    }
+}
+
+#[inline]
 fn alloc_page_raw() -> Result<usize, &'static str> {
+    repair_page_allocator_cursor_if_stale();
     let next = PAGE_ALLOC_NEXT.load(Ordering::Relaxed);
     let end = PAGE_ALLOC_END.load(Ordering::Relaxed);
     if next == 0 || end == 0 {
@@ -272,6 +387,9 @@ fn clone_table_recursive(src_table_phys: usize, level: usize) -> Result<usize, &
         return Err("AArch64 MMU clone depth overflow");
     }
     let dst_table_phys = alloc_page_raw()?;
+    if dst_table_phys == src_table_phys {
+        return Err("AArch64 MMU clone allocator alias with source table");
+    }
     let src = table_mut(src_table_phys);
     let dst = table_mut(dst_table_phys);
     for i in 0..ENTRIES_PER_TABLE {
@@ -628,16 +746,7 @@ fn write_mair_tcr_ttbrs_and_enable(root_phys: usize) {
     }
 }
 
-fn mmu_bootstrap_init() -> Result<(), &'static str> {
-    if MMU_INITIALIZED.load(Ordering::Relaxed) {
-        return Ok(());
-    }
-
-    init_page_allocator_if_needed();
-
-    let root = alloc_page_raw()?;
-    KERNEL_ROOT_PHYS.store(root, Ordering::Relaxed);
-
+fn populate_kernel_mappings(root: usize) -> Result<(), &'static str> {
     // Map DRAM from DTB (or fallback), plus key MMIO regions.
     let (mem_base, mem_size) = aarch64_virt::discovered_memory_range()
         .unwrap_or((0x4000_0000, 512 * 1024 * 1024));
@@ -663,6 +772,21 @@ fn mmu_bootstrap_init() -> Result<(), &'static str> {
             map_range_l2_blocks(root, dtb_ptr, dtb_ptr, 2 * 1024 * 1024, MemType::Normal, false)?;
         }
     }
+
+    Ok(())
+}
+
+fn mmu_bootstrap_init() -> Result<(), &'static str> {
+    if MMU_INITIALIZED.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+
+    init_page_allocator_if_needed();
+
+    let root = alloc_page_raw()?;
+    KERNEL_ROOT_PHYS.store(root, Ordering::Relaxed);
+
+    populate_kernel_mappings(root)?;
 
     write_mair_tcr_ttbrs_and_enable(root);
     MMU_INITIALIZED.store(true, Ordering::Relaxed);

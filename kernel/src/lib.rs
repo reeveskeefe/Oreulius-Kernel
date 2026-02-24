@@ -418,9 +418,6 @@ fn aarch64_uart_log_hex_line(prefix: &str, value: usize) {
 
 #[cfg(target_arch = "aarch64")]
 extern "C" fn aarch64_shell_scheduler_task() -> ! {
-    crate::vfs_platform::aarch64_register_default_shared_process_bridge();
-    let _ = crate::vfs_platform::aarch64_set_current_pid(1);
-    let _ = crate::arch::aarch64_virt::scheduler_note_context_switch(1);
     crate::arch::enable_interrupts();
     crate::arch::aarch64_virt::run_serial_shell()
 }
@@ -461,7 +458,6 @@ fn rust_main_aarch64_bringup() -> ! {
     aarch64_uart_log_line("[A64] init process backend...");
     crate::process::init();
     crate::vfs_platform::aarch64_register_default_shared_process_bridge();
-    let _ = crate::arch::aarch64_virt::scheduler_note_context_switch(1);
 
     match boot_info.raw_info_ptr {
         Some(ptr) => match crate::arch::aarch64_dtb::parse_dtb_header(ptr) {

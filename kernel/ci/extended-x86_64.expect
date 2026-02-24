@@ -1,0 +1,72 @@
+#!/usr/bin/expect -f
+set timeout 300
+
+set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
+cd $kernel_dir
+
+set loops 5
+if {[info exists env(X64_EXT_LOOPS)]} {
+    set loops $env(X64_EXT_LOOPS)
+}
+
+proc expect_x64_prompt {} {
+    expect {
+        -re {x64> } {}
+        timeout { puts "timeout waiting for x86_64 prompt"; exit 1 }
+    }
+}
+
+proc run_x64_cmd {cmd ok_re desc} {
+    send -- "$cmd\r"
+    expect {
+        -re $ok_re {}
+        timeout { puts "timeout waiting for x86_64 command: $desc"; exit 1 }
+    }
+    expect_x64_prompt
+}
+
+set env(QEMU_EXTRA_ARGS) "-nographic -monitor none -display none -no-reboot -no-shutdown -m 512M"
+spawn ./run-x86_64-mb2-grub.sh
+
+expect {
+    -re {\[X64\] minimal serial shell ready} {}
+    timeout { puts "timeout waiting for x86_64 shell banner"; exit 1 }
+}
+expect_x64_prompt
+
+run_x64_cmd "help" {commands: help .*jitcall .*jitbench .*jitfuzz .*halt} "help"
+run_x64_cmd "mmu" {\[X64\] mmu backend=.*} "mmu"
+run_x64_cmd "regs" {\[X64\] cr0=.* cr3=.* cr4=.* efer=.*} "regs"
+run_x64_cmd "ticks" {\[X64\] ticks=[0-9]+} "ticks"
+run_x64_cmd "irq0" {\[X64\] irq0-count=[0-9]+} "irq0"
+run_x64_cmd "int3" {\[X64\] breakpoint count=[0-9]+ last_vec=.*} "int3"
+run_x64_cmd "traps" {\[X64\] trap-counts: #BP=.* #GP=.* #PF=.*} "traps"
+run_x64_cmd "pfstats" {\[X64\] pf-stats faults=.* cow=.* copies=.*} "pfstats"
+run_x64_cmd "cowtest" {\[X64\] cowtest ok} "cowtest"
+run_x64_cmd "vmtest" {\[X64\] vmtest ok} "vmtest"
+run_x64_cmd "jitpre" {\[X64\] jitpre ok} "jitpre"
+run_x64_cmd "jitbench" {\[X64\] jitbench ok: wasm-jit-bounds-selftest} "jitbench"
+run_x64_cmd "jitfuzz" {\[X64\] jitfuzz ok: iters=[0-9]+ ok=[0-9]+ traps=[0-9]+} "jitfuzz"
+
+send -- "jitcall\r"
+expect {
+    -re {\[X64\] jitcall ok: .*} {}
+    -re {\[X64\] jitcall failed: x86_64 JIT user entry/trampoline path not yet ported .*} {}
+    timeout { puts "timeout waiting for x86_64 jitcall"; exit 1 }
+}
+expect_x64_prompt
+
+for {set i 0} {$i < $loops} {incr i} {
+    run_x64_cmd "int3" {\[X64\] breakpoint count=[0-9]+ last_vec=.*} "int3 loop"
+    run_x64_cmd "vmtest" {\[X64\] vmtest ok} "vmtest loop"
+    run_x64_cmd "pfstats" {\[X64\] pf-stats faults=.* cow=.* copies=.*} "pfstats loop"
+    run_x64_cmd "ticks" {\[X64\] ticks=[0-9]+} "ticks loop"
+}
+
+send -- "halt\r"
+expect {
+    -re {\[X64\] halting} {}
+    timeout { puts "timeout waiting for x86_64 halt"; exit 1 }
+}
+send "\003"
+expect eof

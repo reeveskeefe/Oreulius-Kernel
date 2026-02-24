@@ -1,0 +1,98 @@
+#!/usr/bin/expect -f
+set timeout 300
+
+set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
+cd $kernel_dir
+
+set loops 4
+if {[info exists env(A64_EXT_LOOPS)]} {
+    set loops $env(A64_EXT_LOOPS)
+}
+set send_slow {1 0.02}
+
+proc expect_a64_prompt {} {
+    expect {
+        -re {a64> } {}
+        timeout { puts "timeout waiting for aarch64 prompt"; exit 1 }
+    }
+}
+
+proc run_a64_cmd {cmd ok_re desc} {
+    puts "RUN: $desc"
+    after 100
+    send -s -- "$cmd\r"
+    expect {
+        -re $ok_re {}
+        timeout { puts "timeout waiting for aarch64 command: $desc"; exit 1 }
+    }
+    expect_a64_prompt
+}
+
+spawn ./run-aarch64-virt-image-virtio-blk-mmio.sh
+
+expect {
+    -re {\[A64\] minimal serial shell ready} {}
+    timeout { puts "timeout waiting for aarch64 shell banner"; exit 1 }
+}
+expect_a64_prompt
+
+run_a64_cmd "commands-help" {\[A64-CMD\] commands:} "commands-help"
+run_a64_cmd "uartirq fix" {\[A64\] uartirq fix: .*} "uartirq fix"
+run_a64_cmd "uartirq" {\[A64\] uartirq strict=.*} "uartirq"
+run_a64_cmd "sched" {\[A64\] sched-backend ticks=.*} "sched"
+if {[info exists env(A64_INCLUDE_VMTEST)] && $env(A64_INCLUDE_VMTEST) == "1"} {
+    run_a64_cmd "vmtest" {\[A64\] vmtest ok} "vmtest"
+}
+run_a64_cmd "virtio" {\[A64\] virtio-active slot=.*} "virtio"
+run_a64_cmd "blk-info" {\[A64-CMD\] blk present=1 .*} "blk-info"
+if {[info exists env(A64_INCLUDE_BLK_PARTITIONS)] && $env(A64_INCLUDE_BLK_PARTITIONS) == "1"} {
+    after 50
+    puts "RUN: blk-partitions"
+    send -s -- "blk-partitions\r"
+    expect {
+        -re {\[A64-CMD\] blk-partitions\r?\n} {}
+        -re {\[A64-CMD\] blk-partitions failed: .*} {}
+        timeout { puts "timeout waiting for aarch64 blk-partitions"; exit 1 }
+    }
+    expect_a64_prompt
+}
+
+after 50
+puts "RUN: brk"
+send -s -- "brk\r"
+expect {
+    -re {\[A64-EXC\] slot=.*BRK64.*} {}
+    timeout { puts "timeout waiting for aarch64 brk trap"; exit 1 }
+}
+expect_a64_prompt
+
+run_a64_cmd "traps" {\[A64\] trap-counts sync=.*} "traps"
+
+if {[info exists env(A64_INCLUDE_STRICT_UART_IRQ)] && $env(A64_INCLUDE_STRICT_UART_IRQ) == "1"} {
+    run_a64_cmd "strict-uart-irq on" {\[A64\] strict-uart-irq=on} "strict-uart-irq on"
+    run_a64_cmd "sched" {\[A64\] sched-backend ticks=.*} "sched under strict UART IRQ"
+    run_a64_cmd "strict-uart-irq off" {\[A64\] strict-uart-irq=off} "strict-uart-irq off"
+}
+
+run_a64_cmd "vfs-mkdir /mntext" {\[A64-CMD\] vfs-mkdir ok /mntext} "vfs-mkdir /mntext"
+run_a64_cmd "vfs-mount-virtio /mntext" {\[A64-CMD\] vfs-mount-virtio ok /mntext} "vfs-mount-virtio"
+run_a64_cmd "vfs-ls /mntext" {\[A64-CMD\] vfs-ls /mntext .*raw.*} "vfs-ls /mntext"
+
+for {set i 0} {$i < $loops} {incr i} {
+    run_a64_cmd "blk-rwtest" {\[A64\] blk-rwtest ok lba=.*} "blk-rwtest loop"
+    run_a64_cmd "vfs-blk-read raw 0 1" {\[A64\] blk-read lba=.*} "vfs-blk-read loop"
+    run_a64_cmd "ticks" {\[A64\] ticks=.*} "ticks loop"
+    if {[expr {$i % 2}] == 0} {
+        run_a64_cmd "virtio" {\[A64\] virtio-active slot=.*} "virtio loop"
+    }
+}
+
+after 50
+puts "RUN: halt"
+send -s -- "halt\r"
+expect {
+    -re {\[A64\] halting} {}
+    timeout { puts "timeout waiting for aarch64 halt"; exit 1 }
+}
+send "\003"
+expect eof

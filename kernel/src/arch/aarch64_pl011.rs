@@ -86,7 +86,7 @@ const CR_RXE: u32 = 1 << 9;
 
 const INT_RX: u32 = 1 << 4;
 const INT_RT: u32 = 1 << 6;
-const RX_BUF_CAPACITY: usize = 512;
+const RX_BUF_CAPACITY: usize = 2048;
 
 struct RxRingBuffer {
     buf: UnsafeCell<[u8; RX_BUF_CAPACITY]>,

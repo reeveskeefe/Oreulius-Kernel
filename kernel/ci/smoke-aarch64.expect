@@ -11,7 +11,7 @@ expect {
     timeout { puts "timeout waiting for aarch64 shell banner"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt"; exit 1 }
 }
 
@@ -21,7 +21,7 @@ expect {
     timeout { puts "timeout waiting for AArch64 commands-help"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt after commands-help"; exit 1 }
 }
 
@@ -31,7 +31,7 @@ expect {
     timeout { puts "timeout waiting for AArch64 blk-info"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt after blk-info"; exit 1 }
 }
 
@@ -41,7 +41,7 @@ expect {
     timeout { puts "timeout waiting for AArch64 vfs-mkdir"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt after vfs-mkdir"; exit 1 }
 }
 
@@ -51,7 +51,7 @@ expect {
     timeout { puts "timeout waiting for AArch64 vfs-write"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt after vfs-write"; exit 1 }
 }
 
@@ -61,7 +61,7 @@ expect {
     timeout { puts "timeout waiting for AArch64 vfs-open"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt after vfs-open"; exit 1 }
 }
 
@@ -75,7 +75,7 @@ expect {
     timeout { puts "timeout waiting for AArch64 vfs-readfd payload"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt after vfs-readfd"; exit 1 }
 }
 
@@ -85,7 +85,7 @@ expect {
     timeout { puts "timeout waiting for AArch64 vfs-close"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt after vfs-close"; exit 1 }
 }
 
@@ -95,7 +95,7 @@ expect {
     timeout { puts "timeout waiting for AArch64 vfs-mkdir /mnt"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt after vfs-mkdir /mnt"; exit 1 }
 }
 
@@ -105,7 +105,7 @@ expect {
     timeout { puts "timeout waiting for AArch64 vfs-mount-virtio"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt after vfs-mount-virtio"; exit 1 }
 }
 
@@ -119,7 +119,7 @@ expect {
     timeout { puts "timeout waiting for AArch64 mounted raw entry"; exit 1 }
 }
 expect {
-    -re {a64> $} {}
+    -re {a64> } {}
     timeout { puts "timeout waiting for aarch64 prompt after vfs-ls"; exit 1 }
 }
 

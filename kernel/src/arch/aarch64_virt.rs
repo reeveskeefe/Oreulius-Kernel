@@ -739,16 +739,19 @@ fn shell_try_read_input_byte() -> Option<u8> {
         // bytes while IRQ-driven draining is active.
         let irq_count = UART_IRQ_COUNT.load(Ordering::Relaxed);
         if irq_count == 0 {
-            return uart().try_read_byte();
+            let _ = uart().irq_drain_rx_to_buffer();
+            return uart().try_read_buffered_byte().or_else(|| uart().try_read_byte());
         }
         let last_irq_tick = UART_LAST_IRQ_TICK.load(Ordering::Relaxed);
         let now_ticks = TIMER_TICKS.load(Ordering::Relaxed);
         if now_ticks.saturating_sub(last_irq_tick) >= 1 {
-            return uart().try_read_byte();
+            let _ = uart().irq_drain_rx_to_buffer();
+            return uart().try_read_buffered_byte().or_else(|| uart().try_read_byte());
         }
         None
     } else {
-        uart().try_read_byte()
+        let _ = uart().irq_drain_rx_to_buffer();
+        uart().try_read_buffered_byte().or_else(|| uart().try_read_byte())
     }
 }
 
@@ -1960,11 +1963,52 @@ fn shell_print_virtio_runtime() {
 }
 
 fn vm_map_self_test() -> Result<(), &'static str> {
-    let mut space = crate::arch::mmu::AddressSpace::new()?;
-
     let code_va = 0x0040_0000usize;
     let stack_va = 0x0080_0000usize;
     let phys_map_va = 0x00C0_0000usize;
+    let kernel_probe_va = (vm_map_self_test as usize) & !0xFFFusize;
+    let mut current_sp = 0usize;
+    unsafe {
+        core::arch::asm!("mov {out}, sp", out = out(reg) current_sp, options(nomem, nostack));
+    }
+    let stack_probe_va = current_sp & !0xFFFusize;
+    let current_before = crate::arch::mmu::aarch64_debug_virt_to_phys(kernel_probe_va);
+
+    let mut space = crate::arch::mmu::AddressSpace::new_kernel_template()?;
+
+    let current_after_build = crate::arch::mmu::aarch64_debug_virt_to_phys(kernel_probe_va);
+    if current_after_build != current_before {
+        let u = uart();
+        u.write_str("[A64] vmtest template build changed current kernel mapping at ");
+        uart_write_hex_usize(kernel_probe_va);
+        u.write_str(" before=");
+        match current_before {
+            Some(pa) => uart_write_hex_usize(pa),
+            None => uart_write_hex_u64(0),
+        }
+        u.write_str(" after=");
+        match current_after_build {
+            Some(pa) => uart_write_hex_usize(pa),
+            None => uart_write_hex_u64(0),
+        }
+        uart_newline();
+        return Err("vmtest template build mutated current root mapping");
+    }
+
+    if space.virt_to_phys(kernel_probe_va).is_none() {
+        let u = uart();
+        u.write_str("[A64] vmtest preflight missing kernel code mapping at ");
+        uart_write_hex_usize(kernel_probe_va);
+        uart_newline();
+        return Err("vmtest clone missing kernel code mapping");
+    }
+    if space.virt_to_phys(stack_probe_va).is_none() {
+        let u = uart();
+        u.write_str("[A64] vmtest preflight missing stack mapping at ");
+        uart_write_hex_usize(stack_probe_va);
+        uart_newline();
+        return Err("vmtest clone missing kernel stack mapping");
+    }
 
     crate::arch::mmu::alloc_user_pages(&mut space, code_va, 1, true)?;
     crate::arch::mmu::alloc_user_pages(&mut space, stack_va, 1, true)?;
@@ -1973,22 +2017,33 @@ fn vm_map_self_test() -> Result<(), &'static str> {
     crate::arch::mmu::map_user_range_phys(&mut space, phys_map_va, phys_page, 4096, true)?;
 
     let old_root = crate::arch::mmu::current_page_table_root_addr();
-    unsafe { space.activate(); }
+    let irq_flags = unsafe { crate::scheduler_platform::irq_save_disable() };
+    let vmtest_result = (|| -> Result<(u8, u8, u8), &'static str> {
+        unsafe { space.activate(); }
 
-    unsafe {
-        (code_va as *mut u8).write(0xC3);
-        (stack_va as *mut u8).write(0x5A);
-        (phys_map_va as *mut u8).write(0xA5);
-    }
+        unsafe {
+            (code_va as *mut u8).write(0xC3);
+            (stack_va as *mut u8).write(0x5A);
+            (phys_map_va as *mut u8).write(0xA5);
+        }
 
-    let code_byte = unsafe { (code_va as *const u8).read() };
-    let stack_byte = unsafe { (stack_va as *const u8).read() };
-    let phys_byte = unsafe { (phys_map_va as *const u8).read() };
+        let code_byte = unsafe { (code_va as *const u8).read() };
+        let stack_byte = unsafe { (stack_va as *const u8).read() };
+        let phys_byte = unsafe { (phys_map_va as *const u8).read() };
 
-    crate::arch::mmu::set_page_table_root(old_root)?;
-    crate::arch::mmu::unmap_page(&mut space, code_va)?;
-    crate::arch::mmu::unmap_page(&mut space, stack_va)?;
-    crate::arch::mmu::unmap_page(&mut space, phys_map_va)?;
+        // Unmap while the temporary address space is still active so its
+        // page-table pages are reachable even under per-task TTBR0 roots.
+        crate::arch::mmu::unmap_page(&mut space, code_va)?;
+        crate::arch::mmu::unmap_page(&mut space, stack_va)?;
+        crate::arch::mmu::unmap_page(&mut space, phys_map_va)?;
+
+        Ok((code_byte, stack_byte, phys_byte))
+    })();
+
+    let restore_root_res = crate::arch::mmu::set_page_table_root(old_root);
+    unsafe { crate::scheduler_platform::irq_restore(irq_flags) };
+    restore_root_res?;
+    let (code_byte, stack_byte, phys_byte) = vmtest_result?;
 
     let u = uart();
     u.write_str("[A64] vmtest old-root=");
@@ -2047,6 +2102,29 @@ fn parse_u64_auto(s: &str) -> Option<u64> {
     } else {
         parse_u64_decimal(s)
     }
+}
+
+fn normalize_shell_command_whitespace(buf: &mut [u8], len: usize) -> usize {
+    let mut out = 0usize;
+    let mut prev_space = true; // trim leading spaces
+    for i in 0..len {
+        let b = buf[i];
+        if b.is_ascii_whitespace() {
+            if !prev_space {
+                buf[out] = b' ';
+                out += 1;
+                prev_space = true;
+            }
+        } else {
+            buf[out] = b;
+            out += 1;
+            prev_space = false;
+        }
+    }
+    if out > 0 && buf[out - 1] == b' ' {
+        out -= 1;
+    }
+    out
 }
 
 fn parse_u8_auto(s: &str) -> Option<u8> {
@@ -2821,14 +2899,17 @@ pub(crate) fn run_serial_shell() -> ! {
     early_log("[A64] minimal serial shell ready (type 'help')\n");
     shell_prompt();
 
-    let mut buf = [0u8; 128];
+    let mut buf = [0u8; 256];
     let mut len = 0usize;
 
     loop {
-        if let Some(byte) = shell_try_read_input_byte() {
+        let mut made_progress = false;
+        while let Some(byte) = shell_try_read_input_byte() {
+            made_progress = true;
             match byte {
                 b'\r' | b'\n' => {
                     uart_newline();
+                    len = normalize_shell_command_whitespace(&mut buf, len);
                     let cmd = core::str::from_utf8(&buf[..len]).unwrap_or("");
                     let keep_running = shell_exec_command(cmd.trim());
                     len = 0;
@@ -2852,7 +2933,14 @@ pub(crate) fn run_serial_shell() -> ! {
                 }
                 _ => {}
             }
-        } else {
+            if len == 0 {
+                // Command execution may have emitted large output. Return to the
+                // outer loop to give IRQs/timer processing a chance before
+                // consuming additional buffered input.
+                break;
+            }
+        }
+        if !made_progress {
             unsafe {
                 core::arch::asm!("wfi", options(nomem, nostack));
             }
