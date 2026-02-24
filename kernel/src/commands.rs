@@ -6537,10 +6537,14 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
             print_u32(stats.compile_errors);
             vga::print_str("\nOpcode bins hit: ");
             print_u32(stats.opcode_bins_hit);
-            vga::print_str(" / 14");
-            vga::print_str("\nOpcode edges hit: ");
+            vga::print_str(" / 20");
+            vga::print_str("\nOpcode edges hit (full): ");
             print_u32(stats.opcode_edges_hit);
-            vga::print_str(" / 196");
+            vga::print_str(" / 400");
+            vga::print_str("\nOpcode edges hit (admissible): ");
+            print_u32(stats.opcode_edges_hit_admissible);
+            vga::print_str(" / ");
+            print_u32(stats.opcode_edges_admissible_total);
             vga::print_str("\nNovel programs: ");
             print_u32(stats.novel_programs);
             vga::print_str("\n");
@@ -6726,10 +6730,14 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             print_u32(stats.total_compile_errors);
             vga::print_str("\nMax opcode bins hit: ");
             print_u32(stats.max_opcode_bins_hit);
-            vga::print_str(" / 14");
-            vga::print_str("\nMax opcode edges hit: ");
+            vga::print_str(" / 20");
+            vga::print_str("\nMax opcode edges hit (full): ");
             print_u32(stats.max_opcode_edges_hit);
-            vga::print_str(" / 196");
+            vga::print_str(" / 400");
+            vga::print_str("\nMax opcode edges hit (admissible): ");
+            print_u32(stats.max_opcode_edges_hit_admissible);
+            vga::print_str(" / ");
+            print_u32(stats.opcode_edges_admissible_total);
             vga::print_str("\nTotal novel programs: ");
             print_u32(stats.total_novel_programs);
             if let Some(seed) = stats.first_failed_seed {
@@ -6918,10 +6926,14 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
             print_u32(stats.total_compile_errors);
             vga::print_str("\nMax opcode bins hit: ");
             print_u32(stats.max_opcode_bins_hit);
-            vga::print_str(" / 14");
-            vga::print_str("\nMax opcode edges hit: ");
+            vga::print_str(" / 20");
+            vga::print_str("\nMax opcode edges hit (full): ");
             print_u32(stats.max_opcode_edges_hit);
-            vga::print_str(" / 196");
+            vga::print_str(" / 400");
+            vga::print_str("\nMax opcode edges hit (admissible): ");
+            print_u32(stats.max_opcode_edges_hit_admissible);
+            vga::print_str(" / ");
+            print_u32(stats.opcode_edges_admissible_total);
             vga::print_str("\nTotal novel programs: ");
             print_u32(stats.total_novel_programs);
 

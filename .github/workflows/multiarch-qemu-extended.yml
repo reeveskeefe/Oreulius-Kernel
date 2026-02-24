@@ -7,6 +7,10 @@ on:
         description: "x86_64 extended loop count"
         required: false
         default: "5"
+      x64_jitfuzzreg_timeout:
+        description: "x86_64 jitfuzzreg command timeout (seconds)"
+        required: false
+        default: "180"
       a64_loops:
         description: "AArch64 extended loop count"
         required: false
@@ -78,6 +82,7 @@ jobs:
         env:
           QEMU_AUDIO_DRV: none
           X64_EXT_LOOPS: ${{ github.event.inputs.x64_loops || '5' }}
+          X64_JITFUZZREG_TIMEOUT: ${{ github.event.inputs.x64_jitfuzzreg_timeout || '180' }}
         run: ./ci/extended-x86_64.sh
 
       - name: Run AArch64 extended shell regression

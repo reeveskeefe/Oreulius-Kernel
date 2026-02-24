@@ -11,7 +11,8 @@ QEMU launch paths, and CI workflows already present in this repository.
 ## Current Baseline (What Exists Today)
 
 - `i686` legacy boot/runtime path is functional and CI-smoked.
-- `x86_64` bring-up path boots under Multiboot2/GRUB and runs a minimal serial shell.
+- `x86_64` bring-up/runtime path boots under Multiboot2/GRUB, runs a serial shell under the shared scheduler,
+  and has working MMU/traps/timer/JIT user-entry plumbing with CI-covered JIT checks (`jitbench`, `jitfuzz`, bounded `jitfuzzreg`).
 - `AArch64` QEMU `virt` bring-up path boots raw `Image`, parses DTB, runs MMU/GIC/timer,
   shared scheduler, serial shell, and `virtio-mmio` block + VFS shell smoke.
 - CI smoke exists:
@@ -19,6 +20,11 @@ QEMU launch paths, and CI workflows already present in this repository.
   - `kernel/ci/smoke-i686.sh`
   - `kernel/ci/smoke-x86_64.sh`
   - `kernel/ci/smoke-aarch64.sh`
+- CI extended regression exists (nightly/manual, multi-arch):
+  - `.github/workflows/multiarch-qemu-extended.yml`
+  - `kernel/ci/extended-x86_64.sh`
+  - `kernel/ci/extended-aarch64.sh`
+  - `kernel/ci/soak-i686.sh`
 
 ## Not Done (The Remaining Gap)
 
@@ -35,17 +41,24 @@ The following are **not** complete and block an honest "porting complete / produ
 
 ### Current known gaps
 
-- `x86_64`: JIT sandbox preflight exists, but `call_jit_user()` entry/trampoline stage is still unported (`kernel/src/wasm.rs`).
+- `x86_64`: user-entry/trampoline path is implemented and CI-smoked, but the `wasm_jit` x86_64 backend is still subset coverage (not full opcode parity).
 - `AArch64`: bring-up shell/runtime exists, but no usermode/JIT entry/trampoline parity.
 - Shared scheduler has AArch64 bring-up integration, but user process creation paths remain stubbed in `kernel/src/quantum_scheduler.rs`.
 
 ### TODO (methodical)
 
-- [ ] Port `x86_64` usermode entry/trampoline path in `kernel/src/wasm.rs` and `kernel/src/usermode.rs`
-  - Replace current x86_64 "preflight only" path with real user entry.
-  - Validate trap-return + error propagation back to kernel.
-- [ ] Add `x86_64` JIT execution CI step (not just `jitpre` / `jitcall` expected-error path)
-  - Acceptance: run a small JIT-compiled WASM kernel test under QEMU and assert deterministic output.
+- [x] Port `x86_64` usermode entry/trampoline path in `kernel/src/wasm.rs` and `kernel/src/usermode.rs`
+  - Replaced the x86_64 preflight-only path with real user entry/return handling (`iretq` + return handoff).
+  - Trap-return + error propagation paths are wired and runtime-smoked via `jitcall`.
+- [x] Add `x86_64` JIT execution CI step (not just `jitpre` / `jitcall` expected-error path)
+  - `jitbench` is now a real x86_64 WASM JIT execution check in extended x86_64 QEMU CI.
+  - Bounded `jitfuzz` and real `jitfuzzreg` dry-run are also exercised in extended x86_64 CI.
+- [ ] Expand `x86_64` `wasm_jit` backend coverage from subset support to broader opcode parity
+  - Current x86_64 backend supports a useful fuzz/test subset (arith/locals/load/store), but not full parity.
+- [x] Achieve full guided-bin pairwise fuzz transition coverage for the current x86_64 JIT fuzz generator model
+  - `jit_fuzz` now computes an admissible edge matrix (`E_adm`) for the 14-bin guided generator, reports both full and admissible pairwise coverage, and uses a deterministic pair-cover prepass.
+  - Current result reaches `Opcode edges hit (full): 196 / 196` and `Opcode edges hit (admissible): 196 / 196` for the present 14-bin generator abstraction.
+  - This is a generator-level pairwise milestone, not full WASM opcode parity or CFG/control-flow coverage.
 - [ ] Implement `AArch64` usermode transition and trap return path (`EL0` entry/return)
   - Includes syscall/exception return ABI and register frame handling.
 - [ ] Add `AArch64` JIT sandbox/user-entry path (or explicit interpreter-only mode until JIT backend lands)
@@ -90,22 +103,20 @@ The following are **not** complete and block an honest "porting complete / produ
 
 ### Current known gaps
 
-- Existing CI is smoke-level (boot + shell + small command checks).
-- No nightly soak, fault-injection, or performance trend tracking.
+- CI now includes smoke + extended QEMU regressions, but long-run soak/perf trend tracking is still limited.
 - Limited automated evidence for interrupt/timer/scheduler stability over time.
-- Known AArch64 regression surfaced by extended harness work: `vmtest` can trigger a repeated
-  `DATA_ABORT_SAME_EL` storm under the shared-scheduler path (keep tracked until fixed, then
-  re-enable by default in extended CI).
+- AArch64 `vmtest` shared-scheduler abort storm was fixed and `A64_INCLUDE_VMTEST=1` is re-enabled by default in extended CI;
+  keep watching for regressions under longer soak runs.
 
 ### TODO (methodical)
 
-- [ ] Add extended QEMU regression workflows (nightly/manual)
+- [x] Add extended QEMU regression workflows (nightly/manual)
   - Multi-arch soak and fault-injection suites
   - Preserve logs/artifacts for triage
-- [ ] Add fault-injection command coverage
+- [x] Add fault-injection command coverage
   - x86_64: `int3`, page fault/COW tests, JIT preflight failure path
   - AArch64: `brk`, `vmtest`, UART/GIC diagnostics, virtio reinit
-- [ ] Add stress loops
+- [x] Add stress loops
   - Repeated block I/O, VFS ops, scheduler tick load, trap tests
 - [ ] Add baseline performance probes (even if shell-level initially)
   - Capture durations for repeated block read/write loops
@@ -122,8 +133,8 @@ The following are **not** complete and block an honest "porting complete / produ
 
 ### Current known gaps
 
-- AArch64 shared scheduler is enabled, but runtime is still bring-up grade.
-- Shared process backend is now bridged into `vfs_platform`, but full subsystem parity is incomplete.
+- AArch64 shared scheduler is enabled and used for the shell runtime, but runtime behavior is still bring-up grade.
+- Shared process backend is bridged into `vfs_platform` (scheduler-driven PID sync is in place), but full subsystem parity is incomplete.
 - User process and fork/COW scheduler paths are still stubbed or partial on non-legacy paths.
 
 ### TODO (methodical)
@@ -157,7 +168,7 @@ The following are **not** complete and block an honest "porting complete / produ
 ## Execution Order (Recommended)
 
 1. Stabilize validation first (extended CI + soak/fault scripts + artifacts).
-2. Finish `x86_64` usermode/JIT path so x86_64 is not stuck at preflight-only.
+2. Expand `x86_64` JIT backend opcode/runtime coverage so the x86_64 path is not stuck at subset-only JIT support (pairwise infrastructure for the current 14-bin generator is now in place and complete).
 3. Port `AArch64` usermode + user process scheduler path.
 4. Expand shared virtio drivers and real-board AArch64 bring-up.
 5. Run nightly regressions long enough to establish confidence before changing README claims again.

@@ -341,6 +341,48 @@ fn emit_code_into(
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_ges();
             }
+            Opcode::I32LtU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_ltu();
+            }
+            Opcode::I32GtU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_gtu();
+            }
+            Opcode::I32LeU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_leu();
+            }
+            Opcode::I32GeU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_geu();
+            }
+            Opcode::I32Shl => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_shl();
+            }
+            Opcode::I32ShrS => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_shrs();
+            }
+            Opcode::I32ShrU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_shru();
+            }
             Opcode::LocalGet => {
                 emitter.emit_instr_fuel_check();
                 let (idx, n) = read_uleb128(code, pc).ok_or("Bad local")?;
@@ -454,6 +496,13 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
             | Opcode::I32GtS
             | Opcode::I32LeS
             | Opcode::I32GeS
+            | Opcode::I32LtU
+            | Opcode::I32GtU
+            | Opcode::I32LeU
+            | Opcode::I32GeU
+            | Opcode::I32Shl
+            | Opcode::I32ShrS
+            | Opcode::I32ShrU
             | Opcode::LocalGet
             | Opcode::LocalSet
             | Opcode::LocalTee
@@ -1217,6 +1266,76 @@ impl Emitter {
         self.emit_push_eax();
     }
 
+    fn emit_i32_ltu(&mut self) {
+        self.emit_pop_to_ebx();
+        self.emit_pop_to_eax();
+        self.emit(&[0x39, 0xD8]);
+        // setb al
+        self.emit(&[0x0F, 0x92, 0xC0]);
+        self.emit(&[0x0F, 0xB6, 0xC0]);
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_gtu(&mut self) {
+        self.emit_pop_to_ebx();
+        self.emit_pop_to_eax();
+        self.emit(&[0x39, 0xD8]);
+        // seta al
+        self.emit(&[0x0F, 0x97, 0xC0]);
+        self.emit(&[0x0F, 0xB6, 0xC0]);
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_leu(&mut self) {
+        self.emit_pop_to_ebx();
+        self.emit_pop_to_eax();
+        self.emit(&[0x39, 0xD8]);
+        // setbe al
+        self.emit(&[0x0F, 0x96, 0xC0]);
+        self.emit(&[0x0F, 0xB6, 0xC0]);
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_geu(&mut self) {
+        self.emit_pop_to_ebx();
+        self.emit_pop_to_eax();
+        self.emit(&[0x39, 0xD8]);
+        // setae al
+        self.emit(&[0x0F, 0x93, 0xC0]);
+        self.emit(&[0x0F, 0xB6, 0xC0]);
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_shl(&mut self) {
+        self.emit_pop_to_ebx(); // shift count
+        self.emit_pop_to_eax(); // value
+        self.emit(&[0x88, 0xD9]); // mov cl, bl
+        self.emit(&[0xD3, 0xE0]); // shl eax, cl
+        self.emit_push_eax();
+        // restore mem_len register (ecx) for future bounds checks
+        self.emit(&[0x8B, 0x4D, 0x14]); // mov ecx, [ebp+20]
+    }
+
+    fn emit_i32_shrs(&mut self) {
+        self.emit_pop_to_ebx(); // shift count
+        self.emit_pop_to_eax(); // value
+        self.emit(&[0x88, 0xD9]); // mov cl, bl
+        self.emit(&[0xD3, 0xF8]); // sar eax, cl
+        self.emit_push_eax();
+        // restore mem_len register (ecx) for future bounds checks
+        self.emit(&[0x8B, 0x4D, 0x14]); // mov ecx, [ebp+20]
+    }
+
+    fn emit_i32_shru(&mut self) {
+        self.emit_pop_to_ebx(); // shift count
+        self.emit_pop_to_eax(); // value
+        self.emit(&[0x88, 0xD9]); // mov cl, bl
+        self.emit(&[0xD3, 0xE8]); // shr eax, cl
+        self.emit_push_eax();
+        // restore mem_len register (ecx) for future bounds checks
+        self.emit(&[0x8B, 0x4D, 0x14]); // mov ecx, [ebp+20]
+    }
+
     fn emit_bounds_check(&mut self, off: u32, size: u32) {
         // eax = addr, ecx = mem_len
         // add eax, off
@@ -1761,6 +1880,63 @@ impl Emitter {
         self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
         self.emit(&[0x0F, 0x9D, 0xC0]);   // setge al
         self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_ltu(&mut self) {
+        self.emit_pop_to_ecx();           // b
+        self.emit_pop_to_eax();           // a
+        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
+        self.emit(&[0x0F, 0x92, 0xC0]);   // setb al
+        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_gtu(&mut self) {
+        self.emit_pop_to_ecx();           // b
+        self.emit_pop_to_eax();           // a
+        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
+        self.emit(&[0x0F, 0x97, 0xC0]);   // seta al
+        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_leu(&mut self) {
+        self.emit_pop_to_ecx();           // b
+        self.emit_pop_to_eax();           // a
+        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
+        self.emit(&[0x0F, 0x96, 0xC0]);   // setbe al
+        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_geu(&mut self) {
+        self.emit_pop_to_ecx();           // b
+        self.emit_pop_to_eax();           // a
+        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
+        self.emit(&[0x0F, 0x93, 0xC0]);   // setae al
+        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_shl(&mut self) {
+        self.emit_pop_to_ecx();           // shift
+        self.emit_pop_to_eax();           // value
+        self.emit(&[0xD3, 0xE0]);         // shl eax, cl
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_shrs(&mut self) {
+        self.emit_pop_to_ecx();           // shift
+        self.emit_pop_to_eax();           // value
+        self.emit(&[0xD3, 0xF8]);         // sar eax, cl
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_shru(&mut self) {
+        self.emit_pop_to_ecx();           // shift
+        self.emit_pop_to_eax();           // value
+        self.emit(&[0xD3, 0xE8]);         // shr eax, cl
         self.emit_push_eax();
     }
 
@@ -2657,6 +2833,22 @@ fn verify_x86_subset(
                     _ => return Err("Unexpected XOR encoding"),
                 }
             }
+            // mov r/m8, r8 (used for mov cl, bl before shifts)
+            0x88 => {
+                need(code, i, 2)?;
+                if code[i + 1] != 0xD9 {
+                    return Err("Unexpected 0x88 encoding");
+                }
+                i += 2;
+            }
+            // shift r/m32, cl
+            0xD3 => {
+                need(code, i, 2)?;
+                match code[i + 1] {
+                    0xE0 | 0xE8 | 0xF8 => i += 2, // shl/shr/sar eax, cl
+                    _ => return Err("Unexpected 0xD3 encoding"),
+                }
+            }
             // Two-byte opcodes
             0x0F => {
                 let b1 = *code.get(i + 1).ok_or("Truncated 0x0F")?;
@@ -2668,7 +2860,7 @@ fn verify_x86_subset(
                         }
                         i += 3;
                     }
-                    0x94 | 0x95 | 0x9C | 0x9F | 0x9E | 0x9D | 0xB6 => {
+                    0x92 | 0x93 | 0x94 | 0x95 | 0x96 | 0x97 | 0x9C | 0x9D | 0x9E | 0x9F | 0xB6 => {
                         need(code, i, 3)?;
                         if code[i + 2] != 0xC0 {
                             return Err("Unexpected setcc/movzx encoding");

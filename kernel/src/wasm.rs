@@ -186,6 +186,8 @@ pub struct JitFuzzStats {
     pub compile_errors: u32,
     pub opcode_bins_hit: u32,
     pub opcode_edges_hit: u32,
+    pub opcode_edges_hit_admissible: u32,
+    pub opcode_edges_admissible_total: u32,
     pub novel_programs: u32,
     pub first_mismatch: Option<JitFuzzMismatch>,
     pub first_compile_error: Option<JitFuzzCompileError>,
@@ -193,7 +195,7 @@ pub struct JitFuzzStats {
 
 const MAX_FUZZ_CODE_SIZE: usize = 256;
 const MAX_FUZZ_JIT_CODE_SIZE: usize = 8192;
-const JIT_FUZZ_OPCODE_BINS: usize = 14;
+const JIT_FUZZ_OPCODE_BINS: usize = 20;
 
 /// Stable regression corpus seeds for JIT fuzz replay.
 pub const JIT_FUZZ_REGRESSION_SEEDS: [u64; 10] = [
@@ -219,6 +221,8 @@ pub struct JitFuzzRegressionStats {
     pub total_compile_errors: u32,
     pub max_opcode_bins_hit: u32,
     pub max_opcode_edges_hit: u32,
+    pub max_opcode_edges_hit_admissible: u32,
+    pub opcode_edges_admissible_total: u32,
     pub total_novel_programs: u32,
     pub first_failed_seed: Option<u64>,
     pub first_failed_mismatches: u32,
@@ -240,6 +244,8 @@ pub struct JitFuzzSoakStats {
     pub total_compile_errors: u32,
     pub max_opcode_bins_hit: u32,
     pub max_opcode_edges_hit: u32,
+    pub max_opcode_edges_hit_admissible: u32,
+    pub opcode_edges_admissible_total: u32,
     pub total_novel_programs: u32,
     pub first_failed_round: Option<u32>,
     pub first_failed_seed: Option<u64>,
@@ -512,6 +518,14 @@ impl Opcode {
             0x45 => Some(Opcode::I32Eqz),
             0x46 => Some(Opcode::I32Eq),
             0x47 => Some(Opcode::I32Ne),
+            0x48 => Some(Opcode::I32LtS),
+            0x49 => Some(Opcode::I32LtU),
+            0x4A => Some(Opcode::I32GtS),
+            0x4B => Some(Opcode::I32GtU),
+            0x4C => Some(Opcode::I32LeS),
+            0x4D => Some(Opcode::I32LeU),
+            0x4E => Some(Opcode::I32GeS),
+            0x4F => Some(Opcode::I32GeU),
             0x6A => Some(Opcode::I32Add),
             0x6B => Some(Opcode::I32Sub),
             0x6C => Some(Opcode::I32Mul),
@@ -519,6 +533,9 @@ impl Opcode {
             0x71 => Some(Opcode::I32And),
             0x72 => Some(Opcode::I32Or),
             0x73 => Some(Opcode::I32Xor),
+            0x74 => Some(Opcode::I32Shl),
+            0x75 => Some(Opcode::I32ShrS),
+            0x76 => Some(Opcode::I32ShrU),
             0x7C => Some(Opcode::I64Add),
             0x7D => Some(Opcode::I64Sub),
             0x7E => Some(Opcode::I64Mul),
@@ -951,30 +968,16 @@ unsafe impl Send for LinearMemory {}
 impl LinearMemory {
     /// Create new linear memory with initial size
     pub fn new(initial_pages: usize) -> Self {
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log("x64 inst-new: linear-mem begin");
         let max_pages = MAX_MEMORY_SIZE / (64 * 1024);
         let pages = core::cmp::min(initial_pages, max_pages);
         let alloc_pages = (MAX_MEMORY_SIZE + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
         let base = memory::jit_allocate_pages(alloc_pages).unwrap_or(0) as *mut u8;
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log(if base.is_null() {
-            "x64 inst-new: linear-mem alloc null"
-        } else {
-            "x64 inst-new: linear-mem alloc ok"
-        });
         if !base.is_null() {
             unsafe {
                 core::ptr::write_bytes(base, 0, MAX_MEMORY_SIZE);
             }
-            #[cfg(target_arch = "x86_64")]
-            jit_user_debug_log("x64 inst-new: linear-mem zero ok");
             let _ = memory_isolation::tag_wasm_linear_memory(base as usize, MAX_MEMORY_SIZE, false);
-            #[cfg(target_arch = "x86_64")]
-            jit_user_debug_log("x64 inst-new: linear-mem tag ok");
         }
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log("x64 inst-new: linear-mem end");
         LinearMemory {
             data: base,
             pages,
@@ -3052,39 +3055,21 @@ unsafe impl Send for WasmInstance {}
 
 impl WasmInstance {
     fn alloc_jit_state() -> (*mut JitUserState, usize) {
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log("x64 inst-new: alloc_jit_state begin");
         let size = core::mem::size_of::<JitUserState>();
         let pages = (size + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
         let base = memory::jit_allocate_pages(pages).unwrap_or(0) as *mut JitUserState;
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log(if base.is_null() {
-            "x64 inst-new: alloc_jit_state alloc null"
-        } else {
-            "x64 inst-new: alloc_jit_state alloc ok"
-        });
         if !base.is_null() {
             let span = pages * paging::PAGE_SIZE;
             // JIT code sealing toggles page writability in the shared arena.
             // Reassert RW policy for per-instance mutable JIT state pages.
             if crate::arch::mmu::set_page_writable_range(base as usize, span, true).is_err() {
-                #[cfg(target_arch = "x86_64")]
-                jit_user_debug_log("x64 inst-new: alloc_jit_state set-writable failed");
                 return (core::ptr::null_mut(), 0);
             }
-            #[cfg(target_arch = "x86_64")]
-            jit_user_debug_log("x64 inst-new: alloc_jit_state set-writable ok");
             let _ = crate::memory_isolation::tag_jit_user_state(base as usize, span, false);
-            #[cfg(target_arch = "x86_64")]
-            jit_user_debug_log("x64 inst-new: alloc_jit_state tag ok");
             unsafe {
                 core::ptr::write_bytes(base as *mut u8, 0, span);
             }
-            #[cfg(target_arch = "x86_64")]
-            jit_user_debug_log("x64 inst-new: alloc_jit_state zero ok");
         }
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log("x64 inst-new: alloc_jit_state end");
         (base, pages)
     }
 
@@ -3869,16 +3854,8 @@ impl WasmInstance {
 
     /// Create a new instance
     pub fn new(module: WasmModule, process_id: ProcessId, instance_id: usize) -> Self {
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log("x64 inst-new: wasm-instance begin");
         let (jit_state, jit_state_pages) = Self::alloc_jit_state();
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log("x64 inst-new: after alloc_jit_state");
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log("x64 inst-new: before linear-mem new");
         let memory = LinearMemory::new(1);
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log("x64 inst-new: after linear-mem new");
         WasmInstance {
             module,
             memory, // 1 page = 64 KiB
@@ -4905,6 +4882,75 @@ impl WasmInstance {
             Opcode::I32Eqz => {
                 let a = self.stack.pop()?.as_i32()?;
                 self.stack.push(Value::I32(if a == 0 { 1 } else { 0 }))?;
+            }
+
+            Opcode::I32LtS => {
+                let b = self.stack.pop()?.as_i32()?;
+                let a = self.stack.pop()?.as_i32()?;
+                self.stack.push(Value::I32(if a < b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I32GtS => {
+                let b = self.stack.pop()?.as_i32()?;
+                let a = self.stack.pop()?.as_i32()?;
+                self.stack.push(Value::I32(if a > b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I32LeS => {
+                let b = self.stack.pop()?.as_i32()?;
+                let a = self.stack.pop()?.as_i32()?;
+                self.stack.push(Value::I32(if a <= b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I32GeS => {
+                let b = self.stack.pop()?.as_i32()?;
+                let a = self.stack.pop()?.as_i32()?;
+                self.stack.push(Value::I32(if a >= b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I32LtU => {
+                let b = self.stack.pop()?.as_u32()?;
+                let a = self.stack.pop()?.as_u32()?;
+                self.stack.push(Value::I32(if a < b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I32GtU => {
+                let b = self.stack.pop()?.as_u32()?;
+                let a = self.stack.pop()?.as_u32()?;
+                self.stack.push(Value::I32(if a > b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I32LeU => {
+                let b = self.stack.pop()?.as_u32()?;
+                let a = self.stack.pop()?.as_u32()?;
+                self.stack.push(Value::I32(if a <= b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I32GeU => {
+                let b = self.stack.pop()?.as_u32()?;
+                let a = self.stack.pop()?.as_u32()?;
+                self.stack.push(Value::I32(if a >= b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I32Shl => {
+                let b = self.stack.pop()?.as_i32()? as u32;
+                let a = self.stack.pop()?.as_i32()?;
+                let sh = b & 31;
+                self.stack.push(Value::I32(a.wrapping_shl(sh)))?;
+            }
+
+            Opcode::I32ShrS => {
+                let b = self.stack.pop()?.as_i32()? as u32;
+                let a = self.stack.pop()?.as_i32()?;
+                let sh = b & 31;
+                self.stack.push(Value::I32(a >> sh))?;
+            }
+
+            Opcode::I32ShrU => {
+                let b = self.stack.pop()?.as_i32()? as u32;
+                let a = self.stack.pop()?.as_u32()?;
+                let sh = b & 31;
+                self.stack.push(Value::I32((a >> sh) as i32))?;
             }
 
             Opcode::I32Load => {
@@ -7361,31 +7407,15 @@ impl WasmRuntime {
 
     /// Instantiate a pre-built module (used by tests/benchmarks)
     pub fn instantiate_module(&self, module: WasmModule, process_id: ProcessId) -> Result<usize, WasmError> {
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log("x64 instantiate_module: begin");
         let mut module_opt = Some(module);
         let mut instances = self.instances.lock();
-        #[cfg(target_arch = "x86_64")]
-        jit_user_debug_log("x64 instantiate_module: got instances lock");
         for (i, slot) in instances.iter_mut().enumerate() {
             if matches!(slot, RuntimeInstanceSlot::Empty) {
-                #[cfg(target_arch = "x86_64")]
-                jit_user_debug_log("x64 instantiate_module: found empty slot");
                 let module = module_opt.take().ok_or(WasmError::InvalidModule)?;
-                #[cfg(target_arch = "x86_64")]
-                jit_user_debug_log("x64 instantiate_module: before WasmInstance::new");
                 let mut instance = WasmInstance::new(module, process_id, i);
-                #[cfg(target_arch = "x86_64")]
-                jit_user_debug_log("x64 instantiate_module: after WasmInstance::new");
                 instance.initialize_from_module()?;
-                #[cfg(target_arch = "x86_64")]
-                jit_user_debug_log("x64 instantiate_module: after initialize_from_module");
                 instance.run_start_if_present()?;
-                #[cfg(target_arch = "x86_64")]
-                jit_user_debug_log("x64 instantiate_module: after run_start_if_present");
                 *slot = RuntimeInstanceSlot::Ready(instance);
-                #[cfg(target_arch = "x86_64")]
-                jit_user_debug_log("x64 instantiate_module: slot ready");
                 return Ok(i);
             }
         }
@@ -9958,6 +9988,157 @@ fn jit_bounds_self_test_x86_64_direct(_force_user_mode: bool) -> Result<(), &'st
     Ok(())
 }
 
+pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
+    fn push_uleb128(buf: &mut Vec<u8>, mut value: u32) {
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            buf.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    fn push_sleb128_i32(buf: &mut Vec<u8>, mut value: i32) {
+        let mut more = true;
+        while more {
+            let mut byte = (value & 0x7F) as u8;
+            let sign = (byte & 0x40) != 0;
+            value >>= 7;
+            if (value == 0 && !sign) || (value == -1 && sign) {
+                more = false;
+            } else {
+                byte |= 0x80;
+            }
+            buf.push(byte);
+        }
+    }
+
+    fn build_binop(op: Opcode, a: i32, b: i32) -> Vec<u8> {
+        let mut code = Vec::with_capacity(16);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, a);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, b);
+        code.push(op as u8);
+        code.push(Opcode::End as u8);
+        code
+    }
+
+    fn build_local_tee_shift(op: Opcode, a: i32, sh: i32) -> Vec<u8> {
+        // i32.const a; local.tee 0; i32.const sh; op; end
+        let mut code = Vec::with_capacity(20);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, a);
+        code.push(Opcode::LocalTee as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, sh);
+        code.push(op as u8);
+        code.push(Opcode::End as u8);
+        code
+    }
+
+    struct Case {
+        name: &'static str,
+        code: Vec<u8>,
+        locals_total: usize,
+        expected: i32,
+    }
+
+    let cases: [Case; 12] = [
+        Case { name: "eq_0_0", code: build_binop(Opcode::I32Eq, 0, 0), locals_total: 0, expected: 1 },
+        Case { name: "ne_1_2", code: build_binop(Opcode::I32Ne, 1, 2), locals_total: 0, expected: 1 },
+        Case { name: "lt_s_neg", code: build_binop(Opcode::I32LtS, -1, 0), locals_total: 0, expected: 1 },
+        Case { name: "gt_s_neg", code: build_binop(Opcode::I32GtS, -1, 0), locals_total: 0, expected: 0 },
+        Case { name: "le_s_eq", code: build_binop(Opcode::I32LeS, 7, 7), locals_total: 0, expected: 1 },
+        Case { name: "ge_s_pos", code: build_binop(Opcode::I32GeS, 9, -3), locals_total: 0, expected: 1 },
+        Case { name: "lt_u_wrap", code: build_binop(Opcode::I32LtU, -1, 0), locals_total: 0, expected: 0 },
+        Case { name: "gt_u_wrap", code: build_binop(Opcode::I32GtU, -1, 0), locals_total: 0, expected: 1 },
+        Case { name: "le_u_eq", code: build_binop(Opcode::I32LeU, -1, -1), locals_total: 0, expected: 1 },
+        Case { name: "ge_u_small", code: build_binop(Opcode::I32GeU, 1, 2), locals_total: 0, expected: 0 },
+        Case { name: "shl_masked_33", code: build_local_tee_shift(Opcode::I32Shl, 1, 33), locals_total: 1, expected: 2 },
+        Case { name: "shru_masked_40", code: build_local_tee_shift(Opcode::I32ShrU, -1, 40), locals_total: 1, expected: 0x00FF_FFFFu32 as i32 },
+    ];
+
+    let mut base_module = WasmModule::new();
+    base_module.reserve_bytecode(MAX_FUZZ_CODE_SIZE);
+    base_module
+        .load(&[Opcode::End as u8])
+        .map_err(|_| "jit compare/shift self-test: base load failed")?;
+    base_module
+        .add_function(Function {
+            code_offset: 0,
+            code_len: 1,
+            param_count: 0,
+            result_count: 1,
+            local_count: 0,
+        })
+        .map_err(|_| "jit compare/shift self-test: base function add failed")?;
+
+    let interp_id = wasm_runtime()
+        .instantiate_module(base_module.clone(), ProcessId(1))
+        .map_err(|_| "jit compare/shift self-test: interp instantiate failed")?;
+    let jit_id = match wasm_runtime().instantiate_module(base_module, ProcessId(1)) {
+        Ok(id) => id,
+        Err(_) => {
+            let _ = wasm_runtime().destroy(interp_id);
+            return Err("jit compare/shift self-test: jit instantiate failed");
+        }
+    };
+
+    let mut compiler = crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
+        .map_err(|_| "jit compare/shift self-test: compiler init failed")?;
+
+    let mut idx = 0usize;
+    while idx < cases.len() {
+        let case = &cases[idx];
+
+        let interp = wasm_runtime().get_instance_mut(interp_id, |instance| -> Result<i32, WasmError> {
+            instance.prepare_fuzz();
+            instance.load_fuzz_program(&case.code, case.locals_total)?;
+            instance.enable_jit(false);
+            instance.call(0)?;
+            instance.stack.pop()?.as_i32()
+        }).map_err(|_| "jit compare/shift self-test: interp instance missing")?
+          .map_err(|_| "jit compare/shift self-test: interp execution failed")?;
+
+        let entry = compiler
+            .compile(&case.code, case.locals_total)
+            .map_err(|_| "jit compare/shift self-test: jit compile failed")?;
+        let jit_exec = JitExecInfo {
+            entry,
+            exec_ptr: compiler.exec_ptr(),
+            exec_len: compiler.exec_len(),
+        };
+
+        let jit = wasm_runtime().get_instance_mut(jit_id, |instance| -> Result<i32, WasmError> {
+            instance.prepare_fuzz();
+            instance.load_fuzz_program(&case.code, case.locals_total)?;
+            instance.run_jit_entry(0, jit_exec)?;
+            instance.stack.pop()?.as_i32()
+        }).map_err(|_| "jit compare/shift self-test: jit instance missing")?
+          .map_err(|_| "jit compare/shift self-test: jit execution failed")?;
+
+        if interp != case.expected || jit != case.expected || interp != jit {
+            let _ = wasm_runtime().destroy(interp_id);
+            let _ = wasm_runtime().destroy(jit_id);
+            let _ = case.name;
+            return Err("jit compare/shift self-test: mismatch");
+        }
+
+        idx += 1;
+    }
+
+    let _ = wasm_runtime().destroy(interp_id);
+    let _ = wasm_runtime().destroy(jit_id);
+    Ok(())
+}
+
 /// JIT bounds self-test (expects MemoryOutOfBounds traps in both interpreter and JIT).
 pub fn jit_bounds_self_test() -> Result<(), &'static str> {
     jit_bounds_self_test_impl(true)
@@ -9987,15 +10168,11 @@ fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
         *slots = None;
     }
 
-    jit_user_debug_log("fuzz stage: instances-create");
     let mut base_module = WasmModule::new();
-    jit_user_debug_log("fuzz stage: instances-create reserve-bytecode");
     base_module.reserve_bytecode(MAX_FUZZ_CODE_SIZE);
-    jit_user_debug_log("fuzz stage: instances-create reserve-bytecode ok");
     base_module
         .load(&[Opcode::End as u8])
         .map_err(|_| "Module load failed")?;
-    jit_user_debug_log("fuzz stage: instances-create module-load ok");
     base_module
         .add_function(Function {
             code_offset: 0,
@@ -10005,14 +10182,10 @@ fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
             local_count: 0,
         })
         .map_err(|_| "Function add failed")?;
-    jit_user_debug_log("fuzz stage: instances-create add-function ok");
 
-    jit_user_debug_log("fuzz stage: instances-create interp instantiate begin");
     let interp_id = wasm_runtime()
         .instantiate_module(base_module.clone(), ProcessId(1))
         .map_err(|_| "Instance create failed")?;
-    jit_user_debug_log("fuzz stage: instances-create interp instantiate ok");
-    jit_user_debug_log("fuzz stage: instances-create jit instantiate begin");
     let jit_id = match wasm_runtime().instantiate_module(base_module, ProcessId(1)) {
         Ok(id) => id,
         Err(_) => {
@@ -10020,10 +10193,8 @@ fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
             return Err("Instance create failed");
         }
     };
-    jit_user_debug_log("fuzz stage: instances-create jit instantiate ok");
     let mut slots = JIT_FUZZ_INSTANCES.lock();
     *slots = Some((interp_id, jit_id));
-    jit_user_debug_log("fuzz stage: instances-create slots saved");
     Ok((interp_id, jit_id))
 }
 
@@ -10133,6 +10304,419 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         rng.next_u32() % (JIT_FUZZ_OPCODE_BINS as u32)
     }
 
+    fn guided_choice_step_abstract(
+        stack_depth: i32,
+        locals_total: usize,
+        choice: u8,
+    ) -> Option<i32> {
+        match choice {
+            0 => Some(stack_depth), // nop
+            1 => {
+                if stack_depth > 0 {
+                    Some(stack_depth - 1) // drop
+                } else {
+                    Some(stack_depth + 1) // fallback i32.const
+                }
+            }
+            2 => {
+                if stack_depth < (MAX_STACK_DEPTH as i32) - 1 {
+                    Some(stack_depth + 1)
+                } else {
+                    None
+                }
+            }
+            3 | 4 | 5 | 6 | 7 | 8 => {
+                if stack_depth >= 2 {
+                    Some(stack_depth - 1)
+                } else {
+                    None
+                }
+            }
+            9 => {
+                if stack_depth >= 1 {
+                    Some(stack_depth)
+                } else {
+                    None
+                }
+            }
+            10 => {
+                if stack_depth >= 1 {
+                    Some(stack_depth) // bounded load macro net stack delta = 0
+                } else {
+                    None
+                }
+            }
+            11 => {
+                if locals_total > 0 && stack_depth >= 2 {
+                    Some(stack_depth - 2) // bounded store macro net stack delta = -2
+                } else {
+                    None
+                }
+            }
+            12 => {
+                if locals_total > 0 {
+                    Some(stack_depth + 1) // local.get
+                } else {
+                    None
+                }
+            }
+            13 => {
+                if locals_total > 0 && stack_depth > 0 {
+                    Some(stack_depth - 1) // local.set
+                } else {
+                    None
+                }
+            }
+            14 => {
+                if locals_total > 0 && stack_depth > 0 {
+                    Some(stack_depth) // local.tee
+                } else {
+                    None
+                }
+            }
+            15 | 16 | 17 | 18 => {
+                if stack_depth >= 2 {
+                    Some(stack_depth - 1) // binary compares / shifts
+                } else {
+                    None
+                }
+            }
+            19 => {
+                if stack_depth >= 1 {
+                    Some(stack_depth) // compare-with-const macro net stack delta = 0
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn compute_jit_fuzz_admissible_edges() -> (
+        [bool; JIT_FUZZ_OPCODE_BINS * JIT_FUZZ_OPCODE_BINS],
+        [Option<(u16, u8)>; JIT_FUZZ_OPCODE_BINS * JIT_FUZZ_OPCODE_BINS],
+        u32,
+    ) {
+        // Pairwise admissibility is computed in an "early-budget" abstract state:
+        // enough remaining code budget to emit two guided choices plus normalization.
+        // For pairwise reachability, stack depth and local availability dominate.
+        const MAX_ABSTRACT_STACK: i32 = 8;
+
+        let mut admissible = [false; JIT_FUZZ_OPCODE_BINS * JIT_FUZZ_OPCODE_BINS];
+        let mut witnesses = [None; JIT_FUZZ_OPCODE_BINS * JIT_FUZZ_OPCODE_BINS];
+
+        let local_variants = [0usize, 2usize];
+        let mut lv = 0usize;
+        while lv < local_variants.len() {
+            let locals_total = local_variants[lv];
+            let mut s0 = 0i32;
+            while s0 <= MAX_ABSTRACT_STACK {
+                let mut i = 0usize;
+                while i < JIT_FUZZ_OPCODE_BINS {
+                    if let Some(s1) =
+                        guided_choice_step_abstract(s0, locals_total, i as u8)
+                    {
+                        let mut j = 0usize;
+                        while j < JIT_FUZZ_OPCODE_BINS {
+                            if guided_choice_step_abstract(s1, locals_total, j as u8).is_some() {
+                                let edge_idx = i * JIT_FUZZ_OPCODE_BINS + j;
+                                if !admissible[edge_idx] {
+                                    admissible[edge_idx] = true;
+                                    witnesses[edge_idx] = Some((s0 as u16, locals_total as u8));
+                                }
+                            }
+                            j += 1;
+                        }
+                    }
+                    i += 1;
+                }
+                s0 += 1;
+            }
+            lv += 1;
+        }
+
+        let mut total = 0u32;
+        let mut idx = 0usize;
+        while idx < admissible.len() {
+            if admissible[idx] {
+                total += 1;
+            }
+            idx += 1;
+        }
+        (admissible, witnesses, total)
+    }
+
+    fn emit_guided_choice_forced(
+        code: &mut Vec<u8>,
+        stack_depth: &mut i32,
+        locals_total: usize,
+        choice: u8,
+    ) -> bool {
+        match choice {
+            0 => {
+                code.push(Opcode::Nop as u8);
+                true
+            }
+            1 => {
+                if *stack_depth > 0 {
+                    code.push(Opcode::Drop as u8);
+                    *stack_depth -= 1;
+                } else {
+                    code.push(Opcode::I32Const as u8);
+                    push_sleb128_i32(code, 0);
+                    *stack_depth += 1;
+                }
+                true
+            }
+            2 => {
+                if *stack_depth < (MAX_STACK_DEPTH as i32) - 1 {
+                    code.push(Opcode::I32Const as u8);
+                    push_sleb128_i32(code, 0);
+                    *stack_depth += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            3 => {
+                if *stack_depth >= 2 {
+                    code.push(Opcode::I32Add as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            4 => {
+                if *stack_depth >= 2 {
+                    code.push(Opcode::I32Sub as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            5 => {
+                if *stack_depth >= 2 {
+                    code.push(Opcode::I32Mul as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            6 => {
+                if *stack_depth >= 2 {
+                    code.push(Opcode::I32And as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            7 => {
+                if *stack_depth >= 2 {
+                    code.push(Opcode::I32Or as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            8 => {
+                if *stack_depth >= 2 {
+                    code.push(Opcode::I32Xor as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            9 => {
+                if *stack_depth >= 1 {
+                    code.push(Opcode::I32Eqz as u8);
+                    true
+                } else {
+                    false
+                }
+            }
+            10 => {
+                if *stack_depth >= 1 {
+                    code.push(Opcode::I32Const as u8);
+                    push_sleb128_i32(code, 0xFFFC);
+                    *stack_depth += 1;
+                    code.push(Opcode::I32And as u8);
+                    *stack_depth -= 1;
+                    code.push(Opcode::I32Load as u8);
+                    push_uleb128(code, 0);
+                    push_uleb128(code, 0);
+                    true
+                } else {
+                    false
+                }
+            }
+            11 => {
+                if locals_total > 0 && *stack_depth >= 2 {
+                    code.push(Opcode::LocalSet as u8);
+                    push_uleb128(code, 0);
+                    *stack_depth -= 1;
+                    code.push(Opcode::I32Const as u8);
+                    push_sleb128_i32(code, 0xFFFC);
+                    *stack_depth += 1;
+                    code.push(Opcode::I32And as u8);
+                    *stack_depth -= 1;
+                    code.push(Opcode::LocalGet as u8);
+                    push_uleb128(code, 0);
+                    *stack_depth += 1;
+                    code.push(Opcode::I32Store as u8);
+                    push_uleb128(code, 0);
+                    push_uleb128(code, 0);
+                    *stack_depth -= 2;
+                    true
+                } else {
+                    false
+                }
+            }
+            12 => {
+                if locals_total > 0 {
+                    code.push(Opcode::LocalGet as u8);
+                    push_uleb128(code, 0);
+                    *stack_depth += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            13 => {
+                if locals_total > 0 && *stack_depth > 0 {
+                    code.push(Opcode::LocalSet as u8);
+                    push_uleb128(code, 0);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            14 => {
+                if locals_total > 0 && *stack_depth > 0 {
+                    code.push(Opcode::LocalTee as u8);
+                    push_uleb128(code, 0);
+                    true
+                } else {
+                    false
+                }
+            }
+            15 => {
+                if *stack_depth >= 2 {
+                    code.push(Opcode::I32Eq as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            16 => {
+                if *stack_depth >= 2 {
+                    code.push(Opcode::I32Ne as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            17 => {
+                if *stack_depth >= 2 {
+                    code.push(Opcode::I32LtS as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            18 => {
+                if *stack_depth >= 2 {
+                    code.push(Opcode::I32LtU as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            19 => {
+                if *stack_depth >= 1 {
+                    code.push(Opcode::I32Const as u8);
+                    push_sleb128_i32(code, 0);
+                    *stack_depth += 1;
+                    code.push(Opcode::I32LtU as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn build_pair_cover_program_for_edge(
+        code: &mut Vec<u8>,
+        choice_trace: &mut Vec<u8>,
+        edge_idx: usize,
+        witness: (u16, u8),
+    ) -> Option<usize> {
+        let i = (edge_idx / JIT_FUZZ_OPCODE_BINS) as u8;
+        let j = (edge_idx % JIT_FUZZ_OPCODE_BINS) as u8;
+        let target_stack = witness.0 as i32;
+        let locals_total = witness.1 as usize;
+
+        code.clear();
+        choice_trace.clear();
+        let mut stack_depth = 0i32;
+
+        while stack_depth < target_stack {
+            if code.len() + 8 >= MAX_FUZZ_CODE_SIZE {
+                return None;
+            }
+            if !emit_guided_choice_forced(code, &mut stack_depth, locals_total, 2) {
+                return None;
+            }
+            choice_trace.push(2);
+        }
+        if stack_depth != target_stack {
+            return None;
+        }
+
+        if code.len() + 48 >= MAX_FUZZ_CODE_SIZE {
+            return None;
+        }
+        if !emit_guided_choice_forced(code, &mut stack_depth, locals_total, i) {
+            return None;
+        }
+        choice_trace.push(i);
+        if !emit_guided_choice_forced(code, &mut stack_depth, locals_total, j) {
+            return None;
+        }
+        choice_trace.push(j);
+
+        while stack_depth > 1 && code.len() + 2 < MAX_FUZZ_CODE_SIZE {
+            code.push(Opcode::Drop as u8);
+            stack_depth -= 1;
+        }
+        while stack_depth < 1 && code.len() + 8 < MAX_FUZZ_CODE_SIZE {
+            code.push(Opcode::I32Const as u8);
+            push_sleb128_i32(code, 0);
+            stack_depth += 1;
+        }
+        if stack_depth != 1 {
+            return None;
+        }
+        code.push(Opcode::End as u8);
+        if validate_bytecode(&code).is_err() {
+            return None;
+        }
+        Some(locals_total)
+    }
+
     let _guard = {
         let mut cfg = jit_config().lock();
         let guard = JitConfigGuard {
@@ -10146,7 +10730,6 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         cfg.user_mode = guard.user_mode;
         guard
     };
-    jit_user_debug_log("fuzz stage: config-ready");
     let _rate_guard = {
         struct RateLimitGuard {
             enabled: bool,
@@ -10161,17 +10744,14 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         sec.set_rate_limit_enabled(false);
         RateLimitGuard { enabled: prev }
     };
-    jit_user_debug_log("fuzz stage: rate-limit-off");
 
     let (interp_id, jit_id) = ensure_fuzz_instances()?;
-    jit_user_debug_log("fuzz stage: instances-ready");
 
     let mut scratch_slot = JIT_FUZZ_SCRATCH.lock();
     if scratch_slot.is_none() {
         *scratch_slot = Some(JitFuzzScratch::new());
     }
     let scratch = scratch_slot.as_mut().ok_or("Fuzz scratch init failed")?;
-    jit_user_debug_log("fuzz stage: scratch-ready");
     let code = &mut scratch.code;
     let interp_mem_snapshot = &mut scratch.interp_mem_snapshot;
     let interp_mem_snapshot_len = &mut scratch.interp_mem_snapshot_len;
@@ -10185,7 +10765,6 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         );
     }
     let compiler = compiler_slot.as_mut().ok_or("Fuzz compiler init failed")?;
-    jit_user_debug_log("fuzz stage: compiler-ready");
 
     let _ = wasm_runtime().get_instance_mut(interp_id, |instance| {
         instance.prepare_fuzz();
@@ -10203,6 +10782,8 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         compile_errors: 0,
         opcode_bins_hit: 0,
         opcode_edges_hit: 0,
+        opcode_edges_hit_admissible: 0,
+        opcode_edges_admissible_total: 0,
         novel_programs: 0,
         first_mismatch: None,
         first_compile_error: None,
@@ -10210,18 +10791,63 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     let mut opcode_hits = [0u32; JIT_FUZZ_OPCODE_BINS];
     let mut opcode_seen = [false; JIT_FUZZ_OPCODE_BINS];
     let mut edge_seen = [false; JIT_FUZZ_OPCODE_BINS * JIT_FUZZ_OPCODE_BINS];
+    let (admissible_edge_matrix, admissible_edge_witness, admissible_edge_total) =
+        compute_jit_fuzz_admissible_edges();
+    stats.opcode_edges_admissible_total = admissible_edge_total;
+    let mut admissible_edge_order: Vec<usize> =
+        Vec::with_capacity(admissible_edge_total as usize);
+    let mut edge_idx = 0usize;
+    while edge_idx < admissible_edge_matrix.len() {
+        if admissible_edge_matrix[edge_idx] {
+            admissible_edge_order.push(edge_idx);
+        }
+        edge_idx += 1;
+    }
+    let mut pair_cover_cursor = 0usize;
 
     for iter in 0..iterations {
-        if iter == 0 {
-            jit_user_debug_log("fuzz stage: iteration-0-start");
-        }
-        let locals_total = (rng.next_u32() % 4) as usize;
+        let mut locals_total = (rng.next_u32() % 4) as usize;
         code.clear();
         choice_trace.clear();
         let mut stack_depth: i32 = 0;
-        let ops = 8 + (rng.next_u32() % 32) as usize;
+        'build_program: {
+            let mut built_from_pair_prepass = false;
+            while pair_cover_cursor < admissible_edge_order.len() {
+                let edge_idx = admissible_edge_order[pair_cover_cursor];
+                pair_cover_cursor += 1;
+                if edge_seen[edge_idx] {
+                    continue;
+                }
+                let Some(witness) = admissible_edge_witness[edge_idx] else {
+                    continue;
+                };
+                if let Some(prepass_locals_total) =
+                    build_pair_cover_program_for_edge(code, choice_trace, edge_idx, witness)
+                {
+                    locals_total = prepass_locals_total;
+                    let mut cidx = 0usize;
+                    while cidx < choice_trace.len() {
+                        let bin = choice_trace[cidx] as usize;
+                        opcode_hits[bin] = opcode_hits[bin].saturating_add(1);
+                        cidx += 1;
+                    }
+                    built_from_pair_prepass = true;
+                    break 'build_program;
+                }
+            }
 
-        for _ in 0..ops {
+            if !built_from_pair_prepass {
+                // Failed prepass attempts leave partial bytes in `code` because
+                // the builder clears on entry but may return early. Reset here
+                // before falling back to stochastic generation.
+                code.clear();
+                choice_trace.clear();
+                stack_depth = 0;
+            }
+
+            let ops = 8 + (rng.next_u32() % 32) as usize;
+
+            for _ in 0..ops {
             // Keep enough headroom for the largest generated opcode sequence:
             // bounded i32.store rewrite with local temp and immediates.
             if code.len() + 40 >= MAX_FUZZ_CODE_SIZE {
@@ -10348,12 +10974,81 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                         emitted_choice = Some(12);
                     }
                 }
-                _ => {
+                13 => {
                     if locals_total > 0 && stack_depth > 0 {
                         code.push(Opcode::LocalSet as u8);
                         push_uleb128(code, (rng.next_u32() as usize % locals_total) as u32);
                         stack_depth -= 1;
                         emitted_choice = Some(13);
+                    }
+                }
+                14 => {
+                    if locals_total > 0 && stack_depth > 0 {
+                        code.push(Opcode::LocalTee as u8);
+                        push_uleb128(code, (rng.next_u32() as usize % locals_total) as u32);
+                        emitted_choice = Some(14);
+                    }
+                }
+                15 => {
+                    if stack_depth >= 2 {
+                        if (rng.next_u32() & 1) == 0 {
+                            code.push(Opcode::I32Eq as u8);
+                        } else {
+                            code.push(Opcode::I32Ne as u8);
+                        }
+                        stack_depth -= 1;
+                        emitted_choice = Some(15);
+                    }
+                }
+                16 => {
+                    if stack_depth >= 2 {
+                        match rng.next_u32() % 4 {
+                            0 => code.push(Opcode::I32LtS as u8),
+                            1 => code.push(Opcode::I32GtS as u8),
+                            2 => code.push(Opcode::I32LeS as u8),
+                            _ => code.push(Opcode::I32GeS as u8),
+                        }
+                        stack_depth -= 1;
+                        emitted_choice = Some(16);
+                    }
+                }
+                17 => {
+                    if stack_depth >= 2 {
+                        match rng.next_u32() % 4 {
+                            0 => code.push(Opcode::I32LtU as u8),
+                            1 => code.push(Opcode::I32GtU as u8),
+                            2 => code.push(Opcode::I32LeU as u8),
+                            _ => code.push(Opcode::I32GeU as u8),
+                        }
+                        stack_depth -= 1;
+                        emitted_choice = Some(17);
+                    }
+                }
+                18 => {
+                    if stack_depth >= 2 {
+                        match rng.next_u32() % 3 {
+                            0 => code.push(Opcode::I32Shl as u8),
+                            1 => code.push(Opcode::I32ShrS as u8),
+                            _ => code.push(Opcode::I32ShrU as u8),
+                        }
+                        stack_depth -= 1;
+                        emitted_choice = Some(18);
+                    }
+                }
+                _ => {
+                    // Keep one bin as a compare-with-constant macro to diversify
+                    // immediate decoding and binary compare lowering paths.
+                    if stack_depth >= 1 {
+                        code.push(Opcode::I32Const as u8);
+                        push_sleb128_i32(code, (rng.next_u32() & 0xFF) as i32);
+                        stack_depth += 1;
+                        if (rng.next_u32() & 1) == 0 {
+                            code.push(Opcode::I32LtU as u8);
+                        } else {
+                            code.push(Opcode::I32GeS as u8);
+                        }
+                        stack_depth -= 1;
+                        emitted_choice = Some(19);
                     }
                 }
             }
@@ -10362,29 +11057,31 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 opcode_hits[idx] = opcode_hits[idx].saturating_add(1);
                 choice_trace.push(choice_idx);
             }
-        }
+            }
 
-        // Normalize stack shape for a single i32 return value.
-        while stack_depth > 1 && code.len() + 2 < MAX_FUZZ_CODE_SIZE {
-            code.push(Opcode::Drop as u8);
-            stack_depth -= 1;
-        }
-        while stack_depth < 1 && code.len() + 8 < MAX_FUZZ_CODE_SIZE {
-            code.push(Opcode::I32Const as u8);
-            push_sleb128_i32(code, 0);
-            stack_depth += 1;
-        }
+            // Normalize stack shape for a single i32 return value.
+            while stack_depth > 1 && code.len() + 2 < MAX_FUZZ_CODE_SIZE {
+                code.push(Opcode::Drop as u8);
+                stack_depth -= 1;
+            }
+            while stack_depth < 1 && code.len() + 8 < MAX_FUZZ_CODE_SIZE {
+                code.push(Opcode::I32Const as u8);
+                push_sleb128_i32(code, 0);
+                stack_depth += 1;
+            }
 
-        code.push(Opcode::End as u8);
-
-        // Defensive hardening: if generation buffer was perturbed by prior unsafe
-        // execution side effects, repair to a canonical valid program so fuzzing
-        // can continue and still compare interpreter/JIT semantics.
-        if validate_bytecode(&code).is_err() {
-            code.clear();
-            code.push(Opcode::I32Const as u8);
-            push_sleb128_i32(code, 0);
             code.push(Opcode::End as u8);
+
+            // Defensive hardening: if generation buffer was perturbed by prior unsafe
+            // execution side effects, repair to a canonical valid program so fuzzing
+            // can continue and still compare interpreter/JIT semantics.
+            if validate_bytecode(&code).is_err() {
+                code.clear();
+                choice_trace.clear();
+                code.push(Opcode::I32Const as u8);
+                push_sleb128_i32(code, 0);
+                code.push(Opcode::End as u8);
+            }
         }
 
         let mut novel = false;
@@ -10411,42 +11108,33 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         }
 
         let interp = match wasm_runtime().get_instance_mut(interp_id, |instance| {
-            if iter == 0 {
-                jit_user_debug_log("fuzz stage: iteration-0-interp");
+            // Rarely under long unsafe JIT fuzz runs, instance/module state can
+            // transiently report an impossible load error (e.g. `ModuleTooLarge`
+            // for a tiny fuzz program). Retry once from a re-primed fuzz module
+            // before classifying it as a real compile/load failure.
+            let mut load_res = instance.load_fuzz_program(&code, locals_total);
+            if matches!(load_res, Err(WasmError::ModuleTooLarge))
+                && code.len() <= MAX_FUZZ_CODE_SIZE
+            {
+                instance.prepare_fuzz();
+                load_res = instance.load_fuzz_program(&code, locals_total);
             }
-            if iter == 0 {
-                jit_user_debug_log("fuzz stage: iteration-0-interp load-1");
-            }
-            instance.load_fuzz_program(&code, locals_total)?;
-            if iter == 0 {
-                jit_user_debug_log("fuzz stage: iteration-0-interp load-1 ok");
-            }
+            load_res?;
             instance.enable_jit(false);
-            if iter == 0 {
-                jit_user_debug_log("fuzz stage: iteration-0-interp call-1 begin");
-            }
             let mut res = instance.call(0);
-            if iter == 0 {
-                jit_user_debug_log("fuzz stage: iteration-0-interp call-1 returned");
-            }
             if res.is_err() {
                 // Retry once from a clean state to filter transient runtime
                 // corruption from previous unsafe JIT iterations.
-                if iter == 0 {
-                    jit_user_debug_log("fuzz stage: iteration-0-interp retry load-2");
+                let mut load_res = instance.load_fuzz_program(&code, locals_total);
+                if matches!(load_res, Err(WasmError::ModuleTooLarge))
+                    && code.len() <= MAX_FUZZ_CODE_SIZE
+                {
+                    instance.prepare_fuzz();
+                    load_res = instance.load_fuzz_program(&code, locals_total);
                 }
-                instance.load_fuzz_program(&code, locals_total)?;
-                if iter == 0 {
-                    jit_user_debug_log("fuzz stage: iteration-0-interp retry load-2 ok");
-                }
+                load_res?;
                 instance.enable_jit(false);
-                if iter == 0 {
-                    jit_user_debug_log("fuzz stage: iteration-0-interp call-2 begin");
-                }
                 res = instance.call(0);
-                if iter == 0 {
-                    jit_user_debug_log("fuzz stage: iteration-0-interp call-2 returned");
-                }
             }
             let value = instance
                 .stack
@@ -10502,9 +11190,6 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 let _guard = IrqGuard(flags);
                 compiler_ref.compile(&code, locals_total)
             };
-        if iter == 0 {
-            jit_user_debug_log("fuzz stage: iteration-0-compile");
-        }
         let entry = match compile_with_irqs_masked(compiler) {
             Ok(entry) => entry,
             Err(first_err) => {
@@ -10574,12 +11259,16 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
 
         let interp_ok = matches!(interp.0, Ok(_));
         let jit = match wasm_runtime().get_instance_mut(jit_id, |instance| {
-            if iter == 0 {
-                jit_user_debug_log("fuzz stage: iteration-0-jit");
-            }
             let mut attempt = 0u8;
             loop {
-                instance.load_fuzz_program(&code, locals_total)?;
+                let mut load_res = instance.load_fuzz_program(&code, locals_total);
+                if matches!(load_res, Err(WasmError::ModuleTooLarge))
+                    && code.len() <= MAX_FUZZ_CODE_SIZE
+                {
+                    instance.prepare_fuzz();
+                    load_res = instance.load_fuzz_program(&code, locals_total);
+                }
+                load_res?;
                 let res = instance.run_jit_entry(0, jit_entry);
                 let value = instance
                     .stack
@@ -10705,6 +11394,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
 
     let mut bins = 0u32;
     let mut edges = 0u32;
+    let mut adm_edges_hit = 0u32;
     let mut i = 0usize;
     while i < opcode_seen.len() {
         if opcode_seen[i] {
@@ -10716,11 +11406,15 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     while j < edge_seen.len() {
         if edge_seen[j] {
             edges += 1;
+            if admissible_edge_matrix[j] {
+                adm_edges_hit += 1;
+            }
         }
         j += 1;
     }
     stats.opcode_bins_hit = bins;
     stats.opcode_edges_hit = edges;
+    stats.opcode_edges_hit_admissible = adm_edges_hit;
 
     Ok(stats)
 }
@@ -10738,6 +11432,8 @@ pub fn jit_fuzz_regression_default(
         total_compile_errors: 0,
         max_opcode_bins_hit: 0,
         max_opcode_edges_hit: 0,
+        max_opcode_edges_hit_admissible: 0,
+        opcode_edges_admissible_total: 0,
         total_novel_programs: 0,
         first_failed_seed: None,
         first_failed_mismatches: 0,
@@ -10760,6 +11456,12 @@ pub fn jit_fuzz_regression_default(
         }
         if stats.opcode_edges_hit > out.max_opcode_edges_hit {
             out.max_opcode_edges_hit = stats.opcode_edges_hit;
+        }
+        if stats.opcode_edges_hit_admissible > out.max_opcode_edges_hit_admissible {
+            out.max_opcode_edges_hit_admissible = stats.opcode_edges_hit_admissible;
+        }
+        if stats.opcode_edges_admissible_total > out.opcode_edges_admissible_total {
+            out.opcode_edges_admissible_total = stats.opcode_edges_admissible_total;
         }
 
         if stats.mismatches == 0 && stats.compile_errors == 0 {
@@ -10801,6 +11503,8 @@ pub fn jit_fuzz_regression_soak_default(
         total_compile_errors: 0,
         max_opcode_bins_hit: 0,
         max_opcode_edges_hit: 0,
+        max_opcode_edges_hit_admissible: 0,
+        opcode_edges_admissible_total: 0,
         total_novel_programs: 0,
         first_failed_round: None,
         first_failed_seed: None,
@@ -10826,6 +11530,12 @@ pub fn jit_fuzz_regression_soak_default(
         }
         if stats.max_opcode_edges_hit > out.max_opcode_edges_hit {
             out.max_opcode_edges_hit = stats.max_opcode_edges_hit;
+        }
+        if stats.max_opcode_edges_hit_admissible > out.max_opcode_edges_hit_admissible {
+            out.max_opcode_edges_hit_admissible = stats.max_opcode_edges_hit_admissible;
+        }
+        if stats.opcode_edges_admissible_total > out.opcode_edges_admissible_total {
+            out.opcode_edges_admissible_total = stats.opcode_edges_admissible_total;
         }
 
         if stats.seeds_failed == 0 {

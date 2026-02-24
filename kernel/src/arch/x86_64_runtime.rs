@@ -581,11 +581,14 @@ fn serial_exec_command(cmd: &str) -> bool {
             crate::serial_println!("[X64] jitfuzzreg begin: regression dry-run");
             match crate::wasm::jit_fuzz_regression_default(1) {
                 Ok(stats) => crate::serial_println!(
-                    "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={}",
+                    "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/400 edges_adm={}/{}",
                     stats.seeds_passed,
                     stats.seeds_failed,
                     stats.total_mismatches,
-                    stats.total_compile_errors
+                    stats.total_compile_errors,
+                    stats.max_opcode_edges_hit,
+                    stats.max_opcode_edges_hit_admissible,
+                    stats.opcode_edges_admissible_total,
                 ),
                 Err(e) => crate::serial_println!("[X64] jitfuzzreg failed: {}", e),
             }
@@ -789,15 +792,54 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
         stack_depth += 1;
         emit_i32_load(&mut code, 0);
 
+        if (rng.next_u32() & 1) == 0 {
+            emit_i32_const(&mut code, (rng.next_u32() & 31) as i32);
+            stack_depth += 1;
+            match rng.next_u32() % 3 {
+                0 => code.push(Opcode::I32Shl as u8),
+                1 => code.push(Opcode::I32ShrS as u8),
+                _ => code.push(Opcode::I32ShrU as u8),
+            }
+            stack_depth -= 1;
+            used_arith = true;
+        }
+
         if (rng.next_u32() % 3) == 0 {
             emit_local_tee(&mut code, 1);
             used_local = true;
         }
-        if (rng.next_u32() % 2) == 0 {
-            code.push(Opcode::I32Eqz as u8);
-        } else {
-            emit_i32_const(&mut code, 0);
-            code.push(Opcode::I32Ne as u8);
+        match rng.next_u32() % 6 {
+            0 => code.push(Opcode::I32Eqz as u8),
+            1 => {
+                emit_i32_const(&mut code, 0);
+                stack_depth += 1;
+                code.push(Opcode::I32Ne as u8);
+                stack_depth -= 1;
+            }
+            2 => {
+                emit_i32_const(&mut code, (rng.next_u32() & 0xFF) as i32);
+                stack_depth += 1;
+                code.push(Opcode::I32LtU as u8);
+                stack_depth -= 1;
+            }
+            3 => {
+                emit_i32_const(&mut code, (rng.next_u32() & 0xFF) as i32);
+                stack_depth += 1;
+                code.push(Opcode::I32GtU as u8);
+                stack_depth -= 1;
+            }
+            4 => {
+                emit_i32_const(&mut code, (rng.next_u32() & 0xFF) as i32);
+                stack_depth += 1;
+                code.push(Opcode::I32LeU as u8);
+                stack_depth -= 1;
+            }
+            _ => {
+                emit_i32_const(&mut code, (rng.next_u32() & 0xFF) as i32);
+                stack_depth += 1;
+                code.push(Opcode::I32GeU as u8);
+                stack_depth -= 1;
+            }
         }
         used_arith = true;
 
@@ -812,7 +854,13 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
 
         let jit = match crate::wasm_jit::compile(&code, locals_total) {
             Ok(j) => j,
-            Err(_) => {
+            Err(e) => {
+                if compile_errors == 0 {
+                    crate::serial_println!("[X64] jitfuzz dbg first compile-fail err={} len={}", e, code.len());
+                    for (i, b) in code.iter().enumerate() {
+                        crate::serial_println!("[X64] jitfuzz dbg byte[{}]=0x{:02x}", i, b);
+                    }
+                }
                 compile_errors = compile_errors.saturating_add(1);
                 continue;
             }

@@ -8,6 +8,10 @@ set loops 5
 if {[info exists env(X64_EXT_LOOPS)]} {
     set loops $env(X64_EXT_LOOPS)
 }
+set jitfuzzreg_timeout 180
+if {[info exists env(X64_JITFUZZREG_TIMEOUT)]} {
+    set jitfuzzreg_timeout $env(X64_JITFUZZREG_TIMEOUT)
+}
 
 proc expect_x64_prompt {} {
     expect {
@@ -25,6 +29,22 @@ proc run_x64_cmd {cmd ok_re desc} {
     expect_x64_prompt
 }
 
+proc run_x64_cmd_with_timeout {cmd ok_re desc timeout_s} {
+    global timeout
+    set saved_timeout $timeout
+    set timeout $timeout_s
+    send -- "$cmd\r"
+    expect {
+        -re $ok_re {}
+        timeout {
+            puts "timeout waiting for x86_64 command ($timeout_s s): $desc"
+            exit 1
+        }
+    }
+    set timeout $saved_timeout
+    expect_x64_prompt
+}
+
 set env(QEMU_EXTRA_ARGS) "-nographic -monitor none -display none -no-reboot -no-shutdown -m 512M"
 spawn ./run-x86_64-mb2-grub.sh
 
@@ -34,7 +54,7 @@ expect {
 }
 expect_x64_prompt
 
-run_x64_cmd "help" {commands: help .*jitcall .*jitbench .*jitfuzz .*halt} "help"
+run_x64_cmd "help" {commands: help .*jitcall .*jitbench .*jitfuzz .*jitfuzzreg .*halt} "help"
 run_x64_cmd "mmu" {\[X64\] mmu backend=.*} "mmu"
 run_x64_cmd "regs" {\[X64\] cr0=.* cr3=.* cr4=.* efer=.*} "regs"
 run_x64_cmd "ticks" {\[X64\] ticks=[0-9]+} "ticks"
@@ -47,6 +67,7 @@ run_x64_cmd "vmtest" {\[X64\] vmtest ok} "vmtest"
 run_x64_cmd "jitpre" {\[X64\] jitpre ok} "jitpre"
 run_x64_cmd "jitbench" {\[X64\] jitbench ok: wasm-jit-bounds-selftest} "jitbench"
 run_x64_cmd "jitfuzz" {\[X64\] jitfuzz ok: iters=[0-9]+ ok=[0-9]+ traps=[0-9]+} "jitfuzz"
+run_x64_cmd_with_timeout "jitfuzzreg" {\[X64\] jitfuzzreg ok: seeds_passed=[0-9]+ seeds_failed=[0-9]+ mismatches=[0-9]+ compile_errors=[0-9]+ edges_full=[0-9]+/400 edges_adm=[0-9]+/[0-9]+} "jitfuzzreg" $jitfuzzreg_timeout
 
 send -- "jitcall\r"
 expect {
