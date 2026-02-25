@@ -6495,10 +6495,52 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
         }
     }
 
+    struct ScopedJitRecover;
+
+    impl Drop for ScopedJitRecover {
+        fn drop(&mut self) {
+            // Preserve reusable fuzz allocations across command runs while still
+            // clearing transient user-mode handoff/fault state.
+            crate::wasm::jit_runtime_recover_transient();
+        }
+    }
+
+    struct ScopedFuzzIrqQuiesce {
+        #[cfg(target_arch = "x86")]
+        flags: u32,
+        #[cfg(not(target_arch = "x86"))]
+        _dummy: (),
+    }
+
+    impl ScopedFuzzIrqQuiesce {
+        #[cfg(target_arch = "x86")]
+        fn maybe_enter(enable: bool) -> Option<Self> {
+            if !enable {
+                return None;
+            }
+            let flags = unsafe { crate::idt_asm::fast_cli_save() };
+            Some(Self { flags })
+        }
+
+        #[cfg(not(target_arch = "x86"))]
+        fn maybe_enter(_enable: bool) -> Option<Self> {
+            None
+        }
+    }
+
+    impl Drop for ScopedFuzzIrqQuiesce {
+        fn drop(&mut self) {
+            #[cfg(target_arch = "x86")]
+            unsafe {
+                crate::idt_asm::fast_sti_restore(self.flags);
+            }
+        }
+    }
+
     let iters = match parts.next().and_then(parse_number) {
         Some(v) => v as u32,
         None => {
-            vga::print_str("Usage: wasm-jit-fuzz <iters> [seed]\n");
+            vga::print_str("Usage: wasm-jit-fuzz <iters> [seed] [auto|user|kernel]\n");
             return;
         }
     };
@@ -6508,22 +6550,84 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
         vga::print_str("Use <= 10000. Did you swap iters/seed?\n");
         return;
     }
-    let seed = parts
-        .next()
-        .and_then(parse_number)
-        .map(|v| v as u64)
-        .unwrap_or_else(|| crate::security::security().random_u32() as u64);
+    let mut seed: Option<u64> = None;
+    let mut mode_token: Option<&str> = None;
+    if let Some(arg1) = parts.next() {
+        if let Some(v) = parse_number(arg1) {
+            seed = Some(v as u64);
+            mode_token = parts.next();
+        } else {
+            mode_token = Some(arg1);
+        }
+    }
+    if parts.next().is_some() {
+        vga::print_str("Usage: wasm-jit-fuzz <iters> [seed] [auto|user|kernel]\n");
+        return;
+    }
+    let seed = seed.unwrap_or_else(|| crate::security::security().random_u32() as u64);
+
+    // Default to kernel-mode JIT for repeat-run stability. User sandbox mode is
+    // still available explicitly (`... user`) for sandbox path validation.
+    let default_user_mode = false;
+    let user_mode = match mode_token {
+        None | Some("auto") => default_user_mode,
+        Some("user") => true,
+        Some("kernel") => false,
+        Some(_) => {
+            vga::print_str("Usage: wasm-jit-fuzz <iters> [seed] [auto|user|kernel]\n");
+            return;
+        }
+    };
+    let mode_label = if user_mode {
+        "user sandbox"
+    } else {
+        "kernel JIT"
+    };
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = mode_label;
+        let _ = user_mode;
+        let _ = seed;
+        let _ = iters;
+        vga::print_str("\n===== WASM JIT Fuzz =====\n\n");
+        vga::print_str("Shared wasm-jit-fuzz is disabled on x86_64 bring-up runtime (can reset QEMU).\n");
+        vga::print_str("Use x86_64 shell commands instead:\n");
+        vga::print_str("  jitfuzz      - stable x86_64 mini-fuzz smoke\n");
+        vga::print_str("  jitfuzzreg   - bounded/full regression (CI-oriented)\n\n");
+        vga::print_str("Examples:\n");
+        vga::print_str("  jitfuzz\n");
+        vga::print_str("  jitfuzzreg\n");
+        vga::print_str("  jitfuzzreg full\n");
+        return;
+    }
 
     vga::print_str("\n===== WASM JIT Fuzz =====\n\n");
     vga::print_str("Iterations: ");
     print_u32(iters);
     vga::print_str("\nSeed: ");
     print_u64(seed);
-    vga::print_str("\nMode: user sandbox (forced for stability)\n\n");
+    vga::print_str("\nMode: ");
+    vga::print_str(mode_label);
+    if mode_token.is_none() || mode_token == Some("auto") {
+        #[cfg(target_arch = "x86_64")]
+        vga::print_str(" (default on x86_64)");
+        #[cfg(not(target_arch = "x86_64"))]
+        vga::print_str(" (default on x86/i686)");
+    }
+    if !user_mode {
+        vga::print_str(" (selected for repeat-run stability)");
+    }
+    vga::print_str("\n\n");
 
     // Defensive reset so prior JIT runs cannot leak transient state into fuzz.
-    crate::wasm::jit_runtime_recover();
-    let _jit_mode_guard = ScopedJitUserMode::enter(true);
+    crate::wasm::jit_runtime_recover_transient();
+    let _recover_guard = ScopedJitRecover;
+    let _jit_mode_guard = ScopedJitUserMode::enter(user_mode);
+    // i686 user-sandbox fuzz is susceptible to scheduler/network preemption races
+    // while bouncing through the ring transition path. Quiesce IRQ-driven
+    // preemption for this command run to keep fuzz results deterministic/stable.
+    let _irq_quiesce = ScopedFuzzIrqQuiesce::maybe_enter(user_mode);
 
     match crate::wasm::jit_fuzz(iters, seed) {
         Ok(stats) => {
@@ -6664,7 +6768,6 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\n");
         }
     }
-    crate::wasm::jit_runtime_recover();
     vga::print_str("\n");
 }
 
@@ -6689,6 +6792,32 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
         }
     }
 
+    struct ScopedFuzzIrqQuiesce {
+        #[cfg(target_arch = "x86")]
+        flags: u32,
+        #[cfg(not(target_arch = "x86"))]
+        _dummy: (),
+    }
+    impl ScopedFuzzIrqQuiesce {
+        #[cfg(target_arch = "x86")]
+        fn enter() -> Self {
+            let flags = unsafe { crate::idt_asm::fast_cli_save() };
+            Self { flags }
+        }
+        #[cfg(not(target_arch = "x86"))]
+        fn enter() -> Self {
+            Self { _dummy: () }
+        }
+    }
+    impl Drop for ScopedFuzzIrqQuiesce {
+        fn drop(&mut self) {
+            #[cfg(target_arch = "x86")]
+            unsafe {
+                crate::idt_asm::fast_sti_restore(self.flags);
+            }
+        }
+    }
+
     let iters = parts
         .next()
         .and_then(parse_number)
@@ -6709,8 +6838,9 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     vga::print_str("\nMode: user sandbox (forced for stability)");
     vga::print_str("\n\n");
 
-    crate::wasm::jit_runtime_recover();
+    crate::wasm::jit_runtime_recover_transient();
     let _jit_mode_guard = ScopedJitUserMode::enter(true);
+    let _irq_quiesce = ScopedFuzzIrqQuiesce::enter();
 
     match crate::wasm::jit_fuzz_regression_default(iters) {
         Ok(stats) => {
@@ -6841,7 +6971,7 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\n");
         }
     }
-    crate::wasm::jit_runtime_recover();
+    crate::wasm::jit_runtime_recover_transient();
     vga::print_str("\n");
 }
 
@@ -6863,6 +6993,32 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
         fn drop(&mut self) {
             let mut cfg = crate::wasm::jit_config().lock();
             cfg.user_mode = self.prev;
+        }
+    }
+
+    struct ScopedFuzzIrqQuiesce {
+        #[cfg(target_arch = "x86")]
+        flags: u32,
+        #[cfg(not(target_arch = "x86"))]
+        _dummy: (),
+    }
+    impl ScopedFuzzIrqQuiesce {
+        #[cfg(target_arch = "x86")]
+        fn enter() -> Self {
+            let flags = unsafe { crate::idt_asm::fast_cli_save() };
+            Self { flags }
+        }
+        #[cfg(not(target_arch = "x86"))]
+        fn enter() -> Self {
+            Self { _dummy: () }
+        }
+    }
+    impl Drop for ScopedFuzzIrqQuiesce {
+        fn drop(&mut self) {
+            #[cfg(target_arch = "x86")]
+            unsafe {
+                crate::idt_asm::fast_sti_restore(self.flags);
+            }
         }
     }
 
@@ -6901,8 +7057,9 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     vga::print_str("\nMode: user sandbox (forced for stability)");
     vga::print_str("\n\n");
 
-    crate::wasm::jit_runtime_recover();
+    crate::wasm::jit_runtime_recover_transient();
     let _jit_mode_guard = ScopedJitUserMode::enter(true);
+    let _irq_quiesce = ScopedFuzzIrqQuiesce::enter();
 
     match crate::wasm::jit_fuzz_regression_soak_default(iters, rounds) {
         Ok(stats) => {
@@ -6958,7 +7115,7 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
         }
     }
 
-    crate::wasm::jit_runtime_recover();
+    crate::wasm::jit_runtime_recover_transient();
     vga::print_str("\n");
 }
 

@@ -153,6 +153,22 @@ pub fn jit_arena_range() -> (usize, usize) {
     )
 }
 
+/// Returns true iff `[base, base + size)` lies fully inside the dedicated JIT arena.
+pub fn jit_arena_contains_range(base: usize, size: usize) -> bool {
+    if size == 0 {
+        return false;
+    }
+    let (start, end) = jit_arena_range();
+    if start == 0 || end == 0 || end <= start {
+        return false;
+    }
+    let range_end = match base.checked_add(size) {
+        Some(v) => v,
+        None => return false,
+    };
+    base >= start && range_end <= end
+}
+
 pub fn heap_range() -> (usize, usize) {
     let alloc = ALLOCATOR.0.lock();
     (alloc.heap_start, alloc.heap_end)

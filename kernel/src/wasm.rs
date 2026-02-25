@@ -2949,6 +2949,8 @@ struct JitUserCall {
     shadow_stack_ptr: u32,
     shadow_sp_ptr: u32,
     ret: i32,
+    req_seq: u32,
+    ack_seq: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -3060,6 +3062,9 @@ impl WasmInstance {
         let base = memory::jit_allocate_pages(pages).unwrap_or(0) as *mut JitUserState;
         if !base.is_null() {
             let span = pages * paging::PAGE_SIZE;
+            if !jit_arena_range_sane(base as usize, span) {
+                return (core::ptr::null_mut(), 0);
+            }
             // JIT code sealing toggles page writability in the shared arena.
             // Reassert RW policy for per-instance mutable JIT state pages.
             if crate::arch::mmu::set_page_writable_range(base as usize, span, true).is_err() {
@@ -3658,6 +3663,9 @@ impl WasmInstance {
         }
         if !self.jit_state.is_null() && self.jit_state_pages != 0 {
             let span = self.jit_state_pages * paging::PAGE_SIZE;
+            if !jit_arena_range_sane(self.jit_state as usize, span) {
+                return Err(WasmError::Trap);
+            }
             crate::arch::mmu::set_page_writable_range(self.jit_state as usize, span, true)
                 .map_err(|_| WasmError::Trap)?;
             let _ = crate::memory_isolation::tag_jit_user_state(
@@ -7913,6 +7921,30 @@ struct JitUserPreflightAuxPages {
     mem: usize,
 }
 
+#[inline]
+fn jit_arena_range_sane(base: usize, size: usize) -> bool {
+    size != 0
+        && (base & (paging::PAGE_SIZE - 1)) == 0
+        && crate::memory::jit_arena_contains_range(base, size)
+}
+
+fn validate_jit_user_pages(pages: &JitUserPages) -> Result<(), &'static str> {
+    if !jit_arena_range_sane(pages.trampoline, paging::PAGE_SIZE) {
+        return Err("JIT user trampoline outside JIT arena");
+    }
+    if !jit_arena_range_sane(pages.call, paging::PAGE_SIZE) {
+        return Err("JIT user call page outside JIT arena");
+    }
+    let stack_span = pages
+        .stack_pages
+        .checked_mul(paging::PAGE_SIZE)
+        .ok_or("JIT user stack span overflow")?;
+    if !jit_arena_range_sane(pages.stack, stack_span) {
+        return Err("JIT user stack outside JIT arena");
+    }
+    Ok(())
+}
+
 #[no_mangle]
 pub static JIT_USER_ACTIVE: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
@@ -7968,6 +8000,8 @@ pub static mut JIT_USER_DBG_SYSCALL_FROM_CS: u32 = 0;
 
 const TRAP_MEM: i32 = -1;
 const JIT_USER_TIMEOUT_TICKS: u32 = 25; // 250ms @ 100Hz
+const JIT_USER_CALL_LOG_LIMIT: u32 = 4;
+const JIT_USER_HANDOFF_LOG_LIMIT: u32 = 8;
 
 #[inline]
 fn jit_user_debug_set_stage(stage: u32) {
@@ -7987,8 +8021,7 @@ pub fn jit_stats() -> &'static Mutex<JitStats> {
     &JIT_STATS
 }
 
-/// Force-reset transient JIT state after stress/fuzz commands.
-pub fn jit_runtime_recover() {
+fn jit_runtime_recover_impl(drop_fuzz_state: bool) {
     let stale_pending = JIT_USER_RETURN_PENDING.load(Ordering::SeqCst);
     let stale_active = JIT_USER_ACTIVE.load(Ordering::SeqCst);
     let stale_ret_eip = JIT_USER_RETURN_EIP.load(Ordering::SeqCst);
@@ -8053,22 +8086,26 @@ pub fn jit_runtime_recover() {
         JIT_FAULT_TRAP_PTR = core::ptr::null_mut();
     }
 
-    // Drop potentially corrupted fuzz instances/compilers between stress runs.
-    let stale_instances = {
-        let mut slots = JIT_FUZZ_INSTANCES.lock();
-        let prev = *slots;
-        *slots = None;
-        prev
-    };
-    if let Some((interp_id, jit_id)) = stale_instances {
-        let _ = wasm_runtime().destroy(interp_id);
-        if jit_id != interp_id {
-            let _ = wasm_runtime().destroy(jit_id);
+    if drop_fuzz_state {
+        // Deep recovery path: drop fuzz instances/compiler state. This is useful
+        // after a suspected corruption, but it also reallocates from the bump-only
+        // JIT arena on the next run.
+        let stale_instances = {
+            let mut slots = JIT_FUZZ_INSTANCES.lock();
+            let prev = *slots;
+            *slots = None;
+            prev
+        };
+        if let Some((interp_id, jit_id)) = stale_instances {
+            let _ = wasm_runtime().destroy(interp_id);
+            if jit_id != interp_id {
+                let _ = wasm_runtime().destroy(jit_id);
+            }
         }
-    }
-    {
-        let mut compiler = JIT_FUZZ_COMPILER.lock();
-        *compiler = None;
+        {
+            let mut compiler = JIT_FUZZ_COMPILER.lock();
+            *compiler = None;
+        }
     }
 
     if kpti::enabled() {
@@ -8082,6 +8119,20 @@ pub fn jit_runtime_recover() {
     }
 
     unsafe { idt_asm::fast_sti() };
+}
+
+/// Force-reset transient JIT state after stress/fuzz commands.
+pub fn jit_runtime_recover() {
+    jit_runtime_recover_impl(true);
+}
+
+/// Reset transient JIT/user-handoff state but preserve reusable fuzz allocations.
+///
+/// This is the preferred recovery mode between repeated `wasm-jit-fuzz` runs
+/// because fuzz instances and the reusable fuzz compiler allocate from a bump-only
+/// JIT arena; repeatedly dropping/recreating them can exhaust the arena.
+pub fn jit_runtime_recover_transient() {
+    jit_runtime_recover_impl(false);
 }
 
 struct JitFaultScope;
@@ -8203,6 +8254,14 @@ fn write_jit_user_trampoline(trampoline: *mut u8, call_addr: u32) {
         write_u8!(0x89);
         write_u8!(0x41);
         write_u8!(0x2C);
+        // Copy request seq -> ack seq so kernel can verify this return belongs
+        // to the current invocation (prevents stale ret reuse).
+        write_u8!(0x8B);
+        write_u8!(0x51);
+        write_u8!(0x30);
+        write_u8!(0x89);
+        write_u8!(0x51);
+        write_u8!(0x34);
         write_u8!(0xB8);
         write_u32!(SYSCALL_JIT_RETURN);
         write_u8!(0xCD);
@@ -8276,6 +8335,9 @@ fn write_jit_user_trampoline(trampoline: *mut u8, call_addr: u32) {
         write_u8!(0x48); write_u8!(0x83); write_u8!(0xC4); write_u8!(0x20);
         // mov [r11+44], eax
         write_u8!(0x41); write_u8!(0x89); write_u8!(0x43); write_u8!(0x2C);
+        // mov edx, [r11+48] ; mov [r11+52], edx  (req_seq -> ack_seq)
+        write_u8!(0x41); write_u8!(0x8B); write_u8!(0x53); write_u8!(0x30);
+        write_u8!(0x41); write_u8!(0x89); write_u8!(0x53); write_u8!(0x34);
         // mov eax, SYS_JIT_RETURN ; int 0x80 ; jmp $
         write_u8!(0xB8); write_u32!(SYSCALL_JIT_RETURN);
         write_u8!(0xCD); write_u8!(0x80);
@@ -8307,6 +8369,7 @@ fn write_jit_user_trampoline(trampoline: *mut u8, call_addr: u32) {
 
 fn ensure_jit_user_pages(pages: &mut Option<JitUserPages>) -> Result<JitUserPages, &'static str> {
     if let Some(existing) = *pages {
+        validate_jit_user_pages(&existing)?;
         return Ok(existing);
     }
     let trampoline = memory::jit_allocate_pages(1)?;
@@ -8324,11 +8387,15 @@ fn ensure_jit_user_pages(pages: &mut Option<JitUserPages>) -> Result<JitUserPage
         stack,
         stack_pages,
     };
+    validate_jit_user_pages(&new_pages)?;
     *pages = Some(new_pages);
     Ok(new_pages)
 }
 
 fn wipe_jit_user_pages(pages: &JitUserPages) {
+    if validate_jit_user_pages(pages).is_err() {
+        return;
+    }
     let _ = crate::arch::mmu::set_page_writable_range(pages.trampoline, paging::PAGE_SIZE, true);
     write_jit_user_trampoline(pages.trampoline as *mut u8, USER_JIT_CALL_BASE as u32);
     let _ = crate::arch::mmu::set_page_writable_range(pages.trampoline, paging::PAGE_SIZE, false);
@@ -8364,6 +8431,7 @@ fn jit_x86_64_sandbox_preflight_with_pages(
     source: &'static str,
 ) -> Result<(), &'static str> {
     let pages = ensure_jit_user_pages(pages_cache)?;
+    validate_jit_user_pages(&pages)?;
     wipe_jit_user_pages(&pages);
 
     let mut sandbox_slot = JIT_USER_SANDBOX.lock();
@@ -9133,6 +9201,7 @@ fn call_jit_user(
 
     jit_user_debug_set_stage(2);
     let pages = ensure_jit_user_pages(jit_user_pages)?;
+    validate_jit_user_pages(&pages)?;
     wipe_jit_user_pages(&pages);
 
     jit_user_debug_set_stage(3);
@@ -9392,6 +9461,12 @@ fn call_jit_user(
 
     // Harden against stale RX flags in the shared JIT arena before staging
     // user-call metadata and trap/fuel state.
+    if !jit_arena_range_sane(pages.call, paging::PAGE_SIZE) {
+        return Err("JIT call page outside JIT arena");
+    }
+    if !jit_arena_range_sane(state_ptr as usize, state_map_len) {
+        return Err("JIT user state page outside JIT arena");
+    }
     crate::arch::mmu::set_page_writable_range(pages.call, paging::PAGE_SIZE, true)?;
     crate::arch::mmu::set_page_writable_range(state_ptr as usize, state_map_len, true)?;
 
@@ -9409,10 +9484,16 @@ fn call_jit_user(
         (*call_ptr).shadow_stack_ptr = (user_state_base + shadow_stack_off) as u32;
         (*call_ptr).shadow_sp_ptr = (user_state_base + shadow_sp_off) as u32;
         (*call_ptr).ret = 0;
+        (*call_ptr).req_seq = 0;
+        (*call_ptr).ack_seq = 0;
     }
     let call_seq = JIT_USER_DBG_CALL_SEQ
         .fetch_add(1, Ordering::SeqCst)
         .wrapping_add(1);
+    unsafe {
+        (*call_ptr).req_seq = call_seq;
+        (*call_ptr).ack_seq = 0;
+    }
     let call_snapshot = unsafe { *call_ptr };
     let code_limit = code_base
         .checked_add(exec_map_len)
@@ -9454,7 +9535,7 @@ fn call_jit_user(
         JIT_USER_DBG_CALL_INSTANCE = instance_id;
         JIT_USER_DBG_CALL_FUNC = func_idx;
     }
-    if call_seq <= 32 {
+    if call_seq <= JIT_USER_CALL_LOG_LIMIT {
         crate::serial::_print(format_args!(
             "[JIT-DBG] call-desc seq={} pid={} inst={} func={} entry=0x{:08x} stack=0x{:08x} sp=0x{:08x} trap=0x{:08x} shadow_sp=0x{:08x} mem=0x{:08x}+{} valid={}\n",
             call_seq,
@@ -9557,16 +9638,20 @@ fn call_jit_user(
     {
         handoff_ok = false;
     }
+    let (call_req_seq, call_ack_seq) = unsafe { ((*call_ptr).req_seq, (*call_ptr).ack_seq) };
+    if call_req_seq != call_seq || call_ack_seq != call_seq {
+        handoff_ok = false;
+    }
     if call_snapshot.entry != user_entry as u32 {
         handoff_ok = false;
     }
-    if !handoff_ok || call_seq <= 32 {
+    if !handoff_ok || call_seq <= JIT_USER_CALL_LOG_LIMIT {
         let log_idx = JIT_USER_HANDOFF_LOG_COUNT
             .fetch_add(1, Ordering::SeqCst)
             .wrapping_add(1);
-        if !handoff_ok || log_idx <= 64 {
+        if !handoff_ok || log_idx <= JIT_USER_HANDOFF_LOG_LIMIT {
             crate::serial::_print(format_args!(
-                "[JIT-DBG] handoff seq={} ok={} pid={} inst={} func={} save_seq={} sys_seq={} path={} flags=0x{:08x} nr={} from=0x{:08x}/0x{:08x} save=0x{:08x}/0x{:08x} sys=0x{:08x}/0x{:08x} entry=0x{:08x}\n",
+                "[JIT-DBG] handoff seq={} ok={} pid={} inst={} func={} save_seq={} sys_seq={} req={} ack={} path={} flags=0x{:08x} nr={} from=0x{:08x}/0x{:08x} save=0x{:08x}/0x{:08x} sys=0x{:08x}/0x{:08x} entry=0x{:08x}\n",
                 call_seq,
                 if handoff_ok { 1 } else { 0 },
                 process_id,
@@ -9574,6 +9659,8 @@ fn call_jit_user(
                 func_idx,
                 save_seq,
                 sys_seq,
+                call_req_seq,
+                call_ack_seq,
                 sys_path,
                 sys_flags,
                 sys_nr,
@@ -9600,7 +9687,7 @@ fn call_jit_user(
             || stale_pending != 1
             || stale_ret_esp != save_esp
             || stale_ret_eip != save_eip;
-        if clear_anomaly || call_seq <= 32 {
+        if clear_anomaly || call_seq <= JIT_USER_CALL_LOG_LIMIT {
         crate::serial::_print(format_args!(
             "[JIT-DBG] handoff-clear seq={} pending={} active={} ret=0x{:08x}/0x{:08x}\n",
             call_seq,
@@ -9632,6 +9719,15 @@ fn call_jit_user(
     let _ = memory_isolation::tag_jit_user_state(state_phys, state_map_len, false);
     let _ = memory_isolation::tag_wasm_linear_memory(mem_phys, mem_map_len, false);
     unsafe { idt_asm::fast_sti_restore(flags) };
+
+    if !handoff_ok {
+        unsafe {
+            if !trap_code.is_null() {
+                *trap_code = TRAP_MEM;
+            }
+        }
+        return Err("JIT user handoff validation failed");
+    }
 
     if JIT_USER_SYSCALL_VIOLATION.swap(0, Ordering::SeqCst) != 0 {
         unsafe {
@@ -10717,6 +10813,104 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         Some(locals_total)
     }
 
+    fn validate_jit_fuzz_generated_subset(code: &[u8]) -> Result<(), WasmError> {
+        let mut pc = 0usize;
+        let mut saw_terminal_end = false;
+        while pc < code.len() {
+            let opcode_byte = code[pc];
+            pc += 1;
+            let opcode = Opcode::from_byte(opcode_byte).ok_or(WasmError::UnknownOpcode(opcode_byte))?;
+            match opcode {
+                Opcode::Nop
+                | Opcode::Drop
+                | Opcode::I32Add
+                | Opcode::I32Sub
+                | Opcode::I32Mul
+                | Opcode::I32And
+                | Opcode::I32Or
+                | Opcode::I32Xor
+                | Opcode::I32Eqz
+                | Opcode::I32Eq
+                | Opcode::I32Ne
+                | Opcode::I32LtS
+                | Opcode::I32GtS
+                | Opcode::I32LeS
+                | Opcode::I32GeS
+                | Opcode::I32LtU
+                | Opcode::I32GtU
+                | Opcode::I32LeU
+                | Opcode::I32GeU
+                | Opcode::I32Shl
+                | Opcode::I32ShrS
+                | Opcode::I32ShrU => {}
+                Opcode::End => {
+                    if pc != code.len() {
+                        // Generated fuzz programs must terminate exactly once.
+                        // Trailing bytes after `end` indicate a corrupted/stale build buffer.
+                        return Err(WasmError::InvalidModule);
+                    }
+                    saw_terminal_end = true;
+                }
+                Opcode::I32Const => {
+                    let (_v, n) = read_sleb128_i32_validate(code, pc)?;
+                    pc += n;
+                }
+                Opcode::LocalGet | Opcode::LocalSet | Opcode::LocalTee => {
+                    let (_v, n) = read_uleb128_validate(code, pc)?;
+                    pc += n;
+                }
+                Opcode::I32Load | Opcode::I32Store => {
+                    let (_align, n1) = read_uleb128_validate(code, pc)?;
+                    pc += n1;
+                    let (_off, n2) = read_uleb128_validate(code, pc)?;
+                    pc += n2;
+                }
+                _ => return Err(WasmError::UnknownOpcode(opcode_byte)),
+            }
+        }
+        if !saw_terminal_end {
+            return Err(WasmError::UnexpectedEndOfCode);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn jit_fuzz_code_has_memory_ops(code: &[u8]) -> bool {
+        // Conservative byte scan is sufficient for retry heuristics: false positives
+        // only reduce retries, but false negatives are unlikely for the short fuzz programs.
+        code.iter().any(|b| *b == (Opcode::I32Load as u8) || *b == (Opcode::I32Store as u8))
+    }
+
+    #[inline]
+    fn capture_jit_fuzz_jit_bytes(emitted: &[u8]) -> Vec<u8> {
+        const MAX_CAPTURED_JIT_BYTES: usize = 4096;
+        let n = core::cmp::min(emitted.len(), MAX_CAPTURED_JIT_BYTES);
+        let mut out = Vec::with_capacity(n);
+        out.extend_from_slice(&emitted[..n]);
+        out
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    struct X64ScopedFuzzIrqQuiesce {
+        flags: u32,
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    impl X64ScopedFuzzIrqQuiesce {
+        #[inline]
+        fn enter() -> Self {
+            let flags = unsafe { crate::idt_asm::fast_cli_save() };
+            Self { flags }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    impl Drop for X64ScopedFuzzIrqQuiesce {
+        fn drop(&mut self) {
+            unsafe { crate::idt_asm::fast_sti_restore(self.flags) };
+        }
+    }
+
     let _guard = {
         let mut cfg = jit_config().lock();
         let guard = JitConfigGuard {
@@ -10805,7 +10999,27 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     }
     let mut pair_cover_cursor = 0usize;
 
+    #[cfg(target_arch = "x86_64")]
+    const X64_JIT_FUZZ_CHECKPOINT_ITERS: u32 = 64;
+
     for iter in 0..iterations {
+        #[cfg(target_arch = "x86_64")]
+        if iter != 0 && (iter % X64_JIT_FUZZ_CHECKPOINT_ITERS) == 0 {
+            // x86_64 bring-up runtime benefits from periodic transient cleanup
+            // during long fuzz runs (stale handoff/fault state, CR3/IDT hygiene)
+            // without dropping reusable fuzz instances/compiler allocations.
+            jit_runtime_recover_transient();
+            let _ = wasm_runtime().get_instance_mut(interp_id, |instance| {
+                instance.prepare_fuzz();
+            });
+            let _ = wasm_runtime().get_instance_mut(jit_id, |instance| {
+                instance.prepare_fuzz();
+            });
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        let _x64_irq_quiesce = X64ScopedFuzzIrqQuiesce::enter();
+
         let mut locals_total = (rng.next_u32() % 4) as usize;
         code.clear();
         choice_trace.clear();
@@ -11075,7 +11289,9 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             // Defensive hardening: if generation buffer was perturbed by prior unsafe
             // execution side effects, repair to a canonical valid program so fuzzing
             // can continue and still compare interpreter/JIT semantics.
-            if validate_bytecode(&code).is_err() {
+            if validate_bytecode(&code).is_err()
+                || validate_jit_fuzz_generated_subset(&code).is_err()
+            {
                 code.clear();
                 choice_trace.clear();
                 code.push(Opcode::I32Const as u8);
@@ -11083,6 +11299,8 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 code.push(Opcode::End as u8);
             }
         }
+
+        let code_has_memory_ops = jit_fuzz_code_has_memory_ops(&code);
 
         let mut novel = false;
         let mut prev: Option<u8> = None;
@@ -11211,8 +11429,8 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                                 Err(fresh_err) => {
                                     stats.compile_errors += 1;
                                     if stats.first_compile_error.is_none() {
-                                        let mut jit_code = Vec::new();
-                                        jit_code.extend_from_slice(fresh_compiler.emitted_code());
+                                        let jit_code =
+                                            capture_jit_fuzz_jit_bytes(fresh_compiler.emitted_code());
                                         stats.first_compile_error = Some(JitFuzzCompileError {
                                             iteration: iter,
                                             locals_total: locals_total as u32,
@@ -11233,8 +11451,8 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                                 };
                                 stats.compile_errors += 1;
                                 if stats.first_compile_error.is_none() {
-                                    let mut jit_code = Vec::new();
-                                    jit_code.extend_from_slice(compiler.emitted_code());
+                                    let jit_code =
+                                        capture_jit_fuzz_jit_bytes(compiler.emitted_code());
                                     stats.first_compile_error = Some(JitFuzzCompileError {
                                         iteration: iter,
                                         locals_total: locals_total as u32,
@@ -11292,7 +11510,6 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 // mismatches while still preserving persistent semantic failures.
                 if attempt == 0
                     && interp_ok
-                    && mem_equal
                     && matches!(
                         mapped,
                         Err(WasmError::MemoryOutOfBounds)
@@ -11300,6 +11517,20 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                             | Err(WasmError::Trap)
                     )
                 {
+                    // Retry once if the JIT reports an impossible transient trap
+                    // (e.g. MemoryOutOfBounds on a no-memory program) or if memory
+                    // state remained identical despite the trap classification.
+                    if !(mem_equal
+                        || (!code_has_memory_ops
+                            && matches!(mapped, Err(WasmError::MemoryOutOfBounds))
+                            && mem_len == 0))
+                    {
+                        return Ok::<
+                            (Result<i32, WasmError>, u64, u32, Option<(u32, u8)>, bool),
+                            WasmError,
+                        >((mapped, mem_hash, mem_len, first_nz, mem_equal));
+                    }
+                    instance.prepare_fuzz();
                     attempt = 1;
                     continue;
                 }

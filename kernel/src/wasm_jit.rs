@@ -107,6 +107,7 @@ struct TranslationProof {
 pub struct JitExecBuffer {
     pub ptr: *mut u8,
     pub len: usize,
+    alloc_len: usize,
     sealed: bool,
 }
 
@@ -130,10 +131,17 @@ impl JitExecBuffer {
             .ok_or("Size overflow")?
             / paging::PAGE_SIZE;
         let base = memory::jit_allocate_pages(pages)?;
+        let alloc_len = pages
+            .checked_mul(paging::PAGE_SIZE)
+            .ok_or("JIT exec buffer size overflow")?;
+        if !memory::jit_arena_contains_range(base, alloc_len) {
+            return Err("JIT exec buffer outside JIT arena");
+        }
         let _ = memory_isolation::tag_jit_code_kernel(base, pages * paging::PAGE_SIZE, false);
         Ok(JitExecBuffer {
             ptr: base as *mut u8,
             len,
+            alloc_len,
             sealed: false,
         })
     }
@@ -151,14 +159,24 @@ impl JitExecBuffer {
                 .ok_or("Code length overflow")?
                 & !(paging::PAGE_SIZE - 1)
         };
+        let base = self.ptr as usize;
+        if base == 0 || (base & (paging::PAGE_SIZE - 1)) != 0 {
+            return Err("Invalid JIT exec buffer pointer");
+        }
+        if self.alloc_len == 0 || !memory::jit_arena_contains_range(base, self.alloc_len) {
+            return Err("JIT exec buffer outside JIT arena");
+        }
+        if writable_len != 0 && !memory::jit_arena_contains_range(base, writable_len) {
+            return Err("JIT write range outside JIT arena");
+        }
         // Ensure writable during copy
-        crate::arch::mmu::set_page_writable_range(self.ptr as usize, writable_len, true)?;
+        crate::arch::mmu::set_page_writable_range(base, writable_len, true)?;
         unsafe {
             core::ptr::copy_nonoverlapping(code.as_ptr(), self.ptr, code.len());
         }
         // Seal pages (read-only policy)
-        crate::arch::mmu::set_page_writable_range(self.ptr as usize, writable_len, false)?;
-        memory_isolation::tag_jit_code_kernel(self.ptr as usize, writable_len, true)?;
+        crate::arch::mmu::set_page_writable_range(base, writable_len, false)?;
+        memory_isolation::tag_jit_code_kernel(base, writable_len, true)?;
         self.sealed = true;
         Ok(())
     }

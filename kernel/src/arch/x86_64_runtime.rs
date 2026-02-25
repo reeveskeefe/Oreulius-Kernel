@@ -31,7 +31,7 @@
  */
 
 
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use core::{fmt, sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering}};
 
 use crate::asm_bindings;
 
@@ -59,8 +59,14 @@ const IDT_TYPE_INTERRUPT_GATE_DPL3: u8 = 0xEE;
 static LAST_VECTOR: AtomicU8 = AtomicU8::new(0);
 static LAST_ERROR: AtomicU64 = AtomicU64::new(0);
 static HEARTBEAT_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
+static SHELL_CONSOLE_MODE: AtomicU8 = AtomicU8::new(0); // 0=both, 1=serial, 2=vga
+static KBDTEST_ENABLED: AtomicBool = AtomicBool::new(false);
 static PS2_SHIFT_DOWN: AtomicBool = AtomicBool::new(false);
 static PS2_EXTENDED_PREFIX: AtomicBool = AtomicBool::new(false);
+static PS2_KBD_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+static PS2_KBD_LAST_RAW: AtomicU8 = AtomicU8::new(0);
+static PS2_KBD_LAST_DECODED: AtomicU8 = AtomicU8::new(0);
+static PS2_KBD_LAST_FLAGS: AtomicU8 = AtomicU8::new(0);
 static EXC_COUNTS: [AtomicU64; 32] = [
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
@@ -86,17 +92,73 @@ struct DescriptorTablePtr64 {
 
 macro_rules! shell_print {
     ($($arg:tt)*) => {{
-        crate::vga_print!($($arg)*);
+        shell_print_fmt(format_args!($($arg)*));
     }};
 }
 
 macro_rules! shell_println {
     () => {{
-        crate::vga_println!();
+        shell_print_fmt(format_args!("\n"));
     }};
     ($($arg:tt)*) => {{
-        crate::vga_println!($($arg)*);
+        shell_print_fmt(format_args!("{}\n", format_args!($($arg)*)));
     }};
+}
+
+const KBD_FLAG_RELEASE: u8 = 1 << 0;
+const KBD_FLAG_DECODED: u8 = 1 << 1;
+const KBD_FLAG_E0_PREFIX: u8 = 1 << 2;
+const KBD_FLAG_EXTENDED: u8 = 1 << 3;
+const KBD_FLAG_SHIFT: u8 = 1 << 4;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellConsoleMode {
+    Both,
+    SerialOnly,
+    VgaOnly,
+}
+
+fn shell_console_mode() -> ShellConsoleMode {
+    match SHELL_CONSOLE_MODE.load(Ordering::Relaxed) {
+        1 => ShellConsoleMode::SerialOnly,
+        2 => ShellConsoleMode::VgaOnly,
+        _ => ShellConsoleMode::Both,
+    }
+}
+
+fn shell_set_console_mode(mode: ShellConsoleMode) {
+    let raw = match mode {
+        ShellConsoleMode::Both => 0,
+        ShellConsoleMode::SerialOnly => 1,
+        ShellConsoleMode::VgaOnly => 2,
+    };
+    SHELL_CONSOLE_MODE.store(raw, Ordering::Relaxed);
+}
+
+fn shell_print_fmt(args: fmt::Arguments<'_>) {
+    use core::fmt::Write;
+
+    let mode = shell_console_mode();
+
+    if mode != ShellConsoleMode::VgaOnly {
+        if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
+            let _ = serial.write_fmt(args);
+        }
+    }
+
+    if mode != ShellConsoleMode::SerialOnly {
+        struct TerminalAdapter;
+        impl fmt::Write for TerminalAdapter {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                // Avoid double-echoing to serial: the x86_64 shell wrapper already
+                // writes to COM1 when serial output is enabled.
+                crate::terminal::write_str_no_serial(s);
+                Ok(())
+            }
+        }
+        let mut terminal_writer = TerminalAdapter;
+        let _ = terminal_writer.write_fmt(args);
+    }
 }
 
 #[repr(C, packed)]
@@ -557,6 +619,102 @@ fn ps2_set1_scancode_to_ascii(sc: u8, shifted: bool) -> Option<u8> {
     Some(ch)
 }
 
+fn kbdtest_record_event(raw: u8, decoded: Option<u8>, mut flags: u8) {
+    if PS2_SHIFT_DOWN.load(Ordering::Relaxed) {
+        flags |= KBD_FLAG_SHIFT;
+    }
+    if decoded.is_some() {
+        flags |= KBD_FLAG_DECODED;
+    }
+
+    PS2_KBD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+    PS2_KBD_LAST_RAW.store(raw, Ordering::Relaxed);
+    PS2_KBD_LAST_DECODED.store(decoded.unwrap_or(0), Ordering::Relaxed);
+    PS2_KBD_LAST_FLAGS.store(flags, Ordering::Relaxed);
+
+    if !KBDTEST_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let event_kind = if (flags & KBD_FLAG_E0_PREFIX) != 0 {
+        "e0-prefix"
+    } else if (flags & KBD_FLAG_EXTENDED) != 0 {
+        if (flags & KBD_FLAG_RELEASE) != 0 { "ext-break" } else { "ext-make" }
+    } else if (flags & KBD_FLAG_RELEASE) != 0 {
+        "break"
+    } else {
+        "make"
+    };
+
+    if let Some(b) = decoded {
+        match b {
+            b'\n' => shell_println!(
+                "[X64-KBD] raw=0x{:02x} kind={} dec=<ENTER>(0x0a) shift={}",
+                raw,
+                event_kind,
+                if (flags & KBD_FLAG_SHIFT) != 0 { 1 } else { 0 }
+            ),
+            8 => shell_println!(
+                "[X64-KBD] raw=0x{:02x} kind={} dec=<BS>(0x08) shift={}",
+                raw,
+                event_kind,
+                if (flags & KBD_FLAG_SHIFT) != 0 { 1 } else { 0 }
+            ),
+            c if (0x20..=0x7e).contains(&c) => shell_println!(
+                "[X64-KBD] raw=0x{:02x} kind={} dec='{}'(0x{:02x}) shift={}",
+                raw,
+                event_kind,
+                c as char,
+                c,
+                if (flags & KBD_FLAG_SHIFT) != 0 { 1 } else { 0 }
+            ),
+            _ => shell_println!(
+                "[X64-KBD] raw=0x{:02x} kind={} dec=0x{:02x} shift={}",
+                raw,
+                event_kind,
+                b,
+                if (flags & KBD_FLAG_SHIFT) != 0 { 1 } else { 0 }
+            ),
+        }
+    } else {
+        shell_println!(
+            "[X64-KBD] raw=0x{:02x} kind={} shift={}",
+            raw,
+            event_kind,
+            if (flags & KBD_FLAG_SHIFT) != 0 { 1 } else { 0 }
+        );
+    }
+}
+
+fn kbdtest_print_status() {
+    let raw = PS2_KBD_LAST_RAW.load(Ordering::Relaxed);
+    let decoded = PS2_KBD_LAST_DECODED.load(Ordering::Relaxed);
+    let flags = PS2_KBD_LAST_FLAGS.load(Ordering::Relaxed);
+    let events = PS2_KBD_EVENT_COUNT.load(Ordering::Relaxed);
+    let enabled = KBDTEST_ENABLED.load(Ordering::Relaxed);
+
+    shell_println!(
+        "[X64] kbdtest {} events={} last_raw=0x{:02x} flags=0x{:02x}",
+        if enabled { "on" } else { "off" },
+        events,
+        raw,
+        flags
+    );
+
+    if (flags & KBD_FLAG_DECODED) != 0 {
+        match decoded {
+            b'\n' => shell_println!("[X64] kbdtest last_dec=<ENTER>(0x0a)"),
+            8 => shell_println!("[X64] kbdtest last_dec=<BS>(0x08)"),
+            c if (0x20..=0x7e).contains(&c) => {
+                shell_println!("[X64] kbdtest last_dec='{}'(0x{:02x})", c as char, c)
+            }
+            _ => shell_println!("[X64] kbdtest last_dec=0x{:02x}", decoded),
+        }
+    } else {
+        shell_println!("[X64] kbdtest last_dec=<none>");
+    }
+}
+
 fn ps2_try_read_byte() -> Option<u8> {
     unsafe {
         let status = inb(PS2_STATUS);
@@ -567,22 +725,30 @@ fn ps2_try_read_byte() -> Option<u8> {
 
         if sc == 0xE0 {
             PS2_EXTENDED_PREFIX.store(true, Ordering::Relaxed);
+            kbdtest_record_event(sc, None, KBD_FLAG_E0_PREFIX);
             return None;
         }
 
         let had_extended = PS2_EXTENDED_PREFIX.swap(false, Ordering::Relaxed);
         if had_extended {
             // Minimal bring-up shell: ignore extended-key sequences for now.
+            let mut flags = KBD_FLAG_EXTENDED;
+            if (sc & 0x80) != 0 {
+                flags |= KBD_FLAG_RELEASE;
+            }
+            kbdtest_record_event(sc, None, flags);
             return None;
         }
 
         match sc {
             0x2A | 0x36 => {
                 PS2_SHIFT_DOWN.store(true, Ordering::Relaxed);
+                kbdtest_record_event(sc, None, 0);
                 return None;
             }
             0xAA | 0xB6 => {
                 PS2_SHIFT_DOWN.store(false, Ordering::Relaxed);
+                kbdtest_record_event(sc, None, KBD_FLAG_RELEASE);
                 return None;
             }
             _ => {}
@@ -590,10 +756,12 @@ fn ps2_try_read_byte() -> Option<u8> {
 
         if (sc & 0x80) != 0 {
             // Key release for non-shift keys.
+            kbdtest_record_event(sc, None, KBD_FLAG_RELEASE);
             return None;
         }
-
-        ps2_set1_scancode_to_ascii(sc, PS2_SHIFT_DOWN.load(Ordering::Relaxed))
+        let decoded = ps2_set1_scancode_to_ascii(sc, PS2_SHIFT_DOWN.load(Ordering::Relaxed));
+        kbdtest_record_event(sc, decoded, 0);
+        decoded
     }
 }
 
@@ -605,11 +773,351 @@ fn shell_try_read_byte() -> Option<u8> {
 }
 
 fn serial_write_prompt() {
-    crate::serial_print!("\r\nx64> ");
-    crate::vga::print_str("\nx64> ");
+    match shell_console_mode() {
+        ShellConsoleMode::Both => {
+            crate::serial_print!("\r\nx64> ");
+            crate::terminal::write_str_no_serial("\nx64> ");
+        }
+        ShellConsoleMode::SerialOnly => {
+            crate::serial_print!("\r\nx64> ");
+        }
+        ShellConsoleMode::VgaOnly => {
+            crate::terminal::write_str_no_serial("\nx64> ");
+        }
+    }
+}
+
+const X64_MINI_HELP: &str =
+    "help help-all help-mini ticks irq0 int3 traps pfstats cowtest vmtest \
+     jitpre jitcall jitbench jitfuzz jitfuzzreg heartbeat console kbdtest \
+     mmu regs halt";
+
+fn x64_print_mini_help() {
+    shell_println!("x86_64 bring-up commands:");
+    shell_println!("  {}", X64_MINI_HELP);
+    shell_println!("[X64] `help` shows the shared command menu plus x86_64 extensions.");
+}
+
+fn x64_print_combined_help() {
+    crate::commands::execute("help");
+    shell_println!("");
+    shell_println!("[X64] x86_64 window/bring-up shell extensions:");
+    shell_println!("  {}", X64_MINI_HELP);
+    shell_println!("[X64] x86_64 command aliases (compat):");
+    shell_println!("  wasm-jit-selftest");
+    shell_println!("  wasm-jit-fuzz <iters> [seed] [auto|kernel]");
+    shell_println!("  wasm-jit-fuzz-corpus <iters>");
+    shell_println!("  wasm-jit-fuzz-soak <iters> <rounds>");
+    shell_println!("[X64] note: x86_64 user-sandbox generic fuzz mode is still blocked in the bring-up shell.");
+    shell_println!("[X64] use `jitcall`/`jitpre` to probe the x86_64 user JIT path directly.");
+}
+
+fn x64_parse_u32(s: &str) -> Option<u32> {
+    let mut out = 0u32;
+    for ch in s.chars() {
+        let d = ch.to_digit(10)?;
+        out = out.checked_mul(10)?.checked_add(d)?;
+    }
+    Some(out)
+}
+
+fn x64_parse_u64(s: &str) -> Option<u64> {
+    let mut out = 0u64;
+    for ch in s.chars() {
+        let d = ch.to_digit(10)? as u64;
+        out = out.checked_mul(10)?.checked_add(d)?;
+    }
+    Some(out)
+}
+
+fn x64_print_hex_bytes(label: &str, bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    shell_println!("{}", label);
+    for chunk in bytes.chunks(16) {
+        shell_print!("  ");
+        for b in chunk {
+            shell_print!("{:02x} ", b);
+        }
+        shell_println!();
+    }
+}
+
+fn x64_print_first_nonzero_opt(val: Option<(u32, u8)>) {
+    match val {
+        Some((off, byte)) => shell_print!("0x{:x}:{:02x}", off, byte),
+        None => shell_print!("none"),
+    }
+}
+
+fn x64_print_jit_fuzz_stats(stats: &crate::wasm::JitFuzzStats) {
+    shell_println!("OK: {}", stats.ok);
+    shell_println!("Traps: {}", stats.traps);
+    shell_println!("Mismatches: {}", stats.mismatches);
+    shell_println!("Compile errors: {}", stats.compile_errors);
+    shell_println!("Opcode bins hit: {} / 20", stats.opcode_bins_hit);
+    shell_println!("Opcode edges hit (full): {} / 400", stats.opcode_edges_hit);
+    shell_println!(
+        "Opcode edges hit (admissible): {} / {}",
+        stats.opcode_edges_hit_admissible,
+        stats.opcode_edges_admissible_total
+    );
+    shell_println!("Novel programs: {}", stats.novel_programs);
+
+    if let Some(err) = stats.first_compile_error.as_ref() {
+        shell_println!();
+        shell_println!("First compile error:");
+        shell_println!(
+            "Iter: {}  Locals: {}  Stage: {}  Code len: {}",
+            err.iteration,
+            err.locals_total,
+            err.stage,
+            err.code.len()
+        );
+        shell_println!("Reason: {}", err.reason);
+        x64_print_hex_bytes("Code bytes:", &err.code);
+        x64_print_hex_bytes("JIT x86 bytes:", &err.jit_code);
+    }
+
+    if let Some(m) = stats.first_mismatch.as_ref() {
+        shell_println!();
+        shell_println!("First mismatch:");
+        shell_println!(
+            "Iter: {}  Locals: {}  Code len: {}",
+            m.iteration,
+            m.locals_total,
+            m.code.len()
+        );
+        shell_print!("Interp: ");
+        match m.interp {
+            Ok(v) => shell_print!("ok {}", v),
+            Err(e) => shell_print!("{}", e.as_str()),
+        }
+        shell_print!("  JIT: ");
+        match m.jit {
+            Ok(v) => shell_print!("ok {}", v),
+            Err(e) => shell_print!("{}", e.as_str()),
+        }
+        shell_println!();
+        shell_println!(
+            "Mem hash (interp/jit): 0x{:016x} / 0x{:016x}",
+            m.interp_mem_hash,
+            m.jit_mem_hash
+        );
+        shell_println!(
+            "Mem len (interp/jit): {} / {}",
+            m.interp_mem_len,
+            m.jit_mem_len
+        );
+        shell_print!("First non-zero (interp/jit): ");
+        x64_print_first_nonzero_opt(m.interp_first_nonzero);
+        shell_print!(" / ");
+        x64_print_first_nonzero_opt(m.jit_first_nonzero);
+        shell_println!();
+        x64_print_hex_bytes("Code bytes:", &m.code);
+    }
+}
+
+struct X64ScopedJitUserMode {
+    prev: bool,
+}
+
+impl X64ScopedJitUserMode {
+    fn enter(user_mode: bool) -> Self {
+        let mut cfg = crate::wasm::jit_config().lock();
+        let prev = cfg.user_mode;
+        cfg.user_mode = user_mode;
+        Self { prev }
+    }
+}
+
+impl Drop for X64ScopedJitUserMode {
+    fn drop(&mut self) {
+        let mut cfg = crate::wasm::jit_config().lock();
+        cfg.user_mode = self.prev;
+    }
+}
+
+struct X64ScopedJitRecover;
+
+impl Drop for X64ScopedJitRecover {
+    fn drop(&mut self) {
+        crate::wasm::jit_runtime_recover_transient();
+    }
+}
+
+fn x64_alias_wasm_jit_selftest(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
+    let _ = parts.next();
+    if parts.next().is_some() {
+        shell_println!("[X64] usage: wasm-jit-selftest");
+        return true;
+    }
+    match crate::wasm::jit_bounds_self_test() {
+        Ok(()) => shell_println!("[X64] wasm-jit-selftest ok"),
+        Err(e) => shell_println!("[X64] wasm-jit-selftest failed: {}", e),
+    }
+    true
+}
+
+fn x64_alias_wasm_jit_fuzz(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
+    let _ = parts.next();
+    let iters = match parts.next().and_then(x64_parse_u32) {
+        Some(v) => v,
+        None => {
+            shell_println!("[X64] usage: wasm-jit-fuzz <iters> [seed] [auto|user|kernel]");
+            return true;
+        }
+    };
+    const MAX_FUZZ_ITERS: u32 = 10_000;
+    if iters > MAX_FUZZ_ITERS {
+        shell_println!("[X64] iterations too high; use <= {}", MAX_FUZZ_ITERS);
+        return true;
+    }
+
+    let mut seed: Option<u64> = None;
+    let mut mode_token: Option<&str> = None;
+    if let Some(arg1) = parts.next() {
+        if let Some(v) = x64_parse_u64(arg1) {
+            seed = Some(v);
+            mode_token = parts.next();
+        } else {
+            mode_token = Some(arg1);
+        }
+    }
+    if parts.next().is_some() {
+        shell_println!("[X64] usage: wasm-jit-fuzz <iters> [seed] [auto|user|kernel]");
+        return true;
+    }
+    let seed = seed.unwrap_or(0);
+    let user_mode = match mode_token {
+        None | Some("auto") | Some("kernel") => false,
+        Some("user") => {
+            shell_println!("[X64] wasm-jit-fuzz user mode is not stable on x86_64 bring-up shell.");
+            shell_println!("[X64] use `jitcall` / `jitpre` for x86_64 user-path probes.");
+            return true;
+        }
+        Some(_) => {
+            shell_println!("[X64] usage: wasm-jit-fuzz <iters> [seed] [auto|user|kernel]");
+            return true;
+        }
+    };
+
+    shell_println!();
+    shell_println!("===== WASM JIT Fuzz (x86_64 compat) =====");
+    shell_println!();
+    shell_println!("Iterations: {}", iters);
+    shell_println!("Seed: {}", seed);
+    shell_println!("Mode: kernel JIT (x86_64 compat alias)");
+    shell_println!("[X64] long runs use internal x86_64 fuzz checkpoints/recovery.");
+    shell_println!();
+
+    crate::wasm::jit_runtime_recover_transient();
+    let _recover_guard = X64ScopedJitRecover;
+    let _jit_mode_guard = X64ScopedJitUserMode::enter(user_mode);
+
+    match crate::wasm::jit_fuzz(iters, seed) {
+        Ok(stats) => x64_print_jit_fuzz_stats(&stats),
+        Err(e) => shell_println!("[X64] wasm-jit-fuzz failed: {}", e),
+    }
+    true
+}
+
+fn x64_alias_wasm_jit_fuzz_corpus(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
+    let _ = parts.next();
+    let iters = match parts.next().and_then(x64_parse_u32) {
+        Some(v) => v.max(1),
+        None => {
+            shell_println!("[X64] usage: wasm-jit-fuzz-corpus <iters>");
+            return true;
+        }
+    };
+    if parts.next().is_some() {
+        shell_println!("[X64] usage: wasm-jit-fuzz-corpus <iters>");
+        return true;
+    }
+
+    shell_println!("[X64] wasm-jit-fuzz-corpus begin (kernel JIT x86_64 compat): iters/seed={}", iters);
+    crate::wasm::jit_runtime_recover_transient();
+    let _recover_guard = X64ScopedJitRecover;
+    let _jit_mode_guard = X64ScopedJitUserMode::enter(false);
+    match crate::wasm::jit_fuzz_regression_default(iters) {
+        Ok(stats) => shell_println!(
+            "[X64] wasm-jit-fuzz-corpus ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/400 edges_adm={}/{}",
+            stats.seeds_passed,
+            stats.seeds_failed,
+            stats.total_mismatches,
+            stats.total_compile_errors,
+            stats.max_opcode_edges_hit,
+            stats.max_opcode_edges_hit_admissible,
+            stats.opcode_edges_admissible_total,
+        ),
+        Err(e) => shell_println!("[X64] wasm-jit-fuzz-corpus failed: {}", e),
+    }
+    true
+}
+
+fn x64_alias_wasm_jit_fuzz_soak(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
+    let _ = parts.next();
+    let iters = match parts.next().and_then(x64_parse_u32) {
+        Some(v) => v.max(1),
+        None => {
+            shell_println!("[X64] usage: wasm-jit-fuzz-soak <iters> <rounds>");
+            return true;
+        }
+    };
+    let rounds = match parts.next().and_then(x64_parse_u32) {
+        Some(v) => v.max(1),
+        None => {
+            shell_println!("[X64] usage: wasm-jit-fuzz-soak <iters> <rounds>");
+            return true;
+        }
+    };
+    if parts.next().is_some() {
+        shell_println!("[X64] usage: wasm-jit-fuzz-soak <iters> <rounds>");
+        return true;
+    }
+
+    shell_println!(
+        "[X64] wasm-jit-fuzz-soak begin (kernel JIT x86_64 compat): iters/seed={} rounds={}",
+        iters, rounds
+    );
+    crate::wasm::jit_runtime_recover_transient();
+    let _recover_guard = X64ScopedJitRecover;
+    let _jit_mode_guard = X64ScopedJitUserMode::enter(false);
+    match crate::wasm::jit_fuzz_regression_soak_default(iters, rounds) {
+        Ok(stats) => shell_println!(
+            "[X64] wasm-jit-fuzz-soak ok: rounds_passed={} rounds_failed={} seed_failures={} mismatches={} compile_errors={} edges_full={}/400 edges_adm={}/{}",
+            stats.rounds_passed,
+            stats.rounds_failed,
+            stats.total_seed_failures,
+            stats.total_mismatches,
+            stats.total_compile_errors,
+            stats.max_opcode_edges_hit,
+            stats.max_opcode_edges_hit_admissible,
+            stats.opcode_edges_admissible_total,
+        ),
+        Err(e) => shell_println!("[X64] wasm-jit-fuzz-soak failed: {}", e),
+    }
+    true
+}
+
+fn x64_try_shared_command_alias(cmd: &str) -> bool {
+    let mut parts = cmd.split_whitespace();
+    match parts.next() {
+        Some("wasm-jit-selftest") => x64_alias_wasm_jit_selftest(&mut cmd.split_whitespace()),
+        Some("wasm-jit-fuzz-corpus") => x64_alias_wasm_jit_fuzz_corpus(&mut cmd.split_whitespace()),
+        Some("wasm-jit-fuzz-soak") => x64_alias_wasm_jit_fuzz_soak(&mut cmd.split_whitespace()),
+        Some("wasm-jit-fuzz") => x64_alias_wasm_jit_fuzz(&mut cmd.split_whitespace()),
+        _ => false,
+    }
 }
 
 fn serial_exec_command(cmd: &str) -> bool {
+    if x64_try_shared_command_alias(cmd) {
+        return true;
+    }
+
     if let Some(rest) = cmd.strip_prefix("jitfuzzreg") {
         if rest.is_empty() || rest.starts_with(' ') {
             let mut parts = cmd.split_whitespace();
@@ -709,7 +1217,13 @@ fn serial_exec_command(cmd: &str) -> bool {
     match cmd {
         "" => {}
         "help" => {
-            shell_println!("commands: help ticks irq0 int3 traps pfstats cowtest vmtest jitpre jitcall jitbench jitfuzz jitfuzzreg heartbeat mmu regs halt");
+            x64_print_combined_help();
+        }
+        "help-mini" => {
+            x64_print_mini_help();
+        }
+        "help-all" => {
+            x64_print_combined_help();
         }
         "heartbeat" => {
             shell_println!(
@@ -724,6 +1238,40 @@ fn serial_exec_command(cmd: &str) -> bool {
         "heartbeat off" => {
             HEARTBEAT_LOG_ENABLED.store(false, Ordering::Relaxed);
             shell_println!("[X64] heartbeat off");
+        }
+        "console" => {
+            let mode = match shell_console_mode() {
+                ShellConsoleMode::Both => "both",
+                ShellConsoleMode::SerialOnly => "serial",
+                ShellConsoleMode::VgaOnly => "vga",
+            };
+            shell_println!("[X64] console {} (use: console both|serial|vga)", mode);
+        }
+        "console both" => {
+            shell_set_console_mode(ShellConsoleMode::Both);
+            shell_println!("[X64] console both");
+        }
+        "console serial" => {
+            shell_set_console_mode(ShellConsoleMode::SerialOnly);
+            shell_println!("[X64] console serial");
+        }
+        "console vga" => {
+            shell_set_console_mode(ShellConsoleMode::VgaOnly);
+            shell_println!("[X64] console vga");
+        }
+        "kbdtest" => {
+            kbdtest_print_status();
+            shell_println!("[X64] kbdtest usage: kbdtest on|off");
+        }
+        "kbdtest on" => {
+            KBDTEST_ENABLED.store(true, Ordering::Relaxed);
+            shell_println!("[X64] kbdtest on (raw scancode + decoded char logging)");
+            kbdtest_print_status();
+        }
+        "kbdtest off" => {
+            KBDTEST_ENABLED.store(false, Ordering::Relaxed);
+            shell_println!("[X64] kbdtest off");
+            kbdtest_print_status();
         }
         "ticks" => {
             shell_println!("[X64] ticks={}", crate::pit::get_ticks());
@@ -817,7 +1365,10 @@ fn serial_exec_command(cmd: &str) -> bool {
             return false;
         }
         _ => {
-            shell_println!("[X64] unknown command: {}", cmd);
+            // Fall back to the shared command stack (same command surface used by the
+            // legacy shell) so x86_64 users can exercise more of the kernel without
+            // waiting for the full x86_64 shell port.
+            crate::commands::execute(cmd);
         }
     }
     true
@@ -1221,7 +1772,12 @@ pub fn wait_for_ticks(min_delta: u64, max_spin_hlt: usize) -> bool {
 }
 
 pub fn run_serial_shell() -> ! {
-    shell_println!("[X64] minimal shell ready (serial + VGA keyboard)");
+    crate::terminal::clear_screen();
+    crate::terminal::write_str_no_serial("Oreulia OS (x86_64 bring-up)\n");
+    crate::terminal::write_str_no_serial(
+        "Type 'help' for the full shared command list.\nType 'help-mini' for x86_64 bring-up commands.\n\n"
+    );
+    shell_println!("[X64] x86_64 shell ready (serial + VGA keyboard)");
     serial_write_prompt();
 
     let mut buf = [0u8; 128];

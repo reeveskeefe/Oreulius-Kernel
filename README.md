@@ -85,27 +85,27 @@ Oreulia is now cross-compatible at the boot/runtime abstraction layer across `i6
 ```text
 +--------------------------------------------------------------+
 | Shell / Command Plane                                        |
-|  help, formal-verify, temporal-*, wasm-jit-*, capnet-*      |
+|  help, formal-verify, temporal-*, wasm-jit-*, capnet-*       |
 +-------------------------------+------------------------------+
                                 |
 +-------------------------------v------------------------------+
-| Capability, Security, Intent, Registry, IPC                 |
-| authority checks, policy, channels, service discovery       |
+| Capability, Security, Intent, Registry, IPC                  |
+| authority checks, policy, channels, service discovery        |
 +-------------------------------+------------------------------+
                                 |
 +-------------------------------v------------------------------+
-| WASM Runtime + JIT + Service Pointers                       |
-| interpreted + compiled paths, typed calls, replay hooks     |
+| WASM Runtime + JIT + Service Pointers                        |
+| interpreted + compiled paths, typed calls, replay hooks      |
 +-------------------------------+------------------------------+
                                 |
 +-------------------------------v------------------------------+
-| Temporal + Persistence Layer                                  |
-| object adapters, version DAG, rollback/merge, snapshots     |
+| Temporal + Persistence Layer                                 |
+| object adapters, version DAG, rollback/merge, snapshots      |
 +-------------------------------+------------------------------+
                                 |
 +-------------------------------v------------------------------+
-| Process/Scheduler + VM + Syscall + Network/WiFi/E1000       |
-| context switch, paging, user transitions, protocol stack    |
+| Process/Scheduler + VM + Syscall + Network/WiFi/E1000        |
+| context switch, paging, user transitions, protocol stack     |
 +--------------------------------------------------------------+
 ```
 
