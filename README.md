@@ -315,61 +315,81 @@ cd oreulieus-kernel/kernel
 ```bash
 ./build.sh
 ./run.sh
-# or
+```
+
+Known-good QEMU serial launch (interactive from your terminal):
+
+```bash
 qemu-system-i386 -cdrom oreulia.iso -serial stdio
-```
-
-### x86_64 (Multiboot2 + GRUB + QEMU)
-
-Build the x86_64 Multiboot2 kernel ELF:
-
-```bash
-./build-x86_64-full.sh
-```
-
-Create a GRUB ISO and boot in QEMU (BIOS path):
-
-```bash
-mkdir -p iso-x86_64/boot/grub
-cp target/x86_64-mb2/oreulia-kernel-x86_64 iso-x86_64/boot/
-cat > iso-x86_64/boot/grub/grub.cfg <<'EOF'
-set timeout=0
-set default=0
-terminal_output console
-menuentry "Oreulia x86_64" {
-    multiboot2 /boot/oreulia-kernel-x86_64
-    boot
-}
-EOF
-
-# On many hosts, i686-elf-grub-mkrescue produces a BIOS-bootable ISO for this flow.
-i686-elf-grub-mkrescue -o oreulia-x86_64.iso iso-x86_64
-qemu-system-x86_64 -cdrom oreulia-x86_64.iso -serial stdio -m 512M
 ```
 
 Notes:
 
+- `i686` supports the legacy runtime path and can be used through the VGA window and/or serial depending on the shell path you boot into.
+- If you want reproducible command capture, prefer the serial launch above.
+
+### x86_64 (Multiboot2 + GRUB + QEMU)
+
+Build and package the x86_64 Multiboot2 kernel (full-link + GRUB ISO):
+
+```bash
+./build-x86_64-mb2-iso.sh
+```
+
+Run the x86_64 bring-up shell in QEMU using the provided launcher (recommended):
+
+```bash
+QEMU_EXTRA_ARGS="-monitor none -nographic" ./run-x86_64-mb2-grub.sh
+```
+
+Notes:
+
+- The x86_64 bring-up shell is **serial-input driven**. Typing in the QEMU VGA window will not control the shell.
+- Use `-nographic` (as above) or another `QEMU_EXTRA_ARGS` variant that keeps COM1 attached to your terminal.
+- If you prefer a windowed QEMU session, you still need serial attached to your terminal; for example:
+
+```bash
+qemu-system-x86_64 \
+  -cdrom target/x86_64-mb2/oreulia-x86_64-mb2.iso \
+  -serial mon:stdio \
+  -monitor none \
+  -m 512M
+```
+
 - `./build-x86_64-full.sh` validates the Multiboot2 header when `grub-file` is available.
-- Some host toolchains produce UEFI-only ISOs with `x86_64-elf-grub-mkrescue`; the BIOS QEMU flow above is known-good with `i686-elf-grub-mkrescue`.
+- `./build-x86_64-mb2-iso.sh` automatically prefers `i686-elf-grub-mkrescue` when available because it is the most reliable BIOS-bootable GRUB ISO path for this flow.
+- If you see `unknown command` for `wasm-jit-fuzz` in the x86_64 shell, use the x86_64 bring-up commands instead (`jitbench`, `jitfuzz`, `jitfuzzreg`, `jitcall`).
 
 ### AArch64 (QEMU `virt` Raw `Image`)
 
-Build the AArch64 QEMU `virt` image:
+Build the AArch64 QEMU `virt` raw `Image`:
 
 ```bash
 ./build-aarch64-virt.sh
 ```
 
-Run the basic AArch64 `virt` bring-up shell:
+Run the basic AArch64 `virt` bring-up shell (recommended launcher):
 
 ```bash
 ./run-aarch64-virt-image.sh
 ```
 
-Run the AArch64 `virt` variant with an explicit DTB-visible `virtio-mmio` block device binding:
+Run the AArch64 `virt` variant with an explicit DTB-visible `virtio-mmio` block device binding (for block/VFS smoke work):
 
 ```bash
 ./run-aarch64-virt-image-virtio-blk-mmio.sh
+```
+
+Notes:
+
+- The AArch64 bring-up shell is a **PL011 serial shell**. These launchers already run QEMU in terminal/serial mode.
+- If you want a manual QEMU invocation, the raw `Image` path is the validated route (not `-kernel` ELF on this target path):
+
+```bash
+qemu-system-aarch64 \
+  -M virt -cpu cortex-a57 -m 512M \
+  -nographic -monitor none -serial stdio \
+  -kernel target/aarch64-virt/Image
 ```
 
 Optional launcher parameters:
@@ -377,6 +397,25 @@ Optional launcher parameters:
 - `BUS_SLOT` (default `0`) to choose `virtio-mmio-bus.N`
 - `DISK_IMAGE` (default `target/aarch64-virt/virtio-blk-mmio-test.img`)
 - `DISK_SIZE` (default `16M`)
+
+### Known-Good QEMU Bring-up Matrix (Copy/Paste)
+
+```bash
+# i686 (legacy runtime)
+cd kernel
+./build.sh
+qemu-system-i386 -cdrom oreulia.iso -serial stdio
+
+# x86_64 (MB2 + GRUB ISO; serial shell)
+cd kernel
+./build-x86_64-mb2-iso.sh
+QEMU_EXTRA_ARGS="-monitor none -nographic" ./run-x86_64-mb2-grub.sh
+
+# AArch64 (QEMU virt raw Image; PL011 serial shell)
+cd kernel
+./build-aarch64-virt.sh
+./run-aarch64-virt-image.sh
+```
 
 ### Quick Rebuild Loop
 

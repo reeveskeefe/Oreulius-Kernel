@@ -67,7 +67,7 @@ run_x64_cmd "vmtest" {\[X64\] vmtest ok} "vmtest"
 run_x64_cmd "jitpre" {\[X64\] jitpre ok} "jitpre"
 run_x64_cmd "jitbench" {\[X64\] jitbench ok: wasm-jit-bounds-selftest} "jitbench"
 run_x64_cmd "jitfuzz" {\[X64\] jitfuzz ok: iters=[0-9]+ ok=[0-9]+ traps=[0-9]+} "jitfuzz"
-run_x64_cmd_with_timeout "jitfuzzreg" {\[X64\] jitfuzzreg ok: seeds_passed=[0-9]+ seeds_failed=[0-9]+ mismatches=[0-9]+ compile_errors=[0-9]+ edges_full=[0-9]+/400 edges_adm=[0-9]+/[0-9]+} "jitfuzzreg" $jitfuzzreg_timeout
+run_x64_cmd_with_timeout "jitfuzzreg full" {\[X64\] jitfuzzreg ok: seeds_passed=[0-9]+ seeds_failed=[0-9]+ mismatches=[0-9]+ compile_errors=[0-9]+ edges_full=[0-9]+/400 edges_adm=[0-9]+/[0-9]+} "jitfuzzreg full" $jitfuzzreg_timeout
 
 send -- "jitcall\r"
 expect {

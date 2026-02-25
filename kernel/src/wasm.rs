@@ -11422,8 +11422,16 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
 pub fn jit_fuzz_regression_default(
     iterations_per_seed: u32,
 ) -> Result<JitFuzzRegressionStats, &'static str> {
+    jit_fuzz_regression_bounded(iterations_per_seed, JIT_FUZZ_REGRESSION_SEEDS.len() as u32)
+}
+
+pub fn jit_fuzz_regression_bounded(
+    iterations_per_seed: u32,
+    max_seeds: u32,
+) -> Result<JitFuzzRegressionStats, &'static str> {
+    let seeds_limit = core::cmp::min(max_seeds as usize, JIT_FUZZ_REGRESSION_SEEDS.len());
     let mut out = JitFuzzRegressionStats {
-        seeds_total: JIT_FUZZ_REGRESSION_SEEDS.len() as u32,
+        seeds_total: seeds_limit as u32,
         seeds_passed: 0,
         seeds_failed: 0,
         total_ok: 0,
@@ -11443,7 +11451,7 @@ pub fn jit_fuzz_regression_default(
     };
 
     let mut i = 0usize;
-    while i < JIT_FUZZ_REGRESSION_SEEDS.len() {
+    while i < seeds_limit {
         let seed = JIT_FUZZ_REGRESSION_SEEDS[i];
         let stats = jit_fuzz(iterations_per_seed, seed)?;
         out.total_ok = out.total_ok.saturating_add(stats.ok);

@@ -31,7 +31,7 @@
  */
 
 
-use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use crate::asm_bindings;
 
@@ -50,12 +50,17 @@ const PIC_EOI: u8 = 0x20;
 const COM1_BASE: u16 = 0x3F8;
 const COM_LSR: u16 = COM1_BASE + 5;
 const COM_DATA: u16 = COM1_BASE;
+const PS2_DATA: u16 = 0x60;
+const PS2_STATUS: u16 = 0x64;
 
 const IDT_TYPE_INTERRUPT_GATE: u8 = 0x8E;
 const IDT_TYPE_INTERRUPT_GATE_DPL3: u8 = 0xEE;
 
 static LAST_VECTOR: AtomicU8 = AtomicU8::new(0);
 static LAST_ERROR: AtomicU64 = AtomicU64::new(0);
+static HEARTBEAT_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
+static PS2_SHIFT_DOWN: AtomicBool = AtomicBool::new(false);
+static PS2_EXTENDED_PREFIX: AtomicBool = AtomicBool::new(false);
 static EXC_COUNTS: [AtomicU64; 32] = [
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
@@ -77,6 +82,21 @@ static IRQ_COUNTS: [AtomicU64; 16] = [
 struct DescriptorTablePtr64 {
     limit: u16,
     base: u64,
+}
+
+macro_rules! shell_print {
+    ($($arg:tt)*) => {{
+        crate::vga_print!($($arg)*);
+    }};
+}
+
+macro_rules! shell_println {
+    () => {{
+        crate::vga_println!();
+    }};
+    ($($arg:tt)*) => {{
+        crate::vga_println!($($arg)*);
+    }};
 }
 
 #[repr(C, packed)]
@@ -480,26 +500,241 @@ fn serial_try_read_byte() -> Option<u8> {
     }
 }
 
+fn ps2_set1_scancode_to_ascii(sc: u8, shifted: bool) -> Option<u8> {
+    let ch = match sc {
+        0x02 => if shifted { b'!' } else { b'1' },
+        0x03 => if shifted { b'@' } else { b'2' },
+        0x04 => if shifted { b'#' } else { b'3' },
+        0x05 => if shifted { b'$' } else { b'4' },
+        0x06 => if shifted { b'%' } else { b'5' },
+        0x07 => if shifted { b'^' } else { b'6' },
+        0x08 => if shifted { b'&' } else { b'7' },
+        0x09 => if shifted { b'*' } else { b'8' },
+        0x0A => if shifted { b'(' } else { b'9' },
+        0x0B => if shifted { b')' } else { b'0' },
+        0x0C => if shifted { b'_' } else { b'-' },
+        0x0D => if shifted { b'+' } else { b'=' },
+        0x10 => if shifted { b'Q' } else { b'q' },
+        0x11 => if shifted { b'W' } else { b'w' },
+        0x12 => if shifted { b'E' } else { b'e' },
+        0x13 => if shifted { b'R' } else { b'r' },
+        0x14 => if shifted { b'T' } else { b't' },
+        0x15 => if shifted { b'Y' } else { b'y' },
+        0x16 => if shifted { b'U' } else { b'u' },
+        0x17 => if shifted { b'I' } else { b'i' },
+        0x18 => if shifted { b'O' } else { b'o' },
+        0x19 => if shifted { b'P' } else { b'p' },
+        0x1A => if shifted { b'{' } else { b'[' },
+        0x1B => if shifted { b'}' } else { b']' },
+        0x1C => b'\n',
+        0x1E => if shifted { b'A' } else { b'a' },
+        0x1F => if shifted { b'S' } else { b's' },
+        0x20 => if shifted { b'D' } else { b'd' },
+        0x21 => if shifted { b'F' } else { b'f' },
+        0x22 => if shifted { b'G' } else { b'g' },
+        0x23 => if shifted { b'H' } else { b'h' },
+        0x24 => if shifted { b'J' } else { b'j' },
+        0x25 => if shifted { b'K' } else { b'k' },
+        0x26 => if shifted { b'L' } else { b'l' },
+        0x27 => if shifted { b':' } else { b';' },
+        0x28 => if shifted { b'"' } else { b'\'' },
+        0x29 => if shifted { b'~' } else { b'`' },
+        0x2B => if shifted { b'|' } else { b'\\' },
+        0x2C => if shifted { b'Z' } else { b'z' },
+        0x2D => if shifted { b'X' } else { b'x' },
+        0x2E => if shifted { b'C' } else { b'c' },
+        0x2F => if shifted { b'V' } else { b'v' },
+        0x30 => if shifted { b'B' } else { b'b' },
+        0x31 => if shifted { b'N' } else { b'n' },
+        0x32 => if shifted { b'M' } else { b'm' },
+        0x33 => if shifted { b'<' } else { b',' },
+        0x34 => if shifted { b'>' } else { b'.' },
+        0x35 => if shifted { b'?' } else { b'/' },
+        0x39 => b' ',
+        0x0E => 8, // backspace
+        _ => return None,
+    };
+    Some(ch)
+}
+
+fn ps2_try_read_byte() -> Option<u8> {
+    unsafe {
+        let status = inb(PS2_STATUS);
+        if (status & 0x01) == 0 {
+            return None;
+        }
+        let sc = inb(PS2_DATA);
+
+        if sc == 0xE0 {
+            PS2_EXTENDED_PREFIX.store(true, Ordering::Relaxed);
+            return None;
+        }
+
+        let had_extended = PS2_EXTENDED_PREFIX.swap(false, Ordering::Relaxed);
+        if had_extended {
+            // Minimal bring-up shell: ignore extended-key sequences for now.
+            return None;
+        }
+
+        match sc {
+            0x2A | 0x36 => {
+                PS2_SHIFT_DOWN.store(true, Ordering::Relaxed);
+                return None;
+            }
+            0xAA | 0xB6 => {
+                PS2_SHIFT_DOWN.store(false, Ordering::Relaxed);
+                return None;
+            }
+            _ => {}
+        }
+
+        if (sc & 0x80) != 0 {
+            // Key release for non-shift keys.
+            return None;
+        }
+
+        ps2_set1_scancode_to_ascii(sc, PS2_SHIFT_DOWN.load(Ordering::Relaxed))
+    }
+}
+
+fn shell_try_read_byte() -> Option<u8> {
+    if let Some(b) = serial_try_read_byte() {
+        return Some(b);
+    }
+    ps2_try_read_byte()
+}
+
 fn serial_write_prompt() {
     crate::serial_print!("\r\nx64> ");
+    crate::vga::print_str("\nx64> ");
 }
 
 fn serial_exec_command(cmd: &str) -> bool {
+    if let Some(rest) = cmd.strip_prefix("jitfuzzreg") {
+        if rest.is_empty() || rest.starts_with(' ') {
+            let mut parts = cmd.split_whitespace();
+            let _cmd0 = parts.next();
+            let arg1 = parts.next();
+            let arg2 = parts.next();
+            let arg3 = parts.next();
+            if arg3.is_some() {
+                shell_println!("[X64] jitfuzzreg usage: jitfuzzreg [iters [seeds]] | jitfuzzreg full [iters]");
+                return true;
+            }
+            let mut iterations_per_seed: u32 = 1;
+            let mut seeds_limit: u32 = 2; // interactive-safe default
+            let mut full = false;
+
+            if arg1.is_none() {
+                shell_println!(
+                    "[X64] jitfuzzreg disabled in interactive shell by default (can reset QEMU)."
+                );
+                shell_println!(
+                    "[X64] usage: jitfuzzreg full [iters]   |   jitfuzzreg [iters seeds] (experimental)"
+                );
+                return true;
+            }
+
+            if let Some(a1) = arg1 {
+                if a1 == "full" {
+                    full = true;
+                    if let Some(a2) = arg2 {
+                        if let Ok(v) = a2.parse::<u32>() {
+                            iterations_per_seed = v.max(1);
+                        } else {
+                            shell_println!("[X64] jitfuzzreg usage: jitfuzzreg [iters [seeds]] | jitfuzzreg full [iters]");
+                            return true;
+                        }
+                    }
+                } else {
+                    if let Ok(v) = a1.parse::<u32>() {
+                        iterations_per_seed = v.max(1);
+                    } else {
+                        shell_println!("[X64] jitfuzzreg usage: jitfuzzreg [iters [seeds]] | jitfuzzreg full [iters]");
+                        return true;
+                    }
+                    if let Some(a2) = arg2 {
+                        if let Ok(v) = a2.parse::<u32>() {
+                            seeds_limit = v.max(1);
+                        } else {
+                            shell_println!("[X64] jitfuzzreg usage: jitfuzzreg [iters [seeds]] | jitfuzzreg full [iters]");
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            if full {
+                shell_println!(
+                    "[X64] jitfuzzreg begin: full regression (iters/seed={})",
+                    iterations_per_seed
+                );
+                match crate::wasm::jit_fuzz_regression_default(iterations_per_seed) {
+                    Ok(stats) => shell_println!(
+                        "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/400 edges_adm={}/{}",
+                        stats.seeds_passed,
+                        stats.seeds_failed,
+                        stats.total_mismatches,
+                        stats.total_compile_errors,
+                        stats.max_opcode_edges_hit,
+                        stats.max_opcode_edges_hit_admissible,
+                        stats.opcode_edges_admissible_total,
+                    ),
+                    Err(e) => shell_println!("[X64] jitfuzzreg failed: {}", e),
+                }
+            } else {
+                shell_println!(
+                    "[X64] jitfuzzreg begin: bounded regression (iters/seed={}, seeds={})",
+                    iterations_per_seed,
+                    seeds_limit
+                );
+                match crate::wasm::jit_fuzz_regression_bounded(iterations_per_seed, seeds_limit) {
+                    Ok(stats) => shell_println!(
+                        "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/400 edges_adm={}/{}",
+                        stats.seeds_passed,
+                        stats.seeds_failed,
+                        stats.total_mismatches,
+                        stats.total_compile_errors,
+                        stats.max_opcode_edges_hit,
+                        stats.max_opcode_edges_hit_admissible,
+                        stats.opcode_edges_admissible_total,
+                    ),
+                    Err(e) => shell_println!("[X64] jitfuzzreg failed: {}", e),
+                }
+            }
+            return true;
+        }
+    }
+
     match cmd {
         "" => {}
         "help" => {
-            crate::serial_println!("commands: help ticks irq0 int3 traps pfstats cowtest vmtest jitpre jitcall jitbench jitfuzz jitfuzzreg mmu regs halt");
+            shell_println!("commands: help ticks irq0 int3 traps pfstats cowtest vmtest jitpre jitcall jitbench jitfuzz jitfuzzreg heartbeat mmu regs halt");
+        }
+        "heartbeat" => {
+            shell_println!(
+                "[X64] heartbeat {} (use: heartbeat on|off)",
+                if HEARTBEAT_LOG_ENABLED.load(Ordering::Relaxed) { "on" } else { "off" }
+            );
+        }
+        "heartbeat on" => {
+            HEARTBEAT_LOG_ENABLED.store(true, Ordering::Relaxed);
+            shell_println!("[X64] heartbeat on");
+        }
+        "heartbeat off" => {
+            HEARTBEAT_LOG_ENABLED.store(false, Ordering::Relaxed);
+            shell_println!("[X64] heartbeat off");
         }
         "ticks" => {
-            crate::serial_println!("[X64] ticks={}", crate::pit::get_ticks());
+            shell_println!("[X64] ticks={}", crate::pit::get_ticks());
         }
         "irq0" => {
-            crate::serial_println!("[X64] irq0-count={}", irq_count(0));
+            shell_println!("[X64] irq0-count={}", irq_count(0));
         }
         "int3" => {
-            crate::serial_println!("[X64] triggering int3");
+            shell_println!("[X64] triggering int3");
             trigger_breakpoint();
-            crate::serial_println!(
+            shell_println!(
                 "[X64] breakpoint count={} last_vec={} last_err={:#x}",
                 exception_count(3),
                 last_vector(),
@@ -507,7 +742,7 @@ fn serial_exec_command(cmd: &str) -> bool {
             );
         }
         "traps" => {
-            crate::serial_println!(
+            shell_println!(
                 "[X64] trap-counts: #BP={} #GP={} #PF={} last_vec={} last_err={:#x}",
                 exception_count(3),
                 exception_count(13),
@@ -518,13 +753,13 @@ fn serial_exec_command(cmd: &str) -> bool {
         }
         "pfstats" => {
             let (pf, cow, copies) = crate::arch::mmu::x86_64_debug_pf_stats();
-            crate::serial_println!(
+            shell_println!(
                 "[X64] pf-stats faults={} cow={} copies={}",
                 pf, cow, copies
             );
         }
         "mmu" => {
-            crate::serial_println!(
+            shell_println!(
                 "[X64] mmu backend={} cr3={:#018x}",
                 crate::arch::mmu::backend_name(),
                 crate::arch::mmu::current_page_table_root_addr(),
@@ -533,72 +768,56 @@ fn serial_exec_command(cmd: &str) -> bool {
         "regs" => {
             let (cr0, cr3, cr4) = read_ctrl_regs();
             let efer = read_efer();
-            crate::serial_println!(
+            shell_println!(
                 "[X64] cr0={:#018x} cr3={:#018x} cr4={:#018x} efer={:#018x}",
                 cr0, cr3, cr4, efer
             );
         }
         "cowtest" => {
             match cow_self_test() {
-                Ok(()) => crate::serial_println!("[X64] cowtest ok"),
-                Err(e) => crate::serial_println!("[X64] cowtest failed: {}", e),
+                Ok(()) => shell_println!("[X64] cowtest ok"),
+                Err(e) => shell_println!("[X64] cowtest failed: {}", e),
             }
         }
         "vmtest" => {
             match vm_map_self_test() {
-                Ok(()) => crate::serial_println!("[X64] vmtest ok"),
-                Err(e) => crate::serial_println!("[X64] vmtest failed: {}", e),
+                Ok(()) => shell_println!("[X64] vmtest ok"),
+                Err(e) => shell_println!("[X64] vmtest failed: {}", e),
             }
         }
         "jitpre" => {
             match crate::wasm::jit_x86_64_sandbox_preflight() {
-                Ok(()) => crate::serial_println!("[X64] jitpre ok"),
-                Err(e) => crate::serial_println!("[X64] jitpre failed: {}", e),
+                Ok(()) => shell_println!("[X64] jitpre ok"),
+                Err(e) => shell_println!("[X64] jitpre failed: {}", e),
             }
         }
         "jitcall" => {
             match crate::wasm::jit_x86_64_call_user_path_probe() {
-                Ok(msg) => crate::serial_println!("[X64] jitcall ok: {}", msg),
-                Err(e) => crate::serial_println!("[X64] jitcall failed: {}", e),
+                Ok(msg) => shell_println!("[X64] jitcall ok: {}", msg),
+                Err(e) => shell_println!("[X64] jitcall failed: {}", e),
             }
         }
         "jitbench" => {
             match crate::wasm::jit_bounds_self_test() {
-                Ok(()) => crate::serial_println!("[X64] jitbench ok: wasm-jit-bounds-selftest"),
-                Err(e) => crate::serial_println!("[X64] jitbench failed: {}", e),
+                Ok(()) => shell_println!("[X64] jitbench ok: wasm-jit-bounds-selftest"),
+                Err(e) => shell_println!("[X64] jitbench failed: {}", e),
             }
         }
         "jitfuzz" => {
             match jit_fuzz_smoke_self_test() {
-                Ok((iters, ok, traps)) => crate::serial_println!(
+                Ok((iters, ok, traps)) => shell_println!(
                     "[X64] jitfuzz ok: iters={} ok={} traps={}",
                     iters, ok, traps
                 ),
-                Err(e) => crate::serial_println!("[X64] jitfuzz failed: {}", e),
-            }
-        }
-        "jitfuzzreg" => {
-            crate::serial_println!("[X64] jitfuzzreg begin: regression dry-run");
-            match crate::wasm::jit_fuzz_regression_default(1) {
-                Ok(stats) => crate::serial_println!(
-                    "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/400 edges_adm={}/{}",
-                    stats.seeds_passed,
-                    stats.seeds_failed,
-                    stats.total_mismatches,
-                    stats.total_compile_errors,
-                    stats.max_opcode_edges_hit,
-                    stats.max_opcode_edges_hit_admissible,
-                    stats.opcode_edges_admissible_total,
-                ),
-                Err(e) => crate::serial_println!("[X64] jitfuzzreg failed: {}", e),
+                Err(e) => shell_println!("[X64] jitfuzz failed: {}", e),
             }
         }
         "halt" | "exit" => {
-            crate::serial_println!("[X64] halting");
+            shell_println!("[X64] halting");
             return false;
         }
         _ => {
-            crate::serial_println!("[X64] unknown command: {}", cmd);
+            shell_println!("[X64] unknown command: {}", cmd);
         }
     }
     true
@@ -628,7 +847,7 @@ fn cow_self_test() -> Result<(), &'static str> {
 
     let a = unsafe { ptr.read() };
     let b = unsafe { ptr.add(1).read() };
-    crate::serial_println!(
+    shell_println!(
         "[X64] cowtest phys {:#x} -> {:#x}, bytes={:#x}/{:#x}, cow {}->{}, copies {}->{}",
         phys_before,
         phys_after,
@@ -940,7 +1159,7 @@ fn vm_map_self_test() -> Result<(), &'static str> {
     let phys_byte = unsafe { (phys_map_va as *const u8).read() };
     crate::arch::mmu::set_page_table_root(old_root)?;
 
-    crate::serial_println!(
+    shell_println!(
         "[X64] vmtest root={:#x} bytes code={:#x} stack={:#x} physmap={:#x}",
         space.page_table_root_addr(),
         code_byte,
@@ -1002,7 +1221,7 @@ pub fn wait_for_ticks(min_delta: u64, max_spin_hlt: usize) -> bool {
 }
 
 pub fn run_serial_shell() -> ! {
-    crate::serial_println!("[X64] minimal serial shell ready (type 'help')");
+    shell_println!("[X64] minimal shell ready (serial + VGA keyboard)");
     serial_write_prompt();
 
     let mut buf = [0u8; 128];
@@ -1010,10 +1229,10 @@ pub fn run_serial_shell() -> ! {
     let mut last_heartbeat = crate::pit::get_ticks();
 
     loop {
-        if let Some(byte) = serial_try_read_byte() {
+        if let Some(byte) = shell_try_read_byte() {
             match byte {
                 b'\r' | b'\n' => {
-                    crate::serial_println!("");
+                    shell_println!("");
                     let cmd = core::str::from_utf8(&buf[..len]).unwrap_or("");
                     let keep_running = serial_exec_command(cmd.trim());
                     len = 0;
@@ -1026,13 +1245,14 @@ pub fn run_serial_shell() -> ! {
                     if len > 0 {
                         len -= 1;
                         crate::serial_print!("\x08 \x08");
+                        crate::vga::backspace();
                     }
                 }
                 b if (0x20..=0x7E).contains(&b) => {
                     if len < buf.len() - 1 {
                         buf[len] = b;
                         len += 1;
-                        crate::serial_print!("{}", b as char);
+                        shell_print!("{}", b as char);
                     }
                 }
                 _ => {}
@@ -1040,7 +1260,9 @@ pub fn run_serial_shell() -> ! {
         }
 
         let ticks = crate::pit::get_ticks();
-        if ticks.wrapping_sub(last_heartbeat) >= 100 {
+        if HEARTBEAT_LOG_ENABLED.load(Ordering::Relaxed)
+            && ticks.wrapping_sub(last_heartbeat) >= 100
+        {
             last_heartbeat = ticks;
             let (pf, cow, _) = crate::arch::mmu::x86_64_debug_pf_stats();
             crate::serial_println!(
@@ -1052,9 +1274,9 @@ pub fn run_serial_shell() -> ! {
                 cow,
             );
             if len > 0 {
-                crate::serial_print!("x64> {}", core::str::from_utf8(&buf[..len]).unwrap_or(""));
+                shell_print!("x64> {}", core::str::from_utf8(&buf[..len]).unwrap_or(""));
             } else {
-                crate::serial_print!("x64> ");
+                shell_print!("x64> ");
             }
         }
 
