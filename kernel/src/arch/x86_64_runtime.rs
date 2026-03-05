@@ -61,6 +61,9 @@ static LAST_ERROR: AtomicU64 = AtomicU64::new(0);
 static HEARTBEAT_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
 static SHELL_CONSOLE_MODE: AtomicU8 = AtomicU8::new(0); // 0=both, 1=serial, 2=vga
 static KBDTEST_ENABLED: AtomicBool = AtomicBool::new(false);
+static PF_LOOP_LAST_RIP: AtomicU64 = AtomicU64::new(0);
+static PF_LOOP_LAST_ADDR: AtomicU64 = AtomicU64::new(0);
+static PF_LOOP_REPEAT_COUNT: AtomicU64 = AtomicU64::new(0);
 static PS2_SHIFT_DOWN: AtomicBool = AtomicBool::new(false);
 static PS2_EXTENDED_PREFIX: AtomicBool = AtomicBool::new(false);
 static PS2_KBD_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -422,6 +425,15 @@ fn pic_eoi(irq: u8) {
     }
 }
 
+#[cold]
+fn halt_forever() -> ! {
+    loop {
+        unsafe {
+            core::arch::asm!("cli; hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
 fn is_error_code_vector(vector: u8) -> bool {
     matches!(vector, 8 | 10 | 11 | 12 | 13 | 14 | 17 | 21 | 29 | 30)
 }
@@ -455,10 +467,73 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
             unsafe {
                 core::arch::asm!("mov {}, cr2", out(reg) fault_addr, options(nomem, nostack, preserves_flags));
             }
-            if have_user_frame && !frame.is_null() {
+            if !frame.is_null() {
+                if have_user_frame {
+                    let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
+                    if crate::wasm::jit_handle_page_fault_x86_64(
+                        fault_addr,
+                        error,
+                        &mut uf.rip,
+                        uf.cs,
+                        &mut uf.rsp,
+                    ) {
+                        return;
+                    }
+                } else {
+                    let f = unsafe { &mut *frame };
+                    let mut dummy_rsp = 0u64;
+                    if crate::wasm::jit_handle_page_fault_x86_64(
+                        fault_addr,
+                        error,
+                        &mut f.rip,
+                        f.cs,
+                        &mut dummy_rsp,
+                    ) {
+                        return;
+                    }
+                }
+            }
+            if crate::arch::mmu::handle_page_fault(fault_addr, error) {
+                PF_LOOP_REPEAT_COUNT.store(0, Ordering::Relaxed);
+                return;
+            }
+            let rip = if !frame.is_null() {
+                unsafe { (*frame).rip }
+            } else {
+                0
+            };
+            let prev_rip = PF_LOOP_LAST_RIP.load(Ordering::Relaxed);
+            let prev_addr = PF_LOOP_LAST_ADDR.load(Ordering::Relaxed);
+            let repeat = if prev_rip == rip && prev_addr == fault_addr as u64 {
+                PF_LOOP_REPEAT_COUNT
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1)
+            } else {
+                PF_LOOP_LAST_RIP.store(rip, Ordering::Relaxed);
+                PF_LOOP_LAST_ADDR.store(fault_addr as u64, Ordering::Relaxed);
+                PF_LOOP_REPEAT_COUNT.store(1, Ordering::Relaxed);
+                1
+            };
+            crate::serial_println!(
+                "[X64-PF] unhandled cr2={:#018x} err={:#x} rip={:#018x} repeat={}",
+                fault_addr,
+                error,
+                rip,
+                repeat,
+            );
+            if repeat >= 64 {
+                crate::serial_println!(
+                    "[X64-PF] repeating unhandled PF at same RIP/CR2; halting to avoid livelock"
+                );
+                halt_forever();
+            }
+        }
+
+        if vector != 14 && !frame.is_null() {
+            if have_user_frame {
                 let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
-                if crate::wasm::jit_handle_page_fault_x86_64(
-                    fault_addr,
+                if crate::wasm::jit_handle_exception_x86_64(
+                    vector as u64,
                     error,
                     &mut uf.rip,
                     uf.cs,
@@ -466,27 +541,18 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
                 ) {
                     return;
                 }
-            }
-            if crate::arch::mmu::handle_page_fault(fault_addr, error) {
-                return;
-            }
-            crate::serial_println!(
-                "[X64-PF] unhandled cr2={:#018x} err={:#x}",
-                fault_addr,
-                error
-            );
-        }
-
-        if vector != 14 && have_user_frame && !frame.is_null() {
-            let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
-            if crate::wasm::jit_handle_exception_x86_64(
-                vector as u64,
-                error,
-                &mut uf.rip,
-                uf.cs,
-                &mut uf.rsp,
-            ) {
-                return;
+            } else {
+                let f = unsafe { &mut *frame };
+                let mut dummy_rsp = 0u64;
+                if crate::wasm::jit_handle_exception_x86_64(
+                    vector as u64,
+                    error,
+                    &mut f.rip,
+                    f.cs,
+                    &mut dummy_rsp,
+                ) {
+                    return;
+                }
             }
         }
 
@@ -515,13 +581,20 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
         if irq == 0 {
             crate::pit::tick();
             if !frame.is_null() {
-                let f = unsafe { &*frame };
+                let f = unsafe { &mut *frame };
                 if (f.cs & 0x3) == 0x3 {
                     let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
                     let _ = crate::wasm::jit_handle_timer_interrupt_x86_64(
                         &mut uf.rip,
                         uf.cs,
                         &mut uf.rsp,
+                    );
+                } else {
+                    let mut dummy_rsp = 0u64;
+                    let _ = crate::wasm::jit_handle_timer_interrupt_x86_64(
+                        &mut f.rip,
+                        f.cs,
+                        &mut dummy_rsp,
                     );
                 }
             }
@@ -919,6 +992,66 @@ fn x64_print_jit_fuzz_stats(stats: &crate::wasm::JitFuzzStats) {
     }
 }
 
+fn x64_empty_jit_fuzz_stats() -> crate::wasm::JitFuzzStats {
+    crate::wasm::JitFuzzStats {
+        iterations: 0,
+        ok: 0,
+        traps: 0,
+        mismatches: 0,
+        compile_errors: 0,
+        opcode_bins_hit: 0,
+        opcode_edges_hit: 0,
+        opcode_edges_hit_admissible: 0,
+        opcode_edges_admissible_total: 0,
+        novel_programs: 0,
+        first_mismatch: None,
+        first_compile_error: None,
+    }
+}
+
+fn x64_merge_jit_fuzz_stats(
+    agg: &mut crate::wasm::JitFuzzStats,
+    mut chunk: crate::wasm::JitFuzzStats,
+    iter_base: u32,
+) {
+    agg.iterations = agg.iterations.saturating_add(chunk.iterations);
+    agg.ok = agg.ok.saturating_add(chunk.ok);
+    agg.traps = agg.traps.saturating_add(chunk.traps);
+    agg.mismatches = agg.mismatches.saturating_add(chunk.mismatches);
+    agg.compile_errors = agg.compile_errors.saturating_add(chunk.compile_errors);
+    agg.opcode_bins_hit = agg.opcode_bins_hit.max(chunk.opcode_bins_hit);
+    agg.opcode_edges_hit = agg.opcode_edges_hit.max(chunk.opcode_edges_hit);
+    agg.opcode_edges_hit_admissible = agg
+        .opcode_edges_hit_admissible
+        .max(chunk.opcode_edges_hit_admissible);
+    agg.opcode_edges_admissible_total = agg
+        .opcode_edges_admissible_total
+        .max(chunk.opcode_edges_admissible_total);
+    agg.novel_programs = agg.novel_programs.saturating_add(chunk.novel_programs);
+
+    if agg.first_compile_error.is_none() {
+        if let Some(mut e) = chunk.first_compile_error.take() {
+            e.iteration = e.iteration.saturating_add(iter_base);
+            agg.first_compile_error = Some(e);
+        }
+    }
+    if agg.first_mismatch.is_none() {
+        if let Some(mut m) = chunk.first_mismatch.take() {
+            m.iteration = m.iteration.saturating_add(iter_base);
+            agg.first_mismatch = Some(m);
+        }
+    }
+}
+
+fn x64_jit_fuzz_chunk_seed(base_seed: u64, chunk_idx: u32) -> u64 {
+    if chunk_idx == 0 {
+        return base_seed;
+    }
+    // Deterministic derivation for compat chunking in the bring-up shell.
+    let mix = 0x9E37_79B9_7F4A_7C15u64.wrapping_mul((chunk_idx as u64).wrapping_add(1));
+    base_seed ^ mix.rotate_left((chunk_idx & 31) + 1)
+}
+
 struct X64ScopedJitUserMode {
     prev: bool,
 }
@@ -944,6 +1077,23 @@ struct X64ScopedJitRecover;
 impl Drop for X64ScopedJitRecover {
     fn drop(&mut self) {
         crate::wasm::jit_runtime_recover_transient();
+    }
+}
+
+struct X64ScopedJitFuzzDiag {
+    prev: bool,
+}
+
+impl X64ScopedJitFuzzDiag {
+    fn enter(enabled: bool) -> Self {
+        let prev = crate::wasm::jit_fuzz_set_x64_diag(enabled);
+        Self { prev }
+    }
+}
+
+impl Drop for X64ScopedJitFuzzDiag {
+    fn drop(&mut self) {
+        let _ = crate::wasm::jit_fuzz_set_x64_diag(self.prev);
     }
 }
 
@@ -1010,16 +1160,83 @@ fn x64_alias_wasm_jit_fuzz(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
     shell_println!("Seed: {}", seed);
     shell_println!("Mode: kernel JIT (x86_64 compat alias)");
     shell_println!("[X64] long runs use internal x86_64 fuzz checkpoints/recovery.");
+    const X64_COMPAT_FUZZ_CHUNK_ITERS: u32 = 64;
+    let use_chunking = iters > X64_COMPAT_FUZZ_CHUNK_ITERS;
+    let total_chunks = if use_chunking {
+        (iters + X64_COMPAT_FUZZ_CHUNK_ITERS - 1) / X64_COMPAT_FUZZ_CHUNK_ITERS
+    } else {
+        1
+    };
+    if use_chunking {
+        shell_println!(
+            "[X64] compat alias chunking enabled: {} chunks (<= {} iters each).",
+            total_chunks,
+            X64_COMPAT_FUZZ_CHUNK_ITERS
+        );
+    }
     shell_println!();
 
+    shell_println!("[X64] recover transient begin...");
     crate::wasm::jit_runtime_recover_transient();
+    shell_println!("[X64] recover transient done.");
     let _recover_guard = X64ScopedJitRecover;
     let _jit_mode_guard = X64ScopedJitUserMode::enter(user_mode);
+    let _diag_guard = X64ScopedJitFuzzDiag::enter(true);
 
-    match crate::wasm::jit_fuzz(iters, seed) {
-        Ok(stats) => x64_print_jit_fuzz_stats(&stats),
-        Err(e) => shell_println!("[X64] wasm-jit-fuzz failed: {}", e),
+    if !use_chunking {
+        match crate::wasm::jit_fuzz(iters, seed) {
+            Ok(stats) => x64_print_jit_fuzz_stats(&stats),
+            Err(e) => shell_println!("[X64] wasm-jit-fuzz failed: {}", e),
+        }
+        return true;
     }
+
+    let mut agg = x64_empty_jit_fuzz_stats();
+    let mut remaining = iters;
+    let mut iter_base = 0u32;
+    let mut chunk_idx = 0u32;
+    while remaining > 0 {
+        let chunk_iters = if remaining > X64_COMPAT_FUZZ_CHUNK_ITERS {
+            X64_COMPAT_FUZZ_CHUNK_ITERS
+        } else {
+            remaining
+        };
+        let chunk_seed = x64_jit_fuzz_chunk_seed(seed, chunk_idx);
+        shell_println!(
+            "[X64] fuzz chunk {}/{} start: iters={} seed={}",
+            chunk_idx + 1,
+            total_chunks,
+            chunk_iters,
+            chunk_seed
+        );
+        let chunk_res = crate::wasm::jit_fuzz(chunk_iters, chunk_seed);
+        match chunk_res {
+            Ok(stats) => {
+                let stop_early = stats.mismatches != 0 || stats.compile_errors != 0;
+                x64_merge_jit_fuzz_stats(&mut agg, stats, iter_base);
+                remaining -= chunk_iters;
+                iter_base = iter_base.saturating_add(chunk_iters);
+                chunk_idx = chunk_idx.saturating_add(1);
+                // Keep long runs stable by resetting transient JIT/handoff state
+                // between chunks in the bring-up runtime.
+                crate::wasm::jit_runtime_recover_transient();
+                if stop_early {
+                    break;
+                }
+            }
+            Err(e) => {
+                shell_println!(
+                    "[X64] wasm-jit-fuzz failed in chunk {} (iters={} seed={}): {}",
+                    chunk_idx,
+                    chunk_iters,
+                    chunk_seed,
+                    e
+                );
+                return true;
+            }
+        }
+    }
+    x64_print_jit_fuzz_stats(&agg);
     true
 }
 
@@ -1307,10 +1524,22 @@ fn serial_exec_command(cmd: &str) -> bool {
             );
         }
         "mmu" => {
+            let (pf, cow, copies) = crate::arch::mmu::x86_64_debug_pf_stats();
+            let (pt_used, pt_cap, rec_fail, rec_addr, rec_err, rec_reason) =
+                crate::arch::mmu::x86_64_debug_recover_stats();
             shell_println!(
-                "[X64] mmu backend={} cr3={:#018x}",
+                "[X64] mmu backend={} cr3={:#018x} pf={} cow={} copies={} pt_pool={}/{} rec_fail={} rec_last={:#x}/err={:#x}/why={}",
                 crate::arch::mmu::backend_name(),
                 crate::arch::mmu::current_page_table_root_addr(),
+                pf,
+                cow,
+                copies,
+                pt_used,
+                pt_cap,
+                rec_fail,
+                rec_addr,
+                rec_err,
+                rec_reason,
             );
         }
         "regs" => {

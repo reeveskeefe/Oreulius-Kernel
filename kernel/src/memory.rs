@@ -63,6 +63,8 @@ impl BumpAllocator {
         self.heap_start = &_heap_start as *const usize as usize;
         self.heap_end = &_heap_end as *const usize as usize;
         self.next = self.heap_start;
+        HEAP_RANGE_START.store(self.heap_start, Ordering::Relaxed);
+        HEAP_RANGE_END.store(self.heap_end, Ordering::Relaxed);
     }
 }
 
@@ -118,6 +120,8 @@ const PAGE_SIZE: usize = 4096;
 
 static JIT_ARENA_START: AtomicUsize = AtomicUsize::new(0);
 static JIT_ARENA_END: AtomicUsize = AtomicUsize::new(0);
+static HEAP_RANGE_START: AtomicUsize = AtomicUsize::new(0);
+static HEAP_RANGE_END: AtomicUsize = AtomicUsize::new(0);
 
 struct JitArena {
     next: usize,
@@ -170,8 +174,10 @@ pub fn jit_arena_contains_range(base: usize, size: usize) -> bool {
 }
 
 pub fn heap_range() -> (usize, usize) {
-    let alloc = ALLOCATOR.0.lock();
-    (alloc.heap_start, alloc.heap_end)
+    (
+        HEAP_RANGE_START.load(Ordering::Relaxed),
+        HEAP_RANGE_END.load(Ordering::Relaxed),
+    )
 }
 
 pub fn jit_allocate(size: usize, align: usize) -> Result<usize, &'static str> {

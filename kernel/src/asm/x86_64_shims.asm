@@ -285,6 +285,22 @@ x64_jit_callpage_exec:
     pop rbp
     ret
 
+; Resume from a ring0 JIT fault by unwinding the x86_64 JIT prologue frame.
+; The emitted JIT prologue is:
+;   push rbp; mov rbp,rsp; push rbx,r12,r13,r14,r15; sub rsp,0x20
+; so we restore callee-saved regs from [rbp-*] slots and return to caller.
+global asm_jit_fault_resume
+asm_jit_fault_resume:
+    mov r15, [rbp - 40]
+    mov r14, [rbp - 32]
+    mov r13, [rbp - 24]
+    mov r12, [rbp - 16]
+    mov rbx, [rbp - 8]
+    xor eax, eax
+    mov rsp, rbp
+    pop rbp
+    ret
+
 ; Enter long-mode ring3 using an iretq frame.
 ; Signature compatibility with legacy path:
 ;   void jit_user_enter(u32 esp, u32 eip, u16 cs, u16 ds)
@@ -518,7 +534,6 @@ STUB_ZERO asm_has_sse4_2
 STUB_ZERO asm_hash_djb2
 STUB_ZERO asm_hash_fnv1a
 STUB_ZERO asm_hash_sdbm
-STUB_ZERO asm_jit_fault_resume
 STUB_ZERO asm_load_context
 STUB_ZERO asm_rdrand
 STUB_ZERO asm_rdtsc_begin

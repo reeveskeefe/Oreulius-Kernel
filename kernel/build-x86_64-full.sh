@@ -76,6 +76,8 @@ echo "[3/3] Linking x86_64 kernel ELF..."
   --whole-archive "${RUST_LIB}" --no-whole-archive
 
 echo "Built: ${OUT_ELF}"
+echo "Note: ISO is not rebuilt by this script."
+echo "Run ./build-x86_64-mb2-iso.sh before ./run-x86_64-mb2-grub.sh."
 
 GRUB_FILE_BIN="${GRUB_FILE_BIN:-}"
 if [[ -z "${GRUB_FILE_BIN}" ]]; then

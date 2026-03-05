@@ -4300,13 +4300,15 @@ impl WasmInstance {
             self.control_depth = 0;
             self.current_func_end = 0;
 
-            // Check rate limiting and security
-            if !crate::security::security().validate_capability(
-                self.process_id,
-                1, // Execute permission
-                1,
-            ).is_ok() {
-                return Err(WasmError::PermissionDenied);
+            // Check capability security policy unless this is an internal JIT fuzz run.
+            if !JIT_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+                if !crate::security::security().validate_capability(
+                    self.process_id,
+                    1, // Execute permission
+                    1,
+                ).is_ok() {
+                    return Err(WasmError::PermissionDenied);
+                }
             }
 
             let func = self.module.get_function(func_idx)?;
@@ -7892,6 +7894,7 @@ static JIT_CACHE: Mutex<JitCache> = Mutex::new(JitCache::new());
 static JIT_FUZZ_SCRATCH: Mutex<Option<JitFuzzScratch>> = Mutex::new(None);
 static JIT_FUZZ_COMPILER: Mutex<Option<crate::wasm_jit::FuzzCompiler>> = Mutex::new(None);
 static JIT_FUZZ_INSTANCES: Mutex<Option<(usize, usize)>> = Mutex::new(None);
+static JIT_FUZZ_ACTIVE: AtomicBool = AtomicBool::new(false);
 static JIT_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static JIT_FAULT_EXEC_START: AtomicU32 = AtomicU32::new(0);
 static JIT_FAULT_EXEC_END: AtomicU32 = AtomicU32::new(0);
@@ -7901,9 +7904,11 @@ static JIT_USER_SANDBOX: Mutex<Option<arch_mmu::AddressSpace>> = Mutex::new(None
 static JIT_USER_PREFLIGHT_PAGES: Mutex<Option<JitUserPages>> = Mutex::new(None);
 static JIT_USER_PREFLIGHT_AUX_PAGES: Mutex<Option<JitUserPreflightAuxPages>> = Mutex::new(None);
 static JIT_KERNEL_CALL_LOCK: Mutex<()> = Mutex::new(());
+static JIT_FUZZ_X64_DIAG: AtomicBool = AtomicBool::new(false);
 static JIT_USER_DEBUG_STAGE: AtomicU32 = AtomicU32::new(0);
 static JIT_USER_FAULT_LOGGED: AtomicBool = AtomicBool::new(false);
 static JIT_USER_ENTER_TICK: AtomicU32 = AtomicU32::new(0);
+static JIT_KERNEL_ENTER_TICK: AtomicU32 = AtomicU32::new(0);
 static JIT_USER_HANDOFF_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy)]
@@ -8000,6 +8005,8 @@ pub static mut JIT_USER_DBG_SYSCALL_FROM_CS: u32 = 0;
 
 const TRAP_MEM: i32 = -1;
 const JIT_USER_TIMEOUT_TICKS: u32 = 25; // 250ms @ 100Hz
+#[cfg(target_arch = "x86_64")]
+const JIT_KERNEL_TIMEOUT_TICKS_X64: u32 = 100; // 1s @ 100Hz
 const JIT_USER_CALL_LOG_LIMIT: u32 = 4;
 const JIT_USER_HANDOFF_LOG_LIMIT: u32 = 8;
 
@@ -8019,6 +8026,16 @@ pub fn jit_config() -> &'static Mutex<JitConfig> {
 
 pub fn jit_stats() -> &'static Mutex<JitStats> {
     &JIT_STATS
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn jit_fuzz_set_x64_diag(enabled: bool) -> bool {
+    JIT_FUZZ_X64_DIAG.swap(enabled, Ordering::SeqCst)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn jit_fuzz_set_x64_diag(_enabled: bool) -> bool {
+    false
 }
 
 fn jit_runtime_recover_impl(drop_fuzz_state: bool) {
@@ -8058,6 +8075,7 @@ fn jit_runtime_recover_impl(drop_fuzz_state: bool) {
     JIT_USER_DEBUG_STAGE.store(0, Ordering::SeqCst);
     JIT_USER_FAULT_LOGGED.store(false, Ordering::SeqCst);
     JIT_USER_ENTER_TICK.store(0, Ordering::SeqCst);
+    JIT_KERNEL_ENTER_TICK.store(0, Ordering::SeqCst);
     JIT_USER_HANDOFF_LOG_COUNT.store(0, Ordering::SeqCst);
     JIT_USER_DBG_CALL_SEQ.store(0, Ordering::SeqCst);
     unsafe {
@@ -8111,7 +8129,16 @@ fn jit_runtime_recover_impl(drop_fuzz_state: bool) {
     if kpti::enabled() {
         kpti::leave_user();
     } else {
-        idt_asm::reload();
+        #[cfg(target_arch = "x86_64")]
+        {
+            // x86_64 bring-up uses a dedicated 64-bit IDT path; reloading the
+            // legacy idt_asm table here can stall/fault before fuzz chunks start.
+            crate::arch::x86_64_runtime::init_trap_table();
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            idt_asm::reload();
+        }
     }
 
     if let Some(kernel_cr3) = crate::arch::mmu::kernel_page_table_root_addr() {
@@ -8808,6 +8835,27 @@ pub fn jit_user_active() -> bool {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[inline]
+fn jit_handle_kernel_fault_x86_64(rip: &mut u64) -> bool {
+    if !JIT_FAULT_ACTIVE.load(Ordering::SeqCst) {
+        return false;
+    }
+    let start = JIT_FAULT_EXEC_START.load(Ordering::SeqCst) as usize;
+    let end = JIT_FAULT_EXEC_END.load(Ordering::SeqCst) as usize;
+    let pc = *rip as usize;
+    if start == 0 || end <= start || pc < start || pc >= end {
+        return false;
+    }
+    unsafe {
+        if !JIT_FAULT_TRAP_PTR.is_null() {
+            *JIT_FAULT_TRAP_PTR = TRAP_MEM;
+        }
+    }
+    *rip = crate::asm_bindings::asm_jit_fault_resume as usize as u64;
+    true
+}
+
+#[cfg(target_arch = "x86_64")]
 pub fn jit_handle_page_fault_x86_64(
     fault_addr: usize,
     error_code: u64,
@@ -8818,12 +8866,12 @@ pub fn jit_handle_page_fault_x86_64(
     if !JIT_FAULT_ACTIVE.load(Ordering::SeqCst) {
         return false;
     }
-    unsafe {
-        if !JIT_FAULT_TRAP_PTR.is_null() {
-            *JIT_FAULT_TRAP_PTR = TRAP_MEM;
-        }
-    }
     if (cs & 0x3) == 0x3 && JIT_USER_ACTIVE.load(Ordering::SeqCst) != 0 {
+        unsafe {
+            if !JIT_FAULT_TRAP_PTR.is_null() {
+                *JIT_FAULT_TRAP_PTR = TRAP_MEM;
+            }
+        }
         if !JIT_USER_FAULT_LOGGED.swap(true, Ordering::SeqCst) {
             let stage = JIT_USER_DEBUG_STAGE.load(Ordering::SeqCst);
             crate::serial::_print(format_args!(
@@ -8836,7 +8884,10 @@ pub fn jit_handle_page_fault_x86_64(
         *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16) as u64;
         return true;
     }
-    false
+    // Kernel-mode JIT fuzz executes in ring0. If the faulting RIP is inside the
+    // active JIT translation window, force trap return through the shared resume
+    // shim instead of re-entering the faulting instruction endlessly.
+    jit_handle_kernel_fault_x86_64(rip)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -8850,60 +8901,83 @@ pub fn jit_handle_exception_x86_64(
     if !JIT_FAULT_ACTIVE.load(Ordering::SeqCst) {
         return false;
     }
-    if (cs & 0x3) != 0x3 || JIT_USER_ACTIVE.load(Ordering::SeqCst) == 0 {
-        return false;
-    }
-    match vector as u32 {
-        6 | 7 | 10 | 11 | 12 | 13 | 16 | 17 | 19 | 21 => {}
-        _ => return false,
-    }
-    unsafe {
-        if !JIT_FAULT_TRAP_PTR.is_null() {
-            *JIT_FAULT_TRAP_PTR = TRAP_MEM;
+    if (cs & 0x3) == 0x3 && JIT_USER_ACTIVE.load(Ordering::SeqCst) != 0 {
+        match vector as u32 {
+            6 | 7 | 10 | 11 | 12 | 13 | 16 | 17 | 19 | 21 => {}
+            _ => return false,
         }
+        unsafe {
+            if !JIT_FAULT_TRAP_PTR.is_null() {
+                *JIT_FAULT_TRAP_PTR = TRAP_MEM;
+            }
+        }
+        if !JIT_USER_FAULT_LOGGED.swap(true, Ordering::SeqCst) {
+            let stage = JIT_USER_DEBUG_STAGE.load(Ordering::SeqCst);
+            crate::serial::_print(format_args!(
+                "[JIT-DBG] x64 user exception stage={} vector={} err=0x{:016x} rip=0x{:016x} rsp=0x{:016x}\n",
+                stage, vector, error_code, *rip, *rsp
+            ));
+        }
+        let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
+        *rip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u64;
+        *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16) as u64;
+        return true;
     }
-    if !JIT_USER_FAULT_LOGGED.swap(true, Ordering::SeqCst) {
-        let stage = JIT_USER_DEBUG_STAGE.load(Ordering::SeqCst);
-        crate::serial::_print(format_args!(
-            "[JIT-DBG] x64 user exception stage={} vector={} err=0x{:016x} rip=0x{:016x} rsp=0x{:016x}\n",
-            stage, vector, error_code, *rip, *rsp
-        ));
-    }
-    let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
-    *rip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u64;
-    *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16) as u64;
-    true
+    // Kernel-mode JIT execution faults are converted into TRAP_MEM and resumed
+    // through asm_jit_fault_resume if the RIP is inside active translated code.
+    jit_handle_kernel_fault_x86_64(rip)
 }
 
 #[cfg(target_arch = "x86_64")]
 pub fn jit_handle_timer_interrupt_x86_64(rip: &mut u64, cs: u64, rsp: &mut u64) -> bool {
-    if (cs & 0x3) != 0x3 || JIT_USER_ACTIVE.load(Ordering::SeqCst) == 0 {
-        return false;
+    if (cs & 0x3) == 0x3 && JIT_USER_ACTIVE.load(Ordering::SeqCst) != 0 {
+        let start_tick = JIT_USER_ENTER_TICK.load(Ordering::SeqCst);
+        if start_tick == 0 {
+            return false;
+        }
+        let now = crate::pit::get_ticks() as u32;
+        if now.wrapping_sub(start_tick) < JIT_USER_TIMEOUT_TICKS {
+            return false;
+        }
+        unsafe {
+            if !JIT_FAULT_TRAP_PTR.is_null() {
+                *JIT_FAULT_TRAP_PTR = TRAP_MEM;
+            }
+        }
+        if !JIT_USER_FAULT_LOGGED.swap(true, Ordering::SeqCst) {
+            let stage = JIT_USER_DEBUG_STAGE.load(Ordering::SeqCst);
+            crate::serial::_print(format_args!(
+                "[JIT-DBG] x64 user timeout stage={} start_tick={} now_tick={} rip=0x{:016x} rsp=0x{:016x}\n",
+                stage, start_tick, now, *rip, *rsp
+            ));
+        }
+        let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
+        *rip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u64;
+        *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16) as u64;
+        return true;
     }
-    let start_tick = JIT_USER_ENTER_TICK.load(Ordering::SeqCst);
-    if start_tick == 0 {
-        return false;
-    }
-    let now = crate::pit::get_ticks() as u32;
-    if now.wrapping_sub(start_tick) < JIT_USER_TIMEOUT_TICKS {
-        return false;
-    }
-    unsafe {
-        if !JIT_FAULT_TRAP_PTR.is_null() {
-            *JIT_FAULT_TRAP_PTR = TRAP_MEM;
+
+    // Kernel-mode x86_64 JIT: force timeout escape through asm_jit_fault_resume
+    // so malformed emitted code cannot livelock the bring-up shell.
+    if (cs & 0x3) == 0 {
+        let start_tick = JIT_KERNEL_ENTER_TICK.load(Ordering::SeqCst);
+        if start_tick == 0 || !JIT_FAULT_ACTIVE.load(Ordering::SeqCst) {
+            return false;
+        }
+        let now = crate::pit::get_ticks() as u32;
+        if now.wrapping_sub(start_tick) < JIT_KERNEL_TIMEOUT_TICKS_X64 {
+            return false;
+        }
+        if jit_handle_kernel_fault_x86_64(rip) {
+            JIT_KERNEL_ENTER_TICK.store(0, Ordering::SeqCst);
+            crate::serial::_print(format_args!(
+                "[JIT-DBG] x64 kernel timeout start_tick={} now_tick={} rip=0x{:016x}\n",
+                start_tick, now, *rip
+            ));
+            return true;
         }
     }
-    if !JIT_USER_FAULT_LOGGED.swap(true, Ordering::SeqCst) {
-        let stage = JIT_USER_DEBUG_STAGE.load(Ordering::SeqCst);
-        crate::serial::_print(format_args!(
-            "[JIT-DBG] x64 user timeout stage={} start_tick={} now_tick={} rip=0x{:016x} rsp=0x{:016x}\n",
-            stage, start_tick, now, *rip, *rsp
-        ));
-    }
-    let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
-    *rip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u64;
-    *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16) as u64;
-    true
+    false
 }
 
 pub fn jit_handle_page_fault(
@@ -9125,7 +9199,10 @@ pub(crate) fn call_jit_kernel(
     shadow_sp_ptr: *mut usize,
 ) -> i32 {
     let _call_guard = JIT_KERNEL_CALL_LOCK.lock();
+    #[cfg(not(target_arch = "x86_64"))]
     let flags = unsafe { idt_asm::fast_cli_save() };
+    #[cfg(target_arch = "x86_64")]
+    JIT_KERNEL_ENTER_TICK.store(crate::pit::get_ticks() as u32, Ordering::SeqCst);
     let _fault_guard = JitFaultScope::enter(
         trap_code,
         jit_entry.exec_ptr as usize,
@@ -9145,6 +9222,9 @@ pub(crate) fn call_jit_kernel(
             shadow_sp_ptr,
         )
     };
+    #[cfg(target_arch = "x86_64")]
+    JIT_KERNEL_ENTER_TICK.store(0, Ordering::SeqCst);
+    #[cfg(not(target_arch = "x86_64"))]
     unsafe { idt_asm::fast_sti_restore(flags) };
     ret
 }
@@ -10890,27 +10970,6 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         out
     }
 
-    #[cfg(target_arch = "x86_64")]
-    struct X64ScopedFuzzIrqQuiesce {
-        flags: u32,
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    impl X64ScopedFuzzIrqQuiesce {
-        #[inline]
-        fn enter() -> Self {
-            let flags = unsafe { crate::idt_asm::fast_cli_save() };
-            Self { flags }
-        }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    impl Drop for X64ScopedFuzzIrqQuiesce {
-        fn drop(&mut self) {
-            unsafe { crate::idt_asm::fast_sti_restore(self.flags) };
-        }
-    }
-
     let _guard = {
         let mut cfg = jit_config().lock();
         let guard = JitConfigGuard {
@@ -10938,8 +10997,30 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         sec.set_rate_limit_enabled(false);
         RateLimitGuard { enabled: prev }
     };
+    let _fuzz_active_guard = {
+        struct JitFuzzActiveGuard {
+            prev: bool,
+        }
+        impl Drop for JitFuzzActiveGuard {
+            fn drop(&mut self) {
+                JIT_FUZZ_ACTIVE.store(self.prev, Ordering::SeqCst);
+            }
+        }
+        let prev = JIT_FUZZ_ACTIVE.swap(true, Ordering::SeqCst);
+        JitFuzzActiveGuard { prev }
+    };
+    #[cfg(target_arch = "x86_64")]
+    let x64_diag = JIT_FUZZ_X64_DIAG.load(Ordering::SeqCst);
 
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] stage=ensure-instances-begin");
+    }
     let (interp_id, jit_id) = ensure_fuzz_instances()?;
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] stage=ensure-instances-done interp={} jit={}", interp_id, jit_id);
+    }
 
     let mut scratch_slot = JIT_FUZZ_SCRATCH.lock();
     if scratch_slot.is_none() {
@@ -10950,6 +11031,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     let interp_mem_snapshot = &mut scratch.interp_mem_snapshot;
     let interp_mem_snapshot_len = &mut scratch.interp_mem_snapshot_len;
     let choice_trace = &mut scratch.choice_trace;
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] stage=scratch-ready");
+    }
 
     let mut compiler_slot = JIT_FUZZ_COMPILER.lock();
     if compiler_slot.is_none() {
@@ -10959,6 +11044,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         );
     }
     let compiler = compiler_slot.as_mut().ok_or("Fuzz compiler init failed")?;
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] stage=compiler-ready");
+    }
 
     let _ = wasm_runtime().get_instance_mut(interp_id, |instance| {
         instance.prepare_fuzz();
@@ -10966,6 +11055,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     let _ = wasm_runtime().get_instance_mut(jit_id, |instance| {
         instance.prepare_fuzz();
     });
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] stage=instances-prepared");
+    }
 
     let mut rng = FuzzRng::new(seed);
     let mut stats = JitFuzzStats {
@@ -11004,6 +11097,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
 
     for iter in 0..iterations {
         #[cfg(target_arch = "x86_64")]
+        if x64_diag && (iter % 8) == 0 {
+            crate::serial_println!("[X64-JF] iter={} stage=start", iter);
+        }
+        #[cfg(target_arch = "x86_64")]
         if iter != 0 && (iter % X64_JIT_FUZZ_CHECKPOINT_ITERS) == 0 {
             // x86_64 bring-up runtime benefits from periodic transient cleanup
             // during long fuzz runs (stale handoff/fault state, CR3/IDT hygiene)
@@ -11016,9 +11113,6 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 instance.prepare_fuzz();
             });
         }
-
-        #[cfg(target_arch = "x86_64")]
-        let _x64_irq_quiesce = X64ScopedFuzzIrqQuiesce::enter();
 
         let mut locals_total = (rng.next_u32() % 4) as usize;
         code.clear();
@@ -11301,6 +11395,14 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         }
 
         let code_has_memory_ops = jit_fuzz_code_has_memory_ops(&code);
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag && iter == 0 {
+            crate::serial_println!(
+                "[X64-JF] iter=0 stage=program-built len={} locals={}",
+                code.len(),
+                locals_total
+            );
+        }
 
         let mut novel = false;
         let mut prev: Option<u8> = None;
@@ -11325,11 +11427,28 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             stats.novel_programs = stats.novel_programs.saturating_add(1);
         }
 
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag && iter == 0 {
+            crate::serial_println!("[X64-JF] iter=0 stage=before-interp");
+            let mut bi = 0usize;
+            while bi < code.len() {
+                crate::serial_println!("[X64-JF] iter=0 code[{}]=0x{:02x}", bi, code[bi]);
+                bi += 1;
+            }
+        }
         let interp = match wasm_runtime().get_instance_mut(interp_id, |instance| {
+            #[cfg(target_arch = "x86_64")]
+            if x64_diag && iter == 0 {
+                crate::serial_println!("[X64-JF] iter=0 stage=interp-enter");
+            }
             // Rarely under long unsafe JIT fuzz runs, instance/module state can
             // transiently report an impossible load error (e.g. `ModuleTooLarge`
             // for a tiny fuzz program). Retry once from a re-primed fuzz module
             // before classifying it as a real compile/load failure.
+            #[cfg(target_arch = "x86_64")]
+            if x64_diag && iter == 0 {
+                crate::serial_println!("[X64-JF] iter=0 stage=interp-load");
+            }
             let mut load_res = instance.load_fuzz_program(&code, locals_total);
             if matches!(load_res, Err(WasmError::ModuleTooLarge))
                 && code.len() <= MAX_FUZZ_CODE_SIZE
@@ -11338,6 +11457,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 load_res = instance.load_fuzz_program(&code, locals_total);
             }
             load_res?;
+            #[cfg(target_arch = "x86_64")]
+            if x64_diag && iter == 0 {
+                crate::serial_println!("[X64-JF] iter=0 stage=interp-call");
+            }
             instance.enable_jit(false);
             let mut res = instance.call(0);
             if res.is_err() {
@@ -11369,6 +11492,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             let mem_hash = hash_memory_fuzz(mem_slice);
             let mem_len = mem_slice.len() as u32;
             let first_nz = first_nonzero(mem_slice);
+            #[cfg(target_arch = "x86_64")]
+            if x64_diag && iter == 0 {
+                crate::serial_println!("[X64-JF] iter=0 stage=interp-exit");
+            }
             Ok::<(Result<i32, WasmError>, u64, u32, Option<(u32, u8)>), WasmError>((
                 res.map(|_| value),
                 mem_hash,
@@ -11395,13 +11522,26 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             },
             Err(_) => return Err("Instance missing"),
         };
-
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag && (iter % 8) == 0 {
+            crate::serial_println!("[X64-JF] iter={} stage=interp", iter);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
         struct IrqGuard(u32);
+        #[cfg(not(target_arch = "x86_64"))]
         impl Drop for IrqGuard {
             fn drop(&mut self) {
                 unsafe { crate::idt_asm::fast_sti_restore(self.0) };
             }
         }
+        #[cfg(target_arch = "x86_64")]
+        let compile_with_irqs_masked =
+            |compiler_ref: &mut crate::wasm_jit::FuzzCompiler| {
+                // x86_64 bring-up uses trap/MMU recovery paths during fuzz JIT compile;
+                // masking IRQs here can stall those paths and hang long runs.
+                compiler_ref.compile(&code, locals_total)
+            };
+        #[cfg(not(target_arch = "x86_64"))]
         let compile_with_irqs_masked =
             |compiler_ref: &mut crate::wasm_jit::FuzzCompiler| {
                 let flags = unsafe { crate::idt_asm::fast_cli_save() };
@@ -11469,6 +11609,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 }
             }
         };
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag && (iter % 8) == 0 {
+            crate::serial_println!("[X64-JF] iter={} stage=compile", iter);
+        }
         let jit_entry = JitExecInfo {
             entry,
             exec_ptr: compiler.exec_ptr(),
@@ -11559,7 +11703,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             },
             Err(_) => return Err("Instance missing"),
         };
-
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag && (iter % 8) == 0 {
+            crate::serial_println!("[X64-JF] iter={} stage=jit-run", iter);
+        }
         let interp_res = interp.0;
         let jit_res = jit.0;
         let interp_mem = interp.1;

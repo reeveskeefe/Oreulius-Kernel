@@ -308,6 +308,16 @@ pub(crate) fn x86_64_debug_pf_stats() -> (u64, u64, u64) {
     (0, 0, 0)
 }
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn x86_64_debug_recover_stats() -> (usize, usize, u64, usize, u64, u8) {
+    mmu_x86_64::debug_recover_stats()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub(crate) fn x86_64_debug_recover_stats() -> (usize, usize, u64, usize, u64, u8) {
+    (0, 0, 0, 0, 0, 0)
+}
+
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn aarch64_alloc_debug_page() -> Result<usize, &'static str> {
     mmu_aarch64::debug_alloc_page()

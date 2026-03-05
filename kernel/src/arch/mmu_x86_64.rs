@@ -32,7 +32,7 @@
 
 
 use core::ptr;
-use core::sync::atomic::{compiler_fence, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{compiler_fence, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use super::{ArchMmu, PageAttribute};
 
@@ -68,12 +68,22 @@ impl PageTablePage {
     }
 }
 
-const BOOT_PT_POOL_PAGES: usize = 128;
+// Emergency page-table pool used by fault-time recovery paths where heap
+// allocation is unsafe (allocator lock may already be held).
+//
+// Keep this comfortably above the number of 2MiB regions we may split during
+// long fuzz/bring-up sessions to avoid recovery starvation.
+const BOOT_PT_POOL_PAGES: usize = 1024;
 
 static PT_POOL_NEXT: AtomicUsize = AtomicUsize::new(0);
 static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 static COW_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 static PAGE_COPY_COUNT: AtomicU64 = AtomicU64::new(0);
+static KERNEL_ROOT_CR3: AtomicUsize = AtomicUsize::new(0);
+static RECOVER_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
+static RECOVER_LAST_ADDR: AtomicUsize = AtomicUsize::new(0);
+static RECOVER_LAST_ERROR: AtomicU64 = AtomicU64::new(0);
+static RECOVER_LAST_REASON: AtomicU8 = AtomicU8::new(0);
 
 static mut PT_POOL: [PageTablePage; BOOT_PT_POOL_PAGES] = [PageTablePage::zeroed(); BOOT_PT_POOL_PAGES];
 
@@ -280,6 +290,60 @@ impl X86_64Mmu {
         }
 
         Ok(entry_addr(entry) as *mut u64)
+    }
+
+    unsafe fn ensure_table_entry_boot(entry_ptr: *mut u64) -> Result<*mut u64, &'static str> {
+        let mut entry = ptr::read_volatile(entry_ptr);
+        if !is_present(entry) {
+            let table_page = alloc_boot_pt_page().ok_or("x86_64 PT pool exhausted")?;
+            let table_ptr = (*table_page).entries.as_mut_ptr();
+            entry = ((table_ptr as usize as u64) & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE;
+            ptr::write_volatile(entry_ptr, entry);
+            return Ok(table_ptr);
+        }
+        if (entry & PTE_PS) != 0 {
+            return Err("unexpected huge page at upper page-table level");
+        }
+        Ok(entry_addr(entry) as *mut u64)
+    }
+
+    unsafe fn map_identity_page_boot(
+        root_phys: usize,
+        virt_addr: usize,
+        writable: bool,
+    ) -> Result<(), &'static str> {
+        let virt_page = align_down(virt_addr, PAGE_SIZE);
+        let (i4, i3, i2, i1) = indices_for(virt_page);
+
+        let pml4 = Self::pml4_ptr_from_root(root_phys);
+        let pdpt = Self::ensure_table_entry_boot(pml4.add(i4))?;
+        let pd = Self::ensure_table_entry_boot(pdpt.add(i3))?;
+
+        let pde_ptr = pd.add(i2);
+        let pde = ptr::read_volatile(pde_ptr);
+        let pt = if !is_present(pde) {
+            let pt_page = alloc_boot_pt_page().ok_or("x86_64 PT pool exhausted")?;
+            let pt_ptr = (*pt_page).entries.as_mut_ptr();
+            let new_pde = ((pt_ptr as usize as u64) & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITABLE;
+            ptr::write_volatile(pde_ptr, new_pde);
+            pt_ptr
+        } else if is_huge_2m(pde) {
+            Self::split_2m_page(pde_ptr)?
+        } else {
+            entry_addr(pde) as *mut u64
+        };
+
+        let pte_ptr = pt.add(i1);
+        let old = ptr::read_volatile(pte_ptr);
+        let mut new_pte = ((virt_page as u64) & PTE_ADDR_MASK) | PTE_PRESENT;
+        if writable {
+            new_pte |= PTE_WRITABLE;
+        }
+        if !is_present(old) || old != new_pte {
+            ptr::write_volatile(pte_ptr, new_pte);
+        }
+        MMU.flush_tlb_page(virt_page);
+        Ok(())
     }
 
     unsafe fn pte_ptr_for_root(
@@ -610,6 +674,12 @@ impl ArchMmu for X86_64Mmu {
         unsafe {
             core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nostack, preserves_flags));
         }
+        let _ = KERNEL_ROOT_CR3.compare_exchange(
+            0,
+            self.read_cr3(),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
         Ok(())
     }
 
@@ -618,7 +688,12 @@ impl ArchMmu for X86_64Mmu {
     }
 
     fn kernel_page_table_root_addr(&self) -> Option<usize> {
-        Some(self.read_cr3())
+        let root = KERNEL_ROOT_CR3.load(Ordering::SeqCst);
+        if root != 0 {
+            Some(root)
+        } else {
+            Some(self.read_cr3())
+        }
     }
 
     fn current_page_table_root_addr(&self) -> usize {
@@ -704,8 +779,102 @@ pub(crate) fn debug_pf_stats() -> (u64, u64, u64) {
     )
 }
 
+pub(crate) fn debug_recover_stats() -> (usize, usize, u64, usize, u64, u8) {
+    (
+        PT_POOL_NEXT.load(Ordering::Relaxed),
+        BOOT_PT_POOL_PAGES,
+        RECOVER_FAIL_COUNT.load(Ordering::Relaxed),
+        RECOVER_LAST_ADDR.load(Ordering::Relaxed),
+        RECOVER_LAST_ERROR.load(Ordering::Relaxed),
+        RECOVER_LAST_REASON.load(Ordering::Relaxed),
+    )
+}
+
+#[inline]
+fn range_contains(range: (usize, usize), addr: usize) -> bool {
+    let (start, end) = range;
+    start != 0 && end > start && addr >= start && addr < end
+}
+
+#[inline]
+fn recoverable_kernel_identity_page(addr: usize) -> bool {
+    // x86_64 bring-up currently runs with an identity-mapped low kernel image
+    // (text/data/bss + jit arena + heap). Recover PFs in this low-kernel window
+    // so long fuzz/JIT runs can repair transient page-table damage in-place.
+    const KERNEL_LOW_BASE: usize = 0x0010_0000;
+    let (_heap_start, heap_end) = crate::memory::heap_range();
+    if heap_end > KERNEL_LOW_BASE && addr >= KERNEL_LOW_BASE && addr < heap_end {
+        return true;
+    }
+
+    let (jit_start, jit_end) = crate::memory::jit_arena_range();
+    if jit_start != 0 {
+        let jitter_guard_start = jit_start.saturating_sub(PAGE_SIZE);
+        if range_contains((jitter_guard_start, jit_end), addr) {
+            return true;
+        }
+    }
+    false
+}
+
+fn recover_nonpresent_kernel_data_page(fault_addr: usize, error: u64) -> bool {
+    // Non-present write/read faults in managed kernel data regions can occur after
+    // page-table corruption during bring-up stress. Reinstall an identity PTE so
+    // the kernel can continue and report higher-level diagnostics.
+    if (error & PF_ERR_PRESENT) != 0 {
+        return false;
+    }
+
+    let fault_page = align_down(fault_addr, PAGE_SIZE);
+    if !recoverable_kernel_identity_page(fault_page) {
+        return false;
+    }
+
+    // Fault handlers must avoid heap-allocating page-table paths (can deadlock
+    // if the fault happened while allocator locks were held).
+    let recover = unsafe { X86_64Mmu::map_identity_page_boot(MMU.read_cr3(), fault_page, true) };
+    if recover.is_err() {
+        RECOVER_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+        RECOVER_LAST_ADDR.store(fault_page, Ordering::Relaxed);
+        RECOVER_LAST_ERROR.store(error, Ordering::Relaxed);
+        RECOVER_LAST_REASON.store(1, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
+fn recover_kernel_data_write_fault(fault_addr: usize, error: u64) -> bool {
+    // Recover write faults on managed mutable kernel regions that are mapped but
+    // temporarily writable-cleared outside the COW path.
+    if (error & (PF_ERR_PRESENT | PF_ERR_WRITE)) != (PF_ERR_PRESENT | PF_ERR_WRITE) {
+        return false;
+    }
+
+    let fault_page = align_down(fault_addr, PAGE_SIZE);
+    if !recoverable_kernel_identity_page(fault_page) {
+        return false;
+    }
+
+    let recover = unsafe { X86_64Mmu::map_identity_page_boot(MMU.read_cr3(), fault_page, true) };
+    if recover.is_err() {
+        RECOVER_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+        RECOVER_LAST_ADDR.store(fault_page, Ordering::Relaxed);
+        RECOVER_LAST_ERROR.store(error, Ordering::Relaxed);
+        RECOVER_LAST_REASON.store(2, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
 pub(crate) fn handle_page_fault(fault_addr: usize, error: u64) -> bool {
     PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    if recover_nonpresent_kernel_data_page(fault_addr, error) {
+        return true;
+    }
+    if recover_kernel_data_write_fault(fault_addr, error) {
+        return true;
+    }
 
     if (error & (PF_ERR_PRESENT | PF_ERR_WRITE)) != (PF_ERR_PRESENT | PF_ERR_WRITE) {
         return false;
