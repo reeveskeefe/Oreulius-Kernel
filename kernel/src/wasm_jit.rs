@@ -298,7 +298,30 @@ fn emit_code_into(
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_i32_mul();
             }
-            Opcode::I32DivS => return Err("i32.div_s not supported by JIT"),
+            Opcode::I32DivS => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_divs();
+            }
+            Opcode::I32DivU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_divu();
+            }
+            Opcode::I32RemS => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_rems();
+            }
+            Opcode::I32RemU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_remu();
+            }
             Opcode::I32And => {
                 emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 2)?;
@@ -504,6 +527,10 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
             | Opcode::I32Add
             | Opcode::I32Sub
             | Opcode::I32Mul
+            | Opcode::I32DivS
+            | Opcode::I32DivU
+            | Opcode::I32RemS
+            | Opcode::I32RemU
             | Opcode::I32And
             | Opcode::I32Or
             | Opcode::I32Xor
@@ -1193,6 +1220,60 @@ impl Emitter {
         self.emit_push_eax();
     }
 
+    fn emit_i32_divs(&mut self) {
+        // WASM: a / b with trap on divide-by-zero and INT_MIN / -1 overflow.
+        self.emit_pop_to_ebx(); // b (divisor)
+        self.emit_pop_to_eax(); // a (dividend)
+        self.emit(&[0x83, 0xFB, 0x00]); // cmp ebx, 0
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x83, 0xFB, 0xFF]); // cmp ebx, -1
+        self.emit(&[0x75, 0x0B]); // jne +11 (skip overflow guard)
+        self.emit(&[0x3D, 0x00, 0x00, 0x00, 0x80]); // cmp eax, 0x80000000
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x99]); // cdq
+        self.emit(&[0xF7, 0xFB]); // idiv ebx
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_divu(&mut self) {
+        // WASM: unsigned division with trap on divide-by-zero.
+        self.emit_pop_to_ebx(); // b (divisor)
+        self.emit_pop_to_eax(); // a (dividend)
+        self.emit(&[0x83, 0xFB, 0x00]); // cmp ebx, 0
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x31, 0xD2]); // xor edx, edx
+        self.emit(&[0xF7, 0xF3]); // div ebx
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_rems(&mut self) {
+        // WASM: a % b with trap on divide-by-zero and INT_MIN / -1 overflow.
+        self.emit_pop_to_ebx(); // b (divisor)
+        self.emit_pop_to_eax(); // a (dividend)
+        self.emit(&[0x83, 0xFB, 0x00]); // cmp ebx, 0
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x83, 0xFB, 0xFF]); // cmp ebx, -1
+        self.emit(&[0x75, 0x0B]); // jne +11 (skip overflow guard)
+        self.emit(&[0x3D, 0x00, 0x00, 0x00, 0x80]); // cmp eax, 0x80000000
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x99]); // cdq
+        self.emit(&[0xF7, 0xFB]); // idiv ebx
+        self.emit(&[0x89, 0xD0]); // mov eax, edx
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_remu(&mut self) {
+        // WASM: unsigned remainder with trap on divide-by-zero.
+        self.emit_pop_to_ebx(); // b (divisor)
+        self.emit_pop_to_eax(); // a (dividend)
+        self.emit(&[0x83, 0xFB, 0x00]); // cmp ebx, 0
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x31, 0xD2]); // xor edx, edx
+        self.emit(&[0xF7, 0xF3]); // div ebx
+        self.emit(&[0x89, 0xD0]); // mov eax, edx
+        self.emit_push_eax();
+    }
+
     fn emit_i32_and(&mut self) {
         self.emit_pop_to_eax();
         self.emit_pop_to_ebx();
@@ -1734,15 +1815,14 @@ impl Emitter {
 
     fn emit_pop_to_eax(&mut self) {
         self.emit(&[
-            0x49, 0x8B, 0x45, 0x00,       // mov rax, [r13+0]
-            0x48, 0x85, 0xC0,             // test rax, rax
+            0x4D, 0x8B, 0x55, 0x00,       // mov r10, [r13+0]
+            0x4D, 0x85, 0xD2,             // test r10, r10
         ]);
         self.emit_trap_stack_jump(0x84);   // jz trap
         self.emit(&[
-            0x48, 0xFF, 0xC8,             // dec rax
-            0x41, 0x8B, 0x0C, 0x84,       // mov ecx, [r12 + rax*4]
-            0x89, 0xC8,                   // mov eax, ecx
-            0x49, 0x89, 0x45, 0x00,       // mov [r13+0], rax
+            0x49, 0xFF, 0xCA,             // dec r10
+            0x43, 0x8B, 0x04, 0x94,       // mov eax, [r12 + r10*4]
+            0x4D, 0x89, 0x55, 0x00,       // mov [r13+0], r10
         ]);
     }
 
@@ -1754,14 +1834,16 @@ impl Emitter {
 
     fn emit_pop_to_ecx(&mut self) {
         self.emit(&[
-            0x49, 0x8B, 0x45, 0x00,       // mov rax, [r13+0]
-            0x48, 0x85, 0xC0,             // test rax, rax
+            0x89, 0xC2,                   // mov edx, eax (preserve prior eax value)
+            0x4D, 0x8B, 0x55, 0x00,       // mov r10, [r13+0]
+            0x4D, 0x85, 0xD2,             // test r10, r10
         ]);
         self.emit_trap_stack_jump(0x84);   // jz trap
         self.emit(&[
-            0x48, 0xFF, 0xC8,             // dec rax
-            0x41, 0x8B, 0x0C, 0x84,       // mov ecx, [r12 + rax*4]
-            0x49, 0x89, 0x45, 0x00,       // mov [r13+0], rax
+            0x49, 0xFF, 0xCA,             // dec r10
+            0x43, 0x8B, 0x0C, 0x94,       // mov ecx, [r12 + r10*4]
+            0x4D, 0x89, 0x55, 0x00,       // mov [r13+0], r10
+            0x89, 0xD0,                   // mov eax, edx (restore prior eax value)
         ]);
     }
 
@@ -1815,6 +1897,60 @@ impl Emitter {
         self.emit_pop_to_eax();
         self.emit_pop_to_ecx();
         self.emit(&[0x0F, 0xAF, 0xC1]);   // imul eax, ecx
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_divs(&mut self) {
+        // WASM: a / b with trap on divide-by-zero and INT_MIN / -1 overflow.
+        self.emit_pop_to_ecx();           // b (divisor)
+        self.emit_pop_to_eax();           // a (dividend)
+        self.emit(&[0x83, 0xF9, 0x00]);   // cmp ecx, 0
+        self.emit_trap_stack_jump(0x84);   // je trap
+        self.emit(&[0x83, 0xF9, 0xFF]);   // cmp ecx, -1
+        self.emit(&[0x75, 0x0B]);         // jne +11 (skip overflow guard)
+        self.emit(&[0x3D, 0x00, 0x00, 0x00, 0x80]); // cmp eax, 0x80000000
+        self.emit_trap_stack_jump(0x84);   // je trap
+        self.emit(&[0x99]);               // cdq
+        self.emit(&[0xF7, 0xF9]);         // idiv ecx
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_divu(&mut self) {
+        // WASM: unsigned division with trap on divide-by-zero.
+        self.emit_pop_to_ecx();           // b (divisor)
+        self.emit_pop_to_eax();           // a (dividend)
+        self.emit(&[0x83, 0xF9, 0x00]);   // cmp ecx, 0
+        self.emit_trap_stack_jump(0x84);   // je trap
+        self.emit(&[0x31, 0xD2]);         // xor edx, edx
+        self.emit(&[0xF7, 0xF1]);         // div ecx
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_rems(&mut self) {
+        // WASM: a % b with trap on divide-by-zero and INT_MIN / -1 overflow.
+        self.emit_pop_to_ecx();           // b (divisor)
+        self.emit_pop_to_eax();           // a (dividend)
+        self.emit(&[0x83, 0xF9, 0x00]);   // cmp ecx, 0
+        self.emit_trap_stack_jump(0x84);   // je trap
+        self.emit(&[0x83, 0xF9, 0xFF]);   // cmp ecx, -1
+        self.emit(&[0x75, 0x0B]);         // jne +11 (skip overflow guard)
+        self.emit(&[0x3D, 0x00, 0x00, 0x00, 0x80]); // cmp eax, 0x80000000
+        self.emit_trap_stack_jump(0x84);   // je trap
+        self.emit(&[0x99]);               // cdq
+        self.emit(&[0xF7, 0xF9]);         // idiv ecx
+        self.emit(&[0x89, 0xD0]);         // mov eax, edx
+        self.emit_push_eax();
+    }
+
+    fn emit_i32_remu(&mut self) {
+        // WASM: unsigned remainder with trap on divide-by-zero.
+        self.emit_pop_to_ecx();           // b (divisor)
+        self.emit_pop_to_eax();           // a (dividend)
+        self.emit(&[0x83, 0xF9, 0x00]);   // cmp ecx, 0
+        self.emit_trap_stack_jump(0x84);   // je trap
+        self.emit(&[0x31, 0xD2]);         // xor edx, edx
+        self.emit(&[0xF7, 0xF1]);         // div ecx
+        self.emit(&[0x89, 0xD0]);         // mov eax, edx
         self.emit_push_eax();
     }
 

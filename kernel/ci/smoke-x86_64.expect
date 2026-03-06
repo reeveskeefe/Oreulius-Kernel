@@ -9,6 +9,7 @@ spawn ./run-x86_64-mb2-grub.sh
 
 expect {
     -re {\[X64\] minimal serial shell ready} {}
+    -re {\[X64\] x86_64 shell ready} {}
     timeout { puts "timeout waiting for x86_64 shell banner"; exit 1 }
 }
 expect {
@@ -18,7 +19,7 @@ expect {
 
 send "help\r"
 expect {
-    -re {commands: help .*halt} {}
+    -re {Available commands:|commands: help .*halt} {}
     timeout { puts "timeout waiting for x86_64 help output"; exit 1 }
 }
 expect {

@@ -925,12 +925,14 @@ fn x64_print_first_nonzero_opt(val: Option<(u32, u8)>) {
 }
 
 fn x64_print_jit_fuzz_stats(stats: &crate::wasm::JitFuzzStats) {
+    let bins_total = crate::wasm::jit_fuzz_opcode_bins_total();
+    let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
     shell_println!("OK: {}", stats.ok);
     shell_println!("Traps: {}", stats.traps);
     shell_println!("Mismatches: {}", stats.mismatches);
     shell_println!("Compile errors: {}", stats.compile_errors);
-    shell_println!("Opcode bins hit: {} / 20", stats.opcode_bins_hit);
-    shell_println!("Opcode edges hit (full): {} / 400", stats.opcode_edges_hit);
+    shell_println!("Opcode bins hit: {} / {}", stats.opcode_bins_hit, bins_total);
+    shell_println!("Opcode edges hit (full): {} / {}", stats.opcode_edges_hit, edges_total);
     shell_println!(
         "Opcode edges hit (admissible): {} / {}",
         stats.opcode_edges_hit_admissible,
@@ -1181,7 +1183,7 @@ fn x64_alias_wasm_jit_fuzz(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
     shell_println!("[X64] recover transient done.");
     let _recover_guard = X64ScopedJitRecover;
     let _jit_mode_guard = X64ScopedJitUserMode::enter(user_mode);
-    let _diag_guard = X64ScopedJitFuzzDiag::enter(true);
+    let _diag_guard = X64ScopedJitFuzzDiag::enter(false);
 
     if !use_chunking {
         match crate::wasm::jit_fuzz(iters, seed) {
@@ -1213,6 +1215,15 @@ fn x64_alias_wasm_jit_fuzz(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
         match chunk_res {
             Ok(stats) => {
                 let stop_early = stats.mismatches != 0 || stats.compile_errors != 0;
+                shell_println!(
+                    "[X64] fuzz chunk {}/{} done: ok={} traps={} mismatches={} compile_errors={}",
+                    chunk_idx + 1,
+                    total_chunks,
+                    stats.ok,
+                    stats.traps,
+                    stats.mismatches,
+                    stats.compile_errors
+                );
                 x64_merge_jit_fuzz_stats(&mut agg, stats, iter_base);
                 remaining -= chunk_iters;
                 iter_base = iter_base.saturating_add(chunk_iters);
@@ -1258,14 +1269,16 @@ fn x64_alias_wasm_jit_fuzz_corpus(parts: &mut core::str::SplitWhitespace<'_>) ->
     crate::wasm::jit_runtime_recover_transient();
     let _recover_guard = X64ScopedJitRecover;
     let _jit_mode_guard = X64ScopedJitUserMode::enter(false);
+    let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
     match crate::wasm::jit_fuzz_regression_default(iters) {
         Ok(stats) => shell_println!(
-            "[X64] wasm-jit-fuzz-corpus ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/400 edges_adm={}/{}",
+            "[X64] wasm-jit-fuzz-corpus ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/{} edges_adm={}/{}",
             stats.seeds_passed,
             stats.seeds_failed,
             stats.total_mismatches,
             stats.total_compile_errors,
             stats.max_opcode_edges_hit,
+            edges_total,
             stats.max_opcode_edges_hit_admissible,
             stats.opcode_edges_admissible_total,
         ),
@@ -1302,15 +1315,17 @@ fn x64_alias_wasm_jit_fuzz_soak(parts: &mut core::str::SplitWhitespace<'_>) -> b
     crate::wasm::jit_runtime_recover_transient();
     let _recover_guard = X64ScopedJitRecover;
     let _jit_mode_guard = X64ScopedJitUserMode::enter(false);
+    let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
     match crate::wasm::jit_fuzz_regression_soak_default(iters, rounds) {
         Ok(stats) => shell_println!(
-            "[X64] wasm-jit-fuzz-soak ok: rounds_passed={} rounds_failed={} seed_failures={} mismatches={} compile_errors={} edges_full={}/400 edges_adm={}/{}",
+            "[X64] wasm-jit-fuzz-soak ok: rounds_passed={} rounds_failed={} seed_failures={} mismatches={} compile_errors={} edges_full={}/{} edges_adm={}/{}",
             stats.rounds_passed,
             stats.rounds_failed,
             stats.total_seed_failures,
             stats.total_mismatches,
             stats.total_compile_errors,
             stats.max_opcode_edges_hit,
+            edges_total,
             stats.max_opcode_edges_hit_admissible,
             stats.opcode_edges_admissible_total,
         ),
@@ -1328,6 +1343,35 @@ fn x64_try_shared_command_alias(cmd: &str) -> bool {
         Some("wasm-jit-fuzz") => x64_alias_wasm_jit_fuzz(&mut cmd.split_whitespace()),
         _ => false,
     }
+}
+
+fn x64_is_runtime_extension_command(cmd: &str) -> bool {
+    let first = cmd.split_whitespace().next().unwrap_or("");
+    matches!(
+        first,
+        "help"
+            | "help-mini"
+            | "help-all"
+            | "heartbeat"
+            | "console"
+            | "kbdtest"
+            | "ticks"
+            | "irq0"
+            | "int3"
+            | "traps"
+            | "pfstats"
+            | "mmu"
+            | "regs"
+            | "cowtest"
+            | "vmtest"
+            | "jitpre"
+            | "jitcall"
+            | "jitbench"
+            | "jitfuzz"
+            | "jitfuzzreg"
+            | "halt"
+            | "exit"
+    )
 }
 
 fn serial_exec_command(cmd: &str) -> bool {
@@ -1394,14 +1438,16 @@ fn serial_exec_command(cmd: &str) -> bool {
                     "[X64] jitfuzzreg begin: full regression (iters/seed={})",
                     iterations_per_seed
                 );
+                let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
                 match crate::wasm::jit_fuzz_regression_default(iterations_per_seed) {
                     Ok(stats) => shell_println!(
-                        "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/400 edges_adm={}/{}",
+                        "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/{} edges_adm={}/{}",
                         stats.seeds_passed,
                         stats.seeds_failed,
                         stats.total_mismatches,
                         stats.total_compile_errors,
                         stats.max_opcode_edges_hit,
+                        edges_total,
                         stats.max_opcode_edges_hit_admissible,
                         stats.opcode_edges_admissible_total,
                     ),
@@ -1413,14 +1459,16 @@ fn serial_exec_command(cmd: &str) -> bool {
                     iterations_per_seed,
                     seeds_limit
                 );
+                let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
                 match crate::wasm::jit_fuzz_regression_bounded(iterations_per_seed, seeds_limit) {
                     Ok(stats) => shell_println!(
-                        "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/400 edges_adm={}/{}",
+                        "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/{} edges_adm={}/{}",
                         stats.seeds_passed,
                         stats.seeds_failed,
                         stats.total_mismatches,
                         stats.total_compile_errors,
                         stats.max_opcode_edges_hit,
+                        edges_total,
                         stats.max_opcode_edges_hit_admissible,
                         stats.opcode_edges_admissible_total,
                     ),
@@ -1429,6 +1477,14 @@ fn serial_exec_command(cmd: &str) -> bool {
             }
             return true;
         }
+    }
+
+    // Shared command stack parity:
+    // default to shared commands unless this is an explicit x86_64 runtime
+    // extension handled below.
+    if !x64_is_runtime_extension_command(cmd) {
+        crate::commands::execute(cmd);
+        return true;
     }
 
     match cmd {

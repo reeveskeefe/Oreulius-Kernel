@@ -197,6 +197,14 @@ const MAX_FUZZ_CODE_SIZE: usize = 256;
 const MAX_FUZZ_JIT_CODE_SIZE: usize = 8192;
 const JIT_FUZZ_OPCODE_BINS: usize = 20;
 
+pub const fn jit_fuzz_opcode_bins_total() -> u32 {
+    JIT_FUZZ_OPCODE_BINS as u32
+}
+
+pub const fn jit_fuzz_opcode_edges_total() -> u32 {
+    (JIT_FUZZ_OPCODE_BINS * JIT_FUZZ_OPCODE_BINS) as u32
+}
+
 /// Stable regression corpus seeds for JIT fuzz replay.
 pub const JIT_FUZZ_REGRESSION_SEEDS: [u64; 10] = [
     0,
@@ -9202,6 +9210,8 @@ pub(crate) fn call_jit_kernel(
     #[cfg(not(target_arch = "x86_64"))]
     let flags = unsafe { idt_asm::fast_cli_save() };
     #[cfg(target_arch = "x86_64")]
+    let flags = unsafe { x86_64_cli_save() };
+    #[cfg(target_arch = "x86_64")]
     JIT_KERNEL_ENTER_TICK.store(crate::pit::get_ticks() as u32, Ordering::SeqCst);
     let _fault_guard = JitFaultScope::enter(
         trap_code,
@@ -9226,7 +9236,30 @@ pub(crate) fn call_jit_kernel(
     JIT_KERNEL_ENTER_TICK.store(0, Ordering::SeqCst);
     #[cfg(not(target_arch = "x86_64"))]
     unsafe { idt_asm::fast_sti_restore(flags) };
+    #[cfg(target_arch = "x86_64")]
+    unsafe { x86_64_sti_restore(flags) };
     ret
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn x86_64_cli_save() -> u64 {
+    let flags: u64;
+    core::arch::asm!(
+        "pushfq",
+        "pop {}",
+        "cli",
+        out(reg) flags,
+    );
+    flags
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn x86_64_sti_restore(flags: u64) {
+    if (flags & (1u64 << 9)) != 0 {
+        core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -10564,6 +10597,13 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                     None
                 }
             }
+            20 | 21 | 22 | 23 => {
+                if stack_depth >= 1 {
+                    Some(stack_depth) // const-divisor div/rem macro net stack delta = 0
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -10830,6 +10870,54 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                     false
                 }
             }
+            20 => {
+                if *stack_depth >= 1 {
+                    code.push(Opcode::I32Const as u8);
+                    push_sleb128_i32(code, 1);
+                    *stack_depth += 1;
+                    code.push(Opcode::I32DivS as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            21 => {
+                if *stack_depth >= 1 {
+                    code.push(Opcode::I32Const as u8);
+                    push_sleb128_i32(code, 1);
+                    *stack_depth += 1;
+                    code.push(Opcode::I32DivU as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            22 => {
+                if *stack_depth >= 1 {
+                    code.push(Opcode::I32Const as u8);
+                    push_sleb128_i32(code, 1);
+                    *stack_depth += 1;
+                    code.push(Opcode::I32RemS as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            23 => {
+                if *stack_depth >= 1 {
+                    code.push(Opcode::I32Const as u8);
+                    push_sleb128_i32(code, 1);
+                    *stack_depth += 1;
+                    code.push(Opcode::I32RemU as u8);
+                    *stack_depth -= 1;
+                    true
+                } else {
+                    false
+                }
+            }
             _ => false,
         }
     }
@@ -10922,7 +11010,11 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 | Opcode::I32GeU
                 | Opcode::I32Shl
                 | Opcode::I32ShrS
-                | Opcode::I32ShrU => {}
+                | Opcode::I32ShrU
+                | Opcode::I32DivS
+                | Opcode::I32DivU
+                | Opcode::I32RemS
+                | Opcode::I32RemU => {}
                 Opcode::End => {
                     if pc != code.len() {
                         // Generated fuzz programs must terminate exactly once.
@@ -11343,7 +11435,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                         emitted_choice = Some(18);
                     }
                 }
-                _ => {
+                19 => {
                     // Keep one bin as a compare-with-constant macro to diversify
                     // immediate decoding and binary compare lowering paths.
                     if stack_depth >= 1 {
@@ -11359,6 +11451,47 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                         emitted_choice = Some(19);
                     }
                 }
+                20 => {
+                    if stack_depth >= 1 {
+                        code.push(Opcode::I32Const as u8);
+                        push_sleb128_i32(code, 1);
+                        stack_depth += 1;
+                        code.push(Opcode::I32DivS as u8);
+                        stack_depth -= 1;
+                        emitted_choice = Some(20);
+                    }
+                }
+                21 => {
+                    if stack_depth >= 1 {
+                        code.push(Opcode::I32Const as u8);
+                        push_sleb128_i32(code, 1);
+                        stack_depth += 1;
+                        code.push(Opcode::I32DivU as u8);
+                        stack_depth -= 1;
+                        emitted_choice = Some(21);
+                    }
+                }
+                22 => {
+                    if stack_depth >= 1 {
+                        code.push(Opcode::I32Const as u8);
+                        push_sleb128_i32(code, 1);
+                        stack_depth += 1;
+                        code.push(Opcode::I32RemS as u8);
+                        stack_depth -= 1;
+                        emitted_choice = Some(22);
+                    }
+                }
+                23 => {
+                    if stack_depth >= 1 {
+                        code.push(Opcode::I32Const as u8);
+                        push_sleb128_i32(code, 1);
+                        stack_depth += 1;
+                        code.push(Opcode::I32RemU as u8);
+                        stack_depth -= 1;
+                        emitted_choice = Some(23);
+                    }
+                }
+                _ => {}
             }
             if let Some(choice_idx) = emitted_choice {
                 let idx = choice_idx as usize;

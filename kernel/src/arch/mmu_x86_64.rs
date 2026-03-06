@@ -855,6 +855,16 @@ fn recover_kernel_data_write_fault(fault_addr: usize, error: u64) -> bool {
         return false;
     }
 
+    // Do not consume COW write faults in the generic recovery path.
+    // Those must flow through the COW handler so remap/counter semantics stay correct.
+    let pte_ptr = unsafe { MMU.pte_ptr_for_virt(fault_page, false) };
+    if let Ok(p) = pte_ptr {
+        let pte = unsafe { ptr::read_volatile(p) };
+        if is_present(pte) && (pte & PTE_COW_SOFT) != 0 {
+            return false;
+        }
+    }
+
     let recover = unsafe { X86_64Mmu::map_identity_page_boot(MMU.read_cr3(), fault_page, true) };
     if recover.is_err() {
         RECOVER_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
