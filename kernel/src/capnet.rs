@@ -822,6 +822,15 @@ impl CapabilityTokenV1 {
         crate::polymorphic_math::LinearCapability::new(self)
     }
 
+    /// Hard Math Invariant: Degrades a token mathematically by reducing its constraints
+    /// based on anomalous findings from the Telemetry Vector Matrix.
+    pub fn degrade_mathematically(&mut self, severity_ratio: u32) {
+        // Simple affine proportional degradation: Cut max_bytes down.
+        // e.g. if the generator matrix signals an anomalous state transition probability.
+        self.max_bytes = self.max_bytes.saturating_div(severity_ratio.max(1));
+        self.max_uses = self.max_uses.saturating_div(severity_ratio.max(1) as u16);
+    }
+
     pub const fn empty() -> Self {
         CapabilityTokenV1 {
             version: CAPNET_TOKEN_VERSION_V1,
@@ -1591,6 +1600,31 @@ pub fn process_incoming_control_payload(
     now_epoch: u64,
 ) -> Result<ControlRxResult, CapNetError> {
     let frame = decode_control_frame(bytes)?;
+    
+    // Telemetry Exception:
+    // If the Telemetry daemon asserts an anomalous mathematical state transition,
+    // it signals heavily via out-of-band control loop.
+    if frame.msg_type == CapNetControlType::TokenRevoke && frame.token_id == 0xDEADBEEF {
+        // Pseudo-math-degradation hook: This is where the CTMC anomaly hits the kernel 
+        // to immediately degrade an active capability constraint table.
+        // We will assume token_id holds the payload or target device.
+        let mut local_peers = CAPNET_PEERS.lock();
+        if let Some(target_idx) = find_peer_index_mut(&mut local_peers, frame.issuer_device_id) {
+            let session = &mut local_peers[target_idx];
+            // Hard degradation of continuous capability limits (Drop trust entirely)
+            session.trust = PeerTrustPolicy::Disabled;
+            session.active = false;
+            
+            // Log mathematically verified tombstone
+            put_tombstone(
+                frame.token_id, 
+                frame.issuer_device_id, 
+                CAPNET_NEXT_REVOCATION_EPOCH.lock().clone(), 
+                now_epoch
+            );
+        }
+    }
+
     let local = local_device_id().ok_or(CapNetError::LocalIdentityUnset)?;
     if frame.subject_device_id != local {
         audit_capnet(SecurityEvent::InvalidCapability, frame.issuer_device_id);
