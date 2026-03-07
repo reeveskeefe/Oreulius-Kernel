@@ -862,7 +862,7 @@ fn serial_write_prompt() {
 
 const X64_MINI_HELP: &str =
     "help help-all help-mini ticks irq0 int3 traps pfstats cowtest vmtest \
-     jitpre jitcall jitbench jitfuzz jitfuzzreg heartbeat console kbdtest \
+     jitpre jitcall jitbench jitfuzz jitfuzzreg jitfuzz24dbg heartbeat console kbdtest \
      mmu regs halt";
 
 fn x64_print_mini_help() {
@@ -881,6 +881,7 @@ fn x64_print_combined_help() {
     shell_println!("  wasm-jit-fuzz <iters> [seed] [auto|kernel]");
     shell_println!("  wasm-jit-fuzz-corpus <iters>");
     shell_println!("  wasm-jit-fuzz-soak <iters> <rounds>");
+    shell_println!("  jitfuzz24dbg [iters] [diag]  (24-bin deterministic debug corpus)");
     shell_println!("[X64] note: x86_64 user-sandbox generic fuzz mode is still blocked in the bring-up shell.");
     shell_println!("[X64] use `jitcall`/`jitpre` to probe the x86_64 user JIT path directly.");
 }
@@ -1334,6 +1335,86 @@ fn x64_alias_wasm_jit_fuzz_soak(parts: &mut core::str::SplitWhitespace<'_>) -> b
     true
 }
 
+fn x64_alias_jitfuzz24dbg(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
+    let _ = parts.next();
+    let mut iterations_per_seed: u32 = 32;
+    let mut seen_iters = false;
+    let mut diag = false;
+
+    while let Some(arg) = parts.next() {
+        if arg == "diag" {
+            diag = true;
+            continue;
+        }
+        if let Some(v) = x64_parse_u32(arg) {
+            if seen_iters {
+                shell_println!("[X64] usage: jitfuzz24dbg [iters] [diag]");
+                return true;
+            }
+            iterations_per_seed = v.max(1);
+            seen_iters = true;
+            continue;
+        }
+        shell_println!("[X64] usage: jitfuzz24dbg [iters] [diag]");
+        return true;
+    }
+
+    if !crate::wasm::jit_fuzz_24bin_feature_enabled() {
+        shell_println!("[X64] jitfuzz24dbg requires build feature `jit-fuzz-24bin`.");
+        shell_println!("[X64] rebuild x86_64 with KERNEL_CARGO_FEATURES=jit-fuzz-24bin");
+        return true;
+    }
+
+    const MAX_ITERS_PER_SEED: u32 = 256;
+    if iterations_per_seed > MAX_ITERS_PER_SEED {
+        shell_println!(
+            "[X64] jitfuzz24dbg iters too high; use <= {}",
+            MAX_ITERS_PER_SEED
+        );
+        return true;
+    }
+
+    shell_println!(
+        "[X64] jitfuzz24dbg begin: iters/seed={} seeds={} diag={}",
+        iterations_per_seed,
+        crate::wasm::jit_fuzz_x64_debug_seed_count(),
+        if diag { "on" } else { "off" }
+    );
+    shell_println!("[X64] path: direct deterministic corpus (no alias chunking)");
+
+    crate::wasm::jit_runtime_recover_transient();
+    let _recover_guard = X64ScopedJitRecover;
+    let _jit_mode_guard = X64ScopedJitUserMode::enter(false);
+    let _diag_guard = X64ScopedJitFuzzDiag::enter(diag);
+    let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
+
+    match crate::wasm::jit_fuzz_x64_debug_corpus(iterations_per_seed) {
+        Ok(stats) => {
+            shell_println!(
+                "[X64] jitfuzz24dbg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/{} edges_adm={}/{}",
+                stats.seeds_passed,
+                stats.seeds_failed,
+                stats.total_mismatches,
+                stats.total_compile_errors,
+                stats.max_opcode_edges_hit,
+                edges_total,
+                stats.max_opcode_edges_hit_admissible,
+                stats.opcode_edges_admissible_total,
+            );
+            if let Some(seed) = stats.first_failed_seed {
+                shell_println!(
+                    "[X64] jitfuzz24dbg first_failed_seed={} mismatches={} compile_errors={}",
+                    seed,
+                    stats.first_failed_mismatches,
+                    stats.first_failed_compile_errors
+                );
+            }
+        }
+        Err(e) => shell_println!("[X64] jitfuzz24dbg failed: {}", e),
+    }
+    true
+}
+
 fn x64_try_shared_command_alias(cmd: &str) -> bool {
     let mut parts = cmd.split_whitespace();
     match parts.next() {
@@ -1369,6 +1450,7 @@ fn x64_is_runtime_extension_command(cmd: &str) -> bool {
             | "jitbench"
             | "jitfuzz"
             | "jitfuzzreg"
+            | "jitfuzz24dbg"
             | "halt"
             | "exit"
     )
@@ -1377,6 +1459,12 @@ fn x64_is_runtime_extension_command(cmd: &str) -> bool {
 fn serial_exec_command(cmd: &str) -> bool {
     if x64_try_shared_command_alias(cmd) {
         return true;
+    }
+
+    if let Some(rest) = cmd.strip_prefix("jitfuzz24dbg") {
+        if rest.is_empty() || rest.starts_with(' ') {
+            return x64_alias_jitfuzz24dbg(&mut cmd.split_whitespace());
+        }
     }
 
     if let Some(rest) = cmd.strip_prefix("jitfuzzreg") {

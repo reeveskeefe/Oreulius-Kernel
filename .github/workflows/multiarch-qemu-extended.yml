@@ -15,6 +15,10 @@ on:
         description: "x86_64 wasm-jit-fuzz 1000 0 command timeout (seconds)"
         required: false
         default: "420"
+      x64_jit_fuzz_24bin:
+        description: "Enable x86_64 24-bin WASM JIT fuzz feature/edge assertions"
+        required: false
+        default: "1"
       a64_loops:
         description: "AArch64 extended loop count"
         required: false
@@ -85,6 +89,7 @@ jobs:
         if: matrix.arch == 'x86_64'
         env:
           QEMU_AUDIO_DRV: none
+          X64_JIT_FUZZ_24BIN: ${{ github.event.inputs.x64_jit_fuzz_24bin || '1' }}
           X64_EXT_LOOPS: ${{ github.event.inputs.x64_loops || '5' }}
           X64_JITFUZZREG_TIMEOUT: ${{ github.event.inputs.x64_jitfuzzreg_timeout || '180' }}
           X64_JITFUZZ_TIMEOUT: ${{ github.event.inputs.x64_jitfuzz_timeout || '420' }}

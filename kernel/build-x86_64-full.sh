@@ -43,11 +43,20 @@ nasm -f elf64 src/asm/boot_x86_64_mb2.asm -o "${BOOT_OBJ}"
 nasm -f elf64 src/asm/x86_64_shims.asm -o "${SHIM_OBJ}"
 
 echo "[2/3] Building Rust kernel staticlib for x86_64..."
+CARGO_FEATURES="${KERNEL_CARGO_FEATURES:-${CARGO_FEATURES:-}}"
+if [[ -n "${CARGO_FEATURES}" ]]; then
+  echo "[2/3] Enabling Cargo features: ${CARGO_FEATURES}"
+fi
+CARGO_BUILD_CMD=(
+  cargo ${TOOLCHAIN} build --release --lib --target "${RUST_TARGET}"
+  -Z build-std=core,compiler_builtins,alloc
+  -Z build-std-features=compiler-builtins-mem
+)
+if [[ -n "${CARGO_FEATURES}" ]]; then
+  CARGO_BUILD_CMD+=(--features "${CARGO_FEATURES}")
+fi
 if ! CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-C relocation-model=static -C code-model=kernel" \
-  cargo ${TOOLCHAIN} build --release --lib --target "${RUST_TARGET}" \
-    -Z build-std=core,compiler_builtins,alloc \
-    -Z build-std-features=compiler-builtins-mem
-then
+  "${CARGO_BUILD_CMD[@]}"; then
   cat <<'EOF'
 Rust x86_64 build failed.
 

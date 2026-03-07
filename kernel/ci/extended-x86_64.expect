@@ -16,6 +16,18 @@ set jitfuzz_timeout 420
 if {[info exists env(X64_JITFUZZ_TIMEOUT)]} {
     set jitfuzz_timeout $env(X64_JITFUZZ_TIMEOUT)
 }
+set expect_bins_total 20
+if {[info exists env(X64_EXPECT_BINS_TOTAL)]} {
+    set expect_bins_total $env(X64_EXPECT_BINS_TOTAL)
+}
+set expect_edge_total 400
+if {[info exists env(X64_EXPECT_EDGE_TOTAL)]} {
+    set expect_edge_total $env(X64_EXPECT_EDGE_TOTAL)
+}
+set expect_edge_adm_total $expect_edge_total
+if {[info exists env(X64_EXPECT_EDGE_ADM_TOTAL)]} {
+    set expect_edge_adm_total $env(X64_EXPECT_EDGE_ADM_TOTAL)
+}
 
 proc expect_x64_prompt {} {
     expect {
@@ -50,6 +62,9 @@ proc run_x64_cmd_with_timeout {cmd ok_re desc timeout_s} {
 }
 
 proc run_x64_jit_fuzz_stable {cmd timeout_s} {
+    global expect_bins_total
+    global expect_edge_total
+    global expect_edge_adm_total
     global timeout
     set saved_timeout $timeout
     set timeout $timeout_s
@@ -60,6 +75,9 @@ proc run_x64_jit_fuzz_stable {cmd timeout_s} {
     set seen_traps 0
     set seen_mismatches 0
     set seen_compile_errors 0
+    set seen_bins_total 0
+    set seen_edges_total 0
+    set seen_edges_adm_total 0
 
     send -- "$cmd\r"
     expect {
@@ -91,9 +109,21 @@ proc run_x64_jit_fuzz_stable {cmd timeout_s} {
             set seen_compile_errors 1
             exp_continue
         }
+        -re [format {Opcode bins hit: [0-9]+ / %s} $expect_bins_total] {
+            set seen_bins_total 1
+            exp_continue
+        }
+        -re [format {Opcode edges hit \(full\): [0-9]+ / %s} $expect_edge_total] {
+            set seen_edges_total 1
+            exp_continue
+        }
+        -re [format {Opcode edges hit \(admissible\): [0-9]+ / %s} $expect_edge_adm_total] {
+            set seen_edges_adm_total 1
+            exp_continue
+        }
         -re {x64> } {
-            if {!$seen_banner || !$seen_iters || !$seen_seed || !$seen_ok || !$seen_traps || !$seen_mismatches || !$seen_compile_errors} {
-                puts "x86_64 wasm-jit-fuzz stability assertion failed: banner=$seen_banner iters=$seen_iters seed=$seen_seed ok=$seen_ok traps=$seen_traps mismatches=$seen_mismatches compile_errors=$seen_compile_errors"
+            if {!$seen_banner || !$seen_iters || !$seen_seed || !$seen_ok || !$seen_traps || !$seen_mismatches || !$seen_compile_errors || !$seen_bins_total || !$seen_edges_total || !$seen_edges_adm_total} {
+                puts "x86_64 wasm-jit-fuzz stability assertion failed: banner=$seen_banner iters=$seen_iters seed=$seen_seed ok=$seen_ok traps=$seen_traps mismatches=$seen_mismatches compile_errors=$seen_compile_errors bins_total=$seen_bins_total edges_total=$seen_edges_total edges_adm_total=$seen_edges_adm_total"
                 exit 1
             }
         }
@@ -115,7 +145,7 @@ expect {
 }
 expect_x64_prompt
 
-run_x64_cmd "help" {Available commands:|commands: help .*jitcall .*jitbench .*jitfuzz .*jitfuzzreg .*halt} "help"
+run_x64_cmd "help" {Available commands:|commands: help .*jitcall .*jitbench .*jitfuzz .*jitfuzzreg .*jitfuzz24dbg .*halt} "help"
 run_x64_cmd "mmu" {\[X64\] mmu backend=[^\r\n]+} "mmu"
 run_x64_cmd "regs" {\[X64\] cr0=[^\r\n]+ cr3=[^\r\n]+ cr4=[^\r\n]+ efer=[^\r\n]+} "regs"
 run_x64_cmd "ticks" {\[X64\] ticks=[0-9]+} "ticks"
@@ -132,7 +162,9 @@ run_x64_jit_fuzz_stable "wasm-jit-fuzz 1000 0" $jitfuzz_timeout
 # Run the same long fuzz command a second time to catch reboot/PF-storm style
 # regressions that only show up on repeated execution.
 run_x64_jit_fuzz_stable "wasm-jit-fuzz 1000 0" $jitfuzz_timeout
-run_x64_cmd_with_timeout "jitfuzzreg full" {\[X64\] jitfuzzreg ok: seeds_passed=[0-9]+ seeds_failed=[0-9]+ mismatches=[0-9]+ compile_errors=[0-9]+ edges_full=[0-9]+/[0-9]+ edges_adm=[0-9]+/[0-9]+} "jitfuzzreg full" $jitfuzzreg_timeout
+set jitfuzzreg_re [format {\[X64\] jitfuzzreg ok: seeds_passed=[0-9]+ seeds_failed=[0-9]+ mismatches=0 compile_errors=0 edges_full=[0-9]+/%s edges_adm=[0-9]+/%s} \
+    $expect_edge_total $expect_edge_adm_total]
+run_x64_cmd_with_timeout "jitfuzzreg full" $jitfuzzreg_re "jitfuzzreg full" $jitfuzzreg_timeout
 
 send -- "jitcall\r"
 expect {

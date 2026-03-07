@@ -195,6 +195,9 @@ pub struct JitFuzzStats {
 
 const MAX_FUZZ_CODE_SIZE: usize = 256;
 const MAX_FUZZ_JIT_CODE_SIZE: usize = 8192;
+#[cfg(feature = "jit-fuzz-24bin")]
+const JIT_FUZZ_OPCODE_BINS: usize = 24;
+#[cfg(not(feature = "jit-fuzz-24bin"))]
 const JIT_FUZZ_OPCODE_BINS: usize = 20;
 
 pub const fn jit_fuzz_opcode_bins_total() -> u32 {
@@ -203,6 +206,10 @@ pub const fn jit_fuzz_opcode_bins_total() -> u32 {
 
 pub const fn jit_fuzz_opcode_edges_total() -> u32 {
     (JIT_FUZZ_OPCODE_BINS * JIT_FUZZ_OPCODE_BINS) as u32
+}
+
+pub const fn jit_fuzz_24bin_feature_enabled() -> bool {
+    cfg!(feature = "jit-fuzz-24bin")
 }
 
 /// Stable regression corpus seeds for JIT fuzz replay.
@@ -218,6 +225,17 @@ pub const JIT_FUZZ_REGRESSION_SEEDS: [u64; 10] = [
     3_735_928_559,
     4_294_967_295,
 ];
+
+const JIT_FUZZ_X64_DEBUG_SEEDS: [u64; 4] = [
+    0,
+    107_427_055,
+    2_105_703_400,
+    4_294_967_295,
+];
+
+pub const fn jit_fuzz_x64_debug_seed_count() -> u32 {
+    JIT_FUZZ_X64_DEBUG_SEEDS.len() as u32
+}
 
 pub struct JitFuzzRegressionStats {
     pub seeds_total: u32,
@@ -7425,20 +7443,169 @@ impl WasmRuntime {
 
     /// Instantiate a pre-built module (used by tests/benchmarks)
     pub fn instantiate_module(&self, module: WasmModule, process_id: ProcessId) -> Result<usize, WasmError> {
-        let mut module_opt = Some(module);
-        let mut instances = self.instances.lock();
-        for (i, slot) in instances.iter_mut().enumerate() {
-            if matches!(slot, RuntimeInstanceSlot::Empty) {
-                let module = module_opt.take().ok_or(WasmError::InvalidModule)?;
-                let mut instance = WasmInstance::new(module, process_id, i);
-                instance.initialize_from_module()?;
-                instance.run_start_if_present()?;
-                *slot = RuntimeInstanceSlot::Ready(instance);
-                return Ok(i);
-            }
+        #[cfg(target_arch = "x86_64")]
+        let x64_diag = JIT_FUZZ_X64_DIAG.load(Ordering::SeqCst);
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag {
+            crate::serial_println!("[X64-JF] instantiate=enter");
         }
 
-        Err(WasmError::TooManyCapabilities) // Reuse error for "too many instances"
+        // Reserve a slot quickly, then perform potentially heavy initialization
+        // outside the runtime mutex to avoid lock hold stalls/deadlocks.
+        let reserved = {
+            #[cfg(target_arch = "x86_64")]
+            if x64_diag {
+                crate::serial_println!("[X64-JF] instantiate=lock-attempt");
+            }
+
+            let mut spins = 0usize;
+            let mut instances = loop {
+                if let Some(guard) = self.instances.try_lock() {
+                    break guard;
+                }
+                spins = spins.saturating_add(1);
+                if spins == 1 {
+                    #[cfg(target_arch = "x86_64")]
+                    if x64_diag {
+                        crate::serial_println!("[X64-JF] instantiate=lock-contended");
+                    }
+                }
+                if spins > 5_000_000 {
+                    #[cfg(target_arch = "x86_64")]
+                    if x64_diag {
+                        crate::serial_println!("[X64-JF] instantiate=lock-timeout");
+                    }
+                    return Err(WasmError::InstanceBusy);
+                }
+                core::hint::spin_loop();
+            };
+            #[cfg(target_arch = "x86_64")]
+            if x64_diag {
+                crate::serial_println!("[X64-JF] instantiate=lock-acquired");
+            }
+            let mut idx = 0usize;
+            let mut found = None;
+            while idx < instances.len() {
+                if matches!(instances[idx], RuntimeInstanceSlot::Empty) {
+                    instances[idx] = RuntimeInstanceSlot::Busy(process_id);
+                    found = Some(idx);
+                    break;
+                }
+                idx += 1;
+            }
+            drop(instances);
+            found
+        };
+
+        let slot_idx = match reserved {
+            Some(i) => i,
+            None => return Err(WasmError::TooManyCapabilities), // Reuse error for "too many instances"
+        };
+
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag {
+            crate::serial_println!(
+                "[X64-JF] instantiate=slot-reserved idx={} pid={}",
+                slot_idx,
+                process_id.0
+            );
+        }
+
+        let clear_reserved_slot = |runtime: &WasmRuntime| -> Result<(), WasmError> {
+            let mut cleanup_spins = 0usize;
+            let mut instances = loop {
+                if let Some(guard) = runtime.instances.try_lock() {
+                    break guard;
+                }
+                cleanup_spins = cleanup_spins.saturating_add(1);
+                if cleanup_spins > 5_000_000 {
+                    return Err(WasmError::InstanceBusy);
+                }
+                core::hint::spin_loop();
+            };
+            if slot_idx < instances.len() {
+                if let RuntimeInstanceSlot::Busy(owner) = instances[slot_idx] {
+                    if owner == process_id {
+                        instances[slot_idx] = RuntimeInstanceSlot::Empty;
+                    }
+                }
+            }
+            Ok(())
+        };
+
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag {
+            crate::serial_println!("[X64-JF] instantiate=instance-new");
+        }
+        let mut instance = WasmInstance::new(module, process_id, slot_idx);
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag {
+            crate::serial_println!("[X64-JF] instantiate=init-from-module");
+        }
+        if let Err(e) = instance.initialize_from_module() {
+            let _ = clear_reserved_slot(self);
+            #[cfg(target_arch = "x86_64")]
+            if x64_diag {
+                crate::serial_println!("[X64-JF] instantiate=init-failed");
+            }
+            return Err(e);
+        }
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag {
+            crate::serial_println!("[X64-JF] instantiate=run-start");
+        }
+        if let Err(e) = instance.run_start_if_present() {
+            let _ = clear_reserved_slot(self);
+            #[cfg(target_arch = "x86_64")]
+            if x64_diag {
+                crate::serial_println!("[X64-JF] instantiate=init-failed");
+            }
+            return Err(e);
+        }
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag {
+            crate::serial_println!("[X64-JF] instantiate=init-ok");
+            crate::serial_println!("[X64-JF] instantiate=commit-lock-attempt");
+        }
+
+        let mut commit_spins = 0usize;
+        let mut instances = loop {
+            if let Some(guard) = self.instances.try_lock() {
+                break guard;
+            }
+            commit_spins = commit_spins.saturating_add(1);
+            if commit_spins > 5_000_000 {
+                #[cfg(target_arch = "x86_64")]
+                if x64_diag {
+                    crate::serial_println!("[X64-JF] instantiate=commit-lock-timeout");
+                }
+                let _ = clear_reserved_slot(self);
+                return Err(WasmError::InstanceBusy);
+            }
+            core::hint::spin_loop();
+        };
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag {
+            crate::serial_println!("[X64-JF] instantiate=commit-lock-acquired");
+        }
+        if slot_idx >= instances.len() {
+            let _ = clear_reserved_slot(self);
+            return Err(WasmError::InvalidModule);
+        }
+        match &instances[slot_idx] {
+            RuntimeInstanceSlot::Busy(owner) if *owner == process_id => {
+                instances[slot_idx] = RuntimeInstanceSlot::Ready(instance);
+                drop(instances);
+                #[cfg(target_arch = "x86_64")]
+                if x64_diag {
+                    crate::serial_println!("[X64-JF] instantiate=commit-ready");
+                }
+                Ok(slot_idx)
+            }
+            RuntimeInstanceSlot::Busy(_) => Err(WasmError::InstanceBusy),
+            RuntimeInstanceSlot::Ready(_) => Err(WasmError::InstanceBusy),
+            RuntimeInstanceSlot::Empty => Err(WasmError::InvalidModule),
+        }
     }
 
     /// Get a mutable reference to an instance
@@ -10360,11 +10527,29 @@ pub fn jit_bounds_self_test_kernel_mode() -> Result<(), &'static str> {
 
 /// JIT fuzzing harness (generates random programs and compares interpreter vs JIT).
 fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    let x64_diag = JIT_FUZZ_X64_DIAG.load(Ordering::SeqCst);
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] ensure=check-existing");
+    }
     let existing = { *JIT_FUZZ_INSTANCES.lock() };
     if let Some((interp_id, jit_id)) = existing {
+        #[cfg(target_arch = "x86_64")]
+        if x64_diag {
+            crate::serial_println!(
+                "[X64-JF] ensure=existing interp={} jit={}",
+                interp_id,
+                jit_id
+            );
+        }
         let interp_ok = wasm_runtime().get_instance_mut(interp_id, |_| ()).is_ok();
         let jit_ok = wasm_runtime().get_instance_mut(jit_id, |_| ()).is_ok();
         if interp_ok && jit_ok {
+            #[cfg(target_arch = "x86_64")]
+            if x64_diag {
+                crate::serial_println!("[X64-JF] ensure=existing-ok");
+            }
             return Ok((interp_id, jit_id));
         }
         if interp_ok {
@@ -10377,11 +10562,27 @@ fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
         *slots = None;
     }
 
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] ensure=build-base-module");
+    }
     let mut base_module = WasmModule::new();
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] ensure=reserve-bytecode");
+    }
     base_module.reserve_bytecode(MAX_FUZZ_CODE_SIZE);
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] ensure=load-end");
+    }
     base_module
         .load(&[Opcode::End as u8])
         .map_err(|_| "Module load failed")?;
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] ensure=add-function");
+    }
     base_module
         .add_function(Function {
             code_offset: 0,
@@ -10392,9 +10593,30 @@ fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
         })
         .map_err(|_| "Function add failed")?;
 
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] ensure=instantiate-interp");
+    }
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] ensure=instantiate-interp-clone");
+    }
+    let interp_module = base_module.clone();
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] ensure=instantiate-interp-call");
+    }
     let interp_id = wasm_runtime()
-        .instantiate_module(base_module.clone(), ProcessId(1))
+        .instantiate_module(interp_module, ProcessId(1))
         .map_err(|_| "Instance create failed")?;
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] ensure=instantiate-jit");
+    }
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!("[X64-JF] ensure=instantiate-jit-call");
+    }
     let jit_id = match wasm_runtime().instantiate_module(base_module, ProcessId(1)) {
         Ok(id) => id,
         Err(_) => {
@@ -10404,6 +10626,14 @@ fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
     };
     let mut slots = JIT_FUZZ_INSTANCES.lock();
     *slots = Some((interp_id, jit_id));
+    #[cfg(target_arch = "x86_64")]
+    if x64_diag {
+        crate::serial_println!(
+            "[X64-JF] ensure=created interp={} jit={}",
+            interp_id,
+            jit_id
+        );
+    }
     Ok((interp_id, jit_id))
 }
 
@@ -11930,19 +12160,12 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     Ok(stats)
 }
 
-pub fn jit_fuzz_regression_default(
+fn jit_fuzz_regression_run_seed_slice(
     iterations_per_seed: u32,
+    seeds: &[u64],
 ) -> Result<JitFuzzRegressionStats, &'static str> {
-    jit_fuzz_regression_bounded(iterations_per_seed, JIT_FUZZ_REGRESSION_SEEDS.len() as u32)
-}
-
-pub fn jit_fuzz_regression_bounded(
-    iterations_per_seed: u32,
-    max_seeds: u32,
-) -> Result<JitFuzzRegressionStats, &'static str> {
-    let seeds_limit = core::cmp::min(max_seeds as usize, JIT_FUZZ_REGRESSION_SEEDS.len());
     let mut out = JitFuzzRegressionStats {
-        seeds_total: seeds_limit as u32,
+        seeds_total: seeds.len() as u32,
         seeds_passed: 0,
         seeds_failed: 0,
         total_ok: 0,
@@ -11962,8 +12185,8 @@ pub fn jit_fuzz_regression_bounded(
     };
 
     let mut i = 0usize;
-    while i < seeds_limit {
-        let seed = JIT_FUZZ_REGRESSION_SEEDS[i];
+    while i < seeds.len() {
+        let seed = seeds[i];
         let stats = jit_fuzz(iterations_per_seed, seed)?;
         out.total_ok = out.total_ok.saturating_add(stats.ok);
         out.total_traps = out.total_traps.saturating_add(stats.traps);
@@ -11999,6 +12222,28 @@ pub fn jit_fuzz_regression_bounded(
     }
 
     Ok(out)
+}
+
+pub fn jit_fuzz_regression_default(
+    iterations_per_seed: u32,
+) -> Result<JitFuzzRegressionStats, &'static str> {
+    jit_fuzz_regression_bounded(iterations_per_seed, JIT_FUZZ_REGRESSION_SEEDS.len() as u32)
+}
+
+pub fn jit_fuzz_regression_bounded(
+    iterations_per_seed: u32,
+    max_seeds: u32,
+) -> Result<JitFuzzRegressionStats, &'static str> {
+    let seeds_limit = core::cmp::min(max_seeds as usize, JIT_FUZZ_REGRESSION_SEEDS.len());
+    jit_fuzz_regression_run_seed_slice(iterations_per_seed, &JIT_FUZZ_REGRESSION_SEEDS[..seeds_limit])
+}
+
+pub fn jit_fuzz_x64_debug_corpus(
+    iterations_per_seed: u32,
+) -> Result<JitFuzzRegressionStats, &'static str> {
+    // Small deterministic corpus intended for x86_64 hang isolation:
+    // short, repeatable, direct jit_fuzz() calls without alias chunking.
+    jit_fuzz_regression_run_seed_slice(iterations_per_seed, &JIT_FUZZ_X64_DEBUG_SEEDS)
 }
 
 pub fn jit_fuzz_regression_soak_default(
