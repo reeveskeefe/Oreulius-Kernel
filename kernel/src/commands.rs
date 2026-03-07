@@ -6552,6 +6552,65 @@ fn run_with_shared_jit_fuzz_context<T>(user_mode: bool, f: impl FnOnce() -> T) -
     f()
 }
 
+fn jit_fuzz_empty_stats() -> crate::wasm::JitFuzzStats {
+    crate::wasm::JitFuzzStats {
+        iterations: 0,
+        ok: 0,
+        traps: 0,
+        mismatches: 0,
+        compile_errors: 0,
+        opcode_bins_hit: 0,
+        opcode_edges_hit: 0,
+        opcode_edges_hit_admissible: 0,
+        opcode_edges_admissible_total: 0,
+        novel_programs: 0,
+        first_mismatch: None,
+        first_compile_error: None,
+    }
+}
+
+fn jit_fuzz_merge_stats(
+    agg: &mut crate::wasm::JitFuzzStats,
+    mut chunk: crate::wasm::JitFuzzStats,
+    iter_base: u32,
+) {
+    agg.iterations = agg.iterations.saturating_add(chunk.iterations);
+    agg.ok = agg.ok.saturating_add(chunk.ok);
+    agg.traps = agg.traps.saturating_add(chunk.traps);
+    agg.mismatches = agg.mismatches.saturating_add(chunk.mismatches);
+    agg.compile_errors = agg.compile_errors.saturating_add(chunk.compile_errors);
+    agg.opcode_bins_hit = agg.opcode_bins_hit.max(chunk.opcode_bins_hit);
+    agg.opcode_edges_hit = agg.opcode_edges_hit.max(chunk.opcode_edges_hit);
+    agg.opcode_edges_hit_admissible = agg
+        .opcode_edges_hit_admissible
+        .max(chunk.opcode_edges_hit_admissible);
+    agg.opcode_edges_admissible_total = agg
+        .opcode_edges_admissible_total
+        .max(chunk.opcode_edges_admissible_total);
+    agg.novel_programs = agg.novel_programs.saturating_add(chunk.novel_programs);
+
+    if agg.first_compile_error.is_none() {
+        if let Some(mut e) = chunk.first_compile_error.take() {
+            e.iteration = e.iteration.saturating_add(iter_base);
+            agg.first_compile_error = Some(e);
+        }
+    }
+    if agg.first_mismatch.is_none() {
+        if let Some(mut m) = chunk.first_mismatch.take() {
+            m.iteration = m.iteration.saturating_add(iter_base);
+            agg.first_mismatch = Some(m);
+        }
+    }
+}
+
+fn jit_fuzz_chunk_seed(base_seed: u64, chunk_idx: u32) -> u64 {
+    if chunk_idx == 0 {
+        return base_seed;
+    }
+    let mix = 0x9E37_79B9_7F4A_7C15u64.wrapping_mul((chunk_idx as u64).wrapping_add(1));
+    base_seed ^ mix.rotate_left((chunk_idx & 31) + 1)
+}
+
 fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
 
     let iters = match parts.next().and_then(parse_number) {
@@ -6619,7 +6678,61 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
     }
     vga::print_str("\n\n");
 
-    match run_with_shared_jit_fuzz_context(user_mode, || crate::wasm::jit_fuzz(iters, seed)) {
+    #[cfg(target_arch = "x86_64")]
+    const X64_FUZZ_CHUNK_ITERS: u32 = if cfg!(feature = "jit-fuzz-24bin") { 256 } else { 64 };
+    #[cfg(not(target_arch = "x86_64"))]
+    const X64_FUZZ_CHUNK_ITERS: u32 = u32::MAX;
+
+    let stats_result = if cfg!(target_arch = "x86_64") && !user_mode && iters > X64_FUZZ_CHUNK_ITERS {
+        let total_chunks = (iters + X64_FUZZ_CHUNK_ITERS - 1) / X64_FUZZ_CHUNK_ITERS;
+        vga::print_str("[x64] shared command chunking enabled: ");
+        print_u32(total_chunks);
+        vga::print_str(" chunks (<= ");
+        print_u32(X64_FUZZ_CHUNK_ITERS);
+        vga::print_str(" iters each)\n\n");
+
+        let mut agg = jit_fuzz_empty_stats();
+        let mut remaining = iters;
+        let mut iter_base = 0u32;
+        let mut chunk_idx = 0u32;
+
+        let mut err: Option<&'static str> = None;
+        while remaining > 0 {
+            let chunk_iters = if remaining > X64_FUZZ_CHUNK_ITERS {
+                X64_FUZZ_CHUNK_ITERS
+            } else {
+                remaining
+            };
+            let chunk_seed = jit_fuzz_chunk_seed(seed, chunk_idx);
+            let res = run_with_shared_jit_fuzz_context(user_mode, || crate::wasm::jit_fuzz(chunk_iters, chunk_seed));
+            match res {
+                Ok(chunk_stats) => {
+                    let stop_early = chunk_stats.mismatches != 0 || chunk_stats.compile_errors != 0;
+                    jit_fuzz_merge_stats(&mut agg, chunk_stats, iter_base);
+                    remaining -= chunk_iters;
+                    iter_base = iter_base.saturating_add(chunk_iters);
+                    chunk_idx = chunk_idx.saturating_add(1);
+                    crate::wasm::jit_runtime_recover_transient();
+                    if stop_early {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    err = Some(e);
+                    break;
+                }
+            }
+        }
+        if let Some(e) = err {
+            Err(e)
+        } else {
+            Ok(agg)
+        }
+    } else {
+        run_with_shared_jit_fuzz_context(user_mode, || crate::wasm::jit_fuzz(iters, seed))
+    };
+
+    match stats_result {
         Ok(stats) => {
             vga::print_str("OK: ");
             print_u32(stats.ok);

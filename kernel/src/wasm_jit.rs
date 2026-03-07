@@ -32,7 +32,7 @@
 
 //! Minimal WASM JIT compiler (ELF-less, in-kernel).
 //!
-//! Supports a small subset of opcodes and translates to 32-bit x86 machine code.
+//! Supports a bounded MVP-oriented opcode set for i686/x86_64 backends.
 
 #![allow(dead_code)]
 
@@ -203,15 +203,49 @@ fn analyze_basic_blocks_into(code: &[u8], blocks: &mut Vec<BasicBlock>) {
                 let (_v, n) = read_sleb128_i32(code, pc).unwrap_or((0, 0));
                 pc += n;
             }
+            Some(Opcode::If) => {
+                let (n, _empty_block_type) = match read_blocktype_width(code, pc) {
+                    Some(v) => v,
+                    None => break,
+                };
+                pc += n;
+            }
+            Some(Opcode::LocalGet) | Some(Opcode::LocalSet) | Some(Opcode::LocalTee) => {
+                let (_idx, n) = match read_uleb128(code, pc) {
+                    Some(v) => v,
+                    None => break,
+                };
+                pc += n;
+            }
+            Some(Opcode::Br) | Some(Opcode::BrIf) => {
+                let (_depth, n) = match read_uleb128(code, pc) {
+                    Some(v) => v,
+                    None => break,
+                };
+                pc += n;
+            }
             Some(Opcode::I32Load) | Some(Opcode::I32Store) => {
-                let (_align, n1) = read_uleb128(code, pc).unwrap_or((0, 0));
+                let (_align, n1) = match read_uleb128(code, pc) {
+                    Some(v) => v,
+                    None => break,
+                };
                 pc += n1;
-                let (_off, n2) = read_uleb128(code, pc).unwrap_or((0, 0));
+                let (_off, n2) = match read_uleb128(code, pc) {
+                    Some(v) => v,
+                    None => break,
+                };
                 pc += n2;
+            }
+            Some(Opcode::MemorySize) | Some(Opcode::MemoryGrow) => {
+                // Reserved memory index immediate (must be 0 in MVP subset).
+                if pc < code.len() {
+                    pc += 1;
+                }
             }
             Some(Opcode::Unreachable)
             | Some(Opcode::Return)
             | Some(Opcode::End)
+            | Some(Opcode::Else)
             | Some(Opcode::Br)
             | Some(Opcode::BrIf) => {
                 blocks.push(BasicBlock { start, end: pc });
@@ -232,6 +266,31 @@ pub fn analyze_basic_blocks(code: &[u8]) -> Vec<BasicBlock> {
     blocks
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlKind {
+    Function,
+    If,
+}
+
+struct ControlFrame {
+    kind: ControlKind,
+    stack_depth_at_entry: i32,
+    else_patch: Option<usize>,
+    has_else: bool,
+    end_patches: Vec<usize>,
+}
+
+fn resolve_label_target_idx(
+    control_stack: &[ControlFrame],
+    depth: u32,
+) -> Result<usize, &'static str> {
+    let depth = depth as usize;
+    if depth >= control_stack.len() {
+        return Err("Branch depth out of bounds");
+    }
+    Ok(control_stack.len() - 1 - depth)
+}
+
 fn emit_code_into(
     code: &[u8],
     locals_total: usize,
@@ -245,10 +304,19 @@ fn emit_code_into(
     emitter.emit_prologue();
 
     traces.clear();
+    let mut control_stack = Vec::new();
+    control_stack.push(ControlFrame {
+        kind: ControlKind::Function,
+        stack_depth_at_entry: 0,
+        else_patch: None,
+        has_else: false,
+        end_patches: Vec::new(),
+    });
     let mut pc = 0usize;
     let mut stack_depth: i32 = 0;
     let mut max_depth: i32 = 0;
     let mut instr_count: usize = 0;
+    let mut saw_function_end = false;
     while pc < code.len() {
         let wasm_start = pc;
         let op = code[pc];
@@ -263,7 +331,6 @@ fn emit_code_into(
             return Err("JIT function too large");
         }
         let x86_start = emitter.code.len();
-        let mut terminates = false;
         match opcode {
             Opcode::Nop => {
                 emitter.emit_instr_fuel_check();
@@ -271,11 +338,41 @@ fn emit_code_into(
             Opcode::Unreachable => {
                 emitter.emit_instr_fuel_check();
                 emitter.emit_trap_stack_always();
-                terminates = true;
             }
-            Opcode::End | Opcode::Return => {
+            Opcode::Return => {
                 emitter.emit_instr_fuel_check();
-                terminates = true;
+                let jmp = emitter.emit_jump_placeholder();
+                control_stack[0].end_patches.push(jmp);
+                stack_depth = control_stack[0].stack_depth_at_entry;
+            }
+            Opcode::End => {
+                emitter.emit_instr_fuel_check();
+                let end_target = emitter.code.len();
+                if control_stack.is_empty() {
+                    return Err("Unexpected end");
+                }
+                if control_stack.len() == 1 {
+                    let function_frame = &mut control_stack[0];
+                    if function_frame.kind != ControlKind::Function {
+                        return Err("Malformed control stack");
+                    }
+                    for patch in function_frame.end_patches.drain(..) {
+                        emitter.patch_rel32(patch, end_target)?;
+                    }
+                    saw_function_end = true;
+                } else {
+                    let mut frame = control_stack.pop().ok_or("Unexpected end")?;
+                    if frame.kind != ControlKind::If {
+                        return Err("Unsupported control frame");
+                    }
+                    if let Some(else_patch) = frame.else_patch.take() {
+                        emitter.patch_rel32(else_patch, end_target)?;
+                    }
+                    for patch in frame.end_patches.drain(..) {
+                        emitter.patch_rel32(patch, end_target)?;
+                    }
+                    stack_depth = frame.stack_depth_at_entry;
+                }
             }
             Opcode::Drop => {
                 emitter.emit_instr_fuel_check();
@@ -504,8 +601,86 @@ fn emit_code_into(
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_memory_size();
             }
-            Opcode::If | Opcode::Else | Opcode::Br | Opcode::BrIf => {
-                return Err("Control flow not supported by JIT");
+            Opcode::If => {
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    return Err("Control flow not supported by JIT");
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    emitter.emit_instr_fuel_check();
+                    let (blocktype_width, empty_block_type) =
+                        read_blocktype_width(code, pc).ok_or("Bad if block type")?;
+                    pc += blocktype_width;
+                    if !empty_block_type {
+                        return Err("Non-empty if block type not supported by JIT");
+                    }
+                    stack_pop(&mut stack_depth, 1)?;
+                    let else_patch = emitter.emit_pop_cond_jz_placeholder();
+                    control_stack.push(ControlFrame {
+                        kind: ControlKind::If,
+                        stack_depth_at_entry: stack_depth,
+                        else_patch: Some(else_patch),
+                        has_else: false,
+                        end_patches: Vec::new(),
+                    });
+                }
+            }
+            Opcode::Else => {
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    return Err("Control flow not supported by JIT");
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    emitter.emit_instr_fuel_check();
+                    let end_jump = emitter.emit_jump_placeholder();
+                    let else_body_start = emitter.code.len();
+                    let frame = control_stack.last_mut().ok_or("Unexpected else")?;
+                    if frame.kind != ControlKind::If || frame.has_else {
+                        return Err("Unexpected else");
+                    }
+                    if let Some(else_patch) = frame.else_patch.take() {
+                        emitter.patch_rel32(else_patch, else_body_start)?;
+                    } else {
+                        return Err("Missing if else patch");
+                    }
+                    frame.has_else = true;
+                    frame.end_patches.push(end_jump);
+                    stack_depth = frame.stack_depth_at_entry;
+                }
+            }
+            Opcode::Br => {
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    return Err("Control flow not supported by JIT");
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    emitter.emit_instr_fuel_check();
+                    let (depth, n) = read_uleb128(code, pc).ok_or("Bad br depth")?;
+                    pc += n;
+                    let target_idx = resolve_label_target_idx(&control_stack, depth)?;
+                    let jump = emitter.emit_jump_placeholder();
+                    control_stack[target_idx].end_patches.push(jump);
+                    stack_depth = control_stack[target_idx].stack_depth_at_entry;
+                }
+            }
+            Opcode::BrIf => {
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    return Err("Control flow not supported by JIT");
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    emitter.emit_instr_fuel_check();
+                    let (depth, n) = read_uleb128(code, pc).ok_or("Bad br_if depth")?;
+                    pc += n;
+                    stack_pop(&mut stack_depth, 1)?;
+                    let target_idx = resolve_label_target_idx(&control_stack, depth)?;
+                    let jump = emitter.emit_pop_cond_jnz_placeholder();
+                    control_stack[target_idx].end_patches.push(jump);
+                }
             }
             _ => return Err("Opcode not supported by JIT"),
         }
@@ -520,9 +695,12 @@ fn emit_code_into(
             x86_end,
             opcode,
         });
-        if terminates {
+        if saw_function_end {
             break;
         }
+    }
+    if !saw_function_end {
+        return Err("Missing function end");
     }
 
     let _ret_pos = emitter.emit_epilogue();
@@ -584,6 +762,10 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
             | Opcode::I32Load
             | Opcode::I32Store
             | Opcode::MemorySize
+            | Opcode::If
+            | Opcode::Else
+            | Opcode::Br
+            | Opcode::BrIf
     )
 }
 
@@ -800,7 +982,17 @@ fn validate_translation_per_block_into(
         }
 
         let last_opcode = traces[trace_idx - 1].opcode;
-        if block_idx + 1 < blocks.len() && !matches!(last_opcode, Opcode::End | Opcode::Return) {
+        if block_idx + 1 < blocks.len()
+            && !matches!(
+                last_opcode,
+                Opcode::End
+                    | Opcode::Else
+                    | Opcode::Return
+                    | Opcode::Br
+                    | Opcode::BrIf
+                    | Opcode::Unreachable
+            )
+        {
             return Err("Non-terminal block boundary in translation metadata");
         }
 
@@ -1218,6 +1410,41 @@ impl Emitter {
         self.emit(&[0x48]);
         // mov [esi], eax
         self.emit(&[0x89, 0x06]);
+    }
+
+    fn emit_pop_cond_jz_placeholder(&mut self) -> usize {
+        self.emit_pop_to_eax();
+        self.emit(&[0x85, 0xC0]); // test eax, eax
+        self.emit(&[0x0F, 0x84]); // jz rel32
+        let pos = self.code.len();
+        self.emit_u32(0);
+        pos
+    }
+
+    fn emit_pop_cond_jnz_placeholder(&mut self) -> usize {
+        self.emit_pop_to_eax();
+        self.emit(&[0x85, 0xC0]); // test eax, eax
+        self.emit(&[0x0F, 0x85]); // jnz rel32
+        let pos = self.code.len();
+        self.emit_u32(0);
+        pos
+    }
+
+    fn emit_jump_placeholder(&mut self) -> usize {
+        self.emit(&[0xE9]); // jmp rel32
+        let pos = self.code.len();
+        self.emit_u32(0);
+        pos
+    }
+
+    fn patch_rel32(&mut self, rel_pos: usize, target: usize) -> Result<(), &'static str> {
+        let end = rel_pos.checked_add(4).ok_or("Patch index overflow")?;
+        if end > self.code.len() {
+            return Err("Patch index out of range");
+        }
+        let rel = (target as isize - end as isize) as i32;
+        self.code[rel_pos..end].copy_from_slice(&rel.to_le_bytes());
+        Ok(())
     }
 
     fn emit_i32_const(&mut self, imm: i32) {
@@ -1930,6 +2157,41 @@ impl Emitter {
         ]);
     }
 
+    fn emit_pop_cond_jz_placeholder(&mut self) -> usize {
+        self.emit_pop_to_eax();
+        self.emit(&[0x85, 0xC0]); // test eax, eax
+        self.emit(&[0x0F, 0x84]); // jz rel32
+        let pos = self.code.len();
+        self.emit_u32(0);
+        pos
+    }
+
+    fn emit_pop_cond_jnz_placeholder(&mut self) -> usize {
+        self.emit_pop_to_eax();
+        self.emit(&[0x85, 0xC0]); // test eax, eax
+        self.emit(&[0x0F, 0x85]); // jnz rel32
+        let pos = self.code.len();
+        self.emit_u32(0);
+        pos
+    }
+
+    fn emit_jump_placeholder(&mut self) -> usize {
+        self.emit(&[0xE9]); // jmp rel32
+        let pos = self.code.len();
+        self.emit_u32(0);
+        pos
+    }
+
+    fn patch_rel32(&mut self, rel_pos: usize, target: usize) -> Result<(), &'static str> {
+        let end = rel_pos.checked_add(4).ok_or("Patch index overflow")?;
+        if end > self.code.len() {
+            return Err("Patch index out of range");
+        }
+        let rel = (target as isize - end as isize) as i32;
+        self.code[rel_pos..end].copy_from_slice(&rel.to_le_bytes());
+        Ok(())
+    }
+
     fn emit_i32_const(&mut self, imm: i32) {
         self.emit(&[0xB8]);                // mov eax, imm32
         self.emit_i32(imm);
@@ -2420,6 +2682,21 @@ fn read_sleb128_i32(bytes: &[u8], mut offset: usize) -> Option<(i32, usize)> {
         result |= !0 << shift;
     }
     Some((result, count))
+}
+
+fn read_blocktype_width(bytes: &[u8], offset: usize) -> Option<(usize, bool)> {
+    if offset >= bytes.len() {
+        return None;
+    }
+    let b = bytes[offset];
+    if b == 0x40 {
+        return Some((1, true));
+    }
+    if b == 0x7F || b == 0x7E || b == 0x7D || b == 0x7C || b == 0x70 || b == 0x6F {
+        return Some((1, false));
+    }
+    let (_idx, n) = read_uleb128(bytes, offset)?;
+    Some((n, false))
 }
 
 // ============================================================================

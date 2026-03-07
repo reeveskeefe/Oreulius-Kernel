@@ -12,8 +12,12 @@ if [[ "${X64_JIT_FUZZ_24BIN:-0}" == "1" ]]; then
   # Coverage gate defaults for 24-bin mode.
   # Tune upward as backend parity improves.
   export X64_EXPECT_MIN_BINS="${X64_EXPECT_MIN_BINS:-24}"
-  export X64_EXPECT_MIN_EDGES_FULL="${X64_EXPECT_MIN_EDGES_FULL:-128}"
-  export X64_EXPECT_MIN_EDGES_ADM="${X64_EXPECT_MIN_EDGES_ADM:-128}"
+  export X64_EXPECT_MIN_EDGES_FULL="${X64_EXPECT_MIN_EDGES_FULL:-240}"
+  export X64_EXPECT_MIN_EDGES_ADM="${X64_EXPECT_MIN_EDGES_ADM:-240}"
+  # jitfuzzreg full is a small cross-seed smoke run by default; keep a light gate
+  # and enforce high edge floors on the dedicated wasm-jit-fuzz command above.
+  export X64_EXPECT_MIN_JITFUZZREG_EDGES_FULL="${X64_EXPECT_MIN_JITFUZZREG_EDGES_FULL:-1}"
+  export X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM="${X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM:-1}"
 fi
 
 ./build-x86_64-mb2-iso.sh

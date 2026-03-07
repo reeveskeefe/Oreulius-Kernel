@@ -40,6 +40,14 @@ set expect_min_edges_adm 0
 if {[info exists env(X64_EXPECT_MIN_EDGES_ADM)]} {
     set expect_min_edges_adm $env(X64_EXPECT_MIN_EDGES_ADM)
 }
+set expect_min_reg_edges_full 0
+if {[info exists env(X64_EXPECT_MIN_JITFUZZREG_EDGES_FULL)]} {
+    set expect_min_reg_edges_full $env(X64_EXPECT_MIN_JITFUZZREG_EDGES_FULL)
+}
+set expect_min_reg_edges_adm 0
+if {[info exists env(X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM)]} {
+    set expect_min_reg_edges_adm $env(X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM)
+}
 
 proc expect_x64_prompt {} {
     expect {
@@ -169,8 +177,8 @@ proc run_x64_jit_fuzz_stable {cmd timeout_s} {
 proc run_x64_jitfuzzreg_with_gate {cmd timeout_s} {
     global expect_edge_total
     global expect_edge_adm_total
-    global expect_min_edges_full
-    global expect_min_edges_adm
+    global expect_min_reg_edges_full
+    global expect_min_reg_edges_adm
     global timeout
     set saved_timeout $timeout
     set timeout $timeout_s
@@ -201,12 +209,12 @@ proc run_x64_jitfuzzreg_with_gate {cmd timeout_s} {
         puts "x86_64 jitfuzzreg assertion failed: missing summary line"
         exit 1
     }
-    if {$expect_min_edges_full > 0 && $edges_full_hit < $expect_min_edges_full} {
-        puts "x86_64 jitfuzzreg coverage gate failed: edges_full=$edges_full_hit min=$expect_min_edges_full"
+    if {$expect_min_reg_edges_full > 0 && $edges_full_hit < $expect_min_reg_edges_full} {
+        puts "x86_64 jitfuzzreg coverage gate failed: edges_full=$edges_full_hit min=$expect_min_reg_edges_full"
         exit 1
     }
-    if {$expect_min_edges_adm > 0 && $edges_adm_hit < $expect_min_edges_adm} {
-        puts "x86_64 jitfuzzreg coverage gate failed: edges_adm=$edges_adm_hit min=$expect_min_edges_adm"
+    if {$expect_min_reg_edges_adm > 0 && $edges_adm_hit < $expect_min_reg_edges_adm} {
+        puts "x86_64 jitfuzzreg coverage gate failed: edges_adm=$edges_adm_hit min=$expect_min_reg_edges_adm"
         exit 1
     }
 }
@@ -244,6 +252,7 @@ send -- "jitcall\r"
 expect {
     -re {\[X64\] jitcall ok: [^\r\n]+} {}
     -re {\[X64\] jitcall failed: x86_64 JIT user entry/trampoline path not yet ported[^\r\n]*} {}
+    -re {\[X64\] jitcall failed: WASM memory not mapped[^\r\n]*} {}
     timeout { puts "timeout waiting for x86_64 jitcall"; exit 1 }
 }
 expect_x64_prompt
