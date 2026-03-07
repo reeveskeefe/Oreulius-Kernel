@@ -12,7 +12,7 @@
 //! no unbounded latency, and leaves floating/SIMD processing to the telemetry daemon.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::polymorphic_math::ScalarTensor;
+use crate::tensor_core::ScalarTensor;
 
 const QUEUE_SIZE: usize = 128;
 

@@ -35,16 +35,39 @@ impl GeneratorMatrix {
         // E.g., self.q_data[(0, 1)] += 0.01;
     }
 
-    /// Computes P(t) = P(0) * e^(Q*t) using a basic Taylor series expansion
+    /// Computes P(t) = P(0) * e^(Q*t) using a basic Padé approximation
     /// for matrix exponential, leveraging nalgebra's structured algebra.
     pub fn compute_matrix_exponential(&self, t: f64) -> DMatrix<f64> {
         let dim = self.dim;
-        let p_0 = DMatrix::identity(dim, dim); // Assume initial state is Identity
+        let id = DMatrix::identity(dim, dim);
         let q_t = &self.q_data * t;
 
-        // 1st order Taylor expansion: P(t) ≈ I + Q*t
-        // (In a full implementation, we'd use a Padé approximation or higher-order expansion)
-        let mut p_t = p_0 + q_t;
+        // Scaling (squaring and scaling method)
+        let mut q_scaled = q_t.clone();
+        let norm = q_scaled.amax();
+        let scale_power = if norm > 1.0 { norm.log2().ceil() as i32 } else { 0 };
+        if scale_power > 0 {
+            q_scaled *= 1.0 / (2.0f64.powi(scale_power));
+        }
+
+        // [3/3] Padé approximant for e^A ≈ Dpq(A)^-1 * Npq(A)
+        // D33(A) = I - A/2 + A^2/10 - A^3/120
+        // N33(A) = I + A/2 + A^2/10 + A^3/120
+        let a2 = &q_scaled * &q_scaled;
+        let a3 = &a2 * &q_scaled;
+
+        let n33 = &id + &q_scaled * 0.5 + &a2 * 0.1 + &a3 * (1.0/120.0);
+        let d33 = &id - &q_scaled * 0.5 + &a2 * 0.1 - &a3 * (1.0/120.0);
+
+        let mut p_t = match d33.lu().solve(&n33) {
+            Some(res) => res,
+            None => id.clone(), // Fallback if singular
+        };
+
+        // Squaring phase
+        for _ in 0..scale_power {
+            p_t = &p_t * &p_t;
+        }
 
         // Bounds clamping for probabilities (P_ij must be [0, 1])
         for val in p_t.iter_mut() {

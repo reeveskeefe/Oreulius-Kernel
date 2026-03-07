@@ -818,8 +818,8 @@ pub struct CapabilityTokenV1 {
 impl CapabilityTokenV1 {
     /// Elevates an ordinary token into a structurally bounded affine capability
     /// ensuring it adheres to strict Max-Flow tracking via the `LinearCapability` struct.
-    pub fn into_linear<const C: usize>(self) -> crate::polymorphic_math::LinearCapability<Self, C> {
-        crate::polymorphic_math::LinearCapability::new(self)
+    pub fn into_linear<const C: usize>(self) -> crate::tensor_core::LinearCapability<Self, C> {
+        crate::tensor_core::LinearCapability::new(self)
     }
 
     /// Hard Math Invariant: Degrades a token mathematically by reducing its constraints
