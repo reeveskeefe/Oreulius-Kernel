@@ -1067,3 +1067,4 @@ fn redraw_line(input: &[u8; 256], len: usize, cursor: usize, prompt_pos: (usize,
     terminal::set_cursor(prompt_pos.0, prompt_pos.1 + cursor);
 }
 pub mod polymorphic_math;
+pub mod telemetry;
