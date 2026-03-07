@@ -556,6 +556,9 @@ impl Opcode {
             0x6B => Some(Opcode::I32Sub),
             0x6C => Some(Opcode::I32Mul),
             0x6D => Some(Opcode::I32DivS),
+            0x6E => Some(Opcode::I32DivU),
+            0x6F => Some(Opcode::I32RemS),
+            0x70 => Some(Opcode::I32RemU),
             0x71 => Some(Opcode::I32And),
             0x72 => Some(Opcode::I32Or),
             0x73 => Some(Opcode::I32Xor),
@@ -10419,26 +10422,67 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         code
     }
 
+    fn build_select(val1: i32, val2: i32, cond: i32) -> Vec<u8> {
+        let mut code = Vec::with_capacity(20);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, val1);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, val2);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, cond);
+        code.push(Opcode::Select as u8);
+        code.push(Opcode::End as u8);
+        code
+    }
+
+    fn build_memory_size() -> Vec<u8> {
+        let mut code = Vec::with_capacity(3);
+        code.push(Opcode::MemorySize as u8);
+        code.push(0x00);
+        code.push(Opcode::End as u8);
+        code
+    }
+
+    fn build_unreachable() -> Vec<u8> {
+        let mut code = Vec::with_capacity(2);
+        code.push(Opcode::Unreachable as u8);
+        code.push(Opcode::End as u8);
+        code
+    }
+
+    enum Expected {
+        Value(i32),
+        Trap,
+        MatchOk,
+    }
+
     struct Case {
         name: &'static str,
         code: Vec<u8>,
         locals_total: usize,
-        expected: i32,
+        expected: Expected,
     }
 
-    let cases: [Case; 12] = [
-        Case { name: "eq_0_0", code: build_binop(Opcode::I32Eq, 0, 0), locals_total: 0, expected: 1 },
-        Case { name: "ne_1_2", code: build_binop(Opcode::I32Ne, 1, 2), locals_total: 0, expected: 1 },
-        Case { name: "lt_s_neg", code: build_binop(Opcode::I32LtS, -1, 0), locals_total: 0, expected: 1 },
-        Case { name: "gt_s_neg", code: build_binop(Opcode::I32GtS, -1, 0), locals_total: 0, expected: 0 },
-        Case { name: "le_s_eq", code: build_binop(Opcode::I32LeS, 7, 7), locals_total: 0, expected: 1 },
-        Case { name: "ge_s_pos", code: build_binop(Opcode::I32GeS, 9, -3), locals_total: 0, expected: 1 },
-        Case { name: "lt_u_wrap", code: build_binop(Opcode::I32LtU, -1, 0), locals_total: 0, expected: 0 },
-        Case { name: "gt_u_wrap", code: build_binop(Opcode::I32GtU, -1, 0), locals_total: 0, expected: 1 },
-        Case { name: "le_u_eq", code: build_binop(Opcode::I32LeU, -1, -1), locals_total: 0, expected: 1 },
-        Case { name: "ge_u_small", code: build_binop(Opcode::I32GeU, 1, 2), locals_total: 0, expected: 0 },
-        Case { name: "shl_masked_33", code: build_local_tee_shift(Opcode::I32Shl, 1, 33), locals_total: 1, expected: 2 },
-        Case { name: "shru_masked_40", code: build_local_tee_shift(Opcode::I32ShrU, -1, 40), locals_total: 1, expected: 0x00FF_FFFFu32 as i32 },
+    let cases: [Case; 19] = [
+        Case { name: "eq_0_0", code: build_binop(Opcode::I32Eq, 0, 0), locals_total: 0, expected: Expected::Value(1) },
+        Case { name: "ne_1_2", code: build_binop(Opcode::I32Ne, 1, 2), locals_total: 0, expected: Expected::Value(1) },
+        Case { name: "lt_s_neg", code: build_binop(Opcode::I32LtS, -1, 0), locals_total: 0, expected: Expected::Value(1) },
+        Case { name: "gt_s_neg", code: build_binop(Opcode::I32GtS, -1, 0), locals_total: 0, expected: Expected::Value(0) },
+        Case { name: "le_s_eq", code: build_binop(Opcode::I32LeS, 7, 7), locals_total: 0, expected: Expected::Value(1) },
+        Case { name: "ge_s_pos", code: build_binop(Opcode::I32GeS, 9, -3), locals_total: 0, expected: Expected::Value(1) },
+        Case { name: "lt_u_wrap", code: build_binop(Opcode::I32LtU, -1, 0), locals_total: 0, expected: Expected::Value(0) },
+        Case { name: "gt_u_wrap", code: build_binop(Opcode::I32GtU, -1, 0), locals_total: 0, expected: Expected::Value(1) },
+        Case { name: "le_u_eq", code: build_binop(Opcode::I32LeU, -1, -1), locals_total: 0, expected: Expected::Value(1) },
+        Case { name: "ge_u_small", code: build_binop(Opcode::I32GeU, 1, 2), locals_total: 0, expected: Expected::Value(0) },
+        Case { name: "shl_masked_33", code: build_local_tee_shift(Opcode::I32Shl, 1, 33), locals_total: 1, expected: Expected::Value(2) },
+        Case { name: "shru_masked_40", code: build_local_tee_shift(Opcode::I32ShrU, -1, 40), locals_total: 1, expected: Expected::Value(0x00FF_FFFFu32 as i32) },
+        Case { name: "divu_wrap", code: build_binop(Opcode::I32DivU, -1, 2), locals_total: 0, expected: Expected::Value(0x7FFF_FFFF) },
+        Case { name: "rems_neg", code: build_binop(Opcode::I32RemS, -7, 3), locals_total: 0, expected: Expected::Value(-1) },
+        Case { name: "remu_wrap", code: build_binop(Opcode::I32RemU, -1, 2), locals_total: 0, expected: Expected::Value(1) },
+        Case { name: "select_true", code: build_select(11, 22, 1), locals_total: 0, expected: Expected::Value(11) },
+        Case { name: "select_false", code: build_select(11, 22, 0), locals_total: 0, expected: Expected::Value(22) },
+        Case { name: "memory_size_match", code: build_memory_size(), locals_total: 0, expected: Expected::MatchOk },
+        Case { name: "unreachable_trap", code: build_unreachable(), locals_total: 0, expected: Expected::Trap },
     ];
 
     let mut base_module = WasmModule::new();
@@ -10480,8 +10524,7 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
             instance.enable_jit(false);
             instance.call(0)?;
             instance.stack.pop()?.as_i32()
-        }).map_err(|_| "jit compare/shift self-test: interp instance missing")?
-          .map_err(|_| "jit compare/shift self-test: interp execution failed")?;
+        }).map_err(|_| "jit compare/shift self-test: interp instance missing")?;
 
         let entry = compiler
             .compile(&case.code, case.locals_total)
@@ -10497,10 +10540,20 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
             instance.load_fuzz_program(&case.code, case.locals_total)?;
             instance.run_jit_entry(0, jit_exec)?;
             instance.stack.pop()?.as_i32()
-        }).map_err(|_| "jit compare/shift self-test: jit instance missing")?
-          .map_err(|_| "jit compare/shift self-test: jit execution failed")?;
+        }).map_err(|_| "jit compare/shift self-test: jit instance missing")?;
 
-        if interp != case.expected || jit != case.expected || interp != jit {
+        let case_ok = match case.expected {
+            Expected::Value(expected) => interp == Ok(expected) && jit == Ok(expected),
+            Expected::Trap => {
+                matches!(interp, Err(WasmError::Trap))
+                    && matches!(jit, Err(WasmError::Trap))
+            }
+            Expected::MatchOk => match (interp, jit) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => false,
+            },
+        };
+        if !case_ok {
             let _ = wasm_runtime().destroy(interp_id);
             let _ = wasm_runtime().destroy(jit_id);
             let _ = case.name;
@@ -10509,7 +10562,6 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
 
         idx += 1;
     }
-
     let _ = wasm_runtime().destroy(interp_id);
     let _ = wasm_runtime().destroy(jit_id);
     Ok(())

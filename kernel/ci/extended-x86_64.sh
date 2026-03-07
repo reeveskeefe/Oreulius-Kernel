@@ -9,6 +9,11 @@ if [[ "${X64_JIT_FUZZ_24BIN:-0}" == "1" ]]; then
   export X64_EXPECT_BINS_TOTAL="${X64_EXPECT_BINS_TOTAL:-24}"
   export X64_EXPECT_EDGE_TOTAL="${X64_EXPECT_EDGE_TOTAL:-576}"
   export X64_EXPECT_EDGE_ADM_TOTAL="${X64_EXPECT_EDGE_ADM_TOTAL:-576}"
+  # Coverage gate defaults for 24-bin mode.
+  # Tune upward as backend parity improves.
+  export X64_EXPECT_MIN_BINS="${X64_EXPECT_MIN_BINS:-24}"
+  export X64_EXPECT_MIN_EDGES_FULL="${X64_EXPECT_MIN_EDGES_FULL:-128}"
+  export X64_EXPECT_MIN_EDGES_ADM="${X64_EXPECT_MIN_EDGES_ADM:-128}"
 fi
 
 ./build-x86_64-mb2-iso.sh

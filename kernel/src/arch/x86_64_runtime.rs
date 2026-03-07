@@ -862,7 +862,7 @@ fn serial_write_prompt() {
 
 const X64_MINI_HELP: &str =
     "help help-all help-mini ticks irq0 int3 traps pfstats cowtest vmtest \
-     jitpre jitcall jitbench jitfuzz jitfuzzreg jitfuzz24dbg heartbeat console kbdtest \
+     jitpre jitcall jitbench jitfuzz jitfuzz24dbg heartbeat console kbdtest \
      mmu regs halt";
 
 fn x64_print_mini_help() {
@@ -876,14 +876,14 @@ fn x64_print_combined_help() {
     shell_println!("");
     shell_println!("[X64] x86_64 window/bring-up shell extensions:");
     shell_println!("  {}", X64_MINI_HELP);
-    shell_println!("[X64] x86_64 command aliases (compat):");
+    shell_println!("[X64] shared JIT commands (full path via commands.rs):");
     shell_println!("  wasm-jit-selftest");
-    shell_println!("  wasm-jit-fuzz <iters> [seed] [auto|kernel]");
+    shell_println!("  wasm-jit-fuzz <iters> [seed] [auto|user|kernel]");
     shell_println!("  wasm-jit-fuzz-corpus <iters>");
     shell_println!("  wasm-jit-fuzz-soak <iters> <rounds>");
+    shell_println!("  jitfuzzreg [iters [seeds]] | jitfuzzreg full [iters]");
     shell_println!("  jitfuzz24dbg [iters] [diag]  (24-bin deterministic debug corpus)");
-    shell_println!("[X64] note: x86_64 user-sandbox generic fuzz mode is still blocked in the bring-up shell.");
-    shell_println!("[X64] use `jitcall`/`jitpre` to probe the x86_64 user JIT path directly.");
+    shell_println!("[X64] jitcall/jitpre are still x86_64 bring-up specific probes.");
 }
 
 fn x64_parse_u32(s: &str) -> Option<u32> {
@@ -893,166 +893,6 @@ fn x64_parse_u32(s: &str) -> Option<u32> {
         out = out.checked_mul(10)?.checked_add(d)?;
     }
     Some(out)
-}
-
-fn x64_parse_u64(s: &str) -> Option<u64> {
-    let mut out = 0u64;
-    for ch in s.chars() {
-        let d = ch.to_digit(10)? as u64;
-        out = out.checked_mul(10)?.checked_add(d)?;
-    }
-    Some(out)
-}
-
-fn x64_print_hex_bytes(label: &str, bytes: &[u8]) {
-    if bytes.is_empty() {
-        return;
-    }
-    shell_println!("{}", label);
-    for chunk in bytes.chunks(16) {
-        shell_print!("  ");
-        for b in chunk {
-            shell_print!("{:02x} ", b);
-        }
-        shell_println!();
-    }
-}
-
-fn x64_print_first_nonzero_opt(val: Option<(u32, u8)>) {
-    match val {
-        Some((off, byte)) => shell_print!("0x{:x}:{:02x}", off, byte),
-        None => shell_print!("none"),
-    }
-}
-
-fn x64_print_jit_fuzz_stats(stats: &crate::wasm::JitFuzzStats) {
-    let bins_total = crate::wasm::jit_fuzz_opcode_bins_total();
-    let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
-    shell_println!("OK: {}", stats.ok);
-    shell_println!("Traps: {}", stats.traps);
-    shell_println!("Mismatches: {}", stats.mismatches);
-    shell_println!("Compile errors: {}", stats.compile_errors);
-    shell_println!("Opcode bins hit: {} / {}", stats.opcode_bins_hit, bins_total);
-    shell_println!("Opcode edges hit (full): {} / {}", stats.opcode_edges_hit, edges_total);
-    shell_println!(
-        "Opcode edges hit (admissible): {} / {}",
-        stats.opcode_edges_hit_admissible,
-        stats.opcode_edges_admissible_total
-    );
-    shell_println!("Novel programs: {}", stats.novel_programs);
-
-    if let Some(err) = stats.first_compile_error.as_ref() {
-        shell_println!();
-        shell_println!("First compile error:");
-        shell_println!(
-            "Iter: {}  Locals: {}  Stage: {}  Code len: {}",
-            err.iteration,
-            err.locals_total,
-            err.stage,
-            err.code.len()
-        );
-        shell_println!("Reason: {}", err.reason);
-        x64_print_hex_bytes("Code bytes:", &err.code);
-        x64_print_hex_bytes("JIT x86 bytes:", &err.jit_code);
-    }
-
-    if let Some(m) = stats.first_mismatch.as_ref() {
-        shell_println!();
-        shell_println!("First mismatch:");
-        shell_println!(
-            "Iter: {}  Locals: {}  Code len: {}",
-            m.iteration,
-            m.locals_total,
-            m.code.len()
-        );
-        shell_print!("Interp: ");
-        match m.interp {
-            Ok(v) => shell_print!("ok {}", v),
-            Err(e) => shell_print!("{}", e.as_str()),
-        }
-        shell_print!("  JIT: ");
-        match m.jit {
-            Ok(v) => shell_print!("ok {}", v),
-            Err(e) => shell_print!("{}", e.as_str()),
-        }
-        shell_println!();
-        shell_println!(
-            "Mem hash (interp/jit): 0x{:016x} / 0x{:016x}",
-            m.interp_mem_hash,
-            m.jit_mem_hash
-        );
-        shell_println!(
-            "Mem len (interp/jit): {} / {}",
-            m.interp_mem_len,
-            m.jit_mem_len
-        );
-        shell_print!("First non-zero (interp/jit): ");
-        x64_print_first_nonzero_opt(m.interp_first_nonzero);
-        shell_print!(" / ");
-        x64_print_first_nonzero_opt(m.jit_first_nonzero);
-        shell_println!();
-        x64_print_hex_bytes("Code bytes:", &m.code);
-    }
-}
-
-fn x64_empty_jit_fuzz_stats() -> crate::wasm::JitFuzzStats {
-    crate::wasm::JitFuzzStats {
-        iterations: 0,
-        ok: 0,
-        traps: 0,
-        mismatches: 0,
-        compile_errors: 0,
-        opcode_bins_hit: 0,
-        opcode_edges_hit: 0,
-        opcode_edges_hit_admissible: 0,
-        opcode_edges_admissible_total: 0,
-        novel_programs: 0,
-        first_mismatch: None,
-        first_compile_error: None,
-    }
-}
-
-fn x64_merge_jit_fuzz_stats(
-    agg: &mut crate::wasm::JitFuzzStats,
-    mut chunk: crate::wasm::JitFuzzStats,
-    iter_base: u32,
-) {
-    agg.iterations = agg.iterations.saturating_add(chunk.iterations);
-    agg.ok = agg.ok.saturating_add(chunk.ok);
-    agg.traps = agg.traps.saturating_add(chunk.traps);
-    agg.mismatches = agg.mismatches.saturating_add(chunk.mismatches);
-    agg.compile_errors = agg.compile_errors.saturating_add(chunk.compile_errors);
-    agg.opcode_bins_hit = agg.opcode_bins_hit.max(chunk.opcode_bins_hit);
-    agg.opcode_edges_hit = agg.opcode_edges_hit.max(chunk.opcode_edges_hit);
-    agg.opcode_edges_hit_admissible = agg
-        .opcode_edges_hit_admissible
-        .max(chunk.opcode_edges_hit_admissible);
-    agg.opcode_edges_admissible_total = agg
-        .opcode_edges_admissible_total
-        .max(chunk.opcode_edges_admissible_total);
-    agg.novel_programs = agg.novel_programs.saturating_add(chunk.novel_programs);
-
-    if agg.first_compile_error.is_none() {
-        if let Some(mut e) = chunk.first_compile_error.take() {
-            e.iteration = e.iteration.saturating_add(iter_base);
-            agg.first_compile_error = Some(e);
-        }
-    }
-    if agg.first_mismatch.is_none() {
-        if let Some(mut m) = chunk.first_mismatch.take() {
-            m.iteration = m.iteration.saturating_add(iter_base);
-            agg.first_mismatch = Some(m);
-        }
-    }
-}
-
-fn x64_jit_fuzz_chunk_seed(base_seed: u64, chunk_idx: u32) -> u64 {
-    if chunk_idx == 0 {
-        return base_seed;
-    }
-    // Deterministic derivation for compat chunking in the bring-up shell.
-    let mix = 0x9E37_79B9_7F4A_7C15u64.wrapping_mul((chunk_idx as u64).wrapping_add(1));
-    base_seed ^ mix.rotate_left((chunk_idx & 31) + 1)
 }
 
 struct X64ScopedJitUserMode {
@@ -1098,241 +938,6 @@ impl Drop for X64ScopedJitFuzzDiag {
     fn drop(&mut self) {
         let _ = crate::wasm::jit_fuzz_set_x64_diag(self.prev);
     }
-}
-
-fn x64_alias_wasm_jit_selftest(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
-    let _ = parts.next();
-    if parts.next().is_some() {
-        shell_println!("[X64] usage: wasm-jit-selftest");
-        return true;
-    }
-    match crate::wasm::jit_bounds_self_test() {
-        Ok(()) => shell_println!("[X64] wasm-jit-selftest ok"),
-        Err(e) => shell_println!("[X64] wasm-jit-selftest failed: {}", e),
-    }
-    true
-}
-
-fn x64_alias_wasm_jit_fuzz(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
-    let _ = parts.next();
-    let iters = match parts.next().and_then(x64_parse_u32) {
-        Some(v) => v,
-        None => {
-            shell_println!("[X64] usage: wasm-jit-fuzz <iters> [seed] [auto|user|kernel]");
-            return true;
-        }
-    };
-    const MAX_FUZZ_ITERS: u32 = 10_000;
-    if iters > MAX_FUZZ_ITERS {
-        shell_println!("[X64] iterations too high; use <= {}", MAX_FUZZ_ITERS);
-        return true;
-    }
-
-    let mut seed: Option<u64> = None;
-    let mut mode_token: Option<&str> = None;
-    if let Some(arg1) = parts.next() {
-        if let Some(v) = x64_parse_u64(arg1) {
-            seed = Some(v);
-            mode_token = parts.next();
-        } else {
-            mode_token = Some(arg1);
-        }
-    }
-    if parts.next().is_some() {
-        shell_println!("[X64] usage: wasm-jit-fuzz <iters> [seed] [auto|user|kernel]");
-        return true;
-    }
-    let seed = seed.unwrap_or(0);
-    let user_mode = match mode_token {
-        None | Some("auto") | Some("kernel") => false,
-        Some("user") => {
-            shell_println!("[X64] wasm-jit-fuzz user mode is not stable on x86_64 bring-up shell.");
-            shell_println!("[X64] use `jitcall` / `jitpre` for x86_64 user-path probes.");
-            return true;
-        }
-        Some(_) => {
-            shell_println!("[X64] usage: wasm-jit-fuzz <iters> [seed] [auto|user|kernel]");
-            return true;
-        }
-    };
-
-    shell_println!();
-    shell_println!("===== WASM JIT Fuzz (x86_64 compat) =====");
-    shell_println!();
-    shell_println!("Iterations: {}", iters);
-    shell_println!("Seed: {}", seed);
-    shell_println!("Mode: kernel JIT (x86_64 compat alias)");
-    shell_println!("[X64] long runs use internal x86_64 fuzz checkpoints/recovery.");
-    const X64_COMPAT_FUZZ_CHUNK_ITERS: u32 = 64;
-    let use_chunking = iters > X64_COMPAT_FUZZ_CHUNK_ITERS;
-    let total_chunks = if use_chunking {
-        (iters + X64_COMPAT_FUZZ_CHUNK_ITERS - 1) / X64_COMPAT_FUZZ_CHUNK_ITERS
-    } else {
-        1
-    };
-    if use_chunking {
-        shell_println!(
-            "[X64] compat alias chunking enabled: {} chunks (<= {} iters each).",
-            total_chunks,
-            X64_COMPAT_FUZZ_CHUNK_ITERS
-        );
-    }
-    shell_println!();
-
-    shell_println!("[X64] recover transient begin...");
-    crate::wasm::jit_runtime_recover_transient();
-    shell_println!("[X64] recover transient done.");
-    let _recover_guard = X64ScopedJitRecover;
-    let _jit_mode_guard = X64ScopedJitUserMode::enter(user_mode);
-    let _diag_guard = X64ScopedJitFuzzDiag::enter(false);
-
-    if !use_chunking {
-        match crate::wasm::jit_fuzz(iters, seed) {
-            Ok(stats) => x64_print_jit_fuzz_stats(&stats),
-            Err(e) => shell_println!("[X64] wasm-jit-fuzz failed: {}", e),
-        }
-        return true;
-    }
-
-    let mut agg = x64_empty_jit_fuzz_stats();
-    let mut remaining = iters;
-    let mut iter_base = 0u32;
-    let mut chunk_idx = 0u32;
-    while remaining > 0 {
-        let chunk_iters = if remaining > X64_COMPAT_FUZZ_CHUNK_ITERS {
-            X64_COMPAT_FUZZ_CHUNK_ITERS
-        } else {
-            remaining
-        };
-        let chunk_seed = x64_jit_fuzz_chunk_seed(seed, chunk_idx);
-        shell_println!(
-            "[X64] fuzz chunk {}/{} start: iters={} seed={}",
-            chunk_idx + 1,
-            total_chunks,
-            chunk_iters,
-            chunk_seed
-        );
-        let chunk_res = crate::wasm::jit_fuzz(chunk_iters, chunk_seed);
-        match chunk_res {
-            Ok(stats) => {
-                let stop_early = stats.mismatches != 0 || stats.compile_errors != 0;
-                shell_println!(
-                    "[X64] fuzz chunk {}/{} done: ok={} traps={} mismatches={} compile_errors={}",
-                    chunk_idx + 1,
-                    total_chunks,
-                    stats.ok,
-                    stats.traps,
-                    stats.mismatches,
-                    stats.compile_errors
-                );
-                x64_merge_jit_fuzz_stats(&mut agg, stats, iter_base);
-                remaining -= chunk_iters;
-                iter_base = iter_base.saturating_add(chunk_iters);
-                chunk_idx = chunk_idx.saturating_add(1);
-                // Keep long runs stable by resetting transient JIT/handoff state
-                // between chunks in the bring-up runtime.
-                crate::wasm::jit_runtime_recover_transient();
-                if stop_early {
-                    break;
-                }
-            }
-            Err(e) => {
-                shell_println!(
-                    "[X64] wasm-jit-fuzz failed in chunk {} (iters={} seed={}): {}",
-                    chunk_idx,
-                    chunk_iters,
-                    chunk_seed,
-                    e
-                );
-                return true;
-            }
-        }
-    }
-    x64_print_jit_fuzz_stats(&agg);
-    true
-}
-
-fn x64_alias_wasm_jit_fuzz_corpus(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
-    let _ = parts.next();
-    let iters = match parts.next().and_then(x64_parse_u32) {
-        Some(v) => v.max(1),
-        None => {
-            shell_println!("[X64] usage: wasm-jit-fuzz-corpus <iters>");
-            return true;
-        }
-    };
-    if parts.next().is_some() {
-        shell_println!("[X64] usage: wasm-jit-fuzz-corpus <iters>");
-        return true;
-    }
-
-    shell_println!("[X64] wasm-jit-fuzz-corpus begin (kernel JIT x86_64 compat): iters/seed={}", iters);
-    crate::wasm::jit_runtime_recover_transient();
-    let _recover_guard = X64ScopedJitRecover;
-    let _jit_mode_guard = X64ScopedJitUserMode::enter(false);
-    let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
-    match crate::wasm::jit_fuzz_regression_default(iters) {
-        Ok(stats) => shell_println!(
-            "[X64] wasm-jit-fuzz-corpus ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/{} edges_adm={}/{}",
-            stats.seeds_passed,
-            stats.seeds_failed,
-            stats.total_mismatches,
-            stats.total_compile_errors,
-            stats.max_opcode_edges_hit,
-            edges_total,
-            stats.max_opcode_edges_hit_admissible,
-            stats.opcode_edges_admissible_total,
-        ),
-        Err(e) => shell_println!("[X64] wasm-jit-fuzz-corpus failed: {}", e),
-    }
-    true
-}
-
-fn x64_alias_wasm_jit_fuzz_soak(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
-    let _ = parts.next();
-    let iters = match parts.next().and_then(x64_parse_u32) {
-        Some(v) => v.max(1),
-        None => {
-            shell_println!("[X64] usage: wasm-jit-fuzz-soak <iters> <rounds>");
-            return true;
-        }
-    };
-    let rounds = match parts.next().and_then(x64_parse_u32) {
-        Some(v) => v.max(1),
-        None => {
-            shell_println!("[X64] usage: wasm-jit-fuzz-soak <iters> <rounds>");
-            return true;
-        }
-    };
-    if parts.next().is_some() {
-        shell_println!("[X64] usage: wasm-jit-fuzz-soak <iters> <rounds>");
-        return true;
-    }
-
-    shell_println!(
-        "[X64] wasm-jit-fuzz-soak begin (kernel JIT x86_64 compat): iters/seed={} rounds={}",
-        iters, rounds
-    );
-    crate::wasm::jit_runtime_recover_transient();
-    let _recover_guard = X64ScopedJitRecover;
-    let _jit_mode_guard = X64ScopedJitUserMode::enter(false);
-    let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
-    match crate::wasm::jit_fuzz_regression_soak_default(iters, rounds) {
-        Ok(stats) => shell_println!(
-            "[X64] wasm-jit-fuzz-soak ok: rounds_passed={} rounds_failed={} seed_failures={} mismatches={} compile_errors={} edges_full={}/{} edges_adm={}/{}",
-            stats.rounds_passed,
-            stats.rounds_failed,
-            stats.total_seed_failures,
-            stats.total_mismatches,
-            stats.total_compile_errors,
-            stats.max_opcode_edges_hit,
-            edges_total,
-            stats.max_opcode_edges_hit_admissible,
-            stats.opcode_edges_admissible_total,
-        ),
-        Err(e) => shell_println!("[X64] wasm-jit-fuzz-soak failed: {}", e),
-    }
-    true
 }
 
 fn x64_alias_jitfuzz24dbg(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
@@ -1415,17 +1020,6 @@ fn x64_alias_jitfuzz24dbg(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
     true
 }
 
-fn x64_try_shared_command_alias(cmd: &str) -> bool {
-    let mut parts = cmd.split_whitespace();
-    match parts.next() {
-        Some("wasm-jit-selftest") => x64_alias_wasm_jit_selftest(&mut cmd.split_whitespace()),
-        Some("wasm-jit-fuzz-corpus") => x64_alias_wasm_jit_fuzz_corpus(&mut cmd.split_whitespace()),
-        Some("wasm-jit-fuzz-soak") => x64_alias_wasm_jit_fuzz_soak(&mut cmd.split_whitespace()),
-        Some("wasm-jit-fuzz") => x64_alias_wasm_jit_fuzz(&mut cmd.split_whitespace()),
-        _ => false,
-    }
-}
-
 fn x64_is_runtime_extension_command(cmd: &str) -> bool {
     let first = cmd.split_whitespace().next().unwrap_or("");
     matches!(
@@ -1449,7 +1043,6 @@ fn x64_is_runtime_extension_command(cmd: &str) -> bool {
             | "jitcall"
             | "jitbench"
             | "jitfuzz"
-            | "jitfuzzreg"
             | "jitfuzz24dbg"
             | "halt"
             | "exit"
@@ -1457,113 +1050,20 @@ fn x64_is_runtime_extension_command(cmd: &str) -> bool {
 }
 
 fn serial_exec_command(cmd: &str) -> bool {
-    if x64_try_shared_command_alias(cmd) {
+    // Keep shared fuzz commands on the shared command stack regardless of
+    // x86_64 bring-up extension handling order.
+    let first = cmd.split_whitespace().next().unwrap_or("");
+    if matches!(
+        first,
+        "wasm-jit-fuzz" | "wasm-jit-fuzz-corpus" | "wasm-jit-fuzz-soak" | "jitfuzzreg"
+    ) {
+        crate::commands::execute(cmd);
         return true;
     }
 
     if let Some(rest) = cmd.strip_prefix("jitfuzz24dbg") {
         if rest.is_empty() || rest.starts_with(' ') {
             return x64_alias_jitfuzz24dbg(&mut cmd.split_whitespace());
-        }
-    }
-
-    if let Some(rest) = cmd.strip_prefix("jitfuzzreg") {
-        if rest.is_empty() || rest.starts_with(' ') {
-            let mut parts = cmd.split_whitespace();
-            let _cmd0 = parts.next();
-            let arg1 = parts.next();
-            let arg2 = parts.next();
-            let arg3 = parts.next();
-            if arg3.is_some() {
-                shell_println!("[X64] jitfuzzreg usage: jitfuzzreg [iters [seeds]] | jitfuzzreg full [iters]");
-                return true;
-            }
-            let mut iterations_per_seed: u32 = 1;
-            let mut seeds_limit: u32 = 2; // interactive-safe default
-            let mut full = false;
-
-            if arg1.is_none() {
-                shell_println!(
-                    "[X64] jitfuzzreg disabled in interactive shell by default (can reset QEMU)."
-                );
-                shell_println!(
-                    "[X64] usage: jitfuzzreg full [iters]   |   jitfuzzreg [iters seeds] (experimental)"
-                );
-                return true;
-            }
-
-            if let Some(a1) = arg1 {
-                if a1 == "full" {
-                    full = true;
-                    if let Some(a2) = arg2 {
-                        if let Ok(v) = a2.parse::<u32>() {
-                            iterations_per_seed = v.max(1);
-                        } else {
-                            shell_println!("[X64] jitfuzzreg usage: jitfuzzreg [iters [seeds]] | jitfuzzreg full [iters]");
-                            return true;
-                        }
-                    }
-                } else {
-                    if let Ok(v) = a1.parse::<u32>() {
-                        iterations_per_seed = v.max(1);
-                    } else {
-                        shell_println!("[X64] jitfuzzreg usage: jitfuzzreg [iters [seeds]] | jitfuzzreg full [iters]");
-                        return true;
-                    }
-                    if let Some(a2) = arg2 {
-                        if let Ok(v) = a2.parse::<u32>() {
-                            seeds_limit = v.max(1);
-                        } else {
-                            shell_println!("[X64] jitfuzzreg usage: jitfuzzreg [iters [seeds]] | jitfuzzreg full [iters]");
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            if full {
-                shell_println!(
-                    "[X64] jitfuzzreg begin: full regression (iters/seed={})",
-                    iterations_per_seed
-                );
-                let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
-                match crate::wasm::jit_fuzz_regression_default(iterations_per_seed) {
-                    Ok(stats) => shell_println!(
-                        "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/{} edges_adm={}/{}",
-                        stats.seeds_passed,
-                        stats.seeds_failed,
-                        stats.total_mismatches,
-                        stats.total_compile_errors,
-                        stats.max_opcode_edges_hit,
-                        edges_total,
-                        stats.max_opcode_edges_hit_admissible,
-                        stats.opcode_edges_admissible_total,
-                    ),
-                    Err(e) => shell_println!("[X64] jitfuzzreg failed: {}", e),
-                }
-            } else {
-                shell_println!(
-                    "[X64] jitfuzzreg begin: bounded regression (iters/seed={}, seeds={})",
-                    iterations_per_seed,
-                    seeds_limit
-                );
-                let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
-                match crate::wasm::jit_fuzz_regression_bounded(iterations_per_seed, seeds_limit) {
-                    Ok(stats) => shell_println!(
-                        "[X64] jitfuzzreg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/{} edges_adm={}/{}",
-                        stats.seeds_passed,
-                        stats.seeds_failed,
-                        stats.total_mismatches,
-                        stats.total_compile_errors,
-                        stats.max_opcode_edges_hit,
-                        edges_total,
-                        stats.max_opcode_edges_hit_admissible,
-                        stats.opcode_edges_admissible_total,
-                    ),
-                    Err(e) => shell_println!("[X64] jitfuzzreg failed: {}", e),
-                }
-            }
-            return true;
         }
     }
 

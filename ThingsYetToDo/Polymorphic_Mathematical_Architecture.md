@@ -2,7 +2,20 @@
 
 ## Abstract
 
-This document outlines the theoretical and architectural transition of the Oreulia kernel from heuristic queues and unbounded dynamic dispatch into a mathematically proven, predictive, and zero-drift execution environment. By replacing traditional runtime abstractions with rigid polymorphic trait geometry (e.g., highly bounded associated types and lifetimes) and evaluating formal mathematical models—specifically Shannon Entropy arrays, Markov Chains, and Functors—in hardware-accelerated SIMD instructions, we achieve zero-cost abstractions with strictly bounded temporal and intent-driven guarantees at Ring-0. This foundation allows Oreulia to pre-emptively manage state, security, and scheduling probabilistically in microseconds.
+This document outlines the theoretical and architectural transition of the Oreulia kernel from heuristic queues and unbounded dynamic dispatch into a mathematically proven, predictive, and zero-drift execution environment. Oreulia is designed to be **a formally bounded, mathematically proactive kernel that preserves minimal-core verification discipline while introducing hardware-accelerated online control theory inside privileged execution.**
+
+By replacing traditional runtime abstractions with rigid polymorphic trait geometry (e.g., highly bounded associated types and lifetimes) and evaluating formal mathematical models—specifically Shannon Entropy arrays, Markov Chains, and Functors—in hardware-accelerated SIMD instructions, we achieve zero-cost abstractions with strictly bounded temporal and intent-driven guarantees at Ring-0. This foundation allows Oreulia to pre-emptively manage state, security, and scheduling probabilistically in microseconds.
+
+---
+
+## Core System Invariants
+
+To safely embed advanced online control theory directly into privileged execution without abandoning rigorous microkernel verification limits, the Oreulia architecture enforces four strict invariants:
+
+1. **The Hot-Path Budget Invariant**: Every online mathematical model update must complete within a strictly provable upper bound in CPU cycles, cache lines touched, and memory allocations (with exactly zero dynamic heap allocations permitted in the hot path).
+2. **The Safety Separation Invariant**: Static, compile-time verified capabilities (via affine types and trait boundaries) remain the primary absolute authority model. Online probabilistic models and continuous tensors may only refine scheduling, throttle execution, or trigger secondary revocation reviews, unless they exceed a formally proven threshold.
+3. **The Degradation Invariant**: If hardware SIMD units, wait-free telemetry queues, or spectral estimators fail or are unavailable on a target platform, the kernel must gracefully fall back to a deterministic, scalar-safe execution mode without compromising core functional correctness or isolation.
+4. **The Proof-Surface Invariant**: The mathematical layers are strictly partitioned. We clearly delineate what must be *formally proved* (e.g., functorial temporal replay loops, affine IPC max-flow topologies), what is *validated statistically* (e.g., Bayesian JIT confidence, spectral transition thresholds), and what is *merely heuristic* (e.g., entropic scheduler tie-breakers).
 
 ---
 
@@ -50,33 +63,32 @@ $$ \Delta S = -\sum_{i=1}^{N} P(x_i) \log_2 P(x_i) $$
 
 A system context exhibiting low total entropy implies highly predictable compute-bound paths, permitting extended execution quanta. A high-entropy state sequence implies erratic I/O bounds, triggering preemptive context shifts. 
 
-### 2.2 Implementation in `quantum_scheduler.rs`
+### 2.2 Implementation & Empirical Baselines in `quantum_scheduler.rs`
 
-1. **Trait Formulation**: Introduce `trait EntropyEvaluator<P: ProcessMetrics>` inside `kernel/src/quantum_scheduler.rs`.
-2. **Weight Standardization**: Parse existing `ProcessPriority` weights to seed the initial probability vectors $\mathbf{P}$.
-3. **Integral Computation**: The $\log_2$ evaluations must execute via strictly structured, purely integral fixed-point math arrays appended to the main scheduler heartbeat tick (avoiding float non-determinism).
+1. **Experimental Formulation**: Introduce `trait EntropyEvaluator<P: ProcessMetrics>` inside `kernel/src/quantum_scheduler.rs`, gated behind an `experimental_entropy_sched` feature flag.
+2. **Simplified Math**: Instead of $O(N)$ continuous operations inducing cache misses, use bit-shifted Exponentially Weighted Moving Averages (EWMA) of page-faults and yields to approximate entropy heuristically.
+3. **Empirical Benchmarking**: This implementation must be heavily instrumented and profiled against established baseline schedulers (e.g., Linux CFS or microkernel EEVDF) to empirically justify that the overhead of tracking probabilistic states does not negate the latency benefits.
 
 ---
 
-## 3. Predictive Intent Tensors (Continuous Markov Chains)
+## 3. Predictive Intent Tensors & Userspace Anomaly Telemetry
 
-Capability verification natively bridges standard Access Control Lists (ACLs) to dynamic access limits. The Oreulia Capability Intent Graph is structurally mapped as an adjacency tensor, evaluating probability state arrays dynamically to preemptively revoke access *before* vulnerabilities are exploited.
+Capability verification natively bridges standard Access Control Lists (ACLs) to dynamic access limits. The Oreulia Capability Intent Graph maps behavioral trends as an adjacency tensor. However, to prevent Time-Of-Check-To-Time-Of-Use (TOCTTOU) races and limit the proof burden of the Ring-0 kernel (similar to the seL4 design philosophy), the transition matrices are executed purely out-of-band as high-level telemetry, rather than inline blocking syscalls.
 
-### 3.1 The Algorithmic Premise
+### 3.1 The Algorithmic Premise (Offline/Userspace)
 
-Instead of simple boolean checks (`if has_cap()`), capabilities are vector states representing behavioral trust matrices:
+Instead of simple boolean checks (`if has_cap()`), capabilities are vector states representing behavioral trust matrices monitored by a privileged userspace daemon:
 
 $$ \mathbf{P}_{t+1} = (\mathbf{P}_t \times \mathbf{T}_{intent}) + \mathbf{N} $$
 
 - $\mathbf{P}_t$: The current process capability heuristic vector.
 - $\mathbf{T}_{intent}$: The transition matrix representing the moving average of past system-call sequence intentions.
-- $\mathbf{N}$: The white-noise or baseline normalization matrix (accounting for standard expected faults).
+- $\mathbf{N}$: The white-noise or baseline normalization matrix.
 
-### 3.2 Implementation in `intent_graph.rs`
+### 3.2 The Telemetry Interface
 
-1. **Tensor Definitions**: Define `pub trait PolicyTensor<M: SimdTensor<N>>` within `kernel/src/intent_graph.rs`.
-2. **Matrix Evaluation**: Overhaul the existing graph nodes in `kernel/src/capability.rs` and `fs.rs` to compute the dot product of the current state vector against the transition matrix.
-3. **Preemptive Revocation**: If the length of the derivative vector $\mathbf{P}_{t+1}$ exceeds the predetermined scalar instability threshold $\epsilon$, the capability scales down or revokes instantly, mitigating potential zero-day exploit chains probabilistically.
+1. **Wait-Free Ring Buffers**: The kernel logs syscall morphisms to a strict atomic CAS loop eBPF-style ring buffer.
+2. **Userspace Evaluation**: A privileged userspace "Math Daemon" consumes this queue and runs the transition matrix computations. If the length of the derivative vector $\mathbf{P}_{t+1}$ exceeds the predetermined scalar instability threshold $\epsilon$, the daemon signals the kernel to formally revoke or demote the application's capabilities asynchronously.
 
 ---
 
@@ -106,22 +118,27 @@ To resolve this, math routines are statically bound to architecture-specific, fi
 
 ### 5.1 Bounding the Hardware Layer
 
-1. **Const Generics & Tensors**: Introduce `trait SimdTensor<const N: usize>` within `kernel/src/arch/mod.rs`, conditionally compiled (`#[cfg(target_feature = "avx2")]`, etc.) to map to intrinsic byte-vector operations (e.g., `vpmulld` on x86_64 or NEON multiply-accumulate on ARM).
+1. **Const Generics & Tensors**: Introduce `trait SimdTensor<const N: usize>` within `kernel/src/arch/mod.rs`, conditionally compiled (`#[cfg(target_feature = "avx2")]`, etc.) to map to intrinsic byte-vector operations (e.g., `vpmulld` on x86_64 or NEON multiply-accumulate on ARM). To prevent catastrophic `#GP` (General Protection) alignment faults at Ring-0, backing structures must enforce strict memory alignment axioms (e.g., `#[repr(align(32))]` or `#[repr(align(64))]`), guaranteeing that the MMU maps these arrays to bounded physical cache-lines cleanly.
 2. **The Lazy FPU Context Switcher**: Saving full AVX-512/NEON registers synchronously on every tick balloons the `ProcessContext` memory usage in `kernel/src/process_asm.rs`. We implement a deferred (Lazy) "Vector Context" save boundary. Vector registers are only spilt to RAM if an asynchronous scheduler/intent interrupt fires *during* a Ring-0 mathematical calculation.
 3. **Fixed-Point Primitives**: Ensure that standard FPU floating-point units are strictly disabled (`-mno-sse` / soft-float compiler flags for kernel space except in the explicitly bounded SIMD tensor regions), forcing the Entropy array and Transition matrices to synthesize results deterministically in integer fractional limits.
 
+### 5.2 Thread Model & Hardware Portability Constraints
+
+While SIMD acceleration provides deterministic execution speedups for core cryptographic and networking derivations, an Operating System cannot assume AVX-512 ubiquity.
+1. **Fallback Paths**: Any `SimdTensor` matrix calculation must seamlessly fall back to scalar, `no_std` pure integer iterations on older x86 or embedded ARM cores without causing algorithmic failure.
+2. **Threat Model Limits**: The probabilistic intent arrays are strictly **Telemetry and Heuristic**. They are *not* intended to act as the primary security gateway (which is statically managed by Affine Types/Capabilities, see section 8). The Math routines are an anomaly detection layer, modeled to prevent DoS rather than act as a synchronous TOCTTOU capability checker.
+
 ---
 
-## 6. Asynchronous Mathematical Coprocessing (The Math Backend)
+## 6. The Userspace Math Daemon (Telemetry Coprocessing)
 
-Computing complex multidimensional tensor limits ($\mathbf{P}_{t+1}$) synchronously during a system call introduces unacceptable latency and execution jitter, defeating the purpose of a real-time kernel. To resolve the tension between strict mathematical bounds and microsecond execution constraints, Oreulia employs an Asynchronous Mathematical Backend.
+Computing complex multidimensional tensor limits ($\mathbf{P}_{t+1}$) synchronously during a system call introduces unacceptable latency and execution jitter, defeating the purpose of a real-time kernel. To ensure isolation and prevent kernel state-space explosion (making Coq formal proofs untractable), Oreulia elevates the "Math Core" to a privileged Userspace Daemon.
 
-### 6.1 Pinned Out-Of-Band (OOB) Coprocessing
-Rather than pausing the syscall to crunch SIMD matrix multiples, the syscall fast-path pushes the delta events (morphisms) to a wait-free Ring-0 disruption queue. A dedicated CPU core (the "Math Core") reads this queue continuously, processing the capability transition matrices out-of-band (OOB). This offloads heavy polynomial work entirely away from the active execution state.
+### 6.1 Pinned Out-Of-Band (OOB) Telemetry
+Rather than pausing the syscall to crunch SIMD matrix multiples, the syscall fast-path pushes the delta events (morphisms) to a strictly wait-free Ring-0 disruption queue. This queue must be implemented using atomic Compare-And-Swap (CAS) loops without any locking primitives, mathematically bounding the enqueue latency to $O(1)$ and preventing priority inversion. A dedicated Userspace Daemon reads this queue continuously, processing the capability transition matrices out-of-band (OOB). This offloads heavy polynomial work entirely away from the active execution state and the Ring-0 attack surface.
 
-### 6.2 Eventual Consistency for Predictive Capabilities
-By offloading to an async backend, capability revocation operates under an *eventual consistency* model mathematically bounded by a tight time-quanta $\delta t$. 
-Syscalls proceed optimistically, but if the asynchronous Math Core determines that the new predictive vector breaches the conditional instability threshold ($||\mathbf{P}_{t+1}||_{\infty} > \epsilon$), it generates a non-maskable inter-processor interrupt (IPI) routed to the main execution cores to instantaneously halt the offending process. This enforces predictive revocation without dragging down the global syscall throughput.
+### 6.2 Asynchronous Anomaly Revocation
+By offloading this logic to user space, the kernel remains microsecond-fast and provably small. If the userspace Math Daemon determines that the application's telemetry vector breaches the instability threshold, it issues a standard capability-revocation system call back into the Ring-0 kernel to revoke the offending capability from the rogue process.
 
 ---
 
@@ -142,17 +159,12 @@ If these probabilities are computed with lossy integer division truncations in t
 
 ---
 
-## 8. Algebraic IPC and Linear Capability Networks (CapNet)
+## 8. Algebraic IPC and Affine Type Systems (Singularity OS Model)
 
-Oreulia's CapNet governs inter-process communication (IPC) via capability delegation. Unbounded dynamically-typed capabilities run the risk of topological leaks (e.g., unauthorized transitive delegation). We apply **Linear Logic** and **Graph Flow Networks** to bound capability distribution at compile-time.
+Oreulia's CapNet governs inter-process communication (IPC) via capability delegation. Rather than relying entirely on heuristic behavioral tracking to block topology leaks, we adopt the strict zero-copy message passing models proven by Microsoft's Singularity OS. We apply **Affine/Linear Logic** and **Session Types** to bound capability distribution at compile-time.
 
-### 8.1 Max-Flow Min-Cut Theorem for State Bounds
-We model the IPC endpoints as a graph network $G = (V, E)$. The delegation of a capability is mathematically bounded by the max-flow limit formula:
-
-$$ \sum_{v \in V} f(u, v) = 0 \quad \text{(for all node vectors except source/sink)} $$
-$$ f(u,v) \leq c(u,v) $$
-
-where $c(u,v)$ represents the rigid topological security capacity mapped in the core trait boundaries.
+### 8.1 Compile-Time Channel Contracts
+We model the IPC endpoints as a graph network $G = (V, E)$. To prevent state aliasing and topological security leaks, Capabilities are enforced as Linear Types. Once a capability is delegated over an IPC channel, the compiler invalidates the local reference.
 
 ### 8.2 Linear Type Geometry for IPC
 To enforce this algebra without runtime tracker overhead, we introduce affine/linear type bounds into `kernel/src/capnet.rs`. 
@@ -162,7 +174,7 @@ pub trait LinearCapability<T, const C: usize>: Send {
     fn delegate(self, target: Dest) -> SplitCap<T, C>;
 }
 ```
-This geometry allows the compiler type-checker to formally verify that transitive capability delegation does not violate the maximum capacity of restricted sub-graphs. Only bounded mathematical splits are valid.
+This geometry allows the compiler type-checker to formally verify that transitive capability delegation does not violate the maximum capacity of restricted sub-graphs. It achieves the isolation power of a microkernel capability derivation tree (like seL4) without the heavy runtime capability traversal penalty.
 
 ---
 
@@ -215,62 +227,44 @@ To ensure these mathematical theories are not merely academic exercises but brin
 
 ---
 
-## Roadmap to Integration
+## 11. Advanced Spectral and Operator Methods for Offline Static Analysis
 
-- **Phase 1: Polymorphic Core**: Introduce `ArchMmu`, HRTB boundaries, and bounded types across `netstack` and `wasm`.
-- **Phase 2: The Integer Tensor Crate**: Map the hardware abstractions in `kernel/src/arch/mod.rs` to safe SIMD integer bounds. Update `process_asm.rs` context switching.
-- **Phase 3: The Probabilistic Subsystems**: Replace `quantum_scheduler.rs` static queues with the Shannon execution arrays. Transition `intent_graph.rs` to calculating $\mathbf{P}_{t+1}$.
-- **Phase 4: Coq/Formal Proofs Generation**: Add corresponding logical theories to `verification/theories/` to prove the functor composition over `temporal.rs` logic.
- 
-## 11. Advanced Spectral and Operator Methods for Kernel Safety and Performance
-
-This section strengthens the mathematical toolkit used across the Oreulia roadmap using spectral/operator methods and modern numerical linear algebra techniques. It intentionally avoids naming or importing any physics-specific gauge theories; instead it draws on the general mathematics of spectral gaps, eigenvalue estimation, Krylov subspace methods, and randomized linear algebra to provide provable mixing, revocation, and stability bounds for the kernel's probabilistic subsystems.
+This section strengthens the mathematical toolkit used across the Oreulia roadmap using spectral/operator methods. However, rather than computing computationally intense Krylov subspaces in the hot‑path of the Ring-0 scheduler, these methods are shifted to **Offline Verification and Userspace Telemetry Daemon** pipelines.
 
 ### 11.1 Key Concepts and Why They Matter
 
-- **Spectral Gap (Mixing Bound):** For any stochastic transition matrix `T` used in intent/capability prediction, the spectral gap γ = 1 - λ2(T) controls mixing time and the system's responsiveness to predictive revocation. Larger γ implies faster mixing and tighter revocation guarantees.
-- **Eigenpair Estimation:** Efficiently estimating the top few eigenvalues/eigenvectors of `T` (or of symmetric preconditioned operators derived from `T`) yields quantitative bounds on instability and provides certificates for revocation thresholds.
-- **Krylov Subspace Methods (Lanczos / Arnoldi):** Lightweight Krylov methods produce accurate low-dimensional approximations of large operators with few iterations—well-suited for the Math Core's stream processing of adjacency/tensor updates.
-- **Power Iteration & Warm-Start:** For online, incremental matrices, power iteration with warm-start from previous eigenvectors gives a cost-effective estimator for λ2 and related diagnostics.
-- **Cheeger-Type Inequalities & Conductance:** Graph conductance bounds give theorems linking cut-based vulnerabilities to spectral gap lower bounds; these are directly applicable to CapNet and IPC flow analysis.
-- **Preconditioning & Graph Sparsification:** Sparse approximations and preconditioners reduce the arithmetic cost of spectral solves while preserving spectral properties within provable tolerances.
-- **Randomized Numerical Linear Algebra (Sketching / RandSVD):** For very large or streaming adjacency/tensor data, randomized sketching offers fast approximate SVD or eigen-decompositions with bounded error—enabling the Math Core to scale to many concurrent event streams.
+- **Spectral Gap (Mixing Bound):** For any stochastic transition matrix `T` used in intent/capability prediction, the spectral gap γ = 1 - λ2(T) controls mixing time and the system's responsiveness to predictive revocation.
+- **Eigenpair Estimation:** Efficiently estimating the top few eigenvalues/eigenvectors of `T`  yields quantitative bounds on instability.
+- **Cheeger-Type Inequalities & Conductance:** Graph conductance bounds give theorems linking cut-based vulnerabilities to spectral gap lower bounds; these are applied statically to CapNet and IPC routing tables during the build phase.
 
-### 11.2 Practical Algorithms for the Math Backend
+### 11.2 Practical Algorithms for Offline & Daemon Verification
 
-1. **Incremental Lanczos Worker:** Implement a bounded-iteration Lanczos worker in the Math Core that accepts small delta updates from the wait-free queue and updates a compact tridiagonal model to extract updated Ritz values. Use fixed-point integer arithmetic or deterministically-rounded arithmetic to avoid float drift in Ring-0.
-
-2. **Warm-Started Power Iteration:** For very low-overhead quick checks (e.g., per-syscall heuristics), perform 1–3 steps of warm-started power iteration on the current transition matrix to estimate the dominant eigenvector and λ1; compute the gap proxy λ1 - RayleighQuotient(next) as a cheap instability indicator.
-
-3. **Sketching Pipeline:** When tensors/graphs exceed local memory budgets, compute subspace sketches (CountSketch / SRHT) to reduce operator dimension, then run small-scale Krylov on the sketch to estimate spectral bounds with provable error margins.
-
-4. **Preconditioned Solver for Soft Revocation:** For soft revocation policies (gradual scaling down of capability weight), use a preconditioned inverse iteration on (I - αT) to compute influence scores; preconditioning uses sparsified graph Laplacians that maintain conductance properties.
+1. **Build-Time Static Conductance Checks:** During CI/CD or kernel module compilation, run offline Lanczos algorithms against the static IPC Capability routing definitions. If the Spectral Gap drops below safety thresholds (indicating a heavily clustered topological leak), the compilation halts.
+2. **Userspace Telemetry Power Iteration:** For low-overhead dynamic checks in the Userspace Math Daemon, perform 1–3 steps of warm-started power iteration on the telemetry eBPF stream to estimate the dominant eigenvector and identify cascading anomaly events without blocking the kernel.
 
 ### 11.3 Numerical Stability & Determinism
 
-- **Fixed-Point Kernels:** Implement core vector ops (dot, axpy, norm, spmv) in fixed-point integer SIMD with deterministic rounding semantics. Define a formal specification for rounding and saturation that the verifier can reference.
-- **Deterministic Reduction Trees:** Use associative, order-preserving reduction trees for SIMD accumulation to avoid non-deterministic sums across different CPU topologies.
-- **Error Bounds & Certificates:** Each spectral estimate produced by the Math Core should include a small certificate (residual norm, iteration count, and sketch error) so policy enforcers can apply conservative thresholds when acting on approximate results.
+- **Certificate Interfaces:** Each spectral estimate produced by the Offline Solver should include a small certificate so the kernel verifier can validate policies.
+- **Wait-Free Guarantees**: The disruption queue mapping telemetry from syscalls to the Userspace Daemon *must* be implemented via strict atomic CAS unrolled loops.
 
-### 11.4 Mapping to Kernel Subsystems
+### 11.4 Mapping to Ecosystem
 
-- `kernel/src/intent_graph.rs` / `kernel/src/capability.rs`: Replace scalar heuristics with streaming spectral diagnostics—use Lanczos-derived Ritz values to trigger hard revocation when residuals cross thresholds.
-- `kernel/src/quantum_scheduler.rs`: Use power-iteration proxies of per-process mixing to infer predictability; low mixing implies longer quanta, high mixing triggers preemption.
-- `kernel/src/capnet.rs` / `kernel/src/ipc.rs`: Use conductance estimates and max-flow spectral proxies to bound delegation topology; use sparsification to reduce the runtime cost of capacity checks.
-- `kernel/src/wasm_jit.rs` and `kernel/src/wasm.rs`: Use sketching to cluster similar WASM traces before performing expensive Bayesian pairwise verifications; spectral clustering helps identify representative traces for formal equivalence checks.
-- `kernel/src/math/backend.rs` (Math Core): Host Lanczos/Arnoldi, power-iteration, and sketching primitives; provide deterministic fixed-point SIMD implementations and a small certificate interface for each computed bound.
-
-### 11.5 Verification & Calibration
-
-- **Calibration Parameters:** Add `verification/calibration/spectral.toml` with tunables: `epsilon_revocation`, `mixing_delta_t`, `ritz_residual_tol`, `sketch_error_bound`.
-- **Unit Proofs:** In `verification/theories/` provide target lemmas: (1) spectral gap lower bound implies mixing-time upper bound; (2) residual certificate correctness for Lanczos; (3) rounding error bounds for fixed-point SIMD ops.
-
-### 11.6 Implementation Notes & Safety
-
-- Keep spectral workers behind `polybounds` feature flag until microbenchmarks validate latency impact.
-- Use a conservative fail-open policy for approximate results: only act on revocation if both (a) certificate residual < tol and (b) multiple independent estimators (e.g., Lanczos + sketch) agree within bound.
-- Log minimal, typed certificates in a compact binary form so auditors and the verification pipeline can replay the Math Core decisions efficiently.
+- `kernel/src/intent_graph.rs` / `kernel/src/capability.rs`: Escalate complex Markov tracking to the Userspace Math Daemon via a wait-free ring buffer telemetry API.
+- `kernel/src/quantum_scheduler.rs`: Rely only on O(1) bit-shifted EWMA heuristcs; utilize EEVDF/CFS logic benchmark suites to prove out custom heuristics before adoption.
+- `build.rs` / Static Checkers: Use sparsified Lanczos methods offline to prove capability isolation statically (similar to seL4 derivation proofs).
 
 ---
 
-End of advanced spectral methods section. These techniques keep the design mathematically rigorous while avoiding domain-specific physics references; they provide concrete algorithmic paths for scaling predictive capability, revocation, and scheduler stability.
+## Roadmap to Integration
+
+- **Phase 1: Polymorphic Core**: Introduce `ArchMmu`, HRTB boundaries, and built-in Fallback Paths for scalar non-SIMD processors.
+- **Phase 2: Compiler Static Analysis & CapNet**: Inject Singularity OS affine logic (`LinearCapability`) and perform offline CI/CD Spectral/Conductance map analysis to verify capabilities.
+- **Phase 3: The Probabilistic Subsystems**: Develop the `experimental_entropy_sched` in `quantum_scheduler.rs` behind flags and profile against EEVDF bounds.
+- **Phase 4: Coq/Formal Proofs Generation**: Add corresponding logical theories to `verification/theories/` to prove the functor composition over `temporal.rs` logic.
+- **Phase 5: The Math Daemon (Userspace)**: Establish the wait-free eBPF ring buffer telemetry and initialize the isolated Userspace Math Daemon for anomaly revocation.
+
+---
+
+## 12. Conclusion
+
+The integration of strict mathematically policed geometries—via zero-cost HRTB logic, entropic schedulers, async capability evaluation, linear CapNet IPC flow control, and dynamic spectral diagnostics—allows the Oreulia kernel to behave structurally as a series of proven mathematical theorems. Removing heuristic ambiguity and lock-based hazards creates an environment inherently immune to traditional time-of-check-to-time-of-use vulnerabilities, establishing a formally determinable Ring-0 foundation spanning across standard and probabilistic compute bounds.

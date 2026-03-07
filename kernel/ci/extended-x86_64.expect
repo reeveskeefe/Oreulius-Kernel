@@ -28,6 +28,18 @@ set expect_edge_adm_total $expect_edge_total
 if {[info exists env(X64_EXPECT_EDGE_ADM_TOTAL)]} {
     set expect_edge_adm_total $env(X64_EXPECT_EDGE_ADM_TOTAL)
 }
+set expect_min_bins 0
+if {[info exists env(X64_EXPECT_MIN_BINS)]} {
+    set expect_min_bins $env(X64_EXPECT_MIN_BINS)
+}
+set expect_min_edges_full 0
+if {[info exists env(X64_EXPECT_MIN_EDGES_FULL)]} {
+    set expect_min_edges_full $env(X64_EXPECT_MIN_EDGES_FULL)
+}
+set expect_min_edges_adm 0
+if {[info exists env(X64_EXPECT_MIN_EDGES_ADM)]} {
+    set expect_min_edges_adm $env(X64_EXPECT_MIN_EDGES_ADM)
+}
 
 proc expect_x64_prompt {} {
     expect {
@@ -65,6 +77,9 @@ proc run_x64_jit_fuzz_stable {cmd timeout_s} {
     global expect_bins_total
     global expect_edge_total
     global expect_edge_adm_total
+    global expect_min_bins
+    global expect_min_edges_full
+    global expect_min_edges_adm
     global timeout
     set saved_timeout $timeout
     set timeout $timeout_s
@@ -78,10 +93,13 @@ proc run_x64_jit_fuzz_stable {cmd timeout_s} {
     set seen_bins_total 0
     set seen_edges_total 0
     set seen_edges_adm_total 0
+    set bins_hit -1
+    set edges_full_hit -1
+    set edges_adm_hit -1
 
     send -- "$cmd\r"
     expect {
-        -re {===== WASM JIT Fuzz \(x86_64 compat\) =====} {
+        -re {===== WASM JIT Fuzz( \(x86_64 compat\))? =====} {
             set seen_banner 1
             exp_continue
         }
@@ -109,21 +127,34 @@ proc run_x64_jit_fuzz_stable {cmd timeout_s} {
             set seen_compile_errors 1
             exp_continue
         }
-        -re [format {Opcode bins hit: [0-9]+ / %s} $expect_bins_total] {
+        -re [format {Opcode bins hit: ([0-9]+) / %s} $expect_bins_total] {
             set seen_bins_total 1
+            set bins_hit $expect_out(1,string)
             exp_continue
         }
-        -re [format {Opcode edges hit \(full\): [0-9]+ / %s} $expect_edge_total] {
+        -re [format {Opcode edges hit \(full\): ([0-9]+) / %s} $expect_edge_total] {
             set seen_edges_total 1
+            set edges_full_hit $expect_out(1,string)
             exp_continue
         }
-        -re [format {Opcode edges hit \(admissible\): [0-9]+ / %s} $expect_edge_adm_total] {
+        -re [format {Opcode edges hit \(admissible\): ([0-9]+) / %s} $expect_edge_adm_total] {
             set seen_edges_adm_total 1
+            set edges_adm_hit $expect_out(1,string)
             exp_continue
         }
         -re {x64> } {
-            if {!$seen_banner || !$seen_iters || !$seen_seed || !$seen_ok || !$seen_traps || !$seen_mismatches || !$seen_compile_errors || !$seen_bins_total || !$seen_edges_total || !$seen_edges_adm_total} {
-                puts "x86_64 wasm-jit-fuzz stability assertion failed: banner=$seen_banner iters=$seen_iters seed=$seen_seed ok=$seen_ok traps=$seen_traps mismatches=$seen_mismatches compile_errors=$seen_compile_errors bins_total=$seen_bins_total edges_total=$seen_edges_total edges_adm_total=$seen_edges_adm_total"
+            set coverage_gate_ok 1
+            if {$expect_min_bins > 0 && $bins_hit >= 0 && $bins_hit < $expect_min_bins} {
+                set coverage_gate_ok 0
+            }
+            if {$expect_min_edges_full > 0 && $edges_full_hit >= 0 && $edges_full_hit < $expect_min_edges_full} {
+                set coverage_gate_ok 0
+            }
+            if {$expect_min_edges_adm > 0 && $edges_adm_hit >= 0 && $edges_adm_hit < $expect_min_edges_adm} {
+                set coverage_gate_ok 0
+            }
+            if {!$seen_banner || !$seen_iters || !$seen_seed || !$seen_ok || !$seen_traps || !$seen_mismatches || !$seen_compile_errors || !$seen_bins_total || !$seen_edges_total || !$seen_edges_adm_total || !$coverage_gate_ok} {
+                puts "x86_64 wasm-jit-fuzz stability assertion failed: banner=$seen_banner iters=$seen_iters seed=$seen_seed ok=$seen_ok traps=$seen_traps mismatches=$seen_mismatches compile_errors=$seen_compile_errors bins_total=$seen_bins_total edges_total=$seen_edges_total edges_adm_total=$seen_edges_adm_total bins_hit=$bins_hit edges_full_hit=$edges_full_hit edges_adm_hit=$edges_adm_hit min_bins=$expect_min_bins min_edges_full=$expect_min_edges_full min_edges_adm=$expect_min_edges_adm"
                 exit 1
             }
         }
@@ -133,6 +164,51 @@ proc run_x64_jit_fuzz_stable {cmd timeout_s} {
         }
     }
     set timeout $saved_timeout
+}
+
+proc run_x64_jitfuzzreg_with_gate {cmd timeout_s} {
+    global expect_edge_total
+    global expect_edge_adm_total
+    global expect_min_edges_full
+    global expect_min_edges_adm
+    global timeout
+    set saved_timeout $timeout
+    set timeout $timeout_s
+    set seen_line 0
+    set edges_full_hit -1
+    set edges_adm_hit -1
+    send -- "$cmd\r"
+    expect {
+        -re [format {\[X64\] jitfuzzreg ok: seeds_passed=[0-9]+ seeds_failed=[0-9]+ mismatches=0 compile_errors=0 edges_full=([0-9]+)/%s edges_adm=([0-9]+)/%s} $expect_edge_total $expect_edge_adm_total] {
+            set seen_line 1
+            set edges_full_hit $expect_out(1,string)
+            set edges_adm_hit $expect_out(2,string)
+        }
+        -re [format {\[jitfuzzreg\] ok: seeds_passed=[0-9]+ seeds_failed=[0-9]+ mismatches=0 compile_errors=0 edges_full=([0-9]+)/%s edges_adm=([0-9]+)/%s} $expect_edge_total $expect_edge_adm_total] {
+            set seen_line 1
+            set edges_full_hit $expect_out(1,string)
+            set edges_adm_hit $expect_out(2,string)
+        }
+        timeout {
+            puts "timeout waiting for x86_64 command ($timeout_s s): jitfuzzreg full"
+            exit 1
+        }
+    }
+    set timeout $saved_timeout
+    expect_x64_prompt
+
+    if {!$seen_line} {
+        puts "x86_64 jitfuzzreg assertion failed: missing summary line"
+        exit 1
+    }
+    if {$expect_min_edges_full > 0 && $edges_full_hit < $expect_min_edges_full} {
+        puts "x86_64 jitfuzzreg coverage gate failed: edges_full=$edges_full_hit min=$expect_min_edges_full"
+        exit 1
+    }
+    if {$expect_min_edges_adm > 0 && $edges_adm_hit < $expect_min_edges_adm} {
+        puts "x86_64 jitfuzzreg coverage gate failed: edges_adm=$edges_adm_hit min=$expect_min_edges_adm"
+        exit 1
+    }
 }
 
 set env(QEMU_EXTRA_ARGS) "-nographic -monitor none -display none -no-reboot -no-shutdown -m 512M"
@@ -162,9 +238,7 @@ run_x64_jit_fuzz_stable "wasm-jit-fuzz 1000 0" $jitfuzz_timeout
 # Run the same long fuzz command a second time to catch reboot/PF-storm style
 # regressions that only show up on repeated execution.
 run_x64_jit_fuzz_stable "wasm-jit-fuzz 1000 0" $jitfuzz_timeout
-set jitfuzzreg_re [format {\[X64\] jitfuzzreg ok: seeds_passed=[0-9]+ seeds_failed=[0-9]+ mismatches=0 compile_errors=0 edges_full=[0-9]+/%s edges_adm=[0-9]+/%s} \
-    $expect_edge_total $expect_edge_adm_total]
-run_x64_cmd_with_timeout "jitfuzzreg full" $jitfuzzreg_re "jitfuzzreg full" $jitfuzzreg_timeout
+run_x64_jitfuzzreg_with_gate "jitfuzzreg full" $jitfuzzreg_timeout
 
 send -- "jitcall\r"
 expect {

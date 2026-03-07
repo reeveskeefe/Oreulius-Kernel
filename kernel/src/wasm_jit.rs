@@ -209,7 +209,11 @@ fn analyze_basic_blocks_into(code: &[u8], blocks: &mut Vec<BasicBlock>) {
                 let (_off, n2) = read_uleb128(code, pc).unwrap_or((0, 0));
                 pc += n2;
             }
-            Some(Opcode::Return) | Some(Opcode::End) | Some(Opcode::Br) | Some(Opcode::BrIf) => {
+            Some(Opcode::Unreachable)
+            | Some(Opcode::Return)
+            | Some(Opcode::End)
+            | Some(Opcode::Br)
+            | Some(Opcode::BrIf) => {
                 blocks.push(BasicBlock { start, end: pc });
                 start = pc;
             }
@@ -263,6 +267,11 @@ fn emit_code_into(
         match opcode {
             Opcode::Nop => {
                 emitter.emit_instr_fuel_check();
+            }
+            Opcode::Unreachable => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_trap_stack_always();
+                terminates = true;
             }
             Opcode::End | Opcode::Return => {
                 emitter.emit_instr_fuel_check();
@@ -455,6 +464,12 @@ fn emit_code_into(
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_local_tee(idx as u32);
             }
+            Opcode::Select => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 3)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_select();
+            }
             Opcode::I32Load => {
                 emitter.emit_instr_fuel_check();
                 emitter.emit_mem_fuel_check();
@@ -475,6 +490,19 @@ fn emit_code_into(
                 pc += n2;
                 stack_pop(&mut stack_depth, 2)?;
                 emitter.emit_i32_store(off);
+            }
+            Opcode::MemorySize => {
+                emitter.emit_instr_fuel_check();
+                if pc >= code.len() {
+                    return Err("Bad memory.size");
+                }
+                let mem_idx = code[pc];
+                pc += 1;
+                if mem_idx != 0 {
+                    return Err("Bad memory.size");
+                }
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_memory_size();
             }
             Opcode::If | Opcode::Else | Opcode::Br | Opcode::BrIf => {
                 return Err("Control flow not supported by JIT");
@@ -520,6 +548,7 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
     matches!(
         opcode,
         Opcode::Nop
+            | Opcode::Unreachable
             | Opcode::End
             | Opcode::Return
             | Opcode::Drop
@@ -551,8 +580,10 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
             | Opcode::LocalGet
             | Opcode::LocalSet
             | Opcode::LocalTee
+            | Opcode::Select
             | Opcode::I32Load
             | Opcode::I32Store
+            | Opcode::MemorySize
     )
 }
 
@@ -1527,6 +1558,25 @@ impl Emitter {
         self.emit(&[0x89, 0x1C, 0x02]);
     }
 
+    fn emit_select(&mut self) {
+        // Stack shape: [..., val1, val2, cond]
+        self.emit_pop_to_eax(); // cond
+        self.emit(&[0x89, 0xC2]); // mov edx, eax
+        self.emit_pop_to_ebx(); // val2
+        self.emit_pop_to_eax(); // val1
+        self.emit(&[0x85, 0xD2]); // test edx, edx
+        self.emit(&[0x0F, 0x44, 0xC3]); // cmovz eax, ebx
+        self.emit_push_eax();
+    }
+
+    fn emit_memory_size(&mut self) {
+        // memory.size returns current linear memory size in 64KiB pages.
+        // mem_len is in ECX as bytes.
+        self.emit(&[0x89, 0xC8]); // mov eax, ecx
+        self.emit(&[0xC1, 0xE8, 0x10]); // shr eax, 16
+        self.emit_push_eax();
+    }
+
     fn emit_cfi_push_return(&mut self) {
         // mov eax, [ebp-24] (shadow sp ptr)
         self.emit(&[0x8B, 0x45, 0xE8]);
@@ -1677,6 +1727,13 @@ impl Emitter {
 
     fn emit_trap_stack_jump(&mut self, opcode_ext: u8) {
         self.emit(&[0x0F, opcode_ext]);
+        let pos = self.code.len();
+        self.emit_u32(0);
+        self.trap_stack_jumps.push(pos);
+    }
+
+    fn emit_trap_stack_always(&mut self) {
+        self.emit(&[0xE9]);
         let pos = self.code.len();
         self.emit_u32(0);
         self.trap_stack_jumps.push(pos);
@@ -2162,6 +2219,25 @@ impl Emitter {
         ]);
     }
 
+    fn emit_select(&mut self) {
+        // Stack shape: [..., val1, val2, cond]
+        self.emit_pop_to_eax();            // cond
+        self.emit(&[0x89, 0xC2]);          // mov edx, eax
+        self.emit_pop_to_ecx();            // val2
+        self.emit_pop_to_eax();            // val1
+        self.emit(&[0x85, 0xD2]);          // test edx, edx
+        self.emit(&[0x0F, 0x44, 0xC1]);    // cmovz eax, ecx
+        self.emit_push_eax();
+    }
+
+    fn emit_memory_size(&mut self) {
+        // memory.size returns current linear memory size in 64KiB pages.
+        // mem_len lives in r15 (bytes).
+        self.emit(&[0x44, 0x89, 0xF8]);    // mov eax, r15d
+        self.emit(&[0xC1, 0xE8, 0x10]);    // shr eax, 16
+        self.emit_push_eax();
+    }
+
     fn emit_cfi_push_return(&mut self) {}
 
     fn emit_cfi_check_return(&mut self) {}
@@ -2247,6 +2323,13 @@ impl Emitter {
 
     fn emit_trap_stack_jump(&mut self, opcode_ext: u8) {
         self.emit(&[0x0F, opcode_ext]);
+        let pos = self.code.len();
+        self.emit_u32(0);
+        self.trap_stack_jumps.push(pos);
+    }
+
+    fn emit_trap_stack_always(&mut self) {
+        self.emit(&[0xE9]);
         let pos = self.code.len();
         self.emit_u32(0);
         self.trap_stack_jumps.push(pos);
