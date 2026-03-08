@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,14 +22,13 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
-
 
 //! Architecture abstraction shim for incremental multi-arch bring-up.
 //!
@@ -38,15 +37,15 @@
 //! x86_64/AArch64 implementations can slot in without touching `rust_main`
 //! call ordering again.
 
-pub mod mmu;
-#[cfg(target_arch = "x86_64")]
-pub(crate) mod x86_64_runtime;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod aarch64_dtb;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod aarch64_pl011;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod aarch64_vectors;
+pub mod mmu;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod x86_64_runtime;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BootProtocol {
@@ -108,7 +107,8 @@ impl BootInfo {
 
         // Best-effort bounded scan for early-boot pointers supplied by the bootloader.
         // This avoids walking unbounded memory if a terminator is missing.
-        let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, Self::MAX_BOOT_STRING_BYTES) };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(ptr as *const u8, Self::MAX_BOOT_STRING_BYTES) };
         let len = bytes.iter().position(|&b| b == 0)?;
         if len == 0 {
             return Some("");
@@ -134,19 +134,19 @@ pub trait ArchPlatform {
     fn halt_loop(&self) -> !;
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-mod x86_legacy;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod aarch64_virt;
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
 mod unsupported;
-
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use x86_legacy::PLATFORM;
+mod x86_legacy;
+
 #[cfg(target_arch = "aarch64")]
 use aarch64_virt::PLATFORM;
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
 use unsupported::PLATFORM;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use x86_legacy::PLATFORM;
 
 #[inline]
 fn active() -> &'static dyn ArchPlatform {

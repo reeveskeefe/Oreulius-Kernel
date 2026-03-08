@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,13 +22,12 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  */
-
 
 //! Minimal WASM JIT compiler (ELF-less, in-kernel).
 //!
@@ -40,7 +39,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use crate::wasm::{Opcode, MAX_STACK_DEPTH, MAX_INSTRUCTIONS_PER_CALL, MAX_LOCALS};
+use crate::wasm::{Opcode, MAX_INSTRUCTIONS_PER_CALL, MAX_LOCALS, MAX_STACK_DEPTH};
 use crate::{memory, memory_isolation, paging};
 
 pub type JitFn = unsafe extern "C" fn(
@@ -71,6 +70,13 @@ pub struct JitFunction {
     pub exec: JitExecBuffer,
     pub exec_hash: u64,
     translation: TranslationValidation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JitTypeSignature {
+    pub param_count: usize,
+    pub result_count: usize,
+    pub all_i32: bool,
 }
 
 // SAFETY: JitFunction is safe to send/sync because all components are:
@@ -204,7 +210,7 @@ fn analyze_basic_blocks_into(code: &[u8], blocks: &mut Vec<BasicBlock>) {
                 pc += n;
             }
             Some(Opcode::Block) | Some(Opcode::Loop) | Some(Opcode::If) => {
-                let (n, _block_type) = match read_blocktype_width(code, pc) {
+                let (n, _block_type) = match read_blocktype_width(code, pc, &[]) {
                     Some(v) => v,
                     None => break,
                 };
@@ -256,7 +262,10 @@ fn analyze_basic_blocks_into(code: &[u8], blocks: &mut Vec<BasicBlock>) {
         }
     }
     if start < code.len() {
-        blocks.push(BasicBlock { start, end: code.len() });
+        blocks.push(BasicBlock {
+            start,
+            end: code.len(),
+        });
     }
 }
 
@@ -275,19 +284,37 @@ enum ControlKind {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum JitBlockType {
-    Empty,
-    I32,
-    Unsupported,
+struct JitBlockType {
+    param_arity: i32,
+    result_arity: i32,
+    supported: bool,
 }
 
 impl JitBlockType {
     #[inline]
-    fn result_arity(self) -> i32 {
-        match self {
-            JitBlockType::Empty => 0,
-            JitBlockType::I32 => 1,
-            JitBlockType::Unsupported => 0,
+    const fn empty() -> Self {
+        JitBlockType {
+            param_arity: 0,
+            result_arity: 0,
+            supported: true,
+        }
+    }
+
+    #[inline]
+    const fn i32_result() -> Self {
+        JitBlockType {
+            param_arity: 0,
+            result_arity: 1,
+            supported: true,
+        }
+    }
+
+    #[inline]
+    const fn unsupported() -> Self {
+        JitBlockType {
+            param_arity: 0,
+            result_arity: 0,
+            supported: false,
         }
     }
 }
@@ -295,6 +322,7 @@ impl JitBlockType {
 struct ControlFrame {
     kind: ControlKind,
     stack_depth_at_entry: i32,
+    param_arity: i32,
     result_arity: i32,
     label_arity: i32,
     loop_target: Option<usize>,
@@ -317,6 +345,7 @@ fn resolve_label_target_idx(
 fn emit_code_into(
     code: &[u8],
     locals_total: usize,
+    type_sigs: &[JitTypeSignature],
     emitter: &mut Emitter,
     traces: &mut Vec<TranslationRecord>,
 ) -> Result<(), &'static str> {
@@ -331,6 +360,7 @@ fn emit_code_into(
     control_stack.push(ControlFrame {
         kind: ControlKind::Function,
         stack_depth_at_entry: 0,
+        param_arity: 0,
         result_arity: 0,
         label_arity: 0,
         loop_target: None,
@@ -388,8 +418,11 @@ fn emit_code_into(
                     saw_function_end = true;
                 } else {
                     let mut frame = control_stack.pop().ok_or("Unexpected end")?;
-                    if frame.kind == ControlKind::If && frame.result_arity > 0 && !frame.has_else {
-                        return Err("Typed if without else not supported by JIT");
+                    if frame.kind == ControlKind::If
+                        && !frame.has_else
+                        && frame.param_arity != frame.result_arity
+                    {
+                        return Err("Typed if without else block type not supported by JIT");
                     }
                     match frame.kind {
                         ControlKind::If => {
@@ -415,17 +448,21 @@ fn emit_code_into(
                 {
                     emitter.emit_instr_fuel_check();
                     let (blocktype_width, block_type) =
-                        read_blocktype_width(code, pc).ok_or("Bad block type")?;
+                        read_blocktype_width(code, pc, type_sigs).ok_or("Bad block type")?;
                     pc += blocktype_width;
-                    if block_type == JitBlockType::Unsupported {
+                    if !block_type.supported {
                         return Err("Block type not supported by JIT");
                     }
-                    let result_arity = block_type.result_arity();
+                    if stack_depth < block_type.param_arity {
+                        return Err("JIT stack underflow");
+                    }
+                    let stack_depth_at_entry = stack_depth - block_type.param_arity;
                     control_stack.push(ControlFrame {
                         kind: ControlKind::Block,
-                        stack_depth_at_entry: stack_depth,
-                        result_arity,
-                        label_arity: result_arity,
+                        stack_depth_at_entry,
+                        param_arity: block_type.param_arity,
+                        result_arity: block_type.result_arity,
+                        label_arity: block_type.result_arity,
                         loop_target: None,
                         else_patch: None,
                         has_else: false,
@@ -442,19 +479,22 @@ fn emit_code_into(
                 {
                     emitter.emit_instr_fuel_check();
                     let (blocktype_width, block_type) =
-                        read_blocktype_width(code, pc).ok_or("Bad loop type")?;
+                        read_blocktype_width(code, pc, type_sigs).ok_or("Bad loop type")?;
                     pc += blocktype_width;
-                    if block_type == JitBlockType::Unsupported {
+                    if !block_type.supported {
                         return Err("Loop type not supported by JIT");
                     }
+                    if stack_depth < block_type.param_arity {
+                        return Err("JIT stack underflow");
+                    }
                     let loop_target = emitter.code.len();
-                    let result_arity = block_type.result_arity();
+                    let stack_depth_at_entry = stack_depth - block_type.param_arity;
                     control_stack.push(ControlFrame {
                         kind: ControlKind::Loop,
-                        stack_depth_at_entry: stack_depth,
-                        result_arity,
-                        // MVP subset: loop branch targets consume no values.
-                        label_arity: 0,
+                        stack_depth_at_entry,
+                        param_arity: block_type.param_arity,
+                        result_arity: block_type.result_arity,
+                        label_arity: block_type.param_arity,
                         loop_target: Some(loop_target),
                         else_patch: None,
                         has_else: false,
@@ -712,19 +752,23 @@ fn emit_code_into(
                 {
                     emitter.emit_instr_fuel_check();
                     let (blocktype_width, block_type) =
-                        read_blocktype_width(code, pc).ok_or("Bad if block type")?;
+                        read_blocktype_width(code, pc, type_sigs).ok_or("Bad if block type")?;
                     pc += blocktype_width;
-                    if block_type == JitBlockType::Unsupported {
+                    if !block_type.supported {
                         return Err("If block type not supported by JIT");
                     }
                     stack_pop(&mut stack_depth, 1)?;
+                    if stack_depth < block_type.param_arity {
+                        return Err("JIT stack underflow");
+                    }
                     let else_patch = emitter.emit_pop_cond_jz_placeholder();
-                    let result_arity = block_type.result_arity();
+                    let stack_depth_at_entry = stack_depth - block_type.param_arity;
                     control_stack.push(ControlFrame {
                         kind: ControlKind::If,
-                        stack_depth_at_entry: stack_depth,
-                        result_arity,
-                        label_arity: result_arity,
+                        stack_depth_at_entry,
+                        param_arity: block_type.param_arity,
+                        result_arity: block_type.result_arity,
+                        label_arity: block_type.result_arity,
                         loop_target: None,
                         else_patch: Some(else_patch),
                         has_else: false,
@@ -753,7 +797,7 @@ fn emit_code_into(
                     }
                     frame.has_else = true;
                     frame.end_patches.push(end_jump);
-                    stack_depth = frame.stack_depth_at_entry;
+                    stack_depth = frame.stack_depth_at_entry + frame.param_arity;
                 }
             }
             Opcode::Br => {
@@ -776,13 +820,21 @@ fn emit_code_into(
                             frame.label_arity,
                         )
                     };
-                    if target_kind != ControlKind::Loop && target_label_arity != 0 {
-                        return Err("Branch to value-typed block not supported by JIT");
+                    if target_label_arity > 1 {
+                        return Err("Multi-value branch not supported by JIT");
                     }
                     let target_depth = target_stack_depth + target_label_arity;
                     // Branch target stack depth must be committed on the taken
                     // path before transfer-of-control.
-                    emitter.emit_set_stack_depth(target_depth)?;
+                    if target_label_arity == 1 {
+                        // Preserve the top-of-stack branch result while dropping
+                        // any transient values above the target block entry depth.
+                        emitter.emit_pop_to_eax();
+                        emitter.emit_set_stack_depth(target_stack_depth)?;
+                        emitter.emit_push_eax();
+                    } else {
+                        emitter.emit_set_stack_depth(target_depth)?;
+                    }
                     let jump = emitter.emit_jump_placeholder();
                     match target_kind {
                         ControlKind::Loop => {
@@ -820,11 +872,17 @@ fn emit_code_into(
                             frame.label_arity,
                         )
                     };
-                    if target_kind != ControlKind::Loop && target_label_arity != 0 {
-                        return Err("br_if to value-typed block not supported by JIT");
+                    if target_label_arity > 1 {
+                        return Err("Multi-value br_if not supported by JIT");
                     }
                     let target_depth = target_stack_depth + target_label_arity;
-                    emitter.emit_set_stack_depth(target_depth)?;
+                    if target_label_arity == 1 {
+                        emitter.emit_pop_to_eax();
+                        emitter.emit_set_stack_depth(target_stack_depth)?;
+                        emitter.emit_push_eax();
+                    } else {
+                        emitter.emit_set_stack_depth(target_depth)?;
+                    }
                     let jump = emitter.emit_jump_placeholder();
                     match target_kind {
                         ControlKind::Loop => {
@@ -868,12 +926,7 @@ fn emit_code_into(
     let trap_cfi_pos = emitter.emit_trap_stub(TRAP_CFI, false);
     emitter.patch_traps(trap_mem_pos, trap_fuel_pos, trap_stack_pos, trap_cfi_pos)?;
 
-    let trap_targets = [
-        trap_mem_pos,
-        trap_fuel_pos,
-        trap_stack_pos,
-        trap_cfi_pos,
-    ];
+    let trap_targets = [trap_mem_pos, trap_fuel_pos, trap_stack_pos, trap_cfi_pos];
     verify_x86_subset(&emitter.code, locals_total, &trap_targets)?;
     Ok(())
 }
@@ -933,10 +986,11 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
 fn emit_code(
     code: &[u8],
     locals_total: usize,
+    type_sigs: &[JitTypeSignature],
     emitter: &mut Emitter,
 ) -> Result<Vec<TranslationRecord>, &'static str> {
     let mut traces = Vec::new();
-    emit_code_into(code, locals_total, emitter, &mut traces)?;
+    emit_code_into(code, locals_total, type_sigs, emitter, &mut traces)?;
     Ok(traces)
 }
 
@@ -1174,13 +1228,7 @@ fn validate_translation_per_block(
     native_code: &[u8],
 ) -> Result<Vec<u64>, &'static str> {
     let mut block_hashes = Vec::new();
-    validate_translation_per_block_into(
-        wasm_code,
-        blocks,
-        traces,
-        native_code,
-        &mut block_hashes,
-    )?;
+    validate_translation_per_block_into(wasm_code, blocks, traces, native_code, &mut block_hashes)?;
     Ok(block_hashes)
 }
 
@@ -1289,10 +1337,14 @@ fn slice_is_kernel_mapped<T>(slice: &[T]) -> bool {
     crate::paging::is_kernel_range_mapped(slice.as_ptr() as usize, bytes)
 }
 
-pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static str> {
+pub fn compile_with_types(
+    code: &[u8],
+    locals_total: usize,
+    type_sigs: &[JitTypeSignature],
+) -> Result<JitFunction, &'static str> {
     let blocks = analyze_basic_blocks(code);
     let mut emitter = Emitter::new();
-    let traces = emit_code(code, locals_total, &mut emitter)?;
+    let traces = emit_code(code, locals_total, type_sigs, &mut emitter)?;
     let block_hashes = validate_translation_per_block(code, &blocks, &traces, &emitter.code)?;
     let proof = build_translation_proof(code, &traces, &emitter.code)?;
 
@@ -1316,6 +1368,10 @@ pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static
             proof,
         },
     })
+}
+
+pub fn compile(code: &[u8], locals_total: usize) -> Result<JitFunction, &'static str> {
+    compile_with_types(code, locals_total, &[])
 }
 
 /// Reusable JIT compiler for fuzzing (avoids per-iteration allocations).
@@ -1350,6 +1406,15 @@ impl FuzzCompiler {
     }
 
     pub fn compile(&mut self, code: &[u8], locals_total: usize) -> Result<JitFn, &'static str> {
+        self.compile_with_types(code, locals_total, &[])
+    }
+
+    pub fn compile_with_types(
+        &mut self,
+        code: &[u8],
+        locals_total: usize,
+        type_sigs: &[JitTypeSignature],
+    ) -> Result<JitFn, &'static str> {
         // Reuse allocations across fuzz iterations, but always compile from a
         // clean emitter/trace state so stale machine code cannot be executed.
         self.emitter.reset();
@@ -1357,7 +1422,13 @@ impl FuzzCompiler {
         self.blocks.clear();
         self.block_hashes.clear();
 
-        emit_code_into(code, locals_total, &mut self.emitter, &mut self.traces)?;
+        emit_code_into(
+            code,
+            locals_total,
+            type_sigs,
+            &mut self.emitter,
+            &mut self.traces,
+        )?;
         analyze_basic_blocks_into(code, &mut self.blocks);
         validate_translation_per_block_into(
             code,
@@ -1636,7 +1707,7 @@ impl Emitter {
     fn emit_i32_add(&mut self) {
         self.emit_pop_to_eax(); // a
         self.emit_pop_to_ebx(); // b
-        // add eax, ebx
+                                // add eax, ebx
         self.emit(&[0x01, 0xD8]);
         self.emit_push_eax();
     }
@@ -1644,7 +1715,7 @@ impl Emitter {
     fn emit_i32_sub(&mut self) {
         self.emit_pop_to_ebx(); // b
         self.emit_pop_to_eax(); // a
-        // sub eax, ebx
+                                // sub eax, ebx
         self.emit(&[0x29, 0xD8]);
         self.emit_push_eax();
     }
@@ -2179,9 +2250,7 @@ impl Emitter {
             trap_pos: usize,
         ) -> Result<(), &'static str> {
             for &idx in jumps {
-                let end = idx
-                    .checked_add(4)
-                    .ok_or("Trap patch index overflow")?;
+                let end = idx.checked_add(4).ok_or("Trap patch index overflow")?;
                 if end > code.len() {
                     return Err("Trap patch index out of range");
                 }
@@ -2268,38 +2337,38 @@ impl Emitter {
         // Locals are stored in the reserved stack area below saved callee-saved regs:
         // [rbp-48] instr_fuel_ptr, [rbp-56] mem_fuel_ptr, [rbp-64] trap_ptr.
         self.emit(&[
-            0x55,                         // push rbp
-            0x48, 0x89, 0xE5,             // mov rbp, rsp
-            0x53,                         // push rbx
-            0x41, 0x54,                   // push r12
-            0x41, 0x55,                   // push r13
-            0x41, 0x56,                   // push r14
-            0x41, 0x57,                   // push r15
-            0x48, 0x83, 0xEC, 0x20,       // sub rsp, 0x20
-            0x49, 0x89, 0xFC,             // mov r12, rdi
-            0x49, 0x89, 0xF5,             // mov r13, rsi
-            0x49, 0x89, 0xD6,             // mov r14, rdx
-            0x49, 0x89, 0xCF,             // mov r15, rcx
-            0x4C, 0x89, 0xC3,             // mov rbx, r8
-            0x4C, 0x89, 0x4D, 0xD0,       // mov [rbp-48], r9
-            0x48, 0x8B, 0x45, 0x10,       // mov rax, [rbp+16]
-            0x48, 0x89, 0x45, 0xC8,       // mov [rbp-56], rax
-            0x48, 0x8B, 0x45, 0x18,       // mov rax, [rbp+24]
-            0x48, 0x89, 0x45, 0xC0,       // mov [rbp-64], rax
+            0x55, // push rbp
+            0x48, 0x89, 0xE5, // mov rbp, rsp
+            0x53, // push rbx
+            0x41, 0x54, // push r12
+            0x41, 0x55, // push r13
+            0x41, 0x56, // push r14
+            0x41, 0x57, // push r15
+            0x48, 0x83, 0xEC, 0x20, // sub rsp, 0x20
+            0x49, 0x89, 0xFC, // mov r12, rdi
+            0x49, 0x89, 0xF5, // mov r13, rsi
+            0x49, 0x89, 0xD6, // mov r14, rdx
+            0x49, 0x89, 0xCF, // mov r15, rcx
+            0x4C, 0x89, 0xC3, // mov rbx, r8
+            0x4C, 0x89, 0x4D, 0xD0, // mov [rbp-48], r9
+            0x48, 0x8B, 0x45, 0x10, // mov rax, [rbp+16]
+            0x48, 0x89, 0x45, 0xC8, // mov [rbp-56], rax
+            0x48, 0x8B, 0x45, 0x18, // mov rax, [rbp+24]
+            0x48, 0x89, 0x45, 0xC0, // mov [rbp-64], rax
         ]);
         self.emit_cfi_push_return();
     }
 
     fn emit_pop_to_eax(&mut self) {
         self.emit(&[
-            0x4D, 0x8B, 0x55, 0x00,       // mov r10, [r13+0]
-            0x4D, 0x85, 0xD2,             // test r10, r10
+            0x4D, 0x8B, 0x55, 0x00, // mov r10, [r13+0]
+            0x4D, 0x85, 0xD2, // test r10, r10
         ]);
-        self.emit_trap_stack_jump(0x84);   // jz trap
+        self.emit_trap_stack_jump(0x84); // jz trap
         self.emit(&[
-            0x49, 0xFF, 0xCA,             // dec r10
-            0x43, 0x8B, 0x04, 0x94,       // mov eax, [r12 + r10*4]
-            0x4D, 0x89, 0x55, 0x00,       // mov [r13+0], r10
+            0x49, 0xFF, 0xCA, // dec r10
+            0x43, 0x8B, 0x04, 0x94, // mov eax, [r12 + r10*4]
+            0x4D, 0x89, 0x55, 0x00, // mov [r13+0], r10
         ]);
     }
 
@@ -2311,42 +2380,42 @@ impl Emitter {
 
     fn emit_pop_to_ecx(&mut self) {
         self.emit(&[
-            0x89, 0xC2,                   // mov edx, eax (preserve prior eax value)
-            0x4D, 0x8B, 0x55, 0x00,       // mov r10, [r13+0]
-            0x4D, 0x85, 0xD2,             // test r10, r10
+            0x89, 0xC2, // mov edx, eax (preserve prior eax value)
+            0x4D, 0x8B, 0x55, 0x00, // mov r10, [r13+0]
+            0x4D, 0x85, 0xD2, // test r10, r10
         ]);
-        self.emit_trap_stack_jump(0x84);   // jz trap
+        self.emit_trap_stack_jump(0x84); // jz trap
         self.emit(&[
-            0x49, 0xFF, 0xCA,             // dec r10
-            0x43, 0x8B, 0x0C, 0x94,       // mov ecx, [r12 + r10*4]
-            0x4D, 0x89, 0x55, 0x00,       // mov [r13+0], r10
-            0x89, 0xD0,                   // mov eax, edx (restore prior eax value)
+            0x49, 0xFF, 0xCA, // dec r10
+            0x43, 0x8B, 0x0C, 0x94, // mov ecx, [r12 + r10*4]
+            0x4D, 0x89, 0x55, 0x00, // mov [r13+0], r10
+            0x89, 0xD0, // mov eax, edx (restore prior eax value)
         ]);
     }
 
     fn emit_push_eax(&mut self) {
         self.emit(&[
-            0x4D, 0x8B, 0x55, 0x00,       // mov r10, [r13+0]
-            0x49, 0x81, 0xFA,             // cmp r10, imm32
+            0x4D, 0x8B, 0x55, 0x00, // mov r10, [r13+0]
+            0x49, 0x81, 0xFA, // cmp r10, imm32
         ]);
         self.emit_u32(MAX_STACK_DEPTH as u32);
-        self.emit_trap_stack_jump(0x83);   // jae trap
+        self.emit_trap_stack_jump(0x83); // jae trap
         self.emit(&[
-            0x43, 0x89, 0x04, 0x94,       // mov [r12 + r10*4], eax
-            0x49, 0xFF, 0xC2,             // inc r10
-            0x4D, 0x89, 0x55, 0x00,       // mov [r13+0], r10
+            0x43, 0x89, 0x04, 0x94, // mov [r12 + r10*4], eax
+            0x49, 0xFF, 0xC2, // inc r10
+            0x4D, 0x89, 0x55, 0x00, // mov [r13+0], r10
         ]);
     }
 
     fn emit_pop_discard(&mut self) {
         self.emit(&[
-            0x4D, 0x8B, 0x55, 0x00,       // mov r10, [r13+0]
-            0x4D, 0x85, 0xD2,             // test r10, r10
+            0x4D, 0x8B, 0x55, 0x00, // mov r10, [r13+0]
+            0x4D, 0x85, 0xD2, // test r10, r10
         ]);
-        self.emit_trap_stack_jump(0x84);   // jz trap
+        self.emit_trap_stack_jump(0x84); // jz trap
         self.emit(&[
-            0x49, 0xFF, 0xCA,             // dec r10
-            0x4D, 0x89, 0x55, 0x00,       // mov [r13+0], r10
+            0x49, 0xFF, 0xCA, // dec r10
+            0x4D, 0x89, 0x55, 0x00, // mov [r13+0], r10
         ]);
     }
 
@@ -2381,7 +2450,7 @@ impl Emitter {
             return Err("Negative stack depth");
         }
         self.emit(&[
-            0x41, 0xBA,             // mov r10d, imm32
+            0x41, 0xBA, // mov r10d, imm32
         ]);
         self.emit_i32(depth);
         self.emit(&[
@@ -2408,7 +2477,7 @@ impl Emitter {
     }
 
     fn emit_i32_const(&mut self, imm: i32) {
-        self.emit(&[0xB8]);                // mov eax, imm32
+        self.emit(&[0xB8]); // mov eax, imm32
         self.emit_i32(imm);
         self.emit_push_eax();
     }
@@ -2416,221 +2485,221 @@ impl Emitter {
     fn emit_i32_add(&mut self) {
         self.emit_pop_to_eax();
         self.emit_pop_to_ecx();
-        self.emit(&[0x01, 0xC8]);         // add eax, ecx
+        self.emit(&[0x01, 0xC8]); // add eax, ecx
         self.emit_push_eax();
     }
 
     fn emit_i32_sub(&mut self) {
-        self.emit_pop_to_ecx();           // b
-        self.emit_pop_to_eax();           // a
-        self.emit(&[0x29, 0xC8]);         // sub eax, ecx
+        self.emit_pop_to_ecx(); // b
+        self.emit_pop_to_eax(); // a
+        self.emit(&[0x29, 0xC8]); // sub eax, ecx
         self.emit_push_eax();
     }
 
     fn emit_i32_mul(&mut self) {
         self.emit_pop_to_eax();
         self.emit_pop_to_ecx();
-        self.emit(&[0x0F, 0xAF, 0xC1]);   // imul eax, ecx
+        self.emit(&[0x0F, 0xAF, 0xC1]); // imul eax, ecx
         self.emit_push_eax();
     }
 
     fn emit_i32_divs(&mut self) {
         // WASM: a / b with trap on divide-by-zero and INT_MIN / -1 overflow.
-        self.emit_pop_to_ecx();           // b (divisor)
-        self.emit_pop_to_eax();           // a (dividend)
-        self.emit(&[0x83, 0xF9, 0x00]);   // cmp ecx, 0
-        self.emit_trap_stack_jump(0x84);   // je trap
-        self.emit(&[0x83, 0xF9, 0xFF]);   // cmp ecx, -1
-        self.emit(&[0x75, 0x0B]);         // jne +11 (skip overflow guard)
+        self.emit_pop_to_ecx(); // b (divisor)
+        self.emit_pop_to_eax(); // a (dividend)
+        self.emit(&[0x83, 0xF9, 0x00]); // cmp ecx, 0
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x83, 0xF9, 0xFF]); // cmp ecx, -1
+        self.emit(&[0x75, 0x0B]); // jne +11 (skip overflow guard)
         self.emit(&[0x3D, 0x00, 0x00, 0x00, 0x80]); // cmp eax, 0x80000000
-        self.emit_trap_stack_jump(0x84);   // je trap
-        self.emit(&[0x99]);               // cdq
-        self.emit(&[0xF7, 0xF9]);         // idiv ecx
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x99]); // cdq
+        self.emit(&[0xF7, 0xF9]); // idiv ecx
         self.emit_push_eax();
     }
 
     fn emit_i32_divu(&mut self) {
         // WASM: unsigned division with trap on divide-by-zero.
-        self.emit_pop_to_ecx();           // b (divisor)
-        self.emit_pop_to_eax();           // a (dividend)
-        self.emit(&[0x83, 0xF9, 0x00]);   // cmp ecx, 0
-        self.emit_trap_stack_jump(0x84);   // je trap
-        self.emit(&[0x31, 0xD2]);         // xor edx, edx
-        self.emit(&[0xF7, 0xF1]);         // div ecx
+        self.emit_pop_to_ecx(); // b (divisor)
+        self.emit_pop_to_eax(); // a (dividend)
+        self.emit(&[0x83, 0xF9, 0x00]); // cmp ecx, 0
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x31, 0xD2]); // xor edx, edx
+        self.emit(&[0xF7, 0xF1]); // div ecx
         self.emit_push_eax();
     }
 
     fn emit_i32_rems(&mut self) {
         // WASM: a % b with trap on divide-by-zero and INT_MIN / -1 overflow.
-        self.emit_pop_to_ecx();           // b (divisor)
-        self.emit_pop_to_eax();           // a (dividend)
-        self.emit(&[0x83, 0xF9, 0x00]);   // cmp ecx, 0
-        self.emit_trap_stack_jump(0x84);   // je trap
-        self.emit(&[0x83, 0xF9, 0xFF]);   // cmp ecx, -1
-        self.emit(&[0x75, 0x0B]);         // jne +11 (skip overflow guard)
+        self.emit_pop_to_ecx(); // b (divisor)
+        self.emit_pop_to_eax(); // a (dividend)
+        self.emit(&[0x83, 0xF9, 0x00]); // cmp ecx, 0
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x83, 0xF9, 0xFF]); // cmp ecx, -1
+        self.emit(&[0x75, 0x0B]); // jne +11 (skip overflow guard)
         self.emit(&[0x3D, 0x00, 0x00, 0x00, 0x80]); // cmp eax, 0x80000000
-        self.emit_trap_stack_jump(0x84);   // je trap
-        self.emit(&[0x99]);               // cdq
-        self.emit(&[0xF7, 0xF9]);         // idiv ecx
-        self.emit(&[0x89, 0xD0]);         // mov eax, edx
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x99]); // cdq
+        self.emit(&[0xF7, 0xF9]); // idiv ecx
+        self.emit(&[0x89, 0xD0]); // mov eax, edx
         self.emit_push_eax();
     }
 
     fn emit_i32_remu(&mut self) {
         // WASM: unsigned remainder with trap on divide-by-zero.
-        self.emit_pop_to_ecx();           // b (divisor)
-        self.emit_pop_to_eax();           // a (dividend)
-        self.emit(&[0x83, 0xF9, 0x00]);   // cmp ecx, 0
-        self.emit_trap_stack_jump(0x84);   // je trap
-        self.emit(&[0x31, 0xD2]);         // xor edx, edx
-        self.emit(&[0xF7, 0xF1]);         // div ecx
-        self.emit(&[0x89, 0xD0]);         // mov eax, edx
+        self.emit_pop_to_ecx(); // b (divisor)
+        self.emit_pop_to_eax(); // a (dividend)
+        self.emit(&[0x83, 0xF9, 0x00]); // cmp ecx, 0
+        self.emit_trap_stack_jump(0x84); // je trap
+        self.emit(&[0x31, 0xD2]); // xor edx, edx
+        self.emit(&[0xF7, 0xF1]); // div ecx
+        self.emit(&[0x89, 0xD0]); // mov eax, edx
         self.emit_push_eax();
     }
 
     fn emit_i32_and(&mut self) {
         self.emit_pop_to_eax();
         self.emit_pop_to_ecx();
-        self.emit(&[0x21, 0xC8]);         // and eax, ecx
+        self.emit(&[0x21, 0xC8]); // and eax, ecx
         self.emit_push_eax();
     }
 
     fn emit_i32_or(&mut self) {
         self.emit_pop_to_eax();
         self.emit_pop_to_ecx();
-        self.emit(&[0x09, 0xC8]);         // or eax, ecx
+        self.emit(&[0x09, 0xC8]); // or eax, ecx
         self.emit_push_eax();
     }
 
     fn emit_i32_xor(&mut self) {
         self.emit_pop_to_eax();
         self.emit_pop_to_ecx();
-        self.emit(&[0x31, 0xC8]);         // xor eax, ecx
+        self.emit(&[0x31, 0xC8]); // xor eax, ecx
         self.emit_push_eax();
     }
 
     fn emit_i32_eq(&mut self) {
         self.emit_pop_to_eax();
         self.emit_pop_to_ecx();
-        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
-        self.emit(&[0x0F, 0x94, 0xC0]);   // sete al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit(&[0x39, 0xC8]); // cmp eax, ecx
+        self.emit(&[0x0F, 0x94, 0xC0]); // sete al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_ne(&mut self) {
         self.emit_pop_to_eax();
         self.emit_pop_to_ecx();
-        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
-        self.emit(&[0x0F, 0x95, 0xC0]);   // setne al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit(&[0x39, 0xC8]); // cmp eax, ecx
+        self.emit(&[0x0F, 0x95, 0xC0]); // setne al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_eqz(&mut self) {
         self.emit_pop_to_eax();
-        self.emit(&[0x83, 0xF8, 0x00]);   // cmp eax, 0
-        self.emit(&[0x0F, 0x94, 0xC0]);   // sete al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit(&[0x83, 0xF8, 0x00]); // cmp eax, 0
+        self.emit(&[0x0F, 0x94, 0xC0]); // sete al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_lts(&mut self) {
-        self.emit_pop_to_ecx();           // b
-        self.emit_pop_to_eax();           // a
-        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
-        self.emit(&[0x0F, 0x9C, 0xC0]);   // setl al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_pop_to_ecx(); // b
+        self.emit_pop_to_eax(); // a
+        self.emit(&[0x39, 0xC8]); // cmp eax, ecx
+        self.emit(&[0x0F, 0x9C, 0xC0]); // setl al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_gts(&mut self) {
-        self.emit_pop_to_ecx();           // b
-        self.emit_pop_to_eax();           // a
-        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
-        self.emit(&[0x0F, 0x9F, 0xC0]);   // setg al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_pop_to_ecx(); // b
+        self.emit_pop_to_eax(); // a
+        self.emit(&[0x39, 0xC8]); // cmp eax, ecx
+        self.emit(&[0x0F, 0x9F, 0xC0]); // setg al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_les(&mut self) {
-        self.emit_pop_to_ecx();           // b
-        self.emit_pop_to_eax();           // a
-        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
-        self.emit(&[0x0F, 0x9E, 0xC0]);   // setle al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_pop_to_ecx(); // b
+        self.emit_pop_to_eax(); // a
+        self.emit(&[0x39, 0xC8]); // cmp eax, ecx
+        self.emit(&[0x0F, 0x9E, 0xC0]); // setle al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_ges(&mut self) {
-        self.emit_pop_to_ecx();           // b
-        self.emit_pop_to_eax();           // a
-        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
-        self.emit(&[0x0F, 0x9D, 0xC0]);   // setge al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_pop_to_ecx(); // b
+        self.emit_pop_to_eax(); // a
+        self.emit(&[0x39, 0xC8]); // cmp eax, ecx
+        self.emit(&[0x0F, 0x9D, 0xC0]); // setge al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_ltu(&mut self) {
-        self.emit_pop_to_ecx();           // b
-        self.emit_pop_to_eax();           // a
-        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
-        self.emit(&[0x0F, 0x92, 0xC0]);   // setb al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_pop_to_ecx(); // b
+        self.emit_pop_to_eax(); // a
+        self.emit(&[0x39, 0xC8]); // cmp eax, ecx
+        self.emit(&[0x0F, 0x92, 0xC0]); // setb al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_gtu(&mut self) {
-        self.emit_pop_to_ecx();           // b
-        self.emit_pop_to_eax();           // a
-        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
-        self.emit(&[0x0F, 0x97, 0xC0]);   // seta al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_pop_to_ecx(); // b
+        self.emit_pop_to_eax(); // a
+        self.emit(&[0x39, 0xC8]); // cmp eax, ecx
+        self.emit(&[0x0F, 0x97, 0xC0]); // seta al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_leu(&mut self) {
-        self.emit_pop_to_ecx();           // b
-        self.emit_pop_to_eax();           // a
-        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
-        self.emit(&[0x0F, 0x96, 0xC0]);   // setbe al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_pop_to_ecx(); // b
+        self.emit_pop_to_eax(); // a
+        self.emit(&[0x39, 0xC8]); // cmp eax, ecx
+        self.emit(&[0x0F, 0x96, 0xC0]); // setbe al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_geu(&mut self) {
-        self.emit_pop_to_ecx();           // b
-        self.emit_pop_to_eax();           // a
-        self.emit(&[0x39, 0xC8]);         // cmp eax, ecx
-        self.emit(&[0x0F, 0x93, 0xC0]);   // setae al
-        self.emit(&[0x0F, 0xB6, 0xC0]);   // movzx eax, al
+        self.emit_pop_to_ecx(); // b
+        self.emit_pop_to_eax(); // a
+        self.emit(&[0x39, 0xC8]); // cmp eax, ecx
+        self.emit(&[0x0F, 0x93, 0xC0]); // setae al
+        self.emit(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.emit_push_eax();
     }
 
     fn emit_i32_shl(&mut self) {
-        self.emit_pop_to_ecx();           // shift
-        self.emit_pop_to_eax();           // value
-        self.emit(&[0xD3, 0xE0]);         // shl eax, cl
+        self.emit_pop_to_ecx(); // shift
+        self.emit_pop_to_eax(); // value
+        self.emit(&[0xD3, 0xE0]); // shl eax, cl
         self.emit_push_eax();
     }
 
     fn emit_i32_shrs(&mut self) {
-        self.emit_pop_to_ecx();           // shift
-        self.emit_pop_to_eax();           // value
-        self.emit(&[0xD3, 0xF8]);         // sar eax, cl
+        self.emit_pop_to_ecx(); // shift
+        self.emit_pop_to_eax(); // value
+        self.emit(&[0xD3, 0xF8]); // sar eax, cl
         self.emit_push_eax();
     }
 
     fn emit_i32_shru(&mut self) {
-        self.emit_pop_to_ecx();           // shift
-        self.emit_pop_to_eax();           // value
-        self.emit(&[0xD3, 0xE8]);         // shr eax, cl
+        self.emit_pop_to_ecx(); // shift
+        self.emit_pop_to_eax(); // value
+        self.emit(&[0xD3, 0xE8]); // shr eax, cl
         self.emit_push_eax();
     }
 
     fn emit_bounds_check(&mut self, off: u32, size: u32) {
         if off != 0 {
-            self.emit(&[0x05]);            // add eax, imm32
+            self.emit(&[0x05]); // add eax, imm32
             self.emit_u32(off);
             self.emit_trap_mem_jump(0x82); // jc trap
         }
@@ -2638,7 +2707,7 @@ impl Emitter {
             if size <= 0x7F {
                 self.emit(&[0x49, 0x83, 0xFF, size as u8]); // cmp r15, imm8
             } else {
-                self.emit(&[0x49, 0x81, 0xFF]);             // cmp r15, imm32
+                self.emit(&[0x49, 0x81, 0xFF]); // cmp r15, imm32
                 self.emit_u32(size);
             }
             self.emit_trap_mem_jump(0x82); // jb trap
@@ -2647,14 +2716,14 @@ impl Emitter {
             if size <= 0x7F {
                 self.emit(&[0x49, 0x83, 0xEA, size as u8]); // sub r10, imm8
             } else {
-                self.emit(&[0x49, 0x81, 0xEA]);             // sub r10, imm32
+                self.emit(&[0x49, 0x81, 0xEA]); // sub r10, imm32
                 self.emit_u32(size);
             }
             self.emit(&[
-                0x89, 0xC2,                   // mov edx, eax
-                0x4C, 0x39, 0xD2,             // cmp rdx, r10
+                0x89, 0xC2, // mov edx, eax
+                0x4C, 0x39, 0xD2, // cmp rdx, r10
             ]);
-            self.emit_trap_mem_jump(0x87);     // ja trap
+            self.emit_trap_mem_jump(0x87); // ja trap
         }
     }
 
@@ -2662,56 +2731,56 @@ impl Emitter {
         self.emit_pop_to_eax();
         self.emit_bounds_check(off, 4);
         self.emit(&[
-            0x41, 0x8B, 0x04, 0x06,       // mov eax, [r14 + rax]
+            0x41, 0x8B, 0x04, 0x06, // mov eax, [r14 + rax]
         ]);
         self.emit_push_eax();
     }
 
     fn emit_local_get(&mut self, idx: u32) {
-        self.emit(&[0x8B, 0x83]);         // mov eax, [rbx + disp32]
+        self.emit(&[0x8B, 0x83]); // mov eax, [rbx + disp32]
         self.emit_i32((idx as i32) * 4);
         self.emit_push_eax();
     }
 
     fn emit_local_set(&mut self, idx: u32) {
         self.emit_pop_to_eax();
-        self.emit(&[0x89, 0x83]);         // mov [rbx + disp32], eax
+        self.emit(&[0x89, 0x83]); // mov [rbx + disp32], eax
         self.emit_i32((idx as i32) * 4);
     }
 
     fn emit_local_tee(&mut self, idx: u32) {
         self.emit_pop_to_eax();
-        self.emit(&[0x89, 0x83]);         // mov [rbx + disp32], eax
+        self.emit(&[0x89, 0x83]); // mov [rbx + disp32], eax
         self.emit_i32((idx as i32) * 4);
         self.emit_push_eax();
     }
 
     fn emit_i32_store(&mut self, off: u32) {
         // WASM stack order: [..., addr, value] (value on top).
-        self.emit_pop_to_ecx();           // value
-        self.emit_pop_to_eax();           // addr
+        self.emit_pop_to_ecx(); // value
+        self.emit_pop_to_eax(); // addr
         self.emit_bounds_check(off, 4);
         self.emit(&[
-            0x41, 0x89, 0x0C, 0x06,       // mov [r14 + rax], ecx
+            0x41, 0x89, 0x0C, 0x06, // mov [r14 + rax], ecx
         ]);
     }
 
     fn emit_select(&mut self) {
         // Stack shape: [..., val1, val2, cond]
-        self.emit_pop_to_eax();            // cond
-        self.emit(&[0x89, 0xC2]);          // mov edx, eax
-        self.emit_pop_to_ecx();            // val2
-        self.emit_pop_to_eax();            // val1
-        self.emit(&[0x85, 0xD2]);          // test edx, edx
-        self.emit(&[0x0F, 0x44, 0xC1]);    // cmovz eax, ecx
+        self.emit_pop_to_eax(); // cond
+        self.emit(&[0x89, 0xC2]); // mov edx, eax
+        self.emit_pop_to_ecx(); // val2
+        self.emit_pop_to_eax(); // val1
+        self.emit(&[0x85, 0xD2]); // test edx, edx
+        self.emit(&[0x0F, 0x44, 0xC1]); // cmovz eax, ecx
         self.emit_push_eax();
     }
 
     fn emit_memory_size(&mut self) {
         // memory.size returns current linear memory size in 64KiB pages.
         // mem_len lives in r15 (bytes).
-        self.emit(&[0x44, 0x89, 0xF8]);    // mov eax, r15d
-        self.emit(&[0xC1, 0xE8, 0x10]);    // shr eax, 16
+        self.emit(&[0x44, 0x89, 0xF8]); // mov eax, r15d
+        self.emit(&[0xC1, 0xE8, 0x10]); // shr eax, 16
         self.emit_push_eax();
     }
 
@@ -2735,44 +2804,44 @@ impl Emitter {
 
     fn emit_instr_fuel_check(&mut self) {
         self.emit(&[
-            0x48, 0x8B, 0x45, 0xD0,       // mov rax, [rbp-48]
-            0x83, 0x38, 0x00,             // cmp dword [rax], 0
+            0x48, 0x8B, 0x45, 0xD0, // mov rax, [rbp-48]
+            0x83, 0x38, 0x00, // cmp dword [rax], 0
         ]);
-        self.emit_trap_fuel_jump(0x84);    // je trap
-        self.emit(&[0xFF, 0x08]);          // dec dword [rax]
+        self.emit_trap_fuel_jump(0x84); // je trap
+        self.emit(&[0xFF, 0x08]); // dec dword [rax]
     }
 
     fn emit_mem_fuel_check(&mut self) {
         self.emit(&[
-            0x48, 0x8B, 0x45, 0xC8,       // mov rax, [rbp-56]
-            0x83, 0x38, 0x00,             // cmp dword [rax], 0
+            0x48, 0x8B, 0x45, 0xC8, // mov rax, [rbp-56]
+            0x83, 0x38, 0x00, // cmp dword [rax], 0
         ]);
-        self.emit_trap_fuel_jump(0x84);    // je trap
-        self.emit(&[0xFF, 0x08]);          // dec dword [rax]
+        self.emit_trap_fuel_jump(0x84); // je trap
+        self.emit(&[0xFF, 0x08]); // dec dword [rax]
     }
 
     fn emit_epilogue(&mut self) -> usize {
         let pos = self.code.len();
         self.emit(&[
-            0x4D, 0x8B, 0x55, 0x00,       // mov r10, [r13+0]
-            0x4D, 0x85, 0xD2,             // test r10, r10
-            0x74, 0x0C,                   // jz +12
-            0x49, 0xFF, 0xCA,             // dec r10
-            0x43, 0x8B, 0x04, 0x94,       // mov eax, [r12 + r10*4]
-            0x4D, 0x89, 0x55, 0x00,       // mov [r13+0], r10
-            0xEB, 0x02,                   // jmp +2
-            0x31, 0xC0,                   // xor eax, eax
+            0x4D, 0x8B, 0x55, 0x00, // mov r10, [r13+0]
+            0x4D, 0x85, 0xD2, // test r10, r10
+            0x74, 0x0C, // jz +12
+            0x49, 0xFF, 0xCA, // dec r10
+            0x43, 0x8B, 0x04, 0x94, // mov eax, [r12 + r10*4]
+            0x4D, 0x89, 0x55, 0x00, // mov [r13+0], r10
+            0xEB, 0x02, // jmp +2
+            0x31, 0xC0, // xor eax, eax
         ]);
         self.emit_cfi_check_return();
         self.emit(&[
-            0x48, 0x83, 0xC4, 0x20,       // add rsp, 0x20
-            0x41, 0x5F,                   // pop r15
-            0x41, 0x5E,                   // pop r14
-            0x41, 0x5D,                   // pop r13
-            0x41, 0x5C,                   // pop r12
-            0x5B,                         // pop rbx
-            0x5D,                         // pop rbp
-            0xC3,                         // ret
+            0x48, 0x83, 0xC4, 0x20, // add rsp, 0x20
+            0x41, 0x5F, // pop r15
+            0x41, 0x5E, // pop r14
+            0x41, 0x5D, // pop r13
+            0x41, 0x5C, // pop r12
+            0x5B, // pop rbx
+            0x5D, // pop rbp
+            0xC3, // ret
         ]);
         pos
     }
@@ -2780,20 +2849,20 @@ impl Emitter {
     fn emit_trap_stub(&mut self, code: i32, _check_cfi: bool) -> usize {
         let pos = self.code.len();
         self.emit(&[
-            0x48, 0x8B, 0x45, 0xC0,       // mov rax, [rbp-64]
-            0xC7, 0x00,                   // mov dword [rax], imm32
+            0x48, 0x8B, 0x45, 0xC0, // mov rax, [rbp-64]
+            0xC7, 0x00, // mov dword [rax], imm32
         ]);
         self.emit_i32(code);
         self.emit(&[
-            0x31, 0xC0,                   // xor eax, eax
-            0x48, 0x83, 0xC4, 0x20,       // add rsp, 0x20
-            0x41, 0x5F,                   // pop r15
-            0x41, 0x5E,                   // pop r14
-            0x41, 0x5D,                   // pop r13
-            0x41, 0x5C,                   // pop r12
-            0x5B,                         // pop rbx
-            0x5D,                         // pop rbp
-            0xC3,                         // ret
+            0x31, 0xC0, // xor eax, eax
+            0x48, 0x83, 0xC4, 0x20, // add rsp, 0x20
+            0x41, 0x5F, // pop r15
+            0x41, 0x5E, // pop r14
+            0x41, 0x5D, // pop r13
+            0x41, 0x5C, // pop r12
+            0x5B, // pop rbx
+            0x5D, // pop rbp
+            0xC3, // ret
         ]);
         pos
     }
@@ -2846,9 +2915,7 @@ impl Emitter {
             trap_pos: usize,
         ) -> Result<(), &'static str> {
             for &idx in jumps {
-                let end = idx
-                    .checked_add(4)
-                    .ok_or("Trap patch index overflow")?;
+                let end = idx.checked_add(4).ok_or("Trap patch index overflow")?;
                 if end > code.len() {
                     return Err("Trap patch index out of range");
                 }
@@ -2913,22 +2980,39 @@ fn read_sleb128_i32(bytes: &[u8], mut offset: usize) -> Option<(i32, usize)> {
     Some((result, count))
 }
 
-fn read_blocktype_width(bytes: &[u8], offset: usize) -> Option<(usize, JitBlockType)> {
+fn read_blocktype_width(
+    bytes: &[u8],
+    offset: usize,
+    type_sigs: &[JitTypeSignature],
+) -> Option<(usize, JitBlockType)> {
     if offset >= bytes.len() {
         return None;
     }
     let b = bytes[offset];
     if b == 0x40 {
-        return Some((1, JitBlockType::Empty));
+        return Some((1, JitBlockType::empty()));
     }
     if b == 0x7F {
-        return Some((1, JitBlockType::I32));
+        return Some((1, JitBlockType::i32_result()));
     }
     if b == 0x7E || b == 0x7D || b == 0x7C || b == 0x70 || b == 0x6F {
-        return Some((1, JitBlockType::Unsupported));
+        return Some((1, JitBlockType::unsupported()));
     }
-    let (_idx, n) = read_uleb128(bytes, offset)?;
-    Some((n, JitBlockType::Unsupported))
+    let (idx, n) = read_uleb128(bytes, offset)?;
+    let sig = type_sigs.get(idx as usize).copied()?;
+    if !sig.all_i32 {
+        return Some((n, JitBlockType::unsupported()));
+    }
+    let param_arity = i32::try_from(sig.param_count).ok()?;
+    let result_arity = i32::try_from(sig.result_count).ok()?;
+    Some((
+        n,
+        JitBlockType {
+            param_arity,
+            result_arity,
+            supported: true,
+        },
+    ))
 }
 
 // ============================================================================
@@ -3021,11 +3105,7 @@ fn verify_x86_subset(
         Ok(())
     }
 
-    fn check_rel32_target(
-        code: &[u8],
-        i: usize,
-        allowed: &[usize],
-    ) -> Result<(), &'static str> {
+    fn check_rel32_target(code: &[u8], i: usize, allowed: &[usize]) -> Result<(), &'static str> {
         let rel = read_u32(code, i + 2)? as i32;
         let base = (i + 6) as isize;
         let target = base.wrapping_add(rel as isize);
@@ -3387,7 +3467,10 @@ fn verify_x86_subset(
                         expect_disp8(
                             code,
                             i + 2,
-                            &[0x18, 0x1C, 0x20, 0x24, 0x28, 0x2C, 0xF8, 0xF4, 0xF0, 0xEC, 0xE8, 0xE4],
+                            &[
+                                0x18, 0x1C, 0x20, 0x24, 0x28, 0x2C, 0xF8, 0xF4, 0xF0, 0xEC, 0xE8,
+                                0xE4,
+                            ],
                         )?;
                         i += 3;
                     }
@@ -3671,7 +3754,6 @@ fn verify_x86_subset(
         }
 
         stack_advance(&mut stack_state, stack_tok)?;
-
     }
     Ok(())
 }
@@ -3696,28 +3778,76 @@ impl JitFunction {
         if recomputed_hashes != self.translation.block_hashes {
             return false;
         }
-        let recomputed_proof = match build_translation_proof(
-            &self.wasm_code,
-            &self.translation.records,
-            &self.code,
-        ) {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
+        let recomputed_proof =
+            match build_translation_proof(&self.wasm_code, &self.translation.records, &self.code) {
+                Ok(p) => p,
+                Err(_) => return false,
+            };
         if recomputed_proof != self.translation.proof {
             return false;
         }
         let exec_hash = hash_exec_code(self.exec.as_ptr(), self.exec.len);
         self.exec_hash == exec_hash && self.code_hash == hash_jit_code(&self.code)
     }
+
+    /// Compute a Bayesian translation-confidence score using `ExactRational` arithmetic
+    /// (PMA §7.2).  Avoids all IEEE-754 floating-point in ring-0.
+    ///
+    /// ## Probability model
+    ///
+    /// Let:
+    ///   A  = "translation is correct"
+    ///   B  = "all per-block and full-proof hashes match at runtime verify"
+    ///
+    ///   Prior P(A):          trace_count / (trace_count + 1)
+    ///   Likelihood P(B|A):   (trace_count - mem_trace_count + 1) / (trace_count + 2)
+    ///                        (memory ops are the riskiest instructions; fewer → higher)
+    ///   Normaliser P(B):     (min(trace_count, 127) + 1) / 128
+    ///
+    /// Returns a `Rational64` approximation of P(A|B).
+    /// Returns `Rational64::new(0, 1)` (zero confidence) if trace_count == 0.
+    pub fn bayesian_confidence(&self) -> crate::exact_rational::Rational64 {
+        use crate::exact_rational::Rational64;
+
+        let tc = self.translation.proof.trace_count as u64;
+        if tc == 0 {
+            return Rational64::new(0, 1);
+        }
+        let mc = self.translation.proof.mem_trace_count as u64;
+
+        // Prior P(A): more traces → tighter prior (closer to 1).
+        let prior = Rational64::new(tc, tc.saturating_add(1));
+
+        // P(B|A): fewer memory-ops relative to total → higher likelihood.
+        let safe_traces = tc.saturating_sub(mc);
+        let likelihood = Rational64::new(safe_traces.saturating_add(1), tc.saturating_add(2));
+
+        // Normaliser P(B): fixed-point, approaches 1 as tc grows.
+        let normaliser = Rational64::new(tc.min(127).saturating_add(1), 128);
+
+        Rational64::bayesian_update(prior, likelihood, normaliser)
+    }
+
+    /// Returns `true` if Bayesian confidence meets the minimum threshold (75%).
+    ///
+    /// Gate JIT execution behind this check for untrusted WASM modules.
+    pub fn confidence_acceptable(&self) -> bool {
+        let r = self.bayesian_confidence();
+        if r.d == 0 { return false; }
+        r.n.saturating_mul(100) / r.d >= JIT_CONFIDENCE_THRESHOLD_PCT
+    }
 }
+
+/// Minimum acceptable Bayesian translation confidence (percent, 0–100).
+/// Functions below this threshold should fall back to the interpreter.
+pub const JIT_CONFIDENCE_THRESHOLD_PCT: u64 = 75;
 
 pub fn formal_translation_self_check() -> Result<(), &'static str> {
     let samples: [(&[u8], usize); 5] = [
-        (&[0x41, 0x00, 0x0B], 0), // const 0; end
-        (&[0x41, 0x01, 0x41, 0x02, 0x6A, 0x0B], 0), // add
-        (&[0x20, 0x00, 0x21, 0x01, 0x20, 0x01, 0x0B], 2), // local get/set/get
-        (&[0x41, 0x00, 0x28, 0x00, 0x00, 0x0B], 0), // load
+        (&[0x41, 0x00, 0x0B], 0),                               // const 0; end
+        (&[0x41, 0x01, 0x41, 0x02, 0x6A, 0x0B], 0),             // add
+        (&[0x20, 0x00, 0x21, 0x01, 0x20, 0x01, 0x0B], 2),       // local get/set/get
+        (&[0x41, 0x00, 0x28, 0x00, 0x00, 0x0B], 0),             // load
         (&[0x41, 0x00, 0x41, 0x2A, 0x36, 0x00, 0x00, 0x0B], 0), // store
     ];
 

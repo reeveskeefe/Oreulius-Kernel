@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -42,10 +42,10 @@ extern "C" fn shell_task() -> ! {
     // CRITICAL: Enable interrupts NOW that task is safely running
     // This must be the FIRST operation to prevent race condition where
     // timer interrupt fires during trampoline execution before stack is ready
-    
+
     // Enhanced interrupt state management with verification
     crate::asm_bindings::enable_interrupts();
-    
+
     // Verify interrupts are actually enabled by reading EFLAGS IF bit
     #[cfg(target_arch = "x86")]
     {
@@ -59,21 +59,21 @@ extern "C" fn shell_task() -> ! {
             vga::print_str("[TASK] ERROR: Failed to enable interrupts!\n");
         }
     }
-    
+
     // Write marker to confirm we reached the task
     // unsafe {
     //     let vga = 0xB8000 as *mut u16;
     //     *vga = 0x0A40; // '@' green - task started!
     // }
-    
+
     // Unmask IRQs for keyboard and timer
     vga::print_str("[TASK] Unmasking IRQs...\n");
     crate::idt_asm::set_irq_masks(0xF8, 0x37);
-    
+
     // Enable interrupts for preemptive scheduling
     vga::print_str("[TASK] Enabling interrupts for scheduler...\n");
     crate::asm_bindings::enable_interrupts();
-    
+
     // Verify interrupt state after enabling
     let int_state = unsafe { crate::process_asm::get_interrupt_state() };
     if int_state != 0 {
@@ -81,9 +81,9 @@ extern "C" fn shell_task() -> ! {
     } else {
         vga::print_str("[TASK] WARNING: Interrupt state check failed\n");
     }
-    
+
     vga::print_str("[TASK] Interrupts enabled, starting shell...\n");
-    
+
     // Start the actual shell loop
     crate::shell_loop();
 }
@@ -95,13 +95,13 @@ extern "C" fn worker_task() -> ! {
         let vga = 0xB8000 as *mut u16;
         *(vga.add(1)) = 0x0B57; // 'W' cyan - worker started
     }
-    
+
     // Enable interrupts for this task too
     crate::asm_bindings::enable_interrupts();
-    
+
     // Log interrupt state for worker task
     crate::serial_println!("[WORKER] Interrupts enabled for background task");
-    
+
     loop {
         // Simple background task to demonstrate preemption
         for _ in 0..1_000_000 {
@@ -114,14 +114,21 @@ extern "C" fn worker_task() -> ! {
 #[no_mangle]
 extern "C" fn network_task() -> ! {
     crate::serial_println!("[NET] Network task started");
-    
+
     // Enable interrupts for network processing
     crate::asm_bindings::enable_interrupts();
-    
+
     // Verify interrupt delivery for network events
     let int_state = unsafe { crate::process_asm::get_interrupt_state() };
-    crate::serial_println!("[NET] Interrupt state: {}", if int_state != 0 { "ENABLED" } else { "DISABLED" });
-    
+    crate::serial_println!(
+        "[NET] Interrupt state: {}",
+        if int_state != 0 {
+            "ENABLED"
+        } else {
+            "DISABLED"
+        }
+    );
+
     crate::net_reactor::run();
 }
 
@@ -132,7 +139,7 @@ pub fn start() -> ! {
     crate::idt_asm::set_irq_masks(0xF8, 0x37);
 
     vga::print_str("[TASK] Getting init PID...\n");
-    
+
     // Init process is created in process::init(); reuse it for shell task.
     let init_pid = match process::current_pid() {
         Some(pid) => {
@@ -153,12 +160,12 @@ pub fn start() -> ! {
             pid
         }
     };
-    
+
     // Validate that init process exists before starting scheduler
     vga::print_str("[TASK] Validating init process (PID=");
     crate::commands::print_u32(init_pid.0);
     vga::print_str(")...\n");
-    
+
     let pm = process::process_manager();
     if let Some(init_proc) = pm.get(init_pid) {
         vga::print_str("[TASK] Init process validated: name='");
@@ -175,7 +182,7 @@ pub fn start() -> ! {
     } else {
         vga::print_str("[TASK] WARNING: Init process not found in process table!\n");
     }
-    
+
     vga::print_str("[TASK] Getting init process...\n");
     vga::print_str("[TASK] Adding shell task to scheduler...\n");
     let shell_pid = {
@@ -224,10 +231,10 @@ pub fn start() -> ! {
     //     .lock()
     //     .add_kernel_thread(worker_task, ProcessPriority::Normal);
     // vga::print_str("[TASK] Worker task registered\n");
-    
+
     // Note: We now enable interrupts IN the tasks themselves, not before scheduler
     vga::print_str("[TASK] Ready to start scheduler (interrupts will be enabled in tasks)...\n");
-    
+
     vga::print_str("[TASK] Entering scheduler...\n");
     crate::quantum_scheduler::QuantumScheduler::start_scheduling();
 }

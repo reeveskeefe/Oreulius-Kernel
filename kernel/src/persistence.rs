@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -251,12 +251,10 @@ const SNAPSHOT_DISK_SLOT_TEMPORAL: u16 = 2;
 const SNAPSHOT_DISK_SECTOR_BYTES: usize = 512;
 const SNAPSHOT_FILE_PATH_GENERIC: &str = "/.oreulia_snapshot_generic";
 const SNAPSHOT_FILE_PATH_TEMPORAL: &str = "/.oreulia_snapshot_temporal";
-const SNAPSHOT_IO_SCRATCH_BYTES: usize = ((SNAPSHOT_DISK_HEADER_BYTES
-    + MAX_SNAPSHOT_SIZE
-    + SNAPSHOT_DISK_SECTOR_BYTES
-    - 1)
-    / SNAPSHOT_DISK_SECTOR_BYTES)
-    * SNAPSHOT_DISK_SECTOR_BYTES;
+const SNAPSHOT_IO_SCRATCH_BYTES: usize =
+    ((SNAPSHOT_DISK_HEADER_BYTES + MAX_SNAPSHOT_SIZE + SNAPSHOT_DISK_SECTOR_BYTES - 1)
+        / SNAPSHOT_DISK_SECTOR_BYTES)
+        * SNAPSHOT_DISK_SECTOR_BYTES;
 
 const SNAPSHOT_V2_FLAG_SEALED: u32 = 1 << 0;
 const SNAPSHOT_V2_FLAG_ENCRYPTED: u32 = 1 << 1;
@@ -303,7 +301,9 @@ fn trace_snapshot_crypto(label: &str, slot_id: u16, ptr: *const u8, len: usize, 
     let (jit_start, jit_end) = crate::memory::jit_arena_range();
     let in_heap = addr_in_range(addr, len, heap_start, heap_end);
     let in_jit = addr_in_range(addr, len, jit_start, jit_end);
-    let suspicious = len > MAX_SNAPSHOT_SIZE || addr_end == 0 || span_len > MAX_SNAPSHOT_SIZE.saturating_add(SNAPSHOT_DISK_HEADER_BYTES);
+    let suspicious = len > MAX_SNAPSHOT_SIZE
+        || addr_end == 0
+        || span_len > MAX_SNAPSHOT_SIZE.saturating_add(SNAPSHOT_DISK_HEADER_BYTES);
     if suspicious || seq <= 64 {
         crate::serial::_print(format_args!(
             "[PERSIST-DBG] aes seq={} op={} slot={} ptr=0x{:08x} len={} span={} heap={} jit={}\n",
@@ -557,7 +557,11 @@ fn derive_snapshot_seal_keys(slot_id: u16) -> ([u8; 16], [u8; 32]) {
     (enc_key, mac_key)
 }
 
-fn compute_snapshot_mac_v2(mac_key: &[u8; 32], header_bytes: &[u8; SNAPSHOT_DISK_HEADER_BYTES], payload: &[u8]) -> [u8; 16] {
+fn compute_snapshot_mac_v2(
+    mac_key: &[u8; 32],
+    header_bytes: &[u8; SNAPSHOT_DISK_HEADER_BYTES],
+    payload: &[u8],
+) -> [u8; 16] {
     let mut h = crate::crypto::HmacSha256::new(mac_key);
     h.update(header_bytes);
     h.update(payload);
@@ -580,7 +584,8 @@ impl StoreRights {
     pub const READ_LOG: u32 = 1 << 1;
     pub const WRITE_SNAPSHOT: u32 = 1 << 2;
     pub const READ_SNAPSHOT: u32 = 1 << 3;
-    pub const ALL: u32 = Self::APPEND_LOG | Self::READ_LOG | Self::WRITE_SNAPSHOT | Self::READ_SNAPSHOT;
+    pub const ALL: u32 =
+        Self::APPEND_LOG | Self::READ_LOG | Self::WRITE_SNAPSHOT | Self::READ_SNAPSHOT;
 
     pub const fn new(bits: u32) -> Self {
         StoreRights { bits }
@@ -636,7 +641,11 @@ impl PersistenceService {
     }
 
     /// Append a record to the log
-    pub fn append_log(&mut self, capability: &StoreCapability, record: LogRecord) -> Result<usize, PersistenceError> {
+    pub fn append_log(
+        &mut self,
+        capability: &StoreCapability,
+        record: LogRecord,
+    ) -> Result<usize, PersistenceError> {
         if !capability.rights.has(StoreRights::APPEND_LOG) {
             return Err(PersistenceError::PermissionDenied);
         }
@@ -645,7 +654,12 @@ impl PersistenceService {
     }
 
     /// Read log records
-    pub fn read_log(&self, capability: &StoreCapability, from_offset: usize, max_records: usize) -> Result<impl Iterator<Item = &LogRecord>, PersistenceError> {
+    pub fn read_log(
+        &self,
+        capability: &StoreCapability,
+        from_offset: usize,
+        max_records: usize,
+    ) -> Result<impl Iterator<Item = &LogRecord>, PersistenceError> {
         if !capability.rights.has(StoreRights::READ_LOG) {
             return Err(PersistenceError::PermissionDenied);
         }
@@ -654,7 +668,12 @@ impl PersistenceService {
     }
 
     /// Write a snapshot
-    pub fn write_snapshot(&mut self, capability: &StoreCapability, data: &[u8], last_offset: usize) -> Result<(), PersistenceError> {
+    pub fn write_snapshot(
+        &mut self,
+        capability: &StoreCapability,
+        data: &[u8],
+        last_offset: usize,
+    ) -> Result<(), PersistenceError> {
         if !capability.rights.has(StoreRights::WRITE_SNAPSHOT) {
             return Err(PersistenceError::PermissionDenied);
         }
@@ -665,7 +684,10 @@ impl PersistenceService {
     }
 
     /// Read the current snapshot
-    pub fn read_snapshot(&self, capability: &StoreCapability) -> Result<(&[u8], usize), PersistenceError> {
+    pub fn read_snapshot(
+        &self,
+        capability: &StoreCapability,
+    ) -> Result<(&[u8], usize), PersistenceError> {
         if !capability.rights.has(StoreRights::READ_SNAPSHOT) {
             return Err(PersistenceError::PermissionDenied);
         }
@@ -684,7 +706,8 @@ impl PersistenceService {
             return Err(PersistenceError::PermissionDenied);
         }
         self.temporal_snapshot.write(data, last_offset)?;
-        let _ = Self::write_snapshot_to_durable(SNAPSHOT_DISK_SLOT_TEMPORAL, &self.temporal_snapshot);
+        let _ =
+            Self::write_snapshot_to_durable(SNAPSHOT_DISK_SLOT_TEMPORAL, &self.temporal_snapshot);
         Ok(())
     }
 
@@ -704,7 +727,10 @@ impl PersistenceService {
         (self.log.count(), MAX_LOG_RECORDS)
     }
 
-    fn write_snapshot_to_durable(slot_id: u16, snapshot: &Snapshot) -> Result<(), PersistenceError> {
+    fn write_snapshot_to_durable(
+        slot_id: u16,
+        snapshot: &Snapshot,
+    ) -> Result<(), PersistenceError> {
         match Self::write_snapshot_to_disk(slot_id, snapshot) {
             Ok(()) => Ok(()),
             Err(PersistenceError::BackendUnavailable) => {
@@ -791,7 +817,13 @@ impl PersistenceService {
             {
                 let image_len = image.len();
                 let payload = &mut image[off..off + data_len];
-                trace_snapshot_crypto("disk-write-enc", slot_id, payload.as_ptr(), payload.len(), image_len);
+                trace_snapshot_crypto(
+                    "disk-write-enc",
+                    slot_id,
+                    payload.as_ptr(),
+                    payload.len(),
+                    image_len,
+                );
                 crate::crypto::aes128_ctr_xor(&enc_key, nonce, payload);
             }
             let mac = compute_snapshot_mac_v2(&mac_key, &header_bytes, &image[off..off + data_len]);
@@ -814,10 +846,7 @@ impl PersistenceService {
         Ok(())
     }
 
-    fn read_snapshot_from_disk(
-        slot_id: u16,
-        out: &mut Snapshot,
-    ) -> Result<bool, PersistenceError> {
+    fn read_snapshot_from_disk(slot_id: u16, out: &mut Snapshot) -> Result<bool, PersistenceError> {
         if !crate::virtio_blk::is_present() {
             return Err(PersistenceError::BackendUnavailable);
         }
@@ -954,7 +983,13 @@ impl PersistenceService {
                 let (enc_key, _) = derive_snapshot_seal_keys(slot_id);
                 {
                     let payload = &mut out.data[..data_len];
-                    trace_snapshot_crypto("disk-read-dec", slot_id, payload.as_ptr(), payload.len(), image.len());
+                    trace_snapshot_crypto(
+                        "disk-read-dec",
+                        slot_id,
+                        payload.as_ptr(),
+                        payload.len(),
+                        image.len(),
+                    );
                     crate::crypto::aes128_ctr_xor(&enc_key, header.nonce, payload);
                 }
             }
@@ -1007,7 +1042,13 @@ impl PersistenceService {
             {
                 let image_len = image.len();
                 let payload = &mut image[off..off + data_len];
-                trace_snapshot_crypto("file-write-enc", slot_id, payload.as_ptr(), payload.len(), image_len);
+                trace_snapshot_crypto(
+                    "file-write-enc",
+                    slot_id,
+                    payload.as_ptr(),
+                    payload.len(),
+                    image_len,
+                );
                 crate::crypto::aes128_ctr_xor(&enc_key, nonce, payload);
             }
             let mac = compute_snapshot_mac_v2(&mac_key, &header_bytes, &image[off..off + data_len]);
@@ -1038,10 +1079,7 @@ impl PersistenceService {
         }
     }
 
-    fn read_snapshot_from_file(
-        slot_id: u16,
-        out: &mut Snapshot,
-    ) -> Result<bool, PersistenceError> {
+    fn read_snapshot_from_file(slot_id: u16, out: &mut Snapshot) -> Result<bool, PersistenceError> {
         let path = match Self::snapshot_file_path(slot_id) {
             Some(path) => path,
             None => return Ok(false),
@@ -1150,7 +1188,13 @@ impl PersistenceService {
                 let (enc_key, _) = derive_snapshot_seal_keys(slot_id);
                 {
                     let payload = &mut out.data[..data_len];
-                    trace_snapshot_crypto("file-read-dec", slot_id, payload.as_ptr(), payload.len(), image.len());
+                    trace_snapshot_crypto(
+                        "file-read-dec",
+                        slot_id,
+                        payload.as_ptr(),
+                        payload.len(),
+                        image.len(),
+                    );
                     crate::crypto::aes128_ctr_xor(&enc_key, header.nonce, payload);
                 }
             }
@@ -1180,7 +1224,8 @@ impl PersistenceService {
             return;
         }
         if self.snapshot.data_len == 0 {
-            let _ = Self::read_snapshot_from_durable(SNAPSHOT_DISK_SLOT_GENERIC, &mut self.snapshot);
+            let _ =
+                Self::read_snapshot_from_durable(SNAPSHOT_DISK_SLOT_GENERIC, &mut self.snapshot);
         }
         if self.temporal_snapshot.data_len == 0 {
             let _ = Self::read_snapshot_from_durable(

@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,16 +22,16 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
-use crate::paging::{self, PAGE_SIZE};
 use crate::gdt;
+use crate::paging::{self, PAGE_SIZE};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 const USER_CODE_ADDR: usize = 0x0040_0000;
@@ -40,8 +40,8 @@ const USER_STACK_ADDR: usize = 0x0080_0000;
 // mov eax, 3 (GetPid); int 0x80; ud2
 const USER_STUB: [u8; 9] = [
     0xB8, 0x03, 0x00, 0x00, 0x00, // mov eax, 3
-    0xCD, 0x80,                   // int 0x80
-    0x0F, 0x0B,                   // ud2
+    0xCD, 0x80, // int 0x80
+    0x0F, 0x0B, // ud2
 ];
 
 static CURRENT_WASM_MODULE: AtomicU32 = AtomicU32::new(0);

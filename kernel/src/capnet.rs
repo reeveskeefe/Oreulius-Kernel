@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -43,11 +43,11 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use crate::ipc::ProcessId;
-use crate::security::{self, AuditEntry, SecurityEvent};
-use spin::Mutex;
 use crate::persistence;
+use crate::security::{self, AuditEntry, SecurityEvent};
+use alloc::vec::Vec;
+use spin::Mutex;
 
 pub const CAPNET_TOKEN_MAGIC: u32 = 0x544E_5043; // "CPNT" (little-endian storage)
 pub const CAPNET_TOKEN_VERSION_V1: u8 = 1;
@@ -385,8 +385,9 @@ static CAPNET_PEERS: Mutex<[PeerSession; CAPNET_MAX_PEERS]> =
     Mutex::new([PeerSession::empty(); CAPNET_MAX_PEERS]);
 static CAPNET_DELEGATION_RECORDS: Mutex<[DelegationRecord; CAPNET_MAX_DELEGATION_RECORDS]> =
     Mutex::new([DelegationRecord::empty(); CAPNET_MAX_DELEGATION_RECORDS]);
-static CAPNET_REVOCATION_TOMBSTONES: Mutex<[RevocationTombstone; CAPNET_MAX_REVOCATION_TOMBSTONES]> =
-    Mutex::new([RevocationTombstone::empty(); CAPNET_MAX_REVOCATION_TOMBSTONES]);
+static CAPNET_REVOCATION_TOMBSTONES: Mutex<
+    [RevocationTombstone; CAPNET_MAX_REVOCATION_TOMBSTONES],
+> = Mutex::new([RevocationTombstone::empty(); CAPNET_MAX_REVOCATION_TOMBSTONES]);
 static CAPNET_NEXT_REVOCATION_EPOCH: Mutex<u32> = Mutex::new(1);
 
 fn capnet_append_u16(buf: &mut Vec<u8>, value: u16) {
@@ -584,8 +585,8 @@ pub fn temporal_apply_state_payload(payload: &[u8]) -> Result<(), &'static str> 
                 .ok_or("temporal capnet replay bitmap missing")?;
             let ctrl_rx_high_seq = capnet_read_u32_at(payload, offset + 60)
                 .ok_or("temporal capnet ctrl seq missing")?;
-            let ctrl_tx_next_seq = capnet_read_u32_at(payload, offset + 64)
-                .ok_or("temporal capnet tx seq missing")?;
+            let ctrl_tx_next_seq =
+                capnet_read_u32_at(payload, offset + 64).ok_or("temporal capnet tx seq missing")?;
             let ctrl_rx_bitmap = capnet_read_u64_at(payload, offset + 68)
                 .ok_or("temporal capnet ctrl bitmap missing")?;
             let last_seen_epoch = capnet_read_u64_at(payload, offset + 76)
@@ -628,12 +629,12 @@ pub fn temporal_apply_state_payload(payload: &[u8]) -> Result<(), &'static str> 
                 .ok_or("temporal capnet max bytes missing")?;
             let revoked_epoch = capnet_read_u32_at(payload, offset + 20)
                 .ok_or("temporal capnet revoked epoch missing")?;
-            let token_id =
-                capnet_read_u64_at(payload, offset + 24).ok_or("temporal capnet token id missing")?;
-            let issuer_device_id = capnet_read_u64_at(payload, offset + 32)
-                .ok_or("temporal capnet issuer missing")?;
-            let parent_token_hash = capnet_read_u64_at(payload, offset + 40)
-                .ok_or("temporal capnet parent missing")?;
+            let token_id = capnet_read_u64_at(payload, offset + 24)
+                .ok_or("temporal capnet token id missing")?;
+            let issuer_device_id =
+                capnet_read_u64_at(payload, offset + 32).ok_or("temporal capnet issuer missing")?;
+            let parent_token_hash =
+                capnet_read_u64_at(payload, offset + 40).ok_or("temporal capnet parent missing")?;
             let object_id =
                 capnet_read_u64_at(payload, offset + 48).ok_or("temporal capnet object missing")?;
             let not_before = capnet_read_u64_at(payload, offset + 56)
@@ -669,8 +670,8 @@ pub fn temporal_apply_state_payload(payload: &[u8]) -> Result<(), &'static str> 
         let mut i = 0usize;
         while i < tombstones.len() {
             let active = payload[offset] != 0;
-            let token_id =
-                capnet_read_u64_at(payload, offset + 4).ok_or("temporal capnet tomb token missing")?;
+            let token_id = capnet_read_u64_at(payload, offset + 4)
+                .ok_or("temporal capnet tomb token missing")?;
             let issuer_device_id = capnet_read_u64_at(payload, offset + 12)
                 .ok_or("temporal capnet tomb issuer missing")?;
             let revocation_epoch = capnet_read_u32_at(payload, offset + 20)
@@ -695,7 +696,11 @@ pub fn temporal_apply_state_payload(payload: &[u8]) -> Result<(), &'static str> 
 
     {
         let mut local = CAPNET_LOCAL_DEVICE_ID.lock();
-        *local = if local_device_id == 0 { 1 } else { local_device_id };
+        *local = if local_device_id == 0 {
+            1
+        } else {
+            local_device_id
+        };
     }
     {
         let mut next = CAPNET_NEXT_REVOCATION_EPOCH.lock();
@@ -774,7 +779,9 @@ impl CapNetError {
             CapNetError::DelegationRightsEscalation => "CapNet delegation rights escalation",
             CapNetError::DelegationTypeMismatch => "CapNet delegation type mismatch",
             CapNetError::DelegationObjectMismatch => "CapNet delegation object mismatch",
-            CapNetError::DelegationTemporalWindowViolation => "CapNet delegation temporal window violation",
+            CapNetError::DelegationTemporalWindowViolation => {
+                "CapNet delegation temporal window violation"
+            }
             CapNetError::DelegationConstraintViolation => "CapNet delegation constraint violation",
             CapNetError::JournalDecodeFailed => "CapNet revocation journal decode failed",
         }
@@ -875,10 +882,14 @@ impl CapabilityTokenV1 {
         if self.delegation_depth > CAPNET_MAX_DELEGATION_DEPTH {
             return Err(CapNetError::InvalidDelegationDepth);
         }
-        if (self.constraints_flags & CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE) != 0 && self.max_uses == 0 {
+        if (self.constraints_flags & CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE) != 0
+            && self.max_uses == 0
+        {
             return Err(CapNetError::InvalidUseBudget);
         }
-        if (self.constraints_flags & CAPNET_CONSTRAINT_REQUIRE_BYTE_QUOTA) != 0 && self.max_bytes == 0 {
+        if (self.constraints_flags & CAPNET_CONSTRAINT_REQUIRE_BYTE_QUOTA) != 0
+            && self.max_bytes == 0
+        {
             return Err(CapNetError::InvalidByteBudget);
         }
         Ok(())
@@ -995,9 +1006,7 @@ impl CapabilityTokenV1 {
 }
 
 fn audit_capnet(event: SecurityEvent, context: u64) {
-    security::security().log_event(
-        AuditEntry::new(event, ProcessId(0), 0).with_context(context),
-    );
+    security::security().log_event(AuditEntry::new(event, ProcessId(0), 0).with_context(context));
 }
 
 fn control_mac_input(
@@ -1034,7 +1043,9 @@ fn compute_control_mac(k0: u64, k1: u64, frame: &CapNetControlFrame) -> Result<u
     Ok(security::security().cap_token_sign_with_key(k0, k1, &input[..len]))
 }
 
-fn encode_control_frame(frame: &CapNetControlFrame) -> Result<([u8; CAPNET_CTRL_MAX_FRAME_LEN], usize), CapNetError> {
+fn encode_control_frame(
+    frame: &CapNetControlFrame,
+) -> Result<([u8; CAPNET_CTRL_MAX_FRAME_LEN], usize), CapNetError> {
     let payload_len = frame.payload_len as usize;
     if payload_len > CAPNET_CTRL_MAX_PAYLOAD {
         return Err(CapNetError::PayloadTooLarge);
@@ -1076,7 +1087,8 @@ pub fn decode_control_frame(bytes: &[u8]) -> Result<CapNetControlFrame, CapNetEr
         return Err(CapNetError::InvalidControlFrame);
     }
     let msg_raw = read_u8(bytes, &mut offset)?;
-    let msg_type = CapNetControlType::from_u8(msg_raw).ok_or(CapNetError::UnsupportedControlType)?;
+    let msg_type =
+        CapNetControlType::from_u8(msg_raw).ok_or(CapNetError::UnsupportedControlType)?;
     let flags = read_u8(bytes, &mut offset)?;
     let _reserved = read_u8(bytes, &mut offset)?;
     let seq = read_u32(bytes, &mut offset)?;
@@ -1203,11 +1215,17 @@ fn build_control_frame_for_peer(
     Ok(out)
 }
 
-pub fn build_hello_frame(peer_device_id: u64, ack: u32) -> Result<EncodedControlFrame, CapNetError> {
+pub fn build_hello_frame(
+    peer_device_id: u64,
+    ack: u32,
+) -> Result<EncodedControlFrame, CapNetError> {
     build_control_frame_for_peer(peer_device_id, CapNetControlType::Hello, 0, ack, 0, &[])
 }
 
-pub fn build_attest_frame(peer_device_id: u64, ack: u32) -> Result<EncodedControlFrame, CapNetError> {
+pub fn build_attest_frame(
+    peer_device_id: u64,
+    ack: u32,
+) -> Result<EncodedControlFrame, CapNetError> {
     build_control_frame_for_peer(peer_device_id, CapNetControlType::Attest, 0, ack, 0, &[])
 }
 
@@ -1216,8 +1234,19 @@ pub fn build_heartbeat_frame(
     ack: u32,
     ack_only: bool,
 ) -> Result<EncodedControlFrame, CapNetError> {
-    let flags = if ack_only { CAPNET_CTRL_FLAG_ACK_ONLY } else { 0 };
-    build_control_frame_for_peer(peer_device_id, CapNetControlType::Heartbeat, flags, ack, 0, &[])
+    let flags = if ack_only {
+        CAPNET_CTRL_FLAG_ACK_ONLY
+    } else {
+        0
+    };
+    build_control_frame_for_peer(
+        peer_device_id,
+        CapNetControlType::Heartbeat,
+        flags,
+        ack,
+        0,
+        &[],
+    )
 }
 
 pub fn build_token_offer_frame(
@@ -1299,7 +1328,10 @@ fn verify_delegation_chain(token: &CapabilityTokenV1, now_epoch: u64) -> Result<
     while i < records.len() {
         let rec = records[i];
         // Section 8 Algebraic Anti-loop: Duplicate tokens mapped sequentially mathematically block permission loops
-        if rec.active && rec.token_id == token.token_id() && rec.issuer_device_id == token.issuer_device_id {
+        if rec.active
+            && rec.token_id == token.token_id()
+            && rec.issuer_device_id == token.issuer_device_id
+        {
             return Err(CapNetError::DelegationConstraintViolation);
         }
         if rec.active
@@ -1365,9 +1397,7 @@ fn record_accepted_token(token: &CapabilityTokenV1, now_epoch: u64) {
     let mut i = 0usize;
     while i < records.len() {
         let rec = records[i];
-        if rec.active
-            && rec.token_id == token_id
-            && rec.issuer_device_id == token.issuer_device_id
+        if rec.active && rec.token_id == token_id && rec.issuer_device_id == token.issuer_device_id
         {
             existing_idx = Some(i);
             break;
@@ -1402,12 +1432,7 @@ fn record_accepted_token(token: &CapabilityTokenV1, now_epoch: u64) {
     };
 }
 
-fn put_tombstone(
-    token_id: u64,
-    issuer_device_id: u64,
-    revocation_epoch: u32,
-    revoked_at: u64,
-) {
+fn put_tombstone(token_id: u64, issuer_device_id: u64, revocation_epoch: u32, revoked_at: u64) {
     let mut tombstones = CAPNET_REVOCATION_TOMBSTONES.lock();
     let mut existing_idx = None;
     let mut free_idx = None;
@@ -1526,11 +1551,7 @@ fn rebuild_revocation_journal() {
     *next = max_epoch.saturating_add(1).max(1);
 }
 
-fn apply_token_revocation(
-    issuer_device_id: u64,
-    token_id: u64,
-    now_epoch: u64,
-) -> u32 {
+fn apply_token_revocation(issuer_device_id: u64, token_id: u64, now_epoch: u64) -> u32 {
     let revocation_epoch = {
         let mut next = CAPNET_NEXT_REVOCATION_EPOCH.lock();
         let epoch = (*next).max(1);
@@ -1604,12 +1625,12 @@ pub fn process_incoming_control_payload(
     now_epoch: u64,
 ) -> Result<ControlRxResult, CapNetError> {
     let frame = decode_control_frame(bytes)?;
-    
+
     // Telemetry Exception:
     // If the Telemetry daemon asserts an anomalous mathematical state transition,
     // it signals heavily via out-of-band control loop.
     if frame.msg_type == CapNetControlType::TokenRevoke && frame.token_id == 0xDEADBEEF {
-        // Pseudo-math-degradation hook: This is where the CTMC anomaly hits the kernel 
+        // Pseudo-math-degradation hook: This is where the CTMC anomaly hits the kernel
         // to immediately degrade an active capability constraint table.
         // We will assume token_id holds the payload or target device.
         let mut local_peers = CAPNET_PEERS.lock();
@@ -1618,13 +1639,13 @@ pub fn process_incoming_control_payload(
             // Hard degradation of continuous capability limits (Drop trust entirely)
             session.trust = PeerTrustPolicy::Disabled;
             session.active = false;
-            
+
             // Log mathematically verified tombstone
             put_tombstone(
-                frame.token_id, 
-                frame.issuer_device_id, 
-                CAPNET_NEXT_REVOCATION_EPOCH.lock().clone(), 
-                now_epoch
+                frame.token_id,
+                frame.issuer_device_id,
+                CAPNET_NEXT_REVOCATION_EPOCH.lock().clone(),
+                now_epoch,
             );
         }
     }
@@ -1635,7 +1656,8 @@ pub fn process_incoming_control_payload(
         return Err(CapNetError::UnknownPeer);
     }
     let mut peers = CAPNET_PEERS.lock();
-    let idx = find_peer_index_mut(&mut peers, frame.issuer_device_id).ok_or(CapNetError::UnknownPeer)?;
+    let idx =
+        find_peer_index_mut(&mut peers, frame.issuer_device_id).ok_or(CapNetError::UnknownPeer)?;
     let peer = &mut peers[idx];
     if peer.key_epoch == 0 || frame.key_epoch != peer.key_epoch {
         audit_capnet(SecurityEvent::InvalidCapability, frame.issuer_device_id);
@@ -1806,7 +1828,10 @@ pub fn establish_peer_session(
     let idx = find_peer_index_mut(&mut peers, peer_device_id).ok_or(CapNetError::UnknownPeer)?;
     let peer = &mut peers[idx];
 
-    if peer.measurement_hash != 0 && measurement_hash != 0 && peer.measurement_hash != measurement_hash {
+    if peer.measurement_hash != 0
+        && measurement_hash != 0
+        && peer.measurement_hash != measurement_hash
+    {
         if peer.trust == PeerTrustPolicy::Enforce {
             return Err(CapNetError::MeasurementMismatch);
         }
@@ -1867,10 +1892,7 @@ pub fn install_peer_session_key(
     Ok(())
 }
 
-pub fn verify_incoming_token(
-    token: &CapabilityTokenV1,
-    now_epoch: u64,
-) -> Result<(), CapNetError> {
+pub fn verify_incoming_token(token: &CapabilityTokenV1, now_epoch: u64) -> Result<(), CapNetError> {
     token.validate_semantics()?;
     if !token.is_temporally_valid(now_epoch) {
         return Err(CapNetError::TokenExpired);
@@ -1882,7 +1904,8 @@ pub fn verify_incoming_token(
     }
 
     let mut peers = CAPNET_PEERS.lock();
-    let idx = find_peer_index_mut(&mut peers, token.issuer_device_id).ok_or(CapNetError::UnknownPeer)?;
+    let idx =
+        find_peer_index_mut(&mut peers, token.issuer_device_id).ok_or(CapNetError::UnknownPeer)?;
     let peer = &mut peers[idx];
     if peer.key_epoch == 0 {
         return Err(CapNetError::SessionNotEstablished);
@@ -2200,7 +2223,9 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
                 continue;
             }
         };
-        if let Err(e) = process_incoming_control_payload(&replay.bytes[..replay.len], 2048 + i as u64) {
+        if let Err(e) =
+            process_incoming_control_payload(&replay.bytes[..replay.len], 2048 + i as u64)
+        {
             record_fuzz_failure(
                 &mut stats,
                 i,
@@ -2356,7 +2381,9 @@ pub fn capnet_fuzz_regression_default(
         let stats = capnet_fuzz(iterations_per_seed, seed)?;
         out.total_failures = out.total_failures.saturating_add(stats.failures);
         out.total_valid_path_ok = out.total_valid_path_ok.saturating_add(stats.valid_path_ok);
-        out.total_replay_rejects = out.total_replay_rejects.saturating_add(stats.replay_rejects);
+        out.total_replay_rejects = out
+            .total_replay_rejects
+            .saturating_add(stats.replay_rejects);
         out.total_constraint_rejects = out
             .total_constraint_rejects
             .saturating_add(stats.constraint_rejects);
@@ -2505,7 +2532,8 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
 
     install_peer_session_key(local, 4, k0, k1, 0).map_err(|e| e.as_str())?;
     let replay = build_heartbeat_frame(local, 0, false).map_err(|e| e.as_str())?;
-    process_incoming_control_payload(&replay.bytes[..replay.len], 10_003).map_err(|e| e.as_str())?;
+    process_incoming_control_payload(&replay.bytes[..replay.len], 10_003)
+        .map_err(|e| e.as_str())?;
     match process_incoming_control_payload(&replay.bytes[..replay.len], 10_004) {
         Err(CapNetError::ControlSequenceReplay) => {}
         Err(e) => return Err(e.as_str()),
@@ -2674,8 +2702,8 @@ fn read_u64(buf: &[u8], offset: &mut usize) -> Result<u64, CapNetError> {
     ]))
 }
 
-/// CapNet Offline Certificate 
-/// Extracted securely during compilation via `build.rs` Lanczos analysis 
+/// CapNet Offline Certificate
+/// Extracted securely during compilation via `build.rs` Lanczos analysis
 /// validating strict graph conductance properties.
 pub mod offline_certificate {
     include!(concat!(env!("OUT_DIR"), "/spectral_certificate.rs"));

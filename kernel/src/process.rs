@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -43,9 +43,9 @@
 
 #![allow(dead_code)]
 
+use crate::process_platform::{self, ChannelCapability};
 use core::fmt;
 use spin::Mutex;
-use crate::process_platform::{self, ChannelCapability};
 
 /// Maximum number of processes
 pub const MAX_PROCESSES: usize = 64;
@@ -118,10 +118,7 @@ pub enum CapabilityVariant {
     /// Channel capability for IPC
     Channel(ChannelCapability),
     /// Filesystem capability (from fs module)
-    Filesystem {
-        cap_id: u32,
-        rights: u32,
-    },
+    Filesystem { cap_id: u32, rights: u32 },
     /// Generic capability
     Generic {
         cap_id: u32,
@@ -418,11 +415,11 @@ impl ProcessTable {
 
     /// Get a process by PID
     pub fn get(&self, pid: Pid) -> Option<&Process> {
-        self.processes.iter().find_map(|p| {
-            p.as_ref().filter(|proc| proc.pid == pid)
-        })
+        self.processes
+            .iter()
+            .find_map(|p| p.as_ref().filter(|proc| proc.pid == pid))
     }
-    
+
     /// Get the page directory physical address for a process
     pub fn get_page_dir(&self, pid: Pid) -> Option<u32> {
         self.get(pid).map(|p| p.page_dir_phys)
@@ -440,9 +437,9 @@ impl ProcessTable {
 
     /// Get a mutable process by PID
     pub fn get_mut(&mut self, pid: Pid) -> Option<&mut Process> {
-        self.processes.iter_mut().find_map(|p| {
-            p.as_mut().filter(|proc| proc.pid == pid)
-        })
+        self.processes
+            .iter_mut()
+            .find_map(|p| p.as_mut().filter(|proc| proc.pid == pid))
     }
 
     /// Terminate a process
@@ -468,14 +465,14 @@ impl ProcessTable {
     pub fn list(&self) -> ([(Pid, [u8; 32], ProcessState, usize); MAX_PROCESSES], usize) {
         let mut result = [(Pid(0), [0u8; 32], ProcessState::Terminated, 0); MAX_PROCESSES];
         let mut count = 0;
-        
+
         for proc in self.processes.iter().filter_map(|p| p.as_ref()) {
             if count < MAX_PROCESSES {
                 result[count] = (proc.pid, proc.name, proc.state, proc.capabilities.count());
                 count += 1;
             }
         }
-        
+
         (result, count)
     }
 
@@ -605,12 +602,12 @@ impl ProcessManager {
     pub fn current(&self) -> Option<Pid> {
         self.scheduler.lock().current()
     }
-    
+
     /// Helper to access page directory (needs to be public for paging module)
     pub fn get_process_page_dir(&self, pid: Pid) -> Option<u32> {
         self.table.lock().get_page_dir(pid)
     }
-    
+
     /// Helper to set page directory
     pub fn set_process_page_dir(&self, pid: Pid, pd_phys: u32) -> Result<(), ProcessError> {
         self.table.lock().set_page_dir(pid, pd_phys)
@@ -646,7 +643,8 @@ impl ProcessManager {
     pub fn get_capability(&self, pid: Pid, slot: u32) -> Result<CapabilityVariant, ProcessError> {
         let table = self.table.lock();
         let proc = table.get(pid).ok_or(ProcessError::ProcessNotFound)?;
-        proc.capabilities.get(slot)
+        proc.capabilities
+            .get(slot)
             .cloned()
             .ok_or(ProcessError::InvalidCapSlot)
     }
@@ -813,7 +811,7 @@ pub fn init() {
             // Mark init as current process
             let mut scheduler = PROCESS_MANAGER.scheduler.lock();
             scheduler.set_current(Some(pid));
-            
+
             let mut table = PROCESS_MANAGER.table.lock();
             if let Some(init) = table.get_mut(pid) {
                 init.mark_running();

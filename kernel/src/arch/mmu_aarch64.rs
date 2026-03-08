@@ -10,8 +10,8 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{ArchMmu, PageAttribute};
-use crate::arch::{aarch64_pl011, aarch64_virt};
 use crate::aarch64_alloc::AARCH64_MMU_PT_RESERVE_BYTES;
+use crate::arch::{aarch64_pl011, aarch64_virt};
 
 pub(super) struct AArch64Mmu;
 
@@ -49,8 +49,7 @@ const TCR_SH_INNER: u64 = 0b11;
 const TCR_TG0_4K: u64 = 0b00;
 const TCR_TG1_4K: u64 = 0b10;
 const TCR_IPS_40BIT: u64 = 0b010;
-const TCR_VALUE: u64 =
-    (TCR_T0SZ << 0)
+const TCR_VALUE: u64 = (TCR_T0SZ << 0)
     | (TCR_IRGN_WBWA << 8)
     | (TCR_ORGN_WBWA << 10)
     | (TCR_SH_INNER << 12)
@@ -175,12 +174,7 @@ impl AddressSpace {
         }
         for i in 0..count {
             let phys = alloc_phys_page()?;
-            self.map_page(
-                virt_addr + i * PAGE_SIZE_4K,
-                phys,
-                writable,
-                true,
-            )?;
+            self.map_page(virt_addr + i * PAGE_SIZE_4K, phys, writable, true)?;
         }
         Ok(())
     }
@@ -192,7 +186,13 @@ impl AddressSpace {
         writable: bool,
         user_accessible: bool,
     ) -> Result<(), &'static str> {
-        map_page_4k(self.ttbr0_el1, virt_addr, phys_addr, writable, user_accessible)
+        map_page_4k(
+            self.ttbr0_el1,
+            virt_addr,
+            phys_addr,
+            writable,
+            user_accessible,
+        )
     }
 
     pub fn unmap_page(&mut self, virt_addr: usize) -> Result<(), &'static str> {
@@ -339,7 +339,9 @@ fn alloc_page_raw() -> Result<usize, &'static str> {
     loop {
         let cur = PAGE_ALLOC_NEXT.load(Ordering::Relaxed);
         let aligned = (cur + PAGE_MASK_4K) & !PAGE_MASK_4K;
-        let new = aligned.checked_add(PAGE_SIZE_4K).ok_or("AArch64 MMU allocator overflow")?;
+        let new = aligned
+            .checked_add(PAGE_SIZE_4K)
+            .ok_or("AArch64 MMU allocator overflow")?;
         if new > end {
             return Err("AArch64 MMU allocator exhausted");
         }
@@ -347,7 +349,9 @@ fn alloc_page_raw() -> Result<usize, &'static str> {
             .compare_exchange(cur, new, Ordering::SeqCst, Ordering::Relaxed)
             .is_ok()
         {
-            unsafe { ptr::write_bytes(aligned as *mut u8, 0, PAGE_SIZE_4K); }
+            unsafe {
+                ptr::write_bytes(aligned as *mut u8, 0, PAGE_SIZE_4K);
+            }
             return Ok(aligned);
         }
     }
@@ -397,7 +401,7 @@ fn clone_table_recursive(src_table_phys: usize, level: usize) -> Result<usize, &
         if level < 3 && desc_is_table(desc) {
             let child_src = desc_addr(desc);
             let child_dst = clone_table_recursive(child_src, level + 1)?;
-            dst[i] = (desc & !DESC_ADDR_MASK) | (((child_dst as u64) & DESC_ADDR_MASK));
+            dst[i] = (desc & !DESC_ADDR_MASK) | ((child_dst as u64) & DESC_ADDR_MASK);
         } else {
             dst[i] = desc;
         }
@@ -433,7 +437,9 @@ fn make_l2_block_desc(
     mem: MemType,
     executable: bool,
 ) -> u64 {
-    ((phys_addr as u64) & DESC_ADDR_MASK) | make_leaf_attrs(writable, user, mem, executable) | DESC_VALID
+    ((phys_addr as u64) & DESC_ADDR_MASK)
+        | make_leaf_attrs(writable, user, mem, executable)
+        | DESC_VALID
 }
 
 #[inline]
@@ -466,13 +472,21 @@ fn desc_addr(desc: u64) -> usize {
 }
 
 #[inline]
-fn l0_index(va: usize) -> usize { (va >> 39) & 0x1FF }
+fn l0_index(va: usize) -> usize {
+    (va >> 39) & 0x1FF
+}
 #[inline]
-fn l1_index(va: usize) -> usize { (va >> 30) & 0x1FF }
+fn l1_index(va: usize) -> usize {
+    (va >> 30) & 0x1FF
+}
 #[inline]
-fn l2_index(va: usize) -> usize { (va >> 21) & 0x1FF }
+fn l2_index(va: usize) -> usize {
+    (va >> 21) & 0x1FF
+}
 #[inline]
-fn l3_index(va: usize) -> usize { (va >> 12) & 0x1FF }
+fn l3_index(va: usize) -> usize {
+    (va >> 12) & 0x1FF
+}
 
 fn ensure_next_table(table_phys: usize, index: usize) -> Result<usize, &'static str> {
     let table = table_mut(table_phys);
@@ -488,13 +502,19 @@ fn ensure_next_table(table_phys: usize, index: usize) -> Result<usize, &'static 
     Ok(next)
 }
 
-fn l3_entry_mut(root_phys: usize, va: usize, create: bool) -> Result<Option<&'static mut u64>, &'static str> {
+fn l3_entry_mut(
+    root_phys: usize,
+    va: usize,
+    create: bool,
+) -> Result<Option<&'static mut u64>, &'static str> {
     let l0 = root_phys;
     let l1 = if create {
         ensure_next_table(l0, l0_index(va))?
     } else {
         let d = table_mut(l0)[l0_index(va)];
-        if !desc_is_table(d) { return Ok(None); }
+        if !desc_is_table(d) {
+            return Ok(None);
+        }
         desc_addr(d)
     };
 
@@ -502,7 +522,9 @@ fn l3_entry_mut(root_phys: usize, va: usize, create: bool) -> Result<Option<&'st
         ensure_next_table(l1, l1_index(va))?
     } else {
         let d = table_mut(l1)[l1_index(va)];
-        if !desc_is_table(d) { return Ok(None); }
+        if !desc_is_table(d) {
+            return Ok(None);
+        }
         desc_addr(d)
     };
 
@@ -698,7 +720,11 @@ pub(crate) fn debug_walk_current(virt_addr: usize) -> DebugWalk {
     out
 }
 
-fn set_pte_writable(root_phys: usize, virt_addr: usize, writable: bool) -> Result<(), &'static str> {
+fn set_pte_writable(
+    root_phys: usize,
+    virt_addr: usize,
+    writable: bool,
+) -> Result<(), &'static str> {
     let Some(entry) = l3_entry_mut(root_phys, virt_addr, false)? else {
         return Err("AArch64 MMU set_page_attribute_range: page not mapped");
     };
@@ -748,28 +774,63 @@ fn write_mair_tcr_ttbrs_and_enable(root_phys: usize) {
 
 fn populate_kernel_mappings(root: usize) -> Result<(), &'static str> {
     // Map DRAM from DTB (or fallback), plus key MMIO regions.
-    let (mem_base, mem_size) = aarch64_virt::discovered_memory_range()
-        .unwrap_or((0x4000_0000, 512 * 1024 * 1024));
+    let (mem_base, mem_size) =
+        aarch64_virt::discovered_memory_range().unwrap_or((0x4000_0000, 512 * 1024 * 1024));
     map_range_l2_blocks(root, mem_base, mem_base, mem_size, MemType::Normal, true)?;
 
     let uart_base = aarch64_pl011::early_uart().base();
-    map_range_l2_blocks(root, uart_base, uart_base, PAGE_SIZE_4K, MemType::Device, false)?;
+    map_range_l2_blocks(
+        root,
+        uart_base,
+        uart_base,
+        PAGE_SIZE_4K,
+        MemType::Device,
+        false,
+    )?;
 
     if let Some((gicd, gicc)) = aarch64_virt::discovered_gicv2_bases() {
         map_range_l2_blocks(root, gicd, gicd, PAGE_SIZE_4K * 64, MemType::Device, false)?;
         map_range_l2_blocks(root, gicc, gicc, PAGE_SIZE_4K * 64, MemType::Device, false)?;
     } else {
-        map_range_l2_blocks(root, 0x0800_0000, 0x0800_0000, PAGE_SIZE_4K * 64, MemType::Device, false)?;
-        map_range_l2_blocks(root, 0x0801_0000, 0x0801_0000, PAGE_SIZE_4K * 64, MemType::Device, false)?;
+        map_range_l2_blocks(
+            root,
+            0x0800_0000,
+            0x0800_0000,
+            PAGE_SIZE_4K * 64,
+            MemType::Device,
+            false,
+        )?;
+        map_range_l2_blocks(
+            root,
+            0x0801_0000,
+            0x0801_0000,
+            PAGE_SIZE_4K * 64,
+            MemType::Device,
+            false,
+        )?;
     }
 
     aarch64_virt::for_each_discovered_virtio_mmio(|base, size, _irq| {
-        let _ = map_range_l2_blocks(root, base, base, size.max(PAGE_SIZE_4K), MemType::Device, false);
+        let _ = map_range_l2_blocks(
+            root,
+            base,
+            base,
+            size.max(PAGE_SIZE_4K),
+            MemType::Device,
+            false,
+        );
     });
 
     if let Some(dtb_ptr) = aarch64_virt::discovered_dtb_ptr() {
         if translate(root, dtb_ptr).is_none() {
-            map_range_l2_blocks(root, dtb_ptr, dtb_ptr, 2 * 1024 * 1024, MemType::Normal, false)?;
+            map_range_l2_blocks(
+                root,
+                dtb_ptr,
+                dtb_ptr,
+                2 * 1024 * 1024,
+                MemType::Normal,
+                false,
+            )?;
         }
     }
 
@@ -895,5 +956,9 @@ impl ArchMmu for AArch64Mmu {
 
 #[inline]
 fn nonzero_usize(v: usize) -> Option<usize> {
-    if v == 0 { None } else { Some(v) }
+    if v == 0 {
+        None
+    } else {
+        Some(v)
+    }
 }

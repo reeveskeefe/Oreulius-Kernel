@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,16 +22,16 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
 //! Programmable Interval Timer (PIT) Driver
-//! 
+//!
 //! The PIT generates periodic timer interrupts for preemptive multitasking.
 //! We configure it to fire IRQ0 at a configurable frequency (default 100 Hz).
 
@@ -54,11 +54,11 @@ static TICKS_HI: AtomicU32 = AtomicU32::new(0);
 /// Initialize the PIT timer
 pub fn init() {
     let divisor = (PIT_FREQUENCY / TIMER_HZ) as u16;
-    
+
     unsafe {
         // Command: Channel 0, Access mode lo/hi byte, Rate generator
         outb(PIT_COMMAND, 0x36);
-        
+
         // Set frequency divisor
         outb(PIT_CHANNEL_0, (divisor & 0xFF) as u8);
         outb(PIT_CHANNEL_0, ((divisor >> 8) & 0xFF) as u8);
@@ -100,7 +100,7 @@ pub fn get_frequency() -> u32 {
 pub fn sleep_ms(ms: u32) {
     let start = get_ticks();
     let target_ticks = (ms as u64 * TIMER_HZ as u64) / 1000;
-    
+
     while get_ticks() - start < target_ticks {
         unsafe {
             // Use HLT to save power while waiting

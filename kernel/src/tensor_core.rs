@@ -1,16 +1,40 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
  */
 
 //! Polymorphic Mathematical Architecture - Phase 1 Scaffolding
-//! 
+//!
 //! Implements foundational traits for hardware-accelerated math,
 //! affine resource tensor networks for Max-Flow capability splits,
 //! and the CTMC (Continuous-Time Markov Chain) structures.
 
 use core::marker::PhantomData;
+
+/// Trait that enforces affine (use-exactly-once) capability semantics with compile-time
+/// capacity-network (Max-Flow) constraints.  Implementing this trait signals that the
+/// type has a bounded `CAPACITY` and can only be consumed or split — never cloned
+/// freely — preserving zero-sum flow invariants.
+///
+/// The const generic `C` is the total capacity units represented by this token.
+/// `affine_split<A, B>` is only valid when `A + B == C`, which the concrete implementation
+/// enforces at runtime (and which future const-generic improvements will enforce at
+/// compile time).
+///
+/// ## PMA §6 — LinearCapability as Trait
+/// Making this a trait rather than a concrete struct allows alternate implementations
+/// (e.g. hardware-enforced memory capabilities on CHERI/Morello) to satisfy the same
+/// interface without source changes.
+pub trait AffineSplit<T, const C: usize>: Send + Sized {
+    /// Split `self` into two sub-capabilities with capacities `A` and `B`.
+    /// Implementations **must** verify that `A + B == C`.
+    fn affine_split<const A: usize, const B: usize>(
+        self,
+    ) -> Result<(LinearCapability<T, A>, LinearCapability<T, B>), &'static str>
+    where
+        T: Clone;
+}
 
 /// Represents a mathematical capability token guaranteed to be affine (used exactly once).
 /// Zero-sum splits enforce capacity networks (Max-Flow limitation).
@@ -18,6 +42,10 @@ pub struct LinearCapability<T, const CAPACITY: usize> {
     pub resource: T,
     _marker: PhantomData<()>,
 }
+
+// SAFETY: `LinearCapability<T, C>: Send` when `T: Send` because ownership is
+// strictly linear — no shared references escape.
+unsafe impl<T: Send, const C: usize> Send for LinearCapability<T, C> {}
 
 impl<T, const C: usize> LinearCapability<T, C> {
     /// Creates a new foundational capability token (typically done once per resource at boot).
@@ -30,20 +58,41 @@ impl<T, const C: usize> LinearCapability<T, C> {
 
     /// Consumes the capability and splits it into two affine components ensuring
     /// flow capacity preservation, obeying the Min-Cut zero-sum capability flow.
-    pub fn affine_split<const A: usize, const B: usize>(self) -> Result<(LinearCapability<T, A>, LinearCapability<T, B>), &'static str>
+    pub fn affine_split<const A: usize, const B: usize>(
+        self,
+    ) -> Result<(LinearCapability<T, A>, LinearCapability<T, B>), &'static str>
     where
         T: Clone,
     {
         if A + B != C {
             return Err("Zero-sum capacity violation: A + B must equal C");
         }
-        
+
         let res_clone = self.resource.clone();
-        
+
         Ok((
-            LinearCapability { resource: self.resource, _marker: PhantomData },
-            LinearCapability { resource: res_clone, _marker: PhantomData },
+            LinearCapability {
+                resource: self.resource,
+                _marker: PhantomData,
+            },
+            LinearCapability {
+                resource: res_clone,
+                _marker: PhantomData,
+            },
         ))
+    }
+}
+
+/// Blanket impl of `AffineSplit` for the canonical `LinearCapability<T, C>` struct.
+/// Any future CHERI/Morello-backed capability type can provide its own impl.
+impl<T: Clone + Send, const C: usize> AffineSplit<T, C> for LinearCapability<T, C> {
+    fn affine_split<const A: usize, const B: usize>(
+        self,
+    ) -> Result<(LinearCapability<T, A>, LinearCapability<T, B>), &'static str>
+    where
+        T: Clone,
+    {
+        LinearCapability::<T, C>::affine_split::<A, B>(self)
     }
 }
 
@@ -109,7 +158,6 @@ impl EntropyEvaluator for EevdfEntropy {
     }
 }
 
-
 #[cfg(target_arch = "x86_64")]
 pub mod x86_simd {
     use super::SimdTensor;
@@ -160,9 +208,15 @@ pub mod x86_simd {
 
     impl<const N: usize> SimdTensor<N> for Avx2Tensor<N> {
         type Element = i32;
-        fn zeros() -> Self { unsafe { Self::zeros_impl() } }
-        fn add(&self, other: &Self) -> Self { unsafe { self.add_impl(other) } }
-        fn dot_product(&self, other: &Self) -> Self::Element { unsafe { self.dot_product_impl(other) } }
+        fn zeros() -> Self {
+            unsafe { Self::zeros_impl() }
+        }
+        fn add(&self, other: &Self) -> Self {
+            unsafe { self.add_impl(other) }
+        }
+        fn dot_product(&self, other: &Self) -> Self::Element {
+            unsafe { self.dot_product_impl(other) }
+        }
     }
 }
 
@@ -211,8 +265,14 @@ pub mod aarch64_simd {
 
     impl<const N: usize> SimdTensor<N> for NeonTensor<N> {
         type Element = i32;
-        fn zeros() -> Self { unsafe { Self::zeros_impl() } }
-        fn add(&self, other: &Self) -> Self { unsafe { self.add_impl(other) } }
-        fn dot_product(&self, other: &Self) -> Self::Element { unsafe { self.dot_product_impl(other) } }
+        fn zeros() -> Self {
+            unsafe { Self::zeros_impl() }
+        }
+        fn add(&self, other: &Self) -> Self {
+            unsafe { self.add_impl(other) }
+        }
+        fn dot_product(&self, other: &Self) -> Self::Element {
+            unsafe { self.dot_product_impl(other) }
+        }
     }
 }

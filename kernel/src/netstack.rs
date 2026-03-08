@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -48,13 +48,13 @@ extern crate alloc;
 pub trait NetworkInterface: Send {
     /// Send raw Ethernet frame
     fn send_frame(&mut self, frame: &[u8]) -> Result<(), &'static str>;
-    
+
     /// Receive raw Ethernet frame (non-blocking)
     fn recv_frame(&mut self, buffer: &mut [u8]) -> Result<usize, &'static str>;
-    
+
     /// Get MAC address
     fn mac_address(&self) -> [u8; 6];
-    
+
     /// Check if link is up
     fn is_link_up(&self) -> bool;
 }
@@ -91,15 +91,15 @@ impl Ipv4Addr {
     pub const fn new(a: u8, b: u8, c: u8, d: u8) -> Self {
         Ipv4Addr([a, b, c, d])
     }
-    
+
     pub fn octets(&self) -> [u8; 4] {
         self.0
     }
-    
+
     pub fn to_u32(&self) -> u32 {
         u32::from_be_bytes(self.0)
     }
-    
+
     pub fn from_u32(val: u32) -> Self {
         Ipv4Addr(val.to_be_bytes())
     }
@@ -112,7 +112,7 @@ impl MacAddr {
     pub const fn new(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) -> Self {
         MacAddr([a, b, c, d, e, f])
     }
-    
+
     pub const BROADCAST: MacAddr = MacAddr([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
 }
 
@@ -137,12 +137,12 @@ impl ArpCache {
             mac: MacAddr([0, 0, 0, 0, 0, 0]),
             valid: false,
         };
-        
+
         ArpCache {
             entries: [EMPTY; 16],
         }
     }
-    
+
     fn lookup(&self, ip: Ipv4Addr) -> Option<MacAddr> {
         for entry in &self.entries {
             if entry.valid && entry.ip == ip {
@@ -151,7 +151,7 @@ impl ArpCache {
         }
         None
     }
-    
+
     fn insert(&mut self, ip: Ipv4Addr, mac: MacAddr) {
         // Find empty slot or oldest entry
         for entry in &mut self.entries {
@@ -162,7 +162,7 @@ impl ArpCache {
                 return;
             }
         }
-        
+
         // Overwrite first entry if cache is full
         self.entries[0].ip = ip;
         self.entries[0].mac = mac;
@@ -219,10 +219,10 @@ pub struct NetworkStack {
 impl NetworkStack {
     pub const fn new() -> Self {
         NetworkStack {
-            my_ip: Ipv4Addr([10, 0, 2, 15]),  // QEMU default
-            my_mac: MacAddr([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]),  // QEMU default
-            gateway_ip: Ipv4Addr([10, 0, 2, 2]),  // QEMU default gateway
-            dns_server: Ipv4Addr([8, 8, 8, 8]),  // Google DNS
+            my_ip: Ipv4Addr([10, 0, 2, 15]),                       // QEMU default
+            my_mac: MacAddr([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]), // QEMU default
+            gateway_ip: Ipv4Addr([10, 0, 2, 2]),                   // QEMU default gateway
+            dns_server: Ipv4Addr([8, 8, 8, 8]),                    // Google DNS
             arp_cache: ArpCache::new(),
             dhcp_enabled: false,
             has_interface: false,
@@ -231,7 +231,7 @@ impl NetworkStack {
             http_server: HttpServer::new(),
         }
     }
-    
+
     /// Mark interface as available
     pub fn mark_ready(&mut self) {
         let prev_has_interface = self.has_interface;
@@ -246,265 +246,280 @@ impl NetworkStack {
             );
         }
     }
-    
+
     /// Check if network is ready
     pub fn is_ready(&self) -> bool {
         // Check if E1000 driver is available
         crate::e1000::get_mac_address().is_some()
     }
-    
+
     // ========================================================================
     // ARP Protocol
     // ========================================================================
-    
+
     /// Send ARP request
     fn send_arp_request(&mut self, target_ip: Ipv4Addr) -> Result<(), &'static str> {
         let mut driver = crate::e1000::E1000_DRIVER.lock();
         let interface = driver.as_mut().ok_or("No E1000 driver")?;
-        
+
         let mut frame = [0u8; 42];
         let mut offset = 0;
-        
+
         // Ethernet header
-        frame[offset..offset+6].copy_from_slice(&MacAddr::BROADCAST.0);  // Dest MAC
+        frame[offset..offset + 6].copy_from_slice(&MacAddr::BROADCAST.0); // Dest MAC
         offset += 6;
-        frame[offset..offset+6].copy_from_slice(&self.my_mac.0);  // Src MAC
+        frame[offset..offset + 6].copy_from_slice(&self.my_mac.0); // Src MAC
         offset += 6;
-        frame[offset..offset+2].copy_from_slice(&ETHERTYPE_ARP.to_be_bytes());  // EtherType
+        frame[offset..offset + 2].copy_from_slice(&ETHERTYPE_ARP.to_be_bytes()); // EtherType
         offset += 2;
-        
+
         // ARP packet
-        frame[offset..offset+2].copy_from_slice(&[0x00, 0x01]);  // Hardware type: Ethernet
+        frame[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Hardware type: Ethernet
         offset += 2;
-        frame[offset..offset+2].copy_from_slice(&[0x08, 0x00]);  // Protocol type: IPv4
+        frame[offset..offset + 2].copy_from_slice(&[0x08, 0x00]); // Protocol type: IPv4
         offset += 2;
-        frame[offset] = 6;  // Hardware size
+        frame[offset] = 6; // Hardware size
         offset += 1;
-        frame[offset] = 4;  // Protocol size
+        frame[offset] = 4; // Protocol size
         offset += 1;
-        frame[offset..offset+2].copy_from_slice(&ARP_OP_REQUEST.to_be_bytes());  // Operation
+        frame[offset..offset + 2].copy_from_slice(&ARP_OP_REQUEST.to_be_bytes()); // Operation
         offset += 2;
-        frame[offset..offset+6].copy_from_slice(&self.my_mac.0);  // Sender MAC
+        frame[offset..offset + 6].copy_from_slice(&self.my_mac.0); // Sender MAC
         offset += 6;
-        frame[offset..offset+4].copy_from_slice(&self.my_ip.0);  // Sender IP
+        frame[offset..offset + 4].copy_from_slice(&self.my_ip.0); // Sender IP
         offset += 4;
-        frame[offset..offset+6].copy_from_slice(&[0; 6]);  // Target MAC (unknown)
+        frame[offset..offset + 6].copy_from_slice(&[0; 6]); // Target MAC (unknown)
         offset += 6;
-        frame[offset..offset+4].copy_from_slice(&target_ip.0);  // Target IP
-        
+        frame[offset..offset + 4].copy_from_slice(&target_ip.0); // Target IP
+
         interface.send_frame(&frame)
     }
-    
+
     /// Process received ARP packet
     fn handle_arp(&mut self, packet: &[u8]) -> Result<(), &'static str> {
         if packet.len() < 28 {
             return Err("ARP packet too short");
         }
-        
+
         let op = u16::from_be_bytes([packet[6], packet[7]]);
-        let sender_mac = MacAddr([packet[8], packet[9], packet[10], packet[11], packet[12], packet[13]]);
+        let sender_mac = MacAddr([
+            packet[8], packet[9], packet[10], packet[11], packet[12], packet[13],
+        ]);
         let sender_ip = Ipv4Addr([packet[14], packet[15], packet[16], packet[17]]);
-        
+
         // Update ARP cache
         self.arp_cache.insert(sender_ip, sender_mac);
-        
+
         // Handle ARP request
         if op == ARP_OP_REQUEST {
             let target_ip = Ipv4Addr([packet[24], packet[25], packet[26], packet[27]]);
-            
+
             // Reply if request is for us
             if target_ip == self.my_ip {
                 self.send_arp_reply(sender_mac, sender_ip)?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Send ARP reply
     fn send_arp_reply(&mut self, dest_mac: MacAddr, dest_ip: Ipv4Addr) -> Result<(), &'static str> {
         let mut driver = crate::e1000::E1000_DRIVER.lock();
         let interface = driver.as_mut().ok_or("No E1000 driver")?;
-        
+
         let mut frame = [0u8; 42];
         let mut offset = 0;
-        
+
         // Ethernet header
-        frame[offset..offset+6].copy_from_slice(&dest_mac.0);
+        frame[offset..offset + 6].copy_from_slice(&dest_mac.0);
         offset += 6;
-        frame[offset..offset+6].copy_from_slice(&self.my_mac.0);
+        frame[offset..offset + 6].copy_from_slice(&self.my_mac.0);
         offset += 6;
-        frame[offset..offset+2].copy_from_slice(&ETHERTYPE_ARP.to_be_bytes());
+        frame[offset..offset + 2].copy_from_slice(&ETHERTYPE_ARP.to_be_bytes());
         offset += 2;
-        
+
         // ARP packet
-        frame[offset..offset+2].copy_from_slice(&[0x00, 0x01]);
+        frame[offset..offset + 2].copy_from_slice(&[0x00, 0x01]);
         offset += 2;
-        frame[offset..offset+2].copy_from_slice(&[0x08, 0x00]);
+        frame[offset..offset + 2].copy_from_slice(&[0x08, 0x00]);
         offset += 2;
         frame[offset] = 6;
         offset += 1;
         frame[offset] = 4;
         offset += 1;
-        frame[offset..offset+2].copy_from_slice(&ARP_OP_REPLY.to_be_bytes());
+        frame[offset..offset + 2].copy_from_slice(&ARP_OP_REPLY.to_be_bytes());
         offset += 2;
-        frame[offset..offset+6].copy_from_slice(&self.my_mac.0);
+        frame[offset..offset + 6].copy_from_slice(&self.my_mac.0);
         offset += 6;
-        frame[offset..offset+4].copy_from_slice(&self.my_ip.0);
+        frame[offset..offset + 4].copy_from_slice(&self.my_ip.0);
         offset += 4;
-        frame[offset..offset+6].copy_from_slice(&dest_mac.0);
+        frame[offset..offset + 6].copy_from_slice(&dest_mac.0);
         offset += 6;
-        frame[offset..offset+4].copy_from_slice(&dest_ip.0);
-        
+        frame[offset..offset + 4].copy_from_slice(&dest_ip.0);
+
         interface.send_frame(&frame)
     }
-    
+
     /// Resolve IP to MAC address (with ARP)
     fn resolve_mac(&mut self, ip: Ipv4Addr) -> Result<MacAddr, &'static str> {
         // Check ARP cache first
         if let Some(mac) = self.arp_cache.lookup(ip) {
             return Ok(mac);
         }
-        
+
         // Send ARP request
         self.send_arp_request(ip)?;
-        
+
         // Poll for response (simple timeout)
         for _ in 0..1000 {
             self.poll_once()?;
-            
+
             if let Some(mac) = self.arp_cache.lookup(ip) {
                 return Ok(mac);
             }
-            
+
             // Simple delay
             for _ in 0..10000 {
-                unsafe { core::arch::asm!("nop"); }
+                unsafe {
+                    core::arch::asm!("nop");
+                }
             }
         }
-        
+
         Err("ARP timeout")
     }
-    
+
     // ========================================================================
     // UDP Protocol
     // ========================================================================
-    
+
     /// Send UDP packet
-    fn send_udp(&mut self, dest_ip: Ipv4Addr, dest_port: u16, src_port: u16, data: &[u8]) 
-        -> Result<(), &'static str> 
-    {
-        if data.len() > 1472 {  // Max UDP payload in standard Ethernet
+    fn send_udp(
+        &mut self,
+        dest_ip: Ipv4Addr,
+        dest_port: u16,
+        src_port: u16,
+        data: &[u8],
+    ) -> Result<(), &'static str> {
+        if data.len() > 1472 {
+            // Max UDP payload in standard Ethernet
             return Err("UDP payload too large");
         }
-        
+
         // Resolve destination MAC (use gateway for external IPs)
-        let next_hop = if self.is_local(dest_ip) { dest_ip } else { self.gateway_ip };
+        let next_hop = if self.is_local(dest_ip) {
+            dest_ip
+        } else {
+            self.gateway_ip
+        };
         let dest_mac = self.resolve_mac(next_hop)?;
-        
+
         // Use E1000 driver directly
         let mut driver = crate::e1000::E1000_DRIVER.lock();
         let driver = driver.as_mut().ok_or("No E1000 driver")?;
-        
+
         // Build packet
         let mut frame = [0u8; 1514];
         let mut offset = 0;
-        
+
         // Ethernet header (14 bytes)
-        frame[offset..offset+6].copy_from_slice(&dest_mac.0);
+        frame[offset..offset + 6].copy_from_slice(&dest_mac.0);
         offset += 6;
-        frame[offset..offset+6].copy_from_slice(&self.my_mac.0);
+        frame[offset..offset + 6].copy_from_slice(&self.my_mac.0);
         offset += 6;
-        frame[offset..offset+2].copy_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+        frame[offset..offset + 2].copy_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
         offset += 2;
-        
+
         // IPv4 header (20 bytes)
         let ip_header_start = offset;
-        frame[offset] = 0x45;  // Version 4, header length 5 (20 bytes)
+        frame[offset] = 0x45; // Version 4, header length 5 (20 bytes)
         offset += 1;
-        frame[offset] = 0;  // DSCP/ECN
+        frame[offset] = 0; // DSCP/ECN
         offset += 1;
-        let total_len = 20 + 8 + data.len();  // IP header + UDP header + data
-        frame[offset..offset+2].copy_from_slice(&(total_len as u16).to_be_bytes());
+        let total_len = 20 + 8 + data.len(); // IP header + UDP header + data
+        frame[offset..offset + 2].copy_from_slice(&(total_len as u16).to_be_bytes());
         offset += 2;
-        frame[offset..offset+2].copy_from_slice(&[0x00, 0x01]);  // Identification
+        frame[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Identification
         offset += 2;
-        frame[offset..offset+2].copy_from_slice(&[0x00, 0x00]);  // Flags/Fragment
+        frame[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Flags/Fragment
         offset += 2;
-        frame[offset] = 64;  // TTL
+        frame[offset] = 64; // TTL
         offset += 1;
         frame[offset] = IP_PROTOCOL_UDP;
         offset += 1;
-        frame[offset..offset+2].copy_from_slice(&[0x00, 0x00]);  // Checksum (filled later)
+        frame[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Checksum (filled later)
         let ip_checksum_offset = offset - 2;
         offset += 2;
-        frame[offset..offset+4].copy_from_slice(&self.my_ip.0);
+        frame[offset..offset + 4].copy_from_slice(&self.my_ip.0);
         offset += 4;
-        frame[offset..offset+4].copy_from_slice(&dest_ip.0);
+        frame[offset..offset + 4].copy_from_slice(&dest_ip.0);
         offset += 4;
-        
+
         // Calculate IP checksum
         let ip_checksum = calculate_checksum(&frame[ip_header_start..offset]);
-        frame[ip_checksum_offset..ip_checksum_offset+2].copy_from_slice(&ip_checksum.to_be_bytes());
-        
+        frame[ip_checksum_offset..ip_checksum_offset + 2]
+            .copy_from_slice(&ip_checksum.to_be_bytes());
+
         // UDP header (8 bytes)
-        frame[offset..offset+2].copy_from_slice(&src_port.to_be_bytes());
+        frame[offset..offset + 2].copy_from_slice(&src_port.to_be_bytes());
         offset += 2;
-        frame[offset..offset+2].copy_from_slice(&dest_port.to_be_bytes());
+        frame[offset..offset + 2].copy_from_slice(&dest_port.to_be_bytes());
         offset += 2;
         let udp_len = 8 + data.len();
-        frame[offset..offset+2].copy_from_slice(&(udp_len as u16).to_be_bytes());
+        frame[offset..offset + 2].copy_from_slice(&(udp_len as u16).to_be_bytes());
         offset += 2;
-        frame[offset..offset+2].copy_from_slice(&[0x00, 0x00]);  // Checksum (optional for IPv4)
+        frame[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Checksum (optional for IPv4)
         offset += 2;
-        
+
         // UDP payload
-        frame[offset..offset+data.len()].copy_from_slice(data);
+        frame[offset..offset + data.len()].copy_from_slice(data);
         offset += data.len();
-        
+
         driver.send_frame(&frame[..offset])
     }
-    
+
     /// Receive UDP packet (simplified - returns payload if matches port)
     fn recv_udp(&mut self, expected_port: u16, buffer: &mut [u8]) -> Result<usize, &'static str> {
         // Use E1000 driver directly
         let mut driver = crate::e1000::E1000_DRIVER.lock();
         let driver = driver.as_mut().ok_or("No E1000 driver")?;
-        
+
         let mut frame = [0u8; 1514];
         let frame_len = driver.recv_frame(&mut frame)?;
-        
-        if frame_len < 42 {  // Min: Eth(14) + IP(20) + UDP(8)
+
+        if frame_len < 42 {
+            // Min: Eth(14) + IP(20) + UDP(8)
             return Err("Frame too short");
         }
-        
+
         // Check EtherType
         let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
         if ethertype != ETHERTYPE_IPV4 {
             return Err("Not IPv4");
         }
-        
+
         // Check IP protocol
         if frame[23] != IP_PROTOCOL_UDP {
             return Err("Not UDP");
         }
-        
+
         // Parse UDP header
-        let udp_offset = 14 + 20;  // After Ethernet + IP
-        let dest_port = u16::from_be_bytes([frame[udp_offset+2], frame[udp_offset+3]]);
-        
+        let udp_offset = 14 + 20; // After Ethernet + IP
+        let dest_port = u16::from_be_bytes([frame[udp_offset + 2], frame[udp_offset + 3]]);
+
         if dest_port != expected_port {
             return Err("Wrong port");
         }
-        
-        let udp_len = u16::from_be_bytes([frame[udp_offset+4], frame[udp_offset+5]]) as usize;
-        let payload_len = udp_len - 8;  // Subtract UDP header
-        
+
+        let udp_len = u16::from_be_bytes([frame[udp_offset + 4], frame[udp_offset + 5]]) as usize;
+        let payload_len = udp_len - 8; // Subtract UDP header
+
         if payload_len > buffer.len() {
             return Err("Buffer too small");
         }
-        
-        buffer[..payload_len].copy_from_slice(&frame[udp_offset+8..udp_offset+8+payload_len]);
+
+        buffer[..payload_len].copy_from_slice(&frame[udp_offset + 8..udp_offset + 8 + payload_len]);
         Ok(payload_len)
     }
 
@@ -519,8 +534,19 @@ impl NetworkStack {
         peer_device_id: u64,
     ) -> Result<u32, &'static str> {
         let frame = crate::capnet::build_hello_frame(peer_device_id, 0).map_err(|e| e.as_str())?;
-        self.send_udp(dest_ip, dest_port, crate::capnet::CAPNET_CONTROL_PORT, &frame.bytes[..frame.len])?;
-        self.capnet_queue_retx(peer_device_id, dest_ip, dest_port, frame.seq, &frame.bytes[..frame.len])?;
+        self.send_udp(
+            dest_ip,
+            dest_port,
+            crate::capnet::CAPNET_CONTROL_PORT,
+            &frame.bytes[..frame.len],
+        )?;
+        self.capnet_queue_retx(
+            peer_device_id,
+            dest_ip,
+            dest_port,
+            frame.seq,
+            &frame.bytes[..frame.len],
+        )?;
         Ok(frame.seq)
     }
 
@@ -534,9 +560,20 @@ impl NetworkStack {
     ) -> Result<u32, &'static str> {
         let frame = crate::capnet::build_heartbeat_frame(peer_device_id, ack, ack_only)
             .map_err(|e| e.as_str())?;
-        self.send_udp(dest_ip, dest_port, crate::capnet::CAPNET_CONTROL_PORT, &frame.bytes[..frame.len])?;
+        self.send_udp(
+            dest_ip,
+            dest_port,
+            crate::capnet::CAPNET_CONTROL_PORT,
+            &frame.bytes[..frame.len],
+        )?;
         if !ack_only {
-            self.capnet_queue_retx(peer_device_id, dest_ip, dest_port, frame.seq, &frame.bytes[..frame.len])?;
+            self.capnet_queue_retx(
+                peer_device_id,
+                dest_ip,
+                dest_port,
+                frame.seq,
+                &frame.bytes[..frame.len],
+            )?;
         }
         Ok(frame.seq)
     }
@@ -548,10 +585,21 @@ impl NetworkStack {
         peer_device_id: u64,
         mut token: crate::capnet::CapabilityTokenV1,
     ) -> Result<u64, &'static str> {
-        let frame =
-            crate::capnet::build_token_offer_frame(peer_device_id, 0, &mut token).map_err(|e| e.as_str())?;
-        self.send_udp(dest_ip, dest_port, crate::capnet::CAPNET_CONTROL_PORT, &frame.bytes[..frame.len])?;
-        self.capnet_queue_retx(peer_device_id, dest_ip, dest_port, frame.seq, &frame.bytes[..frame.len])?;
+        let frame = crate::capnet::build_token_offer_frame(peer_device_id, 0, &mut token)
+            .map_err(|e| e.as_str())?;
+        self.send_udp(
+            dest_ip,
+            dest_port,
+            crate::capnet::CAPNET_CONTROL_PORT,
+            &frame.bytes[..frame.len],
+        )?;
+        self.capnet_queue_retx(
+            peer_device_id,
+            dest_ip,
+            dest_port,
+            frame.seq,
+            &frame.bytes[..frame.len],
+        )?;
         Ok(frame.token_id)
     }
 
@@ -563,9 +611,14 @@ impl NetworkStack {
         token_id: u64,
         ack: u32,
     ) -> Result<u32, &'static str> {
-        let frame =
-            crate::capnet::build_token_accept_frame(peer_device_id, ack, token_id).map_err(|e| e.as_str())?;
-        self.send_udp(dest_ip, dest_port, crate::capnet::CAPNET_CONTROL_PORT, &frame.bytes[..frame.len])?;
+        let frame = crate::capnet::build_token_accept_frame(peer_device_id, ack, token_id)
+            .map_err(|e| e.as_str())?;
+        self.send_udp(
+            dest_ip,
+            dest_port,
+            crate::capnet::CAPNET_CONTROL_PORT,
+            &frame.bytes[..frame.len],
+        )?;
         // Token-accept frames are ack-only confirmations and do not need retransmit queueing.
         Ok(frame.seq)
     }
@@ -577,10 +630,21 @@ impl NetworkStack {
         peer_device_id: u64,
         token_id: u64,
     ) -> Result<u32, &'static str> {
-        let frame =
-            crate::capnet::build_token_revoke_frame(peer_device_id, 0, token_id).map_err(|e| e.as_str())?;
-        self.send_udp(dest_ip, dest_port, crate::capnet::CAPNET_CONTROL_PORT, &frame.bytes[..frame.len])?;
-        self.capnet_queue_retx(peer_device_id, dest_ip, dest_port, frame.seq, &frame.bytes[..frame.len])?;
+        let frame = crate::capnet::build_token_revoke_frame(peer_device_id, 0, token_id)
+            .map_err(|e| e.as_str())?;
+        self.send_udp(
+            dest_ip,
+            dest_port,
+            crate::capnet::CAPNET_CONTROL_PORT,
+            &frame.bytes[..frame.len],
+        )?;
+        self.capnet_queue_retx(
+            peer_device_id,
+            dest_ip,
+            dest_port,
+            frame.seq,
+            &frame.bytes[..frame.len],
+        )?;
         Ok(frame.seq)
     }
 
@@ -672,35 +736,35 @@ impl NetworkStack {
             }
         }
     }
-    
+
     // ========================================================================
     // DNS Protocol
     // ========================================================================
-    
+
     /// Resolve domain name to IP address
     pub fn dns_resolve(&mut self, domain: &str) -> Result<Ipv4Addr, &'static str> {
         if domain.len() > 253 {
             return Err("Domain name too long");
         }
-        
+
         // Build DNS query
         let mut query = [0u8; 512];
         let mut offset = 0;
-        
+
         // DNS header
-        query[offset..offset+2].copy_from_slice(&[0x00, 0x01]);  // Transaction ID
+        query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Transaction ID
         offset += 2;
-        query[offset..offset+2].copy_from_slice(&[0x01, 0x00]);  // Flags: standard query
+        query[offset..offset + 2].copy_from_slice(&[0x01, 0x00]); // Flags: standard query
         offset += 2;
-        query[offset..offset+2].copy_from_slice(&[0x00, 0x01]);  // Questions: 1
+        query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Questions: 1
         offset += 2;
-        query[offset..offset+2].copy_from_slice(&[0x00, 0x00]);  // Answer RRs: 0
+        query[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Answer RRs: 0
         offset += 2;
-        query[offset..offset+2].copy_from_slice(&[0x00, 0x00]);  // Authority RRs: 0
+        query[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Authority RRs: 0
         offset += 2;
-        query[offset..offset+2].copy_from_slice(&[0x00, 0x00]);  // Additional RRs: 0
+        query[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Additional RRs: 0
         offset += 2;
-        
+
         // Question: encode domain name
         for label in domain.split('.') {
             if label.len() > 63 {
@@ -708,25 +772,25 @@ impl NetworkStack {
             }
             query[offset] = label.len() as u8;
             offset += 1;
-            query[offset..offset+label.len()].copy_from_slice(label.as_bytes());
+            query[offset..offset + label.len()].copy_from_slice(label.as_bytes());
             offset += label.len();
         }
-        query[offset] = 0;  // End of domain name
+        query[offset] = 0; // End of domain name
         offset += 1;
-        
-        query[offset..offset+2].copy_from_slice(&[0x00, 0x01]);  // Type: A (IPv4)
+
+        query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Type: A (IPv4)
         offset += 2;
-        query[offset..offset+2].copy_from_slice(&[0x00, 0x01]);  // Class: IN (Internet)
+        query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Class: IN (Internet)
         offset += 2;
-        
+
         let query_len = offset;
-        
+
         // Send DNS query (UDP port 53)
         self.send_udp(self.dns_server, 53, 53000, &query[..query_len])?;
-        
+
         // Receive DNS response
         let mut response = [0u8; 512];
-        
+
         // Poll for response with timeout
         for _ in 0..100 {
             match self.recv_udp(53000, &mut response) {
@@ -736,65 +800,67 @@ impl NetworkStack {
                 Err(_) => {
                     // Wait and retry
                     for _ in 0..50000 {
-                        unsafe { core::arch::asm!("nop"); }
+                        unsafe {
+                            core::arch::asm!("nop");
+                        }
                     }
                 }
             }
         }
-        
+
         Err("DNS timeout")
     }
-    
+
     /// Parse DNS response
     fn parse_dns_response(&self, response: &[u8]) -> Result<Ipv4Addr, &'static str> {
         if response.len() < 12 {
             return Err("DNS response too short");
         }
-        
+
         // Check response code
         let flags = u16::from_be_bytes([response[2], response[3]]);
         let rcode = flags & 0x000F;
         if rcode != 0 {
             return Err("DNS error");
         }
-        
+
         let answer_count = u16::from_be_bytes([response[6], response[7]]);
         if answer_count == 0 {
             return Err("No answers");
         }
-        
+
         // Skip question section
         let mut offset = 12;
-        
+
         // Skip domain name in question
         loop {
             if offset >= response.len() {
                 return Err("Invalid DNS response");
             }
-            
+
             let len = response[offset];
             if len == 0 {
                 offset += 1;
                 break;
             }
-            
+
             // Handle compression pointer
             if len & 0xC0 == 0xC0 {
                 offset += 2;
                 break;
             }
-            
+
             offset += 1 + len as usize;
         }
-        
-        offset += 4;  // Skip QTYPE and QCLASS
-        
+
+        offset += 4; // Skip QTYPE and QCLASS
+
         // Parse answer section
         for _ in 0..answer_count {
             if offset + 12 > response.len() {
                 return Err("Invalid answer");
             }
-            
+
             // Skip name (handle compression)
             if response[offset] & 0xC0 == 0xC0 {
                 offset += 2;
@@ -808,31 +874,32 @@ impl NetworkStack {
                     offset += 1 + len as usize;
                 }
             }
-            
-            let rtype = u16::from_be_bytes([response[offset], response[offset+1]]);
-            let rdlength = u16::from_be_bytes([response[offset+8], response[offset+9]]) as usize;
+
+            let rtype = u16::from_be_bytes([response[offset], response[offset + 1]]);
+            let rdlength =
+                u16::from_be_bytes([response[offset + 8], response[offset + 9]]) as usize;
             offset += 10;
-            
+
             // Check for A record (IPv4)
             if rtype == 1 && rdlength == 4 {
                 return Ok(Ipv4Addr([
                     response[offset],
-                    response[offset+1],
-                    response[offset+2],
-                    response[offset+3],
+                    response[offset + 1],
+                    response[offset + 2],
+                    response[offset + 3],
                 ]));
             }
-            
+
             offset += rdlength;
         }
-        
+
         Err("No A record found")
     }
-    
+
     // ========================================================================
     // Packet Processing
     // ========================================================================
-    
+
     /// Poll for incoming packets once
     pub fn poll_once(&mut self) -> Result<(), &'static str> {
         let mut frame = [0u8; 1514];
@@ -844,14 +911,14 @@ impl NetworkStack {
                 Err(_) => return Ok(()), // No packet available
             }
         };
-        
+
         if frame_len < 14 {
-            return Ok(());  // Too short
+            return Ok(()); // Too short
         }
-        
+
         // Parse EtherType
         let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
-        
+
         match ethertype {
             ETHERTYPE_ARP => {
                 let _ = self.handle_arp(&frame[14..frame_len]);
@@ -861,7 +928,7 @@ impl NetworkStack {
             }
             _ => {}
         }
-        
+
         Ok(())
     }
 
@@ -897,7 +964,14 @@ impl NetworkStack {
                 let mut payload = [0u8; 256];
                 let len = conn.last_payload_len;
                 payload[..len].copy_from_slice(&conn.last_payload[..len]);
-                action = Some((tcp_endpoint(conn), conn.last_seq, conn.last_ack, conn.last_flags, payload, len));
+                action = Some((
+                    tcp_endpoint(conn),
+                    conn.last_seq,
+                    conn.last_ack,
+                    conn.last_flags,
+                    payload,
+                    len,
+                ));
                 conn.retries = conn.retries.saturating_add(1);
                 conn.last_send_tick = now;
             }
@@ -906,22 +980,20 @@ impl NetworkStack {
             }
         }
     }
-    
+
     // ========================================================================
     // Helpers
     // ========================================================================
-    
+
     fn is_local(&self, ip: Ipv4Addr) -> bool {
         // Simple check: same /24 network
-        ip.0[0] == self.my_ip.0[0] && 
-        ip.0[1] == self.my_ip.0[1] && 
-        ip.0[2] == self.my_ip.0[2]
+        ip.0[0] == self.my_ip.0[0] && ip.0[1] == self.my_ip.0[1] && ip.0[2] == self.my_ip.0[2]
     }
-    
+
     pub fn get_ip(&self) -> Ipv4Addr {
         self.my_ip
     }
-    
+
     pub fn set_dns_server(&mut self, dns: Ipv4Addr) {
         if self.dns_server == dns {
             return;
@@ -1012,7 +1084,11 @@ impl NetworkStack {
         accepted
     }
 
-    pub fn tcp_connect(&mut self, remote_ip: Ipv4Addr, remote_port: u16) -> Result<u16, &'static str> {
+    pub fn tcp_connect(
+        &mut self,
+        remote_ip: Ipv4Addr,
+        remote_port: u16,
+    ) -> Result<u16, &'static str> {
         let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
         let res = tcp.connect(self, remote_ip, remote_port);
         self.tcp = tcp;
@@ -1430,8 +1506,18 @@ impl TcpManager {
         Err("No connection slots")
     }
 
-    fn find_conn_mut(&mut self, local_port: u16, remote_ip: Ipv4Addr, remote_port: u16) -> Option<&mut TcpConn> {
-        self.conns.iter_mut().find(|c| c.in_use && c.local_port == local_port && c.remote_port == remote_port && c.remote_ip == remote_ip)
+    fn find_conn_mut(
+        &mut self,
+        local_port: u16,
+        remote_ip: Ipv4Addr,
+        remote_port: u16,
+    ) -> Option<&mut TcpConn> {
+        self.conns.iter_mut().find(|c| {
+            c.in_use
+                && c.local_port == local_port
+                && c.remote_port == remote_port
+                && c.remote_ip == remote_ip
+        })
     }
 
     fn find_conn_id_mut(&mut self, conn_id: u16) -> Option<&mut TcpConn> {
@@ -1443,11 +1529,7 @@ impl TcpManager {
     }
 
     fn ensure_conn_with_id(&mut self, conn_id: u16) -> Result<&mut TcpConn, &'static str> {
-        if let Some(idx) = self
-            .conns
-            .iter()
-            .position(|c| c.in_use && c.id == conn_id)
-        {
+        if let Some(idx) = self.conns.iter().position(|c| c.in_use && c.id == conn_id) {
             return Ok(&mut self.conns[idx]);
         }
 
@@ -1471,15 +1553,30 @@ impl TcpManager {
         Ok(&mut self.conns[idx])
     }
 
-    fn find_conn_index(&self, local_port: u16, remote_ip: Ipv4Addr, remote_port: u16) -> Option<usize> {
+    fn find_conn_index(
+        &self,
+        local_port: u16,
+        remote_ip: Ipv4Addr,
+        remote_port: u16,
+    ) -> Option<usize> {
         self.conns
             .iter()
             .enumerate()
-            .find(|(_, c)| c.in_use && c.local_port == local_port && c.remote_port == remote_port && c.remote_ip == remote_ip)
+            .find(|(_, c)| {
+                c.in_use
+                    && c.local_port == local_port
+                    && c.remote_port == remote_port
+                    && c.remote_ip == remote_ip
+            })
             .map(|(i, _)| i)
     }
 
-    fn connect(&mut self, stack: &mut NetworkStack, remote_ip: Ipv4Addr, remote_port: u16) -> Result<u16, &'static str> {
+    fn connect(
+        &mut self,
+        stack: &mut NetworkStack,
+        remote_ip: Ipv4Addr,
+        remote_port: u16,
+    ) -> Result<u16, &'static str> {
         let local_port = 40000 + (self.next_id % 10000);
         let iss = (crate::pit::get_ticks() as u32).wrapping_add(1000);
         let conn = self.alloc_conn()?;
@@ -1504,21 +1601,43 @@ impl TcpManager {
         Ok(conn.id)
     }
 
-    fn send(&mut self, stack: &mut NetworkStack, conn_id: u16, data: &[u8]) -> Result<usize, &'static str> {
-        let conn = self.find_conn_id_mut(conn_id).ok_or("Connection not found")?;
+    fn send(
+        &mut self,
+        stack: &mut NetworkStack,
+        conn_id: u16,
+        data: &[u8],
+    ) -> Result<usize, &'static str> {
+        let conn = self
+            .find_conn_id_mut(conn_id)
+            .ok_or("Connection not found")?;
         if conn.state != TcpState::Established && conn.state != TcpState::CloseWait {
             return Err("Connection not established");
         }
         let len = core::cmp::min(data.len(), conn.last_payload.len());
         let ep = tcp_endpoint(conn);
-        send_tcp_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_ACK | TCP_FLAG_PSH, &data[..len])?;
-        record_last(conn, TCP_FLAG_ACK | TCP_FLAG_PSH, conn.snd_nxt, conn.rcv_nxt, &data[..len]);
+        send_tcp_segment(
+            stack,
+            ep,
+            conn.snd_nxt,
+            conn.rcv_nxt,
+            TCP_FLAG_ACK | TCP_FLAG_PSH,
+            &data[..len],
+        )?;
+        record_last(
+            conn,
+            TCP_FLAG_ACK | TCP_FLAG_PSH,
+            conn.snd_nxt,
+            conn.rcv_nxt,
+            &data[..len],
+        );
         conn.snd_nxt = conn.snd_nxt.wrapping_add(len as u32);
         Ok(len)
     }
 
     fn recv(&mut self, conn_id: u16, out: &mut [u8]) -> Result<usize, &'static str> {
-        let conn = self.find_conn_id_mut(conn_id).ok_or("Connection not found")?;
+        let conn = self
+            .find_conn_id_mut(conn_id)
+            .ok_or("Connection not found")?;
         if conn.recv_len == 0 {
             return Ok(0);
         }
@@ -1529,20 +1648,48 @@ impl TcpManager {
     }
 
     fn close(&mut self, stack: &mut NetworkStack, conn_id: u16) -> Result<(), &'static str> {
-        let conn = self.find_conn_id_mut(conn_id).ok_or("Connection not found")?;
+        let conn = self
+            .find_conn_id_mut(conn_id)
+            .ok_or("Connection not found")?;
         if conn.state == TcpState::Established {
             conn.state = TcpState::FinWait1;
             let ep = tcp_endpoint(conn);
-            send_tcp_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_FIN | TCP_FLAG_ACK, &[])?;
-            record_last(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, conn.snd_nxt, conn.rcv_nxt, &[]);
+            send_tcp_segment(
+                stack,
+                ep,
+                conn.snd_nxt,
+                conn.rcv_nxt,
+                TCP_FLAG_FIN | TCP_FLAG_ACK,
+                &[],
+            )?;
+            record_last(
+                conn,
+                TCP_FLAG_FIN | TCP_FLAG_ACK,
+                conn.snd_nxt,
+                conn.rcv_nxt,
+                &[],
+            );
             conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
             return Ok(());
         }
         if conn.state == TcpState::CloseWait {
             conn.state = TcpState::LastAck;
             let ep = tcp_endpoint(conn);
-            send_tcp_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_FIN | TCP_FLAG_ACK, &[])?;
-            record_last(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, conn.snd_nxt, conn.rcv_nxt, &[]);
+            send_tcp_segment(
+                stack,
+                ep,
+                conn.snd_nxt,
+                conn.rcv_nxt,
+                TCP_FLAG_FIN | TCP_FLAG_ACK,
+                &[],
+            )?;
+            record_last(
+                conn,
+                TCP_FLAG_FIN | TCP_FLAG_ACK,
+                conn.snd_nxt,
+                conn.rcv_nxt,
+                &[],
+            );
             conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
             return Ok(());
         }
@@ -1571,7 +1718,14 @@ impl TcpManager {
                 let mut payload = [0u8; 256];
                 let len = conn.last_payload_len;
                 payload[..len].copy_from_slice(&conn.last_payload[..len]);
-                action = Some((tcp_endpoint(conn), conn.last_seq, conn.last_ack, conn.last_flags, payload, len));
+                action = Some((
+                    tcp_endpoint(conn),
+                    conn.last_seq,
+                    conn.last_ack,
+                    conn.last_flags,
+                    payload,
+                    len,
+                ));
                 conn.retries = conn.retries.saturating_add(1);
                 conn.last_send_tick = now;
             }
@@ -1830,24 +1984,20 @@ impl NetworkStack {
         }
 
         let (reply, queue_reply) = match rx.msg_type {
-            crate::capnet::CapNetControlType::TokenOffer => {
-                (
-                    crate::capnet::build_token_accept_frame(rx.peer_device_id, rx.seq, rx.token_id)
-                        .map_err(|e| e.as_str())?,
-                    true,
-                )
-            }
+            crate::capnet::CapNetControlType::TokenOffer => (
+                crate::capnet::build_token_accept_frame(rx.peer_device_id, rx.seq, rx.token_id)
+                    .map_err(|e| e.as_str())?,
+                true,
+            ),
             crate::capnet::CapNetControlType::TokenRevoke
             | crate::capnet::CapNetControlType::TokenAccept
             | crate::capnet::CapNetControlType::Hello
             | crate::capnet::CapNetControlType::Attest
-            | crate::capnet::CapNetControlType::Heartbeat => {
-                (
-                    crate::capnet::build_heartbeat_frame(rx.peer_device_id, rx.seq, true)
-                        .map_err(|e| e.as_str())?,
-                    false,
-                )
-            }
+            | crate::capnet::CapNetControlType::Heartbeat => (
+                crate::capnet::build_heartbeat_frame(rx.peer_device_id, rx.seq, true)
+                    .map_err(|e| e.as_str())?,
+                false,
+            ),
         };
 
         self.send_udp(
@@ -1913,14 +2063,20 @@ impl NetworkStack {
                         conn.srtt = sample;
                         conn.rttvar = sample / 2;
                     } else {
-                        let err = if conn.srtt > sample { conn.srtt - sample } else { sample - conn.srtt };
+                        let err = if conn.srtt > sample {
+                            conn.srtt - sample
+                        } else {
+                            sample - conn.srtt
+                        };
                         conn.rttvar = (3 * conn.rttvar + err) / 4;
                         conn.srtt = (7 * conn.srtt + sample) / 8;
                     }
                     conn.rto_ticks = core::cmp::max(1, conn.srtt + 4 * conn.rttvar);
                 }
 
-                if conn.state == TcpState::SynSent && (flags & (TCP_FLAG_SYN | TCP_FLAG_ACK)) == (TCP_FLAG_SYN | TCP_FLAG_ACK) {
+                if conn.state == TcpState::SynSent
+                    && (flags & (TCP_FLAG_SYN | TCP_FLAG_ACK)) == (TCP_FLAG_SYN | TCP_FLAG_ACK)
+                {
                     conn.state = TcpState::Established;
                     conn.irs = seq;
                     conn.rcv_nxt = seq.wrapping_add(1);
@@ -2075,7 +2231,14 @@ impl NetworkStack {
                     record_last(conn, TCP_FLAG_SYN | TCP_FLAG_ACK, seq_out, ack_out, &[]);
                     conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
                     let _ = idx;
-                    let _ = send_tcp_segment(self, ep, seq_out, ack_out, TCP_FLAG_SYN | TCP_FLAG_ACK, &[]);
+                    let _ = send_tcp_segment(
+                        self,
+                        ep,
+                        seq_out,
+                        ack_out,
+                        TCP_FLAG_SYN | TCP_FLAG_ACK,
+                        &[],
+                    );
                     return Ok(());
                 }
             }
@@ -2107,7 +2270,13 @@ impl NetworkStack {
                 Some(c) => c,
                 None => return,
             };
-            record_last(conn, TCP_FLAG_ACK | TCP_FLAG_PSH, conn.snd_nxt, conn.rcv_nxt, body);
+            record_last(
+                conn,
+                TCP_FLAG_ACK | TCP_FLAG_PSH,
+                conn.snd_nxt,
+                conn.rcv_nxt,
+                body,
+            );
             conn.snd_nxt = conn.snd_nxt.wrapping_add(body.len() as u32);
             conn.state = TcpState::LastAck;
             conn.http_pending = false;
@@ -2116,11 +2285,16 @@ impl NetworkStack {
 
         let _ = send_tcp_segment(self, ep2, seq2, ack2, TCP_FLAG_FIN | TCP_FLAG_ACK, &[]);
         if let Some(conn) = self.tcp.find_conn_id_mut(conn_id) {
-            record_last(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, conn.snd_nxt, conn.rcv_nxt, &[]);
+            record_last(
+                conn,
+                TCP_FLAG_FIN | TCP_FLAG_ACK,
+                conn.snd_nxt,
+                conn.rcv_nxt,
+                &[],
+            );
             conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
         }
     }
-
 }
 
 // ============================================================================

@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,13 +22,12 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  */
-
 
 //! VirtIO Block Driver (legacy PCI)
 //!
@@ -163,11 +162,12 @@ impl VirtQueue {
 
         let desc_size = 16 * qsize;
         let avail_size = 4 + 2 * qsize + 2; // flags+idx + ring + used_event
-        let used_size = 4 + 8 * qsize + 2;  // flags+idx + ring + avail_event
+        let used_size = 4 + 8 * qsize + 2; // flags+idx + ring + avail_event
         let used_off = align_up(desc_size + avail_size, 4);
         let total_size = align_up(used_off + used_size, 4096);
 
-        let layout = alloc::alloc::Layout::from_size_align(total_size, 4096).map_err(|_| "bad layout")?;
+        let layout =
+            alloc::alloc::Layout::from_size_align(total_size, 4096).map_err(|_| "bad layout")?;
         let mem = unsafe { alloc::alloc::alloc_zeroed(layout) };
         if mem.is_null() {
             return Err("Failed to allocate virtqueue");
@@ -283,7 +283,7 @@ impl BlockCache {
 
         let mut victim = 0;
         let mut oldest_time = u64::MAX;
-        
+
         // LRU eviction: find oldest entry or first invalid slot
         for (i, entry) in self.entries.iter().enumerate() {
             if !entry.valid {
@@ -352,7 +352,13 @@ impl VirtioBlk {
         lo | (hi << 32)
     }
 
-    fn submit(&mut self, req_type: u32, sector: u64, buffer: *mut u8, write: bool) -> Result<(), &'static str> {
+    fn submit(
+        &mut self,
+        req_type: u32,
+        sector: u64,
+        buffer: *mut u8,
+        write: bool,
+    ) -> Result<(), &'static str> {
         let size = self.queue.size as usize;
         if size < 3 {
             return Err("Queue too small");
@@ -375,7 +381,11 @@ impl VirtioBlk {
             (*self.queue.desc.add(1)) = VirtqDesc {
                 addr: buffer as u64,
                 len: SECTOR_SIZE as u32,
-                flags: if write { VIRTQ_DESC_F_NEXT } else { VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE },
+                flags: if write {
+                    VIRTQ_DESC_F_NEXT
+                } else {
+                    VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE
+                },
                 next: 2,
             };
             // descriptor 2: status
@@ -462,7 +472,10 @@ pub fn init(device: PciDevice) -> Result<(), &'static str> {
         // Reset and announce driver
         outb(io_base + VIRTIO_PCI_STATUS, 0);
         outb(io_base + VIRTIO_PCI_STATUS, STATUS_ACKNOWLEDGE);
-        outb(io_base + VIRTIO_PCI_STATUS, STATUS_ACKNOWLEDGE | STATUS_DRIVER);
+        outb(
+            io_base + VIRTIO_PCI_STATUS,
+            STATUS_ACKNOWLEDGE | STATUS_DRIVER,
+        );
 
         // Negotiate features (none for now)
         let _features = inl(io_base + VIRTIO_PCI_HOST_FEATURES);
@@ -495,12 +508,19 @@ pub fn init(device: PciDevice) -> Result<(), &'static str> {
         queue,
         capacity_sectors: capacity,
         cache: BlockCache::new(),
-        req: VirtioBlkReq { req_type: 0, reserved: 0, sector: 0 },
+        req: VirtioBlkReq {
+            req_type: 0,
+            reserved: 0,
+            sector: 0,
+        },
         status: 0,
     };
 
     unsafe {
-        outb(io_base + VIRTIO_PCI_STATUS, STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_DRIVER_OK);
+        outb(
+            io_base + VIRTIO_PCI_STATUS,
+            STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_DRIVER_OK,
+        );
         inb(io_base + VIRTIO_PCI_ISR); // clear
     }
 
@@ -589,7 +609,9 @@ pub fn read_sectors(start_lba: u64, count: usize, out: &mut [u8]) -> Result<(), 
     if count == 0 {
         return Ok(());
     }
-    let needed = count.checked_mul(SECTOR_SIZE).ok_or("sector count overflow")?;
+    let needed = count
+        .checked_mul(SECTOR_SIZE)
+        .ok_or("sector count overflow")?;
     if out.len() < needed {
         return Err("buffer too small");
     }
@@ -604,7 +626,9 @@ pub fn write_sectors(start_lba: u64, count: usize, data: &[u8]) -> Result<(), &'
     if count == 0 {
         return Ok(());
     }
-    let needed = count.checked_mul(SECTOR_SIZE).ok_or("sector count overflow")?;
+    let needed = count
+        .checked_mul(SECTOR_SIZE)
+        .ok_or("sector count overflow")?;
     if data.len() < needed {
         return Err("buffer too small");
     }
@@ -634,7 +658,10 @@ pub struct GptPartition {
     pub name: [u8; 36],
 }
 
-pub fn read_partitions(mbr_out: &mut [Option<MbrPartition>; 4], gpt_out: &mut [Option<GptPartition>; 4]) -> Result<(), &'static str> {
+pub fn read_partitions(
+    mbr_out: &mut [Option<MbrPartition>; 4],
+    gpt_out: &mut [Option<GptPartition>; 4],
+) -> Result<(), &'static str> {
     for entry in mbr_out.iter_mut() {
         *entry = None;
     }
@@ -644,72 +671,116 @@ pub fn read_partitions(mbr_out: &mut [Option<MbrPartition>; 4], gpt_out: &mut [O
 
     let mut sector0 = [0u8; SECTOR_SIZE];
     read_sector(0, &mut sector0)?;
-    
+
     if sector0[510] != 0x55 || sector0[511] != 0xAA {
         return Err("Invalid MBR signature");
     }
-    
+
     for i in 0..4 {
         let off = 446 + i * 16;
         let boot = sector0[off] == 0x80;
         let part_type = sector0[off + 4];
-        let lba_start = u32::from_le_bytes([sector0[off + 8], sector0[off + 9], sector0[off + 10], sector0[off + 11]]);
-        let sectors = u32::from_le_bytes([sector0[off + 12], sector0[off + 13], sector0[off + 14], sector0[off + 15]]);
+        let lba_start = u32::from_le_bytes([
+            sector0[off + 8],
+            sector0[off + 9],
+            sector0[off + 10],
+            sector0[off + 11],
+        ]);
+        let sectors = u32::from_le_bytes([
+            sector0[off + 12],
+            sector0[off + 13],
+            sector0[off + 14],
+            sector0[off + 15],
+        ]);
         if part_type != 0 {
-            mbr_out[i] = Some(MbrPartition { bootable: boot, part_type, lba_start, sectors });
+            mbr_out[i] = Some(MbrPartition {
+                bootable: boot,
+                part_type,
+                lba_start,
+                sectors,
+            });
         }
     }
-    
+
     // Detect GPT protective MBR (type 0xEE)
-    let has_gpt = mbr_out.iter().any(|p| p.map(|pp| pp.part_type == 0xEE).unwrap_or(false));
+    let has_gpt = mbr_out
+        .iter()
+        .any(|p| p.map(|pp| pp.part_type == 0xEE).unwrap_or(false));
     if !has_gpt {
         return Ok(());
     }
-    
+
     let mut gpt_header = [0u8; SECTOR_SIZE];
     read_sector(1, &mut gpt_header)?;
     if &gpt_header[0..8] != b"EFI PART" {
         return Err("GPT signature not found");
     }
-    
+
     let entries_lba = u64::from_le_bytes([
-        gpt_header[72], gpt_header[73], gpt_header[74], gpt_header[75],
-        gpt_header[76], gpt_header[77], gpt_header[78], gpt_header[79],
+        gpt_header[72],
+        gpt_header[73],
+        gpt_header[74],
+        gpt_header[75],
+        gpt_header[76],
+        gpt_header[77],
+        gpt_header[78],
+        gpt_header[79],
     ]);
-    let entry_size = u32::from_le_bytes([gpt_header[84], gpt_header[85], gpt_header[86], gpt_header[87]]) as usize;
+    let entry_size = u32::from_le_bytes([
+        gpt_header[84],
+        gpt_header[85],
+        gpt_header[86],
+        gpt_header[87],
+    ]) as usize;
     if entry_size < 128 {
         return Err("GPT entry size too small");
     }
-    
+
     let mut entries_sector = [0u8; SECTOR_SIZE];
     read_sector(entries_lba, &mut entries_sector)?;
-    
+
     for i in 0..4 {
         let off = i * entry_size;
         if off + 128 > SECTOR_SIZE {
             break;
         }
         let first_lba = u64::from_le_bytes([
-            entries_sector[off + 32], entries_sector[off + 33], entries_sector[off + 34], entries_sector[off + 35],
-            entries_sector[off + 36], entries_sector[off + 37], entries_sector[off + 38], entries_sector[off + 39],
+            entries_sector[off + 32],
+            entries_sector[off + 33],
+            entries_sector[off + 34],
+            entries_sector[off + 35],
+            entries_sector[off + 36],
+            entries_sector[off + 37],
+            entries_sector[off + 38],
+            entries_sector[off + 39],
         ]);
         let last_lba = u64::from_le_bytes([
-            entries_sector[off + 40], entries_sector[off + 41], entries_sector[off + 42], entries_sector[off + 43],
-            entries_sector[off + 44], entries_sector[off + 45], entries_sector[off + 46], entries_sector[off + 47],
+            entries_sector[off + 40],
+            entries_sector[off + 41],
+            entries_sector[off + 42],
+            entries_sector[off + 43],
+            entries_sector[off + 44],
+            entries_sector[off + 45],
+            entries_sector[off + 46],
+            entries_sector[off + 47],
         ]);
         if first_lba == 0 && last_lba == 0 {
             continue;
         }
-        
+
         let mut name = [0u8; 36];
         let name_off = off + 56;
         for j in 0..36 {
             name[j] = entries_sector[name_off + j * 2];
         }
-        
-        gpt_out[i] = Some(GptPartition { first_lba, last_lba, name });
+
+        gpt_out[i] = Some(GptPartition {
+            first_lba,
+            last_lba,
+            name,
+        });
     }
-    
+
     Ok(())
 }
 

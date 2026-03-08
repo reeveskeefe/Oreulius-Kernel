@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -452,10 +452,19 @@ pub fn tag_jit_code_kernel(start: usize, len: usize, sealed_rx: bool) -> Result<
 }
 
 pub fn tag_jit_code_user(start: usize, len: usize) -> Result<(), &'static str> {
-    tag_range(start, len, IsolationDomain::JitCode, AccessPolicy::user_rx())
+    tag_range(
+        start,
+        len,
+        IsolationDomain::JitCode,
+        AccessPolicy::user_rx(),
+    )
 }
 
-pub fn tag_jit_user_trampoline(start: usize, len: usize, user_visible: bool) -> Result<(), &'static str> {
+pub fn tag_jit_user_trampoline(
+    start: usize,
+    len: usize,
+    user_visible: bool,
+) -> Result<(), &'static str> {
     let policy = if user_visible {
         AccessPolicy::user_rx()
     } else {
@@ -464,7 +473,11 @@ pub fn tag_jit_user_trampoline(start: usize, len: usize, user_visible: bool) -> 
     tag_range(start, len, IsolationDomain::JitUserTrampoline, policy)
 }
 
-pub fn tag_jit_user_state(start: usize, len: usize, user_visible: bool) -> Result<(), &'static str> {
+pub fn tag_jit_user_state(
+    start: usize,
+    len: usize,
+    user_visible: bool,
+) -> Result<(), &'static str> {
     let policy = if user_visible {
         AccessPolicy::user_rw()
     } else {
@@ -473,7 +486,11 @@ pub fn tag_jit_user_state(start: usize, len: usize, user_visible: bool) -> Resul
     tag_range(start, len, IsolationDomain::JitUserState, policy)
 }
 
-pub fn tag_jit_user_stack(start: usize, len: usize, user_visible: bool) -> Result<(), &'static str> {
+pub fn tag_jit_user_stack(
+    start: usize,
+    len: usize,
+    user_visible: bool,
+) -> Result<(), &'static str> {
     let policy = if user_visible {
         AccessPolicy::user_rw()
     } else {
@@ -482,7 +499,11 @@ pub fn tag_jit_user_stack(start: usize, len: usize, user_visible: bool) -> Resul
     tag_range(start, len, IsolationDomain::JitUserStack, policy)
 }
 
-pub fn tag_wasm_linear_memory(start: usize, len: usize, user_visible: bool) -> Result<(), &'static str> {
+pub fn tag_wasm_linear_memory(
+    start: usize,
+    len: usize,
+    user_visible: bool,
+) -> Result<(), &'static str> {
     let policy = if user_visible {
         AccessPolicy::user_rw()
     } else {
@@ -506,7 +527,9 @@ pub fn validate_mapping_request(
 
     let map_start = align_down(phys_addr, PAGE_SIZE);
     let map_end = align_up(
-        phys_addr.checked_add(size).ok_or("Mapping range overflow")?,
+        phys_addr
+            .checked_add(size)
+            .ok_or("Mapping range overflow")?,
         PAGE_SIZE,
     )?;
 

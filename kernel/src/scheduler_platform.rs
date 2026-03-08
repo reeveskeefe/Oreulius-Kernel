@@ -284,10 +284,16 @@ pub unsafe fn debug_dump_launch_context(ctx_ptr: *const ProcessContext) {
     unsafe fn read_sysreg(name: &str) -> u64 {
         let mut val: u64 = 0;
         match name {
-            "ttbr0" => core::arch::asm!("mrs {0}, TTBR0_EL1", out(reg) val, options(nomem, nostack)),
-            "ttbr1" => core::arch::asm!("mrs {0}, TTBR1_EL1", out(reg) val, options(nomem, nostack)),
+            "ttbr0" => {
+                core::arch::asm!("mrs {0}, TTBR0_EL1", out(reg) val, options(nomem, nostack))
+            }
+            "ttbr1" => {
+                core::arch::asm!("mrs {0}, TTBR1_EL1", out(reg) val, options(nomem, nostack))
+            }
             "tcr" => core::arch::asm!("mrs {0}, TCR_EL1", out(reg) val, options(nomem, nostack)),
-            "sctlr" => core::arch::asm!("mrs {0}, SCTLR_EL1", out(reg) val, options(nomem, nostack)),
+            "sctlr" => {
+                core::arch::asm!("mrs {0}, SCTLR_EL1", out(reg) val, options(nomem, nostack))
+            }
             "daif" => core::arch::asm!("mrs {0}, DAIF", out(reg) val, options(nomem, nostack)),
             "vbar" => core::arch::asm!("mrs {0}, VBAR_EL1", out(reg) val, options(nomem, nostack)),
             _ => {}

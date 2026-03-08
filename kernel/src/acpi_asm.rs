@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -63,21 +63,21 @@ pub struct AcpiTableHeader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SleepState {
-    S0 = 0,     // Working
-    S1 = 1,     // Sleep
-    S2 = 2,     // Sleep
-    S3 = 3,     // Suspend to RAM
-    S4 = 4,     // Suspend to disk
-    S5 = 5,     // Soft off
+    S0 = 0, // Working
+    S1 = 1, // Sleep
+    S2 = 2, // Sleep
+    S3 = 3, // Suspend to RAM
+    S4 = 4, // Suspend to disk
+    S5 = 5, // Soft off
 }
 
 /// CPU C-states
 #[derive(Debug, Clone, Copy)]
 pub enum CState {
-    C0,         // Active
-    C1,         // Halt
-    C2,         // Stop clock
-    C3,         // Deep sleep
+    C0, // Active
+    C1, // Halt
+    C2, // Stop clock
+    C3, // Deep sleep
 }
 
 /// Cooling policy
@@ -101,40 +101,40 @@ extern "C" {
     pub fn acpi_find_rsdp() -> u32;
     pub fn acpi_checksum(table: *const u8, length: u32) -> u8;
     pub fn acpi_find_table(rsdt_addr: u32, signature: u32) -> u32;
-    
+
     // Register access
     pub fn acpi_read_pm1_control(pm1a_base: u16) -> u16;
     pub fn acpi_write_pm1_control(pm1a_base: u16, value: u16);
     pub fn acpi_read_pm1_status(pm1a_base: u16) -> u16;
     pub fn acpi_write_pm1_status(pm1a_base: u16, value: u16);
-    
+
     // Power state transitions
     pub fn acpi_enter_sleep_state(pm1a_base: u16, sleep_type: u8, sleep_enable: u8);
     pub fn acpi_shutdown(pm1a_base: u16);
     pub fn acpi_reboot(reset_reg_addr: u8);
-    
+
     // Thermal monitoring
     pub fn acpi_read_thermal_zone(ec_data_port: u16, register: u8) -> u32;
     pub fn acpi_set_cooling_policy(policy: u8);
-    
+
     // C-states
     pub fn acpi_enter_c1();
     pub fn acpi_enter_c2(p_lvl2_port: u16);
     pub fn acpi_enter_c3(p_lvl3_port: u16);
-    
+
     // P-states
     pub fn acpi_set_pstate(pstate: u8);
     pub fn acpi_get_pstate() -> u8;
-    
+
     // Battery
     pub fn acpi_get_battery_status() -> u32;
     pub fn acpi_get_battery_capacity() -> u8;
-    
+
     // Events
     pub fn acpi_enable_events(pm1a_base: u16, event_mask: u16);
     pub fn acpi_get_event_status(pm1a_base: u16) -> u16;
     pub fn acpi_clear_event(pm1a_base: u16, event_bits: u16);
-    
+
     // Statistics
     pub fn get_acpi_stats(sleeps: *mut u32, wakes: *mut u32, thermal: *mut u32);
 }
@@ -152,47 +152,52 @@ impl Acpi {
         if rsdp_addr == 0 {
             return None;
         }
-        
+
         let rsdp = unsafe { &*(rsdp_addr as *const Rsdp) };
-        
+
         // Verify checksum
         let sum = unsafe { acpi_checksum(rsdp_addr as *const u8, 20) };
         if sum != 0 {
             return None;
         }
-        
+
         crate::serial_println!("[ACPI] RSDP found at address: 0x{:08X}", rsdp_addr);
-        crate::serial_println!("[ACPI] RSDP signature: {}", 
-            core::str::from_utf8(&rsdp.signature).unwrap_or("<invalid>"));
-        
+        crate::serial_println!(
+            "[ACPI] RSDP signature: {}",
+            core::str::from_utf8(&rsdp.signature).unwrap_or("<invalid>")
+        );
+
         // Copy packed field to avoid unaligned reference
         let rsdt_addr = rsdp.rsdt_address;
         crate::serial_println!("[ACPI] RSDT address: 0x{:08X}", rsdt_addr);
-        
+
         let acpi = Self {
             rsdp_addr,
             rsdt_addr: rsdp.rsdt_address,
-            pm1a_base: 0,  // Should be read from FADT
+            pm1a_base: 0, // Should be read from FADT
         };
-        
+
         // Log ACPI initialization details using rsdp_addr
         crate::serial_println!("[ACPI] Initialized successfully");
-        crate::serial_println!("[ACPI] Memory map: RSDP=0x{:08X}, RSDT=0x{:08X}", 
-            acpi.rsdp_address(), acpi.rsdt_address());
-        
+        crate::serial_println!(
+            "[ACPI] Memory map: RSDP=0x{:08X}, RSDT=0x{:08X}",
+            acpi.rsdp_address(),
+            acpi.rsdt_address()
+        );
+
         Some(acpi)
     }
-    
+
     /// Get RSDP address for diagnostics
     pub fn rsdp_address(&self) -> u32 {
         self.rsdp_addr
     }
-    
+
     /// Get RSDT address
     pub fn rsdt_address(&self) -> u32 {
         self.rsdt_addr
     }
-    
+
     /// Print ACPI table information for diagnostics
     pub fn print_info(&self) {
         crate::serial_println!("[ACPI] Table Addresses:");
@@ -200,7 +205,7 @@ impl Acpi {
         crate::serial_println!("[ACPI]   RSDT: 0x{:08X}", self.rsdt_addr);
         crate::serial_println!("[ACPI]   PM1a Control: 0x{:04X}", self.pm1a_base);
     }
-    
+
     pub fn find_table(&self, signature: &[u8; 4]) -> Option<u32> {
         let sig = u32::from_le_bytes(*signature);
         let addr = unsafe { acpi_find_table(self.rsdt_addr, sig) };
@@ -210,15 +215,15 @@ impl Acpi {
             Some(addr)
         }
     }
-    
+
     pub fn shutdown(&self) {
         unsafe { acpi_shutdown(self.pm1a_base) }
     }
-    
+
     pub fn reboot(&self) {
         unsafe { acpi_reboot(0) }
     }
-    
+
     pub fn enter_sleep(&self, state: SleepState) {
         unsafe {
             acpi_enter_sleep_state(self.pm1a_base, state as u8, 1);
@@ -233,19 +238,19 @@ impl CpuPower {
     pub fn enter_c1() {
         unsafe { acpi_enter_c1() }
     }
-    
+
     pub fn enter_c2(port: u16) {
         unsafe { acpi_enter_c2(port) }
     }
-    
+
     pub fn enter_c3(port: u16) {
         unsafe { acpi_enter_c3(port) }
     }
-    
+
     pub fn set_pstate(state: u8) {
         unsafe { acpi_set_pstate(state) }
     }
-    
+
     pub fn get_pstate() -> u8 {
         unsafe { acpi_get_pstate() }
     }
@@ -262,7 +267,7 @@ impl Battery {
             critical: (status & 2) != 0,
         }
     }
-    
+
     pub fn capacity() -> u8 {
         unsafe { acpi_get_battery_capacity() }
     }
@@ -294,7 +299,11 @@ impl AcpiStatsAccessor {
     pub fn get() -> AcpiStats {
         let mut stats = AcpiStats::default();
         unsafe {
-            get_acpi_stats(&mut stats.sleeps, &mut stats.wakes, &mut stats.thermal_events);
+            get_acpi_stats(
+                &mut stats.sleeps,
+                &mut stats.wakes,
+                &mut stats.thermal_events,
+            );
         }
         stats
     }

@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -49,11 +49,11 @@
 
 #![allow(dead_code)]
 
+pub use crate::ipc::ProcessId; // Re-export for syscall module
+use crate::ipc::{ChannelCapability, ChannelId, ChannelRights};
+use crate::security::{self, AuditEntry, SecurityEvent};
 use core::fmt;
 use spin::Mutex;
-pub use crate::ipc::ProcessId;  // Re-export for syscall module
-use crate::ipc::{ChannelCapability, ChannelId, ChannelRights};
-use crate::security::{self, SecurityEvent, AuditEntry};
 
 // ============================================================================
 // Capability Types and Rights
@@ -67,14 +67,14 @@ pub enum CapabilityType {
     Channel = 0,
     Task = 1,
     Spawner = 2,
-    
+
     // System service capabilities
     Console = 10,
     Clock = 11,
     Store = 12,
     Filesystem = 13,
     ServicePointer = 14,
-    
+
     // Future: Network, Device, etc.
     Reserved = 255,
 }
@@ -107,27 +107,27 @@ impl Rights {
     pub const CHANNEL_RECEIVE: u32 = 1 << 1;
     pub const CHANNEL_CLONE_SENDER: u32 = 1 << 2;
     pub const CHANNEL_CREATE: u32 = 1 << 3;
-    
+
     // Task rights
     pub const TASK_SIGNAL: u32 = 1 << 4;
     pub const TASK_JOIN: u32 = 1 << 5;
-    
+
     // Spawner rights
     pub const SPAWNER_SPAWN: u32 = 1 << 6;
-    
+
     // Console rights
     pub const CONSOLE_WRITE: u32 = 1 << 7;
     pub const CONSOLE_READ: u32 = 1 << 8;
-    
+
     // Clock rights
     pub const CLOCK_READ_MONOTONIC: u32 = 1 << 9;
-    
+
     // Store rights
     pub const STORE_APPEND_LOG: u32 = 1 << 10;
     pub const STORE_READ_LOG: u32 = 1 << 11;
     pub const STORE_WRITE_SNAPSHOT: u32 = 1 << 12;
     pub const STORE_READ_SNAPSHOT: u32 = 1 << 13;
-    
+
     // Filesystem rights
     pub const FS_READ: u32 = 1 << 14;
     pub const FS_WRITE: u32 = 1 << 15;
@@ -138,24 +138,26 @@ impl Rights {
     pub const SERVICE_INVOKE: u32 = 1 << 18;
     pub const SERVICE_DELEGATE: u32 = 1 << 19;
     pub const SERVICE_INTROSPECT: u32 = 1 << 20;
-    
+
     pub const NONE: u32 = 0;
     pub const ALL: u32 = 0xFFFFFFFF;
-    
+
     pub const fn new(bits: u32) -> Self {
         Rights { bits }
     }
-    
+
     pub const fn contains(&self, right: u32) -> bool {
         (self.bits & right) == right
     }
-    
+
     pub const fn is_subset_of(&self, other: &Rights) -> bool {
         (self.bits & !other.bits) == 0
     }
-    
+
     pub fn attenuate(&self, mask: u32) -> Self {
-        Rights { bits: self.bits & mask }
+        Rights {
+            bits: self.bits & mask,
+        }
     }
 
     pub const fn bits(&self) -> u32 {
@@ -207,33 +209,37 @@ impl OreuliaCapability {
             token: 0,
         }
     }
-    
+
     /// Attenuate capability to fewer rights (subset principle)
     pub fn attenuate(&self, new_rights: Rights) -> Result<Self, CapabilityError> {
         if !new_rights.is_subset_of(&self.rights) {
             return Err(CapabilityError::InvalidAttenuation);
         }
-        
+
         let mut attenuated = *self;
         attenuated.rights = new_rights;
         Ok(attenuated)
     }
-    
+
     /// Check if this capability grants a specific right
     pub fn has_right(&self, right: u32) -> bool {
         self.rights.contains(right)
     }
-    
+
     /// Verify capability is valid for an operation
-    pub fn verify(&self, required_type: CapabilityType, required_right: u32) -> Result<(), CapabilityError> {
+    pub fn verify(
+        &self,
+        required_type: CapabilityType,
+        required_right: u32,
+    ) -> Result<(), CapabilityError> {
         if self.cap_type != required_type {
             return Err(CapabilityError::TypeMismatch);
         }
-        
+
         if !self.has_right(required_right) {
             return Err(CapabilityError::InsufficientRights);
         }
-        
+
         Ok(())
     }
 
@@ -495,7 +501,7 @@ impl CapabilityTable {
             owner,
         }
     }
-    
+
     /// Install a capability (creation or transfer)
     pub fn install(&mut self, cap: OreuliaCapability) -> Result<u32, CapabilityError> {
         // Find empty slot
@@ -507,17 +513,17 @@ impl CapabilityTable {
                 installed.granted_at = crate::pit::get_ticks() as u64;
                 installed.sign(self.owner);
                 *entry = Some(installed);
-                
+
                 // Audit capability installation
                 security::security().log_event(
                     AuditEntry::new(SecurityEvent::CapabilityCreated, self.owner, cap_id)
-                        .with_context(cap.object_id)
+                        .with_context(cap.object_id),
                 );
-                
+
                 return Ok(cap_id);
             }
         }
-        
+
         Err(CapabilityError::TableFull)
     }
 
@@ -546,7 +552,7 @@ impl CapabilityTable {
         }
         self.install(cap)
     }
-    
+
     /// Lookup capability by cap_id
     pub fn lookup(&self, cap_id: u32) -> Result<&OreuliaCapability, CapabilityError> {
         if let Some(entry) = self
@@ -556,9 +562,11 @@ impl CapabilityTable {
         {
             if let Some(cap) = entry.as_ref() {
                 if !cap.verify_token(self.owner) {
-                    security::security().log_event(
-                        AuditEntry::new(SecurityEvent::InvalidCapability, self.owner, cap_id),
-                    );
+                    security::security().log_event(AuditEntry::new(
+                        SecurityEvent::InvalidCapability,
+                        self.owner,
+                        cap_id,
+                    ));
                     return Err(CapabilityError::InvalidCapability);
                 }
                 return Ok(cap);
@@ -566,42 +574,46 @@ impl CapabilityTable {
         }
         Err(CapabilityError::InvalidCapability)
     }
-    
+
     /// Remove capability (for transfer or revocation)
     pub fn remove(&mut self, cap_id: u32) -> Result<OreuliaCapability, CapabilityError> {
         for entry in self.entries.iter_mut() {
             if let Some(cap) = entry {
                 if cap.cap_id == cap_id {
                     if !cap.verify_token(self.owner) {
-                        security::security().log_event(
-                            AuditEntry::new(SecurityEvent::InvalidCapability, self.owner, cap_id),
-                        );
+                        security::security().log_event(AuditEntry::new(
+                            SecurityEvent::InvalidCapability,
+                            self.owner,
+                            cap_id,
+                        ));
                         return Err(CapabilityError::InvalidCapability);
                     }
                     let removed = *cap;
                     *entry = None;
-                    
+
                     // Audit capability removal
-                    security::security().log_event(
-                        AuditEntry::new(SecurityEvent::CapabilityRevoked, self.owner, cap_id)
-                    );
-                    
+                    security::security().log_event(AuditEntry::new(
+                        SecurityEvent::CapabilityRevoked,
+                        self.owner,
+                        cap_id,
+                    ));
+
                     return Ok(removed);
                 }
             }
         }
-        
+
         Err(CapabilityError::InvalidCapability)
     }
-    
+
     /// Attenuate an existing capability
     pub fn attenuate(&mut self, cap_id: u32, new_rights: Rights) -> Result<u32, CapabilityError> {
         let original = self.lookup(cap_id)?;
         let attenuated = original.attenuate(new_rights)?;
-        
+
         self.install(attenuated)
     }
-    
+
     /// Count capabilities by type
     pub fn count_by_type(&self, cap_type: CapabilityType) -> usize {
         self.entries
@@ -609,14 +621,19 @@ impl CapabilityTable {
             .filter(|e| e.as_ref().map_or(false, |c| c.cap_type == cap_type))
             .count()
     }
-    
+
     /// Get all capabilities (for auditing)
     pub fn list_all(&self) -> impl Iterator<Item = &OreuliaCapability> {
         self.entries.iter().filter_map(|e| e.as_ref())
     }
-    
+
     /// Create channel capability from ChannelId
-    pub fn create_channel_capability(&mut self, channel: ChannelId, rights: Rights, origin: ProcessId) -> Result<u32, CapabilityError> {
+    pub fn create_channel_capability(
+        &mut self,
+        channel: ChannelId,
+        rights: Rights,
+        origin: ProcessId,
+    ) -> Result<u32, CapabilityError> {
         let cap = OreuliaCapability::new(
             0,
             channel.0 as u64, // Use channel ID as object ID
@@ -707,21 +724,20 @@ pub struct CapabilityManager {
 impl CapabilityManager {
     pub const fn new() -> Self {
         CapabilityManager {
-            tables: Mutex::new([None, None, None, None, None, None, None, None,
-                               None, None, None, None, None, None, None, None,
-                               None, None, None, None, None, None, None, None,
-                               None, None, None, None, None, None, None, None,
-                               None, None, None, None, None, None, None, None,
-                               None, None, None, None, None, None, None, None,
-                               None, None, None, None, None, None, None, None,
-                               None, None, None, None, None, None, None, None]),
+            tables: Mutex::new([
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None,
+            ]),
             next_object_id: Mutex::new(1),
             remote_leases: Mutex::new([None; MAX_REMOTE_LEASES]),
             quarantined_caps: Mutex::new([None; MAX_QUARANTINED_CAPS]),
             next_remote_cap_id: Mutex::new(1),
         }
     }
-    
+
     /// Initialize capability table for a task
     pub fn init_task(&self, pid: ProcessId) {
         let mut tables = self.tables.lock();
@@ -773,12 +789,11 @@ impl CapabilityManager {
             };
             *entry = None;
             security::security().log_event(
-                AuditEntry::new(SecurityEvent::CapabilityRevoked, pid, 0)
-                    .with_context(token_id),
+                AuditEntry::new(SecurityEvent::CapabilityRevoked, pid, 0).with_context(token_id),
             );
         }
     }
-    
+
     /// Create a new object and return its ID
     pub fn create_object(&self) -> u64 {
         let mut next = self.next_object_id.lock();
@@ -786,7 +801,7 @@ impl CapabilityManager {
         *next += 1;
         id
     }
-    
+
     /// Grant a capability to a task
     pub fn grant_capability(
         &self,
@@ -797,7 +812,7 @@ impl CapabilityManager {
         origin: ProcessId,
     ) -> Result<u32, CapabilityError> {
         let mut tables = self.tables.lock();
-        
+
         if let Some(table) = tables[pid.0 as usize].as_mut() {
             let cap = OreuliaCapability::new(0, object_id, cap_type, rights, origin);
             let cap_id = table.install(cap)?;
@@ -817,7 +832,7 @@ impl CapabilityManager {
             Err(CapabilityError::TaskNotFound)
         }
     }
-    
+
     /// Transfer capability from one task to another
     pub fn transfer_capability(
         &self,
@@ -826,30 +841,30 @@ impl CapabilityManager {
         cap_id: u32,
     ) -> Result<u32, CapabilityError> {
         let mut tables = self.tables.lock();
-        
+
         // Remove from source
         let cap = if let Some(from_table) = tables[from_pid.0 as usize].as_mut() {
             from_table.remove(cap_id)?
         } else {
             return Err(CapabilityError::TaskNotFound);
         };
-        
+
         // Install in destination
         if let Some(to_table) = tables[to_pid.0 as usize].as_mut() {
             let new_cap_id = to_table.install(cap)?;
-            
+
             // Audit transfer
             security::security().log_event(
                 AuditEntry::new(SecurityEvent::CapabilityTransferred, from_pid, cap_id)
-                    .with_context(to_pid.0 as u64)
+                    .with_context(to_pid.0 as u64),
             );
-            
+
             Ok(new_cap_id)
         } else {
             Err(CapabilityError::TaskNotFound)
         }
     }
-    
+
     /// Verify capability and return object ID if valid
     pub fn verify_and_get_object(
         &self,
@@ -859,7 +874,7 @@ impl CapabilityManager {
         required_right: u32,
     ) -> Result<u64, CapabilityError> {
         let tables = self.tables.lock();
-        
+
         if let Some(table) = tables[pid.0 as usize].as_ref() {
             let cap = table.lookup(cap_id)?;
             verify_capability_access(
@@ -871,19 +886,19 @@ impl CapabilityManager {
                     required_right,
                 },
             )?;
-            
+
             // Audit capability use
             security::security().log_event(
                 AuditEntry::new(SecurityEvent::CapabilityUsed, pid, cap_id)
-                    .with_context(cap.object_id)
+                    .with_context(cap.object_id),
             );
-            
+
             Ok(cap.object_id)
         } else {
             Err(CapabilityError::TaskNotFound)
         }
     }
-    
+
     /// Attenuate a capability
     pub fn attenuate_capability(
         &self,
@@ -892,27 +907,27 @@ impl CapabilityManager {
         new_rights: Rights,
     ) -> Result<u32, CapabilityError> {
         let mut tables = self.tables.lock();
-        
+
         if let Some(table) = tables[pid.0 as usize].as_mut() {
             table.attenuate(cap_id, new_rights)
         } else {
             Err(CapabilityError::TaskNotFound)
         }
     }
-    
+
     /// Get capability statistics for auditing
     pub fn get_statistics(&self, pid: ProcessId) -> (usize, usize, usize) {
         let tables = self.tables.lock();
-        
+
         if let Some(table) = tables[pid.0 as usize].as_ref() {
             let total = table.list_all().count();
             let channels = table.count_by_type(CapabilityType::Channel);
-            let services = table.count_by_type(CapabilityType::Console) 
+            let services = table.count_by_type(CapabilityType::Console)
                 + table.count_by_type(CapabilityType::Clock)
                 + table.count_by_type(CapabilityType::Store)
                 + table.count_by_type(CapabilityType::Filesystem)
                 + table.count_by_type(CapabilityType::ServicePointer);
-            
+
             (total, channels, services)
         } else {
             (0, 0, 0)
@@ -929,7 +944,9 @@ impl CapabilityManager {
         let mut i = 0usize;
         while i < quarantined.len() {
             match quarantined[i] {
-                Some(existing) if existing.owner_pid == owner_pid && existing.cap.cap_id == cap.cap_id => {
+                Some(existing)
+                    if existing.owner_pid == owner_pid && existing.cap.cap_id == cap.cap_id =>
+                {
                     slot_idx = Some(i);
                     break;
                 }
@@ -1275,8 +1292,10 @@ impl CapabilityManager {
         }
 
         if let Some(prev) = previous {
-            let same_mapping =
-                !owner_any && !prev.owner_any && prev.owner_pid == owner_pid && prev.mapped_cap_id == mapped_cap_id;
+            let same_mapping = !owner_any
+                && !prev.owner_any
+                && prev.owner_pid == owner_pid
+                && prev.mapped_cap_id == mapped_cap_id;
             if prev.mapped_cap_id != 0 && !same_mapping {
                 self.remove_remote_cap_mapping(&mut tables, prev.owner_pid, prev.mapped_cap_id);
             }
@@ -1415,7 +1434,12 @@ pub fn resolve_channel_capability(
     access: ChannelAccess,
 ) -> Result<ChannelCapability, &'static str> {
     if pid.0 == 0 {
-        return Ok(ChannelCapability::new(0, channel_id, ChannelRights::all(), pid));
+        return Ok(ChannelCapability::new(
+            0,
+            channel_id,
+            ChannelRights::all(),
+            pid,
+        ));
     }
 
     let required_right = match access {
@@ -1523,8 +1547,7 @@ pub fn check_capability(
         );
         sec.intent_capability_denied(pid, cap_type, required_rights.bits, object_id);
         sec.log_event(
-            AuditEntry::new(SecurityEvent::CapabilityRevoked, pid, 0)
-                .with_context(revoked as u64),
+            AuditEntry::new(SecurityEvent::CapabilityRevoked, pid, 0).with_context(revoked as u64),
         );
         sec.log_event(
             AuditEntry::new(SecurityEvent::PermissionDenied, pid, 0).with_context(object_id),
@@ -1583,7 +1606,7 @@ pub fn check_capability(
                             // Audit successful capability use
                             sec.log_event(
                                 AuditEntry::new(SecurityEvent::CapabilityUsed, pid, cap.cap_id)
-                                    .with_context(cap.object_id)
+                                    .with_context(cap.object_id),
                             );
                             return true;
                         }
@@ -1612,9 +1635,7 @@ pub fn check_capability(
 
     // No matching local capability or remote lease found
     sec.intent_capability_denied(pid, cap_type, required_rights.bits, object_id);
-    sec.log_event(
-        AuditEntry::new(SecurityEvent::PermissionDenied, pid, 0).with_context(object_id),
-    );
+    sec.log_event(AuditEntry::new(SecurityEvent::PermissionDenied, pid, 0).with_context(object_id));
     false
 }
 
@@ -1637,7 +1658,11 @@ pub fn install_remote_lease_from_capnet_token(
     };
     let enforce_use_budget =
         (token.constraints_flags & crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE) != 0;
-    let uses_remaining = if enforce_use_budget { token.max_uses } else { 0 };
+    let uses_remaining = if enforce_use_budget {
+        token.max_uses
+    } else {
+        0
+    };
 
     CAPABILITY_MANAGER
         .install_remote_lease(
@@ -1779,9 +1804,13 @@ impl CapabilityManager {
         }
         Ok(())
     }
-    
+
     /// Query capability information (syscall wrapper)
-    pub fn query_capability(&self, pid: ProcessId, cap_id: u32) -> Result<(u32, u64), &'static str> {
+    pub fn query_capability(
+        &self,
+        pid: ProcessId,
+        cap_id: u32,
+    ) -> Result<(u32, u64), &'static str> {
         let idx = pid.0 as usize;
         if idx >= MAX_TASKS {
             return Err("Task not found");
@@ -1794,11 +1823,7 @@ impl CapabilityManager {
     }
 
     /// Revoke all capabilities referencing a specific object/type pair across all tasks.
-    pub fn revoke_object_capabilities(
-        &self,
-        cap_type: CapabilityType,
-        object_id: u64,
-    ) -> usize {
+    pub fn revoke_object_capabilities(&self, cap_type: CapabilityType, object_id: u64) -> usize {
         let mut tables = self.tables.lock();
         let mut revoked = 0usize;
 
@@ -1931,9 +1956,7 @@ pub fn export_capability_to_ipc(
 ) -> Result<crate::ipc::Capability, &'static str> {
     let cap = capability_manager().get_capability(owner, cap_id)?;
 
-    if cap.cap_type == CapabilityType::ServicePointer
-        && !cap.has_right(Rights::SERVICE_DELEGATE)
-    {
+    if cap.cap_type == CapabilityType::ServicePointer && !cap.has_right(Rights::SERVICE_DELEGATE) {
         return Err("Service pointer requires delegate right for transfer");
     }
 
@@ -1962,12 +1985,11 @@ pub fn import_capability_from_ipc(
         return Err("Invalid IPC capability token");
     }
 
-    let cap_type = cap_type_from_ipc(cap.cap_type, cap.extra)
-        .ok_or("Unsupported IPC capability type")?;
+    let cap_type =
+        cap_type_from_ipc(cap.cap_type, cap.extra).ok_or("Unsupported IPC capability type")?;
     let object_id = object_id_from_ipc_cap(cap);
 
-    if cap_type == CapabilityType::ServicePointer
-        && !crate::wasm::service_pointer_exists(object_id)
+    if cap_type == CapabilityType::ServicePointer && !crate::wasm::service_pointer_exists(object_id)
     {
         return Err("Unknown service pointer object");
     }

@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -50,11 +50,26 @@ const TEMPORAL_NETWORK_CONFIG_BYTES: usize = 32;
 #[derive(Clone, Copy)]
 enum NetRequest {
     None,
-    DnsResolve { len: u8, data: [u8; MAX_STR] },
-    TcpConnect { remote_ip: Ipv4Addr, remote_port: u16 },
-    TcpSend { conn_id: u16, len: u16, data: [u8; MAX_TCP_IO] },
-    TcpRecv { conn_id: u16, max_len: u16 },
-    TcpClose { conn_id: u16 },
+    DnsResolve {
+        len: u8,
+        data: [u8; MAX_STR],
+    },
+    TcpConnect {
+        remote_ip: Ipv4Addr,
+        remote_port: u16,
+    },
+    TcpSend {
+        conn_id: u16,
+        len: u16,
+        data: [u8; MAX_TCP_IO],
+    },
+    TcpRecv {
+        conn_id: u16,
+        max_len: u16,
+    },
+    TcpClose {
+        conn_id: u16,
+    },
     TemporalApplyTcpListener {
         listener_id: u16,
         port: u16,
@@ -80,7 +95,9 @@ enum NetRequest {
         flags: u8,
         event: u8,
     },
-    HttpServerStart { port: u16 },
+    HttpServerStart {
+        port: u16,
+    },
     HttpServerStop,
     GetInfo,
     CapNetHello {
@@ -191,12 +208,13 @@ fn handle_request(stack: &mut NetworkStack) {
                 Err(e) => NetResponse::Err(e),
             }
         }
-        NetRequest::TcpConnect { remote_ip, remote_port } => {
-            match stack.tcp_connect(remote_ip, remote_port) {
-                Ok(conn_id) => NetResponse::U64(conn_id as u64),
-                Err(e) => NetResponse::Err(e),
-            }
-        }
+        NetRequest::TcpConnect {
+            remote_ip,
+            remote_port,
+        } => match stack.tcp_connect(remote_ip, remote_port) {
+            Ok(conn_id) => NetResponse::U64(conn_id as u64),
+            Err(e) => NetResponse::Err(e),
+        },
         NetRequest::TcpSend { conn_id, len, data } => {
             let len = core::cmp::min(len as usize, data.len());
             match stack.tcp_send(conn_id, &data[..len]) {
@@ -326,10 +344,13 @@ fn handle_request(stack: &mut NetworkStack) {
             dest_port,
             token_id,
             ack,
-        } => match stack.capnet_send_token_accept(dest_ip, dest_port, peer_device_id, token_id, ack) {
-            Ok(seq) => NetResponse::U64(seq as u64),
-            Err(e) => NetResponse::Err(e),
-        },
+        } => {
+            match stack.capnet_send_token_accept(dest_ip, dest_port, peer_device_id, token_id, ack)
+            {
+                Ok(seq) => NetResponse::U64(seq as u64),
+                Err(e) => NetResponse::Err(e),
+            }
+        }
         NetRequest::CapNetTokenRevoke {
             peer_device_id,
             dest_ip,

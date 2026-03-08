@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -128,7 +128,11 @@ fn read_struct<T: Copy>(bytes: &[u8], offset: usize) -> Result<T, &'static str> 
     }
     let mut tmp = MaybeUninit::<T>::uninit();
     unsafe {
-        ptr::copy_nonoverlapping(bytes.as_ptr().add(offset), tmp.as_mut_ptr() as *mut u8, size_of::<T>());
+        ptr::copy_nonoverlapping(
+            bytes.as_ptr().add(offset),
+            tmp.as_mut_ptr() as *mut u8,
+            size_of::<T>(),
+        );
         Ok(tmp.assume_init())
     }
 }
@@ -158,7 +162,12 @@ fn align_up(value: u32, align: u32) -> u32 {
     (value + align - 1) & !(align - 1)
 }
 
-fn map_segment(space: &mut AddressSpace, vaddr: u32, memsz: u32, writable: bool) -> Result<(), &'static str> {
+fn map_segment(
+    space: &mut AddressSpace,
+    vaddr: u32,
+    memsz: u32,
+    writable: bool,
+) -> Result<(), &'static str> {
     if memsz == 0 {
         return Ok(());
     }
@@ -207,9 +216,15 @@ fn parse_program_headers(bytes: &[u8], hdr: &Elf32Ehdr) -> Result<Vec<Elf32Phdr>
     Ok(phdrs)
 }
 
-fn collect_dynamic(phdrs: &[Elf32Phdr], bytes: &[u8], base: u32) -> Result<Option<Vec<Elf32Dyn>>, &'static str> {
+fn collect_dynamic(
+    phdrs: &[Elf32Phdr],
+    bytes: &[u8],
+    base: u32,
+) -> Result<Option<Vec<Elf32Dyn>>, &'static str> {
     let dyn_ph = phdrs.iter().find(|p| p.p_type == PT_DYNAMIC);
-    let Some(dyn_ph) = dyn_ph else { return Ok(None); };
+    let Some(dyn_ph) = dyn_ph else {
+        return Ok(None);
+    };
     let dyn_off = dyn_ph.p_offset as usize;
     let dyn_len = dyn_ph.p_filesz as usize;
     if dyn_off + dyn_len > bytes.len() {
@@ -264,8 +279,8 @@ fn apply_relocations(
             DT_RELSZ => rel_size = d.d_val,
             DT_RELENT => rel_ent = d.d_val,
             DT_RELA | DT_RELASZ => has_rela = true,
-            DT_JMPREL => {},
-            _ => {},
+            DT_JMPREL => {}
+            _ => {}
         }
     }
 
@@ -286,19 +301,16 @@ fn apply_relocations(
     }
 
     let old = crate::arch::mmu::current_page_table_root_addr();
-    unsafe { space.activate(); }
+    unsafe {
+        space.activate();
+    }
 
     let count = rel_size / rel_ent;
     for i in 0..count {
         let rel_entry_addr = rel_table_start
             .checked_add(i.saturating_mul(rel_ent))
             .ok_or("REL entry address overflow")?;
-        if !addr_in_load_ranges(
-            phdrs,
-            base,
-            rel_entry_addr,
-            size_of::<Elf32Rel>() as u32,
-        ) {
+        if !addr_in_load_ranges(phdrs, base, rel_entry_addr, size_of::<Elf32Rel>() as u32) {
             let _ = crate::arch::mmu::set_page_table_root(old);
             return Err("REL entry outside load segments");
         }
@@ -340,7 +352,11 @@ pub fn load_elf32(bytes: &[u8]) -> Result<LoadedElf, &'static str> {
         return Err("PT_INTERP not supported (no dynamic linker)");
     }
 
-    let base = if hdr.e_type == ET_DYN { DEFAULT_BASE } else { 0 };
+    let base = if hdr.e_type == ET_DYN {
+        DEFAULT_BASE
+    } else {
+        0
+    };
 
     let mut space = AddressSpace::new()?;
 
@@ -400,10 +416,16 @@ pub fn spawn_elf_process(name: &str, bytes: &[u8]) -> Result<(), &'static str> {
     let pid = process::process_manager()
         .spawn(name, process::current_pid())
         .map_err(|_| "Failed to create process")?;
-    let mut proc = process::process_manager().get(pid).ok_or("Process not found")?;
+    let mut proc = process::process_manager()
+        .get(pid)
+        .ok_or("Process not found")?;
     proc.priority = ProcessPriority::Normal;
-    quantum_scheduler::scheduler().lock()
-        .add_user_process(proc, Box::new(loaded.space), loaded.entry, loaded.user_stack)?;
+    quantum_scheduler::scheduler().lock().add_user_process(
+        proc,
+        Box::new(loaded.space),
+        loaded.entry,
+        loaded.user_stack,
+    )?;
     Ok(())
 }
 

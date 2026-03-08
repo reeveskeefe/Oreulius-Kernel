@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -42,9 +42,9 @@
 
 #![allow(dead_code)]
 
+use crate::ipc::{ChannelId, ProcessId};
 use core::fmt;
 use spin::Mutex;
-use crate::ipc::{ChannelId, ProcessId};
 
 /// Maximum number of registered services
 pub const MAX_SERVICES: usize = 64;
@@ -266,7 +266,7 @@ impl IntroducerCapability {
     pub fn root(cap_id: u32, owner: ProcessId) -> Self {
         IntroducerCapability {
             cap_id,
-            allowed_services: u32::MAX, // All services
+            allowed_services: u32::MAX,    // All services
             max_introductions: usize::MAX, // Unlimited
             introductions_used: 0,
             scope: IntroductionScope::Global,
@@ -502,15 +502,17 @@ impl ServiceRegistry {
         service_type: ServiceType,
         namespace: ServiceNamespace,
     ) -> Option<&mut ServiceOffer> {
-        self.services
-            .iter_mut()
-            .find_map(|s| s.as_mut().filter(|svc| {
-                svc.service_type == service_type && svc.namespace == namespace
-            }))
+        self.services.iter_mut().find_map(|s| {
+            s.as_mut()
+                .filter(|svc| svc.service_type == service_type && svc.namespace == namespace)
+        })
     }
 
     /// Create a root introducer
-    pub fn create_root_introducer(&mut self, owner: ProcessId) -> Result<IntroducerCapability, RegistryError> {
+    pub fn create_root_introducer(
+        &mut self,
+        owner: ProcessId,
+    ) -> Result<IntroducerCapability, RegistryError> {
         let cap_id = self.next_introducer_id;
         self.next_introducer_id += 1;
 
@@ -590,7 +592,7 @@ impl ServiceRegistry {
         // Record the introduction and extract service info before updating introducer
         introducer_cap.record_introduction();
         service.increment_connections();
-        
+
         let service_channel = service.channel;
         let service_metadata = service.metadata;
 
@@ -682,7 +684,10 @@ impl RegistryService {
     }
 
     /// Create a root introducer
-    pub fn create_root_introducer(&self, owner: ProcessId) -> Result<IntroducerCapability, RegistryError> {
+    pub fn create_root_introducer(
+        &self,
+        owner: ProcessId,
+    ) -> Result<IntroducerCapability, RegistryError> {
         self.registry.lock().create_root_introducer(owner)
     }
 
@@ -694,12 +699,9 @@ impl RegistryService {
         scope: IntroductionScope,
         owner: ProcessId,
     ) -> Result<IntroducerCapability, RegistryError> {
-        self.registry.lock().create_introducer(
-            allowed_services,
-            max_introductions,
-            scope,
-            owner,
-        )
+        self.registry
+            .lock()
+            .create_introducer(allowed_services, max_introductions, scope, owner)
     }
 
     /// Perform an introduction
@@ -723,18 +725,27 @@ impl RegistryService {
     }
 
     /// List services (for debugging) - Returns array with count
-    pub fn list_services(&self) -> ([(ServiceType, ServiceNamespace, usize); MAX_SERVICES], usize) {
+    pub fn list_services(
+        &self,
+    ) -> (
+        [(ServiceType, ServiceNamespace, usize); MAX_SERVICES],
+        usize,
+    ) {
         let registry = self.registry.lock();
         let mut result = [(ServiceType::Filesystem, ServiceNamespace::Production, 0); MAX_SERVICES];
         let mut count = 0;
-        
+
         for service in registry.list_services() {
             if count < MAX_SERVICES {
-                result[count] = (service.service_type, service.namespace, service.active_connections);
+                result[count] = (
+                    service.service_type,
+                    service.namespace,
+                    service.active_connections,
+                );
                 count += 1;
             }
         }
-        
+
         (result, count)
     }
 }
@@ -805,26 +816,21 @@ pub fn temporal_apply_service_event(
 
     match event {
         crate::temporal::TEMPORAL_REGISTRY_EVENT_REGISTER => {
-            let metadata =
-                ServiceMetadata::new(version, max_connections as usize, ProcessId(provider_pid_raw));
-            let mut offer = ServiceOffer::new(
-                service_type,
-                ChannelId(channel_raw),
-                namespace,
-                metadata,
+            let metadata = ServiceMetadata::new(
+                version,
+                max_connections as usize,
+                ProcessId(provider_pid_raw),
             );
-            offer.active_connections = core::cmp::min(
-                active_connections as usize,
-                metadata.max_connections,
-            );
+            let mut offer =
+                ServiceOffer::new(service_type, ChannelId(channel_raw), namespace, metadata);
+            offer.active_connections =
+                core::cmp::min(active_connections as usize, metadata.max_connections);
 
             match registry().register_service(offer) {
                 Ok(()) => Ok(()),
                 Err(RegistryError::ServiceAlreadyRegistered) => {
                     let _ = registry().unregister_service(service_type, namespace);
-                    registry()
-                        .register_service(offer)
-                        .map_err(registry_err)
+                    registry().register_service(offer).map_err(registry_err)
                 }
                 Err(e) => Err(registry_err(e)),
             }

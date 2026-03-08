@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -44,12 +44,12 @@
 
 extern crate alloc;
 
+use crate::ipc::ProcessId;
+use crate::net_reactor;
+use crate::pci::PciDevice;
+use crate::wifi::{WifiNetwork, WifiState};
 use alloc::vec::Vec;
 use spin::Mutex;
-use crate::ipc::ProcessId;
-use crate::wifi::{WifiNetwork, WifiState};
-use crate::pci::PciDevice;
-use crate::net_reactor;
 
 const TEMPORAL_NETWORK_LEGACY_SCHEMA_V1: u8 = 1;
 const TEMPORAL_NETWORK_LEGACY_HEADER_BYTES: usize = 32;
@@ -312,9 +312,11 @@ impl NetworkService {
         let count = wifi.scan()?;
         Ok(count)
     }
-    
+
     /// Get WiFi scan results (call after wifi_scan)
-    pub fn wifi_get_scan_results(&self) -> Result<[WifiNetwork; crate::wifi::MAX_SCAN_RESULTS], NetworkError> {
+    pub fn wifi_get_scan_results(
+        &self,
+    ) -> Result<[WifiNetwork; crate::wifi::MAX_SCAN_RESULTS], NetworkError> {
         if !self.wifi_enabled {
             return Err(NetworkError::WiFiNotEnabled);
         }
@@ -322,13 +324,13 @@ impl NetworkService {
         let wifi = crate::wifi::wifi().lock();
         Ok(*wifi.scan_results_array())
     }
-    
+
     /// Get WiFi scan result count
     pub fn wifi_scan_count(&self) -> usize {
         if !self.wifi_enabled {
             return 0;
         }
-        
+
         let wifi = crate::wifi::wifi().lock();
         wifi.scan_count()
     }
@@ -367,7 +369,8 @@ impl NetworkService {
         for i in 0..self.dns_cache_count {
             let entry = &self.dns_cache[i];
             if entry.valid && entry.domain_len == domain.len() {
-                let cached_domain = core::str::from_utf8(&entry.domain[..entry.domain_len]).unwrap_or("");
+                let cached_domain =
+                    core::str::from_utf8(&entry.domain[..entry.domain_len]).unwrap_or("");
                 if cached_domain == domain {
                     return Ok(entry.ip);
                 }
@@ -385,7 +388,8 @@ impl NetworkService {
 
     /// Perform actual DNS query
     fn perform_dns_query(&self, domain: &str) -> Result<Ipv4Addr, NetworkError> {
-        let resolved = net_reactor::dns_resolve(domain).map_err(|_| NetworkError::DnsResolutionFailed)?;
+        let resolved =
+            net_reactor::dns_resolve(domain).map_err(|_| NetworkError::DnsResolutionFailed)?;
         Ok(Ipv4Addr::from_bytes(resolved.0))
     }
 
@@ -471,14 +475,23 @@ impl NetworkService {
     }
 
     /// Send HTTP request over TCP connection
-    fn http_send_request(&self, conn_id: u32, method: HttpMethod, host: &str, path: &str) -> Result<HttpResponse, NetworkError> {
+    fn http_send_request(
+        &self,
+        conn_id: u32,
+        method: HttpMethod,
+        host: &str,
+        path: &str,
+    ) -> Result<HttpResponse, NetworkError> {
         // Find connection
-        let conn = self.tcp_connections.iter()
+        let conn = self
+            .tcp_connections
+            .iter()
             .find(|c| c.id == conn_id)
             .ok_or(NetworkError::ConnectionNotFound)?;
 
         // Build HTTP request
-        let (request, request_len) = self.build_http_request(method, host, path, conn.remote_addr.port);
+        let (request, request_len) =
+            self.build_http_request(method, host, path, conn.remote_addr.port);
         if request_len == 0 {
             return Err(NetworkError::SendFailed);
         }
@@ -489,19 +502,25 @@ impl NetworkService {
         // Send via network reactor (single-owner TCP stack)
         self.send_tcp_data(conn, &request[..request_len])?;
 
-        crate::serial_println!("[HTTP] Sent {} bytes via TCP to {}:{}",
-            request_len, conn.remote_addr.ip.0[0], conn.remote_addr.port);
+        crate::serial_println!(
+            "[HTTP] Sent {} bytes via TCP to {}:{}",
+            request_len,
+            conn.remote_addr.ip.0[0],
+            conn.remote_addr.port
+        );
 
         // Receive and parse HTTP response
         let response = self.receive_and_parse_http_response(conn)?;
 
         Ok(response)
     }
-    
+
     /// Send TCP data to connection
     fn send_tcp_data(&self, conn: &TcpConnection, data: &[u8]) -> Result<(), NetworkError> {
         let conn_id = conn.id as u16;
-        let timeout_ticks = (crate::pit::get_frequency() as u64).saturating_mul(10).max(1);
+        let timeout_ticks = (crate::pit::get_frequency() as u64)
+            .saturating_mul(10)
+            .max(1);
         let start_ticks = crate::pit::get_ticks();
         let mut sent_total = 0usize;
 
@@ -534,12 +553,17 @@ impl NetworkService {
                 return Err(NetworkError::Timeout);
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Build TCP segment with IP and Ethernet headers
-    fn build_tcp_segment(&self, conn: &TcpConnection, data: &[u8], is_last: bool) -> Result<[u8; 1514], NetworkError> {
+    fn build_tcp_segment(
+        &self,
+        conn: &TcpConnection,
+        data: &[u8],
+        is_last: bool,
+    ) -> Result<[u8; 1514], NetworkError> {
         let mut packet = [0u8; 1514];
         let mut offset = 0;
 
@@ -604,7 +628,7 @@ impl NetworkService {
 
         Ok(packet)
     }
-    
+
     /// Send raw packet via network interface
     fn send_raw_packet(&self, packet: &[u8]) -> Result<(), NetworkError> {
         if packet.len() < 34 {
@@ -623,14 +647,20 @@ impl NetworkService {
         };
         let mut driver = crate::e1000::E1000_DRIVER.lock();
         let nic = driver.as_mut().ok_or(NetworkError::SendFailed)?;
-        nic.send_frame(&packet[..frame_len]).map_err(|_| NetworkError::SendFailed)
+        nic.send_frame(&packet[..frame_len])
+            .map_err(|_| NetworkError::SendFailed)
     }
-    
+
     /// Receive and parse HTTP response
-    fn receive_and_parse_http_response(&self, conn: &TcpConnection) -> Result<HttpResponse, NetworkError> {
+    fn receive_and_parse_http_response(
+        &self,
+        conn: &TcpConnection,
+    ) -> Result<HttpResponse, NetworkError> {
         let mut response = HttpResponse::new();
         let conn_id = conn.id as u16;
-        let timeout_ticks = (crate::pit::get_frequency() as u64).saturating_mul(12).max(1);
+        let timeout_ticks = (crate::pit::get_frequency() as u64)
+            .saturating_mul(12)
+            .max(1);
         let start_ticks = crate::pit::get_ticks();
         let mut chunk = [0u8; HTTP_IO_CHUNK];
         let mut headers = [0u8; HTTP_HEADER_MAX];
@@ -641,7 +671,8 @@ impl NetworkService {
         let mut chunked = false;
 
         while crate::pit::get_ticks().saturating_sub(start_ticks) <= timeout_ticks {
-            let read = net_reactor::tcp_recv(conn_id, &mut chunk).map_err(|_| NetworkError::ReceiveFailed)?;
+            let read = net_reactor::tcp_recv(conn_id, &mut chunk)
+                .map_err(|_| NetworkError::ReceiveFailed)?;
             if read == 0 {
                 if headers_done {
                     break;
@@ -703,10 +734,11 @@ impl NetworkService {
         }
 
         if chunked {
-            response.body_len =
-                decode_chunked_body_in_place(&mut response.body, body_len).map_err(|_| NetworkError::ReceiveFailed)?;
+            response.body_len = decode_chunked_body_in_place(&mut response.body, body_len)
+                .map_err(|_| NetworkError::ReceiveFailed)?;
         } else if let Some(expected) = content_length {
-            response.body_len = core::cmp::min(body_len, core::cmp::min(expected, response.body.len()));
+            response.body_len =
+                core::cmp::min(body_len, core::cmp::min(expected, response.body.len()));
         } else {
             response.body_len = body_len;
         }
@@ -721,12 +753,18 @@ impl NetworkService {
             crate::temporal::TEMPORAL_SOCKET_EVENT_RECV,
             &response.body[..response.body_len],
         );
-        
+
         Ok(response)
     }
 
     /// Build HTTP/1.1 request
-    fn build_http_request(&self, method: HttpMethod, host: &str, path: &str, port: u16) -> ([u8; 512], usize) {
+    fn build_http_request(
+        &self,
+        method: HttpMethod,
+        host: &str,
+        path: &str,
+        port: u16,
+    ) -> ([u8; 512], usize) {
         let mut buf = [0u8; 512];
         let mut pos = 0;
         let mut push = |bytes: &[u8]| {
@@ -931,7 +969,9 @@ impl NetworkService {
         if crate::temporal::is_replay_active() {
             return;
         }
-        let payload = match self.encode_temporal_state_payload(crate::temporal::TEMPORAL_NETWORK_LEGACY_EVENT_STATE) {
+        let payload = match self
+            .encode_temporal_state_payload(crate::temporal::TEMPORAL_NETWORK_LEGACY_EVENT_STATE)
+        {
             Some(v) => v,
             None => return,
         };
@@ -951,8 +991,10 @@ pub fn temporal_apply_network_service_payload(payload: &[u8]) -> Result<(), &'st
     let ip_address = Ipv4Addr([payload[8], payload[9], payload[10], payload[11]]);
     let gateway = Ipv4Addr([payload[12], payload[13], payload[14], payload[15]]);
     let dns_server = Ipv4Addr([payload[16], payload[17], payload[18], payload[19]]);
-    let tcp_count = temporal_read_u16(payload, 20).ok_or("temporal legacy network tcp count missing")? as usize;
-    let dns_count = temporal_read_u16(payload, 22).ok_or("temporal legacy network dns count missing")? as usize;
+    let tcp_count =
+        temporal_read_u16(payload, 20).ok_or("temporal legacy network tcp count missing")? as usize;
+    let dns_count =
+        temporal_read_u16(payload, 22).ok_or("temporal legacy network dns count missing")? as usize;
     if tcp_count > MAX_CONNECTIONS || dns_count > MAX_DNS_CACHE {
         return Err("temporal legacy network count out of range");
     }
@@ -965,31 +1007,34 @@ pub fn temporal_apply_network_service_payload(payload: &[u8]) -> Result<(), &'st
         if offset.saturating_add(TEMPORAL_NETWORK_LEGACY_TCP_ENTRY_BYTES) > payload.len() {
             return Err("temporal legacy network tcp entry truncated");
         }
-        let id = temporal_read_u32(payload, offset).ok_or("temporal legacy network conn id missing")?;
+        let id =
+            temporal_read_u32(payload, offset).ok_or("temporal legacy network conn id missing")?;
         let local_ip = Ipv4Addr([
             payload[offset + 4],
             payload[offset + 5],
             payload[offset + 6],
             payload[offset + 7],
         ]);
-        let local_port =
-            temporal_read_u16(payload, offset + 8).ok_or("temporal legacy network local port missing")?;
+        let local_port = temporal_read_u16(payload, offset + 8)
+            .ok_or("temporal legacy network local port missing")?;
         let remote_ip = Ipv4Addr([
             payload[offset + 10],
             payload[offset + 11],
             payload[offset + 12],
             payload[offset + 13],
         ]);
-        let remote_port =
-            temporal_read_u16(payload, offset + 14).ok_or("temporal legacy network remote port missing")?;
+        let remote_port = temporal_read_u16(payload, offset + 14)
+            .ok_or("temporal legacy network remote port missing")?;
         let state = temporal_tcp_state_from_u8(payload[offset + 16])
             .ok_or("temporal legacy network state invalid")?;
-        let owner_pid =
-            temporal_read_u32(payload, offset + 20).ok_or("temporal legacy network owner missing")?;
-        let seq_num = temporal_read_u32(payload, offset + 24).ok_or("temporal legacy network seq missing")?;
-        let ack_num = temporal_read_u32(payload, offset + 28).ok_or("temporal legacy network ack missing")?;
-        let window_size =
-            temporal_read_u16(payload, offset + 32).ok_or("temporal legacy network window missing")?;
+        let owner_pid = temporal_read_u32(payload, offset + 20)
+            .ok_or("temporal legacy network owner missing")?;
+        let seq_num =
+            temporal_read_u32(payload, offset + 24).ok_or("temporal legacy network seq missing")?;
+        let ack_num =
+            temporal_read_u32(payload, offset + 28).ok_or("temporal legacy network ack missing")?;
+        let window_size = temporal_read_u16(payload, offset + 32)
+            .ok_or("temporal legacy network window missing")?;
 
         let mut conn = TcpConnection::new();
         conn.id = id;
@@ -1012,7 +1057,8 @@ pub fn temporal_apply_network_service_payload(payload: &[u8]) -> Result<(), &'st
         }
         let valid = payload[offset] != 0;
         let domain_len = payload[offset + 1] as usize;
-        let ttl = temporal_read_u32(payload, offset + 4).ok_or("temporal legacy network ttl missing")?;
+        let ttl =
+            temporal_read_u32(payload, offset + 4).ok_or("temporal legacy network ttl missing")?;
         let ip = Ipv4Addr([
             payload[offset + 8],
             payload[offset + 9],
@@ -1111,7 +1157,7 @@ pub fn network() -> &'static Mutex<NetworkService> {
 
 pub fn init(wifi_device: Option<PciDevice>) {
     let mut net = NETWORK.lock();
-    
+
     if let Some(device) = wifi_device {
         match net.init_wifi(device) {
             Ok(()) => {
@@ -1252,7 +1298,10 @@ fn find_http_header_end(data: &[u8]) -> Option<usize> {
 }
 
 fn parse_http_status_code(headers: &[u8]) -> Option<u16> {
-    let line_end = headers.windows(2).position(|w| w == b"\r\n").unwrap_or(headers.len());
+    let line_end = headers
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .unwrap_or(headers.len());
     let line = &headers[..line_end];
     if line.len() < 12 || &line[..5] != b"HTTP/" {
         return None;
@@ -1275,8 +1324,16 @@ fn parse_http_status_code(headers: &[u8]) -> Option<u16> {
 }
 
 fn eq_ascii_case(a: u8, b: u8) -> bool {
-    let al = if (b'A'..=b'Z').contains(&a) { a + 32 } else { a };
-    let bl = if (b'A'..=b'Z').contains(&b) { b + 32 } else { b };
+    let al = if (b'A'..=b'Z').contains(&a) {
+        a + 32
+    } else {
+        a
+    };
+    let bl = if (b'A'..=b'Z').contains(&b) {
+        b + 32
+    } else {
+        b
+    };
     al == bl
 }
 
@@ -1311,7 +1368,9 @@ fn parse_http_content_length(headers: &[u8]) -> Option<usize> {
             }
             let mut parsed = 0usize;
             for &b in &value[start..end] {
-                parsed = parsed.saturating_mul(10).saturating_add((b - b'0') as usize);
+                parsed = parsed
+                    .saturating_mul(10)
+                    .saturating_add((b - b'0') as usize);
             }
             return Some(parsed);
         }
@@ -1327,7 +1386,9 @@ fn http_transfer_chunked(headers: &[u8]) -> bool {
             line
         };
         if starts_with_ascii_nocase(line, b"transfer-encoding:")
-            && line.windows(7).any(|w| starts_with_ascii_nocase(w, b"chunked"))
+            && line
+                .windows(7)
+                .any(|w| starts_with_ascii_nocase(w, b"chunked"))
         {
             return true;
         }
@@ -1358,7 +1419,11 @@ fn decode_hex_size(line: &[u8]) -> Option<usize> {
         saw_digit = true;
         value = value.saturating_mul(16).saturating_add(digit);
     }
-    if saw_digit { Some(value) } else { None }
+    if saw_digit {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn decode_chunked_body_in_place(body: &mut [u8], src_len: usize) -> Result<usize, ()> {
@@ -1412,17 +1477,17 @@ fn print_u8(n: u8) {
         crate::vga::print_char('0');
         return;
     }
-    
+
     let mut buf = [0u8; 3];
     let mut i = 0;
     let mut num = n;
-    
+
     while num > 0 {
         buf[i] = (num % 10) + b'0';
         num /= 10;
         i += 1;
     }
-    
+
     while i > 0 {
         i -= 1;
         crate::vga::print_char(buf[i] as char);
@@ -1434,17 +1499,17 @@ fn print_u16(n: u16) {
         crate::vga::print_char('0');
         return;
     }
-    
+
     let mut buf = [0u8; 5];
     let mut i = 0;
     let mut num = n;
-    
+
     while num > 0 {
         buf[i] = (num % 10) as u8 + b'0';
         num /= 10;
         i += 1;
     }
-    
+
     while i > 0 {
         i -= 1;
         crate::vga::print_char(buf[i] as char);

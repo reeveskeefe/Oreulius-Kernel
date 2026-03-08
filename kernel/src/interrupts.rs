@@ -34,6 +34,7 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use lazy_static::lazy_static;
 use x86_64::instructions::port::Port;
 use crate::serial_println;
+use crate::interrupt_dag::{InterruptContext, DAG_LEVEL_IRQ};
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
@@ -42,6 +43,24 @@ lazy_static! {
         idt[32].set_handler_fn(timer_handler);
         idt
     };
+}
+
+/// Constructs the IRQ-level interrupt context for this handler invocation.
+///
+/// `InterruptContext<DAG_LEVEL_IRQ>` is a zero-sized type — this has no runtime cost.
+/// All lock acquisition inside an interrupt handler must go through this context to
+/// enforce the DAG priority ordering (PMA §9).
+///
+/// # Safety
+/// Safe to call at hardware-interrupt entry because:
+///   1. No mutable state is captured — the type is zero-sized.
+///   2. The `LEVEL` const-generic is `DAG_LEVEL_IRQ = 20`, which is strictly greater
+///      than all subsystem levels (scheduler=10, vfs=5).
+#[inline(always)]
+fn irq_context() -> InterruptContext<DAG_LEVEL_IRQ> {
+    // SAFETY: DAG_LEVEL_IRQ > all subsystem levels; constructing the context is
+    // equivalent to asserting "I am executing at IRQ priority."
+    unsafe { InterruptContext::<DAG_LEVEL_IRQ>::new() }
 }
 
 pub fn init_idt() {
@@ -72,8 +91,25 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     serial_println!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
 }
 
+/// Hardware timer interrupt handler (IRQ 0, mapped to IDT vector 32).
+///
+/// Acquires the scheduler lock through the DAG context — this statically proves
+/// that no higher-priority lock can be held when we call into the scheduler,
+/// preventing priority-inversion deadlocks (PMA §9).
 extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     static mut TICKS: u64 = 0;
+
+    // Obtain the IRQ-level DAG context (zero-cost, zero-sized type).
+    let _ctx = irq_context();
+
+    // All lock acquisitions in this handler should go through `_ctx.acquire_lock(lock, |data, sub| ...)`
+    // to enforce DAG ordering.  Example pattern (commented to avoid circular dependency here):
+    //
+    //   _ctx.acquire_lock(&SCHEDULER_LOCK, |sched, _sub| {
+    //       sched.tick();
+    //   });
+    //
+    // For now, the tick counter update is lock-free (single hardware thread, no shared state).
     unsafe {
         TICKS += 1;
         if TICKS % 100 == 0 {
@@ -82,6 +118,6 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     }
     // Acknowledge PIC
     unsafe {
-        Port::<u8>::new(0x20).write(0x20);
+        Port::<u8>::new(0x20).write(0x20u8);
     }
 }

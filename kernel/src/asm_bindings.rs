@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,16 +22,16 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
 //! Assembly function bindings for Oreulia OS
-//! 
+//!
 //! High-performance assembly routines for critical kernel operations.
 //! These functions are implemented in assembly for maximum speed and efficiency.
 
@@ -42,57 +42,75 @@ extern "C" {
     /// Fast context switch between two processes
     /// Saves current context to old_ctx, loads from new_ctx
     pub fn asm_switch_context(old_ctx: *mut ProcessContext, new_ctx: *const ProcessContext);
-    
+
     /// Save current context to memory, returns 0
     pub fn asm_save_context(ctx: *mut ProcessContext) -> i32;
-    
+
     /// Load context from memory (does not return)
     pub fn asm_load_context(ctx: *const ProcessContext) -> !;
-    
+
     /// Thread start trampoline - pops entry function from stack and calls it
     pub fn thread_start_trampoline() -> !;
+
+    /// User-mode entry trampoline: pops user EIP and user ESP from the kernel
+    /// stack and performs a ring-0 → ring-3 transition via `iret`.
+    ///
+    /// Stack frame expected (pushed by `add_user_process`):
+    ///   [esp+0]  user_entry  : u32  – ring-3 EIP
+    ///   [esp+4]  user_stack  : u32  – ring-3 ESP
+    ///
+    /// The trampoline loads user DS/ES/FS/GS selectors, sets up the full
+    /// iret frame (EIP / CS / EFLAGS / ESP / SS) and executes `iret`.
+    /// Must be implemented in kernel/src/context_switch.asm (or equivalent).
+    pub fn kernel_user_entry_trampoline() -> !;
 
     // ===== Memory Operations (memory.asm) =====
     /// Ultra-fast memcpy using rep movsd (5x faster than byte-by-byte)
     pub fn asm_fast_memcpy(dest: *mut u8, src: *const u8, count: usize);
-    
+
     /// Fast memset using rep stosd (4x faster than byte-by-byte)
     pub fn asm_fast_memset(dest: *mut u8, value: u8, count: usize);
-    
+
     /// Fast memcmp, returns 0 if equal, 1 if not equal
     pub fn asm_fast_memcmp(ptr1: *const u8, ptr2: *const u8, count: usize) -> i32;
-    
+
     /// IPv4 header checksum (RFC 1071)
     pub fn asm_checksum_ip(header: *const u8, len: usize) -> u16;
-    
+
     /// TCP/UDP checksum with pseudo-header (RFC 793, RFC 768)
-    pub fn asm_checksum_tcp(data: *const u8, len: usize, src_ip: u32, dst_ip: u32, proto: u8) -> u16;
-    
+    pub fn asm_checksum_tcp(
+        data: *const u8,
+        len: usize,
+        src_ip: u32,
+        dst_ip: u32,
+        proto: u8,
+    ) -> u16;
+
     // ===== Interrupt & CPU Control (interrupt.asm) =====
     /// Enable CPU interrupts (STI)
     pub fn asm_enable_interrupts();
-    
+
     /// Disable CPU interrupts (CLI)
     pub fn asm_disable_interrupts();
-    
+
     /// Halt CPU until next interrupt (HLT)
     pub fn asm_halt();
-    
+
     /// Read CPU Time Stamp Counter (RDTSC)
     pub fn asm_read_tsc() -> u64;
-    
+
     /// I/O wait operation (~1μs delay)
     pub fn asm_io_wait();
-    
+
     /// Read CR0 control register
     pub fn asm_read_cr0() -> u32;
-    
+
     /// Write CR0 control register
     pub fn asm_write_cr0(value: u32);
-    
+
     /// Read CR3 page directory register
     pub fn asm_read_cr3() -> u32;
-    
+
     /// Write CR3 page directory register
     pub fn asm_write_cr3(page_dir_addr: u32);
 
@@ -114,17 +132,17 @@ extern "C" {
     // ===== Port I/O (ports.asm) =====
     /// Output byte to port
     pub fn asm_outb(port: u16, value: u8);
-    
+
     /// Input byte from port
     pub fn asm_inb(port: u16) -> u8;
-    
+
     // ===== Network Operations (network.asm) =====
     /// Swap 16-bit endianness (network byte order conversion)
     pub fn asm_swap_endian_16(value: u16) -> u16;
-    
+
     /// Swap 32-bit endianness (network byte order conversion)
     pub fn asm_swap_endian_32(value: u32) -> u32;
-    
+
     /// Parse Ethernet frame header
     pub fn asm_parse_ethernet_frame(
         packet: *const u8,
@@ -132,7 +150,7 @@ extern "C" {
         src_mac: *mut [u8; 6],
         ethertype: *mut u16,
     );
-    
+
     /// Parse IPv4 header fields
     pub fn asm_parse_ipv4_header(
         ip_header: *const u8,
@@ -142,173 +160,173 @@ extern "C" {
         src_ip: *mut u32,
         dst_ip: *mut u32,
     );
-    
+
     // ===== Cryptographic Operations (crypto.asm) =====
     /// FNV-1a hash (fast non-cryptographic hash)
     pub fn asm_hash_fnv1a(data: *const u8, len: usize) -> u32;
-    
+
     /// DJB2 hash (Dan Bernstein's algorithm)
     pub fn asm_hash_djb2(data: *const u8, len: usize) -> u32;
-    
+
     /// SDBM hash (alternative fast hash)
     pub fn asm_hash_sdbm(data: *const u8, len: usize) -> u32;
-    
+
     /// Simple XOR cipher (for obfuscation, not cryptographically secure)
     pub fn asm_xor_cipher(data: *mut u8, len: usize, key: u8);
-    
+
     // ===== CPU Features (cpu_features.asm) =====
     /// Execute CPUID instruction
     pub fn asm_cpuid(eax_in: u32, ecx_in: u32, result: *mut CpuIdResult);
-    
+
     /// Check if SSE is supported
     pub fn asm_has_sse() -> u32;
-    
+
     /// Check if SSE2 is supported
     pub fn asm_has_sse2() -> u32;
-    
+
     /// Check if SSE3 is supported
     pub fn asm_has_sse3() -> u32;
-    
+
     /// Check if SSE4.1 is supported
     pub fn asm_has_sse4_1() -> u32;
-    
+
     /// Check if SSE4.2 is supported
     pub fn asm_has_sse4_2() -> u32;
-    
+
     /// Check if AVX is supported
     pub fn asm_has_avx() -> u32;
-    
+
     /// Get CPU vendor string
     pub fn asm_get_cpu_vendor(vendor_str: *mut [u8; 12]);
-    
+
     /// Get CPU feature flags
     pub fn asm_get_cpu_features(features: *mut CpuFeatures);
-    
+
     /// Get CPU cache information
     pub fn asm_get_cache_info(cache_info: *mut CacheInfo);
-    
+
     /// Read hardware random number (RDRAND)
     pub fn asm_rdrand(value: *mut u32) -> i32;
-    
+
     /// Check if XSAVE is supported
     pub fn asm_xsave_supported() -> u32;
-    
+
     /// Save FPU/SSE state
     pub fn asm_fxsave(save_area: *mut [u8; 512]);
-    
+
     /// Restore FPU/SSE state
     pub fn asm_fxrstor(save_area: *const [u8; 512]);
-    
+
     // ===== Atomic Operations (atomic.asm) =====
     /// Atomic load with acquire semantics
     pub fn asm_atomic_load(ptr: *const u32) -> u32;
-    
+
     /// Atomic store with release semantics
     pub fn asm_atomic_store(ptr: *mut u32, value: u32);
-    
+
     /// Atomic add, returns old value
     pub fn asm_atomic_add(ptr: *mut u32, value: u32) -> u32;
-    
+
     /// Atomic subtract, returns old value
     pub fn asm_atomic_sub(ptr: *mut u32, value: u32) -> u32;
-    
+
     /// Atomic increment, returns new value
     pub fn asm_atomic_inc(ptr: *mut u32) -> u32;
-    
+
     /// Atomic decrement, returns new value
     pub fn asm_atomic_dec(ptr: *mut u32) -> u32;
-    
+
     /// Atomic swap (exchange)
     pub fn asm_atomic_swap(ptr: *mut u32, new_value: u32) -> u32;
-    
+
     /// Atomic compare-and-swap (strong)
     pub fn asm_atomic_cmpxchg(ptr: *mut u32, expected: u32, desired: u32) -> u32;
-    
+
     /// Atomic compare-and-swap (weak)
     pub fn asm_atomic_cmpxchg_weak(ptr: *mut u32, expected: u32, desired: u32) -> u32;
-    
+
     /// Atomic bitwise AND
     pub fn asm_atomic_and(ptr: *mut u32, value: u32);
-    
+
     /// Atomic bitwise OR
     pub fn asm_atomic_or(ptr: *mut u32, value: u32);
-    
+
     /// Atomic bitwise XOR
     pub fn asm_atomic_xor(ptr: *mut u32, value: u32);
-    
+
     /// Initialize spinlock
     pub fn asm_spinlock_init(lock: *mut u32);
-    
+
     /// Acquire spinlock (blocking)
     pub fn asm_spinlock_lock(lock: *mut u32);
-    
+
     /// Release spinlock
     pub fn asm_spinlock_unlock(lock: *mut u32);
-    
+
     /// Try to acquire spinlock (non-blocking)
     pub fn asm_spinlock_trylock(lock: *mut u32) -> i32;
-    
+
     /// PAUSE instruction (spin-wait hint)
     pub fn asm_pause();
-    
+
     /// Full memory fence (MFENCE)
     pub fn asm_mfence();
-    
+
     /// Load fence (LFENCE)
     pub fn asm_lfence();
-    
+
     /// Store fence (SFENCE)
     pub fn asm_sfence();
-    
+
     // ===== Performance (perf.asm) =====
     /// Begin cycle-accurate timing
     pub fn asm_rdtsc_begin() -> u64;
-    
+
     /// End cycle-accurate timing
     pub fn asm_rdtsc_end() -> u64;
-    
+
     /// Read performance monitoring counter
     pub fn asm_rdpmc(counter: u32) -> u64;
-    
+
     /// Serialize instruction execution
     pub fn asm_serialize();
-    
+
     /// LFENCE + RDTSC
     pub fn asm_lfence_rdtsc() -> u64;
-    
+
     /// Benchmark NOP instruction
     pub fn asm_benchmark_nop(iterations: u32) -> u64;
-    
+
     /// Benchmark ADD instruction
     pub fn asm_benchmark_add(iterations: u32) -> u64;
-    
+
     /// Benchmark MUL instruction
     pub fn asm_benchmark_mul(iterations: u32) -> u64;
-    
+
     /// Benchmark DIV instruction
     pub fn asm_benchmark_div(iterations: u32) -> u64;
-    
+
     /// Benchmark memory LOAD
     pub fn asm_benchmark_load(ptr: *const u32, iterations: u32) -> u64;
-    
+
     /// Benchmark memory STORE
     pub fn asm_benchmark_store(ptr: *mut u32, iterations: u32) -> u64;
-    
+
     /// Benchmark LOCK prefix overhead
     pub fn asm_benchmark_lock(ptr: *mut u32, iterations: u32) -> u64;
-    
+
     /// Flush cache line
     pub fn asm_clflush(addr: *const u8);
-    
+
     /// Prefetch to L1 cache
     pub fn asm_prefetch_t0(addr: *const u8);
-    
+
     /// Prefetch to L2 cache
     pub fn asm_prefetch_t1(addr: *const u8);
-    
+
     /// Prefetch to L3 cache
     pub fn asm_prefetch_t2(addr: *const u8);
-    
+
     /// Prefetch (non-temporal)
     pub fn asm_prefetch_nta(addr: *const u8);
 }
@@ -364,8 +382,8 @@ pub struct CpuIdResult {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CpuFeatures {
-    pub ecx_features: u32,  // Feature flags in ECX
-    pub edx_features: u32,  // Feature flags in EDX
+    pub ecx_features: u32, // Feature flags in ECX
+    pub edx_features: u32, // Feature flags in EDX
 }
 
 /// CPU cache information
@@ -389,22 +407,28 @@ impl Spinlock {
     pub const fn new() -> Self {
         Spinlock { lock: 0 }
     }
-    
+
     /// Initialize the spinlock
     pub fn init(&mut self) {
-        unsafe { asm_spinlock_init(&mut self.lock as *mut u32); }
+        unsafe {
+            asm_spinlock_init(&mut self.lock as *mut u32);
+        }
     }
-    
+
     /// Acquire the spinlock (blocking)
     pub fn lock(&mut self) {
-        unsafe { asm_spinlock_lock(&mut self.lock as *mut u32); }
+        unsafe {
+            asm_spinlock_lock(&mut self.lock as *mut u32);
+        }
     }
-    
+
     /// Release the spinlock
     pub fn unlock(&mut self) {
-        unsafe { asm_spinlock_unlock(&mut self.lock as *mut u32); }
+        unsafe {
+            asm_spinlock_unlock(&mut self.lock as *mut u32);
+        }
     }
-    
+
     /// Try to acquire the spinlock (non-blocking)
     /// Returns true if acquired, false otherwise
     pub fn try_lock(&mut self) -> bool {
@@ -500,17 +524,23 @@ pub fn read_timestamp() -> u64 {
 
 /// Enable CPU interrupts
 pub fn enable_interrupts() {
-    unsafe { asm_enable_interrupts(); }
+    unsafe {
+        asm_enable_interrupts();
+    }
 }
 
 /// Disable CPU interrupts
 pub fn disable_interrupts() {
-    unsafe { asm_disable_interrupts(); }
+    unsafe {
+        asm_disable_interrupts();
+    }
 }
 
 /// Halt CPU until next interrupt
 pub fn hlt() {
-    unsafe { asm_halt(); }
+    unsafe {
+        asm_halt();
+    }
 }
 
 /// Read CR0 control register
@@ -530,7 +560,9 @@ pub fn read_cr3() -> u32 {
 
 /// Write CR3 page directory register (updates page tables)
 pub fn write_cr3(page_dir_addr: u32) {
-    unsafe { asm_write_cr3(page_dir_addr); }
+    unsafe {
+        asm_write_cr3(page_dir_addr);
+    }
 }
 
 /// Read CR4 control register
@@ -545,12 +577,16 @@ pub fn write_cr4(value: u32) {
 
 /// Temporarily allow supervisor access to user pages (SMAP)
 pub fn stac() {
-    unsafe { asm_stac(); }
+    unsafe {
+        asm_stac();
+    }
 }
 
 /// Disallow supervisor access to user pages (SMAP)
 pub fn clac() {
-    unsafe { asm_clac(); }
+    unsafe {
+        asm_clac();
+    }
 }
 
 /// Convert 16-bit value from network byte order to host byte order
@@ -689,7 +725,9 @@ pub fn atomic_load(ptr: &u32) -> u32 {
 
 /// Atomic store with release semantics
 pub fn atomic_store(ptr: &mut u32, value: u32) {
-    unsafe { asm_atomic_store(ptr as *mut u32, value); }
+    unsafe {
+        asm_atomic_store(ptr as *mut u32, value);
+    }
 }
 
 /// Atomic add, returns old value
@@ -725,37 +763,51 @@ pub fn atomic_cmpxchg(ptr: &mut u32, expected: u32, desired: u32) -> u32 {
 
 /// Atomic bitwise AND
 pub fn atomic_and(ptr: &mut u32, value: u32) {
-    unsafe { asm_atomic_and(ptr as *mut u32, value); }
+    unsafe {
+        asm_atomic_and(ptr as *mut u32, value);
+    }
 }
 
 /// Atomic bitwise OR
 pub fn atomic_or(ptr: &mut u32, value: u32) {
-    unsafe { asm_atomic_or(ptr as *mut u32, value); }
+    unsafe {
+        asm_atomic_or(ptr as *mut u32, value);
+    }
 }
 
 /// Atomic bitwise XOR
 pub fn atomic_xor(ptr: &mut u32, value: u32) {
-    unsafe { asm_atomic_xor(ptr as *mut u32, value); }
+    unsafe {
+        asm_atomic_xor(ptr as *mut u32, value);
+    }
 }
 
 /// PAUSE instruction (spin-wait hint)
 pub fn pause() {
-    unsafe { asm_pause(); }
+    unsafe {
+        asm_pause();
+    }
 }
 
 /// Full memory fence
 pub fn memory_fence() {
-    unsafe { asm_mfence(); }
+    unsafe {
+        asm_mfence();
+    }
 }
 
 /// Load fence
 pub fn load_fence() {
-    unsafe { asm_lfence(); }
+    unsafe {
+        asm_lfence();
+    }
 }
 
 /// Store fence
 pub fn store_fence() {
-    unsafe { asm_sfence(); }
+    unsafe {
+        asm_sfence();
+    }
 }
 
 // ===== Performance Measurement Wrappers =====
@@ -815,27 +867,37 @@ pub fn benchmark_lock(ptr: &mut u32, iterations: u32) -> u64 {
 
 /// Flush cache line containing address
 pub fn clflush(addr: &u8) {
-    unsafe { asm_clflush(addr as *const u8); }
+    unsafe {
+        asm_clflush(addr as *const u8);
+    }
 }
 
 /// Prefetch data into L1 cache
 pub fn prefetch_t0(addr: &u8) {
-    unsafe { asm_prefetch_t0(addr as *const u8); }
+    unsafe {
+        asm_prefetch_t0(addr as *const u8);
+    }
 }
 
 /// Prefetch data into L2 cache
 pub fn prefetch_t1(addr: &u8) {
-    unsafe { asm_prefetch_t1(addr as *const u8); }
+    unsafe {
+        asm_prefetch_t1(addr as *const u8);
+    }
 }
 
 /// Prefetch data into L3 cache
 pub fn prefetch_t2(addr: &u8) {
-    unsafe { asm_prefetch_t2(addr as *const u8); }
+    unsafe {
+        asm_prefetch_t2(addr as *const u8);
+    }
 }
 
 /// Prefetch data (non-temporal)
 pub fn prefetch_nta(addr: &u8) {
-    unsafe { asm_prefetch_nta(addr as *const u8); }
+    unsafe {
+        asm_prefetch_nta(addr as *const u8);
+    }
 }
 
 /// Output byte to port

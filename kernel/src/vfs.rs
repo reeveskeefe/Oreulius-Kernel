@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -271,7 +271,12 @@ impl Vfs {
         Ok((parent.to_string(), name.to_string()))
     }
 
-    fn add_dir_entry(&mut self, dir_id: InodeId, name: &str, inode_id: InodeId) -> Result<(), &'static str> {
+    fn add_dir_entry(
+        &mut self,
+        dir_id: InodeId,
+        name: &str,
+        inode_id: InodeId,
+    ) -> Result<(), &'static str> {
         if name.len() > MAX_NAME_LEN {
             return Err("Name too long");
         }
@@ -287,6 +292,19 @@ impl Vfs {
             inode: inode_id,
         });
         Ok(())
+    }
+
+    fn remove_dir_entry(&mut self, dir_id: InodeId, name: &str) -> Result<InodeId, &'static str> {
+        let dir = self.get_inode_mut(dir_id).ok_or("Directory not found")?;
+        if dir.kind != InodeKind::Directory {
+            return Err("Not a directory");
+        }
+        let idx = dir
+            .entries
+            .iter()
+            .position(|entry| entry.name == name)
+            .ok_or("Path component not found")?;
+        Ok(dir.entries.remove(idx).inode)
     }
 
     fn find_mount(&self, path: &str) -> Option<(MountBackend, String)> {
@@ -328,6 +346,87 @@ impl Vfs {
         if let Some(slot) = self.handles.get_mut((handle_id as usize).saturating_sub(1)) {
             *slot = None;
         }
+    }
+
+    fn inode_has_open_handles(&self, inode_id: InodeId) -> bool {
+        self.handles
+            .iter()
+            .flatten()
+            .any(|handle| match handle.kind {
+                HandleKind::MemFile { inode, .. } | HandleKind::MemDir { inode } => {
+                    inode == inode_id
+                }
+                _ => false,
+            })
+    }
+
+    fn unlink_path(&mut self, path: &str) -> Result<(), &'static str> {
+        let normalized = normalize_path(path)?;
+        if normalized == "/" {
+            return Err("Cannot delete root");
+        }
+        if self.find_mount(&normalized).is_some() {
+            return Err("Delete on mounted backend not supported");
+        }
+
+        let inode_id = self.resolve_path(&normalized)?;
+        let inode = self.get_inode(inode_id).ok_or("File not found")?;
+        if inode.kind == InodeKind::Directory {
+            return Err("Use rmdir for directories");
+        }
+        if self.inode_has_open_handles(inode_id) {
+            return Err("File busy");
+        }
+
+        let (parent, name) = Vfs::split_parent(&normalized)?;
+        let parent_id = self.resolve_path(&parent)?;
+        let removed_inode = self.remove_dir_entry(parent_id, &name)?;
+        if removed_inode != inode_id {
+            return Err("Directory entry mismatch");
+        }
+
+        let slot = self
+            .inodes
+            .get_mut(inode_id as usize)
+            .ok_or("File not found")?;
+        *slot = None;
+        Ok(())
+    }
+
+    fn rmdir_path(&mut self, path: &str) -> Result<(), &'static str> {
+        let normalized = normalize_path(path)?;
+        if normalized == "/" {
+            return Err("Cannot delete root");
+        }
+        if self.find_mount(&normalized).is_some() {
+            return Err("Delete on mounted backend not supported");
+        }
+
+        let inode_id = self.resolve_path(&normalized)?;
+        let inode = self.get_inode(inode_id).ok_or("Directory not found")?;
+        if inode.kind != InodeKind::Directory {
+            return Err("Not a directory");
+        }
+        if !inode.entries.is_empty() {
+            return Err("Directory not empty");
+        }
+        if self.inode_has_open_handles(inode_id) {
+            return Err("Directory busy");
+        }
+
+        let (parent, name) = Vfs::split_parent(&normalized)?;
+        let parent_id = self.resolve_path(&parent)?;
+        let removed_inode = self.remove_dir_entry(parent_id, &name)?;
+        if removed_inode != inode_id {
+            return Err("Directory entry mismatch");
+        }
+
+        let slot = self
+            .inodes
+            .get_mut(inode_id as usize)
+            .ok_or("Directory not found")?;
+        *slot = None;
+        Ok(())
     }
 }
 
@@ -374,7 +473,11 @@ pub fn write_path_untracked(path: &str, data: &[u8]) -> Result<usize, &'static s
     write_path_internal(path, data, false)
 }
 
-fn write_path_internal(path: &str, data: &[u8], track_temporal: bool) -> Result<usize, &'static str> {
+fn write_path_internal(
+    path: &str,
+    data: &[u8],
+    track_temporal: bool,
+) -> Result<usize, &'static str> {
     let normalized_path = normalize_path(path)?;
     let mount_target = {
         let mut vfs = VFS.lock_legacy();
@@ -471,6 +574,20 @@ pub fn list_dir(path: &str, out: &mut [u8]) -> Result<usize, &'static str> {
     Ok(len)
 }
 
+pub fn unlink(path: &str) -> Result<(), &'static str> {
+    let normalized_path = normalize_path(path)?;
+    let mut vfs = VFS.lock_legacy();
+    vfs.init();
+    vfs.unlink_path(&normalized_path)
+}
+
+pub fn rmdir(path: &str) -> Result<(), &'static str> {
+    let normalized_path = normalize_path(path)?;
+    let mut vfs = VFS.lock_legacy();
+    vfs.init();
+    vfs.rmdir_path(&normalized_path)
+}
+
 pub fn mount_virtio(path: &str) -> Result<(), &'static str> {
     if !virtio_blk::is_present() {
         return Err("No VirtIO block device present");
@@ -509,7 +626,12 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
         vfs.init();
         if let Some((backend, sub)) = vfs.find_mount(&normalized_path) {
             let kind = mount_open_kind(backend, &sub, flags, &normalized_path)?;
-            let handle = Handle { kind, pos: 0, flags, owner: pid };
+            let handle = Handle {
+                kind,
+                pos: 0,
+                flags,
+                owner: pid,
+            };
             let handle_id = vfs.alloc_handle(handle);
             return vfs_platform::alloc_fd(pid, handle_id);
         }
@@ -528,7 +650,11 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
                             inode: inode_id,
                             path: normalized_path.clone(),
                         },
-                        pos: if flags.contains(OpenFlags::APPEND) { inode.data.len() } else { 0 },
+                        pos: if flags.contains(OpenFlags::APPEND) {
+                            inode.data.len()
+                        } else {
+                            0
+                        },
                         flags,
                         owner: pid,
                     };
@@ -572,7 +698,11 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
                     inode: inode_id,
                     path: normalized_path,
                 },
-                pos: if flags.contains(OpenFlags::APPEND) { inode.data.len() } else { 0 },
+                pos: if flags.contains(OpenFlags::APPEND) {
+                    inode.data.len()
+                } else {
+                    0
+                },
                 flags,
                 owner: pid,
             };
@@ -869,13 +999,17 @@ fn decode_temporal_backend_payload(
     let offset = read_u64(payload, 4).ok_or("Temporal backend offset missing")?;
     match payload[0] {
         TEMPORAL_DEVICE_ENCODING_V1 => {
-            let write_len = read_u32(payload, 12).ok_or("Temporal backend write length missing")? as usize;
-            let stored_len = read_u16(payload, 16).ok_or("Temporal backend stored length missing")? as usize;
+            let write_len =
+                read_u32(payload, 12).ok_or("Temporal backend write length missing")? as usize;
+            let stored_len =
+                read_u16(payload, 16).ok_or("Temporal backend stored length missing")? as usize;
             Ok((offset, write_len, stored_len, 28, flags))
         }
         TEMPORAL_DEVICE_ENCODING_V2 => {
-            let write_len = read_u32(payload, 12).ok_or("Temporal backend write length missing")? as usize;
-            let stored_len = read_u32(payload, 16).ok_or("Temporal backend stored length missing")? as usize;
+            let write_len =
+                read_u32(payload, 12).ok_or("Temporal backend write length missing")? as usize;
+            let stored_len =
+                read_u32(payload, 16).ok_or("Temporal backend stored length missing")? as usize;
             Ok((offset, write_len, stored_len, 28, flags))
         }
         _ => Err("Temporal backend encoding unsupported"),
@@ -905,7 +1039,14 @@ fn generate_partition_text() -> Result<String, &'static str> {
     for (i, p) in gpt.iter().enumerate() {
         if let Some(part) = p {
             let name = gpt_name_to_string(&part.name);
-            let _ = writeln!(s, "  {}: lba {}-{} name {}", i + 1, part.first_lba, part.last_lba, name);
+            let _ = writeln!(
+                s,
+                "  {}: lba {}-{} name {}",
+                i + 1,
+                part.first_lba,
+                part.last_lba,
+                name
+            );
         }
     }
     Ok(s)
@@ -980,7 +1121,8 @@ fn virtio_write_at(offset: usize, data: &[u8]) -> Result<usize, &'static str> {
         let sector_off = pos % 512;
         virtio_blk::read_sector(lba, &mut sector_buf)?;
         let chunk = min(remaining, 512 - sector_off);
-        sector_buf[sector_off..sector_off + chunk].copy_from_slice(&data[data_off..data_off + chunk]);
+        sector_buf[sector_off..sector_off + chunk]
+            .copy_from_slice(&data[data_off..data_off + chunk]);
         virtio_blk::write_sector(lba, &sector_buf)?;
         pos += chunk;
         data_off += chunk;

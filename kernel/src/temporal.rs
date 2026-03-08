@@ -36,10 +36,10 @@ pub trait TemporalFunctor<S: TemporalState, D: TemporalDelta> {
     fn verify_composition_law(state: &S, d1: &D, d2: &D) -> Result<(), &'static str> {
         let composed_delta = d2.compose(d1);
         let path_a = Self::apply_morphism(state, &composed_delta);
-        
+
         let intermediate = Self::apply_morphism(state, d1);
         let path_b = Self::apply_morphism(&intermediate, d2);
-        
+
         if path_a != path_b {
             return Err("Category Theory Violation: Functor composition law broken (F(f o g) != F(f) o F(g))");
         }
@@ -387,9 +387,7 @@ impl TemporalService {
                 size = size.saturating_add(16).saturating_add(branch.name.len());
             }
             for entry in &object.versions {
-                size = size
-                    .saturating_add(64)
-                    .saturating_add(entry.payload.len());
+                size = size.saturating_add(64).saturating_add(entry.payload.len());
             }
         }
         size
@@ -602,7 +600,8 @@ impl TemporalService {
             return Err(TemporalError::ObjectLimit);
         }
 
-        self.objects.push(TemporalObjectHistory::new(path.to_string()));
+        self.objects
+            .push(TemporalObjectHistory::new(path.to_string()));
         Ok(self.objects.len().saturating_sub(1))
     }
 
@@ -664,7 +663,10 @@ impl TemporalService {
             operation,
         };
 
-        object.versions.push(TemporalVersionEntry { meta, payload: data });
+        object.versions.push(TemporalVersionEntry {
+            meta,
+            payload: data,
+        });
         object.head_version_id = Some(version_id);
         let _ = object.update_branch_head_by_id(object.active_branch_id, Some(version_id));
 
@@ -751,20 +753,14 @@ impl TemporalService {
         })
     }
 
-    fn find_version_index_locked(
-        object: &TemporalObjectHistory,
-        version_id: u64,
-    ) -> Option<usize> {
+    fn find_version_index_locked(object: &TemporalObjectHistory, version_id: u64) -> Option<usize> {
         object
             .versions
             .iter()
             .position(|entry| entry.meta.version_id == version_id)
     }
 
-    fn version_payload_locked(
-        object: &TemporalObjectHistory,
-        version_id: u64,
-    ) -> Option<&[u8]> {
+    fn version_payload_locked(object: &TemporalObjectHistory, version_id: u64) -> Option<&[u8]> {
         let idx = Self::find_version_index_locked(object, version_id)?;
         Some(object.versions.get(idx)?.payload.as_slice())
     }
@@ -864,16 +860,15 @@ impl TemporalService {
         object.active_branch_id = branch.branch_id;
         object.head_version_id = branch.head_version_id;
         let payload = match branch.head_version_id {
-            Some(version_id) => Self::version_payload_locked(object, version_id).map(|p| p.to_vec()),
+            Some(version_id) => {
+                Self::version_payload_locked(object, version_id).map(|p| p.to_vec())
+            }
             None => None,
         };
         Ok((branch.branch_id, branch.head_version_id, payload))
     }
 
-    fn list_branches_locked(
-        &self,
-        path: &str,
-    ) -> Result<Vec<TemporalBranchInfo>, TemporalError> {
+    fn list_branches_locked(&self, path: &str) -> Result<Vec<TemporalBranchInfo>, TemporalError> {
         let index = self
             .find_object_index(path)
             .ok_or(TemporalError::ObjectNotFound)?;
@@ -1015,11 +1010,7 @@ impl TemporalService {
         (start, base_end, other_end)
     }
 
-    fn try_three_way_span_merge(
-        base: &[u8],
-        ours: &[u8],
-        theirs: &[u8],
-    ) -> Option<Vec<u8>> {
+    fn try_three_way_span_merge(base: &[u8], ours: &[u8], theirs: &[u8]) -> Option<Vec<u8>> {
         let (s1, be1, oe1) = Self::diff_span(base, ours);
         let (s2, be2, oe2) = Self::diff_span(base, theirs);
 
@@ -1238,7 +1229,10 @@ impl TemporalService {
         let mut t_idx = 0usize;
 
         loop {
-            let next_o = ours_hunks.get(o_idx).map(|h| h.base_start).unwrap_or(usize::MAX);
+            let next_o = ours_hunks
+                .get(o_idx)
+                .map(|h| h.base_start)
+                .unwrap_or(usize::MAX);
             let next_t = theirs_hunks
                 .get(t_idx)
                 .map(|h| h.base_start)
@@ -1431,7 +1425,9 @@ impl TemporalService {
                 .find_branch_index_by_name(name)
                 .ok_or(TemporalError::BranchNotFound)?
         } else {
-            object.active_branch_index().ok_or(TemporalError::BranchNotFound)?
+            object
+                .active_branch_index()
+                .ok_or(TemporalError::BranchNotFound)?
         };
         if source_idx == target_idx {
             return Err(TemporalError::MergeConflict);
@@ -1525,7 +1521,8 @@ impl TemporalService {
             .map(|meta| meta.tick)
             .unwrap_or(0);
 
-        let base_id = Self::common_ancestor_parent_chain_locked(object, ours_head_id, source_head_id);
+        let base_id =
+            Self::common_ancestor_parent_chain_locked(object, ours_head_id, source_head_id);
         let base = base_id.and_then(|id| Self::version_payload_locked(object, id));
 
         let mut merged: Option<Vec<u8>> = None;
@@ -1587,7 +1584,10 @@ impl TemporalService {
             integrity_tag,
             operation: TemporalOperation::Merge,
         };
-        object.versions.push(TemporalVersionEntry { meta, payload: payload.clone() });
+        object.versions.push(TemporalVersionEntry {
+            meta,
+            payload: payload.clone(),
+        });
         let _ = object.update_branch_head_by_id(target_branch.branch_id, Some(version_id));
         if object.active_branch_id == target_branch.branch_id {
             object.head_version_id = Some(version_id);
@@ -1599,14 +1599,22 @@ impl TemporalService {
                 new_version_id: Some(version_id),
                 target_branch_id: target_branch.branch_id,
                 source_branch_id: source_branch.branch_id,
-                    target_head_before: target_head,
-                    target_head_after: Some(version_id),
-                },
-            if target_is_active { Some(payload) } else { None },
+                target_head_before: target_head,
+                target_head_after: Some(version_id),
+            },
+            if target_is_active {
+                Some(payload)
+            } else {
+                None
+            },
         ))
     }
 
-    fn read_version_payload_locked(&self, path: &str, version_id: u64) -> Result<Vec<u8>, TemporalError> {
+    fn read_version_payload_locked(
+        &self,
+        path: &str,
+        version_id: u64,
+    ) -> Result<Vec<u8>, TemporalError> {
         let index = self
             .find_object_index(path)
             .ok_or(TemporalError::ObjectNotFound)?;
@@ -1643,7 +1651,10 @@ impl TemporalService {
         Ok(latest.meta.clone())
     }
 
-    fn list_version_metas_locked(&self, path: &str) -> Result<Vec<TemporalVersionMeta>, TemporalError> {
+    fn list_version_metas_locked(
+        &self,
+        path: &str,
+    ) -> Result<Vec<TemporalVersionMeta>, TemporalError> {
         let index = self
             .find_object_index(path)
             .ok_or(TemporalError::ObjectNotFound)?;
@@ -1706,9 +1717,7 @@ impl TemporalService {
 
         for object in &self.objects {
             stats.versions = stats.versions.saturating_add(object.versions.len());
-            stats.active_branches = stats
-                .active_branches
-                .saturating_add(object.branches.len());
+            stats.active_branches = stats.active_branches.saturating_add(object.branches.len());
             for entry in &object.versions {
                 stats.bytes = stats.bytes.saturating_add(entry.meta.data_len);
             }
@@ -1888,7 +1897,9 @@ impl TemporalService {
                 if cursor.saturating_add(name_len) > data.len() {
                     return None;
                 }
-                let name = core::str::from_utf8(&data[cursor..cursor + name_len]).ok()?.to_string();
+                let name = core::str::from_utf8(&data[cursor..cursor + name_len])
+                    .ok()?
+                    .to_string();
                 cursor = cursor.saturating_add(name_len);
                 object.branches.push(TemporalBranchHead {
                     branch_id,
@@ -2011,7 +2022,10 @@ impl TemporalService {
             if object.head_version_id.is_none() && !object.versions.is_empty() {
                 object.head_version_id = Some(object.versions.last()?.meta.version_id);
             }
-            if object.find_branch_index_by_id(object.active_branch_id).is_none() {
+            if object
+                .find_branch_index_by_id(object.active_branch_id)
+                .is_none()
+            {
                 object.active_branch_id = object.branches.get(0)?.branch_id;
             }
             if object.next_branch_id <= object.active_branch_id {
@@ -2117,7 +2131,9 @@ impl TemporalService {
                 }
                 let op = op_from_u8(data[cursor])?;
                 cursor = cursor.saturating_add(4);
-                if data_len > MAX_TEMPORAL_VERSION_BYTES || cursor.saturating_add(data_len) > data.len() {
+                if data_len > MAX_TEMPORAL_VERSION_BYTES
+                    || cursor.saturating_add(data_len) > data.len()
+                {
                     return None;
                 }
                 let mut payload = Vec::new();
@@ -2198,7 +2214,10 @@ impl TemporalService {
                     head_version_id: head,
                 });
             }
-            if object.find_branch_index_by_id(object.active_branch_id).is_none() {
+            if object
+                .find_branch_index_by_id(object.active_branch_id)
+                .is_none()
+            {
                 object.active_branch_id = 0;
             }
             if object.head_version_id.is_none() {
@@ -2323,7 +2342,9 @@ fn temporal_apply_tcp_listener_payload(
     if payload.len() < 20 {
         return Err("temporal tcp listener payload too short");
     }
-    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_SOCKET_OBJECT_TCP_LISTENER {
+    if payload[0] != TEMPORAL_OBJECT_ENCODING_V1
+        || payload[1] != TEMPORAL_SOCKET_OBJECT_TCP_LISTENER
+    {
         return Err("temporal tcp listener payload type mismatch");
     }
     let listener_id = read_u32(payload, 4).ok_or("temporal tcp listener payload missing id")?;
@@ -2362,11 +2383,14 @@ fn temporal_apply_tcp_conn_payload(
     let remote_ip = [payload[14], payload[15], payload[16], payload[17]];
     let remote_port = read_u16(payload, 18).ok_or("temporal tcp connection missing remote port")?;
 
-    let (aux, preview) = if event == TEMPORAL_SOCKET_EVENT_SEND || event == TEMPORAL_SOCKET_EVENT_RECV {
+    let (aux, preview) = if event == TEMPORAL_SOCKET_EVENT_SEND
+        || event == TEMPORAL_SOCKET_EVENT_RECV
+    {
         if payload.len() < 36 {
             return Err("temporal tcp data payload malformed");
         }
-        let preview_len = read_u16(payload, 24).ok_or("temporal tcp data preview missing")? as usize;
+        let preview_len =
+            read_u16(payload, 24).ok_or("temporal tcp data preview missing")? as usize;
         let preview_start = 36usize;
         if preview_start > payload.len() {
             return Err("temporal tcp data preview offset invalid");
@@ -2430,13 +2454,19 @@ fn temporal_apply_process_payload(
         return Err("temporal process payload/key mismatch");
     }
     let parent_pid = read_u32(payload, 8).ok_or("temporal process payload missing parent")?;
-    let name_len = read_u16(payload, 12).ok_or("temporal process payload missing name length")? as usize;
+    let name_len =
+        read_u16(payload, 12).ok_or("temporal process payload missing name length")? as usize;
     let name_start = 16usize;
     let name_end = name_start.saturating_add(name_len);
     if name_end > payload.len() {
         return Err("temporal process payload truncated");
     }
-    crate::process::temporal_apply_process_event(pid, parent_pid, event, &payload[name_start..name_end])
+    crate::process::temporal_apply_process_event(
+        pid,
+        parent_pid,
+        event,
+        &payload[name_start..name_end],
+    )
 }
 
 fn temporal_apply_capability_payload(
@@ -2487,7 +2517,8 @@ fn temporal_apply_registry_payload(
     let (key_service_type, key_namespace) =
         parse_registry_key(path).ok_or("temporal registry key parse failed")?;
     let event = payload[2];
-    let service_type = read_u32(payload, 4).ok_or("temporal registry payload missing service type")?;
+    let service_type =
+        read_u32(payload, 4).ok_or("temporal registry payload missing service type")?;
     let namespace = read_u32(payload, 8).ok_or("temporal registry payload missing namespace")?;
     if service_type != key_service_type || namespace != key_namespace {
         return Err("temporal registry payload/key mismatch");
@@ -2530,7 +2561,8 @@ fn temporal_apply_console_payload(
     }
     let event = payload[2];
     let owner_pid = read_u32(payload, 12).ok_or("temporal console payload missing owner")?;
-    let write_count = read_u64(payload, 16).ok_or("temporal console payload missing write count")?;
+    let write_count =
+        read_u64(payload, 16).ok_or("temporal console payload missing write count")?;
     let read_count = read_u64(payload, 24).ok_or("temporal console payload missing read count")?;
     crate::console_service::temporal_apply_console_event(
         object_id,
@@ -2560,7 +2592,8 @@ fn temporal_apply_security_payload(
     }
     let policy = crate::intent_graph::IntentPolicy {
         window_seconds: read_u64(payload, 4).ok_or("temporal security payload missing window")?,
-        alert_score: read_u32(payload, 12).ok_or("temporal security payload missing alert score")?,
+        alert_score: read_u32(payload, 12)
+            .ok_or("temporal security payload missing alert score")?,
         restrict_score: read_u32(payload, 16)
             .ok_or("temporal security payload missing restrict score")?,
         isolate_restrictions: read_u16(payload, 20)
@@ -2806,25 +2839,39 @@ fn ensure_object_adapters_initialized() {
             "/socket/tcp/listener/",
             temporal_apply_tcp_listener_payload,
         );
-        let _ = register_object_adapter_internal("/socket/tcp/conn/", temporal_apply_tcp_conn_payload);
-        let _ = register_object_adapter_internal("/ipc/channel/", temporal_apply_ipc_channel_payload);
+        let _ =
+            register_object_adapter_internal("/socket/tcp/conn/", temporal_apply_tcp_conn_payload);
+        let _ =
+            register_object_adapter_internal("/ipc/channel/", temporal_apply_ipc_channel_payload);
         let _ = register_object_adapter_internal("/process/", temporal_apply_process_payload);
         let _ = register_object_adapter_internal("/capability/", temporal_apply_capability_payload);
-        let _ = register_object_adapter_internal("/registry/service/", temporal_apply_registry_payload);
-        let _ = register_object_adapter_internal("/console/object/", temporal_apply_console_payload);
-        let _ = register_object_adapter_internal("/security/intent/policy", temporal_apply_security_payload);
+        let _ =
+            register_object_adapter_internal("/registry/service/", temporal_apply_registry_payload);
+        let _ =
+            register_object_adapter_internal("/console/object/", temporal_apply_console_payload);
+        let _ = register_object_adapter_internal(
+            "/security/intent/policy",
+            temporal_apply_security_payload,
+        );
         let _ = register_object_adapter_internal("/capnet/state", temporal_apply_capnet_payload);
         let _ = register_object_adapter_internal(
             "/wasm/service-pointers",
             temporal_apply_wasm_service_pointer_payload,
         );
-        let _ = register_object_adapter_internal("/network/config", temporal_apply_network_config_payload);
+        let _ = register_object_adapter_internal(
+            "/network/config",
+            temporal_apply_network_config_payload,
+        );
         let _ = register_object_adapter_internal(
             "/wasm/syscall-modules",
             temporal_apply_wasm_syscall_module_table_payload,
         );
-        let _ = register_object_adapter_internal("/scheduler/state", temporal_apply_scheduler_payload);
-        let _ = register_object_adapter_internal("/replay/state", temporal_apply_replay_manager_payload);
+        let _ =
+            register_object_adapter_internal("/scheduler/state", temporal_apply_scheduler_payload);
+        let _ = register_object_adapter_internal(
+            "/replay/state",
+            temporal_apply_replay_manager_payload,
+        );
         let _ = register_object_adapter_internal(
             "/network/legacy/state",
             temporal_apply_network_legacy_payload,
@@ -2904,8 +2951,12 @@ fn emit_temporal_audit(
         security.intent_fs_read(pid, object_hint);
     }
     security.log_event(
-        crate::security::AuditEntry::new(crate::security::SecurityEvent::TemporalOperation, pid, cap_id)
-            .with_context(temporal_audit_context(action, object_hint, success)),
+        crate::security::AuditEntry::new(
+            crate::security::SecurityEvent::TemporalOperation,
+            pid,
+            cap_id,
+        )
+        .with_context(temporal_audit_context(action, object_hint, success)),
     );
 }
 
@@ -3045,7 +3096,8 @@ fn compute_version_hashes(payload: &[u8]) -> (u32, u32, u32) {
         return (content_hash, root, 1);
     }
 
-    let mut leaves: Vec<u32> = Vec::with_capacity((payload.len() + MERKLE_CHUNK_BYTES - 1) / MERKLE_CHUNK_BYTES);
+    let mut leaves: Vec<u32> =
+        Vec::with_capacity((payload.len() + MERKLE_CHUNK_BYTES - 1) / MERKLE_CHUNK_BYTES);
     for (chunk_index, chunk) in payload.chunks(MERKLE_CHUNK_BYTES).enumerate() {
         let seed = TEMPORAL_HASH_SEED ^ ((chunk_index as u32).wrapping_mul(0x9E37_79B1));
         leaves.push(temporal_asm::fnv1a32(chunk, seed));
@@ -3433,7 +3485,9 @@ pub fn record_console_event(
     record_object_write(&key, &payload)
 }
 
-pub fn record_intent_policy_event(policy: &crate::intent_graph::IntentPolicy) -> Result<u64, TemporalError> {
+pub fn record_intent_policy_event(
+    policy: &crate::intent_graph::IntentPolicy,
+) -> Result<u64, TemporalError> {
     let mut payload = Vec::new();
     payload.reserve(36);
     payload.push(TEMPORAL_OBJECT_ENCODING_V1);
@@ -3559,7 +3613,13 @@ pub fn read_version(path: &str, version_id: u64) -> Result<Vec<u8>, TemporalErro
             Ok(payload)
         }
         Err(e) => {
-            emit_temporal_audit(TemporalAuditAction::ReadVersion, &normalized, 0, false, false);
+            emit_temporal_audit(
+                TemporalAuditAction::ReadVersion,
+                &normalized,
+                0,
+                false,
+                false,
+            );
             Err(e)
         }
     }
@@ -3586,7 +3646,13 @@ pub fn list_versions(path: &str) -> Result<Vec<TemporalVersionMeta>, TemporalErr
             Ok(history)
         }
         Err(e) => {
-            emit_temporal_audit(TemporalAuditAction::ListVersions, &normalized, 0, false, false);
+            emit_temporal_audit(
+                TemporalAuditAction::ListVersions,
+                &normalized,
+                0,
+                false,
+                false,
+            );
             Err(e)
         }
     }
@@ -3613,7 +3679,13 @@ pub fn latest_version(path: &str) -> Result<TemporalVersionMeta, TemporalError> 
             Ok(meta)
         }
         Err(e) => {
-            emit_temporal_audit(TemporalAuditAction::LatestVersion, &normalized, 0, false, false);
+            emit_temporal_audit(
+                TemporalAuditAction::LatestVersion,
+                &normalized,
+                0,
+                false,
+                false,
+            );
             Err(e)
         }
     }
@@ -3646,13 +3718,22 @@ pub fn history_window(
             Ok(history)
         }
         Err(e) => {
-            emit_temporal_audit(TemporalAuditAction::HistoryWindow, &normalized, 0, false, false);
+            emit_temporal_audit(
+                TemporalAuditAction::HistoryWindow,
+                &normalized,
+                0,
+                false,
+                false,
+            );
             Err(e)
         }
     }
 }
 
-pub fn rollback_path(path: &str, rollback_to_version_id: u64) -> Result<TemporalRollbackResult, TemporalError> {
+pub fn rollback_path(
+    path: &str,
+    rollback_to_version_id: u64,
+) -> Result<TemporalRollbackResult, TemporalError> {
     let normalized = match normalize_path(path) {
         Ok(path) => path,
         Err(e) => {
@@ -3663,7 +3744,8 @@ pub fn rollback_path(path: &str, rollback_to_version_id: u64) -> Result<Temporal
 
     let (payload, previous_head) = {
         let service = TEMPORAL.lock();
-        let payload = match service.read_version_payload_locked(&normalized, rollback_to_version_id) {
+        let payload = match service.read_version_payload_locked(&normalized, rollback_to_version_id)
+        {
             Ok(payload) => payload,
             Err(e) => {
                 emit_temporal_audit(TemporalAuditAction::Rollback, &normalized, 0, false, true);
@@ -3680,7 +3762,8 @@ pub fn rollback_path(path: &str, rollback_to_version_id: u64) -> Result<Temporal
         (payload, previous_head)
     };
 
-    if apply_temporal_payload_to_object(&normalized, &payload, TemporalRestoreMode::Rollback).is_err()
+    if apply_temporal_payload_to_object(&normalized, &payload, TemporalRestoreMode::Rollback)
+        .is_err()
     {
         emit_temporal_audit(TemporalAuditAction::Rollback, &normalized, 0, false, true);
         return Err(TemporalError::AdapterApplyFailed);
@@ -3688,7 +3771,11 @@ pub fn rollback_path(path: &str, rollback_to_version_id: u64) -> Result<Temporal
 
     let result = {
         let mut service = TEMPORAL.lock();
-        match service.mark_latest_rollback_locked(&normalized, rollback_to_version_id, previous_head) {
+        match service.mark_latest_rollback_locked(
+            &normalized,
+            rollback_to_version_id,
+            previous_head,
+        ) {
             Ok(result) => result,
             Err(e) => {
                 emit_temporal_audit(TemporalAuditAction::Rollback, &normalized, 0, false, true);
@@ -3724,7 +3811,13 @@ pub fn create_branch(
         match service.create_branch_locked(&normalized, branch_name, from_version_id) {
             Ok(branch_id) => branch_id,
             Err(e) => {
-                emit_temporal_audit(TemporalAuditAction::BranchCreate, &normalized, 0, false, true);
+                emit_temporal_audit(
+                    TemporalAuditAction::BranchCreate,
+                    &normalized,
+                    0,
+                    false,
+                    true,
+                );
                 return Err(e);
             }
         }
@@ -3761,7 +3854,13 @@ pub fn list_branches(path: &str) -> Result<Vec<TemporalBranchInfo>, TemporalErro
             Ok(branches)
         }
         Err(e) => {
-            emit_temporal_audit(TemporalAuditAction::ListBranches, &normalized, 0, false, false);
+            emit_temporal_audit(
+                TemporalAuditAction::ListBranches,
+                &normalized,
+                0,
+                false,
+                false,
+            );
             Err(e)
         }
     }
@@ -3780,16 +3879,29 @@ pub fn checkout_branch(path: &str, branch_name: &str) -> Result<(u32, Option<u64
         match service.checkout_branch_locked(&normalized, branch_name) {
             Ok(v) => v,
             Err(e) => {
-                emit_temporal_audit(TemporalAuditAction::BranchCheckout, &normalized, 0, false, true);
+                emit_temporal_audit(
+                    TemporalAuditAction::BranchCheckout,
+                    &normalized,
+                    0,
+                    false,
+                    true,
+                );
                 return Err(e);
             }
         }
     };
 
     if let Some(data) = payload {
-        if apply_temporal_payload_to_object(&normalized, &data, TemporalRestoreMode::Checkout).is_err()
+        if apply_temporal_payload_to_object(&normalized, &data, TemporalRestoreMode::Checkout)
+            .is_err()
         {
-            emit_temporal_audit(TemporalAuditAction::BranchCheckout, &normalized, 0, false, true);
+            emit_temporal_audit(
+                TemporalAuditAction::BranchCheckout,
+                &normalized,
+                0,
+                false,
+                true,
+            );
             return Err(TemporalError::AdapterApplyFailed);
         }
     }
@@ -3820,7 +3932,12 @@ pub fn merge_branch(
     };
     let (result, payload) = {
         let mut service = TEMPORAL.lock();
-        match service.merge_branch_locked(&normalized, source_branch_name, target_branch_name, strategy) {
+        match service.merge_branch_locked(
+            &normalized,
+            source_branch_name,
+            target_branch_name,
+            strategy,
+        ) {
             Ok(v) => v,
             Err(e) => {
                 emit_temporal_audit(TemporalAuditAction::Merge, &normalized, 0, false, true);
@@ -3837,7 +3954,9 @@ pub fn merge_branch(
         }
     }
 
-    let merge_cap_id = result.new_version_id.unwrap_or(result.target_branch_id as u64) as u32;
+    let merge_cap_id = result
+        .new_version_id
+        .unwrap_or(result.target_branch_id as u64) as u32;
     emit_temporal_audit(
         TemporalAuditAction::Merge,
         &normalized,
@@ -3855,22 +3974,34 @@ pub fn stats() -> TemporalStats {
 
 pub fn retention_policy() -> (usize, usize) {
     let svc = TEMPORAL.lock();
-    (svc.retention.max_versions_per_object, svc.retention.max_persist_bytes)
+    (
+        svc.retention.max_versions_per_object,
+        svc.retention.max_persist_bytes,
+    )
 }
 
-pub fn set_retention_policy(max_versions_per_object: usize, max_persist_bytes: usize) -> (usize, usize) {
+pub fn set_retention_policy(
+    max_versions_per_object: usize,
+    max_persist_bytes: usize,
+) -> (usize, usize) {
     let mut svc = TEMPORAL.lock();
     svc.retention.max_versions_per_object =
         max_versions_per_object.clamp(1, MAX_VERSIONS_PER_OBJECT);
-    svc.retention.max_persist_bytes = max_persist_bytes
-        .clamp(256, crate::persistence::MAX_SNAPSHOT_SIZE);
-    (svc.retention.max_versions_per_object, svc.retention.max_persist_bytes)
+    svc.retention.max_persist_bytes =
+        max_persist_bytes.clamp(256, crate::persistence::MAX_SNAPSHOT_SIZE);
+    (
+        svc.retention.max_versions_per_object,
+        svc.retention.max_persist_bytes,
+    )
 }
 
 pub fn reset_retention_policy() -> (usize, usize) {
     let mut svc = TEMPORAL.lock();
     svc.retention = TemporalRetentionPolicy::default();
-    (svc.retention.max_versions_per_object, svc.retention.max_persist_bytes)
+    (
+        svc.retention.max_versions_per_object,
+        svc.retention.max_persist_bytes,
+    )
 }
 
 pub fn gc_for_persistence_budget() -> (usize, usize) {
@@ -3933,12 +4064,8 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
     const LOCAL_IP: [u8; 4] = [10, 1, 0, 2];
     const REMOTE_IP: [u8; 4] = [10, 1, 0, 9];
 
-    record_tcp_socket_listener_event(
-        listener_id,
-        8080,
-        TEMPORAL_SOCKET_EVENT_LISTEN,
-    )
-    .map_err(|_| "temporal object self-check: listener record failed")?;
+    record_tcp_socket_listener_event(listener_id, 8080, TEMPORAL_SOCKET_EVENT_LISTEN)
+        .map_err(|_| "temporal object self-check: listener record failed")?;
     record_tcp_socket_state_event(
         socket_id,
         4, // established
@@ -3961,15 +4088,8 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         b"GET / HTTP/1.1",
     )
     .map_err(|_| "temporal object self-check: socket data record failed")?;
-    record_ipc_channel_event(
-        channel_id,
-        TEMPORAL_CHANNEL_EVENT_SEND,
-        91,
-        64,
-        1,
-        1,
-    )
-    .map_err(|_| "temporal object self-check: channel record failed")?;
+    record_ipc_channel_event(channel_id, TEMPORAL_CHANNEL_EVENT_SEND, 91, 64, 1, 1)
+        .map_err(|_| "temporal object self-check: channel record failed")?;
 
     let socket_key = tcp_socket_object_key(socket_id);
     let socket_history = list_versions(&socket_key)
@@ -4002,8 +4122,13 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
     }
 
     let proc_id = 0x4400_0000u32 | seed;
-    record_process_event(proc_id, Some(1), TEMPORAL_PROCESS_EVENT_SPAWN, "temporal-selfcheck")
-        .map_err(|_| "temporal object self-check: process record failed")?;
+    record_process_event(
+        proc_id,
+        Some(1),
+        TEMPORAL_PROCESS_EVENT_SPAWN,
+        "temporal-selfcheck",
+    )
+    .map_err(|_| "temporal object self-check: process record failed")?;
     let proc_key = process_object_key(proc_id);
     let proc_latest = latest_version(&proc_key)
         .map_err(|_| "temporal object self-check: process history missing")?;
@@ -4024,8 +4149,11 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         7,
     )
     .map_err(|_| "temporal object self-check: capability record failed")?;
-    let cap_key =
-        capability_object_key(1, crate::capability::CapabilityType::Console as u8, cap_object);
+    let cap_key = capability_object_key(
+        1,
+        crate::capability::CapabilityType::Console as u8,
+        cap_object,
+    );
     let cap_latest = latest_version(&cap_key)
         .map_err(|_| "temporal object self-check: capability history missing")?;
     let cap_payload = read_version(&cap_key, cap_latest.version_id)
@@ -4058,14 +4186,8 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
     }
 
     let console_object = 0x6600_0000u64 | (seed as u64);
-    record_console_event(
-        console_object,
-        0,
-        12,
-        0,
-        TEMPORAL_CONSOLE_EVENT_CREATE,
-    )
-    .map_err(|_| "temporal object self-check: console record failed")?;
+    record_console_event(console_object, 0, 12, 0, TEMPORAL_CONSOLE_EVENT_CREATE)
+        .map_err(|_| "temporal object self-check: console record failed")?;
     let console_key = console_object_key(console_object);
     let console_latest = latest_version(&console_key)
         .map_err(|_| "temporal object self-check: console history missing")?;
@@ -4143,9 +4265,11 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         .map_err(|_| "temporal object self-check: wasm syscall module record failed")?;
     let wasm_syscall_latest = latest_version(wasm_syscall_module_table_object_key())
         .map_err(|_| "temporal object self-check: wasm syscall module history missing")?;
-    let wasm_syscall_read =
-        read_version(wasm_syscall_module_table_object_key(), wasm_syscall_latest.version_id)
-            .map_err(|_| "temporal object self-check: wasm syscall module payload unreadable")?;
+    let wasm_syscall_read = read_version(
+        wasm_syscall_module_table_object_key(),
+        wasm_syscall_latest.version_id,
+    )
+    .map_err(|_| "temporal object self-check: wasm syscall module payload unreadable")?;
     if wasm_syscall_read.len() < 4 {
         return Err("temporal object self-check: wasm syscall module payload too short");
     }
@@ -4202,7 +4326,7 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
     wifi_payload[6] = 0; // WifiState::Disabled
     wifi_payload[7] = 0; // ip not assigned
     wifi_payload[39] = 0; // WifiSecurity::Open
-    // scan_count at offset 16 remains 0, connection network is zeroed and valid for ssid_len=0
+                          // scan_count at offset 16 remains 0, connection network is zeroed and valid for ssid_len=0
     record_wifi_state_event(&wifi_payload)
         .map_err(|_| "temporal object self-check: wifi record failed")?;
     let wifi_latest = latest_version(wifi_state_object_key())
@@ -4326,7 +4450,8 @@ pub fn branch_merge_self_check() -> Result<(), &'static str> {
 
     let mut read_buf = Vec::new();
     read_buf.resize(MAIN_UPDATE.len().saturating_add(32), 0);
-    let read = crate::vfs::read_path(PATH, &mut read_buf).map_err(|_| "branch self-check read failed")?;
+    let read =
+        crate::vfs::read_path(PATH, &mut read_buf).map_err(|_| "branch self-check read failed")?;
     read_buf.truncate(read);
     if read_buf.as_slice() != MAIN_UPDATE {
         return Err("branch self-check payload mismatch");
@@ -4364,7 +4489,8 @@ pub fn audit_emission_self_check() -> Result<(), &'static str> {
 
     let before_total = crate::security::security().get_audit_stats().0;
 
-    crate::vfs::write_path(PATH, PAYLOAD).map_err(|_| "temporal audit self-check seed write failed")?;
+    crate::vfs::write_path(PATH, PAYLOAD)
+        .map_err(|_| "temporal audit self-check seed write failed")?;
     snapshot_path(PATH).map_err(|_| "temporal audit self-check snapshot failed")?;
     let _ = latest_version(PATH).map_err(|_| "temporal audit self-check latest query failed")?;
     let _ = list_versions(PATH).map_err(|_| "temporal audit self-check list query failed")?;

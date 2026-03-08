@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -40,10 +40,12 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 
-use crate::idt_asm::{self, IdtEntry, IdtPointer, FLAG_DPL0, FLAG_DPL3, FLAG_PRESENT, GATE_INTERRUPT_32};
+use crate::gdt;
+use crate::idt_asm::{
+    self, IdtEntry, IdtPointer, FLAG_DPL0, FLAG_DPL3, FLAG_PRESENT, GATE_INTERRUPT_32,
+};
 use crate::memory;
 use crate::paging;
-use crate::gdt;
 use crate::process_asm::{write_msr, MSR_IA32_SYSENTER_EIP};
 
 #[no_mangle]
@@ -121,7 +123,11 @@ extern "C" {
 
 const STUB_STRIDE: usize = 16;
 
-fn write_trampoline_stub(base: *mut u8, offset: usize, target: usize) -> Result<usize, &'static str> {
+fn write_trampoline_stub(
+    base: *mut u8,
+    offset: usize,
+    target: usize,
+) -> Result<usize, &'static str> {
     let addr = base as usize + offset;
     unsafe {
         let mut p = base.add(offset);
@@ -185,12 +191,38 @@ pub fn init() -> Result<(), &'static str> {
     let mut offset = 0usize;
     let mut stub_addr = [0usize; 48];
     let isrs: [usize; 32] = [
-        isr0 as usize, isr1 as usize, isr2 as usize, isr3 as usize, isr4 as usize, isr5 as usize,
-        isr6 as usize, isr7 as usize, isr8 as usize, isr9 as usize, isr10 as usize, isr11 as usize,
-        isr12 as usize, isr13 as usize, isr14 as usize, isr15 as usize, isr16 as usize, isr17 as usize,
-        isr18 as usize, isr19 as usize, isr20 as usize, isr21 as usize, isr22 as usize, isr23 as usize,
-        isr24 as usize, isr25 as usize, isr26 as usize, isr27 as usize, isr28 as usize, isr29 as usize,
-        isr30 as usize, isr31 as usize,
+        isr0 as usize,
+        isr1 as usize,
+        isr2 as usize,
+        isr3 as usize,
+        isr4 as usize,
+        isr5 as usize,
+        isr6 as usize,
+        isr7 as usize,
+        isr8 as usize,
+        isr9 as usize,
+        isr10 as usize,
+        isr11 as usize,
+        isr12 as usize,
+        isr13 as usize,
+        isr14 as usize,
+        isr15 as usize,
+        isr16 as usize,
+        isr17 as usize,
+        isr18 as usize,
+        isr19 as usize,
+        isr20 as usize,
+        isr21 as usize,
+        isr22 as usize,
+        isr23 as usize,
+        isr24 as usize,
+        isr25 as usize,
+        isr26 as usize,
+        isr27 as usize,
+        isr28 as usize,
+        isr29 as usize,
+        isr30 as usize,
+        isr31 as usize,
     ];
     for (i, &handler) in isrs.iter().enumerate() {
         let addr = write_trampoline_stub(tramp_ptr, offset, handler)?;
@@ -198,10 +230,22 @@ pub fn init() -> Result<(), &'static str> {
         offset += STUB_STRIDE;
     }
     let irqs: [usize; 16] = [
-        irq0 as usize, irq1 as usize, irq2 as usize, irq3 as usize,
-        irq4 as usize, irq5 as usize, irq6 as usize, irq7 as usize,
-        irq8 as usize, irq9 as usize, irq10 as usize, irq11 as usize,
-        irq12 as usize, irq13 as usize, irq14 as usize, irq15 as usize,
+        irq0 as usize,
+        irq1 as usize,
+        irq2 as usize,
+        irq3 as usize,
+        irq4 as usize,
+        irq5 as usize,
+        irq6 as usize,
+        irq7 as usize,
+        irq8 as usize,
+        irq9 as usize,
+        irq10 as usize,
+        irq11 as usize,
+        irq12 as usize,
+        irq13 as usize,
+        irq14 as usize,
+        irq15 as usize,
     ];
     for (i, &handler) in irqs.iter().enumerate() {
         let addr = write_trampoline_stub(tramp_ptr, offset, handler)?;

@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -384,7 +384,6 @@ impl EnclaveManager {
     fn mark_failure(&mut self) {
         self.failed_total = self.failed_total.saturating_add(1);
     }
-
 }
 
 static MANAGER: Mutex<EnclaveManager> = Mutex::new(EnclaveManager::new());
@@ -782,10 +781,11 @@ fn record_temporal_enclave_state_snapshot() {
     if crate::temporal::is_replay_active() {
         return;
     }
-    let payload = match encode_temporal_enclave_payload(crate::temporal::TEMPORAL_ENCLAVE_EVENT_STATE) {
-        Some(v) => v,
-        None => return,
-    };
+    let payload =
+        match encode_temporal_enclave_payload(crate::temporal::TEMPORAL_ENCLAVE_EVENT_STATE) {
+            Some(v) => v,
+            None => return,
+        };
     let _ = crate::temporal::record_enclave_state_event(&payload);
 }
 
@@ -816,14 +816,16 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
 
     let mut offset = 4 + TEMPORAL_ENCLAVE_SHAPE_BYTES;
     let enabled = payload[offset] != 0;
-    let backend = temporal_backend_from_u8(payload[offset + 1]).ok_or("temporal enclave backend invalid")?;
+    let backend =
+        temporal_backend_from_u8(payload[offset + 1]).ok_or("temporal enclave backend invalid")?;
     let active_session =
         temporal_read_u32(payload, offset + 4).ok_or("temporal enclave active session missing")?;
     let created_total =
         temporal_read_u32(payload, offset + 8).ok_or("temporal enclave created total missing")?;
     let failed_total =
         temporal_read_u32(payload, offset + 12).ok_or("temporal enclave failed total missing")?;
-    let next_id = temporal_read_u32(payload, offset + 16).ok_or("temporal enclave next id missing")?;
+    let next_id =
+        temporal_read_u32(payload, offset + 16).ok_or("temporal enclave next id missing")?;
     let backend_ops_total =
         temporal_read_u32(payload, offset + 20).ok_or("temporal enclave backend ops missing")?;
     let attestation_reports =
@@ -837,22 +839,22 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
         temporal_read_u16(payload, offset + 34).ok_or("temporal enclave tz abi minor missing")?;
     let tz_features =
         temporal_read_u32(payload, offset + 36).ok_or("temporal enclave tz features missing")?;
-    let tz_max_sessions =
-        temporal_read_u32(payload, offset + 40).ok_or("temporal enclave tz max sessions missing")?;
+    let tz_max_sessions = temporal_read_u32(payload, offset + 40)
+        .ok_or("temporal enclave tz max sessions missing")?;
     let epoch_counter =
         temporal_read_u32(payload, offset + 44).ok_or("temporal enclave epoch counter missing")?;
     let remote_policy =
         temporal_read_u32(payload, offset + 48).ok_or("temporal enclave remote policy missing")?;
-    let key_provisioned_total =
-        temporal_read_u32(payload, offset + 52).ok_or("temporal enclave key provisioned missing")?;
+    let key_provisioned_total = temporal_read_u32(payload, offset + 52)
+        .ok_or("temporal enclave key provisioned missing")?;
     let key_revoked_total =
         temporal_read_u32(payload, offset + 56).ok_or("temporal enclave key revoked missing")?;
-    let attestation_verified_total =
-        temporal_read_u32(payload, offset + 60).ok_or("temporal enclave attest verified missing")?;
+    let attestation_verified_total = temporal_read_u32(payload, offset + 60)
+        .ok_or("temporal enclave attest verified missing")?;
     let attestation_failed_total =
         temporal_read_u32(payload, offset + 64).ok_or("temporal enclave attest failed missing")?;
-    let remote_verified_total =
-        temporal_read_u32(payload, offset + 68).ok_or("temporal enclave remote verified missing")?;
+    let remote_verified_total = temporal_read_u32(payload, offset + 68)
+        .ok_or("temporal enclave remote verified missing")?;
     let remote_failed_total =
         temporal_read_u32(payload, offset + 72).ok_or("temporal enclave remote failed missing")?;
     let remote_audit_total =
@@ -873,8 +875,8 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
             return Err("temporal enclave session truncated");
         }
         let id = temporal_read_u32(payload, offset).ok_or("temporal enclave session id missing")?;
-        let state =
-            temporal_enclave_state_from_u8(payload[offset + 4]).ok_or("temporal enclave session state invalid")?;
+        let state = temporal_enclave_state_from_u8(payload[offset + 4])
+            .ok_or("temporal enclave session state invalid")?;
         let attested = payload[offset + 5] != 0;
         let remote_attested = payload[offset + 6] != 0;
         let measurement =
@@ -883,18 +885,18 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
             temporal_read_u32(payload, offset + 16).ok_or("temporal enclave cookie missing")?;
         let launch_token_mac =
             temporal_read_u64(payload, offset + 20).ok_or("temporal enclave launch mac missing")?;
-        let launch_nonce =
-            temporal_read_u32(payload, offset + 28).ok_or("temporal enclave launch nonce missing")?;
+        let launch_nonce = temporal_read_u32(payload, offset + 28)
+            .ok_or("temporal enclave launch nonce missing")?;
         let runtime_key_handle =
             temporal_read_u32(payload, offset + 32).ok_or("temporal enclave key handle missing")?;
-        let remote_verifier_id =
-            temporal_read_u32(payload, offset + 36).ok_or("temporal enclave verifier id missing")?;
-        let remote_quote_nonce =
-            temporal_read_u64(payload, offset + 40).ok_or("temporal enclave quote nonce missing")?;
-        let remote_attest_issued_epoch =
-            temporal_read_u32(payload, offset + 48).ok_or("temporal enclave attest issued missing")?;
-        let remote_attest_expires_epoch =
-            temporal_read_u32(payload, offset + 52).ok_or("temporal enclave attest expires missing")?;
+        let remote_verifier_id = temporal_read_u32(payload, offset + 36)
+            .ok_or("temporal enclave verifier id missing")?;
+        let remote_quote_nonce = temporal_read_u64(payload, offset + 40)
+            .ok_or("temporal enclave quote nonce missing")?;
+        let remote_attest_issued_epoch = temporal_read_u32(payload, offset + 48)
+            .ok_or("temporal enclave attest issued missing")?;
+        let remote_attest_expires_epoch = temporal_read_u32(payload, offset + 52)
+            .ok_or("temporal enclave attest expires missing")?;
         let remote_attest_mac =
             temporal_read_u64(payload, offset + 56).ok_or("temporal enclave attest mac missing")?;
         let (code_phys, code_len, data_phys, data_len, mem_phys, mem_len, epc_base, epc_pages) =
@@ -918,7 +920,9 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
                         .ok_or("temporal enclave epc pages missing")? as usize,
                 )
             } else {
-                (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize)
+                (
+                    0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+                )
             };
 
         decoded_sessions[i] = EnclaveSession {
@@ -953,13 +957,15 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
         if offset.saturating_add(TEMPORAL_ENCLAVE_CERT_BYTES) > payload.len() {
             return Err("temporal enclave cert truncated");
         }
-        let cert_id = temporal_read_u32(payload, offset).ok_or("temporal enclave cert id missing")?;
+        let cert_id =
+            temporal_read_u32(payload, offset).ok_or("temporal enclave cert id missing")?;
         let issuer_id =
             temporal_read_u32(payload, offset + 4).ok_or("temporal enclave issuer id missing")?;
-        let role = temporal_cert_role_from_u8(payload[offset + 8]).ok_or("temporal enclave role invalid")?;
+        let role = temporal_cert_role_from_u8(payload[offset + 8])
+            .ok_or("temporal enclave role invalid")?;
         let revoked = payload[offset + 9] != 0;
-        let pubkey_fingerprint =
-            temporal_read_u64(payload, offset + 12).ok_or("temporal enclave fingerprint missing")?;
+        let pubkey_fingerprint = temporal_read_u64(payload, offset + 12)
+            .ok_or("temporal enclave fingerprint missing")?;
         let not_before_epoch =
             temporal_read_u32(payload, offset + 20).ok_or("temporal enclave not before missing")?;
         let not_after_epoch =
@@ -984,15 +990,18 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
         if offset.saturating_add(TEMPORAL_ENCLAVE_KEY_BYTES) > payload.len() {
             return Err("temporal enclave key truncated");
         }
-        let handle = temporal_read_u32(payload, offset).ok_or("temporal enclave key handle missing")?;
+        let handle =
+            temporal_read_u32(payload, offset).ok_or("temporal enclave key handle missing")?;
         let owner_session =
             temporal_read_u32(payload, offset + 4).ok_or("temporal enclave key owner missing")?;
-        let purpose = temporal_read_u32(payload, offset + 8).ok_or("temporal enclave key purpose missing")?;
-        let state = temporal_key_state_from_u8(payload[offset + 12]).ok_or("temporal enclave key state invalid")?;
-        let created_epoch =
-            temporal_read_u32(payload, offset + 16).ok_or("temporal enclave key created missing")?;
-        let expires_epoch =
-            temporal_read_u32(payload, offset + 20).ok_or("temporal enclave key expires missing")?;
+        let purpose =
+            temporal_read_u32(payload, offset + 8).ok_or("temporal enclave key purpose missing")?;
+        let state = temporal_key_state_from_u8(payload[offset + 12])
+            .ok_or("temporal enclave key state invalid")?;
+        let created_epoch = temporal_read_u32(payload, offset + 16)
+            .ok_or("temporal enclave key created missing")?;
+        let expires_epoch = temporal_read_u32(payload, offset + 20)
+            .ok_or("temporal enclave key expires missing")?;
         let sealed_mac =
             temporal_read_u64(payload, offset + 24).ok_or("temporal enclave key mac missing")?;
         let mut material = [0u8; 32];
@@ -1015,20 +1024,21 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
         if offset.saturating_add(TEMPORAL_ENCLAVE_VERIFIER_BYTES) > payload.len() {
             return Err("temporal enclave verifier truncated");
         }
-        let id = temporal_read_u32(payload, offset).ok_or("temporal enclave verifier id missing")?;
-        let backend =
-            temporal_backend_from_u8(payload[offset + 4]).ok_or("temporal enclave verifier backend invalid")?;
+        let id =
+            temporal_read_u32(payload, offset).ok_or("temporal enclave verifier id missing")?;
+        let backend = temporal_backend_from_u8(payload[offset + 4])
+            .ok_or("temporal enclave verifier backend invalid")?;
         let enabled_flag = payload[offset + 5] != 0;
-        let root_fingerprint =
-            temporal_read_u64(payload, offset + 8).ok_or("temporal enclave verifier root missing")?;
-        let verifier_fingerprint =
-            temporal_read_u64(payload, offset + 16).ok_or("temporal enclave verifier fingerprint missing")?;
-        let shared_secret =
-            temporal_read_u64(payload, offset + 24).ok_or("temporal enclave verifier secret missing")?;
-        let not_before_epoch =
-            temporal_read_u32(payload, offset + 32).ok_or("temporal enclave verifier not before missing")?;
-        let not_after_epoch =
-            temporal_read_u32(payload, offset + 36).ok_or("temporal enclave verifier not after missing")?;
+        let root_fingerprint = temporal_read_u64(payload, offset + 8)
+            .ok_or("temporal enclave verifier root missing")?;
+        let verifier_fingerprint = temporal_read_u64(payload, offset + 16)
+            .ok_or("temporal enclave verifier fingerprint missing")?;
+        let shared_secret = temporal_read_u64(payload, offset + 24)
+            .ok_or("temporal enclave verifier secret missing")?;
+        let not_before_epoch = temporal_read_u32(payload, offset + 32)
+            .ok_or("temporal enclave verifier not before missing")?;
+        let not_after_epoch = temporal_read_u32(payload, offset + 36)
+            .ok_or("temporal enclave verifier not after missing")?;
         remote_verifiers[i] = RemoteVerifier {
             id,
             backend,
@@ -1047,8 +1057,9 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
     }
 
     TEMPORAL_SECRET_POLICY.store(
-        if (persist_flags & (TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_KEYS
-            | TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_REMOTE_SECRETS))
+        if (persist_flags
+            & (TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_KEYS
+                | TEMPORAL_ENCLAVE_PERSIST_FLAG_REDACT_REMOTE_SECRETS))
             != 0
         {
             TEMPORAL_SECRET_POLICY_REDACT
@@ -1251,7 +1262,9 @@ struct AlignedPage {
 
 impl AlignedPage {
     const fn zeroed() -> Self {
-        Self { bytes: [0; PAGE_SIZE] }
+        Self {
+            bytes: [0; PAGE_SIZE],
+        }
     }
 }
 
@@ -1667,7 +1680,10 @@ fn build_quote(
     Ok(quote)
 }
 
-fn verify_quote(quote: &AttestationQuote, expected_launch_token_mac: u64) -> Result<(), &'static str> {
+fn verify_quote(
+    quote: &AttestationQuote,
+    expected_launch_token_mac: u64,
+) -> Result<(), &'static str> {
     ensure_attestation_chain(quote.backend)?;
     let now = current_epoch();
     let anchor = trusted_anchor_for_backend(quote.backend).ok_or("No trust anchor")?;
@@ -1769,10 +1785,7 @@ fn remote_token_payload(
     payload
 }
 
-fn sign_remote_token(
-    token: &RemoteAttestationToken,
-    verifier: RemoteVerifier,
-) -> u64 {
+fn sign_remote_token(token: &RemoteAttestationToken, verifier: RemoteVerifier) -> u64 {
     let payload = remote_token_payload(
         token,
         verifier.root_fingerprint,
@@ -1782,10 +1795,7 @@ fn sign_remote_token(
     attestation_mac64(key, &payload)
 }
 
-fn verify_remote_token(
-    token: &RemoteAttestationToken,
-    verifier: RemoteVerifier,
-) -> bool {
+fn verify_remote_token(token: &RemoteAttestationToken, verifier: RemoteVerifier) -> bool {
     if token.verifier_id != verifier.id {
         return false;
     }
@@ -1953,7 +1963,10 @@ fn install_capnet_peer_session(
     Ok(())
 }
 
-fn enforce_remote_attestation(session: &mut EnclaveSession, quote: &AttestationQuote) -> Result<(), &'static str> {
+fn enforce_remote_attestation(
+    session: &mut EnclaveSession,
+    quote: &AttestationQuote,
+) -> Result<(), &'static str> {
     let policy = remote_policy();
     if policy == RemoteAttestationPolicy::Disabled {
         clear_remote_attestation(session);
@@ -2047,7 +2060,11 @@ fn count_active_keys() -> usize {
     count
 }
 
-fn derive_key_material(session: &EnclaveSession, quote: &AttestationQuote, purpose: u32) -> [u8; 32] {
+fn derive_key_material(
+    session: &EnclaveSession,
+    quote: &AttestationQuote,
+    purpose: u32,
+) -> [u8; 32] {
     let mut key = [0u8; 32];
     let mut block = [0u8; 24];
     block[0..4].copy_from_slice(&session.id.to_le_bytes());
@@ -2243,7 +2260,10 @@ pub fn init() {
         }
     }
     CERT_CHAIN_READY.store(false, Ordering::SeqCst);
-    VENDOR_ROOT_READY.store(trusted_anchor_for_backend(mgr.backend).is_some(), Ordering::SeqCst);
+    VENDOR_ROOT_READY.store(
+        trusted_anchor_for_backend(mgr.backend).is_some(),
+        Ordering::SeqCst,
+    );
     {
         let mut chain = CERT_CHAIN.lock();
         let mut i = 0usize;
@@ -2322,7 +2342,8 @@ pub fn status() -> EnclaveStatus {
         remote_verifiers_configured: count_remote_verifiers(),
         remote_attestation_verified_total: REMOTE_ATTESTATION_VERIFIED_TOTAL.load(Ordering::SeqCst),
         remote_attestation_failed_total: REMOTE_ATTESTATION_FAILED_TOTAL.load(Ordering::SeqCst),
-        remote_attestation_audit_only_total: REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL.load(Ordering::SeqCst),
+        remote_attestation_audit_only_total: REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL
+            .load(Ordering::SeqCst),
     }
 }
 
@@ -2417,7 +2438,9 @@ pub fn enter(session_id: u32) -> Result<(), &'static str> {
     }
 
     let mut mgr = MANAGER.lock();
-    let idx = mgr.find_slot(session_id).ok_or("Enclave session not found")?;
+    let idx = mgr
+        .find_slot(session_id)
+        .ok_or("Enclave session not found")?;
     if mgr.sessions[idx].state != EnclaveState::Initialized {
         mgr.mark_failure();
         return Err("Enclave session not initialized");
@@ -2470,7 +2493,9 @@ pub fn exit(session_id: u32) -> Result<(), &'static str> {
     }
 
     let mut mgr = MANAGER.lock();
-    let idx = mgr.find_slot(session_id).ok_or("Enclave session not found")?;
+    let idx = mgr
+        .find_slot(session_id)
+        .ok_or("Enclave session not found")?;
     if mgr.sessions[idx].state != EnclaveState::Running {
         mgr.mark_failure();
         return Err("Enclave session is not running");
@@ -2501,7 +2526,9 @@ pub fn close(session_id: u32) -> Result<(), &'static str> {
     }
 
     let mut mgr = MANAGER.lock();
-    let idx = mgr.find_slot(session_id).ok_or("Enclave session not found")?;
+    let idx = mgr
+        .find_slot(session_id)
+        .ok_or("Enclave session not found")?;
     let runtime_key_handle = mgr.sessions[idx].runtime_key_handle;
     revoke_runtime_key(runtime_key_handle);
     let backend = mgr.backend;
@@ -2522,10 +2549,15 @@ pub fn close(session_id: u32) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn attest_session(session_id: u32, nonce: u64) -> Result<EnclaveAttestationReport, &'static str> {
+pub fn attest_session(
+    session_id: u32,
+    nonce: u64,
+) -> Result<EnclaveAttestationReport, &'static str> {
     let (backend, s) = {
         let mgr = MANAGER.lock();
-        let idx = mgr.find_slot(session_id).ok_or("Enclave session not found")?;
+        let idx = mgr
+            .find_slot(session_id)
+            .ok_or("Enclave session not found")?;
         (mgr.backend, mgr.sessions[idx])
     };
     let mut payload = [0u8; 48];
@@ -2574,10 +2606,7 @@ fn backend_enter(
     }
 }
 
-fn backend_exit(
-    backend: EnclaveBackend,
-    session: &mut EnclaveSession,
-) -> Result<(), &'static str> {
+fn backend_exit(backend: EnclaveBackend, session: &mut EnclaveSession) -> Result<(), &'static str> {
     match backend {
         EnclaveBackend::None => Ok(()),
         EnclaveBackend::IntelSgx => sgx_exit_session(session),
@@ -2690,10 +2719,7 @@ fn sgx_add_page(
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn sgx_measure_page(
-    linaddr: u64,
-    mgr: &mut EnclaveManager,
-) -> Result<(), &'static str> {
+fn sgx_measure_page(linaddr: u64, mgr: &mut EnclaveManager) -> Result<(), &'static str> {
     let mut off = 0usize;
     while off < PAGE_SIZE {
         let st = call_encls(SGX_ENCLS_EEXTEND, (linaddr as usize) + off, 0, 0);
@@ -2772,18 +2798,16 @@ fn sgx_open_session(
 
         let tcs_lin = enclave_base;
         let tcs_src = ws.tcs.bytes.as_ptr() as usize;
-        sgx_add_page(
-            &mut ws,
-            secs_ptr,
-            tcs_src,
-            tcs_lin,
-            SGX_PAGE_TYPE_TCS,
-            mgr,
-        )?;
+        sgx_add_page(&mut ws, secs_ptr, tcs_src, tcs_lin, SGX_PAGE_TYPE_TCS, mgr)?;
 
         let mut lin = enclave_base + PAGE_SIZE as u64;
         let mut src = align_down(session.code_phys);
-        let code_end = align_up(session.code_phys.checked_add(session.code_len).ok_or("SGX code overflow")?)?;
+        let code_end = align_up(
+            session
+                .code_phys
+                .checked_add(session.code_len)
+                .ok_or("SGX code overflow")?,
+        )?;
         while src < code_end {
             sgx_add_page(
                 &mut ws,
@@ -2799,7 +2823,12 @@ fn sgx_open_session(
         }
 
         let mut data_src = align_down(session.data_phys);
-        let data_end = align_up(session.data_phys.checked_add(session.data_len).ok_or("SGX data overflow")?)?;
+        let data_end = align_up(
+            session
+                .data_phys
+                .checked_add(session.data_len)
+                .ok_or("SGX data overflow")?,
+        )?;
         while data_src < data_end {
             sgx_add_page(
                 &mut ws,
@@ -2814,7 +2843,12 @@ fn sgx_open_session(
         }
 
         let mut mem_src = align_down(session.mem_phys);
-        let mem_end = align_up(session.mem_phys.checked_add(session.mem_len).ok_or("SGX mem overflow")?)?;
+        let mem_end = align_up(
+            session
+                .mem_phys
+                .checked_add(session.mem_len)
+                .ok_or("SGX mem overflow")?,
+        )?;
         while mem_src < mem_end {
             sgx_add_page(
                 &mut ws,
@@ -2867,9 +2901,7 @@ fn sgx_open_session(
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn sgx_enter_session(
-    session: &mut EnclaveSession,
-) -> Result<(), &'static str> {
+fn sgx_enter_session(session: &mut EnclaveSession) -> Result<(), &'static str> {
     if session.backend_cookie == 0 {
         return Err("SGX TCS not initialized");
     }
@@ -2882,32 +2914,24 @@ fn sgx_enter_session(
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn sgx_enter_session(
-    _session: &mut EnclaveSession,
-) -> Result<(), &'static str> {
+fn sgx_enter_session(_session: &mut EnclaveSession) -> Result<(), &'static str> {
     Err("SGX backend unsupported on this build target")
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn sgx_exit_session(
-    _session: &mut EnclaveSession,
-) -> Result<(), &'static str> {
+fn sgx_exit_session(_session: &mut EnclaveSession) -> Result<(), &'static str> {
     // EEXIT is typically executed from enclave code. We model exit as
     // lifecycle state transition after returning from EENTER.
     Ok(())
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn sgx_exit_session(
-    _session: &mut EnclaveSession,
-) -> Result<(), &'static str> {
+fn sgx_exit_session(_session: &mut EnclaveSession) -> Result<(), &'static str> {
     Err("SGX backend unsupported on this build target")
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn sgx_close_session(
-    session: &mut EnclaveSession,
-) -> Result<(), &'static str> {
+fn sgx_close_session(session: &mut EnclaveSession) -> Result<(), &'static str> {
     let mut epc = EPC_MANAGER.lock();
     epc.release_owner(session.id);
     session.backend_cookie = 0;
@@ -2919,9 +2943,7 @@ fn sgx_close_session(
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn sgx_close_session(
-    _session: &mut EnclaveSession,
-) -> Result<(), &'static str> {
+fn sgx_close_session(_session: &mut EnclaveSession) -> Result<(), &'static str> {
     Err("SGX backend unsupported on this build target")
 }
 
@@ -3023,9 +3045,7 @@ fn trustzone_open_session(
     Ok(())
 }
 
-fn trustzone_enter_session(
-    session: &mut EnclaveSession,
-) -> Result<(), &'static str> {
+fn trustzone_enter_session(session: &mut EnclaveSession) -> Result<(), &'static str> {
     let resp = trustzone_smc(TZ_SMC_ENTER, session.backend_cookie, 0, 0);
     record_backend_op();
     if resp == u32::MAX {
@@ -3037,9 +3057,7 @@ fn trustzone_enter_session(
     Ok(())
 }
 
-fn trustzone_exit_session(
-    session: &mut EnclaveSession,
-) -> Result<(), &'static str> {
+fn trustzone_exit_session(session: &mut EnclaveSession) -> Result<(), &'static str> {
     let resp = trustzone_smc(TZ_SMC_EXIT, session.backend_cookie, 0, 0);
     record_backend_op();
     if resp == u32::MAX {
@@ -3051,9 +3069,7 @@ fn trustzone_exit_session(
     Ok(())
 }
 
-fn trustzone_close_session(
-    session: &mut EnclaveSession,
-) -> Result<(), &'static str> {
+fn trustzone_close_session(session: &mut EnclaveSession) -> Result<(), &'static str> {
     let resp = trustzone_smc(TZ_SMC_CLOSE, session.backend_cookie, 0, 0);
     record_backend_op();
     if resp == u32::MAX {

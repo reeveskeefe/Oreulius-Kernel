@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -66,44 +66,44 @@ extern "C" {
 extern "C" {
     // Page fault handler
     fn page_fault_handler();
-    
+
     // Page copying
     fn copy_page_physical(src_phys: u32, dst_phys: u32);
     fn copy_page_fast(src: *const u8, dst: *mut u8);
     fn zero_page(addr: *mut u8);
     fn zero_page_fast(addr: *mut u8);
-    
+
     // TLB operations
     fn flush_tlb_single(virt_addr: u32);
     fn flush_tlb_all();
-    
+
     // CR3 operations
     fn load_page_directory(phys_addr: u32);
     fn get_page_directory() -> u32;
-    
+
     // Paging control
     fn enable_paging();
     fn disable_paging();
     fn is_paging_enabled() -> u32;
-    
+
     // PTE manipulation
     fn set_page_flags(pte_addr: *mut u32, flags: u32);
     fn clear_page_flags(pte_addr: *mut u32, flags: u32);
-    
+
     // COW operations
     fn mark_page_cow(pte_addr: *mut u32);
     fn is_page_cow(pte_value: u32) -> u32;
     fn clear_page_cow(pte_addr: *mut u32);
-    
+
     // Atomic operations
     fn atomic_set_page_flags(pte_addr: *mut u32, flags: u32);
     fn atomic_clear_page_flags(pte_addr: *mut u32, flags: u32);
-    
+
     // Memory barriers
     fn memory_barrier();
     fn load_barrier();
     fn store_barrier();
-    
+
     // Statistics
     fn get_page_fault_count() -> u32;
     fn get_cow_fault_count() -> u32;
@@ -144,27 +144,37 @@ pub unsafe fn read_barrier() {
 
 /// Initialize page fault handler (for IDT setup)
 pub fn init_page_fault_handler() {
-    unsafe { page_fault_handler(); }
+    unsafe {
+        page_fault_handler();
+    }
 }
 
 /// Copy one physical page to another
 pub fn copy_physical_page(src_phys: u32, dst_phys: u32) {
-    unsafe { copy_page_physical(src_phys, dst_phys); }
+    unsafe {
+        copy_page_physical(src_phys, dst_phys);
+    }
 }
 
 /// Disable paging temporarily
 pub fn disable_paging_temp() {
-    unsafe { disable_paging(); }
+    unsafe {
+        disable_paging();
+    }
 }
 
 /// Flush TLB for single page
 pub fn flush_tlb_page(virt_addr: u32) {
-    unsafe { flush_tlb_single(virt_addr); }
+    unsafe {
+        flush_tlb_single(virt_addr);
+    }
 }
 
 /// Flush entire TLB
 pub fn flush_all_tlb() {
-    unsafe { flush_tlb_all(); }
+    unsafe {
+        flush_tlb_all();
+    }
 }
 
 /// Get current page directory physical address
@@ -403,7 +413,11 @@ impl PageDirectory {
     }
 
     /// Allocate a new page table for this directory entry
-    pub fn alloc_table(&mut self, virt_addr: usize, user_accessible: bool) -> Result<*mut PageTable, &'static str> {
+    pub fn alloc_table(
+        &mut self,
+        virt_addr: usize,
+        user_accessible: bool,
+    ) -> Result<*mut PageTable, &'static str> {
         let entry = self.entry_mut(virt_addr);
         if entry.is_present() {
             return Err("Page table already exists");
@@ -490,17 +504,23 @@ pub struct AddressSpace {
 }
 
 impl AddressSpace {
+    /// Return the physical (= kernel-virtual on identity-mapped x86) address of
+    /// the page directory root.  Used by the scheduler to populate CR3.
+    pub fn phys_addr(&self) -> usize {
+        self.phys_addr
+    }
+
     /// Create a new address space
     pub fn new() -> Result<Self, &'static str> {
         crate::vga::print_str("[PAGING] Building kernel address space...\n");
         let mut page_dir = Box::new(PageDirectory::new());
-        
+
         // Map kernel space (identity + higher-half)
         Self::setup_kernel_mapping(&mut page_dir)?;
         crate::vga::print_str("[PAGING] Kernel mappings complete\n");
-        
+
         let phys_addr = &*page_dir as *const _ as usize;
-        
+
         Ok(AddressSpace {
             page_directory: page_dir,
             phys_addr,
@@ -528,7 +548,10 @@ impl AddressSpace {
     }
 
     /// Setup kernel mapping for a specific range (identity + higher-half mirror).
-    fn setup_kernel_mapping_range(page_dir: &mut PageDirectory, map_bytes: usize) -> Result<(), &'static str> {
+    fn setup_kernel_mapping_range(
+        page_dir: &mut PageDirectory,
+        map_bytes: usize,
+    ) -> Result<(), &'static str> {
         const CHUNK_MB: usize = 4;
         const CHUNK_BYTES: usize = CHUNK_MB * 1024 * 1024;
         if map_bytes == 0 {
@@ -663,7 +686,10 @@ impl AddressSpace {
         }
         let mut virt = align_down(virt_start, PAGE_SIZE);
         let mut phys = align_down(phys_start, PAGE_SIZE);
-        let end = align_up(virt_start.checked_add(size).ok_or("Range overflow")?, PAGE_SIZE);
+        let end = align_up(
+            virt_start.checked_add(size).ok_or("Range overflow")?,
+            PAGE_SIZE,
+        );
         while virt < end {
             Self::map_page_in_dir(&mut self.page_directory, virt, phys, writable, true)?;
             virt += PAGE_SIZE;
@@ -697,48 +723,48 @@ impl AddressSpace {
     /// Clone this address space with copy-on-write semantics (user space only)
     pub fn clone_cow(&mut self) -> Result<AddressSpace, &'static str> {
         let mut new_dir = Box::new(PageDirectory::new());
-        
+
         // Map kernel space for child
         Self::setup_kernel_mapping(&mut new_dir)?;
-        
+
         let user_dir_entries = USER_TOP >> 22;
-        
+
         for dir_idx in 0..user_dir_entries {
             let virt_addr = dir_idx << 22;
             let parent_entry = self.page_directory.entries[dir_idx];
             if !parent_entry.is_present() {
                 continue;
             }
-            
+
             // Allocate child page table for this directory entry
             let child_table_ptr = new_dir.alloc_table(virt_addr, true)?;
             let child_table = unsafe { &mut *child_table_ptr };
-            
+
             let parent_table = unsafe {
                 self.page_directory
                     .get_table_mut(virt_addr)
                     .ok_or("Parent table missing")?
             };
-            
+
             for i in 0..PAGE_ENTRIES {
                 let entry = parent_table.entries[i];
                 if !entry.is_present() {
                     continue;
                 }
-                
+
                 // Mark parent entry as COW (clears writable)
                 unsafe {
                     mark_page_cow(&mut parent_table.entries[i] as *mut PageTableEntry as *mut u32);
                 }
-                
+
                 // Copy entry value into child (with COW flag set)
                 let val = parent_table.entries[i].0;
                 child_table.entries[i] = PageTableEntry(val);
             }
         }
-        
+
         Self::flush_tlb_all();
-        
+
         let phys_addr = &*new_dir as *const _ as usize;
         Ok(AddressSpace {
             page_directory: new_dir,
@@ -757,7 +783,7 @@ impl AddressSpace {
         // Align addresses
         let virt_aligned = virt_addr & !0xFFF;
         let phys_aligned = phys_addr & !0xFFF;
-        
+
         if user_accessible && virt_aligned >= USER_TOP {
             return Err("User mapping into kernel space");
         }
@@ -775,7 +801,9 @@ impl AddressSpace {
             if self.page_directory.entry(virt_aligned).is_present() {
                 self.page_directory.get_table_mut(virt_aligned).unwrap()
             } else {
-                &mut *self.page_directory.alloc_table(virt_aligned, user_accessible)?
+                &mut *self
+                    .page_directory
+                    .alloc_table(virt_aligned, user_accessible)?
             }
         };
 
@@ -814,14 +842,14 @@ impl AddressSpace {
 
         // Get physical address before unmapping (for potential memory::free)
         let _phys_addr = entry.phys_addr();
-        
+
         // Use ptr::write to ensure the zero is written atomically
         unsafe {
             ptr::write(entry as *mut PageTableEntry, PageTableEntry::empty());
         }
-        
+
         Self::flush_tlb(virt_aligned);
-        
+
         // Note: Could call memory::free(_phys_addr) here if tracking allocations
         Ok(())
     }
@@ -900,7 +928,7 @@ impl AddressSpace {
         if entry.is_user_accessible() {
             flags |= PageFlags::UserAccessible as u32;
         }
-        
+
         // Use atomic operations for multicore safety
         unsafe {
             let pte_addr = entry as *mut PageTableEntry as *mut u32;
@@ -926,10 +954,10 @@ impl AddressSpace {
         unsafe {
             let table = self.page_directory.get_table(virt_aligned)?;
             let entry = table.entry(virt_aligned);
-            
+
             // Ensure we read the latest PTE value in multicore context
             read_barrier();
-            
+
             if entry.is_present() {
                 Some(entry.phys_addr() + offset)
             } else {
@@ -946,11 +974,6 @@ impl AddressSpace {
     /// Activate this address space (load into CR3)
     pub unsafe fn activate(&self) {
         load_page_directory(self.phys_addr as u32);
-    }
-
-    /// Get physical address of page directory (for CR3)
-    pub fn phys_addr(&self) -> usize {
-        self.phys_addr
     }
 
     /// Flush TLB for a single page (uses assembly implementation)
@@ -974,11 +997,11 @@ impl AddressSpace {
 /// Page fault error code bits
 #[derive(Debug, Clone, Copy)]
 pub struct PageFaultError {
-    pub present: bool,      // 0 = not present, 1 = protection violation
-    pub write: bool,        // 0 = read, 1 = write
-    pub user: bool,         // 0 = kernel, 1 = user mode
-    pub reserved: bool,     // 1 = reserved bit set
-    pub instruction: bool,  // 1 = instruction fetch
+    pub present: bool,     // 0 = not present, 1 = protection violation
+    pub write: bool,       // 0 = read, 1 = write
+    pub user: bool,        // 0 = kernel, 1 = user mode
+    pub reserved: bool,    // 1 = reserved bit set
+    pub instruction: bool, // 1 = instruction fetch
 }
 
 impl PageFaultError {
@@ -1001,16 +1024,21 @@ pub extern "C" fn rust_page_fault_handler(error_code: u32, fault_addr: usize) {
 }
 
 #[no_mangle]
-pub extern "C" fn rust_page_fault_handler_ex(error_code: u32, fault_addr: usize, eip: usize, esp: usize) {
+pub extern "C" fn rust_page_fault_handler_ex(
+    error_code: u32,
+    fault_addr: usize,
+    eip: usize,
+    esp: usize,
+) {
     use crate::vga;
-    
+
     // Update statistics
     unsafe {
         increment_page_fault_count();
     }
-    
+
     let error = PageFaultError::from_code(error_code);
-    
+
     // Check if this is a COW fault
     if error.present && error.write && !error.user {
         // Potential COW fault
@@ -1027,11 +1055,11 @@ pub extern "C" fn rust_page_fault_handler_ex(error_code: u32, fault_addr: usize,
             }
         }
     }
-    
+
     // Unhandled page fault - print error and halt
     vga::print_str("\n\n!!! PAGE FAULT !!!\n");
     vga::print_str("Fault address: 0x");
-    
+
     // Print fault address
     let digits = b"0123456789ABCDEF";
     for i in (0..8).rev() {
@@ -1039,22 +1067,22 @@ pub extern "C" fn rust_page_fault_handler_ex(error_code: u32, fault_addr: usize,
         vga::print_char(digits[nibble] as char);
     }
     vga::print_str("\n");
-    
+
     vga::print_str("Error code: 0x");
     for i in (0..8).rev() {
         let nibble = ((error_code >> (i * 4)) & 0xF) as usize;
         vga::print_char(digits[nibble] as char);
     }
     vga::print_str("\n");
-    
+
     vga::print_str("Present: ");
     vga::print_str(if error.present { "yes" } else { "no" });
     vga::print_str("\n");
-    
+
     vga::print_str("Write: ");
     vga::print_str(if error.write { "yes" } else { "no" });
     vga::print_str("\n");
-    
+
     vga::print_str("User mode: ");
     vga::print_str(if error.user { "yes" } else { "no" });
     vga::print_str("\n");
@@ -1108,7 +1136,7 @@ pub extern "C" fn rust_page_fault_handler_ex(error_code: u32, fault_addr: usize,
         vga::print_str(if in_range { "yes" } else { "no" });
         vga::print_str("\n");
     }
-    
+
     // Halt
     loop {
         unsafe { core::arch::asm!("hlt") };
@@ -1121,12 +1149,12 @@ pub static KERNEL_ADDRESS_SPACE: Mutex<Option<AddressSpace>> = Mutex::new(None);
 /// Initialize paging subsystem
 pub fn init() -> Result<(), &'static str> {
     use crate::vga;
-    
+
     vga::print_str("[PAGING] Initializing virtual memory...\n");
-    
+
     // Create kernel address space
     let kernel_space = AddressSpace::new()?;
-    
+
     vga::print_str("[PAGING] Loading CR3...\n");
     unsafe {
         kernel_space.activate();
@@ -1143,9 +1171,9 @@ pub fn init() -> Result<(), &'static str> {
     cr0 |= 1 << 16;
     crate::asm_bindings::write_cr0(cr0);
     vga::print_str("[PAGING] CR0.WP enabled (kernel W^X enforced)\n");
-    
+
     *KERNEL_ADDRESS_SPACE.lock() = Some(kernel_space);
-    
+
     vga::print_str("[PAGING] Virtual memory enabled\n");
     Ok(())
 }
@@ -1163,7 +1191,11 @@ pub fn kernel_page_directory_addr() -> Option<u32> {
 
 /// Set writable flag for a range of kernel-mapped pages.
 /// This is used to enforce W^X policy for JIT code pages (policy-level on 32-bit).
-pub fn set_page_writable_range(virt_addr: usize, size: usize, writable: bool) -> Result<(), &'static str> {
+pub fn set_page_writable_range(
+    virt_addr: usize,
+    size: usize,
+    writable: bool,
+) -> Result<(), &'static str> {
     if size == 0 {
         return Ok(());
     }
@@ -1176,12 +1208,17 @@ pub fn set_page_writable_range(virt_addr: usize, size: usize, writable: bool) ->
         & !(PAGE_SIZE - 1);
 
     let mut space_guard = KERNEL_ADDRESS_SPACE.lock();
-    let space = space_guard.as_mut().ok_or("Kernel address space not initialized")?;
+    let space = space_guard
+        .as_mut()
+        .ok_or("Kernel address space not initialized")?;
 
     let mut addr = start;
     while addr < end {
         let entry = unsafe {
-            let table = space.page_directory.get_table_mut(addr).ok_or("Missing page table")?;
+            let table = space
+                .page_directory
+                .get_table_mut(addr)
+                .ok_or("Missing page table")?;
             let pte = table.entry_mut(addr);
             if !pte.is_present() {
                 return Err("Page not mapped");
@@ -1241,7 +1278,7 @@ pub fn is_kernel_range_mapped(virt_addr: usize, size: usize) -> bool {
 /// Handle page fault interrupt
 pub fn handle_page_fault(virt_addr: usize, error_code: u32) -> Result<(), &'static str> {
     let error = PageFaultError::from_code(error_code);
-    
+
     // Try to handle COW fault
     if error.write && error.present {
         let mut space_guard = KERNEL_ADDRESS_SPACE.lock();
@@ -1251,7 +1288,7 @@ pub fn handle_page_fault(virt_addr: usize, error_code: u32) -> Result<(), &'stat
             }
         }
     }
-    
+
     // Unhandled page fault
     Err("Unhandled page fault")
 }
@@ -1264,25 +1301,25 @@ pub fn alloc_user_pages(
     writable: bool,
 ) -> Result<(), &'static str> {
     use alloc::alloc::{alloc_zeroed, Layout};
-    
+
     if virt_addr >= USER_TOP {
         return Err("User mapping into kernel space");
     }
 
     for i in 0..count {
         let vaddr = virt_addr + (i * PAGE_SIZE);
-        
+
         // Allocate physical page
         let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
         let phys_page = unsafe { alloc_zeroed(layout) };
         if phys_page.is_null() {
             return Err("Failed to allocate page");
         }
-        
+
         // Map it
         space.map_page(vaddr, phys_page as usize, writable, true)?;
     }
-    
+
     Ok(())
 }
 
@@ -1342,126 +1379,130 @@ pub unsafe fn set_page_directory(phys_addr: u32) {
 }
 
 use crate::memory;
-use crate::process::{Pid, process_manager};
+use crate::process::{process_manager, Pid};
 
 #[no_mangle]
 pub extern "C" fn rust_copy_page_table(parent_pid_raw: u32, child_pid_raw: u32) -> i32 {
     let parent_pid = Pid(parent_pid_raw);
     let child_pid = Pid(child_pid_raw);
     let pm = process_manager();
-    
+
     // 1. Get Parent PD (Physical Address)
     // If parent has no PD recorded (e.g. init), use current CR3
     let parent_pd_phys = match pm.get_process_page_dir(parent_pid) {
         Some(addr) if addr != 0 => addr as usize,
-        _ => unsafe { get_page_directory() as usize }
+        _ => unsafe { get_page_directory() as usize },
     };
-    
+
     // 2. Allocate Child PD
     let child_pd_phys = match memory::allocate_frame() {
         Ok(addr) => addr,
         Err(_) => return -1,
     };
-    
+
     // 3. Loop over directories
     // unsafe: accessing physical memory directly (identity mapping assumed for kernel heap)
     let parent_pd = parent_pd_phys as *mut PageDirectory;
     let child_pd = child_pd_phys as *mut PageDirectory;
-    
+
     unsafe {
         // Init child PD (empty) - assuming valid pointer
         let child_pd_ref = &mut *child_pd;
         // Zero it out effectively (or rely on allocate_frame zeroing)
         // We will overwrite entries anyway or leave them empty.
-        
+
         // Note: We must recursively map page tables
         for i in 0..PAGE_ENTRIES {
-             let pde = &mut (*parent_pd).entries[i];
-             
-             if !pde.is_present() {
-                 child_pd_ref.entries[i] = PageDirEntry::empty();
-                 continue;
-             }
-             
-             // Strategies:
-             // A. Kernel Space (>= 768 for 3GB split, or based on policy): Share Page Table
-             // B. User Space: Copy Page Table (for COW)
-             
-             // Simplify: If it's a kernel mapping, we share the Page Table directly.
-             // Warning: logic assumes standard higher-half split or defined kernel range.
-             // If we don't know, we might COW everything. But COW on kernel stack is bad.
-             // Let's assume > 0xC0000000 (entry 768) is kernel.
-             if i >= 768 { 
-                 child_pd_ref.entries[i] = *pde;
-                 continue;
-             }
-             
-             // User space mapping found.
-             // Allocate new Page Table for child
-             let child_pt_phys = match memory::allocate_frame() {
+            let pde = &mut (*parent_pd).entries[i];
+
+            if !pde.is_present() {
+                child_pd_ref.entries[i] = PageDirEntry::empty();
+                continue;
+            }
+
+            // Strategies:
+            // A. Kernel Space (>= 768 for 3GB split, or based on policy): Share Page Table
+            // B. User Space: Copy Page Table (for COW)
+
+            // Simplify: If it's a kernel mapping, we share the Page Table directly.
+            // Warning: logic assumes standard higher-half split or defined kernel range.
+            // If we don't know, we might COW everything. But COW on kernel stack is bad.
+            // Let's assume > 0xC0000000 (entry 768) is kernel.
+            if i >= 768 {
+                child_pd_ref.entries[i] = *pde;
+                continue;
+            }
+
+            // User space mapping found.
+            // Allocate new Page Table for child
+            let child_pt_phys = match memory::allocate_frame() {
                 Ok(a) => a,
                 Err(_) => return -1, // Should cleanup allocated child_pd... ignoring for MVP
-             };
-             
-             let parent_pt_phys = pde.table_addr();
-             let parent_pt = parent_pt_phys as *mut PageTable;
-             let child_pt = child_pt_phys as *mut PageTable;
-             let child_pt_ref = &mut *child_pt;
-             
-             // Link the new PT into Child PD
-             child_pd_ref.entries[i] = PageDirEntry::new(child_pt_phys, pde.flags());
-             
-             // Copy/COW PTEs
-             for j in 0..PAGE_ENTRIES {
-                 let pte = &mut (*parent_pt).entries[j];
-                 
-                 if !pte.is_present() {
-                     child_pt_ref.entries[j] = PageTableEntry::empty();
-                     continue;
-                 }
-                 
-                 let phys_frame = pte.phys_addr();
-                 let mut flags = pte.flags();
-                 
-                 // Logic: If Writable -> COW. If ReadOnly -> Shared.
-                 if pte.is_writable() {
-                     // Mark Parent Read-Only + COW (atomic operations for multicore safety)
-                     let pte_addr = pte as *mut PageTableEntry as *mut u32;
-                     atomic_modify_pte_clear_flags(pte_addr, PageFlags::Writable as u32);
-                     atomic_modify_pte_set_flags(pte_addr, PageFlags::CopyOnWrite as u32);
-                     
-                     // Mark Child Read-Only + COW
-                     // Remove Write bit from flags for child too
-                     flags &= !(PageFlags::Writable as u32);
-                     flags |= PageFlags::CopyOnWrite as u32;
-                     
-                     child_pt_ref.entries[j] = PageTableEntry::new(phys_frame, flags);
-                     
-                     // Increment refcount (original owner + new owner)
-                     // If it was 1, it becomes 2.
-                     // Note: We increment for EACH new reference.
-                     memory::inc_refcount(phys_frame);
-                     
-                     // Use invlpg if we could. Since we iterate many, flush_all at end is better.
-                 } else {
-                     // Just share it
-                     child_pt_ref.entries[j] = *pte;
-                     memory::inc_refcount(phys_frame);
-                 }
-             }
+            };
+
+            let parent_pt_phys = pde.table_addr();
+            let parent_pt = parent_pt_phys as *mut PageTable;
+            let child_pt = child_pt_phys as *mut PageTable;
+            let child_pt_ref = &mut *child_pt;
+
+            // Link the new PT into Child PD
+            child_pd_ref.entries[i] = PageDirEntry::new(child_pt_phys, pde.flags());
+
+            // Copy/COW PTEs
+            for j in 0..PAGE_ENTRIES {
+                let pte = &mut (*parent_pt).entries[j];
+
+                if !pte.is_present() {
+                    child_pt_ref.entries[j] = PageTableEntry::empty();
+                    continue;
+                }
+
+                let phys_frame = pte.phys_addr();
+                let mut flags = pte.flags();
+
+                // Logic: If Writable -> COW. If ReadOnly -> Shared.
+                if pte.is_writable() {
+                    // Mark Parent Read-Only + COW (atomic operations for multicore safety)
+                    let pte_addr = pte as *mut PageTableEntry as *mut u32;
+                    atomic_modify_pte_clear_flags(pte_addr, PageFlags::Writable as u32);
+                    atomic_modify_pte_set_flags(pte_addr, PageFlags::CopyOnWrite as u32);
+
+                    // Mark Child Read-Only + COW
+                    // Remove Write bit from flags for child too
+                    flags &= !(PageFlags::Writable as u32);
+                    flags |= PageFlags::CopyOnWrite as u32;
+
+                    child_pt_ref.entries[j] = PageTableEntry::new(phys_frame, flags);
+
+                    // Increment refcount (original owner + new owner)
+                    // If it was 1, it becomes 2.
+                    // Note: We increment for EACH new reference.
+                    memory::inc_refcount(phys_frame);
+
+                    // Use invlpg if we could. Since we iterate many, flush_all at end is better.
+                } else {
+                    // Just share it
+                    child_pt_ref.entries[j] = *pte;
+                    memory::inc_refcount(phys_frame);
+                }
+            }
         }
     }
-    
+
     // Memory barrier before saving page directory
-    unsafe { memory_barrier(); }
-    
+    unsafe {
+        memory_barrier();
+    }
+
     // Save to process manager
     if let Err(_) = pm.set_process_page_dir(child_pid, child_pd_phys as u32) {
         return -1;
     }
-    
+
     // Flush TLB in parent because we might have marked pages as Read-Only/COW
-    unsafe { flush_tlb_all(); }
-    
+    unsafe {
+        flush_tlb_all();
+    }
+
     0 // Success
 }

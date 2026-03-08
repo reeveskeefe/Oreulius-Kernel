@@ -155,7 +155,13 @@ fn bridge_destroy_process_shared(pid: Pid) -> Result<(), &'static str> {
 #[cfg(target_arch = "aarch64")]
 fn bridge_process_fd_stats_shared() -> (usize, usize, Pid) {
     let (proc_count, fd_count, current_pid) = crate::process::runtime_fd_stats();
-    (proc_count, fd_count, current_pid.map(shared_pid_to_vfs).unwrap_or(AARCH64_BOOT_PID))
+    (
+        proc_count,
+        fd_count,
+        current_pid
+            .map(shared_pid_to_vfs)
+            .unwrap_or(AARCH64_BOOT_PID),
+    )
 }
 
 #[cfg(target_arch = "aarch64")]

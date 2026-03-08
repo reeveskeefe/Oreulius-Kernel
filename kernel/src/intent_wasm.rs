@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -206,11 +206,15 @@ fn eval_model(features: &[u32; INTENT_MODEL_FEATURES]) -> Result<i32, VmError> {
 pub fn infer_score(features: &[u32; INTENT_MODEL_FEATURES]) -> u32 {
     let raw = eval_model(features).unwrap_or_else(|_| {
         let mut f_data = [0i32; 10];
-        for i in 0..10 { f_data[i] = features[i] as i32; }
-        
+        for i in 0..10 {
+            f_data[i] = features[i] as i32;
+        }
+
         let feature_tensor = ScalarTensor::<i32, 10> { data: f_data };
-        let weight_tensor = ScalarTensor::<i32, 10> { data: [1, 6, 8, 2, 3, 5, 3, 4, 2, 5] };
-        
+        let weight_tensor = ScalarTensor::<i32, 10> {
+            data: [1, 6, 8, 2, 3, 5, 3, 4, 2, 5],
+        };
+
         feature_tensor.dot_product(&weight_tensor)
     });
 

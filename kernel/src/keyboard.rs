@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,16 +22,16 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
-use core::sync::atomic::{AtomicUsize, AtomicU8, AtomicBool, Ordering};
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 static DROPPED_PACKETS: AtomicUsize = AtomicUsize::new(0);
 static LAST_DROP_WARNING: AtomicUsize = AtomicUsize::new(0);
@@ -69,7 +69,7 @@ impl KeyBuffer {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
         let next_tail = (tail + 1) % KEY_BUFFER_SIZE;
-        
+
         if next_tail == head {
             // Buffer full
             let old_count = DROPPED_PACKETS.fetch_add(1, Ordering::Relaxed);
@@ -78,8 +78,10 @@ impl KeyBuffer {
             }
             return false;
         }
-        
-        unsafe { (*self.buf.get())[tail] = byte; }
+
+        unsafe {
+            (*self.buf.get())[tail] = byte;
+        }
         self.tail.store(next_tail, Ordering::Release);
         true
     }
@@ -87,11 +89,11 @@ impl KeyBuffer {
     fn pop(&self) -> Option<u8> {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
-        
+
         if head == tail {
             return None;
         }
-        
+
         let byte = unsafe { (*self.buf.get())[head] };
         let next_head = (head + 1) % KEY_BUFFER_SIZE;
         self.head.store(next_head, Ordering::Release);
@@ -149,7 +151,7 @@ impl EventBuffer {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
         let next_tail = (tail + 1) % EVENT_BUFFER_SIZE;
-        
+
         if next_tail == head {
             // Buffer full
             let old_count = DROPPED_PACKETS.fetch_add(1, Ordering::Relaxed);
@@ -158,8 +160,10 @@ impl EventBuffer {
             }
             return false;
         }
-        
-        unsafe { (*self.buf.get())[tail] = ev; }
+
+        unsafe {
+            (*self.buf.get())[tail] = ev;
+        }
         self.tail.store(next_tail, Ordering::Release);
         true
     }
@@ -167,11 +171,11 @@ impl EventBuffer {
     fn pop(&self) -> Option<KeyEvent> {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
-        
+
         if head == tail {
             return None;
         }
-        
+
         let ev = unsafe { (*self.buf.get())[head] };
         let next_head = (head + 1) % EVENT_BUFFER_SIZE;
         self.head.store(next_head, Ordering::Release);
@@ -227,11 +231,11 @@ fn show_drop_warning() {
     // Get current drop count
     let current = DROPPED_PACKETS.load(Ordering::Relaxed);
     let last_warning = LAST_DROP_WARNING.load(Ordering::Relaxed);
-    
+
     // Only show warning every 50 drops to avoid spam
     if current >= last_warning + 50 {
         LAST_DROP_WARNING.store(current, Ordering::Relaxed);
-        
+
         unsafe {
             let vga = 0xB8000 as *mut u16;
             // Flash "DROP!" at top-right corner (row 0, col 74-78) in red
@@ -265,7 +269,7 @@ impl Keyboard {
         // Handle Set 2 release prefix (0xF0)
         if scancode == 0xF0 {
             RELEASE_PREFIX.store(true, Ordering::Relaxed);
-            // DO NOT force switch to Set 2 mode based on seeing 0xF0. 
+            // DO NOT force switch to Set 2 mode based on seeing 0xF0.
             // If we are in translated mode, 0xF0 shouldn't appear, or might be data.
             // Trust the configuration set in init().
             // SET2_ACTIVE.store(true, Ordering::Relaxed);
@@ -336,8 +340,14 @@ impl Keyboard {
                 0x4D => return Some(KeyEvent::Right),
                 0x47 => return Some(KeyEvent::Home),
                 0x4F => return Some(KeyEvent::End),
-                0x1D => { CTRL_PRESSED.store(true, Ordering::Relaxed); return None; } // Right Ctrl
-                0x38 => { ALT_PRESSED.store(true, Ordering::Relaxed); return None; } // Right Alt
+                0x1D => {
+                    CTRL_PRESSED.store(true, Ordering::Relaxed);
+                    return None;
+                } // Right Ctrl
+                0x38 => {
+                    ALT_PRESSED.store(true, Ordering::Relaxed);
+                    return None;
+                } // Right Alt
                 // TODO: Delete, PageUp, PageDown
                 _ => return None,
             }
@@ -382,7 +392,7 @@ impl Keyboard {
                 let caps_lock = CAPS_LOCK.load(Ordering::Relaxed);
                 let ctrl_pressed = CTRL_PRESSED.load(Ordering::Relaxed);
                 let alt_pressed = ALT_PRESSED.load(Ordering::Relaxed);
-                
+
                 if alt_pressed {
                     if let Some(fn_key) = scancode_to_fn(code) {
                         return Some(KeyEvent::AltFn(fn_key));
@@ -457,7 +467,9 @@ fn wait_write() {
     while unsafe { inb(STATUS_PORT) } & 0x02 != 0 {
         core::hint::spin_loop();
         timeout -= 1;
-        if timeout == 0 { break; }
+        if timeout == 0 {
+            break;
+        }
     }
 }
 
@@ -467,7 +479,9 @@ fn wait_read() -> bool {
     while unsafe { inb(STATUS_PORT) } & 0x01 == 0 {
         core::hint::spin_loop();
         timeout -= 1;
-        if timeout == 0 { return false; }
+        if timeout == 0 {
+            return false;
+        }
     }
     true
 }
@@ -483,7 +497,7 @@ pub fn init() {
         // Read Controller Configuration Byte
         wait_write();
         outb(STATUS_PORT, 0x20);
-        
+
         if wait_read() {
             let mut config = inb(DATA_PORT);
             // Enable IRQ1 (bit 0) and Translation (bit 6)
@@ -493,7 +507,7 @@ pub fn init() {
             // Disable mouse port + mouse IRQ to avoid AUX data blocking keyboard
             config |= 1 << 5;
             config &= !(1 << 1);
-            
+
             // Write Controller Configuration Byte
             wait_write();
             outb(STATUS_PORT, 0x60);
@@ -516,7 +530,7 @@ pub fn init() {
         wait_write();
         outb(DATA_PORT, 0xF5);
         if wait_read() {
-             let _ack = inb(DATA_PORT);
+            let _ack = inb(DATA_PORT);
         }
 
         // Enable scanning (0xF4)
@@ -524,14 +538,14 @@ pub fn init() {
         outb(DATA_PORT, 0xF4);
         // Wait for ACK (0xFA)
         if wait_read() {
-             let _ack = inb(DATA_PORT);
+            let _ack = inb(DATA_PORT);
         }
 
         // Flush any pending data
         let mut timeout = 1000;
         while (inb(STATUS_PORT) & 0x01 != 0) && timeout > 0 {
-             inb(DATA_PORT);
-             timeout -= 1;
+            inb(DATA_PORT);
+            timeout -= 1;
         }
     }
     crate::vga::print_str("[KEYBOARD] PS/2 Controller initialized (Translation enabled)\n");
@@ -550,7 +564,6 @@ pub fn get_last_scancode() -> u8 {
 }
 
 // DEBUG: Get Flags state
-
 
 // DEBUG: Get Flags state (now lock-free!)
 pub fn get_flags() -> (bool, bool, bool, bool) {
@@ -577,7 +590,7 @@ pub fn poll_event() -> Option<KeyEvent> {
     // }
     // let status = unsafe { inb(STATUS_PORT) };
     // let scancode = unsafe { inb(DATA_PORT) };
-    
+
     // Return None if buffer is empty
     None
 }
@@ -606,7 +619,7 @@ pub unsafe fn handle_irq() {
     IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
     // Always read status first
     let status = inb(STATUS_PORT);
-    
+
     // If Output Buffer Full (bit 0) is set, we MUST read data port
     if (status & 0x01) != 0 {
         let scancode = inb(DATA_PORT);
@@ -622,7 +635,7 @@ pub unsafe fn handle_irq() {
         if scancode == 0xFA || scancode == 0xFE {
             return;
         }
-        
+
         // Save last scancode for debugging
         LAST_SCANCODE.store(scancode, Ordering::Relaxed);
         // Check for errors AFTER reading (don't skip the read!)
@@ -634,7 +647,7 @@ pub unsafe fn handle_irq() {
                 show_drop_warning();
             }
         }
-        
+
         // Ignore invalid/phantom scancodes
         if scancode == 0 || scancode == 0xFF {
             return;
@@ -648,7 +661,7 @@ pub unsafe fn handle_irq() {
             EVENTS_PUSHED.fetch_add(1, Ordering::Relaxed);
             // Push to event buffer
             let _pushed = EVENT_BUFFER.push(event);
-            
+
             // Push character representation
             if let Some(c) = event_to_char(event) {
                 let _pushed = KEY_BUFFER.push(c as u8);
@@ -783,23 +796,23 @@ fn set2_to_set1(sc: u8) -> Option<u8> {
 
 // US QWERTY scancode set 1 maps.
 const SCANCODE_MAP: [char; 128] = [
-    '\0', '\x1B', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\x08', '\t',
-    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', '\0', 'a', 's',
-    'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', '\0', '\\', 'z', 'x', 'c', 'v',
-    'b', 'n', 'm', ',', '.', '/', '\0', '*', '\0', ' ', '\0', '\0', '\0', '\0', '\0', '\0',
-    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '7', '8', '9', '-', '4', '5', '6', '+', '1',
-    '2', '3', '0', '.', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '\x1B', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\x08', '\t', 'q',
+    'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', '\0', 'a', 's', 'd', 'f', 'g',
+    'h', 'j', 'k', 'l', ';', '\'', '`', '\0', '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.',
+    '/', '\0', '*', '\0', ' ', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '\0', '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
 ];
 
 const SCANCODE_MAP_SHIFT: [char; 128] = [
-    '\0', '\x1B', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\x08', '\t',
-    'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n', '\0', 'A', 'S',
-    'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~', '\0', '|', 'Z', 'X', 'C', 'V',
-    'B', 'N', 'M', '<', '>', '?', '\0', '*', '\0', ' ', '\0', '\0', '\0', '\0', '\0', '\0',
-    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '7', '8', '9', '-', '4', '5', '6', '+', '1',
-    '2', '3', '0', '.', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '\x1B', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\x08', '\t', 'Q',
+    'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n', '\0', 'A', 'S', 'D', 'F', 'G',
+    'H', 'J', 'K', 'L', ':', '"', '~', '\0', '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?',
+    '\0', '*', '\0', ' ', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.', '\0', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
     '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+    '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
 ];

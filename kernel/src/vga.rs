@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,24 +22,22 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  */
 
- //! Name here
+//! Name here
 //!
 //! fill out line by line features of the file here, and any important notes about the implementation
 //!...
 
-
-
-use core::fmt;
-use spin::Mutex;
-use lazy_static::lazy_static;
 use crate::asm_bindings::{inb, outb};
+use core::fmt;
+use lazy_static::lazy_static;
+use spin::Mutex;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,21 +284,25 @@ pub fn clear_screen_with(fg: Color, bg: Color) {
         color_code: ColorCode::new(fg, bg),
     };
     let mut writer = WRITER.lock();
-    
+
     // Enhanced buffer validation and integrity checking
     let buffer_addr = writer.buffer as *const _ as usize;
-    
+
     // Verify VGA buffer is at expected address (0xB8000 for text mode)
     if buffer_addr != 0xB8000 {
         // Buffer might be remapped, but log for diagnostics
         crate::serial_println!("[VGA] Buffer at non-standard address: 0x{:X}", buffer_addr);
     }
-    
+
     // Validate color codes are in valid range (0-15)
     if fg as u8 > 15 || bg as u8 > 15 {
-        crate::serial_println!("[VGA] WARNING: Invalid color codes - fg:{:?} bg:{:?}", fg, bg);
+        crate::serial_println!(
+            "[VGA] WARNING: Invalid color codes - fg:{:?} bg:{:?}",
+            fg,
+            bg
+        );
     }
-    
+
     // Efficiently fill entire screen buffer with colored blank character
     // This provides explicit color control vs just setting default colors
     for row in 0..BUFFER_HEIGHT {
@@ -308,10 +310,10 @@ pub fn clear_screen_with(fg: Color, bg: Color) {
             writer.buffer.chars[row][col] = blank;
         }
     }
-    
+
     // Memory fence to ensure all writes complete before proceeding
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
-    
+
     // Update writer's default color for future writes
     writer.set_color(fg, bg);
     // Reset cursor to origin
@@ -329,7 +331,7 @@ pub fn init() {
 
 pub fn update_cursor(row: usize, col: usize) {
     let pos = row * BUFFER_WIDTH + col;
-    
+
     unsafe {
         outb(CRTC_ADDR_PORT, 0x0F);
         outb(CRTC_DATA_PORT, (pos & 0xFF) as u8);
@@ -343,7 +345,7 @@ pub fn enable_cursor(start: u8, end: u8) {
         outb(CRTC_ADDR_PORT, 0x0A);
         let cursor_start = inb(CRTC_DATA_PORT) & 0xC0;
         outb(CRTC_DATA_PORT, cursor_start | start);
-        
+
         outb(CRTC_ADDR_PORT, 0x0B);
         let cursor_end = inb(CRTC_DATA_PORT) & 0xE0;
         outb(CRTC_DATA_PORT, cursor_end | end);

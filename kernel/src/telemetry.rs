@@ -1,24 +1,25 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
  */
 
 //! Userspace Telemetry Daemon - Math Queue
-//! 
-//! Implements an eBPF-style wait-free queue (utilizing atomic CAS) for dispatching 
+//!
+//! Implements an eBPF-style wait-free queue (utilizing atomic CAS) for dispatching
 //! intent anomalies and Markov matrix updates to the out-of-band math daemon.
 //! This ensures the Ring-0 kernel remains completely bounded with zero locks,
 //! no unbounded latency, and leaves floating/SIMD processing to the telemetry daemon.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::tensor_core::ScalarTensor;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 const QUEUE_SIZE: usize = 128;
 pub const TENSOR_DIM_GLOBAL: usize = 128;
 
-pub static GLOBAL_TELEMETRY_QUEUE: Mutex<TelemetryQueue<TENSOR_DIM_GLOBAL>> = Mutex::new(TelemetryQueue::new());
+pub static GLOBAL_TELEMETRY_QUEUE: Mutex<TelemetryQueue<TENSOR_DIM_GLOBAL>> =
+    Mutex::new(TelemetryQueue::new());
 
 /// A bounded, atomic ring-buffer for sending raw state matrices
 /// to the Userspace Telemetry Daemon without blocking.
@@ -33,7 +34,7 @@ impl<const TENSOR_DIM: usize> TelemetryQueue<TENSOR_DIM> {
     pub const fn new() -> Self {
         #[allow(clippy::declare_interior_mutable_const)]
         const INIT_NONE: Option<ScalarTensor<i32, 0>> = None;
-        
+
         // This is a minimal macro/unsafe bypass to init the queue.
         // For actual safe initialization, maybe use generic trickery or unsafe:
         // We will mock it with empty loop initialization later.
@@ -50,11 +51,11 @@ impl<const TENSOR_DIM: usize> TelemetryQueue<TENSOR_DIM> {
     pub fn try_push(&mut self, tensor: ScalarTensor<i32, TENSOR_DIM>) -> Result<(), &'static str> {
         let head = self.head.load(Ordering::Acquire);
         let next_head = (head + 1) % QUEUE_SIZE;
-        
+
         if next_head == self.tail.load(Ordering::Acquire) {
             return Err("Telemetry Queue Full: Math daemon fell behind ring-0 rate");
         }
-        
+
         self.buffer[head] = Some(tensor);
         self.head.store(next_head, Ordering::Release);
 

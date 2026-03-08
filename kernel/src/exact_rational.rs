@@ -1,7 +1,7 @@
 /// Section 7: Exact Rational Arithmetic for JIT Confidence
-/// 
+///
 /// Implementing a bounded Exact Rational Number arithmetic trait to compute
-/// Bayesian JIT confidence without forcing Ring-0 into non-deterministic 
+/// Bayesian JIT confidence without forcing Ring-0 into non-deterministic
 /// IEEE-754 floating-point operations.
 
 pub trait Integer: Copy + PartialEq + PartialOrd {
@@ -10,8 +10,12 @@ pub trait Integer: Copy + PartialEq + PartialOrd {
 }
 
 impl Integer for u64 {
-    fn zero() -> Self { 0 }
-    fn one() -> Self { 1 }
+    fn zero() -> Self {
+        0
+    }
+    fn one() -> Self {
+        1
+    }
 }
 
 /// A core trait forcing exact rational tracking for probabilities.
@@ -45,7 +49,9 @@ impl Rational64 {
 
     /// Simplify the logical fraction lazily to remain within u64 bounds
     pub fn simplify(&mut self) {
-        if self.d == 0 { return; } 
+        if self.d == 0 {
+            return;
+        }
         let gcd = Self::gcd(self.n, self.d);
         if gcd > 1 {
             self.n /= gcd;
@@ -58,9 +64,15 @@ impl Rational64 {
     pub fn bayesian_update(prior_a: Self, prob_b_given_a: Self, prob_b: Self) -> Self {
         let mut result = Self {
             // (A.n * B|A.n) * B.d
-            n: prior_a.n.saturating_mul(prob_b_given_a.n).saturating_mul(prob_b.d),
+            n: prior_a
+                .n
+                .saturating_mul(prob_b_given_a.n)
+                .saturating_mul(prob_b.d),
             // (A.d * B|A.d) * B.n
-            d: prior_a.d.saturating_mul(prob_b_given_a.d).saturating_mul(prob_b.n),
+            d: prior_a
+                .d
+                .saturating_mul(prob_b_given_a.d)
+                .saturating_mul(prob_b.n),
         };
         result.simplify();
         result

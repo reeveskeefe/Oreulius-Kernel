@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -42,10 +42,10 @@
 
 #![allow(dead_code)]
 
+use crate::tensor_core::LinearCapability;
 use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::{Mutex, Once};
-use crate::tensor_core::LinearCapability;
 
 /// Maximum message data size (512 bytes - reduced to shrink kernel binary)
 pub const MAX_MESSAGE_SIZE: usize = 512;
@@ -81,7 +81,7 @@ impl ProcessId {
     pub fn new(id: u32) -> Self {
         ProcessId(id)
     }
-    
+
     pub const KERNEL: ProcessId = ProcessId(0);
 }
 
@@ -233,9 +233,7 @@ impl Message {
 
     /// Get the capabilities
     pub fn capabilities(&self) -> impl Iterator<Item = &Capability> {
-        self.caps[..self.caps_len]
-            .iter()
-            .filter_map(|c| c.as_ref())
+        self.caps[..self.caps_len].iter().filter_map(|c| c.as_ref())
     }
 }
 
@@ -279,7 +277,9 @@ impl ChannelRights {
     }
 
     pub const fn receive_only() -> Self {
-        ChannelRights { bits: Self::RECEIVE }
+        ChannelRights {
+            bits: Self::RECEIVE,
+        }
     }
 
     pub const fn send_receive() -> Self {
@@ -291,7 +291,7 @@ impl ChannelRights {
     pub const fn all() -> Self {
         ChannelRights { bits: Self::ALL }
     }
-    
+
     pub const fn full() -> Self {
         Self::all()
     }
@@ -306,8 +306,6 @@ pub struct ChannelCapability {
     pub owner: ProcessId,
 }
 
-
-
 /// Singularity OS Style Affine Endpoint for bounded capability message consumption
 /// This strictly enforces max-flow delegation zero-sum bounds at compile and runtime.
 pub struct AffineEndpoint<const CAPACITY: usize> {
@@ -317,12 +315,14 @@ pub struct AffineEndpoint<const CAPACITY: usize> {
 impl<const CAPACITY: usize> AffineEndpoint<CAPACITY> {
     pub fn new(cap: ChannelCapability) -> Self {
         Self {
-            cap: LinearCapability::new(cap)
+            cap: LinearCapability::new(cap),
         }
     }
 
     /// Splits the endpoint enforcing exact zero-sum delegation capacities.
-    pub fn delegate_zero_sum<const A: usize, const B: usize>(self) -> Result<(AffineEndpoint<A>, AffineEndpoint<B>), &'static str> {
+    pub fn delegate_zero_sum<const A: usize, const B: usize>(
+        self,
+    ) -> Result<(AffineEndpoint<A>, AffineEndpoint<B>), &'static str> {
         let (cap_a, cap_b) = self.cap.affine_split::<A, B>()?;
         Ok((AffineEndpoint { cap: cap_a }, AffineEndpoint { cap: cap_b }))
     }
@@ -333,7 +333,12 @@ impl<const CAPACITY: usize> AffineEndpoint<CAPACITY> {
 }
 
 impl ChannelCapability {
-    pub fn new(cap_id: u32, channel_id: ChannelId, rights: ChannelRights, owner: ProcessId) -> Self {
+    pub fn new(
+        cap_id: u32,
+        channel_id: ChannelId,
+        rights: ChannelRights,
+        owner: ProcessId,
+    ) -> Self {
         ChannelCapability {
             cap_id,
             channel_id,
@@ -432,28 +437,28 @@ pub struct ChannelFlags {
 
 impl ChannelFlags {
     pub const NONE: u32 = 0;
-    pub const BOUNDED: u32 = 1 << 0;      // Bounded queue (default)
-    pub const UNBOUNDED: u32 = 1 << 1;    // Unbounded queue (memory permitting)
+    pub const BOUNDED: u32 = 1 << 0; // Bounded queue (default)
+    pub const UNBOUNDED: u32 = 1 << 1; // Unbounded queue (memory permitting)
     pub const HIGH_PRIORITY: u32 = 1 << 2; // High-priority channel for latency-sensitive messages
-    pub const RELIABLE: u32 = 1 << 3;     // Guaranteed delivery (block on full)
-    pub const ASYNC: u32 = 1 << 4;        // Non-blocking sends (drop on full)
-    
+    pub const RELIABLE: u32 = 1 << 3; // Guaranteed delivery (block on full)
+    pub const ASYNC: u32 = 1 << 4; // Non-blocking sends (drop on full)
+
     pub const fn new(bits: u32) -> Self {
         ChannelFlags { bits }
     }
-    
+
     pub const fn is_bounded(&self) -> bool {
         (self.bits & Self::UNBOUNDED) == 0
     }
-    
+
     pub const fn is_high_priority(&self) -> bool {
         (self.bits & Self::HIGH_PRIORITY) != 0
     }
-    
+
     pub const fn is_reliable(&self) -> bool {
         (self.bits & Self::RELIABLE) != 0
     }
-    
+
     pub const fn is_async(&self) -> bool {
         (self.bits & Self::ASYNC) != 0
     }
@@ -488,9 +493,14 @@ impl Channel {
             priority: 128, // Default medium priority
         }
     }
-    
+
     /// Create a new channel with custom configuration
-    pub fn new_with_flags(id: ChannelId, creator: ProcessId, flags: ChannelFlags, priority: u8) -> Self {
+    pub fn new_with_flags(
+        id: ChannelId,
+        creator: ProcessId,
+        flags: ChannelFlags,
+        priority: u8,
+    ) -> Self {
         Channel {
             id,
             buffer: RingBuffer::new(),
@@ -505,12 +515,19 @@ impl Channel {
 
     /// Send a message through the channel using an affine endpoint, structurally guaranteeing that
     /// capabilities are zero-sum and flow topology remains unbreached according to Section 8 logic.
-    pub fn send_affine<const C: usize>(&mut self, msg: Message, endpoint: &AffineEndpoint<C>) -> Result<(), IpcError> {
+    pub fn send_affine<const C: usize>(
+        &mut self,
+        msg: Message,
+        endpoint: &AffineEndpoint<C>,
+    ) -> Result<(), IpcError> {
         self.send(msg, endpoint.inner_cap())
     }
 
     /// Receive a message through the channel using an affine endpoint.
-    pub fn receive_affine<const C: usize>(&mut self, endpoint: &AffineEndpoint<C>) -> Result<Message, IpcError> {
+    pub fn receive_affine<const C: usize>(
+        &mut self,
+        endpoint: &AffineEndpoint<C>,
+    ) -> Result<Message, IpcError> {
         self.recv(endpoint.inner_cap())
     }
 
@@ -585,7 +602,7 @@ impl Channel {
         if self.closed {
             return Err(IpcError::Closed);
         }
-        
+
         // Handle async channels (non-blocking send)
         if self.flags.is_async() && self.buffer.is_full() {
             // Drop message on full buffer for async channels
@@ -748,12 +765,12 @@ impl Channel {
     pub fn pending(&self) -> usize {
         self.buffer.len()
     }
-    
+
     /// Get channel priority
     pub fn priority(&self) -> u8 {
         self.priority
     }
-    
+
     /// Get channel flags
     pub fn flags(&self) -> ChannelFlags {
         self.flags
@@ -816,11 +833,20 @@ impl ChannelTable {
 
     /// Create a new channel
     pub fn create_channel(&mut self, creator: ProcessId) -> Result<ChannelId, IpcError> {
-        self.create_channel_with_flags(creator, ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::RELIABLE), 128)
+        self.create_channel_with_flags(
+            creator,
+            ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::RELIABLE),
+            128,
+        )
     }
-    
+
     /// Create a new channel with custom configuration
-    pub fn create_channel_with_flags(&mut self, creator: ProcessId, flags: ChannelFlags, priority: u8) -> Result<ChannelId, IpcError> {
+    pub fn create_channel_with_flags(
+        &mut self,
+        creator: ProcessId,
+        flags: ChannelFlags,
+        priority: u8,
+    ) -> Result<ChannelId, IpcError> {
         // Find empty slot
         for slot in &mut self.channels {
             if slot.is_none() {
@@ -852,7 +878,9 @@ impl ChannelTable {
         let idx = if let Some(existing_idx) = self.find_slot_index(id) {
             existing_idx
         } else {
-            let slot_idx = self.find_empty_slot_index().ok_or(IpcError::TooManyChannels)?;
+            let slot_idx = self
+                .find_empty_slot_index()
+                .ok_or(IpcError::TooManyChannels)?;
             self.channels[slot_idx] = Some(Channel::new(id, creator));
             if self.next_id <= id.0 {
                 self.next_id = id.0.saturating_add(1);
@@ -941,19 +969,18 @@ impl IpcService {
     }
 
     /// Create a new channel and return capabilities
-    pub fn create_channel(&self, creator: ProcessId) -> Result<(ChannelCapability, ChannelCapability), IpcError> {
+    pub fn create_channel(
+        &self,
+        creator: ProcessId,
+    ) -> Result<(ChannelCapability, ChannelCapability), IpcError> {
         let mut table = self.channels.lock();
         let channel_id = table.create_channel(creator)?;
         let send_cap_id = self.alloc_channel_cap_id();
         let recv_cap_id = self.alloc_channel_cap_id();
 
         // Create send and receive capabilities
-        let send_cap = ChannelCapability::new(
-            send_cap_id,
-            channel_id,
-            ChannelRights::send_only(),
-            creator,
-        );
+        let send_cap =
+            ChannelCapability::new(send_cap_id, channel_id, ChannelRights::send_only(), creator);
 
         let recv_cap = ChannelCapability::new(
             recv_cap_id,
@@ -1006,7 +1033,10 @@ impl IpcService {
     }
 
     /// Get channel statistics
-    pub fn channel_stats(&self, capability: &ChannelCapability) -> Result<(usize, usize, bool), IpcError> {
+    pub fn channel_stats(
+        &self,
+        capability: &ChannelCapability,
+    ) -> Result<(usize, usize, bool), IpcError> {
         let table = self.channels.lock();
         let channel = table
             .get(capability.channel_id)
@@ -1101,13 +1131,21 @@ pub fn create_channel() -> Result<usize, &'static str> {
 
 /// Create a new channel for a specific process (syscall implementation)
 pub fn create_channel_for_process(creator: ProcessId) -> Result<usize, &'static str> {
-    create_channel_for_process_with_flags(creator, ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::RELIABLE), 128)
+    create_channel_for_process_with_flags(
+        creator,
+        ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::RELIABLE),
+        128,
+    )
 }
 
 /// Create a new channel for a specific process with custom configuration
-pub fn create_channel_for_process_with_flags(creator: ProcessId, flags: ChannelFlags, priority: u8) -> Result<usize, &'static str> {
+pub fn create_channel_for_process_with_flags(
+    creator: ProcessId,
+    flags: ChannelFlags,
+    priority: u8,
+) -> Result<usize, &'static str> {
     let mut channels = ipc().channels.lock();
-    
+
     // Create channel in the table with custom flags
     match channels.create_channel_with_flags(creator, flags, priority) {
         Ok(channel_id) => {
@@ -1130,7 +1168,7 @@ pub fn create_channel_for_process_with_flags(creator: ProcessId, flags: ChannelF
             }
             Ok(channel_id.0 as usize)
         }
-        Err(_) => Err("Failed to create channel")
+        Err(_) => Err("Failed to create channel"),
     }
 }
 
@@ -1147,14 +1185,14 @@ pub fn send_message_for_process(
 ) -> Result<(), &'static str> {
     // Create message from data
     let msg = Message::with_data(source, data).map_err(|_| "Message too large")?;
-    
+
     let cap = crate::capability::resolve_channel_capability(
         source,
         channel_id,
         crate::capability::ChannelAccess::Send,
     )
     .map_err(|_| "Missing channel capability")?;
-    
+
     ipc().send(msg, &cap).map_err(|_| "Failed to send message")
 }
 
@@ -1182,7 +1220,8 @@ pub fn send_message_with_caps_for_process(
     )
     .map_err(|_| "Missing channel capability")?;
 
-    ipc().send(msg, &channel_cap)
+    ipc()
+        .send(msg, &channel_cap)
         .map_err(|_| "Failed to send message")
 }
 
@@ -1203,14 +1242,14 @@ pub fn receive_message_for_process(
         crate::capability::ChannelAccess::Receive,
     )
     .map_err(|_| "Missing channel capability")?;
-    
+
     match ipc().try_recv(&cap) {
         Ok(msg) => {
             let copy_len = msg.payload_len.min(buffer.len());
             crate::asm_bindings::fast_memcpy(&mut buffer[..copy_len], &msg.payload[..copy_len]);
             Ok(copy_len)
         }
-        Err(_) => Err("No message available")
+        Err(_) => Err("No message available"),
     }
 }
 
@@ -1253,14 +1292,17 @@ pub fn close_channel(channel_id: ChannelId) -> Result<(), &'static str> {
 }
 
 /// Close channel on behalf of a process (syscall path).
-pub fn close_channel_for_process(owner: ProcessId, channel_id: ChannelId) -> Result<(), &'static str> {
+pub fn close_channel_for_process(
+    owner: ProcessId,
+    channel_id: ChannelId,
+) -> Result<(), &'static str> {
     let cap = crate::capability::resolve_channel_capability(
         owner,
         channel_id,
         crate::capability::ChannelAccess::Close,
     )
     .map_err(|_| "Missing channel capability")?;
-    
+
     ipc().close(&cap).map_err(|_| "Failed to close channel")
 }
 
@@ -1303,11 +1345,19 @@ pub fn temporal_apply_channel_payload(payload: &[u8]) -> Result<(), &'static str
     let event = payload[2];
     let channel_id = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
     let owner_pid = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
-    let payload_len = u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]) as usize;
+    let payload_len =
+        u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]) as usize;
     let caps_len = u16::from_le_bytes([payload[16], payload[17]]) as usize;
     let queue_depth = u16::from_le_bytes([payload[18], payload[19]]) as usize;
 
-    temporal_apply_channel_event(channel_id, event, owner_pid, payload_len, caps_len, queue_depth)
+    temporal_apply_channel_event(
+        channel_id,
+        event,
+        owner_pid,
+        payload_len,
+        caps_len,
+        queue_depth,
+    )
 }
 
 // ============================================================================
@@ -1344,19 +1394,10 @@ mod tests {
         let id = ChannelId::new(1);
         let mut channel = Channel::new(id, ProcessId::new(1));
 
-        let send_cap = ChannelCapability::new(
-            1,
-            id,
-            ChannelRights::send_only(),
-            ProcessId::new(1),
-        );
+        let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), ProcessId::new(1));
 
-        let recv_cap = ChannelCapability::new(
-            2,
-            id,
-            ChannelRights::receive_only(),
-            ProcessId::new(1),
-        );
+        let recv_cap =
+            ChannelCapability::new(2, id, ChannelRights::receive_only(), ProcessId::new(1));
 
         let msg = Message::with_data(ProcessId::new(1), b"test").unwrap();
         channel.send(msg, &send_cap).unwrap();

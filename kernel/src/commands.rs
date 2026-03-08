@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,27 +22,38 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
 extern crate alloc;
 
-use crate::vga;
+use core::fmt::{self, Write};
+
+use crate::elf;
 use crate::fs;
 use crate::ipc;
-use crate::registry;
-use crate::process;
-use crate::wasm;
-use crate::virtio_blk;
-use crate::vfs;
-use crate::elf;
-use crate::persistence;
 use crate::net;
+use crate::persistence;
+use crate::process;
+use crate::registry;
+use crate::vfs;
+use crate::vga;
+use crate::virtio_blk;
+use crate::wasm;
+
+struct VgaWriter;
+
+impl Write for VgaWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        vga::print_str(s);
+        Ok(())
+    }
+}
 
 // Helper functions for printing numbers
 pub fn print_u32(n: u32) {
@@ -50,17 +61,17 @@ pub fn print_u32(n: u32) {
         vga::print_char('0');
         return;
     }
-    
+
     let mut buf = [0u8; 10];
     let mut i = 0;
     let mut num = n;
-    
+
     while num > 0 {
         buf[i] = (num % 10) as u8 + b'0';
         num /= 10;
         i += 1;
     }
-    
+
     while i > 0 {
         i -= 1;
         vga::print_char(buf[i] as char);
@@ -79,10 +90,14 @@ fn print_usize(n: usize) {
     print_u32(n as u32);
 }
 
-
 pub fn execute(input: &str) {
     let trimmed = input.trim();
     if trimmed.is_empty() {
+        return;
+    }
+
+    let mut shared_out = VgaWriter;
+    if crate::commands_shared::try_execute(&mut shared_out, trimmed, "[CMD]") {
         return;
     }
 
@@ -100,23 +115,37 @@ pub fn execute(input: &str) {
             vga::print_str("  fs-delete  - Delete a file (usage: fs-delete <key>)\n");
             vga::print_str("  fs-list    - List all files\n");
             vga::print_str("  fs-stats   - Show filesystem statistics\n");
+            vga::print_str("  fs-events  - Show recent filesystem events (fs-events [count])\n");
+            vga::print_str("  fs-scrub   - Validate and repair filesystem accounting\n");
             vga::print_str("  vfs-mkdir  - Create directory (vfs-mkdir <path>)\n");
             vga::print_str("  vfs-write  - Write file (vfs-write <path> <data>)\n");
             vga::print_str("  vfs-read   - Read file (vfs-read <path>)\n");
             vga::print_str("  vfs-ls     - List directory (vfs-ls <path>)\n");
+            vga::print_str("  vfs-delete - Delete file path (vfs-delete <path>)\n");
+            vga::print_str("  vfs-rmdir  - Remove empty directory (vfs-rmdir <path>)\n");
             vga::print_str("  vfs-mount-virtio - Mount VirtIO block at path\n");
             vga::print_str("  vfs-open   - Open file (vfs-open <path>)\n");
             vga::print_str("  vfs-readfd - Read via fd (vfs-readfd <fd> [n])\n");
             vga::print_str("  vfs-writefd - Write via fd (vfs-writefd <fd> <data>)\n");
             vga::print_str("  vfs-close  - Close fd (vfs-close <fd>)\n");
-            vga::print_str("  temporal-write - Write + version file (temporal-write <path> <data>)\n");
-            vga::print_str("  temporal-snapshot - Snapshot current file state (temporal-snapshot <path>)\n");
+            vga::print_str(
+                "  temporal-write - Write + version file (temporal-write <path> <data>)\n",
+            );
+            vga::print_str(
+                "  temporal-snapshot - Snapshot current file state (temporal-snapshot <path>)\n",
+            );
             vga::print_str("  temporal-history - Show version history (temporal-history <path>)\n");
-            vga::print_str("    path can be file or object key: /socket/tcp/conn/<id>, /ipc/channel/<id>\n");
-            vga::print_str("  temporal-read - Read specific version (temporal-read <path> <version_id>)\n");
+            vga::print_str(
+                "    path can be file or object key: /socket/tcp/conn/<id>, /ipc/channel/<id>\n",
+            );
+            vga::print_str(
+                "  temporal-read - Read specific version (temporal-read <path> <version_id>)\n",
+            );
             vga::print_str("  temporal-rollback - Roll back file to version (temporal-rollback <path> <version_id>)\n");
             vga::print_str("  temporal-branch-create - Create named branch (temporal-branch-create <path> <branch> [from_version])\n");
-            vga::print_str("  temporal-branch-list - List named branches (temporal-branch-list <path>)\n");
+            vga::print_str(
+                "  temporal-branch-list - List named branches (temporal-branch-list <path>)\n",
+            );
             vga::print_str("  temporal-branch-checkout - Checkout branch head (temporal-branch-checkout <path> <branch>)\n");
             vga::print_str("  temporal-merge - Merge branch into target (temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs])\n");
             vga::print_str("  temporal-stats - Show temporal object stats\n");
@@ -144,7 +173,9 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-fs-demo - Demo WASM filesystem syscalls\n");
             vga::print_str("  wasm-log-demo - Demo WASM logging syscall\n");
             vga::print_str("  temporal-abi-selftest - Run WASM temporal-object ABI self-check\n");
-            vga::print_str("  temporal-hardening-selftest - Run temporal hardening validation suite\n");
+            vga::print_str(
+                "  temporal-hardening-selftest - Run temporal hardening validation suite\n",
+            );
             vga::print_str("  wasm-list    - List loaded WASM instances\n");
             vga::print_str("  svcptr-register - Register service pointer (svcptr-register <instance_id> <func_idx> [delegate])\n");
             vga::print_str("  svcptr-invoke   - Invoke service pointer (svcptr-invoke <object_id> [arg ...])\n");
@@ -156,25 +187,43 @@ pub fn execute(input: &str) {
             vga::print_str("  svcptr-typed-demo - Mixed-type typed invoke host-path demo\n");
             vga::print_str("  wasm-jit-bench - Benchmark WASM JIT vs interpreter\n");
             vga::print_str("  wasm-jit-selftest - Run WASM JIT self-test suite\n");
-            vga::print_str("  wasm-jit-fuzz  - Coverage-guided JIT fuzz (wasm-jit-fuzz <iters> [seed])\n");
+            vga::print_str(
+                "  wasm-jit-fuzz  - Coverage-guided JIT fuzz (wasm-jit-fuzz <iters> [seed])\n",
+            );
             vga::print_str("  wasm-jit-fuzz-corpus - Run external regression seed corpus (wasm-jit-fuzz-corpus <iters>)\n");
             vga::print_str("  wasm-jit-fuzz-soak - Repeat corpus replay (wasm-jit-fuzz-soak <iters> <rounds>)\n");
             vga::print_str("  jitfuzzreg - JIT fuzz regression runner (jitfuzzreg full [iters] | jitfuzzreg [iters [seeds]])\n");
-            vga::print_str("  capnet-fuzz - Fuzz CapNet parser/enforcer (capnet-fuzz <iters> [seed])\n");
-            vga::print_str("  capnet-fuzz-corpus - Replay CapNet seed corpus (capnet-fuzz-corpus <iters>)\n");
+            vga::print_str(
+                "  capnet-fuzz - Fuzz CapNet parser/enforcer (capnet-fuzz <iters> [seed])\n",
+            );
+            vga::print_str(
+                "  capnet-fuzz-corpus - Replay CapNet seed corpus (capnet-fuzz-corpus <iters>)\n",
+            );
             vga::print_str("  capnet-fuzz-soak - Repeat CapNet corpus replay (capnet-fuzz-soak <iters> <rounds>)\n");
-            vga::print_str("  formal-verify - Run formal verification checks (JIT + capability + CapNet)\n");
+            vga::print_str(
+                "  formal-verify - Run formal verification checks (JIT + capability + CapNet)\n",
+            );
             vga::print_str("  wasm-jit-on  - Enable WASM JIT\n");
             vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
             vga::print_str("  wasm-jit-stats - Show WASM JIT stats\n");
-            vga::print_str("  wasm-jit-threshold - Set JIT hot threshold (wasm-jit-threshold <n>)\n");
-            vga::print_str("  wasm-replay-record - Start WASM replay recording (wasm-replay-record <id>)\n");
+            vga::print_str(
+                "  wasm-jit-threshold - Set JIT hot threshold (wasm-jit-threshold <n>)\n",
+            );
+            vga::print_str(
+                "  wasm-replay-record - Start WASM replay recording (wasm-replay-record <id>)\n",
+            );
             vga::print_str("  wasm-replay-stop - Stop WASM replay (wasm-replay-stop <id>)\n");
-            vga::print_str("  wasm-replay-save - Save replay transcript (wasm-replay-save <id> <key>)\n");
-            vga::print_str("  wasm-replay-load - Load replay transcript (wasm-replay-load <id> <key>)\n");
+            vga::print_str(
+                "  wasm-replay-save - Save replay transcript (wasm-replay-save <id> <key>)\n",
+            );
+            vga::print_str(
+                "  wasm-replay-load - Load replay transcript (wasm-replay-load <id> <key>)\n",
+            );
             vga::print_str("  wasm-replay-status - Show replay status (wasm-replay-status <id>)\n");
             vga::print_str("  wasm-replay-clear - Clear replay session (wasm-replay-clear <id>)\n");
-            vga::print_str("  wasm-replay-verify - Verify replay completion (wasm-replay-verify <id>)\n");
+            vga::print_str(
+                "  wasm-replay-verify - Verify replay completion (wasm-replay-verify <id>)\n",
+            );
             vga::print_str("  calculate    - Scientific calculator (calculate <a> <op> <b>)\n");
             vga::print_str("  calculate-help - Show calculator operations\n");
             vga::print_str("  network-help - Show network commands\n");
@@ -196,10 +245,14 @@ pub fn execute(input: &str) {
             vga::print_str("  netstack-info - Show network stack status (real TCP/IP)\n");
             vga::print_str("  capnet-local - Show local CapNet device identity\n");
             vga::print_str("  capnet-peer-add - Register/update a CapNet peer (capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement])\n");
-            vga::print_str("  capnet-peer-show - Show CapNet peer state (capnet-peer-show <peer_id>)\n");
+            vga::print_str(
+                "  capnet-peer-show - Show CapNet peer state (capnet-peer-show <peer_id>)\n",
+            );
             vga::print_str("  capnet-peer-list - List active CapNet peers\n");
             vga::print_str("  capnet-lease-list - List active remote capability leases\n");
-            vga::print_str("  capnet-hello - Send CapNet HELLO (capnet-hello <ip> <port> <peer_id>)\n");
+            vga::print_str(
+                "  capnet-hello - Send CapNet HELLO (capnet-hello <ip> <port> <peer_id>)\n",
+            );
             vga::print_str("  capnet-heartbeat - Send CapNet heartbeat (capnet-heartbeat <ip> <port> <peer_id> [ack] [ack_only])\n");
             vga::print_str("  capnet-lend - Lend a capability token (capnet-lend <ip> <port> <peer_id> <cap_type> <object_id> <rights> <ttl_ticks> [context_pid] [max_uses] [max_bytes] [measurement] [session_id])\n");
             vga::print_str("  capnet-accept - Send token acceptance (capnet-accept <ip> <port> <peer_id> <token_id> [ack])\n");
@@ -213,7 +266,9 @@ pub fn execute(input: &str) {
             vga::print_str("  security-intent-clear - Clear intent restriction for PID (security-intent-clear <pid>)\n");
             vga::print_str("  security-intent-policy - Show/set runtime intent policy (security-intent-policy [show|set|reset])\n");
             vga::print_str("  enclave-secret-policy - Show/set enclave temporal secret redaction (enclave-secret-policy [show|set on|off])\n");
-            vga::print_str("  security-audit - Show recent security events (security-audit [count])\n");
+            vga::print_str(
+                "  security-audit - Show recent security events (security-audit [count])\n",
+            );
             vga::print_str("  security-test  - Run security test suite\n");
             vga::print_str("  cap-list       - List capability table\n");
             vga::print_str("  cap-test-atten - Test capability attenuation\n");
@@ -266,6 +321,12 @@ pub fn execute(input: &str) {
         }
         "fs-stats" => {
             cmd_fs_stats();
+        }
+        "fs-events" => {
+            cmd_fs_events(parts);
+        }
+        "fs-scrub" => {
+            cmd_fs_scrub();
         }
         "vfs-mkdir" => {
             cmd_vfs_mkdir(parts);
@@ -686,7 +747,7 @@ fn cmd_fs_write(mut parts: core::str::SplitWhitespace) {
         }
     };
 
-    let data_str = match parts.next() {
+    let data_str = match join_tail_parts(&mut parts) {
         Some(d) => d,
         None => {
             vga::print_str("Usage: fs-write <key> <data>\n");
@@ -708,11 +769,7 @@ fn cmd_fs_write(mut parts: core::str::SplitWhitespace) {
     };
 
     // Create a root capability for demo purposes
-    let cap = fs::filesystem().create_capability(
-        1,
-        fs::FilesystemRights::all(),
-        None,
-    );
+    let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::all(), None);
 
     let request = match fs::Request::write(key, data_str.as_bytes(), cap) {
         Ok(r) => r,
@@ -727,11 +784,16 @@ fn cmd_fs_write(mut parts: core::str::SplitWhitespace) {
     };
 
     let response = fs::filesystem().handle_request(request);
-    
+
     match response.status {
         fs::ResponseStatus::Ok => {
             vga::print_str("File written successfully: ");
             vga::print_str(key_str);
+            if let Some(detail) = &response.detail {
+                vga::print_str(" (");
+                vga::print_str(detail);
+                vga::print_str(")");
+            }
             vga::print_str("\n");
         }
         fs::ResponseStatus::Error(e) => {
@@ -741,9 +803,15 @@ fn cmd_fs_write(mut parts: core::str::SplitWhitespace) {
                 fs::FilesystemError::AlreadyExists => "already exists\n",
                 fs::FilesystemError::FileTooLarge => "file too large\n",
                 fs::FilesystemError::PermissionDenied => "permission denied\n",
+                fs::FilesystemError::QuotaExceeded => "quota exceeded\n",
                 fs::FilesystemError::FilesystemFull => "filesystem full\n",
                 _ => "unknown error\n",
             });
+            if let Some(detail) = &response.detail {
+                vga::print_str("  Detail: ");
+                vga::print_str(detail);
+                vga::print_str("\n");
+            }
         }
     }
 }
@@ -765,15 +833,11 @@ fn cmd_fs_read(mut parts: core::str::SplitWhitespace) {
         }
     };
 
-    let cap = fs::filesystem().create_capability(
-        1,
-        fs::FilesystemRights::all(),
-        None,
-    );
+    let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::all(), None);
 
     let request = fs::Request::read(key, cap);
     let response = fs::filesystem().handle_request(request);
-    
+
     match response.status {
         fs::ResponseStatus::Ok => {
             vga::print_str("File contents: ");
@@ -791,6 +855,11 @@ fn cmd_fs_read(mut parts: core::str::SplitWhitespace) {
                 fs::FilesystemError::PermissionDenied => "permission denied\n",
                 _ => "unknown error\n",
             });
+            if let Some(detail) = &response.detail {
+                vga::print_str("  Detail: ");
+                vga::print_str(detail);
+                vga::print_str("\n");
+            }
         }
     }
 }
@@ -812,19 +881,20 @@ fn cmd_fs_delete(mut parts: core::str::SplitWhitespace) {
         }
     };
 
-    let cap = fs::filesystem().create_capability(
-        1,
-        fs::FilesystemRights::all(),
-        None,
-    );
+    let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::all(), None);
 
     let request = fs::Request::delete(key, cap);
     let response = fs::filesystem().handle_request(request);
-    
+
     match response.status {
         fs::ResponseStatus::Ok => {
             vga::print_str("File deleted: ");
             vga::print_str(key_str);
+            if let Some(detail) = &response.detail {
+                vga::print_str(" (");
+                vga::print_str(detail);
+                vga::print_str(")");
+            }
             vga::print_str("\n");
         }
         fs::ResponseStatus::Error(e) => {
@@ -834,20 +904,21 @@ fn cmd_fs_delete(mut parts: core::str::SplitWhitespace) {
                 fs::FilesystemError::PermissionDenied => "permission denied\n",
                 _ => "unknown error\n",
             });
+            if let Some(detail) = &response.detail {
+                vga::print_str("  Detail: ");
+                vga::print_str(detail);
+                vga::print_str("\n");
+            }
         }
     }
 }
 
 fn cmd_fs_list() {
-    let cap = fs::filesystem().create_capability(
-        1,
-        fs::FilesystemRights::all(),
-        None,
-    );
+    let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::all(), None);
 
     let request = fs::Request::list(cap);
     let response = fs::filesystem().handle_request(request);
-    
+
     match response.status {
         fs::ResponseStatus::Ok => {
             let data = response.get_data();
@@ -871,12 +942,131 @@ fn cmd_fs_list() {
 }
 
 fn cmd_fs_stats() {
-    let (count, max) = fs::filesystem().stats();
+    let health = fs::filesystem().health();
+    let metrics = fs::filesystem().metrics();
     vga::print_str("Filesystem statistics:\n");
     vga::print_str("  Files: ");
-    print_number(count);
+    print_number(health.file_count);
+    vga::print_str("\n  Bytes: ");
+    print_number(health.total_bytes);
+    vga::print_str("\n  Avg size: ");
+    print_number(health.average_file_size);
+    vga::print_str("\n  Temperature (hot/warm/cold): ");
+    print_number(health.hot_files);
     vga::print_str(" / ");
-    print_number(max);
+    print_number(health.warm_files);
+    vga::print_str(" / ");
+    print_number(health.cold_files);
+    vga::print_str("\n  Bytes (hot/warm/cold): ");
+    print_number(health.hot_bytes);
+    vga::print_str(" / ");
+    print_number(health.warm_bytes);
+    vga::print_str(" / ");
+    print_number(health.cold_bytes);
+    vga::print_str("\n  Avg hot score: ");
+    print_number(health.average_hot_score as usize);
+    vga::print_str("\n  Ops (r/w/d/l): ");
+    print_number(metrics.reads as usize);
+    vga::print_str(" / ");
+    print_number(metrics.writes as usize);
+    vga::print_str(" / ");
+    print_number(metrics.deletes as usize);
+    vga::print_str(" / ");
+    print_number(metrics.lists as usize);
+    vga::print_str("\n  Bytes (read/write/net): ");
+    print_number(metrics.bytes_read as usize);
+    vga::print_str(" / ");
+    print_number(metrics.bytes_written as usize);
+    vga::print_str(" / ");
+    if metrics.net_bytes_added < 0 {
+        vga::print_str("-");
+        print_number(metrics.net_bytes_added.unsigned_abs() as usize);
+    } else {
+        print_number(metrics.net_bytes_added as usize);
+    }
+    vga::print_str("\n  Event log entries: ");
+    print_number(health.event_log_len);
+    if let Some(key) = &health.hottest_key {
+        vga::print_str("\n  Hottest key: ");
+        vga::print_str(key.as_str());
+    }
+    if let Some(event) = &health.last_event {
+        vga::print_str("\n  Last event: ");
+        match event.operation {
+            fs::FilesystemOperation::Read => vga::print_str("read"),
+            fs::FilesystemOperation::WriteCreate => vga::print_str("write-create"),
+            fs::FilesystemOperation::WriteUpdate => vga::print_str("write-update"),
+            fs::FilesystemOperation::Delete => vga::print_str("delete"),
+            fs::FilesystemOperation::List => vga::print_str("list"),
+            fs::FilesystemOperation::PermissionDenied => vga::print_str("denied"),
+            fs::FilesystemOperation::NotFound => vga::print_str("not-found"),
+            fs::FilesystemOperation::QuotaDenied => vga::print_str("quota-denied"),
+            fs::FilesystemOperation::Repair => vga::print_str("repair"),
+        }
+        if let Some(key) = &event.key {
+            vga::print_str(" ");
+            vga::print_str(key.as_str());
+        }
+    }
+    vga::print_str("\n");
+}
+
+fn cmd_fs_events(mut parts: core::str::SplitWhitespace) {
+    let limit = parts
+        .next()
+        .and_then(parse_number)
+        .unwrap_or(16)
+        .clamp(1, 128);
+    let events = fs::filesystem().recent_events(limit);
+
+    if events.is_empty() {
+        vga::print_str("No filesystem events recorded.\n");
+        return;
+    }
+
+    vga::print_str("Recent filesystem events:\n");
+    for event in events {
+        vga::print_str("  #");
+        print_number(event.sequence as usize);
+        vga::print_str(" tick=");
+        print_number(event.tick as usize);
+        vga::print_str(" op=");
+        match event.operation {
+            fs::FilesystemOperation::Read => vga::print_str("read"),
+            fs::FilesystemOperation::WriteCreate => vga::print_str("write-create"),
+            fs::FilesystemOperation::WriteUpdate => vga::print_str("write-update"),
+            fs::FilesystemOperation::Delete => vga::print_str("delete"),
+            fs::FilesystemOperation::List => vga::print_str("list"),
+            fs::FilesystemOperation::PermissionDenied => vga::print_str("denied"),
+            fs::FilesystemOperation::NotFound => vga::print_str("not-found"),
+            fs::FilesystemOperation::QuotaDenied => vga::print_str("quota-denied"),
+            fs::FilesystemOperation::Repair => vga::print_str("repair"),
+        }
+        if let Some(key) = &event.key {
+            vga::print_str(" key=");
+            vga::print_str(key.as_str());
+        }
+        vga::print_str(" bytes=");
+        print_number(event.bytes);
+        if let Some(detail) = &event.detail {
+            vga::print_str(" detail=");
+            vga::print_str(detail);
+        }
+        vga::print_str("\n");
+    }
+}
+
+fn cmd_fs_scrub() {
+    let report = fs::filesystem().scrub_and_repair();
+    vga::print_str("Filesystem scrub complete:\n");
+    vga::print_str("  Files scanned: ");
+    print_number(report.files_scanned);
+    vga::print_str("\n  Issues found: ");
+    print_number(report.issues_found);
+    vga::print_str("\n  Repaired files: ");
+    print_number(report.repaired_files);
+    vga::print_str("\n  Bytes recounted: ");
+    print_number(report.bytes_recounted);
     vga::print_str("\n");
 }
 
@@ -1034,7 +1224,10 @@ fn cmd_vfs_open(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    match vfs::open_for_current(path, vfs::OpenFlags::READ | vfs::OpenFlags::WRITE | vfs::OpenFlags::CREATE) {
+    match vfs::open_for_current(
+        path,
+        vfs::OpenFlags::READ | vfs::OpenFlags::WRITE | vfs::OpenFlags::CREATE,
+    ) {
         Ok(fd) => {
             vga::print_str("Opened fd ");
             print_number(fd);
@@ -1715,7 +1908,8 @@ fn cmd_temporal_retention(mut parts: core::str::SplitWhitespace) {
             };
 
             let max_bytes = max_kib.saturating_mul(1024);
-            let (use_versions, use_bytes) = crate::temporal::set_retention_policy(max_versions, max_bytes);
+            let (use_versions, use_bytes) =
+                crate::temporal::set_retention_policy(max_versions, max_bytes);
             vga::print_str("Updated temporal retention policy.\n");
             vga::print_str("  max_versions_per_object: ");
             print_number(use_versions);
@@ -1859,7 +2053,12 @@ fn temporal_ipc_parse_request_frame(frame: &[u8]) -> Result<(u8, u16, u32, &[u8]
     if frame.len() != expected_len {
         return Err(TEMPORAL_IPC_STATUS_INVALID_FRAME);
     }
-    Ok((opcode, flags, request_id, &frame[TEMPORAL_IPC_REQUEST_HEADER_BYTES..]))
+    Ok((
+        opcode,
+        flags,
+        request_id,
+        &frame[TEMPORAL_IPC_REQUEST_HEADER_BYTES..],
+    ))
 }
 
 fn temporal_ipc_build_response_frame(
@@ -1914,16 +2113,20 @@ fn temporal_ipc_parse_response_frame(
     let flags = temporal_ipc_read_u16(frame, 6).ok_or("temporal IPC response missing flags")?;
     let request_id =
         temporal_ipc_read_u32(frame, 8).ok_or("temporal IPC response missing request id")?;
-    let status = i32::from_le_bytes([
-        frame[12], frame[13], frame[14], frame[15],
-    ]);
+    let status = i32::from_le_bytes([frame[12], frame[13], frame[14], frame[15]]);
     let payload_len = temporal_ipc_read_u16(frame, 16)
         .ok_or("temporal IPC response missing payload length")? as usize;
     let expected_len = TEMPORAL_IPC_RESPONSE_HEADER_BYTES.saturating_add(payload_len);
     if frame.len() != expected_len {
         return Err("temporal IPC response length mismatch");
     }
-    Ok((opcode, flags, request_id, status, &frame[TEMPORAL_IPC_RESPONSE_HEADER_BYTES..]))
+    Ok((
+        opcode,
+        flags,
+        request_id,
+        status,
+        &frame[TEMPORAL_IPC_RESPONSE_HEADER_BYTES..],
+    ))
 }
 
 fn temporal_ipc_opcode_name(opcode: u8) -> &'static str {
@@ -1979,11 +2182,18 @@ fn temporal_ipc_build_branch_create_payload(
 ) -> Result<alloc::vec::Vec<u8>, &'static str> {
     let path_bytes = path.as_bytes();
     let branch_bytes = branch_name.as_bytes();
-    if path_bytes.len() > u16::MAX as usize || branch_bytes.is_empty() || branch_bytes.len() > u16::MAX as usize {
+    if path_bytes.len() > u16::MAX as usize
+        || branch_bytes.is_empty()
+        || branch_bytes.len() > u16::MAX as usize
+    {
         return Err("temporal IPC branch-create payload bounds invalid");
     }
     let mut payload = alloc::vec::Vec::new();
-    payload.reserve(14usize.saturating_add(path_bytes.len()).saturating_add(branch_bytes.len()));
+    payload.reserve(
+        14usize
+            .saturating_add(path_bytes.len())
+            .saturating_add(branch_bytes.len()),
+    );
     let base_version = from_version.unwrap_or(u64::MAX);
     payload.extend_from_slice(&base_version.to_le_bytes());
     temporal_ipc_append_u16(&mut payload, path_bytes.len() as u16);
@@ -2000,11 +2210,18 @@ fn temporal_ipc_build_branch_checkout_payload(
 ) -> Result<alloc::vec::Vec<u8>, &'static str> {
     let path_bytes = path.as_bytes();
     let branch_bytes = branch_name.as_bytes();
-    if path_bytes.len() > u16::MAX as usize || branch_bytes.is_empty() || branch_bytes.len() > u16::MAX as usize {
+    if path_bytes.len() > u16::MAX as usize
+        || branch_bytes.is_empty()
+        || branch_bytes.len() > u16::MAX as usize
+    {
         return Err("temporal IPC branch-checkout payload bounds invalid");
     }
     let mut payload = alloc::vec::Vec::new();
-    payload.reserve(6usize.saturating_add(path_bytes.len()).saturating_add(branch_bytes.len()));
+    payload.reserve(
+        6usize
+            .saturating_add(path_bytes.len())
+            .saturating_add(branch_bytes.len()),
+    );
     temporal_ipc_append_u16(&mut payload, path_bytes.len() as u16);
     temporal_ipc_append_u16(&mut payload, branch_bytes.len() as u16);
     temporal_ipc_append_u16(&mut payload, 0);
@@ -2064,18 +2281,10 @@ fn temporal_ipc_roundtrip(
     let owner = ipc::ProcessId(1);
     let mut channel = ipc::Channel::new(channel_id, owner);
 
-    let send_cap = ipc::ChannelCapability::new(
-        1,
-        channel_id,
-        ipc::ChannelRights::send_only(),
-        owner,
-    );
-    let recv_cap = ipc::ChannelCapability::new(
-        2,
-        channel_id,
-        ipc::ChannelRights::receive_only(),
-        owner,
-    );
+    let send_cap =
+        ipc::ChannelCapability::new(1, channel_id, ipc::ChannelRights::send_only(), owner);
+    let recv_cap =
+        ipc::ChannelCapability::new(2, channel_id, ipc::ChannelRights::receive_only(), owner);
 
     let mut msg = ipc::Message::with_data(owner, request_frame)
         .map_err(|_| "temporal IPC request too large")?;
@@ -2117,39 +2326,29 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
     const PATH: &str = "/temporal-ipc-selfcheck";
     vfs::write_path(PATH, b"temporal-ipc-alpha").map_err(|_| "IPC self-check seed write failed")?;
 
-    let fs_cap = fs::filesystem().create_capability(
-        911,
-        fs::FilesystemRights::all(),
-        None,
-    );
+    let fs_cap = fs::filesystem().create_capability(911, fs::FilesystemRights::all(), None);
 
     let snapshot_payload = temporal_ipc_build_path_payload(PATH)?;
-    let snapshot_req = temporal_ipc_build_request_frame(
-        TEMPORAL_IPC_OP_SNAPSHOT,
-        0,
-        1,
-        &snapshot_payload,
-    )?;
-    let snapshot_resp = temporal_ipc_roundtrip(&snapshot_req, Some(fs_cap))?;
+    let snapshot_req =
+        temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_SNAPSHOT, 0, 1, &snapshot_payload)?;
+    let snapshot_resp = temporal_ipc_roundtrip(&snapshot_req, Some(fs_cap.clone()))?;
     let (snapshot_opcode, _snapshot_flags, snapshot_request_id, snapshot_status, snapshot_payload) =
         temporal_ipc_parse_response_frame(&snapshot_resp)?;
     if snapshot_opcode != TEMPORAL_IPC_OP_SNAPSHOT || snapshot_request_id != 1 {
         return Err("temporal IPC snapshot response header mismatch");
     }
-    if snapshot_status != TEMPORAL_IPC_STATUS_OK || snapshot_payload.len() != TEMPORAL_IPC_META_BYTES {
+    if snapshot_status != TEMPORAL_IPC_STATUS_OK
+        || snapshot_payload.len() != TEMPORAL_IPC_META_BYTES
+    {
         return Err("temporal IPC snapshot request failed");
     }
     let snapshot_version =
         temporal_ipc_extract_version(snapshot_payload).ok_or("snapshot version decode failed")?;
 
     let latest_payload = temporal_ipc_build_path_payload(PATH)?;
-    let latest_req = temporal_ipc_build_request_frame(
-        TEMPORAL_IPC_OP_LATEST,
-        0,
-        2,
-        &latest_payload,
-    )?;
-    let latest_resp = temporal_ipc_roundtrip(&latest_req, Some(fs_cap))?;
+    let latest_req =
+        temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_LATEST, 0, 2, &latest_payload)?;
+    let latest_resp = temporal_ipc_roundtrip(&latest_req, Some(fs_cap.clone()))?;
     let (latest_opcode, _latest_flags, latest_request_id, latest_status, latest_payload) =
         temporal_ipc_parse_response_frame(&latest_resp)?;
     if latest_opcode != TEMPORAL_IPC_OP_LATEST || latest_request_id != 2 {
@@ -2165,13 +2364,9 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
     }
 
     let history_payload = temporal_ipc_build_history_payload(PATH, 0, 4)?;
-    let history_req = temporal_ipc_build_request_frame(
-        TEMPORAL_IPC_OP_HISTORY,
-        0,
-        3,
-        &history_payload,
-    )?;
-    let history_resp = temporal_ipc_roundtrip(&history_req, Some(fs_cap))?;
+    let history_req =
+        temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_HISTORY, 0, 3, &history_payload)?;
+    let history_resp = temporal_ipc_roundtrip(&history_req, Some(fs_cap.clone()))?;
     let (history_opcode, _history_flags, history_request_id, history_status, history_payload) =
         temporal_ipc_parse_response_frame(&history_resp)?;
     if history_opcode != TEMPORAL_IPC_OP_HISTORY || history_request_id != 3 {
@@ -2200,23 +2395,21 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
         return Err("temporal IPC stats objects unexpectedly zero");
     }
 
-    vfs::write_path(PATH, b"temporal-ipc-beta").map_err(|_| "IPC self-check second write failed")?;
+    vfs::write_path(PATH, b"temporal-ipc-beta")
+        .map_err(|_| "IPC self-check second write failed")?;
     let latest_after_write = crate::temporal::latest_version(PATH)
         .map_err(|_| "IPC self-check latest lookup after write failed")?
         .version_id;
 
-    let branch_create_payload = temporal_ipc_build_branch_create_payload(
-        PATH,
-        "ipc-alt",
-        Some(snapshot_version),
-    )?;
+    let branch_create_payload =
+        temporal_ipc_build_branch_create_payload(PATH, "ipc-alt", Some(snapshot_version))?;
     let branch_create_req = temporal_ipc_build_request_frame(
         TEMPORAL_IPC_OP_BRANCH_CREATE,
         0,
         5,
         &branch_create_payload,
     )?;
-    let branch_create_resp = temporal_ipc_roundtrip(&branch_create_req, Some(fs_cap))?;
+    let branch_create_resp = temporal_ipc_roundtrip(&branch_create_req, Some(fs_cap.clone()))?;
     let (
         branch_create_opcode,
         _branch_create_flags,
@@ -2236,13 +2429,9 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
         .ok_or("branch-create payload missing branch id")?;
 
     let branch_list_payload = temporal_ipc_build_path_payload(PATH)?;
-    let branch_list_req = temporal_ipc_build_request_frame(
-        TEMPORAL_IPC_OP_BRANCH_LIST,
-        0,
-        6,
-        &branch_list_payload,
-    )?;
-    let branch_list_resp = temporal_ipc_roundtrip(&branch_list_req, Some(fs_cap))?;
+    let branch_list_req =
+        temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_BRANCH_LIST, 0, 6, &branch_list_payload)?;
+    let branch_list_resp = temporal_ipc_roundtrip(&branch_list_req, Some(fs_cap.clone()))?;
     let (
         branch_list_opcode,
         _branch_list_flags,
@@ -2256,7 +2445,8 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
     if branch_list_status != TEMPORAL_IPC_STATUS_OK || branch_list_payload.len() < 4 {
         return Err("temporal IPC branch-list request failed");
     }
-    let branch_count = temporal_ipc_read_u16(branch_list_payload, 0).ok_or("branch-list count missing")?;
+    let branch_count =
+        temporal_ipc_read_u16(branch_list_payload, 0).ok_or("branch-list count missing")?;
     if branch_count < 2 {
         return Err("temporal IPC branch-list expected at least 2 branches");
     }
@@ -2268,16 +2458,19 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
         crate::temporal::TemporalMergeStrategy::FastForwardOnly,
     )?;
     let merge_req = temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_MERGE, 0, 7, &merge_payload)?;
-    let merge_resp = temporal_ipc_roundtrip(&merge_req, Some(fs_cap))?;
+    let merge_resp = temporal_ipc_roundtrip(&merge_req, Some(fs_cap.clone()))?;
     let (merge_opcode, _merge_flags, merge_request_id, merge_status, merge_payload) =
         temporal_ipc_parse_response_frame(&merge_resp)?;
     if merge_opcode != TEMPORAL_IPC_OP_MERGE || merge_request_id != 7 {
         return Err("temporal IPC merge response header mismatch");
     }
-    if merge_status != TEMPORAL_IPC_STATUS_OK || merge_payload.len() != TEMPORAL_IPC_MERGE_RESULT_BYTES {
+    if merge_status != TEMPORAL_IPC_STATUS_OK
+        || merge_payload.len() != TEMPORAL_IPC_MERGE_RESULT_BYTES
+    {
         return Err("temporal IPC merge request failed");
     }
-    let merge_target_branch = temporal_ipc_read_u32(merge_payload, 4).ok_or("merge target branch missing")?;
+    let merge_target_branch =
+        temporal_ipc_read_u32(merge_payload, 4).ok_or("merge target branch missing")?;
     if merge_target_branch != ipc_alt_branch {
         return Err("temporal IPC merge target branch mismatch");
     }
@@ -2285,16 +2478,19 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
     let checkout_payload = temporal_ipc_build_branch_checkout_payload(PATH, "ipc-alt")?;
     let checkout_req =
         temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_BRANCH_CHECKOUT, 0, 8, &checkout_payload)?;
-    let checkout_resp = temporal_ipc_roundtrip(&checkout_req, Some(fs_cap))?;
+    let checkout_resp = temporal_ipc_roundtrip(&checkout_req, Some(fs_cap.clone()))?;
     let (checkout_opcode, _checkout_flags, checkout_request_id, checkout_status, checkout_payload) =
         temporal_ipc_parse_response_frame(&checkout_resp)?;
     if checkout_opcode != TEMPORAL_IPC_OP_BRANCH_CHECKOUT || checkout_request_id != 8 {
         return Err("temporal IPC branch-checkout response header mismatch");
     }
-    if checkout_status != TEMPORAL_IPC_STATUS_OK || checkout_payload.len() != TEMPORAL_IPC_BRANCH_CHECKOUT_BYTES {
+    if checkout_status != TEMPORAL_IPC_STATUS_OK
+        || checkout_payload.len() != TEMPORAL_IPC_BRANCH_CHECKOUT_BYTES
+    {
         return Err("temporal IPC branch-checkout request failed");
     }
-    let checkout_head = temporal_ipc_read_u64(checkout_payload, 8).ok_or("branch-checkout head missing")?;
+    let checkout_head =
+        temporal_ipc_read_u64(checkout_payload, 8).ok_or("branch-checkout head missing")?;
     if checkout_head != latest_after_write {
         return Err("temporal IPC branch-checkout head mismatch after merge");
     }
@@ -2343,12 +2539,16 @@ fn print_temporal_ipc_response(label: &str, frame: &[u8]) {
                         vga::print_str(" entries=");
                         print_u32(count as u32);
                     }
-                    TEMPORAL_IPC_OP_BRANCH_CREATE if payload.len() >= TEMPORAL_IPC_BRANCH_ID_BYTES => {
+                    TEMPORAL_IPC_OP_BRANCH_CREATE
+                        if payload.len() >= TEMPORAL_IPC_BRANCH_ID_BYTES =>
+                    {
                         let branch = temporal_ipc_read_u32(payload, 0).unwrap_or(0);
                         vga::print_str(" branch=");
                         print_u32(branch);
                     }
-                    TEMPORAL_IPC_OP_BRANCH_CHECKOUT if payload.len() >= TEMPORAL_IPC_BRANCH_CHECKOUT_BYTES => {
+                    TEMPORAL_IPC_OP_BRANCH_CHECKOUT
+                        if payload.len() >= TEMPORAL_IPC_BRANCH_CHECKOUT_BYTES =>
+                    {
                         let branch = temporal_ipc_read_u32(payload, 0).unwrap_or(0);
                         let has_head = temporal_ipc_read_u32(payload, 4).unwrap_or(0) != 0;
                         let head = temporal_ipc_read_u64(payload, 8).unwrap_or(u64::MAX);
@@ -2408,11 +2608,7 @@ fn cmd_temporal_ipc_demo() {
         }
     }
 
-    let fs_cap = fs::filesystem().create_capability(
-        910,
-        fs::FilesystemRights::all(),
-        None,
-    );
+    let fs_cap = fs::filesystem().create_capability(910, fs::FilesystemRights::all(), None);
 
     let stats_req = match temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_STATS, 0, 101, &[]) {
         Ok(v) => v,
@@ -2442,21 +2638,18 @@ fn cmd_temporal_ipc_demo() {
             return;
         }
     };
-    let snapshot_req = match temporal_ipc_build_request_frame(
-        TEMPORAL_IPC_OP_SNAPSHOT,
-        0,
-        102,
-        &snapshot_payload,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            vga::print_str("Failed to build SNAPSHOT request: ");
-            vga::print_str(e);
-            vga::print_str("\n");
-            return;
-        }
-    };
-    match temporal_ipc_roundtrip(&snapshot_req, Some(fs_cap)) {
+    let snapshot_req =
+        match temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_SNAPSHOT, 0, 102, &snapshot_payload)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                vga::print_str("Failed to build SNAPSHOT request: ");
+                vga::print_str(e);
+                vga::print_str("\n");
+                return;
+            }
+        };
+    match temporal_ipc_roundtrip(&snapshot_req, Some(fs_cap.clone())) {
         Ok(resp) => print_temporal_ipc_response("SNAPSHOT", &resp),
         Err(e) => {
             vga::print_str("SNAPSHOT transport error: ");
@@ -2475,21 +2668,17 @@ fn cmd_temporal_ipc_demo() {
             return;
         }
     };
-    let latest_req = match temporal_ipc_build_request_frame(
-        TEMPORAL_IPC_OP_LATEST,
-        0,
-        103,
-        &latest_payload,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            vga::print_str("Failed to build LATEST request: ");
-            vga::print_str(e);
-            vga::print_str("\n");
-            return;
-        }
-    };
-    match temporal_ipc_roundtrip(&latest_req, Some(fs_cap)) {
+    let latest_req =
+        match temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_LATEST, 0, 103, &latest_payload) {
+            Ok(v) => v,
+            Err(e) => {
+                vga::print_str("Failed to build LATEST request: ");
+                vga::print_str(e);
+                vga::print_str("\n");
+                return;
+            }
+        };
+    match temporal_ipc_roundtrip(&latest_req, Some(fs_cap.clone())) {
         Ok(resp) => print_temporal_ipc_response("LATEST", &resp),
         Err(e) => {
             vga::print_str("LATEST transport error: ");
@@ -2508,21 +2697,17 @@ fn cmd_temporal_ipc_demo() {
             return;
         }
     };
-    let history_req = match temporal_ipc_build_request_frame(
-        TEMPORAL_IPC_OP_HISTORY,
-        0,
-        104,
-        &history_payload,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            vga::print_str("Failed to build HISTORY request: ");
-            vga::print_str(e);
-            vga::print_str("\n");
-            return;
-        }
-    };
-    match temporal_ipc_roundtrip(&history_req, Some(fs_cap)) {
+    let history_req =
+        match temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_HISTORY, 0, 104, &history_payload) {
+            Ok(v) => v,
+            Err(e) => {
+                vga::print_str("Failed to build HISTORY request: ");
+                vga::print_str(e);
+                vga::print_str("\n");
+                return;
+            }
+        };
+    match temporal_ipc_roundtrip(&history_req, Some(fs_cap.clone())) {
         Ok(resp) => print_temporal_ipc_response("HISTORY", &resp),
         Err(e) => {
             vga::print_str("HISTORY transport error: ");
@@ -2601,16 +2786,27 @@ fn print_number(n: usize) {
 // ============================================================================
 
 // Simple channel storage for demo (channel_id -> (send_cap, recv_cap))
-static mut DEMO_CHANNELS: [(u32, Option<(ipc::ChannelCapability, ipc::ChannelCapability)>); 8] = 
-    [(0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None), (0, None)];
+static mut DEMO_CHANNELS: [(
+    u32,
+    Option<(ipc::ChannelCapability, ipc::ChannelCapability)>,
+); 8] = [
+    (0, None),
+    (0, None),
+    (0, None),
+    (0, None),
+    (0, None),
+    (0, None),
+    (0, None),
+    (0, None),
+];
 
 fn cmd_ipc_create() {
     let process_id = ipc::ProcessId::new(1); // Demo process ID
-    
+
     match ipc::ipc().create_channel(process_id) {
         Ok((send_cap, recv_cap)) => {
             let chan_id = send_cap.channel_id.0;
-            
+
             // Store capabilities for later use
             unsafe {
                 for slot in &mut DEMO_CHANNELS {
@@ -2621,7 +2817,7 @@ fn cmd_ipc_create() {
                     }
                 }
             }
-            
+
             vga::print_str("Channel created: ");
             print_number(chan_id as usize);
             vga::print_str("\n");
@@ -2823,13 +3019,9 @@ fn cmd_cap_demo(mut parts: core::str::SplitWhitespace) {
         }
     };
 
-    let root_cap = fs::filesystem().create_capability(
-        1,
-        fs::FilesystemRights::all(),
-        None,
-    );
+    let root_cap = fs::filesystem().create_capability(1, fs::FilesystemRights::all(), None);
 
-    let write_req = match fs::Request::write(key, b"Secret data!", root_cap) {
+    let write_req = match fs::Request::write(key.clone(), b"Secret data!", root_cap) {
         Ok(r) => r,
         Err(_) => {
             vga::print_str("Error creating write request\n");
@@ -2847,11 +3039,7 @@ fn cmd_cap_demo(mut parts: core::str::SplitWhitespace) {
 
     // Step 2: Create a read-only filesystem capability
     vga::print_str("Step 2: Create read-only filesystem capability\n");
-    let fs_cap = fs::filesystem().create_capability(
-        100,
-        fs::FilesystemRights::read_only(),
-        None,
-    );
+    let fs_cap = fs::filesystem().create_capability(100, fs::FilesystemRights::read_only(), None);
     vga::print_str("  ✓ Capability created (cap_id=");
     print_number(fs_cap.cap_id as usize);
     vga::print_str(", rights=READ)\n\n");
@@ -2949,7 +3137,7 @@ fn cmd_cap_demo(mut parts: core::str::SplitWhitespace) {
 
     // Step 8: Use the received capability to read the file
     vga::print_str("Step 8: Use received capability to read file\n");
-    let read_req = fs::Request::read(key, restored_fs_cap);
+    let read_req = fs::Request::read(key.clone(), restored_fs_cap.clone());
     let response = fs::filesystem().handle_request(read_req);
 
     match response.status {
@@ -2968,7 +3156,7 @@ fn cmd_cap_demo(mut parts: core::str::SplitWhitespace) {
 
     // Step 9: Try to write (should fail - read-only cap)
     vga::print_str("Step 9: Try to write with read-only capability\n");
-    let write_attempt = match fs::Request::write(key, b"Hacked!", restored_fs_cap) {
+    let write_attempt = match fs::Request::write(key.clone(), b"Hacked!", restored_fs_cap) {
         Ok(r) => r,
         Err(_) => {
             vga::print_str("  ✓ Write blocked at request level\n\n");
@@ -3015,7 +3203,8 @@ fn handle_filesystem_request(message: &ipc::Message) -> ipc::Message {
             };
 
             // Create capability and read
-            let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::read_only(), None);
+            let cap =
+                fs::filesystem().create_capability(1, fs::FilesystemRights::read_only(), None);
             let read_req = fs::Request::read(key, cap);
             let read_response = fs::filesystem().handle_request(read_req);
 
@@ -3040,8 +3229,8 @@ fn handle_filesystem_request(message: &ipc::Message) -> ipc::Message {
         } else if request_str.starts_with("WRITE ") {
             // Simple write request: "WRITE filename data"
             if let Some(space_pos) = request_str[6..].find(' ') {
-                let filename = &request_str[6..6+space_pos];
-                let data = &request_str[6+space_pos+1..];
+                let filename = &request_str[6..6 + space_pos];
+                let data = &request_str[6 + space_pos + 1..];
 
                 let key = match fs::FileKey::new(filename) {
                     Ok(k) => k,
@@ -3082,7 +3271,11 @@ fn handle_filesystem_request(message: &ipc::Message) -> ipc::Message {
                 response.payload_len = error_msg.len();
             }
         } else if request_str.starts_with("LIST") {
-            let cap = fs::filesystem().create_capability(1, fs::FilesystemRights::new(fs::FilesystemRights::LIST), None);
+            let cap = fs::filesystem().create_capability(
+                1,
+                fs::FilesystemRights::new(fs::FilesystemRights::LIST),
+                None,
+            );
             let list_req = fs::Request::list(cap);
             let list_response = fs::filesystem().handle_request(list_req);
 
@@ -3251,13 +3444,15 @@ fn handle_persistence_request(message: &ipc::Message) -> ipc::Message {
                 match persistence::LogRecord::new(record_type, data_bytes) {
                     Ok(record) => {
                         // Create a capability with append rights
-                        let cap = persistence::StoreCapability::new(1, persistence::StoreRights::all());
-                        
+                        let cap =
+                            persistence::StoreCapability::new(1, persistence::StoreRights::all());
+
                         // Append to log
                         let mut persist_svc = persistence::persistence().lock();
                         match persist_svc.append_log(&cap, record) {
                             Ok(offset) => {
-                                let success_msg = alloc::format!("OK: Record appended at offset {}", offset);
+                                let success_msg =
+                                    alloc::format!("OK: Record appended at offset {}", offset);
                                 let bytes = success_msg.as_bytes();
                                 if bytes.len() <= response.payload.len() {
                                     response.payload[..bytes.len()].copy_from_slice(bytes);
@@ -3292,10 +3487,10 @@ fn handle_persistence_request(message: &ipc::Message) -> ipc::Message {
                 let offset = offset_str.parse::<usize>().unwrap_or(0);
                 let count = count_str.parse::<usize>().unwrap_or(10).min(50);
 
-                // Build the result inside the lock scope  
+                // Build the result inside the lock scope
                 let cap = persistence::StoreCapability::new(1, persistence::StoreRights::all());
                 let persist_svc = persistence::persistence().lock();
-                
+
                 let result_msg = match persist_svc.read_log(&cap, offset, count) {
                     Ok(records) => {
                         let mut msg = alloc::format!("OK: Records from offset {}:\n", offset);
@@ -3303,20 +3498,30 @@ fn handle_persistence_request(message: &ipc::Message) -> ipc::Message {
                             // Copy packed struct fields to avoid unaligned reference error
                             let record_type = record.header.record_type;
                             let record_len = record.header.len;
-                            
+
                             let payload_preview = if record.payload().len() > 40 {
-                                alloc::format!("{}...", core::str::from_utf8(&record.payload()[..40]).unwrap_or("<binary>"))
+                                alloc::format!(
+                                    "{}...",
+                                    core::str::from_utf8(&record.payload()[..40])
+                                        .unwrap_or("<binary>")
+                                )
                             } else {
-                                alloc::format!("{}", core::str::from_utf8(record.payload()).unwrap_or("<binary>"))
+                                alloc::format!(
+                                    "{}",
+                                    core::str::from_utf8(record.payload()).unwrap_or("<binary>")
+                                )
                             };
-                            msg.push_str(&alloc::format!("  [{}] type={}, len={}, data: {}\n", 
-                                offset + i, record_type, record_len, payload_preview));
+                            msg.push_str(&alloc::format!(
+                                "  [{}] type={}, len={}, data: {}\n",
+                                offset + i,
+                                record_type,
+                                record_len,
+                                payload_preview
+                            ));
                         }
                         Ok(msg)
                     }
-                    Err(e) => {
-                        Err(alloc::format!("ERROR: Failed to read log: {}", e))
-                    }
+                    Err(e) => Err(alloc::format!("ERROR: Failed to read log: {}", e)),
                 };
                 drop(persist_svc); // Explicitly drop the lock
 
@@ -3348,7 +3553,11 @@ fn handle_persistence_request(message: &ipc::Message) -> ipc::Message {
 
                 match persist_svc.write_snapshot(&cap, data_bytes, last_offset) {
                     Ok(()) => {
-                        let success_msg = alloc::format!("OK: Snapshot written ({} bytes at offset {})", data_bytes.len(), last_offset);
+                        let success_msg = alloc::format!(
+                            "OK: Snapshot written ({} bytes at offset {})",
+                            data_bytes.len(),
+                            last_offset
+                        );
                         let bytes = success_msg.as_bytes();
                         if bytes.len() <= response.payload.len() {
                             response.payload[..bytes.len()].copy_from_slice(bytes);
@@ -3372,11 +3581,19 @@ fn handle_persistence_request(message: &ipc::Message) -> ipc::Message {
                 match persist_svc.read_snapshot(&cap) {
                     Ok((data, last_offset)) => {
                         let preview = if data.len() > 100 {
-                            alloc::format!("{}...", core::str::from_utf8(&data[..100]).unwrap_or("<binary>"))
+                            alloc::format!(
+                                "{}...",
+                                core::str::from_utf8(&data[..100]).unwrap_or("<binary>")
+                            )
                         } else {
                             alloc::format!("{}", core::str::from_utf8(data).unwrap_or("<binary>"))
                         };
-                        let result = alloc::format!("OK: Snapshot ({} bytes at offset {}):\n{}", data.len(), last_offset, preview);
+                        let result = alloc::format!(
+                            "OK: Snapshot ({} bytes at offset {}):\n{}",
+                            data.len(),
+                            last_offset,
+                            preview
+                        );
                         let bytes = result.as_bytes();
                         let copy_len = bytes.len().min(response.payload.len());
                         response.payload[..copy_len].copy_from_slice(&bytes[..copy_len]);
@@ -3395,8 +3612,12 @@ fn handle_persistence_request(message: &ipc::Message) -> ipc::Message {
             "STATS" => {
                 let persist_svc = persistence::persistence().lock();
                 let (count, capacity) = persist_svc.log_stats();
-                let result = alloc::format!("OK: Persistence Stats:\n  Log records: {}/{}\n  Utilization: {}%", 
-                    count, capacity, (count * 100) / capacity.max(1));
+                let result = alloc::format!(
+                    "OK: Persistence Stats:\n  Log records: {}/{}\n  Utilization: {}%",
+                    count,
+                    capacity,
+                    (count * 100) / capacity.max(1)
+                );
                 let bytes = result.as_bytes();
                 if bytes.len() <= response.payload.len() {
                     response.payload[..bytes.len()].copy_from_slice(bytes);
@@ -3476,40 +3697,53 @@ fn temporal_ipc_decode_path_payload(payload: &[u8]) -> Result<alloc::string::Str
     if payload.len() < 2 {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
-    let path_len = temporal_ipc_read_u16(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let path_len =
+        temporal_ipc_read_u16(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
     if payload.len() != 2usize.saturating_add(path_len) {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
     let path_bytes = &payload[2..];
-    let path_str = core::str::from_utf8(path_bytes).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path_str =
+        core::str::from_utf8(path_bytes).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     normalize_temporal_path(path_str).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)
 }
 
-fn temporal_ipc_decode_read_payload(payload: &[u8]) -> Result<(alloc::string::String, u64, usize), i32> {
+fn temporal_ipc_decode_read_payload(
+    payload: &[u8],
+) -> Result<(alloc::string::String, u64, usize), i32> {
     if payload.len() < 12 {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
-    let version_id = temporal_ipc_read_u64(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
-    let preview_len = temporal_ipc_read_u16(payload, 8).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
-    let path_len = temporal_ipc_read_u16(payload, 10).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let version_id =
+        temporal_ipc_read_u64(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let preview_len =
+        temporal_ipc_read_u16(payload, 8).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let path_len =
+        temporal_ipc_read_u16(payload, 10).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
     if payload.len() != 12usize.saturating_add(path_len) {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
-    let path_str = core::str::from_utf8(&payload[12..]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path_str =
+        core::str::from_utf8(&payload[12..]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     let path = normalize_temporal_path(path_str).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     Ok((path, version_id, preview_len))
 }
 
-fn temporal_ipc_decode_rollback_payload(payload: &[u8]) -> Result<(alloc::string::String, u64), i32> {
+fn temporal_ipc_decode_rollback_payload(
+    payload: &[u8],
+) -> Result<(alloc::string::String, u64), i32> {
     if payload.len() < 10 {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
-    let version_id = temporal_ipc_read_u64(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
-    let path_len = temporal_ipc_read_u16(payload, 8).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let version_id =
+        temporal_ipc_read_u64(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path_len =
+        temporal_ipc_read_u16(payload, 8).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
     if payload.len() != 10usize.saturating_add(path_len) {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
-    let path_str = core::str::from_utf8(&payload[10..]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path_str =
+        core::str::from_utf8(&payload[10..]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     let path = normalize_temporal_path(path_str).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     Ok((path, version_id))
 }
@@ -3524,11 +3758,13 @@ fn temporal_ipc_decode_history_payload(
         temporal_ipc_read_u32(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
     let max_entries =
         temporal_ipc_read_u16(payload, 4).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
-    let path_len = temporal_ipc_read_u16(payload, 6).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let path_len =
+        temporal_ipc_read_u16(payload, 6).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
     if payload.len() != 8usize.saturating_add(path_len) {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
-    let path_str = core::str::from_utf8(&payload[8..]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path_str =
+        core::str::from_utf8(&payload[8..]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     let path = normalize_temporal_path(path_str).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     Ok((path, start_from_newest, max_entries))
 }
@@ -3539,10 +3775,14 @@ fn temporal_ipc_decode_branch_create_payload(
     if payload.len() < 14 {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
-    let from_version_raw = temporal_ipc_read_u64(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
-    let path_len = temporal_ipc_read_u16(payload, 8).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
-    let branch_len = temporal_ipc_read_u16(payload, 10).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
-    let _reserved = temporal_ipc_read_u16(payload, 12).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let from_version_raw =
+        temporal_ipc_read_u64(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path_len =
+        temporal_ipc_read_u16(payload, 8).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let branch_len =
+        temporal_ipc_read_u16(payload, 10).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let _reserved =
+        temporal_ipc_read_u16(payload, 12).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     if branch_len == 0 {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
@@ -3570,8 +3810,10 @@ fn temporal_ipc_decode_branch_checkout_payload(
     if payload.len() < 6 {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
-    let path_len = temporal_ipc_read_u16(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
-    let branch_len = temporal_ipc_read_u16(payload, 2).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let path_len =
+        temporal_ipc_read_u16(payload, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let branch_len =
+        temporal_ipc_read_u16(payload, 2).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
     let _reserved = temporal_ipc_read_u16(payload, 4).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     if branch_len == 0 {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
@@ -3580,7 +3822,8 @@ fn temporal_ipc_decode_branch_checkout_payload(
     if payload.len() != expected {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
-    let path_raw = core::str::from_utf8(&payload[6..6 + path_len]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path_raw = core::str::from_utf8(&payload[6..6 + path_len])
+        .map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     let branch_raw = core::str::from_utf8(&payload[6 + path_len..expected])
         .map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     let path = normalize_temporal_path(path_raw).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
@@ -3610,9 +3853,12 @@ fn temporal_ipc_decode_merge_payload(
     };
     let flags = payload[1];
     let target_present = (flags & 1) != 0;
-    let path_len = temporal_ipc_read_u16(payload, 2).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
-    let source_len = temporal_ipc_read_u16(payload, 4).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
-    let target_len = temporal_ipc_read_u16(payload, 6).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let path_len =
+        temporal_ipc_read_u16(payload, 2).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let source_len =
+        temporal_ipc_read_u16(payload, 4).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
+    let target_len =
+        temporal_ipc_read_u16(payload, 6).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)? as usize;
     if source_len == 0 {
         return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD);
     }
@@ -3633,9 +3879,10 @@ fn temporal_ipc_decode_merge_payload(
     let source_off = path_off.saturating_add(path_len);
     let target_off = source_off.saturating_add(source_len);
 
-    let path_raw = core::str::from_utf8(&payload[path_off..source_off]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
-    let source_raw =
-        core::str::from_utf8(&payload[source_off..target_off]).map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let path_raw = core::str::from_utf8(&payload[path_off..source_off])
+        .map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
+    let source_raw = core::str::from_utf8(&payload[source_off..target_off])
+        .map_err(|_| TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     let path = normalize_temporal_path(path_raw).ok_or(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD)?;
     let source = alloc::string::String::from(source_raw);
     let target = if target_present {
@@ -3653,7 +3900,9 @@ fn temporal_ipc_split_u64(value: u64) -> (u32, u32) {
     (value as u32, (value >> 32) as u32)
 }
 
-fn temporal_ipc_encode_meta(meta: &crate::temporal::TemporalVersionMeta) -> [u8; TEMPORAL_IPC_META_BYTES] {
+fn temporal_ipc_encode_meta(
+    meta: &crate::temporal::TemporalVersionMeta,
+) -> [u8; TEMPORAL_IPC_META_BYTES] {
     let mut out = [0u8; TEMPORAL_IPC_META_BYTES];
     let (version_lo, version_hi) = temporal_ipc_split_u64(meta.version_id);
     let words = [
@@ -3680,7 +3929,12 @@ fn temporal_ipc_encode_rollback(
 ) -> [u8; TEMPORAL_IPC_ROLLBACK_BYTES] {
     let mut out = [0u8; TEMPORAL_IPC_ROLLBACK_BYTES];
     let (version_lo, version_hi) = temporal_ipc_split_u64(result.new_version_id);
-    let words = [version_lo, version_hi, result.branch_id, result.restored_len as u32];
+    let words = [
+        version_lo,
+        version_hi,
+        result.branch_id,
+        result.restored_len as u32,
+    ];
     let mut i = 0usize;
     while i < words.len() {
         let base = i * 4;
@@ -3690,7 +3944,9 @@ fn temporal_ipc_encode_rollback(
     out
 }
 
-fn temporal_ipc_encode_stats(stats: crate::temporal::TemporalStats) -> [u8; TEMPORAL_IPC_STATS_BYTES] {
+fn temporal_ipc_encode_stats(
+    stats: crate::temporal::TemporalStats,
+) -> [u8; TEMPORAL_IPC_STATS_BYTES] {
     let mut out = [0u8; TEMPORAL_IPC_STATS_BYTES];
     let bytes = stats.bytes as u64;
     let words = [
@@ -3870,19 +4126,34 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
             let path = match temporal_ipc_decode_path_payload(payload) {
                 Ok(path) => path,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
-            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ)
+            {
                 return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
-            match crate::temporal::snapshot_path(&path).and_then(|_| crate::temporal::latest_version(&path)) {
+            match crate::temporal::snapshot_path(&path)
+                .and_then(|_| crate::temporal::latest_version(&path))
+            {
                 Ok(meta) => {
                     response_payload.extend_from_slice(&temporal_ipc_encode_meta(&meta));
                     TEMPORAL_IPC_STATUS_OK
@@ -3894,16 +4165,29 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
             let path = match temporal_ipc_decode_path_payload(payload) {
                 Ok(path) => path,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
-            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ)
+            {
                 return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::latest_version(&path) {
@@ -3918,16 +4202,29 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
             let (path, version_id, preview_len) = match temporal_ipc_decode_read_payload(payload) {
                 Ok(v) => v,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
-            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ)
+            {
                 return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::read_version(&path, version_id) {
@@ -3935,7 +4232,8 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
                     let max_blob = ipc::MAX_MESSAGE_SIZE
                         .saturating_sub(TEMPORAL_IPC_RESPONSE_HEADER_BYTES)
                         .saturating_sub(8);
-                    let returned_len = core::cmp::min(core::cmp::min(data.len(), preview_len), max_blob);
+                    let returned_len =
+                        core::cmp::min(core::cmp::min(data.len(), preview_len), max_blob);
                     temporal_ipc_append_u32(&mut response_payload, data.len() as u32);
                     temporal_ipc_append_u32(&mut response_payload, returned_len as u32);
                     response_payload.extend_from_slice(&data[..returned_len]);
@@ -3948,16 +4246,30 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
             let (path, version_id) = match temporal_ipc_decode_rollback_payload(payload) {
                 Ok(v) => v,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
-            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE) {
+            if let Err(status) =
+                authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE)
+            {
                 return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::rollback_path(&path, version_id) {
@@ -3972,17 +4284,30 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
             let (path, start_from_newest, max_entries) =
                 match temporal_ipc_decode_history_payload(payload) {
                     Ok(v) => v,
                     Err(status) => {
-                        return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                        return temporal_ipc_build_response_frame(
+                            opcode,
+                            flags,
+                            request_id,
+                            status,
+                            &[],
+                        );
                     }
                 };
-            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ)
+            {
                 return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
             if max_entries > TEMPORAL_IPC_MAX_HISTORY_ENTRIES {
@@ -4021,16 +4346,31 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
-            let (path, branch, from_version) = match temporal_ipc_decode_branch_create_payload(payload) {
-                Ok(v) => v,
-                Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
-                }
-            };
-            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE) {
+            let (path, branch, from_version) =
+                match temporal_ipc_decode_branch_create_payload(payload) {
+                    Ok(v) => v,
+                    Err(status) => {
+                        return temporal_ipc_build_response_frame(
+                            opcode,
+                            flags,
+                            request_id,
+                            status,
+                            &[],
+                        );
+                    }
+                };
+            if let Err(status) =
+                authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE)
+            {
                 return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::create_branch(&path, &branch, from_version) {
@@ -4045,16 +4385,30 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
             let (path, branch) = match temporal_ipc_decode_branch_checkout_payload(payload) {
                 Ok(v) => v,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
-            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE) {
+            if let Err(status) =
+                authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE)
+            {
                 return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::checkout_branch(&path, &branch) {
@@ -4072,16 +4426,29 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
             let path = match temporal_ipc_decode_path_payload(payload) {
                 Ok(path) => path,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
-            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ) {
+            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ)
+            {
                 return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::list_branches(&path) {
@@ -4111,16 +4478,31 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
-            let (path, source, target, strategy) = match temporal_ipc_decode_merge_payload(payload) {
+            let (path, source, target, strategy) = match temporal_ipc_decode_merge_payload(payload)
+            {
                 Ok(v) => v,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                    return temporal_ipc_build_response_frame(
+                        opcode,
+                        flags,
+                        request_id,
+                        status,
+                        &[],
+                    );
                 }
             };
-            if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE) {
+            if let Err(status) =
+                authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE)
+            {
                 return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::merge_branch(&path, &source, target.as_deref(), strategy) {
@@ -4210,7 +4592,8 @@ fn handle_network_request(message: &ipc::Message) -> ipc::Message {
                             }
                         }
                         Err(e) => {
-                            let error_msg = alloc::format!("ERROR: WiFi connect failed: {}", e.as_str());
+                            let error_msg =
+                                alloc::format!("ERROR: WiFi connect failed: {}", e.as_str());
                             let bytes = error_msg.as_bytes();
                             if bytes.len() <= response.payload.len() {
                                 response.payload[..bytes.len()].copy_from_slice(bytes);
@@ -4243,7 +4626,8 @@ fn handle_network_request(message: &ipc::Message) -> ipc::Message {
                         }
                     }
                     Err(e) => {
-                        let error_msg = alloc::format!("ERROR: Failed to get WiFi status: {}", e.as_str());
+                        let error_msg =
+                            alloc::format!("ERROR: Failed to get WiFi status: {}", e.as_str());
                         let bytes = error_msg.as_bytes();
                         if bytes.len() <= response.payload.len() {
                             response.payload[..bytes.len()].copy_from_slice(bytes);
@@ -4264,8 +4648,14 @@ fn handle_network_request(message: &ipc::Message) -> ipc::Message {
                     let mut net_svc = net::network().lock();
                     match net_svc.dns_resolve(domain) {
                         Ok(ip) => {
-                            let result = alloc::format!("OK: {} resolved to {}.{}.{}.{}", 
-                                domain, ip.octets()[0], ip.octets()[1], ip.octets()[2], ip.octets()[3]);
+                            let result = alloc::format!(
+                                "OK: {} resolved to {}.{}.{}.{}",
+                                domain,
+                                ip.octets()[0],
+                                ip.octets()[1],
+                                ip.octets()[2],
+                                ip.octets()[3]
+                            );
                             let bytes = result.as_bytes();
                             if bytes.len() <= response.payload.len() {
                                 response.payload[..bytes.len()].copy_from_slice(bytes);
@@ -4273,7 +4663,8 @@ fn handle_network_request(message: &ipc::Message) -> ipc::Message {
                             }
                         }
                         Err(e) => {
-                            let error_msg = alloc::format!("ERROR: DNS resolution failed: {}", e.as_str());
+                            let error_msg =
+                                alloc::format!("ERROR: DNS resolution failed: {}", e.as_str());
                             let bytes = error_msg.as_bytes();
                             if bytes.len() <= response.payload.len() {
                                 response.payload[..bytes.len()].copy_from_slice(bytes);
@@ -4295,26 +4686,39 @@ fn handle_network_request(message: &ipc::Message) -> ipc::Message {
                     // Parse URL to extract host and path using parse_url_simple
                     let (host, path) = parse_url_simple(&url);
                     crate::serial_println!("[NET] HTTP GET request to {} (path: {})", host, path);
-                    
+
                     let mut net_svc = net::network().lock();
                     match net_svc.http_get(&url) {
                         Ok(http_response) => {
                             let body_preview = if http_response.body_len > 100 {
-                                alloc::format!("{}...", 
-                                    core::str::from_utf8(&http_response.body[..100]).unwrap_or("<binary>"))
+                                alloc::format!(
+                                    "{}...",
+                                    core::str::from_utf8(&http_response.body[..100])
+                                        .unwrap_or("<binary>")
+                                )
                             } else {
-                                alloc::format!("{}", 
-                                    core::str::from_utf8(&http_response.body[..http_response.body_len]).unwrap_or("<binary>"))
+                                alloc::format!(
+                                    "{}",
+                                    core::str::from_utf8(
+                                        &http_response.body[..http_response.body_len]
+                                    )
+                                    .unwrap_or("<binary>")
+                                )
                             };
-                            let result = alloc::format!("OK: HTTP {} - {} bytes:\n{}", 
-                                http_response.status_code, http_response.body_len, body_preview);
+                            let result = alloc::format!(
+                                "OK: HTTP {} - {} bytes:\n{}",
+                                http_response.status_code,
+                                http_response.body_len,
+                                body_preview
+                            );
                             let bytes = result.as_bytes();
                             let copy_len = bytes.len().min(response.payload.len());
                             response.payload[..copy_len].copy_from_slice(&bytes[..copy_len]);
                             response.payload_len = copy_len;
                         }
                         Err(e) => {
-                            let error_msg = alloc::format!("ERROR: HTTP GET failed: {}", e.as_str());
+                            let error_msg =
+                                alloc::format!("ERROR: HTTP GET failed: {}", e.as_str());
                             let bytes = error_msg.as_bytes();
                             if bytes.len() <= response.payload.len() {
                                 response.payload[..bytes.len()].copy_from_slice(bytes);
@@ -4327,9 +4731,13 @@ fn handle_network_request(message: &ipc::Message) -> ipc::Message {
             "STATS" => {
                 let net_svc = net::network().lock();
                 let stats = net_svc.stats();
-                let ip_str = alloc::format!("{}.{}.{}.{}", 
-                    stats.ip_address.octets()[0], stats.ip_address.octets()[1], 
-                    stats.ip_address.octets()[2], stats.ip_address.octets()[3]);
+                let ip_str = alloc::format!(
+                    "{}.{}.{}.{}",
+                    stats.ip_address.octets()[0],
+                    stats.ip_address.octets()[1],
+                    stats.ip_address.octets()[2],
+                    stats.ip_address.octets()[3]
+                );
                 let result = alloc::format!("OK: Network Stats:\n  WiFi: {}\n  IP: {}\n  TCP connections: {}\n  DNS cache: {}",
                     if stats.wifi_enabled { "Enabled" } else { "Disabled" },
                     ip_str,
@@ -4361,7 +4769,7 @@ fn handle_network_request(message: &ipc::Message) -> ipc::Message {
 
 /// Register a service (for testing)
 fn cmd_svc_register(mut parts: core::str::SplitWhitespace) {
-    use registry::{ServiceType, ServiceNamespace, ServiceMetadata, ServiceOffer};
+    use registry::{ServiceMetadata, ServiceNamespace, ServiceOffer, ServiceType};
 
     let type_str = match parts.next() {
         Some(t) => t,
@@ -4399,9 +4807,9 @@ fn cmd_svc_register(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    
+
     let channel = cap1.channel_id;
-    
+
     // Store the receiver capability for the service to use
     let service_cap = _cap2;
 
@@ -4424,10 +4832,10 @@ fn cmd_svc_register(mut parts: core::str::SplitWhitespace) {
             vga::print_str(" on channel ");
             print_u32(channel.0);
             vga::print_str("\n");
-            
+
             // Demonstrate service operation using the receiver capability
             vga::print_str("Service is now listening for requests...\n");
-            
+
             // In a real implementation, this would be a service loop
             // For demo purposes, we'll try to receive one message
             match ipc::ipc().try_recv(&service_cap) {
@@ -4442,14 +4850,16 @@ fn cmd_svc_register(mut parts: core::str::SplitWhitespace) {
                         vga::print_str("...");
                     }
                     vga::print_str("\n");
-                    
+
                     // Send a response
                     let mut response = ipc::Message::new(ipc::ProcessId(1));
                     let response_text = b"Service response: Hello from ";
                     response.payload[..response_text.len()].copy_from_slice(response_text);
-                    response.payload[response_text.len()..response_text.len() + service_type.name().len()].copy_from_slice(service_type.name().as_bytes());
+                    response.payload
+                        [response_text.len()..response_text.len() + service_type.name().len()]
+                        .copy_from_slice(service_type.name().as_bytes());
                     response.payload_len = response_text.len() + service_type.name().len();
-                    
+
                     match ipc::ipc().send(response, &cap1) {
                         Ok(()) => vga::print_str("Response sent\n"),
                         Err(e) => {
@@ -4479,7 +4889,7 @@ fn cmd_svc_register(mut parts: core::str::SplitWhitespace) {
 
 /// Request a service introduction
 fn cmd_svc_request(mut parts: core::str::SplitWhitespace) {
-    use registry::{ServiceType, IntroductionRequest, IntroductionStatus};
+    use registry::{IntroductionRequest, IntroductionStatus, ServiceType};
 
     let type_str = match parts.next() {
         Some(t) => t,
@@ -4532,7 +4942,7 @@ fn cmd_svc_request(mut parts: core::str::SplitWhitespace) {
                 vga::print_str("  Channel: ");
                 print_u32(channel.0);
                 vga::print_str("\n");
-                
+
                 if let Some(metadata) = response.metadata {
                     vga::print_str("  Version: ");
                     print_u32(metadata.version);
@@ -4559,7 +4969,7 @@ fn cmd_svc_list() {
     vga::print_str("-------------------\n");
 
     let (services, count) = registry::registry().list_services();
-    
+
     if count == 0 {
         vga::print_str("No services registered\n");
         return;
@@ -4570,7 +4980,7 @@ fn cmd_svc_list() {
         vga::print_str("  ");
         vga::print_str(service_type.name());
         vga::print_str(" (");
-        
+
         match namespace {
             ServiceNamespace::Production => vga::print_str("prod"),
             ServiceNamespace::Test => vga::print_str("test"),
@@ -4580,7 +4990,7 @@ fn cmd_svc_list() {
                 print_u32(n);
             }
         }
-        
+
         vga::print_str(") - ");
         print_usize(connections);
         vga::print_str(" connections\n");
@@ -4589,7 +4999,7 @@ fn cmd_svc_list() {
 
 /// Show registry statistics
 fn cmd_svc_stats() {
-    let (service_count, max_services, introducer_count, max_introducers) = 
+    let (service_count, max_services, introducer_count, max_introducers) =
         registry::registry().stats();
 
     vga::print_str("Service Registry Statistics:\n");
@@ -4608,14 +5018,14 @@ fn cmd_svc_stats() {
 
 /// Demo introduction protocol
 fn cmd_intro_demo() {
-    use registry::{ServiceType, ServiceNamespace, ServiceMetadata, ServiceOffer};
-    use registry::{IntroductionRequest, IntroductionStatus, IntroductionScope};
+    use registry::{IntroductionRequest, IntroductionScope, IntroductionStatus};
+    use registry::{ServiceMetadata, ServiceNamespace, ServiceOffer, ServiceType};
 
     vga::print_str("\n=== Service Introduction Protocol Demo ===\n\n");
 
     // Step 1: Register a filesystem service
     vga::print_str("Step 1: Register a Filesystem service\n");
-    
+
     let channel_result = ipc::ipc().create_channel(ipc::ProcessId(100));
 
     let (cap1, _cap2) = match channel_result {
@@ -4627,9 +5037,9 @@ fn cmd_intro_demo() {
             return;
         }
     };
-    
+
     let channel = cap1.channel_id;
-    
+
     // Store the receiver capability for the service to use
     let service_cap = _cap2;
 
@@ -4647,7 +5057,7 @@ fn cmd_intro_demo() {
             vga::print_str("    Channel: ");
             print_u32(channel.0);
             vga::print_str("\n    Max connections: 5\n");
-            
+
             // Service loop for filesystem operations
             let mut request_count = 0;
             let max_requests = 5; // Shorter for demo
@@ -4709,7 +5119,7 @@ fn cmd_intro_demo() {
 
     // Step 2: Create a root introducer
     vga::print_str("Step 2: Create root introducer (unlimited access)\n");
-    
+
     let mut root_introducer = match registry::registry().create_root_introducer(ipc::ProcessId(1)) {
         Ok(i) => i,
         Err(e) => {
@@ -4727,7 +5137,7 @@ fn cmd_intro_demo() {
 
     // Step 3: Process requests introduction
     vga::print_str("Step 3: Process 201 requests Filesystem service\n");
-    
+
     let request = IntroductionRequest::new(ServiceType::Filesystem, ipc::ProcessId(201));
     let response = registry::registry().introduce(request, &mut root_introducer);
 
@@ -4753,13 +5163,13 @@ fn cmd_intro_demo() {
 
     // Step 4: Create restricted introducer
     vga::print_str("Step 4: Create restricted introducer (3 intros max)\n");
-    
+
     let allowed_services = (1u32 << (ServiceType::Filesystem.as_u32() % 32))
-                         | (1u32 << (ServiceType::Timer.as_u32() % 32));
-    
+        | (1u32 << (ServiceType::Timer.as_u32() % 32));
+
     let mut restricted_introducer = match registry::registry().create_introducer(
         allowed_services,
-        3,  // Max 3 introductions
+        3, // Max 3 introductions
         IntroductionScope::Global,
         ipc::ProcessId(201),
     ) {
@@ -4780,7 +5190,7 @@ fn cmd_intro_demo() {
 
     // Step 5: Use restricted introducer (success)
     vga::print_str("Step 5: Use restricted introducer (1/3)\n");
-    
+
     let request2 = IntroductionRequest::new(ServiceType::Filesystem, ipc::ProcessId(202));
     let response2 = registry::registry().introduce(request2, &mut restricted_introducer);
 
@@ -4788,7 +5198,9 @@ fn cmd_intro_demo() {
         IntroductionStatus::Success => {
             vga::print_str("  ✓ Introduction successful\n");
             vga::print_str("    Remaining: ");
-            print_usize(restricted_introducer.max_introductions - restricted_introducer.introductions_used);
+            print_usize(
+                restricted_introducer.max_introductions - restricted_introducer.introductions_used,
+            );
             vga::print_str(" / 3\n\n");
         }
         _ => {
@@ -4800,7 +5212,7 @@ fn cmd_intro_demo() {
 
     // Step 6: Try to request network service (should fail - not allowed)
     vga::print_str("Step 6: Try to request Network service (not allowed)\n");
-    
+
     let request3 = IntroductionRequest::new(ServiceType::Network, ipc::ProcessId(203));
     let response3 = registry::registry().introduce(request3, &mut restricted_introducer);
 
@@ -4915,10 +5327,14 @@ fn cmd_ps() {
         vga::print_str("  ");
 
         // Print name (truncate at 18 chars, pad if shorter)
-        let name_len = name_bytes.iter().position(|&c| c == 0).unwrap_or(32).min(18);
+        let name_len = name_bytes
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(32)
+            .min(18);
         let name_str = core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("<invalid>");
         vga::print_str(name_str);
-        
+
         // Pad name to 20 chars
         for _ in name_len..20 {
             vga::print_char(' ');
@@ -4976,7 +5392,7 @@ fn cmd_kill(mut parts: core::str::SplitWhitespace) {
             vga::print_str("Process ");
             print_u32(pid.0);
             vga::print_str(" terminated\n");
-            
+
             // Reap terminated processes
             process::process_manager().reap();
         }
@@ -4991,7 +5407,7 @@ fn cmd_kill(mut parts: core::str::SplitWhitespace) {
 /// Yield current process
 fn cmd_yield() {
     let old_pid = process::current_pid();
-    
+
     if let Some(new_pid) = process::process_manager().yield_process() {
         vga::print_str("Yielded: PID ");
         if let Some(old) = old_pid {
@@ -5088,18 +5504,16 @@ fn cmd_wasm_demo() {
 
     // Hand-crafted WASM bytecode
     let bytecode: [u8; 50] = [
-        0x41, 0x05,           // i32.const 5
-        0x41, 0x03,           // i32.const 3
-        0x6A,                 // i32.add
-        0x41, 0x02,           // i32.const 2
-        0x6C,                 // i32.mul
-        0x21, 0x00,           // local.set 0
-        0x20, 0x00,           // local.get 0
-        0x0F,                 // return
-        0x0B,                 // end
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0x41, 0x05, // i32.const 5
+        0x41, 0x03, // i32.const 3
+        0x6A, // i32.add
+        0x41, 0x02, // i32.const 2
+        0x6C, // i32.mul
+        0x21, 0x00, // local.set 0
+        0x20, 0x00, // local.get 0
+        0x0F, // return
+        0x0B, // end
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0,
     ];
 
@@ -5136,7 +5550,7 @@ fn cmd_wasm_demo() {
             result_count: 1,
             local_count: 1,
         };
-        
+
         match instance.module.add_function(func) {
             Ok(_) => {
                 // Execute the function
@@ -5226,27 +5640,25 @@ fn cmd_wasm_fs_demo() {
     let bytecode: [u8; 179] = [
         // Setup: Write key "wasm-test" at memory offset 0
         // Write data "Hello from WASM!" at memory offset 20
-        
+
         // Call oreulia_fs_write (host function 1002 = 1000 + 2)
-        0x41, 0x00,           // i32.const 0 (cap handle - will inject later)
-        0x41, 0x14,           // i32.const 20 (key_ptr - offset in memory)
-        0x41, 0x09,           // i32.const 9 (key_len - "wasm-test")
-        0x41, 0x32,           // i32.const 50 (data_ptr)
-        0x41, 0x11,           // i32.const 17 (data_len - "Hello from WASM!")
-        0x10, 0xEA, 0x07,     // call 1002 (oreulia_fs_write)
-        0x21, 0x00,           // local.set 0 (store result)
-        0x20, 0x00,           // local.get 0 (load result)
-        0x0F,                 // return
-        0x0B,                 // end
+        0x41, 0x00, // i32.const 0 (cap handle - will inject later)
+        0x41, 0x14, // i32.const 20 (key_ptr - offset in memory)
+        0x41, 0x09, // i32.const 9 (key_len - "wasm-test")
+        0x41, 0x32, // i32.const 50 (data_ptr)
+        0x41, 0x11, // i32.const 17 (data_len - "Hello from WASM!")
+        0x10, 0xEA, 0x07, // call 1002 (oreulia_fs_write)
+        0x21, 0x00, // local.set 0 (store result)
+        0x20, 0x00, // local.get 0 (load result)
+        0x0F, // return
+        0x0B, // end
         // Padding
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
 
     // Instantiate module
@@ -5267,7 +5679,7 @@ fn cmd_wasm_fs_demo() {
 
     // Inject filesystem capability
     let fs_cap = fs::filesystem().create_capability(1, fs::FilesystemRights::all(), None);
-    
+
     let cap_handle = wasm::wasm_runtime().get_instance_mut(instance_id, |instance| {
         // Write the key "wasm-test" to memory offset 20
         let key_bytes = b"wasm-test";
@@ -5318,7 +5730,7 @@ fn cmd_wasm_fs_demo() {
             result_count: 1,
             local_count: 1,
         };
-        
+
         if let Err(e) = instance.module.add_function(func) {
             vga::print_str("✗ Failed to add function: ");
             vga::print_str(e.as_str());
@@ -5360,7 +5772,7 @@ fn cmd_wasm_fs_demo() {
     if result.is_ok() && result.unwrap() {
         // Verify the file was written
         vga::print_str("\nVerifying filesystem write...\n");
-        
+
         let key = match fs::FileKey::new("wasm-test") {
             Ok(k) => k,
             Err(_) => {
@@ -5405,17 +5817,15 @@ fn cmd_wasm_log_demo() {
     // Function signature: oreulia_log(msg_ptr: i32, msg_len: i32)
     let bytecode: [u8; 94] = [
         // Call oreulia_log (host function 1000)
-        0x41, 0x00,           // i32.const 0 (msg_ptr)
-        0x41, 0x1B,           // i32.const 27 (msg_len)
-        0x10, 0xE8, 0x07,     // call 1000 (oreulia_log)
-        0x0F,                 // return
-        0x0B,                 // end
+        0x41, 0x00, // i32.const 0 (msg_ptr)
+        0x41, 0x1B, // i32.const 27 (msg_len)
+        0x10, 0xE8, 0x07, // call 1000 (oreulia_log)
+        0x0F, // return
+        0x0B, // end
         // Padding
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
 
     let instance_id = match wasm::wasm_runtime().instantiate(&bytecode[..10], pid) {
@@ -5433,9 +5843,8 @@ fn cmd_wasm_log_demo() {
 
     // Write message to WASM memory
     let message = b"Greetings from WebAssembly!";
-    let _ = wasm::wasm_runtime().get_instance_mut(instance_id, |instance| {
-        instance.memory.write(0, message)
-    });
+    let _ = wasm::wasm_runtime()
+        .get_instance_mut(instance_id, |instance| instance.memory.write(0, message));
 
     // Execute
     vga::print_str("\nExecuting WASM (should print message below):\n");
@@ -5447,7 +5856,7 @@ fn cmd_wasm_log_demo() {
             result_count: 0,
             local_count: 0,
         };
-        
+
         let _ = instance.module.add_function(func);
         instance.call(0)
     });
@@ -5548,7 +5957,9 @@ fn cmd_temporal_hardening_selftest() {
     }
 
     match crate::wifi::temporal_required_reconnect_failure_self_check() {
-        Ok(()) => vga::print_str("Temporal WiFi required-reconnect failure-path self-check: PASS\n"),
+        Ok(()) => {
+            vga::print_str("Temporal WiFi required-reconnect failure-path self-check: PASS\n")
+        }
         Err(e) => {
             vga::print_str("Temporal WiFi required-reconnect failure-path self-check: FAIL - ");
             vga::print_str(e);
@@ -5557,7 +5968,9 @@ fn cmd_temporal_hardening_selftest() {
     }
 
     match crate::enclave::temporal_active_session_reentry_self_check() {
-        Ok(()) => vga::print_str("Temporal enclave active-session re-entry-path self-check: PASS\n"),
+        Ok(()) => {
+            vga::print_str("Temporal enclave active-session re-entry-path self-check: PASS\n")
+        }
         Err(e) => {
             vga::print_str("Temporal enclave active-session re-entry-path self-check: FAIL - ");
             vga::print_str(e);
@@ -5966,9 +6379,11 @@ fn cmd_svcptr_demo() {
         if cap.cap_type != ipc::CapabilityType::ServicePointer {
             continue;
         }
-        if let Ok(new_cap_id) = crate::capability::import_capability_from_ipc(pid, cap, received.source) {
-            if let Ok((_cap_type, object_id)) = crate::capability::capability_manager()
-                .query_capability(pid, new_cap_id)
+        if let Ok(new_cap_id) =
+            crate::capability::import_capability_from_ipc(pid, cap, received.source)
+        {
+            if let Ok((_cap_type, object_id)) =
+                crate::capability::capability_manager().query_capability(pid, new_cap_id)
             {
                 imported_cap_id = new_cap_id;
                 imported_object = object_id;
@@ -6126,7 +6541,8 @@ fn cmd_svcptr_demo_crosspid() {
         };
         channel_id = Some(ch);
 
-        let recv_rights = crate::capability::Rights::new(crate::capability::Rights::CHANNEL_RECEIVE);
+        let recv_rights =
+            crate::capability::Rights::new(crate::capability::Rights::CHANNEL_RECEIVE);
         if crate::capability::capability_manager()
             .grant_capability(
                 consumer,
@@ -6207,8 +6623,8 @@ fn cmd_svcptr_demo_crosspid() {
             if let Ok(new_cap_id) =
                 crate::capability::import_capability_from_ipc(consumer, cap, received.source)
             {
-                if let Ok((_cap_type, object_id)) = crate::capability::capability_manager()
-                    .query_capability(consumer, new_cap_id)
+                if let Ok((_cap_type, object_id)) =
+                    crate::capability::capability_manager().query_capability(consumer, new_cap_id)
                 {
                     vga::print_str("  consumer imported cap_id=");
                     print_u32(new_cap_id);
@@ -6297,19 +6713,25 @@ fn cmd_wasm_jit_selftest() {
     vga::print_str("===== WASM JIT Self-Test Suite =====\n\n");
     let bounds = crate::wasm::jit_bounds_self_test();
     let parity = crate::wasm::jit_compare_shift_fixed_vector_self_test();
-    match (bounds, parity) {
-        (Ok(()), Ok(())) => {
+    let typed_blocktypes = crate::wasm::jit_typed_blocktype_module_self_test();
+    match (bounds, parity, typed_blocktypes) {
+        (Ok(()), Ok(()), Ok(())) => {
             vga::print_str(
                 "Self-test passed (bounds traps + fixed-vector interpreter/JIT parity)\n",
             );
         }
-        (Err(e), _) => {
+        (Err(e), _, _) => {
             vga::print_str("Self-test failed (bounds): ");
             vga::print_str(e);
             vga::print_str("\n");
         }
-        (_, Err(e)) => {
+        (_, Err(e), _) => {
             vga::print_str("Self-test failed (fixed-vectors): ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+        (_, _, Err(e)) => {
+            vga::print_str("Self-test failed (typed-blocktypes): ");
             vga::print_str(e);
             vga::print_str("\n");
         }
@@ -6621,7 +7043,6 @@ fn jit_fuzz_chunk_seed(base_seed: u64, chunk_idx: u32) -> u64 {
 }
 
 fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
-
     let iters = match parts.next().and_then(parse_number) {
         Some(v) => v as u32,
         None => {
@@ -6692,7 +7113,8 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
     #[cfg(not(target_arch = "x86_64"))]
     const X64_FUZZ_CHUNK_ITERS: u32 = u32::MAX;
 
-    let stats_result = if cfg!(target_arch = "x86_64") && !user_mode && iters > X64_FUZZ_CHUNK_ITERS {
+    let stats_result = if cfg!(target_arch = "x86_64") && !user_mode && iters > X64_FUZZ_CHUNK_ITERS
+    {
         let total_chunks = (iters + X64_FUZZ_CHUNK_ITERS - 1) / X64_FUZZ_CHUNK_ITERS;
         vga::print_str("[x64] shared command chunking enabled: ");
         print_u32(total_chunks);
@@ -6713,7 +7135,9 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
                 remaining
             };
             let chunk_seed = jit_fuzz_chunk_seed(seed, chunk_idx);
-            let res = run_with_shared_jit_fuzz_context(user_mode, || crate::wasm::jit_fuzz(chunk_iters, chunk_seed));
+            let res = run_with_shared_jit_fuzz_context(user_mode, || {
+                crate::wasm::jit_fuzz(chunk_iters, chunk_seed)
+            });
             match res {
                 Ok(chunk_stats) => {
                     let stop_early = chunk_stats.mismatches != 0 || chunk_stats.compile_errors != 0;
@@ -7905,18 +8329,18 @@ fn cmd_calculate_help() {
     vga::print_str("  *    Multiplication   (e.g., calculate 1000 * 1000)\n");
     vga::print_str("  /    Division         (e.g., calculate 100 / 4)\n");
     vga::print_str("  %    Modulo/Remainder (e.g., calculate 17 % 5)\n\n");
-    
+
     vga::print_str("Bitwise Operations:\n");
     vga::print_str("  &    AND              (e.g., calculate 12 & 10)\n");
     vga::print_str("  |    OR               (e.g., calculate 12 | 10)\n");
     vga::print_str("  ^    XOR              (e.g., calculate 12 ^ 10)\n");
     vga::print_str("  <<   Left Shift       (e.g., calculate 5 << 2)\n");
     vga::print_str("  >>   Right Shift      (e.g., calculate 20 >> 2)\n\n");
-    
+
     vga::print_str("Power Operations:\n");
     vga::print_str("  **   Power            (e.g., calculate 2 ** 10)\n");
     vga::print_str("  sqrt Square Root      (e.g., calculate sqrt 144)\n\n");
-    
+
     vga::print_str("Comparison Operations:\n");
     vga::print_str("  ==   Equal            (e.g., calculate 5 == 5)\n");
     vga::print_str("  !=   Not Equal        (e.g., calculate 5 != 3)\n");
@@ -7924,12 +8348,12 @@ fn cmd_calculate_help() {
     vga::print_str("  >    Greater Than     (e.g., calculate 7 > 4)\n");
     vga::print_str("  <=   Less or Equal    (e.g., calculate 5 <= 5)\n");
     vga::print_str("  >=   Greater or Equal (e.g., calculate 8 >= 6)\n\n");
-    
+
     vga::print_str("Advanced Operations:\n");
     vga::print_str("  min  Minimum          (e.g., calculate 10 min 5)\n");
     vga::print_str("  max  Maximum          (e.g., calculate 10 max 5)\n");
     vga::print_str("  abs  Absolute Value   (e.g., calculate abs -42)\n\n");
-    
+
     vga::print_str("Examples:\n");
     vga::print_str("  > calculate 1000 * 1000\n");
     vga::print_str("  Result: 1000000\n\n");
@@ -7937,7 +8361,7 @@ fn cmd_calculate_help() {
     vga::print_str("  Result: 65536\n\n");
     vga::print_str("  > calculate sqrt 256\n");
     vga::print_str("  Result: 16\n\n");
-    
+
     vga::print_str("All computations run in isolated WASM!\n\n");
 }
 
@@ -7961,7 +8385,7 @@ fn cmd_calculate(mut parts: core::str::SplitWhitespace) {
                 return;
             }
         };
-        
+
         let val = match parse_i32(val_str) {
             Some(n) => n,
             None => {
@@ -7969,7 +8393,7 @@ fn cmd_calculate(mut parts: core::str::SplitWhitespace) {
                 return;
             }
         };
-        
+
         execute_wasm_unary("abs", val);
         return;
     }
@@ -7982,7 +8406,7 @@ fn cmd_calculate(mut parts: core::str::SplitWhitespace) {
                 return;
             }
         };
-        
+
         let val = match parse_u32(val_str) {
             Some(n) => n as i32,
             None => {
@@ -7990,7 +8414,7 @@ fn cmd_calculate(mut parts: core::str::SplitWhitespace) {
                 return;
             }
         };
-        
+
         execute_wasm_sqrt(val);
         return;
     }
@@ -8130,19 +8554,28 @@ fn execute_wasm_power(base: i32, exp: i32) {
 /// Execute min/max operation
 fn execute_wasm_minmax(a: i32, b: i32, op: &str) {
     let bytecode: [u8; 18] = [
-        0x20, 0x00,  // local.get 0
-        0x20, 0x01,  // local.get 1
-        0x20, 0x00,  // local.get 0
-        0x20, 0x01,  // local.get 1
+        0x20,
+        0x00, // local.get 0
+        0x20,
+        0x01, // local.get 1
+        0x20,
+        0x00, // local.get 0
+        0x20,
+        0x01,                                  // local.get 1
         if op == "min" { 0x48 } else { 0x4A }, // i32.lt_s or i32.gt_s
-        0x1B,        // select
-        0x0F,        // return
-        0x0B,        // end
-        0, 0, 0, 0, 0, 0,
+        0x1B,                                  // select
+        0x0F,                                  // return
+        0x0B,                                  // end
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
     ];
 
     let pid = process::current_pid().unwrap_or(ipc::ProcessId::new(1));
-    
+
     let instance_id = match wasm::wasm_runtime().instantiate(&bytecode[..10], pid) {
         Ok(id) => id,
         Err(_) => return,
@@ -8156,7 +8589,7 @@ fn execute_wasm_minmax(a: i32, b: i32, op: &str) {
             result_count: 1,
             local_count: 2,
         };
-        
+
         if let Ok(_) = instance.module.add_function(func) {
             let _ = instance.stack.push(wasm::Value::I32(a));
             let _ = instance.stack.push(wasm::Value::I32(b));
@@ -8371,14 +8804,18 @@ fn cmd_capnet_peer_add(mut parts: core::str::SplitWhitespace) {
     let peer_str = match parts.next() {
         Some(v) => v,
         None => {
-            vga::print_str("Usage: capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]\n");
+            vga::print_str(
+                "Usage: capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]\n",
+            );
             return;
         }
     };
     let policy_str = match parts.next() {
         Some(v) => v,
         None => {
-            vga::print_str("Usage: capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]\n");
+            vga::print_str(
+                "Usage: capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]\n",
+            );
             return;
         }
     };
@@ -8591,7 +9028,11 @@ fn cmd_capnet_heartbeat(mut parts: core::str::SplitWhitespace) {
         }
     };
     let ack = parts.next().and_then(parse_u32).unwrap_or(0);
-    let ack_only = parts.next().and_then(parse_u32).map(|v| v != 0).unwrap_or(false);
+    let ack_only = parts
+        .next()
+        .and_then(parse_u32)
+        .map(|v| v != 0)
+        .unwrap_or(false);
     match net_reactor::capnet_send_heartbeat(peer_id, ip, port, ack, ack_only) {
         Ok(seq) => {
             vga::print_str("CapNet heartbeat sent, seq=");
@@ -8942,11 +9383,9 @@ fn cmd_capnet_demo() {
     // Loopback peer uses local ID so we can run a deterministic control-path
     // demo on one node without a second machine.
     let loopback_peer = local_id;
-    if let Err(e) = crate::capnet::register_peer(
-        loopback_peer,
-        crate::capnet::PeerTrustPolicy::Audit,
-        0,
-    ) {
+    if let Err(e) =
+        crate::capnet::register_peer(loopback_peer, crate::capnet::PeerTrustPolicy::Audit, 0)
+    {
         vga::print_str("Demo failed: peer registration: ");
         vga::print_str(e.as_str());
         vga::print_str("\n");
@@ -9047,15 +9486,16 @@ fn cmd_capnet_demo() {
     }
 
     vga::print_str("Step 3: Build+process TOKEN_REVOKE...\n");
-    let revoke = match crate::capnet::build_token_revoke_frame(loopback_peer, offer.seq, offer.token_id) {
-        Ok(v) => v,
-        Err(e) => {
-            vga::print_str("Demo failed: build revoke: ");
-            vga::print_str(e.as_str());
-            vga::print_str("\n");
-            return;
-        }
-    };
+    let revoke =
+        match crate::capnet::build_token_revoke_frame(loopback_peer, offer.seq, offer.token_id) {
+            Ok(v) => v,
+            Err(e) => {
+                vga::print_str("Demo failed: build revoke: ");
+                vga::print_str(e.as_str());
+                vga::print_str("\n");
+                return;
+            }
+        };
     let revoke_rx = match crate::capnet::process_incoming_control_payload(
         &revoke.bytes[..revoke.len],
         crate::pit::get_ticks() as u64,
@@ -9114,12 +9554,12 @@ fn cmd_net_info() {
     vga::print_str("\n");
     vga::print_str("===== Network Status =====\n");
     vga::print_str("\n");
-    
+
     let net_service = net::network();
     let net_lock = net_service.lock();
-    
+
     let stats = net_lock.stats();
-    
+
     vga::print_str("WiFi: ");
     if stats.wifi_enabled {
         vga::print_str("ENABLED\n");
@@ -9127,15 +9567,15 @@ fn cmd_net_info() {
         vga::print_str("DISABLED\n");
         return;
     }
-    
+
     vga::print_str("IP Address: ");
     print_ipv4_net(stats.ip_address);
     vga::print_str("\n");
-    
+
     vga::print_str("TCP Connections: ");
     print_usize(stats.tcp_connections);
     vga::print_str("\n");
-    
+
     vga::print_str("DNS Cache Entries: ");
     print_usize(stats.dns_cache_entries);
     vga::print_str("\n");
@@ -9146,10 +9586,10 @@ fn cmd_wifi_scan() {
     vga::print_str("\n");
     vga::print_str("===== WiFi Network Scan =====\n");
     vga::print_str("\n");
-    
+
     let net_service = net::network();
     let net_lock = net_service.lock();
-    
+
     // Perform scan
     let _count = match net_lock.wifi_scan() {
         Ok(c) => c,
@@ -9160,7 +9600,7 @@ fn cmd_wifi_scan() {
             return;
         }
     };
-    
+
     // Get scan results
     let networks_array = match net_lock.wifi_get_scan_results() {
         Ok(nets) => nets,
@@ -9171,33 +9611,33 @@ fn cmd_wifi_scan() {
             return;
         }
     };
-    
+
     let count = net_lock.wifi_scan_count();
-    
+
     if count == 0 {
         vga::print_str("No networks found.\n");
         return;
     }
-    
+
     vga::print_str("Found ");
     print_usize(count);
     vga::print_str(" networks:\n\n");
-    
+
     for i in 0..count {
         let network = &networks_array[i];
         print_usize(i + 1);
         vga::print_str(". ");
         vga::print_str(network.ssid_str());
         vga::print_str("\n");
-        
+
         vga::print_str("   BSSID: ");
         print_mac_net(network.bssid);
         vga::print_str("\n");
-        
+
         vga::print_str("   Signal: ");
         print_i8(network.signal_strength);
         vga::print_str(" dBm");
-        
+
         // Signal quality indicator
         if network.signal_strength >= -50 {
             vga::print_str(" [Excellent]");
@@ -9209,13 +9649,13 @@ fn cmd_wifi_scan() {
             vga::print_str(" [Weak]");
         }
         vga::print_str("\n");
-        
+
         vga::print_str("   Channel: ");
         print_u8_val(network.channel);
         vga::print_str("  Frequency: ");
         print_u16_val(network.frequency);
         vga::print_str(" MHz\n");
-        
+
         vga::print_str("   Security: ");
         vga::print_str(network.security.as_str());
         vga::print_str("\n\n");
@@ -9232,17 +9672,17 @@ fn cmd_wifi_connect(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    
+
     let password = parts.next();
-    
+
     vga::print_str("\n");
     vga::print_str("Connecting to: ");
     vga::print_str(ssid);
     vga::print_str("\n");
-    
+
     let net_service = net::network();
     let mut net_lock = net_service.lock();
-    
+
     match net_lock.wifi_connect(ssid, password) {
         Ok(()) => {
             vga::print_str("Successfully connected!\n");
@@ -9254,20 +9694,20 @@ fn cmd_wifi_connect(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\n");
         }
     }
-    
+
     vga::print_str("\n");
 }
 
 fn cmd_wifi_status() {
     use crate::wifi::WifiState;
-    
+
     vga::print_str("\n");
     vga::print_str("===== WiFi Status =====\n");
     vga::print_str("\n");
-    
+
     let net_service = net::network();
     let net_lock = net_service.lock();
-    
+
     let state = match net_lock.wifi_status() {
         Ok(s) => s,
         Err(e) => {
@@ -9277,7 +9717,7 @@ fn cmd_wifi_status() {
             return;
         }
     };
-    
+
     vga::print_str("State: ");
     match state {
         WifiState::Disabled => vga::print_str("DISABLED\n"),
@@ -9290,24 +9730,24 @@ fn cmd_wifi_status() {
         WifiState::Disconnecting => vga::print_str("DISCONNECTING\n"),
         WifiState::Error => vga::print_str("ERROR\n"),
     }
-    
+
     if state == WifiState::Connected {
         let wifi = crate::wifi::wifi().lock();
         let conn = wifi.connection();
-        
+
         vga::print_str("SSID: ");
         vga::print_str(conn.network.ssid_str());
         vga::print_str("\n");
-        
+
         vga::print_str("Signal: ");
         print_i8(conn.network.signal_strength);
         vga::print_str(" dBm\n");
-        
+
         vga::print_str("Security: ");
         vga::print_str(conn.network.security.as_str());
         vga::print_str("\n");
     }
-    
+
     vga::print_str("\n");
 }
 
@@ -9320,15 +9760,15 @@ fn cmd_http_get(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    
+
     vga::print_str("\n");
     vga::print_str("HTTP GET: ");
     vga::print_str(url);
     vga::print_str("\n\n");
-    
+
     let net_service = net::network();
     let mut net_lock = net_service.lock();
-    
+
     let response = match net_lock.http_get(url) {
         Ok(resp) => resp,
         Err(e) => {
@@ -9338,25 +9778,25 @@ fn cmd_http_get(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    
+
     vga::print_str("Status: ");
     print_u16_val(response.status_code);
     vga::print_str("\n\n");
-    
+
     vga::print_str("===== Response Body =====\n\n");
-    
+
     // Print body (limit to 1024 chars for screen)
     let print_len = response.body_len.min(1024);
     for i in 0..print_len {
         vga::print_char(response.body[i] as char);
     }
-    
+
     if response.body_len > 1024 {
         vga::print_str("\n\n[... truncated ");
         print_usize(response.body_len - 1024);
         vga::print_str(" bytes ...]\n");
     }
-    
+
     vga::print_str("\n\nTotal: ");
     print_usize(response.body_len);
     vga::print_str(" bytes\n");
@@ -9397,7 +9837,7 @@ fn cmd_http_server_stop() {
 
 fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
     use crate::net_reactor;
-    
+
     let domain = match parts.next() {
         Some(d) => d,
         None => {
@@ -9406,13 +9846,13 @@ fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    
+
     vga::print_str("\n");
     vga::print_str("=== Real DNS Resolution ===\n\n");
     vga::print_str("Domain: ");
     vga::print_str(domain);
     vga::print_str("\n");
-    
+
     let info = match net_reactor::get_info() {
         Ok(info) => info,
         Err(e) => {
@@ -9422,15 +9862,15 @@ fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    
+
     if !info.ready {
         vga::print_str("Error: Network not ready\n");
         vga::print_str("Check: eth-status or pci-list\n\n");
         return;
     }
-    
+
     vga::print_str("Sending UDP DNS query to 8.8.8.8...\n");
-    
+
     let ip = match net_reactor::dns_resolve(domain) {
         Ok(addr) => addr,
         Err(e) => {
@@ -9440,7 +9880,7 @@ fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    
+
     vga::print_str("Success! IP: ");
     print_ipv4_netstack(ip);
     vga::print_str("\n\n");
@@ -9515,17 +9955,17 @@ fn print_u8_val(n: u8) {
         vga::print_char('0');
         return;
     }
-    
+
     let mut buf = [0u8; 3];
     let mut i = 0;
     let mut num = n;
-    
+
     while num > 0 {
         buf[i] = (num % 10) + b'0';
         num /= 10;
         i += 1;
     }
-    
+
     while i > 0 {
         i -= 1;
         vga::print_char(buf[i] as char);
@@ -9537,17 +9977,17 @@ fn print_u16_val(n: u16) {
         vga::print_char('0');
         return;
     }
-    
+
     let mut buf = [0u8; 5];
     let mut i = 0;
     let mut num = n;
-    
+
     while num > 0 {
         buf[i] = (num % 10) as u8 + b'0';
         num /= 10;
         i += 1;
     }
-    
+
     while i > 0 {
         i -= 1;
         vga::print_char(buf[i] as char);
@@ -9557,7 +9997,7 @@ fn print_u16_val(n: u16) {
 fn print_hex_byte(byte: u8) {
     let high = (byte >> 4) & 0xF;
     let low = byte & 0xF;
-    
+
     vga::print_char(hex_digit(high));
     vga::print_char(hex_digit(low));
 }
@@ -9590,7 +10030,7 @@ fn parse_url_simple(url: &str) -> (&str, &str) {
     } else {
         url
     };
-    
+
     // Split host and path
     if let Some(slash_pos) = url.find('/') {
         (&url[..slash_pos], &url[slash_pos..])
@@ -9614,23 +10054,23 @@ fn cmd_pci_list() {
     vga::print_str("\n");
     vga::print_str("===== PCI Devices (Real Hardware Detection) =====\n");
     vga::print_str("\n");
-    
+
     vga::print_str("Scanning PCI bus...\n\n");
-    
+
     let mut scanner = crate::pci::PciScanner::new();
     scanner.scan();
-    
+
     let devices = scanner.devices();
     let mut count = 0;
-    
+
     for device_opt in devices.iter() {
         if let Some(device) = device_opt {
             count += 1;
-            
+
             vga::print_str("Device ");
             print_u32(count);
             vga::print_str(": ");
-            
+
             // Format as BB:DD.F
             print_hex_u8(device.bus);
             vga::print_char(':');
@@ -9638,7 +10078,7 @@ fn cmd_pci_list() {
             vga::print_char('.');
             print_hex_u8(device.func);
             vga::print_str("  ");
-            
+
             // Device info
             vga::print_str("Vendor: 0x");
             print_hex_u16(device.vendor_id);
@@ -9649,27 +10089,27 @@ fn cmd_pci_list() {
             vga::print_char('/');
             print_hex_u8(device.subclass);
             vga::print_str("\n");
-            
+
             // Device type
             vga::print_str("         Type: ");
             vga::print_str(device.device_type_str());
-            
+
             // Vendor name
             vga::print_str("  Vendor: ");
             vga::print_str(device.vendor_name());
             vga::print_str("\n");
-            
+
             // Check if WiFi
             if device.is_wifi() {
                 vga::print_str("         ** WiFi Device Detected **\n");
             } else if device.is_ethernet() {
                 vga::print_str("         ** Ethernet Device Detected **\n");
             }
-            
+
             vga::print_str("\n");
         }
     }
-    
+
     if count == 0 {
         vga::print_str("No PCI devices found.\n");
     } else {
@@ -9677,9 +10117,9 @@ fn cmd_pci_list() {
         print_u32(count);
         vga::print_str("\n");
     }
-    
+
     vga::print_str("\n");
-    
+
     // Check for WiFi
     if let Some(wifi) = scanner.find_wifi_device() {
         vga::print_str("WiFi Available: YES (Vendor 0x");
@@ -9692,7 +10132,7 @@ fn cmd_pci_list() {
         vga::print_str("  This is normal in QEMU (no WiFi emulation)\n");
         vga::print_str("  Boot on real hardware to use WiFi\n");
     }
-    
+
     vga::print_str("\n");
 }
 
@@ -9934,42 +10374,44 @@ fn print_gpt_name(name: &[u8; 36]) {
 
 fn cmd_eth_status() {
     use crate::e1000;
-    
+
     vga::print_str("\n");
     vga::print_str("===== Ethernet Status =====\n\n");
-    
+
     if let Some(mac) = e1000::get_mac_address() {
         vga::print_str("Device: Intel E1000 Gigabit Ethernet\n");
         vga::print_str("MAC Address: ");
         for (i, byte) in mac.iter().enumerate() {
-            if i > 0 { vga::print_str(":"); }
+            if i > 0 {
+                vga::print_str(":");
+            }
             print_hex_u8(*byte);
         }
         vga::print_str("\n");
-        
+
         vga::print_str("Link Status: ");
         if e1000::is_link_up() {
             vga::print_str("UP\n");
         } else {
             vga::print_str("DOWN\n");
         }
-        
+
         vga::print_str("Speed: 1000 Mbps (Gigabit)\n");
         vga::print_str("Duplex: Full\n");
     } else {
         vga::print_str("No Ethernet device detected\n");
         vga::print_str("Run 'pci-list' to see available devices\n");
     }
-    
+
     vga::print_str("\n");
 }
 
 fn cmd_eth_info() {
     use crate::e1000;
-    
+
     vga::print_str("\n");
     vga::print_str("===== Ethernet Information =====\n\n");
-    
+
     if e1000::get_mac_address().is_some() {
         vga::print_str("Driver: Intel E1000 (Real Hardware)\n");
         vga::print_str("Chipset: 82540EM Gigabit Ethernet Controller\n");
@@ -9984,16 +10426,16 @@ fn cmd_eth_info() {
     } else {
         vga::print_str("No Ethernet device available\n");
     }
-    
+
     vga::print_str("\n");
 }
 
 fn cmd_netstack_info() {
     use crate::net_reactor;
-    
+
     vga::print_str("\n");
     vga::print_str("===== Production Network Stack =====\n\n");
-    
+
     let info = match net_reactor::get_info() {
         Ok(info) => info,
         Err(e) => {
@@ -10003,21 +10445,21 @@ fn cmd_netstack_info() {
             return;
         }
     };
-    
+
     vga::print_str("Status: ");
     if info.ready {
         vga::print_str("READY\n");
     } else {
         vga::print_str("NOT READY (no interface)\n");
     }
-    
+
     vga::print_str("\nFeatures:\n");
     vga::print_str("  [x] ARP Protocol (address resolution)\n");
     vga::print_str("  [x] UDP Protocol (for DNS)\n");
     vga::print_str("  [x] DNS Client (real queries to 8.8.8.8)\n");
     vga::print_str("  [x] Real packet I/O via E1000 descriptors\n");
     vga::print_str("  [x] Universal interface (works with any driver)\n");
-    
+
     vga::print_str("\nMy IP: ");
     print_ipv4_netstack(info.ip);
     vga::print_str("\n");
@@ -10029,13 +10471,17 @@ fn cmd_netstack_info() {
     vga::print_str(" listeners\n");
 
     vga::print_str("HTTP server: ");
-    vga::print_str(if info.http_running { "ON (port " } else { "OFF" });
+    vga::print_str(if info.http_running {
+        "ON (port "
+    } else {
+        "OFF"
+    });
     if info.http_running {
         print_number(info.http_port as usize);
         vga::print_str(")");
     }
     vga::print_str("\n");
-    
+
     vga::print_str("\nTry: dns-resolve google.com\n");
     vga::print_str("     dns-resolve github.com\n");
     vga::print_str("\n");
@@ -10043,49 +10489,51 @@ fn cmd_netstack_info() {
 
 fn cmd_asm_test() {
     use crate::asm_bindings;
-    
+
     vga::print_str("\n");
     vga::print_str("===== Assembly Performance Tests =====\n\n");
-    
+
     // Test 1: Fast Memory Copy
     vga::print_str("[1] Testing fast_memcpy...\n");
-    let src_data: [u8; 16] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                               0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
+    let src_data: [u8; 16] = [
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+        0x10,
+    ];
     let mut dst_data: [u8; 16] = [0; 16];
     asm_bindings::fast_memcpy(&mut dst_data, &src_data);
-    
+
     vga::print_str("    Source:      ");
     for byte in &src_data[0..8] {
         print_hex_byte(*byte);
         vga::print_char(' ');
     }
     vga::print_str("...\n");
-    
+
     vga::print_str("    Destination: ");
     for byte in &dst_data[0..8] {
         print_hex_byte(*byte);
         vga::print_char(' ');
     }
     vga::print_str("...\n");
-    
+
     if asm_bindings::fast_memcmp(&src_data, &dst_data) {
         vga::print_str("    ✓ Copy successful!\n\n");
     } else {
         vga::print_str("    ✗ Copy failed!\n\n");
     }
-    
+
     // Test 2: Fast Memory Set
     vga::print_str("[2] Testing fast_memset...\n");
     let mut set_data: [u8; 16] = [0; 16];
     asm_bindings::fast_memset(&mut set_data, 0x42);
-    
+
     vga::print_str("    Fill with 0x42: ");
     for byte in &set_data[0..8] {
         print_hex_byte(*byte);
         vga::print_char(' ');
     }
     vga::print_str("...\n");
-    
+
     let mut all_match = true;
     for byte in &set_data {
         if *byte != 0x42 {
@@ -10093,85 +10541,85 @@ fn cmd_asm_test() {
             break;
         }
     }
-    
+
     if all_match {
         vga::print_str("    ✓ Set successful!\n\n");
     } else {
         vga::print_str("    ✗ Set failed!\n\n");
     }
-    
+
     // Test 3: Memory Compare
     vga::print_str("[3] Testing fast_memcmp...\n");
     let data1: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
     let data2: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
     let data3: [u8; 8] = [1, 2, 3, 4, 9, 9, 9, 9];
-    
+
     if asm_bindings::fast_memcmp(&data1, &data2) {
         vga::print_str("    ✓ Equal arrays detected\n");
     } else {
         vga::print_str("    ✗ Equal arrays not detected\n");
     }
-    
+
     if !asm_bindings::fast_memcmp(&data1, &data3) {
         vga::print_str("    ✓ Different arrays detected\n\n");
     } else {
         vga::print_str("    ✗ Different arrays not detected\n\n");
     }
-    
+
     // Test 4: Hash Functions
     vga::print_str("[4] Testing hash functions...\n");
     let test_str = b"Oreulia OS";
-    
+
     let hash1 = asm_bindings::hash_data(test_str);
     vga::print_str("    FNV-1a hash: 0x");
     print_hex_u32(hash1);
     vga::print_str("\n");
-    
+
     let hash2 = asm_bindings::hash_djb2(test_str);
     vga::print_str("    DJB2 hash:   0x");
     print_hex_u32(hash2);
     vga::print_str("\n");
-    
+
     let hash3 = asm_bindings::hash_sdbm(test_str);
     vga::print_str("    SDBM hash:   0x");
     print_hex_u32(hash3);
     vga::print_str("\n\n");
-    
+
     // Test 5: IP Checksum
     vga::print_str("[5] Testing IP checksum...\n");
     // Simple IPv4 header (20 bytes, version 4, IHL 5)
     let ip_header: [u8; 20] = [
-        0x45, 0x00, 0x00, 0x3c,  // Version/IHL, DSCP, Total Length
-        0x1c, 0x46, 0x40, 0x00,  // ID, Flags/Fragment
-        0x40, 0x06, 0x00, 0x00,  // TTL, Protocol (TCP), Checksum (0)
-        0xac, 0x10, 0x0a, 0x63,  // Source IP: 172.16.10.99
-        0xac, 0x10, 0x0a, 0x0c,  // Dest IP: 172.16.10.12
+        0x45, 0x00, 0x00, 0x3c, // Version/IHL, DSCP, Total Length
+        0x1c, 0x46, 0x40, 0x00, // ID, Flags/Fragment
+        0x40, 0x06, 0x00, 0x00, // TTL, Protocol (TCP), Checksum (0)
+        0xac, 0x10, 0x0a, 0x63, // Source IP: 172.16.10.99
+        0xac, 0x10, 0x0a, 0x0c, // Dest IP: 172.16.10.12
     ];
-    
+
     let checksum = asm_bindings::ip_checksum(&ip_header);
     vga::print_str("    IPv4 checksum: 0x");
     print_hex_u16(checksum);
     vga::print_str("\n");
     vga::print_str("    ✓ Checksum calculated\n\n");
-    
+
     // Test 6: Timestamp Counter
     vga::print_str("[6] Testing CPU timestamp counter...\n");
     let tsc1 = asm_bindings::read_timestamp();
-    
+
     // Do some work
     let mut dummy: u32 = 0;
     for i in 0..1000 {
         dummy = dummy.wrapping_add(i);
     }
-    
+
     let tsc2 = asm_bindings::read_timestamp();
     let cycles = tsc2 - tsc1;
-    
+
     vga::print_str("    Cycles for 1000 iterations: ");
     print_u64(cycles);
     vga::print_str("\n");
     vga::print_str("    ✓ High-precision timing working\n\n");
-    
+
     // Test 7: Byte Order Conversion
     vga::print_str("[7] Testing byte order conversion...\n");
     let host16: u16 = 0x1234;
@@ -10181,7 +10629,7 @@ fn cmd_asm_test() {
     vga::print_str(" -> Network 0x");
     print_hex_u16(net16);
     vga::print_str("\n");
-    
+
     let host32: u32 = 0x12345678;
     let net32 = asm_bindings::htonl(host32);
     vga::print_str("    Host 0x");
@@ -10190,7 +10638,7 @@ fn cmd_asm_test() {
     print_hex_u32(net32);
     vga::print_str("\n");
     vga::print_str("    ✓ Endianness conversion working\n\n");
-    
+
     vga::print_str("===== All Assembly Tests Complete =====\n");
     vga::print_str("Performance boost: 5-10x faster than pure Rust!\n\n");
 }
@@ -10200,33 +10648,31 @@ fn print_u64(n: u64) {
         vga::print_char('0');
         return;
     }
-    
+
     let mut buf = [0u8; 20];
     let mut i = 0;
     let mut num = n;
-    
+
     while num > 0 {
         buf[i] = (num % 10) as u8 + b'0';
         num /= 10;
         i += 1;
     }
-    
+
     while i > 0 {
         i -= 1;
         vga::print_char(buf[i] as char);
     }
 }
 
-
-
 fn cmd_sched_stats() {
     use crate::scheduler;
-    
+
     vga::print_str("\n===== Scheduler Statistics =====\n\n");
-    
+
     let sched = scheduler::scheduler().lock_legacy();
     let stats = sched.get_stats();
-    
+
     vga::print_str("Processes:\n  Total:    ");
     print_usize(stats.total_processes);
     vga::print_str("\n  Running:  ");
@@ -10248,19 +10694,25 @@ fn cmd_sched_stats() {
 fn cmd_sleep(mut parts: core::str::SplitWhitespace) {
     let ms_str = match parts.next() {
         Some(s) => s,
-        None => { vga::print_str("Usage: sleep <milliseconds>\n"); return; }
+        None => {
+            vga::print_str("Usage: sleep <milliseconds>\n");
+            return;
+        }
     };
-    
+
     let ms = match parse_u32_result(ms_str) {
         Ok(n) => n,
-        Err(_) => { vga::print_str("Error: Invalid number\n"); return; }
+        Err(_) => {
+            vga::print_str("Error: Invalid number\n");
+            return;
+        }
     };
-    
+
     if ms > 60000 {
         vga::print_str("Error: Maximum sleep is 60000ms (1 minute)\n");
         return;
     }
-    
+
     vga::print_str("Sleeping for ");
     print_u32(ms);
     vga::print_str("ms...\n");
@@ -10275,10 +10727,16 @@ fn cmd_uptime() {
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
-    
+
     vga::print_str("\nSystem Uptime: ");
-    if hours > 0 { print_u64(hours); vga::print_str("h "); }
-    if minutes > 0 || hours > 0 { print_u64(minutes); vga::print_str("m "); }
+    if hours > 0 {
+        print_u64(hours);
+        vga::print_str("h ");
+    }
+    if minutes > 0 || hours > 0 {
+        print_u64(minutes);
+        vga::print_str("m ");
+    }
     print_u64(seconds);
     vga::print_str("s\nTotal ticks:   ");
     print_u64(ticks);
@@ -10367,11 +10825,11 @@ fn print_security_intent_policy(policy: crate::intent_graph::IntentPolicy) {
 
 fn cmd_security_stats() {
     use crate::security;
-    
+
     vga::print_str("\n===== Security Statistics =====\n\n");
-    
+
     let (total, denied, quota) = security::security().get_audit_stats();
-    
+
     vga::print_str("Audit Events:\n");
     vga::print_str("  Total events: ");
     print_usize(total);
@@ -10382,7 +10840,7 @@ fn cmd_security_stats() {
     vga::print_str("  Quota exceeded: ");
     print_usize(quota);
     vga::print_str("\n\n");
-    
+
     vga::print_str("WASM Execution Limits:\n");
     vga::print_str("  Max instructions/call: ");
     print_usize(crate::wasm::MAX_INSTRUCTIONS_PER_CALL);
@@ -10393,7 +10851,7 @@ fn cmd_security_stats() {
     vga::print_str("  Max syscalls/call: ");
     print_usize(crate::wasm::MAX_SYSCALLS_PER_CALL);
     vga::print_str("\n\n");
-    
+
     vga::print_str("Rate Limiting:\n");
     vga::print_str("  Ops per second: ");
     print_usize(security::RATE_LIMIT_OPS_PER_SEC as usize);
@@ -10760,7 +11218,11 @@ fn cmd_security_intent(mut parts: core::str::SplitWhitespace) {
     vga::print_str("\n  Termination recommendations total: ");
     print_u32(snapshot.terminate_recommendations_total);
     vga::print_str("\n  Termination currently recommended: ");
-    vga::print_str(if snapshot.terminate_recommended { "yes" } else { "no" });
+    vga::print_str(if snapshot.terminate_recommended {
+        "yes"
+    } else {
+        "no"
+    });
     vga::print_str("\n  Restriction until tick: ");
     print_u64(snapshot.restriction_until_tick);
     vga::print_str("\n  Restriction remaining ticks: ");
@@ -10888,11 +11350,15 @@ fn cmd_sched_net_soak(mut parts: core::str::SplitWhitespace) {
     let delta_switches = sched_after
         .total_switches
         .saturating_sub(sched_before.total_switches);
-    let delta_preempt = sched_after.preemptions.saturating_sub(sched_before.preemptions);
+    let delta_preempt = sched_after
+        .preemptions
+        .saturating_sub(sched_before.preemptions);
     let delta_yields = sched_after
         .voluntary_yields
         .saturating_sub(sched_before.voluntary_yields);
-    let delta_idle = sched_after.idle_ticks.saturating_sub(sched_before.idle_ticks);
+    let delta_idle = sched_after
+        .idle_ticks
+        .saturating_sub(sched_before.idle_ticks);
     let delta_alerts = anomaly_after
         .alerts_total
         .saturating_sub(anomaly_before.alerts_total);
@@ -10997,7 +11463,7 @@ fn cmd_enclave_secret_policy(mut parts: core::str::SplitWhitespace) {
 
 fn cmd_security_audit(mut parts: core::str::SplitWhitespace) {
     use crate::security;
-    
+
     let limit = match parts.next() {
         Some(s) => match parse_u32(s) {
             Some(n) => n as usize,
@@ -11005,11 +11471,11 @@ fn cmd_security_audit(mut parts: core::str::SplitWhitespace) {
         },
         None => 10,
     };
-    
+
     vga::print_str("\n===== Recent Security Events =====\n\n");
-    
+
     let events = security::security().get_recent_events(limit);
-    
+
     let mut has_events = false;
     for event_opt in events.iter() {
         if let Some(event) = event_opt {
@@ -11025,58 +11491,58 @@ fn cmd_security_audit(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\n");
         }
     }
-    
+
     if !has_events {
         vga::print_str("No events logged yet.\n");
     }
-    
+
     vga::print_str("\n");
 }
 
 fn cmd_security_test() {
-    use crate::security;
     use crate::ipc::ProcessId;
-    
+    use crate::security;
+
     vga::print_str("\n===== Security Test Suite =====\n\n");
-    
+
     let test_pid = ProcessId::new(42);
-    
+
     // Test 1: Capability validation
     vga::print_str("Test 1: Capability validation\n");
     security::security().init_process(test_pid);
-    
+
     match security::security().validate_capability(test_pid, 0b11, 0b11) {
         Ok(_) => vga::print_str("  ✓ Valid rights accepted\n"),
         Err(_) => vga::print_str("  ✗ Valid rights rejected\n"),
     }
-    
+
     match security::security().validate_capability(test_pid, 0b11, 0b01) {
         Ok(_) => vga::print_str("  ✗ Invalid rights accepted\n"),
         Err(_) => vga::print_str("  ✓ Invalid rights rejected\n"),
     }
-    
+
     // Test 2: Resource quotas
     vga::print_str("\nTest 2: Resource quotas\n");
-    
+
     use crate::security::ResourceType;
-    
+
     match security::security().check_resource(test_pid, ResourceType::Memory, 1024) {
         Ok(_) => vga::print_str("  ✓ Normal allocation allowed\n"),
         Err(_) => vga::print_str("  ✗ Normal allocation denied\n"),
     }
-    
+
     match security::security().check_resource(test_pid, ResourceType::Memory, 10_000_000) {
         Ok(_) => vga::print_str("  ✗ Over-quota allocation allowed\n"),
         Err(_) => vga::print_str("  ✓ Over-quota allocation denied\n"),
     }
-    
+
     // Test 3: Random number generation
     vga::print_str("\nTest 3: Cryptographic randomness\n");
-    
+
     let rand1 = security::security().random_u32();
     let rand2 = security::security().random_u32();
     let rand3 = security::security().random_u32();
-    
+
     vga::print_str("  Random values: ");
     print_u32(rand1);
     vga::print_str(", ");
@@ -11084,30 +11550,30 @@ fn cmd_security_test() {
     vga::print_str(", ");
     print_u32(rand3);
     vga::print_str("\n");
-    
+
     if rand1 != rand2 && rand2 != rand3 {
         vga::print_str("  ✓ Values are different\n");
     } else {
         vga::print_str("  ✗ Values collision detected\n");
     }
-    
+
     // Test 4: Data integrity
     vga::print_str("\nTest 4: Data integrity verification\n");
-    
+
     let data = b"Hello, Oreulia!";
     let hash = security::hash_data(data);
-    
+
     vga::print_str("  Hash: 0x");
     print_u32((hash >> 32) as u32);
     print_u32(hash as u32);
     vga::print_str("\n");
-    
+
     if security::verify_integrity(data, hash) {
         vga::print_str("  ✓ Integrity check passed\n");
     } else {
         vga::print_str("  ✗ Integrity check failed\n");
     }
-    
+
     if !security::verify_integrity(b"Modified data", hash) {
         vga::print_str("  ✓ Modified data detected\n");
     } else {
@@ -11141,7 +11607,7 @@ fn cmd_security_test() {
     } else {
         vga::print_str("  ✗ Predictive restriction not triggered\n");
     }
-    
+
     vga::print_str("\nAll security tests completed.\n\n");
 }
 
@@ -11153,23 +11619,23 @@ fn cmd_security_test() {
 fn cmd_cap_list() {
     use crate::capability::{capability_manager, CapabilityType};
     use crate::ipc::ProcessId;
-    
+
     let pid = ProcessId::new(0); // Kernel process for now
     let (total, channels, services) = capability_manager().get_statistics(pid);
-    
+
     vga::print_str("Capability Table (PID=0)\n");
     vga::print_str("========================\n\n");
-    
+
     vga::print_str("Total capabilities: ");
     print_u32(total as u32);
     vga::print_str("\n");
-    
+
     vga::print_str("Channel caps:       ");
     print_u32(channels as u32);
     vga::print_str(" (type=");
     print_u32(CapabilityType::Channel as u32);
     vga::print_str(")\n");
-    
+
     vga::print_str("Service caps:       ");
     print_u32(services as u32);
     vga::print_str(" (Console=");
@@ -11189,26 +11655,32 @@ fn cmd_cap_list() {
 fn cmd_cap_test_attenuation() {
     use crate::capability::{capability_manager, CapabilityType, Rights};
     use crate::ipc::ProcessId;
-    
+
     vga::print_str("Capability Attenuation Test\n");
     vga::print_str("============================\n\n");
-    
+
     let pid = ProcessId::new(0);
-    
+
     // Initialize capability table
     capability_manager().init_task(pid);
-    
+
     // Create a capability with multiple rights
     let object_id = capability_manager().create_object();
     let full_rights = Rights::new(Rights::CONSOLE_WRITE | Rights::CONSOLE_READ);
-    
+
     vga::print_str("1. Creating capability with READ+WRITE rights...\n");
-    match capability_manager().grant_capability(pid, object_id, CapabilityType::Console, full_rights, pid) {
+    match capability_manager().grant_capability(
+        pid,
+        object_id,
+        CapabilityType::Console,
+        full_rights,
+        pid,
+    ) {
         Ok(cap_id) => {
             vga::print_str("   ✓ Created cap_id=");
             print_u32(cap_id);
             vga::print_str("\n");
-            
+
             // Attenuate to write-only
             vga::print_str("\n2. Attenuating to WRITE-only...\n");
             let write_only = Rights::new(Rights::CONSOLE_WRITE);
@@ -11217,11 +11689,14 @@ fn cmd_cap_test_attenuation() {
                     vga::print_str("   ✓ Attenuated cap_id=");
                     print_u32(attenuated_cap_id);
                     vga::print_str("\n");
-                    
+
                     // Try to verify write (should succeed)
                     vga::print_str("\n3. Testing WRITE access on attenuated cap...\n");
                     match capability_manager().verify_and_get_object(
-                        pid, attenuated_cap_id, CapabilityType::Console, Rights::CONSOLE_WRITE
+                        pid,
+                        attenuated_cap_id,
+                        CapabilityType::Console,
+                        Rights::CONSOLE_WRITE,
                     ) {
                         Ok(_) => vga::print_str("   ✓ WRITE access granted\n"),
                         Err(e) => {
@@ -11230,13 +11705,18 @@ fn cmd_cap_test_attenuation() {
                             vga::print_str("\n");
                         }
                     }
-                    
+
                     // Try to verify read (should fail)
                     vga::print_str("\n4. Testing READ access on attenuated cap...\n");
                     match capability_manager().verify_and_get_object(
-                        pid, attenuated_cap_id, CapabilityType::Console, Rights::CONSOLE_READ
+                        pid,
+                        attenuated_cap_id,
+                        CapabilityType::Console,
+                        Rights::CONSOLE_READ,
                     ) {
-                        Ok(_) => vga::print_str("   ✗ READ access granted (should have been denied!)\n"),
+                        Ok(_) => {
+                            vga::print_str("   ✗ READ access granted (should have been denied!)\n")
+                        }
                         Err(e) => {
                             vga::print_str("   ✓ READ access denied: ");
                             vga::print_str(e.as_str());
@@ -11250,12 +11730,15 @@ fn cmd_cap_test_attenuation() {
                     vga::print_str("\n");
                 }
             }
-            
+
             // Try invalid attenuation (adding rights)
             vga::print_str("\n5. Attempting invalid attenuation (adding rights)...\n");
-            let invalid_rights = Rights::new(Rights::CONSOLE_WRITE | Rights::CONSOLE_READ | Rights::TASK_SIGNAL);
+            let invalid_rights =
+                Rights::new(Rights::CONSOLE_WRITE | Rights::CONSOLE_READ | Rights::TASK_SIGNAL);
             match capability_manager().attenuate_capability(pid, cap_id, invalid_rights) {
-                Ok(_) => vga::print_str("   ✗ Invalid attenuation succeeded (should have failed!)\n"),
+                Ok(_) => {
+                    vga::print_str("   ✗ Invalid attenuation succeeded (should have failed!)\n")
+                }
                 Err(e) => {
                     vga::print_str("   ✓ Invalid attenuation blocked: ");
                     vga::print_str(e.as_str());
@@ -11269,7 +11752,7 @@ fn cmd_cap_test_attenuation() {
             vga::print_str("\n");
         }
     }
-    
+
     vga::print_str("\nAttenuation test completed.\n\n");
 }
 
@@ -11277,19 +11760,19 @@ fn cmd_cap_test_attenuation() {
 fn cmd_cap_test_console() {
     use crate::console_service;
     use crate::ipc::ProcessId;
-    
+
     vga::print_str("Console Capability Test\n");
     vga::print_str("========================\n\n");
-    
+
     let pid = ProcessId::new(0);
-    
+
     vga::print_str("1. Creating console with capability...\n");
     match console_service::create_console(pid) {
         Ok(cap_id) => {
             vga::print_str("   ✓ Console created, cap_id=");
             print_u32(cap_id);
             vga::print_str("\n");
-            
+
             // Test write
             vga::print_str("\n2. Writing to console via capability...\n");
             let message = b"[CAP-TEST] Hello from capability-based console!\n";
@@ -11305,7 +11788,7 @@ fn cmd_cap_test_console() {
                     vga::print_str("\n");
                 }
             }
-            
+
             // Get stats
             vga::print_str("\n3. Getting console statistics...\n");
             match console_service::console_stats(pid, cap_id) {
@@ -11322,7 +11805,7 @@ fn cmd_cap_test_console() {
                     vga::print_str("\n");
                 }
             }
-            
+
             // Test invalid cap_id
             vga::print_str("\n4. Testing invalid capability...\n");
             match console_service::console_write(pid, 9999, b"Should fail") {
@@ -11340,7 +11823,7 @@ fn cmd_cap_test_console() {
             vga::print_str("\n");
         }
     }
-    
+
     vga::print_str("\nConsole capability test completed.\n\n");
 }
 
@@ -11348,14 +11831,14 @@ fn cmd_cap_test_console() {
 fn cmd_cap_arch() {
     vga::print_str("Oreulia Capability Architecture\n");
     vga::print_str("================================\n\n");
-    
+
     vga::print_str("Design Principles:\n");
     vga::print_str("  • NO AMBIENT AUTHORITY - All access requires explicit capability\n");
     vga::print_str("  • UNFORGEABLE - Capabilities cannot be invented by tasks\n");
     vga::print_str("  • TRANSFERABLE - Capabilities can be sent over IPC channels\n");
     vga::print_str("  • ATTENUATABLE - Capabilities can be reduced to fewer rights\n");
     vga::print_str("  • AUDITABLE - All capability operations are tracked\n\n");
-    
+
     vga::print_str("Contrast with Traditional Kernels:\n");
     vga::print_str("  POSIX/Unix/Linux/Mac/NT:     Oreulia:\n");
     vga::print_str("  • Global filesystem (/)      • Filesystem capability required\n");
@@ -11363,7 +11846,7 @@ fn cmd_cap_arch() {
     vga::print_str("  • Ambient time access        • Clock capability required\n");
     vga::print_str("  • User/group permissions     • Unforgeable capability tokens\n");
     vga::print_str("  • Discretionary access       • Mandatory capability checks\n\n");
-    
+
     vga::print_str("Capability Types:\n");
     vga::print_str("  Channel (0)     - IPC channel send/receive\n");
     vga::print_str("  Task (1)        - Process signal/join\n");
@@ -11372,7 +11855,7 @@ fn cmd_cap_arch() {
     vga::print_str("  Clock (11)      - Monotonic time read\n");
     vga::print_str("  Store (12)      - Event log append/read\n");
     vga::print_str("  Filesystem (13) - File read/write/delete\n\n");
-    
+
     vga::print_str("Operations:\n");
     vga::print_str("  create     - Create new capability (privileged)\n");
     vga::print_str("  transfer   - Send capability over IPC channel\n");
@@ -11387,10 +11870,10 @@ fn cmd_cap_arch() {
 /// Display CPU information and features
 fn cmd_cpu_info() {
     use crate::asm_bindings::*;
-    
+
     vga::print_str("CPU Information\n");
     vga::print_str("===============\n\n");
-    
+
     // Get vendor string
     let vendor = get_cpu_vendor();
     vga::print_str("Vendor: ");
@@ -11400,7 +11883,7 @@ fn cmd_cpu_info() {
         }
     }
     vga::print_str("\n\n");
-    
+
     // CPU ID
     let cpuid_result = cpuid(1, 0);
     vga::print_str("CPUID (EAX=1):\n");
@@ -11413,7 +11896,7 @@ fn cmd_cpu_info() {
     vga::print_str("\n  EDX: 0x");
     print_u32(cpuid_result.edx);
     vga::print_str("\n\n");
-    
+
     // SIMD Features
     vga::print_str("SIMD Support:\n");
     vga::print_str("  SSE:     ");
@@ -11422,35 +11905,35 @@ fn cmd_cpu_info() {
     } else {
         vga::print_str("✗ No\n");
     }
-    
+
     vga::print_str("  SSE2:    ");
     if has_sse2() {
         vga::print_str("✓ Yes\n");
     } else {
         vga::print_str("✗ No\n");
     }
-    
+
     vga::print_str("  SSE3:    ");
     if has_sse3() {
         vga::print_str("✓ Yes\n");
     } else {
         vga::print_str("✗ No\n");
     }
-    
+
     vga::print_str("  SSE4.1:  ");
     if has_sse4_1() {
         vga::print_str("✓ Yes\n");
     } else {
         vga::print_str("✗ No\n");
     }
-    
+
     vga::print_str("  SSE4.2:  ");
     if has_sse4_2() {
         vga::print_str("✓ Yes\n");
     } else {
         vga::print_str("✗ No\n");
     }
-    
+
     vga::print_str("  AVX:     ");
     if has_avx() {
         vga::print_str("✓ Yes\n");
@@ -11586,7 +12069,7 @@ fn cmd_cpu_info() {
         vga::print_str("not-ready");
     }
     vga::print_str("\n");
-    
+
     // Other Features
     vga::print_str("\nOther Features:\n");
     vga::print_str("  XSAVE:   ");
@@ -11595,7 +12078,7 @@ fn cmd_cpu_info() {
     } else {
         vga::print_str("✗ No\n");
     }
-    
+
     // Try RDRAND
     vga::print_str("  RDRAND:  ");
     match try_rdrand() {
@@ -11608,7 +12091,7 @@ fn cmd_cpu_info() {
             vga::print_str("✗ No or failed\n");
         }
     }
-    
+
     // Timestamp Counter
     vga::print_str("\nTimestamp Counter: ");
     let tsc = read_timestamp();
@@ -11620,16 +12103,16 @@ fn cmd_cpu_info() {
 /// Benchmark CPU instructions
 fn cmd_cpu_benchmark() {
     use crate::asm_bindings::*;
-    
+
     vga::print_str("CPU Instruction Benchmarks\n");
     vga::print_str("==========================\n\n");
-    
+
     const ITERATIONS: u32 = 100000;
-    
+
     vga::print_str("Iterations: ");
     print_u32(ITERATIONS);
     vga::print_str("\n\n");
-    
+
     // NOP benchmark
     vga::print_str("1. NOP instruction:\n");
     let cycles_nop = benchmark_nop(ITERATIONS);
@@ -11640,7 +12123,7 @@ fn cmd_cpu_benchmark() {
     let cycles_per_nop = cycles_nop / ITERATIONS as u64;
     print_u32(cycles_per_nop as u32);
     vga::print_str(" cycles/op)\n\n");
-    
+
     // ADD benchmark
     vga::print_str("2. ADD instruction:\n");
     let cycles_add = benchmark_add(ITERATIONS);
@@ -11651,7 +12134,7 @@ fn cmd_cpu_benchmark() {
     let cycles_per_add = cycles_add / ITERATIONS as u64;
     print_u32(cycles_per_add as u32);
     vga::print_str(" cycles/op)\n\n");
-    
+
     // MUL benchmark
     vga::print_str("3. MUL instruction:\n");
     let cycles_mul = benchmark_mul(ITERATIONS);
@@ -11662,7 +12145,7 @@ fn cmd_cpu_benchmark() {
     let cycles_per_mul = cycles_mul / ITERATIONS as u64;
     print_u32(cycles_per_mul as u32);
     vga::print_str(" cycles/op)\n\n");
-    
+
     // DIV benchmark
     vga::print_str("4. DIV instruction:\n");
     let cycles_div = benchmark_div(ITERATIONS);
@@ -11673,7 +12156,7 @@ fn cmd_cpu_benchmark() {
     let cycles_per_div = cycles_div / ITERATIONS as u64;
     print_u32(cycles_per_div as u32);
     vga::print_str(" cycles/op)\n\n");
-    
+
     // Memory LOAD benchmark
     vga::print_str("5. Memory LOAD:\n");
     let test_value: u32 = 0x12345678;
@@ -11685,7 +12168,7 @@ fn cmd_cpu_benchmark() {
     let cycles_per_load = cycles_load / ITERATIONS as u64;
     print_u32(cycles_per_load as u32);
     vga::print_str(" cycles/op)\n\n");
-    
+
     // Memory STORE benchmark
     vga::print_str("6. Memory STORE:\n");
     let mut test_target: u32 = 0;
@@ -11697,7 +12180,7 @@ fn cmd_cpu_benchmark() {
     let cycles_per_store = cycles_store / ITERATIONS as u64;
     print_u32(cycles_per_store as u32);
     vga::print_str(" cycles/op)\n\n");
-    
+
     // LOCK prefix benchmark
     vga::print_str("7. LOCK ADD (atomic):\n");
     let mut lock_target: u32 = 0;
@@ -11713,30 +12196,30 @@ fn cmd_cpu_benchmark() {
     let lock_overhead = cycles_per_lock as i32 - cycles_per_add as i32;
     print_u32(lock_overhead.abs() as u32);
     vga::print_str(" cycles/op\n\n");
-    
+
     vga::print_str("Benchmark completed.\n\n");
 }
 
 /// Test atomic operations
 fn cmd_atomic_test() {
     use crate::asm_bindings::*;
-    
+
     vga::print_str("Atomic Operations Test\n");
     vga::print_str("======================\n\n");
-    
+
     let mut value: u32 = 100;
-    
+
     // Test atomic load/store
     vga::print_str("1. Atomic load/store:\n");
     vga::print_str("   Initial value: ");
     print_u32(value);
     vga::print_str("\n");
-    
+
     atomic_store(&mut value, 200);
     vga::print_str("   After store(200): ");
     print_u32(atomic_load(&value));
     vga::print_str("\n\n");
-    
+
     // Test atomic add
     vga::print_str("2. Atomic add:\n");
     let old_add = atomic_add(&mut value, 50);
@@ -11745,7 +12228,7 @@ fn cmd_atomic_test() {
     vga::print_str(", New value: ");
     print_u32(value);
     vga::print_str("\n\n");
-    
+
     // Test atomic subtract
     vga::print_str("3. Atomic subtract:\n");
     let old_sub = atomic_sub(&mut value, 30);
@@ -11754,7 +12237,7 @@ fn cmd_atomic_test() {
     vga::print_str(", New value: ");
     print_u32(value);
     vga::print_str("\n\n");
-    
+
     // Test atomic increment
     vga::print_str("4. Atomic increment:\n");
     let new_inc = atomic_inc(&mut value);
@@ -11763,14 +12246,14 @@ fn cmd_atomic_test() {
     vga::print_str(" (expected ");
     print_u32(old_sub - 30 + 1);
     vga::print_str(")\n\n");
-    
+
     // Test atomic decrement
     vga::print_str("5. Atomic decrement:\n");
     let new_dec = atomic_dec(&mut value);
     vga::print_str("   New value: ");
     print_u32(new_dec);
     vga::print_str("\n\n");
-    
+
     // Test atomic swap
     vga::print_str("6. Atomic swap:\n");
     let old_swap = atomic_swap(&mut value, 999);
@@ -11779,7 +12262,7 @@ fn cmd_atomic_test() {
     vga::print_str(", New value: ");
     print_u32(value);
     vga::print_str("\n\n");
-    
+
     // Test compare-and-swap (success)
     vga::print_str("7. Compare-and-swap (success):\n");
     let old_cas = atomic_cmpxchg(&mut value, 999, 777);
@@ -11792,7 +12275,7 @@ fn cmd_atomic_test() {
     } else {
         vga::print_str(" ✗\n\n");
     }
-    
+
     // Test compare-and-swap (failure)
     vga::print_str("8. Compare-and-swap (failure):\n");
     let old_cas_fail = atomic_cmpxchg(&mut value, 999, 555);
@@ -11805,42 +12288,42 @@ fn cmd_atomic_test() {
     } else {
         vga::print_str(" ✗\n\n");
     }
-    
+
     // Test bitwise operations
     value = 0b11110000;
     vga::print_str("9. Atomic bitwise operations:\n");
     vga::print_str("   Initial:   0b11110000 (");
     print_u32(value);
     vga::print_str(")\n");
-    
+
     atomic_or(&mut value, 0b00001111);
     vga::print_str("   After OR:  0b11111111 (");
     print_u32(value);
     vga::print_str(")\n");
-    
+
     atomic_and(&mut value, 0b10101010);
     vga::print_str("   After AND: 0b10101010 (");
     print_u32(value);
     vga::print_str(")\n");
-    
+
     atomic_xor(&mut value, 0b11111111);
     vga::print_str("   After XOR: 0b01010101 (");
     print_u32(value);
     vga::print_str(")\n\n");
-    
+
     vga::print_str("All atomic tests completed.\n\n");
 }
 
 /// Test spinlock implementation
 fn cmd_spinlock_test() {
     use crate::asm_bindings::Spinlock;
-    
+
     vga::print_str("Spinlock Implementation Test\n");
     vga::print_str("============================\n\n");
-    
+
     let mut lock = Spinlock::new();
     lock.init();
-    
+
     // Test basic lock/unlock
     vga::print_str("1. Basic lock/unlock:\n");
     vga::print_str("   Acquiring lock...\n");
@@ -11849,7 +12332,7 @@ fn cmd_spinlock_test() {
     vga::print_str("   Releasing lock...\n");
     lock.unlock();
     vga::print_str("   ✓ Lock released\n\n");
-    
+
     // Test try_lock success
     vga::print_str("2. Try lock (should succeed):\n");
     if lock.try_lock() {
@@ -11859,7 +12342,7 @@ fn cmd_spinlock_test() {
         vga::print_str("   ✗ try_lock failed\n");
     }
     vga::print_str("\n");
-    
+
     // Test try_lock failure
     vga::print_str("3. Try lock while locked (should fail):\n");
     lock.lock();
@@ -11872,7 +12355,7 @@ fn cmd_spinlock_test() {
     }
     lock.unlock();
     vga::print_str("\n");
-    
+
     // Performance test
     vga::print_str("4. Lock/unlock performance (10000 iterations):\n");
     let start = crate::asm_bindings::rdtsc_begin();
@@ -11888,24 +12371,24 @@ fn cmd_spinlock_test() {
     vga::print_str("\n   Avg cycles per lock/unlock: ");
     print_u32((cycles / 10000) as u32);
     vga::print_str("\n\n");
-    
+
     vga::print_str("Spinlock tests completed.\n\n");
 }
 
 fn cmd_paging_test() {
     use crate::advanced_commands::print_hex;
-    
+
     vga::print_str("=== Virtual Memory Paging Test ===\n\n");
-    
+
     // Test 1: Allocate and map a page
     vga::print_str("Test 1: Allocating and mapping page...\n");
     let test_virt = 0x400000; // 4MB virtual address
     let test_phys = 0x500000; // 5MB physical address
-    
+
     // Get kernel address space
     use crate::paging::KERNEL_ADDRESS_SPACE;
     let mut space_opt = KERNEL_ADDRESS_SPACE.lock();
-    
+
     let space = match space_opt.as_mut() {
         Some(s) => s,
         None => {
@@ -11913,7 +12396,7 @@ fn cmd_paging_test() {
             return;
         }
     };
-    
+
     match space.map_page(test_virt, test_phys, true, false) {
         Ok(()) => {
             vga::print_str("  ✓ Page mapped successfully\n");
@@ -11928,7 +12411,7 @@ fn cmd_paging_test() {
             return;
         }
     }
-    
+
     // Test 2: Verify mapping
     vga::print_str("\nTest 2: Verifying address translation...\n");
     match space.virt_to_phys(test_virt) {
@@ -11946,7 +12429,7 @@ fn cmd_paging_test() {
             vga::print_str("  ✗ Translation failed (page not mapped)\n");
         }
     }
-    
+
     // Test 3: Copy-on-write
     vga::print_str("\nTest 3: Testing copy-on-write flag...\n");
     match space.mark_copy_on_write(test_virt) {
@@ -11965,7 +12448,7 @@ fn cmd_paging_test() {
         core::ptr::write_volatile(test_virt as *mut u32, 0xDEADBEEF);
     }
     vga::print_str("  ✓ Write completed (COW handled)\n");
-    
+
     // Test 4: Unmap page
     vga::print_str("\nTest 4: Unmapping page...\n");
     match space.unmap_page(test_virt) {
@@ -11976,7 +12459,7 @@ fn cmd_paging_test() {
             vga::print_str("  ✗ Failed to unmap page\n");
         }
     }
-    
+
     // Test 5: Verify unmapped
     vga::print_str("\nTest 5: Verifying page is unmapped...\n");
     if space.is_mapped(test_virt) {
@@ -11984,59 +12467,63 @@ fn cmd_paging_test() {
     } else {
         vga::print_str("  ✓ Page correctly unmapped\n");
     }
-    
+
     // Drop lock before getting stats
     drop(space_opt);
-    
+
     // Test 6: COW Statistics
     vga::print_str("\nCOW Statistics (from assembly):\n");
     let paging_stats = crate::paging::get_paging_stats();
-    
+
     vga::print_str("  Page faults:  ");
     print_u32(paging_stats.page_faults);
     vga::print_str("\n");
-    
+
     vga::print_str("  COW faults:   ");
     print_u32(paging_stats.cow_faults);
     vga::print_str("\n");
-    
+
     vga::print_str("  Page copies:  ");
     print_u32(paging_stats.page_copies);
     vga::print_str("\n");
-    
+
     vga::print_str("\nPaging Status:\n");
     vga::print_str("  Paging enabled: ");
-    vga::print_str(if crate::paging::paging_enabled() { "yes" } else { "no" });
+    vga::print_str(if crate::paging::paging_enabled() {
+        "yes"
+    } else {
+        "no"
+    });
     vga::print_str("\n");
-    
+
     vga::print_str("  CR3 value: 0x");
     print_hex(crate::arch::mmu::current_page_table_root_addr());
     vga::print_str("\n");
-    
+
     vga::print_str("\n=== Paging Tests Complete ===\n\n");
 }
 
 fn cmd_syscall_test() {
     vga::print_str("=== System Call Interface Test ===\n\n");
-    
+
     // Display syscall statistics
     let stats = crate::syscall::get_stats();
-    
+
     vga::print_str("Syscall Statistics:\n");
     vga::print_str("  Total calls: ");
     print_u64(stats.total_calls);
     vga::print_str("\n");
-    
+
     vga::print_str("  Permission denied: ");
     print_u64(stats.denied);
     vga::print_str("\n");
-    
+
     vga::print_str("  Errors: ");
     print_u64(stats.errors);
     vga::print_str("\n");
-    
+
     vga::print_str("\nTop syscalls by frequency:\n");
-    
+
     // Find top 5 syscalls
     let mut top: [(usize, u64); 5] = [(0, 0); 5];
     for i in 0..256 {
@@ -12046,8 +12533,8 @@ fn cmd_syscall_test() {
             for j in 0..5 {
                 if count > top[j].1 {
                     // Shift down
-                    for k in (j+1..5).rev() {
-                        top[k] = top[k-1];
+                    for k in (j + 1..5).rev() {
+                        top[k] = top[k - 1];
                     }
                     top[j] = (i, count);
                     break;
@@ -12055,7 +12542,7 @@ fn cmd_syscall_test() {
             }
         }
     }
-    
+
     for (i, (num, count)) in top.iter().enumerate() {
         if *count == 0 {
             break;
@@ -12068,10 +12555,10 @@ fn cmd_syscall_test() {
         print_u64(*count);
         vga::print_str(" calls\n");
     }
-    
+
     vga::print_str("\nNote: Use INT 0x80 from user mode to invoke syscalls\n");
     vga::print_str("Register layout: EAX=number, EBX-EDI=args\n");
     vga::print_str("Returns: EAX=value, EDX=errno\n");
-    
+
     vga::print_str("\n=== Syscall Tests Complete ===\n\n");
 }

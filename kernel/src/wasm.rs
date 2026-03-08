@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -51,23 +51,23 @@
 
 extern crate alloc;
 
-use core::fmt;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use alloc::vec::Vec;
-use spin::Mutex;
-use crate::capability::{self, CapabilityType, Rights};
-use crate::ipc::{ProcessId, ChannelId};
-use crate::fs;
 use crate::arch::mmu as arch_mmu;
-use crate::paging;
+use crate::capability::{self, CapabilityType, Rights};
+use crate::fs;
+use crate::gdt;
 use crate::idt_asm;
+use crate::ipc::{ChannelId, ProcessId};
+use crate::kpti;
 use crate::memory;
 use crate::memory_isolation;
-use crate::syscall::SYSCALL_JIT_RETURN;
-use crate::gdt;
+use crate::paging;
 use crate::process_asm;
-use crate::kpti;
 use crate::replay::{self, ReplayEventStatus, ReplayMode};
+use crate::syscall::SYSCALL_JIT_RETURN;
+use alloc::vec::Vec;
+use core::fmt;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use spin::Mutex;
 
 // ============================================================================
 // WASM Types & Constants
@@ -226,12 +226,7 @@ pub const JIT_FUZZ_REGRESSION_SEEDS: [u64; 10] = [
     4_294_967_295,
 ];
 
-const JIT_FUZZ_X64_DEBUG_SEEDS: [u64; 4] = [
-    0,
-    107_427_055,
-    2_105_703_400,
-    4_294_967_295,
-];
+const JIT_FUZZ_X64_DEBUG_SEEDS: [u64; 4] = [0, 107_427_055, 2_105_703_400, 4_294_967_295];
 
 pub const fn jit_fuzz_x64_debug_seed_count() -> u32 {
     JIT_FUZZ_X64_DEBUG_SEEDS.len() as u32
@@ -304,8 +299,8 @@ impl JitFuzzScratch {
 pub enum ValueType {
     I32,
     I64,
-    F32,  // Not implemented in v0
-    F64,  // Not implemented in v0
+    F32, // Not implemented in v0
+    F64, // Not implemented in v0
     FuncRef,
     ExternRef,
 }
@@ -426,18 +421,18 @@ pub enum Opcode {
     CallIndirect = 0x11,
     Delegate = 0x18,
     CatchAll = 0x19,
-    
+
     // Parametric
     Drop = 0x1A,
     Select = 0x1B,
-    
+
     // Variable access
     LocalGet = 0x20,
     LocalSet = 0x21,
     LocalTee = 0x22,
     GlobalGet = 0x23,
     GlobalSet = 0x24,
-    
+
     // Memory
     I32Load = 0x28,
     I64Load = 0x29,
@@ -445,13 +440,13 @@ pub enum Opcode {
     I64Store = 0x37,
     MemorySize = 0x3F,
     MemoryGrow = 0x40,
-    
+
     // Constants
     I32Const = 0x41,
     I64Const = 0x42,
     F32Const = 0x43,
     F64Const = 0x44,
-    
+
     // i32 operations
     I32Eqz = 0x45,
     I32Eq = 0x46,
@@ -464,7 +459,7 @@ pub enum Opcode {
     I32LeU = 0x4D,
     I32GeS = 0x4E,
     I32GeU = 0x4F,
-    
+
     I32Add = 0x6A,
     I32Sub = 0x6B,
     I32Mul = 0x6C,
@@ -781,9 +776,7 @@ fn read_byte_at(bytes: &[u8], offset: &mut usize) -> Result<u8, WasmError> {
 
 fn read_uleb128_at(bytes: &[u8], offset: &mut usize) -> Result<u32, WasmError> {
     let (value, width) = read_uleb128_validate(bytes, *offset)?;
-    *offset = offset
-        .checked_add(width)
-        .ok_or(WasmError::InvalidModule)?;
+    *offset = offset.checked_add(width).ok_or(WasmError::InvalidModule)?;
     Ok(value)
 }
 
@@ -1062,7 +1055,9 @@ impl LinearMemory {
 
     /// Read bytes from memory
     pub fn read(&self, offset: usize, len: usize) -> Result<&[u8], WasmError> {
-        let end = offset.checked_add(len).ok_or(WasmError::MemoryOutOfBounds)?;
+        let end = offset
+            .checked_add(len)
+            .ok_or(WasmError::MemoryOutOfBounds)?;
         if end > self.pages * 64 * 1024 {
             return Err(WasmError::MemoryOutOfBounds);
         }
@@ -1074,7 +1069,9 @@ impl LinearMemory {
 
     /// Write bytes to memory
     pub fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), WasmError> {
-        let end = offset.checked_add(data.len()).ok_or(WasmError::MemoryOutOfBounds)?;
+        let end = offset
+            .checked_add(data.len())
+            .ok_or(WasmError::MemoryOutOfBounds)?;
         if end > self.pages * 64 * 1024 {
             return Err(WasmError::MemoryOutOfBounds);
         }
@@ -1102,8 +1099,7 @@ impl LinearMemory {
     pub fn read_i64(&self, offset: usize) -> Result<i64, WasmError> {
         let bytes = self.read(offset, 8)?;
         Ok(i64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]))
     }
 
@@ -1272,7 +1268,7 @@ fn parsed_signature_equal(a: ParsedFunctionType, b: ParsedFunctionType) -> bool 
 }
 
 /// Capability types that can be injected into WASM
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum WasmCapability {
     Channel(ChannelId),
     Filesystem(fs::FilesystemCapability),
@@ -1281,47 +1277,34 @@ pub enum WasmCapability {
 }
 
 /// Per-instance capability table
+#[derive(Clone)]
 pub struct CapabilityTable {
-    caps: [WasmCapability; MAX_INJECTED_CAPS],
-    count: usize,
+    caps: Vec<WasmCapability>,
 }
 
 impl CapabilityTable {
-    pub const fn new() -> Self {
-        CapabilityTable {
-            caps: [WasmCapability::None; MAX_INJECTED_CAPS],
-            count: 0,
-        }
+    pub fn new() -> Self {
+        CapabilityTable { caps: Vec::new() }
     }
 
     /// Inject a capability, returns handle
     pub fn inject(&mut self, cap: WasmCapability) -> Result<CapHandle, WasmError> {
-        if self.count >= MAX_INJECTED_CAPS {
+        if self.caps.len() >= MAX_INJECTED_CAPS {
             return Err(WasmError::TooManyCapabilities);
         }
 
-        let handle = CapHandle(self.count as u32);
-        self.caps[self.count] = cap;
-        self.count += 1;
+        let handle = CapHandle(self.caps.len() as u32);
+        self.caps.push(cap);
         Ok(handle)
     }
 
     /// Resolve a capability handle
     pub fn get(&self, handle: CapHandle) -> Result<WasmCapability, WasmError> {
         let idx = handle.0 as usize;
-        if idx >= self.count {
-            return Err(WasmError::InvalidCapability);
-        }
-        Ok(self.caps[idx])
-    }
-}
-
-impl Clone for CapabilityTable {
-    fn clone(&self) -> Self {
-        CapabilityTable {
-            caps: self.caps,
-            count: self.count,
-        }
+        self.caps
+            .get(idx)
+            .cloned()
+            .ok_or(WasmError::InvalidCapability)
     }
 }
 
@@ -1656,9 +1639,8 @@ pub fn temporal_apply_service_pointer_registry_payload(payload: &[u8]) -> Result
         let mut r = 0usize;
         let result_base = offset + 44 + MAX_WASM_TYPE_ARITY;
         while r < MAX_WASM_TYPE_ARITY {
-            result_types[r] =
-                service_pointer_temporal_tag_to_value_type(payload[result_base + r])
-                    .ok_or("temporal wasm service pointer result type invalid")?;
+            result_types[r] = service_pointer_temporal_tag_to_value_type(payload[result_base + r])
+                .ok_or("temporal wasm service pointer result type invalid")?;
             r += 1;
         }
 
@@ -1759,10 +1741,8 @@ fn revoke_service_pointers_for_instance(instance_id: usize) -> usize {
 
     let mut i = 0usize;
     while i < object_count {
-        let _ = capability::capability_manager().revoke_object_capabilities(
-            CapabilityType::ServicePointer,
-            object_ids[i],
-        );
+        let _ = capability::capability_manager()
+            .revoke_object_capabilities(CapabilityType::ServicePointer, object_ids[i]);
         i += 1;
     }
     let changed = rebound.saturating_add(removed);
@@ -1779,28 +1759,31 @@ pub fn register_service_pointer(
     allow_delegate: bool,
 ) -> Result<ServicePointerRegistration, &'static str> {
     let metadata = wasm_runtime()
-        .get_instance_mut(target_instance, |instance| -> Result<(ProcessId, usize, ParsedFunctionType), WasmError> {
-            let mut resolved = function_index;
-            let mut call_target = instance.module.resolve_call_target(resolved);
-            if !matches!(call_target, Ok(CallTarget::Function(_)))
-                && function_index < instance.module.function_count
-            {
-                resolved = instance
-                    .module
-                    .import_function_count
-                    .checked_add(function_index)
-                    .ok_or(WasmError::InvalidModule)?;
-                call_target = instance.module.resolve_call_target(resolved);
-            }
-
-            match call_target? {
-                CallTarget::Function(_) => {
-                    let signature = instance.module.signature_for_combined(resolved)?;
-                    Ok((instance.process_id, resolved, signature))
+        .get_instance_mut(
+            target_instance,
+            |instance| -> Result<(ProcessId, usize, ParsedFunctionType), WasmError> {
+                let mut resolved = function_index;
+                let mut call_target = instance.module.resolve_call_target(resolved);
+                if !matches!(call_target, Ok(CallTarget::Function(_)))
+                    && function_index < instance.module.function_count
+                {
+                    resolved = instance
+                        .module
+                        .import_function_count
+                        .checked_add(function_index)
+                        .ok_or(WasmError::InvalidModule)?;
+                    call_target = instance.module.resolve_call_target(resolved);
                 }
-                CallTarget::Host(_) => Err(WasmError::PermissionDenied),
-            }
-        })
+
+                match call_target? {
+                    CallTarget::Function(_) => {
+                        let signature = instance.module.signature_for_combined(resolved)?;
+                        Ok((instance.process_id, resolved, signature))
+                    }
+                    CallTarget::Host(_) => Err(WasmError::PermissionDenied),
+                }
+            },
+        )
         .map_err(|_| "Target instance not available")?;
     let (actual_owner, function_index, signature) = match metadata {
         Ok(v) => v,
@@ -1874,10 +1857,8 @@ pub fn revoke_service_pointer(owner_pid: ProcessId, object_id: u64) -> Result<()
     }
     registry.entries[idx] = ServicePointerEntry::empty();
     drop(registry);
-    let _ = capability::capability_manager().revoke_object_capabilities(
-        CapabilityType::ServicePointer,
-        object_id,
-    );
+    let _ = capability::capability_manager()
+        .revoke_object_capabilities(CapabilityType::ServicePointer, object_id);
     record_temporal_service_pointer_registry_snapshot();
     Ok(())
 }
@@ -1906,10 +1887,8 @@ pub fn revoke_service_pointers_for_owner(owner_pid: ProcessId) -> usize {
 
     let mut i = 0usize;
     while i < object_count {
-        let _ = capability::capability_manager().revoke_object_capabilities(
-            CapabilityType::ServicePointer,
-            object_ids[i],
-        );
+        let _ = capability::capability_manager()
+            .revoke_object_capabilities(CapabilityType::ServicePointer, object_ids[i]);
         i += 1;
     }
     if removed > 0 {
@@ -1941,46 +1920,51 @@ pub fn invoke_service_pointer_typed(
         .resolve_for_invoke(object_id, args, now)?;
 
     let call = wasm_runtime()
-        .with_instance_exclusive(entry.target_instance, |instance| -> Result<ServicePointerInvokeResult, WasmError> {
-            if instance.process_id != entry.owner_pid {
-                return Err(WasmError::PermissionDenied);
-            }
-            let runtime_sig = instance.module.signature_for_combined(entry.function_index)?;
-            if !parsed_signature_equal(runtime_sig, entry.signature) {
-                return Err(WasmError::TypeMismatch);
-            }
+        .with_instance_exclusive(
+            entry.target_instance,
+            |instance| -> Result<ServicePointerInvokeResult, WasmError> {
+                if instance.process_id != entry.owner_pid {
+                    return Err(WasmError::PermissionDenied);
+                }
+                let runtime_sig = instance
+                    .module
+                    .signature_for_combined(entry.function_index)?;
+                if !parsed_signature_equal(runtime_sig, entry.signature) {
+                    return Err(WasmError::TypeMismatch);
+                }
 
-            instance.stack.clear();
-            let mut i = 0usize;
-            while i < args.len() {
-                instance.stack.push(args[i])?;
-                i += 1;
-            }
-
-            if let Err(e) = instance.invoke_combined_function(entry.function_index) {
                 instance.stack.clear();
-                return Err(e);
-            }
+                let mut i = 0usize;
+                while i < args.len() {
+                    instance.stack.push(args[i])?;
+                    i += 1;
+                }
 
-            if instance.stack.len() != entry.signature.result_count {
-                instance.stack.clear();
-                return Err(WasmError::TypeMismatch);
-            }
-            let mut out = ServicePointerInvokeResult::empty();
-            out.value_count = entry.signature.result_count;
-            let mut r = 0usize;
-            while r < entry.signature.result_count {
-                let value = instance.stack.get(r)?;
-                if !value.matches_type(entry.signature.result_types[r]) {
+                if let Err(e) = instance.invoke_combined_function(entry.function_index) {
+                    instance.stack.clear();
+                    return Err(e);
+                }
+
+                if instance.stack.len() != entry.signature.result_count {
                     instance.stack.clear();
                     return Err(WasmError::TypeMismatch);
                 }
-                out.values[r] = value;
-                r += 1;
-            }
-            instance.stack.clear();
-            Ok(out)
-        })
+                let mut out = ServicePointerInvokeResult::empty();
+                out.value_count = entry.signature.result_count;
+                let mut r = 0usize;
+                while r < entry.signature.result_count {
+                    let value = instance.stack.get(r)?;
+                    if !value.matches_type(entry.signature.result_types[r]) {
+                        instance.stack.clear();
+                        return Err(WasmError::TypeMismatch);
+                    }
+                    out.values[r] = value;
+                    r += 1;
+                }
+                instance.stack.clear();
+                Ok(out)
+            },
+        )
         .map_err(|e| match e {
             WasmError::InstanceBusy => "Service pointer target busy",
             _ => "Service pointer target unavailable",
@@ -2042,9 +2026,10 @@ pub fn inject_service_pointer_capability(
             if instance.process_id != owner_pid {
                 return Err(WasmError::PermissionDenied);
             }
-            instance.inject_capability(WasmCapability::ServicePointer(
-                ServicePointerCapability { object_id, cap_id },
-            ))
+            instance.inject_capability(WasmCapability::ServicePointer(ServicePointerCapability {
+                object_id,
+                cap_id,
+            }))
         })
         .map_err(|_| "Instance not found")?
         .map_err(|e| e.as_str())
@@ -2349,8 +2334,8 @@ impl WasmModule {
                                 if ty_idx >= self.type_count {
                                     return Err(WasmError::InvalidModule);
                                 }
-                                let sig = self.type_signatures[ty_idx]
-                                    .ok_or(WasmError::InvalidModule)?;
+                                let sig =
+                                    self.type_signatures[ty_idx].ok_or(WasmError::InvalidModule)?;
                                 let host_id = resolve_host_import(module_name, field_name, sig)?;
                                 let combined_idx = self.import_function_count;
                                 if combined_idx >= 64 {
@@ -2494,7 +2479,8 @@ impl WasmModule {
                         let index = read_uleb128_at(bytes, &mut cursor)? as usize;
                         match kind {
                             0x00 => {
-                                if index >= self.import_function_count + defined_type_indices.len() {
+                                if index >= self.import_function_count + defined_type_indices.len()
+                                {
                                     return Err(WasmError::InvalidModule);
                                 }
                             }
@@ -2579,7 +2565,9 @@ impl WasmModule {
                     let mut i = 0usize;
                     while i < code_count {
                         let body_size = read_uleb128_at(bytes, &mut cursor)? as usize;
-                        let body_end = cursor.checked_add(body_size).ok_or(WasmError::InvalidModule)?;
+                        let body_end = cursor
+                            .checked_add(body_size)
+                            .ok_or(WasmError::InvalidModule)?;
                         if body_end > section_end {
                             return Err(WasmError::InvalidModule);
                         }
@@ -2630,7 +2618,9 @@ impl WasmModule {
                             parse_init_expr(bytes, &mut cursor, section_end, &globals)?;
                         let base = init_expr_offset(offset_expr)?;
                         let data_len = read_uleb128_at(bytes, &mut cursor)? as usize;
-                        let end = cursor.checked_add(data_len).ok_or(WasmError::InvalidModule)?;
+                        let end = cursor
+                            .checked_add(data_len)
+                            .ok_or(WasmError::InvalidModule)?;
                         if end > section_end {
                             return Err(WasmError::InvalidModule);
                         }
@@ -2800,7 +2790,10 @@ impl WasmModule {
             if params != 0 || results != 0 {
                 return Err(WasmError::InvalidModule);
             }
-            if !matches!(self.resolve_call_target(start_idx), Ok(CallTarget::Function(_))) {
+            if !matches!(
+                self.resolve_call_target(start_idx),
+                Ok(CallTarget::Function(_))
+            ) {
                 return Err(WasmError::InvalidModule);
             }
         }
@@ -2844,7 +2837,8 @@ impl WasmModule {
     }
 
     pub fn total_function_count(&self) -> usize {
-        self.import_function_count.saturating_add(self.function_count)
+        self.import_function_count
+            .saturating_add(self.function_count)
     }
 
     fn resolve_call_target(&self, func_idx: usize) -> Result<CallTarget, WasmError> {
@@ -3345,11 +3339,7 @@ impl WasmInstance {
         Ok(exn)
     }
 
-    fn find_exception_handler(
-        &self,
-        frame: ControlFrame,
-        tag_idx: usize,
-    ) -> Option<(usize, bool)> {
+    fn find_exception_handler(&self, frame: ControlFrame, tag_idx: usize) -> Option<(usize, bool)> {
         let mut i = 0usize;
         while i < frame.catch_count {
             if frame.catch_tags[i] == Some(tag_idx) {
@@ -3404,9 +3394,7 @@ impl WasmInstance {
             if frame.kind == ControlKind::Try {
                 if let Some(delegate_depth) = frame.delegate_depth {
                     self.control_stack[idx] = None;
-                    let target_plus_one = idx
-                        .checked_sub(delegate_depth)
-                        .ok_or(WasmError::Trap)?;
+                    let target_plus_one = idx.checked_sub(delegate_depth).ok_or(WasmError::Trap)?;
                     let mut pop_idx = idx;
                     while pop_idx > target_plus_one {
                         pop_idx -= 1;
@@ -3459,7 +3447,11 @@ impl WasmInstance {
         self.unwind_exception(thrown, target_idx)
     }
 
-    fn skip_opcode_immediate_scan(&self, mut pc: usize, opcode: Opcode) -> Result<usize, WasmError> {
+    fn skip_opcode_immediate_scan(
+        &self,
+        mut pc: usize,
+        opcode: Opcode,
+    ) -> Result<usize, WasmError> {
         match opcode {
             Opcode::I32Const => {
                 let (_v, n) = read_sleb128_i32_validate(&self.module.bytecode, pc)?;
@@ -3585,7 +3577,8 @@ impl WasmInstance {
                     depth = depth.saturating_add(1);
                 }
                 Opcode::Catch => {
-                    let (tag_idx, _n) = read_uleb128_validate(&self.module.bytecode, immediate_pos)?;
+                    let (tag_idx, _n) =
+                        read_uleb128_validate(&self.module.bytecode, immediate_pos)?;
                     if depth == 1 {
                         if delegate_depth.is_some() || catch_all_pc.is_some() {
                             return Err(WasmError::InvalidModule);
@@ -3718,8 +3711,12 @@ impl WasmInstance {
                 .jit_state_pages
                 .checked_mul(paging::PAGE_SIZE)
                 .ok_or(WasmError::Trap)?;
-            if crate::arch::mmu::set_page_writable_range(self.jit_state as usize, rebuilt_span, true)
-                .is_err()
+            if crate::arch::mmu::set_page_writable_range(
+                self.jit_state as usize,
+                rebuilt_span,
+                true,
+            )
+            .is_err()
             {
                 #[cfg(not(target_arch = "x86_64"))]
                 {
@@ -3740,11 +3737,8 @@ impl WasmInstance {
                     return Err(WasmError::Trap);
                 }
             }
-            let _ = crate::memory_isolation::tag_jit_user_state(
-                self.jit_state as usize,
-                span,
-                false,
-            );
+            let _ =
+                crate::memory_isolation::tag_jit_user_state(self.jit_state as usize, span, false);
         }
         self.module.load(code)?;
         self.module.reset_functions();
@@ -3927,8 +3921,7 @@ impl WasmInstance {
         }
         self.instruction_count =
             (MAX_INSTRUCTIONS_PER_CALL as u32).saturating_sub(instr_left) as usize;
-        self.memory_op_count =
-            (MAX_MEMORY_OPS_PER_CALL as u32).saturating_sub(mem_left) as usize;
+        self.memory_op_count = (MAX_MEMORY_OPS_PER_CALL as u32).saturating_sub(mem_left) as usize;
         Ok(())
     }
 
@@ -4030,6 +4023,8 @@ impl WasmInstance {
         let (code_start, code_end) = self.function_code_range(func)?;
         let code = &self.module.bytecode[code_start..code_end];
         let locals_total = func.param_count + func.local_count;
+        let type_sigs = collect_jit_type_signatures(&self.module);
+        let type_sig_hash = hash_jit_type_signatures(&type_sigs);
 
         self.jit_hot[func_idx] = self.jit_hot[func_idx].saturating_add(1);
         if self.jit_hash[func_idx].is_none() {
@@ -4038,20 +4033,22 @@ impl WasmInstance {
                 jit_stats().lock().interp_calls += 1;
                 return Ok(false);
             }
-            let hash = hash_code(code, locals_total);
-            let entry = match jit_cache_get_or_compile(hash, code, locals_total) {
-                Some(e) => e,
-                None => {
-                    return Ok(false);
-                }
-            };
+            let hash = hash_code(code, locals_total) ^ type_sig_hash;
+            let entry =
+                match jit_cache_get_or_compile(hash, code, locals_total, &type_sigs, type_sig_hash)
+                {
+                    Some(e) => e,
+                    None => {
+                        return Ok(false);
+                    }
+                };
             self.jit_hash[func_idx] = Some(hash);
             jit_stats().lock().compiled += 1;
             let _ = entry;
         }
 
         let hash = self.jit_hash[func_idx].ok_or(WasmError::InvalidModule)?;
-        let jit_entry = match jit_cache_get(hash, code, locals_total) {
+        let jit_entry = match jit_cache_get(hash, code, locals_total, type_sig_hash) {
             Some(e) => e,
             None => {
                 self.jit_hash[func_idx] = None;
@@ -4225,8 +4222,7 @@ impl WasmInstance {
         }
         self.instruction_count =
             (MAX_INSTRUCTIONS_PER_CALL as u32).saturating_sub(instr_left) as usize;
-        self.memory_op_count =
-            (MAX_MEMORY_OPS_PER_CALL as u32).saturating_sub(mem_left) as usize;
+        self.memory_op_count = (MAX_MEMORY_OPS_PER_CALL as u32).saturating_sub(mem_left) as usize;
 
         if let Some(shadow_inst) = shadow {
             if !self.validate_against_shadow(&shadow_inst, func) {
@@ -4376,11 +4372,14 @@ impl WasmInstance {
 
             // Check capability security policy unless this is an internal JIT fuzz run.
             if !JIT_FUZZ_ACTIVE.load(Ordering::Relaxed) {
-                if !crate::security::security().validate_capability(
-                    self.process_id,
-                    1, // Execute permission
-                    1,
-                ).is_ok() {
+                if !crate::security::security()
+                    .validate_capability(
+                        self.process_id,
+                        1, // Execute permission
+                        1,
+                    )
+                    .is_ok()
+                {
                     return Err(WasmError::PermissionDenied);
                 }
             }
@@ -4486,12 +4485,11 @@ impl WasmInstance {
         let opcode_byte = self.module.bytecode[self.pc];
         self.pc += 1;
 
-        let opcode = Opcode::from_byte(opcode_byte)
-            .ok_or(WasmError::UnknownOpcode(opcode_byte))?;
+        let opcode = Opcode::from_byte(opcode_byte).ok_or(WasmError::UnknownOpcode(opcode_byte))?;
 
         match opcode {
             Opcode::Nop => {}
-            
+
             Opcode::Unreachable => {
                 return Err(WasmError::Trap);
             }
@@ -4500,7 +4498,8 @@ impl WasmInstance {
                 let (param_count, param_types, result_count, result_types) =
                     self.read_block_signature()?;
                 let body_start = self.pc;
-                let (_else_pc, end_pc) = self.scan_control_structure(ControlKind::Block, body_start)?;
+                let (_else_pc, end_pc) =
+                    self.scan_control_structure(ControlKind::Block, body_start)?;
                 let stack_len = self.stack.len();
                 if stack_len < param_count {
                     return Err(WasmError::StackUnderflow);
@@ -4523,7 +4522,8 @@ impl WasmInstance {
                 let (param_count, param_types, result_count, result_types) =
                     self.read_block_signature()?;
                 let body_start = self.pc;
-                let (_else_pc, end_pc) = self.scan_control_structure(ControlKind::Loop, body_start)?;
+                let (_else_pc, end_pc) =
+                    self.scan_control_structure(ControlKind::Loop, body_start)?;
                 let stack_len = self.stack.len();
                 if stack_len < param_count {
                     return Err(WasmError::StackUnderflow);
@@ -4621,7 +4621,10 @@ impl WasmInstance {
                 self.enforce_frame_exit_values(frame)?;
                 self.control_stack[idx] = None;
                 self.control_depth = idx;
-                self.pc = frame.end_pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
+                self.pc = frame
+                    .end_pc
+                    .checked_add(1)
+                    .ok_or(WasmError::InvalidModule)?;
             }
 
             Opcode::CatchAll => {
@@ -4636,7 +4639,10 @@ impl WasmInstance {
                 self.enforce_frame_exit_values(frame)?;
                 self.control_stack[idx] = None;
                 self.control_depth = idx;
-                self.pc = frame.end_pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
+                self.pc = frame
+                    .end_pc
+                    .checked_add(1)
+                    .ok_or(WasmError::InvalidModule)?;
             }
 
             Opcode::Delegate => {
@@ -4652,7 +4658,10 @@ impl WasmInstance {
                 self.enforce_frame_exit_values(frame)?;
                 self.control_stack[idx] = None;
                 self.control_depth = idx;
-                self.pc = frame.end_pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
+                self.pc = frame
+                    .end_pc
+                    .checked_add(1)
+                    .ok_or(WasmError::InvalidModule)?;
             }
 
             Opcode::Throw => {
@@ -4678,7 +4687,10 @@ impl WasmInstance {
                 self.enforce_frame_exit_values(frame)?;
                 self.control_stack[idx] = None;
                 self.control_depth = idx;
-                self.pc = frame.end_pc.checked_add(1).ok_or(WasmError::InvalidModule)?;
+                self.pc = frame
+                    .end_pc
+                    .checked_add(1)
+                    .ok_or(WasmError::InvalidModule)?;
             }
 
             Opcode::End => {
@@ -5078,7 +5090,8 @@ impl WasmInstance {
                 let _align = self.read_uleb128()?; // Alignment hint (ignored for now)
                 let offset = self.read_uleb128()? as usize;
                 let addr = self.stack.pop()?.as_u32()? as usize;
-                let effective_addr = addr.checked_add(offset)
+                let effective_addr = addr
+                    .checked_add(offset)
                     .ok_or(WasmError::MemoryOutOfBounds)?;
                 let value = self.memory.read_i32(effective_addr)?;
                 self.stack.push(Value::I32(value))?;
@@ -5089,7 +5102,8 @@ impl WasmInstance {
                 let _align = self.read_uleb128()?; // Alignment hint (ignored for now)
                 let offset = self.read_uleb128()? as usize;
                 let addr = self.stack.pop()?.as_u32()? as usize;
-                let effective_addr = addr.checked_add(offset)
+                let effective_addr = addr
+                    .checked_add(offset)
                     .ok_or(WasmError::MemoryOutOfBounds)?;
                 let value = self.memory.read_i64(effective_addr)?;
                 self.stack.push(Value::I64(value))?;
@@ -5101,7 +5115,8 @@ impl WasmInstance {
                 let offset = self.read_uleb128()? as usize;
                 let value = self.stack.pop()?.as_i32()?;
                 let addr = self.stack.pop()?.as_u32()? as usize;
-                let effective_addr = addr.checked_add(offset)
+                let effective_addr = addr
+                    .checked_add(offset)
                     .ok_or(WasmError::MemoryOutOfBounds)?;
                 self.memory.write_i32(effective_addr, value)?;
             }
@@ -5112,7 +5127,8 @@ impl WasmInstance {
                 let offset = self.read_uleb128()? as usize;
                 let value = self.stack.pop()?.as_i64()?;
                 let addr = self.stack.pop()?.as_u32()? as usize;
-                let effective_addr = addr.checked_add(offset)
+                let effective_addr = addr
+                    .checked_add(offset)
                     .ok_or(WasmError::MemoryOutOfBounds)?;
                 self.memory.write_i64(effective_addr, value)?;
             }
@@ -5188,7 +5204,7 @@ impl WasmInstance {
             self.pc += 1;
 
             result |= ((byte & 0x7F) as u32) << shift;
-            
+
             if (byte & 0x80) == 0 {
                 break;
             }
@@ -5424,10 +5440,8 @@ impl WasmInstance {
             self.stack.push(Value::I32(out.result))?;
             return Ok(());
         }
-        let key_str = core::str::from_utf8(key_bytes)
-            .map_err(|_| WasmError::InvalidUtf8)?;
-        let key = fs::FileKey::new(key_str)
-            .map_err(|_| WasmError::SyscallFailed)?;
+        let key_str = core::str::from_utf8(key_bytes).map_err(|_| WasmError::InvalidUtf8)?;
+        let key = fs::FileKey::new(key_str).map_err(|_| WasmError::SyscallFailed)?;
 
         // Call filesystem
         crate::security::security().intent_fs_read(self.process_id, fs_cap.cap_id as u64);
@@ -5508,15 +5522,13 @@ impl WasmInstance {
             self.stack.push(Value::I32(out.result))?;
             return Ok(());
         }
-        let key_str = core::str::from_utf8(key_bytes)
-            .map_err(|_| WasmError::InvalidUtf8)?;
-        let key = fs::FileKey::new(key_str)
-            .map_err(|_| WasmError::SyscallFailed)?;
+        let key_str = core::str::from_utf8(key_bytes).map_err(|_| WasmError::InvalidUtf8)?;
+        let key = fs::FileKey::new(key_str).map_err(|_| WasmError::SyscallFailed)?;
 
         // Call filesystem
         crate::security::security().intent_fs_write(self.process_id, fs_cap.cap_id as u64);
-        let request = fs::Request::write(key, data, fs_cap)
-            .map_err(|_| WasmError::SyscallFailed)?;
+        let request =
+            fs::Request::write(key, data, fs_cap).map_err(|_| WasmError::SyscallFailed)?;
         let response = fs::filesystem().handle_request(request);
 
         match response.status {
@@ -5593,10 +5605,10 @@ impl WasmInstance {
             crate::ipc::ChannelRights::send_only(),
             self.process_id,
         );
-        
+
         let msg = crate::ipc::Message::with_data(self.process_id, msg_data)
             .map_err(|_| WasmError::SyscallFailed)?;
-        
+
         let send_result = crate::ipc::ipc().send(msg, &channel_cap);
         if send_result.is_err() {
             if mode == ReplayMode::Record {
@@ -5673,7 +5685,7 @@ impl WasmInstance {
             crate::ipc::ChannelRights::receive_only(),
             self.process_id,
         );
-        
+
         match crate::ipc::ipc().try_recv(&channel_cap) {
             Ok(msg) => {
                 let msg_data = &msg.payload[..msg.payload_len];
@@ -5746,8 +5758,7 @@ impl WasmInstance {
             self.stack.push(Value::I32(out.result))?;
             return Ok(());
         }
-        let url_str = core::str::from_utf8(url_bytes)
-            .map_err(|_| WasmError::InvalidUtf8)?;
+        let url_str = core::str::from_utf8(url_bytes).map_err(|_| WasmError::InvalidUtf8)?;
 
         // Get network service
         let net = crate::net::network();
@@ -5775,7 +5786,7 @@ impl WasmInstance {
         // Copy to WASM memory
         let copy_len = response.body_len.min(buf_len);
         self.memory.write(buf_ptr, &response.body[..copy_len])?;
-        
+
         self.stack.push(Value::I32(copy_len as i32))?;
         if mode == ReplayMode::Record {
             replay::record_host_call(
@@ -5817,8 +5828,7 @@ impl WasmInstance {
             self.stack.push(Value::I32(out.result))?;
             return Ok(());
         }
-        let _host_str = core::str::from_utf8(host_bytes)
-            .map_err(|_| WasmError::InvalidUtf8)?;
+        let _host_str = core::str::from_utf8(host_bytes).map_err(|_| WasmError::InvalidUtf8)?;
 
         // For v1, return success (real socket implementation would happen here)
         self.stack.push(Value::I32(1))?; // Simulated socket ID
@@ -5860,8 +5870,7 @@ impl WasmInstance {
             self.stack.push(Value::I32(out.result))?;
             return Ok(());
         }
-        let domain_str = core::str::from_utf8(domain_bytes)
-            .map_err(|_| WasmError::InvalidUtf8)?;
+        let domain_str = core::str::from_utf8(domain_bytes).map_err(|_| WasmError::InvalidUtf8)?;
 
         // Get network service
         let net = crate::net::network();
@@ -5925,12 +5934,12 @@ impl WasmInstance {
                 continue;
             }
 
-            if let Ok(handle) = self.inject_capability(WasmCapability::ServicePointer(
-                ServicePointerCapability {
+            if let Ok(handle) =
+                self.inject_capability(WasmCapability::ServicePointer(ServicePointerCapability {
                     object_id,
                     cap_id: imported,
-                },
-            )) {
+                }))
+            {
                 self.last_received_service_handle = Some(handle);
             }
         }
@@ -5995,7 +6004,9 @@ impl WasmInstance {
         Ok(value as usize)
     }
 
-    fn encode_temporal_meta(meta: &crate::temporal::TemporalVersionMeta) -> [u8; TEMPORAL_META_BYTES] {
+    fn encode_temporal_meta(
+        meta: &crate::temporal::TemporalVersionMeta,
+    ) -> [u8; TEMPORAL_META_BYTES] {
         let mut out = [0u8; TEMPORAL_META_BYTES];
         out[0..4].copy_from_slice(&(meta.version_id as u32).to_le_bytes());
         out[4..8].copy_from_slice(&((meta.version_id >> 32) as u32).to_le_bytes());
@@ -6030,7 +6041,9 @@ impl WasmInstance {
         out
     }
 
-    fn encode_temporal_history_record(meta: &crate::temporal::TemporalVersionMeta) -> [u8; TEMPORAL_HISTORY_RECORD_BYTES] {
+    fn encode_temporal_history_record(
+        meta: &crate::temporal::TemporalVersionMeta,
+    ) -> [u8; TEMPORAL_HISTORY_RECORD_BYTES] {
         let mut out = [0u8; TEMPORAL_HISTORY_RECORD_BYTES];
         let (version_lo, version_hi) = Self::split_u64(meta.version_id);
         let parent = meta.parent_version_id.unwrap_or(u64::MAX);
@@ -6188,9 +6201,7 @@ impl WasmInstance {
 
         let mut words = [0u32; MAX_SERVICE_CALL_ARGS];
         if args_count > 0 {
-            let bytes = self
-                .memory
-                .read(args_ptr, args_count.saturating_mul(4))?;
+            let bytes = self.memory.read(args_ptr, args_count.saturating_mul(4))?;
             args_hash = replay::hash_bytes(args_hash, bytes);
             let mut i = 0usize;
             while i < args_count {
@@ -6216,8 +6227,9 @@ impl WasmInstance {
             return Ok(());
         }
 
-        let result = invoke_service_pointer(self.process_id, svc_ptr.object_id, &words[..args_count])
-            .map_err(|_| WasmError::SyscallFailed)?;
+        let result =
+            invoke_service_pointer(self.process_id, svc_ptr.object_id, &words[..args_count])
+                .map_err(|_| WasmError::SyscallFailed)?;
         self.stack.push(Value::I32(result as i32))?;
 
         if mode == ReplayMode::Record {
@@ -6326,7 +6338,10 @@ impl WasmInstance {
         let mut i = 0usize;
         while i < result.value_count {
             let base = i * SERVICE_TYPED_SLOT_BYTES;
-            Self::encode_typed_service_value(result.values[i], &mut encoded_results[base..base + SERVICE_TYPED_SLOT_BYTES])?;
+            Self::encode_typed_service_value(
+                result.values[i],
+                &mut encoded_results[base..base + SERVICE_TYPED_SLOT_BYTES],
+            )?;
             i += 1;
         }
         if !encoded_results.is_empty() {
@@ -6463,7 +6478,8 @@ impl WasmInstance {
         let mut msg = crate::ipc::Message::with_data(self.process_id, msg_data)
             .map_err(|_| WasmError::SyscallFailed)?;
         if let Some(ipc_cap) = attach {
-            msg.add_capability(ipc_cap).map_err(|_| WasmError::SyscallFailed)?;
+            msg.add_capability(ipc_cap)
+                .map_err(|_| WasmError::SyscallFailed)?;
         }
         crate::ipc::ipc()
             .send(msg, &channel_cap)
@@ -6894,7 +6910,8 @@ impl WasmInstance {
             _ => return Err(WasmError::InvalidCapability),
         };
 
-        if max_entries > MAX_TEMPORAL_HISTORY_ENTRIES || out_capacity > MAX_TEMPORAL_HISTORY_ENTRIES {
+        if max_entries > MAX_TEMPORAL_HISTORY_ENTRIES || out_capacity > MAX_TEMPORAL_HISTORY_ENTRIES
+        {
             return Err(WasmError::SyscallFailed);
         }
 
@@ -7146,7 +7163,8 @@ impl WasmInstance {
                         if let Ok((branch_id, head_version)) =
                             crate::temporal::checkout_branch(path, branch)
                         {
-                            encoded = Self::encode_temporal_branch_checkout(branch_id, head_version);
+                            encoded =
+                                Self::encode_temporal_branch_checkout(branch_id, head_version);
                             self.memory.write(out_ptr, &encoded)?;
                             encoded_len = TEMPORAL_BRANCH_CHECKOUT_BYTES;
                             result_code = 0;
@@ -7356,7 +7374,9 @@ impl WasmInstance {
                     };
                     if target_len == 0 || target.is_some() {
                         if let Ok(key) = fs::FileKey::new(path) {
-                            if fs_cap.rights.has(fs::FilesystemRights::WRITE) && fs_cap.can_access(&key) {
+                            if fs_cap.rights.has(fs::FilesystemRights::WRITE)
+                                && fs_cap.can_access(&key)
+                            {
                                 if let Ok(result) =
                                     crate::temporal::merge_branch(path, source, target, strategy)
                                 {
@@ -7399,7 +7419,7 @@ pub enum WasmError {
     InvalidModule,
     TooManyFunctions,
     FunctionNotFound,
-    
+
     // Execution errors
     StackOverflow,
     StackUnderflow,
@@ -7415,15 +7435,15 @@ pub enum WasmError {
     ExecutionLimitExceeded,
     PermissionDenied,
     InstanceBusy,
-    
+
     // Memory errors
     MemoryOutOfBounds,
     MemoryGrowFailed,
-    
+
     // Capability errors
     InvalidCapability,
     TooManyCapabilities,
-    
+
     // Host function errors
     UnknownHostFunction,
     SyscallFailed,
@@ -7534,7 +7554,11 @@ impl WasmRuntime {
     }
 
     /// Instantiate a pre-built module (used by tests/benchmarks)
-    pub fn instantiate_module(&self, module: WasmModule, process_id: ProcessId) -> Result<usize, WasmError> {
+    pub fn instantiate_module(
+        &self,
+        module: WasmModule,
+        process_id: ProcessId,
+    ) -> Result<usize, WasmError> {
         #[cfg(target_arch = "x86_64")]
         let x64_diag = JIT_FUZZ_X64_DIAG.load(Ordering::SeqCst);
         #[cfg(target_arch = "x86_64")]
@@ -7709,7 +7733,7 @@ impl WasmRuntime {
         if instance_id >= 8 {
             return Err(WasmError::InvalidModule);
         }
-        
+
         match &mut instances[instance_id] {
             RuntimeInstanceSlot::Ready(instance) => Ok(f(instance)),
             RuntimeInstanceSlot::Busy(_) => Err(WasmError::InstanceBusy),
@@ -7820,7 +7844,7 @@ impl WasmRuntime {
     pub fn list(&self) -> [(usize, ProcessId, bool); 8] {
         let instances = self.instances.lock();
         let mut result = [(0, ProcessId(0), false); 8];
-        
+
         for (i, instance) in instances.iter().enumerate() {
             result[i] = match instance {
                 RuntimeInstanceSlot::Ready(inst) => (i, inst.process_id, true),
@@ -7828,7 +7852,7 @@ impl WasmRuntime {
                 RuntimeInstanceSlot::Empty => (i, ProcessId(0), false),
             };
         }
-        
+
         result
     }
 }
@@ -7908,7 +7932,8 @@ fn encode_temporal_syscall_module_table_payload(event: u8) -> Option<Vec<u8>> {
         let slot = &table[i];
         payload.extend_from_slice(&(slot.module_id as u32).to_le_bytes());
         payload.extend_from_slice(&slot.owner_pid.0.to_le_bytes());
-        payload.extend_from_slice(&(slot.bound_instance.unwrap_or(usize::MAX) as u32).to_le_bytes());
+        payload
+            .extend_from_slice(&(slot.bound_instance.unwrap_or(usize::MAX) as u32).to_le_bytes());
         payload.extend_from_slice(&(slot.module.bytecode_len as u32).to_le_bytes());
         if slot.module.bytecode_len > 0 {
             payload.extend_from_slice(&slot.module.bytecode[..slot.module.bytecode_len]);
@@ -7947,15 +7972,18 @@ pub fn temporal_apply_syscall_module_table_payload(payload: &[u8]) -> Result<(),
         return Err("temporal wasm syscall schema unsupported");
     }
 
-    let max_slots = temporal_read_u16_at(payload, 4).ok_or("temporal wasm syscall max slots missing")?;
+    let max_slots =
+        temporal_read_u16_at(payload, 4).ok_or("temporal wasm syscall max slots missing")?;
     if max_slots as usize != MAX_SYSCALL_MODULES {
         return Err("temporal wasm syscall max slots mismatch");
     }
-    let entry_count = temporal_read_u16_at(payload, 6).ok_or("temporal wasm syscall count missing")? as usize;
+    let entry_count =
+        temporal_read_u16_at(payload, 6).ok_or("temporal wasm syscall count missing")? as usize;
     if entry_count > MAX_SYSCALL_MODULES {
         return Err("temporal wasm syscall count out of range");
     }
-    let next_id = temporal_read_u32_at(payload, 8).ok_or("temporal wasm syscall next id missing")?;
+    let next_id =
+        temporal_read_u32_at(payload, 8).ok_or("temporal wasm syscall next id missing")?;
 
     let mut offset = TEMPORAL_SYSCALL_MODULE_HEADER_BYTES;
     let mut restored = Vec::with_capacity(entry_count);
@@ -7972,7 +8000,8 @@ pub fn temporal_apply_syscall_module_table_payload(payload: &[u8]) -> Result<(),
         let _bound_instance = temporal_read_u32_at(payload, offset + 8)
             .ok_or("temporal wasm syscall bound instance missing")?;
         let bytecode_len = temporal_read_u32_at(payload, offset + 12)
-            .ok_or("temporal wasm syscall bytecode len missing")? as usize;
+            .ok_or("temporal wasm syscall bytecode len missing")?
+            as usize;
         offset += TEMPORAL_SYSCALL_MODULE_ENTRY_META_BYTES;
         if offset.saturating_add(bytecode_len) > payload.len() {
             return Err("temporal wasm syscall bytecode truncated");
@@ -8130,6 +8159,7 @@ impl JitStats {
 struct JitCacheEntry {
     hash: u64,
     locals_total: usize,
+    type_sig_hash: u64,
     code_len: usize,
     func: crate::wasm_jit::JitFunction,
 }
@@ -8620,34 +8650,85 @@ fn write_jit_user_trampoline(trampoline: *mut u8, call_addr: u32) {
         }
 
         // mov r11d, imm32 (call page pointer)
-        write_u8!(0x41); write_u8!(0xBB); write_u32!(call_addr);
+        write_u8!(0x41);
+        write_u8!(0xBB);
+        write_u32!(call_addr);
         // mov r10d, [r11]
-        write_u8!(0x45); write_u8!(0x8B); write_u8!(0x13);
+        write_u8!(0x45);
+        write_u8!(0x8B);
+        write_u8!(0x13);
         // first 6 SysV args
-        write_u8!(0x41); write_u8!(0x8B); write_u8!(0x7B); write_u8!(0x04); // edi
-        write_u8!(0x41); write_u8!(0x8B); write_u8!(0x73); write_u8!(0x08); // esi
-        write_u8!(0x41); write_u8!(0x8B); write_u8!(0x53); write_u8!(0x0C); // edx
-        write_u8!(0x41); write_u8!(0x8B); write_u8!(0x4B); write_u8!(0x10); // ecx
-        write_u8!(0x45); write_u8!(0x8B); write_u8!(0x43); write_u8!(0x14); // r8d
-        write_u8!(0x45); write_u8!(0x8B); write_u8!(0x4B); write_u8!(0x18); // r9d
-        // remaining 4 args on stack
-        write_u8!(0x41); write_u8!(0xFF); write_u8!(0x73); write_u8!(0x28);
-        write_u8!(0x41); write_u8!(0xFF); write_u8!(0x73); write_u8!(0x24);
-        write_u8!(0x41); write_u8!(0xFF); write_u8!(0x73); write_u8!(0x20);
-        write_u8!(0x41); write_u8!(0xFF); write_u8!(0x73); write_u8!(0x1C);
+        write_u8!(0x41);
+        write_u8!(0x8B);
+        write_u8!(0x7B);
+        write_u8!(0x04); // edi
+        write_u8!(0x41);
+        write_u8!(0x8B);
+        write_u8!(0x73);
+        write_u8!(0x08); // esi
+        write_u8!(0x41);
+        write_u8!(0x8B);
+        write_u8!(0x53);
+        write_u8!(0x0C); // edx
+        write_u8!(0x41);
+        write_u8!(0x8B);
+        write_u8!(0x4B);
+        write_u8!(0x10); // ecx
+        write_u8!(0x45);
+        write_u8!(0x8B);
+        write_u8!(0x43);
+        write_u8!(0x14); // r8d
+        write_u8!(0x45);
+        write_u8!(0x8B);
+        write_u8!(0x4B);
+        write_u8!(0x18); // r9d
+                         // remaining 4 args on stack
+        write_u8!(0x41);
+        write_u8!(0xFF);
+        write_u8!(0x73);
+        write_u8!(0x28);
+        write_u8!(0x41);
+        write_u8!(0xFF);
+        write_u8!(0x73);
+        write_u8!(0x24);
+        write_u8!(0x41);
+        write_u8!(0xFF);
+        write_u8!(0x73);
+        write_u8!(0x20);
+        write_u8!(0x41);
+        write_u8!(0xFF);
+        write_u8!(0x73);
+        write_u8!(0x1C);
         // call r10
-        write_u8!(0x41); write_u8!(0xFF); write_u8!(0xD2);
+        write_u8!(0x41);
+        write_u8!(0xFF);
+        write_u8!(0xD2);
         // add rsp, 32
-        write_u8!(0x48); write_u8!(0x83); write_u8!(0xC4); write_u8!(0x20);
+        write_u8!(0x48);
+        write_u8!(0x83);
+        write_u8!(0xC4);
+        write_u8!(0x20);
         // mov [r11+44], eax
-        write_u8!(0x41); write_u8!(0x89); write_u8!(0x43); write_u8!(0x2C);
+        write_u8!(0x41);
+        write_u8!(0x89);
+        write_u8!(0x43);
+        write_u8!(0x2C);
         // mov edx, [r11+48] ; mov [r11+52], edx  (req_seq -> ack_seq)
-        write_u8!(0x41); write_u8!(0x8B); write_u8!(0x53); write_u8!(0x30);
-        write_u8!(0x41); write_u8!(0x89); write_u8!(0x53); write_u8!(0x34);
+        write_u8!(0x41);
+        write_u8!(0x8B);
+        write_u8!(0x53);
+        write_u8!(0x30);
+        write_u8!(0x41);
+        write_u8!(0x89);
+        write_u8!(0x53);
+        write_u8!(0x34);
         // mov eax, SYS_JIT_RETURN ; int 0x80 ; jmp $
-        write_u8!(0xB8); write_u32!(SYSCALL_JIT_RETURN);
-        write_u8!(0xCD); write_u8!(0x80);
-        write_u8!(0xEB); write_u8!(0xFC);
+        write_u8!(0xB8);
+        write_u32!(SYSCALL_JIT_RETURN);
+        write_u8!(0xCD);
+        write_u8!(0x80);
+        write_u8!(0xEB);
+        write_u8!(0xFC);
 
         let fault_ptr = trampoline.add(USER_JIT_TRAMPOLINE_FAULT_OFFSET);
         let mut fidx = 0usize;
@@ -8768,8 +8849,8 @@ fn jit_x86_64_sandbox_preflight_with_pages(
         .ok_or("Preflight code phys lookup failed")?;
     let state_phys = arch_mmu::x86_64_debug_virt_to_phys(state_page)
         .ok_or("Preflight state phys lookup failed")?;
-    let mem_phys = arch_mmu::x86_64_debug_virt_to_phys(mem_page)
-        .ok_or("Preflight mem phys lookup failed")?;
+    let mem_phys =
+        arch_mmu::x86_64_debug_virt_to_phys(mem_page).ok_or("Preflight mem phys lookup failed")?;
 
     let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
     let code_guard = USER_JIT_CODE_GUARD_PAGES * paging::PAGE_SIZE;
@@ -8796,7 +8877,12 @@ fn jit_x86_64_sandbox_preflight_with_pages(
     memory_isolation::tag_jit_user_state(state_phys, paging::PAGE_SIZE, true)?;
     memory_isolation::tag_wasm_linear_memory(mem_phys, paging::PAGE_SIZE, true)?;
 
-    sandbox.map_user_range_phys(USER_JIT_TRAMPOLINE_BASE, trampoline_phys, paging::PAGE_SIZE, false)?;
+    sandbox.map_user_range_phys(
+        USER_JIT_TRAMPOLINE_BASE,
+        trampoline_phys,
+        paging::PAGE_SIZE,
+        false,
+    )?;
     sandbox.map_user_range_phys(USER_JIT_CALL_BASE, call_phys, paging::PAGE_SIZE, true)?;
     sandbox.map_user_range_phys(
         USER_JIT_STACK_BASE + guard_bytes,
@@ -8809,11 +8895,14 @@ fn jit_x86_64_sandbox_preflight_with_pages(
     sandbox.map_user_range_phys(mem_base, mem_phys, paging::PAGE_SIZE, true)?;
 
     let old_cr3 = arch_mmu::current_page_table_root_addr();
-    unsafe { sandbox.activate(); }
+    unsafe {
+        sandbox.activate();
+    }
     let verify = (|| -> Result<(), &'static str> {
         let tramp_b = unsafe { core::ptr::read_volatile(USER_JIT_TRAMPOLINE_BASE as *const u8) };
         let call_b = unsafe { core::ptr::read_volatile(USER_JIT_CALL_BASE as *const u8) };
-        let stack_user_top = USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 1;
+        let stack_user_top =
+            USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 1;
         unsafe {
             core::ptr::write_volatile(USER_JIT_CALL_BASE as *mut u8, 0x11);
             core::ptr::write_volatile((USER_JIT_STACK_BASE + guard_bytes) as *mut u8, 0x22);
@@ -8823,7 +8912,8 @@ fn jit_x86_64_sandbox_preflight_with_pages(
         let code_b = unsafe { core::ptr::read_volatile(code_base as *const u8) };
         let data_b = unsafe { core::ptr::read_volatile(data_base as *const u8) };
         let mem_b = unsafe { core::ptr::read_volatile(mem_base as *const u8) };
-        let stack_b = unsafe { core::ptr::read_volatile((USER_JIT_STACK_BASE + guard_bytes) as *const u8) };
+        let stack_b =
+            unsafe { core::ptr::read_volatile((USER_JIT_STACK_BASE + guard_bytes) as *const u8) };
         let stack_top_b = unsafe { core::ptr::read_volatile(stack_user_top as *const u8) };
         crate::serial::_print(format_args!(
             "[JIT-DBG] x64 preflight({}) map cr3=0x{:08x} tramp=0x{:02x} call=0x{:02x} code=0x{:02x} data=0x{:02x} mem=0x{:02x} stack=0x{:02x} top=0x{:02x}\n",
@@ -8867,11 +8957,7 @@ fn jit_x86_64_sandbox_preflight_with_pages(
     // Restore kernel-only visibility tags for the reusable trampoline/call/stack pages.
     memory_isolation::tag_jit_user_trampoline(trampoline_phys, paging::PAGE_SIZE, false)?;
     memory_isolation::tag_jit_user_state(call_phys, paging::PAGE_SIZE, false)?;
-    memory_isolation::tag_jit_user_stack(
-        stack_phys,
-        pages.stack_pages * paging::PAGE_SIZE,
-        false,
-    )?;
+    memory_isolation::tag_jit_user_stack(stack_phys, pages.stack_pages * paging::PAGE_SIZE, false)?;
 
     Ok(())
 }
@@ -8970,10 +9056,12 @@ pub fn jit_x86_64_call_user_path_probe() -> Result<&'static str, &'static str> {
         let stack_off = unsafe { core::ptr::addr_of!((*state_ptr).stack) as usize } - base;
         let sp_off = unsafe { core::ptr::addr_of!((*state_ptr).sp) as usize } - base;
         let locals_off = unsafe { core::ptr::addr_of!((*state_ptr).locals) as usize } - base;
-        let instr_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).instr_fuel) as usize } - base;
+        let instr_fuel_off =
+            unsafe { core::ptr::addr_of!((*state_ptr).instr_fuel) as usize } - base;
         let mem_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).mem_fuel) as usize } - base;
         let trap_off = unsafe { core::ptr::addr_of!((*state_ptr).trap_code) as usize } - base;
-        let shadow_stack_off = unsafe { core::ptr::addr_of!((*state_ptr).shadow_stack) as usize } - base;
+        let shadow_stack_off =
+            unsafe { core::ptr::addr_of!((*state_ptr).shadow_stack) as usize } - base;
         let shadow_sp_off = unsafe { core::ptr::addr_of!((*state_ptr).shadow_sp) as usize } - base;
 
         let call_ptr = pages.call as *mut JitUserCall;
@@ -9083,7 +9171,10 @@ pub fn jit_x86_64_call_user_path_probe() -> Result<&'static str, &'static str> {
             Ok("x86_64 JIT user trampoline/iret/int80 return path ok; callpage exec shim ok")
         }
         Ok(ret) => {
-            crate::serial::_print(format_args!("[JIT-DBG] x64 jitcall probe unexpected ret={}\n", ret));
+            crate::serial::_print(format_args!(
+                "[JIT-DBG] x64 jitcall probe unexpected ret={}\n",
+                ret
+            ));
             Err("x86_64 JIT user path returned unexpected value")
         }
         Err(e) => {
@@ -9162,7 +9253,8 @@ pub fn jit_handle_page_fault_x86_64(
         }
         let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
         *rip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u64;
-        *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16) as u64;
+        *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16)
+            as u64;
         return true;
     }
     // Kernel-mode JIT fuzz executes in ring0. If the faulting RIP is inside the
@@ -9201,7 +9293,8 @@ pub fn jit_handle_exception_x86_64(
         }
         let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
         *rip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u64;
-        *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16) as u64;
+        *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16)
+            as u64;
         return true;
     }
     // Kernel-mode JIT execution faults are converted into TRAP_MEM and resumed
@@ -9234,7 +9327,8 @@ pub fn jit_handle_timer_interrupt_x86_64(rip: &mut u64, cs: u64, rsp: &mut u64) 
         }
         let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
         *rip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u64;
-        *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16) as u64;
+        *rsp = (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16)
+            as u64;
         return true;
     }
 
@@ -9344,21 +9438,15 @@ pub fn jit_handle_exception(frame: &mut crate::idt_asm::InterruptFrame) -> bool 
         let stage = JIT_USER_DEBUG_STAGE.load(Ordering::SeqCst);
         crate::serial::_print(format_args!(
             "[JIT-DBG] user exception stage={} vector={} err=0x{:08x} eip=0x{:08x} esp=0x{:08x}\n",
-            stage,
-            frame.int_no,
-            frame.err_code,
-            frame.eip,
-            frame.user_esp
+            stage, frame.int_no, frame.err_code, frame.eip, frame.user_esp
         ));
     }
 
     let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
     frame.eax = 0;
     frame.eip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u32;
-    frame.user_esp = (USER_JIT_STACK_BASE
-        + guard_bytes
-        + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE)
-        - 4) as u32;
+    frame.user_esp =
+        (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 4) as u32;
     true
 }
 
@@ -9384,20 +9472,14 @@ pub fn jit_handle_timer_interrupt(frame: &mut crate::idt_asm::InterruptFrame) ->
         let stage = JIT_USER_DEBUG_STAGE.load(Ordering::SeqCst);
         crate::serial::_print(format_args!(
             "[JIT-DBG] user timeout stage={} start_tick={} now_tick={} eip=0x{:08x} esp=0x{:08x}\n",
-            stage,
-            start_tick,
-            now,
-            frame.eip,
-            frame.user_esp
+            stage, start_tick, now, frame.eip, frame.user_esp
         ));
     }
     let guard_bytes = USER_JIT_STACK_GUARD_PAGES * paging::PAGE_SIZE;
     frame.eax = 0;
     frame.eip = (USER_JIT_TRAMPOLINE_BASE + USER_JIT_TRAMPOLINE_FAULT_OFFSET) as u32;
-    frame.user_esp = (USER_JIT_STACK_BASE
-        + guard_bytes
-        + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE)
-        - 4) as u32;
+    frame.user_esp =
+        (USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 4) as u32;
     true
 }
 
@@ -9486,11 +9568,8 @@ pub(crate) fn call_jit_kernel(
     let flags = unsafe { x86_64_cli_save() };
     #[cfg(target_arch = "x86_64")]
     JIT_KERNEL_ENTER_TICK.store(crate::pit::get_ticks() as u32, Ordering::SeqCst);
-    let _fault_guard = JitFaultScope::enter(
-        trap_code,
-        jit_entry.exec_ptr as usize,
-        jit_entry.exec_len,
-    );
+    let _fault_guard =
+        JitFaultScope::enter(trap_code, jit_entry.exec_ptr as usize, jit_entry.exec_len);
     let ret = unsafe {
         (jit_entry.entry)(
             stack_ptr,
@@ -9508,9 +9587,13 @@ pub(crate) fn call_jit_kernel(
     #[cfg(target_arch = "x86_64")]
     JIT_KERNEL_ENTER_TICK.store(0, Ordering::SeqCst);
     #[cfg(not(target_arch = "x86_64"))]
-    unsafe { idt_asm::fast_sti_restore(flags) };
+    unsafe {
+        idt_asm::fast_sti_restore(flags)
+    };
     #[cfg(target_arch = "x86_64")]
-    unsafe { x86_64_sti_restore(flags) };
+    unsafe {
+        x86_64_sti_restore(flags)
+    };
     ret
 }
 
@@ -9600,9 +9683,7 @@ fn call_jit_user(
     if sandbox_slot.is_none() {
         *sandbox_slot = Some(arch_mmu::new_jit_sandbox()?);
     }
-    let sandbox = sandbox_slot
-        .as_mut()
-        .ok_or("JIT sandbox unavailable")?;
+    let sandbox = sandbox_slot.as_mut().ok_or("JIT sandbox unavailable")?;
 
     #[cfg(not(target_arch = "x86_64"))]
     let kernel_guard = paging::kernel_space().lock();
@@ -9631,24 +9712,24 @@ fn call_jit_user(
 
     jit_user_debug_set_stage(4);
     #[cfg(target_arch = "x86_64")]
-    let trampoline_phys = arch_mmu::x86_64_debug_virt_to_phys(pages.trampoline)
-        .ok_or("Trampoline not mapped")?;
+    let trampoline_phys =
+        arch_mmu::x86_64_debug_virt_to_phys(pages.trampoline).ok_or("Trampoline not mapped")?;
     #[cfg(not(target_arch = "x86_64"))]
     let trampoline_phys = kernel_space
         .virt_to_phys(pages.trampoline)
         .ok_or("Trampoline not mapped")?;
 
     #[cfg(target_arch = "x86_64")]
-    let call_phys = arch_mmu::x86_64_debug_virt_to_phys(pages.call)
-        .ok_or("Call page not mapped")?;
+    let call_phys =
+        arch_mmu::x86_64_debug_virt_to_phys(pages.call).ok_or("Call page not mapped")?;
     #[cfg(not(target_arch = "x86_64"))]
     let call_phys = kernel_space
         .virt_to_phys(pages.call)
         .ok_or("Call page not mapped")?;
 
     #[cfg(target_arch = "x86_64")]
-    let stack_phys = arch_mmu::x86_64_debug_virt_to_phys(pages.stack)
-        .ok_or("User stack not mapped")?;
+    let stack_phys =
+        arch_mmu::x86_64_debug_virt_to_phys(pages.stack).ok_or("User stack not mapped")?;
     #[cfg(not(target_arch = "x86_64"))]
     let stack_phys = kernel_space
         .virt_to_phys(pages.stack)
@@ -9656,8 +9737,7 @@ fn call_jit_user(
 
     let exec_ptr = jit_entry.exec_ptr as usize;
     #[cfg(target_arch = "x86_64")]
-    let exec_phys = arch_mmu::x86_64_debug_virt_to_phys(exec_ptr)
-        .ok_or("JIT exec not mapped")?;
+    let exec_phys = arch_mmu::x86_64_debug_virt_to_phys(exec_ptr).ok_or("JIT exec not mapped")?;
     #[cfg(not(target_arch = "x86_64"))]
     let exec_phys = kernel_space
         .virt_to_phys(exec_ptr)
@@ -9756,15 +9836,11 @@ fn call_jit_user(
         .checked_sub(USER_WASM_MEM_BASE)
         .ok_or("WASM memory window overflow")?;
 
-    let code_guard_total = code_guard
-        .checked_mul(2)
-        .ok_or("JIT code guard overflow")?;
+    let code_guard_total = code_guard.checked_mul(2).ok_or("JIT code guard overflow")?;
     if code_guard_total >= code_window {
         return Err("JIT code guard exceeds window");
     }
-    let data_guard_total = data_guard
-        .checked_mul(2)
-        .ok_or("JIT data guard overflow")?;
+    let data_guard_total = data_guard.checked_mul(2).ok_or("JIT data guard overflow")?;
     if data_guard_total >= data_window {
         return Err("JIT data guard exceeds window");
     }
@@ -9818,36 +9894,16 @@ fn call_jit_user(
         paging::PAGE_SIZE,
         false,
     )?;
-    sandbox.map_user_range_phys(
-        USER_JIT_CALL_BASE,
-        call_phys,
-        paging::PAGE_SIZE,
-        true,
-    )?;
+    sandbox.map_user_range_phys(USER_JIT_CALL_BASE, call_phys, paging::PAGE_SIZE, true)?;
     sandbox.map_user_range_phys(
         USER_JIT_STACK_BASE + guard_bytes,
         stack_phys + guard_bytes,
         USER_JIT_STACK_PAGES * paging::PAGE_SIZE,
         true,
     )?;
-    sandbox.map_user_range_phys(
-        code_base,
-        exec_phys,
-        exec_map_len,
-        false,
-    )?;
-    sandbox.map_user_range_phys(
-        data_base,
-        state_phys,
-        state_map_len,
-        true,
-    )?;
-    sandbox.map_user_range_phys(
-        mem_base,
-        mem_phys,
-        mem_map_len,
-        true,
-    )?;
+    sandbox.map_user_range_phys(code_base, exec_phys, exec_map_len, false)?;
+    sandbox.map_user_range_phys(data_base, state_phys, state_map_len, true)?;
+    sandbox.map_user_range_phys(mem_base, mem_phys, mem_map_len, true)?;
 
     let enclave_session = crate::enclave::open_jit_session(
         exec_phys,
@@ -9880,14 +9936,12 @@ fn call_jit_user(
     let stack_off = unsafe { core::ptr::addr_of!((*state_ptr).stack) as usize } - base;
     let sp_off = unsafe { core::ptr::addr_of!((*state_ptr).sp) as usize } - base;
     let locals_off = unsafe { core::ptr::addr_of!((*state_ptr).locals) as usize } - base;
-    let instr_fuel_off =
-        unsafe { core::ptr::addr_of!((*state_ptr).instr_fuel) as usize } - base;
+    let instr_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).instr_fuel) as usize } - base;
     let mem_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).mem_fuel) as usize } - base;
     let trap_off = unsafe { core::ptr::addr_of!((*state_ptr).trap_code) as usize } - base;
     let shadow_stack_off =
         unsafe { core::ptr::addr_of!((*state_ptr).shadow_stack) as usize } - base;
-    let shadow_sp_off =
-        unsafe { core::ptr::addr_of!((*state_ptr).shadow_sp) as usize } - base;
+    let shadow_sp_off = unsafe { core::ptr::addr_of!((*state_ptr).shadow_sp) as usize } - base;
 
     let user_mem_ptr = mem_base + mem_offset;
 
@@ -10007,10 +10061,8 @@ fn call_jit_user(
     jit_user_debug_set_stage(9);
     let _ = crate::arch::mmu::set_page_table_root(sandbox_pd as usize);
 
-    let user_stack_top = USER_JIT_STACK_BASE
-        + guard_bytes
-        + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE)
-        - 16;
+    let user_stack_top =
+        USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16;
     JIT_USER_ENTER_TICK.store(crate::pit::get_ticks() as u32, Ordering::SeqCst);
     unsafe {
         process_asm::jit_user_enter(
@@ -10041,7 +10093,19 @@ fn call_jit_user(
 
     jit_user_debug_set_stage(10);
     let mut handoff_ok = true;
-    let (save_seq, save_esp, save_eip, sys_seq, sys_path, sys_flags, sys_esp, sys_eip, sys_nr, sys_from_eip, sys_from_cs) = unsafe {
+    let (
+        save_seq,
+        save_esp,
+        save_eip,
+        sys_seq,
+        sys_path,
+        sys_flags,
+        sys_esp,
+        sys_eip,
+        sys_nr,
+        sys_from_eip,
+        sys_from_cs,
+    ) = unsafe {
         (
             JIT_USER_DBG_SAVE_SEQ,
             JIT_USER_DBG_SAVE_ESP,
@@ -10120,14 +10184,10 @@ fn call_jit_user(
             || stale_ret_esp != save_esp
             || stale_ret_eip != save_eip;
         if clear_anomaly || call_seq <= JIT_USER_CALL_LOG_LIMIT {
-        crate::serial::_print(format_args!(
-            "[JIT-DBG] handoff-clear seq={} pending={} active={} ret=0x{:016x}/0x{:016x}\n",
-            call_seq,
-            stale_pending,
-            stale_active,
-            stale_ret_esp,
-            stale_ret_eip,
-        ));
+            crate::serial::_print(format_args!(
+                "[JIT-DBG] handoff-clear seq={} pending={} active={} ret=0x{:016x}/0x{:016x}\n",
+                call_seq, stale_pending, stale_active, stale_ret_esp, stale_ret_eip,
+            ));
         }
     }
 
@@ -10189,6 +10249,44 @@ fn hash_code(code: &[u8], locals_total: usize) -> u64 {
     hash
 }
 
+fn hash_jit_type_signatures(type_sigs: &[crate::wasm_jit::JitTypeSignature]) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    for sig in type_sigs {
+        hash ^= sig.param_count as u64;
+        hash = hash.wrapping_mul(1099511628211);
+        hash ^= sig.result_count as u64;
+        hash = hash.wrapping_mul(1099511628211);
+        hash ^= if sig.all_i32 { 1 } else { 0 };
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash ^= type_sigs.len() as u64;
+    hash = hash.wrapping_mul(1099511628211);
+    hash
+}
+
+fn collect_jit_type_signatures(module: &WasmModule) -> Vec<crate::wasm_jit::JitTypeSignature> {
+    let mut out = Vec::with_capacity(module.type_count);
+    let mut idx = 0usize;
+    while idx < module.type_count {
+        let sig = module.type_signatures.get(idx).and_then(|entry| *entry);
+        if let Some(sig) = sig {
+            out.push(crate::wasm_jit::JitTypeSignature {
+                param_count: sig.param_count,
+                result_count: sig.result_count,
+                all_i32: sig.all_i32,
+            });
+        } else {
+            out.push(crate::wasm_jit::JitTypeSignature {
+                param_count: 0,
+                result_count: 0,
+                all_i32: false,
+            });
+        }
+        idx += 1;
+    }
+    out
+}
+
 fn hash_memory(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 14695981039346656037;
     for &b in bytes {
@@ -10207,10 +10305,19 @@ fn hash_memory_fuzz(bytes: &[u8]) -> u64 {
     hash
 }
 
-fn jit_cache_get(hash: u64, code: &[u8], locals_total: usize) -> Option<JitExecInfo> {
+fn jit_cache_get(
+    hash: u64,
+    code: &[u8],
+    locals_total: usize,
+    type_sig_hash: u64,
+) -> Option<JitExecInfo> {
     let cache = JIT_CACHE.lock();
     for entry in cache.entries.iter() {
-        if entry.hash == hash && entry.locals_total == locals_total && entry.code_len == code.len() {
+        if entry.hash == hash
+            && entry.locals_total == locals_total
+            && entry.type_sig_hash == type_sig_hash
+            && entry.code_len == code.len()
+        {
             if entry.func.wasm_code != code {
                 continue;
             }
@@ -10227,11 +10334,17 @@ fn jit_cache_get(hash: u64, code: &[u8], locals_total: usize) -> Option<JitExecI
     None
 }
 
-fn jit_cache_get_or_compile(hash: u64, code: &[u8], locals_total: usize) -> Option<JitExecInfo> {
-    if let Some(entry) = jit_cache_get(hash, code, locals_total) {
+fn jit_cache_get_or_compile(
+    hash: u64,
+    code: &[u8],
+    locals_total: usize,
+    type_sigs: &[crate::wasm_jit::JitTypeSignature],
+    type_sig_hash: u64,
+) -> Option<JitExecInfo> {
+    if let Some(entry) = jit_cache_get(hash, code, locals_total, type_sig_hash) {
         return Some(entry);
     }
-    let jit = match crate::wasm_jit::compile(code, locals_total) {
+    let jit = match crate::wasm_jit::compile_with_types(code, locals_total, type_sigs) {
         Ok(j) => j,
         Err(_) => {
             jit_stats().lock().failed += 1;
@@ -10243,6 +10356,7 @@ fn jit_cache_get_or_compile(hash: u64, code: &[u8], locals_total: usize) -> Opti
         cache.entries.push(JitCacheEntry {
             hash,
             locals_total,
+            type_sig_hash,
             code_len: code.len(),
             func: jit,
         });
@@ -10257,6 +10371,7 @@ fn jit_cache_get_or_compile(hash: u64, code: &[u8], locals_total: usize) -> Opti
     cache.entries[idx] = JitCacheEntry {
         hash,
         locals_total,
+        type_sig_hash,
         code_len: code.len(),
         func: jit,
     };
@@ -10286,13 +10401,15 @@ pub fn jit_benchmark() -> Result<(u64, u64), &'static str> {
     code.push(Opcode::End as u8);
 
     module.load(&code).map_err(|_| "Module load failed")?;
-    module.add_function(Function {
-        code_offset: 0,
-        code_len: code.len(),
-        param_count: 0,
-        result_count: 1,
-        local_count: 0,
-    }).map_err(|_| "Function add failed")?;
+    module
+        .add_function(Function {
+            code_offset: 0,
+            code_len: code.len(),
+            param_count: 0,
+            result_count: 1,
+            local_count: 0,
+        })
+        .map_err(|_| "Function add failed")?;
 
     let instance_id = wasm_runtime()
         .instantiate_module(module, ProcessId(1))
@@ -10693,6 +10810,72 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         code
     }
 
+    fn build_typed_block_br_i32_result_unwind_add() -> Vec<u8> {
+        // i32.const 7
+        // block (result i32)
+        //   i32.const 99
+        //   i32.const 11
+        //   br 0          ;; keep 11, drop transient 99
+        //   drop
+        //   drop
+        // end
+        // i32.add         ;; 7 + 11 = 18
+        // end
+        let mut code = Vec::with_capacity(28);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 7);
+        code.push(Opcode::Block as u8);
+        code.push(0x7F); // i32 block result
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 99);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 11);
+        code.push(Opcode::Br as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::Drop as u8);
+        code.push(Opcode::Drop as u8);
+        code.push(Opcode::End as u8); // end block
+        code.push(Opcode::I32Add as u8);
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
+    fn build_typed_block_br_if_i32_result_unwind_add(cond: i32, fallthrough: i32) -> Vec<u8> {
+        // i32.const 7
+        // block (result i32)
+        //   i32.const 99
+        //   i32.const 11
+        //   i32.const cond
+        //   br_if 0       ;; taken: keep 11, drop transient 99
+        //   drop
+        //   drop
+        //   i32.const fallthrough
+        // end
+        // i32.add
+        // end
+        let mut code = Vec::with_capacity(36);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 7);
+        code.push(Opcode::Block as u8);
+        code.push(0x7F); // i32 block result
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 99);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 11);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, cond);
+        code.push(Opcode::BrIf as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::Drop as u8);
+        code.push(Opcode::Drop as u8);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, fallthrough);
+        code.push(Opcode::End as u8); // end block
+        code.push(Opcode::I32Add as u8);
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
     fn build_if_br_local() -> Vec<u8> {
         // i32.const 0; local.set 0;
         // i32.const 1; if
@@ -10996,44 +11179,247 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         expected: Expected,
     }
 
-    let cases: [Case; 37] = [
-        Case { name: "eq_0_0", code: build_binop(Opcode::I32Eq, 0, 0), locals_total: 0, expected: Expected::Value(1) },
-        Case { name: "ne_1_2", code: build_binop(Opcode::I32Ne, 1, 2), locals_total: 0, expected: Expected::Value(1) },
-        Case { name: "lt_s_neg", code: build_binop(Opcode::I32LtS, -1, 0), locals_total: 0, expected: Expected::Value(1) },
-        Case { name: "gt_s_neg", code: build_binop(Opcode::I32GtS, -1, 0), locals_total: 0, expected: Expected::Value(0) },
-        Case { name: "le_s_eq", code: build_binop(Opcode::I32LeS, 7, 7), locals_total: 0, expected: Expected::Value(1) },
-        Case { name: "ge_s_pos", code: build_binop(Opcode::I32GeS, 9, -3), locals_total: 0, expected: Expected::Value(1) },
-        Case { name: "lt_u_wrap", code: build_binop(Opcode::I32LtU, -1, 0), locals_total: 0, expected: Expected::Value(0) },
-        Case { name: "gt_u_wrap", code: build_binop(Opcode::I32GtU, -1, 0), locals_total: 0, expected: Expected::Value(1) },
-        Case { name: "le_u_eq", code: build_binop(Opcode::I32LeU, -1, -1), locals_total: 0, expected: Expected::Value(1) },
-        Case { name: "ge_u_small", code: build_binop(Opcode::I32GeU, 1, 2), locals_total: 0, expected: Expected::Value(0) },
-        Case { name: "shl_masked_33", code: build_local_tee_shift(Opcode::I32Shl, 1, 33), locals_total: 1, expected: Expected::Value(2) },
-        Case { name: "shru_masked_40", code: build_local_tee_shift(Opcode::I32ShrU, -1, 40), locals_total: 1, expected: Expected::Value(0x00FF_FFFFu32 as i32) },
-        Case { name: "divu_wrap", code: build_binop(Opcode::I32DivU, -1, 2), locals_total: 0, expected: Expected::Value(0x7FFF_FFFF) },
-        Case { name: "rems_neg", code: build_binop(Opcode::I32RemS, -7, 3), locals_total: 0, expected: Expected::Value(-1) },
-        Case { name: "remu_wrap", code: build_binop(Opcode::I32RemU, -1, 2), locals_total: 0, expected: Expected::Value(1) },
-        Case { name: "select_true", code: build_select(11, 22, 1), locals_total: 0, expected: Expected::Value(11) },
-        Case { name: "select_false", code: build_select(11, 22, 0), locals_total: 0, expected: Expected::Value(22) },
-        Case { name: "if_else_true", code: build_if_else_local(1, 11, 22), locals_total: 1, expected: Expected::Value(11) },
-        Case { name: "if_else_false", code: build_if_else_local(0, 11, 22), locals_total: 1, expected: Expected::Value(22) },
-        Case { name: "if_br_skip_tail", code: build_if_br_local(), locals_total: 1, expected: Expected::Value(33) },
-        Case { name: "if_br_if_taken", code: build_if_br_if_local(1), locals_total: 1, expected: Expected::Value(33) },
-        Case { name: "if_br_if_fallthrough", code: build_if_br_if_local(0), locals_total: 1, expected: Expected::Value(44) },
-        Case { name: "block_br_skip_tail", code: build_block_br_skip_tail(), locals_total: 1, expected: Expected::Value(77) },
-        Case { name: "loop_countdown_sum", code: build_loop_countdown_sum(), locals_total: 2, expected: Expected::Value(3) },
-        Case { name: "block_br_unwind_add", code: build_block_br_unwind_add(), locals_total: 0, expected: Expected::Value(29) },
-        Case { name: "block_br_if_unwind_add", code: build_block_br_if_unwind_add(), locals_total: 0, expected: Expected::Value(29) },
-        Case { name: "nested_block_br_depth1_unwind_add", code: build_nested_block_br_depth1_unwind_add(), locals_total: 0, expected: Expected::Value(29) },
-        Case { name: "nested_block_br_if_depth1_taken", code: build_nested_block_br_if_depth1_unwind_add(1), locals_total: 0, expected: Expected::Value(29) },
-        Case { name: "nested_block_br_if_depth1_fallthrough", code: build_nested_block_br_if_depth1_unwind_add(0), locals_total: 0, expected: Expected::Value(129) },
-        Case { name: "block_typed_i32_result", code: build_typed_block_i32_result(42), locals_total: 0, expected: Expected::Value(42) },
-        Case { name: "loop_typed_i32_result", code: build_typed_loop_i32_result(9), locals_total: 0, expected: Expected::Value(9) },
-        Case { name: "if_typed_i32_true", code: build_typed_if_else_i32_result(1, 11, 22), locals_total: 0, expected: Expected::Value(11) },
-        Case { name: "if_typed_i32_false", code: build_typed_if_else_i32_result(0, 11, 22), locals_total: 0, expected: Expected::Value(22) },
-        Case { name: "memory_size_match", code: build_memory_size(), locals_total: 0, expected: Expected::MatchOk },
-        Case { name: "memory_grow_zero_returns_old_pages", code: build_memory_grow(0), locals_total: 0, expected: Expected::Value(1) },
-        Case { name: "memory_grow_fail_returns_minus1", code: build_memory_grow(1), locals_total: 0, expected: Expected::Value(-1) },
-        Case { name: "unreachable_trap", code: build_unreachable(), locals_total: 0, expected: Expected::AnyErr },
+    let cases: [Case; 40] = [
+        Case {
+            name: "eq_0_0",
+            code: build_binop(Opcode::I32Eq, 0, 0),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "ne_1_2",
+            code: build_binop(Opcode::I32Ne, 1, 2),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "lt_s_neg",
+            code: build_binop(Opcode::I32LtS, -1, 0),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "gt_s_neg",
+            code: build_binop(Opcode::I32GtS, -1, 0),
+            locals_total: 0,
+            expected: Expected::Value(0),
+        },
+        Case {
+            name: "le_s_eq",
+            code: build_binop(Opcode::I32LeS, 7, 7),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "ge_s_pos",
+            code: build_binop(Opcode::I32GeS, 9, -3),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "lt_u_wrap",
+            code: build_binop(Opcode::I32LtU, -1, 0),
+            locals_total: 0,
+            expected: Expected::Value(0),
+        },
+        Case {
+            name: "gt_u_wrap",
+            code: build_binop(Opcode::I32GtU, -1, 0),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "le_u_eq",
+            code: build_binop(Opcode::I32LeU, -1, -1),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "ge_u_small",
+            code: build_binop(Opcode::I32GeU, 1, 2),
+            locals_total: 0,
+            expected: Expected::Value(0),
+        },
+        Case {
+            name: "shl_masked_33",
+            code: build_local_tee_shift(Opcode::I32Shl, 1, 33),
+            locals_total: 1,
+            expected: Expected::Value(2),
+        },
+        Case {
+            name: "shru_masked_40",
+            code: build_local_tee_shift(Opcode::I32ShrU, -1, 40),
+            locals_total: 1,
+            expected: Expected::Value(0x00FF_FFFFu32 as i32),
+        },
+        Case {
+            name: "divu_wrap",
+            code: build_binop(Opcode::I32DivU, -1, 2),
+            locals_total: 0,
+            expected: Expected::Value(0x7FFF_FFFF),
+        },
+        Case {
+            name: "rems_neg",
+            code: build_binop(Opcode::I32RemS, -7, 3),
+            locals_total: 0,
+            expected: Expected::Value(-1),
+        },
+        Case {
+            name: "remu_wrap",
+            code: build_binop(Opcode::I32RemU, -1, 2),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "select_true",
+            code: build_select(11, 22, 1),
+            locals_total: 0,
+            expected: Expected::Value(11),
+        },
+        Case {
+            name: "select_false",
+            code: build_select(11, 22, 0),
+            locals_total: 0,
+            expected: Expected::Value(22),
+        },
+        Case {
+            name: "if_else_true",
+            code: build_if_else_local(1, 11, 22),
+            locals_total: 1,
+            expected: Expected::Value(11),
+        },
+        Case {
+            name: "if_else_false",
+            code: build_if_else_local(0, 11, 22),
+            locals_total: 1,
+            expected: Expected::Value(22),
+        },
+        Case {
+            name: "if_br_skip_tail",
+            code: build_if_br_local(),
+            locals_total: 1,
+            expected: Expected::Value(33),
+        },
+        Case {
+            name: "if_br_if_taken",
+            code: build_if_br_if_local(1),
+            locals_total: 1,
+            expected: Expected::Value(33),
+        },
+        Case {
+            name: "if_br_if_fallthrough",
+            code: build_if_br_if_local(0),
+            locals_total: 1,
+            expected: Expected::Value(44),
+        },
+        Case {
+            name: "block_br_skip_tail",
+            code: build_block_br_skip_tail(),
+            locals_total: 1,
+            expected: Expected::Value(77),
+        },
+        Case {
+            name: "loop_countdown_sum",
+            code: build_loop_countdown_sum(),
+            locals_total: 2,
+            expected: Expected::Value(3),
+        },
+        Case {
+            name: "block_br_unwind_add",
+            code: build_block_br_unwind_add(),
+            locals_total: 0,
+            expected: Expected::Value(29),
+        },
+        Case {
+            name: "block_br_if_unwind_add",
+            code: build_block_br_if_unwind_add(),
+            locals_total: 0,
+            expected: Expected::Value(29),
+        },
+        Case {
+            name: "nested_block_br_depth1_unwind_add",
+            code: build_nested_block_br_depth1_unwind_add(),
+            locals_total: 0,
+            expected: Expected::Value(29),
+        },
+        Case {
+            name: "nested_block_br_if_depth1_taken",
+            code: build_nested_block_br_if_depth1_unwind_add(1),
+            locals_total: 0,
+            expected: Expected::Value(29),
+        },
+        Case {
+            name: "nested_block_br_if_depth1_fallthrough",
+            code: build_nested_block_br_if_depth1_unwind_add(0),
+            locals_total: 0,
+            expected: Expected::Value(129),
+        },
+        Case {
+            name: "block_typed_i32_result",
+            code: build_typed_block_i32_result(42),
+            locals_total: 0,
+            expected: Expected::Value(42),
+        },
+        Case {
+            name: "loop_typed_i32_result",
+            code: build_typed_loop_i32_result(9),
+            locals_total: 0,
+            expected: Expected::Value(9),
+        },
+        Case {
+            name: "if_typed_i32_true",
+            code: build_typed_if_else_i32_result(1, 11, 22),
+            locals_total: 0,
+            expected: Expected::Value(11),
+        },
+        Case {
+            name: "if_typed_i32_false",
+            code: build_typed_if_else_i32_result(0, 11, 22),
+            locals_total: 0,
+            expected: Expected::Value(22),
+        },
+        Case {
+            name: "block_typed_br_i32_unwind_add",
+            code: build_typed_block_br_i32_result_unwind_add(),
+            locals_total: 0,
+            expected: Expected::Value(18),
+        },
+        Case {
+            name: "block_typed_br_if_i32_taken",
+            code: build_typed_block_br_if_i32_result_unwind_add(1, 22),
+            locals_total: 0,
+            expected: Expected::Value(18),
+        },
+        Case {
+            name: "block_typed_br_if_i32_fallthrough",
+            code: build_typed_block_br_if_i32_result_unwind_add(0, 22),
+            locals_total: 0,
+            expected: Expected::Value(29),
+        },
+        Case {
+            name: "memory_size_match",
+            code: build_memory_size(),
+            locals_total: 0,
+            expected: Expected::MatchOk,
+        },
+        Case {
+            name: "memory_grow_zero_returns_old_pages",
+            code: build_memory_grow(0),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "memory_grow_fail_returns_minus1",
+            code: build_memory_grow(1),
+            locals_total: 0,
+            expected: Expected::Value(-1),
+        },
+        Case {
+            name: "unreachable_trap",
+            code: build_unreachable(),
+            locals_total: 0,
+            expected: Expected::AnyErr,
+        },
     ];
 
     let mut base_module = WasmModule::new();
@@ -11062,20 +11448,23 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         }
     };
 
-    let mut compiler = crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
-        .map_err(|_| "jit compare/shift self-test: compiler init failed")?;
+    let mut compiler =
+        crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
+            .map_err(|_| "jit compare/shift self-test: compiler init failed")?;
 
     let mut idx = 0usize;
     while idx < cases.len() {
         let case = &cases[idx];
 
-        let interp = wasm_runtime().get_instance_mut(interp_id, |instance| -> Result<i32, WasmError> {
-            instance.prepare_fuzz();
-            instance.load_fuzz_program(&case.code, case.locals_total)?;
-            instance.enable_jit(false);
-            instance.call(0)?;
-            instance.stack.pop()?.as_i32()
-        }).map_err(|_| "jit compare/shift self-test: interp instance missing")?;
+        let interp = wasm_runtime()
+            .get_instance_mut(interp_id, |instance| -> Result<i32, WasmError> {
+                instance.prepare_fuzz();
+                instance.load_fuzz_program(&case.code, case.locals_total)?;
+                instance.enable_jit(false);
+                instance.call(0)?;
+                instance.stack.pop()?.as_i32()
+            })
+            .map_err(|_| "jit compare/shift self-test: interp instance missing")?;
 
         let entry = compiler
             .compile(&case.code, case.locals_total)
@@ -11086,18 +11475,19 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
             exec_len: compiler.exec_len(),
         };
 
-        let jit = wasm_runtime().get_instance_mut(jit_id, |instance| -> Result<i32, WasmError> {
-            instance.prepare_fuzz();
-            instance.load_fuzz_program(&case.code, case.locals_total)?;
-            instance.run_jit_entry(0, jit_exec)?;
-            instance.stack.pop()?.as_i32()
-        }).map_err(|_| "jit compare/shift self-test: jit instance missing")?;
+        let jit = wasm_runtime()
+            .get_instance_mut(jit_id, |instance| -> Result<i32, WasmError> {
+                instance.prepare_fuzz();
+                instance.load_fuzz_program(&case.code, case.locals_total)?;
+                instance.run_jit_entry(0, jit_exec)?;
+                instance.stack.pop()?.as_i32()
+            })
+            .map_err(|_| "jit compare/shift self-test: jit instance missing")?;
 
         let case_ok = match case.expected {
             Expected::Value(expected) => interp == Ok(expected) && jit == Ok(expected),
             Expected::Trap => {
-                matches!(interp, Err(WasmError::Trap))
-                    && matches!(jit, Err(WasmError::Trap))
+                matches!(interp, Err(WasmError::Trap)) && matches!(jit, Err(WasmError::Trap))
             }
             Expected::AnyErr => interp.is_err() && jit.is_err(),
             Expected::MatchOk => match (interp, jit) {
@@ -11130,6 +11520,140 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
     );
     let _ = wasm_runtime().destroy(interp_id);
     let _ = wasm_runtime().destroy(jit_id);
+    Ok(())
+}
+
+pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
+    struct JitConfigGuard {
+        enabled: bool,
+        hot_threshold: u32,
+        user_mode: bool,
+    }
+    impl Drop for JitConfigGuard {
+        fn drop(&mut self) {
+            let mut cfg = jit_config().lock();
+            cfg.enabled = self.enabled;
+            cfg.hot_threshold = self.hot_threshold;
+            cfg.user_mode = self.user_mode;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    struct JitModeGuard {
+        prev_user_mode: bool,
+    }
+    #[cfg(target_arch = "x86_64")]
+    impl Drop for JitModeGuard {
+        fn drop(&mut self) {
+            let mut cfg = jit_config().lock();
+            cfg.user_mode = self.prev_user_mode;
+        }
+    }
+
+    let guard = {
+        let mut cfg = jit_config().lock();
+        let guard = JitConfigGuard {
+            enabled: cfg.enabled,
+            hot_threshold: cfg.hot_threshold,
+            user_mode: cfg.user_mode,
+        };
+        cfg.enabled = true;
+        cfg.hot_threshold = 0;
+        guard
+    };
+
+    #[cfg(target_arch = "x86_64")]
+    let _jit_mode_guard = {
+        let mut cfg = jit_config().lock();
+        let guard = JitModeGuard {
+            prev_user_mode: cfg.user_mode,
+        };
+        cfg.user_mode = false;
+        guard
+    };
+
+    let cases: [(&str, &[u8], i32); 2] = [
+        (
+            "typed_block_typeidx",
+            &WASM_CONFORMANCE_MODULE_TYPED_BLOCK,
+            42,
+        ),
+        (
+            "typed_if_implicit_else_typeidx",
+            &WASM_CONFORMANCE_MODULE_TYPED_IF_IMPLICIT_ELSE,
+            42,
+        ),
+    ];
+
+    let mut idx = 0usize;
+    while idx < cases.len() {
+        let (name, bytes, expected) = cases[idx];
+
+        let mut interp_module = WasmModule::new();
+        interp_module
+            .load_binary(bytes)
+            .map_err(|_| "jit typed blocktype self-test: parse failed")?;
+        let interp_id = wasm_runtime()
+            .instantiate_module(interp_module, ProcessId(1))
+            .map_err(|_| "jit typed blocktype self-test: interp instantiate failed")?;
+
+        let mut jit_module = WasmModule::new();
+        jit_module
+            .load_binary(bytes)
+            .map_err(|_| "jit typed blocktype self-test: parse failed")?;
+        let jit_id = match wasm_runtime().instantiate_module(jit_module, ProcessId(1)) {
+            Ok(id) => id,
+            Err(_) => {
+                let _ = wasm_runtime().destroy(interp_id);
+                return Err("jit typed blocktype self-test: jit instantiate failed");
+            }
+        };
+
+        let interp = wasm_runtime()
+            .get_instance_mut(interp_id, |instance| -> Result<i32, WasmError> {
+                instance.stack.clear();
+                instance.enable_jit(false);
+                instance.call(0)?;
+                instance.stack.pop()?.as_i32()
+            })
+            .map_err(|_| "jit typed blocktype self-test: interp instance missing")?;
+
+        let stats_before = {
+            let stats = jit_stats().lock();
+            (stats.jit_calls, stats.failed)
+        };
+        let jit = wasm_runtime()
+            .get_instance_mut(jit_id, |instance| -> Result<i32, WasmError> {
+                instance.stack.clear();
+                instance.enable_jit(true);
+                instance.call(0)?;
+                instance.stack.pop()?.as_i32()
+            })
+            .map_err(|_| "jit typed blocktype self-test: jit instance missing")?;
+        let stats_after = {
+            let stats = jit_stats().lock();
+            (stats.jit_calls, stats.failed)
+        };
+
+        let _ = wasm_runtime().destroy(interp_id);
+        let _ = wasm_runtime().destroy(jit_id);
+
+        if interp != Ok(expected) || jit != Ok(expected) {
+            let _ = name;
+            drop(guard);
+            return Err("jit typed blocktype self-test: result mismatch");
+        }
+        if stats_after.0 <= stats_before.0 || stats_after.1 != stats_before.1 {
+            let _ = name;
+            drop(guard);
+            return Err("jit typed blocktype self-test: JIT path not exercised");
+        }
+
+        idx += 1;
+    }
+
+    crate::serial_println!("[WASM-JIT] typed-blocktypes total={}", cases.len());
+    drop(guard);
     Ok(())
 }
 
@@ -11527,9 +12051,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             while s0 <= MAX_ABSTRACT_STACK {
                 let mut i = 0usize;
                 while i < JIT_FUZZ_OPCODE_BINS {
-                    if let Some(s1) =
-                        guided_choice_step_abstract(s0, locals_total, i as u8)
-                    {
+                    if let Some(s1) = guided_choice_step_abstract(s0, locals_total, i as u8) {
                         let mut j = 0usize;
                         while j < JIT_FUZZ_OPCODE_BINS {
                             if guided_choice_step_abstract(s1, locals_total, j as u8).is_some() {
@@ -11885,7 +12407,8 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         while pc < code.len() {
             let opcode_byte = code[pc];
             pc += 1;
-            let opcode = Opcode::from_byte(opcode_byte).ok_or(WasmError::UnknownOpcode(opcode_byte))?;
+            let opcode =
+                Opcode::from_byte(opcode_byte).ok_or(WasmError::UnknownOpcode(opcode_byte))?;
             match opcode {
                 Opcode::Nop
                 | Opcode::Drop
@@ -11948,7 +12471,8 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     fn jit_fuzz_code_has_memory_ops(code: &[u8]) -> bool {
         // Conservative byte scan is sufficient for retry heuristics: false positives
         // only reduce retries, but false negatives are unlikely for the short fuzz programs.
-        code.iter().any(|b| *b == (Opcode::I32Load as u8) || *b == (Opcode::I32Store as u8))
+        code.iter()
+            .any(|b| *b == (Opcode::I32Load as u8) || *b == (Opcode::I32Store as u8))
     }
 
     #[inline]
@@ -12009,7 +12533,11 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     let (interp_id, jit_id) = ensure_fuzz_instances()?;
     #[cfg(target_arch = "x86_64")]
     if x64_diag {
-        crate::serial_println!("[X64-JF] stage=ensure-instances-done interp={} jit={}", interp_id, jit_id);
+        crate::serial_println!(
+            "[X64-JF] stage=ensure-instances-done interp={} jit={}",
+            interp_id,
+            jit_id
+        );
     }
 
     let mut scratch_slot = JIT_FUZZ_SCRATCH.lock();
@@ -12071,8 +12599,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
     let (admissible_edge_matrix, admissible_edge_witness, admissible_edge_total) =
         compute_jit_fuzz_admissible_edges();
     stats.opcode_edges_admissible_total = admissible_edge_total;
-    let mut admissible_edge_order: Vec<usize> =
-        Vec::with_capacity(admissible_edge_total as usize);
+    let mut admissible_edge_order: Vec<usize> = Vec::with_capacity(admissible_edge_total as usize);
     let mut edge_idx = 0usize;
     while edge_idx < admissible_edge_matrix.len() {
         if admissible_edge_matrix[edge_idx] {
@@ -12158,262 +12685,262 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             let ops = 8 + (rng.next_u32() % 32) as usize;
 
             for _ in 0..ops {
-            // Keep enough headroom for the largest generated opcode sequence:
-            // bounded i32.store rewrite with local temp and immediates.
-            if code.len() + 40 >= MAX_FUZZ_CODE_SIZE {
-                break;
-            }
-            let choice = choose_guided_choice_with_edge_frontier(
-                &mut rng,
-                choice_trace.last().copied(),
-                &opcode_hits,
-                &edge_seen,
-                &admissible_edge_matrix,
-            );
-            let mut emitted_choice: Option<u8> = None;
-            match choice {
-                0 => {
-                    code.push(Opcode::Nop as u8);
-                    emitted_choice = Some(0);
+                // Keep enough headroom for the largest generated opcode sequence:
+                // bounded i32.store rewrite with local temp and immediates.
+                if code.len() + 40 >= MAX_FUZZ_CODE_SIZE {
+                    break;
                 }
-                1 => {
-                    if stack_depth > 0 {
-                        code.push(Opcode::Drop as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(1);
-                    } else {
-                        code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(code, rng.next_i32());
-                        stack_depth += 1;
-                        emitted_choice = Some(1);
+                let choice = choose_guided_choice_with_edge_frontier(
+                    &mut rng,
+                    choice_trace.last().copied(),
+                    &opcode_hits,
+                    &edge_seen,
+                    &admissible_edge_matrix,
+                );
+                let mut emitted_choice: Option<u8> = None;
+                match choice {
+                    0 => {
+                        code.push(Opcode::Nop as u8);
+                        emitted_choice = Some(0);
                     }
-                }
-                2 => {
-                    if stack_depth < (MAX_STACK_DEPTH as i32) - 1 {
-                        code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(code, rng.next_i32());
-                        stack_depth += 1;
-                        emitted_choice = Some(2);
-                    }
-                }
-                3 => {
-                    if stack_depth >= 2 {
-                        code.push(Opcode::I32Add as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(3);
-                    }
-                }
-                4 => {
-                    if stack_depth >= 2 {
-                        code.push(Opcode::I32Sub as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(4);
-                    }
-                }
-                5 => {
-                    if stack_depth >= 2 {
-                        code.push(Opcode::I32Mul as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(5);
-                    }
-                }
-                6 => {
-                    if stack_depth >= 2 {
-                        code.push(Opcode::I32And as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(6);
-                    }
-                }
-                7 => {
-                    if stack_depth >= 2 {
-                        code.push(Opcode::I32Or as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(7);
-                    }
-                }
-                8 => {
-                    if stack_depth >= 2 {
-                        code.push(Opcode::I32Xor as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(8);
-                    }
-                }
-                9 => {
-                    if stack_depth >= 1 {
-                        code.push(Opcode::I32Eqz as u8);
-                        emitted_choice = Some(9);
-                    }
-                }
-                10 => {
-                    if stack_depth >= 1 {
-                        // Keep memory accesses bounded and deterministic:
-                        // mask address to <= 0xFFFC before load.
-                        code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(code, 0xFFFC);
-                        stack_depth += 1;
-                        code.push(Opcode::I32And as u8);
-                        stack_depth -= 1;
-                        code.push(Opcode::I32Load as u8);
-                        push_uleb128(code, 0);
-                        push_uleb128(code, 0);
-                        emitted_choice = Some(10);
-                    }
-                }
-                11 => {
-                    if stack_depth >= 2 && locals_total > 0 {
-                        // Store needs stack order [..., addr, value].
-                        // Save value in a local, bound addr, reload value, then store.
-                        let tmp_idx = (rng.next_u32() as usize % locals_total) as u32;
-                        code.push(Opcode::LocalSet as u8);
-                        push_uleb128(code, tmp_idx);
-                        stack_depth -= 1;
-                        code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(code, 0xFFFC);
-                        stack_depth += 1;
-                        code.push(Opcode::I32And as u8);
-                        stack_depth -= 1;
-                        code.push(Opcode::LocalGet as u8);
-                        push_uleb128(code, tmp_idx);
-                        stack_depth += 1;
-                        code.push(Opcode::I32Store as u8);
-                        push_uleb128(code, 0);
-                        push_uleb128(code, 0);
-                        stack_depth -= 2;
-                        emitted_choice = Some(11);
-                    }
-                }
-                12 => {
-                    if locals_total > 0 {
-                        code.push(Opcode::LocalGet as u8);
-                        push_uleb128(code, (rng.next_u32() as usize % locals_total) as u32);
-                        stack_depth += 1;
-                        emitted_choice = Some(12);
-                    }
-                }
-                13 => {
-                    if locals_total > 0 && stack_depth > 0 {
-                        code.push(Opcode::LocalSet as u8);
-                        push_uleb128(code, (rng.next_u32() as usize % locals_total) as u32);
-                        stack_depth -= 1;
-                        emitted_choice = Some(13);
-                    }
-                }
-                14 => {
-                    if locals_total > 0 && stack_depth > 0 {
-                        code.push(Opcode::LocalTee as u8);
-                        push_uleb128(code, (rng.next_u32() as usize % locals_total) as u32);
-                        emitted_choice = Some(14);
-                    }
-                }
-                15 => {
-                    if stack_depth >= 2 {
-                        if (rng.next_u32() & 1) == 0 {
-                            code.push(Opcode::I32Eq as u8);
+                    1 => {
+                        if stack_depth > 0 {
+                            code.push(Opcode::Drop as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(1);
                         } else {
-                            code.push(Opcode::I32Ne as u8);
+                            code.push(Opcode::I32Const as u8);
+                            push_sleb128_i32(code, rng.next_i32());
+                            stack_depth += 1;
+                            emitted_choice = Some(1);
                         }
-                        stack_depth -= 1;
-                        emitted_choice = Some(15);
                     }
-                }
-                16 => {
-                    if stack_depth >= 2 {
-                        match rng.next_u32() % 4 {
-                            0 => code.push(Opcode::I32LtS as u8),
-                            1 => code.push(Opcode::I32GtS as u8),
-                            2 => code.push(Opcode::I32LeS as u8),
-                            _ => code.push(Opcode::I32GeS as u8),
+                    2 => {
+                        if stack_depth < (MAX_STACK_DEPTH as i32) - 1 {
+                            code.push(Opcode::I32Const as u8);
+                            push_sleb128_i32(code, rng.next_i32());
+                            stack_depth += 1;
+                            emitted_choice = Some(2);
                         }
-                        stack_depth -= 1;
-                        emitted_choice = Some(16);
                     }
-                }
-                17 => {
-                    if stack_depth >= 2 {
-                        match rng.next_u32() % 4 {
-                            0 => code.push(Opcode::I32LtU as u8),
-                            1 => code.push(Opcode::I32GtU as u8),
-                            2 => code.push(Opcode::I32LeU as u8),
-                            _ => code.push(Opcode::I32GeU as u8),
+                    3 => {
+                        if stack_depth >= 2 {
+                            code.push(Opcode::I32Add as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(3);
                         }
-                        stack_depth -= 1;
-                        emitted_choice = Some(17);
                     }
-                }
-                18 => {
-                    if stack_depth >= 2 {
-                        match rng.next_u32() % 3 {
-                            0 => code.push(Opcode::I32Shl as u8),
-                            1 => code.push(Opcode::I32ShrS as u8),
-                            _ => code.push(Opcode::I32ShrU as u8),
+                    4 => {
+                        if stack_depth >= 2 {
+                            code.push(Opcode::I32Sub as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(4);
                         }
-                        stack_depth -= 1;
-                        emitted_choice = Some(18);
                     }
-                }
-                19 => {
-                    // Keep one bin as a compare-with-constant macro to diversify
-                    // immediate decoding and binary compare lowering paths.
-                    if stack_depth >= 1 {
-                        code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(code, (rng.next_u32() & 0xFF) as i32);
-                        stack_depth += 1;
-                        if (rng.next_u32() & 1) == 0 {
-                            code.push(Opcode::I32LtU as u8);
-                        } else {
-                            code.push(Opcode::I32GeS as u8);
+                    5 => {
+                        if stack_depth >= 2 {
+                            code.push(Opcode::I32Mul as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(5);
                         }
-                        stack_depth -= 1;
-                        emitted_choice = Some(19);
                     }
-                }
-                20 => {
-                    if stack_depth >= 1 {
-                        code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(code, 1);
-                        stack_depth += 1;
-                        code.push(Opcode::I32DivS as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(20);
+                    6 => {
+                        if stack_depth >= 2 {
+                            code.push(Opcode::I32And as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(6);
+                        }
                     }
-                }
-                21 => {
-                    if stack_depth >= 1 {
-                        code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(code, 1);
-                        stack_depth += 1;
-                        code.push(Opcode::I32DivU as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(21);
+                    7 => {
+                        if stack_depth >= 2 {
+                            code.push(Opcode::I32Or as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(7);
+                        }
                     }
-                }
-                22 => {
-                    if stack_depth >= 1 {
-                        code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(code, 1);
-                        stack_depth += 1;
-                        code.push(Opcode::I32RemS as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(22);
+                    8 => {
+                        if stack_depth >= 2 {
+                            code.push(Opcode::I32Xor as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(8);
+                        }
                     }
-                }
-                23 => {
-                    if stack_depth >= 1 {
-                        code.push(Opcode::I32Const as u8);
-                        push_sleb128_i32(code, 1);
-                        stack_depth += 1;
-                        code.push(Opcode::I32RemU as u8);
-                        stack_depth -= 1;
-                        emitted_choice = Some(23);
+                    9 => {
+                        if stack_depth >= 1 {
+                            code.push(Opcode::I32Eqz as u8);
+                            emitted_choice = Some(9);
+                        }
                     }
+                    10 => {
+                        if stack_depth >= 1 {
+                            // Keep memory accesses bounded and deterministic:
+                            // mask address to <= 0xFFFC before load.
+                            code.push(Opcode::I32Const as u8);
+                            push_sleb128_i32(code, 0xFFFC);
+                            stack_depth += 1;
+                            code.push(Opcode::I32And as u8);
+                            stack_depth -= 1;
+                            code.push(Opcode::I32Load as u8);
+                            push_uleb128(code, 0);
+                            push_uleb128(code, 0);
+                            emitted_choice = Some(10);
+                        }
+                    }
+                    11 => {
+                        if stack_depth >= 2 && locals_total > 0 {
+                            // Store needs stack order [..., addr, value].
+                            // Save value in a local, bound addr, reload value, then store.
+                            let tmp_idx = (rng.next_u32() as usize % locals_total) as u32;
+                            code.push(Opcode::LocalSet as u8);
+                            push_uleb128(code, tmp_idx);
+                            stack_depth -= 1;
+                            code.push(Opcode::I32Const as u8);
+                            push_sleb128_i32(code, 0xFFFC);
+                            stack_depth += 1;
+                            code.push(Opcode::I32And as u8);
+                            stack_depth -= 1;
+                            code.push(Opcode::LocalGet as u8);
+                            push_uleb128(code, tmp_idx);
+                            stack_depth += 1;
+                            code.push(Opcode::I32Store as u8);
+                            push_uleb128(code, 0);
+                            push_uleb128(code, 0);
+                            stack_depth -= 2;
+                            emitted_choice = Some(11);
+                        }
+                    }
+                    12 => {
+                        if locals_total > 0 {
+                            code.push(Opcode::LocalGet as u8);
+                            push_uleb128(code, (rng.next_u32() as usize % locals_total) as u32);
+                            stack_depth += 1;
+                            emitted_choice = Some(12);
+                        }
+                    }
+                    13 => {
+                        if locals_total > 0 && stack_depth > 0 {
+                            code.push(Opcode::LocalSet as u8);
+                            push_uleb128(code, (rng.next_u32() as usize % locals_total) as u32);
+                            stack_depth -= 1;
+                            emitted_choice = Some(13);
+                        }
+                    }
+                    14 => {
+                        if locals_total > 0 && stack_depth > 0 {
+                            code.push(Opcode::LocalTee as u8);
+                            push_uleb128(code, (rng.next_u32() as usize % locals_total) as u32);
+                            emitted_choice = Some(14);
+                        }
+                    }
+                    15 => {
+                        if stack_depth >= 2 {
+                            if (rng.next_u32() & 1) == 0 {
+                                code.push(Opcode::I32Eq as u8);
+                            } else {
+                                code.push(Opcode::I32Ne as u8);
+                            }
+                            stack_depth -= 1;
+                            emitted_choice = Some(15);
+                        }
+                    }
+                    16 => {
+                        if stack_depth >= 2 {
+                            match rng.next_u32() % 4 {
+                                0 => code.push(Opcode::I32LtS as u8),
+                                1 => code.push(Opcode::I32GtS as u8),
+                                2 => code.push(Opcode::I32LeS as u8),
+                                _ => code.push(Opcode::I32GeS as u8),
+                            }
+                            stack_depth -= 1;
+                            emitted_choice = Some(16);
+                        }
+                    }
+                    17 => {
+                        if stack_depth >= 2 {
+                            match rng.next_u32() % 4 {
+                                0 => code.push(Opcode::I32LtU as u8),
+                                1 => code.push(Opcode::I32GtU as u8),
+                                2 => code.push(Opcode::I32LeU as u8),
+                                _ => code.push(Opcode::I32GeU as u8),
+                            }
+                            stack_depth -= 1;
+                            emitted_choice = Some(17);
+                        }
+                    }
+                    18 => {
+                        if stack_depth >= 2 {
+                            match rng.next_u32() % 3 {
+                                0 => code.push(Opcode::I32Shl as u8),
+                                1 => code.push(Opcode::I32ShrS as u8),
+                                _ => code.push(Opcode::I32ShrU as u8),
+                            }
+                            stack_depth -= 1;
+                            emitted_choice = Some(18);
+                        }
+                    }
+                    19 => {
+                        // Keep one bin as a compare-with-constant macro to diversify
+                        // immediate decoding and binary compare lowering paths.
+                        if stack_depth >= 1 {
+                            code.push(Opcode::I32Const as u8);
+                            push_sleb128_i32(code, (rng.next_u32() & 0xFF) as i32);
+                            stack_depth += 1;
+                            if (rng.next_u32() & 1) == 0 {
+                                code.push(Opcode::I32LtU as u8);
+                            } else {
+                                code.push(Opcode::I32GeS as u8);
+                            }
+                            stack_depth -= 1;
+                            emitted_choice = Some(19);
+                        }
+                    }
+                    20 => {
+                        if stack_depth >= 1 {
+                            code.push(Opcode::I32Const as u8);
+                            push_sleb128_i32(code, 1);
+                            stack_depth += 1;
+                            code.push(Opcode::I32DivS as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(20);
+                        }
+                    }
+                    21 => {
+                        if stack_depth >= 1 {
+                            code.push(Opcode::I32Const as u8);
+                            push_sleb128_i32(code, 1);
+                            stack_depth += 1;
+                            code.push(Opcode::I32DivU as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(21);
+                        }
+                    }
+                    22 => {
+                        if stack_depth >= 1 {
+                            code.push(Opcode::I32Const as u8);
+                            push_sleb128_i32(code, 1);
+                            stack_depth += 1;
+                            code.push(Opcode::I32RemS as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(22);
+                        }
+                    }
+                    23 => {
+                        if stack_depth >= 1 {
+                            code.push(Opcode::I32Const as u8);
+                            push_sleb128_i32(code, 1);
+                            stack_depth += 1;
+                            code.push(Opcode::I32RemU as u8);
+                            stack_depth -= 1;
+                            emitted_choice = Some(23);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-            if let Some(choice_idx) = emitted_choice {
-                let idx = choice_idx as usize;
-                opcode_hits[idx] = opcode_hits[idx].saturating_add(1);
-                choice_trace.push(choice_idx);
-            }
+                if let Some(choice_idx) = emitted_choice {
+                    let idx = choice_idx as usize;
+                    opcode_hits[idx] = opcode_hits[idx].saturating_add(1);
+                    choice_trace.push(choice_idx);
+                }
             }
 
             // Normalize stack shape for a single i32 return value.
@@ -12584,19 +13111,17 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             }
         }
         #[cfg(target_arch = "x86_64")]
-        let compile_with_irqs_masked =
-            |compiler_ref: &mut crate::wasm_jit::FuzzCompiler| {
-                // x86_64 bring-up uses trap/MMU recovery paths during fuzz JIT compile;
-                // masking IRQs here can stall those paths and hang long runs.
-                compiler_ref.compile(&code, locals_total)
-            };
+        let compile_with_irqs_masked = |compiler_ref: &mut crate::wasm_jit::FuzzCompiler| {
+            // x86_64 bring-up uses trap/MMU recovery paths during fuzz JIT compile;
+            // masking IRQs here can stall those paths and hang long runs.
+            compiler_ref.compile(&code, locals_total)
+        };
         #[cfg(not(target_arch = "x86_64"))]
-        let compile_with_irqs_masked =
-            |compiler_ref: &mut crate::wasm_jit::FuzzCompiler| {
-                let flags = unsafe { crate::idt_asm::fast_cli_save() };
-                let _guard = IrqGuard(flags);
-                compiler_ref.compile(&code, locals_total)
-            };
+        let compile_with_irqs_masked = |compiler_ref: &mut crate::wasm_jit::FuzzCompiler| {
+            let flags = unsafe { crate::idt_asm::fast_cli_save() };
+            let _guard = IrqGuard(flags);
+            compiler_ref.compile(&code, locals_total)
+        };
         let entry = match compile_with_irqs_masked(compiler) {
             Ok(entry) => entry,
             Err(first_err) => {
@@ -12619,31 +13144,34 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                             MAX_FUZZ_JIT_CODE_SIZE,
                             MAX_FUZZ_CODE_SIZE,
                         ) {
-                            Ok(mut fresh_compiler) => match compile_with_irqs_masked(&mut fresh_compiler) {
-                                Ok(entry) => {
-                                    *compiler = fresh_compiler;
-                                    entry
-                                }
-                                Err(fresh_err) => {
-                                    if should_skip_compile_error(fresh_err) {
+                            Ok(mut fresh_compiler) => {
+                                match compile_with_irqs_masked(&mut fresh_compiler) {
+                                    Ok(entry) => {
+                                        *compiler = fresh_compiler;
+                                        entry
+                                    }
+                                    Err(fresh_err) => {
+                                        if should_skip_compile_error(fresh_err) {
+                                            continue;
+                                        }
+                                        stats.compile_errors += 1;
+                                        if stats.first_compile_error.is_none() {
+                                            let jit_code = capture_jit_fuzz_jit_bytes(
+                                                fresh_compiler.emitted_code(),
+                                            );
+                                            stats.first_compile_error = Some(JitFuzzCompileError {
+                                                iteration: iter,
+                                                locals_total: locals_total as u32,
+                                                stage: "jit-compile",
+                                                reason: fresh_err,
+                                                code: code.clone(),
+                                                jit_code,
+                                            });
+                                        }
                                         continue;
                                     }
-                                    stats.compile_errors += 1;
-                                    if stats.first_compile_error.is_none() {
-                                        let jit_code =
-                                            capture_jit_fuzz_jit_bytes(fresh_compiler.emitted_code());
-                                        stats.first_compile_error = Some(JitFuzzCompileError {
-                                            iteration: iter,
-                                            locals_total: locals_total as u32,
-                                            stage: "jit-compile",
-                                            reason: fresh_err,
-                                            code: code.clone(),
-                                            jit_code,
-                                        });
-                                    }
-                                    continue;
                                 }
-                            },
+                            }
                             Err(new_err) => {
                                 let reason = if second_err != first_err {
                                     second_err
@@ -12736,7 +13264,9 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                         return Ok::<
                             (Result<i32, WasmError>, u64, u32, Option<(u32, u8)>, bool),
                             WasmError,
-                        >((mapped, mem_hash, mem_len, first_nz, mem_equal));
+                        >((
+                            mapped, mem_hash, mem_len, first_nz, mem_equal,
+                        ));
                     }
                     instance.prepare_fuzz();
                     attempt = 1;
@@ -12892,8 +13422,12 @@ fn jit_fuzz_regression_run_seed_slice(
         out.total_ok = out.total_ok.saturating_add(stats.ok);
         out.total_traps = out.total_traps.saturating_add(stats.traps);
         out.total_mismatches = out.total_mismatches.saturating_add(stats.mismatches);
-        out.total_compile_errors = out.total_compile_errors.saturating_add(stats.compile_errors);
-        out.total_novel_programs = out.total_novel_programs.saturating_add(stats.novel_programs);
+        out.total_compile_errors = out
+            .total_compile_errors
+            .saturating_add(stats.compile_errors);
+        out.total_novel_programs = out
+            .total_novel_programs
+            .saturating_add(stats.novel_programs);
         if stats.opcode_bins_hit > out.max_opcode_bins_hit {
             out.max_opcode_bins_hit = stats.opcode_bins_hit;
         }
@@ -12936,7 +13470,10 @@ pub fn jit_fuzz_regression_bounded(
     max_seeds: u32,
 ) -> Result<JitFuzzRegressionStats, &'static str> {
     let seeds_limit = core::cmp::min(max_seeds as usize, JIT_FUZZ_REGRESSION_SEEDS.len());
-    jit_fuzz_regression_run_seed_slice(iterations_per_seed, &JIT_FUZZ_REGRESSION_SEEDS[..seeds_limit])
+    jit_fuzz_regression_run_seed_slice(
+        iterations_per_seed,
+        &JIT_FUZZ_REGRESSION_SEEDS[..seeds_limit],
+    )
 }
 
 pub fn jit_fuzz_x64_debug_corpus(
@@ -12988,8 +13525,12 @@ pub fn jit_fuzz_regression_soak_default(
         out.total_ok = out.total_ok.saturating_add(stats.total_ok);
         out.total_traps = out.total_traps.saturating_add(stats.total_traps);
         out.total_mismatches = out.total_mismatches.saturating_add(stats.total_mismatches);
-        out.total_compile_errors = out.total_compile_errors.saturating_add(stats.total_compile_errors);
-        out.total_novel_programs = out.total_novel_programs.saturating_add(stats.total_novel_programs);
+        out.total_compile_errors = out
+            .total_compile_errors
+            .saturating_add(stats.total_compile_errors);
+        out.total_novel_programs = out
+            .total_novel_programs
+            .saturating_add(stats.total_novel_programs);
         if stats.max_opcode_bins_hit > out.max_opcode_bins_hit {
             out.max_opcode_bins_hit = stats.max_opcode_bins_hit;
         }
@@ -13123,7 +13664,8 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
         //   ref.func 0)
         const PROVIDER_MODULE: [u8; 50] = [
             0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
-            0x01, 0x0C, 0x01, 0x60, 0x04, 0x7E, 0x7D, 0x7C, 0x70, 0x04, 0x7E, 0x7D, 0x7C, 0x70, // type section
+            0x01, 0x0C, 0x01, 0x60, 0x04, 0x7E, 0x7D, 0x7C, 0x70, 0x04, 0x7E, 0x7D, 0x7C,
+            0x70, // type section
             0x03, 0x02, 0x01, 0x00, // function section
             0x0A, 0x16, 0x01, 0x14, // code section header
             0x00, // local decl count
@@ -13149,9 +13691,8 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
 
         let exported = capability::export_capability_to_ipc(provider, registration.cap_id)
             .map_err(|_| "Typed service demo: export failed")?;
-        let imported_cap_id =
-            capability::import_capability_from_ipc(consumer, &exported, provider)
-                .map_err(|_| "Typed service demo: import failed")?;
+        let imported_cap_id = capability::import_capability_from_ipc(consumer, &exported, provider)
+            .map_err(|_| "Typed service demo: import failed")?;
         let (imported_cap_type, imported_object) = capability::capability_manager()
             .query_capability(consumer, imported_cap_id)
             .map_err(|_| "Typed service demo: imported capability missing")?;
@@ -13208,9 +13749,7 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
                 instance.stack.push(Value::I32(ARGS_PTR as i32))?;
                 instance.stack.push(Value::I32(ARGS_COUNT as i32))?;
                 instance.stack.push(Value::I32(RESULTS_PTR as i32))?;
-                instance
-                    .stack
-                    .push(Value::I32(RESULTS_CAPACITY as i32))?;
+                instance.stack.push(Value::I32(RESULTS_CAPACITY as i32))?;
                 instance.host_service_invoke_typed()?;
 
                 let written = instance.stack.pop()?.as_i32()? as usize;
@@ -13283,7 +13822,8 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
     const INITIAL: &[u8] = b"alpha-temporal";
     const UPDATED: &[u8] = b"beta-temporal";
 
-    crate::vfs::write_path(PATH, INITIAL).map_err(|_| "Temporal self-check: initial write failed")?;
+    crate::vfs::write_path(PATH, INITIAL)
+        .map_err(|_| "Temporal self-check: initial write failed")?;
 
     let mut instance_id: Option<usize> = None;
     let result = (|| -> Result<(), &'static str> {
@@ -13304,11 +13844,8 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
                 const STATS_PTR: usize = 0x700;
                 const HISTORY_CAPACITY: usize = 4;
 
-                let fs_cap = fs::filesystem().create_capability(
-                    900,
-                    fs::FilesystemRights::all(),
-                    None,
-                );
+                let fs_cap =
+                    fs::filesystem().create_capability(900, fs::FilesystemRights::all(), None);
                 let fs_handle = instance.inject_capability(WasmCapability::Filesystem(fs_cap))?;
                 instance.memory.write(PATH_PTR, PATH.as_bytes())?;
 
@@ -13360,9 +13897,7 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
                 instance.stack.push(Value::I32(0))?; // start_from_newest
                 instance.stack.push(Value::I32(HISTORY_CAPACITY as i32))?;
                 instance.stack.push(Value::I32(HISTORY_PTR as i32))?;
-                instance
-                    .stack
-                    .push(Value::I32(HISTORY_CAPACITY as i32))?;
+                instance.stack.push(Value::I32(HISTORY_CAPACITY as i32))?;
                 instance.host_temporal_history()?;
                 let written = instance.stack.pop()?.as_i32()? as usize;
                 if written < 2 {
@@ -13370,9 +13905,10 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
                     return Err(WasmError::TypeMismatch);
                 }
 
-                let history_bytes = instance
-                    .memory
-                    .read(HISTORY_PTR, written.saturating_mul(TEMPORAL_HISTORY_RECORD_BYTES))?;
+                let history_bytes = instance.memory.read(
+                    HISTORY_PTR,
+                    written.saturating_mul(TEMPORAL_HISTORY_RECORD_BYTES),
+                )?;
                 let newest_lo = u32::from_le_bytes([
                     history_bytes[0],
                     history_bytes[1],
@@ -13467,20 +14003,13 @@ pub fn wasm_control_flow_self_check() -> Result<(), &'static str> {
     let mut module = WasmModule::new();
     let code: [u8; 50] = [
         // i32.const 7
-        0x41, 0x07,
-        // block
-        0x02, 0x40,
-        // loop
-        0x03, 0x40,
-        // br 1
-        0x0C, 0x01,
-        // dead code
-        0x41, 0x63, 0x1A,
-        // end loop, end block
-        0x0B, 0x0B,
-        // verify br worked
-        0x41, 0x07, 0x46,
-        // select path check -> bool
+        0x41, 0x07, // block
+        0x02, 0x40, // loop
+        0x03, 0x40, // br 1
+        0x0C, 0x01, // dead code
+        0x41, 0x63, 0x1A, // end loop, end block
+        0x0B, 0x0B, // verify br worked
+        0x41, 0x07, 0x46, // select path check -> bool
         0x41, 0x0A, 0x41, 0x14, 0x41, 0x00, 0x1B, 0x41, 0x14, 0x46, 0x71,
         // br_if block check
         0x02, 0x40, 0x41, 0x01, 0x0D, 0x00, 0x41, 0x00, 0x1A, 0x0B,
@@ -13489,7 +14018,9 @@ pub fn wasm_control_flow_self_check() -> Result<(), &'static str> {
         // end function
         0x0B,
     ];
-    module.load(&code).map_err(|_| "control-flow self-check: code load failed")?;
+    module
+        .load(&code)
+        .map_err(|_| "control-flow self-check: code load failed")?;
     let _ = module
         .add_function(Function {
             code_offset: 0,
@@ -13527,8 +14058,8 @@ const WASM_CONFORMANCE_MODULE_IMPORT: [u8; 58] = [
     0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
     0x01, 0x09, 0x02, 0x60, 0x02, 0x7F, 0x7F, 0x00, 0x60, 0x00, 0x00, // types
     0x02, 0x15, 0x01, 0x07, 0x6F, 0x72, 0x65, 0x75, 0x6C, 0x69, 0x61, // import section
-    0x09, 0x64, 0x65, 0x62, 0x75, 0x67, 0x5F, 0x6C, 0x6F, 0x67, 0x00, 0x00,
-    0x03, 0x02, 0x01, 0x01, // function section
+    0x09, 0x64, 0x65, 0x62, 0x75, 0x67, 0x5F, 0x6C, 0x6F, 0x67, 0x00, 0x00, 0x03, 0x02, 0x01,
+    0x01, // function section
     0x0A, 0x0A, 0x01, 0x08, 0x00, 0x41, 0x00, 0x41, 0x00, 0x10, 0x00, 0x0B, // code
 ];
 
@@ -13549,7 +14080,8 @@ const WASM_CONFORMANCE_MODULE_TYPED_BLOCK: [u8; 39] = [
     0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
     0x01, 0x0B, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F, // types
     0x03, 0x02, 0x01, 0x00, // function section
-    0x0A, 0x0C, 0x01, 0x0A, 0x00, 0x41, 0x0A, 0x41, 0x20, 0x02, 0x01, 0x6A, 0x0B, 0x0B, // code
+    0x0A, 0x0C, 0x01, 0x0A, 0x00, 0x41, 0x0A, 0x41, 0x20, 0x02, 0x01, 0x6A, 0x0B,
+    0x0B, // code
 ];
 
 const WASM_CONFORMANCE_MODULE_TYPED_IF_IMPLICIT_ELSE: [u8; 37] = [
@@ -13841,7 +14373,9 @@ pub fn call_function(module_id: usize, func_idx: usize, args: &[u32]) -> Result<
     let (table_idx, module, bound_instance) = lookup_syscall_module(module_id, caller_pid)?;
 
     let reuse = if let Some(instance_id) = bound_instance {
-        match wasm_runtime().get_instance_mut(instance_id, |instance| instance.process_id == caller_pid) {
+        match wasm_runtime()
+            .get_instance_mut(instance_id, |instance| instance.process_id == caller_pid)
+        {
             Ok(same_owner) => same_owner,
             Err(WasmError::InstanceBusy) => return Err("WASM instance busy"),
             Err(_) => false,

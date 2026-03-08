@@ -140,7 +140,11 @@ impl Default for NodeState {
             reg_second: None,
             irq_first_candidate: None,
             timer_irq_candidate: None,
-            bus_ranges: [BusRange { child_base: 0, cpu_base: 0, size: 0 }; MAX_BUS_RANGES],
+            bus_ranges: [BusRange {
+                child_base: 0,
+                cpu_base: 0,
+                size: 0,
+            }; MAX_BUS_RANGES],
             bus_range_count: 0,
         }
     }
@@ -175,7 +179,12 @@ fn cstr_from_bytes(bytes: &'static [u8]) -> Option<&'static [u8]> {
 }
 
 fn fdt_string(header: &DtbHeaderInfo, nameoff: usize) -> Option<&'static [u8]> {
-    let strings = bytes_at(header.ptr, header.total_size, header.off_dt_strings, header.size_dt_strings)?;
+    let strings = bytes_at(
+        header.ptr,
+        header.total_size,
+        header.off_dt_strings,
+        header.size_dt_strings,
+    )?;
     if nameoff >= strings.len() {
         return None;
     }
@@ -209,7 +218,9 @@ fn parse_u32_prop(data: &'static [u8]) -> Option<u32> {
     if data.len() < 4 {
         return None;
     }
-    Some(be32(unsafe { ptr::read_unaligned(data.as_ptr() as *const u32) }))
+    Some(be32(unsafe {
+        ptr::read_unaligned(data.as_ptr() as *const u32)
+    }))
 }
 
 fn parse_cells_u64(data: &'static [u8], cells: u32, offset_cells: usize) -> Option<u64> {
@@ -224,7 +235,8 @@ fn parse_cells_u64(data: &'static [u8], cells: u32, offset_cells: usize) -> Opti
     }
     let mut value = 0u64;
     for i in 0..(cells as usize) {
-        let word = be32(unsafe { ptr::read_unaligned(data[start + i * 4..].as_ptr() as *const u32) });
+        let word =
+            be32(unsafe { ptr::read_unaligned(data[start + i * 4..].as_ptr() as *const u32) });
         value = (value << 32) | (word as u64);
     }
     Some(value)
@@ -255,7 +267,11 @@ fn parse_reg_two(
 }
 
 fn parse_timer_interrupts(data: &'static [u8], interrupt_cells: u32) -> Option<u32> {
-    let cells = if interrupt_cells == 0 { 3 } else { interrupt_cells } as usize;
+    let cells = if interrupt_cells == 0 {
+        3
+    } else {
+        interrupt_cells
+    } as usize;
     if cells < 2 {
         return None;
     }
@@ -270,8 +286,8 @@ fn parse_timer_interrupts(data: &'static [u8], interrupt_cells: u32) -> Option<u
         let ty = be32(unsafe { ptr::read_unaligned(data[off..].as_ptr() as *const u32) });
         let num = be32(unsafe { ptr::read_unaligned(data[off + 4..].as_ptr() as *const u32) });
         let intid = match ty {
-            0 => 32u32.checked_add(num)?,  // SPI
-            1 => 16u32.checked_add(num)?,  // PPI
+            0 => 32u32.checked_add(num)?, // SPI
+            1 => 16u32.checked_add(num)?, // PPI
             _ => {
                 off += tuple_bytes;
                 continue;
@@ -289,7 +305,11 @@ fn parse_timer_interrupts(data: &'static [u8], interrupt_cells: u32) -> Option<u
 }
 
 fn parse_first_interrupt_intid(data: &'static [u8], interrupt_cells: u32) -> Option<u32> {
-    let cells = if interrupt_cells == 0 { 3 } else { interrupt_cells } as usize;
+    let cells = if interrupt_cells == 0 {
+        3
+    } else {
+        interrupt_cells
+    } as usize;
     if cells < 2 {
         return None;
     }
@@ -361,13 +381,13 @@ fn translate_addr_via_parent(parent: &NodeState, addr: u64) -> Option<u64> {
     None
 }
 
-fn parse_reg_first_translated(
-    data: &'static [u8],
-    parent: &NodeState,
-) -> Option<DtbRange> {
+fn parse_reg_first_translated(data: &'static [u8], parent: &NodeState) -> Option<DtbRange> {
     let raw = parse_reg_first(data, parent.addr_cells, parent.size_cells)?;
     let cpu = translate_addr_via_parent(parent, raw.base as u64)? as usize;
-    Some(DtbRange { base: cpu, size: raw.size })
+    Some(DtbRange {
+        base: cpu,
+        size: raw.size,
+    })
 }
 
 fn parse_reg_two_translated(
@@ -389,11 +409,7 @@ fn parse_reg_two_translated(
     ))
 }
 
-fn parse_ranges_into_state(
-    state: &mut NodeState,
-    parent: &NodeState,
-    data: &'static [u8],
-) {
+fn parse_ranges_into_state(state: &mut NodeState, parent: &NodeState, data: &'static [u8]) {
     state.bus_range_count = 0;
     if data.is_empty() {
         // Empty ranges property => identity mapping for children.
@@ -403,7 +419,10 @@ fn parse_ranges_into_state(
     let child_cells = state.addr_cells as usize;
     let parent_cells = parent.addr_cells as usize;
     let size_cells = state.size_cells as usize;
-    let tuple_cells = match child_cells.checked_add(parent_cells).and_then(|v| v.checked_add(size_cells)) {
+    let tuple_cells = match child_cells
+        .checked_add(parent_cells)
+        .and_then(|v| v.checked_add(size_cells))
+    {
         Some(v) if v > 0 => v,
         _ => return,
     };
@@ -422,14 +441,11 @@ fn parse_ranges_into_state(
             Some(v) => v,
             None => break,
         };
-        let size = match parse_cells_u64(
-            data,
-            state.size_cells,
-            off / 4 + child_cells + parent_cells,
-        ) {
-            Some(v) => v,
-            None => break,
-        };
+        let size =
+            match parse_cells_u64(data, state.size_cells, off / 4 + child_cells + parent_cells) {
+                Some(v) => v,
+                None => break,
+            };
         let Some(cpu_base) = translate_addr_via_parent(parent, parent_addr) else {
             off += tuple_bytes;
             continue;
@@ -577,7 +593,11 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
         gic_dist_base: None,
         gic_cpu_base: None,
         timer_irq_intid: None,
-        virtio_mmio: [DtbMmioIrqDevice { base: 0, size: 0, irq_intid: None }; MAX_VIRTIO_MMIO_DEVICES],
+        virtio_mmio: [DtbMmioIrqDevice {
+            base: 0,
+            size: 0,
+            irq_intid: None,
+        }; MAX_VIRTIO_MMIO_DEVICES],
         virtio_mmio_count: 0,
         chosen_bootargs_ptr: None,
         chosen_bootargs_len: 0,
@@ -601,7 +621,11 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
         reg_second: None,
         irq_first_candidate: None,
         timer_irq_candidate: None,
-        bus_ranges: [BusRange { child_base: 0, cpu_base: 0, size: 0 }; MAX_BUS_RANGES],
+        bus_ranges: [BusRange {
+            child_base: 0,
+            cpu_base: 0,
+            size: 0,
+        }; MAX_BUS_RANGES],
         bus_range_count: 0,
     };
 
@@ -622,7 +646,8 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
                 cur += 1; // skip NUL
                 cur = align4(cur);
 
-                let name = unsafe { core::slice::from_raw_parts(name_start as *const u8, name_len) };
+                let name =
+                    unsafe { core::slice::from_raw_parts(name_start as *const u8, name_len) };
                 let parent = stack[depth];
                 if depth + 1 >= MAX_TREE_DEPTH {
                     return None;
@@ -642,7 +667,11 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
                     reg_second: None,
                     irq_first_candidate: None,
                     timer_irq_candidate: None,
-                    bus_ranges: [BusRange { child_base: 0, cpu_base: 0, size: 0 }; MAX_BUS_RANGES],
+                    bus_ranges: [BusRange {
+                        child_base: 0,
+                        cpu_base: 0,
+                        size: 0,
+                    }; MAX_BUS_RANGES],
                     bus_range_count: 0,
                 };
             }
@@ -681,7 +710,11 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
                     continue;
                 };
 
-                let parent_snapshot = if depth > 0 { stack[depth - 1] } else { stack[depth] };
+                let parent_snapshot = if depth > 0 {
+                    stack[depth - 1]
+                } else {
+                    stack[depth]
+                };
                 let state = &mut stack[depth];
                 if bytes_eq(name, b"#address-cells") {
                     if let Some(v) = parse_u32_prop(data) {
@@ -757,7 +790,8 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
                             info.uart_pl011_base = Some(r.base);
                         }
                     }
-                    if (state.class_bits & CLASS_PL011) != 0 && info.uart_pl011_irq_intid.is_none() {
+                    if (state.class_bits & CLASS_PL011) != 0 && info.uart_pl011_irq_intid.is_none()
+                    {
                         info.uart_pl011_irq_intid = state.irq_first_candidate;
                     }
                     if (state.class_bits & CLASS_GICV2) != 0
@@ -789,7 +823,8 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
                         info.memory = parse_reg_first_translated(data, &parent_snapshot);
                     }
                     state.reg_first = parse_reg_first_translated(data, &parent_snapshot);
-                    state.reg_second = parse_reg_two_translated(data, &parent_snapshot).map(|(_, second)| second);
+                    state.reg_second =
+                        parse_reg_two_translated(data, &parent_snapshot).map(|(_, second)| second);
                     if (state.class_bits & CLASS_PL011) != 0 && info.uart_pl011_base.is_none() {
                         if let Some(r) = state.reg_first {
                             info.uart_pl011_base = Some(r.base);
@@ -812,9 +847,12 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
                         .interrupt_parent_phandle
                         .and_then(|ph| lookup_interrupt_cells(&interrupt_controllers, ph))
                         .unwrap_or(parent_snapshot.interrupt_cells.max(1));
-                    state.irq_first_candidate = parse_first_interrupt_intid(data, parent_interrupt_cells);
-                    state.timer_irq_candidate = parse_timer_interrupts(data, parent_interrupt_cells);
-                    if (state.class_bits & CLASS_PL011) != 0 && info.uart_pl011_irq_intid.is_none() {
+                    state.irq_first_candidate =
+                        parse_first_interrupt_intid(data, parent_interrupt_cells);
+                    state.timer_irq_candidate =
+                        parse_timer_interrupts(data, parent_interrupt_cells);
+                    if (state.class_bits & CLASS_PL011) != 0 && info.uart_pl011_irq_intid.is_none()
+                    {
                         info.uart_pl011_irq_intid = state.irq_first_candidate;
                     }
                     if (state.class_bits & CLASS_TIMER) != 0 && info.timer_irq_intid.is_none() {
@@ -831,7 +869,8 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
                         parse_interrupts_extended_first(data, &interrupt_controllers, false);
                     state.timer_irq_candidate =
                         parse_interrupts_extended_first(data, &interrupt_controllers, true);
-                    if (state.class_bits & CLASS_PL011) != 0 && info.uart_pl011_irq_intid.is_none() {
+                    if (state.class_bits & CLASS_PL011) != 0 && info.uart_pl011_irq_intid.is_none()
+                    {
                         info.uart_pl011_irq_intid = state.irq_first_candidate;
                     }
                     if (state.class_bits & CLASS_TIMER) != 0 && info.timer_irq_intid.is_none() {

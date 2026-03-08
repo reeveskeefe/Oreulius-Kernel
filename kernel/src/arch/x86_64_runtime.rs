@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,16 +22,18 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
-
-use core::{fmt, sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering}};
+use core::{
+    fmt,
+    sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+};
 
 use crate::asm_bindings;
 
@@ -71,20 +73,56 @@ static PS2_KBD_LAST_RAW: AtomicU8 = AtomicU8::new(0);
 static PS2_KBD_LAST_DECODED: AtomicU8 = AtomicU8::new(0);
 static PS2_KBD_LAST_FLAGS: AtomicU8 = AtomicU8::new(0);
 static EXC_COUNTS: [AtomicU64; 32] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 static IRQ_COUNTS: [AtomicU64; 16] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 
 #[repr(C, packed)]
@@ -230,12 +268,10 @@ macro_rules! declare_isr_irq_stubs {
 }
 
 declare_isr_irq_stubs!(
-    isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7,
-    isr8, isr9, isr10, isr11, isr12, isr13, isr14, isr15,
-    isr16, isr17, isr18, isr19, isr20, isr21, isr22, isr23,
-    isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31,
-    irq0, irq1, irq2, irq3, irq4, irq5, irq6, irq7,
-    irq8, irq9, irq10, irq11, irq12, irq13, irq14, irq15,
+    isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7, isr8, isr9, isr10, isr11, isr12, isr13, isr14,
+    isr15, isr16, isr17, isr18, isr19, isr20, isr21, isr22, isr23, isr24, isr25, isr26, isr27,
+    isr28, isr29, isr30, isr31, irq0, irq1, irq2, irq3, irq4, irq5, irq6, irq7, irq8, irq9, irq10,
+    irq11, irq12, irq13, irq14, irq15,
 );
 
 extern "C" {
@@ -340,20 +376,56 @@ fn idt_set_with_attr(vector: u8, handler: usize, type_attr: u8) {
 
 pub fn init_trap_table() {
     let exceptions: [usize; 32] = [
-        isr0 as usize, isr1 as usize, isr2 as usize, isr3 as usize,
-        isr4 as usize, isr5 as usize, isr6 as usize, isr7 as usize,
-        isr8 as usize, isr9 as usize, isr10 as usize, isr11 as usize,
-        isr12 as usize, isr13 as usize, isr14 as usize, isr15 as usize,
-        isr16 as usize, isr17 as usize, isr18 as usize, isr19 as usize,
-        isr20 as usize, isr21 as usize, isr22 as usize, isr23 as usize,
-        isr24 as usize, isr25 as usize, isr26 as usize, isr27 as usize,
-        isr28 as usize, isr29 as usize, isr30 as usize, isr31 as usize,
+        isr0 as usize,
+        isr1 as usize,
+        isr2 as usize,
+        isr3 as usize,
+        isr4 as usize,
+        isr5 as usize,
+        isr6 as usize,
+        isr7 as usize,
+        isr8 as usize,
+        isr9 as usize,
+        isr10 as usize,
+        isr11 as usize,
+        isr12 as usize,
+        isr13 as usize,
+        isr14 as usize,
+        isr15 as usize,
+        isr16 as usize,
+        isr17 as usize,
+        isr18 as usize,
+        isr19 as usize,
+        isr20 as usize,
+        isr21 as usize,
+        isr22 as usize,
+        isr23 as usize,
+        isr24 as usize,
+        isr25 as usize,
+        isr26 as usize,
+        isr27 as usize,
+        isr28 as usize,
+        isr29 as usize,
+        isr30 as usize,
+        isr31 as usize,
     ];
     let irqs: [usize; 16] = [
-        irq0 as usize, irq1 as usize, irq2 as usize, irq3 as usize,
-        irq4 as usize, irq5 as usize, irq6 as usize, irq7 as usize,
-        irq8 as usize, irq9 as usize, irq10 as usize, irq11 as usize,
-        irq12 as usize, irq13 as usize, irq14 as usize, irq15 as usize,
+        irq0 as usize,
+        irq1 as usize,
+        irq2 as usize,
+        irq3 as usize,
+        irq4 as usize,
+        irq5 as usize,
+        irq6 as usize,
+        irq7 as usize,
+        irq8 as usize,
+        irq9 as usize,
+        irq10 as usize,
+        irq11 as usize,
+        irq12 as usize,
+        irq13 as usize,
+        irq14 as usize,
+        irq15 as usize,
     ];
 
     for (i, &h) in exceptions.iter().enumerate() {
@@ -604,11 +676,17 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
 }
 
 pub fn exception_count(vector: u8) -> u64 {
-    EXC_COUNTS.get(vector as usize).map(|v| v.load(Ordering::Relaxed)).unwrap_or(0)
+    EXC_COUNTS
+        .get(vector as usize)
+        .map(|v| v.load(Ordering::Relaxed))
+        .unwrap_or(0)
 }
 
 pub fn irq_count(irq: u8) -> u64 {
-    IRQ_COUNTS.get(irq as usize).map(|v| v.load(Ordering::Relaxed)).unwrap_or(0)
+    IRQ_COUNTS
+        .get(irq as usize)
+        .map(|v| v.load(Ordering::Relaxed))
+        .unwrap_or(0)
 }
 
 pub fn last_vector() -> u8 {
@@ -637,54 +715,336 @@ fn serial_try_read_byte() -> Option<u8> {
 
 fn ps2_set1_scancode_to_ascii(sc: u8, shifted: bool) -> Option<u8> {
     let ch = match sc {
-        0x02 => if shifted { b'!' } else { b'1' },
-        0x03 => if shifted { b'@' } else { b'2' },
-        0x04 => if shifted { b'#' } else { b'3' },
-        0x05 => if shifted { b'$' } else { b'4' },
-        0x06 => if shifted { b'%' } else { b'5' },
-        0x07 => if shifted { b'^' } else { b'6' },
-        0x08 => if shifted { b'&' } else { b'7' },
-        0x09 => if shifted { b'*' } else { b'8' },
-        0x0A => if shifted { b'(' } else { b'9' },
-        0x0B => if shifted { b')' } else { b'0' },
-        0x0C => if shifted { b'_' } else { b'-' },
-        0x0D => if shifted { b'+' } else { b'=' },
-        0x10 => if shifted { b'Q' } else { b'q' },
-        0x11 => if shifted { b'W' } else { b'w' },
-        0x12 => if shifted { b'E' } else { b'e' },
-        0x13 => if shifted { b'R' } else { b'r' },
-        0x14 => if shifted { b'T' } else { b't' },
-        0x15 => if shifted { b'Y' } else { b'y' },
-        0x16 => if shifted { b'U' } else { b'u' },
-        0x17 => if shifted { b'I' } else { b'i' },
-        0x18 => if shifted { b'O' } else { b'o' },
-        0x19 => if shifted { b'P' } else { b'p' },
-        0x1A => if shifted { b'{' } else { b'[' },
-        0x1B => if shifted { b'}' } else { b']' },
+        0x02 => {
+            if shifted {
+                b'!'
+            } else {
+                b'1'
+            }
+        }
+        0x03 => {
+            if shifted {
+                b'@'
+            } else {
+                b'2'
+            }
+        }
+        0x04 => {
+            if shifted {
+                b'#'
+            } else {
+                b'3'
+            }
+        }
+        0x05 => {
+            if shifted {
+                b'$'
+            } else {
+                b'4'
+            }
+        }
+        0x06 => {
+            if shifted {
+                b'%'
+            } else {
+                b'5'
+            }
+        }
+        0x07 => {
+            if shifted {
+                b'^'
+            } else {
+                b'6'
+            }
+        }
+        0x08 => {
+            if shifted {
+                b'&'
+            } else {
+                b'7'
+            }
+        }
+        0x09 => {
+            if shifted {
+                b'*'
+            } else {
+                b'8'
+            }
+        }
+        0x0A => {
+            if shifted {
+                b'('
+            } else {
+                b'9'
+            }
+        }
+        0x0B => {
+            if shifted {
+                b')'
+            } else {
+                b'0'
+            }
+        }
+        0x0C => {
+            if shifted {
+                b'_'
+            } else {
+                b'-'
+            }
+        }
+        0x0D => {
+            if shifted {
+                b'+'
+            } else {
+                b'='
+            }
+        }
+        0x10 => {
+            if shifted {
+                b'Q'
+            } else {
+                b'q'
+            }
+        }
+        0x11 => {
+            if shifted {
+                b'W'
+            } else {
+                b'w'
+            }
+        }
+        0x12 => {
+            if shifted {
+                b'E'
+            } else {
+                b'e'
+            }
+        }
+        0x13 => {
+            if shifted {
+                b'R'
+            } else {
+                b'r'
+            }
+        }
+        0x14 => {
+            if shifted {
+                b'T'
+            } else {
+                b't'
+            }
+        }
+        0x15 => {
+            if shifted {
+                b'Y'
+            } else {
+                b'y'
+            }
+        }
+        0x16 => {
+            if shifted {
+                b'U'
+            } else {
+                b'u'
+            }
+        }
+        0x17 => {
+            if shifted {
+                b'I'
+            } else {
+                b'i'
+            }
+        }
+        0x18 => {
+            if shifted {
+                b'O'
+            } else {
+                b'o'
+            }
+        }
+        0x19 => {
+            if shifted {
+                b'P'
+            } else {
+                b'p'
+            }
+        }
+        0x1A => {
+            if shifted {
+                b'{'
+            } else {
+                b'['
+            }
+        }
+        0x1B => {
+            if shifted {
+                b'}'
+            } else {
+                b']'
+            }
+        }
         0x1C => b'\n',
-        0x1E => if shifted { b'A' } else { b'a' },
-        0x1F => if shifted { b'S' } else { b's' },
-        0x20 => if shifted { b'D' } else { b'd' },
-        0x21 => if shifted { b'F' } else { b'f' },
-        0x22 => if shifted { b'G' } else { b'g' },
-        0x23 => if shifted { b'H' } else { b'h' },
-        0x24 => if shifted { b'J' } else { b'j' },
-        0x25 => if shifted { b'K' } else { b'k' },
-        0x26 => if shifted { b'L' } else { b'l' },
-        0x27 => if shifted { b':' } else { b';' },
-        0x28 => if shifted { b'"' } else { b'\'' },
-        0x29 => if shifted { b'~' } else { b'`' },
-        0x2B => if shifted { b'|' } else { b'\\' },
-        0x2C => if shifted { b'Z' } else { b'z' },
-        0x2D => if shifted { b'X' } else { b'x' },
-        0x2E => if shifted { b'C' } else { b'c' },
-        0x2F => if shifted { b'V' } else { b'v' },
-        0x30 => if shifted { b'B' } else { b'b' },
-        0x31 => if shifted { b'N' } else { b'n' },
-        0x32 => if shifted { b'M' } else { b'm' },
-        0x33 => if shifted { b'<' } else { b',' },
-        0x34 => if shifted { b'>' } else { b'.' },
-        0x35 => if shifted { b'?' } else { b'/' },
+        0x1E => {
+            if shifted {
+                b'A'
+            } else {
+                b'a'
+            }
+        }
+        0x1F => {
+            if shifted {
+                b'S'
+            } else {
+                b's'
+            }
+        }
+        0x20 => {
+            if shifted {
+                b'D'
+            } else {
+                b'd'
+            }
+        }
+        0x21 => {
+            if shifted {
+                b'F'
+            } else {
+                b'f'
+            }
+        }
+        0x22 => {
+            if shifted {
+                b'G'
+            } else {
+                b'g'
+            }
+        }
+        0x23 => {
+            if shifted {
+                b'H'
+            } else {
+                b'h'
+            }
+        }
+        0x24 => {
+            if shifted {
+                b'J'
+            } else {
+                b'j'
+            }
+        }
+        0x25 => {
+            if shifted {
+                b'K'
+            } else {
+                b'k'
+            }
+        }
+        0x26 => {
+            if shifted {
+                b'L'
+            } else {
+                b'l'
+            }
+        }
+        0x27 => {
+            if shifted {
+                b':'
+            } else {
+                b';'
+            }
+        }
+        0x28 => {
+            if shifted {
+                b'"'
+            } else {
+                b'\''
+            }
+        }
+        0x29 => {
+            if shifted {
+                b'~'
+            } else {
+                b'`'
+            }
+        }
+        0x2B => {
+            if shifted {
+                b'|'
+            } else {
+                b'\\'
+            }
+        }
+        0x2C => {
+            if shifted {
+                b'Z'
+            } else {
+                b'z'
+            }
+        }
+        0x2D => {
+            if shifted {
+                b'X'
+            } else {
+                b'x'
+            }
+        }
+        0x2E => {
+            if shifted {
+                b'C'
+            } else {
+                b'c'
+            }
+        }
+        0x2F => {
+            if shifted {
+                b'V'
+            } else {
+                b'v'
+            }
+        }
+        0x30 => {
+            if shifted {
+                b'B'
+            } else {
+                b'b'
+            }
+        }
+        0x31 => {
+            if shifted {
+                b'N'
+            } else {
+                b'n'
+            }
+        }
+        0x32 => {
+            if shifted {
+                b'M'
+            } else {
+                b'm'
+            }
+        }
+        0x33 => {
+            if shifted {
+                b'<'
+            } else {
+                b','
+            }
+        }
+        0x34 => {
+            if shifted {
+                b'>'
+            } else {
+                b'.'
+            }
+        }
+        0x35 => {
+            if shifted {
+                b'?'
+            } else {
+                b'/'
+            }
+        }
         0x39 => b' ',
         0x0E => 8, // backspace
         _ => return None,
@@ -712,7 +1072,11 @@ fn kbdtest_record_event(raw: u8, decoded: Option<u8>, mut flags: u8) {
     let event_kind = if (flags & KBD_FLAG_E0_PREFIX) != 0 {
         "e0-prefix"
     } else if (flags & KBD_FLAG_EXTENDED) != 0 {
-        if (flags & KBD_FLAG_RELEASE) != 0 { "ext-break" } else { "ext-make" }
+        if (flags & KBD_FLAG_RELEASE) != 0 {
+            "ext-break"
+        } else {
+            "ext-make"
+        }
     } else if (flags & KBD_FLAG_RELEASE) != 0 {
         "break"
     } else {
@@ -860,8 +1224,7 @@ fn serial_write_prompt() {
     }
 }
 
-const X64_MINI_HELP: &str =
-    "help help-all help-mini ticks irq0 int3 traps pfstats cowtest vmtest \
+const X64_MINI_HELP: &str = "help help-all help-mini ticks irq0 int3 traps pfstats cowtest vmtest \
      jitpre jitcall jitbench jitfuzz jitfuzz24dbg heartbeat console kbdtest \
      mmu regs halt";
 
@@ -1089,7 +1452,11 @@ fn serial_exec_command(cmd: &str) -> bool {
         "heartbeat" => {
             shell_println!(
                 "[X64] heartbeat {} (use: heartbeat on|off)",
-                if HEARTBEAT_LOG_ENABLED.load(Ordering::Relaxed) { "on" } else { "off" }
+                if HEARTBEAT_LOG_ENABLED.load(Ordering::Relaxed) {
+                    "on"
+                } else {
+                    "off"
+                }
             );
         }
         "heartbeat on" => {
@@ -1162,10 +1529,7 @@ fn serial_exec_command(cmd: &str) -> bool {
         }
         "pfstats" => {
             let (pf, cow, copies) = crate::arch::mmu::x86_64_debug_pf_stats();
-            shell_println!(
-                "[X64] pf-stats faults={} cow={} copies={}",
-                pf, cow, copies
-            );
+            shell_println!("[X64] pf-stats faults={} cow={} copies={}", pf, cow, copies);
         }
         "mmu" => {
             let (pf, cow, copies) = crate::arch::mmu::x86_64_debug_pf_stats();
@@ -1191,48 +1555,41 @@ fn serial_exec_command(cmd: &str) -> bool {
             let efer = read_efer();
             shell_println!(
                 "[X64] cr0={:#018x} cr3={:#018x} cr4={:#018x} efer={:#018x}",
-                cr0, cr3, cr4, efer
+                cr0,
+                cr3,
+                cr4,
+                efer
             );
         }
-        "cowtest" => {
-            match cow_self_test() {
-                Ok(()) => shell_println!("[X64] cowtest ok"),
-                Err(e) => shell_println!("[X64] cowtest failed: {}", e),
-            }
-        }
-        "vmtest" => {
-            match vm_map_self_test() {
-                Ok(()) => shell_println!("[X64] vmtest ok"),
-                Err(e) => shell_println!("[X64] vmtest failed: {}", e),
-            }
-        }
-        "jitpre" => {
-            match crate::wasm::jit_x86_64_sandbox_preflight() {
-                Ok(()) => shell_println!("[X64] jitpre ok"),
-                Err(e) => shell_println!("[X64] jitpre failed: {}", e),
-            }
-        }
-        "jitcall" => {
-            match crate::wasm::jit_x86_64_call_user_path_probe() {
-                Ok(msg) => shell_println!("[X64] jitcall ok: {}", msg),
-                Err(e) => shell_println!("[X64] jitcall failed: {}", e),
-            }
-        }
-        "jitbench" => {
-            match crate::wasm::jit_bounds_self_test() {
-                Ok(()) => shell_println!("[X64] jitbench ok: wasm-jit-bounds-selftest"),
-                Err(e) => shell_println!("[X64] jitbench failed: {}", e),
-            }
-        }
-        "jitfuzz" => {
-            match jit_fuzz_smoke_self_test() {
-                Ok((iters, ok, traps)) => shell_println!(
-                    "[X64] jitfuzz ok: iters={} ok={} traps={}",
-                    iters, ok, traps
-                ),
-                Err(e) => shell_println!("[X64] jitfuzz failed: {}", e),
-            }
-        }
+        "cowtest" => match cow_self_test() {
+            Ok(()) => shell_println!("[X64] cowtest ok"),
+            Err(e) => shell_println!("[X64] cowtest failed: {}", e),
+        },
+        "vmtest" => match vm_map_self_test() {
+            Ok(()) => shell_println!("[X64] vmtest ok"),
+            Err(e) => shell_println!("[X64] vmtest failed: {}", e),
+        },
+        "jitpre" => match crate::wasm::jit_x86_64_sandbox_preflight() {
+            Ok(()) => shell_println!("[X64] jitpre ok"),
+            Err(e) => shell_println!("[X64] jitpre failed: {}", e),
+        },
+        "jitcall" => match crate::wasm::jit_x86_64_call_user_path_probe() {
+            Ok(msg) => shell_println!("[X64] jitcall ok: {}", msg),
+            Err(e) => shell_println!("[X64] jitcall failed: {}", e),
+        },
+        "jitbench" => match crate::wasm::jit_bounds_self_test() {
+            Ok(()) => shell_println!("[X64] jitbench ok: wasm-jit-bounds-selftest"),
+            Err(e) => shell_println!("[X64] jitbench failed: {}", e),
+        },
+        "jitfuzz" => match jit_fuzz_smoke_self_test() {
+            Ok((iters, ok, traps)) => shell_println!(
+                "[X64] jitfuzz ok: iters={} ok={} traps={}",
+                iters,
+                ok,
+                traps
+            ),
+            Err(e) => shell_println!("[X64] jitfuzz failed: {}", e),
+        },
         "halt" | "exit" => {
             shell_println!("[X64] halting");
             return false;
@@ -1255,7 +1612,8 @@ fn cow_self_test() -> Result<(), &'static str> {
         ptr.add(1).write(0x42);
     }
 
-    let phys_before = crate::arch::mmu::x86_64_debug_virt_to_phys(page).ok_or("virt->phys before failed")?;
+    let phys_before =
+        crate::arch::mmu::x86_64_debug_virt_to_phys(page).ok_or("virt->phys before failed")?;
     crate::arch::mmu::x86_64_debug_mark_page_cow(page)?;
 
     let (_pf_before, cow_before, copies_before) = crate::arch::mmu::x86_64_debug_pf_stats();
@@ -1266,7 +1624,8 @@ fn cow_self_test() -> Result<(), &'static str> {
         ptr.add(1).write(0x7B);
     }
 
-    let phys_after = crate::arch::mmu::x86_64_debug_virt_to_phys(page).ok_or("virt->phys after failed")?;
+    let phys_after =
+        crate::arch::mmu::x86_64_debug_virt_to_phys(page).ok_or("virt->phys after failed")?;
     let (_pf_after, cow_after, copies_after) = crate::arch::mmu::x86_64_debug_pf_stats();
 
     let a = unsafe { ptr.read() };
@@ -1316,15 +1675,17 @@ fn native_jit_exec_self_test() -> Result<(), &'static str> {
 }
 
 fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
-    use alloc::vec::Vec;
     use crate::wasm::{Opcode, MAX_INSTRUCTIONS_PER_CALL};
+    use alloc::vec::Vec;
 
     const ITERS: usize = 32;
 
     #[derive(Clone, Copy)]
     struct Rng(u64);
     impl Rng {
-        fn new(seed: u64) -> Self { Self(seed) }
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
         fn next_u32(&mut self) -> u32 {
             let mut x = self.0;
             x ^= x << 13;
@@ -1339,9 +1700,13 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
         loop {
             let mut byte = (value & 0x7F) as u8;
             value >>= 7;
-            if value != 0 { byte |= 0x80; }
+            if value != 0 {
+                byte |= 0x80;
+            }
             buf.push(byte);
-            if value == 0 { break; }
+            if value == 0 {
+                break;
+            }
         }
     }
 
@@ -1360,7 +1725,10 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
         }
     }
 
-    fn emit_i32_const(code: &mut Vec<u8>, v: i32) { code.push(Opcode::I32Const as u8); push_sleb128_i32(code, v); }
+    fn emit_i32_const(code: &mut Vec<u8>, v: i32) {
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(code, v);
+    }
     let mut rng = Rng::new(0x5846_554A_4954_0002);
     let mut code: Vec<u8> = Vec::with_capacity(128);
 
@@ -1369,12 +1737,17 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
         .checked_add(crate::paging::PAGE_SIZE - 1)
         .ok_or("jitfuzz state size overflow")?
         / crate::paging::PAGE_SIZE;
-    let state_base = crate::memory::jit_allocate_pages(state_pages)? as *mut crate::wasm::JitUserState;
+    let state_base =
+        crate::memory::jit_allocate_pages(state_pages)? as *mut crate::wasm::JitUserState;
     if state_base.is_null() {
         return Err("jitfuzz state alloc failed");
     }
     unsafe {
-        core::ptr::write_bytes(state_base as *mut u8, 0, state_pages * crate::paging::PAGE_SIZE);
+        core::ptr::write_bytes(
+            state_base as *mut u8,
+            0,
+            state_pages * crate::paging::PAGE_SIZE,
+        );
     }
 
     let mem_pages = 1usize;
@@ -1399,7 +1772,10 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
         let mut stack_depth = 0i32;
         // Keep x86_64 smoke deterministic and compile-safe: this path is a
         // CI liveness gate, not broad opcode-coverage fuzz.
-        emit_i32_const(&mut code, ((rng.next_u32() as i32) & 0x7FFF) + (iter as i32));
+        emit_i32_const(
+            &mut code,
+            ((rng.next_u32() as i32) & 0x7FFF) + (iter as i32),
+        );
         stack_depth += 1;
 
         if stack_depth <= 0 {
@@ -1415,7 +1791,11 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
             Ok(j) => j,
             Err(e) => {
                 if compile_errors == 0 {
-                    crate::serial_println!("[X64] jitfuzz dbg first compile-fail err={} len={}", e, code.len());
+                    crate::serial_println!(
+                        "[X64] jitfuzz dbg first compile-fail err={} len={}",
+                        e,
+                        code.len()
+                    );
                     for (i, b) in code.iter().enumerate() {
                         crate::serial_println!("[X64] jitfuzz dbg byte[{}]=0x{:02x}", i, b);
                     }
@@ -1438,7 +1818,9 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
         state.instr_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
         state.mem_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
         state.trap_code = 0;
-        for local in state.locals.iter_mut() { *local = 0; }
+        for local in state.locals.iter_mut() {
+            *local = 0;
+        }
 
         let _ret = crate::wasm::call_jit_kernel(
             jit_entry,
@@ -1481,14 +1863,22 @@ fn vm_map_self_test() -> Result<(), &'static str> {
     crate::arch::mmu::alloc_user_pages(&mut space, stack_va, 1, true)?;
 
     let phys_page = crate::memory::allocate_frame()?;
-    crate::arch::mmu::map_user_range_phys(&mut space, phys_map_va, phys_page, crate::paging::PAGE_SIZE, true)?;
+    crate::arch::mmu::map_user_range_phys(
+        &mut space,
+        phys_map_va,
+        phys_page,
+        crate::paging::PAGE_SIZE,
+        true,
+    )?;
 
     if !space.is_mapped(code_va) || !space.is_mapped(stack_va) || !space.is_mapped(phys_map_va) {
         return Err("mapped pages not visible in new address space");
     }
 
     let old_root = crate::arch::mmu::current_page_table_root_addr();
-    unsafe { space.activate(); }
+    unsafe {
+        space.activate();
+    }
     unsafe {
         (code_va as *mut u8).write(0xC3);
         (stack_va as *mut u8).write(0x5A);

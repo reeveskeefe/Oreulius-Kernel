@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -39,13 +39,13 @@ use alloc::boxed::Box;
 // use alloc::vec::Vec;
 // use alloc::string::String;
 
-pub mod arch;
 #[cfg(target_arch = "aarch64")]
 mod aarch64_alloc;
 #[cfg(not(target_arch = "aarch64"))]
-pub mod advanced_commands;
-#[cfg(not(target_arch = "aarch64"))]
 pub mod acpi_asm;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod advanced_commands;
+pub mod arch;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod asm_bindings;
 #[cfg(not(target_arch = "aarch64"))]
@@ -57,6 +57,7 @@ pub mod commands;
 #[cfg(target_arch = "aarch64")]
 #[path = "commands_aarch64.rs"]
 pub mod commands;
+pub mod commands_shared;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod console_service;
 #[cfg(not(target_arch = "aarch64"))]
@@ -64,39 +65,41 @@ pub mod cpu_security;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod crypto;
 #[cfg(not(target_arch = "aarch64"))]
-pub mod dma_asm;
-#[cfg(not(target_arch = "aarch64"))]
 pub mod disk;
 #[cfg(not(target_arch = "aarch64"))]
-pub mod enclave;
-#[cfg(not(target_arch = "aarch64"))]
-pub mod elf;
-#[cfg(not(target_arch = "aarch64"))]
-pub mod gdt;
+pub mod dma_asm;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod e1000;
 #[cfg(not(target_arch = "aarch64"))]
-pub mod fs;
+pub mod elf;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod enclave;
+pub mod exact_rational;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod formal;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod fs;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod gdt;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod hardened_allocator;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod idt_asm;
-pub mod interrupt_dag;
-pub mod exact_rational;
-#[cfg(not(target_arch = "aarch64"))]
-pub mod ipc;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod intent_graph;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod intent_wasm;
+pub mod interrupt_dag;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod ipc;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod keyboard;
 #[cfg(not(target_arch = "aarch64"))]
-pub mod memory;
+pub mod kpti;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod memopt_asm;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod memory;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod memory_isolation;
 #[cfg(not(target_arch = "aarch64"))]
@@ -114,18 +117,18 @@ pub mod persistence;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod pit;
 pub mod process;
-pub mod process_platform;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod process_asm;
+pub mod process_platform;
 pub mod quantum_scheduler;
-pub mod scheduler_platform;
-pub mod scheduler_runtime_platform;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod registry;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod replay;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod scheduler;
+pub mod scheduler_platform;
+pub mod scheduler_runtime_platform;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod security;
 #[cfg(not(target_arch = "aarch64"))]
@@ -133,28 +136,27 @@ pub mod serial;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod syscall;
 #[cfg(not(target_arch = "aarch64"))]
-pub mod terminal;
+pub mod tasks;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod temporal;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod temporal_asm;
 #[cfg(not(target_arch = "aarch64"))]
-pub mod vga;
+pub mod terminal;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod usermode;
 pub mod vfs;
 pub mod vfs_platform;
-pub mod virtio_blk;
 #[cfg(not(target_arch = "aarch64"))]
-pub mod wasm_jit;
+pub mod vga;
+pub mod virtio_blk;
+pub mod wait_free_ring;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod wasm;
 #[cfg(not(target_arch = "aarch64"))]
+pub mod wasm_jit;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod wifi;
-#[cfg(not(target_arch = "aarch64"))]
-pub mod kpti;
-#[cfg(not(target_arch = "aarch64"))]
-pub mod usermode;
-#[cfg(not(target_arch = "aarch64"))]
-pub mod tasks;
 
 /// Helper to ensure Box is available for heap allocations across modules
 #[cfg(not(target_arch = "aarch64"))]
@@ -176,24 +178,24 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-    // Attempt to print to serial port first (best effort, no locks if possible)
-    use core::fmt::Write;
-    if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
-        let _ = writeln!(serial, "[PANIC] {}", info);
-    }
-
-    // Direct VGA write to guarantee visibility (bypassing all locks)
-    unsafe {
-        let vga_buf = 0xb8000 as *mut u16;
-        let s = "PANIC";
-        // Write PANIC in Red/White at top left
-        for (i, byte) in s.bytes().enumerate() {
-            *vga_buf.add(i) = 0x4F00 | (byte as u16);
+        // Attempt to print to serial port first (best effort, no locks if possible)
+        use core::fmt::Write;
+        if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
+            let _ = writeln!(serial, "[PANIC] {}", info);
         }
-    }
-    
-    // Try normal printing if locks aren't held (might deadlock, but we tried)
-    // vga::print_str("[PANIC] Kernel panic\n");
+
+        // Direct VGA write to guarantee visibility (bypassing all locks)
+        unsafe {
+            let vga_buf = 0xb8000 as *mut u16;
+            let s = "PANIC";
+            // Write PANIC in Red/White at top left
+            for (i, byte) in s.bytes().enumerate() {
+                *vga_buf.add(i) = 0x4F00 | (byte as u16);
+            }
+        }
+
+        // Try normal printing if locks aren't held (might deadlock, but we tried)
+        // vga::print_str("[PANIC] Kernel panic\n");
     }
 
     crate::arch::halt_loop()
@@ -211,18 +213,18 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-    use core::fmt::Write;
-    if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
-        let _ = writeln!(serial, "[ALLOC ERROR] Layout: {:?}", layout);
-    }
-    
-    unsafe {
-        let vga = 0xb8000 as *mut u16;
-        let msg = b"ALLOC FAIL";
-        for (i, &b) in msg.iter().enumerate() {
-            *vga.add(i) = 0x4F00 | (b as u16);
+        use core::fmt::Write;
+        if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
+            let _ = writeln!(serial, "[ALLOC ERROR] Layout: {:?}", layout);
         }
-    }
+
+        unsafe {
+            let vga = 0xb8000 as *mut u16;
+            let msg = b"ALLOC FAIL";
+            for (i, &b) in msg.iter().enumerate() {
+                *vga.add(i) = 0x4F00 | (b as u16);
+            }
+        }
     }
     crate::arch::halt_loop()
 }
@@ -319,7 +321,10 @@ fn rust_main_x86_64_bringup() -> ! {
         boot_info.boot_loader_name_ptr.unwrap_or(0),
         boot_info.boot_loader_name_str().unwrap_or("<none>")
     );
-    crate::serial_println!("[X64] acpi rsdp={:#018x}", boot_info.acpi_rsdp_ptr.unwrap_or(0));
+    crate::serial_println!(
+        "[X64] acpi rsdp={:#018x}",
+        boot_info.acpi_rsdp_ptr.unwrap_or(0)
+    );
 
     memory::init();
     crate::serial_println!("[X64] heap allocator initialized");
@@ -338,7 +343,10 @@ fn rust_main_x86_64_bringup() -> ! {
     let efer = crate::arch::x86_64_runtime::read_efer();
     crate::serial_println!(
         "[X64] cr0={:#018x} cr3={:#018x} cr4={:#018x} efer={:#018x}",
-        cr0, cr3, cr4, efer
+        cr0,
+        cr3,
+        cr4,
+        efer
     );
     crate::serial_println!(
         "[X64] paging sanity pg={} pae={} lme={} lma={}",
@@ -437,7 +445,10 @@ fn rust_main_aarch64_bringup() -> ! {
         uart.write_str(arch::platform_name());
         uart.write_str("\n");
     }
-    aarch64_uart_log_hex_line("[A64] boot raw_info_ptr=", boot_info.raw_info_ptr.unwrap_or(0));
+    aarch64_uart_log_hex_line(
+        "[A64] boot raw_info_ptr=",
+        boot_info.raw_info_ptr.unwrap_or(0),
+    );
     aarch64_uart_log_hex_line("[A64] boot dtb_ptr=", boot_info.dtb_ptr.unwrap_or(0));
 
     aarch64_uart_log_line("[A64] mmu init...");
@@ -524,240 +535,242 @@ pub extern "C" fn rust_main() -> ! {
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-    // IMMEDIATE VGA WRITE to confirm we reached Rust code
-    unsafe {
-        let vga = 0xb8000 as *mut u16;
-        *(vga.add(8)) = 0x0252; // 'R' in green at position 8 (after "BOOTCALL")
-    }
-    
-    // CRITICAL: Initialize memory allocator FIRST before ANY allocations
-    memory::init();
-    
-    unsafe {
-        let vga = 0xb8000 as *mut u16;
-        *(vga.add(9)) = 0x024d; // 'M' in green - memory initialized
-    }
-    
-    // Now we can use VGA (and everything else)
-    vga::print_str("[MEMORY] Heap allocator initialized\n");
-    let boot_info = arch::boot_info();
-    vga::print_str("[ARCH] Platform: ");
-    vga::print_str(arch::platform_name());
-    vga::print_str("\n");
-    vga::print_str("[BOOT] Protocol: ");
-    match boot_info.protocol {
-        arch::BootProtocol::Unknown => vga::print_str("unknown"),
-        arch::BootProtocol::Multiboot1 => vga::print_str("multiboot1"),
-        arch::BootProtocol::Multiboot2 => vga::print_str("multiboot2"),
-    }
-    vga::print_str("\n");
-    vga::print_str("[BOOT] Cmdline ptr: 0x");
-    advanced_commands::print_hex(boot_info.cmdline_ptr.unwrap_or(0));
-    vga::print_str("\n");
-    vga::print_str("[BOOT] Cmdline: ");
-    if let Some(cmdline) = boot_info.cmdline_str() {
-        vga::print_str(cmdline);
-    } else {
-        vga::print_str("<none>");
-    }
-    vga::print_str("\n");
-    vga::print_str("[BOOT] Loader ptr: 0x");
-    advanced_commands::print_hex(boot_info.boot_loader_name_ptr.unwrap_or(0));
-    vga::print_str("\n");
-    vga::print_str("[BOOT] Loader: ");
-    if let Some(loader) = boot_info.boot_loader_name_str() {
-        vga::print_str(loader);
-    } else {
-        vga::print_str("<none>");
-    }
-    vga::print_str("\n");
-    vga::print_str("[BOOT] ACPI RSDP ptr: 0x");
-    advanced_commands::print_hex(boot_info.acpi_rsdp_ptr.unwrap_or(0));
-    vga::print_str("\n");
-    vga::print_str("[MMU] Backend: ");
-    vga::print_str(arch::mmu::backend_name());
-    vga::print_str("\n");
-    
-    // Test heap allocation
-    if ensure_heap_available().is_some() {
-        vga::print_str("[MEMORY] Heap allocation test passed\n");
-    }
-    
-    // Initialize GDT/TSS for ring transitions
-    vga::print_str("[GDT] Initializing GDT/TSS...\n");
-    arch::init_cpu_tables();
-    vga::print_str("[GDT] GDT loaded, TSS ready\n");
-    
-    // Initialize IDT and PIC before enabling paging/interrupts
-    vga::print_str("[IDT] Initializing interrupt descriptor table...\n");
-    arch::init_trap_table();
-    vga::print_str("[IDT] IDT loaded\n");
-    vga::print_str("[IRQCTL] Initializing interrupt controller...\n");
-    arch::init_interrupt_controller();
-    vga::print_str("[IRQCTL] Controller initialized\n");
+        // IMMEDIATE VGA WRITE to confirm we reached Rust code
+        unsafe {
+            let vga = 0xb8000 as *mut u16;
+            *(vga.add(8)) = 0x0252; // 'R' in green at position 8 (after "BOOTCALL")
+        }
 
-    // Initialize Keyboard (specifically PS/2 configuration)
-    keyboard::init();
-    
-    // Initialize virtual memory management (must be early, after physical memory)
-    vga::print_str("[PAGING] Enabling virtual memory...\n");
-    if let Err(e) = arch::mmu::init() {
-        vga::print_str("[PAGING] Failed to initialize: ");
-        vga::print_str(e);
+        // CRITICAL: Initialize memory allocator FIRST before ANY allocations
+        memory::init();
+
+        unsafe {
+            let vga = 0xb8000 as *mut u16;
+            *(vga.add(9)) = 0x024d; // 'M' in green - memory initialized
+        }
+
+        // Now we can use VGA (and everything else)
+        vga::print_str("[MEMORY] Heap allocator initialized\n");
+        let boot_info = arch::boot_info();
+        vga::print_str("[ARCH] Platform: ");
+        vga::print_str(arch::platform_name());
         vga::print_str("\n");
-        loop { core::hint::spin_loop(); }
-    }
-    vga::print_str("[PAGING] Virtual memory enabled (4KB pages, user/kernel separation)\n");
-    vga::print_str("[PAGING] Kernel root addr: 0x");
-    advanced_commands::print_hex(arch::mmu::kernel_page_table_root_addr().unwrap_or(0));
-    vga::print_str("\n");
-
-    // Enable CPU hardening features (SMEP/SMAP) if supported.
-    cpu_security::init();
-    if let Err(e) = kpti::init() {
-        vga::print_str("[KPTI] Init failed: ");
-        vga::print_str(e);
+        vga::print_str("[BOOT] Protocol: ");
+        match boot_info.protocol {
+            arch::BootProtocol::Unknown => vga::print_str("unknown"),
+            arch::BootProtocol::Multiboot1 => vga::print_str("multiboot1"),
+            arch::BootProtocol::Multiboot2 => vga::print_str("multiboot2"),
+        }
         vga::print_str("\n");
-    }
-    memory_isolation::init();
-    enclave::init();
-    
-    // Initialize syscall interface
-    vga::print_str("[SYSCALL] Setting up system call interface...\n");
-    syscall::init();
-    vga::print_str("[SYSCALL] INT 0x80 handler registered\n");
-    
-    vga::print_str("[DEBUG] About to initialize WASM runtime...\n");
-    
-    vga::print_str("[WASM] Runtime initialized\n");
-    
-    // Initialize services
-    vga::print_str("[DEBUG] About to init fs...\n");
-    fs::init();
-    vga::print_str("[DEBUG] About to init vfs...\n");
-    vfs::init();
-    vga::print_str("[DEBUG] About to init persistence...\n");
-    persistence::init();
-    vga::print_str("[DEBUG] About to init temporal...\n");
-    temporal::init();
-    vga::print_str("[DEBUG] About to init ipc...\n");
-    ipc::init();
-    vga::print_str("[DEBUG] About to init registry...\n");
-    registry::init();
-    vga::print_str("[DEBUG] About to init process...\n");
-    process::init();  // Creates init process (PID 1)
-    vga::print_str("[DEBUG] About to init wasm...\n");
-    wasm::init();     // Initialize WASM runtime
-    
-    // Initialize security subsystem
-    vga::print_str("[SECURITY] Initializing security manager...\n");
-    security::init();
-    vga::print_str("[SECURITY] Audit logging enabled\n");
-    capnet::init();
-    vga::print_str("[CAPNET] Peer token subsystem initialized\n");
-    
-    // Initialize capability subsystem
-    vga::print_str("[CAPABILITY] Initializing capability manager...\n");
-    capability::init();
-    vga::print_str("[CAPABILITY] Authority model enabled\n");
-    
-    // Initialize console service
-    vga::print_str("[CONSOLE] Initializing console service...\n");
-    console_service::init();
-    vga::print_str("[CONSOLE] Capability-based I/O ready\n");
-    
-    vga::print_str("[DEBUG] About to initialize timer...\n");
-    
-    // Initialize timer for preemptive scheduling
-    vga::print_str("[TIMER] Initializing PIT (100 Hz)...\n");
-    arch::init_timer();
-    vga::print_str("[SCHED] Preemptive scheduler ready\n");
-    
-    // Enable CPU interrupts now that IDT/PIC/PIT are configured
-    vga::print_str("[IRQ] Enabling interrupts...\n");
-    arch::enable_interrupts();
-    vga::print_str("[IRQ] Interrupts enabled\n");
-    
-    vga::print_str("[DEBUG] Timer initialized successfully\n");
-    
-    // Initialize PCI and detect devices
-    vga::print_str("[PCI] Scanning for devices...\n");
-    let mut pci_scanner = pci::PciScanner::new();
-    pci_scanner.scan();
+        vga::print_str("[BOOT] Cmdline ptr: 0x");
+        advanced_commands::print_hex(boot_info.cmdline_ptr.unwrap_or(0));
+        vga::print_str("\n");
+        vga::print_str("[BOOT] Cmdline: ");
+        if let Some(cmdline) = boot_info.cmdline_str() {
+            vga::print_str(cmdline);
+        } else {
+            vga::print_str("<none>");
+        }
+        vga::print_str("\n");
+        vga::print_str("[BOOT] Loader ptr: 0x");
+        advanced_commands::print_hex(boot_info.boot_loader_name_ptr.unwrap_or(0));
+        vga::print_str("\n");
+        vga::print_str("[BOOT] Loader: ");
+        if let Some(loader) = boot_info.boot_loader_name_str() {
+            vga::print_str(loader);
+        } else {
+            vga::print_str("<none>");
+        }
+        vga::print_str("\n");
+        vga::print_str("[BOOT] ACPI RSDP ptr: 0x");
+        advanced_commands::print_hex(boot_info.acpi_rsdp_ptr.unwrap_or(0));
+        vga::print_str("\n");
+        vga::print_str("[MMU] Backend: ");
+        vga::print_str(arch::mmu::backend_name());
+        vga::print_str("\n");
 
-    if let Some(blk_device) = pci_scanner.find_virtio_block() {
-        vga::print_str("[BLOCK] VirtIO block device detected\n");
-        if let Err(e) = virtio_blk::init(blk_device) {
-            vga::print_str("[BLOCK] Init failed: ");
+        // Test heap allocation
+        if ensure_heap_available().is_some() {
+            vga::print_str("[MEMORY] Heap allocation test passed\n");
+        }
+
+        // Initialize GDT/TSS for ring transitions
+        vga::print_str("[GDT] Initializing GDT/TSS...\n");
+        arch::init_cpu_tables();
+        vga::print_str("[GDT] GDT loaded, TSS ready\n");
+
+        // Initialize IDT and PIC before enabling paging/interrupts
+        vga::print_str("[IDT] Initializing interrupt descriptor table...\n");
+        arch::init_trap_table();
+        vga::print_str("[IDT] IDT loaded\n");
+        vga::print_str("[IRQCTL] Initializing interrupt controller...\n");
+        arch::init_interrupt_controller();
+        vga::print_str("[IRQCTL] Controller initialized\n");
+
+        // Initialize Keyboard (specifically PS/2 configuration)
+        keyboard::init();
+
+        // Initialize virtual memory management (must be early, after physical memory)
+        vga::print_str("[PAGING] Enabling virtual memory...\n");
+        if let Err(e) = arch::mmu::init() {
+            vga::print_str("[PAGING] Failed to initialize: ");
             vga::print_str(e);
             vga::print_str("\n");
-        } else {
-            vga::print_str("[BLOCK] VirtIO block ready\n");
-            persistence::init();
-            match temporal::recover_from_persistence() {
-                Ok(()) => vga::print_str("[TEMPORAL] Recovery check complete\n"),
-                Err(e) => {
-                    vga::print_str("[TEMPORAL] Recovery skipped: ");
-                    vga::print_str(e);
-                    vga::print_str("\n");
-                }
+            loop {
+                core::hint::spin_loop();
             }
         }
-    } else {
-        vga::print_str("[BLOCK] No VirtIO block device found\n");
-    }
-    
-    // Try WiFi first, then Ethernet (init currently disabled)
-    if let Some(_wifi_device) = pci_scanner.find_wifi_device() {
-        vga::print_str("[NET] WiFi device detected (init disabled)\n");
-        // net::init(Some(wifi_device));
-    } else if let Some(eth_device) = pci_scanner.find_ethernet_device() {
-        vga::print_str("[NET] Ethernet device detected, initializing...\n");
-        
-        // Use a copy to read BAR for mapping, before moving device into init
-        let bar0 = unsafe { eth_device.read_bar(0) };
-        if bar0 != 0 {
-            vga::print_str("[NET] Mapping MMIO region...\n");
-            let phys_base = (bar0 & !0xF) as usize;
-            let size = 128 * 1024; // 128KB
-            
-            // DEBUG: Print phys_base
-            vga::print_str("MMIO Base: 0x");
-            advanced_commands::print_hex(phys_base);
-            vga::print_str("\n");
+        vga::print_str("[PAGING] Virtual memory enabled (4KB pages, user/kernel separation)\n");
+        vga::print_str("[PAGING] Kernel root addr: 0x");
+        advanced_commands::print_hex(arch::mmu::kernel_page_table_root_addr().unwrap_or(0));
+        vga::print_str("\n");
 
-            if let Some(ref mut space) = *paging::kernel_space().lock() {
-                 for offset in (0..size).step_by(paging::PAGE_SIZE) {
-                     let addr = phys_base + offset;
-                     let _ = space.map_page(addr, addr, true, false);
-                 }
-            }
-            
-            // DEBUG: Verify mapping
-            if let Some(ref mut space) = *paging::kernel_space().lock() {
-                if space.is_mapped(phys_base) {
-                     vga::print_str("MMIO Base Mapped successfully\n");
-                } else {
-                     vga::print_str("MMIO Base failed to map\n");
+        // Enable CPU hardening features (SMEP/SMAP) if supported.
+        cpu_security::init();
+        if let Err(e) = kpti::init() {
+            vga::print_str("[KPTI] Init failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+        memory_isolation::init();
+        enclave::init();
+
+        // Initialize syscall interface
+        vga::print_str("[SYSCALL] Setting up system call interface...\n");
+        syscall::init();
+        vga::print_str("[SYSCALL] INT 0x80 handler registered\n");
+
+        vga::print_str("[DEBUG] About to initialize WASM runtime...\n");
+
+        vga::print_str("[WASM] Runtime initialized\n");
+
+        // Initialize services
+        vga::print_str("[DEBUG] About to init fs...\n");
+        fs::init();
+        vga::print_str("[DEBUG] About to init vfs...\n");
+        vfs::init();
+        vga::print_str("[DEBUG] About to init persistence...\n");
+        persistence::init();
+        vga::print_str("[DEBUG] About to init temporal...\n");
+        temporal::init();
+        vga::print_str("[DEBUG] About to init ipc...\n");
+        ipc::init();
+        vga::print_str("[DEBUG] About to init registry...\n");
+        registry::init();
+        vga::print_str("[DEBUG] About to init process...\n");
+        process::init(); // Creates init process (PID 1)
+        vga::print_str("[DEBUG] About to init wasm...\n");
+        wasm::init(); // Initialize WASM runtime
+
+        // Initialize security subsystem
+        vga::print_str("[SECURITY] Initializing security manager...\n");
+        security::init();
+        vga::print_str("[SECURITY] Audit logging enabled\n");
+        capnet::init();
+        vga::print_str("[CAPNET] Peer token subsystem initialized\n");
+
+        // Initialize capability subsystem
+        vga::print_str("[CAPABILITY] Initializing capability manager...\n");
+        capability::init();
+        vga::print_str("[CAPABILITY] Authority model enabled\n");
+
+        // Initialize console service
+        vga::print_str("[CONSOLE] Initializing console service...\n");
+        console_service::init();
+        vga::print_str("[CONSOLE] Capability-based I/O ready\n");
+
+        vga::print_str("[DEBUG] About to initialize timer...\n");
+
+        // Initialize timer for preemptive scheduling
+        vga::print_str("[TIMER] Initializing PIT (100 Hz)...\n");
+        arch::init_timer();
+        vga::print_str("[SCHED] Preemptive scheduler ready\n");
+
+        // Enable CPU interrupts now that IDT/PIC/PIT are configured
+        vga::print_str("[IRQ] Enabling interrupts...\n");
+        arch::enable_interrupts();
+        vga::print_str("[IRQ] Interrupts enabled\n");
+
+        vga::print_str("[DEBUG] Timer initialized successfully\n");
+
+        // Initialize PCI and detect devices
+        vga::print_str("[PCI] Scanning for devices...\n");
+        let mut pci_scanner = pci::PciScanner::new();
+        pci_scanner.scan();
+
+        if let Some(blk_device) = pci_scanner.find_virtio_block() {
+            vga::print_str("[BLOCK] VirtIO block device detected\n");
+            if let Err(e) = virtio_blk::init(blk_device) {
+                vga::print_str("[BLOCK] Init failed: ");
+                vga::print_str(e);
+                vga::print_str("\n");
+            } else {
+                vga::print_str("[BLOCK] VirtIO block ready\n");
+                persistence::init();
+                match temporal::recover_from_persistence() {
+                    Ok(()) => vga::print_str("[TEMPORAL] Recovery check complete\n"),
+                    Err(e) => {
+                        vga::print_str("[TEMPORAL] Recovery skipped: ");
+                        vga::print_str(e);
+                        vga::print_str("\n");
+                    }
                 }
             }
-        }
-        
-        if e1000::init(eth_device).is_ok() {
-            vga::print_str("[NET] E1000 initialized - Ready for DNS/ARP/UDP\n");
-            // Enable network stack processing
-            // if let Some(mut stack) = netstack::NETWORK_STACK.try_lock() {
-            //      vga::print_str("[NET] Network stack available, link up\n");
-            // }
         } else {
-            vga::print_str("[NET] E1000 init failed\n");
+            vga::print_str("[BLOCK] No VirtIO block device found\n");
         }
-    } else {
-        vga::print_str("[NET] No network device found\n");
-    }
-    
-    vga::print_str("\n[INIT] Initialization complete, starting scheduler...\n");
-    tasks::start();
+
+        // Try WiFi first, then Ethernet (init currently disabled)
+        if let Some(_wifi_device) = pci_scanner.find_wifi_device() {
+            vga::print_str("[NET] WiFi device detected (init disabled)\n");
+            // net::init(Some(wifi_device));
+        } else if let Some(eth_device) = pci_scanner.find_ethernet_device() {
+            vga::print_str("[NET] Ethernet device detected, initializing...\n");
+
+            // Use a copy to read BAR for mapping, before moving device into init
+            let bar0 = unsafe { eth_device.read_bar(0) };
+            if bar0 != 0 {
+                vga::print_str("[NET] Mapping MMIO region...\n");
+                let phys_base = (bar0 & !0xF) as usize;
+                let size = 128 * 1024; // 128KB
+
+                // DEBUG: Print phys_base
+                vga::print_str("MMIO Base: 0x");
+                advanced_commands::print_hex(phys_base);
+                vga::print_str("\n");
+
+                if let Some(ref mut space) = *paging::kernel_space().lock() {
+                    for offset in (0..size).step_by(paging::PAGE_SIZE) {
+                        let addr = phys_base + offset;
+                        let _ = space.map_page(addr, addr, true, false);
+                    }
+                }
+
+                // DEBUG: Verify mapping
+                if let Some(ref mut space) = *paging::kernel_space().lock() {
+                    if space.is_mapped(phys_base) {
+                        vga::print_str("MMIO Base Mapped successfully\n");
+                    } else {
+                        vga::print_str("MMIO Base failed to map\n");
+                    }
+                }
+            }
+
+            if e1000::init(eth_device).is_ok() {
+                vga::print_str("[NET] E1000 initialized - Ready for DNS/ARP/UDP\n");
+                // Enable network stack processing
+                // if let Some(mut stack) = netstack::NETWORK_STACK.try_lock() {
+                //      vga::print_str("[NET] Network stack available, link up\n");
+                // }
+            } else {
+                vga::print_str("[NET] E1000 init failed\n");
+            }
+        } else {
+            vga::print_str("[NET] No network device found\n");
+        }
+
+        vga::print_str("\n[INIT] Initialization complete, starting scheduler...\n");
+        tasks::start();
     }
 }
 
@@ -798,64 +811,64 @@ pub fn shell_loop() -> ! {
         // 1. Diagnostics (Safe VGA Write at Bottom-Right Corner)
         loops = loops.wrapping_add(1);
         if loops % 10000 == 0 {
-             unsafe {
-                 let vga = 0xB8000 as *mut u16;
-                 // Heartbeat at Row 24, Col 79
-                 let pos = 24 * 80 + 79;
-                 let char_idx = (loops / 10000) % 4;
-                 *vga.add(pos) = 0x0F00 | (HEARTBEAT[char_idx] as u16);
-                 
-                 // IRQ Count at Row 24, Col 70 "I:XX"
-                 let irq_cnt = idt_asm::get_interrupt_count(33); // IRQ1 = 32+1 = 33
-                 let hex = b"0123456789ABCDEF";
-                 *vga.add(pos - 8) = 0x0F49; // 'I'
-                 *vga.add(pos - 7) = 0x0F3A; // ':'
-                 *vga.add(pos - 6) = 0x0F00 | (hex[((irq_cnt >> 4) & 0xF) as usize] as u16);
-                 *vga.add(pos - 5) = 0x0F00 | (hex[(irq_cnt & 0xF) as usize] as u16);
-                 
-                 // Buffer Len at Row 24, Col 60 "B:XX"
-                 let buf_len = keyboard::event_buffer_len();
-                 *vga.add(pos - 18) = 0x0F42; // 'B'
-                 *vga.add(pos - 17) = 0x0F3A; // ':'
-                 *vga.add(pos - 16) = 0x0F00 | (hex[((buf_len >> 4) & 0xF) as usize] as u16);
-                 *vga.add(pos - 15) = 0x0F00 | (hex[(buf_len & 0xF) as usize] as u16);
+            unsafe {
+                let vga = 0xB8000 as *mut u16;
+                // Heartbeat at Row 24, Col 79
+                let pos = 24 * 80 + 79;
+                let char_idx = (loops / 10000) % 4;
+                *vga.add(pos) = 0x0F00 | (HEARTBEAT[char_idx] as u16);
 
-                 // Last Scancode at Row 24, Col 50 "S:XX"
-                 let sc = keyboard::get_last_scancode();
-                 *vga.add(pos - 28) = 0x0F53; // 'S'
-                 *vga.add(pos - 27) = 0x0F3A; // ':'
-                 *vga.add(pos - 26) = 0x0F00 | (hex[((sc >> 4) & 0xF) as usize] as u16);
-                 *vga.add(pos - 25) = 0x0F00 | (hex[(sc & 0xF) as usize] as u16);
+                // IRQ Count at Row 24, Col 70 "I:XX"
+                let irq_cnt = idt_asm::get_interrupt_count(33); // IRQ1 = 32+1 = 33
+                let hex = b"0123456789ABCDEF";
+                *vga.add(pos - 8) = 0x0F49; // 'I'
+                *vga.add(pos - 7) = 0x0F3A; // ':'
+                *vga.add(pos - 6) = 0x0F00 | (hex[((irq_cnt >> 4) & 0xF) as usize] as u16);
+                *vga.add(pos - 5) = 0x0F00 | (hex[(irq_cnt & 0xF) as usize] as u16);
 
-                 // Flags at Row 24, Col 40 "C:0 A:0 S:0 E:0"
-                 // Removed get_flags() locally to prevent live lock on KEYBOARD mutex.
-                 
-                 let row_offset = 24 * 80;
+                // Buffer Len at Row 24, Col 60 "B:XX"
+                let buf_len = keyboard::event_buffer_len();
+                *vga.add(pos - 18) = 0x0F42; // 'B'
+                *vga.add(pos - 17) = 0x0F3A; // ':'
+                *vga.add(pos - 16) = 0x0F00 | (hex[((buf_len >> 4) & 0xF) as usize] as u16);
+                *vga.add(pos - 15) = 0x0F00 | (hex[(buf_len & 0xF) as usize] as u16);
 
-                 // Dropped Packets at Row 24, Col 20 "D:XX"
-                 let dropped = keyboard::get_dropped_packets();
-                 *vga.add(row_offset + 20) = 0x0F44; // D
-                 *vga.add(row_offset + 21) = 0x0F3A; // :
-                 *vga.add(row_offset + 22) = 0x0F00 | (hex[((dropped >> 4) & 0xF) as usize] as u16);
-                 *vga.add(row_offset + 23) = 0x0F00 | (hex[(dropped & 0xF) as usize] as u16);
+                // Last Scancode at Row 24, Col 50 "S:XX"
+                let sc = keyboard::get_last_scancode();
+                *vga.add(pos - 28) = 0x0F53; // 'S'
+                *vga.add(pos - 27) = 0x0F3A; // ':'
+                *vga.add(pos - 26) = 0x0F00 | (hex[((sc >> 4) & 0xF) as usize] as u16);
+                *vga.add(pos - 25) = 0x0F00 | (hex[(sc & 0xF) as usize] as u16);
 
-                 // Event stats at Row 24, Col 30 "P:XX N:XX E:XX"
-                 let (pushed, _popped, none, errors) = keyboard::get_event_stats();
-                 *vga.add(row_offset + 30) = 0x0F50; // P
-                 *vga.add(row_offset + 31) = 0x0F3A; // :
-                 *vga.add(row_offset + 32) = 0x0F00 | (hex[((pushed >> 4) & 0xF) as usize] as u16);
-                 *vga.add(row_offset + 33) = 0x0F00 | (hex[(pushed & 0xF) as usize] as u16);
+                // Flags at Row 24, Col 40 "C:0 A:0 S:0 E:0"
+                // Removed get_flags() locally to prevent live lock on KEYBOARD mutex.
 
-                 *vga.add(row_offset + 35) = 0x0F4E; // N
-                 *vga.add(row_offset + 36) = 0x0F3A; // :
-                 *vga.add(row_offset + 37) = 0x0F00 | (hex[((none >> 4) & 0xF) as usize] as u16);
-                 *vga.add(row_offset + 38) = 0x0F00 | (hex[(none & 0xF) as usize] as u16);
+                let row_offset = 24 * 80;
 
-                 *vga.add(row_offset + 40) = 0x0F45; // E
-                 *vga.add(row_offset + 41) = 0x0F3A; // :
-                 *vga.add(row_offset + 42) = 0x0F00 | (hex[((errors >> 4) & 0xF) as usize] as u16);
-                 *vga.add(row_offset + 43) = 0x0F00 | (hex[(errors & 0xF) as usize] as u16);
-             }
+                // Dropped Packets at Row 24, Col 20 "D:XX"
+                let dropped = keyboard::get_dropped_packets();
+                *vga.add(row_offset + 20) = 0x0F44; // D
+                *vga.add(row_offset + 21) = 0x0F3A; // :
+                *vga.add(row_offset + 22) = 0x0F00 | (hex[((dropped >> 4) & 0xF) as usize] as u16);
+                *vga.add(row_offset + 23) = 0x0F00 | (hex[(dropped & 0xF) as usize] as u16);
+
+                // Event stats at Row 24, Col 30 "P:XX N:XX E:XX"
+                let (pushed, _popped, none, errors) = keyboard::get_event_stats();
+                *vga.add(row_offset + 30) = 0x0F50; // P
+                *vga.add(row_offset + 31) = 0x0F3A; // :
+                *vga.add(row_offset + 32) = 0x0F00 | (hex[((pushed >> 4) & 0xF) as usize] as u16);
+                *vga.add(row_offset + 33) = 0x0F00 | (hex[(pushed & 0xF) as usize] as u16);
+
+                *vga.add(row_offset + 35) = 0x0F4E; // N
+                *vga.add(row_offset + 36) = 0x0F3A; // :
+                *vga.add(row_offset + 37) = 0x0F00 | (hex[((none >> 4) & 0xF) as usize] as u16);
+                *vga.add(row_offset + 38) = 0x0F00 | (hex[(none & 0xF) as usize] as u16);
+
+                *vga.add(row_offset + 40) = 0x0F45; // E
+                *vga.add(row_offset + 41) = 0x0F3A; // :
+                *vga.add(row_offset + 42) = 0x0F00 | (hex[((errors >> 4) & 0xF) as usize] as u16);
+                *vga.add(row_offset + 43) = 0x0F00 | (hex[(errors & 0xF) as usize] as u16);
+            }
         }
 
         if let Some(ev) = keyboard::poll_event() {
@@ -881,8 +894,8 @@ pub fn shell_loop() -> ! {
                             } else {
                                 // Rotate history
                                 for i in 1..16 {
-                                    SHELL_HISTORY[i-1] = SHELL_HISTORY[i];
-                                    SHELL_HISTORY_LENS[i-1] = SHELL_HISTORY_LENS[i];
+                                    SHELL_HISTORY[i - 1] = SHELL_HISTORY[i];
+                                    SHELL_HISTORY_LENS[i - 1] = SHELL_HISTORY_LENS[i];
                                 }
                                 SHELL_HISTORY[15] = input;
                                 SHELL_HISTORY_LENS[15] = len;
@@ -1000,24 +1013,22 @@ pub fn shell_loop() -> ! {
                         }
                     }
                 }
-                keyboard::KeyEvent::Down => {
-                    unsafe {
-                        if history_index < SHELL_HISTORY_COUNT {
-                            history_index += 1;
-                            if history_index == SHELL_HISTORY_COUNT {
-                                len = 0;
-                                input = [0; 256];
-                                cursor = 0;
-                                redraw_line(&input, len, cursor, prompt_pos);
-                            } else {
-                                input = SHELL_HISTORY[history_index];
-                                len = SHELL_HISTORY_LENS[history_index];
-                                cursor = len;
-                                redraw_line(&input, len, cursor, prompt_pos);
-                            }
+                keyboard::KeyEvent::Down => unsafe {
+                    if history_index < SHELL_HISTORY_COUNT {
+                        history_index += 1;
+                        if history_index == SHELL_HISTORY_COUNT {
+                            len = 0;
+                            input = [0; 256];
+                            cursor = 0;
+                            redraw_line(&input, len, cursor, prompt_pos);
+                        } else {
+                            input = SHELL_HISTORY[history_index];
+                            len = SHELL_HISTORY_LENS[history_index];
+                            cursor = len;
+                            redraw_line(&input, len, cursor, prompt_pos);
                         }
                     }
-                }
+                },
                 keyboard::KeyEvent::AltChar(c) => {
                     // Treat Alt-modified character as a normal character for input
                     if (c.is_ascii_graphic() || c == ' ') && len < input.len() - 1 {
@@ -1042,7 +1053,9 @@ pub fn shell_loop() -> ! {
                     // Debug: bypassing max_len and forcing output
                     // terminal::write_char(c); // Commented out to avoid double printing if proper logic works
 
-                    if (c.is_ascii_graphic() || c == ' ') && len < input.len() - 1 /* && len < max_len */ {
+                    if (c.is_ascii_graphic() || c == ' ') && len < input.len() - 1
+                    /* && len < max_len */
+                    {
                         for i in (cursor..len).rev() {
                             input[i + 1] = input[i];
                         }
@@ -1068,5 +1081,5 @@ fn redraw_line(input: &[u8; 256], len: usize, cursor: usize, prompt_pos: (usize,
     terminal::write_str_no_serial(line);
     terminal::set_cursor(prompt_pos.0, prompt_pos.1 + cursor);
 }
-pub mod tensor_core;
 pub mod telemetry;
+pub mod tensor_core;

@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,16 +22,16 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
 //! Preemptive Scheduler with Round-Robin
-//! 
+//!
 //! Features:
 //! - Timer-based preemption (10ms time slices)
 //! - Round-robin scheduling per priority level
@@ -39,11 +39,10 @@
 //! - Yield support
 //! - Uses assembly context switching for speed
 
-
+use crate::asm_bindings::{asm_switch_context, ProcessContext};
 use crate::interrupt_dag::{DagSpinlock, DAG_LEVEL_SCHEDULER};
-use crate::process::{Process, ProcessState, ProcessPriority, Pid, MAX_PROCESSES};
-use crate::asm_bindings::{ProcessContext, asm_switch_context};
 use crate::pit;
+use crate::process::{Pid, Process, ProcessPriority, ProcessState, MAX_PROCESSES};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Time slice in milliseconds (10ms = 100 Hz)
@@ -84,7 +83,7 @@ pub struct Scheduler {
 #[derive(Clone, Copy)]
 struct SleepingProcess {
     pid: Pid,
-    wake_at: u64,  // Tick count to wake at
+    wake_at: u64, // Tick count to wake at
 }
 
 impl Scheduler {
@@ -92,8 +91,11 @@ impl Scheduler {
         const NONE_PROC: Option<Process> = None;
         const EMPTY_CTX: ProcessContext = ProcessContext::new();
         const NONE_PID: Option<Pid> = None;
-        const EMPTY_SLEEP: SleepingProcess = SleepingProcess { pid: Pid(0), wake_at: 0 };
-        
+        const EMPTY_SLEEP: SleepingProcess = SleepingProcess {
+            pid: Pid(0),
+            wake_at: 0,
+        };
+
         Scheduler {
             processes: [NONE_PROC; MAX_PROCESSES],
             contexts: [EMPTY_CTX; MAX_PROCESSES],
@@ -117,32 +119,32 @@ impl Scheduler {
     pub fn add_process(&mut self, mut process: Process) -> Result<(), &'static str> {
         let pid = process.pid;
         let idx = pid.0 as usize;
-        
+
         if idx >= MAX_PROCESSES {
             return Err("Invalid PID");
         }
-        
+
         if self.processes[idx].is_some() {
             return Err("PID already in use");
         }
-        
+
         process.state = ProcessState::Ready;
         self.processes[idx] = Some(process.clone());
-        
+
         // Add to appropriate ready queue
         self.enqueue_ready(pid, process.priority);
-        
+
         Ok(())
     }
 
     /// Remove a process from the scheduler
     pub fn remove_process(&mut self, pid: Pid) -> Result<(), &'static str> {
         let idx = pid.0 as usize;
-        
+
         if idx >= MAX_PROCESSES {
             return Err("Invalid PID");
         }
-        
+
         if let Some(ref mut proc) = self.processes[idx] {
             proc.state = ProcessState::Terminated;
             self.processes[idx] = None;
@@ -189,7 +191,7 @@ impl Scheduler {
             };
             self.enqueue_ready(current_pid, priority);
         }
-        
+
         self.schedule();
     }
 
@@ -197,18 +199,18 @@ impl Scheduler {
     pub fn sleep(&mut self, ms: u32) {
         if let Some(current_pid) = self.current_pid {
             let wake_at = pit::get_ticks() + ((ms as u64 * pit::get_frequency() as u64) / 1000);
-            
+
             if self.sleeping_count < MAX_SLEEPING {
                 self.sleeping[self.sleeping_count] = SleepingProcess {
                     pid: current_pid,
                     wake_at,
                 };
                 self.sleeping_count += 1;
-                
+
                 if let Some(ref mut proc) = self.processes[current_pid.0 as usize] {
                     proc.state = ProcessState::Blocked;
                 }
-                
+
                 self.current_pid = None;
                 self.schedule();
             }
@@ -219,11 +221,11 @@ impl Scheduler {
     pub fn wake_sleeping(&mut self) {
         let now = pit::get_ticks();
         let mut i = 0;
-        
+
         while i < self.sleeping_count {
             if self.sleeping[i].wake_at <= now {
                 let pid = self.sleeping[i].pid;
-                
+
                 // Get priority before calling enqueue_ready
                 let priority = if let Some(ref mut proc) = self.processes[pid.0 as usize] {
                     proc.state = ProcessState::Ready;
@@ -234,10 +236,10 @@ impl Scheduler {
                     self.sleeping[i] = self.sleeping[self.sleeping_count];
                     continue;
                 };
-                
+
                 // Move process to ready queue
                 self.enqueue_ready(pid, priority);
-                
+
                 // Remove from sleeping array (swap with last)
                 self.sleeping_count -= 1;
                 self.sleeping[i] = self.sleeping[self.sleeping_count];
@@ -251,22 +253,22 @@ impl Scheduler {
     pub fn on_timer_tick(&mut self) {
         // Wake any sleeping processes
         self.wake_sleeping();
-        
+
         // Increment tick counter
         self.ticks_since_schedule += 1;
-        
+
         // Calculate ticks per time slice (100 Hz timer = 10ms per tick)
         const TIMER_HZ: u32 = 100;
         const TICKS_PER_SLICE: u32 = (TIME_SLICE_MS * TIMER_HZ) / 1000;
-        
+
         // Only preempt after full time slice has elapsed
         if self.ticks_since_schedule < TICKS_PER_SLICE {
             return;
         }
-        
+
         self.ticks_since_schedule = 0;
         self.preemptions += 1;
-        
+
         // Preempt current process
         if let Some(current_pid) = self.current_pid {
             let priority = if let Some(ref mut proc) = self.processes[current_pid.0 as usize] {
@@ -277,7 +279,7 @@ impl Scheduler {
             };
             self.enqueue_ready(current_pid, priority);
         }
-        
+
         // Schedule next process
         self.schedule();
     }
@@ -285,22 +287,23 @@ impl Scheduler {
     /// Schedule next process to run (round-robin within priority levels)
     fn schedule(&mut self) {
         // Select next process (priority order: High -> Normal -> Low)
-        let next_pid = self.dequeue_ready_high()
+        let next_pid = self
+            .dequeue_ready_high()
             .or_else(|| self.dequeue_ready_normal())
             .or_else(|| self.dequeue_ready_low());
-        
+
         if let Some(next_pid) = next_pid {
             // Context switch
             let old_pid = self.current_pid;
             self.current_pid = Some(next_pid);
-            
+
             if let Some(ref mut proc) = self.processes[next_pid.0 as usize] {
                 proc.state = ProcessState::Running;
                 proc.cpu_time += 1;
             }
-            
+
             self.total_switches += 1;
-            
+
             // Set Task Switched (TS) bit in CR0 to enable lazy FPU context saving
             #[cfg(target_arch = "x86")]
             unsafe {
@@ -314,7 +317,7 @@ impl Scheduler {
             unsafe {
                 let old_ctx = old_pid.map(|pid| &mut self.contexts[pid.0 as usize] as *mut _);
                 let new_ctx = &self.contexts[next_pid.0 as usize] as *const _;
-                
+
                 if let Some(old_ctx_ptr) = old_ctx {
                     asm_switch_context(old_ctx_ptr, new_ctx);
                 } else {
@@ -337,17 +340,19 @@ impl Scheduler {
                         core::arch::asm!("pushfd", "pop {}", out(reg) eflags, options(nomem, nostack));
                     }
                     if (eflags & 0x200) == 0 {
-                        crate::serial_println!("[SCHED] WARNING: Attempting HLT with interrupts disabled!");
+                        crate::serial_println!(
+                            "[SCHED] WARNING: Attempting HLT with interrupts disabled!"
+                        );
                         return; // Avoid deadlock
                     }
                 }
-                
+
                 // Log idle entry for power profiling
                 crate::serial_println!("[SCHED] Entering idle state (HLT)");
-                
+
                 // HLT to save power - CPU will wake on next interrupt
                 crate::asm_bindings::hlt();
-                
+
                 // Track wakeup reason
                 crate::serial_println!("[SCHED] Woke from idle");
             }
@@ -435,7 +440,7 @@ impl Scheduler {
                 i += 1;
             }
         }
-        
+
         // Normal priority queue
         i = 0;
         while i < self.ready_normal_len {
@@ -448,7 +453,7 @@ impl Scheduler {
                 i += 1;
             }
         }
-        
+
         // Low priority queue
         i = 0;
         while i < self.ready_low_len {
@@ -467,9 +472,15 @@ impl Scheduler {
     pub fn get_stats(&self) -> SchedulerStats {
         SchedulerStats {
             total_processes: self.processes.iter().filter(|p| p.is_some()).count(),
-            running_processes: self.processes.iter().filter(|p| {
-                p.as_ref().map(|proc| proc.state == ProcessState::Running).unwrap_or(false)
-            }).count(),
+            running_processes: self
+                .processes
+                .iter()
+                .filter(|p| {
+                    p.as_ref()
+                        .map(|proc| proc.state == ProcessState::Running)
+                        .unwrap_or(false)
+                })
+                .count(),
             ready_processes: self.ready_high_len + self.ready_normal_len + self.ready_low_len,
             sleeping_processes: self.sleeping_count,
             total_switches: self.total_switches,
@@ -539,7 +550,8 @@ pub struct SchedulerStats {
 static RESCHED_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 // Global scheduler instance
-pub static SCHEDULER: DagSpinlock<DAG_LEVEL_SCHEDULER, Scheduler> = DagSpinlock::new(Scheduler::new());
+pub static SCHEDULER: DagSpinlock<DAG_LEVEL_SCHEDULER, Scheduler> =
+    DagSpinlock::new(Scheduler::new());
 
 /// Get the global scheduler
 pub fn scheduler() -> &'static DagSpinlock<DAG_LEVEL_SCHEDULER, Scheduler> {
@@ -575,7 +587,7 @@ pub fn on_timer_tick() {
         RESCHED_REQUESTED.store(true, Ordering::SeqCst);
         return;
     }
-    
+
     SCHEDULER.lock_legacy().on_timer_tick();
 }
 

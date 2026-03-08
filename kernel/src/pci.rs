@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -55,7 +55,7 @@ unsafe fn pci_config_read_u32(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
 
     // Write address
     x86::io::outl(PCI_CONFIG_ADDRESS, address);
-    
+
     // Read data
     x86::io::inl(PCI_CONFIG_DATA)
 }
@@ -147,14 +147,14 @@ impl PciDevice {
             (0x8086, 0x08B1) => "Intel Wireless 7260",
             (0x8086, 0x095A) => "Intel Wireless 7265",
             (0x8086, 0x24FD) => "Intel Wireless 8265",
-            
+
             // Realtek
             (0x10EC, 0x8139) => "Realtek RTL8139 Fast Ethernet",
             (0x10EC, 0x8168) => "Realtek RTL8168 Gigabit Ethernet",
             (0x10EC, 0x8169) => "Realtek RTL8169 Gigabit Ethernet",
             (0x10EC, 0x8176) => "Realtek RTL8188CE WiFi",
             (0x10EC, 0x8179) => "Realtek RTL8188EE WiFi",
-            
+
             // Broadcom
             (0x14E4, 0x4311) => "Broadcom BCM4311 802.11b/g WiFi",
             (0x14E4, 0x4312) => "Broadcom BCM4312 802.11b/g WiFi",
@@ -163,7 +163,7 @@ impl PciDevice {
             (0x14E4, 0x4328) => "Broadcom BCM4321 802.11a/b/g/n WiFi",
             (0x14E4, 0x432B) => "Broadcom BCM4322 802.11a/b/g/n WiFi",
             (0x14E4, 0x4353) => "Broadcom BCM43224 WiFi",
-            
+
             // Atheros
             (0x168C, 0x0013) => "Atheros AR5212 802.11abg WiFi",
             (0x168C, 0x001C) => "Atheros AR242x 802.11abg WiFi",
@@ -171,11 +171,11 @@ impl PciDevice {
             (0x168C, 0x002A) => "Atheros AR928X 802.11n WiFi",
             (0x168C, 0x002B) => "Atheros AR9285 802.11n WiFi",
             (0x168C, 0x0030) => "Atheros AR93xx 802.11n WiFi",
-            
+
             // VirtIO (QEMU/KVM)
             (0x1AF4, 0x1000) => "VirtIO Network Device",
             (0x1AF4, 0x1041) => "VirtIO Network Device (modern)",
-            
+
             _ => "Unknown Network Device",
         }
     }
@@ -309,7 +309,7 @@ impl PciScanner {
     /// Probe a specific PCI device
     unsafe fn probe_device(&self, bus: u8, slot: u8, func: u8) -> Option<PciDevice> {
         let vendor_id = pci_config_read_u16(bus, slot, func, 0x00);
-        
+
         if vendor_id == 0xFFFF {
             return None; // No device
         }

@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  * SPDX-License-Identifier: MIT
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -43,15 +43,15 @@
 
 #![allow(dead_code)]
 
-use core::fmt;
-use core::sync::atomic::{AtomicBool, Ordering};
-use spin::Mutex;
 use crate::capability::CapabilityType;
 use crate::intent_graph::{
     IntentDecision, IntentGraph, IntentGraphStats, IntentPolicy, IntentPolicyError,
     IntentProcessSnapshot, IntentSignal,
 };
 use crate::ipc::ProcessId;
+use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
+use spin::Mutex;
 
 // ============================================================================
 // Security Constants
@@ -75,9 +75,8 @@ pub const PERSISTENCE_SEAL_KEY_BYTES: usize = 32;
 // Default sealing key for development environments without a hardware root-of-trust.
 // Production deployments should override this via attested provisioning.
 const DEFAULT_PERSISTENCE_SEAL_KEY: [u8; PERSISTENCE_SEAL_KEY_BYTES] = [
-    0x6f, 0x72, 0x65, 0x75, 0x6c, 0x69, 0x61, 0x2d, 0x70, 0x65, 0x72, 0x73, 0x69, 0x73,
-    0x74, 0x2d, 0x73, 0x65, 0x61, 0x6c, 0x2d, 0x6b, 0x65, 0x79, 0x2d, 0x76, 0x31, 0x00,
-    0x01, 0x23, 0x45, 0x67,
+    0x6f, 0x72, 0x65, 0x75, 0x6c, 0x69, 0x61, 0x2d, 0x70, 0x65, 0x72, 0x73, 0x69, 0x73, 0x74, 0x2d,
+    0x73, 0x65, 0x61, 0x6c, 0x2d, 0x6b, 0x65, 0x79, 0x2d, 0x76, 0x31, 0x00, 0x01, 0x23, 0x45, 0x67,
 ];
 
 static PERSISTENCE_SEAL_KEY: Mutex<[u8; PERSISTENCE_SEAL_KEY_BYTES]> =
@@ -446,7 +445,12 @@ impl CapabilityValidator {
     }
 
     /// Validate capability rights
-    pub fn validate_rights(&mut self, process: ProcessId, required: u32, actual: u32) -> Result<(), SecurityError> {
+    pub fn validate_rights(
+        &mut self,
+        process: ProcessId,
+        required: u32,
+        actual: u32,
+    ) -> Result<(), SecurityError> {
         if (actual & required) != required {
             self.record_violation(process);
             return Err(SecurityError::InsufficientRights);
@@ -651,7 +655,12 @@ impl ResourceTracker {
     }
 
     /// Check if allocation is allowed
-    pub fn check_allocation(&mut self, process: ProcessId, resource: ResourceType, amount: usize) -> Result<(), SecurityError> {
+    pub fn check_allocation(
+        &mut self,
+        process: ProcessId,
+        resource: ResourceType,
+        amount: usize,
+    ) -> Result<(), SecurityError> {
         for i in 0..self.count {
             if self.quotas[i].0 == process {
                 let quota = &mut self.quotas[i].1[resource as usize];
@@ -1007,15 +1016,31 @@ impl SecurityManager {
 
     fn syscall_required_access(syscall_no: u32, args: [u32; 5]) -> Option<(CapabilityType, u32)> {
         match syscall_no {
-            10 => Some((CapabilityType::Channel, crate::capability::Rights::CHANNEL_CREATE)),
-            11 => Some((CapabilityType::Channel, crate::capability::Rights::CHANNEL_SEND)),
-            12 => Some((CapabilityType::Channel, crate::capability::Rights::CHANNEL_RECEIVE)),
+            10 => Some((
+                CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_CREATE,
+            )),
+            11 => Some((
+                CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_SEND,
+            )),
+            12 => Some((
+                CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_RECEIVE,
+            )),
             13 => Some((
                 CapabilityType::Channel,
-                crate::capability::Rights::CHANNEL_SEND | crate::capability::Rights::CHANNEL_RECEIVE,
+                crate::capability::Rights::CHANNEL_SEND
+                    | crate::capability::Rights::CHANNEL_RECEIVE,
             )),
-            14 => Some((CapabilityType::Channel, crate::capability::Rights::CHANNEL_SEND)),
-            15 => Some((CapabilityType::Channel, crate::capability::Rights::CHANNEL_RECEIVE)),
+            14 => Some((
+                CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_SEND,
+            )),
+            15 => Some((
+                CapabilityType::Channel,
+                crate::capability::Rights::CHANNEL_RECEIVE,
+            )),
             20 => {
                 let flags = args[1];
                 let mut rights = 0u32;
@@ -1030,16 +1055,34 @@ impl SecurityManager {
                 }
                 Some((CapabilityType::Filesystem, rights))
             }
-            21 => Some((CapabilityType::Filesystem, crate::capability::Rights::FS_READ)),
-            22 => Some((CapabilityType::Filesystem, crate::capability::Rights::FS_WRITE)),
+            21 => Some((
+                CapabilityType::Filesystem,
+                crate::capability::Rights::FS_READ,
+            )),
+            22 => Some((
+                CapabilityType::Filesystem,
+                crate::capability::Rights::FS_WRITE,
+            )),
             23 => Some((
                 CapabilityType::Filesystem,
                 crate::capability::Rights::FS_READ | crate::capability::Rights::FS_WRITE,
             )),
-            24 => Some((CapabilityType::Filesystem, crate::capability::Rights::FS_DELETE)),
-            25 => Some((CapabilityType::Filesystem, crate::capability::Rights::FS_LIST)),
-            50 => Some((CapabilityType::Console, crate::capability::Rights::CONSOLE_WRITE)),
-            51 => Some((CapabilityType::Console, crate::capability::Rights::CONSOLE_READ)),
+            24 => Some((
+                CapabilityType::Filesystem,
+                crate::capability::Rights::FS_DELETE,
+            )),
+            25 => Some((
+                CapabilityType::Filesystem,
+                crate::capability::Rights::FS_LIST,
+            )),
+            50 => Some((
+                CapabilityType::Console,
+                crate::capability::Rights::CONSOLE_WRITE,
+            )),
+            51 => Some((
+                CapabilityType::Console,
+                crate::capability::Rights::CONSOLE_READ,
+            )),
             62 => Some((
                 CapabilityType::ServicePointer,
                 crate::capability::Rights::SERVICE_INVOKE,
@@ -1070,7 +1113,12 @@ impl SecurityManager {
     }
 
     /// Policy gate for syscall-level predictive revocation.
-    pub fn syscall_policy_blocked(&self, process: ProcessId, syscall_no: u32, args: [u32; 5]) -> bool {
+    pub fn syscall_policy_blocked(
+        &self,
+        process: ProcessId,
+        syscall_no: u32,
+        args: [u32; 5],
+    ) -> bool {
         let (cap_type, rights) = match Self::syscall_required_access(syscall_no, args) {
             Some(v) => v,
             None => return false,
@@ -1091,37 +1139,53 @@ impl SecurityManager {
     }
 
     /// Validate capability operation
-    pub fn validate_capability(&self, process: ProcessId, required_rights: u32, actual_rights: u32) -> Result<(), SecurityError> {
+    pub fn validate_capability(
+        &self,
+        process: ProcessId,
+        required_rights: u32,
+        actual_rights: u32,
+    ) -> Result<(), SecurityError> {
         // Check rate limit
         if self.rate_limit_enabled.load(Ordering::SeqCst) {
             if !self.rate_limiter.lock().allow(process) {
-                self.log_event(
-                    AuditEntry::new(SecurityEvent::RateLimitExceeded, process, 0)
-                );
+                self.log_event(AuditEntry::new(
+                    SecurityEvent::RateLimitExceeded,
+                    process,
+                    0,
+                ));
                 return Err(SecurityError::RateLimitExceeded);
             }
         }
 
         // Validate rights
-        let result = self.validator.lock().validate_rights(process, required_rights, actual_rights);
+        let result = self
+            .validator
+            .lock()
+            .validate_rights(process, required_rights, actual_rights);
 
         if result.is_err() {
-            self.log_event(
-                AuditEntry::new(SecurityEvent::PermissionDenied, process, 0)
-            );
+            self.log_event(AuditEntry::new(SecurityEvent::PermissionDenied, process, 0));
         }
 
         result
     }
 
     /// Check resource allocation
-    pub fn check_resource(&self, process: ProcessId, resource: ResourceType, amount: usize) -> Result<(), SecurityError> {
-        let result = self.resource_tracker.lock().check_allocation(process, resource, amount);
+    pub fn check_resource(
+        &self,
+        process: ProcessId,
+        resource: ResourceType,
+        amount: usize,
+    ) -> Result<(), SecurityError> {
+        let result = self
+            .resource_tracker
+            .lock()
+            .check_allocation(process, resource, amount);
 
         if result.is_err() {
             self.log_event(
                 AuditEntry::new(SecurityEvent::QuotaExceeded, process, 0)
-                    .with_context(resource as u64)
+                    .with_context(resource as u64),
             );
         }
 
@@ -1130,16 +1194,16 @@ impl SecurityManager {
 
     /// Release resource
     pub fn release_resource(&self, process: ProcessId, resource: ResourceType, amount: usize) {
-        self.resource_tracker.lock().release(process, resource, amount);
+        self.resource_tracker
+            .lock()
+            .release(process, resource, amount);
     }
 
     /// Initialize process security context
     pub fn init_process(&self, process: ProcessId) {
         self.resource_tracker.lock().init_process(process);
         self.intent_graph.lock().init_process(process);
-        self.log_event(
-            AuditEntry::new(SecurityEvent::ProcessSpawned, process, 0)
-        );
+        self.log_event(AuditEntry::new(SecurityEvent::ProcessSpawned, process, 0));
     }
 
     /// Tear down process security context and transient detector state.
@@ -1148,9 +1212,11 @@ impl SecurityManager {
         self.rate_limiter.lock().remove_process(process);
         self.validator.lock().clear_process(process);
         self.intent_graph.lock().deinit_process(process);
-        self.log_event(
-            AuditEntry::new(SecurityEvent::ProcessTerminated, process, 0)
-        );
+        self.log_event(AuditEntry::new(
+            SecurityEvent::ProcessTerminated,
+            process,
+            0,
+        ));
     }
 
     /// Generate secure random bytes
@@ -1282,19 +1348,21 @@ impl SecurityManager {
         let mut result = [None; 32];
         let actual_limit = limit.min(32);
         let mut idx = 0;
-        
+
         for entry in self.audit_log.lock().recent(actual_limit) {
             if idx < 32 {
                 result[idx] = Some(*entry);
                 idx += 1;
             }
         }
-        
+
         result
     }
 
     pub fn get_anomaly_stats(&self) -> AnomalyStats {
-        self.anomaly_detector.lock().snapshot(crate::pit::get_ticks())
+        self.anomaly_detector
+            .lock()
+            .snapshot(crate::pit::get_ticks())
     }
 
     /// Check if process should be terminated
@@ -1348,9 +1416,7 @@ pub fn security() -> &'static SecurityManager {
 }
 
 pub fn temporal_apply_intent_policy(policy: IntentPolicy) -> Result<(), &'static str> {
-    security()
-        .set_intent_policy(policy)
-        .map_err(|e| e.as_str())
+    security().set_intent_policy(policy).map_err(|e| e.as_str())
 }
 
 /// Initialize security subsystem
@@ -1370,12 +1436,24 @@ pub fn init() {
     let mut key_bytes = [0u8; 16];
     SECURITY.random.lock().fill_bytes(&mut key_bytes);
     let k0 = u64::from_le_bytes([
-        key_bytes[0], key_bytes[1], key_bytes[2], key_bytes[3],
-        key_bytes[4], key_bytes[5], key_bytes[6], key_bytes[7],
+        key_bytes[0],
+        key_bytes[1],
+        key_bytes[2],
+        key_bytes[3],
+        key_bytes[4],
+        key_bytes[5],
+        key_bytes[6],
+        key_bytes[7],
     ]);
     let k1 = u64::from_le_bytes([
-        key_bytes[8], key_bytes[9], key_bytes[10], key_bytes[11],
-        key_bytes[12], key_bytes[13], key_bytes[14], key_bytes[15],
+        key_bytes[8],
+        key_bytes[9],
+        key_bytes[10],
+        key_bytes[11],
+        key_bytes[12],
+        key_bytes[13],
+        key_bytes[14],
+        key_bytes[15],
     ]);
     if let Some(mut key) = SECURITY.cap_token_key.try_lock() {
         *key = [k0, k1];

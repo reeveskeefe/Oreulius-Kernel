@@ -8,13 +8,11 @@
 
 use core::cell::UnsafeCell;
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{
-    AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering,
-};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
-use super::{ArchPlatform, BootInfo};
 use super::aarch64_vectors::VectorSlot;
+use super::{ArchPlatform, BootInfo};
 
 const QEMU_VIRT_GICD_BASE_FALLBACK: usize = 0x0800_0000;
 const QEMU_VIRT_GICC_BASE_FALLBACK: usize = 0x0801_0000;
@@ -94,22 +92,58 @@ static DISCOVERED_TIMER_INTID: AtomicU32 = AtomicU32::new(30);
 static DISCOVERED_UART_IRQ_INTID: AtomicU32 = AtomicU32::new(u32::MAX);
 static DISCOVERED_VIRTIO_MMIO_COUNT: AtomicUsize = AtomicUsize::new(0);
 static DISCOVERED_VIRTIO_MMIO_BASES: [AtomicUsize; MAX_TRACKED_VIRTIO_MMIO] = [
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
 ];
 static DISCOVERED_VIRTIO_MMIO_SIZES: [AtomicUsize; MAX_TRACKED_VIRTIO_MMIO] = [
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
-    AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
+    AtomicUsize::new(0),
 ];
 static DISCOVERED_VIRTIO_MMIO_IRQS: [AtomicU32; MAX_TRACKED_VIRTIO_MMIO] = [
-    AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX),
-    AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX),
-    AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX),
-    AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX), AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
 ];
 
 static EARLY_UART_READY: AtomicBool = AtomicBool::new(false);
@@ -139,46 +173,130 @@ static AARCH64_SCHED_CONTEXT_SWITCHES: AtomicU64 = AtomicU64::new(0);
 static AARCH64_SCHED_TIMESLICE_TICKS: AtomicU64 = AtomicU64::new(10);
 static AARCH64_SCHED_TIMESLICE_POS: AtomicU64 = AtomicU64::new(0);
 static VIRTIO_MMIO_LAST_IRQ_STATUS: [AtomicU32; MAX_TRACKED_VIRTIO_MMIO] = [
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
 ];
 static VIRTIO_MMIO_IRQ_COUNTS: [AtomicU64; MAX_TRACKED_VIRTIO_MMIO] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 static VIRTIO_MMIO_MAGIC: [AtomicU32; MAX_TRACKED_VIRTIO_MMIO] = [
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
 ];
 static VIRTIO_MMIO_VERSION_REG: [AtomicU32; MAX_TRACKED_VIRTIO_MMIO] = [
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
 ];
 static VIRTIO_MMIO_DEVICE_ID_REG: [AtomicU32; MAX_TRACKED_VIRTIO_MMIO] = [
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
 ];
 static VIRTIO_MMIO_VENDOR_ID_REG: [AtomicU32; MAX_TRACKED_VIRTIO_MMIO] = [
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
 ];
 static VIRTIO_MMIO_HOST_FEATURES0: [AtomicU32; MAX_TRACKED_VIRTIO_MMIO] = [
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
 ];
 
 #[repr(C, align(4096))]
@@ -301,7 +419,11 @@ static A64_VFS_MOUNT: Mutex<A64VfsMountState> = Mutex::new(A64VfsMountState::new
 
 #[inline]
 fn nonzero_ptr(ptr: usize) -> Option<usize> {
-    if ptr == 0 { None } else { Some(ptr) }
+    if ptr == 0 {
+        None
+    } else {
+        Some(ptr)
+    }
 }
 
 #[inline]
@@ -317,7 +439,10 @@ fn ensure_uart() {
 }
 
 fn seed_platform_fallbacks() {
-    DISCOVERED_UART_BASE.store(super::aarch64_pl011::QEMU_VIRT_PL011_BASE, Ordering::Relaxed);
+    DISCOVERED_UART_BASE.store(
+        super::aarch64_pl011::QEMU_VIRT_PL011_BASE,
+        Ordering::Relaxed,
+    );
     DISCOVERED_GICD_BASE.store(QEMU_VIRT_GICD_BASE_FALLBACK, Ordering::Relaxed);
     DISCOVERED_GICC_BASE.store(QEMU_VIRT_GICC_BASE_FALLBACK, Ordering::Relaxed);
     DISCOVERED_MEM_BASE.store(QEMU_VIRT_MEM_BASE_FALLBACK, Ordering::Relaxed);
@@ -426,7 +551,8 @@ fn discover_from_dtb_if_needed() {
             }
             DISCOVERED_VIRTIO_MMIO_BASES[count].store(dev.base, Ordering::Relaxed);
             DISCOVERED_VIRTIO_MMIO_SIZES[count].store(dev.size, Ordering::Relaxed);
-            DISCOVERED_VIRTIO_MMIO_IRQS[count].store(dev.irq_intid.unwrap_or(u32::MAX), Ordering::Relaxed);
+            DISCOVERED_VIRTIO_MMIO_IRQS[count]
+                .store(dev.irq_intid.unwrap_or(u32::MAX), Ordering::Relaxed);
             count += 1;
         }
         DISCOVERED_VIRTIO_MMIO_COUNT.store(count, Ordering::Relaxed);
@@ -459,23 +585,37 @@ fn mmio_write8(base: usize, off: usize, val: u8) {
 #[inline]
 fn gicd_base() -> usize {
     let b = DISCOVERED_GICD_BASE.load(Ordering::Relaxed);
-    if b != 0 { b } else { QEMU_VIRT_GICD_BASE_FALLBACK }
+    if b != 0 {
+        b
+    } else {
+        QEMU_VIRT_GICD_BASE_FALLBACK
+    }
 }
 
 #[inline]
 fn gicc_base() -> usize {
     let b = DISCOVERED_GICC_BASE.load(Ordering::Relaxed);
-    if b != 0 { b } else { QEMU_VIRT_GICC_BASE_FALLBACK }
+    if b != 0 {
+        b
+    } else {
+        QEMU_VIRT_GICC_BASE_FALLBACK
+    }
 }
 
 #[inline]
 fn discovered_uart_irq_intid() -> Option<u32> {
     let v = DISCOVERED_UART_IRQ_INTID.load(Ordering::Relaxed);
-    if v == u32::MAX { None } else { Some(v) }
+    if v == u32::MAX {
+        None
+    } else {
+        Some(v)
+    }
 }
 
 fn for_each_discovered_virtio_irq(mut f: impl FnMut(usize, u32)) {
-    let count = DISCOVERED_VIRTIO_MMIO_COUNT.load(Ordering::Relaxed).min(MAX_TRACKED_VIRTIO_MMIO);
+    let count = DISCOVERED_VIRTIO_MMIO_COUNT
+        .load(Ordering::Relaxed)
+        .min(MAX_TRACKED_VIRTIO_MMIO);
     for idx in 0..count {
         let intid = DISCOVERED_VIRTIO_MMIO_IRQS[idx].load(Ordering::Relaxed);
         if intid != u32::MAX {
@@ -545,7 +685,13 @@ fn gicv2_snapshot_cpu_if(gicc: usize) -> GicCpuIfSnapshot {
     }
 }
 
-fn gicv2_configure_spi(gicd: usize, intid: u32, target_mask: u8, priority: u8, edge_triggered: bool) {
+fn gicv2_configure_spi(
+    gicd: usize,
+    intid: u32,
+    target_mask: u8,
+    priority: u8,
+    edge_triggered: bool,
+) {
     if intid < 32 {
         return;
     }
@@ -570,7 +716,9 @@ fn gicv2_configure_spi(gicd: usize, intid: u32, target_mask: u8, priority: u8, e
 }
 
 pub(crate) fn for_each_discovered_virtio_mmio(mut f: impl FnMut(usize, usize, u32)) {
-    let count = DISCOVERED_VIRTIO_MMIO_COUNT.load(Ordering::Relaxed).min(MAX_TRACKED_VIRTIO_MMIO);
+    let count = DISCOVERED_VIRTIO_MMIO_COUNT
+        .load(Ordering::Relaxed)
+        .min(MAX_TRACKED_VIRTIO_MMIO);
     for idx in 0..count {
         let base = DISCOVERED_VIRTIO_MMIO_BASES[idx].load(Ordering::Relaxed);
         let size = DISCOVERED_VIRTIO_MMIO_SIZES[idx].load(Ordering::Relaxed);
@@ -740,18 +888,24 @@ fn shell_try_read_input_byte() -> Option<u8> {
         let irq_count = UART_IRQ_COUNT.load(Ordering::Relaxed);
         if irq_count == 0 {
             let _ = uart().irq_drain_rx_to_buffer();
-            return uart().try_read_buffered_byte().or_else(|| uart().try_read_byte());
+            return uart()
+                .try_read_buffered_byte()
+                .or_else(|| uart().try_read_byte());
         }
         let last_irq_tick = UART_LAST_IRQ_TICK.load(Ordering::Relaxed);
         let now_ticks = TIMER_TICKS.load(Ordering::Relaxed);
         if now_ticks.saturating_sub(last_irq_tick) >= 1 {
             let _ = uart().irq_drain_rx_to_buffer();
-            return uart().try_read_buffered_byte().or_else(|| uart().try_read_byte());
+            return uart()
+                .try_read_buffered_byte()
+                .or_else(|| uart().try_read_byte());
         }
         None
     } else {
         let _ = uart().irq_drain_rx_to_buffer();
-        uart().try_read_buffered_byte().or_else(|| uart().try_read_byte())
+        uart()
+            .try_read_buffered_byte()
+            .or_else(|| uart().try_read_byte())
     }
 }
 
@@ -852,7 +1006,9 @@ fn gicv2_enable_intid(gicd: usize, intid: u32) {
 }
 
 fn virtio_mmio_handle_irq(intid: u32) -> bool {
-    let count = DISCOVERED_VIRTIO_MMIO_COUNT.load(Ordering::Relaxed).min(MAX_TRACKED_VIRTIO_MMIO);
+    let count = DISCOVERED_VIRTIO_MMIO_COUNT
+        .load(Ordering::Relaxed)
+        .min(MAX_TRACKED_VIRTIO_MMIO);
     for idx in 0..count {
         let irq = DISCOVERED_VIRTIO_MMIO_IRQS[idx].load(Ordering::Relaxed);
         if irq != intid {
@@ -884,7 +1040,9 @@ fn virtio_mmio_handle_irq(intid: u32) -> bool {
 }
 
 fn virtio_mmio_probe_all() {
-    let count = DISCOVERED_VIRTIO_MMIO_COUNT.load(Ordering::Relaxed).min(MAX_TRACKED_VIRTIO_MMIO);
+    let count = DISCOVERED_VIRTIO_MMIO_COUNT
+        .load(Ordering::Relaxed)
+        .min(MAX_TRACKED_VIRTIO_MMIO);
     for idx in 0..count {
         let base = DISCOVERED_VIRTIO_MMIO_BASES[idx].load(Ordering::Relaxed);
         if base == 0 {
@@ -935,7 +1093,10 @@ fn virtqueue_layout_legacy(qsize: u16) -> Option<VirtQueueLayout> {
     let used_bytes = 6usize.checked_add(8usize.checked_mul(q)?)?;
     let desc_off = 0usize;
     let avail_off = desc_off.checked_add(desc_bytes)?;
-    let used_off = align_up(avail_off.checked_add(avail_bytes)?, VIRTIO_QUEUE_ALIGN_BYTES);
+    let used_off = align_up(
+        avail_off.checked_add(avail_bytes)?,
+        VIRTIO_QUEUE_ALIGN_BYTES,
+    );
     let total = used_off.checked_add(used_bytes)?;
     if total > 8192 {
         return None;
@@ -1054,7 +1215,11 @@ fn virtio_blk_wait_until_idle() -> Result<(), &'static str> {
     Err("virtio-blk queue idle wait timeout")
 }
 
-fn virtio_blk_submit_sync(req_type: u32, lba: u64, buf: &mut [u8; VIRTIO_BLK_SECTOR_SIZE]) -> Result<(), &'static str> {
+fn virtio_blk_submit_sync(
+    req_type: u32,
+    lba: u64,
+    buf: &mut [u8; VIRTIO_BLK_SECTOR_SIZE],
+) -> Result<(), &'static str> {
     if !virtio_blk_try_lock() {
         return Err("virtio-blk busy");
     }
@@ -1077,7 +1242,11 @@ fn virtio_blk_submit_sync(req_type: u32, lba: u64, buf: &mut [u8; VIRTIO_BLK_SEC
             if req_type == VIRTIO_BLK_T_OUT {
                 (*VIRTIO_BLK_REQ.data.get()).copy_from_slice(buf);
             } else {
-                core::ptr::write_bytes((*VIRTIO_BLK_REQ.data.get()).as_mut_ptr(), 0, VIRTIO_BLK_SECTOR_SIZE);
+                core::ptr::write_bytes(
+                    (*VIRTIO_BLK_REQ.data.get()).as_mut_ptr(),
+                    0,
+                    VIRTIO_BLK_SECTOR_SIZE,
+                );
             }
             *VIRTIO_BLK_REQ.status.get() = 0xFF;
         }
@@ -1108,15 +1277,7 @@ fn virtio_blk_submit_sync(req_type: u32, lba: u64, buf: &mut [u8; VIRTIO_BLK_SEC
             },
             2,
         );
-        virtio_queue_write_desc(
-            queue_base,
-            layout,
-            2,
-            status_addr,
-            1,
-            VIRTQ_DESC_F_WRITE,
-            0,
-        );
+        virtio_queue_write_desc(queue_base, layout, 2, status_addr, 1, VIRTQ_DESC_F_WRITE, 0);
 
         let completed_before = VIRTIO_BLK_REQ_COMPLETED.load(Ordering::Relaxed);
         virtio_queue_submit_head(base, queue_base, layout, qsize, 0);
@@ -1147,11 +1308,17 @@ fn virtio_blk_submit_sync(req_type: u32, lba: u64, buf: &mut [u8; VIRTIO_BLK_SEC
     result
 }
 
-fn virtio_blk_read_sector_sync(lba: u64, buf: &mut [u8; VIRTIO_BLK_SECTOR_SIZE]) -> Result<(), &'static str> {
+fn virtio_blk_read_sector_sync(
+    lba: u64,
+    buf: &mut [u8; VIRTIO_BLK_SECTOR_SIZE],
+) -> Result<(), &'static str> {
     virtio_blk_submit_sync(VIRTIO_BLK_T_IN, lba, buf)
 }
 
-fn virtio_blk_write_sector_sync(lba: u64, buf: &[u8; VIRTIO_BLK_SECTOR_SIZE]) -> Result<(), &'static str> {
+fn virtio_blk_write_sector_sync(
+    lba: u64,
+    buf: &[u8; VIRTIO_BLK_SECTOR_SIZE],
+) -> Result<(), &'static str> {
     let mut tmp = [0u8; VIRTIO_BLK_SECTOR_SIZE];
     tmp.copy_from_slice(buf);
     virtio_blk_submit_sync(VIRTIO_BLK_T_OUT, lba, &mut tmp)
@@ -1197,7 +1364,8 @@ fn virtio_queue_write_desc(
     flags: u16,
     next: u16,
 ) {
-    let ptr = (queue_base + layout.desc_off + idx * core::mem::size_of::<VirtqDesc>()) as *mut VirtqDesc;
+    let ptr =
+        (queue_base + layout.desc_off + idx * core::mem::size_of::<VirtqDesc>()) as *mut VirtqDesc;
     unsafe {
         write_volatile(
             ptr,
@@ -1211,7 +1379,13 @@ fn virtio_queue_write_desc(
     }
 }
 
-fn virtio_queue_submit_head(base: usize, queue_base: usize, layout: VirtQueueLayout, qsize: u16, head: u16) {
+fn virtio_queue_submit_head(
+    base: usize,
+    queue_base: usize,
+    layout: VirtQueueLayout,
+    qsize: u16,
+    head: u16,
+) {
     let qsz = qsize as usize;
     let avail_flags_ptr = (queue_base + layout.avail_off) as *mut u16;
     let avail_idx_ptr = (queue_base + layout.avail_off + 2) as *mut u16;
@@ -1233,7 +1407,12 @@ fn virtio_blk_read_capacity(base: usize) -> u64 {
     (hi << 32) | lo
 }
 
-fn virtio_blk_post_capacity_probe_read(base: usize, queue_base: usize, layout: VirtQueueLayout, qsize: u16) -> bool {
+fn virtio_blk_post_capacity_probe_read(
+    base: usize,
+    queue_base: usize,
+    layout: VirtQueueLayout,
+    qsize: u16,
+) -> bool {
     if qsize < 3 {
         VIRTIO_BLK_REQ_POST_FAILS.fetch_add(1, Ordering::Relaxed);
         return false;
@@ -1250,8 +1429,24 @@ fn virtio_blk_post_capacity_probe_read(base: usize, queue_base: usize, layout: V
     let data_addr = VIRTIO_BLK_REQ.data.get() as usize;
     let status_addr = VIRTIO_BLK_REQ.status.get() as usize;
 
-    virtio_queue_write_desc(queue_base, layout, 0, hdr_addr, core::mem::size_of::<VirtioBlkReqHeader>() as u32, VIRTQ_DESC_F_NEXT, 1);
-    virtio_queue_write_desc(queue_base, layout, 1, data_addr, 512, VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE, 2);
+    virtio_queue_write_desc(
+        queue_base,
+        layout,
+        0,
+        hdr_addr,
+        core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+        VIRTQ_DESC_F_NEXT,
+        1,
+    );
+    virtio_queue_write_desc(
+        queue_base,
+        layout,
+        1,
+        data_addr,
+        512,
+        VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
+        2,
+    );
     virtio_queue_write_desc(queue_base, layout, 2, status_addr, 1, VIRTQ_DESC_F_WRITE, 0);
 
     virtio_queue_submit_head(base, queue_base, layout, qsize, 0);
@@ -1277,7 +1472,9 @@ fn virtio_mmio_bringup_one() {
     VIRTIO_ACTIVE_USED_ADVANCES.store(0, Ordering::Relaxed);
     VIRTIO_ACTIVE_NOTIFY_COUNT.store(0, Ordering::Relaxed);
 
-    let count = DISCOVERED_VIRTIO_MMIO_COUNT.load(Ordering::Relaxed).min(MAX_TRACKED_VIRTIO_MMIO);
+    let count = DISCOVERED_VIRTIO_MMIO_COUNT
+        .load(Ordering::Relaxed)
+        .min(MAX_TRACKED_VIRTIO_MMIO);
     let mut chosen: Option<usize> = None;
     let mut fallback: Option<usize> = None;
     for idx in 0..count {
@@ -1313,14 +1510,22 @@ fn virtio_mmio_bringup_one() {
 
     mmio_write32(base, VIRTIO_MMIO_STATUS, 0);
     mmio_write32(base, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
-    mmio_write32(base, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+    mmio_write32(
+        base,
+        VIRTIO_MMIO_STATUS,
+        VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER,
+    );
 
     mmio_write32(base, VIRTIO_MMIO_HOST_FEATURES_SEL, 0);
     let host_features0 = mmio_read32(base, VIRTIO_MMIO_HOST_FEATURES);
     VIRTIO_MMIO_HOST_FEATURES0[idx].store(host_features0, Ordering::Relaxed);
     mmio_write32(base, VIRTIO_MMIO_GUEST_FEATURES_SEL, 0);
     mmio_write32(base, VIRTIO_MMIO_GUEST_FEATURES, 0);
-    mmio_write32(base, VIRTIO_MMIO_GUEST_PAGE_SIZE, VIRTIO_QUEUE_ALIGN_BYTES as u32);
+    mmio_write32(
+        base,
+        VIRTIO_MMIO_GUEST_PAGE_SIZE,
+        VIRTIO_QUEUE_ALIGN_BYTES as u32,
+    );
 
     mmio_write32(base, VIRTIO_MMIO_QUEUE_SEL, 0);
     let qmax = mmio_read32(base, VIRTIO_MMIO_QUEUE_NUM_MAX) as u16;
@@ -1340,7 +1545,11 @@ fn virtio_mmio_bringup_one() {
     let _ = layout.total_bytes;
 
     mmio_write32(base, VIRTIO_MMIO_QUEUE_NUM, qsize as u32);
-    mmio_write32(base, VIRTIO_MMIO_QUEUE_ALIGN, VIRTIO_QUEUE_ALIGN_BYTES as u32);
+    mmio_write32(
+        base,
+        VIRTIO_MMIO_QUEUE_ALIGN,
+        VIRTIO_QUEUE_ALIGN_BYTES as u32,
+    );
     mmio_write32(base, VIRTIO_MMIO_QUEUE_PFN, (queue_base >> 12) as u32);
     mmio_write32(
         base,
@@ -1478,7 +1687,9 @@ impl ArchPlatform for AArch64QemuVirtPlatform {
         uart_write_hex_u64(DISCOVERED_VIRTIO_MMIO_COUNT.load(Ordering::Relaxed) as u64);
         uart_newline();
 
-        let count = DISCOVERED_VIRTIO_MMIO_COUNT.load(Ordering::Relaxed).min(MAX_TRACKED_VIRTIO_MMIO);
+        let count = DISCOVERED_VIRTIO_MMIO_COUNT
+            .load(Ordering::Relaxed)
+            .min(MAX_TRACKED_VIRTIO_MMIO);
         for idx in 0..count {
             let base = DISCOVERED_VIRTIO_MMIO_BASES[idx].load(Ordering::Relaxed);
             if base == 0 {
@@ -1550,7 +1761,9 @@ pub(crate) fn handle_irq_exception(_slot: u8) {
     LAST_IRQ_ID.store(intid, Ordering::Relaxed);
     if intid == DISCOVERED_TIMER_INTID.load(Ordering::Relaxed) {
         TIMER_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
-        let ticks = TIMER_TICKS.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        let ticks = TIMER_TICKS
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
         crate::kernel_timer_tick_hook();
         SCHED_TICK_HOOK_COUNT.fetch_add(1, Ordering::Relaxed);
         if HEARTBEAT_TICKS != 0 && (ticks % HEARTBEAT_TICKS) == 0 {
@@ -1623,7 +1836,10 @@ fn shell_print_boot_info() {
 
 fn shell_print_dtb_info() {
     let boot = crate::arch::boot_info();
-    match boot.dtb_ptr.and_then(super::aarch64_dtb::parse_platform_info) {
+    match boot
+        .dtb_ptr
+        .and_then(super::aarch64_dtb::parse_platform_info)
+    {
         Some(info) => {
             let h = info.header;
             let u = uart();
@@ -1739,9 +1955,17 @@ fn shell_print_traps() {
 fn shell_print_irqs() {
     let u = uart();
     u.write_str("[A64] irq gic_ready=");
-    u.write_str(if GIC_READY.load(Ordering::Relaxed) { "1" } else { "0" });
+    u.write_str(if GIC_READY.load(Ordering::Relaxed) {
+        "1"
+    } else {
+        "0"
+    });
     u.write_str(" timer_ready=");
-    u.write_str(if TIMER_READY.load(Ordering::Relaxed) { "1" } else { "0" });
+    u.write_str(if TIMER_READY.load(Ordering::Relaxed) {
+        "1"
+    } else {
+        "0"
+    });
     u.write_str(" timer_intid=");
     uart_write_hex_u64(DISCOVERED_TIMER_INTID.load(Ordering::Relaxed) as u64);
     u.write_str(" uart_intid=");
@@ -1766,7 +1990,9 @@ fn shell_print_irqs() {
     uart_write_hex_u64(uart().rx_buffer_dropped());
     uart_newline();
 
-    let count = DISCOVERED_VIRTIO_MMIO_COUNT.load(Ordering::Relaxed).min(MAX_TRACKED_VIRTIO_MMIO);
+    let count = DISCOVERED_VIRTIO_MMIO_COUNT
+        .load(Ordering::Relaxed)
+        .min(MAX_TRACKED_VIRTIO_MMIO);
     for idx in 0..count {
         let base = DISCOVERED_VIRTIO_MMIO_BASES[idx].load(Ordering::Relaxed);
         let size = DISCOVERED_VIRTIO_MMIO_SIZES[idx].load(Ordering::Relaxed);
@@ -1840,7 +2066,11 @@ fn shell_print_scheduler_backend() {
 fn shell_print_uart_irq_diag() {
     let u = uart();
     u.write_str("[A64] uartirq strict=");
-    u.write_str(if STRICT_UART_IRQ_MODE.load(Ordering::Relaxed) { "1" } else { "0" });
+    u.write_str(if STRICT_UART_IRQ_MODE.load(Ordering::Relaxed) {
+        "1"
+    } else {
+        "0"
+    });
     u.write_str(" irq-count=");
     uart_write_hex_u64(UART_IRQ_COUNT.load(Ordering::Relaxed));
     uart_newline();
@@ -1908,9 +2138,17 @@ fn shell_print_virtio_runtime() {
     let u = uart();
     let slot = VIRTIO_ACTIVE_SLOT.load(Ordering::Relaxed);
     u.write_str("[A64] virtio-active slot=");
-    uart_write_hex_u64(if slot == usize::MAX { u64::MAX } else { slot as u64 });
+    uart_write_hex_u64(if slot == usize::MAX {
+        u64::MAX
+    } else {
+        slot as u64
+    });
     u.write_str(" init-ok=");
-    u.write_str(if VIRTIO_ACTIVE_INIT_OK.load(Ordering::Relaxed) { "1" } else { "0" });
+    u.write_str(if VIRTIO_ACTIVE_INIT_OK.load(Ordering::Relaxed) {
+        "1"
+    } else {
+        "0"
+    });
     u.write_str(" attempts=");
     uart_write_hex_u64(VIRTIO_ACTIVE_INIT_ATTEMPTS.load(Ordering::Relaxed));
     u.write_str(" fails=");
@@ -2019,7 +2257,9 @@ fn vm_map_self_test() -> Result<(), &'static str> {
     let old_root = crate::arch::mmu::current_page_table_root_addr();
     let irq_flags = unsafe { crate::scheduler_platform::irq_save_disable() };
     let vmtest_result = (|| -> Result<(u8, u8, u8), &'static str> {
-        unsafe { space.activate(); }
+        unsafe {
+            space.activate();
+        }
 
         unsafe {
             (code_va as *mut u8).write(0xC3);
@@ -2391,10 +2631,10 @@ fn shell_cmd_blk_readn(cmd: &str) {
             uart_write_hex_u64(count as u64);
             uart_newline();
             for i in 0..count {
-                let sector: &[u8; VIRTIO_BLK_SECTOR_SIZE] =
-                    (&buf[i * VIRTIO_BLK_SECTOR_SIZE..(i + 1) * VIRTIO_BLK_SECTOR_SIZE])
-                        .try_into()
-                        .expect("slice length exact");
+                let sector: &[u8; VIRTIO_BLK_SECTOR_SIZE] = (&buf
+                    [i * VIRTIO_BLK_SECTOR_SIZE..(i + 1) * VIRTIO_BLK_SECTOR_SIZE])
+                    .try_into()
+                    .expect("slice length exact");
                 shell_dump_sector_preview(lba + i as u64, sector);
             }
         }
@@ -2410,7 +2650,9 @@ fn shell_cmd_blk_readn(cmd: &str) {
 fn shell_cmd_blk_writen(cmd: &str) {
     let mut parts = cmd.split_whitespace();
     let _ = parts.next();
-    let (Some(lba_str), Some(count_str), Some(byte_str)) = (parts.next(), parts.next(), parts.next()) else {
+    let (Some(lba_str), Some(count_str), Some(byte_str)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
         early_log("[A64] usage: blk-writen <lba> <count> <byte>\n");
         return;
     };
@@ -2615,10 +2857,15 @@ fn shell_cmd_vfs_blk_read(cmd: &str) {
     }
     let abs_lba = base.saturating_add(rel_lba);
     let mut buf = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
-    match crate::virtio_blk::read_sectors(abs_lba, count, &mut buf[..count * VIRTIO_BLK_SECTOR_SIZE]) {
+    match crate::virtio_blk::read_sectors(
+        abs_lba,
+        count,
+        &mut buf[..count * VIRTIO_BLK_SECTOR_SIZE],
+    ) {
         Ok(()) => {
             for i in 0..count {
-                let sector: &[u8; VIRTIO_BLK_SECTOR_SIZE] = (&buf[i * VIRTIO_BLK_SECTOR_SIZE..(i + 1) * VIRTIO_BLK_SECTOR_SIZE])
+                let sector: &[u8; VIRTIO_BLK_SECTOR_SIZE] = (&buf
+                    [i * VIRTIO_BLK_SECTOR_SIZE..(i + 1) * VIRTIO_BLK_SECTOR_SIZE])
                     .try_into()
                     .expect("slice length exact");
                 shell_dump_sector_preview(abs_lba + i as u64, sector);
@@ -2677,7 +2924,8 @@ fn shell_cmd_vfs_blk_write(cmd: &str) {
     let abs_lba = base.saturating_add(rel_lba);
     let mut data = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
     data[..count * VIRTIO_BLK_SECTOR_SIZE].fill(value);
-    match crate::virtio_blk::write_sectors(abs_lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE]) {
+    match crate::virtio_blk::write_sectors(abs_lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE])
+    {
         Ok(()) => {
             let u = uart();
             u.write_str("[A64] vfs-blk-write ok ");
@@ -2743,7 +2991,9 @@ fn shell_exec_command(cmd: &str) -> bool {
         return true;
     }
     if let Some(arg) = cmd.strip_prefix("sched quantum ") {
-        match parse_u64_decimal(arg.trim()).and_then(|v| scheduler_tick_backend_set_quantum(v).ok().map(|_| v)) {
+        match parse_u64_decimal(arg.trim())
+            .and_then(|v| scheduler_tick_backend_set_quantum(v).ok().map(|_| v))
+        {
             Some(v) => {
                 let u = uart();
                 u.write_str("[A64] sched quantum set=");
@@ -2859,7 +3109,11 @@ fn shell_exec_command(cmd: &str) -> bool {
         "vectors" => {
             let u = uart();
             u.write_str("[A64] vectors installed=");
-            u.write_str(if super::aarch64_vectors::vectors_installed() { "1" } else { "0" });
+            u.write_str(if super::aarch64_vectors::vectors_installed() {
+                "1"
+            } else {
+                "0"
+            });
             u.write_str(" base=");
             uart_write_hex_usize(super::aarch64_vectors::vector_base());
             u.write_str(" vbar=");

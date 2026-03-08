@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -38,7 +38,7 @@
 //! This eliminates ambient authority and makes I/O explicit in the capability graph.
 
 use crate::capability::{
-    capability_manager, OreuliaCapability, CapabilityType, Rights, CapabilityError
+    capability_manager, CapabilityError, CapabilityType, OreuliaCapability, Rights,
 };
 use crate::ipc::ProcessId;
 use crate::vga;
@@ -68,12 +68,12 @@ impl Console {
             read_count: 0,
         }
     }
-    
+
     /// Validate that the given process ID owns this console
     fn validate_owner(&self, pid: ProcessId) -> bool {
         self.owner == pid
     }
-    
+
     /// Check if process has access to this console
     fn check_access(&self, pid: ProcessId) -> Result<(), &'static str> {
         if !self.validate_owner(pid) {
@@ -93,7 +93,7 @@ impl ConsoleRegistry {
             consoles: [None; MAX_CONSOLES],
         }
     }
-    
+
     fn register(&mut self, console: Console) -> Result<(), ConsoleError> {
         for slot in self.consoles.iter_mut() {
             if slot.is_none() {
@@ -103,7 +103,7 @@ impl ConsoleRegistry {
         }
         Err(ConsoleError::RegistryFull)
     }
-    
+
     fn lookup_mut(&mut self, object_id: u64) -> Option<&mut Console> {
         self.consoles
             .iter_mut()
@@ -115,7 +115,8 @@ impl ConsoleRegistry {
         if self.lookup_mut(object_id).is_none() {
             self.register(Console::new(object_id, owner))?;
         }
-        self.lookup_mut(object_id).ok_or(ConsoleError::InvalidConsole)
+        self.lookup_mut(object_id)
+            .ok_or(ConsoleError::InvalidConsole)
     }
 }
 
@@ -132,12 +133,12 @@ pub fn create_console(owner: ProcessId) -> Result<u32, ConsoleError> {
     let object_id = capability_manager().create_object();
     vga::print_str("[CONSOLE-DEBUG] object created\n");
     let console = Console::new(object_id, owner);
-    
+
     // Register console
     vga::print_str("[CONSOLE-DEBUG] registering console\n");
     CONSOLE_REGISTRY.lock().register(console)?;
     vga::print_str("[CONSOLE-DEBUG] registered\n");
-    
+
     // Grant capability to owner with write rights
     let rights = Rights::new(Rights::CONSOLE_WRITE | Rights::CONSOLE_READ);
     vga::print_str("[CONSOLE-DEBUG] granting capability\n");
@@ -155,29 +156,28 @@ pub fn create_console(owner: ProcessId) -> Result<u32, ConsoleError> {
             crate::temporal::TEMPORAL_CONSOLE_EVENT_CREATE,
         );
     }
-    
+
     Ok(cap_id)
 }
 
 /// Write to console (requires CONSOLE_WRITE capability)
-pub fn console_write(
-    pid: ProcessId,
-    cap_id: u32,
-    data: &[u8],
-) -> Result<usize, ConsoleError> {
+pub fn console_write(pid: ProcessId, cap_id: u32, data: &[u8]) -> Result<usize, ConsoleError> {
     // Verify capability
     let object_id = capability_manager()
         .verify_and_get_object(pid, cap_id, CapabilityType::Console, Rights::CONSOLE_WRITE)
         .map_err(|e| ConsoleError::CapabilityDenied(e))?;
-    
+
     // Lookup console
     let mut registry = CONSOLE_REGISTRY.lock();
-    let console = registry.lookup_mut(object_id)
+    let console = registry
+        .lookup_mut(object_id)
         .ok_or(ConsoleError::InvalidConsole)?;
-    
+
     // Validate owner has access
-    console.check_access(pid).map_err(|_| ConsoleError::AccessDenied)?;
-    
+    console
+        .check_access(pid)
+        .map_err(|_| ConsoleError::AccessDenied)?;
+
     // Write to VGA (actual output)
     for &byte in data {
         if byte == b'\n' {
@@ -186,7 +186,7 @@ pub fn console_write(
             vga::print_char(byte as char);
         }
     }
-    
+
     // Update statistics
     console.write_count += data.len() as u64;
     if !crate::temporal::is_replay_active() {
@@ -198,7 +198,7 @@ pub fn console_write(
             crate::temporal::TEMPORAL_CONSOLE_EVENT_STATE,
         );
     }
-    
+
     Ok(data.len())
 }
 
@@ -213,7 +213,7 @@ pub fn console_read(
     let _object_id = capability_manager()
         .verify_and_get_object(pid, cap_id, CapabilityType::Console, Rights::CONSOLE_READ)
         .map_err(|e| ConsoleError::CapabilityDenied(e))?;
-    
+
     // TODO: Implement keyboard input queue
     Err(ConsoleError::NotImplemented)
 }
@@ -222,16 +222,22 @@ pub fn console_read(
 pub fn console_stats(pid: ProcessId, cap_id: u32) -> Result<(u64, u64), ConsoleError> {
     // Verify capability (any right allows stats)
     let object_id = capability_manager()
-        .verify_and_get_object(pid, cap_id, CapabilityType::Console, Rights::CONSOLE_WRITE | Rights::CONSOLE_READ)
+        .verify_and_get_object(
+            pid,
+            cap_id,
+            CapabilityType::Console,
+            Rights::CONSOLE_WRITE | Rights::CONSOLE_READ,
+        )
         .map_err(|e| ConsoleError::CapabilityDenied(e))?;
-    
+
     let registry = CONSOLE_REGISTRY.lock();
-    let console = registry.consoles
+    let console = registry
+        .consoles
         .iter()
         .find(|c| c.as_ref().map_or(false, |con| con.object_id == object_id))
         .and_then(|c| c.as_ref())
         .ok_or(ConsoleError::InvalidConsole)?;
-    
+
     Ok((console.write_count, console.read_count))
 }
 
@@ -244,9 +250,7 @@ pub fn temporal_apply_console_event(
 ) -> Result<(), &'static str> {
     let owner = ProcessId(owner_pid);
     let mut registry = CONSOLE_REGISTRY.lock();
-    let console = registry
-        .ensure(object_id, owner)
-        .map_err(|e| e.as_str())?;
+    let console = registry.ensure(object_id, owner).map_err(|e| e.as_str())?;
     console.owner = owner;
     if event == crate::temporal::TEMPORAL_CONSOLE_EVENT_CREATE
         || event == crate::temporal::TEMPORAL_CONSOLE_EVENT_STATE
@@ -265,13 +269,16 @@ pub fn validate_console_capability(cap: &OreuliaCapability) -> Result<(), Consol
     if cap.cap_type != CapabilityType::Console {
         return Err(ConsoleError::InvalidConsole);
     }
-    
+
     // Verify the console object exists
     let registry = CONSOLE_REGISTRY.lock();
-    if !registry.consoles.iter().any(|c| c.as_ref().map_or(false, |con| con.object_id == cap.object_id)) {
+    if !registry.consoles.iter().any(|c| {
+        c.as_ref()
+            .map_or(false, |con| con.object_id == cap.object_id)
+    }) {
         return Err(ConsoleError::InvalidConsole);
     }
-    
+
     Ok(())
 }
 

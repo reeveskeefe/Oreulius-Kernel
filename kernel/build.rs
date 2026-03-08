@@ -7,12 +7,12 @@ use std::path::Path;
 fn main() {
     println!("cargo:rerun-if-changed=src/intent_graph.rs");
     println!("cargo:rerun-if-changed=src/capability.rs");
-    
+
     // Simulate parsing the static IPC routing Graph from source files
     // For this build.rs, we construct a known safe capability graph with N nodes
     // and verify its Cheeger Inequality / Spectral Gap.
     let num_nodes = 9; // Aligning with intent_graph.rs INTENT_NODE_COUNT
-    
+
     // Create Adjacency Matrix A (fully connected ring with random cross-chords)
     let mut adj_matrix = vec![vec![0.0f64; num_nodes]; num_nodes];
     let mut degree = vec![0.0f64; num_nodes];
@@ -32,7 +32,7 @@ fn main() {
     // Force an isolated subgraph to simulate "Hoarded capability" topology risk?
     // No, we want compilation to SECURELY PASS.
     // If we wanted it to fail, we would cut edges here.
-    
+
     // Populate degrees
     for i in 0..num_nodes {
         let mut sum = 0.0;
@@ -59,7 +59,11 @@ fn main() {
     let mut t_matrix = vec![vec![0.0f64; num_nodes]; num_nodes];
     for i in 0..num_nodes {
         for j in 0..num_nodes {
-            t_matrix[i][j] = if i == j { 1.0 - l_norm[i][j] } else { -l_norm[i][j] };
+            t_matrix[i][j] = if i == j {
+                1.0 - l_norm[i][j]
+            } else {
+                -l_norm[i][j]
+            };
         }
     }
 
@@ -114,21 +118,24 @@ fn main() {
 
     // Cheeger Inequality threshold epsilon
     let epsilon_safe = 0.05; // We require strict bounding!
-    
+
     let gamma = lambda_2_L.max(0.0);
     let static_conductance = (gamma / 2.0).sqrt();
 
     println!("cargo:warning=--- Oreulia Static Analysis ---");
     println!("cargo:warning=Target: Section 11.2 - Static Conductance Checks");
     println!("cargo:warning=Spectral Gap (gamma): {}", gamma);
-    println!("cargo:warning=Estimated Graph Conductance (Phi): {}", static_conductance);
+    println!(
+        "cargo:warning=Estimated Graph Conductance (Phi): {}",
+        static_conductance
+    );
 
     if gamma < epsilon_safe {
         panic!("FATAL: IPC Capability Graph fails static conductance Check! Spectral gap (gamma = {}) is < epsilon_safe ({})! Risk of Hoarded Subgraph Isolation.", gamma, epsilon_safe);
     } else {
         println!("cargo:warning=SUCCESS: Cheeger Isolation Bounds Verified Statistically.");
         println!("cargo:warning=Mathematical Preemptive Compiler Pipeline Complete.");
-        
+
         let out_dir = env::var("OUT_DIR").unwrap();
         let dest_path = Path::new(&out_dir).join("spectral_certificate.rs");
         fs::write(

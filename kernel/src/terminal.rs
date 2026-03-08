@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -155,7 +155,7 @@ impl Terminal {
         self.cursor_row = 0;
         self.cursor_col = 0;
         if render {
-             vga::update_cursor(0, 0);
+            vga::update_cursor(0, 0);
         }
     }
 
@@ -201,7 +201,6 @@ impl Terminal {
         self.cursor_col = col.min(WIDTH - 1);
         vga::update_cursor(self.cursor_row, self.cursor_col);
     }
-
 
     fn cursor(&self) -> (usize, usize) {
         (self.cursor_row, self.cursor_col)
@@ -261,71 +260,66 @@ impl Terminal {
 
     fn write_byte(&mut self, byte: u8, render: bool) {
         match self.esc {
-            EscState::None => {
-                match byte {
-                    b'\n' => self.new_line(render),
-                    b'\r' => self.cursor_col = 0,
-                    0x08 => self.backspace(render),
-                    0x1B => self.esc = EscState::Esc,
-                    0x20..=0x7e => self.put_char(byte, render),
-                    _ => {}
+            EscState::None => match byte {
+                b'\n' => self.new_line(render),
+                b'\r' => self.cursor_col = 0,
+                0x08 => self.backspace(render),
+                0x1B => self.esc = EscState::Esc,
+                0x20..=0x7e => self.put_char(byte, render),
+                _ => {}
+            },
+            EscState::Esc => match byte {
+                b'[' => self.esc = EscState::new_csi(),
+                b'7' => {
+                    self.saved_row = self.cursor_row;
+                    self.saved_col = self.cursor_col;
+                    self.esc = EscState::None;
                 }
-            }
-            EscState::Esc => {
-                match byte {
-                    b'[' => self.esc = EscState::new_csi(),
-                    b'7' => {
-                        self.saved_row = self.cursor_row;
-                        self.saved_col = self.cursor_col;
-                        self.esc = EscState::None;
-                    }
-                    b'8' => {
-                        self.cursor_row = self.saved_row;
-                        self.cursor_col = self.saved_col;
-                        self.esc = EscState::None;
-                    }
-                    _ => {
-                        self.esc = EscState::None;
-                    }
+                b'8' => {
+                    self.cursor_row = self.saved_row;
+                    self.cursor_col = self.saved_col;
+                    self.esc = EscState::None;
                 }
-            }
+                _ => {
+                    self.esc = EscState::None;
+                }
+            },
             EscState::Csi {
                 ref mut params,
                 ref mut len,
                 ref mut current,
                 ref mut has_current,
-            } => {
-                match byte {
-                    b'0'..=b'9' => {
-                        *current = current.saturating_mul(10).saturating_add((byte - b'0') as u16);
-                        *has_current = true;
+            } => match byte {
+                b'0'..=b'9' => {
+                    *current = current
+                        .saturating_mul(10)
+                        .saturating_add((byte - b'0') as u16);
+                    *has_current = true;
+                }
+                b';' => {
+                    if *len < params.len() {
+                        params[*len] = if *has_current { *current } else { 0 };
+                        *len += 1;
                     }
-                    b';' => {
-                        if *len < params.len() {
+                    *current = 0;
+                    *has_current = false;
+                }
+                b'A' | b'B' | b'C' | b'D' | b'H' | b'f' | b'J' | b'K' | b'm' | b's' | b'u' => {
+                    if *len < params.len() {
+                        if *has_current || *len > 0 {
                             params[*len] = if *has_current { *current } else { 0 };
                             *len += 1;
                         }
-                        *current = 0;
-                        *has_current = false;
                     }
-                    b'A' | b'B' | b'C' | b'D' | b'H' | b'f' | b'J' | b'K' | b'm' | b's'
-                    | b'u' => {
-                        if *len < params.len() {
-                            if *has_current || *len > 0 {
-                                params[*len] = if *has_current { *current } else { 0 };
-                                *len += 1;
-                            }
-                        }
-                        let count = *len;
-                        let params_copy = *params;
-                        self.esc = EscState::None;
-                        self.handle_csi(byte, &params_copy, count, render);
-                    }
-                    _ => {
-                        self.esc = EscState::None;
-                    }
+                    let count = *len;
+                    let params_copy = *params;
+                    self.esc = EscState::None;
+                    self.handle_csi(byte, &params_copy, count, render);
                 }
-            }
+                _ => {
+                    self.esc = EscState::None;
+                }
+            },
         }
     }
 
@@ -416,14 +410,14 @@ impl Terminal {
     fn scroll_up(&mut self, render: bool) {
         // Save top line to scrollback before scrolling
         self.push_scrollback();
-        
+
         // Move lines up in buffer
         for row in 1..HEIGHT {
             for col in 0..WIDTH {
                 self.buffer[row - 1][col] = self.buffer[row][col];
             }
         }
-        
+
         // Clear last line
         for col in 0..WIDTH {
             self.buffer[HEIGHT - 1][col] = Cell::blank(self.fg, self.bg);
@@ -595,9 +589,7 @@ pub fn set_cursor(row: usize, col: usize) {
 }
 
 pub fn cursor_position() -> (usize, usize) {
-    without_interrupts(|| {
-        TERMINAL.lock().cursor()
-    })
+    without_interrupts(|| TERMINAL.lock().cursor())
 }
 
 pub fn clear_line_from_cursor() {

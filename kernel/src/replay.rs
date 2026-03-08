@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -45,7 +45,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::temporal::{TemporalFunctor, TemporalState, TemporalDelta};
+use crate::temporal::{TemporalDelta, TemporalFunctor, TemporalState};
 
 /// Functorial State Replay Engine (Category Theory Section 4)
 /// Maps historical states consistently ensuring no floating point or pointer drift.
@@ -71,10 +71,10 @@ impl<S: TemporalState, D: TemporalDelta, F: TemporalFunctor<S, D>> AlgebraicRepl
     /// Prove total trace via structural category laws to ensure 0-drift equivalence
     pub fn replay_strict(&self) -> Result<S, &'static str> {
         let mut current = self.initial_state.clone();
-        
+
         for i in 0..self.morphism_trace.len() {
             let next_delta = &self.morphism_trace[i];
-            
+
             // Periodically verify functoral identity across adjacent pairs dynamically to prevent hardware bit-rot
             if i > 0 {
                 let prev_delta = &self.morphism_trace[i - 1];
@@ -239,7 +239,11 @@ pub fn mode(instance_id: usize) -> ReplayMode {
         .unwrap_or(ReplayMode::Off)
 }
 
-pub fn start_record(instance_id: usize, module_hash: u64, module_len: usize) -> Result<(), &'static str> {
+pub fn start_record(
+    instance_id: usize,
+    module_hash: u64,
+    module_len: usize,
+) -> Result<(), &'static str> {
     if instance_id >= 8 {
         return Err("Invalid instance id");
     }
@@ -485,7 +489,8 @@ pub fn load_transcript(
     if instance_id >= 8 {
         return Err("Invalid instance id");
     }
-    let (events, event_hash, total_bytes) = decode_transcript_checked(module_hash, module_len, data)?;
+    let (events, event_hash, total_bytes) =
+        decode_transcript_checked(module_hash, module_len, data)?;
 
     let session = ReplaySession {
         mode: ReplayMode::Replay,
@@ -640,14 +645,20 @@ pub fn temporal_apply_replay_manager_payload(payload: &[u8]) -> Result<(), &'sta
         let present = payload[offset] != 0;
         let mode_raw = payload[offset + 1];
         let mode = temporal_replay_mode_from_u8(mode_raw).ok_or("temporal replay mode invalid")?;
-        let module_hash = temporal_read_u64(payload, offset + 4).ok_or("temporal replay module hash missing")?;
-        let module_len = temporal_read_u32(payload, offset + 12).ok_or("temporal replay module len missing")?;
-        let cursor = temporal_read_u32(payload, offset + 16).ok_or("temporal replay cursor missing")?;
-        let event_hash = temporal_read_u64(payload, offset + 20).ok_or("temporal replay event hash missing")?;
-        let event_count = temporal_read_u32(payload, offset + 28).ok_or("temporal replay event count missing")?;
-        let transcript_len = temporal_read_u32(payload, offset + 32).ok_or("temporal replay transcript len missing")?;
-        let chunk_count = temporal_read_u16(payload, offset + 36).ok_or("temporal replay chunk count missing")?
-            as usize;
+        let module_hash =
+            temporal_read_u64(payload, offset + 4).ok_or("temporal replay module hash missing")?;
+        let module_len =
+            temporal_read_u32(payload, offset + 12).ok_or("temporal replay module len missing")?;
+        let cursor =
+            temporal_read_u32(payload, offset + 16).ok_or("temporal replay cursor missing")?;
+        let event_hash =
+            temporal_read_u64(payload, offset + 20).ok_or("temporal replay event hash missing")?;
+        let event_count =
+            temporal_read_u32(payload, offset + 28).ok_or("temporal replay event count missing")?;
+        let transcript_len = temporal_read_u32(payload, offset + 32)
+            .ok_or("temporal replay transcript len missing")?;
+        let chunk_count = temporal_read_u16(payload, offset + 36)
+            .ok_or("temporal replay chunk count missing")? as usize;
         offset = offset.saturating_add(40);
 
         if chunk_count > 64 {
@@ -659,11 +670,12 @@ pub fn temporal_apply_replay_manager_payload(payload: &[u8]) -> Result<(), &'sta
             if offset.saturating_add(16) > payload.len() {
                 return Err("temporal replay chunk truncated");
             }
-            let chunk_idx = temporal_read_u16(payload, offset).ok_or("temporal replay chunk idx missing")?;
-            let chunk_len =
-                temporal_read_u32(payload, offset + 4).ok_or("temporal replay chunk len missing")?;
-            let version_id =
-                temporal_read_u64(payload, offset + 8).ok_or("temporal replay chunk version missing")?;
+            let chunk_idx =
+                temporal_read_u16(payload, offset).ok_or("temporal replay chunk idx missing")?;
+            let chunk_len = temporal_read_u32(payload, offset + 4)
+                .ok_or("temporal replay chunk len missing")?;
+            let version_id = temporal_read_u64(payload, offset + 8)
+                .ok_or("temporal replay chunk version missing")?;
             chunks.push((chunk_idx, chunk_len, version_id));
             offset = offset.saturating_add(16);
         }
@@ -677,7 +689,8 @@ pub fn temporal_apply_replay_manager_payload(payload: &[u8]) -> Result<(), &'sta
         transcript.reserve(transcript_len as usize);
         for (chunk_idx, chunk_len, version_id) in chunks.iter().copied() {
             let key = temporal_transcript_chunk_key(instance_id, chunk_idx as usize);
-            let data = crate::temporal::read_version(&key, version_id).map_err(|_| "temporal replay chunk read failed")?;
+            let data = crate::temporal::read_version(&key, version_id)
+                .map_err(|_| "temporal replay chunk read failed")?;
             if data.len() != chunk_len as usize {
                 return Err("temporal replay chunk length mismatch");
             }

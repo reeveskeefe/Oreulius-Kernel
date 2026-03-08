@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,14 +22,13 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
-
 
 use core::ptr;
 use core::sync::atomic::{compiler_fence, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -64,7 +63,9 @@ struct PageTablePage {
 
 impl PageTablePage {
     const fn zeroed() -> Self {
-        Self { entries: [0; ENTRIES_PER_TABLE] }
+        Self {
+            entries: [0; ENTRIES_PER_TABLE],
+        }
     }
 }
 
@@ -85,7 +86,8 @@ static RECOVER_LAST_ADDR: AtomicUsize = AtomicUsize::new(0);
 static RECOVER_LAST_ERROR: AtomicU64 = AtomicU64::new(0);
 static RECOVER_LAST_REASON: AtomicU8 = AtomicU8::new(0);
 
-static mut PT_POOL: [PageTablePage; BOOT_PT_POOL_PAGES] = [PageTablePage::zeroed(); BOOT_PT_POOL_PAGES];
+static mut PT_POOL: [PageTablePage; BOOT_PT_POOL_PAGES] =
+    [PageTablePage::zeroed(); BOOT_PT_POOL_PAGES];
 
 #[inline]
 fn align_down(v: usize, align: usize) -> usize {
@@ -421,11 +423,7 @@ impl X86_64Mmu {
         Ok(pt.add(i1))
     }
 
-    unsafe fn update_entry_low_flags(
-        entry_low_ptr: *mut u32,
-        set_mask: u32,
-        clear_mask: u32,
-    ) {
+    unsafe fn update_entry_low_flags(entry_low_ptr: *mut u32, set_mask: u32, clear_mask: u32) {
         let lo = ptr::read_volatile(entry_low_ptr);
         let hi = ptr::read_volatile(entry_low_ptr.add(1));
         let mut full = ((hi as u64) << 32) | (lo as u64);
@@ -500,8 +498,13 @@ impl AddressSpace {
             if is_present(pml4e0) {
                 let old_pdpt_phys = entry_addr(pml4e0);
                 let new_pdpt_phys = alloc_runtime_pt_page()?;
-                ptr::copy_nonoverlapping(old_pdpt_phys as *const u8, new_pdpt_phys as *mut u8, PAGE_SIZE);
-                let pml4e0_new = (pml4e0 & !PTE_ADDR_MASK) | ((new_pdpt_phys as u64) & PTE_ADDR_MASK);
+                ptr::copy_nonoverlapping(
+                    old_pdpt_phys as *const u8,
+                    new_pdpt_phys as *mut u8,
+                    PAGE_SIZE,
+                );
+                let pml4e0_new =
+                    (pml4e0 & !PTE_ADDR_MASK) | ((new_pdpt_phys as u64) & PTE_ADDR_MASK);
                 ptr::write_volatile(new_pml4.add(0), pml4e0_new);
 
                 let new_pdpt = new_pdpt_phys as *mut u64;
@@ -509,8 +512,13 @@ impl AddressSpace {
                 if is_present(pdpte0) && (pdpte0 & PTE_PS) == 0 {
                     let old_pd_phys = entry_addr(pdpte0);
                     let new_pd_phys = alloc_runtime_pt_page()?;
-                    ptr::copy_nonoverlapping(old_pd_phys as *const u8, new_pd_phys as *mut u8, PAGE_SIZE);
-                    let pdpte0_new = (pdpte0 & !PTE_ADDR_MASK) | ((new_pd_phys as u64) & PTE_ADDR_MASK);
+                    ptr::copy_nonoverlapping(
+                        old_pd_phys as *const u8,
+                        new_pd_phys as *mut u8,
+                        PAGE_SIZE,
+                    );
+                    let pdpte0_new =
+                        (pdpte0 & !PTE_ADDR_MASK) | ((new_pd_phys as u64) & PTE_ADDR_MASK);
                     ptr::write_volatile(new_pdpt.add(0), pdpte0_new);
                 }
             }
@@ -891,10 +899,12 @@ pub(crate) fn handle_page_fault(fault_addr: usize, error: u64) -> bool {
     }
 
     let fault_page = align_down(fault_addr, PAGE_SIZE);
-    let pte_ptr = unsafe { match MMU.pte_ptr_for_virt(fault_page, false) {
-        Ok(p) => p,
-        Err(_) => return false,
-    }};
+    let pte_ptr = unsafe {
+        match MMU.pte_ptr_for_virt(fault_page, false) {
+            Ok(p) => p,
+            Err(_) => return false,
+        }
+    };
     let pte = unsafe { ptr::read_volatile(pte_ptr) };
     if !is_present(pte) || (pte & PTE_COW_SOFT) == 0 {
         return false;
@@ -938,18 +948,16 @@ pub extern "C" fn clear_page_flags(pte_addr: *mut u32, flags: u32) {
 
 #[no_mangle]
 pub extern "C" fn mark_page_cow(pte_addr: *mut u32) {
-    unsafe {
-        X86_64Mmu::update_entry_low_flags(
-            pte_addr,
-            PTE_COW_SOFT as u32,
-            PTE_WRITABLE as u32,
-        )
-    }
+    unsafe { X86_64Mmu::update_entry_low_flags(pte_addr, PTE_COW_SOFT as u32, PTE_WRITABLE as u32) }
 }
 
 #[no_mangle]
 pub extern "C" fn is_page_cow(pte_value: u32) -> u32 {
-    if (pte_value & (PTE_COW_SOFT as u32)) != 0 { 1 } else { 0 }
+    if (pte_value & (PTE_COW_SOFT as u32)) != 0 {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -981,7 +989,11 @@ pub extern "C" fn copy_page_fast(src: *const u8, dst: *mut u8) {
 #[no_mangle]
 pub extern "C" fn copy_page_physical(src_phys: u32, dst_phys: u32) {
     unsafe {
-        ptr::copy_nonoverlapping(src_phys as usize as *const u8, dst_phys as usize as *mut u8, PAGE_SIZE);
+        ptr::copy_nonoverlapping(
+            src_phys as usize as *const u8,
+            dst_phys as usize as *mut u8,
+            PAGE_SIZE,
+        );
     }
 }
 

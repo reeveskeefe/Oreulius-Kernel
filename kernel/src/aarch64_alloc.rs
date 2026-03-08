@@ -51,9 +51,7 @@ fn ensure_heap_initialized() {
         return;
     }
 
-    let alloc_start = start
-        .saturating_add(AARCH64_MMU_PT_RESERVE_BYTES)
-        .min(end);
+    let alloc_start = start.saturating_add(AARCH64_MMU_PT_RESERVE_BYTES).min(end);
     let alloc_start = align_up(alloc_start, 16);
     let _ = HEAP_NEXT.compare_exchange(0, alloc_start, Ordering::AcqRel, Ordering::Acquire);
     let _ = HEAP_END.compare_exchange(0, end, Ordering::AcqRel, Ordering::Acquire);

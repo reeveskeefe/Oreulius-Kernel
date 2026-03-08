@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -39,11 +39,11 @@ use core::fmt;
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct IdtEntry {
-    pub base_low: u16,      // Handler address bits 0-15
-    pub selector: u16,      // Code segment selector
-    pub zero: u8,           // Reserved (must be zero)
-    pub flags: u8,          // Type and attributes
-    pub base_high: u16,     // Handler address bits 16-31
+    pub base_low: u16,  // Handler address bits 0-15
+    pub selector: u16,  // Code segment selector
+    pub zero: u8,       // Reserved (must be zero)
+    pub flags: u8,      // Type and attributes
+    pub base_high: u16, // Handler address bits 16-31
 }
 
 impl IdtEntry {
@@ -56,7 +56,7 @@ impl IdtEntry {
             base_high: 0,
         }
     }
-    
+
     pub fn set_handler(&mut self, handler: usize, selector: u16, flags: u8) {
         self.base_low = (handler & 0xFFFF) as u16;
         self.base_high = ((handler >> 16) & 0xFFFF) as u16;
@@ -70,8 +70,8 @@ impl IdtEntry {
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct IdtPointer {
-    pub limit: u16,         // Size of IDT - 1
-    pub base: u32,          // Address of first IDT entry
+    pub limit: u16, // Size of IDT - 1
+    pub base: u32,  // Address of first IDT entry
 }
 
 /// Interrupt frame passed to exception handlers
@@ -82,7 +82,7 @@ pub struct InterruptFrame {
     pub fs: u32,
     pub es: u32,
     pub ds: u32,
-    
+
     // General purpose registers (pushed by pushad)
     pub edi: u32,
     pub esi: u32,
@@ -92,17 +92,17 @@ pub struct InterruptFrame {
     pub edx: u32,
     pub ecx: u32,
     pub eax: u32,
-    
+
     // Interrupt number and error code
     pub int_no: u32,
     pub err_code: u32,
-    
+
     // Pushed by CPU on interrupt
     pub eip: u32,
     pub cs: u32,
     pub eflags: u32,
-    pub user_esp: u32,      // Only if privilege change
-    pub ss: u32,            // Only if privilege change
+    pub user_esp: u32, // Only if privilege change
+    pub ss: u32,       // Only if privilege change
 }
 
 impl fmt::Debug for InterruptFrame {
@@ -116,7 +116,7 @@ extern "C" {
     // IDT Management
     pub fn idt_load(idt_ptr: *const IdtPointer);
     pub fn idt_set_gate(idt: *mut IdtEntry, num: u8, handler: u32, selector: u16, flags: u8);
-    
+
     // Exception handlers (ISR 0-31)
     pub fn isr0();
     pub fn isr1();
@@ -150,7 +150,7 @@ extern "C" {
     pub fn isr29();
     pub fn isr30();
     pub fn isr31();
-    
+
     // IRQ handlers (32-47)
     pub fn irq0();
     pub fn irq1();
@@ -181,33 +181,33 @@ extern "C" {
     static asm_sw_new_eip: u32;
     static asm_sw_new_esp: u32;
     static asm_sw_stage: u32;
-    
+
     // PIC Operations
     pub fn pic_send_eoi(irq: u8);
     pub fn pic_remap(offset1: u8, offset2: u8);
     pub fn pic_disable();
-    
+
     // APIC Operations
     pub fn apic_write(reg: u32, value: u32);
     pub fn apic_read(reg: u32) -> u32;
     pub fn apic_send_eoi();
-    
+
     // Interrupt Control
     pub fn fast_cli();
     pub fn fast_sti();
     pub fn fast_cli_save() -> u32;
     pub fn fast_sti_restore(flags: u32);
     pub fn trigger_interrupt(vector: u8);
-    
+
     // Interrupt Statistics
     pub fn get_interrupt_count(vector: u8) -> u32;
     pub fn increment_interrupt_count(vector: u8);
     pub fn clear_interrupt_counts();
-    
+
     // NMI Control
     pub fn enable_nmi();
     pub fn disable_nmi();
-    
+
     // Exception Names
     pub fn get_exception_name(vector: u8) -> *const u8;
 }
@@ -221,10 +221,10 @@ pub const GATE_TRAP_32: u8 = 0x0F;
 
 // IDT flags
 pub const FLAG_PRESENT: u8 = 0x80;
-pub const FLAG_DPL0: u8 = 0x00;     // Kernel privilege
+pub const FLAG_DPL0: u8 = 0x00; // Kernel privilege
 pub const FLAG_DPL1: u8 = 0x20;
 pub const FLAG_DPL2: u8 = 0x40;
-pub const FLAG_DPL3: u8 = 0x60;     // User privilege
+pub const FLAG_DPL3: u8 = 0x60; // User privilege
 
 /// Exception vector numbers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,7 +272,7 @@ impl Exception {
             None
         }
     }
-    
+
     pub fn name(&self) -> &'static str {
         match self {
             Self::DivideByZero => "Divide-by-zero",
@@ -306,29 +306,29 @@ impl Exception {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Irq {
-    Timer = 0,          // IRQ 0 - PIT
-    Keyboard = 1,       // IRQ 1
-    Cascade = 2,        // IRQ 2 - Slave PIC
-    COM2 = 3,           // IRQ 3
-    COM1 = 4,           // IRQ 4
-    LPT2 = 5,           // IRQ 5
-    Floppy = 6,         // IRQ 6
-    LPT1 = 7,           // IRQ 7 (spurious)
-    RTC = 8,            // IRQ 8
-    Free1 = 9,          // IRQ 9
-    Free2 = 10,         // IRQ 10
-    Free3 = 11,         // IRQ 11
-    Mouse = 12,         // IRQ 12 - PS/2 Mouse
-    FPU = 13,           // IRQ 13
-    PrimaryATA = 14,    // IRQ 14
-    SecondaryATA = 15,  // IRQ 15
+    Timer = 0,         // IRQ 0 - PIT
+    Keyboard = 1,      // IRQ 1
+    Cascade = 2,       // IRQ 2 - Slave PIC
+    COM2 = 3,          // IRQ 3
+    COM1 = 4,          // IRQ 4
+    LPT2 = 5,          // IRQ 5
+    Floppy = 6,        // IRQ 6
+    LPT1 = 7,          // IRQ 7 (spurious)
+    RTC = 8,           // IRQ 8
+    Free1 = 9,         // IRQ 9
+    Free2 = 10,        // IRQ 10
+    Free3 = 11,        // IRQ 11
+    Mouse = 12,        // IRQ 12 - PS/2 Mouse
+    FPU = 13,          // IRQ 13
+    PrimaryATA = 14,   // IRQ 14
+    SecondaryATA = 15, // IRQ 15
 }
 
 impl Irq {
     pub fn as_vector(&self) -> u8 {
         32 + (*self as u8)
     }
-    
+
     pub fn from_vector(vector: u8) -> Option<Self> {
         if vector >= 32 && vector < 48 {
             Some(unsafe { core::mem::transmute(vector - 32) })
@@ -356,11 +356,11 @@ impl Idt {
             entries: [IdtEntry::new(); 256],
         }
     }
-    
+
     pub fn set_handler(&mut self, index: u8, handler: usize, selector: u16, flags: u8) {
         self.entries[index as usize].set_handler(handler, selector, flags);
     }
-    
+
     pub fn load(&self) {
         let ptr = IdtPointer {
             limit: (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16,
@@ -368,10 +368,10 @@ impl Idt {
         };
         unsafe { idt_load(&ptr) }
     }
-    
+
     pub fn init_exceptions(&mut self, code_selector: u16) {
         let flags = FLAG_PRESENT | GATE_INTERRUPT_32 | FLAG_DPL0;
-        
+
         // Set up all exception handlers
         self.set_handler(0, isr0 as usize, code_selector, flags);
         self.set_handler(1, isr1 as usize, code_selector, flags);
@@ -406,10 +406,10 @@ impl Idt {
         self.set_handler(30, isr30 as usize, code_selector, flags);
         self.set_handler(31, isr31 as usize, code_selector, flags);
     }
-    
+
     pub fn init_irqs(&mut self, code_selector: u16) {
         let flags = FLAG_PRESENT | GATE_INTERRUPT_32 | FLAG_DPL0;
-        
+
         // Set up all IRQ handlers
         self.set_handler(32, irq0 as usize, code_selector, flags);
         self.set_handler(33, irq1 as usize, code_selector, flags);
@@ -437,11 +437,11 @@ impl Pic {
     pub fn remap(offset1: u8, offset2: u8) {
         unsafe { pic_remap(offset1, offset2) }
     }
-    
+
     pub fn disable() {
         unsafe { pic_disable() }
     }
-    
+
     pub fn send_eoi(irq: Irq) {
         unsafe { pic_send_eoi(irq as u8) }
     }
@@ -473,10 +473,16 @@ fn set_pic_masks(master: u8, slave: u8) {
     unsafe {
         outb(PIC1_DATA, master);
         outb(PIC2_DATA, slave);
-        
+
         let m1 = inb(PIC1_DATA);
         let m2 = inb(PIC2_DATA);
-        crate::serial_println!("[PIC] Masks set to M:{:02X} S:{:02X} (Read back: M:{:02X} S:{:02X})", master, slave, m1, m2);
+        crate::serial_println!(
+            "[PIC] Masks set to M:{:02X} S:{:02X} (Read back: M:{:02X} S:{:02X})",
+            master,
+            slave,
+            m1,
+            m2
+        );
     }
 }
 
@@ -497,12 +503,17 @@ pub fn init_trap_table() {
         let idt = &mut IDT;
         idt.init_exceptions(KERNEL_CODE_SELECTOR);
         idt.init_irqs(KERNEL_CODE_SELECTOR);
-        
+
         // Install INT 0x80 syscall gate (ring 3)
         extern "C" {
             fn syscall_entry();
         }
-        idt.set_handler(0x80, syscall_entry as usize, KERNEL_CODE_SELECTOR, FLAG_PRESENT | GATE_INTERRUPT_32 | FLAG_DPL3);
+        idt.set_handler(
+            0x80,
+            syscall_entry as usize,
+            KERNEL_CODE_SELECTOR,
+            FLAG_PRESENT | GATE_INTERRUPT_32 | FLAG_DPL3,
+        );
 
         idt.load();
     }
@@ -515,7 +526,7 @@ pub fn init_interrupt_controller() {
 
     // DEBUG: Unmask Timer(0) and Keyboard(1) IMMEDIATELY to test interrupts
     let master_mask = 0xFC; // 11111100b
-    let slave_mask = 0xFF;  // 11111111b
+    let slave_mask = 0xFF; // 11111111b
     set_pic_masks(master_mask, slave_mask);
 }
 
@@ -533,7 +544,7 @@ impl InterruptStats {
     pub fn get_count(vector: u8) -> u32 {
         unsafe { get_interrupt_count(vector) }
     }
-    
+
     pub fn clear_all() {
         unsafe { clear_interrupt_counts() }
     }
@@ -543,7 +554,7 @@ impl InterruptStats {
 #[no_mangle]
 pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
     let frame = unsafe { &mut *(frame as *const _ as *mut InterruptFrame) };
-    
+
     if frame.int_no == Exception::DeviceNotAvailable as u32 {
         unsafe {
             // Quantum scheduler is the primary advanced scheduler in Oreulia
@@ -594,17 +605,14 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
     if crate::wasm::jit_handle_exception(frame) {
         return;
     }
-    
+
     if let Some(exc) = Exception::from_u8(frame.int_no as u8) {
         crate::serial::_print(format_args!(
             "\n!!! EXCEPTION: {} ({})\n",
             exc.name(),
             frame.int_no
         ));
-        crate::serial::_print(format_args!(
-            "Error Code: 0x{:08x}\n",
-            frame.err_code
-        ));
+        crate::serial::_print(format_args!("Error Code: 0x{:08x}\n", frame.err_code));
         crate::serial::_print(format_args!(
             "EIP: 0x{:08x}, CS: 0x{:04x}, EFLAGS: 0x{:08x}\n",
             frame.eip, frame.cs, frame.eflags
@@ -635,7 +643,7 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
             ));
         }
     }
-    
+
     // Halt the system
     loop {
         unsafe { core::arch::asm!("hlt") }
@@ -647,7 +655,7 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
 pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
     // Debug entry
     // unsafe { crate::advanced_commands::print_hex(frame as usize); crate::vga::print_char('I'); }
-    
+
     let frame = unsafe { &mut *(frame as *const _ as *mut InterruptFrame) };
 
     // VISUAL DEBUG: Every time IRQ 33 (Keyboard) fires, increment a counter on screen at (0, 70)
@@ -657,13 +665,17 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
             let vga = 0xb8000 as *mut u16;
             let val = *vga.add(70);
             let char_part = (val & 0xFF) as u8;
-            let new_char = if char_part >= b'z' { b'a' } else { char_part + 1 };
+            let new_char = if char_part >= b'z' {
+                b'a'
+            } else {
+                char_part + 1
+            };
             *vga.add(70) = 0x0E00 | (new_char as u16);
         }
     }
-    
+
     unsafe { increment_interrupt_count(frame.int_no as u8) }
-    
+
     if let Some(irq) = Irq::from_vector(frame.int_no as u8) {
         let jit_user_active = crate::wasm::jit_user_active();
 
@@ -682,7 +694,6 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
                 Pic::send_eoi(irq);
                 crate::pit::tick();
 
-                
                 // Network stack tick
                 // if let Some(mut stack) = crate::netstack::NETWORK_STACK.try_lock() {
                 //     stack.tick();
@@ -693,12 +704,12 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
                 }
                 return;
             }
-            Irq::Keyboard => {
-                unsafe { crate::keyboard::handle_irq(); }
-            }
-            Irq::Mouse => {
-                unsafe { crate::keyboard::handle_aux_irq(); }
-            }
+            Irq::Keyboard => unsafe {
+                crate::keyboard::handle_irq();
+            },
+            Irq::Mouse => unsafe {
+                crate::keyboard::handle_aux_irq();
+            },
             Irq::PrimaryATA => {
                 crate::disk::handle_primary_irq();
             }
@@ -710,7 +721,7 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
             }
             _ => {}
         }
-        
+
         Pic::send_eoi(irq);
     }
 }

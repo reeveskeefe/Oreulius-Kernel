@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -39,11 +39,11 @@
 //! - Fragmentation metrics
 //! - Allocation tracking and statistics
 
+#[cfg(debug_assertions)]
+use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
-use spin::Mutex;
-#[cfg(debug_assertions)]
-use alloc::vec::Vec; // Used for allocation tracking
+use spin::Mutex; // Used for allocation tracking
 
 extern "C" {
     static _heap_start: usize;
@@ -69,7 +69,7 @@ struct AllocationHeader {
     #[cfg(debug_assertions)]
     allocation_id: u64,
     #[cfg(debug_assertions)]
-    backtrace: [usize; 4],  // Simple backtrace
+    backtrace: [usize; 4], // Simple backtrace
     canary_post: u32,
 }
 
@@ -84,8 +84,8 @@ pub struct AllocatorStats {
     pub bytes_freed: usize,
     pub bytes_in_use: usize,
     pub peak_bytes_in_use: usize,
-    pub fragmentation_score: f32,  // 0.0 = no fragmentation, 1.0 = high
-    pub heap_efficiency: f32,      // 0.0 = empty, 1.0 = fully used
+    pub fragmentation_score: f32, // 0.0 = no fragmentation, 1.0 = high
+    pub heap_efficiency: f32,     // 0.0 = empty, 1.0 = fully used
     pub guard_page_violations: u64,
     pub canary_violations: u64,
 }
@@ -97,7 +97,7 @@ pub struct HardenedAllocator {
     next: usize,
     stats: AllocatorStats,
     #[cfg(debug_assertions)]
-    allocations: Vec<(usize, usize, u64)>,  // (addr, size, id)
+    allocations: Vec<(usize, usize, u64)>, // (addr, size, id)
     #[cfg(debug_assertions)]
     next_id: u64,
 }
@@ -139,24 +139,24 @@ impl HardenedAllocator {
     pub unsafe fn allocate(&mut self, layout: Layout) -> *mut u8 {
         let size = layout.size().max(MIN_ALLOC);
         let align = layout.align();
-        
+
         // Calculate total size: guard + header + allocation + guard
         let header_size = core::mem::size_of::<AllocationHeader>();
-        let guard_size = 4096;  // One page
+        let guard_size = 4096; // One page
         let total_size = guard_size + header_size + size + guard_size;
-        
+
         // Align to page boundary for guards
         let alloc_start = align_up(self.next, 4096);
         let alloc_end = alloc_start + total_size;
-        
+
         if alloc_end > self.heap_end {
-            return ptr::null_mut();  // Out of memory
+            return ptr::null_mut(); // Out of memory
         }
-        
+
         // Write guard pages
         self.write_guard_page(alloc_start, guard_size);
         self.write_guard_page(alloc_end - guard_size, guard_size);
-        
+
         // Write allocation header
         let header_ptr = (alloc_start + guard_size) as *mut AllocationHeader;
         let header = AllocationHeader {
@@ -167,35 +167,36 @@ impl HardenedAllocator {
             #[cfg(debug_assertions)]
             allocation_id: self.next_id,
             #[cfg(debug_assertions)]
-            backtrace: [0; 4],  // TODO: capture actual backtrace
+            backtrace: [0; 4], // TODO: capture actual backtrace
             canary_post: CANARY,
         };
         ptr::write(header_ptr, header);
-        
+
         // User data starts after header
         let user_ptr = (header_ptr as usize + header_size) as *mut u8;
-        
+
         // Update allocator state
         self.next = alloc_end;
         self.stats.total_allocations += 1;
         self.stats.current_allocations += 1;
         self.stats.bytes_allocated += total_size;
         self.stats.bytes_in_use += total_size;
-        
+
         if self.stats.current_allocations > self.stats.peak_allocations {
             self.stats.peak_allocations = self.stats.current_allocations;
         }
-        
+
         if self.stats.bytes_in_use > self.stats.peak_bytes_in_use {
             self.stats.peak_bytes_in_use = self.stats.bytes_in_use;
         }
-        
+
         #[cfg(debug_assertions)]
         {
-            self.allocations.push((user_ptr as usize, size, self.next_id));
+            self.allocations
+                .push((user_ptr as usize, size, self.next_id));
             self.next_id += 1;
         }
-        
+
         user_ptr
     }
 
@@ -204,17 +205,21 @@ impl HardenedAllocator {
         if ptr.is_null() {
             return;
         }
-        
+
         let header_size = core::mem::size_of::<AllocationHeader>();
         let header_ptr = (ptr as usize - header_size) as *const AllocationHeader;
         let header = ptr::read(header_ptr);
-        
+
         // Validate that the layout size matches the allocation
         if header.size != layout.size() {
             #[cfg(debug_assertions)]
-            panic!("Layout size mismatch: expected {}, got {}", header.size, layout.size());
+            panic!(
+                "Layout size mismatch: expected {}, got {}",
+                header.size,
+                layout.size()
+            );
         }
-        
+
         // Verify canaries
         if header.canary_pre != CANARY || header.canary_post != CANARY {
             self.stats.canary_violations += 1;
@@ -222,37 +227,38 @@ impl HardenedAllocator {
             #[cfg(debug_assertions)]
             panic!("Canary corruption detected at {:p}", ptr);
         }
-        
+
         // Verify guard pages
         let guard_size = 4096;
         let alloc_start = (header_ptr as usize).saturating_sub(guard_size);
         let alloc_end = ptr as usize + header.size + guard_size;
-        
+
         if !self.check_guard_page(alloc_start, guard_size) {
             self.stats.guard_page_violations += 1;
             #[cfg(debug_assertions)]
             panic!("Guard page violation (underflow) at {:p}", ptr);
         }
-        
+
         if !self.check_guard_page(alloc_end - guard_size, guard_size) {
             self.stats.guard_page_violations += 1;
             #[cfg(debug_assertions)]
             panic!("Guard page violation (overflow) at {:p}", ptr);
         }
-        
+
         // Update statistics
         self.stats.total_deallocations += 1;
         self.stats.current_allocations = self.stats.current_allocations.saturating_sub(1);
         let total_size = guard_size + header_size + header.size + guard_size;
         self.stats.bytes_freed += total_size;
         self.stats.bytes_in_use = self.stats.bytes_in_use.saturating_sub(total_size);
-        
+
         #[cfg(debug_assertions)]
         {
             // Remove from tracking
-            self.allocations.retain(|(addr, _, _)| *addr != ptr as usize);
+            self.allocations
+                .retain(|(addr, _, _)| *addr != ptr as usize);
         }
-        
+
         // Note: Bump allocator doesn't actually free memory
         // A real allocator would return memory to free list here
     }
@@ -289,10 +295,10 @@ impl HardenedAllocator {
         } else {
             0.0
         };
-        
+
         // Store heap efficiency for monitoring
         self.stats.heap_efficiency = efficiency;
-        
+
         // Simple fragmentation metric: wasted space / total space
         let wasted = self.stats.bytes_allocated - self.stats.bytes_in_use;
         self.stats.fragmentation_score = if total_heap > 0 {
@@ -327,7 +333,7 @@ unsafe impl GlobalAlloc for LockedHardenedAllocator {
 // Note: Commented out as global_allocator - using bump allocator from memory.rs for now
 // To use hardened allocator, comment out memory.rs global_allocator and uncomment this
 // #[global_allocator]
-static HARDENED_ALLOCATOR: LockedHardenedAllocator = 
+static HARDENED_ALLOCATOR: LockedHardenedAllocator =
     LockedHardenedAllocator(Mutex::new(HardenedAllocator::new()));
 
 /// Initialize hardened allocator

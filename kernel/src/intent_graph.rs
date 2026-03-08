@@ -1,20 +1,20 @@
 /*!
  * Oreulia Kernel Project
- * 
+ *
  *License-Identifier: Oreulius License (see LICENSE)
- * 
+ *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,11 +22,11 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * 
+ *
  * Contributing:
  * - By contributing to this file, you agree to license your work under the same terms.
  * - Please see CONTRIBUTING.md for code style and review guidelines.
- * 
+ *
  * ---------------------------------------------------------------------------
  */
 
@@ -40,7 +40,7 @@
 use crate::capability::{CapabilityType, Rights};
 use crate::intent_wasm::{self, INTENT_MODEL_FEATURES};
 use crate::ipc::ProcessId;
-use crate::tensor_core::{SimdTensor, ScalarTensor};
+use crate::tensor_core::{ScalarTensor, SimdTensor};
 
 const MAX_INTENT_PROCESSES: usize = 64;
 const INTENT_NODE_COUNT: usize = 9;
@@ -70,6 +70,48 @@ pub const INTENT_ALERT_COOLDOWN_MS: u16 = 1000;
 /// Minimum restrict emission gap (milliseconds).
 pub const INTENT_RESTRICT_COOLDOWN_MS: u16 = 500;
 
+/// CTMC integer-scaled (×1024) generator matrix Q for the 9 IntentNode states.
+///
+/// Rows represent "from" states (indexed by IntentNode discriminant).
+/// Columns represent "to" states.
+/// Row sums must equal zero (holding time on diagonal = -sum of off-diagonal row).
+///
+/// Rates are empirical starting points; calibrate from production telemetry.
+/// Fixed-point ×1024 allows first-order Euler steps in pure integer arithmetic:
+///   P(t+dt) ≈ P(t) + P(t)·Q·dt   where dt is expressed in 1/1024-tick units.
+///
+/// Node index mapping (IntentNode discriminant):
+///   0=CapabilityProbe  1=CapabilityDenied  2=InvalidCapability
+///   3=IpcSend          4=IpcRecv           5=WasmCall
+///   6=FsRead           7=FsWrite           8=Syscall
+#[rustfmt::skip]
+const CTMC_Q: [[i32; INTENT_NODE_COUNT]; INTENT_NODE_COUNT] = [
+    // From CapabilityProbe: likely to Syscall or Denied
+    [ -3072,  1024,   512,   256,   256,   256,   256,   256,   256 ],
+    // From CapabilityDenied: high rate to InvalidCapability or stays (self-loop absorbed)
+    [  256, -3072,  1536,   256,   256,   256,   256,   256,   256 - 256 + 256 ],
+    // From InvalidCapability: high risk — tends toward Syscall anomaly
+    [  256,   512, -3072,   256,   256,   256,   256,   256,  1024 ],
+    // From IpcSend: mostly paired with IpcRecv
+    [  256,   256,   256, -3072,  1536,   256,   256,   256,   256 - 256 + 256 - 256 + 256 - 256 + 256 ],
+    // From IpcRecv
+    [  256,   256,   256,  1536, -3072,   256,   256,   256,   256 - 256 + 256 - 256 + 256 - 256 + 256 ],
+    // From WasmCall: can probe capabilities or hit syscall
+    [  512,   256,   256,   256,   256, -3072,   256,   256,  1024 - 256 + 256 - 256 + 256 - 256 + 256 ],
+    // From FsRead
+    [  256,   256,   256,   256,   256,   256, -3072,   512,  1024 - 256 + 256 - 256 + 256 - 256 + 256 ],
+    // From FsWrite: high correlation with capability checks
+    [  512,   512,   256,   256,   256,   256,   512, -3072,   256 - 256 + 256 - 256 + 256 - 256 + 256 ],
+    // From Syscall: returns to various states
+    [  512,   256,   256,   384,   384,   256,   384,   384, -3072 - 256 + 256 - 256 + 256 - 256 + 256 ],
+];
+
+/// CTMC fixed-point scale factor.
+const CTMC_SCALE: i32 = 1024;
+/// Initial state vector: P(Syscall) = 1.0 (×CTMC_SCALE), all others 0.
+/// Syscall is the entry node for all processes.
+const CTMC_INIT: [i32; INTENT_NODE_COUNT] = [0, 0, 0, 0, 0, 0, 0, 0, CTMC_SCALE];
+
 /// A mathematically bounded strict representation of capability access thresholds.
 /// Converts sequential discrete capability comparisons into constant SIMD vector dot products.
 #[derive(Clone, Copy)]
@@ -86,7 +128,7 @@ impl<const N: usize> PolicyTensor<N> {
         }
     }
 
-    /// Authorizes capability access by projecting policy conditions over real-time environmental intent 
+    /// Authorizes capability access by projecting policy conditions over real-time environmental intent
     /// behavior bounds, validating the equation via a strict mathematical threshold.
     pub fn authorize_vectorized(&self, environment_state: &ScalarTensor<i32, N>) -> bool {
         let risk_score = self.weights.dot_product(environment_state);
@@ -173,7 +215,6 @@ impl Default for IntentPolicy {
     }
 }
 
-
 pub enum IntentPolicyError {
     WindowSecondsOutOfRange,
     AlertScoreOutOfRange,
@@ -214,7 +255,6 @@ impl IntentPolicyError {
     }
 }
 
-
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntentNode {
@@ -229,7 +269,6 @@ pub enum IntentNode {
     Syscall = 8,
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IntentSignal {
     pub node: IntentNode,
@@ -239,7 +278,11 @@ pub struct IntentSignal {
 }
 
 impl IntentSignal {
-    pub const fn capability_probe(cap_type: CapabilityType, rights_mask: u32, object_hint: u64) -> Self {
+    pub const fn capability_probe(
+        cap_type: CapabilityType,
+        rights_mask: u32,
+        object_hint: u64,
+    ) -> Self {
         Self {
             node: IntentNode::CapabilityProbe,
             cap_type,
@@ -248,7 +291,11 @@ impl IntentSignal {
         }
     }
 
-    pub const fn capability_denied(cap_type: CapabilityType, rights_mask: u32, object_hint: u64) -> Self {
+    pub const fn capability_denied(
+        cap_type: CapabilityType,
+        rights_mask: u32,
+        object_hint: u64,
+    ) -> Self {
         Self {
             node: IntentNode::CapabilityDenied,
             cap_type,
@@ -257,7 +304,11 @@ impl IntentSignal {
         }
     }
 
-    pub const fn invalid_capability(cap_type: CapabilityType, rights_mask: u32, object_hint: u64) -> Self {
+    pub const fn invalid_capability(
+        cap_type: CapabilityType,
+        rights_mask: u32,
+        object_hint: u64,
+    ) -> Self {
         Self {
             node: IntentNode::InvalidCapability,
             cap_type,
@@ -321,7 +372,6 @@ impl IntentSignal {
     }
 }
 
-
 pub enum IntentDecision {
     Allow,
     Alert(u32),
@@ -345,6 +395,9 @@ struct IntentProcessState {
     node_counts: [u16; INTENT_NODE_COUNT],
     transition_counts: [u16; INTENT_TRANSITION_COUNT],
     object_bloom: [u64; INTENT_OBJECT_BLOOM_WORDS],
+    /// CTMC probability state vector, fixed-point ×CTMC_SCALE.
+    /// `ctmc_state_vec[i]` ≈ P(process is in node i) × 1024.
+    ctmc_state_vec: [i32; INTENT_NODE_COUNT],
     has_last_node: bool,
     last_node: u8,
     last_score: u32,
@@ -380,6 +433,7 @@ impl IntentProcessState {
             node_counts: [0; INTENT_NODE_COUNT],
             transition_counts: [0; INTENT_TRANSITION_COUNT],
             object_bloom: [0; INTENT_OBJECT_BLOOM_WORDS],
+            ctmc_state_vec: CTMC_INIT,
             has_last_node: false,
             last_node: 0,
             last_score: 0,
@@ -412,6 +466,7 @@ impl IntentProcessState {
         self.node_counts = [0; INTENT_NODE_COUNT];
         self.transition_counts = [0; INTENT_TRANSITION_COUNT];
         self.object_bloom = [0; INTENT_OBJECT_BLOOM_WORDS];
+        self.ctmc_state_vec = CTMC_INIT;
         self.window_restrictions = 0;
         self.has_last_node = false;
         self.last_node = 0;
@@ -544,14 +599,7 @@ impl IntentGraph {
     }
 
     fn all_restrictable_cap_bits() -> u16 {
-        (1 << 0)
-            | (1 << 1)
-            | (1 << 2)
-            | (1 << 3)
-            | (1 << 4)
-            | (1 << 5)
-            | (1 << 6)
-            | (1 << 7)
+        (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7)
     }
 
     fn roll_window(state: &mut IntentProcessState, now_ticks: u64, window_seconds: u64) {
@@ -566,11 +614,55 @@ impl IntentGraph {
         }
     }
 
+    /// Advance the CTMC state vector by one event tick using first-order Euler integration.
+    ///
+    /// P(t + dt) ≈ P(t) + P(t)·Q·dt
+    ///
+    /// `dt` here is 1 (one event = one "tick" in the intent graph's discrete sense).
+    /// All arithmetic is fixed-point ×CTMC_SCALE to stay integer-only.
+    ///
+    /// The state vector is renormalised after each step to prevent drift due to
+    /// truncation.
+    fn ctmc_step(state_vec: &mut [i32; INTENT_NODE_COUNT]) {
+        let mut delta = [0i32; INTENT_NODE_COUNT];
+        // delta[j] = sum_i( state_vec[i] * Q[i][j] ) / CTMC_SCALE
+        for i in 0..INTENT_NODE_COUNT {
+            for j in 0..INTENT_NODE_COUNT {
+                // scale down: Q is already ×1024, state_vec is ×1024, product is ×(1024²)
+                // divide by CTMC_SCALE once to keep result in ×1024 range.
+                delta[j] = delta[j]
+                    .saturating_add((state_vec[i].saturating_mul(CTMC_Q[i][j])) / CTMC_SCALE);
+            }
+        }
+        // Apply delta, clamp to [0, CTMC_SCALE]
+        let mut total = 0i32;
+        for j in 0..INTENT_NODE_COUNT {
+            state_vec[j] = (state_vec[j].saturating_add(delta[j])).max(0);
+            total = total.saturating_add(state_vec[j]);
+        }
+        // Renormalise so the vector sums to CTMC_SCALE (avoid probability mass drift).
+        if total > 0 && total != CTMC_SCALE {
+            for j in 0..INTENT_NODE_COUNT {
+                state_vec[j] = (state_vec[j] * CTMC_SCALE) / total;
+            }
+        }
+    }
+
+    /// Extract an anomaly proximity score from the CTMC state vector.
+    ///
+    /// Returns a value in [0, 64] that is added to the heuristic score.
+    /// Weights CapabilityDenied (idx 1) and InvalidCapability (idx 2) most heavily
+    /// because sustained probability mass in those states predicts abuse.
+    #[inline]
+    fn ctmc_anomaly_score(state_vec: &[i32; INTENT_NODE_COUNT]) -> u32 {
+        // P(CapabilityDenied) + P(InvalidCapability) in [0, 2×CTMC_SCALE]
+        let anomaly_mass = state_vec[1].saturating_add(state_vec[2]).max(0) as u32;
+        // Map to [0, 64]: (anomaly_mass * 64) / (2 * CTMC_SCALE)
+        (anomaly_mass.saturating_mul(64)) / (2 * CTMC_SCALE as u32)
+    }
+
     fn millis_to_ticks(ms: u16, hz: u64) -> u64 {
-        let ticks = (ms as u64)
-            .saturating_mul(hz)
-            .saturating_add(999)
-            / 1000;
+        let ticks = (ms as u64).saturating_mul(hz).saturating_add(999) / 1000;
         ticks.max(1)
     }
 
@@ -594,8 +686,7 @@ impl IntentGraph {
         }
 
         // Tiny bloom-based novelty estimate (deterministic, allocation-free).
-        let mut h = signal
-            .object_hint
+        let mut h = signal.object_hint
             ^ ((signal.node as u64) << 56)
             ^ ((signal.cap_type as u64) << 48)
             ^ (signal.rights_mask as u64).rotate_left(13);
@@ -620,7 +711,12 @@ impl IntentGraph {
     }
 
     /// Record a behavioral signal and return a policy decision.
-    pub fn record(&mut self, pid: ProcessId, signal: IntentSignal, now_ticks: u64) -> IntentDecision {
+    pub fn record(
+        &mut self,
+        pid: ProcessId,
+        signal: IntentSignal,
+        now_ticks: u64,
+    ) -> IntentDecision {
         if pid.0 == 0 {
             return IntentDecision::Allow;
         }
@@ -642,7 +738,9 @@ impl IntentGraph {
         let mut transition_novelty = 0u32;
         if state.has_last_node {
             let from = state.last_node as usize;
-            let t_idx = from.saturating_mul(INTENT_NODE_COUNT).saturating_add(node_idx);
+            let t_idx = from
+                .saturating_mul(INTENT_NODE_COUNT)
+                .saturating_add(node_idx);
             if t_idx < state.transition_counts.len() {
                 let count = state.transition_counts[t_idx].saturating_add(1);
                 state.transition_counts[t_idx] = count;
@@ -656,8 +754,12 @@ impl IntentGraph {
         state.last_node = signal.node as u8;
 
         match signal.node {
-            IntentNode::CapabilityDenied => state.denied_events = state.denied_events.saturating_add(1),
-            IntentNode::InvalidCapability => state.invalid_events = state.invalid_events.saturating_add(1),
+            IntentNode::CapabilityDenied => {
+                state.denied_events = state.denied_events.saturating_add(1)
+            }
+            IntentNode::InvalidCapability => {
+                state.invalid_events = state.invalid_events.saturating_add(1)
+            }
             IntentNode::IpcSend | IntentNode::IpcRecv => {
                 state.ipc_events = state.ipc_events.saturating_add(1);
             }
@@ -669,6 +771,10 @@ impl IntentGraph {
         }
 
         let object_novelty = Self::record_object_novelty(state, signal);
+
+        // --- CTMC step: advance the Markov chain by one event and extract anomaly score ---
+        Self::ctmc_step(&mut state.ctmc_state_vec);
+        let ctmc_bonus = Self::ctmc_anomaly_score(&state.ctmc_state_vec);
 
         let mut features = [0u32; INTENT_MODEL_FEATURES];
         features[0] = state.window_events.min(255) as u32;
@@ -695,23 +801,35 @@ impl IntentGraph {
         if state.window_events > 40 {
             score = score.saturating_add(10);
         }
-        if state.fs_write_events > state.fs_read_events.saturating_mul(2) && state.fs_write_events > 3 {
+        if state.fs_write_events > state.fs_read_events.saturating_mul(2)
+            && state.fs_write_events > 3
+        {
             score = score.saturating_add(12);
         }
         if state.object_novel_events > 24 {
             score = score.saturating_add(10);
         }
-        if state.window_events > 16
-            && state.object_novel_events > (state.window_events / 2)
-        {
+        if state.window_events > 16 && state.object_novel_events > (state.window_events / 2) {
             score = score.saturating_add(14);
         }
+        // Inject CTMC anomaly proximity bonus (max +64).
+        score = score.saturating_add(ctmc_bonus);
         score = score.min(255);
 
         state.last_score = score;
         if score > state.max_score {
             state.max_score = score;
         }
+
+        // Push telemetry event to the lock-free ring (best-effort; dropped if full).
+        let event = crate::wait_free_ring::TelemetryEvent::new(
+            pid.0,
+            signal.node as u8,
+            signal.cap_type as u8,
+            score as u8,
+            now_ticks,
+        );
+        let _ = crate::wait_free_ring::TELEMETRY_RING.push(event);
 
         let hz = (crate::pit::get_frequency() as u64).max(1);
         let alert_gap = Self::millis_to_ticks(policy.alert_cooldown_ms, hz);
@@ -755,8 +873,9 @@ impl IntentGraph {
                     }
                     state.restricted_cap_types = Self::all_restrictable_cap_bits();
                     state.restricted_rights = u32::MAX;
-                    let isolate_until = now_ticks
-                        .saturating_add((policy.isolate_extension_seconds as u64).saturating_mul(hz));
+                    let isolate_until = now_ticks.saturating_add(
+                        (policy.isolate_extension_seconds as u64).saturating_mul(hz),
+                    );
                     if isolate_until > state.restriction_until_tick {
                         state.restriction_until_tick = isolate_until;
                     }
@@ -773,7 +892,9 @@ impl IntentGraph {
                 return IntentDecision::Restrict(score);
             }
         } else if score >= policy.alert_score {
-            if state.last_alert_tick == 0 || now_ticks.saturating_sub(state.last_alert_tick) >= alert_gap {
+            if state.last_alert_tick == 0
+                || now_ticks.saturating_sub(state.last_alert_tick) >= alert_gap
+            {
                 state.last_alert_tick = now_ticks;
                 state.alerts_total = state.alerts_total.saturating_add(1);
                 return IntentDecision::Alert(score);
@@ -856,7 +977,11 @@ impl IntentGraph {
         }
     }
 
-    pub fn process_snapshot(&mut self, pid: ProcessId, now_ticks: u64) -> Option<IntentProcessSnapshot> {
+    pub fn process_snapshot(
+        &mut self,
+        pid: ProcessId,
+        now_ticks: u64,
+    ) -> Option<IntentProcessSnapshot> {
         let state = self.process_mut(pid, false)?;
         state.clear_restriction_if_expired(now_ticks);
         Some(IntentProcessSnapshot {
@@ -990,12 +1115,7 @@ mod tests {
         }
 
         assert!(matches!(decision, IntentDecision::Restrict(_)));
-        assert!(graph.is_restricted(
-            pid,
-            CapabilityType::Filesystem,
-            Rights::FS_WRITE,
-            now
-        ));
+        assert!(graph.is_restricted(pid, CapabilityType::Filesystem, Rights::FS_WRITE, now));
 
         // Restriction should expire after enough ticks pass.
         let far_future = now.saturating_add(5_000);
