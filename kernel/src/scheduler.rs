@@ -40,7 +40,7 @@
 //! - Uses assembly context switching for speed
 
 use crate::asm_bindings::{asm_switch_context, ProcessContext};
-use crate::interrupt_dag::{DagSpinlock, DAG_LEVEL_SCHEDULER};
+use crate::interrupt_dag::{DagSpinlock, InterruptContext, DAG_LEVEL_SCHEDULER, DAG_LEVEL_SYSCALL};
 use crate::pit;
 use crate::process::{Pid, Process, ProcessPriority, ProcessState, MAX_PROCESSES};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -558,42 +558,63 @@ pub fn scheduler() -> &'static DagSpinlock<DAG_LEVEL_SCHEDULER, Scheduler> {
     &SCHEDULER
 }
 
+/// Constructs a syscall-level DAG context for scheduler operations.
+///
+/// `DAG_LEVEL_SYSCALL = 15 > DAG_LEVEL_SCHEDULER = 10`, so `acquire_lock(&SCHEDULER, …)`
+/// is statically valid from this context.
+#[inline(always)]
+fn syscall_context() -> InterruptContext<DAG_LEVEL_SYSCALL> {
+    // SAFETY: DAG_LEVEL_SYSCALL > DAG_LEVEL_SCHEDULER; we are in a thread/syscall
+    // context, not inside a hardware IRQ handler.
+    unsafe { InterruptContext::<DAG_LEVEL_SYSCALL>::new() }
+}
+
 /// Yield CPU to next process
 pub fn yield_cpu() {
-    SCHEDULER.lock_legacy().yield_cpu();
+    syscall_context().acquire_lock(&SCHEDULER, |sched, _sub| {
+        sched.yield_cpu();
+    });
 }
 
 /// Sleep current process for N milliseconds
 pub fn sleep(ms: u32) {
-    SCHEDULER.lock_legacy().sleep(ms);
+    syscall_context().acquire_lock(&SCHEDULER, |sched, _sub| {
+        sched.sleep(ms);
+    });
 }
 
 /// Timer interrupt handler (called by IRQ0)
 pub fn on_timer_tick() {
     let in_interrupt = unsafe { crate::process_asm::get_interrupt_state() } == 0;
     if in_interrupt {
-        let mut sched = SCHEDULER.lock_legacy();
-        sched.preemptions += 1;
-        sched.wake_sleeping();
-        if let Some(current_pid) = sched.current_pid {
-            let priority = if let Some(ref mut proc) = sched.processes[current_pid.0 as usize] {
-                proc.state = ProcessState::Ready;
-                proc.priority
-            } else {
-                return;
-            };
-            sched.enqueue_ready(current_pid, priority);
-        }
-        RESCHED_REQUESTED.store(true, Ordering::SeqCst);
+        syscall_context().acquire_lock(&SCHEDULER, |sched, _sub| {
+            sched.preemptions += 1;
+            sched.wake_sleeping();
+            if let Some(current_pid) = sched.current_pid {
+                let priority = if let Some(ref mut proc) = sched.processes[current_pid.0 as usize]
+                {
+                    proc.state = ProcessState::Ready;
+                    proc.priority
+                } else {
+                    return;
+                };
+                sched.enqueue_ready(current_pid, priority);
+            }
+            RESCHED_REQUESTED.store(true, Ordering::SeqCst);
+        });
         return;
     }
 
-    SCHEDULER.lock_legacy().on_timer_tick();
+    syscall_context().acquire_lock(&SCHEDULER, |sched, _sub| {
+        sched.on_timer_tick();
+    });
 }
 
 /// Perform deferred reschedule if requested by timer IRQ
 pub fn maybe_reschedule() {
     if RESCHED_REQUESTED.swap(false, Ordering::SeqCst) {
-        SCHEDULER.lock_legacy().schedule();
+        syscall_context().acquire_lock(&SCHEDULER, |sched, _sub| {
+            sched.schedule();
+        });
     }
 }

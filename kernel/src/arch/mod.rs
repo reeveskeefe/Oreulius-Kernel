@@ -43,6 +43,8 @@ pub(crate) mod aarch64_dtb;
 pub(crate) mod aarch64_pl011;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod aarch64_vectors;
+/// Architecture-specific FPU/SIMD context save/restore (PMA §5.1).
+pub mod fpu;
 pub mod mmu;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod x86_64_runtime;

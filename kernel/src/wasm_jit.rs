@@ -3833,7 +3833,9 @@ impl JitFunction {
     /// Gate JIT execution behind this check for untrusted WASM modules.
     pub fn confidence_acceptable(&self) -> bool {
         let r = self.bayesian_confidence();
-        if r.d == 0 { return false; }
+        if r.d == 0 {
+            return false;
+        }
         r.n.saturating_mul(100) / r.d >= JIT_CONFIDENCE_THRESHOLD_PCT
     }
 }

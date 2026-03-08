@@ -64,6 +64,12 @@ impl TelemetryEvent {
     }
 }
 
+/// Reserved `cap_type` tag for compact VFS watch summaries emitted by `vfs.rs`.
+///
+/// The userspace telemetry daemon must treat these as out-of-band records and
+/// keep them out of the CTMC intent graph path.
+pub const TELEMETRY_CAP_TYPE_VFS_WATCH: u8 = 0xFE;
+
 // ---------------------------------------------------------------------------
 // WaitFreeRingBuffer
 // ---------------------------------------------------------------------------
@@ -102,7 +108,9 @@ impl<T: Copy, const N: usize> WaitFreeRingBuffer<T, N> {
     /// `static` without a constructor function.
     pub const fn new() -> Self {
         Self {
-            slots: unsafe { MaybeUninit::<[UnsafeCell<MaybeUninit<T>>; N]>::uninit().assume_init() },
+            slots: unsafe {
+                MaybeUninit::<[UnsafeCell<MaybeUninit<T>>; N]>::uninit().assume_init()
+            },
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
         }
@@ -217,3 +225,64 @@ pub const TELEMETRY_RING_CAPACITY: usize = 256;
 /// telemetry daemon (consumer).  Placed in `.bss` — no dynamic init required.
 pub static TELEMETRY_RING: WaitFreeRingBuffer<TelemetryEvent, TELEMETRY_RING_CAPACITY> =
     WaitFreeRingBuffer::new();
+
+// ---------------------------------------------------------------------------
+// Kernel → Daemon drain path
+// ---------------------------------------------------------------------------
+
+/// Magic frame header that the userspace daemon uses to re-synchronise on the
+/// byte stream.  Matches the constant in `telemetry.rs` / `uds_queue.rs`.
+const DRAIN_MAGIC: [u8; 4] = [0xEF, 0xBE, 0xAD, 0xDE];
+
+/// Drain up to `limit` events from `TELEMETRY_RING` and write each one to
+/// `SERIAL2_TELEMETRY` (COM2) as:
+///
+///   `[0xEF 0xBE 0xAD 0xDE] [16 bytes of TelemetryEvent in little-endian]`
+///
+/// Called from the timer handler (low-priority periodic drain).  Uses
+/// `try_lock` on the serial port so it silently skips the drain cycle rather
+/// than spinning if another path holds the lock.
+///
+/// # Returns
+/// Number of events drained this call.
+pub fn drain_telemetry_to_serial(limit: usize) -> usize {
+    let mut drained = 0;
+    while drained < limit {
+        let event = match TELEMETRY_RING.pop() {
+            Some(e) => e,
+            None => break,
+        };
+
+        // Serialize the 16-byte TelemetryEvent over COM2 with magic framing.
+        // We hold the lock for the full 20 bytes so the daemon always sees an
+        // atomic frame — partial frames would desync the magic-byte scanner.
+        if let Some(mut serial) = crate::serial::SERIAL2_TELEMETRY.try_lock() {
+            // Magic sync header
+            for b in DRAIN_MAGIC {
+                serial.send_byte(b);
+            }
+            // pid  (4 bytes LE)
+            for b in event.pid.to_le_bytes() {
+                serial.send_byte(b);
+            }
+            // node, cap_type, score, _pad  (4 bytes)
+            serial.send_byte(event.node);
+            serial.send_byte(event.cap_type);
+            serial.send_byte(event.score);
+            serial.send_byte(event._pad);
+            // tick (8 bytes LE)
+            for b in event.tick.to_le_bytes() {
+                serial.send_byte(b);
+            }
+        } else {
+            // Serial port busy — put the event back by re-pushing, then stop
+            // draining for this cycle.  Re-pushing may fail if the ring is
+            // now full, in which case the event is dropped (same as any other
+            // overflow scenario).
+            let _ = TELEMETRY_RING.push(event);
+            break;
+        }
+        drained += 1;
+    }
+    drained
+}

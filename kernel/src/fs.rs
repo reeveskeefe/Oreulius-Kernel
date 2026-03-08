@@ -706,6 +706,47 @@ impl FilesystemMetrics {
     }
 }
 
+/// Retention policy for in-memory observability data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilesystemRetentionPolicy {
+    /// Maximum number of retained filesystem events.
+    ///
+    /// `None` disables trimming and allows unbounded growth.
+    pub max_event_log_entries: Option<usize>,
+}
+
+impl FilesystemRetentionPolicy {
+    /// Leave the event log unbounded.
+    pub const fn unbounded() -> Self {
+        FilesystemRetentionPolicy {
+            max_event_log_entries: None,
+        }
+    }
+
+    /// Retain at most `max_event_log_entries` events.
+    pub const fn bounded(max_event_log_entries: usize) -> Self {
+        FilesystemRetentionPolicy {
+            max_event_log_entries: Some(max_event_log_entries),
+        }
+    }
+
+    /// Default retention budget: one page of event headers.
+    ///
+    /// This keeps the default bounded without reintroducing an arbitrary
+    /// compile-time event count.
+    pub fn page_sized_default() -> Self {
+        let entry_size = core::mem::size_of::<FilesystemEvent>().max(1);
+        let page_budget = crate::paging::PAGE_SIZE / entry_size;
+        FilesystemRetentionPolicy::bounded(page_budget.max(1))
+    }
+}
+
+impl Default for FilesystemRetentionPolicy {
+    fn default() -> Self {
+        Self::page_sized_default()
+    }
+}
+
 /// Snapshot of filesystem state.
 #[derive(Debug, Clone)]
 pub struct FilesystemHealth {
@@ -726,6 +767,7 @@ pub struct FilesystemHealth {
     pub quota_denials: u64,
     pub not_found: u64,
     pub event_log_len: usize,
+    pub event_log_capacity: Option<usize>,
     pub last_event: Option<FilesystemEvent>,
     pub last_error: Option<FilesystemEvent>,
 }
@@ -925,6 +967,7 @@ struct FilesystemState {
     storage: RamStorage,
     metrics: FilesystemMetrics,
     next_sequence: u64,
+    retention_policy: FilesystemRetentionPolicy,
     event_log: VecDeque<FilesystemEvent>,
     last_event: Option<FilesystemEvent>,
     last_error: Option<FilesystemEvent>,
@@ -936,9 +979,20 @@ impl FilesystemState {
             storage: RamStorage::new(),
             metrics: FilesystemMetrics::default(),
             next_sequence: 1,
+            retention_policy: FilesystemRetentionPolicy::default(),
             event_log: VecDeque::new(),
             last_event: None,
             last_error: None,
+        }
+    }
+
+    fn trim_event_log(&mut self) {
+        let Some(max_entries) = self.retention_policy.max_event_log_entries else {
+            return;
+        };
+
+        while self.event_log.len() > max_entries {
+            self.event_log.pop_front();
         }
     }
 
@@ -960,6 +1014,7 @@ impl FilesystemState {
         };
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.event_log.push_back(event.clone());
+        self.trim_event_log();
         self.last_event = Some(event.clone());
         match operation {
             FilesystemOperation::PermissionDenied
@@ -1319,6 +1374,25 @@ impl FilesystemService {
         self.state.lock().metrics
     }
 
+    /// Current observability retention policy.
+    pub fn retention_policy(&self) -> FilesystemRetentionPolicy {
+        self.state.lock().retention_policy
+    }
+
+    /// Update the observability retention policy and immediately trim to fit.
+    pub fn set_retention_policy(&self, retention_policy: FilesystemRetentionPolicy) {
+        let mut state = self.state.lock();
+        state.retention_policy = retention_policy;
+        state.trim_event_log();
+    }
+
+    /// Convenience helper for configuring only the event log capacity.
+    pub fn set_event_log_capacity(&self, max_event_log_entries: Option<usize>) {
+        self.set_retention_policy(FilesystemRetentionPolicy {
+            max_event_log_entries,
+        });
+    }
+
     /// Health snapshot.
     pub fn health(&self) -> FilesystemHealth {
         let state = self.state.lock();
@@ -1348,6 +1422,7 @@ impl FilesystemService {
             quota_denials: state.metrics.quota_denials,
             not_found: state.metrics.not_found,
             event_log_len: state.event_log.len(),
+            event_log_capacity: state.retention_policy.max_event_log_entries,
             last_event: state.last_event.clone(),
             last_error: state.last_error.clone(),
         }
@@ -1496,5 +1571,41 @@ mod tests {
         assert_eq!(health.file_count, 1);
         assert_eq!(health.total_bytes, 11);
         assert!(health.total_operations >= 2);
+        assert_eq!(
+            health.event_log_capacity,
+            fs.retention_policy().max_event_log_entries
+        );
+    }
+
+    #[test]
+    fn test_event_log_retention_policy_trims() {
+        let fs = FilesystemService::new();
+        fs.set_event_log_capacity(Some(2));
+        let cap = fs.create_capability(1, FilesystemRights::all(), None);
+
+        let key_a = FileKey::new("a").unwrap();
+        let key_b = FileKey::new("b").unwrap();
+        let key_c = FileKey::new("c").unwrap();
+
+        assert_eq!(
+            fs.handle_request(Request::write(key_a, b"one", cap.clone()).unwrap())
+                .status,
+            ResponseStatus::Ok
+        );
+        assert_eq!(
+            fs.handle_request(Request::write(key_b, b"two", cap.clone()).unwrap())
+                .status,
+            ResponseStatus::Ok
+        );
+        assert_eq!(
+            fs.handle_request(Request::write(key_c, b"three", cap).unwrap())
+                .status,
+            ResponseStatus::Ok
+        );
+
+        let events = fs.recent_events(8);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].key.as_ref().unwrap().as_str(), "b");
+        assert_eq!(events[1].key.as_ref().unwrap().as_str(), "c");
     }
 }

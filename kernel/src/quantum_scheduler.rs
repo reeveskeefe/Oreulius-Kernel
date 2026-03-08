@@ -258,6 +258,17 @@ pub struct ProcessInfo {
     pub ewma_yield: u32,
     /// EWMA of fault density.
     pub ewma_fault: u32,
+    // --- Lazy FPU / Vector context (PMA §5.1) ---
+    /// Whether this process has ever executed an FP/SIMD instruction.
+    /// False on spawn; set to true inside handle_fpu_trap() on first use.
+    pub has_used_fpu: bool,
+    /// Whether the FPU registers contain state belonging to this process
+    /// that has not yet been saved back to [fpu_state].
+    pub fpu_dirty: bool,
+    /// Extended FPU/SIMD state buffer (2816 bytes, 64-byte aligned).
+    /// Covers the full AVX-512 XSAVE area on x86_64 and Q0-Q31/FPSR/FPCR on AArch64.
+    /// Zero-initialised; only valid after the first call to save_fpu_state_ext.
+    pub fpu_state: crate::arch::fpu::ExtFpuState,
 }
 
 /// Wait queue for blocking primitives
@@ -337,6 +348,10 @@ impl QuantumScheduler {
             pagefault_count: 0,
             ewma_yield: 0,
             ewma_fault: 0,
+            // §5.1 Lazy FPU — starts as "never used FPU"
+            has_used_fpu: false,
+            fpu_dirty: false,
+            fpu_state: crate::arch::fpu::ExtFpuState::new(),
         };
 
         self.processes[idx] = Some(info);
@@ -467,6 +482,32 @@ impl QuantumScheduler {
 
         self.current_pid = Some(next_pid);
 
+        // §5.1 Lazy FPU — deny FP/SIMD access to the incoming process.
+        // The next FP instruction from next_pid will fault into handle_fpu_trap()
+        // (IDT vector 7 / #NM), which will then perform the actual save/restore.
+        // If next_pid is already the FPU owner, we still set TS to ensure any
+        // in-flight FPU dirty state from a preempted IRQ is handled correctly;
+        // handle_fpu_trap() will clear it immediately without swapping state.
+        if self.fpu_owner != Some(next_pid) {
+            // x86_64: Set CR0.TS bit (bit 3) — causes #NM on next FP instruction.
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                let cr0: u64;
+                core::arch::asm!("mov {r}, cr0", r = out(reg) cr0, options(nostack, nomem));
+                core::arch::asm!("mov cr0, {r}", r = in(reg) cr0 | (1u64 << 3),
+                                 options(nostack, nomem));
+            }
+            // AArch64: Clear CPACR_EL1.FPEN [21:20] → trap any FP/NEON to EL1.
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                let cpacr: u64;
+                core::arch::asm!("mrs {r}, cpacr_el1", r = out(reg) cpacr, options(nostack));
+                // FPEN = 0b00 → traps from both EL0 and EL1 are enabled
+                core::arch::asm!("msr cpacr_el1, {r}", r = in(reg) cpacr & !(3u64 << 20),
+                                 options(nostack));
+            }
+        }
+
         // Update scheduling timestamp
         if let Some(ref mut info) = self.processes[next_pid.0 as usize] {
             info.process.state = ProcessState::Running;
@@ -492,6 +533,107 @@ impl QuantumScheduler {
     /// Schedule next process (called on timer interrupt)
     pub fn schedule(&mut self) -> Option<(*mut ProcessContext, *const ProcessContext)> {
         self.plan_switch(None)
+    }
+
+    // -----------------------------------------------------------------------
+    // §5.1  Lazy FPU / Vector context switch
+    // -----------------------------------------------------------------------
+
+    /// Called from the IDT #NM / Device-Not-Available handler (vector 7) when a
+    /// process executes an FP or SIMD instruction while CR0.TS = 1.
+    ///
+    /// Algorithm:
+    ///   1. Clear the trap (CLTS on x86_64, re-enable FPEN on AArch64).
+    ///   2. If the current process already owns the FPU, we're done (spurious trap).
+    ///   3. Save the previous FPU owner's state into its [ProcessInfo::fpu_state].
+    ///   4. Restore (or initialise) the new owner's state.
+    ///   5. Update [fpu_owner].
+    ///
+    /// # Safety
+    /// Must be called from the IDT entry point with no other FPU-related
+    /// interrupt pending. The scheduler lock must be held by the caller.
+    pub unsafe fn handle_fpu_trap(&mut self) {
+        // Step 1 — clear the FP trap so the faulting instruction can retry.
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!("clts", options(nostack, nomem));
+        #[cfg(target_arch = "aarch64")]
+        {
+            let cpacr: u64;
+            core::arch::asm!("mrs {r}, cpacr_el1", r = out(reg) cpacr, options(nostack));
+            // FPEN = 0b11 → no traps from EL0 or EL1
+            core::arch::asm!("msr cpacr_el1, {r}",
+                             r = in(reg) cpacr | (3u64 << 20),
+                             options(nostack));
+        }
+
+        let current = match self.current_pid {
+            Some(pid) => pid,
+            None => return, // No current process — nothing to do.
+        };
+
+        // Step 2 — spurious trap: process already owns FPU (e.g. TS was set
+        // by the IRQ-path save below, then the process immediately faults again).
+        if self.fpu_owner == Some(current) {
+            return;
+        }
+
+        // Step 3 — save old owner's state.
+        if let Some(owner_pid) = self.fpu_owner {
+            let owner_idx = owner_pid.0 as usize;
+            if let Some(ref mut owner_info) = self.processes[owner_idx] {
+                crate::arch::fpu::save_fpu_state_ext(owner_info.fpu_state.0.as_mut_ptr());
+                owner_info.fpu_dirty = false;
+            }
+        }
+
+        // Step 4 — restore (or init) new owner's state.
+        let current_idx = current.0 as usize;
+        if let Some(ref mut info) = self.processes[current_idx] {
+            if info.has_used_fpu {
+                // Restore previously saved state.
+                crate::arch::fpu::restore_fpu_state_ext(info.fpu_state.0.as_ptr());
+            } else {
+                // First ever FP use by this process — provide a clean environment.
+                crate::arch::fpu::init_fpu_state();
+                info.has_used_fpu = true;
+            }
+            info.fpu_dirty = true;
+        }
+
+        // Step 5 — update ownership.
+        self.fpu_owner = Some(current);
+    }
+
+    /// Called by the timer IRQ path **before** context-switching away from a
+    /// process that currently owns the FPU.  This ensures the FPU state is
+    /// consistent if an IRQ fires mid-FP-instruction-stream.
+    ///
+    /// If the current process owns the FPU and has dirty state, we re-enable
+    /// CR0.TS now (the owner will fault via `handle_fpu_trap()` on next use).
+    /// This avoids a full save/restore on every timer tick.
+    pub unsafe fn guard_irq_fpu_state(&mut self) {
+        let current = match self.current_pid {
+            Some(pid) => pid,
+            None => return,
+        };
+        if self.fpu_owner == Some(current) {
+            // Set TS so the *next* FP instruction after IRQ return faults cleanly.
+            #[cfg(target_arch = "x86_64")]
+            {
+                let cr0: u64;
+                core::arch::asm!("mov {r}, cr0", r = out(reg) cr0, options(nostack, nomem));
+                core::arch::asm!("mov cr0, {r}", r = in(reg) cr0 | (1u64 << 3),
+                                 options(nostack, nomem));
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                let cpacr: u64;
+                core::arch::asm!("mrs {r}, cpacr_el1", r = out(reg) cpacr, options(nostack));
+                core::arch::asm!("msr cpacr_el1, {r}",
+                                 r = in(reg) cpacr & !(3u64 << 20),
+                                 options(nostack));
+            }
+        }
     }
 
     /// Enqueue process to ready queue
@@ -921,6 +1063,9 @@ impl QuantumScheduler {
             pagefault_count: 0,
             ewma_yield: 0,
             ewma_fault: 0,
+            has_used_fpu: false,
+            fpu_dirty: false,
+            fpu_state: crate::arch::fpu::ExtFpuState::new(),
         };
 
         scheduler_rt::vga_print_str("\n");
@@ -1171,6 +1316,9 @@ impl QuantumScheduler {
             pagefault_count: 0,
             ewma_yield: 0,
             ewma_fault: 0,
+            has_used_fpu: false,
+            fpu_dirty: false,
+            fpu_state: crate::arch::fpu::ExtFpuState::new(),
         };
 
         self.processes[idx] = Some(info);
@@ -1379,6 +1527,9 @@ impl QuantumScheduler {
             pagefault_count: 0,
             ewma_yield: 0,
             ewma_fault: 0,
+            has_used_fpu: false,
+            fpu_dirty: false,
+            fpu_state: crate::arch::fpu::ExtFpuState::new(),
         };
 
         // ------------------------------------------------------------------ //
@@ -1574,48 +1725,6 @@ impl QuantumScheduler {
     /// Get current PID
     pub fn get_current_pid(&self) -> Option<Pid> {
         self.current_pid
-    }
-
-    /// Handles Device Not Available (#NM) exception for lazy FPU state saving
-    pub unsafe fn handle_fpu_trap(&mut self) {
-        #[cfg(target_arch = "x86")]
-        {
-            // Clear TS bit
-            core::arch::asm!("clts");
-        }
-
-        let current = match self.current_pid {
-            Some(pid) => pid,
-            None => return, // Shouldn't happen
-        };
-
-        if let Some(owner) = self.fpu_owner {
-            if owner == current {
-                // We still own the FPU! Nothing to do.
-                return;
-            }
-
-            // Save state for the old owner
-            if let Some(ref mut info) = self.processes[owner.0 as usize] {
-                crate::process_asm::save_fpu_state(info.process.fpu_state.0.as_mut_ptr());
-            }
-        }
-
-        // Restore or initialize state for the new owner
-        if let Some(ref mut info) = self.processes[current.0 as usize] {
-            if info.process.has_used_fpu {
-                crate::process_asm::restore_fpu_state(info.process.fpu_state.0.as_ptr());
-            } else {
-                #[cfg(target_arch = "x86")]
-                {
-                    core::arch::asm!("fninit");
-                    // Can add fldcw / ldmxcsr here for SSE later if needed
-                }
-                info.process.has_used_fpu = true;
-            }
-        }
-
-        self.fpu_owner = Some(current);
     }
 }
 

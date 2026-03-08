@@ -651,6 +651,14 @@ pub extern "C" fn rust_main() -> ! {
         vfs::init();
         vga::print_str("[DEBUG] About to init persistence...\n");
         persistence::init();
+        match vfs::recover_from_persistence() {
+            Ok(()) => vga::print_str("[VFS] Recovery check complete\n"),
+            Err(e) => {
+                vga::print_str("[VFS] Recovery skipped: ");
+                vga::print_str(e);
+                vga::print_str("\n");
+            }
+        }
         vga::print_str("[DEBUG] About to init temporal...\n");
         temporal::init();
         vga::print_str("[DEBUG] About to init ipc...\n");
@@ -667,7 +675,11 @@ pub extern "C" fn rust_main() -> ! {
         security::init();
         vga::print_str("[SECURITY] Audit logging enabled\n");
         capnet::init();
-        vga::print_str("[CAPNET] Peer token subsystem initialized\n");
+        // Verify that the Lanczos spectral certificate baked in at compile time
+        // is internally consistent.  Panics (kernel halt) if the certificate is
+        // invalid — see PMA §11.2 and capnet::offline_certificate.
+        capnet::offline_certificate::assert_certificate_valid();
+        vga::print_str("[CAPNET] Peer token subsystem initialized (spectral certificate OK)\n");
 
         // Initialize capability subsystem
         vga::print_str("[CAPABILITY] Initializing capability manager...\n");
@@ -707,6 +719,14 @@ pub extern "C" fn rust_main() -> ! {
             } else {
                 vga::print_str("[BLOCK] VirtIO block ready\n");
                 persistence::init();
+                match vfs::recover_from_persistence() {
+                    Ok(()) => vga::print_str("[VFS] Durable recovery complete\n"),
+                    Err(e) => {
+                        vga::print_str("[VFS] Durable recovery skipped: ");
+                        vga::print_str(e);
+                        vga::print_str("\n");
+                    }
+                }
                 match temporal::recover_from_persistence() {
                     Ok(()) => vga::print_str("[TEMPORAL] Recovery check complete\n"),
                     Err(e) => {

@@ -55,7 +55,7 @@ use crate::temporal_asm;
 pub const MAX_TEMPORAL_OBJECTS: usize = 128;
 pub const MAX_VERSIONS_PER_OBJECT: usize = 64;
 pub const MAX_TEMPORAL_VERSION_BYTES: usize = 256 * 1024;
-pub const MAX_TEMPORAL_CAPTURE_BYTES: usize = crate::vfs::MAX_VFS_FILE_SIZE;
+pub const MAX_TEMPORAL_CAPTURE_BYTES: usize = MAX_TEMPORAL_VERSION_BYTES;
 pub const MERKLE_CHUNK_BYTES: usize = 64;
 pub const TEMPORAL_HASH_SEED: u32 = 0x811C9DC5;
 pub const TEMPORAL_OBJECT_ENCODING_V1: u8 = 1;

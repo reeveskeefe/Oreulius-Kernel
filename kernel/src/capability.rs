@@ -1805,6 +1805,19 @@ impl CapabilityManager {
         Ok(())
     }
 
+    /// Revoke all capabilities for a specific PID — used by the Math Daemon
+    /// cross-PID revocation path (PMA §6.2 / syscall 43).
+    pub fn revoke_all_capabilities(&self, pid: ProcessId) -> Result<(), &'static str> {
+        let idx = pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return Err("Task not found");
+        }
+        let mut tables = self.tables.lock();
+        let table = tables[idx].as_mut().ok_or("Task not found")?;
+        table.revoke_all();
+        Ok(())
+    }
+
     /// Query capability information (syscall wrapper)
     pub fn query_capability(
         &self,

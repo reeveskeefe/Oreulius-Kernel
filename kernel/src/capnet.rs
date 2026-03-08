@@ -2707,4 +2707,36 @@ fn read_u64(buf: &[u8], offset: &mut usize) -> Result<u64, CapNetError> {
 /// validating strict graph conductance properties.
 pub mod offline_certificate {
     include!(concat!(env!("OUT_DIR"), "/spectral_certificate.rs"));
+
+    /// Minimum acceptable spectral gap — matches `epsilon_safe` in `build.rs`.
+    /// The build already aborts if the gap is below this at compile time; this
+    /// constant lets runtime code (e.g., the Math Daemon via IPC) query the
+    /// actual certified value and verify the daemon's mixing-time budget.
+    pub const EPSILON_SAFE: f64 = 0.05_f64;
+
+    /// Verify that the compiled certificate values are internally consistent.
+    /// Called once from `capnet_init()` so any linkage/codegen anomaly that
+    /// somehow produces a zero certificate is caught at startup, not silently.
+    ///
+    /// # Panics
+    /// Panics (kernel panic) if either constant is below `EPSILON_SAFE`.
+    pub fn assert_certificate_valid() {
+        // SAFETY: these are compile-time f64 constants — no UB.
+        if SPECTRAL_GAP < EPSILON_SAFE {
+            panic!(
+                "CapNet: spectral gap certificate invalid at runtime \
+                 (SPECTRAL_GAP={} < EPSILON_SAFE={})! \
+                 Rebuild the kernel — capability isolation cannot be guaranteed.",
+                SPECTRAL_GAP, EPSILON_SAFE
+            );
+        }
+        if CHEEGER_CONDUCTANCE < EPSILON_SAFE / 2.0 {
+            panic!(
+                "CapNet: Cheeger conductance certificate invalid at runtime \
+                 (CHEEGER_CONDUCTANCE={} < {})! \
+                 Rebuild the kernel — IPC flow isolation cannot be guaranteed.",
+                CHEEGER_CONDUCTANCE, EPSILON_SAFE / 2.0
+            );
+        }
+    }
 }

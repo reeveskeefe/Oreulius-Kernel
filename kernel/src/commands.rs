@@ -123,6 +123,28 @@ pub fn execute(input: &str) {
             vga::print_str("  vfs-ls     - List directory (vfs-ls <path>)\n");
             vga::print_str("  vfs-delete - Delete file path (vfs-delete <path>)\n");
             vga::print_str("  vfs-rmdir  - Remove empty directory (vfs-rmdir <path>)\n");
+            vga::print_str("  vfs-rename - Rename/move path (vfs-rename <old> <new>)\n");
+            vga::print_str("  vfs-link   - Create hard link (vfs-link <existing> <new>)\n");
+            vga::print_str("  vfs-symlink - Create symbolic link (vfs-symlink <target> <link>)\n");
+            vga::print_str("  vfs-readlink - Show symlink target (vfs-readlink <path>)\n");
+            vga::print_str("  vfs-health - Show VFS health and mount statistics\n");
+            vga::print_str("  vfs-fsck  - Validate and repair VFS graph state\n");
+            vga::print_str("  vfs-policy - Show/set VFS runtime policy\n");
+            vga::print_str("  vfs-watch - Register path watch (exact/tree)\n");
+            vga::print_str("  vfs-unwatch - Remove path watch by id\n");
+            vga::print_str("  vfs-watch-list - List active path watches\n");
+            vga::print_str("  vfs-notify - Show recent watch notifications\n");
+            vga::print_str("  vfs-ipc-sub - Subscribe IPC channel to VFS notifications\n");
+            vga::print_str("  vfs-ipc-unsub - Remove IPC notification subscriber\n");
+            vga::print_str("  vfs-ipc-list - List IPC notification subscribers\n");
+            vga::print_str("  vfs-cap-dir-show - Show directory capability\n");
+            vga::print_str("  vfs-cap-dir-set - Set directory capability and quota\n");
+            vga::print_str("  vfs-cap-dir-clear - Clear directory capability\n");
+            vga::print_str("  vfs-cap-proc-show - Show process capability\n");
+            vga::print_str("  vfs-cap-proc-set - Set process capability and quota\n");
+            vga::print_str("  vfs-cap-proc-clear - Clear process capability\n");
+            vga::print_str("  vfs-cap-effective - Show effective capability for path\n");
+            vga::print_str("  vfs-mounts - Show mounted backend contract state\n");
             vga::print_str("  vfs-mount-virtio - Mount VirtIO block at path\n");
             vga::print_str("  vfs-open   - Open file (vfs-open <path>)\n");
             vga::print_str("  vfs-readfd - Read via fd (vfs-readfd <fd> [n])\n");
@@ -2732,8 +2754,18 @@ fn cmd_elf_run(mut parts: core::str::SplitWhitespace) {
         }
     };
 
+    let size = match vfs::path_size(path) {
+        Ok(n) => n,
+        Err(e) => {
+            vga::print_str("Stat failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    };
+
     let mut buf = alloc::vec::Vec::new();
-    buf.resize(crate::vfs::MAX_VFS_FILE_SIZE, 0);
+    buf.resize(size, 0);
     match vfs::read_path(path, &mut buf) {
         Ok(n) => {
             buf.truncate(n);
@@ -10666,29 +10698,33 @@ fn print_u64(n: u64) {
 }
 
 fn cmd_sched_stats() {
+    use crate::interrupt_dag::{InterruptContext, DAG_LEVEL_SYSCALL};
     use crate::scheduler;
 
     vga::print_str("\n===== Scheduler Statistics =====\n\n");
 
-    let sched = scheduler::scheduler().lock_legacy();
-    let stats = sched.get_stats();
+    // Acquire scheduler lock through the DAG context (PMA §9).
+    let ctx = unsafe { InterruptContext::<DAG_LEVEL_SYSCALL>::new() };
+    ctx.acquire_lock(scheduler::scheduler(), |sched, _sub| {
+        let stats = sched.get_stats();
 
-    vga::print_str("Processes:\n  Total:    ");
-    print_usize(stats.total_processes);
-    vga::print_str("\n  Running:  ");
-    print_usize(stats.running_processes);
-    vga::print_str("\n  Ready:    ");
-    print_usize(stats.ready_processes);
-    vga::print_str("\n  Sleeping: ");
-    print_usize(stats.sleeping_processes);
-    vga::print_str("\n\nContext Switches:\n  Total:       ");
-    print_u64(stats.total_switches);
-    vga::print_str("\n  Preemptions: ");
-    print_u64(stats.preemptions);
-    vga::print_str("\n  Voluntary:   ");
-    print_u64(stats.total_switches.saturating_sub(stats.preemptions));
-    vga::print_str("\n\nScheduler: Round-Robin (10ms time slices)\n");
-    vga::print_str("Priority Levels: High > Normal > Low\n\n");
+        vga::print_str("Processes:\n  Total:    ");
+        print_usize(stats.total_processes);
+        vga::print_str("\n  Running:  ");
+        print_usize(stats.running_processes);
+        vga::print_str("\n  Ready:    ");
+        print_usize(stats.ready_processes);
+        vga::print_str("\n  Sleeping: ");
+        print_usize(stats.sleeping_processes);
+        vga::print_str("\n\nContext Switches:\n  Total:       ");
+        print_u64(stats.total_switches);
+        vga::print_str("\n  Preemptions: ");
+        print_u64(stats.preemptions);
+        vga::print_str("\n  Voluntary:   ");
+        print_u64(stats.total_switches.saturating_sub(stats.preemptions));
+        vga::print_str("\n\nScheduler: Round-Robin (10ms time slices)\n");
+        vga::print_str("Priority Levels: High > Normal > Low\n\n");
+    });
 }
 
 fn cmd_sleep(mut parts: core::str::SplitWhitespace) {

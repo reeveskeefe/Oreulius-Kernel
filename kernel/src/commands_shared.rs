@@ -5,9 +5,13 @@
 
 extern crate alloc;
 
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use core::fmt::Write;
 
+use crate::fs::{FilesystemCapability, FilesystemQuota, FilesystemRights};
 use crate::vfs;
+use crate::vfs_platform;
 
 fn write_line<W: Write>(out: &mut W, prefix: &str, body: &str) {
     if prefix.is_empty() {
@@ -54,6 +58,10 @@ fn parse_usize_auto(s: &str) -> Option<usize> {
     usize::try_from(parse_u64_auto(s)?).ok()
 }
 
+fn parse_u32_auto(s: &str) -> Option<u32> {
+    u32::try_from(parse_u64_auto(s)?).ok()
+}
+
 fn print_hexdump<W: Write>(out: &mut W, prefix: &str, label: &str, buf: &[u8]) {
     let rows = core::cmp::min((buf.len() + 15) / 16, 8);
     for row in 0..rows {
@@ -93,6 +101,140 @@ fn parse_open_flags(mode: &str) -> vfs::OpenFlags {
     }
 }
 
+fn format_rights(rights: &FilesystemRights) -> String {
+    let mut out = String::new();
+    if rights.has(FilesystemRights::READ) {
+        out.push('r');
+    }
+    if rights.has(FilesystemRights::WRITE) {
+        out.push('w');
+    }
+    if rights.has(FilesystemRights::DELETE) {
+        out.push('d');
+    }
+    if rights.has(FilesystemRights::LIST) {
+        out.push('l');
+    }
+    if out.is_empty() {
+        out.push('-');
+    }
+    out
+}
+
+fn format_quota_bound(value: Option<usize>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_capability(capability: &FilesystemCapability) -> String {
+    let quota = capability.quota.unwrap_or(FilesystemQuota::unlimited());
+    alloc::format!(
+        "cap_id={} rights={} prefix={} quota_total={} quota_files={} quota_single={}",
+        capability.cap_id,
+        format_rights(&capability.rights),
+        capability
+            .key_prefix
+            .as_ref()
+            .map(|prefix| prefix.as_str().to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        format_quota_bound(quota.max_total_bytes),
+        format_quota_bound(quota.max_file_count),
+        format_quota_bound(quota.max_single_file_bytes),
+    )
+}
+
+fn format_watch_kind(kind: vfs::VfsWatchKind) -> &'static str {
+    match kind {
+        vfs::VfsWatchKind::Read => "read",
+        vfs::VfsWatchKind::Write => "write",
+        vfs::VfsWatchKind::List => "list",
+        vfs::VfsWatchKind::Create => "create",
+        vfs::VfsWatchKind::Delete => "delete",
+        vfs::VfsWatchKind::Rename => "rename",
+        vfs::VfsWatchKind::Link => "link",
+        vfs::VfsWatchKind::Symlink => "symlink",
+        vfs::VfsWatchKind::ReadLink => "readlink",
+        vfs::VfsWatchKind::Mkdir => "mkdir",
+        vfs::VfsWatchKind::Rmdir => "rmdir",
+        vfs::VfsWatchKind::Mount => "mount",
+    }
+}
+
+fn format_watch_scope(recursive: bool) -> &'static str {
+    if recursive {
+        "tree"
+    } else {
+        "exact"
+    }
+}
+
+fn parse_rights(spec: &str) -> Option<FilesystemRights> {
+    if spec.eq_ignore_ascii_case("all") {
+        return Some(FilesystemRights::all());
+    }
+    if spec == "-" || spec.eq_ignore_ascii_case("none") {
+        return Some(FilesystemRights::new(0));
+    }
+    let mut bits = 0u32;
+    for ch in spec.chars() {
+        match ch {
+            'r' | 'R' => bits |= FilesystemRights::READ,
+            'w' | 'W' => bits |= FilesystemRights::WRITE,
+            'd' | 'D' => bits |= FilesystemRights::DELETE,
+            'l' | 'L' => bits |= FilesystemRights::LIST,
+            _ => return None,
+        }
+    }
+    Some(FilesystemRights::new(bits))
+}
+
+fn parse_quota_bound(token: &str) -> Option<Option<usize>> {
+    if matches!(token, "-" | "none" | "unbounded" | "*") {
+        Some(None)
+    } else {
+        parse_usize_auto(token).map(Some)
+    }
+}
+
+fn parse_quota_args(args: &[&str]) -> Option<Option<FilesystemQuota>> {
+    if args.is_empty() {
+        return Some(None);
+    }
+    if args.len() != 3 {
+        return None;
+    }
+    Some(Some(FilesystemQuota::bounded(
+        parse_quota_bound(args[0])?,
+        parse_quota_bound(args[1])?,
+        parse_quota_bound(args[2])?,
+    )))
+}
+
+fn shell_cap_id(label: &str, salt: u32) -> u32 {
+    let mut hash = 0x811c9dc5u32 ^ salt;
+    for &b in label.as_bytes() {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+fn build_capability(
+    identity: &str,
+    rights_spec: &str,
+    quota_args: &[&str],
+    salt: u32,
+) -> Option<FilesystemCapability> {
+    let rights = parse_rights(rights_spec)?;
+    let quota = parse_quota_args(quota_args)?;
+    let cap_id = shell_cap_id(identity, salt);
+    Some(match quota {
+        Some(quota) => FilesystemCapability::with_quota(cap_id, rights, quota),
+        None => FilesystemCapability::new(cap_id, rights),
+    })
+}
+
 pub fn print_help<W: Write>(out: &mut W, prefix: &str) {
     write_line(out, prefix, "shared commands:");
     write_line(out, prefix, "  help-cmd");
@@ -103,6 +245,36 @@ pub fn print_help<W: Write>(out: &mut W, prefix: &str) {
     write_line(out, prefix, "  vfs-ls <path>");
     write_line(out, prefix, "  vfs-delete <path>");
     write_line(out, prefix, "  vfs-rmdir <path>");
+    write_line(out, prefix, "  vfs-rename <old> <new>");
+    write_line(out, prefix, "  vfs-link <existing> <new>");
+    write_line(out, prefix, "  vfs-symlink <target> <link>");
+    write_line(out, prefix, "  vfs-readlink <path>");
+    write_line(out, prefix, "  vfs-health");
+    write_line(out, prefix, "  vfs-fsck");
+    write_line(out, prefix, "  vfs-policy [auto|none|<bytes>]");
+    write_line(out, prefix, "  vfs-watch <path> [exact|tree]");
+    write_line(out, prefix, "  vfs-unwatch <id>");
+    write_line(out, prefix, "  vfs-watch-list");
+    write_line(out, prefix, "  vfs-notify [count]");
+    write_line(out, prefix, "  vfs-ipc-sub <channel-id>");
+    write_line(out, prefix, "  vfs-ipc-unsub <channel-id>");
+    write_line(out, prefix, "  vfs-ipc-list");
+    write_line(out, prefix, "  vfs-cap-dir-show <path>");
+    write_line(
+        out,
+        prefix,
+        "  vfs-cap-dir-set <path> <rights> [quota_total quota_files quota_single]",
+    );
+    write_line(out, prefix, "  vfs-cap-dir-clear <path>");
+    write_line(out, prefix, "  vfs-cap-proc-show <pid>");
+    write_line(
+        out,
+        prefix,
+        "  vfs-cap-proc-set <pid> <rights> [quota_total quota_files quota_single]",
+    );
+    write_line(out, prefix, "  vfs-cap-proc-clear <pid>");
+    write_line(out, prefix, "  vfs-cap-effective <path> [pid]");
+    write_line(out, prefix, "  vfs-mounts");
     write_line(out, prefix, "  vfs-mount-virtio <path>");
     write_line(out, prefix, "  vfs-open <path> [r|w|rw|rwc|append]");
     write_line(out, prefix, "  vfs-readfd <fd> [n]");
@@ -409,6 +581,493 @@ pub fn try_execute<W: Write>(out: &mut W, input: &str, prefix: &str) -> bool {
                 Err(e) => {
                     let _ = writeln!(out, "{} vfs-rmdir failed: {}", prefix, e);
                 }
+            }
+        }
+        "vfs-rename" => {
+            let mut args = rest.split_whitespace();
+            let (Some(old_path), Some(new_path)) = (args.next(), args.next()) else {
+                let _ = writeln!(out, "{} usage: vfs-rename <old> <new>", prefix);
+                return true;
+            };
+            match vfs::rename(old_path, new_path) {
+                Ok(()) => {
+                    let _ = writeln!(
+                        out,
+                        "{} vfs-rename ok old={} new={}",
+                        prefix, old_path, new_path
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-rename failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-link" => {
+            let mut args = rest.split_whitespace();
+            let (Some(existing), Some(new_path)) = (args.next(), args.next()) else {
+                let _ = writeln!(out, "{} usage: vfs-link <existing> <new>", prefix);
+                return true;
+            };
+            match vfs::link(existing, new_path) {
+                Ok(()) => {
+                    let _ = writeln!(
+                        out,
+                        "{} vfs-link ok src={} dst={}",
+                        prefix, existing, new_path
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-link failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-symlink" => {
+            let mut args = rest.split_whitespace();
+            let (Some(target), Some(link_path)) = (args.next(), args.next()) else {
+                let _ = writeln!(out, "{} usage: vfs-symlink <target> <link>", prefix);
+                return true;
+            };
+            match vfs::symlink(target, link_path) {
+                Ok(()) => {
+                    let _ = writeln!(
+                        out,
+                        "{} vfs-symlink ok target={} link={}",
+                        prefix, target, link_path
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-symlink failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-readlink" => {
+            let path = rest.trim();
+            if path.is_empty() {
+                let _ = writeln!(out, "{} usage: vfs-readlink <path>", prefix);
+                return true;
+            }
+            match vfs::readlink(path) {
+                Ok(target) => {
+                    let _ = writeln!(out, "{} vfs-readlink {} => {}", prefix, path, target);
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-readlink failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-health" => {
+            let health = vfs::health();
+            let _ = writeln!(
+                out,
+                "{} vfs-health inodes={}/{} files={} dirs={} symlinks={} bytes={} handles={} mounts={} orphans={} max_file_size={}",
+                prefix,
+                health.live_inodes,
+                health.total_inode_slots,
+                health.file_count,
+                health.directory_count,
+                health.symlink_count,
+                health.total_bytes,
+                health.open_handles,
+                health.mount_count,
+                health.orphaned_inodes,
+                health
+                    .max_mem_file_size
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "unbounded".to_string())
+            );
+            for mount in health.mount_health {
+                let _ = writeln!(
+                    out,
+                    "{}   mount path={} backend={} reads={} writes={} mutations={} errors={} last_error={}",
+                    prefix,
+                    mount.path,
+                    mount.backend,
+                    mount.reads,
+                    mount.writes,
+                    mount.mutations,
+                    mount.errors,
+                    mount.last_error.unwrap_or_else(|| "-".to_string())
+                );
+            }
+        }
+        "vfs-fsck" => match vfs::fsck_and_repair() {
+            Ok(report) => {
+                let _ = writeln!(
+                    out,
+                    "{} vfs-fsck ok scanned={} dangling_removed={} relinked={} nlink_repairs={} size_repairs={} lost+found_created={}",
+                    prefix,
+                    report.inodes_scanned,
+                    report.dangling_entries_removed,
+                    report.orphaned_inodes_relinked,
+                    report.nlink_repairs,
+                    report.size_repairs,
+                    if report.lost_found_created { 1 } else { 0 }
+                );
+            }
+            Err(e) => {
+                let _ = writeln!(out, "{} vfs-fsck failed: {}", prefix, e);
+            }
+        },
+        "vfs-policy" => {
+            let arg = rest.trim();
+            if arg.is_empty() {
+                let policy = vfs::policy();
+                let _ = writeln!(
+                    out,
+                    "{} vfs-policy max_mem_file_size={}",
+                    prefix,
+                    policy
+                        .max_mem_file_size
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "unbounded".to_string())
+                );
+                return true;
+            }
+            let policy = match arg {
+                "auto" => vfs::VfsPolicy::runtime_default(),
+                "none" | "unbounded" => vfs::VfsPolicy::unbounded(),
+                _ => {
+                    let Some(limit) = parse_usize_auto(arg) else {
+                        let _ = writeln!(out, "{} usage: vfs-policy [auto|none|<bytes>]", prefix);
+                        return true;
+                    };
+                    vfs::VfsPolicy::bounded(limit)
+                }
+            };
+            vfs::set_policy(policy);
+            let effective = vfs::policy();
+            let _ = writeln!(
+                out,
+                "{} vfs-policy ok max_mem_file_size={}",
+                prefix,
+                effective
+                    .max_mem_file_size
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "unbounded".to_string())
+            );
+        }
+        "vfs-watch" => {
+            let mut args = rest.split_whitespace();
+            let Some(path) = args.next() else {
+                let _ = writeln!(out, "{} usage: vfs-watch <path> [exact|tree]", prefix);
+                return true;
+            };
+            let recursive = match args.next().unwrap_or("exact") {
+                "exact" => false,
+                "tree" | "recursive" => true,
+                _ => {
+                    let _ = writeln!(out, "{} usage: vfs-watch <path> [exact|tree]", prefix);
+                    return true;
+                }
+            };
+            match vfs::watch(path, recursive) {
+                Ok(id) => {
+                    let _ = writeln!(
+                        out,
+                        "{} vfs-watch ok id={} path={} scope={}",
+                        prefix,
+                        id,
+                        path,
+                        format_watch_scope(recursive)
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-watch failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-unwatch" => {
+            let Some(id) = parse_u64_auto(rest.trim()) else {
+                let _ = writeln!(out, "{} usage: vfs-unwatch <id>", prefix);
+                return true;
+            };
+            let removed = vfs::unwatch(id);
+            let _ = writeln!(
+                out,
+                "{} vfs-unwatch {}",
+                prefix,
+                if removed { "ok" } else { "miss" }
+            );
+        }
+        "vfs-watch-list" => {
+            let watches = vfs::watches();
+            if watches.is_empty() {
+                let _ = writeln!(out, "{} vfs-watch-list <none>", prefix);
+                return true;
+            }
+            let _ = writeln!(out, "{} vfs-watch-list count={}", prefix, watches.len());
+            for watch in watches {
+                let _ = writeln!(
+                    out,
+                    "{}   id={} path={} scope={}",
+                    prefix,
+                    watch.id,
+                    watch.path,
+                    format_watch_scope(watch.recursive)
+                );
+            }
+        }
+        "vfs-notify" => {
+            let count = parse_usize_auto(rest.trim().trim())
+                .unwrap_or(16)
+                .clamp(1, 128);
+            let events = vfs::notify(count);
+            if events.is_empty() {
+                let _ = writeln!(out, "{} vfs-notify <none>", prefix);
+                return true;
+            }
+            let _ = writeln!(out, "{} vfs-notify count={}", prefix, events.len());
+            for event in events {
+                let _ = writeln!(
+                    out,
+                    "{}   seq={} watch={} kind={} path={} detail={}",
+                    prefix,
+                    event.sequence,
+                    event.watch_id,
+                    format_watch_kind(event.kind),
+                    event.path,
+                    event.detail.unwrap_or_else(|| "-".to_string())
+                );
+            }
+        }
+        "vfs-ipc-sub" => {
+            let Some(channel_id) = parse_u32_auto(rest.trim()) else {
+                let _ = writeln!(out, "{} usage: vfs-ipc-sub <channel-id>", prefix);
+                return true;
+            };
+            match vfs::subscribe_notify_channel(crate::ipc::ChannelId::new(channel_id)) {
+                Ok(()) => {
+                    let _ = writeln!(out, "{} vfs-ipc-sub ok channel={}", prefix, channel_id);
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-ipc-sub failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-ipc-unsub" => {
+            let Some(channel_id) = parse_u32_auto(rest.trim()) else {
+                let _ = writeln!(out, "{} usage: vfs-ipc-unsub <channel-id>", prefix);
+                return true;
+            };
+            let removed = vfs::unsubscribe_notify_channel(crate::ipc::ChannelId::new(channel_id));
+            let _ = writeln!(
+                out,
+                "{} vfs-ipc-unsub {} channel={}",
+                prefix,
+                if removed { "ok" } else { "miss" },
+                channel_id
+            );
+        }
+        "vfs-ipc-list" => {
+            let channels = vfs::notify_channels();
+            if channels.is_empty() {
+                let _ = writeln!(out, "{} vfs-ipc-list <none>", prefix);
+                return true;
+            }
+            let _ = writeln!(out, "{} vfs-ipc-list count={}", prefix, channels.len());
+            for channel in channels {
+                let _ = writeln!(out, "{}   channel={}", prefix, channel.0);
+            }
+        }
+        "vfs-cap-dir-show" => {
+            let path = rest.trim();
+            if path.is_empty() {
+                let _ = writeln!(out, "{} usage: vfs-cap-dir-show <path>", prefix);
+                return true;
+            }
+            match vfs::directory_capability(path) {
+                Ok(Some(capability)) => {
+                    let _ = writeln!(
+                        out,
+                        "{} vfs-cap-dir-show {} => {}",
+                        prefix,
+                        path,
+                        format_capability(&capability)
+                    );
+                }
+                Ok(None) => {
+                    let _ = writeln!(out, "{} vfs-cap-dir-show {} => <none>", prefix, path);
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-cap-dir-show failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-cap-dir-set" => {
+            let args: Vec<&str> = rest.split_whitespace().collect();
+            if args.len() != 2 && args.len() != 5 {
+                let _ = writeln!(
+                    out,
+                    "{} usage: vfs-cap-dir-set <path> <rights> [quota_total quota_files quota_single]",
+                    prefix
+                );
+                return true;
+            }
+            let Some(capability) = build_capability(args[0], args[1], &args[2..], 0x5646_4400)
+            else {
+                let _ = writeln!(
+                    out,
+                    "{} vfs-cap-dir-set failed: invalid capability spec",
+                    prefix
+                );
+                return true;
+            };
+            match vfs::set_directory_capability(args[0], capability.clone()) {
+                Ok(()) => {
+                    let _ = writeln!(
+                        out,
+                        "{} vfs-cap-dir-set ok {} => {}",
+                        prefix,
+                        args[0],
+                        format_capability(&capability)
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-cap-dir-set failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-cap-dir-clear" => {
+            let path = rest.trim();
+            if path.is_empty() {
+                let _ = writeln!(out, "{} usage: vfs-cap-dir-clear <path>", prefix);
+                return true;
+            }
+            match vfs::clear_directory_capability(path) {
+                Ok(()) => {
+                    let _ = writeln!(out, "{} vfs-cap-dir-clear ok {}", prefix, path);
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-cap-dir-clear failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-cap-proc-show" => {
+            let Some(raw_pid) = parse_u64_auto(rest.trim()).and_then(|v| u32::try_from(v).ok())
+            else {
+                let _ = writeln!(out, "{} usage: vfs-cap-proc-show <pid>", prefix);
+                return true;
+            };
+            let pid = vfs_platform::pid_from_raw(raw_pid);
+            match vfs::process_capability(pid) {
+                Some(capability) => {
+                    let _ = writeln!(
+                        out,
+                        "{} vfs-cap-proc-show {} => {}",
+                        prefix,
+                        raw_pid,
+                        format_capability(&capability)
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "{} vfs-cap-proc-show {} => <none>", prefix, raw_pid);
+                }
+            }
+        }
+        "vfs-cap-proc-set" => {
+            let args: Vec<&str> = rest.split_whitespace().collect();
+            if args.len() != 2 && args.len() != 5 {
+                let _ = writeln!(
+                    out,
+                    "{} usage: vfs-cap-proc-set <pid> <rights> [quota_total quota_files quota_single]",
+                    prefix
+                );
+                return true;
+            }
+            let Some(raw_pid) = parse_u64_auto(args[0]).and_then(|v| u32::try_from(v).ok()) else {
+                let _ = writeln!(out, "{} vfs-cap-proc-set failed: invalid pid", prefix);
+                return true;
+            };
+            let Some(capability) = build_capability(args[0], args[1], &args[2..], 0x5646_5000)
+            else {
+                let _ = writeln!(
+                    out,
+                    "{} vfs-cap-proc-set failed: invalid capability spec",
+                    prefix
+                );
+                return true;
+            };
+            let pid = vfs_platform::pid_from_raw(raw_pid);
+            vfs::set_process_capability(pid, capability.clone());
+            let _ = writeln!(
+                out,
+                "{} vfs-cap-proc-set ok {} => {}",
+                prefix,
+                raw_pid,
+                format_capability(&capability)
+            );
+        }
+        "vfs-cap-proc-clear" => {
+            let Some(raw_pid) = parse_u64_auto(rest.trim()).and_then(|v| u32::try_from(v).ok())
+            else {
+                let _ = writeln!(out, "{} usage: vfs-cap-proc-clear <pid>", prefix);
+                return true;
+            };
+            vfs::clear_process_capability(vfs_platform::pid_from_raw(raw_pid));
+            let _ = writeln!(out, "{} vfs-cap-proc-clear ok {}", prefix, raw_pid);
+        }
+        "vfs-cap-effective" => {
+            let mut args = rest.split_whitespace();
+            let Some(path) = args.next() else {
+                let _ = writeln!(out, "{} usage: vfs-cap-effective <path> [pid]", prefix);
+                return true;
+            };
+            let pid = match args.next() {
+                Some(raw) => {
+                    let Some(raw_pid) = parse_u64_auto(raw).and_then(|v| u32::try_from(v).ok())
+                    else {
+                        let _ = writeln!(out, "{} vfs-cap-effective failed: invalid pid", prefix);
+                        return true;
+                    };
+                    Some(vfs_platform::pid_from_raw(raw_pid))
+                }
+                None => vfs_platform::current_pid(),
+            };
+            match vfs::effective_capability_for_pid(pid, path) {
+                Ok(capability) => {
+                    let _ = writeln!(
+                        out,
+                        "{} vfs-cap-effective {} => {}",
+                        prefix,
+                        path,
+                        format_capability(&capability)
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-cap-effective failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-mounts" => {
+            let mounts = vfs::mounts();
+            if mounts.is_empty() {
+                let _ = writeln!(out, "{} vfs-mounts <none>", prefix);
+                return true;
+            }
+            let _ = writeln!(out, "{} vfs-mounts count={}", prefix, mounts.len());
+            for mount in mounts {
+                let special = if mount.contract.special_entries.is_empty() {
+                    "-".to_string()
+                } else {
+                    mount.contract.special_entries.join(",")
+                };
+                let _ = writeln!(
+                    out,
+                    "{}   path={} backend={} mutable={} dirs={} links={} symlinks={} specials={} reads={} writes={} mutations={} errors={} last_error={}",
+                    prefix,
+                    mount.contract.path,
+                    mount.contract.backend,
+                    if mount.contract.mutable { 1 } else { 0 },
+                    if mount.contract.supports_directories { 1 } else { 0 },
+                    if mount.contract.supports_links { 1 } else { 0 },
+                    if mount.contract.supports_symlinks { 1 } else { 0 },
+                    special,
+                    mount.health.reads,
+                    mount.health.writes,
+                    mount.health.mutations,
+                    mount.health.errors,
+                    mount.health.last_error.unwrap_or_else(|| "-".to_string())
+                );
             }
         }
         "vfs-mount-virtio" => {

@@ -248,6 +248,7 @@ const SNAPSHOT_DISK_VERSION_V2: u16 = 2;
 const SNAPSHOT_DISK_HEADER_BYTES: usize = 64;
 const SNAPSHOT_DISK_SLOT_GENERIC: u16 = 1;
 const SNAPSHOT_DISK_SLOT_TEMPORAL: u16 = 2;
+const SNAPSHOT_DISK_SLOT_VFS: u16 = 3;
 const SNAPSHOT_DISK_SECTOR_BYTES: usize = 512;
 const SNAPSHOT_FILE_PATH_GENERIC: &str = "/.oreulia_snapshot_generic";
 const SNAPSHOT_FILE_PATH_TEMPORAL: &str = "/.oreulia_snapshot_temporal";
@@ -430,14 +431,15 @@ fn snapshot_slot_sectors() -> u64 {
 fn snapshot_slot_base_lba(slot_id: u16) -> Option<u64> {
     let capacity = crate::virtio_blk::capacity_sectors()?;
     let slot_sectors = snapshot_slot_sectors();
-    let total_reserved = slot_sectors.saturating_mul(2).saturating_add(1);
+    let total_reserved = slot_sectors.saturating_mul(3).saturating_add(1);
     if capacity <= total_reserved {
         return None;
     }
-    let base = capacity.saturating_sub(slot_sectors.saturating_mul(2));
+    let base = capacity.saturating_sub(slot_sectors.saturating_mul(3));
     match slot_id {
         SNAPSHOT_DISK_SLOT_GENERIC => Some(base),
         SNAPSHOT_DISK_SLOT_TEMPORAL => Some(base.saturating_add(slot_sectors)),
+        SNAPSHOT_DISK_SLOT_VFS => Some(base.saturating_add(slot_sectors.saturating_mul(2))),
         _ => None,
     }
 }
@@ -625,6 +627,8 @@ pub struct PersistenceService {
     snapshot: Snapshot,
     /// Dedicated temporal-object snapshot state
     temporal_snapshot: Snapshot,
+    /// Dedicated VFS snapshot state
+    vfs_snapshot: Snapshot,
     /// True once we have attempted snapshot recovery from all durable backends.
     durable_recovery_attempted: bool,
 }
@@ -636,6 +640,7 @@ impl PersistenceService {
             log: AppendLog::new(),
             snapshot: Snapshot::new(),
             temporal_snapshot: Snapshot::new(),
+            vfs_snapshot: Snapshot::new(),
             durable_recovery_attempted: false,
         }
     }
@@ -722,6 +727,31 @@ impl PersistenceService {
         Ok(self.temporal_snapshot.read())
     }
 
+    /// Write VFS snapshot bytes to durable storage.
+    pub fn write_vfs_snapshot(
+        &mut self,
+        capability: &StoreCapability,
+        data: &[u8],
+        last_offset: usize,
+    ) -> Result<(), PersistenceError> {
+        if !capability.rights.has(StoreRights::WRITE_SNAPSHOT) {
+            return Err(PersistenceError::PermissionDenied);
+        }
+        self.vfs_snapshot.write(data, last_offset)?;
+        Self::write_snapshot_to_preferred_durable(SNAPSHOT_DISK_SLOT_VFS, &self.vfs_snapshot)
+    }
+
+    /// Read VFS snapshot bytes from the last recovered durable state.
+    pub fn read_vfs_snapshot(
+        &self,
+        capability: &StoreCapability,
+    ) -> Result<(&[u8], usize), PersistenceError> {
+        if !capability.rights.has(StoreRights::READ_SNAPSHOT) {
+            return Err(PersistenceError::PermissionDenied);
+        }
+        Ok(self.vfs_snapshot.read())
+    }
+
     /// Get log statistics
     pub fn log_stats(&self) -> (usize, usize) {
         (self.log.count(), MAX_LOG_RECORDS)
@@ -749,6 +779,23 @@ impl PersistenceService {
         }
     }
 
+    fn write_snapshot_to_preferred_durable(
+        slot_id: u16,
+        snapshot: &Snapshot,
+    ) -> Result<(), PersistenceError> {
+        match Self::write_snapshot_to_disk(slot_id, snapshot) {
+            Ok(()) => Ok(()),
+            Err(PersistenceError::BackendUnavailable) => {
+                Self::write_snapshot_to_external(slot_id, snapshot)
+            }
+            Err(primary_err) => match Self::write_snapshot_to_external(slot_id, snapshot) {
+                Ok(()) => Ok(()),
+                Err(PersistenceError::BackendUnavailable) => Err(primary_err),
+                Err(_) => Err(primary_err),
+            },
+        }
+    }
+
     fn read_snapshot_from_durable(
         slot_id: u16,
         out: &mut Snapshot,
@@ -767,6 +814,23 @@ impl PersistenceService {
             Err(primary_err) => match Self::read_snapshot_from_file(slot_id, out) {
                 Ok(true) => Ok(true),
                 Ok(false) => Err(primary_err),
+                Err(_) => Err(primary_err),
+            },
+        }
+    }
+
+    fn read_snapshot_from_preferred_durable(
+        slot_id: u16,
+        out: &mut Snapshot,
+    ) -> Result<bool, PersistenceError> {
+        match Self::read_snapshot_from_disk(slot_id, out) {
+            Ok(true) => Ok(true),
+            Ok(false) | Err(PersistenceError::BackendUnavailable) => {
+                Self::read_snapshot_from_external(slot_id, out)
+            }
+            Err(primary_err) => match Self::read_snapshot_from_external(slot_id, out) {
+                Ok(found) => Ok(found),
+                Err(PersistenceError::BackendUnavailable) => Err(primary_err),
                 Err(_) => Err(primary_err),
             },
         }
@@ -1220,7 +1284,9 @@ impl PersistenceService {
     }
 
     fn recover_snapshots_from_durable(&mut self) {
-        if self.durable_recovery_attempted {
+        let durable_backend_available =
+            crate::virtio_blk::is_present() || EXTERNAL_SNAPSHOT_BACKEND.lock().is_some();
+        if self.durable_recovery_attempted || !durable_backend_available {
             return;
         }
         if self.snapshot.data_len == 0 {
@@ -1231,6 +1297,12 @@ impl PersistenceService {
             let _ = Self::read_snapshot_from_durable(
                 SNAPSHOT_DISK_SLOT_TEMPORAL,
                 &mut self.temporal_snapshot,
+            );
+        }
+        if self.vfs_snapshot.data_len == 0 {
+            let _ = Self::read_snapshot_from_preferred_durable(
+                SNAPSHOT_DISK_SLOT_VFS,
+                &mut self.vfs_snapshot,
             );
         }
         self.durable_recovery_attempted = true;

@@ -66,3 +66,71 @@ Proof.
   apply attenuate_rights_axiom.
 Qed.
 
+(* ======================================================================== *)
+(** * Extended Proofs (PMA §4 — THM-TMP-002 .. THM-TMP-005)
+ *
+ * These lemmas extend the original four with:
+ *   1. Revocation propagates through attenuation chains.
+ *   2. Temporal window functor preserves validity ordering.
+ *   3. Double attenuation is monotone (rights only decrease).
+ *   4. Temporal merge timestamp is monotone in the second argument.
+ *
+ * Traceability: PMA-TMP-002 .. PMA-TMP-005
+ *)
+(* ======================================================================== *)
+
+(** ** Revocation propagation axiom
+    An attenuated capability shares the revocation state of its parent.
+    This axiom is stated separately so it can be swapped for a proof
+    once the full capability model is formalised. *)
+Axiom attenuate_revocation_propagates :
+  forall (c : Capability), Revoked c -> Revoked (Attenuate c).
+
+(** THM-TMP-002: A valid attenuated capability cannot exist once its
+    parent is revoked.
+    Proof: Attenuate(c) is Revoked (by [attenuate_revocation_propagates]),
+    and revoke_axiom prevents Valid ∧ Revoked. *)
+Lemma temporal_attenuated_revocation_safe :
+  forall (c : Capability),
+    Revoked c ->
+    ~ Valid (Attenuate c).
+Proof.
+  intros c Hrev Hvalid_att.
+  apply attenuate_revocation_propagates in Hrev.
+  exact (revoke_axiom (Attenuate c) Hvalid_att Hrev).
+Qed.
+
+(** THM-TMP-003: Double attenuation cannot exceed the original rights.
+    Attenuation is idempotent in the sense that applying it twice only
+    further reduces (or maintains) the rights count. *)
+Lemma double_attenuation_monotone :
+  forall (c : Capability),
+    Rights (Attenuate (Attenuate c)) <= Rights c.
+Proof.
+  intros c.
+  apply Nat.le_trans with (m := Rights (Attenuate c)).
+  - apply attenuate_rights_axiom.
+  - apply attenuate_rights_axiom.
+Qed.
+
+(** THM-TMP-004: fmap over TemporalWindow preserves the timestamp. *)
+Lemma fmap_preserves_timestamp :
+  forall (A B : Type) (f : A -> B) (w : TemporalWindow A),
+    timestamp B (fmap f w) = timestamp A w.
+Proof.
+  intros A B f w.
+  unfold fmap. reflexivity.
+Qed.
+
+(** THM-TMP-005: Temporal Merge timestamp is non-decreasing when w2's
+    timestamp is at least w1's timestamp.
+    This captures the "later snapshot wins" semantics of rollback merges. *)
+Lemma temporal_merge_timestamp_monotone :
+  forall (A : Type) (w1 w2 : TemporalWindow A) (f : A -> A -> A),
+    timestamp A w1 <= timestamp A w2 ->
+    timestamp A w1 <= timestamp A (Merge w1 w2 f).
+Proof.
+  intros A w1 w2 f H.
+  rewrite temporal_merge_preserves_bounds.
+  exact H.
+Qed.

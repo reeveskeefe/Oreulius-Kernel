@@ -29,6 +29,30 @@ pub fn current_pid() -> Option<Pid> {
 
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
+pub const fn pid_from_raw(raw: u32) -> Pid {
+    crate::ipc::ProcessId(raw)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub const fn pid_from_raw(raw: u32) -> Pid {
+    raw
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+pub const fn pid_to_raw(pid: Pid) -> u32 {
+    pid.0
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub const fn pid_to_raw(pid: Pid) -> u32 {
+    pid
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
 pub fn alloc_fd(pid: Pid, handle_id: u64) -> Result<usize, &'static str> {
     crate::process::process_manager()
         .alloc_fd(pid, handle_id)
@@ -134,10 +158,14 @@ fn bridge_set_current_pid_shared(pid: Pid) -> Result<(), &'static str> {
 
 #[cfg(target_arch = "aarch64")]
 fn bridge_spawn_process_shared(parent_pid: Option<Pid>) -> Result<Pid, &'static str> {
-    crate::process::process_manager()
+    let spawned = crate::process::process_manager()
         .spawn("a64-task", parent_pid.map(vfs_pid_to_shared))
         .map(shared_pid_to_vfs)
-        .map_err(|e| e.as_str())
+        .map_err(|e| e.as_str())?;
+    if let Some(parent_pid) = parent_pid {
+        let _ = crate::vfs::inherit_process_capability(parent_pid, spawned, None);
+    }
+    Ok(spawned)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -146,6 +174,7 @@ fn bridge_destroy_process_shared(pid: Pid) -> Result<(), &'static str> {
     crate::process::process_manager()
         .terminate(shared_pid)
         .map_err(|e| e.as_str())?;
+    crate::vfs::clear_process_capability(pid);
     if crate::process::current_pid() == Some(shared_pid) {
         let _ = crate::process::set_current_runtime_pid(crate::process::Pid::new(AARCH64_BOOT_PID));
     }

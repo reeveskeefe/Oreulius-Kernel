@@ -2,8 +2,28 @@ use std::io::Read;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-const TENSOR_DIM: usize = 128;
+// Magic sync bytes — must match `DRAIN_MAGIC` in `kernel/src/wait_free_ring.rs`.
 const MAGIC_SYNC: [u8; 4] = [0xEF, 0xBE, 0xAD, 0xDE];
+
+/// Mirrors `kernel/src/wait_free_ring.rs::TelemetryEvent` exactly.
+///
+/// Layout (16 bytes, little-endian):
+///   [0..4]  pid      : u32
+///   [4]     node     : u8   (IntentNode discriminant 0-8)
+///   [5]     cap_type : u8
+///   [6]     score    : u8   (0-255)
+///   [7]     _pad     : u8   (reserved)
+///   [8..16] tick     : u64
+#[derive(Debug, Clone, Copy)]
+pub struct TelemetryEvent {
+    pub pid: u32,
+    pub node: u8,
+    pub cap_type: u8,
+    pub score: u8,
+    pub tick: u64,
+}
+
+const EVENT_SIZE: usize = 16; // sizeof(TelemetryEvent) on the wire
 
 pub struct UdsTelemetryQueue {
     stream: Option<UnixStream>,
@@ -22,8 +42,9 @@ impl UdsTelemetryQueue {
     fn try_connect(&mut self) -> bool {
         if self.stream.is_none() {
             if let Ok(stream) = UnixStream::connect(self.socket_path) {
-                // Ensure we don't block indefinitely 
-                stream.set_read_timeout(Some(Duration::from_millis(10))).ok();
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(10)))
+                    .ok();
                 self.stream = Some(stream);
                 println!("Connected to QEMU Telemetry Stream!");
                 return true;
@@ -33,59 +54,64 @@ impl UdsTelemetryQueue {
         true
     }
 
-    /// Fetches the raw tensor scalar struct from the queue, returning None if empty.
-    pub fn poll_tensor<const DIM: usize>(&mut self) -> Option<[i32; DIM]> {
+    /// Scan the byte stream for the next magic-framed `TelemetryEvent`.
+    ///
+    /// The kernel always emits exactly:
+    ///   4 magic bytes  +  16 payload bytes = 20 bytes per event.
+    ///
+    /// Returns `None` if no complete frame is available right now (timeout /
+    /// not connected / stream closed).
+    pub fn poll_event(&mut self) -> Option<TelemetryEvent> {
         if !self.try_connect() {
             return None;
         }
 
-        assert_eq!(DIM, TENSOR_DIM);
+        let stream = self.stream.as_mut()?;
 
-        if let Some(stream) = &mut self.stream {
-            let mut sync_buf = [0u8; 1];
-            let mut matched_bytes = 0;
-            
-            // Fast sync to magic bytes (EF BE AD DE)
-            while matched_bytes < 4 {
-                if let Ok(1) = stream.read(&mut sync_buf) {
-                    if sync_buf[0] == MAGIC_SYNC[matched_bytes] {
-                        matched_bytes += 1;
+        // ---- Resync on magic header -----------------------------------------
+        let mut matched = 0usize;
+        let mut buf1 = [0u8; 1];
+        while matched < 4 {
+            match stream.read(&mut buf1) {
+                Ok(1) => {
+                    if buf1[0] == MAGIC_SYNC[matched] {
+                        matched += 1;
                     } else {
-                        matched_bytes = 0;
-                        if sync_buf[0] == MAGIC_SYNC[0] {
-                            matched_bytes = 1;
-                        }
+                        matched = if buf1[0] == MAGIC_SYNC[0] { 1 } else { 0 };
                     }
-                } else {
-                    return None; // No data available right now
                 }
+                _ => return None, // timeout or EOF
             }
-
-            // Sync matched, read exactly DIM * 4 bytes
-            let mut tensor_bytes = vec![0u8; DIM * 4];
-            let mut read_bytes = 0;
-            while read_bytes < DIM * 4 {
-                if let Ok(n) = stream.read(&mut tensor_bytes[read_bytes..]) {
-                    if n == 0 {
-                        self.stream = None; // Socket closed
-                        return None;
-                    }
-                    read_bytes += n;
-                } else {
-                    // Timeout/error during read, partial frame. Drop.
-                    return None;
-                }
-            }
-
-            let mut result = [0i32; DIM];
-            for i in 0..DIM {
-                let start = i * 4;
-                result[i] = i32::from_le_bytes(tensor_bytes[start..start + 4].try_into().unwrap());
-            }
-
-            return Some(result);
         }
 
-        None
+        // ---- Read exactly 16 payload bytes ------------------------------------
+        let mut raw = [0u8; EVENT_SIZE];
+        let mut read = 0;
+        while read < EVENT_SIZE {
+            match stream.read(&mut raw[read..]) {
+                Ok(0) => {
+                    self.stream = None; // EOF — socket closed by QEMU
+                    return None;
+                }
+                Ok(n) => read += n,
+                Err(_) => return None, // timeout mid-frame — drop partial
+            }
+        }
+
+        // ---- Deserialise ------------------------------------------------------
+        let pid = u32::from_le_bytes(raw[0..4].try_into().unwrap());
+        let node = raw[4];
+        let cap_type = raw[5];
+        let score = raw[6];
+        // raw[7] is _pad — ignored
+        let tick = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+
+        Some(TelemetryEvent {
+            pid,
+            node,
+            cap_type,
+            score,
+            tick,
+        })
     }
 }

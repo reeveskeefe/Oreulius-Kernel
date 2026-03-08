@@ -46,6 +46,7 @@ use crate::vga;
 const ENOSYS: u32 = 38; // Function not implemented
 const EINVAL: u32 = 22; // Invalid argument
 const EACCES: u32 = 13; // Permission denied
+const EPERM:  u32 =  1; // Operation not permitted (caller not privileged)
 const EFAULT: u32 = 14; // Bad address
 const ENOMEM: u32 = 12; // Out of memory
 const EIO: u32 = 5; // I/O error
@@ -94,6 +95,10 @@ pub enum SyscallNumber {
     CapabilityGrant = 40,
     CapabilityRevoke = 41,
     CapabilityQuery = 42,
+    /// Privileged cross-PID capability revocation issued by the Math Daemon (PMA §6.2).
+    /// Only callable by the process whose PID equals `MATH_DAEMON_PID`.
+    /// arg1 = target_pid (u32), arg2 = cap_id (u32; 0 = revoke all).
+    CapabilityRevokeForPid = 43,
 
     // Console
     ConsoleWrite = 50,
@@ -139,6 +144,7 @@ impl From<u32> for SyscallNumber {
             40 => SyscallNumber::CapabilityGrant,
             41 => SyscallNumber::CapabilityRevoke,
             42 => SyscallNumber::CapabilityQuery,
+            43 => SyscallNumber::CapabilityRevokeForPid,
             50 => SyscallNumber::ConsoleWrite,
             51 => SyscallNumber::ConsoleRead,
             60 => SyscallNumber::WasmLoad,
@@ -270,6 +276,7 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
         SyscallNumber::CapabilityGrant => sys_cap_grant(args, caller_pid),
         SyscallNumber::CapabilityRevoke => sys_cap_revoke(args, caller_pid),
         SyscallNumber::CapabilityQuery => sys_cap_query(args, caller_pid),
+        SyscallNumber::CapabilityRevokeForPid => sys_cap_revoke_for_pid(args, caller_pid),
 
         SyscallNumber::ConsoleWrite => sys_console_write(args, caller_pid),
         SyscallNumber::ConsoleRead => sys_console_read(args, caller_pid),
@@ -1082,6 +1089,42 @@ fn sys_cap_revoke(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysca
     match capability::capability_manager().revoke_capability(caller_pid, cap_id) {
         Ok(_) => SyscallResult::ok(0),
         Err(_) => SyscallResult::err(EINVAL),
+    }
+}
+
+/// PID assigned to the privileged Math Daemon at boot.
+/// The kernel grants cross-PID revocation authority only to this PID.
+const MATH_DAEMON_PID: u32 = 2;
+
+/// Privileged cross-PID capability revocation — PMA §6.2.
+///
+/// Allows the Math Daemon to revoke capabilities from a rogue process after
+/// detecting a CTMC anomaly.  Gated behind a static PID check: only the
+/// process with PID == `MATH_DAEMON_PID` may invoke this syscall.
+///
+/// * `arg1` — target_pid: PID of the process whose capability should be revoked.
+/// * `arg2` — cap_id: specific capability ID to revoke (0 = revoke all).
+fn sys_cap_revoke_for_pid(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+    // Security gate: only the Math Daemon may use this syscall.
+    if caller_pid.0 != MATH_DAEMON_PID {
+        return SyscallResult::err(EPERM);
+    }
+
+    let target_pid = capability::ProcessId(args.arg1);
+    let cap_id     = args.arg2;
+
+    if cap_id == 0 {
+        // Revoke every capability held by target_pid.
+        match capability::capability_manager().revoke_all_capabilities(target_pid) {
+            Ok(_)  => SyscallResult::ok(0),
+            Err(_) => SyscallResult::err(EINVAL),
+        }
+    } else {
+        // Revoke a single specific capability.
+        match capability::capability_manager().revoke_capability(target_pid, cap_id) {
+            Ok(_)  => SyscallResult::ok(0),
+            Err(_) => SyscallResult::err(EINVAL),
+        }
     }
 }
 

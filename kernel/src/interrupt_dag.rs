@@ -7,6 +7,21 @@ use core::marker::PhantomData;
 pub const DAG_LEVEL_SCHEDULER: u8 = 10;
 /// DAG level for VFS — all VFS locks at this priority.
 pub const DAG_LEVEL_VFS: u8 = 5;
+/// DAG level for a normal kernel thread / syscall context.
+///
+/// Sits between VFS (5) and the scheduler (10), so a thread-context holder can
+/// acquire VFS locks but cannot acquire scheduler locks directly (those must be
+/// reached from IRQ level or a higher-priority context).
+pub const DAG_LEVEL_THREAD: u8 = 8;
+
+/// DAG level for syscall/thread context that needs to acquire scheduler locks.
+///
+/// `DAG_LEVEL_SYSCALL = 15 > DAG_LEVEL_SCHEDULER = 10`, so a syscall context
+/// holder can call `acquire_lock(&SCHEDULER, …)` without triggering the DAG
+/// deadlock assertion.  It is also less than `DAG_LEVEL_IRQ = 20`, so IRQ
+/// handlers retain full priority over syscall paths.
+pub const DAG_LEVEL_SYSCALL: u8 = 15;
+
 /// DAG level for top-level hardware IRQ dispatch context.
 ///
 /// Must be strictly greater than all subsystem lock levels (scheduler=10, vfs=5)
