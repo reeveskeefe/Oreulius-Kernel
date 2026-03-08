@@ -155,7 +155,7 @@ pub fn execute(input: &str) {
             vga::print_str("  svcptr-demo-crosspid - Cross-PID transfer/invoke proof demo\n");
             vga::print_str("  svcptr-typed-demo - Mixed-type typed invoke host-path demo\n");
             vga::print_str("  wasm-jit-bench - Benchmark WASM JIT vs interpreter\n");
-            vga::print_str("  wasm-jit-selftest - Run WASM JIT bounds self-test\n");
+            vga::print_str("  wasm-jit-selftest - Run WASM JIT self-test suite\n");
             vga::print_str("  wasm-jit-fuzz  - Coverage-guided JIT fuzz (wasm-jit-fuzz <iters> [seed])\n");
             vga::print_str("  wasm-jit-fuzz-corpus - Run external regression seed corpus (wasm-jit-fuzz-corpus <iters>)\n");
             vga::print_str("  wasm-jit-fuzz-soak - Repeat corpus replay (wasm-jit-fuzz-soak <iters> <rounds>)\n");
@@ -6294,13 +6294,22 @@ fn cmd_wasm_jit_bench() {
 
 fn cmd_wasm_jit_selftest() {
     vga::print_str("\n");
-    vga::print_str("===== WASM JIT Bounds Self-Test =====\n\n");
-    match crate::wasm::jit_bounds_self_test() {
-        Ok(()) => {
-            vga::print_str("Self-test passed (interpreter + JIT trapped as expected)\n");
+    vga::print_str("===== WASM JIT Self-Test Suite =====\n\n");
+    let bounds = crate::wasm::jit_bounds_self_test();
+    let parity = crate::wasm::jit_compare_shift_fixed_vector_self_test();
+    match (bounds, parity) {
+        (Ok(()), Ok(())) => {
+            vga::print_str(
+                "Self-test passed (bounds traps + fixed-vector interpreter/JIT parity)\n",
+            );
         }
-        Err(e) => {
-            vga::print_str("Self-test failed: ");
+        (Err(e), _) => {
+            vga::print_str("Self-test failed (bounds): ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+        (_, Err(e)) => {
+            vga::print_str("Self-test failed (fixed-vectors): ");
             vga::print_str(e);
             vga::print_str("\n");
         }
@@ -6679,7 +6688,7 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
     vga::print_str("\n\n");
 
     #[cfg(target_arch = "x86_64")]
-    const X64_FUZZ_CHUNK_ITERS: u32 = if cfg!(feature = "jit-fuzz-24bin") { 256 } else { 64 };
+    const X64_FUZZ_CHUNK_ITERS: u32 = 2048;
     #[cfg(not(target_arch = "x86_64"))]
     const X64_FUZZ_CHUNK_ITERS: u32 = u32::MAX;
 
@@ -10215,7 +10224,7 @@ fn cmd_sched_stats() {
     
     vga::print_str("\n===== Scheduler Statistics =====\n\n");
     
-    let sched = scheduler::scheduler().lock();
+    let sched = scheduler::scheduler().lock_legacy();
     let stats = sched.get_stats();
     
     vga::print_str("Processes:\n  Total:    ");

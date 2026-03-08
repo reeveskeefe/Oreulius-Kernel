@@ -39,6 +39,8 @@
 
 #![allow(dead_code)]
 
+use crate::tensor_core::{ScalarTensor, SimdTensor};
+
 /// Number of model input features.
 pub const INTENT_MODEL_FEATURES: usize = 10;
 
@@ -203,14 +205,13 @@ fn eval_model(features: &[u32; INTENT_MODEL_FEATURES]) -> Result<i32, VmError> {
 /// Returns a bounded score in range [0, 255].
 pub fn infer_score(features: &[u32; INTENT_MODEL_FEATURES]) -> u32 {
     let raw = eval_model(features).unwrap_or_else(|_| {
-        let weights = [1u32, 6, 8, 2, 3, 5, 3, 4, 2, 5];
-        let mut acc = 0u32;
-        let mut i = 0usize;
-        while i < INTENT_MODEL_FEATURES {
-            acc = acc.saturating_add(features[i].saturating_mul(weights[i]));
-            i += 1;
-        }
-        acc as i32
+        let mut f_data = [0i32; 10];
+        for i in 0..10 { f_data[i] = features[i] as i32; }
+        
+        let feature_tensor = ScalarTensor::<i32, 10> { data: f_data };
+        let weight_tensor = ScalarTensor::<i32, 10> { data: [1, 6, 8, 2, 3, 5, 3, 4, 2, 5] };
+        
+        feature_tensor.dot_product(&weight_tensor)
     });
 
     if raw <= MODEL_CENTER {

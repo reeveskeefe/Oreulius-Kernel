@@ -244,6 +244,20 @@ tss_set_kernel_stack:
     mov dword [rdi + 8], 0
     ret
 
+; x87/SSE FPU context save/restore used by scheduler FPU trap handling.
+; Signature parity with legacy asm process backend:
+;   void save_fpu_state(void* buffer)
+;   void restore_fpu_state(const void* buffer)
+global save_fpu_state
+save_fpu_state:
+    fxsave64 [rdi]
+    ret
+
+global restore_fpu_state
+restore_fpu_state:
+    fxrstor64 [rdi]
+    ret
+
 ; Execute a JIT user-call descriptor (x86_64 SysV ABI) from a 32-bit-addressed
 ; call page used by the current x86-style JIT metadata layout.
 ; Signature: i32 x64_jit_callpage_exec(u32 call_ptr)

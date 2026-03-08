@@ -10,10 +10,11 @@ if [[ "${X64_JIT_FUZZ_24BIN:-0}" == "1" ]]; then
   export X64_EXPECT_EDGE_TOTAL="${X64_EXPECT_EDGE_TOTAL:-576}"
   export X64_EXPECT_EDGE_ADM_TOTAL="${X64_EXPECT_EDGE_ADM_TOTAL:-576}"
   # Coverage gate defaults for 24-bin mode.
-  # Tune upward as backend parity improves.
+  # x86_64 shared wasm-jit-fuzz now runs unchunked at 1000 iterations by default
+  # and is expected to hit full pairwise edge coverage.
   export X64_EXPECT_MIN_BINS="${X64_EXPECT_MIN_BINS:-24}"
-  export X64_EXPECT_MIN_EDGES_FULL="${X64_EXPECT_MIN_EDGES_FULL:-240}"
-  export X64_EXPECT_MIN_EDGES_ADM="${X64_EXPECT_MIN_EDGES_ADM:-240}"
+  export X64_EXPECT_MIN_EDGES_FULL="${X64_EXPECT_MIN_EDGES_FULL:-576}"
+  export X64_EXPECT_MIN_EDGES_ADM="${X64_EXPECT_MIN_EDGES_ADM:-576}"
   # jitfuzzreg full is a small cross-seed smoke run by default; keep a light gate
   # and enforce high edge floors on the dedicated wasm-jit-fuzz command above.
   export X64_EXPECT_MIN_JITFUZZREG_EDGES_FULL="${X64_EXPECT_MIN_JITFUZZREG_EDGES_FULL:-1}"

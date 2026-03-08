@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+libc = "0.2.182"
 nalgebra = "0.32"
 # Using a fixed-point or standard math library suited for userspace.
 # In userspace, we have the luxury of using std and float logic safely.

@@ -1298,6 +1298,10 @@ fn verify_delegation_chain(token: &CapabilityTokenV1, now_epoch: u64) -> Result<
     let mut i = 0usize;
     while i < records.len() {
         let rec = records[i];
+        // Section 8 Algebraic Anti-loop: Duplicate tokens mapped sequentially mathematically block permission loops
+        if rec.active && rec.token_id == token.token_id() && rec.issuer_device_id == token.issuer_device_id {
+            return Err(CapNetError::DelegationConstraintViolation);
+        }
         if rec.active
             && rec.token_id == token.parent_token_hash
             && rec.issuer_device_id == token.issuer_device_id

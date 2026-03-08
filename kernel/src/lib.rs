@@ -83,6 +83,8 @@ pub mod formal;
 pub mod hardened_allocator;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod idt_asm;
+pub mod interrupt_dag;
+pub mod exact_rational;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod ipc;
 #[cfg(not(target_arch = "aarch64"))]

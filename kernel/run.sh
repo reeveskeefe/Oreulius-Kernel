@@ -39,15 +39,21 @@ if [ -n "$QEMU_EXTRA_ARGS" ]; then
         qemu-system-i386 \
             -cdrom "$ISO_PATH" \
             -serial stdio \
+            -chardev socket,path=/tmp/oreulia_ebpf_telemetry,server=on,wait=off,id=telemetry_socket \
+            -serial chardev:telemetry_socket \
             $QEMU_EXTRA_ARGS
     else
         # shellcheck disable=SC2086
         qemu-system-i386 \
             -cdrom "$ISO_PATH" \
+            -chardev socket,path=/tmp/oreulia_ebpf_telemetry,server=on,wait=off,id=telemetry_socket \
+            -serial chardev:telemetry_socket \
             $QEMU_EXTRA_ARGS
     fi
 else
     qemu-system-i386 \
         -cdrom "$ISO_PATH" \
-        -serial stdio
+        -serial stdio \
+        -chardev socket,path=/tmp/oreulia_ebpf_telemetry,server=on,wait=off,id=telemetry_socket \
+        -serial chardev:telemetry_socket
 fi

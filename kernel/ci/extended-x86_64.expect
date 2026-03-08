@@ -48,6 +48,14 @@ set expect_min_reg_edges_adm 0
 if {[info exists env(X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM)]} {
     set expect_min_reg_edges_adm $env(X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM)
 }
+set expect_min_fixed_vectors 31
+if {[info exists env(X64_EXPECT_MIN_FIXED_VECTORS)]} {
+    set expect_min_fixed_vectors $env(X64_EXPECT_MIN_FIXED_VECTORS)
+}
+set expect_min_structured_vectors 12
+if {[info exists env(X64_EXPECT_MIN_STRUCTURED_VECTORS)]} {
+    set expect_min_structured_vectors $env(X64_EXPECT_MIN_STRUCTURED_VECTORS)
+}
 
 proc expect_x64_prompt {} {
     expect {
@@ -219,6 +227,43 @@ proc run_x64_jitfuzzreg_with_gate {cmd timeout_s} {
     }
 }
 
+proc run_x64_wasm_jit_selftest_with_gate {} {
+    global timeout
+    global expect_min_fixed_vectors
+    global expect_min_structured_vectors
+    set saved_timeout $timeout
+    set timeout 240
+    set seen_summary 0
+    set seen_pass 0
+    set vectors_total -1
+    set vectors_structured -1
+
+    send -- "wasm-jit-selftest\r"
+    expect {
+        -re {\[WASM-JIT\] fixed-vectors total=([0-9]+) structured-control-flow=([0-9]+)} {
+            set seen_summary 1
+            set vectors_total $expect_out(1,string)
+            set vectors_structured $expect_out(2,string)
+            exp_continue
+        }
+        -re {Self-test passed \(bounds traps \+ fixed-vector interpreter/JIT parity\)} {
+            set seen_pass 1
+            exp_continue
+        }
+        -re {x64> } {
+            if {!$seen_summary || !$seen_pass || $vectors_total < $expect_min_fixed_vectors || $vectors_structured < $expect_min_structured_vectors} {
+                puts "x86_64 wasm-jit-selftest assertion failed: summary=$seen_summary pass=$seen_pass total=$vectors_total structured=$vectors_structured min_total=$expect_min_fixed_vectors min_structured=$expect_min_structured_vectors"
+                exit 1
+            }
+        }
+        timeout {
+            puts "timeout waiting for x86_64 wasm-jit-selftest"
+            exit 1
+        }
+    }
+    set timeout $saved_timeout
+}
+
 set env(QEMU_EXTRA_ARGS) "-nographic -monitor none -display none -no-reboot -no-shutdown -m 512M"
 spawn ./run-x86_64-mb2-grub.sh
 
@@ -241,6 +286,7 @@ run_x64_cmd "cowtest" {\[X64\] cowtest ok} "cowtest"
 run_x64_cmd "vmtest" {\[X64\] vmtest ok} "vmtest"
 run_x64_cmd "jitpre" {\[X64\] jitpre ok} "jitpre"
 run_x64_cmd "jitbench" {\[X64\] jitbench ok: wasm-jit-bounds-selftest} "jitbench"
+run_x64_wasm_jit_selftest_with_gate
 run_x64_cmd "jitfuzz" {\[X64\] jitfuzz ok: iters=[0-9]+ ok=[0-9]+ traps=[0-9]+} "jitfuzz"
 run_x64_jit_fuzz_stable "wasm-jit-fuzz 1000 0" $jitfuzz_timeout
 # Run the same long fuzz command a second time to catch reboot/PF-storm style
@@ -251,8 +297,10 @@ run_x64_jitfuzzreg_with_gate "jitfuzzreg full" $jitfuzzreg_timeout
 send -- "jitcall\r"
 expect {
     -re {\[X64\] jitcall ok: [^\r\n]+} {}
-    -re {\[X64\] jitcall failed: x86_64 JIT user entry/trampoline path not yet ported[^\r\n]*} {}
-    -re {\[X64\] jitcall failed: WASM memory not mapped[^\r\n]*} {}
+    -re {\[X64\] jitcall failed: [^\r\n]+} {
+        puts "x86_64 jitcall assertion failed: expected success"
+        exit 1
+    }
     timeout { puts "timeout waiting for x86_64 jitcall"; exit 1 }
 }
 expect_x64_prompt

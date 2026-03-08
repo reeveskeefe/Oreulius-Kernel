@@ -402,8 +402,7 @@ pub fn spawn_elf_process(name: &str, bytes: &[u8]) -> Result<(), &'static str> {
         .map_err(|_| "Failed to create process")?;
     let mut proc = process::process_manager().get(pid).ok_or("Process not found")?;
     proc.priority = ProcessPriority::Normal;
-    quantum_scheduler::scheduler()
-        .lock()
+    quantum_scheduler::scheduler().lock()
         .add_user_process(proc, Box::new(loaded.space), loaded.entry, loaded.user_stack)?;
     Ok(())
 }

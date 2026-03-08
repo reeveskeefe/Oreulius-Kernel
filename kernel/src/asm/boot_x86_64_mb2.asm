@@ -186,5 +186,8 @@ boot_info_saved:
 
 alignb 16
 stack_bottom:
-    resb 131072
+    ; 4 MiB early-kernel stack. x86_64 bring-up currently hits very deep Rust
+    ; call chains (WASM/JIT/selftest/fuzz paths) before shared scheduler stacks
+    ; are online.
+    resb 4194304
 stack_top:

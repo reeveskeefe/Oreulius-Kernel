@@ -40,6 +40,7 @@
 use crate::capability::{CapabilityType, Rights};
 use crate::intent_wasm::{self, INTENT_MODEL_FEATURES};
 use crate::ipc::ProcessId;
+use crate::tensor_core::{SimdTensor, ScalarTensor};
 
 const MAX_INTENT_PROCESSES: usize = 64;
 const INTENT_NODE_COUNT: usize = 9;
@@ -68,6 +69,30 @@ pub const INTENT_SEVERITY_STEP_SCORE: u16 = 16;
 pub const INTENT_ALERT_COOLDOWN_MS: u16 = 1000;
 /// Minimum restrict emission gap (milliseconds).
 pub const INTENT_RESTRICT_COOLDOWN_MS: u16 = 500;
+
+/// A mathematically bounded strict representation of capability access thresholds.
+/// Converts sequential discrete capability comparisons into constant SIMD vector dot products.
+#[derive(Clone, Copy)]
+pub struct PolicyTensor<const N: usize> {
+    pub weights: ScalarTensor<i32, N>,
+    pub threshold: i32,
+}
+
+impl<const N: usize> PolicyTensor<N> {
+    pub const fn new(weights: [i32; N], threshold: i32) -> Self {
+        Self {
+            weights: ScalarTensor { data: weights },
+            threshold,
+        }
+    }
+
+    /// Authorizes capability access by projecting policy conditions over real-time environmental intent 
+    /// behavior bounds, validating the equation via a strict mathematical threshold.
+    pub fn authorize_vectorized(&self, environment_state: &ScalarTensor<i32, N>) -> bool {
+        let risk_score = self.weights.dot_product(environment_state);
+        risk_score < self.threshold
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IntentPolicy {
@@ -148,7 +173,7 @@ impl Default for IntentPolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+
 pub enum IntentPolicyError {
     WindowSecondsOutOfRange,
     AlertScoreOutOfRange,
@@ -189,8 +214,9 @@ impl IntentPolicyError {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+
 #[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntentNode {
     CapabilityProbe = 0,
     CapabilityDenied = 1,
@@ -202,6 +228,7 @@ pub enum IntentNode {
     FsWrite = 7,
     Syscall = 8,
 }
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IntentSignal {
@@ -294,7 +321,7 @@ impl IntentSignal {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+
 pub enum IntentDecision {
     Allow,
     Alert(u32),

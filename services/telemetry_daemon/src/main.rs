@@ -5,12 +5,13 @@
 //! Ring-0 wait-free `TelemetryQueue` into continuous-time Markov analyses.
 //! Using `nalgebra`, we compute rigorous matrix exponentials and state probabilities.
 
+use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 use nalgebra::DMatrix;
 
-mod mmap_queue;
-use mmap_queue::MmapTelemetryQueue;
+mod uds_queue;
+use uds_queue::UdsTelemetryQueue;
 
 // Match the dimension configured in the kernel queue.
 const TENSOR_DIM: usize = 128;
@@ -19,6 +20,8 @@ const TENSOR_DIM: usize = 128;
 struct GeneratorMatrix {
     q_data: DMatrix<f64>,
     dim: usize,
+    pid_states: HashMap<i32, usize>,
+    pid_observations: HashMap<i32, usize>,
 }
 
 impl GeneratorMatrix {
@@ -26,13 +29,51 @@ impl GeneratorMatrix {
         Self {
             q_data: DMatrix::zeros(dim, dim),
             dim,
+            pid_states: HashMap::new(),
+            pid_observations: HashMap::new(),
         }
     }
 
     /// Update Q matrix incrementally given a delta tensor from the kernel.
-    pub fn update_from_kernel(&mut self, _tensor: &[i32; TENSOR_DIM]) {
-        // Placeholder: Map raw task transition counts into state rates.
-        // E.g., self.q_data[(0, 1)] += 0.01;
+    pub fn update_from_kernel(&mut self, tensor: &[i32; TENSOR_DIM]) {
+        let yields_ewma = tensor[0];
+        let pid = tensor[1];
+
+        // Ensure we actually got a message (ignore zeroed buffers if no pid)
+        if pid == 0 && yields_ewma == 0 {
+            return;
+        }
+
+        println!("Process [PID {}] pushed yields_ewma: {}", pid, yields_ewma);
+
+        // Map EWMA into discrete Markov states (e.g., 8 bands representing behavioral volatility)
+        // Lower state = Hogging CPU (0 yields)
+        // Higher state = Yields often (I/O bound)
+        let mut current_state = (yields_ewma / 125) as usize; 
+        if current_state >= self.dim {
+            current_state = self.dim - 1;
+        }
+
+        // Track transitions to build the empirical infinitesimal generator matrix (Q)
+        if let Some(&prev_state) = self.pid_states.get(&pid) {
+            if prev_state != current_state {
+                // Stochastic learning increment for the transition prev -> current
+                self.q_data[(prev_state, current_state)] += 0.05;
+                
+                // Enforce CTMC row-sum constraints (diagonal = -sum of off-diagonals)
+                let mut row_sum = 0.0;
+                for j in 0..self.dim {
+                    if j != prev_state {
+                        row_sum += self.q_data[(prev_state, j)];
+                    }
+                }
+                self.q_data[(prev_state, prev_state)] = -row_sum;
+            }
+        }
+        
+        // Save the current state for future continuity tracking
+        self.pid_states.insert(pid, current_state);
+        *self.pid_observations.entry(pid).or_insert(0) += 1;
     }
 
     /// Computes P(t) = P(0) * e^(Q*t) using a basic Padé approximation
@@ -78,16 +119,28 @@ impl GeneratorMatrix {
         p_t
     }
 
-    /// Check for anomalous capability flows by analyzing the state probabilities.
-    pub fn detect_anomalies(&self, probability_matrix: &DMatrix<f64>) -> bool {
-        // Compare against safety thresholds. For example, check if transition 
-        // probability to a specific "restricted state" is non-zero.
-        for val in probability_matrix.column(0).iter() {
-            if *val > 0.8 {
-                return true; // Simplified threshold trigger
+    /// Check for anomalous capability flows by analyzing the state probabilities for each PID.
+    pub fn check_anomalies_for_pids(&self, probability_matrix: &DMatrix<f64>) -> Vec<i32> {
+        let mut anomalous_pids = Vec::new();
+        let warmup_threshold = 200; // Ignore boot-up fluctuations until we have 200 data points for a PID.
+
+        for (&pid, &current_state) in &self.pid_states {
+            let obs = *self.pid_observations.get(&pid).unwrap_or(&0);
+            if obs < warmup_threshold {
+                continue; // Process is still in early initialization or warmup.
+            }
+
+            // probability_matrix[(i, j)] is the probability of ending up in state j, given starting state i.
+            // State 0 is the "CPU Hogging / No Yields" boundary.
+            let prob_of_hogging = probability_matrix[(current_state, 0)];
+
+            // If the stochastic prediction gives an unnaturally high chance (>60%) of an active thread
+            // collapsing strictly into the worst behavioral bounds after warmup, we flag an anomaly.
+            if prob_of_hogging > 0.60 {
+                anomalous_pids.push(pid);
             }
         }
-        false
+        anomalous_pids
     }
 }
 
@@ -97,7 +150,7 @@ fn main() {
 
     let state_dim = 8; 
     let mut q_matrix = GeneratorMatrix::new(state_dim);
-    let queue = MmapTelemetryQueue::new();
+    let mut queue = UdsTelemetryQueue::new();
 
     // Mock telemetry loop
     loop {
@@ -112,10 +165,10 @@ fn main() {
         let p_t = q_matrix.compute_matrix_exponential(dt);
 
         // 4. Validate mathematically provable constraints bounds
-        let is_anomalous = q_matrix.detect_anomalies(&p_t);
+        let anomalous_pids = q_matrix.check_anomalies_for_pids(&p_t);
 
-        if is_anomalous {
-            println!("CRITICAL: Mathematics anomaly detected. Downgrading capabilities via CapNet!");
+        if !anomalous_pids.is_empty() {
+            println!("CRITICAL: Mathematics anomaly detected for PIDs: {:?}. Downgrading capabilities via CapNet!", anomalous_pids);
         }
 
         thread::sleep(Duration::from_millis(50));

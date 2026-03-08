@@ -45,6 +45,7 @@
 use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::{Mutex, Once};
+use crate::tensor_core::LinearCapability;
 
 /// Maximum message data size (512 bytes - reduced to shrink kernel binary)
 pub const MAX_MESSAGE_SIZE: usize = 512;
@@ -305,6 +306,32 @@ pub struct ChannelCapability {
     pub owner: ProcessId,
 }
 
+
+
+/// Singularity OS Style Affine Endpoint for bounded capability message consumption
+/// This strictly enforces max-flow delegation zero-sum bounds at compile and runtime.
+pub struct AffineEndpoint<const CAPACITY: usize> {
+    pub cap: LinearCapability<ChannelCapability, CAPACITY>,
+}
+
+impl<const CAPACITY: usize> AffineEndpoint<CAPACITY> {
+    pub fn new(cap: ChannelCapability) -> Self {
+        Self {
+            cap: LinearCapability::new(cap)
+        }
+    }
+
+    /// Splits the endpoint enforcing exact zero-sum delegation capacities.
+    pub fn delegate_zero_sum<const A: usize, const B: usize>(self) -> Result<(AffineEndpoint<A>, AffineEndpoint<B>), &'static str> {
+        let (cap_a, cap_b) = self.cap.affine_split::<A, B>()?;
+        Ok((AffineEndpoint { cap: cap_a }, AffineEndpoint { cap: cap_b }))
+    }
+
+    pub fn inner_cap(&self) -> &ChannelCapability {
+        &self.cap.resource
+    }
+}
+
 impl ChannelCapability {
     pub fn new(cap_id: u32, channel_id: ChannelId, rights: ChannelRights, owner: ProcessId) -> Self {
         ChannelCapability {
@@ -475,6 +502,18 @@ impl Channel {
     }
 
     /// Send a message through the channel
+
+    /// Send a message through the channel using an affine endpoint, structurally guaranteeing that
+    /// capabilities are zero-sum and flow topology remains unbreached according to Section 8 logic.
+    pub fn send_affine<const C: usize>(&mut self, msg: Message, endpoint: &AffineEndpoint<C>) -> Result<(), IpcError> {
+        self.send(msg, endpoint.inner_cap())
+    }
+
+    /// Receive a message through the channel using an affine endpoint.
+    pub fn receive_affine<const C: usize>(&mut self, endpoint: &AffineEndpoint<C>) -> Result<Message, IpcError> {
+        self.recv(endpoint.inner_cap())
+    }
+
     pub fn send(&mut self, msg: Message, capability: &ChannelCapability) -> Result<(), IpcError> {
         let sec = crate::security::security();
         if sec.is_predictively_restricted(

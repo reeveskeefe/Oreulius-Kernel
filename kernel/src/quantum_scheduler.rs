@@ -984,6 +984,45 @@ impl QuantumScheduler {
     pub fn get_current_pid(&self) -> Option<Pid> {
         self.current_pid
     }
+
+    /// Global hook for Device Not Available (FPU) trap
+    pub fn handle_fpu_trap(&mut self) {
+        let current_pid = self.current_pid;
+        
+        // If no current process, nothing to do
+        if current_pid.is_none() {
+            return;
+        }
+        
+        let current_pid = current_pid.unwrap();
+        let idx = current_pid.0 as usize;
+        
+        // If invalid index, panic
+        if idx >= MAX_PROCESSES {
+            panic!("Invalid PID index in FPU trap handler");
+        }
+        
+        // Get the process info
+        let info = match self.processes[idx].as_mut() {
+            Some(info) => info,
+            None => return, // Process not found, nothing to do
+        };
+        
+        // If the process is not currently running, we should not modify its state here.
+        // This can happen if the FPU trap occurs during context switch.
+        if info.process.state != ProcessState::Running {
+            return;
+        }
+        
+        // Mark the process as blocked
+        info.process.state = ProcessState::Blocked;
+        
+        // Push the process to the wait queue for FPU traps
+        self.wait_queues[0].waiting.push_back(current_pid);
+        
+        // Update statistics
+        self.stats.voluntary_yields += 1;
+    }
 }
 
 impl Default for WaitQueue {
@@ -1347,4 +1386,9 @@ pub fn wake_one(addr: usize) -> Result<bool, &'static str> {
 /// Wake all waiters on address
 pub fn wake_all(addr: usize) -> Result<usize, &'static str> {
     QUANTUM_SCHEDULER.lock().wake_all(addr)
+}
+
+/// Global hook for Device Not Available (FPU) trap
+pub fn handle_fpu_trap() {
+    QUANTUM_SCHEDULER.lock().handle_fpu_trap();
 }

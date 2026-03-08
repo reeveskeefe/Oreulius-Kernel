@@ -877,7 +877,7 @@ fn x64_print_combined_help() {
     shell_println!("[X64] x86_64 window/bring-up shell extensions:");
     shell_println!("  {}", X64_MINI_HELP);
     shell_println!("[X64] shared JIT commands (full path via commands.rs):");
-    shell_println!("  wasm-jit-selftest");
+    shell_println!("  wasm-jit-selftest   (bounds + fixed-vector parity)");
     shell_println!("  wasm-jit-fuzz <iters> [seed] [auto|user|kernel]");
     shell_println!("  wasm-jit-fuzz-corpus <iters>");
     shell_println!("  wasm-jit-fuzz-soak <iters> <rounds>");

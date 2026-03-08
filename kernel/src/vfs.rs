@@ -44,7 +44,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cmp::min;
 use core::fmt::Write;
-use spin::Mutex;
+
+use crate::interrupt_dag::{DagSpinlock, DAG_LEVEL_VFS};
 
 use crate::vfs_platform::{self, Pid};
 use crate::virtio_blk;
@@ -330,10 +331,10 @@ impl Vfs {
     }
 }
 
-static VFS: Mutex<Vfs> = Mutex::new(Vfs::new());
+static VFS: DagSpinlock<DAG_LEVEL_VFS, Vfs> = DagSpinlock::new(Vfs::new());
 
 pub fn init() {
-    VFS.lock().init();
+    VFS.lock_legacy().init();
 }
 
 // ============================================================================
@@ -341,7 +342,7 @@ pub fn init() {
 // ============================================================================
 
 pub fn mkdir(path: &str) -> Result<(), &'static str> {
-    let mut vfs = VFS.lock();
+    let mut vfs = VFS.lock_legacy();
     vfs.init();
     if vfs.find_mount(path).is_some() {
         return Err("Path is within a mount point");
@@ -353,7 +354,7 @@ pub fn mkdir(path: &str) -> Result<(), &'static str> {
 }
 
 pub fn create_file(path: &str) -> Result<InodeId, &'static str> {
-    let mut vfs = VFS.lock();
+    let mut vfs = VFS.lock_legacy();
     vfs.init();
     if vfs.find_mount(path).is_some() {
         return Err("Path is within a mount point");
@@ -376,7 +377,7 @@ pub fn write_path_untracked(path: &str, data: &[u8]) -> Result<usize, &'static s
 fn write_path_internal(path: &str, data: &[u8], track_temporal: bool) -> Result<usize, &'static str> {
     let normalized_path = normalize_path(path)?;
     let mount_target = {
-        let mut vfs = VFS.lock();
+        let mut vfs = VFS.lock_legacy();
         vfs.init();
         vfs.find_mount(&normalized_path)
     };
@@ -389,7 +390,7 @@ fn write_path_internal(path: &str, data: &[u8], track_temporal: bool) -> Result<
     }
 
     {
-        let mut vfs = VFS.lock();
+        let mut vfs = VFS.lock_legacy();
         vfs.init();
 
         if let Ok(inode_id) = vfs.resolve_path(&normalized_path) {
@@ -413,7 +414,7 @@ fn write_path_internal(path: &str, data: &[u8], track_temporal: bool) -> Result<
 
     create_file(&normalized_path)?;
 
-    let mut vfs = VFS.lock();
+    let mut vfs = VFS.lock_legacy();
     vfs.init();
     let inode_id = vfs.resolve_path(&normalized_path)?;
     let inode = vfs.get_inode_mut(inode_id).ok_or("File not found")?;
@@ -434,7 +435,7 @@ fn write_path_internal(path: &str, data: &[u8], track_temporal: bool) -> Result<
 }
 
 pub fn read_path(path: &str, out: &mut [u8]) -> Result<usize, &'static str> {
-    let mut vfs = VFS.lock();
+    let mut vfs = VFS.lock_legacy();
     vfs.init();
     if let Some((backend, sub)) = vfs.find_mount(path) {
         return mount_read(backend, &sub, out);
@@ -450,7 +451,7 @@ pub fn read_path(path: &str, out: &mut [u8]) -> Result<usize, &'static str> {
 }
 
 pub fn list_dir(path: &str, out: &mut [u8]) -> Result<usize, &'static str> {
-    let mut vfs = VFS.lock();
+    let mut vfs = VFS.lock_legacy();
     vfs.init();
     if let Some((backend, sub)) = vfs.find_mount(path) {
         return mount_list(backend, &sub, out);
@@ -474,7 +475,7 @@ pub fn mount_virtio(path: &str) -> Result<(), &'static str> {
     if !virtio_blk::is_present() {
         return Err("No VirtIO block device present");
     }
-    let mut vfs = VFS.lock();
+    let mut vfs = VFS.lock_legacy();
     vfs.init();
     let norm = normalize_path(path)?;
     let inode_id = vfs.resolve_path(&norm)?;
@@ -504,7 +505,7 @@ pub fn open_for_current(path: &str, flags: OpenFlags) -> Result<usize, &'static 
 pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'static str> {
     let normalized_path = normalize_path(path)?;
     {
-        let mut vfs = VFS.lock();
+        let mut vfs = VFS.lock_legacy();
         vfs.init();
         if let Some((backend, sub)) = vfs.find_mount(&normalized_path) {
             let kind = mount_open_kind(backend, &sub, flags, &normalized_path)?;
@@ -555,7 +556,7 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
 
     create_file(&normalized_path)?;
 
-    let mut vfs = VFS.lock();
+    let mut vfs = VFS.lock_legacy();
     vfs.init();
     let inode_id = vfs.resolve_path(&normalized_path)?;
     let inode = vfs.get_inode_mut(inode_id).ok_or("File not found")?;
@@ -594,7 +595,7 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
 
 pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static str> {
     let handle_id = vfs_platform::get_fd_handle(pid, fd)?;
-    let mut vfs = VFS.lock();
+    let mut vfs = VFS.lock_legacy();
     let (kind, pos) = {
         let handle = vfs.get_handle_mut(handle_id).ok_or("Invalid handle")?;
         if handle.owner != pid {
@@ -637,7 +638,7 @@ pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static st
 
 pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str> {
     let handle_id = vfs_platform::get_fd_handle(pid, fd)?;
-    let mut vfs = VFS.lock();
+    let mut vfs = VFS.lock_legacy();
     let (kind, pos, flags) = {
         let handle = vfs.get_handle_mut(handle_id).ok_or("Invalid handle")?;
         if handle.owner != pid {
@@ -689,7 +690,7 @@ pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str>
 
 pub fn close_fd(pid: Pid, fd: usize) -> Result<(), &'static str> {
     let handle_id = vfs_platform::get_fd_handle(pid, fd)?;
-    let mut vfs = VFS.lock();
+    let mut vfs = VFS.lock_legacy();
     vfs.remove_handle(handle_id);
     vfs_platform::close_fd(pid, fd)
 }
@@ -817,7 +818,7 @@ pub fn temporal_try_apply_backend_payload(
 ) -> Result<bool, &'static str> {
     let normalized_path = normalize_path(path)?;
     let (backend, sub) = {
-        let mut vfs = VFS.lock();
+        let mut vfs = VFS.lock_legacy();
         vfs.init();
         match vfs.find_mount(&normalized_path) {
             Some(v) => v,

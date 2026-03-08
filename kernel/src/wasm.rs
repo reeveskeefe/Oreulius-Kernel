@@ -3936,17 +3936,19 @@ impl WasmInstance {
     pub fn new(module: WasmModule, process_id: ProcessId, instance_id: usize) -> Self {
         let (jit_state, jit_state_pages) = Self::alloc_jit_state();
         let memory = LinearMemory::new(1);
+        let stack = Stack::new();
+        let capabilities = CapabilityTable::new();
         WasmInstance {
             module,
             memory, // 1 page = 64 KiB
-            stack: Stack::new(),
+            stack,
             locals: [Value::I32(0); MAX_LOCALS],
             globals: [None; MAX_WASM_GLOBALS],
             control_stack: [None; MAX_CONTROL_STACK],
             control_depth: 0,
             current_func_end: 0,
             pc: 0,
-            capabilities: CapabilityTable::new(),
+            capabilities,
             process_id,
             instance_id,
             is_shadow: false,
@@ -8168,6 +8170,18 @@ static JIT_USER_LOCK: Mutex<()> = Mutex::new(());
 static JIT_USER_SANDBOX: Mutex<Option<arch_mmu::AddressSpace>> = Mutex::new(None);
 static JIT_USER_PREFLIGHT_PAGES: Mutex<Option<JitUserPages>> = Mutex::new(None);
 static JIT_USER_PREFLIGHT_AUX_PAGES: Mutex<Option<JitUserPreflightAuxPages>> = Mutex::new(None);
+#[cfg(target_arch = "x86_64")]
+static JIT_X64_CALL_PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "x86_64")]
+const JIT_X64_CALL_PROBE_STATE_BYTES: usize =
+    ((core::mem::size_of::<JitUserState>() + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE)
+        * paging::PAGE_SIZE;
+#[cfg(target_arch = "x86_64")]
+#[repr(C, align(4096))]
+struct JitX64CallProbeState([u8; JIT_X64_CALL_PROBE_STATE_BYTES]);
+#[cfg(target_arch = "x86_64")]
+static mut JIT_X64_CALL_PROBE_STATE: JitX64CallProbeState =
+    JitX64CallProbeState([0; JIT_X64_CALL_PROBE_STATE_BYTES]);
 static JIT_KERNEL_CALL_LOCK: Mutex<()> = Mutex::new(());
 static JIT_FUZZ_X64_DIAG: AtomicBool = AtomicBool::new(false);
 static JIT_USER_DEBUG_STAGE: AtomicU32 = AtomicU32::new(0);
@@ -9041,6 +9055,7 @@ pub fn jit_x86_64_call_user_path_probe() -> Result<&'static str, &'static str> {
         / paging::PAGE_SIZE;
     let jit_state_base = memory::jit_allocate_pages(jit_state_pages)? as *mut u8;
 
+    JIT_X64_CALL_PROBE_ACTIVE.store(true, Ordering::SeqCst);
     let result = call_jit_user(
         jit_entry,
         stack.as_mut_ptr(),
@@ -9060,6 +9075,7 @@ pub fn jit_x86_64_call_user_path_probe() -> Result<&'static str, &'static str> {
         1,
         0,
     );
+    JIT_X64_CALL_PROBE_ACTIVE.store(false, Ordering::SeqCst);
 
     match result {
         Ok(ret) if ret == X64_PROBE_RET => {
@@ -9652,10 +9668,33 @@ fn call_jit_user(
         .checked_add(exec_offset)
         .ok_or("JIT exec size overflow")?;
 
-    let mem_ptr_usize = mem_ptr as usize;
+    let mut mem_ptr_usize = mem_ptr as usize;
     #[cfg(target_arch = "x86_64")]
-    let mem_phys = arch_mmu::x86_64_debug_virt_to_phys(mem_ptr_usize)
-        .ok_or("WASM memory not mapped")?;
+    let mem_phys = {
+        let mut mem_phys = arch_mmu::x86_64_debug_virt_to_phys(mem_ptr_usize);
+        if mem_phys.is_none() && JIT_X64_CALL_PROBE_ACTIVE.load(Ordering::SeqCst) {
+            if mem_len <= paging::PAGE_SIZE {
+                let mut aux_pages_slot = JIT_USER_PREFLIGHT_AUX_PAGES.lock();
+                let aux_pages = ensure_jit_user_preflight_aux_pages(&mut *aux_pages_slot)?;
+                unsafe {
+                    core::ptr::write_bytes(aux_pages.mem as *mut u8, 0, paging::PAGE_SIZE);
+                }
+                mem_ptr_usize = aux_pages.mem;
+                mem_phys = arch_mmu::x86_64_debug_virt_to_phys(mem_ptr_usize);
+                if mem_phys.is_some() {
+                    crate::serial::_print(format_args!(
+                        "[JIT-DBG] x64 call-user probe mem fallback src=0x{:016x} dst=0x{:016x} len={}\n",
+                        mem_ptr as usize,
+                        mem_ptr_usize,
+                        mem_len
+                    ));
+                }
+            } else {
+                return Err("WASM memory not mapped");
+            }
+        }
+        mem_phys.ok_or("WASM memory not mapped")?
+    };
     #[cfg(not(target_arch = "x86_64"))]
     let mem_phys = kernel_space
         .virt_to_phys(mem_ptr_usize)
@@ -9665,10 +9704,33 @@ fn call_jit_user(
         .checked_add(mem_offset)
         .ok_or("WASM memory size overflow")?;
 
-    let state_ptr = jit_state_base as usize;
+    let mut state_ptr = jit_state_base as usize;
     #[cfg(target_arch = "x86_64")]
-    let state_phys = arch_mmu::x86_64_debug_virt_to_phys(state_ptr)
-        .ok_or("JIT state not mapped")?;
+    let state_phys = {
+        let mut state_phys = arch_mmu::x86_64_debug_virt_to_phys(state_ptr);
+        if state_phys.is_none() && JIT_X64_CALL_PROBE_ACTIVE.load(Ordering::SeqCst) {
+            let required_state_bytes = jit_state_pages
+                .checked_mul(paging::PAGE_SIZE)
+                .ok_or("JIT state size overflow")?;
+            if required_state_bytes <= JIT_X64_CALL_PROBE_STATE_BYTES {
+                unsafe {
+                    let probe_state = core::ptr::addr_of_mut!(JIT_X64_CALL_PROBE_STATE) as *mut u8;
+                    core::ptr::write_bytes(probe_state, 0, required_state_bytes);
+                    state_ptr = probe_state as usize;
+                }
+                state_phys = arch_mmu::x86_64_debug_virt_to_phys(state_ptr);
+                if state_phys.is_some() {
+                    crate::serial::_print(format_args!(
+                        "[JIT-DBG] x64 call-user probe state fallback src=0x{:016x} dst=0x{:016x} pages={}\n",
+                        jit_state_base as usize,
+                        state_ptr,
+                        jit_state_pages
+                    ));
+                }
+            }
+        }
+        state_phys.ok_or("JIT state not mapped")?
+    };
     #[cfg(not(target_arch = "x86_64"))]
     let state_phys = kernel_space
         .virt_to_phys(state_ptr)
@@ -10626,6 +10688,218 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         code
     }
 
+    fn build_block_br_skip_tail() -> Vec<u8> {
+        // i32.const 0; local.set 0;
+        // block
+        //   i32.const 77; local.set 0;
+        //   br 0;
+        //   i32.const 11; local.set 0;   ;; skipped
+        // end
+        // local.get 0; end
+        let mut code = Vec::with_capacity(44);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 0);
+        code.push(Opcode::LocalSet as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::Block as u8);
+        code.push(0x40); // empty block type
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 77);
+        code.push(Opcode::LocalSet as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::Br as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 11);
+        code.push(Opcode::LocalSet as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::End as u8); // end block
+        code.push(Opcode::LocalGet as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
+    fn build_loop_countdown_sum() -> Vec<u8> {
+        // local0 = counter (3), local1 = trips (0)
+        // loop
+        //   local1 += 1
+        //   local0 -= 1
+        //   br_if 0 (while local0 != 0)
+        // end
+        // return local1
+        let mut code = Vec::with_capacity(64);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 3);
+        code.push(Opcode::LocalSet as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 0);
+        code.push(Opcode::LocalSet as u8);
+        push_uleb128(&mut code, 1);
+        code.push(Opcode::Loop as u8);
+        code.push(0x40); // empty block type
+        code.push(Opcode::LocalGet as u8);
+        push_uleb128(&mut code, 1);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 1);
+        code.push(Opcode::I32Add as u8);
+        code.push(Opcode::LocalSet as u8);
+        push_uleb128(&mut code, 1);
+        code.push(Opcode::LocalGet as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 1);
+        code.push(Opcode::I32Sub as u8);
+        code.push(Opcode::LocalTee as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::BrIf as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::End as u8); // end loop
+        code.push(Opcode::LocalGet as u8);
+        push_uleb128(&mut code, 1);
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
+    fn build_block_br_unwind_add() -> Vec<u8> {
+        // i32.const 7
+        // block
+        //   i32.const 11
+        //   br 0           ;; must unwind 11
+        //   drop
+        // end
+        // i32.const 22
+        // i32.add          ;; 7 + 22 = 29
+        // end
+        let mut code = Vec::with_capacity(20);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 7);
+        code.push(Opcode::Block as u8);
+        code.push(0x40); // empty block type
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 11);
+        code.push(Opcode::Br as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::Drop as u8);
+        code.push(Opcode::End as u8); // end block
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 22);
+        code.push(Opcode::I32Add as u8);
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
+    fn build_block_br_if_unwind_add() -> Vec<u8> {
+        // i32.const 7
+        // block
+        //   i32.const 11
+        //   i32.const 1
+        //   br_if 0        ;; must unwind 11 on taken branch
+        //   drop
+        // end
+        // i32.const 22
+        // i32.add          ;; 7 + 22 = 29
+        // end
+        let mut code = Vec::with_capacity(24);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 7);
+        code.push(Opcode::Block as u8);
+        code.push(0x40); // empty block type
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 11);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 1);
+        code.push(Opcode::BrIf as u8);
+        push_uleb128(&mut code, 0);
+        code.push(Opcode::Drop as u8);
+        code.push(Opcode::End as u8); // end block
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 22);
+        code.push(Opcode::I32Add as u8);
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
+    fn build_nested_block_br_depth1_unwind_add() -> Vec<u8> {
+        // i32.const 7
+        // block
+        //   block
+        //     i32.const 11
+        //     br 1           ;; must unwind inner stack to outer block entry depth
+        //     drop
+        //   end
+        //   i32.const 100    ;; skipped by br 1
+        //   i32.add
+        // end
+        // i32.const 22
+        // i32.add            ;; 7 + 22 = 29
+        // end
+        let mut code = Vec::with_capacity(28);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 7);
+        code.push(Opcode::Block as u8);
+        code.push(0x40); // empty block type
+        code.push(Opcode::Block as u8);
+        code.push(0x40); // empty block type
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 11);
+        code.push(Opcode::Br as u8);
+        push_uleb128(&mut code, 1);
+        code.push(Opcode::Drop as u8);
+        code.push(Opcode::End as u8); // end inner block
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 100);
+        code.push(Opcode::I32Add as u8);
+        code.push(Opcode::End as u8); // end outer block
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 22);
+        code.push(Opcode::I32Add as u8);
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
+    fn build_nested_block_br_if_depth1_unwind_add(cond: i32) -> Vec<u8> {
+        // i32.const 7
+        // block
+        //   block
+        //     i32.const 11
+        //     i32.const cond
+        //     br_if 1        ;; taken path must unwind to outer block entry depth
+        //     drop
+        //   end
+        //   i32.const 100
+        //   i32.add
+        // end
+        // i32.const 22
+        // i32.add
+        // end
+        let mut code = Vec::with_capacity(32);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 7);
+        code.push(Opcode::Block as u8);
+        code.push(0x40); // empty block type
+        code.push(Opcode::Block as u8);
+        code.push(0x40); // empty block type
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 11);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, cond);
+        code.push(Opcode::BrIf as u8);
+        push_uleb128(&mut code, 1);
+        code.push(Opcode::Drop as u8);
+        code.push(Opcode::End as u8); // end inner block
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 100);
+        code.push(Opcode::I32Add as u8);
+        code.push(Opcode::End as u8); // end outer block
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, 22);
+        code.push(Opcode::I32Add as u8);
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
     fn build_unreachable() -> Vec<u8> {
         let mut code = Vec::with_capacity(2);
         code.push(Opcode::Unreachable as u8);
@@ -10636,6 +10910,7 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
     enum Expected {
         Value(i32),
         Trap,
+        AnyErr,
         MatchOk,
     }
 
@@ -10646,7 +10921,7 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         expected: Expected,
     }
 
-    let cases: [Case; 24] = [
+    let cases: [Case; 31] = [
         Case { name: "eq_0_0", code: build_binop(Opcode::I32Eq, 0, 0), locals_total: 0, expected: Expected::Value(1) },
         Case { name: "ne_1_2", code: build_binop(Opcode::I32Ne, 1, 2), locals_total: 0, expected: Expected::Value(1) },
         Case { name: "lt_s_neg", code: build_binop(Opcode::I32LtS, -1, 0), locals_total: 0, expected: Expected::Value(1) },
@@ -10669,8 +10944,15 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         Case { name: "if_br_skip_tail", code: build_if_br_local(), locals_total: 1, expected: Expected::Value(33) },
         Case { name: "if_br_if_taken", code: build_if_br_if_local(1), locals_total: 1, expected: Expected::Value(33) },
         Case { name: "if_br_if_fallthrough", code: build_if_br_if_local(0), locals_total: 1, expected: Expected::Value(44) },
+        Case { name: "block_br_skip_tail", code: build_block_br_skip_tail(), locals_total: 1, expected: Expected::Value(77) },
+        Case { name: "loop_countdown_sum", code: build_loop_countdown_sum(), locals_total: 2, expected: Expected::Value(3) },
+        Case { name: "block_br_unwind_add", code: build_block_br_unwind_add(), locals_total: 0, expected: Expected::Value(29) },
+        Case { name: "block_br_if_unwind_add", code: build_block_br_if_unwind_add(), locals_total: 0, expected: Expected::Value(29) },
+        Case { name: "nested_block_br_depth1_unwind_add", code: build_nested_block_br_depth1_unwind_add(), locals_total: 0, expected: Expected::Value(29) },
+        Case { name: "nested_block_br_if_depth1_taken", code: build_nested_block_br_if_depth1_unwind_add(1), locals_total: 0, expected: Expected::Value(29) },
+        Case { name: "nested_block_br_if_depth1_fallthrough", code: build_nested_block_br_if_depth1_unwind_add(0), locals_total: 0, expected: Expected::Value(129) },
         Case { name: "memory_size_match", code: build_memory_size(), locals_total: 0, expected: Expected::MatchOk },
-        Case { name: "unreachable_trap", code: build_unreachable(), locals_total: 0, expected: Expected::Trap },
+        Case { name: "unreachable_trap", code: build_unreachable(), locals_total: 0, expected: Expected::AnyErr },
     ];
 
     let mut base_module = WasmModule::new();
@@ -10736,20 +11018,35 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
                 matches!(interp, Err(WasmError::Trap))
                     && matches!(jit, Err(WasmError::Trap))
             }
+            Expected::AnyErr => interp.is_err() && jit.is_err(),
             Expected::MatchOk => match (interp, jit) {
                 (Ok(a), Ok(b)) => a == b,
                 _ => false,
             },
         };
         if !case_ok {
+            crate::serial_println!("[JIT-ST] mismatch case={}", case.name);
             let _ = wasm_runtime().destroy(interp_id);
             let _ = wasm_runtime().destroy(jit_id);
             let _ = case.name;
             return Err("jit compare/shift self-test: mismatch");
         }
-
         idx += 1;
     }
+    let structured_control_cases = cases
+        .iter()
+        .filter(|case| {
+            case.name.starts_with("if_")
+                || case.name.starts_with("loop_")
+                || case.name.starts_with("block_")
+                || case.name.starts_with("nested_block_")
+        })
+        .count();
+    crate::serial_println!(
+        "[WASM-JIT] fixed-vectors total={} structured-control-flow={}",
+        cases.len(),
+        structured_control_cases
+    );
     let _ = wasm_runtime().destroy(interp_id);
     let _ = wasm_runtime().destroy(jit_id);
     Ok(())

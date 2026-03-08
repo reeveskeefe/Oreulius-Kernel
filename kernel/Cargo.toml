@@ -11,6 +11,7 @@ crate-type = ["staticlib"]
 default = []
 formal-verify = []
 jit-fuzz-24bin = []
+experimental_entropy_sched = []
 
 [dependencies]
 spin = "0.9"

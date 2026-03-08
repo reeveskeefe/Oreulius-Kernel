@@ -544,6 +544,14 @@ impl InterruptStats {
 pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
     let frame = unsafe { &mut *(frame as *const _ as *mut InterruptFrame) };
     
+    if frame.int_no == Exception::DeviceNotAvailable as u32 {
+        unsafe {
+            // Quantum scheduler is the primary advanced scheduler in Oreulia
+            crate::quantum_scheduler::handle_fpu_trap();
+        }
+        return;
+    }
+
     if frame.int_no == Exception::PageFault as u32 {
         let fault_addr: usize;
         unsafe {

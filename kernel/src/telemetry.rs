@@ -13,8 +13,12 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::tensor_core::ScalarTensor;
+use spin::Mutex;
 
 const QUEUE_SIZE: usize = 128;
+pub const TENSOR_DIM_GLOBAL: usize = 128;
+
+pub static GLOBAL_TELEMETRY_QUEUE: Mutex<TelemetryQueue<TENSOR_DIM_GLOBAL>> = Mutex::new(TelemetryQueue::new());
 
 /// A bounded, atomic ring-buffer for sending raw state matrices
 /// to the Userspace Telemetry Daemon without blocking.
@@ -53,6 +57,24 @@ impl<const TENSOR_DIM: usize> TelemetryQueue<TENSOR_DIM> {
         
         self.buffer[head] = Some(tensor);
         self.head.store(next_head, Ordering::Release);
+
+        // Serialize the data over COM2 directly to the host UNIX socket.
+        if let Some(mut serial) = crate::serial::SERIAL2_TELEMETRY.try_lock() {
+            // Push magic sync bytes to signify the start of a tensor block.
+            serial.send_byte(0xEF);
+            serial.send_byte(0xBE);
+            serial.send_byte(0xAD);
+            serial.send_byte(0xDE);
+
+            for val in tensor.data.iter() {
+                let bytes = val.to_le_bytes();
+                serial.send_byte(bytes[0]);
+                serial.send_byte(bytes[1]);
+                serial.send_byte(bytes[2]);
+                serial.send_byte(bytes[3]);
+            }
+        }
+
         Ok(())
     }
 }

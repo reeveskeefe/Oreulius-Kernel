@@ -59,7 +59,7 @@ impl SerialPort {
         }
     }
 
-    fn send_byte(&mut self, byte: u8) {
+    pub fn send_byte(&mut self, byte: u8) {
         unsafe {
             // Wait for transmit buffer to be empty
             loop {
@@ -87,6 +87,12 @@ impl fmt::Write for SerialPort {
 lazy_static::lazy_static! {
     pub static ref SERIAL1: Mutex<SerialPort> = {
         let mut serial_port = SerialPort::new(0x3F8);
+        serial_port.init();
+        Mutex::new(serial_port)
+    };
+
+    pub static ref SERIAL2_TELEMETRY: Mutex<SerialPort> = {
+        let mut serial_port = SerialPort::new(0x2F8);
         serial_port.init();
         Mutex::new(serial_port)
     };

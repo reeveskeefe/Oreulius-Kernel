@@ -39,7 +39,8 @@
 //! - Yield support
 //! - Uses assembly context switching for speed
 
-use spin::Mutex;
+
+use crate::interrupt_dag::{DagSpinlock, DAG_LEVEL_SCHEDULER};
 use crate::process::{Process, ProcessState, ProcessPriority, Pid, MAX_PROCESSES};
 use crate::asm_bindings::{ProcessContext, asm_switch_context};
 use crate::pit;
@@ -59,6 +60,8 @@ pub struct Scheduler {
     contexts: [ProcessContext; MAX_PROCESSES],
     /// Currently running process
     current_pid: Option<Pid>,
+    /// Which process currently owns the FPU registers
+    fpu_owner: Option<Pid>,
     /// Ready queues (one per priority level)
     ready_queue_high: [Option<Pid>; MAX_PROCESSES],
     ready_queue_normal: [Option<Pid>; MAX_PROCESSES],
@@ -95,6 +98,7 @@ impl Scheduler {
             processes: [NONE_PROC; MAX_PROCESSES],
             contexts: [EMPTY_CTX; MAX_PROCESSES],
             current_pid: None,
+            fpu_owner: None,
             ready_queue_high: [NONE_PID; MAX_PROCESSES],
             ready_queue_normal: [NONE_PID; MAX_PROCESSES],
             ready_queue_low: [NONE_PID; MAX_PROCESSES],
@@ -297,6 +301,15 @@ impl Scheduler {
             
             self.total_switches += 1;
             
+            // Set Task Switched (TS) bit in CR0 to enable lazy FPU context saving
+            #[cfg(target_arch = "x86")]
+            unsafe {
+                let mut cr0: u32;
+                core::arch::asm!("mov {0}, cr0", out(reg) cr0);
+                cr0 |= 8; // Set TS bit
+                core::arch::asm!("mov cr0, {0}", in(reg) cr0);
+            }
+
             // Perform assembly context switch
             unsafe {
                 let old_ctx = old_pid.map(|pid| &mut self.contexts[pid.0 as usize] as *mut _);
@@ -468,6 +481,48 @@ impl Scheduler {
     pub fn list_processes(&self) -> impl Iterator<Item = &Process> {
         self.processes.iter().filter_map(|p| p.as_ref())
     }
+
+    /// Handles Device Not Available (#NM) exception for lazy FPU state saving
+    pub unsafe fn handle_fpu_trap(&mut self) {
+        #[cfg(target_arch = "x86")]
+        {
+            // Clear TS bit
+            core::arch::asm!("clts");
+        }
+
+        let current = match self.current_pid {
+            Some(pid) => pid,
+            None => return, // Shouldn't happen
+        };
+
+        if let Some(owner) = self.fpu_owner {
+            if owner == current {
+                // We still own the FPU! Nothing to do.
+                return;
+            }
+
+            // Save state for the old owner
+            if let Some(ref mut proc) = self.processes[owner.0 as usize] {
+                crate::process_asm::save_fpu_state(proc.fpu_state.0.as_mut_ptr());
+            }
+        }
+
+        // Restore or initialize state for the new owner
+        if let Some(ref mut proc) = self.processes[current.0 as usize] {
+            if proc.has_used_fpu {
+                crate::process_asm::restore_fpu_state(proc.fpu_state.0.as_ptr());
+            } else {
+                #[cfg(target_arch = "x86")]
+                {
+                    core::arch::asm!("fninit");
+                    // Can add fldcw / ldmxcsr here for SSE later if needed
+                }
+                proc.has_used_fpu = true;
+            }
+        }
+
+        self.fpu_owner = Some(current);
+    }
 }
 
 /// Scheduler statistics
@@ -484,28 +539,28 @@ pub struct SchedulerStats {
 static RESCHED_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 // Global scheduler instance
-pub static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
+pub static SCHEDULER: DagSpinlock<DAG_LEVEL_SCHEDULER, Scheduler> = DagSpinlock::new(Scheduler::new());
 
 /// Get the global scheduler
-pub fn scheduler() -> &'static Mutex<Scheduler> {
+pub fn scheduler() -> &'static DagSpinlock<DAG_LEVEL_SCHEDULER, Scheduler> {
     &SCHEDULER
 }
 
 /// Yield CPU to next process
 pub fn yield_cpu() {
-    SCHEDULER.lock().yield_cpu();
+    SCHEDULER.lock_legacy().yield_cpu();
 }
 
 /// Sleep current process for N milliseconds
 pub fn sleep(ms: u32) {
-    SCHEDULER.lock().sleep(ms);
+    SCHEDULER.lock_legacy().sleep(ms);
 }
 
 /// Timer interrupt handler (called by IRQ0)
 pub fn on_timer_tick() {
     let in_interrupt = unsafe { crate::process_asm::get_interrupt_state() } == 0;
     if in_interrupt {
-        let mut sched = SCHEDULER.lock();
+        let mut sched = SCHEDULER.lock_legacy();
         sched.preemptions += 1;
         sched.wake_sleeping();
         if let Some(current_pid) = sched.current_pid {
@@ -521,12 +576,12 @@ pub fn on_timer_tick() {
         return;
     }
     
-    SCHEDULER.lock().on_timer_tick();
+    SCHEDULER.lock_legacy().on_timer_tick();
 }
 
 /// Perform deferred reschedule if requested by timer IRQ
 pub fn maybe_reschedule() {
     if RESCHED_REQUESTED.swap(false, Ordering::SeqCst) {
-        SCHEDULER.lock().schedule();
+        SCHEDULER.lock_legacy().schedule();
     }
 }

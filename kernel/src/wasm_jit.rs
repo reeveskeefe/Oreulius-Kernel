@@ -203,7 +203,7 @@ fn analyze_basic_blocks_into(code: &[u8], blocks: &mut Vec<BasicBlock>) {
                 let (_v, n) = read_sleb128_i32(code, pc).unwrap_or((0, 0));
                 pc += n;
             }
-            Some(Opcode::If) => {
+            Some(Opcode::Block) | Some(Opcode::Loop) | Some(Opcode::If) => {
                 let (n, _empty_block_type) = match read_blocktype_width(code, pc) {
                     Some(v) => v,
                     None => break,
@@ -223,6 +223,8 @@ fn analyze_basic_blocks_into(code: &[u8], blocks: &mut Vec<BasicBlock>) {
                     None => break,
                 };
                 pc += n;
+                blocks.push(BasicBlock { start, end: pc });
+                start = pc;
             }
             Some(Opcode::I32Load) | Some(Opcode::I32Store) => {
                 let (_align, n1) = match read_uleb128(code, pc) {
@@ -245,9 +247,7 @@ fn analyze_basic_blocks_into(code: &[u8], blocks: &mut Vec<BasicBlock>) {
             Some(Opcode::Unreachable)
             | Some(Opcode::Return)
             | Some(Opcode::End)
-            | Some(Opcode::Else)
-            | Some(Opcode::Br)
-            | Some(Opcode::BrIf) => {
+            | Some(Opcode::Else) => {
                 blocks.push(BasicBlock { start, end: pc });
                 start = pc;
             }
@@ -269,12 +269,15 @@ pub fn analyze_basic_blocks(code: &[u8]) -> Vec<BasicBlock> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ControlKind {
     Function,
+    Block,
+    Loop,
     If,
 }
 
 struct ControlFrame {
     kind: ControlKind,
     stack_depth_at_entry: i32,
+    loop_target: Option<usize>,
     else_patch: Option<usize>,
     has_else: bool,
     end_patches: Vec<usize>,
@@ -308,6 +311,7 @@ fn emit_code_into(
     control_stack.push(ControlFrame {
         kind: ControlKind::Function,
         stack_depth_at_entry: 0,
+        loop_target: None,
         else_patch: None,
         has_else: false,
         end_patches: Vec::new(),
@@ -362,16 +366,68 @@ fn emit_code_into(
                     saw_function_end = true;
                 } else {
                     let mut frame = control_stack.pop().ok_or("Unexpected end")?;
-                    if frame.kind != ControlKind::If {
-                        return Err("Unsupported control frame");
-                    }
-                    if let Some(else_patch) = frame.else_patch.take() {
-                        emitter.patch_rel32(else_patch, end_target)?;
+                    match frame.kind {
+                        ControlKind::If => {
+                            if let Some(else_patch) = frame.else_patch.take() {
+                                emitter.patch_rel32(else_patch, end_target)?;
+                            }
+                        }
+                        ControlKind::Block | ControlKind::Loop => {}
+                        ControlKind::Function => return Err("Malformed control stack"),
                     }
                     for patch in frame.end_patches.drain(..) {
                         emitter.patch_rel32(patch, end_target)?;
                     }
                     stack_depth = frame.stack_depth_at_entry;
+                }
+            }
+            Opcode::Block => {
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    return Err("Control flow not supported by JIT");
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    emitter.emit_instr_fuel_check();
+                    let (blocktype_width, empty_block_type) =
+                        read_blocktype_width(code, pc).ok_or("Bad block type")?;
+                    pc += blocktype_width;
+                    if !empty_block_type {
+                        return Err("Non-empty block type not supported by JIT");
+                    }
+                    control_stack.push(ControlFrame {
+                        kind: ControlKind::Block,
+                        stack_depth_at_entry: stack_depth,
+                        loop_target: None,
+                        else_patch: None,
+                        has_else: false,
+                        end_patches: Vec::new(),
+                    });
+                }
+            }
+            Opcode::Loop => {
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    return Err("Control flow not supported by JIT");
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    emitter.emit_instr_fuel_check();
+                    let (blocktype_width, empty_block_type) =
+                        read_blocktype_width(code, pc).ok_or("Bad loop type")?;
+                    pc += blocktype_width;
+                    if !empty_block_type {
+                        return Err("Non-empty loop type not supported by JIT");
+                    }
+                    let loop_target = emitter.code.len();
+                    control_stack.push(ControlFrame {
+                        kind: ControlKind::Loop,
+                        stack_depth_at_entry: stack_depth,
+                        loop_target: Some(loop_target),
+                        else_patch: None,
+                        has_else: false,
+                        end_patches: Vec::new(),
+                    });
                 }
             }
             Opcode::Drop => {
@@ -620,6 +676,7 @@ fn emit_code_into(
                     control_stack.push(ControlFrame {
                         kind: ControlKind::If,
                         stack_depth_at_entry: stack_depth,
+                        loop_target: None,
                         else_patch: Some(else_patch),
                         has_else: false,
                         end_patches: Vec::new(),
@@ -661,9 +718,25 @@ fn emit_code_into(
                     let (depth, n) = read_uleb128(code, pc).ok_or("Bad br depth")?;
                     pc += n;
                     let target_idx = resolve_label_target_idx(&control_stack, depth)?;
+                    let (target_kind, target_stack_depth, target_loop_target) = {
+                        let frame = &control_stack[target_idx];
+                        (frame.kind, frame.stack_depth_at_entry, frame.loop_target)
+                    };
+                    // Branch target stack depth must be committed on the taken
+                    // path before transfer-of-control.
+                    emitter.emit_set_stack_depth(target_stack_depth)?;
                     let jump = emitter.emit_jump_placeholder();
-                    control_stack[target_idx].end_patches.push(jump);
-                    stack_depth = control_stack[target_idx].stack_depth_at_entry;
+                    match target_kind {
+                        ControlKind::Loop => {
+                            let loop_target =
+                                target_loop_target.ok_or("Loop frame missing target")?;
+                            emitter.patch_rel32(jump, loop_target)?;
+                        }
+                        _ => {
+                            control_stack[target_idx].end_patches.push(jump);
+                        }
+                    }
+                    stack_depth = target_stack_depth;
                 }
             }
             Opcode::BrIf => {
@@ -678,8 +751,26 @@ fn emit_code_into(
                     pc += n;
                     stack_pop(&mut stack_depth, 1)?;
                     let target_idx = resolve_label_target_idx(&control_stack, depth)?;
-                    let jump = emitter.emit_pop_cond_jnz_placeholder();
-                    control_stack[target_idx].end_patches.push(jump);
+                    emitter.emit_pop_to_eax();
+                    let jz_fallthrough = emitter.emit_cond_jz_placeholder();
+                    let (target_kind, target_stack_depth, target_loop_target) = {
+                        let frame = &control_stack[target_idx];
+                        (frame.kind, frame.stack_depth_at_entry, frame.loop_target)
+                    };
+                    emitter.emit_set_stack_depth(target_stack_depth)?;
+                    let jump = emitter.emit_jump_placeholder();
+                    match target_kind {
+                        ControlKind::Loop => {
+                            let loop_target =
+                                target_loop_target.ok_or("Loop frame missing target")?;
+                            emitter.patch_rel32(jump, loop_target)?;
+                        }
+                        _ => {
+                            control_stack[target_idx].end_patches.push(jump);
+                        }
+                    }
+                    let fallthrough = emitter.code.len();
+                    emitter.patch_rel32(jz_fallthrough, fallthrough)?;
                 }
             }
             _ => return Err("Opcode not supported by JIT"),
@@ -762,6 +853,8 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
             | Opcode::I32Load
             | Opcode::I32Store
             | Opcode::MemorySize
+            | Opcode::Block
+            | Opcode::Loop
             | Opcode::If
             | Opcode::Else
             | Opcode::Br
@@ -1428,6 +1521,24 @@ impl Emitter {
         let pos = self.code.len();
         self.emit_u32(0);
         pos
+    }
+
+    fn emit_cond_jz_placeholder(&mut self) -> usize {
+        self.emit(&[0x85, 0xC0]); // test eax, eax
+        self.emit(&[0x0F, 0x84]); // jz rel32
+        let pos = self.code.len();
+        self.emit_u32(0);
+        pos
+    }
+
+    fn emit_set_stack_depth(&mut self, depth: i32) -> Result<(), &'static str> {
+        if depth < 0 {
+            return Err("Negative stack depth");
+        }
+        self.emit(&[0xB8]); // mov eax, imm32
+        self.emit_i32(depth);
+        self.emit(&[0x89, 0x06]); // mov [esi], eax
+        Ok(())
     }
 
     fn emit_jump_placeholder(&mut self) -> usize {
@@ -2173,6 +2284,28 @@ impl Emitter {
         let pos = self.code.len();
         self.emit_u32(0);
         pos
+    }
+
+    fn emit_cond_jz_placeholder(&mut self) -> usize {
+        self.emit(&[0x85, 0xC0]); // test eax, eax
+        self.emit(&[0x0F, 0x84]); // jz rel32
+        let pos = self.code.len();
+        self.emit_u32(0);
+        pos
+    }
+
+    fn emit_set_stack_depth(&mut self, depth: i32) -> Result<(), &'static str> {
+        if depth < 0 {
+            return Err("Negative stack depth");
+        }
+        self.emit(&[
+            0x41, 0xBA,             // mov r10d, imm32
+        ]);
+        self.emit_i32(depth);
+        self.emit(&[
+            0x4D, 0x89, 0x55, 0x00, // mov [r13+0], r10
+        ]);
+        Ok(())
     }
 
     fn emit_jump_placeholder(&mut self) -> usize {

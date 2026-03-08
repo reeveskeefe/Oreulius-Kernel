@@ -205,6 +205,11 @@ pub enum ProcessPriority {
     Low = 1,
 }
 
+/// 16-byte aligned FPU State Buffer (512 bytes for fxsave)
+#[repr(align(16))]
+#[derive(Clone)]
+pub struct FpuState(pub [u8; 512]);
+
 /// Process Control Block (PCB)
 #[derive(Clone)]
 pub struct Process {
@@ -232,6 +237,10 @@ pub struct Process {
     pub fd_table: [Option<u64>; MAX_FD],
     /// Physical address of Page Directory (CR3)
     pub page_dir_phys: u32,
+    /// FPU/SIMD state buffer
+    pub fpu_state: FpuState,
+    /// Whether this process has ever used the FPU
+    pub has_used_fpu: bool,
 }
 
 impl Process {
@@ -255,6 +264,8 @@ impl Process {
             created_at: 0,
             fd_table: [None; MAX_FD],
             page_dir_phys: 0, // Will be set by caller or init
+            fpu_state: FpuState([0; 512]),
+            has_used_fpu: false,
         }
     }
 
