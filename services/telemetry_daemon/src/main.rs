@@ -4,11 +4,10 @@
 //! This daemon maps the raw `ScalarTensor` structures polled from the 
 //! Ring-0 wait-free `TelemetryQueue` into continuous-time Markov analyses.
 //! Using `nalgebra`, we compute rigorous matrix exponentials and state probabilities.
-
 use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
-use nalgebra::DMatrix;
+use nalgebra::{DMatrix, DVector};
 
 mod uds_queue;
 use uds_queue::UdsTelemetryQueue;
@@ -22,6 +21,7 @@ struct GeneratorMatrix {
     dim: usize,
     pid_states: HashMap<i32, usize>,
     pid_observations: HashMap<i32, usize>,
+    dominant_eigenvector: DVector<f64>, // For warm-started power iteration
 }
 
 impl GeneratorMatrix {
@@ -31,6 +31,8 @@ impl GeneratorMatrix {
             dim,
             pid_states: HashMap::new(),
             pid_observations: HashMap::new(),
+            // Initialize with an equal superposition of states.
+            dominant_eigenvector: DVector::from_element(dim, 1.0 / (dim as f64).sqrt()),
         }
     }
 
@@ -119,6 +121,23 @@ impl GeneratorMatrix {
         p_t
     }
 
+    /// Perform 1-3 steps of warm-started power iteration to find the dominant eigenvector
+    /// of the transition matrix P(t). This estimates the stationary distribution
+    /// dynamically to evaluate compounding anomaly bounds under spectral gaps.
+    pub fn update_dominant_eigenvector(&mut self, p_t: &DMatrix<f64>) {
+        // Evaluate the Transpose of p_t for left eigenvectors (stationary distribution)
+        let p_t_t = p_t.transpose();
+        // 3 steps of power iteration
+        for _ in 0..3 {
+            let next_vec = &p_t_t * &self.dominant_eigenvector;
+            // Normalize
+            let norm = next_vec.norm();
+            if norm > 1e-12 {
+                self.dominant_eigenvector = next_vec / norm;
+            }
+        }
+    }
+
     /// Check for anomalous capability flows by analyzing the state probabilities for each PID.
     pub fn check_anomalies_for_pids(&self, probability_matrix: &DMatrix<f64>) -> Vec<i32> {
         let mut anomalous_pids = Vec::new();
@@ -134,9 +153,14 @@ impl GeneratorMatrix {
             // State 0 is the "CPU Hogging / No Yields" boundary.
             let prob_of_hogging = probability_matrix[(current_state, 0)];
 
+            // Evaluate if spectral mass concentrates heavily on the problematic state
+            let stationary_hogging_mass = self.dominant_eigenvector[0];
+
             // If the stochastic prediction gives an unnaturally high chance (>60%) of an active thread
             // collapsing strictly into the worst behavioral bounds after warmup, we flag an anomaly.
-            if prob_of_hogging > 0.60 {
+            // Using spectral gap insights: If global stationary distribution also points to failure
+            // then it's a systemic anomaly (eigenvector shift).
+            if prob_of_hogging > 0.60 || stationary_hogging_mass > 0.50 {
                 anomalous_pids.push(pid);
             }
         }
@@ -147,6 +171,7 @@ impl GeneratorMatrix {
 fn main() {
     println!("Oreulia Telemetry Daemon Booting...");
     println!("Initialize CTMC Mathematics Module with Nalgebra...");
+    println!("Applying Userspace Warm-started Power Iteration bounds...");
 
     let state_dim = 8; 
     let mut q_matrix = GeneratorMatrix::new(state_dim);
@@ -155,20 +180,24 @@ fn main() {
     // Mock telemetry loop
     loop {
         // 1. Poll the memory-mapped wait-free queue
-        if let Some(mock_tensor) = queue.poll_tensor::<TENSOR_DIM>() {
-            // 2. Accumulate hardware state observations into the Generator Matrix
+        while let Some(mock_tensor) = queue.poll_tensor::<TENSOR_DIM>() {
+            // Accumulate hardware state observations into the Generator Matrix
             q_matrix.update_from_kernel(&mock_tensor);
         }
 
-        // 3. Extrapolate future state probabilities
+        // 2. Extrapolate future state probabilities P(t) = e^{Qt}
         let dt = 0.1; // Forward projection time step
         let p_t = q_matrix.compute_matrix_exponential(dt);
+
+        // 3. Section 11.2 Userspace Telemetry Power Iteration
+        // Perform 1-3 steps of warm-started power iteration to estimate dominant eigenvector.
+        q_matrix.update_dominant_eigenvector(&p_t);
 
         // 4. Validate mathematically provable constraints bounds
         let anomalous_pids = q_matrix.check_anomalies_for_pids(&p_t);
 
         if !anomalous_pids.is_empty() {
-            println!("CRITICAL: Mathematics anomaly detected for PIDs: {:?}. Downgrading capabilities via CapNet!", anomalous_pids);
+            println!("CRITICAL: Mathematics anomaly detected heavily concentrating in spectral bounds for PIDs: {:?}. Downgrading capabilities via CapNet Context graph!", anomalous_pids);
         }
 
         thread::sleep(Duration::from_millis(50));

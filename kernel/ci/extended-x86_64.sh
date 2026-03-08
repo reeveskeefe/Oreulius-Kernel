@@ -4,21 +4,12 @@ cd "$(dirname "$0")/.."
 
 mkdir -p ci/logs
 
-if [[ "${X64_JIT_FUZZ_24BIN:-0}" == "1" ]]; then
+# Keep 24-bin guided fuzz enabled by default in extended x86_64 CI/regression.
+if [[ "${X64_JIT_FUZZ_24BIN:-1}" == "1" ]]; then
   export KERNEL_CARGO_FEATURES="${KERNEL_CARGO_FEATURES:-jit-fuzz-24bin}"
   export X64_EXPECT_BINS_TOTAL="${X64_EXPECT_BINS_TOTAL:-24}"
   export X64_EXPECT_EDGE_TOTAL="${X64_EXPECT_EDGE_TOTAL:-576}"
   export X64_EXPECT_EDGE_ADM_TOTAL="${X64_EXPECT_EDGE_ADM_TOTAL:-576}"
-  # Coverage gate defaults for 24-bin mode.
-  # x86_64 shared wasm-jit-fuzz now runs unchunked at 1000 iterations by default
-  # and is expected to hit full pairwise edge coverage.
-  export X64_EXPECT_MIN_BINS="${X64_EXPECT_MIN_BINS:-24}"
-  export X64_EXPECT_MIN_EDGES_FULL="${X64_EXPECT_MIN_EDGES_FULL:-576}"
-  export X64_EXPECT_MIN_EDGES_ADM="${X64_EXPECT_MIN_EDGES_ADM:-576}"
-  # jitfuzzreg full is a small cross-seed smoke run by default; keep a light gate
-  # and enforce high edge floors on the dedicated wasm-jit-fuzz command above.
-  export X64_EXPECT_MIN_JITFUZZREG_EDGES_FULL="${X64_EXPECT_MIN_JITFUZZREG_EDGES_FULL:-1}"
-  export X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM="${X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM:-1}"
 fi
 
 ./build-x86_64-mb2-iso.sh

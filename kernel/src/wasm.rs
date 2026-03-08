@@ -52,7 +52,7 @@
 extern crate alloc;
 
 use core::fmt;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use alloc::vec::Vec;
 use spin::Mutex;
 use crate::capability::{self, CapabilityType, Rights};
@@ -8234,9 +8234,9 @@ pub static JIT_USER_ACTIVE: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
 pub static JIT_USER_RETURN_PENDING: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
-pub static JIT_USER_RETURN_EIP: AtomicU32 = AtomicU32::new(0);
+pub static JIT_USER_RETURN_EIP: AtomicUsize = AtomicUsize::new(0);
 #[no_mangle]
-pub static JIT_USER_RETURN_ESP: AtomicU32 = AtomicU32::new(0);
+pub static JIT_USER_RETURN_ESP: AtomicUsize = AtomicUsize::new(0);
 #[no_mangle]
 pub static JIT_USER_SYSCALL_VIOLATION: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
@@ -8260,15 +8260,15 @@ pub static mut JIT_USER_DBG_CALL_INSTANCE: u32 = 0;
 #[no_mangle]
 pub static mut JIT_USER_DBG_CALL_FUNC: u32 = 0;
 #[no_mangle]
-pub static mut JIT_USER_DBG_SAVE_ESP: u32 = 0;
+pub static mut JIT_USER_DBG_SAVE_ESP: usize = 0;
 #[no_mangle]
-pub static mut JIT_USER_DBG_SAVE_EIP: u32 = 0;
+pub static mut JIT_USER_DBG_SAVE_EIP: usize = 0;
 #[no_mangle]
 pub static mut JIT_USER_DBG_SAVE_SEQ: u32 = 0;
 #[no_mangle]
-pub static mut JIT_USER_DBG_SYSCALL_ESP: u32 = 0;
+pub static mut JIT_USER_DBG_SYSCALL_ESP: usize = 0;
 #[no_mangle]
-pub static mut JIT_USER_DBG_SYSCALL_EIP: u32 = 0;
+pub static mut JIT_USER_DBG_SYSCALL_EIP: usize = 0;
 #[no_mangle]
 pub static mut JIT_USER_DBG_SYSCALL_SEQ: u32 = 0;
 #[no_mangle]
@@ -8332,7 +8332,7 @@ fn jit_runtime_recover_impl(drop_fuzz_state: bool) {
         || stale_sys_seq != 0
     {
         crate::serial::_print(format_args!(
-            "[JIT-DBG] recover stale pending={} active={} ret_eip=0x{:08x} ret_esp=0x{:08x} save_seq={} sys_seq={}\n",
+            "[JIT-DBG] recover stale pending={} active={} ret_eip=0x{:016x} ret_esp=0x{:016x} save_seq={} sys_seq={}\n",
             stale_pending,
             stale_active,
             stale_ret_eip,
@@ -10083,7 +10083,7 @@ fn call_jit_user(
             .wrapping_add(1);
         if !handoff_ok || log_idx <= JIT_USER_HANDOFF_LOG_LIMIT {
             crate::serial::_print(format_args!(
-                "[JIT-DBG] handoff seq={} ok={} pid={} inst={} func={} save_seq={} sys_seq={} req={} ack={} path={} flags=0x{:08x} nr={} from=0x{:08x}/0x{:08x} save=0x{:08x}/0x{:08x} sys=0x{:08x}/0x{:08x} entry=0x{:08x}\n",
+                "[JIT-DBG] handoff seq={} ok={} pid={} inst={} func={} save_seq={} sys_seq={} req={} ack={} path={} flags=0x{:08x} nr={} from=0x{:08x}/0x{:08x} save=0x{:016x}/0x{:016x} sys=0x{:016x}/0x{:016x} entry=0x{:08x}\n",
                 call_seq,
                 if handoff_ok { 1 } else { 0 },
                 process_id,
@@ -10121,7 +10121,7 @@ fn call_jit_user(
             || stale_ret_eip != save_eip;
         if clear_anomaly || call_seq <= JIT_USER_CALL_LOG_LIMIT {
         crate::serial::_print(format_args!(
-            "[JIT-DBG] handoff-clear seq={} pending={} active={} ret=0x{:08x}/0x{:08x}\n",
+            "[JIT-DBG] handoff-clear seq={} pending={} active={} ret=0x{:016x}/0x{:016x}\n",
             call_seq,
             stale_pending,
             stale_active,
@@ -10517,6 +10517,30 @@ fn jit_bounds_self_test_x86_64_direct(_force_user_mode: bool) -> Result<(), &'st
 }
 
 pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    struct JitModeGuard {
+        prev_user_mode: bool,
+    }
+    #[cfg(target_arch = "x86_64")]
+    impl Drop for JitModeGuard {
+        fn drop(&mut self) {
+            let mut cfg = jit_config().lock();
+            cfg.user_mode = self.prev_user_mode;
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    let _jit_mode_guard = {
+        // Keep fixed-vector interpreter-vs-JIT parity deterministic on x86_64.
+        // The user trampoline path is validated separately (jitcall/jitpre);
+        // parity vectors should not depend on that bring-up path.
+        let mut cfg = jit_config().lock();
+        let guard = JitModeGuard {
+            prev_user_mode: cfg.user_mode,
+        };
+        cfg.user_mode = false;
+        guard
+    };
+
     fn push_uleb128(buf: &mut Vec<u8>, mut value: u32) {
         loop {
             let mut byte = (value & 0x7F) as u8;
@@ -10592,6 +10616,16 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         code
     }
 
+    fn build_memory_grow(delta_pages: i32) -> Vec<u8> {
+        let mut code = Vec::with_capacity(10);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, delta_pages);
+        code.push(Opcode::MemoryGrow as u8);
+        code.push(0x00);
+        code.push(Opcode::End as u8);
+        code
+    }
+
     fn build_if_else_local(cond: i32, when_true: i32, when_false: i32) -> Vec<u8> {
         let mut code = Vec::with_capacity(40);
         code.push(Opcode::I32Const as u8);
@@ -10614,6 +10648,47 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         code.push(Opcode::End as u8); // end if
         code.push(Opcode::LocalGet as u8);
         push_uleb128(&mut code, 0);
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
+    fn build_typed_block_i32_result(value: i32) -> Vec<u8> {
+        // block (result i32) { i32.const value }; end
+        let mut code = Vec::with_capacity(16);
+        code.push(Opcode::Block as u8);
+        code.push(0x7F); // i32 block result
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, value);
+        code.push(Opcode::End as u8); // end block
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
+    fn build_typed_loop_i32_result(value: i32) -> Vec<u8> {
+        // loop (result i32) { i32.const value }; end
+        let mut code = Vec::with_capacity(16);
+        code.push(Opcode::Loop as u8);
+        code.push(0x7F); // i32 loop result
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, value);
+        code.push(Opcode::End as u8); // end loop
+        code.push(Opcode::End as u8); // end function
+        code
+    }
+
+    fn build_typed_if_else_i32_result(cond: i32, when_true: i32, when_false: i32) -> Vec<u8> {
+        // if (result i32) then i32.const when_true else i32.const when_false
+        let mut code = Vec::with_capacity(24);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, cond);
+        code.push(Opcode::If as u8);
+        code.push(0x7F); // i32 if result
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, when_true);
+        code.push(Opcode::Else as u8);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, when_false);
+        code.push(Opcode::End as u8); // end if
         code.push(Opcode::End as u8); // end function
         code
     }
@@ -10921,7 +10996,7 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         expected: Expected,
     }
 
-    let cases: [Case; 31] = [
+    let cases: [Case; 37] = [
         Case { name: "eq_0_0", code: build_binop(Opcode::I32Eq, 0, 0), locals_total: 0, expected: Expected::Value(1) },
         Case { name: "ne_1_2", code: build_binop(Opcode::I32Ne, 1, 2), locals_total: 0, expected: Expected::Value(1) },
         Case { name: "lt_s_neg", code: build_binop(Opcode::I32LtS, -1, 0), locals_total: 0, expected: Expected::Value(1) },
@@ -10951,7 +11026,13 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         Case { name: "nested_block_br_depth1_unwind_add", code: build_nested_block_br_depth1_unwind_add(), locals_total: 0, expected: Expected::Value(29) },
         Case { name: "nested_block_br_if_depth1_taken", code: build_nested_block_br_if_depth1_unwind_add(1), locals_total: 0, expected: Expected::Value(29) },
         Case { name: "nested_block_br_if_depth1_fallthrough", code: build_nested_block_br_if_depth1_unwind_add(0), locals_total: 0, expected: Expected::Value(129) },
+        Case { name: "block_typed_i32_result", code: build_typed_block_i32_result(42), locals_total: 0, expected: Expected::Value(42) },
+        Case { name: "loop_typed_i32_result", code: build_typed_loop_i32_result(9), locals_total: 0, expected: Expected::Value(9) },
+        Case { name: "if_typed_i32_true", code: build_typed_if_else_i32_result(1, 11, 22), locals_total: 0, expected: Expected::Value(11) },
+        Case { name: "if_typed_i32_false", code: build_typed_if_else_i32_result(0, 11, 22), locals_total: 0, expected: Expected::Value(22) },
         Case { name: "memory_size_match", code: build_memory_size(), locals_total: 0, expected: Expected::MatchOk },
+        Case { name: "memory_grow_zero_returns_old_pages", code: build_memory_grow(0), locals_total: 0, expected: Expected::Value(1) },
+        Case { name: "memory_grow_fail_returns_minus1", code: build_memory_grow(1), locals_total: 0, expected: Expected::Value(-1) },
         Case { name: "unreachable_trap", code: build_unreachable(), locals_total: 0, expected: Expected::AnyErr },
     ];
 

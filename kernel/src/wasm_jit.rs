@@ -204,7 +204,7 @@ fn analyze_basic_blocks_into(code: &[u8], blocks: &mut Vec<BasicBlock>) {
                 pc += n;
             }
             Some(Opcode::Block) | Some(Opcode::Loop) | Some(Opcode::If) => {
-                let (n, _empty_block_type) = match read_blocktype_width(code, pc) {
+                let (n, _block_type) = match read_blocktype_width(code, pc) {
                     Some(v) => v,
                     None => break,
                 };
@@ -274,9 +274,29 @@ enum ControlKind {
     If,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JitBlockType {
+    Empty,
+    I32,
+    Unsupported,
+}
+
+impl JitBlockType {
+    #[inline]
+    fn result_arity(self) -> i32 {
+        match self {
+            JitBlockType::Empty => 0,
+            JitBlockType::I32 => 1,
+            JitBlockType::Unsupported => 0,
+        }
+    }
+}
+
 struct ControlFrame {
     kind: ControlKind,
     stack_depth_at_entry: i32,
+    result_arity: i32,
+    label_arity: i32,
     loop_target: Option<usize>,
     else_patch: Option<usize>,
     has_else: bool,
@@ -311,6 +331,8 @@ fn emit_code_into(
     control_stack.push(ControlFrame {
         kind: ControlKind::Function,
         stack_depth_at_entry: 0,
+        result_arity: 0,
+        label_arity: 0,
         loop_target: None,
         else_patch: None,
         has_else: false,
@@ -366,6 +388,9 @@ fn emit_code_into(
                     saw_function_end = true;
                 } else {
                     let mut frame = control_stack.pop().ok_or("Unexpected end")?;
+                    if frame.kind == ControlKind::If && frame.result_arity > 0 && !frame.has_else {
+                        return Err("Typed if without else not supported by JIT");
+                    }
                     match frame.kind {
                         ControlKind::If => {
                             if let Some(else_patch) = frame.else_patch.take() {
@@ -378,7 +403,7 @@ fn emit_code_into(
                     for patch in frame.end_patches.drain(..) {
                         emitter.patch_rel32(patch, end_target)?;
                     }
-                    stack_depth = frame.stack_depth_at_entry;
+                    stack_depth = frame.stack_depth_at_entry + frame.result_arity;
                 }
             }
             Opcode::Block => {
@@ -389,15 +414,18 @@ fn emit_code_into(
                 #[cfg(target_arch = "x86_64")]
                 {
                     emitter.emit_instr_fuel_check();
-                    let (blocktype_width, empty_block_type) =
+                    let (blocktype_width, block_type) =
                         read_blocktype_width(code, pc).ok_or("Bad block type")?;
                     pc += blocktype_width;
-                    if !empty_block_type {
-                        return Err("Non-empty block type not supported by JIT");
+                    if block_type == JitBlockType::Unsupported {
+                        return Err("Block type not supported by JIT");
                     }
+                    let result_arity = block_type.result_arity();
                     control_stack.push(ControlFrame {
                         kind: ControlKind::Block,
                         stack_depth_at_entry: stack_depth,
+                        result_arity,
+                        label_arity: result_arity,
                         loop_target: None,
                         else_patch: None,
                         has_else: false,
@@ -413,16 +441,20 @@ fn emit_code_into(
                 #[cfg(target_arch = "x86_64")]
                 {
                     emitter.emit_instr_fuel_check();
-                    let (blocktype_width, empty_block_type) =
+                    let (blocktype_width, block_type) =
                         read_blocktype_width(code, pc).ok_or("Bad loop type")?;
                     pc += blocktype_width;
-                    if !empty_block_type {
-                        return Err("Non-empty loop type not supported by JIT");
+                    if block_type == JitBlockType::Unsupported {
+                        return Err("Loop type not supported by JIT");
                     }
                     let loop_target = emitter.code.len();
+                    let result_arity = block_type.result_arity();
                     control_stack.push(ControlFrame {
                         kind: ControlKind::Loop,
                         stack_depth_at_entry: stack_depth,
+                        result_arity,
+                        // MVP subset: loop branch targets consume no values.
+                        label_arity: 0,
                         loop_target: Some(loop_target),
                         else_patch: None,
                         has_else: false,
@@ -657,6 +689,20 @@ fn emit_code_into(
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_memory_size();
             }
+            Opcode::MemoryGrow => {
+                emitter.emit_instr_fuel_check();
+                if pc >= code.len() {
+                    return Err("Bad memory.grow");
+                }
+                let mem_idx = code[pc];
+                pc += 1;
+                if mem_idx != 0 {
+                    return Err("Bad memory.grow");
+                }
+                stack_pop(&mut stack_depth, 1)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_memory_grow();
+            }
             Opcode::If => {
                 #[cfg(not(target_arch = "x86_64"))]
                 {
@@ -665,17 +711,20 @@ fn emit_code_into(
                 #[cfg(target_arch = "x86_64")]
                 {
                     emitter.emit_instr_fuel_check();
-                    let (blocktype_width, empty_block_type) =
+                    let (blocktype_width, block_type) =
                         read_blocktype_width(code, pc).ok_or("Bad if block type")?;
                     pc += blocktype_width;
-                    if !empty_block_type {
-                        return Err("Non-empty if block type not supported by JIT");
+                    if block_type == JitBlockType::Unsupported {
+                        return Err("If block type not supported by JIT");
                     }
                     stack_pop(&mut stack_depth, 1)?;
                     let else_patch = emitter.emit_pop_cond_jz_placeholder();
+                    let result_arity = block_type.result_arity();
                     control_stack.push(ControlFrame {
                         kind: ControlKind::If,
                         stack_depth_at_entry: stack_depth,
+                        result_arity,
+                        label_arity: result_arity,
                         loop_target: None,
                         else_patch: Some(else_patch),
                         has_else: false,
@@ -718,13 +767,22 @@ fn emit_code_into(
                     let (depth, n) = read_uleb128(code, pc).ok_or("Bad br depth")?;
                     pc += n;
                     let target_idx = resolve_label_target_idx(&control_stack, depth)?;
-                    let (target_kind, target_stack_depth, target_loop_target) = {
+                    let (target_kind, target_stack_depth, target_loop_target, target_label_arity) = {
                         let frame = &control_stack[target_idx];
-                        (frame.kind, frame.stack_depth_at_entry, frame.loop_target)
+                        (
+                            frame.kind,
+                            frame.stack_depth_at_entry,
+                            frame.loop_target,
+                            frame.label_arity,
+                        )
                     };
+                    if target_kind != ControlKind::Loop && target_label_arity != 0 {
+                        return Err("Branch to value-typed block not supported by JIT");
+                    }
+                    let target_depth = target_stack_depth + target_label_arity;
                     // Branch target stack depth must be committed on the taken
                     // path before transfer-of-control.
-                    emitter.emit_set_stack_depth(target_stack_depth)?;
+                    emitter.emit_set_stack_depth(target_depth)?;
                     let jump = emitter.emit_jump_placeholder();
                     match target_kind {
                         ControlKind::Loop => {
@@ -736,7 +794,7 @@ fn emit_code_into(
                             control_stack[target_idx].end_patches.push(jump);
                         }
                     }
-                    stack_depth = target_stack_depth;
+                    stack_depth = target_depth;
                 }
             }
             Opcode::BrIf => {
@@ -753,11 +811,20 @@ fn emit_code_into(
                     let target_idx = resolve_label_target_idx(&control_stack, depth)?;
                     emitter.emit_pop_to_eax();
                     let jz_fallthrough = emitter.emit_cond_jz_placeholder();
-                    let (target_kind, target_stack_depth, target_loop_target) = {
+                    let (target_kind, target_stack_depth, target_loop_target, target_label_arity) = {
                         let frame = &control_stack[target_idx];
-                        (frame.kind, frame.stack_depth_at_entry, frame.loop_target)
+                        (
+                            frame.kind,
+                            frame.stack_depth_at_entry,
+                            frame.loop_target,
+                            frame.label_arity,
+                        )
                     };
-                    emitter.emit_set_stack_depth(target_stack_depth)?;
+                    if target_kind != ControlKind::Loop && target_label_arity != 0 {
+                        return Err("br_if to value-typed block not supported by JIT");
+                    }
+                    let target_depth = target_stack_depth + target_label_arity;
+                    emitter.emit_set_stack_depth(target_depth)?;
                     let jump = emitter.emit_jump_placeholder();
                     match target_kind {
                         ControlKind::Loop => {
@@ -853,6 +920,7 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
             | Opcode::I32Load
             | Opcode::I32Store
             | Opcode::MemorySize
+            | Opcode::MemoryGrow
             | Opcode::Block
             | Opcode::Loop
             | Opcode::If
@@ -1915,6 +1983,20 @@ impl Emitter {
         self.emit_push_eax();
     }
 
+    fn emit_memory_grow(&mut self) {
+        // Current kernel runtime wires WASM linear memory at fixed max size
+        // (1 page), so memory.grow can only succeed for delta=0.
+        self.emit_pop_to_eax(); // delta pages
+        self.emit(&[0x83, 0xF8, 0x00]); // cmp eax, 0
+        self.emit(&[0x75, 0x07]); // jne fail
+        self.emit(&[0x89, 0xC8]); // mov eax, ecx
+        self.emit(&[0xC1, 0xE8, 0x10]); // shr eax, 16
+        self.emit(&[0xEB, 0x05]); // jmp done
+        self.emit(&[0xB8]); // fail: mov eax, -1
+        self.emit_i32(-1);
+        self.emit_push_eax();
+    }
+
     fn emit_cfi_push_return(&mut self) {
         // mov eax, [ebp-24] (shadow sp ptr)
         self.emit(&[0x8B, 0x45, 0xE8]);
@@ -2633,6 +2715,20 @@ impl Emitter {
         self.emit_push_eax();
     }
 
+    fn emit_memory_grow(&mut self) {
+        // Current kernel runtime wires WASM linear memory at fixed max size
+        // (1 page), so memory.grow can only succeed for delta=0.
+        self.emit_pop_to_eax(); // delta pages
+        self.emit(&[0x83, 0xF8, 0x00]); // cmp eax, 0
+        self.emit(&[0x75, 0x08]); // jne fail
+        self.emit(&[0x44, 0x89, 0xF8]); // mov eax, r15d
+        self.emit(&[0xC1, 0xE8, 0x10]); // shr eax, 16
+        self.emit(&[0xEB, 0x05]); // jmp done
+        self.emit(&[0xB8]); // fail: mov eax, -1
+        self.emit_i32(-1);
+        self.emit_push_eax();
+    }
+
     fn emit_cfi_push_return(&mut self) {}
 
     fn emit_cfi_check_return(&mut self) {}
@@ -2817,19 +2913,22 @@ fn read_sleb128_i32(bytes: &[u8], mut offset: usize) -> Option<(i32, usize)> {
     Some((result, count))
 }
 
-fn read_blocktype_width(bytes: &[u8], offset: usize) -> Option<(usize, bool)> {
+fn read_blocktype_width(bytes: &[u8], offset: usize) -> Option<(usize, JitBlockType)> {
     if offset >= bytes.len() {
         return None;
     }
     let b = bytes[offset];
     if b == 0x40 {
-        return Some((1, true));
+        return Some((1, JitBlockType::Empty));
     }
-    if b == 0x7F || b == 0x7E || b == 0x7D || b == 0x7C || b == 0x70 || b == 0x6F {
-        return Some((1, false));
+    if b == 0x7F {
+        return Some((1, JitBlockType::I32));
+    }
+    if b == 0x7E || b == 0x7D || b == 0x7C || b == 0x70 || b == 0x6F {
+        return Some((1, JitBlockType::Unsupported));
     }
     let (_idx, n) = read_uleb128(bytes, offset)?;
-    Some((n, false))
+    Some((n, JitBlockType::Unsupported))
 }
 
 // ============================================================================

@@ -326,12 +326,12 @@ jit_user_enter:
     push r12
     push r13
 
-    mov eax, esp
-    mov dword [rel JIT_USER_RETURN_ESP], eax
-    mov dword [rel JIT_USER_DBG_SAVE_ESP], eax
+    mov rax, rsp
+    mov qword [rel JIT_USER_RETURN_ESP], rax
+    mov qword [rel JIT_USER_DBG_SAVE_ESP], rax
     lea rax, [rel .jit_return]
-    mov dword [rel JIT_USER_RETURN_EIP], eax
-    mov dword [rel JIT_USER_DBG_SAVE_EIP], eax
+    mov qword [rel JIT_USER_RETURN_EIP], rax
+    mov qword [rel JIT_USER_DBG_SAVE_EIP], rax
     mov eax, dword [rel JIT_USER_DBG_SAVE_SEQ]
     add eax, 1
     mov dword [rel JIT_USER_DBG_SAVE_SEQ], eax
@@ -412,10 +412,10 @@ syscall_entry:
     mov dword [rel JIT_USER_RETURN_PENDING], 1
     xor ecx, ecx
     xchg ecx, dword [rel JIT_USER_ACTIVE]
-    mov edx, dword [rel JIT_USER_RETURN_ESP]
-    mov ecx, dword [rel JIT_USER_RETURN_EIP]
-    mov dword [rel JIT_USER_DBG_SYSCALL_ESP], edx
-    mov dword [rel JIT_USER_DBG_SYSCALL_EIP], ecx
+    mov rdx, qword [rel JIT_USER_RETURN_ESP]
+    mov rcx, qword [rel JIT_USER_RETURN_EIP]
+    mov qword [rel JIT_USER_DBG_SYSCALL_ESP], rdx
+    mov qword [rel JIT_USER_DBG_SYSCALL_EIP], rcx
     mov dword [rel JIT_USER_DBG_SYSCALL_NR], eax
     mov dword [rel JIT_USER_DBG_SYSCALL_FLAGS], 0
     mov ebx, dword [rel JIT_USER_DBG_SYSCALL_SEQ]

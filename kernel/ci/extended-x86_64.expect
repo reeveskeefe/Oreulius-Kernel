@@ -12,6 +12,10 @@ set jitfuzzreg_timeout 180
 if {[info exists env(X64_JITFUZZREG_TIMEOUT)]} {
     set jitfuzzreg_timeout $env(X64_JITFUZZREG_TIMEOUT)
 }
+set jitfuzzreg_iters 1
+if {[info exists env(X64_JITFUZZREG_ITERS)]} {
+    set jitfuzzreg_iters $env(X64_JITFUZZREG_ITERS)
+}
 set jitfuzz_timeout 420
 if {[info exists env(X64_JITFUZZ_TIMEOUT)]} {
     set jitfuzz_timeout $env(X64_JITFUZZ_TIMEOUT)
@@ -28,23 +32,48 @@ set expect_edge_adm_total $expect_edge_total
 if {[info exists env(X64_EXPECT_EDGE_ADM_TOTAL)]} {
     set expect_edge_adm_total $env(X64_EXPECT_EDGE_ADM_TOTAL)
 }
-set expect_min_bins 0
+if {$expect_bins_total >= 24} {
+    set expect_min_bins 24
+} else {
+    set expect_min_bins 0
+}
 if {[info exists env(X64_EXPECT_MIN_BINS)]} {
     set expect_min_bins $env(X64_EXPECT_MIN_BINS)
 }
-set expect_min_edges_full 0
+if {$expect_edge_total >= 576} {
+    set expect_min_edges_full 576
+} else {
+    set expect_min_edges_full 0
+}
 if {[info exists env(X64_EXPECT_MIN_EDGES_FULL)]} {
     set expect_min_edges_full $env(X64_EXPECT_MIN_EDGES_FULL)
 }
-set expect_min_edges_adm 0
+if {$expect_edge_adm_total >= 576} {
+    set expect_min_edges_adm 576
+} else {
+    set expect_min_edges_adm 0
+}
 if {[info exists env(X64_EXPECT_MIN_EDGES_ADM)]} {
     set expect_min_edges_adm $env(X64_EXPECT_MIN_EDGES_ADM)
 }
-set expect_min_reg_edges_full 0
+if {$expect_edge_total >= 576} {
+    # Repeatable local runs in true 24-bin mode:
+    # `jitfuzzreg full 16` => edges_full/admissible = 18/576.
+    set expect_min_reg_edges_full 18
+    if {![info exists env(X64_JITFUZZREG_ITERS)]} {
+        set jitfuzzreg_iters 16
+    }
+} else {
+    set expect_min_reg_edges_full 0
+}
 if {[info exists env(X64_EXPECT_MIN_JITFUZZREG_EDGES_FULL)]} {
     set expect_min_reg_edges_full $env(X64_EXPECT_MIN_JITFUZZREG_EDGES_FULL)
 }
-set expect_min_reg_edges_adm 0
+if {$expect_edge_adm_total >= 576} {
+    set expect_min_reg_edges_adm 18
+} else {
+    set expect_min_reg_edges_adm 0
+}
 if {[info exists env(X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM)]} {
     set expect_min_reg_edges_adm $env(X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM)
 }
@@ -292,7 +321,7 @@ run_x64_jit_fuzz_stable "wasm-jit-fuzz 1000 0" $jitfuzz_timeout
 # Run the same long fuzz command a second time to catch reboot/PF-storm style
 # regressions that only show up on repeated execution.
 run_x64_jit_fuzz_stable "wasm-jit-fuzz 1000 0" $jitfuzz_timeout
-run_x64_jitfuzzreg_with_gate "jitfuzzreg full" $jitfuzzreg_timeout
+run_x64_jitfuzzreg_with_gate "jitfuzzreg full $jitfuzzreg_iters" $jitfuzzreg_timeout
 
 send -- "jitcall\r"
 expect {

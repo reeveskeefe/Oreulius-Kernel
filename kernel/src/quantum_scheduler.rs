@@ -232,6 +232,7 @@ pub struct ProcessInfo {
     pub process: Process,
     pub context: ProcessContext,
     pub shared_runtime_pid: Option<Pid>,
+    pub address_space: Option<Box<crate::arch::mmu::AddressSpace>>,
     pub stack: Option<Box<[u8; crate::process::STACK_SIZE]>>,
     pub quantum_remaining: u32,
     pub total_cpu_time: u64,      // Total ticks this process ran
@@ -255,6 +256,129 @@ pub struct SchedulerStats {
     pub preemptions: u64,
     pub voluntary_yields: u64,
     pub idle_ticks: u64,
+}
+
+#[inline]
+fn quantum_for_priority(priority: ProcessPriority) -> u32 {
+    match priority {
+        ProcessPriority::High => QUANTUM_HIGH,
+        ProcessPriority::Normal => QUANTUM_NORMAL,
+        ProcessPriority::Low => QUANTUM_LOW,
+    }
+}
+
+#[cfg(target_arch = "x86")]
+#[inline]
+fn address_space_root_addr(space: &crate::arch::mmu::AddressSpace) -> usize {
+    space.phys_addr()
+}
+
+#[cfg(not(target_arch = "x86"))]
+#[inline]
+fn address_space_root_addr(space: &crate::arch::mmu::AddressSpace) -> usize {
+    space.page_table_root_addr()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+extern "C" fn user_process_bootstrap() -> ! {
+    let launch = (|| -> Option<(Pid, u32, u32)> {
+        let mut scheduler = QUANTUM_SCHEDULER.lock();
+        let pid = match scheduler.current_pid {
+            Some(pid) => pid,
+            None => return None,
+        };
+        let info = match scheduler.processes[pid.0 as usize].as_mut() {
+            Some(info) => info,
+            None => return None,
+        };
+        if let Some(space) = info.address_space.as_ref() {
+            unsafe {
+                space.activate();
+            }
+        } else {
+            return None;
+        }
+        let user_entry = info.process.program_counter as u32;
+        let user_stack = info.process.stack_ptr as u32;
+        Some((pid, user_entry, user_stack))
+    })();
+
+    let (pid, user_entry, user_stack) = match launch {
+        Some(v) => v,
+        None => {
+            scheduler_rt::logf(format_args!(
+                "[SCHED] user bootstrap failed: missing current pid/process/address-space"
+            ));
+            loop {
+                scheduler_rt::halt_cpu();
+            }
+        }
+    };
+
+    unsafe {
+        crate::process_asm::enter_user_mode(
+            user_stack,
+            user_entry,
+            crate::gdt::USER_CS,
+            crate::gdt::USER_DS,
+        );
+    }
+
+    scheduler_rt::logf(format_args!(
+        "[SCHED] user process PID {} returned to bootstrap unexpectedly",
+        pid.0
+    ));
+    let _ = QUANTUM_SCHEDULER.lock().remove_process(pid);
+    loop {
+        scheduler_rt::halt_cpu();
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+extern "C" fn user_process_bootstrap() -> ! {
+    scheduler_rt::logf(format_args!(
+        "[SCHED] AArch64 user bootstrap reached before EL0 entry path is implemented"
+    ));
+    loop {
+        scheduler_rt::halt_cpu();
+    }
+}
+
+fn build_user_launch_context(
+    space_root: usize,
+) -> Result<(ProcessContext, Box<[u8; crate::process::STACK_SIZE]>), &'static str> {
+    let mut stack = Box::new([0u8; crate::process::STACK_SIZE]);
+    let stack_top = (stack.as_mut_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
+    let stack_bottom = stack_top.saturating_sub(8);
+    if stack_bottom < 0x1000 || stack_top <= stack_bottom {
+        return Err("User process kernel stack invalid");
+    }
+    if !scheduler_platform::validate_kernel_stack_mapping(stack_bottom, stack_top) {
+        return Err("User process kernel stack not mapped");
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    unsafe {
+        // x86 trampoline pops the entry pointer from the new stack.
+        let entry_addr = user_process_bootstrap as *const () as u32;
+        let entry_ptr = (stack_top - 4) as *mut u32;
+        entry_ptr.write(entry_addr);
+    }
+
+    let (mut ctx, _, _) =
+        scheduler_platform::init_kernel_thread_context(user_process_bootstrap, stack_top)?;
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        ctx.cr3 = space_root as u32;
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        ctx.ttbr0_el1 = space_root as u64;
+        ctx.esp = ctx.sp as u32;
+    }
+
+    Ok((ctx, stack))
 }
 
 impl QuantumScheduler {
@@ -304,6 +428,7 @@ impl QuantumScheduler {
             process,
             context: scheduler_platform::context_new(),
             shared_runtime_pid: Some(pid),
+            address_space: None,
             stack: None,
             quantum_remaining: quantum,
             total_cpu_time: 0,
@@ -698,6 +823,7 @@ impl QuantumScheduler {
             process,
             context: ctx,
             shared_runtime_pid,
+            address_space: None,
             stack: None,  // Stack is static, not heap-allocated
             quantum_remaining: QUANTUM_NORMAL,
             total_cpu_time: 0,
@@ -791,9 +917,71 @@ impl QuantumScheduler {
         unsafe { scheduler_platform::load_context(ctx_ptr); }
     }
     
-    /// Add a user process (stub for now)
-    pub fn add_user_process(&mut self, _process: Process, _space: Box<crate::arch::mmu::AddressSpace>, _entry: u32, _user_stack: u32) -> Result<Pid, &'static str> {
-        Err("User processes not yet implemented")
+    /// Add a user process to the scheduler with an owned address-space.
+    pub fn add_user_process(
+        &mut self,
+        mut process: Process,
+        space: Box<crate::arch::mmu::AddressSpace>,
+        entry: u32,
+        user_stack: u32,
+    ) -> Result<Pid, &'static str> {
+        let pid = process.pid;
+        let idx = pid.0 as usize;
+        if idx >= MAX_PROCESSES {
+            return Err("Invalid PID");
+        }
+        if self.processes[idx].is_some() {
+            return Err("PID already in use");
+        }
+
+        let space_root = address_space_root_addr(space.as_ref());
+        process.state = ProcessState::Ready;
+        process.program_counter = entry as usize;
+        process.stack_ptr = user_stack as usize;
+        process.page_dir_phys = space_root as u32;
+
+        crate::process::process_manager()
+            .set_process_page_dir(pid, process.page_dir_phys)
+            .map_err(|e| e.as_str())?;
+
+        let (ctx, kernel_stack) = build_user_launch_context(space_root)?;
+
+        #[cfg(target_arch = "aarch64")]
+        let shared_runtime_pid = {
+            if !crate::vfs_platform::aarch64_shared_process_bridge_registered() {
+                crate::vfs_platform::aarch64_register_default_shared_process_bridge();
+            }
+            let shared = crate::vfs_platform::aarch64_spawn_process(process.parent.map(|p| p.0))
+                .map_err(|e| {
+                    scheduler_rt::logf(format_args!(
+                        "[SCHED] AArch64 shared process spawn failed for user PID {}: {}",
+                        pid.0, e
+                    ));
+                    e
+                })?;
+            Some(Pid::new(shared))
+        };
+        #[cfg(not(target_arch = "aarch64"))]
+        let shared_runtime_pid = Some(pid);
+
+        let priority = process.priority;
+        let info = ProcessInfo {
+            process,
+            context: ctx,
+            shared_runtime_pid,
+            address_space: Some(space),
+            stack: Some(kernel_stack),
+            quantum_remaining: quantum_for_priority(priority),
+            total_cpu_time: 0,
+            total_wait_time: 0,
+            last_scheduled: scheduler_platform::ticks_now(),
+            switches: 0,
+        };
+
+        self.processes[idx] = Some(info);
+        self.enqueue_ready(pid, priority);
+        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
+        Ok(pid)
     }
     
     /// Remove a process from scheduler state and all run/wait queues.
@@ -851,9 +1039,107 @@ impl QuantumScheduler {
         Ok(())
     }
     
-    /// Fork with COW (stub for now)
+    /// Fork current process with copy-on-write semantics where supported.
     pub fn fork_current_cow(&mut self) -> Result<Pid, &'static str> {
-        Err("Fork not yet implemented")
+        let parent_pid = self.current_pid.ok_or("No current process")?;
+        let parent_idx = parent_pid.0 as usize;
+        if parent_idx >= MAX_PROCESSES {
+            return Err("Invalid current PID");
+        }
+
+        let child_pid = (0..MAX_PROCESSES)
+            .map(|i| Pid(i as u32))
+            .find(|pid| self.processes[pid.0 as usize].is_none())
+            .ok_or("No available PIDs")?;
+
+        let (mut child_process, child_space) = {
+            let parent_info = self.processes[parent_idx]
+                .as_mut()
+                .ok_or("Current process not found")?;
+            let parent_space = parent_info
+                .address_space
+                .as_mut()
+                .ok_or("Current process has no user address space")?;
+
+            #[cfg(target_arch = "x86")]
+            let child_space = Box::new(parent_space.clone_cow()?);
+            #[cfg(not(target_arch = "x86"))]
+            let child_space = Box::new(crate::arch::mmu::AddressSpace::new()?);
+
+            let mut child = parent_info.process.clone();
+            child.pid = child_pid;
+            child.parent = Some(parent_pid);
+            child.state = ProcessState::Ready;
+            child.cpu_time = 0;
+
+            (child, child_space)
+        };
+
+        let child_space_root = address_space_root_addr(child_space.as_ref());
+        child_process.page_dir_phys = child_space_root as u32;
+
+        let child_name_buf = child_process.name;
+        let child_name_len = child_name_buf
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(child_name_buf.len());
+        let child_name =
+            core::str::from_utf8(&child_name_buf[..child_name_len]).unwrap_or("fork-child");
+
+        crate::process::process_manager()
+            .temporal_spawn_with_pid(child_pid, child_name, Some(parent_pid))
+            .map_err(|e| e.as_str())?;
+        crate::process::process_manager()
+            .set_process_page_dir(child_pid, child_process.page_dir_phys)
+            .map_err(|e| e.as_str())?;
+
+        for (_slot, cap) in child_process.capabilities.list() {
+            let _ = crate::process::process_manager().insert_capability(child_pid, *cap);
+        }
+        for fd in 3..crate::process::MAX_FD {
+            if let Some(handle_id) = child_process.fd_table[fd] {
+                let _ = crate::process::process_manager().alloc_fd(child_pid, handle_id);
+            }
+        }
+
+        let (child_ctx, child_stack) = build_user_launch_context(child_space_root)?;
+
+        #[cfg(target_arch = "aarch64")]
+        let shared_runtime_pid = {
+            if !crate::vfs_platform::aarch64_shared_process_bridge_registered() {
+                crate::vfs_platform::aarch64_register_default_shared_process_bridge();
+            }
+            let shared = crate::vfs_platform::aarch64_spawn_process(Some(parent_pid.0))
+                .map_err(|e| {
+                    scheduler_rt::logf(format_args!(
+                        "[SCHED] AArch64 shared process spawn failed for fork child PID {}: {}",
+                        child_pid.0, e
+                    ));
+                    e
+                })?;
+            Some(Pid::new(shared))
+        };
+        #[cfg(not(target_arch = "aarch64"))]
+        let shared_runtime_pid = Some(child_pid);
+
+        let child_priority = child_process.priority;
+        let child_info = ProcessInfo {
+            process: child_process,
+            context: child_ctx,
+            shared_runtime_pid,
+            address_space: Some(child_space),
+            stack: Some(child_stack),
+            quantum_remaining: quantum_for_priority(child_priority),
+            total_cpu_time: 0,
+            total_wait_time: 0,
+            last_scheduled: scheduler_platform::ticks_now(),
+            switches: 0,
+        };
+
+        self.processes[child_pid.0 as usize] = Some(child_info);
+        self.enqueue_ready(child_pid, child_priority);
+        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
+        Ok(child_pid)
     }
     
     /// Record voluntary yield

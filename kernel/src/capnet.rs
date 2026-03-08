@@ -2673,3 +2673,10 @@ fn read_u64(buf: &[u8], offset: &mut usize) -> Result<u64, CapNetError> {
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
     ]))
 }
+
+/// CapNet Offline Certificate 
+/// Extracted securely during compilation via `build.rs` Lanczos analysis 
+/// validating strict graph conductance properties.
+pub mod offline_certificate {
+    include!(concat!(env!("OUT_DIR"), "/spectral_certificate.rs"));
+}
