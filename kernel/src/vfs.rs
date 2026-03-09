@@ -46,7 +46,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::min;
 use core::fmt::Write;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::fs::{
     FileKey, FilesystemCapability, FilesystemError, FilesystemQuota, FilesystemRights, Request,
@@ -62,7 +62,7 @@ pub type InodeId = u64;
 pub const MAX_NAME_LEN: usize = 64;
 const VFS_PERSIST_MAGIC: u32 = 0x4F_56_46_53; // "OVFS"
 const VFS_PERSIST_VERSION: u16 = 3;
-static NEXT_VFS_STORAGE_NAMESPACE: AtomicU64 = AtomicU64::new(1);
+static NEXT_VFS_STORAGE_NAMESPACE: AtomicU32 = AtomicU32::new(1);
 const VFS_STORE_PREFIX: &str = "system/vfs/";
 const VFS_SNAPSHOT_KEY: &str = "system/vfs/snapshot.bin";
 const VFS_JOURNAL_KEY: &str = "system/vfs/journal.log";
@@ -4747,7 +4747,7 @@ fn pid_key(pid: Pid) -> u32 {
 }
 
 fn allocate_vfs_storage_namespace() -> u64 {
-    NEXT_VFS_STORAGE_NAMESPACE.fetch_add(1, Ordering::Relaxed)
+    NEXT_VFS_STORAGE_NAMESPACE.fetch_add(1, Ordering::Relaxed) as u64
 }
 
 fn vfs_store_capability() -> FilesystemCapability {
