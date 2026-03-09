@@ -161,8 +161,9 @@ impl ArchPlatform for X86LegacyPlatform {
     fn name(&self) -> &'static str {
         #[cfg(target_arch = "x86_64")]
         {
-            return "x86_64-bringup";
+            "x86_64-bringup"
         }
+        #[cfg(not(target_arch = "x86_64"))]
         "x86-legacy"
     }
 
@@ -199,8 +200,8 @@ impl ArchPlatform for X86LegacyPlatform {
         #[cfg(target_arch = "x86_64")]
         {
             super::x86_64_runtime::init_cpu_tables();
-            return;
         }
+        #[cfg(not(target_arch = "x86_64"))]
         crate::gdt::init();
     }
 
@@ -208,8 +209,8 @@ impl ArchPlatform for X86LegacyPlatform {
         #[cfg(target_arch = "x86_64")]
         {
             super::x86_64_runtime::init_trap_table();
-            return;
         }
+        #[cfg(not(target_arch = "x86_64"))]
         crate::idt_asm::init_trap_table();
     }
 
@@ -217,8 +218,8 @@ impl ArchPlatform for X86LegacyPlatform {
         #[cfg(target_arch = "x86_64")]
         {
             super::x86_64_runtime::init_interrupt_controller();
-            return;
         }
+        #[cfg(not(target_arch = "x86_64"))]
         crate::idt_asm::init_interrupt_controller();
     }
 
@@ -226,8 +227,8 @@ impl ArchPlatform for X86LegacyPlatform {
         #[cfg(target_arch = "x86_64")]
         {
             super::x86_64_runtime::init_timer();
-            return;
         }
+        #[cfg(not(target_arch = "x86_64"))]
         crate::pit::init();
     }
 
@@ -235,8 +236,8 @@ impl ArchPlatform for X86LegacyPlatform {
         #[cfg(target_arch = "x86_64")]
         {
             super::x86_64_runtime::enable_interrupts();
-            return;
         }
+        #[cfg(not(target_arch = "x86_64"))]
         crate::asm_bindings::enable_interrupts();
     }
 

@@ -855,6 +855,9 @@ fn mmu_bootstrap_init() -> Result<(), &'static str> {
 }
 
 impl ArchMmu for AArch64Mmu {
+    type AddressSpace = AddressSpace;
+    type PageTable = AddressSpace;
+
     fn name(&self) -> &'static str {
         "aarch64-4k-lpae"
     }

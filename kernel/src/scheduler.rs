@@ -591,8 +591,7 @@ pub fn on_timer_tick() {
             sched.preemptions += 1;
             sched.wake_sleeping();
             if let Some(current_pid) = sched.current_pid {
-                let priority = if let Some(ref mut proc) = sched.processes[current_pid.0 as usize]
-                {
+                let priority = if let Some(ref mut proc) = sched.processes[current_pid.0 as usize] {
                     proc.state = ProcessState::Ready;
                     proc.priority
                 } else {

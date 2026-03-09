@@ -145,9 +145,20 @@ impl Tss {
     }
 }
 
+#[cfg(target_arch = "x86")]
 extern "C" {
     fn gdt_load(gdt_ptr: *const GdtPointer);
 }
+
+#[cfg(target_arch = "x86")]
+#[inline]
+unsafe fn gdt_load_compat(gdt_ptr: *const GdtPointer) {
+    gdt_load(gdt_ptr);
+}
+
+#[cfg(not(target_arch = "x86"))]
+#[inline]
+unsafe fn gdt_load_compat(_gdt_ptr: *const GdtPointer) {}
 
 pub const KERNEL_CS: u16 = 0x08;
 pub const KERNEL_DS: u16 = 0x10;
@@ -191,7 +202,7 @@ pub fn init() {
             base: (&GDT as *const _ as u32),
         };
 
-        gdt_load(&gdt_ptr);
+        gdt_load_compat(&gdt_ptr);
 
         // Initialize TSS kernel stack
         let esp0 = read_esp();

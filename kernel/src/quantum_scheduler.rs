@@ -1068,6 +1068,10 @@ impl QuantumScheduler {
             fpu_state: crate::arch::fpu::ExtFpuState::new(),
         };
 
+        self.processes[pid.0 as usize] = Some(info);
+        self.enqueue_ready(pid, priority);
+        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
+
         scheduler_rt::vga_print_str("\n");
         // Print stack assignment for debugging
         scheduler_rt::logf(format_args!(
@@ -1187,150 +1191,97 @@ impl QuantumScheduler {
         entry: u32,
         user_stack: u32,
     ) -> Result<Pid, &'static str> {
-        #[cfg(target_arch = "x86_64")]
-        {
-            let _ = (&mut process, &space, entry, user_stack);
-            return Err("add_user_process: not supported on this arch");
-        }
-
-        let pid = process.pid;
-        let idx = pid.0 as usize;
-
-        if idx >= MAX_PROCESSES {
-            return Err("add_user_process: PID out of range");
-        }
-        if self.processes[idx].is_some() {
-            return Err("add_user_process: PID already in use");
-        }
-
-        // Validate entry and stack look like user-space addresses
-        // (below 0xC000_0000, the kernel base on this x86 build).
-        const KERNEL_BASE_ADDR: u32 = 0xC000_0000;
-        if entry >= KERNEL_BASE_ADDR {
-            return Err("add_user_process: entry point in kernel space");
-        }
-        if user_stack == 0 || user_stack >= KERNEL_BASE_ADDR {
-            return Err("add_user_process: user stack in kernel space or null");
-        }
-
-        // Allocate a kernel stack for this process (used by the kernel-side
-        // of the context switch / syscall trampoline).
-        let kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
-            Box::new([0u8; crate::process::STACK_SIZE]);
-        let stack_top = (kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
-
-        // Physical address of the page directory (= its kernel virtual address
-        // because the kernel identity-maps all RAM on this platform).
-        let page_dir_phys = space.phys_addr() as u32;
-
-        process.state = ProcessState::Ready;
-        process.page_dir_phys = page_dir_phys;
-        process.stack_ptr = user_stack as usize;
-        process.program_counter = entry as usize;
-
-        let priority = process.priority;
-        let quantum = match priority {
-            ProcessPriority::High => QUANTUM_HIGH,
-            ProcessPriority::Normal => QUANTUM_NORMAL,
-            ProcessPriority::Low => QUANTUM_LOW,
-        };
-
-        // Build the initial kernel-side context.
-        // eip  → kernel user-entry trampoline (kernel_user_entry_trampoline).
-        //         On the very first schedule the trampoline is responsible for
-        //         performing the ring-3 transition (iret) using the entry/stack
-        //         values pushed on the kernel stack below.
-        // esp  → top of the kernel stack, minus room for the trampoline frame.
-        // cr3  → user address space physical root.
-        // eflags → IF enabled (0x202), IOPL=0.
-        //
-        // The trampoline frame pushed on the kernel stack carries:
-        //   [esp+0]  entry       (u32) – user EIP for iret
-        //   [esp+4]  user_stack  (u32) – user ESP for iret
-        //
-        // NOTE: a full ring-3 iret also needs CS/SS/DS but those selectors are
-        // architecture wiring done by the trampoline assembly. We pass the
-        // virtual addresses here and leave segment plumbing to the trampoline.
-
-        // Push the two-word frame the trampoline will consume.
-        let frame_top = (stack_top - 8) as *mut u32;
-        unsafe {
-            // slot 0: user entry EIP
-            frame_top.write(entry);
-            // slot 1: user ESP
-            frame_top.add(1).write(user_stack);
-        }
-
-        let mut ctx = scheduler_platform::context_new();
-
-        // On x86 the non-aarch64 ProcessContext exposes eip/esp/ebp/cr3/eflags.
         #[cfg(target_arch = "x86")]
         {
-            // Point to the user-entry trampoline.
+            let pid = process.pid;
+            let idx = pid.0 as usize;
+
+            if idx >= MAX_PROCESSES {
+                return Err("add_user_process: PID out of range");
+            }
+            if self.processes[idx].is_some() {
+                return Err("add_user_process: PID already in use");
+            }
+
+            const KERNEL_BASE_ADDR: u32 = 0xC000_0000;
+            if entry >= KERNEL_BASE_ADDR {
+                return Err("add_user_process: entry point in kernel space");
+            }
+            if user_stack == 0 || user_stack >= KERNEL_BASE_ADDR {
+                return Err("add_user_process: user stack in kernel space or null");
+            }
+
+            let kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
+                Box::new([0u8; crate::process::STACK_SIZE]);
+            let stack_top =
+                (kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
+            let page_dir_phys = space.phys_addr() as u32;
+
+            process.state = ProcessState::Ready;
+            process.page_dir_phys = page_dir_phys;
+            process.stack_ptr = user_stack as usize;
+            process.program_counter = entry as usize;
+
+            let priority = process.priority;
+            let quantum = match priority {
+                ProcessPriority::High => QUANTUM_HIGH,
+                ProcessPriority::Normal => QUANTUM_NORMAL,
+                ProcessPriority::Low => QUANTUM_LOW,
+            };
+
+            let frame_top = (stack_top - 8) as *mut u32;
+            unsafe {
+                frame_top.write(entry);
+                frame_top.add(1).write(user_stack);
+            }
+
+            let mut ctx = scheduler_platform::context_new();
             ctx.eip = crate::asm_bindings::kernel_user_entry_trampoline as u32;
-            // Kernel stack is 8 bytes below the pushed frame (frame_top).
             ctx.esp = frame_top as u32;
             ctx.ebp = frame_top as u32;
             ctx.cr3 = page_dir_phys;
-            // Enable interrupts once the process is first scheduled.
             ctx.eflags = 0x0000_0202;
+
+            let now = scheduler_platform::ticks_now();
+            let info = ProcessInfo {
+                process,
+                context: ctx,
+                shared_runtime_pid: None,
+                stack: Some(kernel_stack),
+                address_space: Some(space),
+                quantum_remaining: quantum,
+                total_cpu_time: 0,
+                total_wait_time: 0,
+                last_scheduled: now,
+                switches: 0,
+                yield_count: 0,
+                pagefault_count: 0,
+                ewma_yield: 0,
+                ewma_fault: 0,
+                has_used_fpu: false,
+                fpu_dirty: false,
+                fpu_state: crate::arch::fpu::ExtFpuState::new(),
+            };
+
+            self.processes[idx] = Some(info);
+            self.enqueue_ready(pid, priority);
+            self.record_temporal_state_snapshot_locked(
+                scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE,
+            );
+
+            scheduler_rt::logf(format_args!(
+                "[SCHED] add_user_process: pid={} entry={:#010x} user_sp={:#010x} cr3={:#010x}",
+                pid.0, entry, user_stack, page_dir_phys,
+            ));
+
+            Ok(pid)
         }
 
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(not(target_arch = "x86"))]
         {
-            // AArch64 user-mode entry: set PC to entry, SP to user_stack, TTBR0 to
-            // the new address space root, and mask IRQs until the thread is running.
-            ctx.pc = entry as u64;
-            ctx.sp = user_stack as u64;
-            ctx.ttbr0_el1 = page_dir_phys as u64;
-            ctx.daif = 1u64 << 7; // IRQ masked; trampoline will unmask
-            ctx.esp = user_stack;
+            let _ = (&mut process, &space, entry, user_stack);
+            Err("add_user_process: not supported on this arch")
         }
-
-        #[cfg(target_arch = "aarch64")]
-        let shared_runtime_pid = {
-            if !crate::vfs_platform::aarch64_shared_process_bridge_registered() {
-                crate::vfs_platform::aarch64_register_default_shared_process_bridge();
-            }
-            crate::vfs_platform::aarch64_spawn_process(Some(pid.0))
-                .ok()
-                .map(Pid::new)
-        };
-        #[cfg(not(target_arch = "aarch64"))]
-        let shared_runtime_pid = None;
-
-        let now = scheduler_platform::ticks_now();
-
-        let info = ProcessInfo {
-            process,
-            context: ctx,
-            shared_runtime_pid,
-            stack: Some(kernel_stack),
-            address_space: Some(space),
-            quantum_remaining: quantum,
-            total_cpu_time: 0,
-            total_wait_time: 0,
-            last_scheduled: now,
-            switches: 0,
-            yield_count: 0,
-            pagefault_count: 0,
-            ewma_yield: 0,
-            ewma_fault: 0,
-            has_used_fpu: false,
-            fpu_dirty: false,
-            fpu_state: crate::arch::fpu::ExtFpuState::new(),
-        };
-
-        self.processes[idx] = Some(info);
-        self.enqueue_ready(pid, priority);
-        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
-
-        scheduler_rt::logf(format_args!(
-            "[SCHED] add_user_process: pid={} entry={:#010x} user_sp={:#010x} cr3={:#010x}",
-            pid.0, entry, user_stack, page_dir_phys,
-        ));
-
-        Ok(pid)
     }
 
     /// Remove a process from scheduler state and all run/wait queues.
@@ -1411,147 +1362,104 @@ impl QuantumScheduler {
     ///   x86_64 and AArch64 still return
     ///   `Err("fork_current_cow: not supported on this arch")`.
     pub fn fork_current_cow(&mut self) -> Result<Pid, &'static str> {
-        // ------------------------------------------------------------------ //
-        // 1. Identify the current (parent) process
-        // ------------------------------------------------------------------ //
-        let parent_pid = self
-            .current_pid
-            .ok_or("fork_current_cow: no current process")?;
-        let parent_idx = parent_pid.0 as usize;
+        #[cfg(target_arch = "x86")]
+        {
+            let parent_pid = self
+                .current_pid
+                .ok_or("fork_current_cow: no current process")?;
+            let parent_idx = parent_pid.0 as usize;
 
-        // ------------------------------------------------------------------ //
-        // 2. Allocate a child PID
-        // ------------------------------------------------------------------ //
-        let child_pid = (0..MAX_PROCESSES)
-            .map(|i| Pid(i as u32))
-            .find(|&p| self.processes[p.0 as usize].is_none())
-            .ok_or("fork_current_cow: process table full")?;
-        let child_idx = child_pid.0 as usize;
+            let child_pid = (0..MAX_PROCESSES)
+                .map(|i| Pid(i as u32))
+                .find(|&p| self.processes[p.0 as usize].is_none())
+                .ok_or("fork_current_cow: process table full")?;
+            let child_idx = child_pid.0 as usize;
 
-        // ------------------------------------------------------------------ //
-        // 3. Clone the parent PCB and adjust child-specific fields
-        // ------------------------------------------------------------------ //
-        // We need to read the parent info without a simultaneous mutable borrow,
-        // so we extract the fields we need first.
-        let (parent_process_clone, parent_ctx, parent_priority) = {
-            let info = self.processes[parent_idx]
-                .as_ref()
-                .ok_or("fork_current_cow: parent info missing")?;
-            (info.process.clone(), info.context, info.process.priority)
-        };
+            let (parent_process_clone, parent_ctx, parent_priority) = {
+                let info = self.processes[parent_idx]
+                    .as_ref()
+                    .ok_or("fork_current_cow: parent info missing")?;
+                (info.process.clone(), info.context, info.process.priority)
+            };
 
-        let mut child_process = parent_process_clone;
-        child_process.pid = child_pid;
-        child_process.parent = Some(parent_pid);
-        child_process.state = ProcessState::Ready;
-        // Reset runtime counters for the child
-        child_process.cpu_time = 0;
-        child_process.has_used_fpu = false;
-        child_process.fpu_state = crate::process::FpuState([0u8; 512]);
+            let mut child_process = parent_process_clone;
+            child_process.pid = child_pid;
+            child_process.parent = Some(parent_pid);
+            child_process.state = ProcessState::Ready;
+            child_process.cpu_time = 0;
+            child_process.has_used_fpu = false;
+            child_process.fpu_state = crate::process::FpuState([0u8; 512]);
 
-        // ------------------------------------------------------------------ //
-        // 4. COW address space duplication (i686/x86 only for now)
-        // ------------------------------------------------------------------ //
+            let child_address_space: Box<crate::arch::mmu::AddressSpace>;
+            let child_cr3: u32;
+            {
+                let child_space = self.processes[parent_idx]
+                    .as_mut()
+                    .and_then(|info| info.address_space.as_mut())
+                    .ok_or("fork_current_cow: parent has no owned address space")
+                    .and_then(|space| {
+                        space
+                            .clone_cow()
+                            .map_err(|_| "fork_current_cow: clone_cow failed")
+                    })?;
+
+                child_cr3 = child_space.phys_addr() as u32;
+                child_address_space = Box::new(child_space);
+                child_process.page_dir_phys = child_cr3;
+            }
+
+            let mut child_ctx = parent_ctx;
+            child_ctx.cr3 = child_cr3;
+
+            let child_kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
+                Box::new([0u8; crate::process::STACK_SIZE]);
+
+            let quantum = match parent_priority {
+                ProcessPriority::High => QUANTUM_HIGH,
+                ProcessPriority::Normal => QUANTUM_NORMAL,
+                ProcessPriority::Low => QUANTUM_LOW,
+            };
+
+            let now = scheduler_platform::ticks_now();
+            let child_info = ProcessInfo {
+                process: child_process,
+                context: child_ctx,
+                shared_runtime_pid: None,
+                stack: Some(child_kernel_stack),
+                address_space: Some(child_address_space),
+                quantum_remaining: quantum,
+                total_cpu_time: 0,
+                total_wait_time: 0,
+                last_scheduled: now,
+                switches: 0,
+                yield_count: 0,
+                pagefault_count: 0,
+                ewma_yield: 0,
+                ewma_fault: 0,
+                has_used_fpu: false,
+                fpu_dirty: false,
+                fpu_state: crate::arch::fpu::ExtFpuState::new(),
+            };
+
+            crate::process_platform::on_process_spawn(child_pid, Some(parent_pid), "forked");
+            self.processes[child_idx] = Some(child_info);
+            self.enqueue_ready(child_pid, parent_priority);
+            self.record_temporal_state_snapshot_locked(
+                scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE,
+            );
+
+            scheduler_rt::logf(format_args!(
+                "[SCHED] fork_current_cow: parent={} -> child={} cr3={:#010x}",
+                parent_pid.0, child_pid.0, child_cr3,
+            ));
+
+            Ok(child_pid)
+        }
+
         #[cfg(not(target_arch = "x86"))]
         {
-            return Err("fork_current_cow: not supported on this arch");
+            Err("fork_current_cow: not supported on this arch")
         }
-
-        #[cfg(target_arch = "x86")]
-        let child_address_space: Box<crate::arch::mmu::AddressSpace>;
-        #[cfg(target_arch = "x86")]
-        let child_cr3: u32;
-
-        #[cfg(target_arch = "x86")]
-        {
-            // Borrow the parent's stored AddressSpace mutably so we can call
-            // clone_cow(). We hold no other mutable borrows into processes[parent_idx]
-            // at this point.
-            let child_space = self.processes[parent_idx]
-                .as_mut()
-                .and_then(|info| info.address_space.as_mut())
-                .ok_or("fork_current_cow: parent has no owned address space")
-                .and_then(|space| {
-                    space
-                        .clone_cow()
-                        .map_err(|_| "fork_current_cow: clone_cow failed")
-                })?;
-
-            child_cr3 = child_space.phys_addr() as u32;
-            child_address_space = Box::new(child_space);
-            child_process.page_dir_phys = child_cr3;
-        }
-
-        // ------------------------------------------------------------------ //
-        // 5. Build child context (copy of parent, but with child's CR3)
-        // ------------------------------------------------------------------ //
-        let mut child_ctx = parent_ctx;
-        #[cfg(target_arch = "x86")]
-        {
-            child_ctx.cr3 = child_cr3;
-            // The child returns 0 from fork (by convention eax is the return value
-            // of the syscall). We leave eax=0; eax is not part of ProcessContext
-            // so the child will naturally resume with the same register state and
-            // the syscall return path will overwrite eax with 0 before iret.
-        }
-
-        // ------------------------------------------------------------------ //
-        // 6. Allocate a kernel stack for the child
-        // ------------------------------------------------------------------ //
-        let child_kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
-            Box::new([0u8; crate::process::STACK_SIZE]);
-
-        let quantum = match parent_priority {
-            ProcessPriority::High => QUANTUM_HIGH,
-            ProcessPriority::Normal => QUANTUM_NORMAL,
-            ProcessPriority::Low => QUANTUM_LOW,
-        };
-
-        let now = scheduler_platform::ticks_now();
-
-        let child_info = ProcessInfo {
-            process: child_process,
-            context: child_ctx,
-            shared_runtime_pid: None,
-            stack: Some(child_kernel_stack),
-            #[cfg(target_arch = "x86")]
-            address_space: Some(child_address_space),
-            #[cfg(not(target_arch = "x86"))]
-            address_space: None,
-            quantum_remaining: quantum,
-            total_cpu_time: 0,
-            total_wait_time: 0,
-            last_scheduled: now,
-            switches: 0,
-            yield_count: 0,
-            pagefault_count: 0,
-            ewma_yield: 0,
-            ewma_fault: 0,
-            has_used_fpu: false,
-            fpu_dirty: false,
-            fpu_state: crate::arch::fpu::ExtFpuState::new(),
-        };
-
-        // ------------------------------------------------------------------ //
-        // 7. Notify platform hooks (temporal, security, capability)
-        // ------------------------------------------------------------------ //
-        #[cfg(target_arch = "x86")]
-        crate::process_platform::on_process_spawn(child_pid, Some(parent_pid), "forked");
-
-        // ------------------------------------------------------------------ //
-        // 8. Insert child into process table and ready queue
-        // ------------------------------------------------------------------ //
-        self.processes[child_idx] = Some(child_info);
-        self.enqueue_ready(child_pid, parent_priority);
-        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
-
-        #[cfg(target_arch = "x86")]
-        scheduler_rt::logf(format_args!(
-            "[SCHED] fork_current_cow: parent={} -> child={} cr3={:#010x}",
-            parent_pid.0, child_pid.0, child_cr3,
-        ));
-
-        Ok(child_pid)
     }
 
     /// Record voluntary yield

@@ -137,6 +137,8 @@ pub fn execute(input: &str) {
             vga::print_str("  vfs-ipc-sub - Subscribe IPC channel to VFS notifications\n");
             vga::print_str("  vfs-ipc-unsub - Remove IPC notification subscriber\n");
             vga::print_str("  vfs-ipc-list - List IPC notification subscribers\n");
+            vga::print_str("  vfs-ipc-stats - Show IPC subscriber backlog/inflight stats\n");
+            vga::print_str("  vfs-ipc-ack - ACK an in-flight IPC watch event\n");
             vga::print_str("  vfs-cap-dir-show - Show directory capability\n");
             vga::print_str("  vfs-cap-dir-set - Set directory capability and quota\n");
             vga::print_str("  vfs-cap-dir-clear - Clear directory capability\n");
@@ -6746,24 +6748,30 @@ fn cmd_wasm_jit_selftest() {
     let bounds = crate::wasm::jit_bounds_self_test();
     let parity = crate::wasm::jit_compare_shift_fixed_vector_self_test();
     let typed_blocktypes = crate::wasm::jit_typed_blocktype_module_self_test();
-    match (bounds, parity, typed_blocktypes) {
-        (Ok(()), Ok(()), Ok(())) => {
+    let globals = crate::wasm::jit_global_module_self_test();
+    match (bounds, parity, typed_blocktypes, globals) {
+        (Ok(()), Ok(()), Ok(()), Ok(())) => {
             vga::print_str(
-                "Self-test passed (bounds traps + fixed-vector interpreter/JIT parity)\n",
+                "Self-test passed (bounds traps + fixed-vector interpreter/JIT parity + module globals)\n",
             );
         }
-        (Err(e), _, _) => {
+        (Err(e), _, _, _) => {
             vga::print_str("Self-test failed (bounds): ");
             vga::print_str(e);
             vga::print_str("\n");
         }
-        (_, Err(e), _) => {
+        (_, Err(e), _, _) => {
             vga::print_str("Self-test failed (fixed-vectors): ");
             vga::print_str(e);
             vga::print_str("\n");
         }
-        (_, _, Err(e)) => {
+        (_, _, Err(e), _) => {
             vga::print_str("Self-test failed (typed-blocktypes): ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+        (_, _, _, Err(e)) => {
+            vga::print_str("Self-test failed (globals): ");
             vga::print_str(e);
             vga::print_str("\n");
         }

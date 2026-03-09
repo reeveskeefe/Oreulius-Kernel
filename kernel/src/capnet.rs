@@ -828,7 +828,46 @@ impl CapabilityTokenV1 {
     pub fn into_linear<const C: usize>(self) -> crate::tensor_core::LinearCapability<Self, C> {
         crate::tensor_core::LinearCapability::new(self)
     }
+}
 
+// ============================================================================
+// Linear Capability Delegation — §1.3 PMA
+// ============================================================================
+
+/// The two halves produced by splitting a linear capability token:
+/// the locally-retained portion and the delegated portion.
+///
+/// Both halves hold the same token type `T`; the split capacity constants
+/// `A` and `B` are enforced at the `LinearCapabilityToken::delegate` call-site
+/// via `AffineSplit`.
+pub struct SplitCap<T: Send, const A: usize, const B: usize> {
+    /// Portion retained by the delegating party.
+    pub local: crate::tensor_core::LinearCapability<T, A>,
+    /// Portion handed off to the delegate.
+    pub delegated: crate::tensor_core::LinearCapability<T, B>,
+}
+
+/// Trait for capability tokens that can be linearly delegated.
+///
+/// `T` is the underlying resource type; `C` is the total capacity before split.
+/// Implementors must be `Send` so delegation works across thread boundaries.
+pub trait LinearCapabilityToken<T: Send, const C: usize>: Send + Sized {
+    /// Consume `self` and produce a zero-sum split into `A` + `B` budget units,
+    /// where `A + B == C` is enforced at runtime by `AffineSplit`.
+    fn delegate<const A: usize, const B: usize>(self) -> Result<SplitCap<T, A, B>, &'static str>;
+}
+
+impl<const C: usize> LinearCapabilityToken<CapabilityTokenV1, C> for CapabilityTokenV1 {
+    fn delegate<const A: usize, const B: usize>(
+        self,
+    ) -> Result<SplitCap<CapabilityTokenV1, A, B>, &'static str> {
+        let linear = self.into_linear::<C>();
+        let (local, delegated) = linear.affine_split::<A, B>()?;
+        Ok(SplitCap { local, delegated })
+    }
+}
+
+impl CapabilityTokenV1 {
     /// Hard Math Invariant: Degrades a token mathematically by reducing its constraints
     /// based on anomalous findings from the Telemetry Vector Matrix.
     pub fn degrade_mathematically(&mut self, severity_ratio: u32) {
@@ -2735,7 +2774,8 @@ pub mod offline_certificate {
                 "CapNet: Cheeger conductance certificate invalid at runtime \
                  (CHEEGER_CONDUCTANCE={} < {})! \
                  Rebuild the kernel — IPC flow isolation cannot be guaranteed.",
-                CHEEGER_CONDUCTANCE, EPSILON_SAFE / 2.0
+                CHEEGER_CONDUCTANCE,
+                EPSILON_SAFE / 2.0
             );
         }
     }

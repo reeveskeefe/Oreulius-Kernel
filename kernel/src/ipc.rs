@@ -47,6 +47,53 @@ use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::{Mutex, Once};
 
+// ============================================================================
+// TypedServiceArg — §1.3 PMA
+// ============================================================================
+
+/// Marker trait for values that may be passed as typed service arguments over
+/// IPC channels.
+///
+/// Implementors must be `Send` (safe to move to another thread/hart) and must
+/// provide a stable `u32` type-tag used for dispatch in `ServiceRequest`
+/// payloads.  Blanket impls cover the primitive types that map directly to the
+/// existing `[u8; 512]` payload encoding.
+pub trait TypedServiceArg: Send {
+    /// Stable runtime tag identifying this argument type.
+    /// Values 0x0000–0x00FF are reserved for kernel primitives.
+    fn type_tag() -> u32
+    where
+        Self: Sized;
+}
+
+impl TypedServiceArg for u8 {
+    #[inline(always)]
+    fn type_tag() -> u32 {
+        0x0001
+    }
+}
+
+impl TypedServiceArg for u32 {
+    #[inline(always)]
+    fn type_tag() -> u32 {
+        0x0004
+    }
+}
+
+impl TypedServiceArg for u64 {
+    #[inline(always)]
+    fn type_tag() -> u32 {
+        0x0008
+    }
+}
+
+impl<const N: usize> TypedServiceArg for [u8; N] {
+    #[inline(always)]
+    fn type_tag() -> u32 {
+        0x0100 | (N as u32 & 0xFFFF)
+    }
+}
+
 /// Maximum message data size (512 bytes - reduced to shrink kernel binary)
 pub const MAX_MESSAGE_SIZE: usize = 512;
 

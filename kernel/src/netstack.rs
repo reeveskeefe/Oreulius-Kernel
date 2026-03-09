@@ -46,6 +46,12 @@ extern crate alloc;
 /// Universal network interface trait - implemented by E1000, WiFi, VirtIO, etc.
 /// Boxed trait objects allow runtime polymorphism for different NICs
 pub trait NetworkInterface: Send {
+    /// Wire-format packet type for this interface.
+    ///
+    /// Using a fixed-size Ethernet MTU array keeps the type zero-alloc and
+    /// trivially `Send + 'static` for use in interrupt/DMA paths.
+    type Packet: Send + 'static;
+
     /// Send raw Ethernet frame
     fn send_frame(&mut self, frame: &[u8]) -> Result<(), &'static str>;
 

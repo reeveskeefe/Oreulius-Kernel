@@ -37,6 +37,9 @@ pub(super) struct X86LegacyMmu;
 pub(super) static MMU: X86LegacyMmu = X86LegacyMmu;
 
 impl ArchMmu for X86LegacyMmu {
+    type AddressSpace = crate::paging::AddressSpace;
+    type PageTable = crate::paging::AddressSpace;
+
     fn name(&self) -> &'static str {
         "i686-paging"
     }

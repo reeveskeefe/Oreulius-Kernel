@@ -37,6 +37,9 @@ pub(super) struct UnsupportedMmu;
 pub(super) static MMU: UnsupportedMmu = UnsupportedMmu;
 
 impl ArchMmu for UnsupportedMmu {
+    type AddressSpace = ();
+    type PageTable = ();
+
     fn name(&self) -> &'static str {
         "unsupported"
     }

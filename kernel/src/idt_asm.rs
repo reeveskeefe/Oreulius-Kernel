@@ -114,6 +114,7 @@ impl fmt::Debug for InterruptFrame {
 
 extern "C" {
     // IDT Management
+    #[cfg(target_arch = "x86")]
     pub fn idt_load(idt_ptr: *const IdtPointer);
     pub fn idt_set_gate(idt: *mut IdtEntry, num: u8, handler: u32, selector: u16, flags: u8);
 
@@ -211,6 +212,16 @@ extern "C" {
     // Exception Names
     pub fn get_exception_name(vector: u8) -> *const u8;
 }
+
+#[cfg(target_arch = "x86")]
+#[inline]
+pub unsafe fn idt_load_compat(idt_ptr: *const IdtPointer) {
+    idt_load(idt_ptr);
+}
+
+#[cfg(not(target_arch = "x86"))]
+#[inline]
+pub unsafe fn idt_load_compat(_idt_ptr: *const IdtPointer) {}
 
 // IDT gate types
 pub const GATE_TASK: u8 = 0x05;
@@ -366,7 +377,7 @@ impl Idt {
             limit: (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16,
             base: self.entries.as_ptr() as u32,
         };
-        unsafe { idt_load(&ptr) }
+        unsafe { idt_load_compat(&ptr) }
     }
 
     pub fn init_exceptions(&mut self, code_selector: u16) {

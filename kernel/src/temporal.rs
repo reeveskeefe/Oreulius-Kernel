@@ -16,6 +16,8 @@ extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use crate::fs::{FileKey, FilesystemRights};
+
 /// Category-Theoretic State representation.
 pub trait TemporalState: Clone + PartialEq + core::fmt::Debug {}
 
@@ -268,6 +270,7 @@ impl TemporalObjectHistory {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemporalError {
     InvalidPath,
+    PermissionDenied,
     ObjectLimit,
     VersionLimit,
     BranchLimit,
@@ -288,6 +291,7 @@ impl TemporalError {
     pub fn as_str(&self) -> &'static str {
         match self {
             TemporalError::InvalidPath => "invalid path",
+            TemporalError::PermissionDenied => "permission denied",
             TemporalError::ObjectLimit => "temporal object limit reached",
             TemporalError::VersionLimit => "version limit reached for object",
             TemporalError::BranchLimit => "branch limit reached for object",
@@ -2909,6 +2913,32 @@ fn find_object_adapter(path: &str) -> Option<TemporalObjectAdapter> {
     best
 }
 
+fn ensure_temporal_vfs_access(path: &str, right: u32) -> Result<(), TemporalError> {
+    let Some(adapter) = find_object_adapter(path) else {
+        return Ok(());
+    };
+    if adapter.prefix != "/" {
+        return Ok(());
+    }
+
+    let capability =
+        crate::vfs::effective_capability_for_pid(crate::vfs_platform::current_pid(), path)
+            .map_err(|_| TemporalError::PermissionDenied)?;
+    let key = FileKey::new(path).map_err(|_| TemporalError::InvalidPath)?;
+    if !capability.can_access(&key) || !capability.rights.has(right) {
+        return Err(TemporalError::PermissionDenied);
+    }
+    Ok(())
+}
+
+fn ensure_temporal_vfs_read_access(path: &str) -> Result<(), TemporalError> {
+    ensure_temporal_vfs_access(path, FilesystemRights::READ)
+}
+
+fn ensure_temporal_vfs_write_access(path: &str) -> Result<(), TemporalError> {
+    ensure_temporal_vfs_access(path, FilesystemRights::WRITE)
+}
+
 fn apply_temporal_payload_to_object(
     path: &str,
     payload: &[u8],
@@ -3598,6 +3628,16 @@ pub fn read_version(path: &str, version_id: u64) -> Result<Vec<u8>, TemporalErro
             return Err(e);
         }
     };
+    if let Err(e) = ensure_temporal_vfs_read_access(&normalized) {
+        emit_temporal_audit(
+            TemporalAuditAction::ReadVersion,
+            &normalized,
+            0,
+            false,
+            false,
+        );
+        return Err(e);
+    }
     let result = TEMPORAL
         .lock()
         .read_version_payload_locked(&normalized, version_id);
@@ -3633,6 +3673,16 @@ pub fn list_versions(path: &str) -> Result<Vec<TemporalVersionMeta>, TemporalErr
             return Err(e);
         }
     };
+    if let Err(e) = ensure_temporal_vfs_read_access(&normalized) {
+        emit_temporal_audit(
+            TemporalAuditAction::ListVersions,
+            &normalized,
+            0,
+            false,
+            false,
+        );
+        return Err(e);
+    }
     let result = TEMPORAL.lock().list_version_metas_locked(&normalized);
     match result {
         Ok(history) => {
@@ -3666,6 +3716,16 @@ pub fn latest_version(path: &str) -> Result<TemporalVersionMeta, TemporalError> 
             return Err(e);
         }
     };
+    if let Err(e) = ensure_temporal_vfs_read_access(&normalized) {
+        emit_temporal_audit(
+            TemporalAuditAction::LatestVersion,
+            &normalized,
+            0,
+            false,
+            false,
+        );
+        return Err(e);
+    }
     let result = TEMPORAL.lock().latest_meta_locked(&normalized);
     match result {
         Ok(meta) => {
@@ -3703,6 +3763,16 @@ pub fn history_window(
             return Err(e);
         }
     };
+    if let Err(e) = ensure_temporal_vfs_read_access(&normalized) {
+        emit_temporal_audit(
+            TemporalAuditAction::HistoryWindow,
+            &normalized,
+            0,
+            false,
+            false,
+        );
+        return Err(e);
+    }
     let result = TEMPORAL
         .lock()
         .history_window_locked(&normalized, start_from_newest, max_entries);
@@ -3741,6 +3811,10 @@ pub fn rollback_path(
             return Err(e);
         }
     };
+    if let Err(e) = ensure_temporal_vfs_write_access(&normalized) {
+        emit_temporal_audit(TemporalAuditAction::Rollback, &normalized, 0, false, true);
+        return Err(e);
+    }
 
     let (payload, previous_head) = {
         let service = TEMPORAL.lock();
@@ -3806,6 +3880,16 @@ pub fn create_branch(
             return Err(e);
         }
     };
+    if let Err(e) = ensure_temporal_vfs_write_access(&normalized) {
+        emit_temporal_audit(
+            TemporalAuditAction::BranchCreate,
+            &normalized,
+            0,
+            false,
+            true,
+        );
+        return Err(e);
+    }
     let branch_id = {
         let mut service = TEMPORAL.lock();
         match service.create_branch_locked(&normalized, branch_name, from_version_id) {
@@ -3841,6 +3925,16 @@ pub fn list_branches(path: &str) -> Result<Vec<TemporalBranchInfo>, TemporalErro
             return Err(e);
         }
     };
+    if let Err(e) = ensure_temporal_vfs_read_access(&normalized) {
+        emit_temporal_audit(
+            TemporalAuditAction::ListBranches,
+            &normalized,
+            0,
+            false,
+            false,
+        );
+        return Err(e);
+    }
     let result = TEMPORAL.lock().list_branches_locked(&normalized);
     match result {
         Ok(branches) => {
@@ -3874,6 +3968,16 @@ pub fn checkout_branch(path: &str, branch_name: &str) -> Result<(u32, Option<u64
             return Err(e);
         }
     };
+    if let Err(e) = ensure_temporal_vfs_write_access(&normalized) {
+        emit_temporal_audit(
+            TemporalAuditAction::BranchCheckout,
+            &normalized,
+            0,
+            false,
+            true,
+        );
+        return Err(e);
+    }
     let (branch_id, head_version_id, payload) = {
         let mut service = TEMPORAL.lock();
         match service.checkout_branch_locked(&normalized, branch_name) {
@@ -3930,6 +4034,10 @@ pub fn merge_branch(
             return Err(e);
         }
     };
+    if let Err(e) = ensure_temporal_vfs_write_access(&normalized) {
+        emit_temporal_audit(TemporalAuditAction::Merge, &normalized, 0, false, true);
+        return Err(e);
+    }
     let (result, payload) = {
         let mut service = TEMPORAL.lock();
         match service.merge_branch_locked(

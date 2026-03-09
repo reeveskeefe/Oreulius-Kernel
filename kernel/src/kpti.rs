@@ -295,7 +295,7 @@ pub fn enter_user(cr3: u32) -> Result<(), &'static str> {
     if let Some(state) = *KPTI_STATE.lock() {
         KPTI_USER_CR3.store(cr3, Ordering::SeqCst);
         unsafe { write_msr(MSR_IA32_SYSENTER_EIP, state.sysenter_stub, 0) };
-        unsafe { idt_asm::idt_load(&state.idt_ptr) };
+        unsafe { idt_asm::idt_load_compat(&state.idt_ptr) };
         return Ok(());
     }
     Err("KPTI not initialized")

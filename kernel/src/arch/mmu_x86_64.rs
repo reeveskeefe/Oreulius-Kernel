@@ -667,6 +667,9 @@ impl AddressSpace {
 }
 
 impl ArchMmu for X86_64Mmu {
+    type AddressSpace = AddressSpace;
+    type PageTable = AddressSpace;
+
     fn name(&self) -> &'static str {
         "x86_64-longmode"
     }

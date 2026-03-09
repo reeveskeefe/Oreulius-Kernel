@@ -795,7 +795,9 @@ impl MountedBackendContract for VirtioMountState {
                 if flags.contains(OpenFlags::WRITE) {
                     Err("Partitions file is read-only")
                 } else {
-                    Ok(HandleKind::VirtioPartitions)
+                    Ok(HandleKind::VirtioPartitions {
+                        path: full_path.to_string(),
+                    })
                 }
             }
         }
@@ -1037,7 +1039,9 @@ enum HandleKind {
     VirtioRaw {
         path: String,
     },
-    VirtioPartitions,
+    VirtioPartitions {
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -1159,6 +1163,36 @@ pub struct VfsWatchEvent {
 }
 
 #[derive(Clone, Debug)]
+struct VfsWatchSubscriber {
+    channel_id: u32,
+    backlog: VecDeque<VfsWatchEvent>,
+    in_flight: Option<u64>,
+    last_acked_sequence: u64,
+    dropped_count: u64,
+}
+
+impl VfsWatchSubscriber {
+    fn new(channel_id: u32) -> Self {
+        Self {
+            channel_id,
+            backlog: VecDeque::new(),
+            in_flight: None,
+            last_acked_sequence: 0,
+            dropped_count: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct VfsWatchSubscriberInfo {
+    pub channel_id: u32,
+    pub pending_events: usize,
+    pub in_flight: Option<u64>,
+    pub last_acked_sequence: u64,
+    pub dropped_count: u64,
+}
+
+#[derive(Clone, Debug)]
 struct CapabilityMapper {
     directory_caps: BTreeMap<InodeId, FilesystemCapability>,
     process_caps: BTreeMap<u32, FilesystemCapability>,
@@ -1188,7 +1222,7 @@ struct Vfs {
     storage_namespace: u64,
     watches: BTreeMap<u64, VfsWatch>,
     watch_events: VecDeque<VfsWatchEvent>,
-    notify_channels: Vec<u32>,
+    notify_channels: BTreeMap<u32, VfsWatchSubscriber>,
     next_watch_id: u64,
     next_watch_event_sequence: u64,
 }
@@ -1204,7 +1238,7 @@ impl Vfs {
             storage_namespace: 0,
             watches: BTreeMap::new(),
             watch_events: VecDeque::new(),
-            notify_channels: Vec::new(),
+            notify_channels: BTreeMap::new(),
             next_watch_id: 1,
             next_watch_event_sequence: 1,
         }
@@ -1362,6 +1396,22 @@ impl Vfs {
         }
     }
 
+    fn trim_notify_backlog(subscriber: &mut VfsWatchSubscriber, cap: usize) {
+        while subscriber.backlog.len() > cap {
+            let drop_front = subscriber
+                .backlog
+                .front()
+                .map(|event| Some(event.sequence) != subscriber.in_flight)
+                .unwrap_or(true);
+            if drop_front {
+                subscriber.backlog.pop_front();
+            } else {
+                subscriber.backlog.pop_back();
+            }
+            subscriber.dropped_count = subscriber.dropped_count.saturating_add(1);
+        }
+    }
+
     fn next_watch_sequence(&mut self) -> u64 {
         let sequence = self.next_watch_event_sequence;
         self.next_watch_event_sequence = self.next_watch_event_sequence.saturating_add(1);
@@ -1452,56 +1502,126 @@ impl Vfs {
         crate::ipc::ipc()
             .channel_stats(&cap)
             .map_err(|_| "Invalid channel")?;
-        if !self.notify_channels.contains(&channel_id) {
-            self.notify_channels.push(channel_id);
-        }
+        self.notify_channels
+            .entry(channel_id)
+            .or_insert_with(|| VfsWatchSubscriber::new(channel_id));
         Ok(())
     }
 
     fn unsubscribe_notify_channel(&mut self, channel_id: u32) -> bool {
-        if let Some(index) = self
-            .notify_channels
-            .iter()
-            .position(|candidate| *candidate == channel_id)
-        {
-            self.notify_channels.remove(index);
-            true
-        } else {
-            false
-        }
+        self.notify_channels.remove(&channel_id).is_some()
     }
 
     fn list_notify_channels(&self) -> Vec<u32> {
-        self.notify_channels.clone()
+        self.notify_channels.keys().copied().collect()
+    }
+
+    fn list_notify_subscribers(&self) -> Vec<VfsWatchSubscriberInfo> {
+        self.notify_channels
+            .values()
+            .map(|subscriber| VfsWatchSubscriberInfo {
+                channel_id: subscriber.channel_id,
+                pending_events: subscriber.backlog.len(),
+                in_flight: subscriber.in_flight,
+                last_acked_sequence: subscriber.last_acked_sequence,
+                dropped_count: subscriber.dropped_count,
+            })
+            .collect()
+    }
+
+    fn notify_channel_stats(
+        &self,
+        channel_id: u32,
+    ) -> Result<VfsWatchSubscriberInfo, &'static str> {
+        let subscriber = self
+            .notify_channels
+            .get(&channel_id)
+            .ok_or("Channel not subscribed")?;
+        Ok(VfsWatchSubscriberInfo {
+            channel_id: subscriber.channel_id,
+            pending_events: subscriber.backlog.len(),
+            in_flight: subscriber.in_flight,
+            last_acked_sequence: subscriber.last_acked_sequence,
+            dropped_count: subscriber.dropped_count,
+        })
+    }
+
+    fn ack_notify_channel(&mut self, channel_id: u32, sequence: u64) -> Result<(), &'static str> {
+        {
+            let subscriber = self
+                .notify_channels
+                .get_mut(&channel_id)
+                .ok_or("Channel not subscribed")?;
+            if sequence <= subscriber.last_acked_sequence {
+                return Ok(());
+            }
+            match subscriber.in_flight {
+                Some(in_flight) if in_flight == sequence => {
+                    let Some(front) = subscriber.backlog.front() else {
+                        subscriber.in_flight = None;
+                        subscriber.last_acked_sequence = sequence;
+                        return Ok(());
+                    };
+                    if front.sequence != sequence {
+                        return Err("Watch subscriber backlog out of sync");
+                    }
+                    subscriber.backlog.pop_front();
+                    subscriber.in_flight = None;
+                    subscriber.last_acked_sequence = sequence;
+                }
+                Some(_) => return Err("Watch ACK sequence mismatch"),
+                None => return Err("No in-flight watch event"),
+            }
+        }
+        self.drain_notify_backlogs();
+        Ok(())
     }
 
     fn broadcast_watch_event(&mut self, event: &VfsWatchEvent) {
         if self.notify_channels.is_empty() {
             return;
         }
-        let payload = encode_watch_event_payload(event);
-        let Ok(message) = crate::ipc::Message::with_data(crate::ipc::ProcessId::KERNEL, &payload)
-        else {
-            return;
-        };
+        let backlog_cap = self.watch_event_capacity();
+        for subscriber in self.notify_channels.values_mut() {
+            subscriber.backlog.push_back(event.clone());
+            Self::trim_notify_backlog(subscriber, backlog_cap);
+        }
+        self.drain_notify_backlogs();
+    }
 
+    fn drain_notify_backlogs(&mut self) {
         let mut stale_channels = Vec::new();
-        for channel_id in self.notify_channels.iter().copied() {
+        for (channel_id, subscriber) in self.notify_channels.iter_mut() {
+            if subscriber.in_flight.is_some() {
+                continue;
+            }
             let capability = match crate::capability::resolve_channel_capability(
                 crate::ipc::ProcessId::KERNEL,
-                crate::ipc::ChannelId::new(channel_id),
+                crate::ipc::ChannelId::new(*channel_id),
                 crate::capability::ChannelAccess::Send,
             ) {
                 Ok(cap) => cap,
                 Err(_) => {
-                    stale_channels.push(channel_id);
+                    stale_channels.push(*channel_id);
                     continue;
                 }
             };
+            let Some(pending) = subscriber.backlog.front().cloned() else {
+                continue;
+            };
+            let payload = encode_watch_event_payload(&pending);
+            let Ok(message) =
+                crate::ipc::Message::with_data(crate::ipc::ProcessId::KERNEL, &payload)
+            else {
+                continue;
+            };
             match crate::ipc::ipc().send(message, &capability) {
-                Ok(()) | Err(crate::ipc::IpcError::WouldBlock) => {}
+                Ok(()) => {
+                    subscriber.in_flight = Some(pending.sequence);
+                }
+                Err(crate::ipc::IpcError::WouldBlock) => {}
                 Err(crate::ipc::IpcError::InvalidCap | crate::ipc::IpcError::Closed) => {
-                    stale_channels.push(channel_id);
+                    stale_channels.push(*channel_id);
                 }
                 Err(_) => {}
             }
@@ -1780,6 +1900,38 @@ impl Vfs {
         self.resolve_path_chain(&parent, true)
     }
 
+    fn resolve_authority_chain(
+        &self,
+        path: &str,
+        follow_final: bool,
+    ) -> Result<Vec<InodeId>, &'static str> {
+        let normalized = normalize_path(path)?;
+        if let Some((mount_idx, _, _)) = self.find_mount(&normalized) {
+            let mount_path = self
+                .mounts
+                .get(mount_idx)
+                .ok_or("Mount not found")?
+                .path
+                .clone();
+            return self.resolve_path_chain(&mount_path, true);
+        }
+        self.resolve_path_chain(&normalized, follow_final)
+    }
+
+    fn resolve_authority_parent_chain(&self, path: &str) -> Result<Vec<InodeId>, &'static str> {
+        let normalized = normalize_path(path)?;
+        if let Some((mount_idx, _, _)) = self.find_mount(&normalized) {
+            let mount_path = self
+                .mounts
+                .get(mount_idx)
+                .ok_or("Mount not found")?
+                .path
+                .clone();
+            return self.resolve_path_chain(&mount_path, true);
+        }
+        self.resolve_parent_chain(&normalized)
+    }
+
     fn resolve_capability_for_chain(
         &self,
         pid: Option<Pid>,
@@ -1806,6 +1958,30 @@ impl Vfs {
             return Err("Permission denied");
         }
         Ok(capability)
+    }
+
+    fn handle_kind_path<'a>(kind: &'a HandleKind) -> Option<&'a str> {
+        match kind {
+            HandleKind::MemFile { path, .. }
+            | HandleKind::MountFile { path, .. }
+            | HandleKind::VirtioRaw { path }
+            | HandleKind::VirtioPartitions { path } => Some(path.as_str()),
+            HandleKind::MemDir { .. } | HandleKind::MountDir { .. } => None,
+        }
+    }
+
+    fn revalidate_handle_access(
+        &self,
+        pid: Pid,
+        kind: &HandleKind,
+        required: VfsAccess,
+    ) -> Result<(), &'static str> {
+        let Some(path) = Self::handle_kind_path(kind) else {
+            return Ok(());
+        };
+        let chain = self.resolve_authority_chain(path, true)?;
+        let _ = self.ensure_path_rights(Some(pid), path, &chain, required)?;
+        Ok(())
     }
 
     fn subtree_usage(&self, root_id: InodeId) -> Result<(usize, usize), &'static str> {
@@ -1891,6 +2067,22 @@ impl Vfs {
             }
         }
         Ok(())
+    }
+
+    fn rewrite_handle_paths(&mut self, old_path: &str, new_path: &str) {
+        for handle in self.handles.iter_mut().flatten() {
+            match &mut handle.kind {
+                HandleKind::MemFile { path, .. }
+                | HandleKind::MountFile { path, .. }
+                | HandleKind::VirtioRaw { path }
+                | HandleKind::VirtioPartitions { path } => {
+                    if let Some(rewritten) = rewrite_path_prefix(path, old_path, new_path) {
+                        *path = rewritten;
+                    }
+                }
+                HandleKind::MemDir { .. } | HandleKind::MountDir { .. } => {}
+            }
+        }
     }
 
     fn split_parent(path: &str) -> Result<(String, String), &'static str> {
@@ -2490,6 +2682,7 @@ impl Vfs {
                 return Err(e);
             }
         }
+        self.rewrite_handle_paths(&old_path, &new_path);
         Ok(())
     }
 
@@ -2813,7 +3006,7 @@ impl Vfs {
             storage_namespace,
             watches: BTreeMap::new(),
             watch_events: VecDeque::new(),
-            notify_channels: Vec::new(),
+            notify_channels: BTreeMap::new(),
             next_watch_id: 1,
             next_watch_event_sequence: 1,
         };
@@ -2965,9 +3158,9 @@ pub fn effective_capability_for_pid(
     let normalized = normalize_path(path)?;
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
-        let chain = match vfs.resolve_path_chain(&normalized, false) {
+        let chain = match vfs.resolve_authority_chain(&normalized, false) {
             Ok(chain) => chain,
-            Err(_) => vfs.resolve_parent_chain(&normalized)?,
+            Err(_) => vfs.resolve_authority_parent_chain(&normalized)?,
         };
         Ok(vfs.resolve_capability_for_chain(pid, &chain))
     })
@@ -3041,6 +3234,32 @@ pub fn notify_channels() -> Vec<crate::ipc::ChannelId> {
     })
 }
 
+pub fn notify_subscribers() -> Vec<VfsWatchSubscriberInfo> {
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        vfs.list_notify_subscribers()
+    })
+}
+
+pub fn notify_channel_stats(
+    channel_id: crate::ipc::ChannelId,
+) -> Result<VfsWatchSubscriberInfo, &'static str> {
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        vfs.notify_channel_stats(channel_id.0)
+    })
+}
+
+pub fn ack_notify_channel(
+    channel_id: crate::ipc::ChannelId,
+    sequence: u64,
+) -> Result<(), &'static str> {
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        vfs.ack_notify_channel(channel_id.0, sequence)
+    })
+}
+
 // ============================================================================
 // Public VFS API (Paths)
 // ============================================================================
@@ -3050,7 +3269,7 @@ pub fn mkdir(path: &str) -> Result<(), &'static str> {
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
         if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized) {
-            let chain = vfs.resolve_parent_chain(&normalized)?;
+            let chain = vfs.resolve_authority_parent_chain(&normalized)?;
             let _ = vfs.ensure_path_rights(
                 vfs_platform::current_pid(),
                 &normalized,
@@ -3092,7 +3311,7 @@ pub fn mkdir(path: &str) -> Result<(), &'static str> {
 fn create_file_inner(vfs: &mut Vfs, path: &str) -> Result<InodeId, &'static str> {
     let normalized = normalize_path(path)?;
     if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized) {
-        let chain = vfs.resolve_parent_chain(&normalized)?;
+        let chain = vfs.resolve_authority_parent_chain(&normalized)?;
         let _ = vfs.ensure_path_rights(
             vfs_platform::current_pid(),
             &normalized,
@@ -3157,7 +3376,7 @@ fn write_path_internal(
 
         // ── Mount-backed write path ────────────────────────────────────────
         if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
-            let chain = vfs.resolve_parent_chain(&normalized_path)?;
+            let chain = vfs.resolve_authority_parent_chain(&normalized_path)?;
             let _ =
                 vfs.ensure_path_rights(subject_pid, &normalized_path, &chain, VfsAccess::Write)?;
             let written = match mount_write(vfs, mount_idx, &sub, data) {
@@ -3218,24 +3437,42 @@ fn write_path_internal(
         // Quota/rights check before creation.
         let chain = vfs.resolve_parent_chain(&normalized_path)?;
         let _ = vfs.ensure_path_rights(subject_pid, &normalized_path, &chain, VfsAccess::Write)?;
+        vfs.ensure_file_size_allowed(data.len())?;
         vfs.ensure_quota_allows(subject_pid, &chain, 0, data.len(), true)?;
 
-        // Create the file without dropping the lock (uses the inner helper).
-        create_file_inner(vfs, &normalized_path)?;
-
-        let inode_id = vfs.resolve_path(&normalized_path)?;
-        vfs.ensure_file_size_allowed(data.len())?;
+        let (parent, name) = Vfs::split_parent(&normalized_path)?;
+        let parent_id = vfs.resolve_path(&parent)?;
+        let inode_id = vfs.alloc_inode(InodeKind::File, 0o644);
+        if let Err(e) = vfs.add_dir_entry(parent_id, &name, inode_id) {
+            if let Some(slot) = vfs.inodes.get_mut(inode_id as usize) {
+                *slot = None;
+            }
+            return Err(e);
+        }
         if vfs.get_inode(inode_id).ok_or("File not found")?.kind != InodeKind::File {
+            let _ = vfs.remove_dir_entry(parent_id, &name);
+            if let Some(slot) = vfs.inodes.get_mut(inode_id as usize) {
+                *slot = None;
+            }
             return Err("Not a file");
         }
-        vfs.write_file_payload(inode_id, data)?;
+        if let Err(e) = vfs.write_file_payload(inode_id, data) {
+            let _ = vfs.remove_dir_entry(parent_id, &name);
+            vfs.delete_file_payload(inode_id);
+            if let Some(slot) = vfs.inodes.get_mut(inode_id as usize) {
+                *slot = None;
+            }
+            return Err(e);
+        }
         if track_temporal {
             let _ = vfs_platform::temporal_record_write(&normalized_path, data);
         }
+        vfs.record_mutation_journal("create", &alloc::format!("path={}", normalized_path));
         vfs.record_mutation_journal(
             "write",
             &alloc::format!("path={} bytes={}", normalized_path, data.len()),
         );
+        vfs.record_watch_event(VfsWatchKind::Create, &normalized_path, None);
         vfs.record_watch_event(
             VfsWatchKind::Write,
             &normalized_path,
@@ -3251,7 +3488,7 @@ pub fn read_path(path: &str, out: &mut [u8]) -> Result<usize, &'static str> {
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
         if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
-            let chain = vfs.resolve_parent_chain(&normalized_path)?;
+            let chain = vfs.resolve_authority_chain(&normalized_path, true)?;
             let _ = vfs.ensure_path_rights(
                 vfs_platform::current_pid(),
                 &normalized_path,
@@ -3304,7 +3541,7 @@ pub fn list_dir(path: &str, out: &mut [u8]) -> Result<usize, &'static str> {
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
         if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
-            let chain = vfs.resolve_path_chain(&normalized_path, true)?;
+            let chain = vfs.resolve_authority_chain(&normalized_path, true)?;
             let _ = vfs.ensure_path_rights(
                 vfs_platform::current_pid(),
                 &normalized_path,
@@ -3357,7 +3594,7 @@ pub fn path_size(path: &str) -> Result<usize, &'static str> {
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
         if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
-            let chain = vfs.resolve_parent_chain(&normalized_path)?;
+            let chain = vfs.resolve_authority_chain(&normalized_path, true)?;
             let _ = vfs.ensure_path_rights(
                 vfs_platform::current_pid(),
                 &normalized_path,
@@ -3392,7 +3629,7 @@ pub fn unlink(path: &str) -> Result<(), &'static str> {
     let normalized_path = normalize_path(path)?;
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
-        let chain = vfs.resolve_path_chain(&normalized_path, false)?;
+        let chain = vfs.resolve_authority_chain(&normalized_path, false)?;
         let _ = vfs.ensure_path_rights(
             vfs_platform::current_pid(),
             &normalized_path,
@@ -3411,7 +3648,7 @@ pub fn rmdir(path: &str) -> Result<(), &'static str> {
     let normalized_path = normalize_path(path)?;
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
-        let chain = vfs.resolve_path_chain(&normalized_path, false)?;
+        let chain = vfs.resolve_authority_chain(&normalized_path, false)?;
         let _ = vfs.ensure_path_rights(
             vfs_platform::current_pid(),
             &normalized_path,
@@ -3431,8 +3668,8 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), &'static str> {
     let new_path = normalize_path(new_path)?;
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
-        let old_chain = vfs.resolve_path_chain(&old_path, false)?;
-        let new_chain = vfs.resolve_parent_chain(&new_path)?;
+        let old_chain = vfs.resolve_authority_chain(&old_path, false)?;
+        let new_chain = vfs.resolve_authority_parent_chain(&new_path)?;
         let _ = vfs.ensure_path_rights(
             vfs_platform::current_pid(),
             &old_path,
@@ -3470,8 +3707,8 @@ pub fn link(existing: &str, new_path: &str) -> Result<(), &'static str> {
     let new_path = normalize_path(new_path)?;
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
-        let existing_chain = vfs.resolve_path_chain(&existing, false)?;
-        let new_chain = vfs.resolve_parent_chain(&new_path)?;
+        let existing_chain = vfs.resolve_authority_chain(&existing, false)?;
+        let new_chain = vfs.resolve_authority_parent_chain(&new_path)?;
         let _ = vfs.ensure_path_rights(
             vfs_platform::current_pid(),
             &existing,
@@ -3509,7 +3746,7 @@ pub fn symlink(target: &str, link_path: &str) -> Result<(), &'static str> {
     let normalized_link = normalize_path(link_path)?;
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
-        let chain = vfs.resolve_parent_chain(&normalized_link)?;
+        let chain = vfs.resolve_authority_parent_chain(&normalized_link)?;
         let _ = vfs.ensure_path_rights(
             vfs_platform::current_pid(),
             &normalized_link,
@@ -3542,7 +3779,7 @@ pub fn readlink(path: &str) -> Result<String, &'static str> {
     let normalized_path = normalize_path(path)?;
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
-        let chain = vfs.resolve_path_chain(&normalized_path, false)?;
+        let chain = vfs.resolve_authority_chain(&normalized_path, false)?;
         let _ = vfs.ensure_path_rights(
             vfs_platform::current_pid(),
             &normalized_path,
@@ -3623,7 +3860,7 @@ pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'s
 
         // ── Mount-backed open ─────────────────────────────────────────────
         if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
-            let chain = vfs.resolve_parent_chain(&normalized_path)?;
+            let chain = vfs.resolve_authority_parent_chain(&normalized_path)?;
             let capability =
                 vfs.ensure_path_rights(Some(pid), &normalized_path, &chain, required_access)?;
             let mut created = false;
@@ -3832,6 +4069,7 @@ pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static st
         if !access_allowed(&capability, VfsAccess::Read) {
             return Err("Permission denied");
         }
+        vfs.revalidate_handle_access(pid, &kind, VfsAccess::Read)?;
         let read_len = match kind {
             HandleKind::MemFile { inode, .. } => {
                 let data = vfs.read_file_payload(inode)?;
@@ -3862,7 +4100,7 @@ pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static st
                     Err(e)
                 }
             },
-            HandleKind::VirtioPartitions => {
+            HandleKind::VirtioPartitions { .. } => {
                 let text = generate_partition_text()?;
                 let bytes = text.as_bytes();
                 let start = pos;
@@ -3879,12 +4117,13 @@ pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static st
             handle.pos = handle.pos.saturating_add(read_len);
         }
         match &kind {
-            HandleKind::MemFile { path, .. } | HandleKind::VirtioRaw { path } => vfs
-                .record_watch_event(
-                    VfsWatchKind::Read,
-                    path,
-                    Some(alloc::format!("bytes={} offset={}", read_len, pos)),
-                ),
+            HandleKind::MemFile { path, .. }
+            | HandleKind::VirtioRaw { path }
+            | HandleKind::VirtioPartitions { path } => vfs.record_watch_event(
+                VfsWatchKind::Read,
+                path,
+                Some(alloc::format!("bytes={} offset={}", read_len, pos)),
+            ),
             HandleKind::MountFile { path, .. } => vfs.record_watch_event(
                 VfsWatchKind::Read,
                 path,
@@ -3917,6 +4156,7 @@ pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str>
         if !access_allowed(&capability, VfsAccess::Write) {
             return Err("Permission denied");
         }
+        vfs.revalidate_handle_access(pid, &kind, VfsAccess::Write)?;
         let mut temporal_capture: Option<(String, Vec<u8>)> = None;
         let mut journal_detail: Option<String> = None;
         let mut persist_local_state = false;
@@ -3987,7 +4227,7 @@ pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str>
                 ));
                 Ok(written)
             }
-            HandleKind::VirtioPartitions => Err("Partitions file is read-only"),
+            HandleKind::VirtioPartitions { .. } => Err("Partitions file is read-only"),
         }?;
 
         if let Some(handle) = vfs.get_handle_mut(handle_id) {
@@ -4291,6 +4531,13 @@ pub fn temporal_try_apply_backend_payload(
         if normalize_subpath(&sub) != "/raw" {
             return Ok(false);
         }
+        let chain = vfs.resolve_authority_chain(&normalized_path, true)?;
+        let _ = vfs.ensure_path_rights(
+            vfs_platform::current_pid(),
+            &normalized_path,
+            &chain,
+            VfsAccess::Write,
+        )?;
         let written = match mount_write_at(vfs, mount_idx, &sub, offset_usize, write_data) {
             Ok(w) => {
                 vfs.note_mount_success(mount_idx, MountOperation::Write);
@@ -4707,6 +4954,19 @@ fn access_allowed(capability: &FilesystemCapability, access: VfsAccess) -> bool 
     }
 }
 
+fn rewrite_path_prefix(path: &str, old_path: &str, new_path: &str) -> Option<String> {
+    if path == old_path {
+        return Some(new_path.to_string());
+    }
+    let suffix = path.strip_prefix(old_path)?;
+    if !suffix.starts_with('/') {
+        return None;
+    }
+    let mut rewritten = new_path.to_string();
+    rewritten.push_str(suffix);
+    Some(rewritten)
+}
+
 fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
     if offset.saturating_add(2) > data.len() {
         return None;
@@ -5028,6 +5288,79 @@ mod tests {
     }
 
     #[test]
+    fn vfs_handle_revalidation_reflects_revoked_write_access() {
+        let mut vfs = Vfs::new();
+        vfs.init();
+
+        let tmp = vfs.alloc_inode(InodeKind::Directory, 0o755);
+        vfs.add_dir_entry(1, "tmp", tmp).unwrap();
+        let file = vfs.alloc_inode(InodeKind::File, 0o644);
+        vfs.write_file_payload(file, b"data").unwrap();
+        vfs.add_dir_entry(tmp, "note", file).unwrap();
+
+        let pid = test_pid(21);
+        vfs.set_process_capability(pid, FilesystemCapability::new(21, FilesystemRights::all()));
+        let chain = vfs.resolve_path_chain("/tmp/note", true).unwrap();
+        let capability = vfs
+            .ensure_path_rights(Some(pid), "/tmp/note", &chain, VfsAccess::Write)
+            .unwrap();
+        let handle = Handle {
+            kind: HandleKind::MemFile {
+                inode: file,
+                path: "/tmp/note".to_string(),
+            },
+            pos: 0,
+            flags: OpenFlags::READ | OpenFlags::WRITE,
+            owner: pid,
+            capability,
+        };
+
+        vfs.set_directory_capability_by_inode(
+            tmp,
+            FilesystemCapability::new(22, FilesystemRights::read_only()),
+        )
+        .unwrap();
+
+        assert!(vfs
+            .revalidate_handle_access(pid, &handle.kind, VfsAccess::Read)
+            .is_ok());
+        assert_eq!(
+            vfs.revalidate_handle_access(pid, &handle.kind, VfsAccess::Write),
+            Err("Permission denied")
+        );
+    }
+
+    #[test]
+    fn vfs_rename_rewrites_open_handle_paths() {
+        let mut vfs = Vfs::new();
+        vfs.init();
+
+        let tmp = vfs.alloc_inode(InodeKind::Directory, 0o755);
+        vfs.add_dir_entry(1, "tmp", tmp).unwrap();
+        let file = vfs.alloc_inode(InodeKind::File, 0o644);
+        vfs.write_file_payload(file, b"data").unwrap();
+        vfs.add_dir_entry(tmp, "note", file).unwrap();
+
+        let handle_id = vfs.alloc_handle(Handle {
+            kind: HandleKind::MemFile {
+                inode: file,
+                path: "/tmp/note".to_string(),
+            },
+            pos: 0,
+            flags: OpenFlags::READ,
+            owner: test_pid(23),
+            capability: FilesystemCapability::new(23, FilesystemRights::read_only()),
+        });
+
+        vfs.rename_path("/tmp/note", "/tmp/renamed").unwrap();
+
+        match &vfs.get_handle_mut(handle_id).unwrap().kind {
+            HandleKind::MemFile { path, .. } => assert_eq!(path, "/tmp/renamed"),
+            other => panic!("unexpected handle kind: {:?}", other),
+        }
+    }
+
+    #[test]
     fn vfs_persistent_state_roundtrip_preserves_capability_maps() {
         let mut vfs = Vfs::new();
         vfs.init();
@@ -5137,5 +5470,65 @@ mod tests {
         let listing = core::str::from_utf8(&root_list[..root_len]).unwrap();
         assert!(listing.contains("cfg"));
         assert!(listing.contains("raw"));
+    }
+
+    #[test]
+    fn watch_subscriber_ack_clears_inflight_and_updates_stats() {
+        let mut vfs = Vfs::new();
+        vfs.init();
+
+        let mut subscriber = VfsWatchSubscriber::new(7);
+        subscriber.backlog.push_back(VfsWatchEvent {
+            sequence: 41,
+            watch_id: 0,
+            kind: VfsWatchKind::Write,
+            path: "/tmp/note".to_string(),
+            detail: None,
+        });
+        subscriber.in_flight = Some(41);
+        vfs.notify_channels.insert(7, subscriber);
+
+        vfs.ack_notify_channel(7, 41).unwrap();
+
+        let stats = vfs.notify_channel_stats(7).unwrap();
+        assert_eq!(stats.channel_id, 7);
+        assert_eq!(stats.pending_events, 0);
+        assert_eq!(stats.in_flight, None);
+        assert_eq!(stats.last_acked_sequence, 41);
+        assert_eq!(stats.dropped_count, 0);
+    }
+
+    #[test]
+    fn watch_subscriber_trim_preserves_inflight_event() {
+        let mut subscriber = VfsWatchSubscriber::new(9);
+        subscriber.backlog.push_back(VfsWatchEvent {
+            sequence: 1,
+            watch_id: 0,
+            kind: VfsWatchKind::Create,
+            path: "/a".to_string(),
+            detail: None,
+        });
+        subscriber.backlog.push_back(VfsWatchEvent {
+            sequence: 2,
+            watch_id: 0,
+            kind: VfsWatchKind::Write,
+            path: "/b".to_string(),
+            detail: None,
+        });
+        subscriber.backlog.push_back(VfsWatchEvent {
+            sequence: 3,
+            watch_id: 0,
+            kind: VfsWatchKind::Delete,
+            path: "/c".to_string(),
+            detail: None,
+        });
+        subscriber.in_flight = Some(1);
+
+        Vfs::trim_notify_backlog(&mut subscriber, 2);
+
+        assert_eq!(subscriber.dropped_count, 1);
+        assert_eq!(subscriber.backlog.len(), 2);
+        assert_eq!(subscriber.backlog.front().unwrap().sequence, 1);
+        assert_eq!(subscriber.backlog.back().unwrap().sequence, 2);
     }
 }

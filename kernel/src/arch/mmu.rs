@@ -41,6 +41,11 @@ pub enum PageAttribute {
 }
 
 pub trait ArchMmu {
+    /// Architecture-specific virtual address space descriptor.
+    type AddressSpace: Send + Sync + 'static;
+    /// Architecture-specific page-table root struct.
+    type PageTable: Send + Sync + 'static;
+
     fn name(&self) -> &'static str;
     fn init(&self) -> Result<(), &'static str>;
     fn page_size(&self) -> usize;
@@ -96,7 +101,26 @@ pub use mmu_aarch64::AddressSpace;
 pub use mmu_x86_64::AddressSpace;
 
 #[inline]
-fn active() -> &'static dyn ArchMmu {
+#[cfg(target_arch = "x86")]
+fn active() -> &'static mmu_x86_legacy::X86LegacyMmu {
+    &MMU
+}
+
+#[inline]
+#[cfg(target_arch = "x86_64")]
+fn active() -> &'static mmu_x86_64::X86_64Mmu {
+    &MMU
+}
+
+#[inline]
+#[cfg(target_arch = "aarch64")]
+fn active() -> &'static mmu_aarch64::AArch64Mmu {
+    &MMU
+}
+
+#[inline]
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+fn active() -> &'static mmu_unsupported::UnsupportedMmu {
     &MMU
 }
 

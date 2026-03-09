@@ -2936,6 +2936,7 @@ pub(crate) struct JitUserState {
     pub(crate) stack: [i32; MAX_STACK_DEPTH],
     pub(crate) sp: usize,
     pub(crate) locals: [i32; MAX_LOCALS],
+    pub(crate) globals: [i32; MAX_WASM_GLOBALS],
     pub(crate) instr_fuel: u32,
     pub(crate) mem_fuel: u32,
     pub(crate) trap_code: i32,
@@ -3113,6 +3114,42 @@ impl WasmInstance {
             return Err(WasmError::Trap);
         }
         Ok(unsafe { &*self.jit_state })
+    }
+
+    fn populate_jit_globals_snapshot(
+        globals: &[Option<GlobalSlot>; MAX_WASM_GLOBALS],
+        global_count: usize,
+        state: &mut JitUserState,
+    ) -> Result<(), WasmError> {
+        let mut idx = 0usize;
+        while idx < MAX_WASM_GLOBALS {
+            state.globals[idx] = 0;
+            idx += 1;
+        }
+        let mut g = 0usize;
+        while g < global_count {
+            let slot = globals[g].ok_or(WasmError::InvalidModule)?;
+            match slot.value {
+                Value::I32(v) => state.globals[g] = v,
+                _ => {}
+            }
+            g += 1;
+        }
+        Ok(())
+    }
+
+    fn sync_jit_globals_from_state(&mut self) -> Result<(), WasmError> {
+        let mut g = 0usize;
+        while g < self.module.global_count {
+            let mut slot = self.globals[g].ok_or(WasmError::InvalidModule)?;
+            if matches!(slot.value_type, ValueType::I32) {
+                let state = self.jit_state()?;
+                slot.value = Value::I32(state.globals[g]);
+                self.globals[g] = Some(slot);
+            }
+            g += 1;
+        }
+        Ok(())
     }
 
     fn initialize_from_module(&mut self) -> Result<(), WasmError> {
@@ -3812,6 +3849,8 @@ impl WasmInstance {
         if (mem_ptr as usize).checked_add(mem_len).is_none() {
             return Err(WasmError::MemoryOutOfBounds);
         }
+        let globals_snapshot = self.globals;
+        let global_count = self.module.global_count;
         // Consume stack params now that we're committed to JIT execution.
         for _ in 0..func.param_count {
             let _ = self.stack.pop()?;
@@ -3823,6 +3862,7 @@ impl WasmInstance {
             stack_ptr,
             sp_ptr,
             locals_ptr,
+            globals_ptr,
             instr_fuel,
             mem_fuel,
             trap_code,
@@ -3844,6 +3884,7 @@ impl WasmInstance {
             for i in 0..locals_total {
                 state.locals[i] = locals_buf[i];
             }
+            Self::populate_jit_globals_snapshot(&globals_snapshot, global_count, state)?;
             state.sp = 0;
             state.instr_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
             state.mem_fuel = MAX_MEMORY_OPS_PER_CALL as u32;
@@ -3853,6 +3894,7 @@ impl WasmInstance {
                 state.stack.as_mut_ptr(),
                 &mut state.sp as *mut usize,
                 state.locals.as_mut_ptr(),
+                state.globals.as_mut_ptr(),
                 &mut state.instr_fuel as *mut u32,
                 &mut state.mem_fuel as *mut u32,
                 &mut state.trap_code as *mut i32,
@@ -3860,6 +3902,12 @@ impl WasmInstance {
                 &mut state.shadow_sp as *mut usize,
             )
         };
+        #[cfg(target_arch = "x86_64")]
+        let _ = shadow_stack_ptr;
+        #[cfg(target_arch = "x86_64")]
+        let cfi_stack_ptr = globals_ptr as *mut u32;
+        #[cfg(not(target_arch = "x86_64"))]
+        let cfi_stack_ptr = shadow_stack_ptr;
         let ret = call_jit_sandboxed(
             jit_entry,
             stack_ptr,
@@ -3870,7 +3918,7 @@ impl WasmInstance {
             instr_fuel,
             mem_fuel,
             trap_code,
-            shadow_stack_ptr,
+            cfi_stack_ptr,
             shadow_sp_ptr,
             jit_state_base,
             jit_state_pages,
@@ -3919,6 +3967,7 @@ impl WasmInstance {
         if func.result_count == 1 {
             self.stack.push(Value::I32(ret))?;
         }
+        self.sync_jit_globals_from_state()?;
         self.instruction_count =
             (MAX_INSTRUCTIONS_PER_CALL as u32).saturating_sub(instr_left) as usize;
         self.memory_op_count = (MAX_MEMORY_OPS_PER_CALL as u32).saturating_sub(mem_left) as usize;
@@ -4025,6 +4074,8 @@ impl WasmInstance {
         let locals_total = func.param_count + func.local_count;
         let type_sigs = collect_jit_type_signatures(&self.module);
         let type_sig_hash = hash_jit_type_signatures(&type_sigs);
+        let global_sigs = collect_jit_global_signatures(&self.module);
+        let global_sig_hash = hash_jit_global_signatures(&global_sigs);
 
         self.jit_hot[func_idx] = self.jit_hot[func_idx].saturating_add(1);
         if self.jit_hash[func_idx].is_none() {
@@ -4033,28 +4084,35 @@ impl WasmInstance {
                 jit_stats().lock().interp_calls += 1;
                 return Ok(false);
             }
-            let hash = hash_code(code, locals_total) ^ type_sig_hash;
-            let entry =
-                match jit_cache_get_or_compile(hash, code, locals_total, &type_sigs, type_sig_hash)
-                {
-                    Some(e) => e,
-                    None => {
-                        return Ok(false);
-                    }
-                };
+            let hash = hash_code(code, locals_total) ^ type_sig_hash ^ global_sig_hash;
+            let entry = match jit_cache_get_or_compile(
+                hash,
+                code,
+                locals_total,
+                &type_sigs,
+                type_sig_hash,
+                &global_sigs,
+                global_sig_hash,
+            ) {
+                Some(e) => e,
+                None => {
+                    return Ok(false);
+                }
+            };
             self.jit_hash[func_idx] = Some(hash);
             jit_stats().lock().compiled += 1;
             let _ = entry;
         }
 
         let hash = self.jit_hash[func_idx].ok_or(WasmError::InvalidModule)?;
-        let jit_entry = match jit_cache_get(hash, code, locals_total, type_sig_hash) {
-            Some(e) => e,
-            None => {
-                self.jit_hash[func_idx] = None;
-                return Ok(false);
-            }
-        };
+        let jit_entry =
+            match jit_cache_get(hash, code, locals_total, type_sig_hash, global_sig_hash) {
+                Some(e) => e,
+                None => {
+                    self.jit_hash[func_idx] = None;
+                    return Ok(false);
+                }
+            };
 
         let mut shadow = if func_idx < self.jit_validate_remaining.len()
             && self.jit_validate_remaining[func_idx] > 0
@@ -4095,6 +4153,8 @@ impl WasmInstance {
         }
         let jit_state_base = self.jit_state as *mut u8;
         let jit_state_pages = self.jit_state_pages;
+        let globals_snapshot = self.globals;
+        let global_count = self.module.global_count;
 
         // Consume stack params now that we're committed to JIT execution.
         for _ in 0..func.param_count {
@@ -4105,6 +4165,7 @@ impl WasmInstance {
             stack_ptr,
             sp_ptr,
             locals_ptr,
+            globals_ptr,
             instr_fuel,
             mem_fuel,
             trap_code,
@@ -4112,9 +4173,21 @@ impl WasmInstance {
             shadow_sp_ptr,
         ) = {
             let state = self.jit_state_mut()?;
+            let mut stack_idx = 0usize;
+            while stack_idx < MAX_STACK_DEPTH {
+                state.stack[stack_idx] = 0;
+                state.shadow_stack[stack_idx] = 0;
+                stack_idx += 1;
+            }
+            let mut local_idx = 0usize;
+            while local_idx < MAX_LOCALS {
+                state.locals[local_idx] = 0;
+                local_idx += 1;
+            }
             for i in 0..locals_total {
                 state.locals[i] = locals_buf[i];
             }
+            Self::populate_jit_globals_snapshot(&globals_snapshot, global_count, state)?;
             state.sp = 0;
             state.instr_fuel = MAX_INSTRUCTIONS_PER_CALL as u32;
             state.mem_fuel = MAX_MEMORY_OPS_PER_CALL as u32;
@@ -4124,6 +4197,7 @@ impl WasmInstance {
                 state.stack.as_mut_ptr(),
                 &mut state.sp as *mut usize,
                 state.locals.as_mut_ptr(),
+                state.globals.as_mut_ptr(),
                 &mut state.instr_fuel as *mut u32,
                 &mut state.mem_fuel as *mut u32,
                 &mut state.trap_code as *mut i32,
@@ -4131,6 +4205,12 @@ impl WasmInstance {
                 &mut state.shadow_sp as *mut usize,
             )
         };
+        #[cfg(target_arch = "x86_64")]
+        let _ = shadow_stack_ptr;
+        #[cfg(target_arch = "x86_64")]
+        let cfi_stack_ptr = globals_ptr as *mut u32;
+        #[cfg(not(target_arch = "x86_64"))]
+        let cfi_stack_ptr = shadow_stack_ptr;
         let ret = call_jit_sandboxed(
             jit_entry,
             stack_ptr,
@@ -4141,7 +4221,7 @@ impl WasmInstance {
             instr_fuel,
             mem_fuel,
             trap_code,
-            shadow_stack_ptr,
+            cfi_stack_ptr,
             shadow_sp_ptr,
             jit_state_base,
             jit_state_pages,
@@ -4220,6 +4300,7 @@ impl WasmInstance {
         if func.result_count == 1 {
             self.stack.push(Value::I32(ret))?;
         }
+        self.sync_jit_globals_from_state()?;
         self.instruction_count =
             (MAX_INSTRUCTIONS_PER_CALL as u32).saturating_sub(instr_left) as usize;
         self.memory_op_count = (MAX_MEMORY_OPS_PER_CALL as u32).saturating_sub(mem_left) as usize;
@@ -4310,7 +4391,34 @@ impl WasmInstance {
         }
         let shadow_hash = hash_memory(shadow.memory.active_slice());
         let self_hash = hash_memory(self.memory.active_slice());
-        shadow_hash == self_hash
+        if shadow_hash != self_hash {
+            return false;
+        }
+        let mut g = 0usize;
+        while g < self.module.global_count {
+            let shadow_slot = shadow.globals[g];
+            let self_slot = self.globals[g];
+            match (shadow_slot, self_slot) {
+                (Some(a), Some(b)) => {
+                    if a.value_type != b.value_type || a.mutable != b.mutable {
+                        return false;
+                    }
+                    match (a.value, b.value) {
+                        (Value::I32(x), Value::I32(y)) if x == y => {}
+                        (Value::I64(x), Value::I64(y)) if x == y => {}
+                        (Value::FuncRef(x), Value::FuncRef(y)) if x == y => {}
+                        (Value::ExternRef(x), Value::ExternRef(y)) if x == y => {}
+                        (Value::F32(x), Value::F32(y)) if x.to_bits() == y.to_bits() => {}
+                        (Value::F64(x), Value::F64(y)) if x.to_bits() == y.to_bits() => {}
+                        _ => return false,
+                    }
+                }
+                (None, None) => {}
+                _ => return false,
+            }
+            g += 1;
+        }
+        true
     }
 
     /// Reset execution limits
@@ -7727,7 +7835,7 @@ impl WasmRuntime {
     /// Get a mutable reference to an instance
     pub fn get_instance_mut<F, R>(&self, instance_id: usize, f: F) -> Result<R, WasmError>
     where
-        F: FnOnce(&mut WasmInstance) -> R,
+        F: for<'a> FnOnce(&'a mut WasmInstance) -> R,
     {
         let mut instances = self.instances.lock();
         if instance_id >= 8 {
@@ -8160,6 +8268,7 @@ struct JitCacheEntry {
     hash: u64,
     locals_total: usize,
     type_sig_hash: u64,
+    global_sig_hash: u64,
     code_len: usize,
     func: crate::wasm_jit::JitFunction,
 }
@@ -9056,10 +9165,15 @@ pub fn jit_x86_64_call_user_path_probe() -> Result<&'static str, &'static str> {
         let stack_off = unsafe { core::ptr::addr_of!((*state_ptr).stack) as usize } - base;
         let sp_off = unsafe { core::ptr::addr_of!((*state_ptr).sp) as usize } - base;
         let locals_off = unsafe { core::ptr::addr_of!((*state_ptr).locals) as usize } - base;
+        let globals_off = unsafe { core::ptr::addr_of!((*state_ptr).globals) as usize } - base;
         let instr_fuel_off =
             unsafe { core::ptr::addr_of!((*state_ptr).instr_fuel) as usize } - base;
         let mem_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).mem_fuel) as usize } - base;
         let trap_off = unsafe { core::ptr::addr_of!((*state_ptr).trap_code) as usize } - base;
+        #[cfg(target_arch = "x86_64")]
+        let _shadow_stack_off =
+            unsafe { core::ptr::addr_of!((*state_ptr).shadow_stack) as usize } - base;
+        #[cfg(not(target_arch = "x86_64"))]
         let shadow_stack_off =
             unsafe { core::ptr::addr_of!((*state_ptr).shadow_stack) as usize } - base;
         let shadow_sp_off = unsafe { core::ptr::addr_of!((*state_ptr).shadow_sp) as usize } - base;
@@ -9075,7 +9189,14 @@ pub fn jit_x86_64_call_user_path_probe() -> Result<&'static str, &'static str> {
             (*call_ptr).instr_fuel_ptr = addr_u32(base + instr_fuel_off)?;
             (*call_ptr).mem_fuel_ptr = addr_u32(base + mem_fuel_off)?;
             (*call_ptr).trap_ptr = addr_u32(base + trap_off)?;
-            (*call_ptr).shadow_stack_ptr = addr_u32(base + shadow_stack_off)?;
+            #[cfg(target_arch = "x86_64")]
+            {
+                (*call_ptr).shadow_stack_ptr = addr_u32(base + globals_off)?;
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                (*call_ptr).shadow_stack_ptr = addr_u32(base + shadow_stack_off)?;
+            }
             (*call_ptr).shadow_sp_ptr = addr_u32(base + shadow_sp_off)?;
             (*call_ptr).ret = 0;
         }
@@ -9086,6 +9207,10 @@ pub fn jit_x86_64_call_user_path_probe() -> Result<&'static str, &'static str> {
         let stack0 = unsafe { (*state_ptr).stack[0] };
         let locals0 = unsafe { (*state_ptr).locals[0] };
         let sp = unsafe { (*state_ptr).sp };
+        let globals0 = unsafe { (*state_ptr).globals[0] };
+        #[cfg(target_arch = "x86_64")]
+        let _shadow0 = unsafe { (*state_ptr).shadow_stack[0] };
+        #[cfg(not(target_arch = "x86_64"))]
         let shadow0 = unsafe { (*state_ptr).shadow_stack[0] };
         let shadow_sp = unsafe { (*state_ptr).shadow_sp };
         let instr_fuel = unsafe { (*state_ptr).instr_fuel };
@@ -9095,7 +9220,11 @@ pub fn jit_x86_64_call_user_path_probe() -> Result<&'static str, &'static str> {
         if ret != 0x1357_2468 || call_ret != 0x1357_2468 {
             return Err("x86_64 callpage exec returned unexpected value");
         }
-        if mem0 != 0x5A || stack0 != 0x11 || locals0 != 0x22 || shadow0 != 0x33 {
+        #[cfg(target_arch = "x86_64")]
+        let cfi_probe_ok = globals0 == 0x33;
+        #[cfg(not(target_arch = "x86_64"))]
+        let cfi_probe_ok = shadow0 == 0x33;
+        if mem0 != 0x5A || stack0 != 0x11 || locals0 != 0x22 || !cfi_probe_ok {
             return Err("x86_64 callpage exec argument wiring mismatch");
         }
         if sp != 1 || shadow_sp != 1 || instr_fuel != 6 || mem_fuel != 8 || trap != 0 {
@@ -9936,9 +10065,14 @@ fn call_jit_user(
     let stack_off = unsafe { core::ptr::addr_of!((*state_ptr).stack) as usize } - base;
     let sp_off = unsafe { core::ptr::addr_of!((*state_ptr).sp) as usize } - base;
     let locals_off = unsafe { core::ptr::addr_of!((*state_ptr).locals) as usize } - base;
+    let globals_off = unsafe { core::ptr::addr_of!((*state_ptr).globals) as usize } - base;
     let instr_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).instr_fuel) as usize } - base;
     let mem_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).mem_fuel) as usize } - base;
     let trap_off = unsafe { core::ptr::addr_of!((*state_ptr).trap_code) as usize } - base;
+    #[cfg(target_arch = "x86_64")]
+    let _shadow_stack_off =
+        unsafe { core::ptr::addr_of!((*state_ptr).shadow_stack) as usize } - base;
+    #[cfg(not(target_arch = "x86_64"))]
     let shadow_stack_off =
         unsafe { core::ptr::addr_of!((*state_ptr).shadow_stack) as usize } - base;
     let shadow_sp_off = unsafe { core::ptr::addr_of!((*state_ptr).shadow_sp) as usize } - base;
@@ -9967,7 +10101,14 @@ fn call_jit_user(
         (*call_ptr).instr_fuel_ptr = (user_state_base + instr_fuel_off) as u32;
         (*call_ptr).mem_fuel_ptr = (user_state_base + mem_fuel_off) as u32;
         (*call_ptr).trap_ptr = (user_state_base + trap_off) as u32;
-        (*call_ptr).shadow_stack_ptr = (user_state_base + shadow_stack_off) as u32;
+        #[cfg(target_arch = "x86_64")]
+        {
+            (*call_ptr).shadow_stack_ptr = (user_state_base + globals_off) as u32;
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            (*call_ptr).shadow_stack_ptr = (user_state_base + shadow_stack_off) as u32;
+        }
         (*call_ptr).shadow_sp_ptr = (user_state_base + shadow_sp_off) as u32;
         (*call_ptr).ret = 0;
         (*call_ptr).req_seq = 0;
@@ -10264,6 +10405,19 @@ fn hash_jit_type_signatures(type_sigs: &[crate::wasm_jit::JitTypeSignature]) -> 
     hash
 }
 
+fn hash_jit_global_signatures(global_sigs: &[crate::wasm_jit::JitGlobalSignature]) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    for sig in global_sigs {
+        hash ^= if sig.mutable { 1 } else { 0 };
+        hash = hash.wrapping_mul(1099511628211);
+        hash ^= if sig.all_i32 { 1 } else { 0 };
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash ^= global_sigs.len() as u64;
+    hash = hash.wrapping_mul(1099511628211);
+    hash
+}
+
 fn collect_jit_type_signatures(module: &WasmModule) -> Vec<crate::wasm_jit::JitTypeSignature> {
     let mut out = Vec::with_capacity(module.type_count);
     let mut idx = 0usize;
@@ -10279,6 +10433,26 @@ fn collect_jit_type_signatures(module: &WasmModule) -> Vec<crate::wasm_jit::JitT
             out.push(crate::wasm_jit::JitTypeSignature {
                 param_count: 0,
                 result_count: 0,
+                all_i32: false,
+            });
+        }
+        idx += 1;
+    }
+    out
+}
+
+fn collect_jit_global_signatures(module: &WasmModule) -> Vec<crate::wasm_jit::JitGlobalSignature> {
+    let mut out = Vec::with_capacity(module.global_count);
+    let mut idx = 0usize;
+    while idx < module.global_count {
+        if let Some(global) = module.global_templates[idx] {
+            out.push(crate::wasm_jit::JitGlobalSignature {
+                mutable: global.mutable,
+                all_i32: matches!(global.value_type, ValueType::I32),
+            });
+        } else {
+            out.push(crate::wasm_jit::JitGlobalSignature {
+                mutable: false,
                 all_i32: false,
             });
         }
@@ -10310,12 +10484,14 @@ fn jit_cache_get(
     code: &[u8],
     locals_total: usize,
     type_sig_hash: u64,
+    global_sig_hash: u64,
 ) -> Option<JitExecInfo> {
     let cache = JIT_CACHE.lock();
     for entry in cache.entries.iter() {
         if entry.hash == hash
             && entry.locals_total == locals_total
             && entry.type_sig_hash == type_sig_hash
+            && entry.global_sig_hash == global_sig_hash
             && entry.code_len == code.len()
         {
             if entry.func.wasm_code != code {
@@ -10340,11 +10516,13 @@ fn jit_cache_get_or_compile(
     locals_total: usize,
     type_sigs: &[crate::wasm_jit::JitTypeSignature],
     type_sig_hash: u64,
+    global_sigs: &[crate::wasm_jit::JitGlobalSignature],
+    global_sig_hash: u64,
 ) -> Option<JitExecInfo> {
-    if let Some(entry) = jit_cache_get(hash, code, locals_total, type_sig_hash) {
+    if let Some(entry) = jit_cache_get(hash, code, locals_total, type_sig_hash, global_sig_hash) {
         return Some(entry);
     }
-    let jit = match crate::wasm_jit::compile_with_types(code, locals_total, type_sigs) {
+    let jit = match crate::wasm_jit::compile_with_env(code, locals_total, type_sigs, global_sigs) {
         Ok(j) => j,
         Err(_) => {
             jit_stats().lock().failed += 1;
@@ -10357,6 +10535,7 @@ fn jit_cache_get_or_compile(
             hash,
             locals_total,
             type_sig_hash,
+            global_sig_hash,
             code_len: code.len(),
             func: jit,
         });
@@ -10372,6 +10551,7 @@ fn jit_cache_get_or_compile(
         hash,
         locals_total,
         type_sig_hash,
+        global_sig_hash,
         code_len: code.len(),
         func: jit,
     };
@@ -10474,82 +10654,84 @@ fn jit_bounds_self_test_impl(force_user_mode: bool) -> Result<(), &'static str> 
         guard
     };
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        let res = jit_bounds_self_test_x86_64_direct(force_user_mode);
-        drop(guard);
-        return res;
-    }
+    let result = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            jit_bounds_self_test_x86_64_direct(force_user_mode)
+        }
 
-    let mut module = WasmModule::new();
-    let mut code: Vec<u8> = Vec::new();
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let mut module = WasmModule::new();
+            let mut code: Vec<u8> = Vec::new();
 
-    fn push_uleb128(buf: &mut Vec<u8>, mut value: u32) {
-        loop {
-            let mut byte = (value & 0x7F) as u8;
-            value >>= 7;
-            if value != 0 {
-                byte |= 0x80;
+            fn push_uleb128(buf: &mut Vec<u8>, mut value: u32) {
+                loop {
+                    let mut byte = (value & 0x7F) as u8;
+                    value >>= 7;
+                    if value != 0 {
+                        byte |= 0x80;
+                    }
+                    buf.push(byte);
+                    if value == 0 {
+                        break;
+                    }
+                }
             }
-            buf.push(byte);
-            if value == 0 {
-                break;
+
+            // i32.const 8
+            code.push(Opcode::I32Const as u8);
+            code.push(0x08);
+            // i32.load align=0 offset=0xFFFF_FFFC (overflow when added to 8)
+            code.push(Opcode::I32Load as u8);
+            push_uleb128(&mut code, 0);
+            push_uleb128(&mut code, 0xFFFF_FFFC);
+            code.push(Opcode::End as u8);
+
+            module.load(&code).map_err(|_| "Module load failed")?;
+            module
+                .add_function(Function {
+                    code_offset: 0,
+                    code_len: code.len(),
+                    param_count: 0,
+                    result_count: 1,
+                    local_count: 0,
+                })
+                .map_err(|_| "Function add failed")?;
+            let instance_id = wasm_runtime()
+                .instantiate_module(module, ProcessId(1))
+                .map_err(|_| "Instance create failed")?;
+
+            let interp = wasm_runtime()
+                .get_instance_mut(instance_id, |instance| {
+                    instance.stack.clear();
+                    instance.enable_jit(false);
+                    instance.call(0)
+                })
+                .map_err(|_| "Instance missing")?;
+            if !matches!(interp, Err(WasmError::MemoryOutOfBounds)) {
+                let _ = wasm_runtime().destroy(instance_id);
+                Err("Interpreter did not trap on bounds overflow")
+            } else {
+                let jit = wasm_runtime()
+                    .get_instance_mut(instance_id, |instance| {
+                        instance.stack.clear();
+                        instance.enable_jit(true);
+                        instance.call(0)
+                    })
+                    .map_err(|_| "Instance missing")?;
+                if !matches!(jit, Err(WasmError::MemoryOutOfBounds)) {
+                    let _ = wasm_runtime().destroy(instance_id);
+                    Err("JIT did not trap on bounds overflow")
+                } else {
+                    let _ = wasm_runtime().destroy(instance_id);
+                    Ok(())
+                }
             }
         }
-    }
-
-    // i32.const 8
-    code.push(Opcode::I32Const as u8);
-    code.push(0x08);
-    // i32.load align=0 offset=0xFFFF_FFFC (overflow when added to 8)
-    code.push(Opcode::I32Load as u8);
-    push_uleb128(&mut code, 0);
-    push_uleb128(&mut code, 0xFFFF_FFFC);
-    code.push(Opcode::End as u8);
-
-    module.load(&code).map_err(|_| "Module load failed")?;
-    module
-        .add_function(Function {
-            code_offset: 0,
-            code_len: code.len(),
-            param_count: 0,
-            result_count: 1,
-            local_count: 0,
-        })
-        .map_err(|_| "Function add failed")?;
-    let instance_id = wasm_runtime()
-        .instantiate_module(module, ProcessId(1))
-        .map_err(|_| "Instance create failed")?;
-
-    let interp = wasm_runtime()
-        .get_instance_mut(instance_id, |instance| {
-            instance.stack.clear();
-            instance.enable_jit(false);
-            instance.call(0)
-        })
-        .map_err(|_| "Instance missing")?;
-    if !matches!(interp, Err(WasmError::MemoryOutOfBounds)) {
-        let _ = wasm_runtime().destroy(instance_id);
-        drop(guard);
-        return Err("Interpreter did not trap on bounds overflow");
-    }
-
-    let jit = wasm_runtime()
-        .get_instance_mut(instance_id, |instance| {
-            instance.stack.clear();
-            instance.enable_jit(true);
-            instance.call(0)
-        })
-        .map_err(|_| "Instance missing")?;
-    if !matches!(jit, Err(WasmError::MemoryOutOfBounds)) {
-        let _ = wasm_runtime().destroy(instance_id);
-        drop(guard);
-        return Err("JIT did not trap on bounds overflow");
-    }
-
-    let _ = wasm_runtime().destroy(instance_id);
+    };
     drop(guard);
-    Ok(())
+    result
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -11572,7 +11754,7 @@ pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
         guard
     };
 
-    let cases: [(&str, &[u8], i32); 2] = [
+    let cases: [(&str, &[u8], i32); 6] = [
         (
             "typed_block_typeidx",
             &WASM_CONFORMANCE_MODULE_TYPED_BLOCK,
@@ -11582,6 +11764,26 @@ pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
             "typed_if_implicit_else_typeidx",
             &WASM_CONFORMANCE_MODULE_TYPED_IF_IMPLICIT_ELSE,
             42,
+        ),
+        (
+            "typed_block_br2_typeidx",
+            &WASM_CONFORMANCE_MODULE_TYPED_BLOCK_BR2,
+            29,
+        ),
+        (
+            "typed_block_br_if2_typeidx",
+            &WASM_CONFORMANCE_MODULE_TYPED_BLOCK_BR_IF2,
+            29,
+        ),
+        (
+            "typed_block_br3_typeidx",
+            &WASM_CONFORMANCE_MODULE_TYPED_BLOCK_BR3,
+            23,
+        ),
+        (
+            "typed_block_br_if3_typeidx",
+            &WASM_CONFORMANCE_MODULE_TYPED_BLOCK_BR_IF3,
+            23,
         ),
     ];
 
@@ -11653,6 +11855,150 @@ pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
     }
 
     crate::serial_println!("[WASM-JIT] typed-blocktypes total={}", cases.len());
+    drop(guard);
+    Ok(())
+}
+
+pub fn jit_global_module_self_test() -> Result<(), &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    struct JitModeGuard {
+        prev_user_mode: bool,
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    impl Drop for JitModeGuard {
+        fn drop(&mut self) {
+            let mut cfg = jit_config().lock();
+            cfg.user_mode = self.prev_user_mode;
+        }
+    }
+
+    let mut guard = jit_config().lock();
+    let prev_enabled = guard.enabled;
+    let prev_hot = guard.hot_threshold;
+    guard.enabled = true;
+    guard.hot_threshold = 0;
+    drop(guard);
+
+    struct ConfigGuard {
+        prev_enabled: bool,
+        prev_hot: u32,
+    }
+
+    impl Drop for ConfigGuard {
+        fn drop(&mut self) {
+            let mut cfg = jit_config().lock();
+            cfg.enabled = self.prev_enabled;
+            cfg.hot_threshold = self.prev_hot;
+        }
+    }
+
+    let guard = ConfigGuard {
+        prev_enabled,
+        prev_hot,
+    };
+
+    #[cfg(target_arch = "x86_64")]
+    let _jit_mode_guard = {
+        let mut cfg = jit_config().lock();
+        let guard = JitModeGuard {
+            prev_user_mode: cfg.user_mode,
+        };
+        cfg.user_mode = false;
+        guard
+    };
+
+    let cases: [(&str, &[u8], i32); 2] = [
+        (
+            "global_get_i32",
+            &WASM_CONFORMANCE_MODULE_GLOBAL_GET_I32,
+            42,
+        ),
+        (
+            "global_set_get_i32",
+            &WASM_CONFORMANCE_MODULE_GLOBAL_SET_GET_I32,
+            23,
+        ),
+    ];
+    let mut compiler = crate::wasm_jit::FuzzCompiler::new(64, 64)
+        .map_err(|_| "jit globals self-test: compiler init failed")?;
+
+    let mut idx = 0usize;
+    while idx < cases.len() {
+        let (name, bytes, expected) = cases[idx];
+
+        let mut interp_module = WasmModule::new();
+        interp_module
+            .load_binary(bytes)
+            .map_err(|_| "jit globals self-test: parse failed")?;
+        let interp_id = wasm_runtime()
+            .instantiate_module(interp_module, ProcessId(1))
+            .map_err(|_| "jit globals self-test: interp instantiate failed")?;
+
+        let mut jit_module = WasmModule::new();
+        jit_module
+            .load_binary(bytes)
+            .map_err(|_| "jit globals self-test: parse failed")?;
+        let jit_exec = {
+            let func = jit_module
+                .get_function(0)
+                .map_err(|_| "jit globals self-test: function missing")?;
+            let code_start = func.code_offset;
+            let code_end = code_start
+                .checked_add(func.code_len)
+                .ok_or("jit globals self-test: code range overflow")?;
+            if code_end > jit_module.bytecode_len || code_end > jit_module.bytecode.len() {
+                return Err("jit globals self-test: code range invalid");
+            }
+            let locals_total = func.param_count + func.local_count;
+            let type_sigs = collect_jit_type_signatures(&jit_module);
+            let global_sigs = collect_jit_global_signatures(&jit_module);
+            let entry = compiler
+                .compile_with_env(
+                    &jit_module.bytecode[code_start..code_end],
+                    locals_total,
+                    &type_sigs,
+                    &global_sigs,
+                )
+                .map_err(|_| "jit globals self-test: jit compile failed")?;
+            JitExecInfo {
+                entry,
+                exec_ptr: compiler.exec_ptr(),
+                exec_len: compiler.exec_len(),
+            }
+        };
+        let jit_id = wasm_runtime()
+            .instantiate_module(jit_module, ProcessId(1))
+            .map_err(|_| "jit globals self-test: jit instantiate failed")?;
+
+        let interp = wasm_runtime()
+            .get_instance_mut(interp_id, |instance| -> Result<i32, WasmError> {
+                instance.enable_jit(false);
+                instance.call(0)?;
+                instance.stack.pop()?.as_i32()
+            })
+            .map_err(|_| "jit globals self-test: interp instance missing")?;
+
+        let jit = wasm_runtime()
+            .get_instance_mut(jit_id, |instance| -> Result<i32, WasmError> {
+                instance.run_jit_entry(0, jit_exec)?;
+                instance.stack.pop()?.as_i32()
+            })
+            .map_err(|_| "jit globals self-test: jit instance missing")?;
+
+        let _ = wasm_runtime().destroy(interp_id);
+        let _ = wasm_runtime().destroy(jit_id);
+
+        if interp != Ok(expected) || jit != Ok(expected) {
+            let _ = name;
+            drop(guard);
+            return Err("jit globals self-test: result mismatch");
+        }
+
+        idx += 1;
+    }
+
+    crate::serial_println!("[WASM-JIT] globals total={}", cases.len());
     drop(guard);
     Ok(())
 }
@@ -14089,6 +14435,95 @@ const WASM_CONFORMANCE_MODULE_TYPED_IF_IMPLICIT_ELSE: [u8; 37] = [
     0x01, 0x0A, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x01, 0x7F, 0x01, 0x7F, // types
     0x03, 0x02, 0x01, 0x00, // function section
     0x0A, 0x0B, 0x01, 0x09, 0x00, 0x41, 0x2A, 0x41, 0x00, 0x04, 0x01, 0x0B, 0x0B, // code
+];
+
+const WASM_CONFORMANCE_MODULE_TYPED_BLOCK_BR2: [u8; 44] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x0A, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x00, 0x02, 0x7F, 0x7F, // types
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x12, 0x01, 0x10, 0x00, // code section header + body size + local decls
+    0x02, 0x01, // block (typeidx 1) => () -> (i32, i32)
+    0x41, 0x07, // i32.const 7
+    0x41, 0x16, // i32.const 22
+    0x0C, 0x00, // br 0
+    0x41, 0x01, // i32.const 1 (skipped)
+    0x41, 0x02, // i32.const 2 (skipped)
+    0x0B, // end block
+    0x6A, // i32.add => 29
+    0x0B, // end function
+];
+
+const WASM_CONFORMANCE_MODULE_TYPED_BLOCK_BR_IF2: [u8; 43] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x0A, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x00, 0x02, 0x7F, 0x7F, // types
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x11, 0x01, 0x0F, 0x00, // code section header + body size + local decls
+    0x02, 0x01, // block (typeidx 1) => () -> (i32, i32)
+    0x41, 0x07, // i32.const 7
+    0x41, 0x16, // i32.const 22
+    0x41, 0x01, // i32.const 1 (take branch)
+    0x0D, 0x00, // br_if 0
+    0x00, // unreachable (skipped)
+    0x0B, // end block
+    0x6A, // i32.add => 29
+    0x0B, // end function
+];
+
+const WASM_CONFORMANCE_MODULE_TYPED_BLOCK_BR3: [u8; 50] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x0B, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x00, 0x03, 0x7F, 0x7F, 0x7F, // types
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x17, 0x01, 0x15, 0x00, // code section header + body size + local decls
+    0x02, 0x01, // block (typeidx 1) => () -> (i32, i32, i32)
+    0x41, 0x05, // i32.const 5
+    0x41, 0x07, // i32.const 7
+    0x41, 0x0B, // i32.const 11
+    0x0C, 0x00, // br 0
+    0x41, 0x01, // i32.const 1 (skipped)
+    0x41, 0x02, // i32.const 2 (skipped)
+    0x41, 0x03, // i32.const 3 (skipped)
+    0x0B, // end block
+    0x6A, // i32.add
+    0x6A, // i32.add => 23
+    0x0B, // end function
+];
+
+const WASM_CONFORMANCE_MODULE_TYPED_BLOCK_BR_IF3: [u8; 47] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x0B, 0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x00, 0x03, 0x7F, 0x7F, 0x7F, // types
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x0A, 0x14, 0x01, 0x12, 0x00, // code section header + body size + local decls
+    0x02, 0x01, // block (typeidx 1) => () -> (i32, i32, i32)
+    0x41, 0x05, // i32.const 5
+    0x41, 0x07, // i32.const 7
+    0x41, 0x0B, // i32.const 11
+    0x41, 0x01, // i32.const 1 (take branch)
+    0x0D, 0x00, // br_if 0
+    0x00, // unreachable (skipped)
+    0x0B, // end block
+    0x6A, // i32.add
+    0x6A, // i32.add => 23
+    0x0B, // end function
+];
+
+const WASM_CONFORMANCE_MODULE_GLOBAL_GET_I32: [u8; 35] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7F, // type: () -> i32
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x06, 0x06, 0x01, 0x7F, 0x00, 0x41, 0x2A, 0x0B, // immutable i32 global = 42
+    0x0A, 0x06, 0x01, 0x04, 0x00, 0x23, 0x00, 0x0B, // global.get 0
+];
+
+const WASM_CONFORMANCE_MODULE_GLOBAL_SET_GET_I32: [u8; 39] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+    0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7F, // type: () -> i32
+    0x03, 0x02, 0x01, 0x00, // function section
+    0x06, 0x06, 0x01, 0x7F, 0x01, 0x41, 0x07, 0x0B, // mutable i32 global = 7
+    0x0A, 0x0A, 0x01, 0x08, 0x00, // code section + body size + local decls
+    0x41, 0x17, // i32.const 23
+    0x24, 0x00, // global.set 0
+    0x23, 0x00, // global.get 0
+    0x0B, // end function
 ];
 
 const WASM_CONFORMANCE_MODULE_REFTYPE_MVP: [u8; 36] = [

@@ -384,7 +384,7 @@ impl E1000Driver {
             self.tx_tail = 0;
 
             // Enable transmitter with collision parameters
-            let tctl = E1000_TCTL_EN | E1000_TCTL_PSP | 
+            let tctl = E1000_TCTL_EN | E1000_TCTL_PSP |
                        ((15 << 4) & E1000_TCTL_CT) |   // Collision threshold
                        ((64 << 12) & E1000_TCTL_COLD); // Collision distance
             self.write_reg(E1000_REG_TCTL, tctl);
@@ -584,6 +584,8 @@ pub fn mmio_base() -> u32 {
 // ============================================================================
 
 impl NetworkInterface for E1000Driver {
+    type Packet = [u8; 2048];
+
     fn send_frame(&mut self, frame: &[u8]) -> Result<(), &'static str> {
         E1000Driver::send_frame(self, frame)
     }

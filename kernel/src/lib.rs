@@ -523,17 +523,20 @@ fn rust_main_aarch64_bringup() -> ! {
 
 #[no_mangle]
 pub extern "C" fn rust_main() -> ! {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     {
-        return rust_main_aarch64_bringup();
+        #[cfg(target_arch = "aarch64")]
+        {
+            rust_main_aarch64_bringup()
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            rust_main_x86_64_bringup()
+        }
     }
 
-    #[cfg(target_arch = "x86_64")]
-    {
-        return rust_main_x86_64_bringup();
-    }
-
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86")]
     {
         // IMMEDIATE VGA WRITE to confirm we reached Rust code
         unsafe {

@@ -77,13 +77,21 @@ if {$expect_edge_adm_total >= 576} {
 if {[info exists env(X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM)]} {
     set expect_min_reg_edges_adm $env(X64_EXPECT_MIN_JITFUZZREG_EDGES_ADM)
 }
-set expect_min_fixed_vectors 31
+set expect_min_fixed_vectors 40
 if {[info exists env(X64_EXPECT_MIN_FIXED_VECTORS)]} {
     set expect_min_fixed_vectors $env(X64_EXPECT_MIN_FIXED_VECTORS)
 }
-set expect_min_structured_vectors 12
+set expect_min_structured_vectors 19
 if {[info exists env(X64_EXPECT_MIN_STRUCTURED_VECTORS)]} {
     set expect_min_structured_vectors $env(X64_EXPECT_MIN_STRUCTURED_VECTORS)
+}
+set expect_min_typed_blocktypes 6
+if {[info exists env(X64_EXPECT_MIN_TYPED_BLOCKTYPES)]} {
+    set expect_min_typed_blocktypes $env(X64_EXPECT_MIN_TYPED_BLOCKTYPES)
+}
+set expect_min_globals 2
+if {[info exists env(X64_EXPECT_MIN_GLOBALS)]} {
+    set expect_min_globals $env(X64_EXPECT_MIN_GLOBALS)
 }
 
 proc expect_x64_prompt {} {
@@ -260,12 +268,18 @@ proc run_x64_wasm_jit_selftest_with_gate {} {
     global timeout
     global expect_min_fixed_vectors
     global expect_min_structured_vectors
+    global expect_min_typed_blocktypes
+    global expect_min_globals
     set saved_timeout $timeout
     set timeout 240
     set seen_summary 0
+    set seen_typed 0
+    set seen_globals 0
     set seen_pass 0
     set vectors_total -1
     set vectors_structured -1
+    set typed_blocktypes_total -1
+    set globals_total -1
 
     send -- "wasm-jit-selftest\r"
     expect {
@@ -275,13 +289,23 @@ proc run_x64_wasm_jit_selftest_with_gate {} {
             set vectors_structured $expect_out(2,string)
             exp_continue
         }
-        -re {Self-test passed \(bounds traps \+ fixed-vector interpreter/JIT parity\)} {
+        -re {\[WASM-JIT\] typed-blocktypes total=([0-9]+)} {
+            set seen_typed 1
+            set typed_blocktypes_total $expect_out(1,string)
+            exp_continue
+        }
+        -re {\[WASM-JIT\] globals total=([0-9]+)} {
+            set seen_globals 1
+            set globals_total $expect_out(1,string)
+            exp_continue
+        }
+        -re {Self-test passed \(bounds traps \+ fixed-vector interpreter/JIT parity \+ module globals\)} {
             set seen_pass 1
             exp_continue
         }
         -re {x64> } {
-            if {!$seen_summary || !$seen_pass || $vectors_total < $expect_min_fixed_vectors || $vectors_structured < $expect_min_structured_vectors} {
-                puts "x86_64 wasm-jit-selftest assertion failed: summary=$seen_summary pass=$seen_pass total=$vectors_total structured=$vectors_structured min_total=$expect_min_fixed_vectors min_structured=$expect_min_structured_vectors"
+            if {!$seen_summary || !$seen_typed || !$seen_globals || !$seen_pass || $vectors_total < $expect_min_fixed_vectors || $vectors_structured < $expect_min_structured_vectors || $typed_blocktypes_total < $expect_min_typed_blocktypes || $globals_total < $expect_min_globals} {
+                puts "x86_64 wasm-jit-selftest assertion failed: summary=$seen_summary typed=$seen_typed globals=$seen_globals pass=$seen_pass total=$vectors_total structured=$vectors_structured typed_total=$typed_blocktypes_total globals_total=$globals_total min_total=$expect_min_fixed_vectors min_structured=$expect_min_structured_vectors min_typed=$expect_min_typed_blocktypes min_globals=$expect_min_globals"
                 exit 1
             }
         }

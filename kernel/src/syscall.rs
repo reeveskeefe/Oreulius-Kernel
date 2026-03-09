@@ -46,7 +46,7 @@ use crate::vga;
 const ENOSYS: u32 = 38; // Function not implemented
 const EINVAL: u32 = 22; // Invalid argument
 const EACCES: u32 = 13; // Permission denied
-const EPERM:  u32 =  1; // Operation not permitted (caller not privileged)
+const EPERM: u32 = 1; // Operation not permitted (caller not privileged)
 const EFAULT: u32 = 14; // Bad address
 const ENOMEM: u32 = 12; // Out of memory
 const EIO: u32 = 5; // I/O error
@@ -1111,18 +1111,18 @@ fn sys_cap_revoke_for_pid(args: SyscallArgs, caller_pid: capability::ProcessId) 
     }
 
     let target_pid = capability::ProcessId(args.arg1);
-    let cap_id     = args.arg2;
+    let cap_id = args.arg2;
 
     if cap_id == 0 {
         // Revoke every capability held by target_pid.
         match capability::capability_manager().revoke_all_capabilities(target_pid) {
-            Ok(_)  => SyscallResult::ok(0),
+            Ok(_) => SyscallResult::ok(0),
             Err(_) => SyscallResult::err(EINVAL),
         }
     } else {
         // Revoke a single specific capability.
         match capability::capability_manager().revoke_capability(target_pid, cap_id) {
-            Ok(_)  => SyscallResult::ok(0),
+            Ok(_) => SyscallResult::ok(0),
             Err(_) => SyscallResult::err(EINVAL),
         }
     }

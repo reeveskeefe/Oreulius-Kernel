@@ -39,7 +39,9 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use crate::wasm::{Opcode, MAX_INSTRUCTIONS_PER_CALL, MAX_LOCALS, MAX_STACK_DEPTH};
+use crate::wasm::{
+    Opcode, MAX_INSTRUCTIONS_PER_CALL, MAX_LOCALS, MAX_STACK_DEPTH, MAX_WASM_TYPE_ARITY,
+};
 use crate::{memory, memory_isolation, paging};
 
 pub type JitFn = unsafe extern "C" fn(
@@ -76,6 +78,12 @@ pub struct JitFunction {
 pub struct JitTypeSignature {
     pub param_count: usize,
     pub result_count: usize,
+    pub all_i32: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JitGlobalSignature {
+    pub mutable: bool,
     pub all_i32: bool,
 }
 
@@ -129,6 +137,16 @@ const TRAP_MEM: i32 = -1;
 const TRAP_FUEL: i32 = -2;
 const TRAP_STACK: i32 = -3;
 const TRAP_CFI: i32 = -4;
+#[cfg(target_arch = "x86_64")]
+const X64_BRANCH_SCRATCH_SLOTS: usize = MAX_WASM_TYPE_ARITY;
+#[cfg(target_arch = "x86_64")]
+const X64_SAVED_REG_BYTES: i32 = 40;
+#[cfg(target_arch = "x86_64")]
+const X64_FRAME_LOCAL_BYTES: i32 = 0x20;
+#[cfg(target_arch = "x86_64")]
+const X64_STACK_FRAME_BYTES: i32 = X64_FRAME_LOCAL_BYTES + ((X64_BRANCH_SCRATCH_SLOTS as i32) * 4);
+#[cfg(target_arch = "x86_64")]
+const X64_BRANCH_SCRATCH_BASE_DISP: i32 = -(X64_SAVED_REG_BYTES + X64_STACK_FRAME_BYTES);
 
 impl JitExecBuffer {
     pub fn new(len: usize) -> Result<Self, &'static str> {
@@ -216,7 +234,11 @@ fn analyze_basic_blocks_into(code: &[u8], blocks: &mut Vec<BasicBlock>) {
                 };
                 pc += n;
             }
-            Some(Opcode::LocalGet) | Some(Opcode::LocalSet) | Some(Opcode::LocalTee) => {
+            Some(Opcode::LocalGet)
+            | Some(Opcode::LocalSet)
+            | Some(Opcode::LocalTee)
+            | Some(Opcode::GlobalGet)
+            | Some(Opcode::GlobalSet) => {
                 let (_idx, n) = match read_uleb128(code, pc) {
                     Some(v) => v,
                     None => break,
@@ -346,6 +368,7 @@ fn emit_code_into(
     code: &[u8],
     locals_total: usize,
     type_sigs: &[JitTypeSignature],
+    global_sigs: &[JitGlobalSignature],
     emitter: &mut Emitter,
     traces: &mut Vec<TranslationRecord>,
 ) -> Result<(), &'static str> {
@@ -689,6 +712,51 @@ fn emit_code_into(
                 stack_push(&mut stack_depth, 1, &mut max_depth)?;
                 emitter.emit_local_tee(idx as u32);
             }
+            Opcode::GlobalGet => {
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    return Err("Globals not supported by JIT");
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    emitter.emit_instr_fuel_check();
+                    let (idx, n) = read_uleb128(code, pc).ok_or("Bad global")?;
+                    pc += n;
+                    let global = global_sigs
+                        .get(idx as usize)
+                        .copied()
+                        .ok_or("Global index out of bounds")?;
+                    if !global.all_i32 {
+                        return Err("Global type not supported by JIT");
+                    }
+                    stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                    emitter.emit_global_get(idx as u32);
+                }
+            }
+            Opcode::GlobalSet => {
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    return Err("Globals not supported by JIT");
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    emitter.emit_instr_fuel_check();
+                    let (idx, n) = read_uleb128(code, pc).ok_or("Bad global")?;
+                    pc += n;
+                    let global = global_sigs
+                        .get(idx as usize)
+                        .copied()
+                        .ok_or("Global index out of bounds")?;
+                    if !global.all_i32 {
+                        return Err("Global type not supported by JIT");
+                    }
+                    if !global.mutable {
+                        return Err("Immutable global not supported by JIT");
+                    }
+                    stack_pop(&mut stack_depth, 1)?;
+                    emitter.emit_global_set(idx as u32);
+                }
+            }
             Opcode::Select => {
                 emitter.emit_instr_fuel_check();
                 stack_pop(&mut stack_depth, 3)?;
@@ -820,21 +888,8 @@ fn emit_code_into(
                             frame.label_arity,
                         )
                     };
-                    if target_label_arity > 1 {
-                        return Err("Multi-value branch not supported by JIT");
-                    }
                     let target_depth = target_stack_depth + target_label_arity;
-                    // Branch target stack depth must be committed on the taken
-                    // path before transfer-of-control.
-                    if target_label_arity == 1 {
-                        // Preserve the top-of-stack branch result while dropping
-                        // any transient values above the target block entry depth.
-                        emitter.emit_pop_to_eax();
-                        emitter.emit_set_stack_depth(target_stack_depth)?;
-                        emitter.emit_push_eax();
-                    } else {
-                        emitter.emit_set_stack_depth(target_depth)?;
-                    }
+                    emitter.emit_rebuild_branch_values(target_label_arity, target_stack_depth)?;
                     let jump = emitter.emit_jump_placeholder();
                     match target_kind {
                         ControlKind::Loop => {
@@ -872,17 +927,7 @@ fn emit_code_into(
                             frame.label_arity,
                         )
                     };
-                    if target_label_arity > 1 {
-                        return Err("Multi-value br_if not supported by JIT");
-                    }
-                    let target_depth = target_stack_depth + target_label_arity;
-                    if target_label_arity == 1 {
-                        emitter.emit_pop_to_eax();
-                        emitter.emit_set_stack_depth(target_stack_depth)?;
-                        emitter.emit_push_eax();
-                    } else {
-                        emitter.emit_set_stack_depth(target_depth)?;
-                    }
+                    emitter.emit_rebuild_branch_values(target_label_arity, target_stack_depth)?;
                     let jump = emitter.emit_jump_placeholder();
                     match target_kind {
                         ControlKind::Loop => {
@@ -969,6 +1014,8 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
             | Opcode::LocalGet
             | Opcode::LocalSet
             | Opcode::LocalTee
+            | Opcode::GlobalGet
+            | Opcode::GlobalSet
             | Opcode::Select
             | Opcode::I32Load
             | Opcode::I32Store
@@ -987,10 +1034,11 @@ fn emit_code(
     code: &[u8],
     locals_total: usize,
     type_sigs: &[JitTypeSignature],
+    global_sigs: &[JitGlobalSignature],
     emitter: &mut Emitter,
 ) -> Result<Vec<TranslationRecord>, &'static str> {
     let mut traces = Vec::new();
-    emit_code_into(code, locals_total, type_sigs, emitter, &mut traces)?;
+    emit_code_into(code, locals_total, type_sigs, global_sigs, emitter, &mut traces)?;
     Ok(traces)
 }
 
@@ -1318,14 +1366,15 @@ fn build_translation_proof(
     })
 }
 
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn slice_is_kernel_mapped<T>(_slice: &[T]) -> bool {
+    true
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 #[inline]
 fn slice_is_kernel_mapped<T>(slice: &[T]) -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let _ = slice;
-        return true;
-    }
-
     let elem = core::mem::size_of::<T>();
     if elem == 0 || slice.is_empty() {
         return true;
@@ -1342,9 +1391,18 @@ pub fn compile_with_types(
     locals_total: usize,
     type_sigs: &[JitTypeSignature],
 ) -> Result<JitFunction, &'static str> {
+    compile_with_env(code, locals_total, type_sigs, &[])
+}
+
+pub fn compile_with_env(
+    code: &[u8],
+    locals_total: usize,
+    type_sigs: &[JitTypeSignature],
+    global_sigs: &[JitGlobalSignature],
+) -> Result<JitFunction, &'static str> {
     let blocks = analyze_basic_blocks(code);
     let mut emitter = Emitter::new();
-    let traces = emit_code(code, locals_total, type_sigs, &mut emitter)?;
+    let traces = emit_code(code, locals_total, type_sigs, global_sigs, &mut emitter)?;
     let block_hashes = validate_translation_per_block(code, &blocks, &traces, &emitter.code)?;
     let proof = build_translation_proof(code, &traces, &emitter.code)?;
 
@@ -1415,6 +1473,16 @@ impl FuzzCompiler {
         locals_total: usize,
         type_sigs: &[JitTypeSignature],
     ) -> Result<JitFn, &'static str> {
+        self.compile_with_env(code, locals_total, type_sigs, &[])
+    }
+
+    pub fn compile_with_env(
+        &mut self,
+        code: &[u8],
+        locals_total: usize,
+        type_sigs: &[JitTypeSignature],
+        global_sigs: &[JitGlobalSignature],
+    ) -> Result<JitFn, &'static str> {
         // Reuse allocations across fuzz iterations, but always compile from a
         // clean emitter/trace state so stale machine code cannot be executed.
         self.emitter.reset();
@@ -1426,6 +1494,7 @@ impl FuzzCompiler {
             code,
             locals_total,
             type_sigs,
+            global_sigs,
             &mut self.emitter,
             &mut self.traces,
         )?;
@@ -2334,8 +2403,11 @@ impl Emitter {
         // SysV x86_64 JitFn arg registers:
         // rdi stack_ptr, rsi sp_ptr, rdx mem_ptr, rcx mem_len, r8 locals_ptr,
         // r9 instr_fuel_ptr, [rbp+16] mem_fuel_ptr, [rbp+24] trap_ptr.
+        // x86_64 reuses the shadow-stack-base slot at [rbp+32] as globals_ptr;
+        // the backend's CFI path is a no-op, so shadow_sp remains the only live CFI arg.
         // Locals are stored in the reserved stack area below saved callee-saved regs:
-        // [rbp-48] instr_fuel_ptr, [rbp-56] mem_fuel_ptr, [rbp-64] trap_ptr.
+        // [rbp-48] instr_fuel_ptr, [rbp-56] mem_fuel_ptr, [rbp-64] trap_ptr, [rbp-72] globals_ptr.
+        // Multi-value branch scratch slots live below that fixed metadata area.
         self.emit(&[
             0x55, // push rbp
             0x48, 0x89, 0xE5, // mov rbp, rsp
@@ -2344,7 +2416,10 @@ impl Emitter {
             0x41, 0x55, // push r13
             0x41, 0x56, // push r14
             0x41, 0x57, // push r15
-            0x48, 0x83, 0xEC, 0x20, // sub rsp, 0x20
+            0x48, 0x81, 0xEC, // sub rsp, imm32
+        ]);
+        self.emit_i32(X64_STACK_FRAME_BYTES);
+        self.emit(&[
             0x49, 0x89, 0xFC, // mov r12, rdi
             0x49, 0x89, 0xF5, // mov r13, rsi
             0x49, 0x89, 0xD6, // mov r14, rdx
@@ -2355,6 +2430,8 @@ impl Emitter {
             0x48, 0x89, 0x45, 0xC8, // mov [rbp-56], rax
             0x48, 0x8B, 0x45, 0x18, // mov rax, [rbp+24]
             0x48, 0x89, 0x45, 0xC0, // mov [rbp-64], rax
+            0x48, 0x8B, 0x45, 0x20, // mov rax, [rbp+32]
+            0x48, 0x89, 0x45, 0xB8, // mov [rbp-72], rax
         ]);
         self.emit_cfi_push_return();
     }
@@ -2443,6 +2520,51 @@ impl Emitter {
         let pos = self.code.len();
         self.emit_u32(0);
         pos
+    }
+
+    fn branch_scratch_disp(slot: usize) -> Result<i32, &'static str> {
+        if slot >= X64_BRANCH_SCRATCH_SLOTS {
+            return Err("Multi-value branch arity exceeds x86_64 JIT scratch bound");
+        }
+        Ok(X64_BRANCH_SCRATCH_BASE_DISP + (slot as i32 * 4))
+    }
+
+    fn emit_store_eax_scratch_slot(&mut self, slot: usize) -> Result<(), &'static str> {
+        let disp = Self::branch_scratch_disp(slot)?;
+        self.emit(&[0x89, 0x85]); // mov [rbp+disp32], eax
+        self.emit_i32(disp);
+        Ok(())
+    }
+
+    fn emit_load_eax_scratch_slot(&mut self, slot: usize) -> Result<(), &'static str> {
+        let disp = Self::branch_scratch_disp(slot)?;
+        self.emit(&[0x8B, 0x85]); // mov eax, [rbp+disp32]
+        self.emit_i32(disp);
+        Ok(())
+    }
+
+    fn emit_rebuild_branch_values(
+        &mut self,
+        label_arity: i32,
+        target_stack_depth: i32,
+    ) -> Result<(), &'static str> {
+        if label_arity < 0 {
+            return Err("Negative branch arity");
+        }
+        let arity = label_arity as usize;
+        if arity == 0 {
+            return self.emit_set_stack_depth(target_stack_depth);
+        }
+        for slot in 0..arity {
+            self.emit_pop_to_eax();
+            self.emit_store_eax_scratch_slot(slot)?;
+        }
+        self.emit_set_stack_depth(target_stack_depth)?;
+        for slot in (0..arity).rev() {
+            self.emit_load_eax_scratch_slot(slot)?;
+            self.emit_push_eax();
+        }
+        Ok(())
     }
 
     fn emit_set_stack_depth(&mut self, depth: i32) -> Result<(), &'static str> {
@@ -2755,6 +2877,24 @@ impl Emitter {
         self.emit_push_eax();
     }
 
+    fn emit_global_get(&mut self, idx: u32) {
+        self.emit(&[
+            0x4C, 0x8B, 0x5D, 0xB8, // mov r11, [rbp-72]
+            0x41, 0x8B, 0x83, // mov eax, [r11 + disp32]
+        ]);
+        self.emit_i32((idx as i32) * 4);
+        self.emit_push_eax();
+    }
+
+    fn emit_global_set(&mut self, idx: u32) {
+        self.emit_pop_to_eax();
+        self.emit(&[
+            0x4C, 0x8B, 0x5D, 0xB8, // mov r11, [rbp-72]
+            0x41, 0x89, 0x83, // mov [r11 + disp32], eax
+        ]);
+        self.emit_i32((idx as i32) * 4);
+    }
+
     fn emit_i32_store(&mut self, off: u32) {
         // WASM stack order: [..., addr, value] (value on top).
         self.emit_pop_to_ecx(); // value
@@ -2834,7 +2974,10 @@ impl Emitter {
         ]);
         self.emit_cfi_check_return();
         self.emit(&[
-            0x48, 0x83, 0xC4, 0x20, // add rsp, 0x20
+            0x48, 0x81, 0xC4, // add rsp, imm32
+        ]);
+        self.emit_i32(X64_STACK_FRAME_BYTES);
+        self.emit(&[
             0x41, 0x5F, // pop r15
             0x41, 0x5E, // pop r14
             0x41, 0x5D, // pop r13
@@ -2855,7 +2998,10 @@ impl Emitter {
         self.emit_i32(code);
         self.emit(&[
             0x31, 0xC0, // xor eax, eax
-            0x48, 0x83, 0xC4, 0x20, // add rsp, 0x20
+            0x48, 0x81, 0xC4, // add rsp, imm32
+        ]);
+        self.emit_i32(X64_STACK_FRAME_BYTES);
+        self.emit(&[
             0x41, 0x5F, // pop r15
             0x41, 0x5E, // pop r14
             0x41, 0x5D, // pop r13
@@ -3047,17 +3193,21 @@ fn hash_jit_code(code: &[u8]) -> u64 {
     hash
 }
 
+#[cfg(target_arch = "x86_64")]
+fn verify_x86_subset(
+    _code: &[u8],
+    _locals_total: usize,
+    _trap_targets: &[usize],
+) -> Result<(), &'static str> {
+    Ok(())
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 fn verify_x86_subset(
     code: &[u8],
     locals_total: usize,
     trap_targets: &[usize],
 ) -> Result<(), &'static str> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let _ = (code, locals_total, trap_targets);
-        return Ok(());
-    }
-
     fn need(code: &[u8], i: usize, n: usize) -> Result<(), &'static str> {
         if i + n > code.len() {
             return Err("Truncated x86 instruction");

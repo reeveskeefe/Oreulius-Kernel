@@ -259,6 +259,8 @@ pub fn print_help<W: Write>(out: &mut W, prefix: &str) {
     write_line(out, prefix, "  vfs-ipc-sub <channel-id>");
     write_line(out, prefix, "  vfs-ipc-unsub <channel-id>");
     write_line(out, prefix, "  vfs-ipc-list");
+    write_line(out, prefix, "  vfs-ipc-stats <channel-id>");
+    write_line(out, prefix, "  vfs-ipc-ack <channel-id> <sequence>");
     write_line(out, prefix, "  vfs-cap-dir-show <path>");
     write_line(
         out,
@@ -859,14 +861,79 @@ pub fn try_execute<W: Write>(out: &mut W, input: &str, prefix: &str) -> bool {
             );
         }
         "vfs-ipc-list" => {
-            let channels = vfs::notify_channels();
-            if channels.is_empty() {
+            let subscribers = vfs::notify_subscribers();
+            if subscribers.is_empty() {
                 let _ = writeln!(out, "{} vfs-ipc-list <none>", prefix);
                 return true;
             }
-            let _ = writeln!(out, "{} vfs-ipc-list count={}", prefix, channels.len());
-            for channel in channels {
-                let _ = writeln!(out, "{}   channel={}", prefix, channel.0);
+            let _ = writeln!(out, "{} vfs-ipc-list count={}", prefix, subscribers.len());
+            for subscriber in subscribers {
+                let _ = writeln!(
+                    out,
+                    "{}   channel={} pending={} inflight={} acked={} dropped={}",
+                    prefix,
+                    subscriber.channel_id,
+                    subscriber.pending_events,
+                    subscriber
+                        .in_flight
+                        .map(|seq| seq.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    subscriber.last_acked_sequence,
+                    subscriber.dropped_count,
+                );
+            }
+        }
+        "vfs-ipc-stats" => {
+            let Some(channel_id) = parse_u32_auto(rest.trim()) else {
+                let _ = writeln!(out, "{} usage: vfs-ipc-stats <channel-id>", prefix);
+                return true;
+            };
+            match vfs::notify_channel_stats(crate::ipc::ChannelId::new(channel_id)) {
+                Ok(subscriber) => {
+                    let _ = writeln!(
+                        out,
+                        "{} vfs-ipc-stats channel={} pending={} inflight={} acked={} dropped={}",
+                        prefix,
+                        subscriber.channel_id,
+                        subscriber.pending_events,
+                        subscriber
+                            .in_flight
+                            .map(|seq| seq.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        subscriber.last_acked_sequence,
+                        subscriber.dropped_count,
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-ipc-stats failed: {}", prefix, e);
+                }
+            }
+        }
+        "vfs-ipc-ack" => {
+            let args: Vec<&str> = rest.split_whitespace().collect();
+            if args.len() != 2 {
+                let _ = writeln!(out, "{} usage: vfs-ipc-ack <channel-id> <sequence>", prefix);
+                return true;
+            }
+            let Some(channel_id) = parse_u32_auto(args[0]) else {
+                let _ = writeln!(out, "{} vfs-ipc-ack failed: invalid channel", prefix);
+                return true;
+            };
+            let Some(sequence) = parse_u64_auto(args[1]) else {
+                let _ = writeln!(out, "{} vfs-ipc-ack failed: invalid sequence", prefix);
+                return true;
+            };
+            match vfs::ack_notify_channel(crate::ipc::ChannelId::new(channel_id), sequence) {
+                Ok(()) => {
+                    let _ = writeln!(
+                        out,
+                        "{} vfs-ipc-ack ok channel={} sequence={}",
+                        prefix, channel_id, sequence
+                    );
+                }
+                Err(e) => {
+                    let _ = writeln!(out, "{} vfs-ipc-ack failed: {}", prefix, e);
+                }
             }
         }
         "vfs-cap-dir-show" => {

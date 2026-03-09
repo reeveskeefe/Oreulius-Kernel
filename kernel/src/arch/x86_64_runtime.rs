@@ -275,8 +275,10 @@ declare_isr_irq_stubs!(
 );
 
 extern "C" {
-    fn gdt_load(ptr: *const DescriptorTablePtr64);
-    fn idt_load(ptr: *const DescriptorTablePtr64);
+    #[link_name = "gdt_load"]
+    fn gdt_load64(ptr: *const DescriptorTablePtr64);
+    #[link_name = "idt_load"]
+    fn idt_load64(ptr: *const DescriptorTablePtr64);
     fn tss_load(selector: u16);
     fn tss_set_kernel_stack(tss_addr: *mut u32, esp0: u32, ss0: u16);
     fn syscall_entry();
@@ -345,7 +347,7 @@ pub fn init_cpu_tables() {
             limit: (core::mem::size_of::<[u64; 7]>() - 1) as u16,
             base: core::ptr::addr_of!(GDT) as *const _ as u64,
         };
-        gdt_load(&gdt_ptr);
+        gdt_load64(&gdt_ptr);
 
         let data_sel = KERNEL_DS;
         core::arch::asm!(
@@ -441,7 +443,7 @@ pub fn init_trap_table() {
             limit: (core::mem::size_of::<[IdtEntry64; 256]>() - 1) as u16,
             base: core::ptr::addr_of!(IDT) as *const _ as u64,
         };
-        idt_load(&idt_ptr);
+        idt_load64(&idt_ptr);
     }
 }
 
@@ -519,17 +521,10 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
     if vector < 32 {
         EXC_COUNTS[vector as usize].fetch_add(1, Ordering::Relaxed);
 
-        let mut frame_rip = 0u64;
-        let mut frame_cs = 0u64;
-        let mut frame_rsp = 0u64;
         let mut have_user_frame = false;
         if !frame.is_null() {
             let f = unsafe { &mut *frame };
-            frame_rip = f.rip;
-            frame_cs = f.cs;
             if (f.cs & 0x3) == 0x3 {
-                let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
-                frame_rsp = uf.rsp;
                 have_user_frame = true;
             }
         }
