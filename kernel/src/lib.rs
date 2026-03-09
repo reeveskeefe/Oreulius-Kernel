@@ -157,6 +157,12 @@ pub mod wasm;
 pub mod wasm_jit;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod wifi;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod framebuffer;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod ata;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod usb;
 
 /// Helper to ensure Box is available for heap allocations across modules
 #[cfg(not(target_arch = "aarch64"))]
@@ -287,6 +293,62 @@ fn x86_64_read_efer() -> u64 {
 }
 
 #[cfg(target_arch = "x86_64")]
+extern "C" fn x86_64_shell_scheduler_task() -> ! {
+    crate::arch::enable_interrupts();
+    crate::arch::x86_64_runtime::run_serial_shell()
+}
+
+#[cfg(target_arch = "x86_64")]
+extern "C" fn x86_64_idle_scheduler_task() -> ! {
+    crate::arch::enable_interrupts();
+    loop {
+        crate::quantum_scheduler::yield_now();
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn x86_64_init_shared_runtime() {
+    crate::serial_println!("[X64] init keyboard...");
+    keyboard::init();
+
+    crate::serial_println!("[X64] init fs...");
+    fs::init();
+    crate::serial_println!("[X64] init vfs...");
+    vfs::init();
+    crate::serial_println!("[X64] init persistence...");
+    persistence::init();
+    match vfs::recover_from_persistence() {
+        Ok(()) => crate::serial_println!("[X64] vfs recovery complete"),
+        Err(e) => crate::serial_println!("[X64] vfs recovery skipped: {}", e),
+    }
+
+    crate::serial_println!("[X64] init temporal...");
+    temporal::init();
+    crate::serial_println!("[X64] init ipc...");
+    ipc::init();
+    crate::serial_println!("[X64] init registry...");
+    registry::init();
+    crate::serial_println!("[X64] init process...");
+    process::init();
+    crate::serial_println!("[X64] init wasm...");
+    wasm::init();
+    crate::serial_println!("[X64] init security...");
+    security::init();
+    crate::serial_println!("[X64] init capnet...");
+    capnet::init();
+    capnet::offline_certificate::assert_certificate_valid();
+    crate::serial_println!("[X64] init capability...");
+    capability::init();
+    crate::serial_println!("[X64] init console service...");
+    console_service::init();
+    crate::serial_println!("[X64] init quantum scheduler...");
+    quantum_scheduler::init();
+}
+
+#[cfg(target_arch = "x86_64")]
 fn rust_main_x86_64_bringup() -> ! {
     unsafe {
         let vga = 0xb8000 as *mut u16;
@@ -373,6 +435,7 @@ fn rust_main_x86_64_bringup() -> ! {
     arch::init_trap_table();
     crate::serial_println!("[X64] init pic...");
     arch::init_interrupt_controller();
+    x86_64_init_shared_runtime();
     crate::serial_println!("[X64] init pit...");
     arch::init_timer();
     crate::serial_println!("[X64] enabling interrupts...");
@@ -380,6 +443,7 @@ fn rust_main_x86_64_bringup() -> ! {
     crate::serial_println!("[X64] interrupts enabled");
 
     crate::arch::x86_64_runtime::self_test_traps_and_timer();
+    crate::asm_bindings::disable_interrupts();
 
     unsafe {
         let vga = 0xb8000 as *mut u16;
@@ -388,8 +452,26 @@ fn rust_main_x86_64_bringup() -> ! {
         *(vga.add(13)) = 0x0E53; // 'S'
         *(vga.add(14)) = 0x0E48; // 'H'
     }
-    crate::serial_println!("[X64] Bring-up diagnostics complete; entering shell");
-    crate::arch::x86_64_runtime::run_serial_shell()
+    crate::serial_println!("[X64] Bring-up diagnostics complete; starting shared scheduler");
+
+    {
+        let mut sched = crate::quantum_scheduler::scheduler().lock();
+        if let Err(e) = sched.add_kernel_thread(
+            x86_64_shell_scheduler_task,
+            crate::process::ProcessPriority::Normal,
+        ) {
+            crate::serial_println!("[X64] scheduler add shell task failed: {}", e);
+            crate::arch::halt_loop();
+        }
+        if let Err(e) = sched.add_kernel_thread(
+            x86_64_idle_scheduler_task,
+            crate::process::ProcessPriority::Normal,
+        ) {
+            crate::serial_println!("[X64] scheduler add idle task failed: {}", e);
+            crate::arch::halt_loop();
+        }
+    }
+    crate::quantum_scheduler::QuantumScheduler::start_scheduling()
 }
 
 #[cfg(target_arch = "aarch64")]

@@ -6,8 +6,42 @@
 
 #![allow(dead_code)]
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86")]
 pub use crate::asm_bindings::ProcessContext;
+
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessContext {
+    pub rbx: u64,
+    pub rbp: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rsp: u64,
+    pub rip: u64,
+    pub rflags: u64,
+    pub cr3: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl ProcessContext {
+    pub const fn new() -> Self {
+        Self {
+            rbx: 0,
+            rbp: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rsp: 0,
+            rip: 0,
+            rflags: 0x202,
+            cr3: 0,
+        }
+    }
+}
 
 #[cfg(target_arch = "aarch64")]
 #[repr(C)]
@@ -67,9 +101,16 @@ extern "C" {
     fn aarch64_thread_start_trampoline() -> !;
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
+extern "C" {
+    fn x86_64_sched_load_context(ctx: *const ProcessContext) -> !;
+    fn x86_64_sched_switch_context(old_ctx: *mut ProcessContext, new_ctx: *const ProcessContext);
+    fn x86_64_thread_start_trampoline() -> !;
+}
+
+#[cfg(target_arch = "x86")]
 pub type IrqFlags = u32;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub type IrqFlags = u64;
 
 #[inline]
@@ -77,7 +118,7 @@ pub fn context_new() -> ProcessContext {
     ProcessContext::new()
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
 pub fn ticks_now() -> u64 {
     crate::pit::get_ticks()
@@ -89,7 +130,7 @@ pub fn ticks_now() -> u64 {
     crate::arch::aarch64_virt::timer_ticks()
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn validate_kernel_stack_mapping(stack_bottom: usize, stack_top: usize) -> bool {
     let guard = crate::paging::kernel_space().lock();
     if let Some(space) = guard.as_ref() {
@@ -107,7 +148,7 @@ pub fn validate_kernel_stack_mapping(_stack_bottom: usize, _stack_top: usize) ->
     true
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86")]
 pub fn init_kernel_thread_context(
     entry: extern "C" fn() -> !,
     stack_top: usize,
@@ -126,6 +167,37 @@ pub fn init_kernel_thread_context(
     ctx.eflags = 0x0000_0002;
 
     Ok((ctx, entry_addr, trampoline_addr))
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn init_kernel_thread_context(
+    entry: extern "C" fn() -> !,
+    stack_top: usize,
+) -> Result<(ProcessContext, usize, usize), &'static str> {
+    let entry_addr = entry as usize as u64;
+    let trampoline_addr = x86_64_thread_start_trampoline as usize as u64;
+    let stack_top = stack_top & !15usize;
+    let bootstrap_sp = stack_top.checked_sub(16).ok_or("invalid kernel stack")?;
+
+    if bootstrap_sp < 0x1000 {
+        return Err("invalid kernel stack");
+    }
+
+    unsafe {
+        let bootstrap = bootstrap_sp as *mut u64;
+        bootstrap.write(0);
+        bootstrap.add(1).write(entry_addr);
+    }
+
+    let mut ctx = ProcessContext::new();
+    ctx.rsp = bootstrap_sp as u64;
+    ctx.rbp = bootstrap_sp as u64;
+    ctx.rip = trampoline_addr;
+    ctx.cr3 = crate::arch::mmu::current_page_table_root_addr() as u64;
+    // Keep IF cleared until thread entry explicitly enables interrupts.
+    ctx.rflags = 0x0000_0002;
+
+    Ok((ctx, entry_addr as usize, trampoline_addr as usize))
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -156,10 +228,16 @@ pub fn init_kernel_thread_context(
     Ok((ctx, entry_addr as usize, trampoline_addr as usize))
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86")]
 #[inline]
 pub fn context_stack_pointer(ctx: &ProcessContext) -> usize {
     ctx.esp as usize
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn context_stack_pointer(ctx: &ProcessContext) -> usize {
+    ctx.rsp as usize
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -168,9 +246,14 @@ pub fn context_stack_pointer(ctx: &ProcessContext) -> usize {
     ctx.sp as usize
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86")]
 pub unsafe fn load_context(ctx: *const ProcessContext) -> ! {
     crate::asm_bindings::asm_load_context(ctx)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn load_context(ctx: *const ProcessContext) -> ! {
+    x86_64_sched_load_context(ctx)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -178,9 +261,14 @@ pub unsafe fn load_context(ctx: *const ProcessContext) -> ! {
     aarch64_sched_load_context(ctx)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86")]
 pub unsafe fn switch_context(from: *mut ProcessContext, to: *const ProcessContext) {
     crate::asm_bindings::asm_switch_context(from, to)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn switch_context(from: *mut ProcessContext, to: *const ProcessContext) {
+    x86_64_sched_switch_context(from, to)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -188,7 +276,7 @@ pub unsafe fn switch_context(from: *mut ProcessContext, to: *const ProcessContex
     aarch64_sched_switch_context(from, to)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
 pub fn runtime_pid_sync(_pid_raw: u32) {}
 
@@ -198,9 +286,17 @@ pub fn runtime_pid_sync(pid_raw: u32) {
     let _ = crate::arch::aarch64_virt::scheduler_note_context_switch(pid_raw);
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86")]
 pub unsafe fn irq_save_disable() -> IrqFlags {
     crate::idt_asm::fast_cli_save()
+}
+
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn irq_save_disable() -> IrqFlags {
+    let flags: u64;
+    core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
+    core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+    flags
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -212,9 +308,16 @@ pub unsafe fn irq_save_disable() -> IrqFlags {
     flags
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86")]
 pub unsafe fn irq_restore(flags: IrqFlags) {
     crate::idt_asm::fast_sti_restore(flags);
+}
+
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn irq_restore(flags: IrqFlags) {
+    if (flags & (1u64 << 9)) != 0 {
+        core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -223,7 +326,7 @@ pub unsafe fn irq_restore(flags: IrqFlags) {
     core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86")]
 pub unsafe fn debug_dump_launch_context(ctx_ptr: *const ProcessContext) {
     if !cfg!(debug_assertions) {
         // Keep diagnostics available in release if the caller wants them.
@@ -258,6 +361,27 @@ pub unsafe fn debug_dump_launch_context(ctx_ptr: *const ProcessContext) {
         esp,
         top,
         ctx_ptr as u32
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn debug_dump_launch_context(ctx_ptr: *const ProcessContext) {
+    let ctx = &*ctx_ptr;
+    crate::serial_println!(
+        "[SCHED] ctx_ptr={:p} rip={:#018x} rsp={:#018x} rbp={:#018x} rflags={:#018x} cr3={:#018x}",
+        ctx_ptr,
+        ctx.rip,
+        ctx.rsp,
+        ctx.rbp,
+        ctx.rflags,
+        ctx.cr3
+    );
+    let slot0 = *(ctx.rsp as *const u64);
+    let slot1 = *((ctx.rsp + 8) as *const u64);
+    crate::serial_println!(
+        "[SCHED] stack slots: [rsp]={:#018x} [rsp+8]={:#018x}",
+        slot0,
+        slot1
     );
 }
 

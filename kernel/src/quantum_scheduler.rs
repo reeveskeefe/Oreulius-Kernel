@@ -1947,6 +1947,40 @@ pub fn on_timer_tick() {
     RESCHED_REQUEST.store(true, Ordering::Release);
 }
 
+/// Perform a deferred reschedule from normal kernel context.
+///
+/// The timer IRQ only marks that scheduling work is needed. Architectures that
+/// do not switch directly from the interrupt frame can call this at safe points
+/// inside long-running kernel loops to honor preemption requests.
+pub fn maybe_reschedule() {
+    if !SCHEDULER_STARTED.load(Ordering::Acquire) {
+        return;
+    }
+    if !RESCHED_REQUEST.swap(false, Ordering::AcqRel) {
+        return;
+    }
+
+    let flags = unsafe { scheduler_platform::irq_save_disable() };
+    let (switch, next_runtime_pid) = {
+        let mut sched = QUANTUM_SCHEDULER.lock();
+        let switch = sched.schedule();
+        let next_runtime_pid = sched.current_runtime_pid_raw();
+        (switch, next_runtime_pid)
+    };
+
+    if let Some((from_ptr, to_ptr)) = switch {
+        if let Some(pid_raw) = next_runtime_pid {
+            scheduler_platform::runtime_pid_sync(pid_raw);
+        }
+        unsafe {
+            scheduler_platform::switch_context(from_ptr, to_ptr);
+        }
+        unsafe { scheduler_platform::irq_restore(flags) };
+    } else {
+        unsafe { scheduler_platform::irq_restore(flags) };
+    }
+}
+
 /// Block the current process until `wake_time` and switch away immediately.
 pub fn sleep_until(pid: Pid, wake_time: u64) -> Result<(), &'static str> {
     let flags = unsafe { scheduler_platform::irq_save_disable() };

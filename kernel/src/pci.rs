@@ -132,6 +132,26 @@ impl PciDevice {
         self.vendor_id == 0x1AF4 && (self.device_id == 0x1001 || self.device_id == 0x1042)
     }
 
+    /// Check if this is a display / GPU controller (PCI class 0x03)
+    pub fn is_display_controller(&self) -> bool {
+        self.class_code == 0x03
+    }
+
+    /// Check if this is a mass-storage controller (PCI class 0x01)
+    pub fn is_storage_controller(&self) -> bool {
+        self.class_code == 0x01
+    }
+
+    /// Check if this is a USB host controller (PCI class 0x0C, subclass 0x03)
+    pub fn is_usb_controller(&self) -> bool {
+        self.class_code == 0x0C && self.subclass == 0x03
+    }
+
+    /// Check if this is an audio / multimedia controller (PCI class 0x04)
+    pub fn is_audio_controller(&self) -> bool {
+        self.class_code == 0x04
+    }
+
     /// Get device name based on vendor/device ID
     pub fn name(&self) -> &'static str {
         match (self.vendor_id, self.device_id) {
@@ -174,9 +194,51 @@ impl PciDevice {
 
             // VirtIO (QEMU/KVM)
             (0x1AF4, 0x1000) => "VirtIO Network Device",
+            (0x1AF4, 0x1001) => "VirtIO Block Device",
             (0x1AF4, 0x1041) => "VirtIO Network Device (modern)",
+            (0x1AF4, 0x1042) => "VirtIO Block Device (modern)",
 
-            _ => "Unknown Network Device",
+            // GPU / Display controllers
+            (0x1002, 0x4752) => "AMD/ATI Radeon RV100 (VE/M6/A11)",
+            (0x1002, 0x6759) => "AMD Radeon HD 6900 Series",
+            (0x1002, 0x687F) => "AMD Radeon RX Vega 64",
+            (0x10DE, 0x1180) => "NVIDIA GeForce GTX 680",
+            (0x10DE, 0x1E04) => "NVIDIA GeForce RTX 2080",
+            (0x10DE, 0x2204) => "NVIDIA GeForce RTX 3090",
+            (0x8086, 0x0412) => "Intel HD Graphics 4600",
+            (0x8086, 0x1912) => "Intel HD Graphics 530",
+            (0x8086, 0x3EA0) => "Intel UHD Graphics 620",
+            (0x15AD, 0x0405) => "VMware SVGA II Adapter",
+            (0x1234, 0x1111) => "QEMU Standard VGA",
+            (0x1B36, 0x0100) => "QEMU QXL Paravirtual GPU",
+
+            // USB host controllers
+            (0x8086, 0x7020) => "Intel PIIX4 USB UHCI",
+            (0x8086, 0x24CD) => "Intel ICH4 USB EHCI",
+            (0x8086, 0x1C26) => "Intel 6 Series/C200 USB EHCI",
+            (0x8086, 0x1E26) => "Intel 7 Series/C210 USB EHCI",
+            (0x8086, 0x8C26) => "Intel 8 Series/C220 USB EHCI",
+            (0x8086, 0x8C31) => "Intel 8 Series/C220 USB xHCI",
+            (0x1B21, 0x1042) => "ASMedia ASM1042 USB 3.0 xHCI",
+            (0x1B21, 0x1142) => "ASMedia ASM1042A USB 3.1 xHCI",
+
+            // ATA / SATA storage
+            (0x8086, 0x7010) => "Intel PIIX3 IDE",
+            (0x8086, 0x7111) => "Intel PIIX4 IDE",
+            (0x8086, 0x2828) => "Intel ICH8M SATA AHCI",
+            (0x8086, 0x1C02) => "Intel 6 Series/C200 SATA AHCI",
+            (0x8086, 0x8C02) => "Intel 8 Series/C220 SATA AHCI",
+            (0x1022, 0x7800) => "AMD FCH SATA AHCI",
+            (0x1022, 0x43B8) => "AMD 300 Series SATA AHCI",
+
+            // Audio
+            (0x8086, 0x2668) => "Intel ICH6 HD Audio",
+            (0x8086, 0x1C20) => "Intel 6 Series/C200 HD Audio",
+            (0x8086, 0x8C20) => "Intel 8 Series/C220 HD Audio",
+            (0x1002, 0xAAB0) => "AMD Oland/Hainan HDMI Audio",
+            (0x10DE, 0x0E0F) => "NVIDIA GK208 HDMI/DP Audio",
+
+            _ => "Unknown PCI Device",
         }
     }
 
@@ -255,15 +317,21 @@ impl PciDevice {
     /// Get vendor name
     pub fn vendor_name(&self) -> &'static str {
         match self.vendor_id {
+            0x1002 => "Advanced Micro Devices (AMD)",
             0x1022 => "AMD",
-            0x10DE => "NVIDIA",
-            0x10EC => "Realtek",
-            0x1106 => "VIA",
-            0x1234 => "QEMU (emulated)",
-            0x14E4 => "Broadcom",
-            0x15AD => "VMware",
+            0x10B9 => "ALi Corporation",
+            0x10DE => "NVIDIA Corporation",
+            0x10EC => "Realtek Semiconductor",
+            0x1106 => "VIA Technologies",
+            0x1234 => "QEMU / Bochs (emulated)",
+            0x1283 => "Integrated Technology Express",
+            0x1414 => "Microsoft Corporation",
+            0x14E4 => "Broadcom Corporation",
+            0x15AD => "VMware Inc.",
             0x168C => "Qualcomm Atheros",
             0x1AF4 => "Red Hat (VirtIO)",
+            0x1B21 => "ASMedia Technology",
+            0x1B36 => "QEMU paravirtual",
             0x8086 => "Intel Corporation",
             _ => "Unknown Vendor",
         }
@@ -383,6 +451,99 @@ impl PciScanner {
         for device_opt in self.devices().iter() {
             if let Some(device) = device_opt {
                 if device.is_virtio_block() {
+                    return Some(*device);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the first display / GPU controller (PCI class 0x03)
+    pub fn find_display_device(&self) -> Option<PciDevice> {
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_display_controller() {
+                    return Some(*device);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find all display / GPU controllers
+    pub fn find_all_display_devices(&self) -> [Option<PciDevice>; 4] {
+        let mut result = [None; 4];
+        let mut count = 0usize;
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_display_controller() && count < 4 {
+                    result[count] = Some(*device);
+                    count += 1;
+                }
+            }
+        }
+        result
+    }
+
+    /// Find the first mass-storage controller (PCI class 0x01)
+    pub fn find_storage_controller(&self) -> Option<PciDevice> {
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_storage_controller() {
+                    return Some(*device);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find all mass-storage controllers
+    pub fn find_all_storage_controllers(&self) -> [Option<PciDevice>; 4] {
+        let mut result = [None; 4];
+        let mut count = 0usize;
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_storage_controller() && count < 4 {
+                    result[count] = Some(*device);
+                    count += 1;
+                }
+            }
+        }
+        result
+    }
+
+    /// Find the first USB host controller (PCI class 0x0C, subclass 0x03)
+    pub fn find_usb_controller(&self) -> Option<PciDevice> {
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_usb_controller() {
+                    return Some(*device);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find all USB host controllers
+    pub fn find_all_usb_controllers(&self) -> [Option<PciDevice>; MAX_PCI_DEVICES] {
+        let mut result = [None; MAX_PCI_DEVICES];
+        let mut count = 0usize;
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_usb_controller() && count < MAX_PCI_DEVICES {
+                    result[count] = Some(*device);
+                    count += 1;
+                }
+            }
+        }
+        result
+    }
+
+    /// Find the first audio / multimedia controller (PCI class 0x04)
+    pub fn find_audio_controller(&self) -> Option<PciDevice> {
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_audio_controller() {
                     return Some(*device);
                 }
             }

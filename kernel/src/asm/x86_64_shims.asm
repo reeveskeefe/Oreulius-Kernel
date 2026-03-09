@@ -258,6 +258,115 @@ restore_fpu_state:
     fxrstor64 [rdi]
     ret
 
+; Cooperative scheduler context for x86_64 kernel threads.
+; Layout matches kernel/src/scheduler_platform.rs:
+;   +0  rbx
+;   +8  rbp
+;   +16 r12
+;   +24 r13
+;   +32 r14
+;   +40 r15
+;   +48 rsp
+;   +56 rip
+;   +64 rflags
+;   +72 cr3
+global x86_64_sched_switch_context
+x86_64_sched_switch_context:
+    test rdi, rdi
+    jz .x64_load_only
+
+    mov [rdi + 0], rbx
+    mov [rdi + 8], rbp
+    mov [rdi + 16], r12
+    mov [rdi + 24], r13
+    mov [rdi + 32], r14
+    mov [rdi + 40], r15
+    mov [rdi + 48], rsp
+    mov rax, [rsp]
+    mov [rdi + 56], rax
+    pushfq
+    pop rax
+    mov [rdi + 64], rax
+    mov rax, cr3
+    mov [rdi + 72], rax
+
+.x64_load_only:
+    mov rax, [rsi + 72]
+    test rax, rax
+    jz .x64_skip_cr3_switch
+    mov rdx, cr3
+    cmp rdx, rax
+    je .x64_skip_cr3_switch
+    mov cr3, rax
+
+.x64_skip_cr3_switch:
+    mov rax, [rsi + 56]
+    mov rdx, [rsi + 48]
+    mov rcx, [rsi + 64]
+    mov rbx, [rsi + 0]
+    mov rbp, [rsi + 8]
+    mov r12, [rsi + 16]
+    mov r13, [rsi + 24]
+    mov r14, [rsi + 32]
+    mov r15, [rsi + 40]
+    mov rsp, rdx
+    push rcx
+    popfq
+    add rsp, 8
+    jmp rax
+
+global x86_64_sched_load_context
+x86_64_sched_load_context:
+    cli
+    mov rax, [rdi + 72]
+    test rax, rax
+    jz .x64_skip_cr3_load
+    mov rdx, cr3
+    cmp rdx, rax
+    je .x64_skip_cr3_load
+    mov cr3, rax
+
+.x64_skip_cr3_load:
+    mov rax, [rdi + 56]
+    mov rdx, [rdi + 48]
+    mov rcx, [rdi + 64]
+    mov rbx, [rdi + 0]
+    mov rbp, [rdi + 8]
+    mov r12, [rdi + 16]
+    mov r13, [rdi + 24]
+    mov r14, [rdi + 32]
+    mov r15, [rdi + 40]
+    mov rsp, rdx
+    push rcx
+    popfq
+    add rsp, 8
+    jmp rax
+
+global x86_64_thread_start_trampoline
+x86_64_thread_start_trampoline:
+    pop rax
+    call rax
+
+.x64_thread_halt:
+    cli
+    hlt
+    jmp .x64_thread_halt
+
+; Keep legacy scheduler symbol names linkable for the old 32-bit-only
+; scheduler module that still compiles on x86_64, but route unexpected use
+; into a safe halt instead of pretending the 32-bit context layout works here.
+global asm_switch_context
+asm_switch_context:
+    ret
+
+global asm_load_context
+asm_load_context:
+    jmp asm_halt
+
+global thread_start_trampoline
+thread_start_trampoline:
+    jmp asm_halt
+
 ; Execute a JIT user-call descriptor (x86_64 SysV ABI) from a 32-bit-addressed
 ; call page used by the current x86-style JIT metadata layout.
 ; Signature: i32 x64_jit_callpage_exec(u32 call_ptr)
@@ -548,7 +657,6 @@ STUB_ZERO asm_has_sse4_2
 STUB_ZERO asm_hash_djb2
 STUB_ZERO asm_hash_fnv1a
 STUB_ZERO asm_hash_sdbm
-STUB_ZERO asm_load_context
 STUB_ZERO asm_rdrand
 STUB_ZERO asm_rdtsc_begin
 STUB_ZERO asm_rdtsc_end
@@ -559,7 +667,6 @@ STUB_ZERO asm_spinlock_trylock
 STUB_ZERO asm_spinlock_unlock
 STUB_ZERO asm_swap_endian_16
 STUB_ZERO asm_swap_endian_32
-STUB_ZERO asm_switch_context
 STUB_ZERO asm_xsave_supported
 STUB_ZERO atomic_dec_refcount
 STUB_ZERO atomic_inc_refcount
@@ -574,7 +681,6 @@ STUB_ZERO temporal_copy_bytes
 STUB_ZERO temporal_fnv1a32
 STUB_ZERO temporal_hash_pair
 STUB_ZERO temporal_merkle_root_u32
-STUB_ZERO thread_start_trampoline
 
 section .bss
 alignb 8

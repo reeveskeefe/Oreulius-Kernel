@@ -647,6 +647,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
         IRQ_COUNTS[irq as usize].fetch_add(1, Ordering::Relaxed);
         if irq == 0 {
             crate::pit::tick();
+            crate::quantum_scheduler::on_timer_tick();
             if !frame.is_null() {
                 let f = unsafe { &mut *frame };
                 if (f.cs & 0x3) == 0x3 {
@@ -664,6 +665,14 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
                         &mut dummy_rsp,
                     );
                 }
+            }
+        } else if irq == 1 {
+            unsafe {
+                crate::keyboard::handle_irq();
+            }
+        } else if irq == 12 {
+            unsafe {
+                crate::keyboard::handle_aux_irq();
             }
         }
         pic_eoi(irq);
@@ -1959,6 +1968,8 @@ pub fn run_serial_shell() -> ! {
     let mut last_heartbeat = crate::pit::get_ticks();
 
     loop {
+        crate::quantum_scheduler::maybe_reschedule();
+
         if let Some(byte) = shell_try_read_byte() {
             match byte {
                 b'\r' | b'\n' => {
