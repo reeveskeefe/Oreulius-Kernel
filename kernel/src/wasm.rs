@@ -1036,6 +1036,11 @@ impl LinearMemory {
         self.pages * 64 * 1024
     }
 
+    /// Get the maximum pages limit for this memory.
+    pub fn max_pages(&self) -> usize {
+        self.max_pages
+    }
+
     /// Get raw pointer to memory
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.data
@@ -3386,6 +3391,8 @@ pub struct WasmInstance {
     jit_hot: [u32; 64],
     jit_validate_remaining: [u8; 64],
     last_received_service_handle: Option<CapHandle>,
+    /// WASM thread pool for this instance (supports WebAssembly Threads proposal).
+    thread_pool: crate::wasm_thread::WasmThreadPool,
 }
 
 // SAFETY: WasmInstance contains raw pointers to kernel-managed memory and is
@@ -4319,6 +4326,7 @@ impl WasmInstance {
             jit_hot: [0; 64],
             jit_validate_remaining: [JIT_VALIDATE_CALLS; 64],
             last_received_service_handle: None,
+            thread_pool: crate::wasm_thread::WasmThreadPool::new(),
         }
     }
 
@@ -4661,6 +4669,7 @@ impl WasmInstance {
             jit_hot: [0; 64],
             jit_validate_remaining: [0; 64],
             last_received_service_handle: self.last_received_service_handle,
+            thread_pool: crate::wasm_thread::WasmThreadPool::new(),
         }
     }
 
@@ -5768,6 +5777,23 @@ impl WasmInstance {
             20 => self.host_temporal_branch_checkout(),
             21 => self.host_temporal_branch_list(),
             22 => self.host_temporal_merge(),
+            // ── WASM Thread host functions ───────────────────────────────────
+            23 => self.host_thread_spawn(),
+            24 => self.host_thread_join(),
+            25 => self.host_thread_id(),
+            26 => self.host_thread_yield(),
+            27 => self.host_thread_exit(),
+            // ── Compositor host functions ────────────────────────────────────
+            28 => self.host_compositor_create_window(),
+            29 => self.host_compositor_destroy_window(),
+            30 => self.host_compositor_set_pixel(),
+            31 => self.host_compositor_fill_rect(),
+            32 => self.host_compositor_flush(),
+            33 => self.host_compositor_move_window(),
+            34 => self.host_compositor_set_z_order(),
+            35 => self.host_compositor_get_width(),
+            36 => self.host_compositor_get_height(),
+            37 => self.host_compositor_draw_text(),
             _ => Err(WasmError::UnknownHostFunction),
         }
     }
@@ -7833,6 +7859,220 @@ impl WasmInstance {
             )
             .map_err(|_| WasmError::ReplayError)?;
         }
+        Ok(())
+    }
+
+    // ========================================================================
+    // WASM Thread host functions (IDs 23–27)
+    // ========================================================================
+
+    /// oreulia_thread_spawn(func_idx: i32, arg: i32) -> i32
+    ///
+    /// Spawns a new cooperative WASM thread starting at the given function
+    /// index with a single i32 argument.  Returns the thread ID (>= 1) on
+    /// success, or -1 on failure.
+    fn host_thread_spawn(&mut self) -> Result<(), WasmError> {
+        let arg       = self.stack.pop()?.as_i32()?;
+        let func_idx  = self.stack.pop()?.as_i32()?;
+
+        let fidx = func_idx as usize;
+        if func_idx < 0 || fidx >= self.module.functions.len() {
+            self.stack.push(Value::I32(-1))?;
+            return Ok(());
+        }
+
+        // Resolve the entry PC for the requested function.
+        let entry_pc = match self.module.functions[fidx] {
+            Some(ref f) => f.code_offset,
+            None => { self.stack.push(Value::I32(-1))?; return Ok(()); }
+        };
+
+        // Attach shared memory on first spawn.
+        if !self.thread_pool.is_memory_attached() {
+            let base        = self.memory.as_mut_ptr();
+            let active      = self.memory.active_len();
+            let max_bytes   = self.memory.max_pages() * 64 * 1024;
+            self.thread_pool.attach_memory(base, active, max_bytes);
+        }
+
+        match self.thread_pool.spawn(func_idx as u32, arg, entry_pc) {
+            Ok(tid) => self.stack.push(Value::I32(tid))?,
+            Err(_)  => self.stack.push(Value::I32(-1))?,
+        }
+        Ok(())
+    }
+
+    /// oreulia_thread_join(tid: i32) -> i32
+    ///
+    /// Waits for the thread with the given tid to finish.
+    /// Returns 0 if the thread finished (or was not found), or -1 if the
+    /// caller would block (in cooperative mode this returns immediately with
+    /// -1, meaning "try again later").
+    fn host_thread_join(&mut self) -> Result<(), WasmError> {
+        let target_tid = self.stack.pop()?.as_i32()?;
+        let caller_tid = 0i32; // main instance acts as "tid 0"
+        let result = self.thread_pool.join(caller_tid, target_tid);
+        use crate::wasm_thread::JoinResult;
+        let code = match result {
+            JoinResult::Done(exit_code) => exit_code,
+            JoinResult::NotFound       => 0,
+            JoinResult::Blocked        => -1, // try again next quantum
+        };
+        self.stack.push(Value::I32(code))?;
+        Ok(())
+    }
+
+    /// oreulia_thread_id() -> i32
+    ///
+    /// Returns the current thread's ID.  The main instance (not spawned as a
+    /// thread) always returns 0.
+    fn host_thread_id(&mut self) -> Result<(), WasmError> {
+        // The main instance is always "thread 0".
+        self.stack.push(Value::I32(0))?;
+        Ok(())
+    }
+
+    /// oreulia_thread_yield() -> ()
+    ///
+    /// Yields the current quantum (no-op for the main instance; meaningful
+    /// when called from inside a thread step).
+    fn host_thread_yield(&mut self) -> Result<(), WasmError> {
+        // The main instance yields back to the scheduler naturally;
+        // a pool thread would mark itself Yielded via the pool tick.
+        Ok(())
+    }
+
+    /// oreulia_thread_exit(code: i32) -> ()
+    ///
+    /// Terminates the calling thread with the given exit code.
+    fn host_thread_exit(&mut self) -> Result<(), WasmError> {
+        let code = self.stack.pop()?.as_i32()?;
+        // For a spawned thread tid is embedded in its WasmThread; the main
+        // instance exiting here is handled as a no-op (it terminates normally).
+        let _ = code;
+        Ok(())
+    }
+
+    // ========================================================================
+    // Compositor host functions (IDs 28–37)
+    // ========================================================================
+
+    /// compositor_create_window(x: i32, y: i32, w: i32, h: i32) -> i32
+    fn host_compositor_create_window(&mut self) -> Result<(), WasmError> {
+        let h  = self.stack.pop()?.as_i32()?;
+        let w  = self.stack.pop()?.as_i32()?;
+        let y  = self.stack.pop()?.as_i32()?;
+        let x  = self.stack.pop()?.as_i32()?;
+        if w <= 0 || h <= 0 {
+            self.stack.push(Value::I32(0))?;
+            return Ok(());
+        }
+        let wid = crate::compositor::compositor()
+            .create_window(x, y, w as u32, h as u32);
+        self.stack.push(Value::I32(wid as i32))?;
+        Ok(())
+    }
+
+    /// compositor_destroy_window(window_id: i32) -> i32  (1 = found, 0 = not found)
+    fn host_compositor_destroy_window(&mut self) -> Result<(), WasmError> {
+        let wid = self.stack.pop()?.as_i32()?;
+        let ok = crate::compositor::compositor()
+            .destroy_window(wid as u32);
+        self.stack.push(Value::I32(if ok { 1 } else { 0 }))?;
+        Ok(())
+    }
+
+    /// compositor_set_pixel(window_id: i32, x: i32, y: i32, argb: i32) -> ()
+    fn host_compositor_set_pixel(&mut self) -> Result<(), WasmError> {
+        let argb = self.stack.pop()?.as_i32()? as u32;
+        let y    = self.stack.pop()?.as_i32()? as u32;
+        let x    = self.stack.pop()?.as_i32()? as u32;
+        let wid  = self.stack.pop()?.as_i32()? as u32;
+        crate::compositor::compositor().set_pixel(wid, x, y, argb);
+        Ok(())
+    }
+
+    /// compositor_fill_rect(window_id: i32, x: i32, y: i32, w: i32, h: i32, argb: i32) -> ()
+    fn host_compositor_fill_rect(&mut self) -> Result<(), WasmError> {
+        let argb = self.stack.pop()?.as_i32()? as u32;
+        let h    = self.stack.pop()?.as_i32()? as u32;
+        let w    = self.stack.pop()?.as_i32()? as u32;
+        let y    = self.stack.pop()?.as_i32()? as u32;
+        let x    = self.stack.pop()?.as_i32()? as u32;
+        let wid  = self.stack.pop()?.as_i32()? as u32;
+        crate::compositor::compositor().fill_rect(wid, x, y, w, h, argb);
+        Ok(())
+    }
+
+    /// compositor_flush(window_id: i32) -> ()
+    ///
+    /// Flush changes for a single window to the physical framebuffer.
+    fn host_compositor_flush(&mut self) -> Result<(), WasmError> {
+        let wid = self.stack.pop()?.as_i32()? as u32;
+        let fb_guard = crate::gpu_support::GPU_FB.lock();
+        if let Some(ref fb) = *fb_guard {
+            crate::compositor::compositor().flush_window(wid, fb);
+        }
+        Ok(())
+    }
+
+    /// compositor_move_window(window_id: i32, x: i32, y: i32) -> ()
+    fn host_compositor_move_window(&mut self) -> Result<(), WasmError> {
+        let y   = self.stack.pop()?.as_i32()?;
+        let x   = self.stack.pop()?.as_i32()?;
+        let wid = self.stack.pop()?.as_i32()? as u32;
+        crate::compositor::compositor().move_window(wid, x, y);
+        Ok(())
+    }
+
+    /// compositor_set_z_order(window_id: i32, z: i32) -> ()
+    fn host_compositor_set_z_order(&mut self) -> Result<(), WasmError> {
+        let z   = (self.stack.pop()?.as_i32()? & 0xFF) as u8;
+        let wid = self.stack.pop()?.as_i32()? as u32;
+        crate::compositor::compositor().set_z_order(wid, z);
+        Ok(())
+    }
+
+    /// compositor_get_width(window_id: i32) -> i32
+    fn host_compositor_get_width(&mut self) -> Result<(), WasmError> {
+        let wid = self.stack.pop()?.as_i32()? as u32;
+        let w = crate::compositor::compositor()
+            .window_size(wid).map(|(w, _)| w as i32).unwrap_or(-1);
+        self.stack.push(Value::I32(w))?;
+        Ok(())
+    }
+
+    /// compositor_get_height(window_id: i32) -> i32
+    fn host_compositor_get_height(&mut self) -> Result<(), WasmError> {
+        let wid = self.stack.pop()?.as_i32()? as u32;
+        let h = crate::compositor::compositor()
+            .window_size(wid).map(|(_, h)| h as i32).unwrap_or(-1);
+        self.stack.push(Value::I32(h))?;
+        Ok(())
+    }
+
+    /// compositor_draw_text(window_id: i32, x: i32, y: i32, ptr: i32, len: i32, fg_argb: i32) -> i32
+    fn host_compositor_draw_text(&mut self) -> Result<(), WasmError> {
+        let fg_argb = self.stack.pop()?.as_i32()? as u32;
+        let len     = self.pop_nonneg_i32_as_usize()?;
+        let ptr     = self.pop_nonneg_i32_as_usize()?;
+        let y       = self.stack.pop()?.as_i32()? as u32;
+        let x       = self.stack.pop()?.as_i32()? as u32;
+        let wid     = self.stack.pop()?.as_i32()? as u32;
+
+        let text_bytes = self.memory.read(ptr, len)?;
+        let text = match core::str::from_utf8(text_bytes) {
+            Ok(s) => s,
+            Err(_) => { self.stack.push(Value::I32(-1))?; return Ok(()); }
+        };
+        // We need to make a copy to avoid borrow issues with compositor.
+        let mut buf = [0u8; 512];
+        let copy_len = text.len().min(511);
+        buf[..copy_len].copy_from_slice(&text.as_bytes()[..copy_len]);
+        // SAFETY: we just validated it was valid UTF-8 above.
+        let text_ref = unsafe { core::str::from_utf8_unchecked(&buf[..copy_len]) };
+        let drawn = crate::compositor::compositor().draw_text(wid, x, y, text_ref, fg_argb);
+        self.stack.push(Value::I32(drawn as i32))?;
         Ok(())
     }
 

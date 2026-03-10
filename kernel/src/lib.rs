@@ -176,6 +176,10 @@ pub mod rtl8139;
 #[cfg(not(target_arch = "aarch64"))]
 #[path = "GPUsupport/mod.rs"]
 pub mod gpu_support;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod wasm_thread;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod compositor;
 
 /// Helper to ensure Box is available for heap allocations across modules
 #[cfg(not(target_arch = "aarch64"))]
@@ -946,6 +950,15 @@ pub extern "C" fn rust_main() -> ! {
             vga::print_str("[GPU] Initializing framebuffer...\n");
             gpu_support::init(mb2_ptr);
             vga::print_str("[GPU] Framebuffer ready\n");
+
+            // ── Compositor ──────────────────────────────────────────────────
+            {
+                let (w, h) = {
+                    let fb = crate::gpu_support::GPU_FB.lock();
+                    fb.as_ref().map(|f| (f.width(), f.height())).unwrap_or((1024, 768))
+                };
+                compositor::init(w, h);
+            }
         }
 
         // ── PS/2 mouse ───────────────────────────────────────────────────────
