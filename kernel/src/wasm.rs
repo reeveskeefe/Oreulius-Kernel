@@ -1054,6 +1054,21 @@ impl LinearMemory {
         unsafe { core::slice::from_raw_parts(self.data, self.active_len()) }
     }
 
+    /// Get mutable active memory slice.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        if self.data.is_null() {
+            // Return a mutable reference to an empty slice-compatible region.
+            // SAFETY: zero-length slice with non-null dangling pointer is valid.
+            return &mut [];
+        }
+        unsafe { core::slice::from_raw_parts_mut(self.data, self.active_len()) }
+    }
+
+    /// Get immutable active memory slice (alias of active_slice).
+    pub fn as_slice(&self) -> &[u8] {
+        self.active_slice()
+    }
+
     /// Zero active memory (fuzz harness/reset).
     pub fn clear_active(&mut self) {
         if self.data.is_null() {
@@ -3393,6 +3408,8 @@ pub struct WasmInstance {
     last_received_service_handle: Option<CapHandle>,
     /// WASM thread pool for this instance (supports WebAssembly Threads proposal).
     thread_pool: crate::wasm_thread::WasmThreadPool,
+    /// WASI context for this instance (CapabilityWASI / Preview 1 ABI).
+    wasi_ctx: crate::wasi::WasiCtx,
 }
 
 // SAFETY: WasmInstance contains raw pointers to kernel-managed memory and is
@@ -4327,6 +4344,7 @@ impl WasmInstance {
             jit_validate_remaining: [JIT_VALIDATE_CALLS; 64],
             last_received_service_handle: None,
             thread_pool: crate::wasm_thread::WasmThreadPool::new(),
+            wasi_ctx: crate::wasi::WasiCtx::new(instance_id),
         }
     }
 
@@ -4670,6 +4688,7 @@ impl WasmInstance {
             jit_validate_remaining: [0; 64],
             last_received_service_handle: self.last_received_service_handle,
             thread_pool: crate::wasm_thread::WasmThreadPool::new(),
+            wasi_ctx: crate::wasi::WasiCtx::new(self.instance_id),
         }
     }
 
@@ -5794,6 +5813,75 @@ impl WasmInstance {
             35 => self.host_compositor_get_width(),
             36 => self.host_compositor_get_height(),
             37 => self.host_compositor_draw_text(),
+
+            // Input event queue (IDs 38–44)
+            38 => self.host_input_poll(),
+            39 => self.host_input_read(),
+            40 => self.host_input_event_type(),
+            41 => self.host_input_flush(),
+            42 => self.host_input_key_poll(),
+            43 => self.host_input_mouse_poll(),
+            44 => self.host_input_gamepad_poll(),
+
+            // CapabilityWASI (IDs 45–90)
+            45 => self.host_wasi_args_get(),
+            46 => self.host_wasi_args_sizes_get(),
+            47 => self.host_wasi_environ_get(),
+            48 => self.host_wasi_environ_sizes_get(),
+            49 => self.host_wasi_clock_res_get(),
+            50 => self.host_wasi_clock_time_get(),
+            51 => { self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // fd_advise no-op
+            52 => { self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // fd_allocate no-op
+            53 => self.host_wasi_fd_close(),
+            54 => { self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // fd_datasync no-op
+            55 => self.host_wasi_fd_fdstat_get(),
+            56 => { self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // fd_fdstat_set_flags no-op
+            57 => { self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // fd_fdstat_set_rights no-op
+            58 => self.host_wasi_fd_filestat_get(),
+            59 => { self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // fd_filestat_set_size no-op
+            60 => { self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // fd_filestat_set_times no-op
+            61 => self.host_wasi_fd_pread(),
+            62 => self.host_wasi_fd_prestat_get(),
+            63 => self.host_wasi_fd_prestat_dir_name(),
+            64 => self.host_wasi_fd_pwrite(),
+            65 => self.host_wasi_fd_read(),
+            66 => self.host_wasi_fd_readdir(),
+            67 => { self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // fd_renumber no-op
+            68 => self.host_wasi_fd_seek(),
+            69 => { self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // fd_sync no-op
+            70 => self.host_wasi_fd_tell(),
+            71 => self.host_wasi_fd_write(),
+            72 => self.host_wasi_path_create_directory(),
+            73 => self.host_wasi_path_filestat_get(),
+            74 => { self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // path_filestat_set_times no-op
+            75 => { self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // path_link no-op
+            76 => self.host_wasi_path_open(),
+            77 => { self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // path_readlink no-op
+            78 => self.host_wasi_path_remove_directory(),
+            79 => { self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // path_rename no-op
+            80 => { self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // path_symlink no-op
+            81 => self.host_wasi_path_unlink_file(),
+            82 => self.host_wasi_poll_oneoff(),
+            83 => self.host_wasi_proc_exit(),
+            84 => { self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // proc_raise no-op
+            85 => { self.stack.push(Value::I32(0))?; Ok(()) }, // sched_yield
+            86 => self.host_wasi_random_get(),
+            87 => self.host_wasi_sock_accept(),
+            88 => self.host_wasi_sock_recv(),
+            89 => self.host_wasi_sock_send(),
+            90 => { self.stack.pop()?; self.stack.pop()?; self.stack.push(Value::I32(0))?; Ok(()) }, // sock_shutdown no-op
+
+            // TLS 1.3 (IDs 91–99)
+            91 => self.host_tls_connect(),
+            92 => self.host_tls_write(),
+            93 => self.host_tls_read(),
+            94 => self.host_tls_close(),
+            95 => self.host_tls_state(),
+            96 => self.host_tls_error(),
+            97 => self.host_tls_handshake_done(),
+            98 => self.host_tls_tick(),
+            99 => self.host_tls_free(),
+
             _ => Err(WasmError::UnknownHostFunction),
         }
     }
@@ -7865,6 +7953,486 @@ impl WasmInstance {
     // ========================================================================
     // WASM Thread host functions (IDs 23–27)
     // ========================================================================
+
+
+    // ========================================================================
+    // Input Event Queue  (IDs 38–44)
+    // ========================================================================
+
+    fn host_input_poll(&mut self) -> Result<(), WasmError> {
+        crate::input::pump();
+        let v = if crate::input::poll() { 1 } else { 0 };
+        self.stack.push(Value::I32(v))
+    }
+
+    fn host_input_read(&mut self) -> Result<(), WasmError> {
+        let buf_len = self.stack.pop()?.as_i32()? as usize;
+        let buf_ptr = self.stack.pop()?.as_i32()? as usize;
+        crate::input::pump();
+        match crate::input::read() {
+            None => self.stack.push(Value::I32(0)),
+            Some(ev) => {
+                let mem = self.memory.as_mut_slice();
+                if buf_ptr + crate::input::INPUT_EVENT_BYTES > mem.len() || buf_len < crate::input::INPUT_EVENT_BYTES {
+                    return self.stack.push(Value::I32(0));
+                }
+                let written = ev.serialise(&mut mem[buf_ptr..buf_ptr + crate::input::INPUT_EVENT_BYTES]);
+                self.stack.push(Value::I32(written as i32))
+            }
+        }
+    }
+
+    fn host_input_event_type(&mut self) -> Result<(), WasmError> {
+        crate::input::pump();
+        let kind = crate::input::peek_kind() as i32;
+        self.stack.push(Value::I32(kind))
+    }
+
+    fn host_input_flush(&mut self) -> Result<(), WasmError> {
+        let count = crate::input::flush() as i32;
+        self.stack.push(Value::I32(count))
+    }
+
+    fn host_input_key_poll(&mut self) -> Result<(), WasmError> {
+        crate::input::pump();
+        let v = if crate::input::poll_key() { 1 } else { 0 };
+        self.stack.push(Value::I32(v))
+    }
+
+    fn host_input_mouse_poll(&mut self) -> Result<(), WasmError> {
+        crate::input::pump();
+        let v = if crate::input::poll_mouse() { 1 } else { 0 };
+        self.stack.push(Value::I32(v))
+    }
+
+    fn host_input_gamepad_poll(&mut self) -> Result<(), WasmError> {
+        self.stack.push(Value::I32(0))
+    }
+
+    // ========================================================================
+    // CapabilityWASI  (IDs 45–90)
+    // ========================================================================
+
+    fn host_wasi_args_get(&mut self) -> Result<(), WasmError> {
+        let argv_buf_ptr = self.stack.pop()?.as_i32()? as u32;
+        let argv_ptr     = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::args_get(&self.wasi_ctx, mem, argv_ptr, argv_buf_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_args_sizes_get(&mut self) -> Result<(), WasmError> {
+        let buf_size_ptr = self.stack.pop()?.as_i32()? as u32;
+        let argc_ptr     = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::args_sizes_get(&self.wasi_ctx, mem, argc_ptr, buf_size_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_environ_get(&mut self) -> Result<(), WasmError> {
+        let env_buf_ptr = self.stack.pop()?.as_i32()? as u32;
+        let env_ptr     = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::environ_get(&self.wasi_ctx, mem, env_ptr, env_buf_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_environ_sizes_get(&mut self) -> Result<(), WasmError> {
+        let buf_size_ptr = self.stack.pop()?.as_i32()? as u32;
+        let cnt_ptr      = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::environ_sizes_get(&self.wasi_ctx, mem, cnt_ptr, buf_size_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_clock_res_get(&mut self) -> Result<(), WasmError> {
+        let ts_ptr   = self.stack.pop()?.as_i32()? as u32;
+        let clock_id = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::clock_res_get(&self.wasi_ctx, mem, clock_id, ts_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_clock_time_get(&mut self) -> Result<(), WasmError> {
+        let ts_ptr    = self.stack.pop()?.as_i32()? as u32;
+        let precision = self.stack.pop()?.as_i64()? as u64;
+        let clock_id  = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::clock_time_get(&self.wasi_ctx, mem, clock_id, precision, ts_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_close(&mut self) -> Result<(), WasmError> {
+        let fd = self.stack.pop()?.as_i32()? as u32;
+        let e  = crate::wasi::fd_close(&mut self.wasi_ctx, fd);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_fdstat_get(&mut self) -> Result<(), WasmError> {
+        let stat_ptr = self.stack.pop()?.as_i32()? as u32;
+        let fd       = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_fdstat_get(&self.wasi_ctx, mem, fd, stat_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_filestat_get(&mut self) -> Result<(), WasmError> {
+        let stat_ptr = self.stack.pop()?.as_i32()? as u32;
+        let fd       = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_filestat_get(&self.wasi_ctx, mem, fd, stat_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_pread(&mut self) -> Result<(), WasmError> {
+        let nread_ptr = self.stack.pop()?.as_i32()? as u32;
+        let offset    = self.stack.pop()?.as_i64()? as u64;
+        let iovs_len  = self.stack.pop()?.as_i32()? as u32;
+        let iovs_ptr  = self.stack.pop()?.as_i32()? as u32;
+        let fd        = self.stack.pop()?.as_i32()? as u32;
+        // Save offset, seek to it, call fd_read, restore.
+        let saved = self.wasi_ctx.fds.get(fd as usize).map(|o| o.offset).unwrap_or(0);
+        if let Some(o) = self.wasi_ctx.fds.get_mut(fd as usize) { o.offset = offset; }
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_read(&mut self.wasi_ctx, mem, fd, iovs_ptr, iovs_len, nread_ptr);
+        if let Some(o) = self.wasi_ctx.fds.get_mut(fd as usize) { o.offset = saved; }
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_prestat_get(&mut self) -> Result<(), WasmError> {
+        let prestat_ptr = self.stack.pop()?.as_i32()? as u32;
+        let fd          = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_prestat_get(&self.wasi_ctx, mem, fd, prestat_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_prestat_dir_name(&mut self) -> Result<(), WasmError> {
+        let path_len = self.stack.pop()?.as_i32()? as u32;
+        let path_ptr = self.stack.pop()?.as_i32()? as u32;
+        let fd       = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_prestat_dir_name(&self.wasi_ctx, mem, fd, path_ptr, path_len);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_pwrite(&mut self) -> Result<(), WasmError> {
+        let nwritten_ptr = self.stack.pop()?.as_i32()? as u32;
+        let offset       = self.stack.pop()?.as_i64()? as u64;
+        let iovs_len     = self.stack.pop()?.as_i32()? as u32;
+        let iovs_ptr     = self.stack.pop()?.as_i32()? as u32;
+        let fd           = self.stack.pop()?.as_i32()? as u32;
+        let saved = self.wasi_ctx.fds.get(fd as usize).map(|o| o.offset).unwrap_or(0);
+        if let Some(o) = self.wasi_ctx.fds.get_mut(fd as usize) { o.offset = offset; }
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_write(&mut self.wasi_ctx, mem, fd, iovs_ptr, iovs_len, nwritten_ptr);
+        if let Some(o) = self.wasi_ctx.fds.get_mut(fd as usize) { o.offset = saved; }
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_read(&mut self) -> Result<(), WasmError> {
+        let nread_ptr = self.stack.pop()?.as_i32()? as u32;
+        let iovs_len  = self.stack.pop()?.as_i32()? as u32;
+        let iovs_ptr  = self.stack.pop()?.as_i32()? as u32;
+        let fd        = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_read(&mut self.wasi_ctx, mem, fd, iovs_ptr, iovs_len, nread_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_readdir(&mut self) -> Result<(), WasmError> {
+        let bufused_ptr = self.stack.pop()?.as_i32()? as u32;
+        let cookie      = self.stack.pop()?.as_i64()? as u64;
+        let buf_len     = self.stack.pop()?.as_i32()? as u32;
+        let buf_ptr     = self.stack.pop()?.as_i32()? as u32;
+        let fd          = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_readdir(&mut self.wasi_ctx, mem, fd, buf_ptr, buf_len, cookie, bufused_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_seek(&mut self) -> Result<(), WasmError> {
+        let newoff_ptr = self.stack.pop()?.as_i32()? as u32;
+        let whence     = self.stack.pop()?.as_i32()? as u8;
+        let offset     = self.stack.pop()?.as_i64()?;
+        let fd         = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_seek(&mut self.wasi_ctx, mem, fd, offset, whence, newoff_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_tell(&mut self) -> Result<(), WasmError> {
+        let offset_ptr = self.stack.pop()?.as_i32()? as u32;
+        let fd         = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_tell(&self.wasi_ctx, mem, fd, offset_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_fd_write(&mut self) -> Result<(), WasmError> {
+        let nwritten_ptr = self.stack.pop()?.as_i32()? as u32;
+        let iovs_len     = self.stack.pop()?.as_i32()? as u32;
+        let iovs_ptr     = self.stack.pop()?.as_i32()? as u32;
+        let fd           = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::fd_write(&mut self.wasi_ctx, mem, fd, iovs_ptr, iovs_len, nwritten_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_path_create_directory(&mut self) -> Result<(), WasmError> {
+        let path_len = self.stack.pop()?.as_i32()? as usize;
+        let path_ptr = self.stack.pop()?.as_i32()? as usize;
+        let _fd      = self.stack.pop()?.as_i32()?;
+        let mem = self.memory.as_mut_slice();
+        if path_ptr + path_len > mem.len() { return self.stack.push(Value::I32(crate::wasi::Errno::Fault.as_i32())); }
+        let path = &mem[path_ptr..path_ptr + path_len];
+        let mut pathbuf = [0u8; 128];
+        let l = path_len.min(127);
+        pathbuf[..l].copy_from_slice(&path[..l]);
+        let e = crate::wasi::path_create_directory(&mut self.wasi_ctx, &pathbuf[..l]);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_path_filestat_get(&mut self) -> Result<(), WasmError> {
+        let stat_ptr = self.stack.pop()?.as_i32()? as u32;
+        let path_len = self.stack.pop()?.as_i32()? as usize;
+        let path_ptr = self.stack.pop()?.as_i32()? as usize;
+        let flags    = self.stack.pop()?.as_i32()? as u32;
+        let fd       = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        if path_ptr + path_len > mem.len() { return self.stack.push(Value::I32(crate::wasi::Errno::Fault.as_i32())); }
+        let mut pathbuf = [0u8; 128];
+        let l = path_len.min(127);
+        pathbuf[..l].copy_from_slice(&mem[path_ptr..path_ptr + l]);
+        let e = crate::wasi::path_filestat_get(&self.wasi_ctx, mem, fd, flags, &pathbuf[..l], stat_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_path_open(&mut self) -> Result<(), WasmError> {
+        let opened_fd_ptr = self.stack.pop()?.as_i32()? as usize;
+        let fdflags       = self.stack.pop()?.as_i32()? as u16;
+        let rights_inh    = self.stack.pop()?.as_i64()? as u64;
+        let rights        = self.stack.pop()?.as_i64()? as u64;
+        let oflags        = self.stack.pop()?.as_i32()? as u16;
+        let path_len      = self.stack.pop()?.as_i32()? as usize;
+        let path_ptr      = self.stack.pop()?.as_i32()? as usize;
+        let dirflags      = self.stack.pop()?.as_i32()? as u32;
+        let dirfd         = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        if path_ptr + path_len > mem.len() || opened_fd_ptr + 4 > mem.len() {
+            return self.stack.push(Value::I32(crate::wasi::Errno::Fault.as_i32()));
+        }
+        let mut pathbuf = [0u8; 128];
+        let l = path_len.min(127);
+        pathbuf[..l].copy_from_slice(&mem[path_ptr..path_ptr + l]);
+        let mut new_fd = 0u32;
+        let e = crate::wasi::path_open(
+            &mut self.wasi_ctx, mem, dirfd, dirflags, &pathbuf[..l],
+            oflags, rights, rights_inh, fdflags, &mut new_fd,
+        );
+        if e == crate::wasi::Errno::Success {
+            mem[opened_fd_ptr..opened_fd_ptr + 4].copy_from_slice(&new_fd.to_le_bytes());
+        }
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_path_remove_directory(&mut self) -> Result<(), WasmError> {
+        let path_len = self.stack.pop()?.as_i32()? as usize;
+        let path_ptr = self.stack.pop()?.as_i32()? as usize;
+        let _fd      = self.stack.pop()?.as_i32()?;
+        let mem = self.memory.as_mut_slice();
+        if path_ptr + path_len > mem.len() { return self.stack.push(Value::I32(crate::wasi::Errno::Fault.as_i32())); }
+        let mut pathbuf = [0u8; 128];
+        let l = path_len.min(127);
+        pathbuf[..l].copy_from_slice(&mem[path_ptr..path_ptr + l]);
+        let e = crate::wasi::path_remove_directory(&mut self.wasi_ctx, &pathbuf[..l]);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_path_unlink_file(&mut self) -> Result<(), WasmError> {
+        let path_len = self.stack.pop()?.as_i32()? as usize;
+        let path_ptr = self.stack.pop()?.as_i32()? as usize;
+        let _fd      = self.stack.pop()?.as_i32()?;
+        let mem = self.memory.as_mut_slice();
+        if path_ptr + path_len > mem.len() { return self.stack.push(Value::I32(crate::wasi::Errno::Fault.as_i32())); }
+        let mut pathbuf = [0u8; 128];
+        let l = path_len.min(127);
+        pathbuf[..l].copy_from_slice(&mem[path_ptr..path_ptr + l]);
+        let e = crate::wasi::path_unlink_file(&mut self.wasi_ctx, &pathbuf[..l]);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_poll_oneoff(&mut self) -> Result<(), WasmError> {
+        let nevents_ptr   = self.stack.pop()?.as_i32()? as u32;
+        let nsubscriptions= self.stack.pop()?.as_i32()? as u32;
+        let out_ptr       = self.stack.pop()?.as_i32()? as u32;
+        let in_ptr        = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::poll_oneoff(&self.wasi_ctx, mem, in_ptr, out_ptr, nsubscriptions, nevents_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_proc_exit(&mut self) -> Result<(), WasmError> {
+        let code = self.stack.pop()?.as_i32()?;
+        crate::wasi::proc_exit(&mut self.wasi_ctx, code);
+        // Signal the WASM interpreter to stop execution.
+        Err(WasmError::Trap)
+    }
+
+    fn host_wasi_random_get(&mut self) -> Result<(), WasmError> {
+        let buf_len = self.stack.pop()?.as_i32()? as u32;
+        let buf_ptr = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::random_get(&mut self.wasi_ctx, mem, buf_ptr, buf_len);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_sock_accept(&mut self) -> Result<(), WasmError> {
+        let new_fd_ptr = self.stack.pop()?.as_i32()? as usize;
+        let flags      = self.stack.pop()?.as_i32()? as u16;
+        let fd         = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let mut new_fd = 0u32;
+        let e = crate::wasi::sock_accept(&mut self.wasi_ctx, fd, flags, &mut new_fd);
+        if e == crate::wasi::Errno::Success && new_fd_ptr + 4 <= mem.len() {
+            mem[new_fd_ptr..new_fd_ptr + 4].copy_from_slice(&new_fd.to_le_bytes());
+        }
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_sock_recv(&mut self) -> Result<(), WasmError> {
+        let ro_flags_ptr  = self.stack.pop()?.as_i32()? as u32;
+        let ro_datalen_ptr= self.stack.pop()?.as_i32()? as u32;
+        let ri_flags      = self.stack.pop()?.as_i32()? as u16;
+        let ri_data_len   = self.stack.pop()?.as_i32()? as u32;
+        let ri_data_ptr   = self.stack.pop()?.as_i32()? as u32;
+        let fd            = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::sock_recv(&mut self.wasi_ctx, mem, fd, ri_data_ptr, ri_data_len, ri_flags, ro_datalen_ptr, ro_flags_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    fn host_wasi_sock_send(&mut self) -> Result<(), WasmError> {
+        let so_datalen_ptr= self.stack.pop()?.as_i32()? as u32;
+        let si_flags      = self.stack.pop()?.as_i32()? as u16;
+        let si_data_len   = self.stack.pop()?.as_i32()? as u32;
+        let si_data_ptr   = self.stack.pop()?.as_i32()? as u32;
+        let fd            = self.stack.pop()?.as_i32()? as u32;
+        let mem = self.memory.as_mut_slice();
+        let e = crate::wasi::sock_send(&mut self.wasi_ctx, mem, fd, si_data_ptr, si_data_len, si_flags, so_datalen_ptr);
+        self.stack.push(Value::I32(e.as_i32()))
+    }
+
+    // ========================================================================
+    // TLS 1.3  (IDs 91–99)
+    // ========================================================================
+
+    fn host_tls_connect(&mut self) -> Result<(), WasmError> {
+        // Stack (top→bottom): port, server_ip_u32, host_len, host_ptr
+        let port          = self.stack.pop()?.as_i32()? as u16;
+        let server_ip_u32 = self.stack.pop()?.as_i32()? as u32;
+        let host_len      = self.stack.pop()?.as_i32()? as usize;
+        let host_ptr      = self.stack.pop()?.as_i32()? as usize;
+        let mem = self.memory.as_slice();
+        if host_ptr + host_len > mem.len() { return self.stack.push(Value::I32(-1)); }
+        let host = &mem[host_ptr..host_ptr + host_len];
+        let server_ip: crate::tls::Ip4 = [
+            (server_ip_u32 >> 24) as u8,
+            (server_ip_u32 >> 16) as u8,
+            (server_ip_u32 >>  8) as u8,
+             server_ip_u32        as u8,
+        ];
+        let handle = crate::tls::alloc_session(host, port, server_ip);
+        if let Some(s) = crate::tls::session_mut(handle) {
+            s.tick();
+        }
+        self.stack.push(Value::I32(handle))
+    }
+
+    fn host_tls_write(&mut self) -> Result<(), WasmError> {
+        let buf_len = self.stack.pop()?.as_i32()? as usize;
+        let buf_ptr = self.stack.pop()?.as_i32()? as usize;
+        let handle  = self.stack.pop()?.as_i32()?;
+        let mem = self.memory.as_slice();
+        if buf_ptr + buf_len > mem.len() { return self.stack.push(Value::I32(-1)); }
+        let data = &mem[buf_ptr..buf_ptr + buf_len];
+        let result = match crate::tls::session_mut(handle) {
+            None    => -1i32,
+            Some(s) => s.write(data) as i32,
+        };
+        self.stack.push(Value::I32(result))
+    }
+
+    fn host_tls_read(&mut self) -> Result<(), WasmError> {
+        let buf_len = self.stack.pop()?.as_i32()? as usize;
+        let buf_ptr = self.stack.pop()?.as_i32()? as usize;
+        let handle  = self.stack.pop()?.as_i32()?;
+        let mem = self.memory.as_mut_slice();
+        if buf_ptr + buf_len > mem.len() { return self.stack.push(Value::I32(0)); }
+        let result = match crate::tls::session_mut(handle) {
+            None    => 0usize,
+            Some(s) => {
+                s.tick();
+                s.read(&mut mem[buf_ptr..buf_ptr + buf_len])
+            }
+        };
+        self.stack.push(Value::I32(result as i32))
+    }
+
+    fn host_tls_close(&mut self) -> Result<(), WasmError> {
+        let handle = self.stack.pop()?.as_i32()?;
+        if let Some(s) = crate::tls::session_mut(handle) { s.close(); }
+        self.stack.push(Value::I32(0))
+    }
+
+    fn host_tls_state(&mut self) -> Result<(), WasmError> {
+        let handle = self.stack.pop()?.as_i32()?;
+        let state = match crate::tls::session_mut(handle) {
+            None    => crate::tls::HandshakeState::Error as i32,
+            Some(s) => s.state as i32,
+        };
+        self.stack.push(Value::I32(state))
+    }
+
+    fn host_tls_error(&mut self) -> Result<(), WasmError> {
+        let buf_len = self.stack.pop()?.as_i32()? as usize;
+        let buf_ptr = self.stack.pop()?.as_i32()? as usize;
+        let handle  = self.stack.pop()?.as_i32()?;
+        let mem = self.memory.as_mut_slice();
+        let result = match crate::tls::session_mut(handle) {
+            None => 0usize,
+            Some(s) => {
+                let err = s.error_str();
+                let copy = err.len().min(buf_len);
+                if buf_ptr + copy <= mem.len() {
+                    mem[buf_ptr..buf_ptr + copy].copy_from_slice(&err[..copy]);
+                }
+                copy
+            }
+        };
+        self.stack.push(Value::I32(result as i32))
+    }
+
+    fn host_tls_handshake_done(&mut self) -> Result<(), WasmError> {
+        let handle = self.stack.pop()?.as_i32()?;
+        let done = match crate::tls::session_mut(handle) {
+            None    => 0,
+            Some(s) => if s.state == crate::tls::HandshakeState::Connected { 1 } else { 0 },
+        };
+        self.stack.push(Value::I32(done))
+    }
+
+    fn host_tls_tick(&mut self) -> Result<(), WasmError> {
+        let handle = self.stack.pop()?.as_i32()?;
+        if let Some(s) = crate::tls::session_mut(handle) { s.tick(); }
+        self.stack.push(Value::I32(0))
+    }
+
+    fn host_tls_free(&mut self) -> Result<(), WasmError> {
+        let handle = self.stack.pop()?.as_i32()?;
+        crate::tls::free_session(handle);
+        self.stack.push(Value::I32(0))
+    }
 
     /// oreulia_thread_spawn(func_idx: i32, arg: i32) -> i32
     ///

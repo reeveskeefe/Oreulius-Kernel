@@ -180,6 +180,12 @@ pub mod gpu_support;
 pub mod wasm_thread;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod compositor;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod input;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod wasi;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod tls;
 
 /// Helper to ensure Box is available for heap allocations across modules
 #[cfg(not(target_arch = "aarch64"))]
@@ -965,6 +971,10 @@ pub extern "C" fn rust_main() -> ! {
         vga::print_str("[MOUSE] Enabling PS/2 auxiliary port...\n");
         mouse::init();
         vga::print_str("[MOUSE] PS/2 mouse ready\n");
+
+        // ── Unified input event queue ─────────────────────────────────────
+        input::init();
+        vga::print_str("[INPUT] Unified input queue ready\n");
 
         vga::print_str("\n[INIT] Initialization complete, starting scheduler...\n");
         tasks::start();

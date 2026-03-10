@@ -96,6 +96,7 @@ fn small_sigma1(x: u32) -> u32 {
     rotr32(x, 17) ^ rotr32(x, 19) ^ (x >> 10)
 }
 
+#[derive(Clone)]
 pub struct Sha256 {
     state: [u32; 8],
     buffer: [u8; SHA256_BLOCK_BYTES],

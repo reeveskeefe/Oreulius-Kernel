@@ -1522,6 +1522,57 @@ pub fn list_dir(path: &str, buffer: &mut [u8]) -> Result<usize, &'static str> {
 }
 
 // ============================================================================
+// Kernel-internal convenience shims used by WASI layer
+// ============================================================================
+
+/// Read file contents by key, returning a heap-allocated copy.
+/// Returns `None` if the file does not exist or cannot be read.
+pub fn kernel_read_bytes(key: &FileKey) -> Option<Vec<u8>> {
+    let fs = filesystem();
+    // Use cap_id=0 (kernel-internal) with all rights to bypass capability check.
+    let cap = fs.create_capability(0u32, FilesystemRights::read_only(), None);
+    let req = Request::read(key.clone(), cap);
+    let resp = fs.handle_request(req);
+    if resp.status == ResponseStatus::Ok {
+        Some(resp.data)
+    } else {
+        None
+    }
+}
+
+/// Write data to a file by key.  Creates the file if it does not exist.
+pub fn kernel_write_bytes(key: &FileKey, data: &[u8]) {
+    let fs = filesystem();
+    let cap = fs.create_capability(0u32, FilesystemRights::read_write(), None);
+    if let Ok(req) = Request::write(key.clone(), data, cap) {
+        let _ = fs.handle_request(req);
+    }
+}
+
+/// Delete a file by key.  Silently ignores errors.
+pub fn kernel_delete(key: &FileKey) {
+    let fs = filesystem();
+    let cap = fs.create_capability(0u32, FilesystemRights::all(), None);
+    let req = Request::delete(key.clone(), cap);
+    let _ = fs.handle_request(req);
+}
+
+/// Read a file by key and return its contents as a static byte slice.
+/// Returns an empty slice if the file does not exist.
+/// The data is leaked from a heap allocation — only use for small, long-lived
+/// kernel assets (e.g., WASI pre-opened read-only files).
+pub fn kernel_read_static(key: &FileKey) -> &'static [u8] {
+    match kernel_read_bytes(key) {
+        Some(v) => {
+            let boxed = v.into_boxed_slice();
+            let leaked: &'static [u8] = Box::leak(boxed);
+            leaked
+        }
+        None => &[],
+    }
+}
+
+// ============================================================================
 // Tests & Examples
 // ============================================================================
 
