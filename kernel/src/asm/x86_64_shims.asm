@@ -7,6 +7,7 @@
 default rel
 
 extern x86_64_trap_dispatch
+extern syscall_handler_rust
 extern JIT_USER_RETURN_PENDING
 extern JIT_USER_RETURN_EIP
 extern JIT_USER_RETURN_ESP
@@ -367,6 +368,27 @@ global thread_start_trampoline
 thread_start_trampoline:
     jmp asm_halt
 
+global kernel_user_entry_trampoline
+kernel_user_entry_trampoline:
+    pop r11                     ; user RIP
+    pop r10                     ; user RSP
+    pop r9                      ; kernel rsp0 top (already synced in TSS, consumed here)
+
+    cli
+    mov eax, 0x23
+    mov ds, ax
+    mov es, ax
+
+    push qword 0x23             ; SS
+    push r10                    ; RSP
+    pushfq
+    pop rax
+    or eax, 0x200               ; enable IF in user mode
+    push rax
+    push qword 0x1B             ; CS
+    push r11                    ; RIP
+    iretq
+
 ; Execute a JIT user-call descriptor (x86_64 SysV ABI) from a 32-bit-addressed
 ; call page used by the current x86-style JIT metadata layout.
 ; Signature: i32 x64_jit_callpage_exec(u32 call_ptr)
@@ -497,7 +519,8 @@ enter_user_mode:
     iretq
 
 ; x86_64 INT 0x80 handler for JIT return path (minimal bring-up implementation).
-; On JIT return/violation, jump directly back to the saved kernel continuation.
+; Normal syscalls dispatch through syscall_handler_rust and return via iretq.
+; JIT return/violation keeps the existing direct handoff path.
 global syscall_entry
 syscall_entry:
     mov edx, dword [rsp + 0]     ; user RIP (low32)
@@ -507,7 +530,7 @@ syscall_entry:
 
     mov ecx, dword [rel JIT_USER_ACTIVE]
     test ecx, ecx
-    je .sysret_iret
+    je .full_dispatch
     cmp eax, 250
     je .jit_return_now
     mov dword [rel JIT_USER_SYSCALL_VIOLATION], 1
@@ -533,7 +556,79 @@ syscall_entry:
     mov rsp, rdx
     jmp rcx
 
-.sysret_iret:
+.full_dispatch:
+    sub rsp, 16*8
+    mov [rsp + 0*8], rax
+    mov [rsp + 1*8], rbx
+    mov [rsp + 2*8], rcx
+    mov [rsp + 3*8], rdx
+    mov [rsp + 4*8], rsi
+    mov [rsp + 5*8], rdi
+    mov [rsp + 6*8], rbp
+    mov [rsp + 7*8], r8
+    mov [rsp + 8*8], r9
+    mov [rsp + 9*8], r10
+    mov [rsp + 10*8], r11
+    mov [rsp + 11*8], r12
+    mov [rsp + 12*8], r13
+    mov [rsp + 13*8], r14
+    mov [rsp + 14*8], r15
+
+    mov rdi, rsp
+    call syscall_handler_rust
+    mov [rsp + 15*8], rax
+
+    xor eax, eax
+    xchg eax, dword [rel JIT_USER_RETURN_PENDING]
+    test eax, eax
+    je .normal_return
+    xor eax, eax
+    xchg eax, dword [rel JIT_USER_ACTIVE]
+    mov rdx, qword [rel JIT_USER_RETURN_ESP]
+    mov rcx, qword [rel JIT_USER_RETURN_EIP]
+    mov qword [rel JIT_USER_DBG_SYSCALL_ESP], rdx
+    mov qword [rel JIT_USER_DBG_SYSCALL_EIP], rcx
+    mov dword [rel JIT_USER_DBG_SYSCALL_NR], 250
+    mov dword [rel JIT_USER_DBG_SYSCALL_PATH], 3
+    xor ebx, ebx
+    test rdx, rdx
+    jnz .jit_pending_esp_ok
+    or ebx, 1
+.jit_pending_esp_ok:
+    test rcx, rcx
+    jnz .jit_pending_eip_ok
+    or ebx, 2
+.jit_pending_eip_ok:
+    test rdx, 0xF
+    jz .jit_pending_align_ok
+    or ebx, 4
+.jit_pending_align_ok:
+    mov dword [rel JIT_USER_DBG_SYSCALL_FLAGS], ebx
+    mov ebx, dword [rel JIT_USER_DBG_SYSCALL_SEQ]
+    add ebx, 1
+    mov dword [rel JIT_USER_DBG_SYSCALL_SEQ], ebx
+    mov rsp, rdx
+    jmp rcx
+
+.normal_return:
+    mov rbx, [rsp + 1*8]
+    mov rcx, [rsp + 2*8]
+    mov rsi, [rsp + 4*8]
+    mov rdi, [rsp + 5*8]
+    mov rbp, [rsp + 6*8]
+    mov r8,  [rsp + 7*8]
+    mov r9,  [rsp + 8*8]
+    mov r10, [rsp + 9*8]
+    mov r11, [rsp + 10*8]
+    mov r12, [rsp + 11*8]
+    mov r13, [rsp + 12*8]
+    mov r14, [rsp + 13*8]
+    mov r15, [rsp + 14*8]
+    mov rax, [rsp + 15*8]
+    shr rax, 32
+    mov edx, eax
+    mov eax, dword [rsp + 15*8]
+    add rsp, 16*8
     iretq
 
 ; ---- Real x86_64 exception/IRQ stubs for bring-up ----

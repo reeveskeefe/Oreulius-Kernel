@@ -326,6 +326,10 @@ pub fn update_jit_kernel_stack_top(rsp0: usize) {
     tss_set_rsp0(rsp0 as u64);
 }
 
+pub fn update_kernel_stack_top(rsp0: usize) {
+    tss_set_rsp0(rsp0 as u64);
+}
+
 pub fn init_cpu_tables() {
     unsafe {
         let irq_stack_top =
@@ -433,6 +437,7 @@ pub fn init_trap_table() {
     for (i, &h) in exceptions.iter().enumerate() {
         idt_set(i as u8, h);
     }
+    idt_set_with_attr(3, isr3 as usize, IDT_TYPE_INTERRUPT_GATE_DPL3);
     for (i, &h) in irqs.iter().enumerate() {
         idt_set((32 + i) as u8, h);
     }

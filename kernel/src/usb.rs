@@ -1834,62 +1834,626 @@ impl EhciController {
 }
 
 // ============================================================================
-// xHCI stub
 // ============================================================================
+// xHCI — full Transfer Ring / Command Ring / Event Ring implementation
+// ============================================================================
+//
+// Reference: Extensible Host Controller Interface for Universal Serial Bus
+//            (xHCI) Specification, Revision 1.2 (2019).
+//
+// Memory layout used here (all static, identity-mapped on i686):
+//   XHCI_CMD_RING   — 64 command TRBs (cycle-bit ring)
+//   XHCI_EVT_RING   — 64 event  TRBs
+//   XHCI_ERST       — 1-entry Event Ring Segment Table
+//   XHCI_DEV_CTX   — 32 device context pointers (DCBAA)
+//   XHCI_DEV_CTX_MEM — 32 × 32-byte input/output device contexts
+//   XHCI_XFER_RING  — 64 transfer TRBs (one shared ring for simplicity)
+//   XHCI_INPUT_CTX  — one 512-byte input context for address_device
+//
+// Design decisions:
+//   • Single command ring with polled completion (no MSI, no IRQ needed).
+//   • One shared transfer ring; real drivers would allocate per-endpoint.
+//   • DCBAA and context arrays are statically allocated (no heap).
 
-/// xHCI host controller (MMIO-based).  Currently only does BIOS hand-off.
+/// xHCI TRB (Transfer Request Block), 16 bytes, 16-byte aligned.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Default)]
+pub struct XhciTrb {
+    pub param:  u64,
+    pub status: u32,
+    pub ctrl:   u32,
+}
+
+// TRB type codes (ctrl bits 15:10)
+const TRB_TYPE_NORMAL:          u32 = 1  << 10;
+const TRB_TYPE_SETUP_STAGE:     u32 = 2  << 10;
+const TRB_TYPE_DATA_STAGE:      u32 = 3  << 10;
+const TRB_TYPE_STATUS_STAGE:    u32 = 4  << 10;
+const TRB_TYPE_LINK:            u32 = 6  << 10;
+const TRB_TYPE_ENABLE_SLOT_CMD: u32 = 9  << 10;
+const TRB_TYPE_ADDR_DEV_CMD:    u32 = 11 << 10;
+const TRB_TYPE_CONFIG_EP_CMD:   u32 = 12 << 10;
+const TRB_TYPE_NO_OP_CMD:       u32 = 23 << 10;
+const TRB_TYPE_CMD_COMPLETION:  u32 = 33 << 10;
+const TRB_TYPE_PORT_STATUS_CHG: u32 = 34 << 10;
+const TRB_TYPE_XFER_EVENT:      u32 = 32 << 10;
+
+// TRB control bit
+const TRB_CYCLE:    u32 = 1 << 0;
+const TRB_TOGGLE:   u32 = 1 << 1; // Link TRB toggle cycle
+const TRB_ENT:      u32 = 1 << 1; // Evaluate Next TRB
+const TRB_ISP:      u32 = 1 << 2; // Interrupt on Short Packet
+const TRB_IOC:      u32 = 1 << 5; // Interrupt on Completion
+const TRB_IDT:      u32 = 1 << 6; // Immediate Data (setup stage)
+const TRB_DIR_IN:   u32 = 1 << 16; // Data Stage direction
+
+// XHCI capability register offsets (from mmio_base)
+const XHCI_CAPLENGTH: usize = 0x00;
+const XHCI_HCSPARAMS1: usize = 0x04;
+const XHCI_HCSPARAMS2: usize = 0x08;
+const XHCI_HCCPARAMS1: usize = 0x10;
+
+// XHCI operational register offsets (from op_base = mmio_base + cap_length)
+const XHCI_USBCMD:    usize = 0x00;
+const XHCI_USBSTS:    usize = 0x04;
+const XHCI_PAGESIZE:  usize = 0x08;
+const XHCI_DNCTRL:    usize = 0x14;
+const XHCI_CRCR_LO:   usize = 0x18;
+const XHCI_CRCR_HI:   usize = 0x1C;
+const XHCI_DCBAAP_LO: usize = 0x30;
+const XHCI_DCBAAP_HI: usize = 0x34;
+const XHCI_CONFIG:    usize = 0x38;
+
+// XHCI runtime register base offset from mmio_base: read from RTSOFF
+const XHCI_RTSOFF: usize = 0x18;
+
+// Runtime register offsets (from runtime_base = mmio_base + rtsoff)
+const XHCI_IMAN:  usize = 0x20; // Interrupter 0 management
+const XHCI_ERDP_LO: usize = 0x38; // Event ring dequeue ptr lo
+const XHCI_ERDP_HI: usize = 0x3C;
+const XHCI_ERSTBA_LO: usize = 0x30; // ERST base lo
+const XHCI_ERSTBA_HI: usize = 0x34;
+const XHCI_ERSTSZ:  usize = 0x28;  // ERST size
+
+// Doorbell register array: offset from mmio_base = DBOFF (at cap+0x14)
+const XHCI_DBOFF: usize = 0x14;
+
+// USBCMD bits
+const XHCI_CMD_RS:    u32 = 1 << 0;
+const XHCI_CMD_HCRST: u32 = 1 << 1;
+const XHCI_CMD_INTE:  u32 = 1 << 2; // Interrupter enable
+
+// USBSTS bits
+const XHCI_STS_HCH:  u32 = 1 << 0; // Host Controller Halted
+const XHCI_STS_CNR:  u32 = 1 << 11; // Controller Not Ready
+
+// Number of TRBs in each ring (must be power of 2; last slot is Link TRB).
+const XHCI_RING_SIZE: usize = 64;
+
+// ERST entry count
+const XHCI_ERST_SIZE: usize = 1;
+
+// Max device slots
+const XHCI_MAX_SLOTS: usize = 32;
+
+/// Event Ring Segment Table entry (64 bytes, 64-byte aligned; we use 1 entry).
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Default)]
+struct XhciErstEntry {
+    base_lo: u32,
+    base_hi: u32,
+    ring_seg_size: u32,
+    _rsvd: u32,
+}
+
+// Static ring storage
+#[repr(C, align(64))]
+struct XhciRing {
+    trbs: [XhciTrb; XHCI_RING_SIZE],
+}
+impl XhciRing {
+    const fn new() -> Self { XhciRing { trbs: [XhciTrb { param: 0, status: 0, ctrl: 0 }; XHCI_RING_SIZE] } }
+}
+
+static mut XHCI_CMD_RING:  XhciRing = XhciRing::new();
+static mut XHCI_EVT_RING:  XhciRing = XhciRing::new();
+static mut XHCI_XFER_RING: XhciRing = XhciRing::new();
+static mut XHCI_ERST:      [XhciErstEntry; XHCI_ERST_SIZE] = [XhciErstEntry { base_lo: 0, base_hi: 0, ring_seg_size: 0, _rsvd: 0 }];
+
+// Device Context Base Address Array (DCBAA).
+// Slot 0 = scratchpad (set to 0); slots 1..=max_slots = output device contexts.
+static mut XHCI_DCBAA: [u64; XHCI_MAX_SLOTS + 1] = [0u64; XHCI_MAX_SLOTS + 1];
+
+// Per-slot output device context (32 bytes × 33; slot 0 unused).
+// A full device context is 32 bytes per endpoint context × 32 EPs = 1024 bytes.
+// For simplicity we allocate the minimal 64-byte Output Device Context.
+#[repr(C, align(64))]
+#[derive(Clone, Copy)]
+struct XhciDevCtxSlot {
+    data: [u32; 16], // 64 bytes
+}
+static mut XHCI_DEV_CTXS: [XhciDevCtxSlot; XHCI_MAX_SLOTS + 1] =
+    [XhciDevCtxSlot { data: [0u32; 16] }; XHCI_MAX_SLOTS + 1];
+
+// Input context for ADDRESS_DEVICE commands (512 bytes, 64-byte aligned).
+#[repr(C, align(64))]
+struct XhciInputCtx {
+    data: [u32; 128], // 512 bytes
+}
+static mut XHCI_INPUT_CTX: XhciInputCtx = XhciInputCtx { data: [0u32; 128] };
+
+/// xHCI host controller — full implementation.
 pub struct XhciController {
-    pub mmio_base: usize,
+    pub mmio_base:  usize,
+    op_base:        usize, // mmio_base + cap_length
+    db_base:        usize, // doorbell array base
+    rt_base:        usize, // runtime register base
     pub initialised: bool,
-    pub pci: PciDevice,
+    pub pci:        PciDevice,
+    max_slots:      u8,
+    max_ports:      u8,
+    /// Command ring enqueue pointer index and cycle state.
+    cmd_enq:   usize,
+    cmd_cycle: bool,
+    /// Event ring dequeue pointer index and cycle state.
+    evt_deq:   usize,
+    evt_cycle: bool,
+    /// Transfer ring enqueue pointer index and cycle state.
+    xfer_enq:   usize,
+    xfer_cycle: bool,
 }
 
 impl XhciController {
     pub const fn new(mmio_base: usize, pci: PciDevice) -> Self {
-        XhciController { mmio_base, initialised: false, pci }
+        XhciController {
+            mmio_base, op_base: 0, db_base: 0, rt_base: 0,
+            initialised: false, pci,
+            max_slots: 0, max_ports: 0,
+            cmd_enq: 0, cmd_cycle: true,
+            evt_deq: 0, evt_cycle: true,
+            xfer_enq: 0, xfer_cycle: true,
+        }
     }
 
-    unsafe fn read32(&self, offset: usize) -> u32 {
-        core::ptr::read_volatile((self.mmio_base + offset) as *const u32)
+    // ----------------------------------------------------------------
+    // MMIO helpers
+    // ----------------------------------------------------------------
+
+    unsafe fn read32(&self, base: usize, offset: usize) -> u32 {
+        core::ptr::read_volatile((base + offset) as *const u32)
     }
-    unsafe fn write32(&self, offset: usize, v: u32) {
-        core::ptr::write_volatile((self.mmio_base + offset) as *mut u32, v);
+    unsafe fn write32(&self, base: usize, offset: usize, v: u32) {
+        core::ptr::write_volatile((base + offset) as *mut u32, v);
+    }
+    unsafe fn read64(&self, base: usize, offset: usize) -> u64 {
+        let lo = self.read32(base, offset) as u64;
+        let hi = self.read32(base, offset + 4) as u64;
+        lo | (hi << 32)
+    }
+    unsafe fn write64(&self, base: usize, offset: usize, v: u64) {
+        self.write32(base, offset,       v as u32);
+        self.write32(base, offset + 4, (v >> 32) as u32);
+    }
+
+    // Capability register shortcuts
+    unsafe fn cap_read32(&self, off: usize) -> u32 { self.read32(self.mmio_base, off) }
+    // Operational register shortcuts
+    unsafe fn op_read32(&self, off: usize)  -> u32 { self.read32(self.op_base, off) }
+    unsafe fn op_write32(&self, off: usize, v: u32) { self.write32(self.op_base, off, v); }
+    // Runtime register shortcuts
+    unsafe fn rt_write32(&self, off: usize, v: u32) { self.write32(self.rt_base, off, v); }
+    unsafe fn rt_write64(&self, off: usize, v: u64) { self.write64(self.rt_base, off, v); }
+    // Doorbell shortcuts
+    unsafe fn ring_doorbell(&self, slot: u8, endpoint: u8) {
+        self.write32(self.db_base, (slot as usize) * 4, endpoint as u32);
     }
 
     const USB_LEGACY_SUPPORT: u32 = 0x01;
     const XHCI_USBLEGSUP_BIOS_SEM: u32 = 1 << 16;
     const XHCI_USBLEGSUP_OS_SEM:   u32 = 1 << 24;
 
-    /// Perform xHCI BIOS OS ownership hand-off (xHCI spec §4.22.1).
+    // ----------------------------------------------------------------
+    // BIOS hand-off
+    // ----------------------------------------------------------------
+
     pub fn bios_handoff(&mut self) {
-        // Walk xECP chain from HCCPARAMS1
         unsafe {
-            let cap_len = self.read32(0x00) & 0xFF;
-            let hccparams1 = self.read32(cap_len as usize + 0x10);
-            let mut xecp = ((hccparams1 >> 16) & 0xFFFF) as u32;
+            let hccparams1 = self.cap_read32(XHCI_HCCPARAMS1);
+            let mut xecp = ((hccparams1 >> 16) & 0xFFFF) as usize;
             while xecp != 0 {
-                let cap_hdr = self.read32((xecp as usize) * 4);
-                let cap_id  = cap_hdr & 0xFF;
-                if cap_id == Self::USB_LEGACY_SUPPORT {
-                    // Set OS semaphore
-                    let new_val = cap_hdr | Self::XHCI_USBLEGSUP_OS_SEM;
-                    self.write32((xecp as usize) * 4, new_val);
-                    // Wait for BIOS semaphore to clear
-                    let mut i = 0u32;
-                    loop {
-                        let v = self.read32((xecp as usize) * 4);
+                let cap_hdr = self.read32(self.mmio_base, xecp * 4);
+                if cap_hdr & 0xFF == Self::USB_LEGACY_SUPPORT {
+                    self.write32(self.mmio_base, xecp * 4,
+                                 cap_hdr | Self::XHCI_USBLEGSUP_OS_SEM);
+                    for _ in 0..200_000u32 {
+                        let v = self.read32(self.mmio_base, xecp * 4);
                         if v & Self::XHCI_USBLEGSUP_BIOS_SEM == 0 { break; }
-                        i += 1;
-                        if i > 100_000 { break; }
                     }
                     break;
                 }
                 let next = (cap_hdr >> 8) & 0xFF;
                 if next == 0 { break; }
-                xecp += next;
+                xecp += next as usize;
             }
         }
+    }
+
+    // ----------------------------------------------------------------
+    // Full initialisation
+    // ----------------------------------------------------------------
+
+    /// Initialise the xHCI controller: reset, ring setup, DCBAA, run.
+    pub fn init(&mut self) -> bool {
+        self.bios_handoff();
+        unsafe {
+            // Derive op_base from cap_length.
+            let cap_len = (self.cap_read32(XHCI_CAPLENGTH) & 0xFF) as usize;
+            self.op_base = self.mmio_base + cap_len;
+
+            // Derive doorbell base from DBOFF capability register.
+            let dboff = self.cap_read32(XHCI_DBOFF as usize) as usize;
+            self.db_base = self.mmio_base + dboff;
+
+            // Derive runtime base from RTSOFF.
+            let rtsoff = self.cap_read32(XHCI_RTSOFF) as usize;
+            self.rt_base = self.mmio_base + rtsoff;
+
+            let hcsparams1 = self.cap_read32(XHCI_HCSPARAMS1);
+            self.max_slots = (hcsparams1 & 0xFF) as u8;
+            self.max_ports = ((hcsparams1 >> 24) & 0xFF) as u8;
+
+            // ---- Stop the controller ----
+            let mut cmd = self.op_read32(XHCI_USBCMD);
+            cmd &= !XHCI_CMD_RS;
+            self.op_write32(XHCI_USBCMD, cmd);
+            // Wait for HCH
+            for _ in 0..100_000u32 {
+                if self.op_read32(XHCI_USBSTS) & XHCI_STS_HCH != 0 { break; }
+            }
+
+            // ---- Reset ----
+            self.op_write32(XHCI_USBCMD, XHCI_CMD_HCRST);
+            for _ in 0..500_000u32 {
+                if self.op_read32(XHCI_USBCMD) & XHCI_CMD_HCRST == 0 &&
+                   self.op_read32(XHCI_USBSTS) & XHCI_STS_CNR  == 0 { break; }
+            }
+
+            // ---- Configure max device slots ----
+            let slots = core::cmp::min(self.max_slots, XHCI_MAX_SLOTS as u8);
+            self.op_write32(XHCI_CONFIG, slots as u32);
+
+            // ---- Set up DCBAA ----
+            for i in 1..=slots as usize {
+                let ctx_phys = &XHCI_DEV_CTXS[i] as *const _ as u64;
+                XHCI_DCBAA[i] = ctx_phys;
+            }
+            let dcbaa_phys = XHCI_DCBAA.as_ptr() as u64;
+            self.write64(self.op_base, XHCI_DCBAAP_LO, dcbaa_phys);
+
+            // ---- Set up Command Ring ----
+            // Insert a Link TRB at the last slot pointing back to the start.
+            let cmd_phys = XHCI_CMD_RING.trbs.as_ptr() as u64;
+            XHCI_CMD_RING.trbs[XHCI_RING_SIZE - 1].param  = cmd_phys;
+            XHCI_CMD_RING.trbs[XHCI_RING_SIZE - 1].status = 0;
+            XHCI_CMD_RING.trbs[XHCI_RING_SIZE - 1].ctrl   = TRB_TYPE_LINK | TRB_TOGGLE | TRB_CYCLE;
+            // Write CRCR: base address + cycle bit
+            self.write64(self.op_base, XHCI_CRCR_LO, cmd_phys | 1);
+
+            // ---- Set up Event Ring ----
+            let evt_phys = XHCI_EVT_RING.trbs.as_ptr() as u64;
+            XHCI_ERST[0].base_lo = evt_phys as u32;
+            XHCI_ERST[0].base_hi = (evt_phys >> 32) as u32;
+            XHCI_ERST[0].ring_seg_size = XHCI_RING_SIZE as u32;
+            let erst_phys = XHCI_ERST.as_ptr() as u64;
+            self.rt_write32(XHCI_ERSTSZ, XHCI_ERST_SIZE as u32);
+            self.rt_write64(XHCI_ERSTBA_LO, erst_phys);
+            self.rt_write64(XHCI_ERDP_LO, evt_phys);
+
+            // ---- Clear DNCTRL ----
+            self.op_write32(XHCI_DNCTRL, 0);
+
+            // ---- Set up Transfer Ring (one global ring for now) ----
+            let xfer_phys = XHCI_XFER_RING.trbs.as_ptr() as u64;
+            XHCI_XFER_RING.trbs[XHCI_RING_SIZE - 1].param  = xfer_phys;
+            XHCI_XFER_RING.trbs[XHCI_RING_SIZE - 1].ctrl   = TRB_TYPE_LINK | TRB_TOGGLE | TRB_CYCLE;
+
+            // ---- Start the controller ----
+            self.op_write32(XHCI_USBCMD, XHCI_CMD_RS);
+            for _ in 0..100_000u32 {
+                if self.op_read32(XHCI_USBSTS) & XHCI_STS_HCH == 0 { break; }
+            }
+        }
+
         self.initialised = true;
+        crate::serial_println!("[xHCI] Initialised: max_slots={} max_ports={}",
+                               self.max_slots, self.max_ports);
+        true
+    }
+
+    // ----------------------------------------------------------------
+    // Port enumeration
+    // ----------------------------------------------------------------
+
+    /// Power and enumerate all root-hub ports.
+    ///
+    /// Returns a list of `(port_index, speed)` tuples for connected devices.
+    /// Speed codes: 1=Full, 2=Low, 3=High, 4=SuperSpeed.
+    pub fn probe_ports(&self) -> [(u8, u8); 16] {
+        let mut result = [(0u8, 0u8); 16];
+        let mut found = 0usize;
+        unsafe {
+            for port in 0..core::cmp::min(self.max_ports as usize, 16) {
+                // PORTSC registers at op_base + 0x400 + port * 0x10
+                let portsc_off = 0x400 + port * 0x10;
+                let portsc = self.op_read32(portsc_off);
+
+                // Power the port (PP bit 9)
+                if portsc & (1 << 9) == 0 {
+                    self.op_write32(portsc_off, portsc | (1 << 9));
+                    for _ in 0..50_000u32 {}
+                }
+
+                let portsc = self.op_read32(portsc_off);
+                // CCS = bit 0: device connected
+                if portsc & 0x01 == 0 { continue; }
+
+                // Reset the port (PR bit 4)
+                self.op_write32(portsc_off, portsc | (1 << 4));
+                for _ in 0..500_000u32 {
+                    if self.op_read32(portsc_off) & (1 << 4) == 0 { break; }
+                }
+
+                let portsc = self.op_read32(portsc_off);
+                let speed  = ((portsc >> 10) & 0xF) as u8; // Port Speed bits 13:10
+                if found < 16 { result[found] = (port as u8 + 1, speed); found += 1; }
+                crate::serial_println!("[xHCI] Port {} connected, speed={}", port + 1, speed);
+            }
+        }
+        result
+    }
+
+    // ----------------------------------------------------------------
+    // Command ring helpers
+    // ----------------------------------------------------------------
+
+    /// Enqueue a TRB onto the command ring and ring doorbell 0, slot 0.
+    /// Returns false if the ring is full.
+    pub fn enqueue_command(&mut self, mut trb: XhciTrb) -> bool {
+        let idx = self.cmd_enq;
+        if idx >= XHCI_RING_SIZE - 1 { return false; } // Link TRB slot reserved
+        // Set cycle bit
+        if self.cmd_cycle { trb.ctrl |= TRB_CYCLE; } else { trb.ctrl &= !TRB_CYCLE; }
+        unsafe { XHCI_CMD_RING.trbs[idx] = trb; }
+        self.cmd_enq += 1;
+        if self.cmd_enq == XHCI_RING_SIZE - 1 {
+            // Wrap: update Link TRB cycle bit and toggle parity.
+            unsafe {
+                let link = &mut XHCI_CMD_RING.trbs[XHCI_RING_SIZE - 1];
+                if self.cmd_cycle { link.ctrl |= TRB_CYCLE; } else { link.ctrl &= !TRB_CYCLE; }
+            }
+            self.cmd_enq = 0;
+            self.cmd_cycle = !self.cmd_cycle;
+        }
+        unsafe { self.ring_doorbell(0, 0); }
+        true
+    }
+
+    /// Poll the event ring for a Command Completion Event.
+    /// Returns `(completion_code, slot_id)` or None on timeout.
+    pub fn poll_command_completion(&mut self) -> Option<(u8, u8)> {
+        for _ in 0..2_000_000u32 {
+            unsafe {
+                let trb = &XHCI_EVT_RING.trbs[self.evt_deq];
+                let trb_cycle = (trb.ctrl & TRB_CYCLE) != 0;
+                if trb_cycle != self.evt_cycle { continue; } // no new event
+                let trb_type = (trb.ctrl >> 10) & 0x3F;
+                if trb_type == 33 { // CMD_COMPLETION
+                    let cc   = ((trb.status >> 24) & 0xFF) as u8;
+                    let slot = ((trb.ctrl >> 24) & 0xFF) as u8;
+                    self.advance_event_deq();
+                    return Some((cc, slot));
+                }
+                // Not the event we want; consume and keep looking.
+                self.advance_event_deq();
+            }
+        }
+        None
+    }
+
+    fn advance_event_deq(&mut self) {
+        self.evt_deq = (self.evt_deq + 1) % (XHCI_RING_SIZE - 1);
+        if self.evt_deq == 0 { self.evt_cycle = !self.evt_cycle; }
+        unsafe {
+            let ptr = &XHCI_EVT_RING.trbs[self.evt_deq] as *const _ as u64;
+            self.rt_write64(XHCI_ERDP_LO, ptr | (1 << 3)); // EHB bit
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // ENABLE_SLOT / ADDRESS_DEVICE
+    // ----------------------------------------------------------------
+
+    /// Issue ENABLE_SLOT command and return the assigned slot ID.
+    pub fn enable_slot(&mut self) -> Option<u8> {
+        let trb = XhciTrb { param: 0, status: 0, ctrl: TRB_TYPE_ENABLE_SLOT_CMD };
+        if !self.enqueue_command(trb) { return None; }
+        let (cc, slot) = self.poll_command_completion()?;
+        if cc == 1 { Some(slot) } else { None } // cc=1 = Success
+    }
+
+    /// Issue ADDRESS_DEVICE command.
+    ///
+    /// Fills a minimal Input Context for slot `slot`, port `port`, speed `speed`
+    /// and issues the ADDRESS_DEVICE command (BSR=false → assign address).
+    pub fn address_device(&mut self, slot: u8, port: u8, speed: u8) -> bool {
+        unsafe {
+            let ic = &mut XHCI_INPUT_CTX;
+            for w in ic.data.iter_mut() { *w = 0; }
+
+            // Input Control Context (dword 0/1): A0 + A1 = add slot + EP0 context.
+            ic.data[0] = 0;            // Drop flags
+            ic.data[1] = 0b11;         // Add flags: bit0=slot, bit1=EP0
+
+            // Slot Context (starts at dword 8 = offset 32 bytes from IC base).
+            let sc = &mut ic.data[8..]; // Slot Context: 8 dwords
+            sc[0] = ((speed as u32 & 0xF) << 20)  // speed
+                  | (1 << 27);                      // Context Entries = 1
+            sc[1] = (port as u32) << 16;            // Root hub port number
+
+            // EP0 Context (starts at dword 16 = offset 64 bytes).
+            let ep0 = &mut ic.data[16..]; // EP0 Context: 8 dwords
+            // Max packet size per speed (Table 56 of xHCI spec):
+            let max_pkt: u16 = match speed {
+                1 => 8,    // Full
+                2 => 8,    // Low
+                3 => 64,   // High
+                4 => 512,  // SuperSpeed
+                _ => 8,
+            };
+            ep0[1] = (max_pkt as u32) << 16 // Max Packet Size
+                   | (3 << 3)               // EP Type: Control
+                   | (0 << 1);              // EP State: Disabled → 0 (set by HW)
+
+            // Transfer Ring dequeue pointer for EP0 (physical address + DCS=1).
+            let xfer_phys = XHCI_XFER_RING.trbs.as_ptr() as u64;
+            ep0[2] = (xfer_phys as u32) | 1; // lo + DCS
+            ep0[3] = (xfer_phys >> 32) as u32;
+
+            // Store output Device Context pointer in DCBAA.
+            let ctx_phys = &XHCI_DEV_CTXS[slot as usize] as *const _ as u64;
+            XHCI_DCBAA[slot as usize] = ctx_phys;
+
+            let ic_phys = &XHCI_INPUT_CTX as *const _ as u64;
+            let trb = XhciTrb {
+                param:  ic_phys,
+                status: 0,
+                ctrl:   TRB_TYPE_ADDR_DEV_CMD | ((slot as u32) << 24),
+            };
+            if !self.enqueue_command(trb) { return false; }
+            if let Some((cc, _)) = self.poll_command_completion() {
+                cc == 1
+            } else {
+                false
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Control transfer via transfer ring
+    // ----------------------------------------------------------------
+
+    /// Issue a control transfer on EP0 of device `slot`.
+    ///
+    /// `setup`: 8-byte SETUP packet.
+    /// `data`:  optional data buffer (host ← device if `dir_in`).
+    pub fn control_transfer(
+        &mut self,
+        slot:   u8,
+        setup:  &UsbSetupPacket,
+        data:   Option<&mut [u8]>,
+        dir_in: bool,
+    ) -> bool {
+        unsafe {
+            let setup_raw = core::slice::from_raw_parts(
+                setup as *const UsbSetupPacket as *const u8, 8);
+            let mut setup_param = 0u64;
+            for (i, &b) in setup_raw.iter().enumerate() {
+                setup_param |= (b as u64) << (i * 8);
+            }
+
+            // SETUP stage TRB (IDT=immediate data, TRT in bits 17:16)
+            let trt: u32 = if data.is_none() { 0 } else if dir_in { 3 } else { 2 };
+            let setup_trb = XhciTrb {
+                param:  setup_param,
+                status: 8, // TRB Transfer Length = 8
+                ctrl:   TRB_TYPE_SETUP_STAGE | TRB_IDT | TRB_IOC | (trt << 16),
+            };
+            self.enqueue_transfer(setup_trb);
+
+            let status_dir_in = dir_in && data.is_none();
+
+            // DATA stage (optional)
+            if let Some(buf) = data {
+                let buf_phys = buf.as_ptr() as u64;
+                let data_trb = XhciTrb {
+                    param:  buf_phys,
+                    status: buf.len() as u32,
+                    ctrl:   TRB_TYPE_DATA_STAGE | TRB_IOC
+                            | if dir_in { TRB_DIR_IN } else { 0 },
+                };
+                self.enqueue_transfer(data_trb);
+            }
+
+            // STATUS stage
+            let status_trb = XhciTrb {
+                param:  0,
+                status: 0,
+                ctrl:   TRB_TYPE_STATUS_STAGE | TRB_IOC
+                        | if status_dir_in { TRB_DIR_IN } else { 0 },
+            };
+            self.enqueue_transfer(status_trb);
+
+            // Ring EP0 doorbell
+            self.ring_doorbell(slot, 1);
+
+            // Poll for Transfer Event
+            self.poll_transfer_completion()
+        }
+    }
+
+    fn enqueue_transfer(&mut self, mut trb: XhciTrb) {
+        let idx = self.xfer_enq;
+        if self.xfer_cycle { trb.ctrl |= TRB_CYCLE; } else { trb.ctrl &= !TRB_CYCLE; }
+        unsafe { XHCI_XFER_RING.trbs[idx] = trb; }
+        self.xfer_enq += 1;
+        if self.xfer_enq == XHCI_RING_SIZE - 1 {
+            unsafe {
+                let link = &mut XHCI_XFER_RING.trbs[XHCI_RING_SIZE - 1];
+                if self.xfer_cycle { link.ctrl |= TRB_CYCLE; } else { link.ctrl &= !TRB_CYCLE; }
+            }
+            self.xfer_enq = 0;
+            self.xfer_cycle = !self.xfer_cycle;
+        }
+    }
+
+    fn poll_transfer_completion(&mut self) -> bool {
+        for _ in 0..2_000_000u32 {
+            unsafe {
+                let trb = &XHCI_EVT_RING.trbs[self.evt_deq];
+                let trb_cycle = (trb.ctrl & TRB_CYCLE) != 0;
+                if trb_cycle != self.evt_cycle { continue; }
+                let trb_type = (trb.ctrl >> 10) & 0x3F;
+                if trb_type == 32 { // XFER_EVENT
+                    let cc = ((trb.status >> 24) & 0xFF) as u8;
+                    self.advance_event_deq();
+                    return cc == 1 || cc == 13; // 1=Success, 13=Short Packet
+                }
+                self.advance_event_deq();
+            }
+        }
+        false
+    }
+
+    // ----------------------------------------------------------------
+    // Device enumeration (mirroring EHCI enumerate_via_ehci pattern)
+    // ----------------------------------------------------------------
+
+    /// Enumerate a device on the given port+speed via ENABLE_SLOT →
+    /// ADDRESS_DEVICE → GET_DESCRIPTOR → SET_CONFIGURATION.
+    pub fn enumerate_port(&mut self, port: u8, speed: u8) -> Option<(u8, [u8; 18])> {
+        let slot = self.enable_slot()?;
+        if !self.address_device(slot, port, speed) { return None; }
+
+        // GET_DEVICE_DESCRIPTOR
+        let mut desc_buf = [0u8; 18];
+        let setup = UsbSetupPacket::get_device_descriptor();
+        if !self.control_transfer(slot, &setup, Some(&mut desc_buf), true) { return None; }
+
+        // SET_CONFIGURATION(1)
+        let setup_cfg = UsbSetupPacket::set_configuration(1);
+        let _ = self.control_transfer(slot, &setup_cfg, None, false);
+
+        Some((slot, desc_buf))
     }
 }
 
@@ -2843,4 +3407,285 @@ impl MassStorageDevice {
         let csw = self.recv_csw(tag, None, Some(ctrl))?;
         if csw.b_csw_status != 0 { Err(MscError::ScsiError(csw.b_csw_status)) } else { Ok(()) }
     }
+}
+
+// ============================================================================
+// USB HID Class Driver
+// ============================================================================
+//
+// USB HID Specification 1.11 §B: Boot Protocol
+//
+// The boot protocol is mandatory for keyboards and mice and provides a
+// fixed, simple report format that does not require parsing a Report
+// Descriptor.  We support:
+//   • Boot keyboard (usage page 0x01, usage 0x06)
+//   • Boot mouse    (usage page 0x01, usage 0x02)
+//
+// After `SET_PROTOCOL(0)` the device sends:
+//   Keyboard: 8-byte report — modifier, reserved, keycodes[6]
+//   Mouse:    4-byte report — buttons, dx, dy, wheel
+//
+// HID class-specific requests
+const HID_REQ_GET_REPORT:    u8 = 0x01;
+const HID_REQ_SET_IDLE:      u8 = 0x0A;
+const HID_REQ_SET_PROTOCOL:  u8 = 0x0B;
+// bRequest / wValue selectors for GET_DESCRIPTOR
+const DESC_HID:    u8 = 0x21;
+const DESC_REPORT: u8 = 0x22;
+// Protocol values
+const HID_PROTO_BOOT:   u16 = 0;
+const HID_PROTO_REPORT: u16 = 1;
+// Subclass / protocol
+const HID_SUBCLASS_BOOT: u8 = 1;
+const HID_PROTO_KBD:     u8 = 1;
+const HID_PROTO_MOUSE:   u8 = 2;
+
+/// Modifier byte bit masks (USB HID keyboard boot report byte 0).
+#[allow(dead_code)]
+pub mod kbd_mod {
+    pub const L_CTRL:  u8 = 1 << 0;
+    pub const L_SHIFT: u8 = 1 << 1;
+    pub const L_ALT:   u8 = 1 << 2;
+    pub const L_GUI:   u8 = 1 << 3;
+    pub const R_CTRL:  u8 = 1 << 4;
+    pub const R_SHIFT: u8 = 1 << 5;
+    pub const R_ALT:   u8 = 1 << 6;
+    pub const R_GUI:   u8 = 1 << 7;
+}
+
+/// A decoded USB HID boot-protocol keyboard report.
+#[derive(Clone, Copy, Default)]
+pub struct HidKeyboardReport {
+    /// Modifier byte (see `kbd_mod` constants).
+    pub modifiers: u8,
+    /// Currently held key codes (up to 6, USB HID page 0x07).
+    pub keycodes:  [u8; 6],
+}
+
+impl HidKeyboardReport {
+    /// Parse from an 8-byte boot-protocol report buffer.
+    pub fn from_bytes(b: &[u8; 8]) -> Self {
+        let mut kc = [0u8; 6];
+        kc.copy_from_slice(&b[2..8]);
+        HidKeyboardReport { modifiers: b[0], keycodes: kc }
+    }
+
+    pub fn shift(&self) -> bool {
+        self.modifiers & (kbd_mod::L_SHIFT | kbd_mod::R_SHIFT) != 0
+    }
+    pub fn ctrl(&self) -> bool {
+        self.modifiers & (kbd_mod::L_CTRL | kbd_mod::R_CTRL) != 0
+    }
+    pub fn alt(&self) -> bool {
+        self.modifiers & (kbd_mod::L_ALT | kbd_mod::R_ALT) != 0
+    }
+}
+
+/// Decoded USB HID boot-protocol mouse report.
+#[derive(Clone, Copy, Default)]
+pub struct HidMouseReport {
+    pub buttons: u8,
+    pub dx:      i8,
+    pub dy:      i8,
+    pub wheel:   i8,
+}
+
+impl HidMouseReport {
+    pub fn from_bytes(b: &[u8; 4]) -> Self {
+        HidMouseReport { buttons: b[0], dx: b[1] as i8, dy: b[2] as i8, wheel: b[3] as i8 }
+    }
+}
+
+/// Which boot-protocol device class this HID device is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HidKind { Keyboard, Mouse, Other }
+
+/// A USB HID device handle.
+pub struct UsbHidDevice {
+    pub dev_addr:   u8,
+    pub ctrl_idx:   usize,
+    pub ctrl_kind:  UsbControllerKind,
+    pub speed:      UsbSpeed,
+    /// Interrupt-IN endpoint number (e.g. 0x81)
+    pub ep_in:      u8,
+    pub max_pkt:    u16,
+    pub kind:       HidKind,
+    toggle:         bool,
+}
+
+impl UsbHidDevice {
+    /// Construct a new HID device handle (does not communicate with device).
+    pub fn new(dev_addr: u8, ctrl_idx: usize, ctrl_kind: UsbControllerKind,
+               speed: UsbSpeed, ep_in: u8, max_pkt: u16, kind: HidKind) -> Self {
+        UsbHidDevice { dev_addr, ctrl_idx, ctrl_kind, speed,
+                       ep_in, max_pkt, kind, toggle: false }
+    }
+
+    // ----------------------------------------------------------------
+    // HID class setup
+    // ----------------------------------------------------------------
+
+    /// Perform HID class initialisation on a UHCI path:
+    ///   1. SET_IDLE(0, 0)        — stop unsolicited reports
+    ///   2. SET_PROTOCOL(Boot)    — switch to boot protocol
+    pub fn setup_uhci(&self, ctrl: &mut UhciController) -> bool {
+        let ls = self.speed == UsbSpeed::Low;
+
+        // SET_IDLE(duration=0, report_id=0): stop repeated reports
+        let idle = UsbSetupPacket {
+            bm_request_type: RT_HOST_TO_DEV | RT_CLASS | RT_INTERFACE,
+            b_request: HID_REQ_SET_IDLE,
+            w_value: 0, w_index: 0, w_length: 0,
+        };
+        let _ = ctrl.control_transfer(self.dev_addr, ls, &idle, None, false);
+
+        // SET_PROTOCOL(0 = Boot)
+        let proto = UsbSetupPacket {
+            bm_request_type: RT_HOST_TO_DEV | RT_CLASS | RT_INTERFACE,
+            b_request: HID_REQ_SET_PROTOCOL,
+            w_value: HID_PROTO_BOOT, w_index: 0, w_length: 0,
+        };
+        ctrl.control_transfer(self.dev_addr, ls, &proto, None, false) == UhciXferResult::Ok
+    }
+
+    /// Perform HID class initialisation on an EHCI path.
+    pub fn setup_ehci(&self, ctrl: &mut EhciController) -> bool {
+        let hs = self.speed == UsbSpeed::High;
+        let ls = self.speed == UsbSpeed::Low;
+
+        let idle = UsbSetupPacket {
+            bm_request_type: RT_HOST_TO_DEV | RT_CLASS | RT_INTERFACE,
+            b_request: HID_REQ_SET_IDLE,
+            w_value: 0, w_index: 0, w_length: 0,
+        };
+        let _ = ctrl.control_transfer(self.dev_addr, hs, ls, &idle, None, false);
+
+        let proto = UsbSetupPacket {
+            bm_request_type: RT_HOST_TO_DEV | RT_CLASS | RT_INTERFACE,
+            b_request: HID_REQ_SET_PROTOCOL,
+            w_value: HID_PROTO_BOOT, w_index: 0, w_length: 0,
+        };
+        ctrl.control_transfer(self.dev_addr, hs, ls, &proto, None, false)
+    }
+
+    // ----------------------------------------------------------------
+    // Polling
+    // ----------------------------------------------------------------
+
+    /// Poll the interrupt-IN endpoint for a keyboard report (UHCI).
+    ///
+    /// Returns `None` if no report is available yet (NAK) or on error.
+    pub fn poll_keyboard_uhci(&mut self, ctrl: &mut UhciController)
+        -> Option<HidKeyboardReport>
+    {
+        let ls = self.speed == UsbSpeed::Low;
+        let mut buf = [0u8; 8];
+        let ep = self.ep_in & 0x0F;
+        match ctrl.bulk_transfer(self.dev_addr, ep, ls, true,
+                                  self.max_pkt as usize, &mut buf, &mut self.toggle)
+        {
+            UhciXferResult::Ok => Some(HidKeyboardReport::from_bytes(&buf)),
+            _ => None,
+        }
+    }
+
+    /// Poll the interrupt-IN endpoint for a mouse report (UHCI).
+    pub fn poll_mouse_uhci(&mut self, ctrl: &mut UhciController)
+        -> Option<HidMouseReport>
+    {
+        let ls = self.speed == UsbSpeed::Low;
+        let mut buf = [0u8; 4];
+        let ep = self.ep_in & 0x0F;
+        match ctrl.bulk_transfer(self.dev_addr, ep, ls, true,
+                                  self.max_pkt as usize, &mut buf, &mut self.toggle)
+        {
+            UhciXferResult::Ok => {
+                let report = HidMouseReport::from_bytes(&buf);
+                // Forward mouse deltas into the shared mouse event pipeline.
+                crate::mouse::submit_usb_report(crate::mouse::UsbMouseReport {
+                    buttons: report.buttons,
+                    dx:      report.dx,
+                    dy:      report.dy,
+                    dwheel:  report.wheel,
+                });
+                Some(report)
+            }
+            _ => None,
+        }
+    }
+
+    /// Poll the interrupt-IN endpoint for a keyboard report (EHCI).
+    pub fn poll_keyboard_ehci(&mut self, ctrl: &mut EhciController)
+        -> Option<HidKeyboardReport>
+    {
+        let hs = self.speed == UsbSpeed::High;
+        let mut buf = [0u8; 8];
+        let ep = self.ep_in & 0x0F;
+        if ctrl.bulk_transfer(self.dev_addr, ep, hs, true,
+                               self.max_pkt, &mut buf, &mut self.toggle)
+        {
+            Some(HidKeyboardReport::from_bytes(&buf))
+        } else {
+            None
+        }
+    }
+
+    /// Poll the interrupt-IN endpoint for a mouse report (EHCI).
+    pub fn poll_mouse_ehci(&mut self, ctrl: &mut EhciController)
+        -> Option<HidMouseReport>
+    {
+        let hs = self.speed == UsbSpeed::High;
+        let mut buf = [0u8; 4];
+        let ep = self.ep_in & 0x0F;
+        if ctrl.bulk_transfer(self.dev_addr, ep, hs, true,
+                               self.max_pkt, &mut buf, &mut self.toggle)
+        {
+            let report = HidMouseReport::from_bytes(&buf);
+            crate::mouse::submit_usb_report(crate::mouse::UsbMouseReport {
+                buttons: report.buttons,
+                dx:      report.dx,
+                dy:      report.dy,
+                dwheel:  report.wheel,
+            });
+            Some(report)
+        } else {
+            None
+        }
+    }
+}
+
+/// Open the first enumerated USB HID keyboard.
+pub fn open_hid_keyboard() -> Option<UsbHidDevice> {
+    let guard = USB_BUS.lock();
+    for d in guard.devices[..guard.device_count].iter().filter_map(|d| d.as_ref()) {
+        if d.descriptor.b_device_class == 0x03 {
+            let kind = guard.controllers[d.controller_index]
+                .map(|c| c.kind)
+                .unwrap_or(UsbControllerKind::Uhci);
+            let max_pkt = match d.speed { UsbSpeed::High => 64, _ => 8 };
+            return Some(UsbHidDevice::new(
+                d.address, d.controller_index, kind, d.speed,
+                0x81, max_pkt, HidKind::Keyboard,
+            ));
+        }
+    }
+    None
+}
+
+/// Open the first enumerated USB HID mouse.
+pub fn open_hid_mouse() -> Option<UsbHidDevice> {
+    let guard = USB_BUS.lock();
+    for d in guard.devices[..guard.device_count].iter().filter_map(|d| d.as_ref()) {
+        if d.descriptor.b_device_class == 0x03 {
+            let kind = guard.controllers[d.controller_index]
+                .map(|c| c.kind)
+                .unwrap_or(UsbControllerKind::Uhci);
+            let max_pkt = match d.speed { UsbSpeed::High => 64, _ => 8 };
+            return Some(UsbHidDevice::new(
+                d.address, d.controller_index, kind, d.speed,
+                0x81, max_pkt, HidKind::Mouse,
+            ));
+        }
+    }
+    None
 }

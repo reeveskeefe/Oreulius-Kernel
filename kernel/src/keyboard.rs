@@ -673,13 +673,14 @@ pub unsafe fn handle_irq() {
     // If no data available (bit 0 clear), just return - controller is fine
 }
 
-/// Handle PS/2 mouse/AUX IRQ (IRQ12) by draining a pending byte.
+/// Handle PS/2 mouse/AUX IRQ (IRQ12).
+///
+/// Delegates to `mouse::handle_irq()` which reads the data byte and feeds it
+/// into the PS/2 mouse packet decoder.  Previously this function simply
+/// discarded the byte; now the byte is consumed by the mouse driver and
+/// decoded events are available via `mouse::pop_event()`.
 pub unsafe fn handle_aux_irq() {
-    let status = inb(STATUS_PORT);
-    if (status & 0x01) != 0 {
-        let _ = inb(DATA_PORT);
-        ERROR_STATUS.fetch_add(1, Ordering::Relaxed);
-    }
+    crate::mouse::handle_irq();
 }
 
 fn event_to_char(ev: KeyEvent) -> Option<char> {

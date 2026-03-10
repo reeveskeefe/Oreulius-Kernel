@@ -240,6 +240,8 @@ pub struct ProcessInfo {
     pub process: Process,
     pub context: ProcessContext,
     pub shared_runtime_pid: Option<Pid>,
+    /// Top of the per-process kernel entry stack used for ring-3 -> ring-0 transitions.
+    pub kernel_stack_top: usize,
     /// Kernel stack allocation (heap-backed for user/forked processes).
     pub stack: Option<Box<[u8; crate::process::STACK_SIZE]>>,
     /// Owned user address space (Some for user processes, None for kernel threads).
@@ -337,6 +339,7 @@ impl QuantumScheduler {
             process,
             context: scheduler_platform::context_new(),
             shared_runtime_pid: Some(pid),
+            kernel_stack_top: 0,
             stack: None,
             address_space: None,
             quantum_remaining: quantum,
@@ -932,6 +935,15 @@ impl QuantumScheduler {
             .map(|pid| pid.0)
     }
 
+    #[inline]
+    fn current_kernel_stack_top(&self) -> Option<usize> {
+        self.current_pid
+            .and_then(|pid| self.processes.get(pid.0 as usize))
+            .and_then(|slot| slot.as_ref())
+            .map(|info| info.kernel_stack_top)
+            .filter(|top| *top != 0)
+    }
+
     /// Add a kernel thread to the scheduler
     pub fn add_kernel_thread(
         &mut self,
@@ -1052,6 +1064,7 @@ impl QuantumScheduler {
             process,
             context: ctx,
             shared_runtime_pid,
+            kernel_stack_top: stack_top,
             stack: None, // Stack is static, not heap-allocated
             address_space: None,
             quantum_remaining: QUANTUM_NORMAL,
@@ -1088,7 +1101,7 @@ impl QuantumScheduler {
     pub fn start_scheduling() -> ! {
         scheduler_rt::vga_print_str("[SCHED] Starting scheduler (safe)\n");
 
-        let (ctx_ptr, runtime_pid_raw) = {
+        let (ctx_ptr, runtime_pid_raw, kernel_stack_top) = {
             let mut scheduler = QUANTUM_SCHEDULER.lock();
 
             // Find next process (prefer ready queues, recover from process table if needed).
@@ -1138,13 +1151,18 @@ impl QuantumScheduler {
             scheduler.record_temporal_state_snapshot_locked(
                 scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE,
             );
+            let runtime_pid_raw = scheduler
+                .runtime_pid_for_scheduler_pid(next_pid)
+                .map(|pid| pid.0)
+                .unwrap_or(next_pid.0);
 
             if let Some(ref mut info) = scheduler.processes[next_pid.0 as usize] {
                 info.process.state = ProcessState::Running;
                 // Return pointer relative to the heap allocation (stable address)
                 (
                     &info.context as *const ProcessContext,
-                    scheduler.current_runtime_pid_raw().unwrap_or(next_pid.0),
+                    runtime_pid_raw,
+                    info.kernel_stack_top,
                 )
             } else {
                 panic!("Process data missing");
@@ -1157,6 +1175,7 @@ impl QuantumScheduler {
             scheduler_platform::debug_dump_launch_context(ctx_ptr);
         }
         scheduler_platform::runtime_pid_sync(runtime_pid_raw);
+        scheduler_platform::runtime_kernel_stack_sync(kernel_stack_top);
 
         // Set Task Switched (TS) bit in CR0 to enable lazy FPU context saving natively on dispatch
         #[cfg(target_arch = "x86")]
@@ -1247,6 +1266,7 @@ impl QuantumScheduler {
                 process,
                 context: ctx,
                 shared_runtime_pid: None,
+                kernel_stack_top: stack_top,
                 stack: Some(kernel_stack),
                 address_space: Some(space),
                 quantum_remaining: quantum,
@@ -1277,7 +1297,97 @@ impl QuantumScheduler {
             Ok(pid)
         }
 
-        #[cfg(not(target_arch = "x86"))]
+        #[cfg(target_arch = "x86_64")]
+        {
+            let pid = process.pid;
+            let idx = pid.0 as usize;
+
+            if idx >= MAX_PROCESSES {
+                return Err("add_user_process: PID out of range");
+            }
+            if self.processes[idx].is_some() {
+                return Err("add_user_process: PID already in use");
+            }
+
+            const KERNEL_BASE_ADDR: u32 = 0xC000_0000;
+            if entry >= KERNEL_BASE_ADDR {
+                return Err("add_user_process: entry point in kernel space");
+            }
+            if user_stack == 0 || user_stack >= KERNEL_BASE_ADDR {
+                return Err("add_user_process: user stack in kernel space or null");
+            }
+
+            let kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
+                Box::new([0u8; crate::process::STACK_SIZE]);
+            let stack_top =
+                (kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
+            let page_dir_phys = space.phys_addr() as u64;
+            let frame_top = stack_top.checked_sub(32).ok_or("add_user_process: invalid stack")?;
+
+            unsafe {
+                let frame = frame_top as *mut u64;
+                frame.write(0);
+                frame.add(1).write(entry as u64);
+                frame.add(2).write(user_stack as u64);
+                frame.add(3).write(stack_top as u64);
+            }
+
+            process.state = ProcessState::Ready;
+            process.page_dir_phys = page_dir_phys as u32;
+            process.stack_ptr = user_stack as usize;
+            process.program_counter = entry as usize;
+
+            let priority = process.priority;
+            let quantum = match priority {
+                ProcessPriority::High => QUANTUM_HIGH,
+                ProcessPriority::Normal => QUANTUM_NORMAL,
+                ProcessPriority::Low => QUANTUM_LOW,
+            };
+
+            let mut ctx = scheduler_platform::context_new();
+            ctx.rip = crate::asm_bindings::kernel_user_entry_trampoline as usize as u64;
+            ctx.rsp = frame_top as u64;
+            ctx.rbp = frame_top as u64;
+            ctx.cr3 = page_dir_phys;
+            ctx.rflags = 0x0000_0002;
+
+            let now = scheduler_platform::ticks_now();
+            let info = ProcessInfo {
+                process,
+                context: ctx,
+                shared_runtime_pid: None,
+                kernel_stack_top: stack_top,
+                stack: Some(kernel_stack),
+                address_space: Some(space),
+                quantum_remaining: quantum,
+                total_cpu_time: 0,
+                total_wait_time: 0,
+                last_scheduled: now,
+                switches: 0,
+                yield_count: 0,
+                pagefault_count: 0,
+                ewma_yield: 0,
+                ewma_fault: 0,
+                has_used_fpu: false,
+                fpu_dirty: false,
+                fpu_state: crate::arch::fpu::ExtFpuState::new(),
+            };
+
+            self.processes[idx] = Some(info);
+            self.enqueue_ready(pid, priority);
+            self.record_temporal_state_snapshot_locked(
+                scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE,
+            );
+
+            scheduler_rt::logf(format_args!(
+                "[SCHED] add_user_process: pid={} entry={:#010x} user_sp={:#010x} cr3={:#018x}",
+                pid.0, entry, user_stack, page_dir_phys,
+            ));
+
+            Ok(pid)
+        }
+
+        #[cfg(target_arch = "aarch64")]
         {
             let _ = (&mut process, &space, entry, user_stack);
             Err("add_user_process: not supported on this arch")
@@ -1425,6 +1535,8 @@ impl QuantumScheduler {
                 process: child_process,
                 context: child_ctx,
                 shared_runtime_pid: None,
+                kernel_stack_top: (child_kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE)
+                    & !15usize,
                 stack: Some(child_kernel_stack),
                 address_space: Some(child_address_space),
                 quantum_remaining: quantum,
@@ -1961,16 +2073,20 @@ pub fn maybe_reschedule() {
     }
 
     let flags = unsafe { scheduler_platform::irq_save_disable() };
-    let (switch, next_runtime_pid) = {
+    let (switch, next_runtime_pid, next_kernel_stack_top) = {
         let mut sched = QUANTUM_SCHEDULER.lock();
         let switch = sched.schedule();
         let next_runtime_pid = sched.current_runtime_pid_raw();
-        (switch, next_runtime_pid)
+        let next_kernel_stack_top = sched.current_kernel_stack_top();
+        (switch, next_runtime_pid, next_kernel_stack_top)
     };
 
     if let Some((from_ptr, to_ptr)) = switch {
         if let Some(pid_raw) = next_runtime_pid {
             scheduler_platform::runtime_pid_sync(pid_raw);
+        }
+        if let Some(stack_top) = next_kernel_stack_top {
+            scheduler_platform::runtime_kernel_stack_sync(stack_top);
         }
         unsafe {
             scheduler_platform::switch_context(from_ptr, to_ptr);
@@ -1984,16 +2100,20 @@ pub fn maybe_reschedule() {
 /// Block the current process until `wake_time` and switch away immediately.
 pub fn sleep_until(pid: Pid, wake_time: u64) -> Result<(), &'static str> {
     let flags = unsafe { scheduler_platform::irq_save_disable() };
-    let (result, next_runtime_pid) = {
+    let (result, next_runtime_pid, next_kernel_stack_top) = {
         let mut sched = QUANTUM_SCHEDULER.lock();
         let result = sched.block_process(pid, wake_time);
         let next_runtime_pid = sched.current_runtime_pid_raw();
-        (result, next_runtime_pid)
+        let next_kernel_stack_top = sched.current_kernel_stack_top();
+        (result, next_runtime_pid, next_kernel_stack_top)
     };
     match result {
         Ok(Some((from_ptr, to_ptr))) => {
             if let Some(pid_raw) = next_runtime_pid {
                 scheduler_platform::runtime_pid_sync(pid_raw);
+            }
+            if let Some(stack_top) = next_kernel_stack_top {
+                scheduler_platform::runtime_kernel_stack_sync(stack_top);
             }
             #[cfg(target_arch = "x86")]
             unsafe {
@@ -2023,15 +2143,19 @@ pub fn sleep_until(pid: Pid, wake_time: u64) -> Result<(), &'static str> {
 pub fn yield_now() {
     let flags = unsafe { scheduler_platform::irq_save_disable() };
     RESCHED_REQUEST.store(false, Ordering::Release);
-    let (switch, next_runtime_pid) = {
+    let (switch, next_runtime_pid, next_kernel_stack_top) = {
         let mut sched = QUANTUM_SCHEDULER.lock();
         let switch = sched.yield_cpu();
         let next_runtime_pid = sched.current_runtime_pid_raw();
-        (switch, next_runtime_pid)
+        let next_kernel_stack_top = sched.current_kernel_stack_top();
+        (switch, next_runtime_pid, next_kernel_stack_top)
     };
     if let Some((from_ptr, to_ptr)) = switch {
         if let Some(pid_raw) = next_runtime_pid {
             scheduler_platform::runtime_pid_sync(pid_raw);
+        }
+        if let Some(stack_top) = next_kernel_stack_top {
+            scheduler_platform::runtime_kernel_stack_sync(stack_top);
         }
         // Set Task Switched (TS) bit in CR0 to enable lazy FPU context saving
         #[cfg(target_arch = "x86")]
@@ -2054,16 +2178,20 @@ pub fn yield_now() {
 /// Block on address (futex-like)
 pub fn block_on(addr: usize) -> Result<(), &'static str> {
     let flags = unsafe { scheduler_platform::irq_save_disable() };
-    let (result, next_runtime_pid) = {
+    let (result, next_runtime_pid, next_kernel_stack_top) = {
         let mut sched = QUANTUM_SCHEDULER.lock();
         let result = sched.block_on(addr);
         let next_runtime_pid = sched.current_runtime_pid_raw();
-        (result, next_runtime_pid)
+        let next_kernel_stack_top = sched.current_kernel_stack_top();
+        (result, next_runtime_pid, next_kernel_stack_top)
     };
     match result {
         Ok(Some((from_ptr, to_ptr))) => {
             if let Some(pid_raw) = next_runtime_pid {
                 scheduler_platform::runtime_pid_sync(pid_raw);
+            }
+            if let Some(stack_top) = next_kernel_stack_top {
+                scheduler_platform::runtime_kernel_stack_sync(stack_top);
             }
             // Set Task Switched (TS) bit in CR0 to enable lazy FPU context saving
             #[cfg(target_arch = "x86")]

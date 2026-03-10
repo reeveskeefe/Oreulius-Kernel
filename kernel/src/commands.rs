@@ -314,7 +314,7 @@ pub fn execute(input: &str) {
             vga::print_str("  syscall-test   - Test system call interface\n");
             vga::print_str("  test-div0      - Trigger divide-by-zero exception\n");
             vga::print_str("  test-pf        - Trigger page fault\n");
-            vga::print_str("  user-test      - Enter user mode (INT 0x80 + UD2)\n");
+            vga::print_str("  user-test      - Launch user-mode entry test (INT 0x80 + INT3)\n");
             vga::print_str("  elf-run       - Load and run ELF from VFS (elf-run <path>)\n");
         }
         "clear" => {
@@ -10809,9 +10809,13 @@ fn cmd_test_page_fault() {
 }
 
 fn cmd_user_test() {
-    vga::print_str("Entering user mode test (will not return)...\n");
-    vga::print_str("Expected: INT 0x80 then UD2 (Invalid Opcode) with CS=0x1B\n");
-    let _ = crate::usermode::enter_user_mode_test();
+    vga::print_str("Launching user mode entry test...\n");
+    vga::print_str("Expected: INT 0x80 then INT3 (#BP) with CS=0x1B\n");
+    if let Err(err) = crate::usermode::enter_user_mode_test() {
+        vga::print_str("user-test error: ");
+        vga::print_str(err);
+        vga::print_str("\n");
+    }
 }
 
 fn parse_u32_result(s: &str) -> Result<u32, ()> {

@@ -152,6 +152,16 @@ impl PciDevice {
         self.class_code == 0x04
     }
 
+    /// Check if this is an NVMe controller (class 0x01 / subclass 0x08 / prog-if 0x02)
+    pub fn is_nvme_controller(&self) -> bool {
+        self.class_code == 0x01 && self.subclass == 0x08 && self.prog_if == 0x02
+    }
+
+    /// Check if this is a Realtek RTL8139 Fast Ethernet (vendor 0x10EC / device 0x8139)
+    pub fn is_rtl8139(&self) -> bool {
+        self.vendor_id == 0x10EC && self.device_id == 0x8139
+    }
+
     /// Get device name based on vendor/device ID
     pub fn name(&self) -> &'static str {
         match (self.vendor_id, self.device_id) {
@@ -544,6 +554,45 @@ impl PciScanner {
         for device_opt in self.devices().iter() {
             if let Some(device) = device_opt {
                 if device.is_audio_controller() {
+                    return Some(*device);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the first NVMe controller (class 0x01 / subclass 0x08 / prog-if 0x02)
+    pub fn find_nvme_controller(&self) -> Option<PciDevice> {
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_nvme_controller() {
+                    return Some(*device);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find all NVMe controllers (up to 4)
+    pub fn find_all_nvme_controllers(&self) -> [Option<PciDevice>; 4] {
+        let mut result = [None; 4];
+        let mut count = 0usize;
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_nvme_controller() && count < 4 {
+                    result[count] = Some(*device);
+                    count += 1;
+                }
+            }
+        }
+        result
+    }
+
+    /// Find a Realtek RTL8139 Fast Ethernet controller
+    pub fn find_rtl8139(&self) -> Option<PciDevice> {
+        for device_opt in self.devices().iter() {
+            if let Some(device) = device_opt {
+                if device.is_rtl8139() {
                     return Some(*device);
                 }
             }

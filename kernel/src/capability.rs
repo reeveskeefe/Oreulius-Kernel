@@ -746,6 +746,38 @@ impl CapabilityManager {
         }
     }
 
+    /// Clone a task capability table into a new owner PID, re-signing each
+    /// capability token for the child task while preserving the slot layout.
+    pub fn clone_task_capabilities(
+        &self,
+        parent_pid: ProcessId,
+        child_pid: ProcessId,
+    ) -> Result<usize, &'static str> {
+        let parent_idx = parent_pid.0 as usize;
+        let child_idx = child_pid.0 as usize;
+        if parent_idx >= MAX_TASKS || child_idx >= MAX_TASKS {
+            return Err("Task not found");
+        }
+
+        let mut tables = self.tables.lock();
+        let parent_table = tables[parent_idx].as_ref().ok_or("Task not found")?;
+        let mut child_table = CapabilityTable::new(child_pid);
+        let mut cloned = 0usize;
+
+        let mut idx = 0usize;
+        while idx < parent_table.entries.len() {
+            if let Some(mut cap) = parent_table.entries[idx] {
+                cap.sign(child_pid);
+                child_table.entries[idx] = Some(cap);
+                cloned = cloned.saturating_add(1);
+            }
+            idx += 1;
+        }
+
+        tables[child_idx] = Some(alloc::boxed::Box::new(child_table));
+        Ok(cloned)
+    }
+
     /// Tear down capability state for a task and revoke owner-bound remote leases.
     pub fn deinit_task(&self, pid: ProcessId) {
         let idx = pid.0 as usize;

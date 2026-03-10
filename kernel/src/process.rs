@@ -413,6 +413,43 @@ impl ProcessTable {
         Err(ProcessError::TooManyProcesses)
     }
 
+    /// Clone an existing process into a caller-specified PID.
+    pub fn fork_process_with_pid(
+        &mut self,
+        parent_pid: Pid,
+        child_pid: Pid,
+    ) -> Result<Process, ProcessError> {
+        if self.count >= MAX_PROCESSES {
+            return Err(ProcessError::TooManyProcesses);
+        }
+        if self.get(child_pid).is_some() {
+            return Err(ProcessError::TooManyProcesses);
+        }
+
+        let mut child = self
+            .get(parent_pid)
+            .ok_or(ProcessError::ProcessNotFound)?
+            .clone();
+        child.pid = child_pid;
+        child.parent = Some(parent_pid);
+        child.state = ProcessState::Ready;
+        child.cpu_time = 0;
+        child.created_at = crate::pit::get_ticks();
+
+        for slot in &mut self.processes {
+            if slot.is_none() {
+                *slot = Some(child.clone());
+                self.count += 1;
+                if self.next_pid <= child_pid.0 {
+                    self.next_pid = child_pid.0.saturating_add(1);
+                }
+                return Ok(child);
+            }
+        }
+
+        Err(ProcessError::TooManyProcesses)
+    }
+
     /// Get a process by PID
     pub fn get(&self, pid: Pid) -> Option<&Process> {
         self.processes
@@ -598,6 +635,23 @@ impl ProcessManager {
         Ok(())
     }
 
+    pub fn fork_process_with_pid(
+        &self,
+        parent_pid: Pid,
+        child_pid: Pid,
+    ) -> Result<Process, ProcessError> {
+        let child = self
+            .table
+            .lock()
+            .fork_process_with_pid(parent_pid, child_pid)?;
+
+        process_platform::on_process_spawn(child_pid, Some(parent_pid), child.name_str());
+        let _ = crate::capability::capability_manager()
+            .clone_task_capabilities(parent_pid, child_pid);
+
+        Ok(child)
+    }
+
     /// Get current running process
     pub fn current(&self) -> Option<Pid> {
         self.scheduler.lock().current()
@@ -720,12 +774,13 @@ impl ProcessManager {
     /// Bring-up helper for runtimes that need to drive the shared process
     /// backend before the full scheduler port is enabled.
     pub fn set_current_runtime_pid(&self, pid: Pid) -> Result<(), ProcessError> {
-        if pid.0 == 0 {
-            return Err(ProcessError::ProcessNotFound);
-        }
-
         let mut scheduler = self.scheduler.lock();
         let mut table = self.table.lock();
+
+        if pid.0 == 0 {
+            scheduler.set_current(None);
+            return Ok(());
+        }
 
         if table.get(pid).is_none() {
             let parent = if pid.0 == 1 { None } else { Some(Pid::new(1)) };

@@ -486,6 +486,12 @@ pub struct AddressSpace {
 }
 
 impl AddressSpace {
+    pub fn current() -> Self {
+        Self {
+            cr3_phys: MMU.read_cr3(),
+        }
+    }
+
     pub fn new() -> Result<Self, &'static str> {
         let current_root = MMU.read_cr3();
         let new_root = alloc_runtime_pt_page()?;

@@ -36,7 +36,9 @@
 //! Includes capability checking at the syscall boundary.
 
 use crate::capability::{self, CapabilityType, Rights};
+#[cfg(target_arch = "x86")]
 use crate::gdt;
+#[cfg(target_arch = "x86")]
 use crate::process_asm::{
     write_msr, MSR_IA32_SYSENTER_CS, MSR_IA32_SYSENTER_EIP, MSR_IA32_SYSENTER_ESP,
 };
@@ -1392,6 +1394,7 @@ fn get_current_pid() -> capability::ProcessId {
 
 /// Saved register state from syscall entry
 #[repr(C)]
+#[cfg(target_arch = "x86")]
 pub struct SavedRegisters {
     eax: u32,
     ebx: u32,
@@ -1402,8 +1405,54 @@ pub struct SavedRegisters {
     ebp: u32,
 }
 
+/// Saved register state from x86_64 syscall entry.
+#[repr(C)]
+#[cfg(target_arch = "x86_64")]
+pub struct SavedRegisters {
+    rax: u64,
+    rbx: u64,
+    rcx: u64,
+    rdx: u64,
+    rsi: u64,
+    rdi: u64,
+    rbp: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+}
+
+#[cfg(target_arch = "x86")]
+fn saved_registers_to_args(regs: &SavedRegisters) -> SyscallArgs {
+    SyscallArgs {
+        number: regs.eax,
+        arg1: regs.ebx,
+        arg2: regs.ecx,
+        arg3: regs.edx,
+        arg4: regs.esi,
+        arg5: regs.edi,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn saved_registers_to_args(regs: &SavedRegisters) -> SyscallArgs {
+    SyscallArgs {
+        number: regs.rax as u32,
+        arg1: regs.rbx as u32,
+        arg2: regs.rcx as u32,
+        arg3: regs.rdx as u32,
+        arg4: regs.rsi as u32,
+        arg5: regs.rdi as u32,
+    }
+}
+
 /// SYSENTER handler (fast syscall path)
 #[no_mangle]
+#[cfg(target_arch = "x86")]
 pub extern "C" fn sysenter_handler_rust(regs: *const SavedRegisters) -> u64 {
     syscall_handler_rust(regs)
 }
@@ -1413,14 +1462,7 @@ pub extern "C" fn sysenter_handler_rust(regs: *const SavedRegisters) -> u64 {
 pub extern "C" fn syscall_handler_rust(regs: *const SavedRegisters) -> u64 {
     let regs = unsafe { &*regs };
 
-    let args = SyscallArgs {
-        number: regs.eax,
-        arg1: regs.ebx,
-        arg2: regs.ecx,
-        arg3: regs.edx,
-        arg4: regs.esi,
-        arg5: regs.edi,
-    };
+    let args = saved_registers_to_args(regs);
 
     // Get actual caller PID from current process
     let caller_pid = get_current_pid();
@@ -1451,6 +1493,7 @@ pub fn init() {
     extern "C" {
         #[allow(dead_code)] // Used via address cast, not direct call
         fn syscall_entry();
+        #[cfg(target_arch = "x86")]
         fn sysenter_entry();
     }
 
@@ -1488,13 +1531,22 @@ pub fn init() {
     vga::print_str("[SYSCALL] System call interface initialized (INT 0x80)\n");
     vga::print_str("[SYSCALL] Handler: syscall_entry -> syscall_handler_rust\n");
 
-    // Configure SYSENTER/SYSEXIT fast path
+    #[cfg(target_arch = "x86")]
     unsafe {
+        // Configure SYSENTER/SYSEXIT fast path on 32-bit x86.
         write_msr(MSR_IA32_SYSENTER_CS, gdt::KERNEL_CS as u32, 0);
         write_msr(MSR_IA32_SYSENTER_ESP, gdt::sysenter_stack_top(), 0);
         write_msr(MSR_IA32_SYSENTER_EIP, sysenter_entry as u32, 0);
     }
+    #[cfg(target_arch = "x86")]
     vga::print_str("[SYSCALL] SYSENTER configured\n");
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        let handler_addr = syscall_entry as usize;
+        crate::serial_println!("[SYSCALL] Registered x86_64 INT 0x80 handler at 0x{:016X}", handler_addr);
+        vga::print_str("[SYSCALL] x86_64 INT 0x80 dispatch enabled\n");
+    }
 }
 
 /// Statistics

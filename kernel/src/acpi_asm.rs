@@ -59,6 +59,46 @@ pub struct AcpiTableHeader {
     pub creator_revision: u32,
 }
 
+/// ACPI FADT (Fixed ACPI Description Table) — "FACP" signature.
+///
+/// We only model the fields we actually need through offset 56.
+/// All multi-byte fields are little-endian.
+///
+/// ACPI §5.2.9 layout:
+///   +0   Header (36 bytes)
+///   +36  FIRMWARE_CTRL  u32
+///   +40  DSDT           u32
+///   +44  Reserved       u8
+///   +45  Preferred_PM_Profile u8
+///   +46  SCI_INT        u16
+///   +48  SMI_CMD        u32
+///   +52  ACPI_ENABLE    u8
+///   +53  ACPI_DISABLE   u8
+///   +54  S4BIOS_REQ     u8
+///   +55  PSTATE_CNT     u8
+///   +56  PM1a_EVT_BLK   u32
+///   +60  PM1b_EVT_BLK   u32
+///   +64  PM1a_CNT_BLK   u32   ← what we need for power management
+///   +68  PM1b_CNT_BLK   u32
+#[repr(C, packed)]
+pub struct FadtTable {
+    pub header:          AcpiTableHeader, // 0..36
+    pub firmware_ctrl:   u32,             // 36
+    pub dsdt:            u32,             // 40
+    pub _reserved:       u8,              // 44
+    pub preferred_pm:    u8,              // 45
+    pub sci_int:         u16,             // 46
+    pub smi_cmd:         u32,             // 48
+    pub acpi_enable:     u8,              // 52
+    pub acpi_disable:    u8,              // 53
+    pub s4bios_req:      u8,              // 54
+    pub pstate_cnt:      u8,              // 55
+    pub pm1a_evt_blk:    u32,             // 56
+    pub pm1b_evt_blk:    u32,             // 60
+    pub pm1a_cnt_blk:    u32,             // 64  ← PM1a Control Block I/O port
+    pub pm1b_cnt_blk:    u32,             // 68
+}
+
 /// Power states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -174,7 +214,26 @@ impl Acpi {
         let acpi = Self {
             rsdp_addr,
             rsdt_addr: rsdp.rsdt_address,
-            pm1a_base: 0, // Should be read from FADT
+            pm1a_base: {
+                // Read PM1a_CNT_BLK from FADT ("FACP") at FADT offset 64.
+                //
+                // acpi_find_table() expects a u32 of the 4-byte signature as
+                // little-endian bytes; "FACP" LE = 0x50_43_41_46.
+                let fadt_addr = unsafe { acpi_find_table(rsdt_addr, 0x5043_4146u32) };
+                if fadt_addr != 0 {
+                    let fadt = unsafe { &*(fadt_addr as *const FadtTable) };
+                    // pm1a_cnt_blk is a packed u32 — copy through a raw pointer
+                    // to avoid an unaligned reference.
+                    let blk: u32 = unsafe {
+                        core::ptr::read_unaligned(core::ptr::addr_of!(fadt.pm1a_cnt_blk))
+                    };
+                    crate::serial_println!("[ACPI] FADT found at 0x{:08X}, PM1a_CNT_BLK=0x{:04X}", fadt_addr, blk);
+                    blk as u16
+                } else {
+                    crate::serial_println!("[ACPI] FADT not found — pm1a_base defaulting to 0");
+                    0
+                }
+            },
         };
 
         // Log ACPI initialization details using rsdp_addr

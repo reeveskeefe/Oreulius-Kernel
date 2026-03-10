@@ -163,6 +163,19 @@ pub mod framebuffer;
 pub mod ata;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod usb;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod mouse;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod audio;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod bluetooth;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod nvme;
+#[cfg(not(target_arch = "aarch64"))]
+pub mod rtl8139;
+#[cfg(not(target_arch = "aarch64"))]
+#[path = "GPUsupport/mod.rs"]
+pub mod gpu_support;
 
 /// Helper to ensure Box is available for heap allocations across modules
 #[cfg(not(target_arch = "aarch64"))]
@@ -329,6 +342,8 @@ fn x86_64_init_shared_runtime() {
     temporal::init();
     crate::serial_println!("[X64] init ipc...");
     ipc::init();
+    crate::serial_println!("[X64] init syscall...");
+    syscall::init();
     crate::serial_println!("[X64] init registry...");
     registry::init();
     crate::serial_println!("[X64] init process...");
@@ -871,8 +886,72 @@ pub extern "C" fn rust_main() -> ! {
                 vga::print_str("[NET] E1000 init failed\n");
             }
         } else {
-            vga::print_str("[NET] No network device found\n");
+            // RTL8139 Fast Ethernet (separate from E1000 path — distinct vendor/device)
+            if let Some(rtl_device) = pci_scanner.find_rtl8139() {
+                vga::print_str("[NET] RTL8139 detected, initializing...\n");
+                rtl8139::init(&[rtl_device]);
+                vga::print_str("[NET] RTL8139 ready\n");
+            } else {
+                vga::print_str("[NET] No network device found\n");
+            }
         }
+
+        // ── USB host controllers ─────────────────────────────────────────────
+        {
+            let usb_pci = pci_scanner.find_all_usb_controllers();
+            // Convert [Option<PciDevice>; 32] directly — usb::init wants &[Option<PciDevice>]
+            let non_empty = usb_pci.iter().any(|x| x.is_some());
+            if non_empty {
+                vga::print_str("[USB] Initializing USB host controllers...\n");
+                usb::init(&usb_pci);
+                vga::print_str("[USB] USB ready\n");
+                // Bluetooth scans the USB bus — must run after USB enumeration
+                bluetooth::init();
+            } else {
+                vga::print_str("[USB] No USB controllers found\n");
+            }
+        }
+
+        // ── NVMe storage ─────────────────────────────────────────────────────
+        {
+            let nvme_pci = pci_scanner.find_all_nvme_controllers();
+            let mut nvme_flat: [crate::pci::PciDevice; 4] =
+                unsafe { core::mem::zeroed() };
+            let mut nvme_count = 0usize;
+            for opt in nvme_pci.iter() {
+                if let Some(d) = opt {
+                    nvme_flat[nvme_count] = *d;
+                    nvme_count += 1;
+                }
+            }
+            if nvme_count > 0 {
+                vga::print_str("[NVME] Initializing NVMe controller...\n");
+                nvme::init(&nvme_flat[..nvme_count]);
+                vga::print_str("[NVME] NVMe init done\n");
+            }
+        }
+
+        // ── Intel HDA / AC'97 audio ──────────────────────────────────────────
+        if let Some(audio_device) = pci_scanner.find_audio_controller() {
+            vga::print_str("[AUDIO] Initializing audio controller...\n");
+            audio::init(&[audio_device]);
+            vga::print_str("[AUDIO] Audio ready\n");
+        }
+
+        // ── GPU / Framebuffer (MB2 VESA tag or QEMU VGA fallback) ────────────
+        {
+            // raw_info_ptr carries the multiboot2 info structure pointer.
+            // gpu_support::init(0) safely falls back to the QEMU VGA framebuffer.
+            let mb2_ptr = boot_info.raw_info_ptr.unwrap_or(0) as u32;
+            vga::print_str("[GPU] Initializing framebuffer...\n");
+            gpu_support::init(mb2_ptr);
+            vga::print_str("[GPU] Framebuffer ready\n");
+        }
+
+        // ── PS/2 mouse ───────────────────────────────────────────────────────
+        vga::print_str("[MOUSE] Enabling PS/2 auxiliary port...\n");
+        mouse::init();
+        vga::print_str("[MOUSE] PS/2 mouse ready\n");
 
         vga::print_str("\n[INIT] Initialization complete, starting scheduler...\n");
         tasks::start();

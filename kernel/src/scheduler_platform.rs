@@ -276,15 +276,39 @@ pub unsafe fn switch_context(from: *mut ProcessContext, to: *const ProcessContex
     aarch64_sched_switch_context(from, to)
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86")]
 #[inline]
-pub fn runtime_pid_sync(_pid_raw: u32) {}
+pub fn runtime_pid_sync(pid_raw: u32) {
+    let _ = crate::process::set_current_runtime_pid(crate::process::Pid::new(pid_raw));
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn runtime_pid_sync(pid_raw: u32) {
+    let _ = crate::process::set_current_runtime_pid(crate::process::Pid::new(pid_raw));
+}
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn runtime_pid_sync(pid_raw: u32) {
     let _ = crate::arch::aarch64_virt::scheduler_note_context_switch(pid_raw);
 }
+
+#[cfg(target_arch = "x86")]
+#[inline]
+pub fn runtime_kernel_stack_sync(stack_top: usize) {
+    crate::gdt::update_kernel_stack(stack_top as u32);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn runtime_kernel_stack_sync(stack_top: usize) {
+    crate::arch::x86_64_runtime::update_kernel_stack_top(stack_top);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn runtime_kernel_stack_sync(_stack_top: usize) {}
 
 #[cfg(target_arch = "x86")]
 pub unsafe fn irq_save_disable() -> IrqFlags {
