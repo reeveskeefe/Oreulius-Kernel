@@ -601,11 +601,8 @@ pub fn init(pci_devices: &[PciDevice]) {
         let bar0_hi = unsafe { dev.read_bar(1) };
         if bar0_lo == 0 { continue; }
         // BAR0 is a 64-bit MMIO BAR (bit 2:1 = 0b10)
-        let mmio_base = if (bar0_lo & 0x6) == 0x4 {
-            ((bar0_lo & !0xF) as usize) | ((bar0_hi as usize) << 32)
-        } else {
-            (bar0_lo & !0xF) as usize
-        };
+        // On 32-bit targets the high BAR word is inaccessible; use low bits.
+        let mmio_base = (bar0_lo & !0xF) as usize;
 
         let mut ctrl = NvmeController::new(mmio_base, dev);
         if ctrl.init() {

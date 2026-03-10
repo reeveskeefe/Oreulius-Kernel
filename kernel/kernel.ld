@@ -8,7 +8,7 @@ PHDRS {
 
 SECTIONS {
     . = 0x100000;
-    __jit_arena_size = 0x200000; /* 2 MB dedicated JIT arena */
+    __jit_arena_size = 0x4000000; /* 64 MB dedicated JIT arena - supports multi-MB WASM memories */
     
     .multiboot : {
         KEEP(*(.multiboot))

@@ -11,7 +11,7 @@ PHDRS {
 SECTIONS {
     /* QEMU virt commonly loads direct kernels around 0x4008_0000. */
     . = 0x40080000;
-    __jit_arena_size = 0x200000; /* 2 MiB */
+    __jit_arena_size = 0x4000000; /* 64 MiB - supports multi-MB WASM memories */
 
     .text.boot : {
         KEEP(*(.text.boot))

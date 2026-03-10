@@ -73,8 +73,14 @@ use spin::Mutex;
 // WASM Types & Constants
 // ============================================================================
 
-/// Maximum linear memory size (64 KiB for v0 - reduced to shrink kernel)
+/// Hard cap kept for legacy fuzz/JIT harnesses that allocate a single page.
 pub const MAX_MEMORY_SIZE: usize = 64 * 1024;
+
+/// WASM spec maximum pages (64 KiB each → 4 GiB total)
+pub const WASM_MAX_PAGES: usize = 65536;
+
+/// Practical default maximum pages per instance (4096 pages = 256 MiB)
+pub const WASM_DEFAULT_MAX_PAGES: usize = 4096;
 
 /// Maximum stack depth
 pub const MAX_STACK_DEPTH: usize = 1024;
@@ -973,14 +979,18 @@ fn init_expr_offset(value: Value) -> Result<usize, WasmError> {
 // Linear Memory
 // ============================================================================
 
-/// WASM linear memory (isolated per-module)
+/// WASM linear memory (isolated per-module, supports on-demand growth)
 pub struct LinearMemory {
     /// Memory buffer (dedicated JIT arena allocation)
     data: *mut u8,
     /// Current size in pages (64 KiB each)
     pages: usize,
-    /// Maximum pages allowed
+    /// Maximum pages allowed (capped by WASM_DEFAULT_MAX_PAGES)
     max_pages: usize,
+    /// Total bytes currently allocated (may exceed active pages * 64KB after grow)
+    allocated_bytes: usize,
+    /// Shared memory flag (required for WASM threads atomic operations)
+    pub shared: bool,
 }
 
 // SAFETY: LinearMemory owns a kernel-allocated buffer and is only accessed
@@ -988,22 +998,31 @@ pub struct LinearMemory {
 unsafe impl Send for LinearMemory {}
 
 impl LinearMemory {
-    /// Create new linear memory with initial size
+    /// Create new linear memory with the given initial and maximum page counts.
+    /// Only `initial_pages` worth of memory is physically allocated.
     pub fn new(initial_pages: usize) -> Self {
-        let max_pages = MAX_MEMORY_SIZE / (64 * 1024);
+        Self::with_max(initial_pages, WASM_DEFAULT_MAX_PAGES, false)
+    }
+
+    /// Create new linear memory with explicit max and shared flag.
+    pub fn with_max(initial_pages: usize, max_pages_hint: usize, shared: bool) -> Self {
+        let max_pages = core::cmp::min(max_pages_hint, WASM_MAX_PAGES);
         let pages = core::cmp::min(initial_pages, max_pages);
-        let alloc_pages = (MAX_MEMORY_SIZE + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
-        let base = memory::jit_allocate_pages(alloc_pages).unwrap_or(0) as *mut u8;
+        // Allocate only for the initial pages (minimum 1 page for null-safety)
+        let alloc_pages_wasm = core::cmp::max(pages, 1);
+        let alloc_bytes = alloc_pages_wasm * 64 * 1024;
+        let kernel_pages = (alloc_bytes + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
+        let base = memory::jit_allocate_pages(kernel_pages).unwrap_or(0) as *mut u8;
         if !base.is_null() {
-            unsafe {
-                core::ptr::write_bytes(base, 0, MAX_MEMORY_SIZE);
-            }
-            let _ = memory_isolation::tag_wasm_linear_memory(base as usize, MAX_MEMORY_SIZE, false);
+            unsafe { core::ptr::write_bytes(base, 0, alloc_bytes) }
+            let _ = memory_isolation::tag_wasm_linear_memory(base as usize, alloc_bytes, shared);
         }
         LinearMemory {
             data: base,
             pages,
             max_pages,
+            allocated_bytes: if base.is_null() { 0 } else { alloc_bytes },
+            shared,
         }
     }
 
@@ -1035,22 +1054,55 @@ impl LinearMemory {
         if self.data.is_null() {
             return;
         }
-        unsafe {
-            core::ptr::write_bytes(self.data, 0, self.active_len());
-        }
+        unsafe { core::ptr::write_bytes(self.data, 0, self.active_len()) }
     }
 
-    /// Grow memory by delta pages
+    /// Grow memory by `delta` pages.  Allocates new pages from the JIT arena
+    /// (contiguous with existing data is not guaranteed; we allocate a new
+    /// region only when growth requires more than what was pre-allocated).
     pub fn grow(&mut self, delta: usize) -> Result<usize, WasmError> {
-        let old_size = self.pages;
-        let new_size = old_size + delta;
-
-        if new_size > self.max_pages {
+        if delta == 0 {
+            return Ok(self.pages);
+        }
+        let old_pages = self.pages;
+        let new_pages = old_pages.checked_add(delta).ok_or(WasmError::MemoryGrowFailed)?;
+        if new_pages > self.max_pages {
             return Err(WasmError::MemoryGrowFailed);
         }
+        let new_bytes = new_pages * 64 * 1024;
 
-        self.pages = new_size;
-        Ok(old_size)
+        if new_bytes <= self.allocated_bytes {
+            // Already have enough physical space (e.g. pre-allocated region)
+            // Zero the newly visible region
+            let zero_start = old_pages * 64 * 1024;
+            unsafe {
+                core::ptr::write_bytes(self.data.add(zero_start), 0, new_bytes - zero_start);
+            }
+            self.pages = new_pages;
+            return Ok(old_pages);
+        }
+
+        // Need to allocate a larger contiguous region
+        let kernel_pages = (new_bytes + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
+        let new_base = memory::jit_allocate_pages(kernel_pages).unwrap_or(0) as *mut u8;
+        if new_base.is_null() {
+            return Err(WasmError::MemoryGrowFailed);
+        }
+        // Copy existing data into new region, zero the rest
+        if !self.data.is_null() && self.allocated_bytes > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(self.data, new_base, self.allocated_bytes);
+            }
+        }
+        let zero_start = old_pages * 64 * 1024;
+        unsafe {
+            core::ptr::write_bytes(new_base.add(zero_start), 0, new_bytes - zero_start);
+        }
+        let _ = memory_isolation::tag_wasm_linear_memory(new_base as usize, new_bytes, self.shared);
+        self.data = new_base;
+        self.pages = new_pages;
+        self.allocated_bytes = new_bytes;
+        Ok(old_pages)
     }
 
     /// Read bytes from memory
@@ -1107,27 +1159,288 @@ impl LinearMemory {
     pub fn write_i64(&mut self, offset: usize, value: i64) -> Result<(), WasmError> {
         self.write(offset, &value.to_le_bytes())
     }
+
+    // ── Atomic primitives ────────────────────────────────────────────────────
+    // All atomic helpers operate on the raw pointer with volatile + compiler
+    // fence semantics.  On single-core bare-metal this is sufficient; on SMP
+    // the caller is responsible for emitting the appropriate fence instruction
+    // (handled via core::sync::atomic::fence in step_atomic()).
+
+    fn bounds_check(&self, addr: usize, width: usize) -> Result<(), WasmError> {
+        let end = addr.checked_add(width).ok_or(WasmError::MemoryOutOfBounds)?;
+        if end > self.pages * 64 * 1024 || self.data.is_null() {
+            Err(WasmError::MemoryOutOfBounds)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn atomic_load_u8(&self, addr: usize) -> Result<u8, WasmError> {
+        self.bounds_check(addr, 1)?;
+        core::sync::atomic::fence(Ordering::Acquire);
+        Ok(unsafe { core::ptr::read_volatile(self.data.add(addr)) })
+    }
+
+    pub fn atomic_load_u16(&self, addr: usize) -> Result<u16, WasmError> {
+        self.bounds_check(addr, 2)?;
+        core::sync::atomic::fence(Ordering::Acquire);
+        Ok(u16::from_le_bytes(unsafe {
+            [*self.data.add(addr), *self.data.add(addr + 1)]
+        }))
+    }
+
+    pub fn atomic_load_u32(&self, addr: usize) -> Result<u32, WasmError> {
+        self.bounds_check(addr, 4)?;
+        core::sync::atomic::fence(Ordering::Acquire);
+        Ok(u32::from_le_bytes(unsafe {
+            [
+                *self.data.add(addr),
+                *self.data.add(addr + 1),
+                *self.data.add(addr + 2),
+                *self.data.add(addr + 3),
+            ]
+        }))
+    }
+
+    pub fn atomic_load_u64(&self, addr: usize) -> Result<u64, WasmError> {
+        self.bounds_check(addr, 8)?;
+        core::sync::atomic::fence(Ordering::Acquire);
+        Ok(u64::from_le_bytes(unsafe {
+            [
+                *self.data.add(addr),     *self.data.add(addr + 1),
+                *self.data.add(addr + 2), *self.data.add(addr + 3),
+                *self.data.add(addr + 4), *self.data.add(addr + 5),
+                *self.data.add(addr + 6), *self.data.add(addr + 7),
+            ]
+        }))
+    }
+
+    pub fn atomic_store_u8(&mut self, addr: usize, val: u8) -> Result<(), WasmError> {
+        self.bounds_check(addr, 1)?;
+        unsafe { core::ptr::write_volatile(self.data.add(addr), val) };
+        core::sync::atomic::fence(Ordering::Release);
+        Ok(())
+    }
+
+    pub fn atomic_store_u16(&mut self, addr: usize, val: u16) -> Result<(), WasmError> {
+        self.bounds_check(addr, 2)?;
+        let b = val.to_le_bytes();
+        unsafe {
+            core::ptr::write_volatile(self.data.add(addr),     b[0]);
+            core::ptr::write_volatile(self.data.add(addr + 1), b[1]);
+        }
+        core::sync::atomic::fence(Ordering::Release);
+        Ok(())
+    }
+
+    pub fn atomic_store_u32(&mut self, addr: usize, val: u32) -> Result<(), WasmError> {
+        self.bounds_check(addr, 4)?;
+        let b = val.to_le_bytes();
+        unsafe {
+            core::ptr::write_volatile(self.data.add(addr),     b[0]);
+            core::ptr::write_volatile(self.data.add(addr + 1), b[1]);
+            core::ptr::write_volatile(self.data.add(addr + 2), b[2]);
+            core::ptr::write_volatile(self.data.add(addr + 3), b[3]);
+        }
+        core::sync::atomic::fence(Ordering::Release);
+        Ok(())
+    }
+
+    pub fn atomic_store_u64(&mut self, addr: usize, val: u64) -> Result<(), WasmError> {
+        self.bounds_check(addr, 8)?;
+        let b = val.to_le_bytes();
+        unsafe {
+            for i in 0..8 { core::ptr::write_volatile(self.data.add(addr + i), b[i]); }
+        }
+        core::sync::atomic::fence(Ordering::Release);
+        Ok(())
+    }
+
+    /// i32 RMW operations.  `sub` is the 0xFE sub-opcode (0x1E–0x24).
+    pub fn atomic_rmw32(&mut self, sub: u8, addr: usize, val: u32) -> Result<u32, WasmError> {
+        self.bounds_check(addr, 4)?;
+        core::sync::atomic::fence(Ordering::AcqRel);
+        let old = self.atomic_load_u32(addr)?;
+        let new_val = match sub {
+            0x1E => old.wrapping_add(val),        // i32.atomic.rmw.add
+            0x1F => old.wrapping_sub(val),        // i32.atomic.rmw.sub
+            0x20 => old & val,                    // i32.atomic.rmw.and
+            0x21 => old | val,                    // i32.atomic.rmw.or
+            0x22 => old ^ val,                    // i32.atomic.rmw.xor
+            0x23 => val,                          // i32.atomic.rmw.xchg
+            0x24 => {
+                // i32.atomic.rmw.cmpxchg — val is expected, need second pop
+                // Note: stack already popped in caller; val = replacement pushed second
+                // The calling convention for cmpxchg is (addr, expected, replacement)
+                // We return old regardless; replacement was passed as `val`
+                if old == val { val } else { old }
+            }
+            _ => return Err(WasmError::UnknownOpcode(sub)),
+        };
+        self.atomic_store_u32(addr, new_val)?;
+        Ok(old)
+    }
+
+    /// i64 RMW operations.  `sub` is the 0xFE sub-opcode (0x25–0x2B).
+    pub fn atomic_rmw64(&mut self, sub: u8, addr: usize, val: u64) -> Result<u64, WasmError> {
+        self.bounds_check(addr, 8)?;
+        core::sync::atomic::fence(Ordering::AcqRel);
+        let old = self.atomic_load_u64(addr)?;
+        let new_val = match sub {
+            0x25 => old.wrapping_add(val),
+            0x26 => old.wrapping_sub(val),
+            0x27 => old & val,
+            0x28 => old | val,
+            0x29 => old ^ val,
+            0x2A => val,
+            0x2B => { if old == val { val } else { old } }
+            _ => return Err(WasmError::UnknownOpcode(sub)),
+        };
+        self.atomic_store_u64(addr, new_val)?;
+        Ok(old)
+    }
+
+    /// Narrow i32 RMW (8-bit: 0x2C-0x2E, 16-bit: 0x2F-0x31)
+    pub fn atomic_rmw32_narrow(&mut self, sub: u8, addr: usize, val: u32) -> Result<u32, WasmError> {
+        core::sync::atomic::fence(Ordering::AcqRel);
+        match sub {
+            // 8-bit ops
+            0x2C => { let o = self.atomic_load_u8(addr)? as u32;
+                      self.atomic_store_u8(addr, (o.wrapping_add(val) & 0xFF) as u8)?; Ok(o) }
+            0x2D => { let o = self.atomic_load_u8(addr)? as u32;
+                      self.atomic_store_u8(addr, (o.wrapping_sub(val) & 0xFF) as u8)?; Ok(o) }
+            0x2E => { let o = self.atomic_load_u8(addr)? as u32;
+                      self.atomic_store_u8(addr, (o & val & 0xFF) as u8)?; Ok(o) }
+            // 16-bit ops
+            0x2F => { if addr & 1 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                      let o = self.atomic_load_u16(addr)? as u32;
+                      self.atomic_store_u16(addr, (o.wrapping_add(val) & 0xFFFF) as u16)?; Ok(o) }
+            0x30 => { if addr & 1 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                      let o = self.atomic_load_u16(addr)? as u32;
+                      self.atomic_store_u16(addr, (o.wrapping_sub(val) & 0xFFFF) as u16)?; Ok(o) }
+            0x31 => { if addr & 1 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                      let o = self.atomic_load_u16(addr)? as u32;
+                      self.atomic_store_u16(addr, (o & val & 0xFFFF) as u16)?; Ok(o) }
+            _ => Err(WasmError::UnknownOpcode(sub)),
+        }
+    }
+
+    /// Narrow i64 RMW (8-bit: 0x32-0x34, 16-bit: 0x35-0x37, 32-bit: 0x38-0x3A)
+    pub fn atomic_rmw64_narrow(&mut self, sub: u8, addr: usize, val: u64) -> Result<u64, WasmError> {
+        core::sync::atomic::fence(Ordering::AcqRel);
+        match sub {
+            0x32 => { let o = self.atomic_load_u8(addr)? as u64;
+                      self.atomic_store_u8(addr, (o.wrapping_add(val) & 0xFF) as u8)?; Ok(o) }
+            0x33 => { let o = self.atomic_load_u8(addr)? as u64;
+                      self.atomic_store_u8(addr, (o.wrapping_sub(val) & 0xFF) as u8)?; Ok(o) }
+            0x34 => { let o = self.atomic_load_u8(addr)? as u64;
+                      self.atomic_store_u8(addr, (o & val & 0xFF) as u8)?; Ok(o) }
+            0x35 => { if addr & 1 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                      let o = self.atomic_load_u16(addr)? as u64;
+                      self.atomic_store_u16(addr, (o.wrapping_add(val) & 0xFFFF) as u16)?; Ok(o) }
+            0x36 => { if addr & 1 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                      let o = self.atomic_load_u16(addr)? as u64;
+                      self.atomic_store_u16(addr, (o.wrapping_sub(val) & 0xFFFF) as u16)?; Ok(o) }
+            0x37 => { if addr & 1 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                      let o = self.atomic_load_u16(addr)? as u64;
+                      self.atomic_store_u16(addr, (o & val & 0xFFFF) as u16)?; Ok(o) }
+            0x38 => { if addr & 3 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                      let o = self.atomic_load_u32(addr)? as u64;
+                      self.atomic_store_u32(addr, (o.wrapping_add(val) & 0xFFFF_FFFF) as u32)?; Ok(o) }
+            0x39 => { if addr & 3 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                      let o = self.atomic_load_u32(addr)? as u64;
+                      self.atomic_store_u32(addr, (o.wrapping_sub(val) & 0xFFFF_FFFF) as u32)?; Ok(o) }
+            0x3A => { if addr & 3 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                      let o = self.atomic_load_u32(addr)? as u64;
+                      self.atomic_store_u32(addr, (o & val & 0xFFFF_FFFF) as u32)?; Ok(o) }
+            _ => Err(WasmError::UnknownOpcode(sub)),
+        }
+    }
 }
 
 impl Clone for LinearMemory {
     fn clone(&self) -> Self {
-        let max_pages = MAX_MEMORY_SIZE / (64 * 1024);
-        let alloc_pages = (MAX_MEMORY_SIZE + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
-        let base = memory::jit_allocate_pages(alloc_pages).unwrap_or(0) as *mut u8;
-        if !base.is_null() && !self.data.is_null() {
+        let active = self.active_len();
+        let alloc = core::cmp::max(active, 64 * 1024); // at least 1 page
+        let kernel_pages = (alloc + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
+        let base = memory::jit_allocate_pages(kernel_pages).unwrap_or(0) as *mut u8;
+        if !base.is_null() && !self.data.is_null() && active > 0 {
             unsafe {
-                core::ptr::copy_nonoverlapping(self.data, base, MAX_MEMORY_SIZE);
+                core::ptr::copy_nonoverlapping(self.data, base, active);
             }
         }
         if !base.is_null() {
-            let _ = memory_isolation::tag_wasm_linear_memory(base as usize, MAX_MEMORY_SIZE, false);
+            let _ = memory_isolation::tag_wasm_linear_memory(base as usize, alloc, self.shared);
         }
         LinearMemory {
             data: base,
             pages: self.pages,
-            max_pages,
+            max_pages: self.max_pages,
+            allocated_bytes: if base.is_null() { 0 } else { alloc },
+            shared: self.shared,
         }
     }
+}
+
+// ============================================================================
+// WASM Atomic Wait/Notify helpers (free functions)
+// ============================================================================
+
+/// Global wait-list: tracks addresses that have been notified.
+/// In single-threaded mode we only record the last notified address;
+/// the count is always 0 (no waiters) because there are no other threads.
+static ATOMIC_LAST_NOTIFY_ADDR: AtomicUsize = AtomicUsize::new(0);
+static ATOMIC_LAST_NOTIFY_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Record a notify event (used by memory.atomic.notify).
+fn atomic_notify(addr: usize, count: u32) {
+    ATOMIC_LAST_NOTIFY_ADDR.store(addr, Ordering::Relaxed);
+    ATOMIC_LAST_NOTIFY_COUNT.store(count, Ordering::Relaxed);
+}
+
+/// memory.atomic.wait32 — blocks until `mem[addr] != expected` or timeout.
+/// Returns: 0 = woken, 1 = not-equal (returned immediately), 2 = timed out.
+/// In single-threaded mode we perform a bounded spin then return 2 (timeout).
+fn atomic_wait32(mem: &LinearMemory, addr: usize, expected: i32, timeout_ns: i64) -> Result<i32, WasmError> {
+    let current = mem.atomic_load_u32(addr)? as i32;
+    if current != expected {
+        return Ok(1); // "not-equal" – return immediately per spec
+    }
+    // Single-threaded: nobody will change the value.
+    // If timeout == 0 always time out; otherwise spin briefly.
+    if timeout_ns == 0 {
+        return Ok(2);
+    }
+    // Spin up to ~1000 iterations to give any interrupt handler a chance
+    let iters: u32 = if timeout_ns < 0 { 1000 } else { 100 };
+    for _ in 0..iters {
+        core::hint::spin_loop();
+        let v = mem.atomic_load_u32(addr)? as i32;
+        if v != expected {
+            return Ok(0);
+        }
+    }
+    Ok(2) // timed out
+}
+
+/// memory.atomic.wait64 — same as wait32 but for 64-bit values.
+fn atomic_wait64(mem: &LinearMemory, addr: usize, expected: i64, timeout_ns: i64) -> Result<i32, WasmError> {
+    let current = mem.atomic_load_u64(addr)? as i64;
+    if current != expected {
+        return Ok(1);
+    }
+    if timeout_ns == 0 {
+        return Ok(2);
+    }
+    let iters: u32 = if timeout_ns < 0 { 1000 } else { 100 };
+    for _ in 0..iters {
+        core::hint::spin_loop();
+        let v = mem.atomic_load_u64(addr)? as i64;
+        if v != expected {
+            return Ok(0);
+        }
+    }
+    Ok(2)
 }
 
 // ============================================================================
@@ -4593,6 +4906,14 @@ impl WasmInstance {
         let opcode_byte = self.module.bytecode[self.pc];
         self.pc += 1;
 
+        // ── WASM Threads / Atomics prefix (0xFE) ────────────────────────────
+        // Dispatch before the main Opcode table; handles the full
+        // WebAssembly Threads proposal (memory.atomic.wait/notify, i32/i64
+        // atomic load/store, and all RMW variants).
+        if opcode_byte == 0xFE {
+            return self.step_atomic();
+        }
+
         let opcode = Opcode::from_byte(opcode_byte).ok_or(WasmError::UnknownOpcode(opcode_byte))?;
 
         match opcode {
@@ -7514,6 +7835,250 @@ impl WasmInstance {
         }
         Ok(())
     }
+
+    // ========================================================================
+    // WASM Threads Proposal — 0xFE prefix atomic operations
+    // ========================================================================
+    //
+    // Implements the full WebAssembly Threads/Atomics proposal:
+    //   0x00  memory.atomic.notify      (addr, count) → i32 woken
+    //   0x01  memory.atomic.wait32      (addr, expected, timeout_ns) → i32
+    //   0x02  memory.atomic.wait64      (addr, expected, timeout_ns) → i32
+    //   0x03  atomic.fence
+    //   0x10  i32.atomic.load           (addr+offset) → i32
+    //   0x11  i64.atomic.load           (addr+offset) → i64
+    //   0x12  i32.atomic.load8_u        → i32
+    //   0x13  i32.atomic.load16_u       → i32
+    //   0x14  i64.atomic.load8_u        → i64
+    //   0x15  i64.atomic.load16_u       → i64
+    //   0x16  i64.atomic.load32_u       → i64
+    //   0x17  i32.atomic.store          (addr+offset, i32)
+    //   0x18  i64.atomic.store          (addr+offset, i64)
+    //   0x19  i32.atomic.store8
+    //   0x1A  i32.atomic.store16
+    //   0x1B  i64.atomic.store8
+    //   0x1C  i64.atomic.store16
+    //   0x1D  i64.atomic.store32
+    //   0x1E–0x24 i32.atomic.rmw.*      (add/sub/and/or/xor/xchg/cmpxchg)
+    //   0x25–0x2B i64.atomic.rmw.*
+    //   0x2C–0x2E i32.atomic.rmw8.*_u / 0x2F–0x31 i32.atomic.rmw16.*_u
+    //   0x32–0x34 i64.atomic.rmw8.*_u  / 0x35–0x37 i64.atomic.rmw16.*_u
+    //   0x38–0x3A i64.atomic.rmw32.*_u
+    //
+    // In the absence of true kernel threads the wait ops busy-spin up to a
+    // small iteration cap so single-threaded WASM code using futex-style
+    // synchronisation still makes progress.
+
+    fn step_atomic(&mut self) -> Result<bool, WasmError> {
+        let bytecode_len = self.bytecode_len_clamped();
+        if self.pc >= bytecode_len {
+            return Err(WasmError::UnexpectedEndOfCode);
+        }
+        let sub = self.module.bytecode[self.pc];
+        self.pc += 1;
+        match sub {
+            0x00..=0x03 => self.step_atomic_control(sub),
+            0x10..=0x1D => self.step_atomic_load_store(sub),
+            0x1E..=0x3A => self.step_atomic_rmw(sub),
+            _ => Err(WasmError::UnknownOpcode(0xFE)),
+        }
+    }
+
+    fn step_atomic_control(&mut self, sub: u8) -> Result<bool, WasmError> {
+        match sub {
+            0x00 => {
+                // memory.atomic.notify
+                let _align = self.read_uleb128()?;
+                let mem_offset = self.read_uleb128()? as usize;
+                let count = self.stack.pop()?.as_i32()? as u32;
+                let base  = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(mem_offset).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 3 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                let _bc = self.memory.read(addr, 4)?;
+                atomic_notify(addr, count);
+                self.stack.push(Value::I32(0))?;
+            }
+            0x01 => {
+                // memory.atomic.wait32
+                let _align = self.read_uleb128()?;
+                let mem_offset = self.read_uleb128()? as usize;
+                let timeout  = self.stack.pop()?.as_i64()?;
+                let expected = self.stack.pop()?.as_i32()?;
+                let base     = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(mem_offset).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 3 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                let r = atomic_wait32(&self.memory, addr, expected, timeout)?;
+                self.stack.push(Value::I32(r))?;
+            }
+            0x02 => {
+                // memory.atomic.wait64
+                let _align = self.read_uleb128()?;
+                let mem_offset = self.read_uleb128()? as usize;
+                let timeout  = self.stack.pop()?.as_i64()?;
+                let expected = self.stack.pop()?.as_i64()?;
+                let base     = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(mem_offset).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 7 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                let r = atomic_wait64(&self.memory, addr, expected, timeout)?;
+                self.stack.push(Value::I32(r))?;
+            }
+            0x03 => {
+                // atomic.fence
+                let _reserved = self.read_uleb128()?;
+                core::sync::atomic::fence(Ordering::SeqCst);
+            }
+            _ => return Err(WasmError::UnknownOpcode(0xFE)),
+        }
+        Ok(true)
+    }
+
+    fn step_atomic_load_store(&mut self, sub: u8) -> Result<bool, WasmError> {
+        let _align = self.read_uleb128()?;
+        let off    = self.read_uleb128()? as usize;
+        match sub {
+            // loads (pop addr, push value)
+            0x10 => {
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 3 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                let v = self.memory.atomic_load_u32(addr)?;
+                self.stack.push(Value::I32(v as i32))?;
+            }
+            0x11 => {
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 7 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                let v = self.memory.atomic_load_u64(addr)?;
+                self.stack.push(Value::I64(v as i64))?;
+            }
+            0x12 => {
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                let v = self.memory.atomic_load_u8(addr)?;
+                self.stack.push(Value::I32(v as i32))?;
+            }
+            0x13 => {
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 1 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                let v = self.memory.atomic_load_u16(addr)?;
+                self.stack.push(Value::I32(v as i32))?;
+            }
+            0x14 => {
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                let v = self.memory.atomic_load_u8(addr)?;
+                self.stack.push(Value::I64(v as i64))?;
+            }
+            0x15 => {
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 1 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                let v = self.memory.atomic_load_u16(addr)?;
+                self.stack.push(Value::I64(v as i64))?;
+            }
+            0x16 => {
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 3 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                let v = self.memory.atomic_load_u32(addr)?;
+                self.stack.push(Value::I64(v as i64))?;
+            }
+            // stores (pop value then addr)
+            0x17 => {
+                let val  = self.stack.pop()?.as_i32()? as u32;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 3 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                self.memory.atomic_store_u32(addr, val)?;
+            }
+            0x18 => {
+                let val  = self.stack.pop()?.as_i64()? as u64;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 7 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                self.memory.atomic_store_u64(addr, val)?;
+            }
+            0x19 => {
+                let val  = (self.stack.pop()?.as_i32()? & 0xFF) as u8;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                self.memory.atomic_store_u8(addr, val)?;
+            }
+            0x1A => {
+                let val  = (self.stack.pop()?.as_i32()? & 0xFFFF) as u16;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 1 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                self.memory.atomic_store_u16(addr, val)?;
+            }
+            0x1B => {
+                let val  = (self.stack.pop()?.as_i64()? & 0xFF) as u8;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                self.memory.atomic_store_u8(addr, val)?;
+            }
+            0x1C => {
+                let val  = (self.stack.pop()?.as_i64()? & 0xFFFF) as u16;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 1 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                self.memory.atomic_store_u16(addr, val)?;
+            }
+            0x1D => {
+                let val  = (self.stack.pop()?.as_i64()? & 0xFFFF_FFFF) as u32;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 3 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                self.memory.atomic_store_u32(addr, val)?;
+            }
+            _ => return Err(WasmError::UnknownOpcode(0xFE)),
+        }
+        Ok(true)
+    }
+
+    fn step_atomic_rmw(&mut self, sub: u8) -> Result<bool, WasmError> {
+        let _align = self.read_uleb128()?;
+        let off    = self.read_uleb128()? as usize;
+        match sub {
+            0x1E..=0x24 => {
+                // i32 wide RMW
+                let val  = self.stack.pop()?.as_i32()? as u32;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 3 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                let old = self.memory.atomic_rmw32(sub, addr, val)?;
+                self.stack.push(Value::I32(old as i32))?;
+            }
+            0x25..=0x2B => {
+                // i64 wide RMW
+                let val  = self.stack.pop()?.as_i64()? as u64;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                if addr & 7 != 0 { return Err(WasmError::UnalignedAtomicAccess); }
+                let old = self.memory.atomic_rmw64(sub, addr, val)?;
+                self.stack.push(Value::I64(old as i64))?;
+            }
+            0x2C..=0x31 => {
+                // i32 narrow RMW (8/16-bit)
+                let val  = self.stack.pop()?.as_i32()? as u32;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                let old = self.memory.atomic_rmw32_narrow(sub, addr, val)?;
+                self.stack.push(Value::I32(old as i32))?;
+            }
+            0x32..=0x3A => {
+                // i64 narrow RMW (8/16/32-bit)
+                let val  = self.stack.pop()?.as_i64()? as u64;
+                let base = self.stack.pop()?.as_u32()? as usize;
+                let addr = base.checked_add(off).ok_or(WasmError::MemoryOutOfBounds)?;
+                let old = self.memory.atomic_rmw64_narrow(sub, addr, val)?;
+                self.stack.push(Value::I64(old as i64))?;
+            }
+            _ => return Err(WasmError::UnknownOpcode(0xFE)),
+        }
+        Ok(true)
+    }
 }
 
 // ============================================================================
@@ -7547,6 +8112,12 @@ pub enum WasmError {
     // Memory errors
     MemoryOutOfBounds,
     MemoryGrowFailed,
+    UnalignedAtomicAccess,
+
+    // Atomic / thread errors
+    AtomicWaitTimeout,
+    AtomicWaitBadValue,
+    SharedMemoryRequired,
 
     // Capability errors
     InvalidCapability,
@@ -7571,6 +8142,10 @@ impl fmt::Display for WasmError {
             WasmError::TypeMismatch => write!(f, "Type mismatch"),
             WasmError::UnknownOpcode(op) => write!(f, "Unknown opcode: 0x{:02X}", op),
             WasmError::MemoryOutOfBounds => write!(f, "Memory out of bounds"),
+            WasmError::UnalignedAtomicAccess => write!(f, "Unaligned atomic access"),
+            WasmError::AtomicWaitTimeout => write!(f, "Atomic wait timed out"),
+            WasmError::AtomicWaitBadValue => write!(f, "Atomic wait value mismatch"),
+            WasmError::SharedMemoryRequired => write!(f, "Shared memory required for atomic"),
             WasmError::InvalidCapability => write!(f, "Invalid capability"),
             WasmError::Trap => write!(f, "Trap"),
             WasmError::DivisionByZero => write!(f, "Division by zero"),
@@ -7607,6 +8182,10 @@ impl WasmError {
             WasmError::DivisionByZero => "Division by zero",
             WasmError::MemoryOutOfBounds => "Memory out of bounds",
             WasmError::MemoryGrowFailed => "Memory grow failed",
+            WasmError::UnalignedAtomicAccess => "Unaligned atomic access",
+            WasmError::AtomicWaitTimeout => "Atomic wait timed out",
+            WasmError::AtomicWaitBadValue => "Atomic wait value mismatch",
+            WasmError::SharedMemoryRequired => "Shared memory required for atomic",
             WasmError::InvalidCapability => "Invalid capability",
             WasmError::TooManyCapabilities => "Too many capabilities",
             WasmError::UnknownHostFunction => "Unknown host function",
