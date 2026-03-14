@@ -45,7 +45,7 @@ A Rust trait with associated types is precisely a *many-sorted algebraic signatu
 **Definition 1.0 (Many-Sorted Signature).** A signature $\Sigma = (S, F)$ consists of a finite set $S$ of *sorts* and a set $F$ of *function symbols*, each with an arity in $S^* \times S$. A $\Sigma$-algebra assigns a carrier set $A_s$ to each sort $s \in S$ and a concrete function $f_A : A_{s_1} \times \cdots \times A_{s_n} \to A_{s_{n+1}}$ to each $f \in F$ with arity $(s_1, \ldots, s_n; s_{n+1})$.
 
 For a trait $T$ with associated types $A_1, \ldots, A_k$ and method signatures $m_1 : \tau_1, \ldots, m_n : \tau_n$, the correspondence is:
-- **Sorts** = $\{$`Self`, $A_1, \ldots, A_k\}$
+- **Sorts** = $\{\texttt{Self},\ A_1, \ldots, A_k\}$
 - **Function symbols** = $\{m_1, \ldots, m_n\}$, each with arity derived from its type signature
 - **Axioms** = the set of trait bounds $A_i : B_1 + \cdots + B_r$
 
@@ -57,9 +57,9 @@ where $\text{impl}(T, X)$ means "type $X$ implements trait $T$". The Rust compil
 
 **The Monomorphization Theorem.** When the Rust compiler processes a generic function
 
-$$\texttt{fn foo<M: ArchMmu>(m: \&M) \{ \ldots \}}$$
+$$\texttt{fn foo<M: ArchMmu>(m: \mathbin{\&}M) \{ \ldots \}}$$
 
-it performs the same role as a term-rewriting system verifying that a ground substitution $[\texttt{M} \mapsto \texttt{X86\_64Mmu}]$ satisfies every Horn clause in the trait specification. The LLVM backend then erases every trait vtable indirection to a direct call via *devirtualization*, so the abstraction carries zero overhead in the compiled binary. The cost of expressiveness is paid entirely at compile time; the runtime pays nothing. This is the core mechanism by which every proof in this document translates directly to guaranteed behavior in the running kernel.
+it performs the same role as a term-rewriting system verifying that a ground substitution $[\texttt{M} \mapsto \texttt{X86\_{}64Mmu}]$ satisfies every Horn clause in the trait specification. The LLVM backend then erases every trait vtable indirection to a direct call via *devirtualization*, so the abstraction carries zero overhead in the compiled binary. The cost of expressiveness is paid entirely at compile time; the runtime pays nothing. This is the core mechanism by which every proof in this document translates directly to guaranteed behavior in the running kernel.
 
 ### 1.2 The `ArchMmu` Trait
 
@@ -189,7 +189,7 @@ The tag encoding is carefully chosen to be both efficient and collision-resistan
 - `u64 → 0x0008`: size 8 bytes
 - `[u8; N] → 0x0100 | N`: the high byte `0x01` distinguishes byte arrays from scalar types even when $N = 4$ or $N = 8$, which would otherwise collide with `u32`/`u64`.
 
-**Lemma 1.4 (Tag Injectivity).** The function $\text{type\_tag} : \mathcal{T} \to \mathbb{Z}/2^{32}\mathbb{Z}$ is injective on the set
+**Lemma 1.4 (Tag Injectivity).** The function $\mathtt{type\_tag} : \mathcal{T} \to \mathbb{Z}/2^{32}\mathbb{Z}$ is injective on the set
 
 $$\mathcal{T} = \{\texttt{u8}, \texttt{u32}, \texttt{u64}\} \cup \{\texttt{[u8; N]} \mid N \in \mathbb{N},\, N \leq 0\text{xFFFF}\}.$$
 
@@ -201,7 +201,7 @@ $$\mathcal{T} = \{\texttt{u8}, \texttt{u32}, \texttt{u64}\} \cup \{\texttt{[u8; 
 
 **Across partitions:** Every scalar tag lies in $\{0\text{x0001},\, 0\text{x0004},\, 0\text{x0008}\} \subset [0,\, 0\text{x00FF}]$. Every array tag lies in $[0\text{x0100},\, 0\text{x01FF}]$ (since $0 \leq N \leq 0\text{xFFFF}$ and the mask `& 0xFFFF` ensures $N$ does not overflow into the high byte). Since $[0,\, 0\text{x00FF}] \cap [0\text{x0100},\, 0\text{x01FF}] = \emptyset$, no collision occurs between the two partitions. $\checkmark$
 
-Since the restriction of $\text{type\_tag}$ to each partition is injective and the ranges are disjoint, the function is injective on $\mathcal{T}$. $\square$
+Since the restriction of $\mathtt{type\_tag}$ to each partition is injective and the ranges are disjoint, the function is injective on $\mathcal{T}$. $\square$
 
 **Remark 1.4.1.** Injectivity guarantees that a receiver can recover the sender's intent unambiguously from the tag alone. It does not guarantee *authenticity* — a malicious sender could forge a tag. Authenticity is enforced by the capability system (Section 3): a process that does not hold a `LinearCapability` token for the target service port cannot even reach the deserialization code.
 
@@ -498,16 +498,16 @@ fn update(&mut self, event: &TelemetryEvent) {
 }
 ```
 
-The increment `+= 0.05` is the *rate estimation step*: each observed transition from state `prev` to state `cur` increases the estimated rate $\hat{q}_{\text{prev,cur}}$ by 0.05 per unit time. This is a simplified maximum-likelihood estimator for a CTMC with observation window normalized to 1. A more rigorous estimator would divide by the observed sojourn time in state `prev`, but the 0.05 constant is chosen to be small enough that transient spikes don't overwhelm long-run behavior, without requiring full sojourn-time tracking (which would require per-state timer registers — too expensive for a hot-path telemetry call).
+The increment `+= 0.05` is the *rate estimation step*: each observed transition from state `prev` to state `cur` increases the estimated rate $\hat{q}_{\mathrm{prev,cur}}$ by 0.05 per unit time. This is a simplified maximum-likelihood estimator for a CTMC with observation window normalized to 1. A more rigorous estimator would divide by the observed sojourn time in state `prev`, but the 0.05 constant is chosen to be small enough that transient spikes don't overwhelm long-run behavior, without requiring full sojourn-time tracking (which would require per-state timer registers — too expensive for a hot-path telemetry call).
 
-**Lemma 4.2 (Online Q Invariant Maintenance).** After every call to `update`, row `prev` of $\mathbf{Q}$ satisfies $\sum_j q_{\text{prev},j} = 0$.
+**Lemma 4.2 (Online Q Invariant Maintenance).** After every call to `update`, row `prev` of $\mathbf{Q}$ satisfies $\sum_j q_{\mathrm{prev},j} = 0$.
 
 *Proof.* The update logic is:
-1. Increment $q_{\text{prev,cur}}$ by 0.05.
-2. Compute $\text{row\_sum} = \sum_{j \neq \text{prev}} q_{\text{prev},j}$ (the off-diagonal row sum *after* the increment in step 1).
-3. Set $q_{\text{prev,prev}} \leftarrow -\text{row\_sum}$.
+1. Increment $q_{\mathrm{prev,cur}}$ by 0.05.
+2. Compute $\mathit{row\_sum} = \sum_{j \neq \mathrm{prev}} q_{\mathrm{prev},j}$ (the off-diagonal row sum *after* the increment in step 1).
+3. Set $q_{\mathrm{prev,prev}} \leftarrow -\mathit{row\_sum}$.
 
-After step 3: $q_{\text{prev,prev}} + \text{row\_sum} = -\text{row\_sum} + \text{row\_sum} = 0$, which is exactly $\sum_j q_{\text{prev},j} = 0$. All other rows of $\mathbf{Q}$ are not touched by this call, so their row-sum invariant is unaffected. $\square$
+After step 3: $q_{\mathrm{prev,prev}} + \mathit{row\_sum} = -\mathit{row\_sum} + \mathit{row\_sum} = 0$, which is exactly $\sum_j q_{\mathrm{prev},j} = 0$. All other rows of $\mathbf{Q}$ are not touched by this call, so their row-sum invariant is unaffected. $\square$
 
 ### 4.5 Padé Approximant for the Matrix Exponential
 
