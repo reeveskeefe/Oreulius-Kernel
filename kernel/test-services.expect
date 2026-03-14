@@ -3,8 +3,15 @@
 
 set timeout 30
 
+cd [file dirname [info script]]
+
+if {![file exists "oreulia.iso"]} {
+    puts "oreulia.iso not found; run ./build.sh first"
+    exit 1
+}
+
 # Start QEMU
-spawn /Users/keefereeves/Desktop/oreulia/kernel/run.sh
+spawn ./run.sh
 
 # Wait for shell prompt
 expect "> "

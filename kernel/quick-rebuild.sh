@@ -1,7 +1,9 @@
 #!/bin/bash
-cd oreulia/kernel
-./build.sh > /tmp/build-output.log 2>&1
-if [ $? -eq 0 ]; then
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+if ./build.sh > /tmp/build-output.log 2>&1; then
     echo "✓ Build successful!"
     echo "✓ ISO: oreulia.iso"
     echo ""

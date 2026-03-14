@@ -18,3 +18,15 @@ qemu-log.txt
 
 # ISO files
 *.iso
+
+# Kernel-generated one-off artifacts kept out of the repo root
+kernel/boot.o
+kernel/qmp_output.txt
+kernel/run_output.txt
+kernel/simpleboot.o
+kernel/test-minimal
+kernel/test-minimal.o
+
+# Local archive buckets for preserved generated artifacts and ad hoc logs
+kernel/archive/generated-local/
+kernel/archive/local-logs/

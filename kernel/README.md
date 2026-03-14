@@ -232,6 +232,11 @@ Acceptance installs a lease only when all predicates hold, and every lease-use p
 ./build.sh && ./run.sh
 ```
 
+Active root entrypoints are limited to the current build, run, and verification
+scripts. Superseded helpers and boot experiments live under `kernel/archive/`.
+Generated outputs should come from `target/` or be regenerated locally, not
+stored long-term in the kernel root.
+
 **Build Process**:
 1. Rust compiler (`rustc`) builds kernel as static library with custom target (`i686-oreulia.json`)
 2. NASM assembles all `.asm` files to `.o` object files

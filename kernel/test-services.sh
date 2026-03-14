@@ -1,5 +1,14 @@
 #!/bin/bash
-# Test script for service functionality
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+ISO_PATH="oreulia.iso"
+if [[ ! -f "${ISO_PATH}" ]]; then
+    echo "ISO not found at ${ISO_PATH}"
+    echo "Run ./build.sh first."
+    exit 1
+fi
 
 echo "Testing Oreulia Service Functionality"
 echo "===================================="
@@ -19,4 +28,4 @@ svc-request timer
 EOF
 
 # Run QEMU with input from file
-qemu-system-i386 -cdrom oreulia.iso -serial stdio < /tmp/qemu_input.txt
+qemu-system-i386 -cdrom "${ISO_PATH}" -serial stdio < /tmp/qemu_input.txt

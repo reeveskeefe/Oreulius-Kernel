@@ -25,14 +25,16 @@ These files exist under `kernel/src/` but are not included in `kernel/src/lib.rs
 ---
 
 ## B) Assembly / Test Artifacts Not Linked Into the Kernel
-These files exist but are not assembled/linked by `kernel/build.sh`.
+These files were never assembled/linked by `kernel/build.sh` and have now been
+archived out of the active kernel root.
 
-- `kernel/simpleboot.asm`
-- `kernel/test-minimal.asm`
+- `kernel/archive/boot-experiments/simpleboot.asm`
+- `kernel/archive/boot-experiments/test-minimal.asm`
 - `kernel/src/asm/context_switch.asm.bak`
 
 **Planned actions**
-- Decide if these are retained as experiments or moved under a `tests/` or `archive/` folder.
+- Decide whether the archived boot experiments should stay as historical
+  references or be removed entirely later.
 - If needed, add them to the build pipeline with explicit targets.
 
 ---
@@ -48,6 +50,5 @@ These files exist but are not assembled/linked by `kernel/build.sh`.
 - [ ] Determine if `timer.rs` is superseded by `pit.rs` and scheduler timer logic.
 - [ ] Decide the role of `qemu.rs` (debug utilities vs. production code).
 - [ ] Decide whether `main.rs` should become a binary entrypoint or be removed.
-- [ ] Classify `simpleboot.asm` and `test-minimal.asm` as tests or archive.
+- [x] Archive `simpleboot.asm` and `test-minimal.asm` under `kernel/archive/boot-experiments/`.
 - [ ] Clean up `context_switch.asm.bak` or move to `archive/`.
-

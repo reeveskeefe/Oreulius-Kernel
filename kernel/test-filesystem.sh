@@ -1,10 +1,19 @@
 #!/bin/bash
-# Test script for Oreulia filesystem
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+ISO_PATH="oreulia.iso"
+if [[ ! -f "${ISO_PATH}" ]]; then
+    echo "ISO not found at ${ISO_PATH}"
+    echo "Run ./build.sh first."
+    exit 1
+fi
 
 echo "Testing Oreulia Filesystem Implementation"
 echo "=========================================="
 echo ""
-echo "Starting QEMU with oreulia.iso..."
+echo "Starting QEMU with ${ISO_PATH}..."
 echo ""
 echo "Commands to test:"
 echo "  help         - Show available commands"
@@ -22,4 +31,4 @@ echo "  > fs-stats"
 echo ""
 
 # Run QEMU with display
-qemu-system-i386 -cdrom oreulia.iso
+qemu-system-i386 -cdrom "${ISO_PATH}"
