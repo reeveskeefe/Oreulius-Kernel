@@ -119,7 +119,7 @@ pub fn enter_runtime() -> ! {
     uart_log_line("[A64] bring-up complete; starting shared scheduler");
 
     crate::quantum_scheduler::init();
-    {
+    let launch = {
         let mut sched = crate::quantum_scheduler::scheduler().lock();
         if let Err(e) = sched.add_kernel_thread(
             shell_scheduler_task,
@@ -131,6 +131,11 @@ pub fn enter_runtime() -> ! {
             uart.write_str("\n");
             crate::arch::halt_loop();
         }
-    }
-    crate::quantum_scheduler::QuantumScheduler::start_scheduling()
+        sched.prepare_start_locked()
+    };
+    crate::quantum_scheduler::QuantumScheduler::launch_prepared_context(
+        launch.0,
+        launch.1,
+        launch.2,
+    )
 }

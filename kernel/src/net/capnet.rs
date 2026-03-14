@@ -32,6 +32,7 @@ use crate::ipc::ProcessId;
 use crate::persistence;
 use crate::security::{self, AuditEntry, SecurityEvent};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 pub const CAPNET_TOKEN_MAGIC: u32 = 0x544E_5043; // "CPNT" (little-endian storage)
@@ -368,6 +369,7 @@ pub struct CapNetFuzzSoakStats {
 static CAPNET_LOCAL_DEVICE_ID: Mutex<u64> = Mutex::new(0);
 static CAPNET_PEERS: Mutex<[PeerSession; CAPNET_MAX_PEERS]> =
     Mutex::new([PeerSession::empty(); CAPNET_MAX_PEERS]);
+static CAPNET_FUZZ_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CAPNET_DELEGATION_RECORDS: Mutex<[DelegationRecord; CAPNET_MAX_DELEGATION_RECORDS]> =
     Mutex::new([DelegationRecord::empty(); CAPNET_MAX_DELEGATION_RECORDS]);
 static CAPNET_REVOCATION_TOMBSTONES: Mutex<
@@ -599,7 +601,7 @@ fn encode_temporal_state_payload(event: u8) -> Vec<u8> {
 }
 
 fn record_temporal_state_snapshot() {
-    if crate::temporal::is_replay_active() {
+    if crate::temporal::is_replay_active() || CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
         return;
     }
     let payload = encode_temporal_state_payload(crate::temporal::TEMPORAL_CAPNET_EVENT_STATE);
@@ -2254,6 +2256,19 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
     if iterations == 0 || iterations > CAPNET_FUZZ_MAX_ITERS {
         return Err("iterations must be 1..=10000");
     }
+
+    let _fuzz_active_guard = {
+        struct CapNetFuzzActiveGuard {
+            prev: bool,
+        }
+        impl Drop for CapNetFuzzActiveGuard {
+            fn drop(&mut self) {
+                CAPNET_FUZZ_ACTIVE.store(self.prev, Ordering::SeqCst);
+            }
+        }
+        let prev = CAPNET_FUZZ_ACTIVE.swap(true, Ordering::SeqCst);
+        CapNetFuzzActiveGuard { prev }
+    };
 
     init();
     let local = local_device_id().ok_or("CapNet local identity unavailable")?;

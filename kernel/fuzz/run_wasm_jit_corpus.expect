@@ -5,6 +5,7 @@
 #   ./fuzz/run_wasm_jit_corpus.expect 1000
 
 set timeout 120
+set send_slow {1 0.05}
 set iters 1000
 set soak_rounds 0
 if {[llength $argv] >= 1} {
@@ -36,24 +37,34 @@ if {$qemu_extra eq ""} {
 }
 set qemu_args [concat $qemu_args $filtered_extra]
 spawn {*}$qemu_args
+
+proc expect_i686_prompt {} {
+    expect {
+        -re {> } {}
+        timeout { puts "timeout waiting for i686 shell prompt"; exit 1 }
+    }
+}
+
+proc sync_and_send_i686_cmd {cmd} {
+    global send_slow
+    after 300
+    send "\r"
+    expect_i686_prompt
+    after 600
+    send -s -- "$cmd\r"
+}
+
 expect {
     -re {Type 'help' for commands\.} {}
     timeout { puts "timeout waiting for i686 kernel shell banner"; exit 1 }
 }
-expect {
-    -re {> } {}
-    timeout { puts "timeout waiting for i686 shell prompt"; exit 1 }
-}
+expect_i686_prompt
 # Clear any stale line noise on the first serial-interactive prompt.
 send "\r"
-expect {
-    -re {> } {}
-    timeout { puts "timeout waiting for clean i686 shell prompt"; exit 1 }
-}
+expect_i686_prompt
 set timeout 600
 
-after 200
-send "wasm-jit-fuzz-corpus $iters\r"
+sync_and_send_i686_cmd "wfc $iters"
 expect {
     -re {Seeds passed: [0-9]+ / [0-9]+} {}
     timeout { puts "timeout waiting for WASM corpus seed summary"; exit 1 }
@@ -66,14 +77,10 @@ expect {
     -re {Total compile errors: [0-9]+} {}
     timeout { puts "timeout waiting for WASM corpus compile summary"; exit 1 }
 }
-expect {
-    -re {> } {}
-    timeout { puts "timeout waiting for i686 shell prompt after WASM corpus"; exit 1 }
-}
+expect_i686_prompt
 
 if {$soak_rounds > 0} {
-    after 200
-    send "wasm-jit-fuzz-soak $iters $soak_rounds\r"
+    sync_and_send_i686_cmd "wfs $iters $soak_rounds"
     expect {
         -re {Rounds passed: [0-9]+ / [0-9]+} {}
         timeout { puts "timeout waiting for WASM soak rounds summary"; exit 1 }
@@ -86,10 +93,7 @@ if {$soak_rounds > 0} {
         -re {Total compile errors: [0-9]+} {}
         timeout { puts "timeout waiting for WASM soak compile summary"; exit 1 }
     }
-    expect {
-        -re {> } {}
-        timeout { puts "timeout waiting for i686 shell prompt after WASM soak"; exit 1 }
-    }
+    expect_i686_prompt
 }
 
 sleep 1

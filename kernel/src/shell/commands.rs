@@ -531,7 +531,13 @@ pub fn execute(input: &str) {
         "wasm-jit-fuzz-corpus" => {
             cmd_wasm_jit_fuzz_corpus(parts);
         }
+        "wfc" => {
+            cmd_wasm_jit_fuzz_corpus(parts);
+        }
         "wasm-jit-fuzz-soak" => {
+            cmd_wasm_jit_fuzz_soak(parts);
+        }
+        "wfs" => {
             cmd_wasm_jit_fuzz_soak(parts);
         }
         "jitfuzzreg" => {
@@ -543,10 +549,19 @@ pub fn execute(input: &str) {
         "capnet-fuzz-corpus" => {
             cmd_capnet_fuzz_corpus(parts);
         }
+        "cfc" => {
+            cmd_capnet_fuzz_corpus(parts);
+        }
         "capnet-fuzz-soak" => {
             cmd_capnet_fuzz_soak(parts);
         }
+        "cfs" => {
+            cmd_capnet_fuzz_soak(parts);
+        }
         "formal-verify" => {
+            cmd_formal_verify();
+        }
+        "fv" => {
             cmd_formal_verify();
         }
         "wasm-jit-on" => {

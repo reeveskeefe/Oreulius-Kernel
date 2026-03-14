@@ -36,6 +36,11 @@ seeds_total="$(echo "${seeds_line}" | awk '{print $5}')"
 total_mismatches="$(echo "${mismatch_line}" | awk '{print $3}')"
 total_compile_errors="$(echo "${compile_line}" | awk '{print $4}')"
 
+seeds_passed="${seeds_passed//$'\r'/}"
+seeds_total="${seeds_total//$'\r'/}"
+total_mismatches="${total_mismatches//$'\r'/}"
+total_compile_errors="${total_compile_errors//$'\r'/}"
+
 if (( seeds_passed != seeds_total )); then
     echo "ERROR: corpus replay failed (${seeds_passed}/${seeds_total} seeds passed)"
     exit 1
@@ -74,6 +79,11 @@ rounds_passed="$(echo "${rounds_line}" | awk '{print $3}')"
 rounds_total="$(echo "${rounds_line}" | awk '{print $5}')"
 soak_mismatches="$(echo "${soak_mismatch_line}" | awk '{print $3}')"
 soak_compile_errors="$(echo "${soak_compile_line}" | awk '{print $4}')"
+
+rounds_passed="${rounds_passed//$'\r'/}"
+rounds_total="${rounds_total//$'\r'/}"
+soak_mismatches="${soak_mismatches//$'\r'/}"
+soak_compile_errors="${soak_compile_errors//$'\r'/}"
 
 if (( rounds_passed != rounds_total )); then
     echo "ERROR: soak replay failed (${rounds_passed}/${rounds_total} rounds passed)"

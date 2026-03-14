@@ -35,6 +35,10 @@ seeds_passed="$(echo "${seeds_line}" | awk '{print $3}')"
 seeds_total="$(echo "${seeds_line}" | awk '{print $5}')"
 total_failures="$(echo "${failures_line}" | awk '{print $3}')"
 
+seeds_passed="${seeds_passed//$'\r'/}"
+seeds_total="${seeds_total//$'\r'/}"
+total_failures="${total_failures//$'\r'/}"
+
 if (( seeds_passed != seeds_total )); then
     echo "ERROR: CapNet corpus replay failed (${seeds_passed}/${seeds_total} seeds passed)"
     exit 1
@@ -63,6 +67,10 @@ fi
 rounds_passed="$(echo "${rounds_line}" | awk '{print $3}')"
 rounds_total="$(echo "${rounds_line}" | awk '{print $5}')"
 soak_failures="$(echo "${soak_failures_line}" | awk '{print $3}')"
+
+rounds_passed="${rounds_passed//$'\r'/}"
+rounds_total="${rounds_total//$'\r'/}"
+soak_failures="${soak_failures//$'\r'/}"
 
 if (( rounds_passed != rounds_total )); then
     echo "ERROR: CapNet soak replay failed (${rounds_passed}/${rounds_total} rounds passed)"

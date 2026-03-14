@@ -1,6 +1,7 @@
 name: multiarch-qemu-smoke
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - "kernel/**"
@@ -46,6 +47,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2023-11-01
+          components: rust-src
 
       - name: Make scripts executable
         run: chmod +x ./build*.sh ./run*.sh ./ci/*.sh
@@ -70,4 +72,3 @@ jobs:
           OBJCOPY_BIN: aarch64-linux-gnu-objcopy
           QEMU_AUDIO_DRV: none
         run: ./ci/smoke-aarch64.sh
-

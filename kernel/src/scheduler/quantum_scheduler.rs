@@ -1143,26 +1143,11 @@ impl QuantumScheduler {
 
         #[cfg(target_arch = "aarch64")]
         let shared_runtime_pid = {
-            let parent = Some(1u32);
-            let parent_pid = parent.map(Pid::new);
-            let spawned = crate::process::process_manager()
-                .spawn("a64-task", parent_pid)
-                .map_err(|e| {
-                    scheduler_rt::logf(format_args!(
-                        "[SCHED] AArch64 shared process spawn failed for kernel thread PID {}: {}",
-                        pid.0,
-                        e.as_str()
-                    ));
-                    e.as_str()
-                })?;
-            if let Some(parent_pid) = parent_pid {
-                let _ = crate::vfs::inherit_process_capability(parent_pid.0, spawned.0, None);
-            }
-            scheduler_rt::logf(format_args!(
-                "[SCHED] AArch64 scheduler PID {} mapped to shared PID {}",
-                pid.0, spawned.0
-            ));
-            Some(spawned)
+            // The AArch64 serial-shell bring-up path does not require a shadow runtime
+            // process for kernel threads. Keep scheduler PIDs self-contained here so
+            // early boot does not depend on the heavier process/temporal plumbing.
+            let _ = pid;
+            None
         };
         #[cfg(not(target_arch = "aarch64"))]
         let shared_runtime_pid = None;
@@ -1219,82 +1204,86 @@ impl QuantumScheduler {
             #[cfg(target_arch = "aarch64")]
             scheduler_rt::logf(format_args!("[A64-SCHED] start_scheduling: lock acquired"));
 
-            // Find next process (prefer ready queues, recover from process table if needed).
-            let next_pid = match scheduler.dequeue_ready() {
-                Some(pid) => pid,
-                None => {
-                    scheduler_rt::logf(format_args!(
-                        "[SCHED] Ready queues empty at scheduler start, scanning process table"
-                    ));
-                    let recovered =
-                        scheduler
-                            .processes
-                            .iter()
-                            .enumerate()
-                            .find_map(|(idx, info_opt)| {
-                                let info = info_opt.as_ref()?;
-                                if matches!(
-                                    info.process.state,
-                                    ProcessState::Ready | ProcessState::Running
-                                ) {
-                                    Some(Pid(idx as u32))
-                                } else {
-                                    None
-                                }
-                            });
-                    match recovered {
-                        Some(pid) => {
-                            scheduler_rt::logf(format_args!(
-                                "[SCHED] Recovered runnable PID {} from process table",
-                                pid.0
-                            ));
-                            pid
-                        }
-                        None => {
-                            scheduler_rt::logf(format_args!(
-                                "[SCHED] FATAL: no runnable processes in scheduler"
-                            ));
-                            scheduler_rt::vga_print_str("[SCHED] FATAL: no runnable processes\n");
-                            scheduler_rt::halt_cpu();
-                        }
-                    }
-                }
-            };
-
-            #[cfg(target_arch = "aarch64")]
-            scheduler_rt::logf(format_args!(
-                "[A64-SCHED] start_scheduling: next pid {}",
-                next_pid.0
-            ));
-
-            scheduler.current_pid = Some(next_pid);
-            SCHEDULER_STARTED.store(true, Ordering::Release);
-            scheduler.record_temporal_state_snapshot_locked(
-                scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE,
-            );
-
-            #[cfg(target_arch = "aarch64")]
-            scheduler_rt::logf(format_args!(
-                "[A64-SCHED] start_scheduling: state snapshot recorded"
-            ));
-            let runtime_pid_raw = scheduler
-                .runtime_pid_for_scheduler_pid(next_pid)
-                .map(|pid| pid.0)
-                .unwrap_or(next_pid.0);
-
-            if let Some(ref mut info) = scheduler.processes[next_pid.0 as usize] {
-                info.process.state = ProcessState::Running;
-                // Return pointer relative to the heap allocation (stable address)
-                (
-                    &info.context as *const ProcessContext,
-                    runtime_pid_raw,
-                    info.kernel_stack_top,
-                )
-            } else {
-                panic!("Process data missing");
-            }
+            scheduler.prepare_start_locked()
         }; // Lock is dropped here
 
+        Self::launch_prepared_context(ctx_ptr, runtime_pid_raw, kernel_stack_top)
+    }
+
+    pub(crate) fn prepare_start_locked(&mut self) -> (*const ProcessContext, u32, usize) {
+        // Find next process (prefer ready queues, recover from process table if needed).
+        let next_pid = match self.dequeue_ready() {
+            Some(pid) => pid,
+            None => {
+                scheduler_rt::logf(format_args!(
+                    "[SCHED] Ready queues empty at scheduler start, scanning process table"
+                ));
+                let recovered = self.processes.iter().enumerate().find_map(|(idx, info_opt)| {
+                    let info = info_opt.as_ref()?;
+                    if matches!(
+                        info.process.state,
+                        ProcessState::Ready | ProcessState::Running
+                    ) {
+                        Some(Pid(idx as u32))
+                    } else {
+                        None
+                    }
+                });
+                match recovered {
+                    Some(pid) => {
+                        scheduler_rt::logf(format_args!(
+                            "[SCHED] Recovered runnable PID {} from process table",
+                            pid.0
+                        ));
+                        pid
+                    }
+                    None => {
+                        scheduler_rt::logf(format_args!(
+                            "[SCHED] FATAL: no runnable processes in scheduler"
+                        ));
+                        scheduler_rt::vga_print_str("[SCHED] FATAL: no runnable processes\n");
+                        scheduler_rt::halt_cpu();
+                    }
+                }
+            }
+        };
+
+        #[cfg(target_arch = "aarch64")]
+        scheduler_rt::logf(format_args!(
+            "[A64-SCHED] start_scheduling: next pid {}",
+            next_pid.0
+        ));
+
+        self.current_pid = Some(next_pid);
+        SCHEDULER_STARTED.store(true, Ordering::Release);
+        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
+
+        #[cfg(target_arch = "aarch64")]
+        scheduler_rt::logf(format_args!(
+            "[A64-SCHED] start_scheduling: state snapshot recorded"
+        ));
+        let runtime_pid_raw = self
+            .runtime_pid_for_scheduler_pid(next_pid)
+            .map(|pid| pid.0)
+            .unwrap_or(next_pid.0);
+
+        if let Some(ref mut info) = self.processes[next_pid.0 as usize] {
+            info.process.state = ProcessState::Running;
+            (
+                &info.context as *const ProcessContext,
+                runtime_pid_raw,
+                info.kernel_stack_top,
+            )
+        } else {
+            panic!("Process data missing");
+        }
+    }
+
+    pub(crate) fn launch_prepared_context(
+        ctx_ptr: *const ProcessContext,
+        runtime_pid_raw: u32,
+        kernel_stack_top: usize,
+    ) -> ! {
         #[cfg(target_arch = "aarch64")]
         scheduler_rt::logf(format_args!("[A64-SCHED] start_scheduling: lock released"));
         scheduler_rt::vga_print_str("[SCHED] Lock dropped, loading context\n");
@@ -2036,6 +2025,7 @@ impl QuantumScheduler {
         Some(payload)
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     fn record_temporal_state_snapshot_locked(&self, event: u8) {
         if scheduler_rt::temporal_is_replay_active() {
             return;
@@ -2046,6 +2036,9 @@ impl QuantumScheduler {
         };
         let _ = scheduler_rt::temporal_record_scheduler_state_event(&payload);
     }
+
+    #[cfg(target_arch = "aarch64")]
+    fn record_temporal_state_snapshot_locked(&self, _event: u8) {}
 
     /// Get current PID
     pub fn get_current_pid(&self) -> Option<Pid> {

@@ -5,6 +5,7 @@
 #   ./fuzz/run_capnet_corpus.expect 1000
 
 set timeout 120
+set send_slow {1 0.05}
 set iters 1000
 set soak_rounds 0
 if {[llength $argv] >= 1} {
@@ -36,24 +37,34 @@ if {$qemu_extra eq ""} {
 }
 set qemu_args [concat $qemu_args $filtered_extra]
 spawn {*}$qemu_args
+
+proc expect_i686_prompt {} {
+    expect {
+        -re {> } {}
+        timeout { puts "timeout waiting for i686 shell prompt"; exit 1 }
+    }
+}
+
+proc sync_and_send_i686_cmd {cmd} {
+    global send_slow
+    after 300
+    send "\r"
+    expect_i686_prompt
+    after 600
+    send -s -- "$cmd\r"
+}
+
 expect {
     -re {Type 'help' for commands\.} {}
     timeout { puts "timeout waiting for i686 kernel shell banner"; exit 1 }
 }
-expect {
-    -re {> } {}
-    timeout { puts "timeout waiting for i686 shell prompt"; exit 1 }
-}
+expect_i686_prompt
 # Clear any stale line noise on the first serial-interactive prompt.
 send "\r"
-expect {
-    -re {> } {}
-    timeout { puts "timeout waiting for clean i686 shell prompt"; exit 1 }
-}
+expect_i686_prompt
 set timeout 600
 
-after 200
-send "capnet-fuzz-corpus $iters\r"
+sync_and_send_i686_cmd "cfc $iters"
 expect {
     -re {Seeds passed: [0-9]+ / [0-9]+} {}
     timeout { puts "timeout waiting for CapNet corpus seed summary"; exit 1 }
@@ -62,14 +73,10 @@ expect {
     -re {Total failures: [0-9]+} {}
     timeout { puts "timeout waiting for CapNet corpus failure summary"; exit 1 }
 }
-expect {
-    -re {> } {}
-    timeout { puts "timeout waiting for i686 shell prompt after CapNet corpus"; exit 1 }
-}
+expect_i686_prompt
 
 if {$soak_rounds > 0} {
-    after 200
-    send "capnet-fuzz-soak $iters $soak_rounds\r"
+    sync_and_send_i686_cmd "cfs $iters $soak_rounds"
     expect {
         -re {Rounds passed: [0-9]+ / [0-9]+} {}
         timeout { puts "timeout waiting for CapNet soak rounds summary"; exit 1 }
@@ -78,22 +85,15 @@ if {$soak_rounds > 0} {
         -re {Total failures: [0-9]+} {}
         timeout { puts "timeout waiting for CapNet soak failure summary"; exit 1 }
     }
-    expect {
-        -re {> } {}
-        timeout { puts "timeout waiting for i686 shell prompt after CapNet soak"; exit 1 }
-    }
+    expect_i686_prompt
 }
 
-after 200
-send "formal-verify\r"
+sync_and_send_i686_cmd "fv"
 expect {
     -re {Formal verification checks: PASSED} {}
     timeout { puts "timeout waiting for formal verification success"; exit 1 }
 }
-expect {
-    -re {> } {}
-    timeout { puts "timeout waiting for i686 shell prompt after formal verification"; exit 1 }
-}
+expect_i686_prompt
 
 sleep 1
 send "\003"
