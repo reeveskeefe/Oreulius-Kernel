@@ -57,9 +57,11 @@ where $\text{impl}(T, X)$ means "type $X$ implements trait $T$". The Rust compil
 
 **The Monomorphization Theorem.** When the Rust compiler processes a generic function
 
-$$\texttt{fn foo<M: ArchMmu>(m: \&{}M) \{ \ldots \}}$$
+```rust
+fn foo<M: ArchMmu>(m: &M) { ... }
+```
 
-it performs the same role as a term-rewriting system verifying that a ground substitution $[\texttt{M} \mapsto \texttt{X86}\text{\_}\texttt{64Mmu}]$ satisfies every Horn clause in the trait specification. The LLVM backend then erases every trait vtable indirection to a direct call via *devirtualization*, so the abstraction carries zero overhead in the compiled binary. The cost of expressiveness is paid entirely at compile time; the runtime pays nothing. This is the core mechanism by which every proof in this document translates directly to guaranteed behavior in the running kernel.
+it performs the same role as a term-rewriting system verifying that a ground substitution `[M ↦ X86_64Mmu]` satisfies every Horn clause in the trait specification. The LLVM backend then erases every trait vtable indirection to a direct call via *devirtualization*, so the abstraction carries zero overhead in the compiled binary. The cost of expressiveness is paid entirely at compile time; the runtime pays nothing. This is the core mechanism by which every proof in this document translates directly to guaranteed behavior in the running kernel.
 
 ### 1.2 The `ArchMmu` Trait
 
