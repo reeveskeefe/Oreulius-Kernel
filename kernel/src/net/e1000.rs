@@ -38,8 +38,17 @@ const E1000_REG_IMS: u32 = 0x00D0; // Interrupt Mask Set
 const E1000_IMS_TXDW: u32 = 0x0001; // TX descriptor written back
 const E1000_IMS_LSC: u32 = 0x0004; // Link status change
 const E1000_IMS_RXT0: u32 = 0x0080; // RX timer interrupt
-/// ITR value: 200 × 256 ns = 51.2 µs → ≈ 19.5 K interrupts/sec ceiling
-const E1000_ITR_200US: u32 = 200;
+/// Adaptive ITR tiers (all in ×256 ns units):
+///   IDLE  =  50 × 256 ns =  12.8 µs  → ~78 K IRQ/s max  (low-latency)
+///   MID   = 200 × 256 ns =  51.2 µs  → ~19.5 K IRQ/s    (balanced)
+///   BULK  = 500 × 256 ns = 128.0 µs  → ~7.8 K IRQ/s     (throughput)
+const E1000_ITR_IDLE: u32 = 50;
+const E1000_ITR_MID: u32 = 200;
+const E1000_ITR_BULK: u32 = 500;
+
+/// Maximum frames to batch into the TX ring before one RDT write.
+/// 32 × 1460 B ≈ 46 KiB — fits inside a single 64 KiB TCP window slice.
+const TX_BATCH_MAX: usize = 32;
 const E1000_REG_RCTL: u32 = 0x0100; // Receive Control
 const E1000_REG_TCTL: u32 = 0x0400; // Transmit Control
 const E1000_REG_RDBAL: u32 = 0x2800; // RX Descriptor Base Low
@@ -161,6 +170,11 @@ pub struct E1000Driver {
     enabled: bool,
     rx_tail: usize,
     tx_tail: usize,
+    /// Number of TX descriptors enqueued since the last RDT write.
+    /// When this reaches TX_BATCH_MAX or flush_tx() is called, RDT is written once.
+    tx_batch_pending: usize,
+    /// Last ITR tier written to the register (avoids redundant MMIO writes).
+    last_itr: u32,
 }
 
 // MMIO base for IRQ-safe interrupt acknowledge
@@ -176,6 +190,8 @@ impl E1000Driver {
             enabled: false,
             rx_tail: 0,
             tx_tail: 0,
+            tx_batch_pending: 0,
+            last_itr: E1000_ITR_MID,
         }
     }
 
@@ -397,9 +413,10 @@ impl E1000Driver {
         // Configure extended control register
         self.write_reg(E1000_REG_CTRL_EXT, 0);
 
-        // Set interrupt throttle rate: 200 × 256 ns ≈ 51 µs between interrupts
-        // Caps at ~19 500 interrupts/sec even at wire rate, preventing interrupt flood.
-        self.write_reg(E1000_REG_ITR, E1000_ITR_200US);
+        // Set interrupt throttle rate: start at MID tier (51 µs).
+        // The reactor will call set_itr_adaptive() each poll cycle to tune this.
+        self.write_reg(E1000_REG_ITR, E1000_ITR_MID);
+        self.last_itr = E1000_ITR_MID;
 
         // Clear any stale interrupt causes before unmasking
         let _ = self.read_reg(E1000_REG_ICR);
@@ -464,20 +481,18 @@ impl E1000Driver {
         self.enabled
     }
 
-    /// Receive an Ethernet frame (non-blocking)
+    /// Receive an Ethernet frame (non-blocking, single frame).
     pub fn recv_frame(&mut self, buffer: &mut [u8]) -> Result<usize, &'static str> {
         if !self.enabled {
             return Err("E1000: Device not enabled");
         }
 
         unsafe {
-            // Check if descriptor has data
             let desc = &RX_DESCS[self.rx_tail];
             if desc.status & 0x01 == 0 {
                 return Err("No packet available");
             }
 
-            // Copy packet data (using fast assembly memcpy)
             let len = desc.length as usize;
             if len > buffer.len() {
                 return Err("Buffer too small");
@@ -488,10 +503,7 @@ impl E1000Driver {
                 &RX_BUFFERS.data[self.rx_tail][..len],
             );
 
-            // Reset descriptor
             RX_DESCS[self.rx_tail].status = 0;
-
-            // Update tail pointer
             self.rx_tail = (self.rx_tail + 1) % NUM_RX_DESC;
             self.write_reg(E1000_REG_RDT, self.rx_tail as u32);
 
@@ -499,38 +511,143 @@ impl E1000Driver {
         }
     }
 
-    /// Send an Ethernet frame
-    pub fn send_frame(&mut self, data: &[u8]) -> Result<(), &'static str> {
+    /// Drain up to `budget` RX frames in a **single lock window**, writing
+    /// RDT once at the end.  Returns the number of frames received.
+    ///
+    /// Each `out_bufs[i]` is a `&mut [u8; 2048]`-sized slot; `out_lens[i]`
+    /// receives the actual frame length.  Both slices must have length ≥ budget.
+    pub fn recv_frames_burst(
+        &mut self,
+        out_bufs: &mut [[u8; 2048]],
+        out_lens: &mut [usize],
+        budget: usize,
+    ) -> usize {
+        if !self.enabled {
+            return 0;
+        }
+        let budget = budget.min(out_bufs.len()).min(out_lens.len()).min(NUM_RX_DESC);
+        let mut received = 0usize;
+        unsafe {
+            while received < budget {
+                let desc = &RX_DESCS[self.rx_tail];
+                if desc.status & 0x01 == 0 {
+                    break; // ring empty
+                }
+                let len = (desc.length as usize).min(2048);
+                crate::asm_bindings::fast_memcpy(
+                    &mut out_bufs[received][..len],
+                    &RX_BUFFERS.data[self.rx_tail][..len],
+                );
+                out_lens[received] = len;
+                RX_DESCS[self.rx_tail].status = 0;
+                self.rx_tail = (self.rx_tail + 1) % NUM_RX_DESC;
+                received += 1;
+            }
+            if received > 0 {
+                // Single RDT write for the whole batch — one PCIe posted write.
+                self.write_reg(E1000_REG_RDT, self.rx_tail as u32);
+            }
+        }
+        received
+    }
+
+    /// Enqueue one frame into the TX ring **without** writing RDT.
+    ///
+    /// The frame is not visible to the hardware until `flush_tx_batch()` is
+    /// called (or the batch depth reaches `TX_BATCH_MAX`, which auto-flushes).
+    /// Use `send_frame()` for single-frame paths; use this + `flush_tx_batch()`
+    /// for burst sends.
+    #[inline]
+    pub fn enqueue_tx_frame(&mut self, data: &[u8]) -> Result<(), &'static str> {
         if !self.enabled {
             return Err("E1000: Device not enabled");
         }
-
         if data.len() > 2048 {
             return Err("Frame too large");
         }
-
         unsafe {
-            // Non-blocking: descriptor must be available
             if TX_DESCS[self.tx_tail].status & E1000_TXD_STAT_DD == 0 {
                 return Err("TX busy");
             }
-
-            // Copy packet data (using fast assembly memcpy - 5x faster)
             crate::asm_bindings::fast_memcpy(
                 &mut TX_BUFFERS.data[self.tx_tail][..data.len()],
                 data,
             );
-
-            // Setup descriptor
+            // Only the last descriptor in the batch needs RS; intermediate ones
+            // use EOP alone so the NIC doesn't generate a write-back per frame.
             TX_DESCS[self.tx_tail].length = data.len() as u16;
-            TX_DESCS[self.tx_tail].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+            TX_DESCS[self.tx_tail].cmd = E1000_TXD_CMD_EOP; // RS added on flush
             TX_DESCS[self.tx_tail].status = 0;
-
-            // Update tail pointer
             self.tx_tail = (self.tx_tail + 1) % NUM_TX_DESC;
-            self.write_reg(E1000_REG_TDT, self.tx_tail as u32);
+            self.tx_batch_pending += 1;
+        }
+        if self.tx_batch_pending >= TX_BATCH_MAX {
+            self.flush_tx_batch();
+        }
+        Ok(())
+    }
 
-            Ok(())
+    /// Commit all pending TX descriptors to the hardware with a single RDT
+    /// write.  Sets RS on the last descriptor so we get one write-back IRQ.
+    #[inline]
+    pub fn flush_tx_batch(&mut self) {
+        if self.tx_batch_pending == 0 {
+            return;
+        }
+        unsafe {
+            // Back up to the last enqueued descriptor and set RS.
+            let last = (self.tx_tail + NUM_TX_DESC - 1) % NUM_TX_DESC;
+            TX_DESCS[last].cmd |= E1000_TXD_CMD_RS;
+        }
+        self.write_reg(E1000_REG_TDT, self.tx_tail as u32);
+        self.tx_batch_pending = 0;
+    }
+
+    /// Send a single Ethernet frame, flushing immediately.
+    ///
+    /// For bulk sends prefer `enqueue_tx_frame` + `flush_tx_batch`.
+    pub fn send_frame(&mut self, data: &[u8]) -> Result<(), &'static str> {
+        self.enqueue_tx_frame(data)?;
+        self.flush_tx_batch();
+        Ok(())
+    }
+
+    /// Send a slice of frames as one batched TX burst — single RDT write.
+    ///
+    /// Returns the number of frames successfully enqueued.
+    pub fn send_frames_batch(&mut self, frames: &[&[u8]]) -> usize {
+        let mut sent = 0usize;
+        for &frame in frames {
+            if self.enqueue_tx_frame(frame).is_err() {
+                break;
+            }
+            sent += 1;
+        }
+        if self.tx_batch_pending > 0 {
+            self.flush_tx_batch();
+        }
+        sent
+    }
+
+    /// Update the interrupt throttle register adaptively based on observed
+    /// RX frame rate.
+    ///
+    /// | frames_per_poll | ITR tier | interval  | max IRQ/s |
+    /// |-----------------|----------|-----------|----------|
+    /// | < 8             | IDLE     | 12.8 µs   | ~78 K    |
+    /// | 8 – 31          | MID      | 51.2 µs   | ~19.5 K  |
+    /// | ≥ 32            | BULK     | 128.0 µs  | ~7.8 K   |
+    pub fn set_itr_adaptive(&mut self, frames_per_poll: usize) {
+        let new_itr = if frames_per_poll < 8 {
+            E1000_ITR_IDLE
+        } else if frames_per_poll < 32 {
+            E1000_ITR_MID
+        } else {
+            E1000_ITR_BULK
+        };
+        if new_itr != self.last_itr {
+            self.write_reg(E1000_REG_ITR, new_itr);
+            self.last_itr = new_itr;
         }
     }
 

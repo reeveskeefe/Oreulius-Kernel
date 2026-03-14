@@ -67,6 +67,31 @@ const ARP_OP_REPLY: u16 = 2;
 const CAPNET_MAX_RETX: usize = 8;
 const CAPNET_RETX_INTERVAL_TICKS: u64 = 25;
 const CAPNET_RETX_MAX_RETRIES: u8 = 4;
+
+// DNS negative-cache: remember NXDOMAIN/timeout results for DNS_NEG_TTL_TICKS ticks
+// to avoid hammering the network for domains we know are unreachable.
+const DNS_NEG_CACHE_SIZE: usize = 8;
+const DNS_NEG_TTL_TICKS: u64 = 3000; // ~3 s at 1 kHz PIT
+const DNS_DOMAIN_MAX: usize = 64;   // max stored domain length
+
+#[derive(Clone, Copy)]
+struct DnsNegEntry {
+    active: bool,
+    expires: u64,
+    domain: [u8; DNS_DOMAIN_MAX],
+    domain_len: u8,
+}
+
+impl DnsNegEntry {
+    const fn empty() -> Self {
+        DnsNegEntry {
+            active: false,
+            expires: 0,
+            domain: [0u8; DNS_DOMAIN_MAX],
+            domain_len: 0,
+        }
+    }
+}
 const TEMPORAL_NETWORK_CONFIG_BYTES: usize = 32;
 const TEMPORAL_NETWORK_CONFIG_FLAG_DHCP: u8 = 1 << 0;
 const TEMPORAL_NETWORK_CONFIG_FLAG_HAS_INTERFACE: u8 = 1 << 1;
@@ -108,8 +133,12 @@ impl MacAddr {
 }
 
 // ============================================================================
-// ARP Cache
+// ARP Cache (hash-indexed for O(1) expected lookup)
 // ============================================================================
+
+/// Number of ARP cache slots.  Must be a power of two for the hash mask trick.
+const ARP_CACHE_SIZE: usize = 16;
+const ARP_CACHE_MASK: u32 = (ARP_CACHE_SIZE - 1) as u32;
 
 struct ArpEntry {
     ip: Ipv4Addr,
@@ -118,7 +147,8 @@ struct ArpEntry {
 }
 
 struct ArpCache {
-    entries: [ArpEntry; 16],
+    entries: [ArpEntry; ARP_CACHE_SIZE],
+    /// Round-robin victim pointer for collision eviction.
     lru_idx: usize,
 }
 
@@ -131,35 +161,63 @@ impl ArpCache {
         };
 
         ArpCache {
-            entries: [EMPTY; 16],
+            entries: [EMPTY; ARP_CACHE_SIZE],
             lru_idx: 0,
         }
     }
 
+    /// Hash an IPv4 address to a bucket index.
+    ///
+    /// Uses a multiplicative hash: multiply by a Knuth constant then take the
+    /// top bits.  This spreads sequential IPs across the table much better
+    /// than a simple modulo.
+    ///
+    /// $$b = \lfloor \text{ip} \times 2654435761 \rfloor \bmod 16$$
+    #[inline]
+    fn bucket(ip: Ipv4Addr) -> usize {
+        let key = ip.to_u32().wrapping_mul(2_654_435_761u32);
+        (key & ARP_CACHE_MASK) as usize
+    }
+
+    /// O(1) expected lookup: check primary bucket first, then linear probe.
     fn lookup(&self, ip: Ipv4Addr) -> Option<MacAddr> {
-        for entry in &self.entries {
-            if entry.valid && entry.ip == ip {
-                return Some(entry.mac);
+        let start = Self::bucket(ip);
+        // Probe up to ARP_CACHE_SIZE slots (full table scan worst-case with
+        // wrap-around, but in practice almost always one comparison).
+        for i in 0..ARP_CACHE_SIZE {
+            let idx = (start + i) % ARP_CACHE_SIZE;
+            let e = &self.entries[idx];
+            if !e.valid {
+                return None; // empty slot terminates probe chain
+            }
+            if e.ip == ip {
+                return Some(e.mac);
             }
         }
         None
     }
 
     fn insert(&mut self, ip: Ipv4Addr, mac: MacAddr) {
-        // Find empty slot or oldest entry
-        for entry in &mut self.entries {
-            if !entry.valid {
-                entry.ip = ip;
-                entry.mac = mac;
-                entry.valid = true;
+        let start = Self::bucket(ip);
+        // First pass: update existing entry or claim an empty slot.
+        for i in 0..ARP_CACHE_SIZE {
+            let idx = (start + i) % ARP_CACHE_SIZE;
+            let e = &mut self.entries[idx];
+            if e.valid && e.ip == ip {
+                e.mac = mac; // refresh
+                return;
+            }
+            if !e.valid {
+                e.ip = ip;
+                e.mac = mac;
+                e.valid = true;
                 return;
             }
         }
-
-        // Round-robin eviction: advance lru_idx so no single hot entry
-        // is permanently thrashed out of the cache.
+        // Table full: evict using round-robin starting from victim pointer
+        // to avoid repeatedly thrashing the primary bucket.
         let victim = self.lru_idx;
-        self.lru_idx = (self.lru_idx + 1) % self.entries.len();
+        self.lru_idx = (self.lru_idx + 1) % ARP_CACHE_SIZE;
         self.entries[victim].ip = ip;
         self.entries[victim].mac = mac;
         self.entries[victim].valid = true;
@@ -210,6 +268,7 @@ pub struct NetworkStack {
     capnet_retx: [CapNetRetransmitEntry; CAPNET_MAX_RETX],
     tcp: TcpManager,
     http_server: HttpServer,
+    dns_neg_cache: [DnsNegEntry; DNS_NEG_CACHE_SIZE],
 }
 
 impl NetworkStack {
@@ -225,6 +284,7 @@ impl NetworkStack {
             capnet_retx: [CapNetRetransmitEntry::empty(); CAPNET_MAX_RETX],
             tcp: TcpManager::new(),
             http_server: HttpServer::new(),
+            dns_neg_cache: [DnsNegEntry::empty(); DNS_NEG_CACHE_SIZE],
         }
     }
 
@@ -755,7 +815,9 @@ impl NetworkStack {
                     (Ipv4Addr([0, 0, 0, 0]), 0u16, 0usize, false)
                 } else {
                     slot.retries = slot.retries.saturating_add(1);
-                    slot.next_retry_tick = now.saturating_add(CAPNET_RETX_INTERVAL_TICKS);
+                    // Exponential backoff: base * 2^min(retries, 4) — caps at 16x = 400 ticks
+                    let backoff_shift = (slot.retries as u32).min(4);
+                    slot.next_retry_tick = now.saturating_add(CAPNET_RETX_INTERVAL_TICKS << backoff_shift);
                     frame_copy[..slot.len].copy_from_slice(&slot.frame[..slot.len]);
                     (slot.dest_ip, slot.dest_port, slot.len, true)
                 }
@@ -781,12 +843,26 @@ impl NetworkStack {
             return Err("Domain name too long");
         }
 
+        // ---- Negative-cache check ----
+        let now = crate::pit::get_ticks();
+        let dlen = domain.len().min(DNS_DOMAIN_MAX);
+        for slot in self.dns_neg_cache.iter_mut() {
+            if !slot.active { continue; }
+            if now >= slot.expires { slot.active = false; continue; }
+            if slot.domain_len as usize == dlen
+                && slot.domain[..dlen] == domain.as_bytes()[..dlen]
+            {
+                return Err("DNS negative cache");
+            }
+        }
+
         // Build DNS query
         let mut query = [0u8; 512];
         let mut offset = 0;
 
         // DNS header
-        query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Transaction ID
+        let txid = (crate::pit::get_ticks() as u16).wrapping_add(0xA5C3); // pseudo-random TX ID
+        query[offset..offset + 2].copy_from_slice(&txid.to_be_bytes()); // Transaction ID (randomized)
         offset += 2;
         query[offset..offset + 2].copy_from_slice(&[0x01, 0x00]); // Flags: standard query
         offset += 2;
@@ -840,6 +916,37 @@ impl NetworkStack {
                     }
                 }
             }
+        }
+
+        // ---- Insert into negative cache on timeout ----
+        let now = crate::pit::get_ticks();
+        let dlen = domain.len().min(DNS_DOMAIN_MAX);
+        // Find free slot or evict oldest
+        let mut oldest_idx = 0usize;
+        let mut oldest_exp = u64::MAX;
+        let mut inserted = false;
+        for (i, slot) in self.dns_neg_cache.iter_mut().enumerate() {
+            if !slot.active || now >= slot.expires {
+                slot.active = true;
+                slot.expires = now.saturating_add(DNS_NEG_TTL_TICKS);
+                slot.domain_len = dlen as u8;
+                slot.domain = [0u8; DNS_DOMAIN_MAX];
+                slot.domain[..dlen].copy_from_slice(&domain.as_bytes()[..dlen]);
+                inserted = true;
+                break;
+            }
+            if slot.expires < oldest_exp {
+                oldest_exp = slot.expires;
+                oldest_idx = i;
+            }
+        }
+        if !inserted {
+            let slot = &mut self.dns_neg_cache[oldest_idx];
+            slot.active = true;
+            slot.expires = now.saturating_add(DNS_NEG_TTL_TICKS);
+            slot.domain_len = dlen as u8;
+            slot.domain = [0u8; DNS_DOMAIN_MAX];
+            slot.domain[..dlen].copy_from_slice(&domain.as_bytes()[..dlen]);
         }
 
         Err("DNS timeout")
@@ -934,7 +1041,7 @@ impl NetworkStack {
     // Packet Processing
     // ========================================================================
 
-    /// Poll for incoming packets once
+    /// Poll for incoming packets once (reads from NIC internally).
     pub fn poll_once(&mut self) -> Result<(), &'static str> {
         let mut frame = [0u8; 1514];
         let frame_len = {
@@ -946,19 +1053,27 @@ impl NetworkStack {
             }
         };
 
-        if frame_len < 14 {
+        self.dispatch_frame(&frame[..frame_len])
+    }
+
+    /// Dispatch a pre-read Ethernet frame through the protocol stack.
+    ///
+    /// Used by the burst-drain path in `net_reactor` which reads frames from
+    /// the NIC in bulk (single lock) and then processes them without holding
+    /// the NIC lock.
+    pub fn dispatch_frame(&mut self, frame: &[u8]) -> Result<(), &'static str> {
+        if frame.len() < 14 {
             return Ok(()); // Too short
         }
 
-        // Parse EtherType
         let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
 
         match ethertype {
             ETHERTYPE_ARP => {
-                let _ = self.handle_arp(&frame[14..frame_len]);
+                let _ = self.handle_arp(&frame[14..]);
             }
             ETHERTYPE_IPV4 => {
-                let _ = self.handle_ipv4(&frame[14..frame_len]);
+                let _ = self.handle_ipv4(&frame[14..]);
             }
             _ => {}
         }
@@ -1010,7 +1125,7 @@ impl NetworkStack {
                 conn.last_send_tick = now;
             }
             if let Some((ep, seq, ack, flags, payload, len)) = action {
-                let _ = send_tcp_segment(self, ep, seq, ack, flags, &payload[..len]);
+                let _ = send_tcp_segment(self, ep, seq, ack, flags, &payload[..len], TCP_BUF_SIZE as u16);
             }
         }
     }
@@ -1694,7 +1809,8 @@ impl TcpManager {
         conn.rto_ticks = (crate::pit::get_frequency() as u64) * 3;
         conn.rtt_start = crate::pit::get_ticks();
         let ep = tcp_endpoint(conn);
-        if let Err(e) = send_syn_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_SYN) {
+        let adv_win = conn_recv_window(conn);
+        if let Err(e) = send_syn_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_SYN, adv_win) {
             conn.state = TcpState::Closed;
             conn.in_use = false;
             return Err(e);
@@ -1733,6 +1849,7 @@ impl TcpManager {
             if chunk_max == 0 { break; }
             let chunk = &data[sent_total..sent_total + chunk_max];
             let ep = tcp_endpoint(conn);
+            let adv_win = conn_recv_window(conn);
             send_tcp_segment(
                 stack,
                 ep,
@@ -1740,6 +1857,7 @@ impl TcpManager {
                 conn.rcv_nxt,
                 TCP_FLAG_ACK | TCP_FLAG_PSH,
                 chunk,
+                adv_win,
             )?;
             record_last(
                 conn,
@@ -1774,6 +1892,7 @@ impl TcpManager {
         if conn.state == TcpState::Established {
             conn.state = TcpState::FinWait1;
             let ep = tcp_endpoint(conn);
+            let adv_win = conn_recv_window(conn);
             send_tcp_segment(
                 stack,
                 ep,
@@ -1781,6 +1900,7 @@ impl TcpManager {
                 conn.rcv_nxt,
                 TCP_FLAG_FIN | TCP_FLAG_ACK,
                 &[],
+                adv_win,
             )?;
             record_last(
                 conn,
@@ -1795,6 +1915,7 @@ impl TcpManager {
         if conn.state == TcpState::CloseWait {
             conn.state = TcpState::LastAck;
             let ep = tcp_endpoint(conn);
+            let adv_win = conn_recv_window(conn);
             send_tcp_segment(
                 stack,
                 ep,
@@ -1802,6 +1923,7 @@ impl TcpManager {
                 conn.rcv_nxt,
                 TCP_FLAG_FIN | TCP_FLAG_ACK,
                 &[],
+                adv_win,
             )?;
             record_last(
                 conn,
@@ -1879,10 +2001,10 @@ impl TcpManager {
                 }
             }
             if let Some((ep, seq_out, ack_out)) = delayed_ack {
-                let _ = send_tcp_segment(stack, ep, seq_out, ack_out, TCP_FLAG_ACK, &[]);
+                let _ = send_tcp_segment(stack, ep, seq_out, ack_out, TCP_FLAG_ACK, &[], TCP_BUF_SIZE as u16);
             }
             if let Some((ep, seq, ack, flags, payload, len)) = action {
-                let _ = send_tcp_segment(stack, ep, seq, ack, flags, &payload[..len]);
+                let _ = send_tcp_segment(stack, ep, seq, ack, flags, &payload[..len], TCP_BUF_SIZE as u16);
             }
         }
     }
@@ -1932,6 +2054,16 @@ impl HttpServer {
     }
 }
 
+/// Compute the receive window to advertise for a connection.
+///
+/// Shrinks as the receive buffer fills so the peer doesn't overrun us:
+/// $$W_{\text{adv}} = \min(\text{TCP\_BUF\_SIZE} - \text{recv\_len},\; 65535)$$
+#[inline]
+fn conn_recv_window(conn: &TcpConn) -> u16 {
+    let avail = TCP_BUF_SIZE.saturating_sub(conn.recv_len);
+    avail.min(0xFFFF) as u16
+}
+
 fn send_tcp_segment(
     stack: &mut NetworkStack,
     ep: TcpEndpoint,
@@ -1939,6 +2071,7 @@ fn send_tcp_segment(
     ack: u32,
     flags: u16,
     payload: &[u8],
+    adv_window: u16,
 ) -> Result<(), &'static str> {
     let dest_mac = if let Some(mac) = stack.arp_cache.lookup(ep.remote_ip) {
         mac
@@ -1987,8 +2120,8 @@ fn send_tcp_segment(
     frame[off + 8..off + 12].copy_from_slice(&ack.to_be_bytes());
     frame[off + 12] = ((tcp_header_len / 4) as u8) << 4;
     frame[off + 13] = (flags & 0xFF) as u8;
-    let window: u16 = (TCP_BUF_SIZE as u64).min(0xFFFF) as u16;
-    frame[off + 14..off + 16].copy_from_slice(&window.to_be_bytes());
+    // Advertise the caller-supplied receive window (already clamped to 65535).
+    frame[off + 14..off + 16].copy_from_slice(&adv_window.to_be_bytes());
     frame[off + 16..off + 18].copy_from_slice(&0u16.to_be_bytes());
     frame[off + 18..off + 20].copy_from_slice(&0u16.to_be_bytes());
     off += tcp_header_len;
@@ -2022,6 +2155,7 @@ fn send_syn_segment(
     seq: u32,
     ack: u32,
     flags: u16,
+    adv_window: u16,
 ) -> Result<(), &'static str> {
     let dest_mac = if let Some(mac) = stack.arp_cache.lookup(ep.remote_ip) {
         mac
@@ -2072,8 +2206,7 @@ fn send_syn_segment(
     frame[off + 8..off + 12].copy_from_slice(&ack.to_be_bytes());
     frame[off + 12] = ((tcp_header_len / 4) as u8) << 4;
     frame[off + 13] = (flags & 0xFF) as u8;
-    let window: u16 = (TCP_BUF_SIZE as u64).min(0xFFFF) as u16;
-    frame[off + 14..off + 16].copy_from_slice(&window.to_be_bytes());
+    frame[off + 14..off + 16].copy_from_slice(&adv_window.to_be_bytes());
     frame[off + 16..off + 18].copy_from_slice(&0u16.to_be_bytes()); // checksum placeholder
     frame[off + 18..off + 20].copy_from_slice(&0u16.to_be_bytes()); // urgent pointer
     frame[off + 20..off + 28].copy_from_slice(&options);
@@ -2475,7 +2608,7 @@ impl NetworkStack {
             }
 
             if let Some((ep, seq_out, ack_out)) = ack_action {
-                let _ = send_tcp_segment(self, ep, seq_out, ack_out, TCP_FLAG_ACK, &[]);
+                let _ = send_tcp_segment(self, ep, seq_out, ack_out, TCP_FLAG_ACK, &[], TCP_BUF_SIZE as u16);
             }
             if let Some((idx, conn_id)) = established_from_listen {
                 let idx = idx as usize;
@@ -2536,12 +2669,14 @@ impl NetworkStack {
                     record_last(conn, TCP_FLAG_SYN | TCP_FLAG_ACK, seq_out, ack_out, &[]);
                     conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
                     let _ = idx;
+                    let adv_win = TCP_BUF_SIZE as u16;
                     let _ = send_syn_segment(
                         self,
                         ep,
                         seq_out,
                         ack_out,
                         TCP_FLAG_SYN | TCP_FLAG_ACK,
+                        adv_win,
                     );
                     return Ok(());
                 }
@@ -2567,7 +2702,7 @@ impl NetworkStack {
         };
 
         let body = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOreulia HTTP server online.\n";
-        let _ = send_tcp_segment(self, ep, seq, ack, TCP_FLAG_ACK | TCP_FLAG_PSH, body);
+        let _ = send_tcp_segment(self, ep, seq, ack, TCP_FLAG_ACK | TCP_FLAG_PSH, body, TCP_BUF_SIZE as u16);
 
         let (ep2, seq2, ack2) = {
             let conn = match self.tcp.find_conn_id_mut(conn_id) {
@@ -2587,7 +2722,7 @@ impl NetworkStack {
             (tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt)
         };
 
-        let _ = send_tcp_segment(self, ep2, seq2, ack2, TCP_FLAG_FIN | TCP_FLAG_ACK, &[]);
+        let _ = send_tcp_segment(self, ep2, seq2, ack2, TCP_FLAG_FIN | TCP_FLAG_ACK, &[], TCP_BUF_SIZE as u16);
         if let Some(conn) = self.tcp.find_conn_id_mut(conn_id) {
             record_last(
                 conn,

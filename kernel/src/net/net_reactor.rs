@@ -29,11 +29,12 @@ use super::netstack::{Ipv4Addr, MacAddr, NetworkStack};
 const MAX_STR: usize = 128;
 const RX_BUDGET: usize = 64;
 const MAX_TCP_IO: usize = 65_535;
-/// Max bytes embedded inline in a `NetRequest::TcpSend` enum variant.
-/// Kept at 4 KiB so the enum (and every stack frame that holds one) stays
-/// small.  The public `tcp_send()` API splits larger buffers into multiple
-/// requests automatically, so callers see no difference.
-const MAX_TCP_SEND_CHUNK: usize = 4_096;
+/// Max bytes per `NetRequest::TcpSend` variant — raised to 16 KiB so a
+/// typical 64 KiB window fits in 4 reactor dispatches instead of 16.
+const MAX_TCP_SEND_CHUNK: usize = 16_384;
+/// Number of per-burst RX frame slots used by `recv_frames_burst`.
+/// Must be ≤ RX_BUDGET and fits in a single poll cycle.
+const RX_BURST_BUFS: usize = RX_BUDGET;
 const MAX_TEMPORAL_SOCKET_PREVIEW: usize = crate::temporal::TEMPORAL_SOCKET_PAYLOAD_PREVIEW_BYTES;
 const TEMPORAL_NETWORK_CONFIG_BYTES: usize = 32;
 
@@ -176,23 +177,58 @@ pub fn on_irq() {
     NET_IRQ_PENDING.fetch_add(1, Ordering::Relaxed);
 }
 
-fn process_irq(stack: &mut NetworkStack) {
-    let mut pending = NET_IRQ_PENDING.swap(0, Ordering::AcqRel);
-    // Cap budget so a sudden IRQ storm can't starve the rest of the loop.
-    let mut budget = RX_BUDGET;
-    while pending > 0 && budget > 0 {
-        let _ = stack.poll_once();
-        pending -= 1;
-        budget -= 1;
+/// Static storage for burst RX frame data (avoids stack allocations in the
+/// reactor task which has limited stack space).
+static mut BURST_BUFS: [[u8; 2048]; RX_BURST_BUFS] = [[0u8; 2048]; RX_BURST_BUFS];
+static mut BURST_LENS: [usize; RX_BURST_BUFS] = [0usize; RX_BURST_BUFS];
+
+/// Drain up to `RX_BUDGET` frames from the NIC in a single lock window,
+/// then dispatch each frame through the network stack.
+/// Returns the number of frames processed (used for yield/ITR decisions).
+fn process_irq(stack: &mut NetworkStack) -> usize {
+    let pending = NET_IRQ_PENDING.swap(0, Ordering::AcqRel);
+    if pending == 0 {
+        return 0;
     }
-    if pending > 0 {
-        NET_IRQ_PENDING.fetch_add(pending, Ordering::Relaxed);
+
+    // Drain up to RX_BUDGET frames with one spinlock acquire + one RDT write.
+    let received = {
+        let mut driver = super::e1000::E1000_DRIVER.lock();
+        match driver.as_mut() {
+            None => 0,
+            Some(nic) => unsafe {
+                nic.recv_frames_burst(&mut BURST_BUFS, &mut BURST_LENS, RX_BURST_BUFS)
+            },
+        }
+    };
+
+    // Update adaptive ITR based on observed burst depth.
+    {
+        let mut driver = super::e1000::E1000_DRIVER.lock();
+        if let Some(nic) = driver.as_mut() {
+            nic.set_itr_adaptive(received);
+        }
     }
+
+    // Process each frame through the network stack (no NIC lock held).
+    for i in 0..received {
+        let len = unsafe { BURST_LENS[i] };
+        if len < 14 { continue; }
+        let _ = stack.dispatch_frame(unsafe { &BURST_BUFS[i][..len] });
+    }
+
+    // If we hit the budget ceiling there may be more frames; re-arm the pending
+    // counter so the next loop iteration drains them too.
+    if received >= RX_BURST_BUFS {
+        NET_IRQ_PENDING.fetch_add(1, Ordering::Relaxed);
+    }
+
+    received
 }
 
-fn handle_request(stack: &mut NetworkStack) {
+fn handle_request(stack: &mut NetworkStack) -> bool {
     if REQ_STATE.load(Ordering::Acquire) != 1 {
-        return;
+        return false;
     }
     let req = unsafe { *REQ_SLOT.req.get() };
     let resp = match req {
@@ -372,6 +408,7 @@ fn handle_request(stack: &mut NetworkStack) {
         *REQ_SLOT.resp.get() = resp;
     }
     REQ_STATE.store(2, Ordering::Release);
+    true
 }
 
 fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
@@ -415,18 +452,25 @@ pub fn run() -> ! {
             marked_ready = true;
         }
 
-        handle_request(stack);
+        // Track whether this iteration did any real work.
+        let mut did_work = false;
 
-        // --- Unconditional RX drain -------------------------------------------
-        // Always poll the NIC at least once per loop iteration so that frames
-        // which arrived between the last IRQ and now are not delayed a full
-        // scheduler quantum.  With IMS now enabled the hardware also raises an
-        // interrupt (throttled to ~51 µs), but we don't want to depend on that
-        // exclusively.
-        let _ = stack.poll_once();
+        if handle_request(stack) {
+            did_work = true;
+        }
 
-        // Drain any additional IRQ-signalled work (up to RX_BUDGET frames).
-        process_irq(stack);
+        // --- Unconditional RX poll (one frame via existing path) --------------
+        // Catches frames that arrived between the last IRQ and now.
+        if stack.poll_once().is_ok() {
+            // poll_once returns Ok(()) whether or not a frame was received;
+            // rely on process_irq for work-done accounting.
+        }
+
+        // --- Burst RX drain (IRQ-signalled frames, single lock) ---------------
+        let burst_frames = process_irq(stack);
+        if burst_frames > 0 {
+            did_work = true;
+        }
 
         let now = crate::pit::get_ticks();
         while last_tick < now {
@@ -434,13 +478,12 @@ pub fn run() -> ! {
             last_tick += 1;
         }
 
-        // --- Conditional yield -----------------------------------------------
-        // Yield to the scheduler only when there is genuinely nothing to do:
-        //   no hardware interrupt pending, no request waiting, and we found no
-        //   new RX frame on the unconditional poll above.
-        // This keeps the reactor spinning during bulk transfers without
-        // burning a full quantum on each frame.
-        if NET_IRQ_PENDING.load(Ordering::Relaxed) == 0
+        // --- Smart yield -----------------------------------------------------
+        // Only yield when this iteration produced zero work AND no new IRQ or
+        // request has arrived.  During bulk transfers `did_work` stays true
+        // continuously so we never surrender the CPU unnecessarily.
+        if !did_work
+            && NET_IRQ_PENDING.load(Ordering::Relaxed) == 0
             && REQ_STATE.load(Ordering::Relaxed) == 0
         {
             crate::quantum_scheduler::yield_now();
