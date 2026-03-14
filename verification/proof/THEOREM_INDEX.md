@@ -20,6 +20,6 @@ Dependencies: <Theorem IDs only>
 Implementation Surface: <file paths>
 Proof Artifact: <path>
 CI Evidence: <job URL/hash>
-Status: <Planned|InProgress|Proven|Invalidated|Blocked>
+Template Status: <Planned|InProgress|Proven|Invalidated|Blocked>
 Owner: <maintainer>
 Last Verified Commit: <sha>

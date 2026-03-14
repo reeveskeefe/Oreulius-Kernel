@@ -31,6 +31,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 pub const MAX_RECORD_SIZE: usize = 64 * 1024;
 
 /// Maximum number of log records (for v0 RAM-backed)
+#[cfg(target_arch = "x86")]
+pub const MAX_LOG_RECORDS: usize = 64;
+#[cfg(not(target_arch = "x86"))]
 pub const MAX_LOG_RECORDS: usize = 1024;
 
 /// Log record magic number for validation
@@ -240,7 +243,13 @@ impl AppendLog {
 // Snapshot
 // ============================================================================
 
-/// Maximum snapshot size (1 MiB for v0)
+/// Maximum snapshot size.
+///
+/// The 32-bit x86 build keeps this smaller so the Multiboot image stays within
+/// what GRUB can comfortably allocate during CI boot.
+#[cfg(target_arch = "x86")]
+pub const MAX_SNAPSHOT_SIZE: usize = 256 * 1024;
+#[cfg(not(target_arch = "x86"))]
 pub const MAX_SNAPSHOT_SIZE: usize = 1024 * 1024;
 const SNAPSHOT_DISK_MAGIC: u32 = 0x4F_52_53_50; // "ORSP"
 const SNAPSHOT_DISK_VERSION_V1: u16 = 1;
@@ -324,7 +333,12 @@ fn seed_snapshot_nonce() {
     // Mix hardware RNG (if present) with cycle counter to avoid nonce reuse across reboot even
     // when no prior snapshot is readable (e.g., corruption).
     let mut seed = 0xA5A5_5A5A_F00D_CAFE_u64;
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    {
+        seed ^= crate::asm_bindings::read_timestamp();
+        seed ^= 0x9E37_79B9_7F4A_7C15u64.rotate_left(7);
+    }
+    #[cfg(all(not(target_arch = "aarch64"), not(target_arch = "x86_64")))]
     {
         seed ^= crate::asm_bindings::rdtsc_begin();
         if let Some(r) = crate::asm_bindings::try_rdrand() {
@@ -719,8 +733,12 @@ impl PersistenceService {
             return Err(PersistenceError::PermissionDenied);
         }
         self.temporal_snapshot.write(data, last_offset)?;
-        let _ =
-            Self::write_snapshot_to_durable(SNAPSHOT_DISK_SLOT_TEMPORAL, &self.temporal_snapshot);
+        // Avoid the file-backed fallback here: temporal writes are often issued while the
+        // caller already holds the VFS lock, and the file backend re-enters VFS.
+        let _ = Self::write_snapshot_to_preferred_durable(
+            SNAPSHOT_DISK_SLOT_TEMPORAL,
+            &self.temporal_snapshot,
+        );
         Ok(())
     }
 
@@ -1384,7 +1402,13 @@ pub fn clear_snapshot_backend() {
 
 /// Initialize the persistence service
 pub fn init() {
+    #[cfg(target_arch = "x86_64")]
+    crate::serial_println!("[PERSIST] init begin");
     seed_snapshot_nonce();
+    #[cfg(target_arch = "x86_64")]
+    crate::serial_println!("[PERSIST] seed complete");
     let mut svc = PERSISTENCE.lock();
     svc.recover_snapshots_from_durable();
+    #[cfg(target_arch = "x86_64")]
+    crate::serial_println!("[PERSIST] recovery complete");
 }

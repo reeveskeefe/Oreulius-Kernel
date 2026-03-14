@@ -121,7 +121,7 @@ echo "[3/3] Linking x86_64 kernel ELF..."
   "${ASM_PIC}" \
   "${ASM_SYSENTER}" \
   "${ASM_SGX}" \
-  --whole-archive "${RUST_LIB}" --no-whole-archive
+  "${RUST_LIB}"
 
 echo "Built: ${OUT_ELF}"
 echo "Note: ISO is not rebuilt by this script."

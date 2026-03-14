@@ -36,6 +36,7 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use crate::arch::mmu as arch_mmu;
 use crate::capability::{self, CapabilityType, Rights};
 use crate::fs;
@@ -11877,7 +11878,7 @@ impl WasmError {
 enum RuntimeInstanceSlot {
     Empty,
     Busy(ProcessId),
-    Ready(WasmInstance),
+    Ready(Box<WasmInstance>),
 }
 
 const MAX_WASM_RUNTIME_INSTANCES: usize = 16;
@@ -12037,7 +12038,7 @@ impl WasmRuntime {
         if x64_diag {
             crate::serial_println!("[X64-JF] instantiate=instance-new");
         }
-        let mut instance = WasmInstance::new(module, process_id, slot_idx);
+        let mut instance = Box::new(WasmInstance::new(module, process_id, slot_idx));
         #[cfg(target_arch = "x86_64")]
         if x64_diag {
             crate::serial_println!("[X64-JF] instantiate=init-from-module");
@@ -12119,7 +12120,7 @@ impl WasmRuntime {
         }
 
         match &mut instances[instance_id] {
-            RuntimeInstanceSlot::Ready(instance) => Ok(f(instance)),
+            RuntimeInstanceSlot::Ready(instance) => Ok(f(instance.as_mut())),
             RuntimeInstanceSlot::Busy(_) => Err(WasmError::InstanceBusy),
             RuntimeInstanceSlot::Empty => Err(WasmError::InvalidModule),
         }
@@ -12155,7 +12156,7 @@ impl WasmRuntime {
             }
         };
 
-        let result = f(&mut instance);
+        let result = f(instance.as_mut());
 
         let mut instances = self.instances.lock();
         if instance_id >= MAX_WASM_RUNTIME_INSTANCES {

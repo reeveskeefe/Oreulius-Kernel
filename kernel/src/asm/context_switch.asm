@@ -7,6 +7,7 @@ global asm_save_context
 global asm_load_context
 global thread_start_trampoline
 global _thread_start_trampoline
+global kernel_user_entry_trampoline
 global asm_dbg_ctx_ptr
 global asm_dbg_eip_target
 global asm_dbg_esp_loaded
@@ -172,6 +173,31 @@ _thread_start_trampoline:
 .halt:
     hlt
     jmp .halt
+
+; User-mode entry trampoline for 32-bit processes.
+; Expected stack layout:
+;   [esp+0] = user EIP
+;   [esp+4] = user ESP
+kernel_user_entry_trampoline:
+    pop ebx                 ; user EIP
+    pop edx                 ; user ESP
+
+    cli
+    mov ax, 0x23            ; user data selector (ring 3)
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+
+    push dword 0x23         ; SS
+    push edx                ; ESP
+    pushfd
+    pop ecx
+    or ecx, 0x200           ; IF=1 in user mode
+    push ecx
+    push dword 0x1B         ; CS
+    push ebx                ; EIP
+    iretd
 
 section .bss
 align 4

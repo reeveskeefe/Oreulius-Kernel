@@ -23,7 +23,7 @@
 </div>
 
 <div align="center">
-<img src="oreuliuswhitebackground.png" width="640" alt="Oreulia kernel logo">
+<img src="docs/assets/oreuliuswhitebackground.png" width="640" alt="Oreulia kernel logo">
 </div>
 
 ## Overview
@@ -49,7 +49,7 @@ It is designed for technical audiences who care about:
 - Built-in verification and fuzz workflows runnable from the shell.
 
 <div align="center">
-<img src="opencommandlineinterface.png" width="640" alt="Oreulia shell interface">
+<img src="docs/assets/opencommandlineinterface.png" width="640" alt="Oreulia shell interface">
 </div>
 
 ## Why It Is Different

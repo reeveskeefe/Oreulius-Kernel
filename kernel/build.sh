@@ -118,7 +118,7 @@ echo "[4/6] Linking kernel (boot.o + asm/*.o + liboreulia_kernel.a)..."
   target/syscall_entry.o \
   target/sgx.o \
   target/temporal.o \
-  --whole-archive "${RUST_LIB}" --no-whole-archive
+  "${RUST_LIB}"
 
 echo "[5/6] Creating ISO..."
 mkdir -p iso/boot/grub

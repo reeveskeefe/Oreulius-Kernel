@@ -880,31 +880,17 @@ fn shell_prompt() {
 
 #[inline]
 fn shell_try_read_input_byte() -> Option<u8> {
+    if !STRICT_UART_IRQ_MODE.load(Ordering::Relaxed) {
+        uart().disable_interrupts();
+        let _ = uart().irq_drain_rx_to_buffer();
+        return uart()
+            .try_read_buffered_byte()
+            .or_else(|| uart().try_read_byte());
+    }
+
     if discovered_uart_irq_intid().is_some() {
         if let Some(b) = uart().try_read_buffered_byte() {
             return Some(b);
-        }
-        if STRICT_UART_IRQ_MODE.load(Ordering::Relaxed) {
-            return None;
-        }
-        // QEMU/firmware combinations may deliver RX IRQs intermittently. Keep an
-        // interrupt-first fallback, but only poll after the UART IRQ path has
-        // been quiet for at least one timer tick to avoid racing/duplicating
-        // bytes while IRQ-driven draining is active.
-        let irq_count = UART_IRQ_COUNT.load(Ordering::Relaxed);
-        if irq_count == 0 {
-            let _ = uart().irq_drain_rx_to_buffer();
-            return uart()
-                .try_read_buffered_byte()
-                .or_else(|| uart().try_read_byte());
-        }
-        let last_irq_tick = UART_LAST_IRQ_TICK.load(Ordering::Relaxed);
-        let now_ticks = TIMER_TICKS.load(Ordering::Relaxed);
-        if now_ticks.saturating_sub(last_irq_tick) >= 1 {
-            let _ = uart().irq_drain_rx_to_buffer();
-            return uart()
-                .try_read_buffered_byte()
-                .or_else(|| uart().try_read_byte());
         }
         None
     } else {
@@ -3202,6 +3188,10 @@ pub(crate) fn run_serial_shell() -> ! {
             }
         }
         if !made_progress {
+            if !STRICT_UART_IRQ_MODE.load(Ordering::Relaxed) {
+                core::hint::spin_loop();
+                continue;
+            }
             unsafe {
                 core::arch::asm!("wfi", options(nomem, nostack));
             }

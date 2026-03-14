@@ -55,13 +55,13 @@ SECTIONS {
     _jit_arena_start = .;
     .jit_arena (NOLOAD) : {
         . += __jit_arena_size;
-    } :data
+    } :NONE
     _jit_arena_end = .;
 
     . = ALIGN(4096);
     _heap_start = .;
     .heap (NOLOAD) : {
         . += 0x1000000; /* 16 MB heap */
-    } :data
+    } :NONE
     _heap_end = .;
 }

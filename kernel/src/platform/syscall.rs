@@ -1745,6 +1745,37 @@ pub extern "C" fn syscall_handler_rust(regs: *const SavedRegisters) -> u64 {
     ((result.errno as u64) << 32) | ((result.value as u32) as u64)
 }
 
+/// x86_64 SYSCALL fast-path dispatcher used by `x86_64_sysenter.asm`.
+///
+/// The legacy Rust syscall core takes a saved-register frame, but the SYSCALL
+/// entry stub already has the decoded arguments in registers. This thin wrapper
+/// keeps the assembly link surface stable without duplicating the full frame
+/// layout in assembly.
+#[no_mangle]
+#[cfg(target_arch = "x86_64")]
+pub extern "C" fn oreulia_syscall_dispatch(
+    nr: u64,
+    a1: u64,
+    a2: u64,
+    a3: u64,
+    a4: u64,
+    a5: u64,
+    _a6: u64,
+) -> u64 {
+    let args = SyscallArgs {
+        number: nr as u32,
+        arg1: a1 as u32,
+        arg2: a2 as u32,
+        arg3: a3 as u32,
+        arg4: a4 as u32,
+        arg5: a5 as u32,
+    };
+
+    let caller_pid = get_current_pid();
+    let result = handle_syscall(args, caller_pid);
+    ((result.errno as u64) << 32) | ((result.value as u32) as u64)
+}
+
 /// Initialize syscall subsystem
 pub fn init() {
     // Register INT 0x80 handler

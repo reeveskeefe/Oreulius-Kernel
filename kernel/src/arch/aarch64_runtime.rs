@@ -115,6 +115,7 @@ pub fn enter_runtime() -> ! {
     uart_log_line("[A64] enable interrupts...");
     crate::arch::enable_interrupts();
     crate::arch::aarch64_virt::self_test_sync_exception();
+    let _scheduler_irq_flags = unsafe { crate::scheduler_platform::irq_save_disable() };
     uart_log_line("[A64] bring-up complete; starting shared scheduler");
 
     crate::quantum_scheduler::init();

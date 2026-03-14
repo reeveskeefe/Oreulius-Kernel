@@ -16,7 +16,12 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+
+#[cfg(target_has_atomic = "64")]
+type CrashTickAtomic = core::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+type CrashTickAtomic = AtomicUsize;
 
 // ============================================================================
 // Constants
@@ -41,7 +46,7 @@ pub struct CrashSlot {
     /// SLOT_MAGIC when this slot contains a valid record, 0 otherwise.
     pub magic: AtomicU32,
     /// Monotonic tick at the time of the panic (from `crate::arch::time::ticks()`).
-    pub tick: AtomicU64,
+    pub tick: CrashTickAtomic,
     /// Boot session counter (incremented once per `rust_main` entry).
     pub boot_session: AtomicU32,
     /// Sequence number assigned by the writer.
@@ -73,6 +78,28 @@ impl AtomicU8Byte {
 unsafe impl Sync for CrashSlot {}
 unsafe impl Send for CrashSlot {}
 
+#[inline]
+fn crash_tick_store(dst: &CrashTickAtomic, value: u64) {
+    #[cfg(target_has_atomic = "64")]
+    dst.store(value, Ordering::SeqCst);
+
+    #[cfg(not(target_has_atomic = "64"))]
+    dst.store(value.min(usize::MAX as u64) as usize, Ordering::SeqCst);
+}
+
+#[inline]
+fn crash_tick_load(src: &CrashTickAtomic) -> u64 {
+    #[cfg(target_has_atomic = "64")]
+    {
+        src.load(Ordering::SeqCst)
+    }
+
+    #[cfg(not(target_has_atomic = "64"))]
+    {
+        src.load(Ordering::SeqCst) as u64
+    }
+}
+
 // We need a const initialiser for the location/message arrays.
 #[allow(unused_macros)]
 macro_rules! zero_atomic_bytes {
@@ -87,7 +114,7 @@ impl CrashSlot {
     pub const fn new() -> Self {
         CrashSlot {
             magic: AtomicU32::new(0),
-            tick: AtomicU64::new(0),
+            tick: CrashTickAtomic::new(0),
             boot_session: AtomicU32::new(0),
             seq: AtomicUsize::new(0),
             location: {
@@ -168,10 +195,10 @@ pub fn record_panic(info: &core::panic::PanicInfo) {
     #[cfg(not(target_arch = "aarch64"))]
     {
         let t = crate::asm_bindings::rdtsc_begin();
-        slot.tick.store(t, Ordering::SeqCst);
+        crash_tick_store(&slot.tick, t);
     }
     #[cfg(target_arch = "aarch64")]
-    slot.tick.store(0, Ordering::SeqCst);
+    crash_tick_store(&slot.tick, 0);
 
     slot.boot_session
         .store(BOOT_SESSION.load(Ordering::SeqCst), Ordering::SeqCst);
@@ -243,7 +270,7 @@ pub fn for_each_crash<F: FnMut(usize, u64, u32, [u8; MSG_CAP], [u8; MSG_CAP])>(m
             continue;
         }
         let seq = slot.seq.load(Ordering::SeqCst);
-        let tick = slot.tick.load(Ordering::SeqCst);
+        let tick = crash_tick_load(&slot.tick);
         let session = slot.boot_session.load(Ordering::SeqCst);
         let mut loc = [0u8; MSG_CAP];
         let mut msg = [0u8; MSG_CAP];

@@ -81,20 +81,23 @@ asm_sha256_init:
 ; rdi = state pointer (8 × u32, big-endian word order)
 ; rsi = 64-byte message block pointer
 ;
-; Intel SHA-NI register conventions:
-;   xmm0 = ABEF (state words A,B,E,F packed as [E,F,B,A] in low→high dword order)
-;   xmm1 = CDGH (state words C,D,G,H)
+; Intel SHA-NI register conventions used here:
+;   xmm6 = working ABEF state
+;   xmm7 = working CDGH state
+;   xmm0 = implicit round input for sha256rnds2
 ;   xmm2-xmm5 = message schedule W[0..15] as groups of 4 dwords
 ; ---------------------------------------------------------------------------
 global asm_sha256_update
 asm_sha256_update:
     ; Save callee-saved XMM registers (ABI requirement on Windows; good practice)
-    sub     rsp, 80
+    sub     rsp, 112
     movdqu  [rsp +  0], xmm6
     movdqu  [rsp + 16], xmm7
     movdqu  [rsp + 32], xmm8
     movdqu  [rsp + 48], xmm9
-    movdqu  [rsp + 64], xmm10  ; only need [rsp+64] if we use xmm10
+    movdqu  [rsp + 64], xmm10
+    movdqu  [rsp + 80], xmm11
+    movdqu  [rsp + 96], xmm12
 
     lea     rdx, [rel sha256_k]
 
@@ -134,9 +137,11 @@ asm_sha256_update:
     movlhps xmm0, xmm1          ; xmm0 = [A,B,E,F] (lo64 from old xmm0, hi64 from xmm1)
     movhlps xmm9, xmm1          ; xmm9 = [G,H,C,D]
     pshufd  xmm1, xmm9, 0x4E   ; swap 64-bit halves: xmm1=[C,D,G,H]
-    ; Save initial state for final add
-    movdqa  xmm6, xmm0          ; initial ABEF
-    movdqa  xmm7, xmm1          ; initial CDGH
+    ; Move the working state out of xmm0/xmm1 so xmm0 stays free for SHA-NI.
+    movdqa  xmm6, xmm0
+    movdqa  xmm7, xmm1
+    movdqa  xmm11, xmm6         ; initial ABEF
+    movdqa  xmm12, xmm7         ; initial CDGH
 
     ; Load and byte-swap message schedule (16 dwords = 4 xmm registers)
     ; The message words must be in big-endian byte order.
@@ -152,34 +157,34 @@ asm_sha256_update:
     pshufb  xmm5, xmm10
 
     ; ---- SHA-256 rounds 0-3 ----
-    movdqa  xmm9, xmm2
-    paddd   xmm9, [rdx + 0*16]
-    sha256rnds2 xmm1, xmm0, xmm9      ; rounds with low two words of xmm9
-    pshufd  xmm9, xmm9, 0x0E          ; high two words
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm2
+    paddd   xmm0, [rdx + 0*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
 
     ; ---- rounds 4-7 ----
-    movdqa  xmm9, xmm3
-    paddd   xmm9, [rdx + 1*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm3
+    paddd   xmm0, [rdx + 1*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     sha256msg1  xmm2, xmm3
 
     ; ---- rounds 8-11 ----
-    movdqa  xmm9, xmm4
-    paddd   xmm9, [rdx + 2*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm4
+    paddd   xmm0, [rdx + 2*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     sha256msg1  xmm3, xmm4
 
     ; ---- rounds 12-15 ----
-    movdqa  xmm9, xmm5
-    paddd   xmm9, [rdx + 3*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm5
+    paddd   xmm0, [rdx + 3*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm5
     palignr xmm8, xmm4, 4
     paddd   xmm2, xmm8
@@ -187,11 +192,11 @@ asm_sha256_update:
     sha256msg1  xmm4, xmm5
 
     ; ---- rounds 16-19 ----
-    movdqa  xmm9, xmm2
-    paddd   xmm9, [rdx + 4*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm2
+    paddd   xmm0, [rdx + 4*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm2
     palignr xmm8, xmm5, 4
     paddd   xmm3, xmm8
@@ -199,11 +204,11 @@ asm_sha256_update:
     sha256msg1  xmm5, xmm2
 
     ; ---- rounds 20-23 ----
-    movdqa  xmm9, xmm3
-    paddd   xmm9, [rdx + 5*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm3
+    paddd   xmm0, [rdx + 5*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm3
     palignr xmm8, xmm2, 4
     paddd   xmm4, xmm8
@@ -211,11 +216,11 @@ asm_sha256_update:
     sha256msg1  xmm2, xmm3
 
     ; ---- rounds 24-27 ----
-    movdqa  xmm9, xmm4
-    paddd   xmm9, [rdx + 6*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm4
+    paddd   xmm0, [rdx + 6*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm4
     palignr xmm8, xmm3, 4
     paddd   xmm5, xmm8
@@ -223,11 +228,11 @@ asm_sha256_update:
     sha256msg1  xmm3, xmm4
 
     ; ---- rounds 28-31 ----
-    movdqa  xmm9, xmm5
-    paddd   xmm9, [rdx + 7*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm5
+    paddd   xmm0, [rdx + 7*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm5
     palignr xmm8, xmm4, 4
     paddd   xmm2, xmm8
@@ -235,11 +240,11 @@ asm_sha256_update:
     sha256msg1  xmm4, xmm5
 
     ; ---- rounds 32-35 ----
-    movdqa  xmm9, xmm2
-    paddd   xmm9, [rdx + 8*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm2
+    paddd   xmm0, [rdx + 8*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm2
     palignr xmm8, xmm5, 4
     paddd   xmm3, xmm8
@@ -247,11 +252,11 @@ asm_sha256_update:
     sha256msg1  xmm5, xmm2
 
     ; ---- rounds 36-39 ----
-    movdqa  xmm9, xmm3
-    paddd   xmm9, [rdx + 9*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm3
+    paddd   xmm0, [rdx + 9*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm3
     palignr xmm8, xmm2, 4
     paddd   xmm4, xmm8
@@ -259,11 +264,11 @@ asm_sha256_update:
     sha256msg1  xmm2, xmm3
 
     ; ---- rounds 40-43 ----
-    movdqa  xmm9, xmm4
-    paddd   xmm9, [rdx + 10*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm4
+    paddd   xmm0, [rdx + 10*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm4
     palignr xmm8, xmm3, 4
     paddd   xmm5, xmm8
@@ -271,63 +276,65 @@ asm_sha256_update:
     sha256msg1  xmm3, xmm4
 
     ; ---- rounds 44-47 ----
-    movdqa  xmm9, xmm5
-    paddd   xmm9, [rdx + 11*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm5
+    paddd   xmm0, [rdx + 11*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm5
     palignr xmm8, xmm4, 4
     paddd   xmm2, xmm8
     sha256msg2  xmm2, xmm5
 
     ; ---- rounds 48-51 ----
-    movdqa  xmm9, xmm2
-    paddd   xmm9, [rdx + 12*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm2
+    paddd   xmm0, [rdx + 12*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm2
     palignr xmm8, xmm5, 4
     paddd   xmm3, xmm8
     sha256msg2  xmm3, xmm2
 
     ; ---- rounds 52-55 ----
-    movdqa  xmm9, xmm3
-    paddd   xmm9, [rdx + 13*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm3
+    paddd   xmm0, [rdx + 13*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm3
     palignr xmm8, xmm2, 4
     paddd   xmm4, xmm8
     sha256msg2  xmm4, xmm3
 
     ; ---- rounds 56-59 ----
-    movdqa  xmm9, xmm4
-    paddd   xmm9, [rdx + 14*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm4
+    paddd   xmm0, [rdx + 14*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
     movdqa  xmm8, xmm4
     palignr xmm8, xmm3, 4
     paddd   xmm5, xmm8
     sha256msg2  xmm5, xmm4
 
     ; ---- rounds 60-63 ----
-    movdqa  xmm9, xmm5
-    paddd   xmm9, [rdx + 15*16]
-    sha256rnds2 xmm1, xmm0, xmm9
-    pshufd  xmm9, xmm9, 0x0E
-    sha256rnds2 xmm0, xmm1, xmm9
+    movdqa  xmm0, xmm5
+    paddd   xmm0, [rdx + 15*16]
+    sha256rnds2 xmm7, xmm6
+    pshufd  xmm0, xmm0, 0x0E
+    sha256rnds2 xmm6, xmm7
 
     ; Add compressed state back to initial state
-    paddd   xmm0, xmm6
-    paddd   xmm1, xmm7
+    paddd   xmm6, xmm11
+    paddd   xmm7, xmm12
 
     ; Unpack ABEF/CDGH back to [A,B,C,D,E,F,G,H] memory order
     ; xmm0=[A,B,E,F] xmm1=[C,D,G,H]
     ; We want: [A,B,C,D] in first 16 bytes, [E,F,G,H] in next 16
+    movdqa  xmm0, xmm6
+    movdqa  xmm1, xmm7
     movdqa  xmm8, xmm0
     movlhps xmm0, xmm1         ; xmm0 = [A,B] lo64 + [C,D] lo64  ... actually:
     ; movlhps: dst_hi = src_lo, dst_lo unchanged
@@ -343,7 +350,9 @@ asm_sha256_update:
     movdqu  xmm8,  [rsp + 32]
     movdqu  xmm9,  [rsp + 48]
     movdqu  xmm10, [rsp + 64]
-    add     rsp, 80
+    movdqu  xmm11, [rsp + 80]
+    movdqu  xmm12, [rsp + 96]
+    add     rsp, 112
     ret
 
 align 16

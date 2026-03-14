@@ -482,6 +482,39 @@ pub fn aes128_encrypt_block_in_place(
     aes_add_round_key(block, round_keys, AES128_ROUNDS);
 }
 
+#[cfg(target_arch = "x86_64")]
+fn kernel_buffer_is_mapped(virt_addr: usize, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let page_size = crate::runtime_page_size();
+    let last = match virt_addr.checked_add(len - 1) {
+        Some(v) => v,
+        None => return false,
+    };
+    let mut page = virt_addr & !(page_size - 1);
+    let end_page = last & !(page_size - 1);
+    loop {
+        if crate::arch::mmu::x86_64_debug_virt_to_phys(page).is_none() {
+            return false;
+        }
+        if page == end_page {
+            break;
+        }
+        page = match page.checked_add(page_size) {
+            Some(v) => v,
+            None => return false,
+        };
+    }
+    true
+}
+
+#[cfg(target_arch = "x86")]
+#[inline]
+fn kernel_buffer_is_mapped(virt_addr: usize, len: usize) -> bool {
+    crate::paging::is_kernel_range_mapped(virt_addr, len)
+}
+
 pub fn aes128_ctr_xor(key: &[u8; 16], nonce: u64, data: &mut [u8]) {
     #[cfg(not(target_arch = "aarch64"))]
     struct IrqGuard(u32);
@@ -506,7 +539,7 @@ pub fn aes128_ctr_xor(key: &[u8; 16], nonce: u64, data: &mut [u8]) {
     }
 
     #[cfg(not(target_arch = "aarch64"))]
-    if !crate::paging::is_kernel_range_mapped(data.as_ptr() as usize, data.len()) {
+    if !kernel_buffer_is_mapped(data.as_ptr() as usize, data.len()) {
         crate::serial::_print(format_args!(
             "[CRYPTO-DBG] aes128_ctr_xor invalid-buffer call={} ptr=0x{:08x} len={}\n",
             call_idx,

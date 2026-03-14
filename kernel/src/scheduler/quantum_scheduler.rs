@@ -33,7 +33,11 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
-// FIX #1: Module-level stacks (properly placed in BSS by linker)
+// Keep the 32-bit scheduler stacks smaller so the Multiboot image fits within
+// GRUB's early allocation limits during CI boots.
+#[cfg(target_arch = "x86")]
+const KERNEL_THREAD_STACK_BYTES: usize = 256 * 1024;
+#[cfg(not(target_arch = "x86"))]
 const KERNEL_THREAD_STACK_BYTES: usize = 1024 * 1024;
 
 #[repr(align(4096))]
@@ -1192,8 +1196,14 @@ impl QuantumScheduler {
     pub fn start_scheduling() -> ! {
         scheduler_rt::vga_print_str("[SCHED] Starting scheduler (safe)\n");
 
+        #[cfg(target_arch = "aarch64")]
+        scheduler_rt::logf(format_args!("[A64-SCHED] start_scheduling: before lock"));
+
         let (ctx_ptr, runtime_pid_raw, kernel_stack_top) = {
             let mut scheduler = QUANTUM_SCHEDULER.lock();
+
+            #[cfg(target_arch = "aarch64")]
+            scheduler_rt::logf(format_args!("[A64-SCHED] start_scheduling: lock acquired"));
 
             // Find next process (prefer ready queues, recover from process table if needed).
             let next_pid = match scheduler.dequeue_ready() {
@@ -1237,11 +1247,22 @@ impl QuantumScheduler {
                 }
             };
 
+            #[cfg(target_arch = "aarch64")]
+            scheduler_rt::logf(format_args!(
+                "[A64-SCHED] start_scheduling: next pid {}",
+                next_pid.0
+            ));
+
             scheduler.current_pid = Some(next_pid);
             SCHEDULER_STARTED.store(true, Ordering::Release);
             scheduler.record_temporal_state_snapshot_locked(
                 scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE,
             );
+
+            #[cfg(target_arch = "aarch64")]
+            scheduler_rt::logf(format_args!(
+                "[A64-SCHED] start_scheduling: state snapshot recorded"
+            ));
             let runtime_pid_raw = scheduler
                 .runtime_pid_for_scheduler_pid(next_pid)
                 .map(|pid| pid.0)
@@ -1260,6 +1281,8 @@ impl QuantumScheduler {
             }
         }; // Lock is dropped here
 
+        #[cfg(target_arch = "aarch64")]
+        scheduler_rt::logf(format_args!("[A64-SCHED] start_scheduling: lock released"));
         scheduler_rt::vga_print_str("[SCHED] Lock dropped, loading context\n");
         scheduler_rt::vga_print_str("[SCHED] Jumping to task...\n");
         unsafe {

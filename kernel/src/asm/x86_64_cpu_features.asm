@@ -21,25 +21,22 @@ _interrupt_count:   resq 1
 section .text
 
 ; ---------------------------------------------------------------------------
-; void asm_cpuid(u32 leaf, u32 *eax, u32 *ebx, u32 *ecx, u32 *edx)
-; Execute CPUID for the given leaf and write all four output registers.
-; rdi=leaf, rsi=*eax, rdx=*ebx, rcx=*ecx, r8=*edx
+; void asm_cpuid(u32 leaf, u32 subleaf, CpuIdResult *out)
+; Execute CPUID for the given leaf/subleaf and write all four output registers
+; into the result struct laid out as { eax, ebx, ecx, edx }.
+; rdi=leaf, rsi=subleaf, rdx=*out
 ; ---------------------------------------------------------------------------
 global asm_cpuid
 asm_cpuid:
     push    rbx                 ; rbx is callee-saved in SysV ABI
+    mov     r8, rdx             ; preserve result pointer across CPUID
     mov     eax, edi            ; leaf
-    xor     ecx, ecx            ; subleaf = 0
+    mov     ecx, esi            ; subleaf
     cpuid
-    ; write outputs — note: rdx was trashed by cpuid, save it first
-    mov     [rsi], eax
-    mov     [rdx], ebx          ; rdx still holds caller's *ebx pointer
-    mov     [rcx], ecx
-    ; r8 holds *edx pointer; edx is now CPUID output
-    ; But we clobbered rdx with ebx result — we wrote [rdx] which was *ebx arg.
-    ; At this point ecx = cpuid ECX output, rcx = caller's *ecx pointer.
-    ; edx = cpuid EDX output.
-    mov     [r8], edx
+    mov     [r8 + 0], eax
+    mov     [r8 + 4], ebx
+    mov     [r8 + 8], ecx
+    mov     [r8 + 12], edx
     pop     rbx
     ret
 
@@ -180,20 +177,23 @@ asm_xsave_supported:
     ret
 
 ; ---------------------------------------------------------------------------
-; u64 asm_rdrand(void)
+; i32 asm_rdrand(u32 *out)
 ; Read a hardware random value via RDRAND. Retries up to 10 times.
-; Returns the random value, or 0 on failure (CF=0 after 10 retries).
+; Returns 1 on success and writes the value to *out, otherwise returns 0.
 ; ---------------------------------------------------------------------------
 global asm_rdrand
 asm_rdrand:
     mov     ecx, 10             ; retry limit
 .retry:
-    rdrand  rax
+    rdrand  eax
     jc      .done               ; CF=1 means valid value
     dec     ecx
     jnz     .retry
     xor     eax, eax            ; failed — return 0
+    ret
 .done:
+    mov     [rdi], eax
+    mov     eax, 1
     ret
 
 ; ---------------------------------------------------------------------------

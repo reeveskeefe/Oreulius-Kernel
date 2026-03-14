@@ -82,7 +82,7 @@ echo "[3/4] Linking AArch64 kernel ELF..."
   "${BOOT_OBJ}" \
   "${VECTORS_OBJ}" \
   "${SCHED_OBJ}" \
-  --whole-archive "${RUST_LIB}" --no-whole-archive
+  "${RUST_LIB}"
 
 echo "Built: ${OUT_ELF}"
 
