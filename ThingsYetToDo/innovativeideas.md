@@ -33,7 +33,7 @@ Decentralized “Kernel Mesh” (Multi-Kernel, Multi-Host)
 Concept: Capabilities federate across devices/networks, treating the local "cap mesh" as a single OS. WASM modules migrate securely between hosts.
 Why Inventive?: Shifts from single-host kernels to distributed, cryptographically-attested "kernel internet"—a new paradigm for federated OS execution.
 Alignment: Extends your Network Stack; perfect for fleet-wide updates in AI thin clients.
-Implementation Starter: Use your TCP/IP for capability routing; sign WASM modules for cross-host trust.
+Implementation Starter: Use your TCP/IP for capability routing; sign WASM modules for cross-host trust. ✅ IMPLEMENTED — see `docs/oreulia-kernel-mesh.md`
 
 
 Temporal Capabilities with "Revocable History"
