@@ -8260,11 +8260,21 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     print_u32(crate::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
     vga::print_str("\nIterations per seed: ");
     print_u32(iters);
-    vga::print_str("\nMode: user sandbox (forced for stability)");
+    #[cfg(target_arch = "x86")]
+    let user_mode = false;
+    #[cfg(not(target_arch = "x86"))]
+    let user_mode = true;
+
+    vga::print_str("\nMode: ");
+    if user_mode {
+        vga::print_str("user sandbox (forced for stability)");
+    } else {
+        vga::print_str("kernel JIT (forced on x86 legacy path)");
+    }
     vga::print_str("\n\n");
 
     crate::wasm::jit_runtime_recover_transient();
-    let _jit_mode_guard = ScopedJitUserMode::enter(true);
+    let _jit_mode_guard = ScopedJitUserMode::enter(user_mode);
     let _irq_quiesce = ScopedFuzzIrqQuiesce::enter();
 
     match crate::wasm::jit_fuzz_regression_default(iters) {
@@ -8486,11 +8496,21 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     print_u32(iters);
     vga::print_str("\nSeeds per round: ");
     print_u32(crate::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
-    vga::print_str("\nMode: user sandbox (forced for stability)");
+    #[cfg(target_arch = "x86")]
+    let user_mode = false;
+    #[cfg(not(target_arch = "x86"))]
+    let user_mode = true;
+
+    vga::print_str("\nMode: ");
+    if user_mode {
+        vga::print_str("user sandbox (forced for stability)");
+    } else {
+        vga::print_str("kernel JIT (forced on x86 legacy path)");
+    }
     vga::print_str("\n\n");
 
     crate::wasm::jit_runtime_recover_transient();
-    let _jit_mode_guard = ScopedJitUserMode::enter(true);
+    let _jit_mode_guard = ScopedJitUserMode::enter(user_mode);
     let _irq_quiesce = ScopedFuzzIrqQuiesce::enter();
 
     match crate::wasm::jit_fuzz_regression_soak_default(iters, rounds) {

@@ -19,7 +19,8 @@ trap 'rm -f "${log_file}"' EXIT
 export QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:--display none -nographic -no-reboot -no-shutdown}"
 
 echo "Running external corpus replay (iters=${iters}, soak_rounds=${soak_rounds})..."
-./fuzz/run_wasm_jit_corpus.expect "${iters}" "${soak_rounds}" | tee "${log_file}"
+./fuzz/run_wasm_jit_corpus.expect "${iters}" "${soak_rounds}" > "${log_file}" 2>&1
+cat "${log_file}"
 
 seeds_line="$(grep -E '^Seeds passed:' "${log_file}" | tail -1 || true)"
 mismatch_line="$(grep -E '^Total mismatches:' "${log_file}" | tail -1 || true)"
