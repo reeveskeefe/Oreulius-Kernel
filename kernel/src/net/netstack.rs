@@ -1283,25 +1283,36 @@ impl NetworkStack {
 
     pub fn tcp_recv(&mut self, conn_id: u16, out: &mut [u8]) -> Result<usize, &'static str> {
         let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
-        let res = tcp.recv(conn_id, out);
-        if let Ok(read_len) = res {
-            if read_len > 0 {
-                if let Some(conn) = tcp.find_conn_id(conn_id) {
-                    let _ = crate::temporal::record_tcp_socket_data_event(
-                        conn.id as u32,
-                        conn.state as u8,
-                        conn.local_ip.0,
-                        conn.local_port,
-                        conn.remote_ip.0,
-                        conn.remote_port,
-                        crate::temporal::TEMPORAL_SOCKET_EVENT_RECV,
-                        &out[..read_len],
-                    );
-                }
+        let (read_len, was_full) = match tcp.recv(conn_id, out) {
+            Ok(pair) => pair,
+            Err(e) => { self.tcp = tcp; return Err(e); }
+        };
+        if read_len > 0 {
+            if let Some(conn) = tcp.find_conn_id(conn_id) {
+                let _ = crate::temporal::record_tcp_socket_data_event(
+                    conn.id as u32,
+                    conn.state as u8,
+                    conn.local_ip.0,
+                    conn.local_port,
+                    conn.remote_ip.0,
+                    conn.remote_port,
+                    crate::temporal::TEMPORAL_SOCKET_EVENT_RECV,
+                    &out[..read_len],
+                );
             }
         }
         self.tcp = tcp;
-        res
+        // Send window-update ACK if buffer was full before the read (peer's window was 0).
+        if was_full {
+            if let Some(conn) = self.tcp.find_conn_id(conn_id) {
+                let ep = tcp_endpoint(conn);
+                let seq = conn.snd_nxt;
+                let ack = conn.rcv_nxt;
+                let adv_win = conn_recv_window(conn);
+                let _ = send_tcp_segment(self, ep, seq, ack, TCP_FLAG_ACK, &[], adv_win);
+            }
+        }
+        Ok(read_len)
     }
 
     pub fn tcp_close(&mut self, conn_id: u16) -> Result<(), &'static str> {
@@ -1373,7 +1384,8 @@ impl NetworkStack {
         if event == crate::temporal::TEMPORAL_SOCKET_EVENT_CLOSE || state == TcpState::Closed {
             if let Some(conn) = self.tcp.find_conn_id_mut(conn_id) {
                 conn.state = TcpState::Closed;
-                conn.recv_len = 0;
+                conn.recv_head = 0;
+                conn.recv_tail = 0;
                 conn.in_use = false;
             }
             return Ok(());
@@ -1397,11 +1409,14 @@ impl NetworkStack {
             }
 
             if event == crate::temporal::TEMPORAL_SOCKET_EVENT_RECV {
-                let copy_len = core::cmp::min(preview.len(), conn.recv_buf.len());
+                // Restore into ring — reset to clean state first then write from head.
+                conn.recv_head = 0;
+                conn.recv_tail = 0;
+                let copy_len = core::cmp::min(preview.len(), TCP_BUF_SIZE);
                 if copy_len > 0 {
                     conn.recv_buf[..copy_len].copy_from_slice(&preview[..copy_len]);
+                    conn.recv_tail = copy_len;
                 }
-                conn.recv_len = copy_len;
             } else if event == crate::temporal::TEMPORAL_SOCKET_EVENT_SEND {
                 let copy_len = core::cmp::min(preview.len(), conn.last_payload.len());
                 if copy_len > 0 {
@@ -1464,7 +1479,9 @@ enum TcpState {
 const MAX_TCP_CONNS: usize = 16;
 const MAX_TCP_LISTEN: usize = 4;
 const MAX_TCP_BACKLOG: usize = 4;
-const TCP_BUF_SIZE: usize = 65_535;
+/// Power-of-two receive buffer: allows O(1) ring-mask indexing.
+const TCP_BUF_SIZE: usize = 65_536;
+const TCP_BUF_MASK: usize = TCP_BUF_SIZE - 1;
 /// 2×MSL for the edge/embedded profile: 30 seconds at 100 Hz = 3,000 ticks.
 const TCP_TIME_WAIT_TICKS: u64 = 3_000;
 /// Delayed ACK: flush after this many unacknowledged segments (RFC 5681 §3.2).
@@ -1503,7 +1520,10 @@ struct TcpConn {
     rttvar: u64,
     retries: u8,
     recv_buf: [u8; TCP_BUF_SIZE],
-    recv_len: usize,
+    /// Ring-buffer producer index (bytes written mod TCP_BUF_SIZE).
+    recv_tail: usize,
+    /// Ring-buffer consumer index (bytes consumed mod TCP_BUF_SIZE).
+    recv_head: usize,
     http_pending: bool,
     /// Number of received segments not yet acknowledged (delayed-ACK counter).
     ack_pending: u8,
@@ -1544,7 +1564,8 @@ impl TcpConn {
             rttvar: 0,
             retries: 0,
             recv_buf: [0u8; TCP_BUF_SIZE],
-            recv_len: 0,
+            recv_tail: 0,
+            recv_head: 0,
             http_pending: false,
             ack_pending: 0,
             ack_pending_since: 0,
@@ -1872,17 +1893,25 @@ impl TcpManager {
         Ok(sent_total)
     }
 
-    fn recv(&mut self, conn_id: u16, out: &mut [u8]) -> Result<usize, &'static str> {
+    fn recv(&mut self, conn_id: u16, out: &mut [u8]) -> Result<(usize, bool), &'static str> {
         let conn = self
             .find_conn_id_mut(conn_id)
             .ok_or("Connection not found")?;
-        if conn.recv_len == 0 {
-            return Ok(0);
+        let occupied = conn.recv_tail.wrapping_sub(conn.recv_head) & TCP_BUF_MASK;
+        if occupied == 0 {
+            return Ok((0, false));
         }
-        let len = core::cmp::min(out.len(), conn.recv_len);
-        out[..len].copy_from_slice(&conn.recv_buf[..len]);
-        conn.recv_len = 0;
-        Ok(len)
+        // Was the buffer full before this read?
+        let was_full = occupied >= TCP_BUF_SIZE - 1;
+        let len = core::cmp::min(out.len(), occupied);
+        let head = conn.recv_head & TCP_BUF_MASK;
+        let first = core::cmp::min(len, TCP_BUF_SIZE - head);
+        out[..first].copy_from_slice(&conn.recv_buf[head..head + first]);
+        if first < len {
+            out[first..len].copy_from_slice(&conn.recv_buf[..len - first]);
+        }
+        conn.recv_head = conn.recv_head.wrapping_add(len);
+        Ok((len, was_full))
     }
 
     fn close(&mut self, stack: &mut NetworkStack, conn_id: u16) -> Result<(), &'static str> {
@@ -2060,8 +2089,11 @@ impl HttpServer {
 /// $$W_{\text{adv}} = \min(\text{TCP\_BUF\_SIZE} - \text{recv\_len},\; 65535)$$
 #[inline]
 fn conn_recv_window(conn: &TcpConn) -> u16 {
-    let avail = TCP_BUF_SIZE.saturating_sub(conn.recv_len);
-    avail.min(0xFFFF) as u16
+    // Bytes occupied in the ring = (tail - head) mod TCP_BUF_SIZE.
+    // Free space = TCP_BUF_SIZE - occupied.
+    let occupied = conn.recv_tail.wrapping_sub(conn.recv_head) & TCP_BUF_MASK;
+    let free = TCP_BUF_SIZE.saturating_sub(occupied);
+    free.min(0xFFFF) as u16
 }
 
 fn send_tcp_segment(
@@ -2507,9 +2539,18 @@ impl NetworkStack {
                 }
 
                 if !payload.is_empty() && seq == conn.rcv_nxt {
-                    let copy_len = core::cmp::min(payload.len(), conn.recv_buf.len());
-                    conn.recv_buf[..copy_len].copy_from_slice(&payload[..copy_len]);
-                    conn.recv_len = copy_len;
+                    // Ring-buffer write: only copy as many bytes as fit in free space.
+                    let occupied = conn.recv_tail.wrapping_sub(conn.recv_head) & TCP_BUF_MASK;
+                    let free = TCP_BUF_SIZE.saturating_sub(occupied);
+                    let copy_len = core::cmp::min(payload.len(), free);
+                    // Split write at ring wrap boundary.
+                    let tail = conn.recv_tail & TCP_BUF_MASK;
+                    let first = core::cmp::min(copy_len, TCP_BUF_SIZE - tail);
+                    conn.recv_buf[tail..tail + first].copy_from_slice(&payload[..first]);
+                    if first < copy_len {
+                        conn.recv_buf[..copy_len - first].copy_from_slice(&payload[first..copy_len]);
+                    }
+                    conn.recv_tail = conn.recv_tail.wrapping_add(copy_len);
                     conn.rcv_nxt = conn.rcv_nxt.wrapping_add(payload.len() as u32);
                     let _ = crate::temporal::record_tcp_socket_data_event(
                         conn.id as u32,
@@ -2527,9 +2568,10 @@ impl NetworkStack {
                     if conn.ack_pending_since == 0 {
                         conn.ack_pending_since = crate::pit::get_ticks();
                     }
+                    let occupied = conn.recv_tail.wrapping_sub(conn.recv_head) & TCP_BUF_MASK;
                     let force_ack = (flags & TCP_FLAG_PSH != 0)
                         || conn.ack_pending as usize >= TCP_DELAYED_ACK_SEGMENTS as usize
-                        || conn.recv_len >= conn.recv_buf.len();
+                        || occupied >= TCP_BUF_SIZE - 1;
                     if force_ack {
                         ack_action = Some((tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt));
                         conn.ack_pending = 0;
