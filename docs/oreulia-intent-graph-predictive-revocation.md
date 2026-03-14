@@ -1,7 +1,7 @@
 # Oreulia Intent Graph with Predictive Revocation
 
 **Status:** Implemented (kernel-integrated)  
-**Primary implementation:** `kernel/src/intent_graph.rs`, `kernel/src/intent_wasm.rs`, `kernel/src/security.rs`, `kernel/src/capability.rs`, `kernel/src/ipc.rs`, `kernel/src/syscall.rs`, `kernel/src/commands.rs`
+**Primary implementation:** `kernel/src/security/intent_graph.rs`, `kernel/src/execution/intent_wasm.rs`, `kernel/src/security/mod.rs`, `kernel/src/capability/mod.rs`, `kernel/src/ipc/mod.rs`, `kernel/src/platform/syscall.rs`, `kernel/src/shell/commands.rs`
 
 ## 1. Abstract
 
@@ -563,7 +563,7 @@ Quarantine is operationally temporary under active process behavior and non-conf
 | VM inference bytecode and fallback | `kernel/src/intent_wasm.rs` |
 | Security manager integration and API exposure | `kernel/src/security.rs` |
 | Quarantine/revoke/restore mechanics | `kernel/src/capability.rs` |
-| IPC enforcement hooks | `kernel/src/ipc.rs` |
+| IPC enforcement hooks | `kernel/src/ipc/mod.rs` |
 | Syscall-boundary audit/block/termination consume | `kernel/src/syscall.rs` |
 | Operator command layer | `kernel/src/commands.rs` |
 

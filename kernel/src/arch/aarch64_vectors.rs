@@ -1,7 +1,7 @@
 /*!
  * Oreulia Kernel Project
  *
- *License-Identifier: Oreulius License (see LICENSE)
+ *License-Identifier: Oreulia Community License v1.0 (see LICENSE)
  *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
  */
@@ -59,6 +59,13 @@ static LAST_SPSR_EL1: AtomicU64 = AtomicU64::new(0);
 static LAST_FAR_EL1: AtomicU64 = AtomicU64::new(0);
 static LAST_EC: AtomicU64 = AtomicU64::new(0);
 static SYNC_EXCEPTION_COUNT: AtomicU64 = AtomicU64::new(0);
+static LAST_BRK_SLOT: AtomicU64 = AtomicU64::new(0);
+static LAST_BRK_ESR_EL1: AtomicU64 = AtomicU64::new(0);
+static LAST_BRK_ELR_EL1: AtomicU64 = AtomicU64::new(0);
+static LAST_BRK_SPSR_EL1: AtomicU64 = AtomicU64::new(0);
+static LAST_BRK_FAR_EL1: AtomicU64 = AtomicU64::new(0);
+static LAST_BRK_IMM16: AtomicU64 = AtomicU64::new(0);
+static BRK_EXCEPTION_COUNT: AtomicU64 = AtomicU64::new(0);
 static VECTOR_COUNTS: [AtomicU64; VECTOR_SLOT_COUNT] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -174,6 +181,16 @@ fn log_sync_exception(slot: u8, esr_el1: u64, elr_el1: u64, spsr_el1: u64, far_e
     uart.write_str("\n");
 }
 
+#[inline]
+fn brk_imm16(esr_el1: u64) -> u16 {
+    (esr_el1 & 0xFFFF) as u16
+}
+
+#[inline]
+fn should_log_sync_exception(slot: u8, ec: u8) -> bool {
+    !(slot == VectorSlot::LowerElA64Sync as u8 && ec == EC_SVC64)
+}
+
 pub(crate) fn install_stub_vectors() {
     let base = vector_base();
     unsafe {
@@ -199,7 +216,7 @@ pub extern "C" fn oreulia_aarch64_vector_dispatch(
     elr_el1: u64,
     spsr_el1: u64,
     far_el1: u64,
-    _sp_at_exception: u64,
+    frame_ptr: u64,
 ) -> u64 {
     let slot_u8 = slot as u8;
     if let Some(counter) = VECTOR_COUNTS.get(slot as usize) {
@@ -217,11 +234,29 @@ pub extern "C" fn oreulia_aarch64_vector_dispatch(
 
     if is_sync_slot(slot_u8) {
         SYNC_EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
-        log_sync_exception(slot_u8, esr_el1, elr_el1, spsr_el1, far_el1);
+        if should_log_sync_exception(slot_u8, ec) {
+            log_sync_exception(slot_u8, esr_el1, elr_el1, spsr_el1, far_el1);
+        }
 
         if ec == EC_FP_ASIMD_TRAP {
             super::aarch64_virt::enable_fp_simd_access();
             return 0;
+        }
+
+        if ec == EC_BRK64 {
+            BRK_EXCEPTION_COUNT.fetch_add(1, Ordering::Relaxed);
+            LAST_BRK_SLOT.store(slot, Ordering::Relaxed);
+            LAST_BRK_ESR_EL1.store(esr_el1, Ordering::Relaxed);
+            LAST_BRK_ELR_EL1.store(elr_el1, Ordering::Relaxed);
+            LAST_BRK_SPSR_EL1.store(spsr_el1, Ordering::Relaxed);
+            LAST_BRK_FAR_EL1.store(far_el1, Ordering::Relaxed);
+            LAST_BRK_IMM16.store(brk_imm16(esr_el1) as u64, Ordering::Relaxed);
+            return 4;
+        }
+
+        if slot_u8 == VectorSlot::LowerElA64Sync as u8 && ec == EC_SVC64 {
+            crate::syscall::aarch64_syscall_from_exception(frame_ptr as *mut crate::syscall::SavedRegisters);
+            return 4;
         }
 
         if matches!(ec, EC_BRK64 | EC_SVC64 | EC_HVC64 | EC_SMC64) {
@@ -249,6 +284,11 @@ pub(crate) fn sync_exception_count() -> u64 {
 }
 
 #[inline]
+pub(crate) fn brk_exception_count() -> u64 {
+    BRK_EXCEPTION_COUNT.load(Ordering::Relaxed)
+}
+
+#[inline]
 pub(crate) fn vector_count(slot: u8) -> u64 {
     VECTOR_COUNTS
         .get(slot as usize)
@@ -265,6 +305,22 @@ pub(crate) fn last_exception_snapshot() -> LastExceptionSnapshot {
         spsr_el1: LAST_SPSR_EL1.load(Ordering::Relaxed),
         far_el1: LAST_FAR_EL1.load(Ordering::Relaxed),
     }
+}
+
+#[inline]
+pub(crate) fn last_brk_snapshot() -> LastExceptionSnapshot {
+    LastExceptionSnapshot {
+        slot: LAST_BRK_SLOT.load(Ordering::Relaxed) as u8,
+        esr_el1: LAST_BRK_ESR_EL1.load(Ordering::Relaxed),
+        elr_el1: LAST_BRK_ELR_EL1.load(Ordering::Relaxed),
+        spsr_el1: LAST_BRK_SPSR_EL1.load(Ordering::Relaxed),
+        far_el1: LAST_BRK_FAR_EL1.load(Ordering::Relaxed),
+    }
+}
+
+#[inline]
+pub(crate) fn last_brk_imm16() -> u16 {
+    LAST_BRK_IMM16.load(Ordering::Relaxed) as u16
 }
 
 #[inline]

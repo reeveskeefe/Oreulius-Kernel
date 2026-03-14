@@ -1,6 +1,17 @@
 # Oreulia — IPC & Dataflow
 
-**Status:** Implemented (Feb 8, 2026)
+**Status:** Implemented (v0 core, March 11, 2026)
+
+For the full implementation roadmap from the current `kernel/src/ipc/mod.rs` root module to the target IPC architecture, see [docs/oreulia-ipc-implementation-roadmap.md](./oreulia-ipc-implementation-roadmap.md).
+
+Current v0 limitations that matter for planning:
+
+- `Channel::recv()` inside the core channel type still aliases `try_recv()`, but `IpcService::recv()` now blocks through scheduler wait queues when a schedulable process context exists and falls back to `WouldBlock` otherwise.
+- capability attachments are signed and transferable, but not yet zero-sum linear by construction.
+- `close()` now enters a draining state when queued messages remain, but it is not yet a full replay-complete graceful-closure protocol.
+- temporal replay captures IPC state partially rather than reconstructing a full event-complete channel state.
+- runtime diagnostics/selftests exist (`ipc-list`, `ipc-inspect`, `ipc-stats`, `ipc-selftest`), including blocked sender/receiver visibility, queue high-water tracking, backpressure hit counters, and a deterministic runtime wakeup scenario, but deeper admission/session/replay coverage is still planned.
+- send/receive policy now goes through an explicit admission decision layer. The service-layer send/recv APIs are scheduler-backed when a schedulable current process exists, while the low-level channel helpers still expose raw nonblocking `WouldBlock` behavior. Backpressure policy is no longer only “full queue or not”: non-high-priority async channels now refuse once they cross the high-pressure threshold, while saturated reliable sends still defer on capacity.
 
 Oreulia is dataflow-first: components communicate through message passing rather than shared global state or shared memory. The Inter-Process Communication (IPC) system is the primary mechanism for interaction between the kernel and user-mode (Wasm) applications.
 
@@ -41,8 +52,11 @@ Kernel syscall boundary also exposes capability-attachment variants:
 `MAX_CAPS_PER_MESSAGE` entries.
 
 ### 2.2 Blocking & Yielding
-- **Receive**: If a channel is empty, `ipc_recv` will **block** the calling process and yield the CPU. The scheduler will wake the process when data arrives.
-- **Send**: If a channel is full, `ipc_send` will block until space is available (providing natural backpressure).
+- **Current v0 behavior**: `try_recv` is nonblocking. `IpcService::recv` parks the caller on a per-channel message wait queue until a message arrives or closure becomes visible, while `IpcService::send` parks reliable/capacity-controlled senders on a per-channel capacity wait queue when the channel is full. The core `Channel::{send,recv}` helpers remain the low-level nonblocking primitives used for compatibility and tests.
+- **Current v0 close behavior**: closing a channel rejects new sends immediately and drains already-queued messages before the channel becomes terminally closed.
+- **Current wake behavior**: send wakes one waiting receiver, receive wakes one capacity waiter, and terminal close wakes blocked waiters so they can observe closure instead of sleeping indefinitely.
+- **Current fallback behavior**: if there is no schedulable current process context, the service-layer blocking paths fall back to `WouldBlock` instead of sleeping while holding kernel state.
+- **Current observability**: `ipc-list`, `ipc-inspect`, and `ipc-stats` expose per-channel waiting receiver/sender counts, backpressure level, recommended pressure action, queue high-water mark, high/saturated send-pressure hit counters, and wake counters so blocked and saturated paths can be inspected at runtime.
 
 ---
 
@@ -65,6 +79,10 @@ Optional improvement:
 
 - allow sender to attenuate at transfer time (preferred)
   - attach `(cap_id, rights_mask)`
+
+Target roadmap change:
+
+- replace copy-style transfer with a zero-sum capability-transfer path backed by `capability.rs`
 
 ### 3.1 Service Pointer Transfer Pattern
 

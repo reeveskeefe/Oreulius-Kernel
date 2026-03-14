@@ -1,0 +1,453 @@
+use super::{
+    BackpressureAction, BackpressureLevel, Capability, CapabilityType, Channel, ChannelCapability,
+    ChannelFlags, ChannelId, ChannelRights, IpcError, Message, ProcessId, CHANNEL_CAPACITY,
+};
+use crate::process::{Pid, ProcessState};
+
+pub const IPC_SELFTEST_CASES: usize = 8;
+
+#[derive(Clone, Copy)]
+pub struct IpcSelftestCase {
+    pub name: &'static str,
+    pub passed: bool,
+    pub detail: &'static str,
+}
+
+#[derive(Clone, Copy)]
+pub struct IpcSelftestReport {
+    pub total: usize,
+    pub passed: usize,
+    pub cases: [IpcSelftestCase; IPC_SELFTEST_CASES],
+}
+
+const EMPTY_CASE: IpcSelftestCase = IpcSelftestCase {
+    name: "",
+    passed: false,
+    detail: "",
+};
+
+pub fn run_selftest() -> IpcSelftestReport {
+    let mut report = IpcSelftestReport {
+        total: IPC_SELFTEST_CASES,
+        passed: 0,
+        cases: [EMPTY_CASE; IPC_SELFTEST_CASES],
+    };
+
+    record_case(&mut report, 0, "round_trip", case_round_trip());
+    record_case(
+        &mut report,
+        1,
+        "bounded_queue_backpressure",
+        case_bounded_queue_backpressure(),
+    );
+    record_case(
+        &mut report,
+        2,
+        "close_drain_then_closed",
+        case_close_drain_then_closed(),
+    );
+    record_case(
+        &mut report,
+        3,
+        "recv_aliases_try_recv_on_empty",
+        case_recv_aliases_try_recv_on_empty(),
+    );
+    record_case(
+        &mut report,
+        4,
+        "cap_attachment_surface",
+        case_cap_attachment_surface(),
+    );
+    record_case(
+        &mut report,
+        5,
+        "backpressure_metrics",
+        case_backpressure_metrics(),
+    );
+    record_case(
+        &mut report,
+        6,
+        "async_high_pressure_policy",
+        case_async_high_pressure_policy(),
+    );
+    record_case(
+        &mut report,
+        7,
+        "runtime_wakeup_surface",
+        case_runtime_wakeup_surface(),
+    );
+
+    report
+}
+
+struct SyntheticWaiterGuard {
+    pid: Option<Pid>,
+}
+
+impl SyntheticWaiterGuard {
+    fn stage(name: &str, addr: usize) -> Result<Self, &'static str> {
+        let pid = crate::quantum_scheduler::selftest_stage_waiter_process(
+            name,
+            addr,
+            ProcessState::WaitingOnChannel,
+        )?;
+        Ok(Self { pid: Some(pid) })
+    }
+
+    fn pid(&self) -> Pid {
+        self.pid.expect("synthetic waiter pid missing")
+    }
+}
+
+impl Drop for SyntheticWaiterGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            let _ = crate::quantum_scheduler::selftest_remove_process(pid);
+        }
+    }
+}
+
+fn record_case(
+    report: &mut IpcSelftestReport,
+    idx: usize,
+    name: &'static str,
+    result: Result<(), &'static str>,
+) {
+    let (passed, detail) = match result {
+        Ok(()) => {
+            report.passed += 1;
+            (true, "ok")
+        }
+        Err(detail) => (false, detail),
+    };
+    report.cases[idx] = IpcSelftestCase {
+        name,
+        passed,
+        detail,
+    };
+}
+
+fn case_round_trip() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x10);
+    let owner = ProcessId::new(7);
+    let mut channel = Channel::new(id, owner);
+    let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+    let recv_cap = ChannelCapability::new(2, id, ChannelRights::receive_only(), owner);
+    let msg = Message::with_data(owner, b"ping").map_err(|_| "failed to build message")?;
+    channel.send(msg, &send_cap).map_err(|_| "send failed")?;
+    let received = channel.try_recv(&recv_cap).map_err(|_| "recv failed")?;
+    if received.payload() != b"ping" {
+        return Err("payload mismatch");
+    }
+    Ok(())
+}
+
+fn case_bounded_queue_backpressure() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x11);
+    let owner = ProcessId::new(8);
+    let mut channel = Channel::new(id, owner);
+    let send_cap = ChannelCapability::new(3, id, ChannelRights::send_only(), owner);
+
+    for idx in 0..CHANNEL_CAPACITY {
+        let payload = [b'a' + idx as u8];
+        let msg =
+            Message::with_data(owner, &payload).map_err(|_| "failed to build queue message")?;
+        channel
+            .send(msg, &send_cap)
+            .map_err(|_| "queue fill send failed")?;
+    }
+
+    let extra = Message::with_data(owner, b"x").map_err(|_| "failed to build overflow message")?;
+    match channel.send(extra, &send_cap) {
+        Err(IpcError::WouldBlock) => {
+            if channel.send_refusals() != 1 {
+                return Err("send refusal counter mismatch");
+            }
+            Ok(())
+        }
+        Err(_) => Err("overflow returned wrong error"),
+        Ok(()) => Err("overflow unexpectedly succeeded"),
+    }
+}
+
+fn case_close_drain_then_closed() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x12);
+    let owner = ProcessId::new(9);
+    let mut channel = Channel::new(id, owner);
+    let send_cap = ChannelCapability::new(4, id, ChannelRights::send_only(), owner);
+    let recv_cap = ChannelCapability::new(5, id, ChannelRights::receive_only(), owner);
+    let close_cap = ChannelCapability::new(6, id, ChannelRights::full(), owner);
+
+    let msg = Message::with_data(owner, b"queued").map_err(|_| "failed to build close message")?;
+    channel.send(msg, &send_cap).map_err(|_| "send failed")?;
+    channel.close(&close_cap).map_err(|_| "close failed")?;
+    if !channel.is_closing() {
+        return Err("channel did not enter closing state");
+    }
+    let blocked = Message::with_data(owner, b"blocked").map_err(|_| "failed to build blocked")?;
+    if !matches!(channel.send(blocked, &send_cap), Err(IpcError::Closed)) {
+        return Err("send after close was not refused");
+    }
+    if channel.send_refusals() != 1 {
+        return Err("close send refusal counter mismatch");
+    }
+
+    let drained = channel.try_recv(&recv_cap).map_err(|_| "drain failed")?;
+    if drained.payload() != b"queued" {
+        return Err("drained payload mismatch");
+    }
+
+    match channel.try_recv(&recv_cap) {
+        Err(IpcError::Closed) => {
+            if channel.recv_refusals() != 1 {
+                return Err("close recv refusal counter mismatch");
+            }
+            Ok(())
+        }
+        Err(_) => Err("post-close drain returned wrong error"),
+        Ok(_) => Err("post-close drain unexpectedly returned message"),
+    }
+}
+
+fn case_recv_aliases_try_recv_on_empty() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x13);
+    let owner = ProcessId::new(10);
+    let mut channel = Channel::new(id, owner);
+    let recv_cap = ChannelCapability::new(7, id, ChannelRights::receive_only(), owner);
+
+    let try_recv = channel.try_recv(&recv_cap);
+    let recv = channel.recv(&recv_cap);
+    if matches!(try_recv, Err(IpcError::WouldBlock)) && matches!(recv, Err(IpcError::WouldBlock))
+    {
+        if channel.recv_refusals() != 2 {
+            return Err("recv refusal counter mismatch");
+        }
+        Ok(())
+    } else {
+        Err("recv diverged from try_recv")
+    }
+}
+
+fn case_cap_attachment_surface() -> Result<(), &'static str> {
+    let owner = ProcessId::new(11);
+    let mut msg = Message::with_data(owner, b"caps").map_err(|_| "failed to build cap message")?;
+    let cap = Capability::with_type(88, 99, 0xA5, CapabilityType::ServicePointer);
+    msg.add_capability(cap)
+        .map_err(|_| "failed to attach capability")?;
+
+    if msg.caps_len != 1 {
+        return Err("cap count mismatch");
+    }
+
+    let attached = msg.capabilities().next().ok_or("missing attached capability")?;
+    if attached.cap_id != 88
+        || attached.object_id != 99
+        || attached.rights != 0xA5
+        || attached.cap_type != CapabilityType::ServicePointer
+    {
+        return Err("attached capability fields mismatch");
+    }
+
+    Ok(())
+}
+
+fn case_backpressure_metrics() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x14);
+    let owner = ProcessId::new(12);
+    let mut channel = Channel::new(id, owner);
+    let send_cap = ChannelCapability::new(8, id, ChannelRights::send_only(), owner);
+    let recv_cap = ChannelCapability::new(9, id, ChannelRights::receive_only(), owner);
+
+    if channel.pressure_level() != BackpressureLevel::Idle {
+        return Err("initial pressure was not idle");
+    }
+
+    for _ in 0..CHANNEL_CAPACITY {
+        let msg = Message::with_data(owner, b"x").map_err(|_| "failed to build metric message")?;
+        channel.send(msg, &send_cap).map_err(|_| "metric send failed")?;
+    }
+
+    if channel.high_watermark() != CHANNEL_CAPACITY {
+        return Err("high watermark did not reach capacity");
+    }
+    if channel.high_pressure_hits() == 0 {
+        return Err("high pressure hits were not observed");
+    }
+    if channel.pressure_level() != BackpressureLevel::Saturated {
+        return Err("pressure did not reach saturated");
+    }
+
+    let overflow = Message::with_data(owner, b"!").map_err(|_| "failed to build overflow")?;
+    if !matches!(channel.send(overflow, &send_cap), Err(IpcError::WouldBlock)) {
+        return Err("saturated send did not block");
+    }
+    if channel.saturated_hits() == 0 {
+        return Err("saturated hits were not observed");
+    }
+
+    for _ in 0..CHANNEL_CAPACITY {
+        let _ = channel.try_recv(&recv_cap).map_err(|_| "metric recv failed")?;
+    }
+
+    if channel.high_watermark() != CHANNEL_CAPACITY {
+        return Err("high watermark was not retained after drain");
+    }
+    if channel.pressure_level() != BackpressureLevel::Idle {
+        return Err("pressure did not return to idle");
+    }
+
+    Ok(())
+}
+
+fn case_async_high_pressure_policy() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x15);
+    let owner = ProcessId::new(13);
+    let mut channel = Channel::new_with_flags(
+        id,
+        owner,
+        ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::ASYNC),
+        128,
+    );
+    let send_cap = ChannelCapability::new(10, id, ChannelRights::send_only(), owner);
+    let recv_cap = ChannelCapability::new(11, id, ChannelRights::receive_only(), owner);
+
+    while channel.pressure_level() != BackpressureLevel::High {
+        let msg =
+            Message::with_data(owner, b"a").map_err(|_| "failed to build async metric message")?;
+        channel
+            .send(msg, &send_cap)
+            .map_err(|_| "failed to reach high pressure")?;
+    }
+
+    if channel.is_full() {
+        return Err("high pressure was only reached at full capacity");
+    }
+    if channel.pressure_action() != BackpressureAction::Refuse {
+        return Err("high pressure action was not refuse");
+    }
+
+    let blocked = Message::with_data(owner, b"b").map_err(|_| "failed to build blocked async")?;
+    if !matches!(channel.send(blocked, &send_cap), Err(IpcError::WouldBlock)) {
+        return Err("async high pressure send was not refused");
+    }
+
+    let _ = channel
+        .try_recv(&recv_cap)
+        .map_err(|_| "failed to recover below threshold")?;
+
+    if channel.pressure_level() != BackpressureLevel::Available {
+        return Err("pressure did not recover below high threshold");
+    }
+    if channel.pressure_action() != BackpressureAction::Commit {
+        return Err("recovered pressure action was not commit");
+    }
+
+    let recovered =
+        Message::with_data(owner, b"c").map_err(|_| "failed to build recovered async send")?;
+    channel
+        .send(recovered, &send_cap)
+        .map_err(|_| "async send did not recover after pressure drop")?;
+
+    Ok(())
+}
+
+fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
+    // Keep the runtime selftest on a high synthetic ID so its wait keys do not
+    // collide with the normal monotonically allocated channel table.
+    let id = ChannelId::new(0x3FFF_FF15);
+    let owner = ProcessId::new(14);
+    let mut channel = Channel::new(id, owner);
+    let send_cap = ChannelCapability::new(12, id, ChannelRights::send_only(), owner);
+    let recv_cap = ChannelCapability::new(13, id, ChannelRights::receive_only(), owner);
+
+    let base_receiver_wakeups = channel.receiver_wakeups();
+    let base_sender_wakeups = channel.sender_wakeups();
+
+    for cycle in 0..2 {
+        let waiter =
+            SyntheticWaiterGuard::stage("ipc-selftest-rx", super::channel_message_wait_addr(id))?;
+        if crate::quantum_scheduler::waiter_count(super::channel_message_wait_addr(id)) != 1 {
+            return Err("receiver waiter was not staged");
+        }
+
+        let payload = [b'R', b'0' + cycle as u8];
+        let msg =
+            Message::with_data(owner, &payload).map_err(|_| "failed to build receiver message")?;
+        channel
+            .send(msg, &send_cap)
+            .map_err(|_| "receiver wake send failed")?;
+
+        if crate::quantum_scheduler::waiter_count(super::channel_message_wait_addr(id)) != 0 {
+            return Err("receiver waiter did not clear");
+        }
+        if crate::quantum_scheduler::selftest_process_state(waiter.pid())
+            != Some(ProcessState::Ready)
+        {
+            return Err("receiver waiter did not become ready");
+        }
+
+        let delivered = channel
+            .try_recv(&recv_cap)
+            .map_err(|_| "failed to drain receiver wake message")?;
+        if delivered.payload() != &payload {
+            return Err("receiver wake payload mismatch");
+        }
+    }
+
+    for _ in 0..2 {
+        while !channel.is_full() {
+            let msg =
+                Message::with_data(owner, b"S").map_err(|_| "failed to build sender message")?;
+            channel
+                .send(msg, &send_cap)
+                .map_err(|_| "sender wake fill failed")?;
+        }
+
+        let waiter = SyntheticWaiterGuard::stage(
+            "ipc-selftest-tx",
+            super::channel_capacity_wait_addr(id),
+        )?;
+        if crate::quantum_scheduler::waiter_count(super::channel_capacity_wait_addr(id)) != 1 {
+            return Err("sender waiter was not staged");
+        }
+
+        let _ = channel
+            .try_recv(&recv_cap)
+            .map_err(|_| "sender wake recv failed")?;
+
+        if crate::quantum_scheduler::waiter_count(super::channel_capacity_wait_addr(id)) != 0 {
+            return Err("sender waiter did not clear");
+        }
+        if crate::quantum_scheduler::selftest_process_state(waiter.pid())
+            != Some(ProcessState::Ready)
+        {
+            return Err("sender waiter did not become ready");
+        }
+
+        while !channel.is_empty() {
+            let _ = channel
+                .try_recv(&recv_cap)
+                .map_err(|_| "failed to drain sender wake queue")?;
+        }
+    }
+
+    if channel.receiver_wakeups() < base_receiver_wakeups.saturating_add(2) {
+        return Err("receiver wakeup counter did not advance");
+    }
+    if channel.sender_wakeups() < base_sender_wakeups.saturating_add(2) {
+        return Err("sender wakeup counter did not advance");
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_ipc_selftest_cases_pass() {
+        let report = run_selftest();
+        assert_eq!(report.passed, report.total);
+    }
+}

@@ -55,12 +55,12 @@ Test with WASM modules that attempt privilege escalation.
 Impact: Makes it "provably secure" for high-stakes edge apps (e.g., cybersecurity appliances), ahead of unverified kernels.
 
 
- Live Defragmentation/Introspection via WASM “Kernel Observers”
+ Live Defragmentation/Introspection via WASM "Kernel Observers" ✅ IMPLEMENTED
 
 Concept: Embed "observer" WASM modules that monitor kernel state in real-time (e.g., detecting memory leaks or anomalies), then self-heal by adjusting capabilities or rolling back via your temporal features.
 Why Cool/Inventive?: Kernels aren't self-aware; this creates "living" observers as revocable agents, inventing kernel-level introspection and auto-repair—a bio-inspired OS paradigm.
 Alignment: Leverages your audit logging and WASM sandbox; prevents downtime in AI edge devices.
-Implementation Starter: Add observer slots in your Security Manager; use IPC to feed data and trigger actions.
+Implementation: Host IDs 106–108 (`observer_subscribe`, `observer_unsubscribe`, `observer_query`). `ObserverRegistry` with 4 slots, IPC channel per observer, 6-bit event mask (CAPABILITY_OP, PROCESS_LIFECYCLE, ANOMALY_DETECTED, IPC_ACTIVITY, MEMORY_PRESSURE, POLYGLOT_LINK). `observer_notify()` wired into SecurityManager anomaly detection, capability grant/revoke, and process spawn. SDK: `wasm/sdk/src/observer.rs` with `subscribe/unsubscribe/query` + `ObserverEvent` struct.
 
 
 First-Class Polyglot Kernel Services

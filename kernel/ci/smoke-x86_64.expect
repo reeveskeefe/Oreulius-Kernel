@@ -27,6 +27,36 @@ expect {
     timeout { puts "timeout waiting for x86_64 prompt after help"; exit 1 }
 }
 
+send "syscall-test\r"
+expect {
+    -re {=== System Call Interface Test ===} {}
+    timeout { puts "timeout waiting for x86_64 syscall-test output"; exit 1 }
+}
+expect {
+    -re {x64> $} {}
+    timeout { puts "timeout waiting for x86_64 prompt after syscall-test"; exit 1 }
+}
+
+send "user-test\r"
+expect {
+    -re {user-test ok} {}
+    timeout { puts "timeout waiting for x86_64 user-test success"; exit 1 }
+}
+expect {
+    -re {x64> $} {}
+    timeout { puts "timeout waiting for x86_64 prompt after user-test"; exit 1 }
+}
+
+send "fork-test\r"
+expect {
+    -re {fork-test ok} {}
+    timeout { puts "timeout waiting for x86_64 fork-test success"; exit 1 }
+}
+expect {
+    -re {x64> $} {}
+    timeout { puts "timeout waiting for x86_64 prompt after fork-test"; exit 1 }
+}
+
 send "mmu\r"
 expect {
     -re {\[X64\] mmu backend=.*} {}
@@ -35,6 +65,16 @@ expect {
 expect {
     -re {x64> $} {}
     timeout { puts "timeout waiting for x86_64 prompt after mmu"; exit 1 }
+}
+
+send "sched-stats\r"
+expect {
+    -re {Scheduler: QuantumScheduler \(x86_64 runtime path\)} {}
+    timeout { puts "timeout waiting for x86_64 sched-stats output"; exit 1 }
+}
+expect {
+    -re {x64> $} {}
+    timeout { puts "timeout waiting for x86_64 prompt after sched-stats"; exit 1 }
 }
 
 send "halt\r"

@@ -1,50 +1,61 @@
-# Oreulius License FAQ (Non-Binding)
+# Oreulia Community License FAQ (Non-Binding)
 
-Effective Date: 2026-02-08
+Effective Date: 2026-03-14
 
-This document is for convenience only. It does not modify the OreuliusLiscence. If there is any conflict, the license controls.
+This document is for convenience only. It does not modify the Oreulia
+Community License. If there is any conflict, the License controls.
 
 ## Is this open source?
-No. The OreuliusLiscence is a source-available commercial license and is not an OSI-approved open-source license. Only files explicitly marked as Open Source Components are under an OSI License.
+No. Oreulia is source-available under the Oreulia Community License and is not
+an OSI-approved open-source project.
 
-## Do I owe fees for noncommercial use?
-No. Noncommercial use is fee-exempt. If your use becomes Cost-Recovery or Commercial, reporting and fee rules apply from that point forward.
+## What can I do under the public license?
+You can study, run, modify, benchmark, fork publicly, and distribute Oreulia
+for research, evaluation, education, and other non-commercial uses.
 
-## What counts as noncommercial use?
-Typical examples include personal projects, academic research, classroom use, and public-interest experimentation, so long as the use is not tied to commercial advantage or revenue.
+## Can a company evaluate Oreulia internally?
+Yes. Internal evaluation, testing, benchmarking, security review, and prototype
+work are allowed so long as Oreulia is not used in production and is not part
+of a paid or revenue-generating product or service.
 
-## What counts as commercial use even if I have no revenue yet?
-If you are developing, testing, or operating a product or service intended for commercial revenue, that is Commercial Use even if revenue is currently zero. Fees may still be zero for that period, but reporting applies.
+## What counts as non-commercial use?
+Typical examples include hobby projects, academic research, classroom use,
+public demonstrations, non-commercial prototypes, and open research
+collaboration.
 
-## What is cost-recovery use?
-Cost-Recovery Use means you charge only to recover direct costs (for example, hosting or hardware), with no profit or surplus. It does not include venture-funded commercial operations or sales with markup.
+## What counts as commercial use?
+Commercial use generally means production deployment, use in a product or
+service offered for sale, operation of hosted or managed services, or paid
+support/integration work built around Oreulia.
 
-## Do nonprofits always qualify as Nonprofit Use?
-Nonprofit Use applies when the Licensed Work is not used to generate Commercial Revenue, other than Cost-Recovery Use. If a nonprofit runs a revenue-generating service, Commercial Use terms can apply.
+## Do I need a separate agreement for commercial use?
+Yes. Commercial use requires a separate written agreement with the Licensor.
 
-## How does revenue attribution work?
-If the Licensed Work is integral to the product or service, 100% attribution is presumed reasonable. If the Licensed Work provides isolation, security, scheduling, or orchestration while application logic is independently functional, a partial allocation may be reasonable with documentation.
+## Can I publish benchmarks or comparisons?
+Yes. The public license explicitly allows benchmarks, evaluations, and public
+technical discussion.
 
-## What if I want certainty on attribution?
-You can request pre-approval of an attribution method from the Licensor. A written approval applies only to the specified products or services and only if applied consistently and in good faith.
+## Can I fork the repository publicly?
+Yes. Public forks are allowed under the Community License for permitted
+non-commercial uses.
 
-## Does SaaS count as Distribution?
-Yes. Hosted or cloud use that delivers functionality materially enabled by the Licensed Work counts as Distribution.
+## What happens to contributions?
+Contributors retain copyright, but accepted contributions may be incorporated,
+distributed, and relicensed as part of Oreulia.
 
-## Do I need to show attribution?
-Attribution is required for Nonprofit Use and Cost-Recovery Use. It is not required for paid Commercial Use.
+## Is there a patent grant?
+Yes. The Community License includes a contributor patent grant and patent
+retaliation language.
 
-## Does the license include support?
-No. Support is available only via a separate Support Addendum.
-
-## Where are the OSI-licensed parts?
-Only files explicitly designated by the Licensor as Open Source Components are under an OSI License. Look for file headers, SPDX identifiers, or repository notices (for example, `LICENSES/`, `OSS-NOTICES`, or `NOTICE`).
+## Does the public license include support?
+No. Support or commercial deployment terms are handled separately.
 
 ## How do license updates apply?
-Each release of the Licensed Work is governed by the license version included with that release. License updates do not retroactively apply to prior versions you already received, unless you agree to the updated terms. If you access, use, or distribute a release explicitly designated under a newer license version, acceptance of that version is required.
+Each copy remains governed by the license under which it was received unless
+you agree to different terms.
 
 ## What if I have questions?
-Contact the Licensor using the notice address listed in the repository or licensing communications.
+Contact the Licensor using the address listed in the repository.
 
 ## Contact
 

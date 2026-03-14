@@ -1,7 +1,7 @@
 /*!
  * Oreulia Kernel Project
  *
- *License-Identifier: Oreulius License (see LICENSE)
+ *License-Identifier: Oreulia Community License v1.0 (see LICENSE)
  *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
  */
@@ -741,13 +741,14 @@ pub(crate) fn scheduler_timer_tick_hook() {
     }
 }
 
-/// Scheduler-facing hook for AArch64 bring-up to keep `vfs_platform`'s current
-/// PID in sync with whichever task the scheduler considers running.
+/// Scheduler-facing hook for AArch64 bring-up to keep the shared process
+/// runtime's current PID in sync with whichever task the scheduler considers
+/// running.
 ///
 /// Today this is exercised by debug shell commands (`pid-set`) because the full
 /// AArch64 quantum scheduler/context-switch path is not enabled yet.
 pub(crate) fn scheduler_note_context_switch(pid: u32) -> Result<(), &'static str> {
-    crate::vfs_platform::aarch64_set_current_pid(pid)?;
+    crate::process::set_current_runtime_pid(crate::process::Pid::new(pid))?;
     AARCH64_SCHED_CONTEXT_SWITCHES.fetch_add(1, Ordering::Relaxed);
     AARCH64_SCHED_RESCHED_PENDING.store(false, Ordering::Release);
     Ok(())
@@ -812,6 +813,11 @@ pub(crate) fn discovered_timer_intid() -> u32 {
 #[inline]
 pub(crate) fn timer_ticks() -> u64 {
     TIMER_TICKS.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub(crate) fn timer_frequency_hz() -> u64 {
+    TIMER_FREQ_HZ.load(Ordering::Relaxed).max(1)
 }
 
 #[inline]
@@ -2044,7 +2050,7 @@ fn shell_print_ticks() {
 
 fn shell_print_scheduler_backend() {
     let (ticks, pending, requests, switches, quantum, pos) = scheduler_tick_backend_snapshot();
-    let (_proc_count, _fd_count, current_pid) = crate::vfs_platform::aarch64_process_fd_stats();
+    let (_proc_count, _fd_count, current_pid) = crate::process::runtime_fd_stats();
     let u = uart();
     u.write_str("[A64] sched-backend ticks=");
     uart_write_hex_u64(ticks);
@@ -2055,7 +2061,7 @@ fn shell_print_scheduler_backend() {
     u.write_str(" switches=");
     uart_write_hex_u64(switches);
     u.write_str(" pid=");
-    uart_write_hex_u64(current_pid as u64);
+    uart_write_hex_u64(current_pid.map(|pid| pid.0 as u64).unwrap_or(1));
     u.write_str(" quantum=");
     uart_write_hex_u64(quantum);
     u.write_str(" pos=");
@@ -3157,6 +3163,7 @@ pub(crate) fn run_serial_shell() -> ! {
     let mut len = 0usize;
 
     loop {
+        crate::runtime_background_maintenance();
         let mut made_progress = false;
         while let Some(byte) = shell_try_read_input_byte() {
             made_progress = true;

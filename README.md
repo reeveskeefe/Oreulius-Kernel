@@ -11,8 +11,14 @@
 [![x86_64](https://img.shields.io/badge/x86__64-Multiboot2%20QEMU%20bringup-blue)](https://en.wikipedia.org/wiki/X86-64)
 [![AArch64](https://img.shields.io/badge/AArch64-QEMU%20virt%20bringup-blue)](https://en.wikipedia.org/wiki/AArch64)
 [![Boot Handoff](https://img.shields.io/badge/boot%20handoff-MB1%20%7C%20MB2%20%7C%20DTB-informational)](#platform-and-portability-status)
+[![WASM Host ABI](https://img.shields.io/badge/WASM%20host%20ABI-IDs%200%E2%80%93131-blueviolet)](#wasm-host-abi-reference)
+[![Multiarch QEMU Smoke](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-smoke.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-smoke.yml)
+[![Multiarch QEMU Extended](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-extended.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-extended.yml)
+[![CapNet Regression](https://github.com/reeveskeefe/oreulia/actions/workflows/capnet-regression.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/capnet-regression.yml)
+[![WASM JIT Regression](https://github.com/reeveskeefe/oreulia/actions/workflows/wasm-jit-regression.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/wasm-jit-regression.yml)
+[![Proof Check](https://github.com/reeveskeefe/oreulia/actions/workflows/proof-check.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/proof-check.yml)
 
-[Why It Is Different](#why-it-is-different) • [Portability](#platform-and-portability-status) • [Architecture](#architecture) • [Cross-Arch Internals](#cross-architecture-implementation) • [Verification](#verification-and-hardening) • [Build](#build-and-run) • [Commands](#command-taxonomy) • [Docs](#documentation-map)
+[Why It Is Different](#why-it-is-different) • [Portability](#platform-and-portability-status) • [Architecture](#architecture) • [Host ABI](#wasm-host-abi-reference) • [SDK](#wasm-sdk-module-reference) • [Kernel Modules](#kernel-module-map) • [Capability Internals](#capability-system-internals) • [CI](#continuous-integration) • [Cross-Arch Internals](#cross-architecture-implementation) • [Verification](#verification-and-hardening) • [Build](#build-and-run) • [Commands](#command-taxonomy) • [Docs](#documentation-map)
 
 </div>
 
@@ -23,6 +29,11 @@
 ## Overview
 
 Oreulia is an experimental kernel that treats capabilities, temporal/versioned kernel state, and WebAssembly execution as first-order primitives.
+
+Oreulia is source-available under the Oreulia Community License. The public
+license allows research, evaluation, modification, public forks, benchmarking,
+and non-commercial distribution. Commercial deployment and production use
+require a separate written agreement. See `LICENSE` and `COMMERCIAL.md`.
 
 It now has active bring-up/build paths for three architectures:
 
@@ -50,6 +61,13 @@ It is designed for technical audiences who care about:
 | WASM execution | Interpreter + JIT path with hardening and differential validation. | High execution flexibility with safety-focused guardrails. |
 | CapNet control plane | Capability delegation extends over network peers with attestation and replay guards. | Portable authority transfer without ambient trust. |
 | In-kernel verification | Shell commands run formal checks, targeted hardening tests, and fuzz corpus replay. | Reproducible evidence of invariants at runtime. |
+| Polyglot WASM runtime | WASM modules can register and resolve cross-language type bindings at runtime (IDs 103–105). | Multiple WASM language toolchains coexist in the same process without a global type registry. |
+| Kernel-mesh networking | Capability tokens are minted, routed, and migrated across an in-kernel peer mesh (IDs 109–115). | Authority delegation survives process migration and cross-node transfer without re-negotiation. |
+| Observer / event bus | Host-visible capability event subscriptions with filtered delivery (IDs 106–108). | Audit and reactive policy without polling loops or extra syscalls. |
+| Temporal capability checkpoints | Capabilities carry their own temporal checkpoint; rollback rewinds both state and access rights (IDs 116–120). | A revocation that happens after a checkpoint can be replayed rather than silently accepted. |
+| Policy contracts | Named policy objects bind to capabilities and are evaluated inline on every access (IDs 121–124). | Runtime policy changes take effect without recompiling the kernel or restarting workloads. |
+| Quantum-inspired capability entanglement | Pairs or groups of capabilities are entangled; revoking any member automatically revokes all co-entangled members (IDs 125–128). | Authority collapse is atomic across capability groups, eliminating partial-revocation races. |
+| Runtime capability graph verification | Every delegation is recorded in a live DAG; cycles and rights-escalation are detected and rejected before the transfer is committed (IDs 129–131). | The delegation graph is auditable at runtime; violations are counted and logged, not silently accepted. |
 
 ## Feature Snapshot
 
@@ -61,6 +79,17 @@ It is designed for technical audiences who care about:
 - WebAssembly runtime with JIT toggle, threshold tuning, and fuzz tooling.
 - IPC channels, service registry, VFS, scheduler, network stack, and enclave state integration.
 - Formal verification and corpus-driven fuzzing commands available in shell.
+- Polyglot WASM runtime with cross-language type resolution and cross-module linking (IDs 103–105).
+- In-kernel peer mesh with capability token minting, routing, and live process migration (IDs 109–115).
+- Observer/event bus for capability lifecycle events with subscription and filtered query (IDs 106–108).
+- Temporal capability checkpoints — authority state snapshotted and rolled back atomically (IDs 116–120).
+- Runtime policy contracts bound to individual capabilities and evaluated inline (IDs 121–124).
+- Quantum-inspired capability entanglement with atomic group revocation (IDs 125–128).
+- Runtime capability delegation graph (DAG) with cycle detection, no-escalation enforcement, and live violation counting (IDs 129–131).
+- WASM host ABI spans IDs 0–131 across 132 callable host functions.
+- 77+ kernel modules organized into subsystem directories within a single Rust `no_std` crate.
+- 5 GitHub Actions CI workflows (smoke, extended, CapNet regression, WASM JIT regression, proof check).
+- 14 shell-level CI scripts for i686, x86_64, and AArch64 covering smoke, extended, and soak profiles.
 
 ## Platform And Portability Status
 
@@ -122,6 +151,503 @@ Oreulia is now cross-compatible at the boot/runtime abstraction layer across `i6
 | Persistence | Durable snapshot read/write for temporal state | Used by temporal self-checks and restore path |
 | Network + CapNet | Ethernet/WiFi stack and capability network control plane | `net-*`, `wifi-*`, `capnet-*`, `http-*`, `dns-resolve` |
 | Assembly paths | Low-level context, syscall, memory, and perf primitives | `asm-test`, `cpu-bench`, VM/syscall tests |
+
+## WASM Host ABI Reference
+
+The Oreulia WASM runtime exposes 132 host functions (IDs 0–131) through a single import module. Functions are resolved by name — both the short form (e.g. `log`) and the fully-qualified `oreulia_` prefix form (e.g. `oreulia_log`) are accepted. Every function call is dispatched through a single match arm in the `WasmInterpreter::call_host_fn` method in `kernel/src/wasm.rs` (19,536 lines).
+
+### Group 0 — Core I/O and IPC (IDs 0–12)
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 0 | `debug_log` / `oreulia_log` | 2 | 0 | Write a UTF-8 string slice (ptr, len) to the kernel serial log. |
+| 1 | `fs_read` | 5 | 1 | Read bytes from a VFS path into a WASM memory buffer. |
+| 2 | `fs_write` | 5 | 1 | Write bytes from a WASM memory buffer to a VFS path. |
+| 3 | `channel_send` | 3 | 1 | Send a message on a named IPC channel by capability handle. |
+| 4 | `channel_recv` | 3 | 1 | Receive a message from a named IPC channel by capability handle. |
+| 5 | `net_http_get` | 4 | 1 | Perform an HTTP GET via the kernel network stack; write response to buffer. |
+| 6 | `net_connect` | 3 | 1 | Open a TCP connection by (host_ptr, host_len, port). |
+| 7 | `dns_resolve` | 2 | 1 | Resolve a hostname; write result IPv4/IPv6 as text into buffer. |
+| 8 | `service_invoke` | 3 | 1 | Invoke a registered service by name and cap handle. |
+| 9 | `service_register` | — | 1 | Register the current module as a named service. |
+| 10 | `channel_send_cap` | 4 | 1 | Send a message on a channel, attaching a capability token. |
+| 11 | `last_service_cap` | 0 | 1 | Return the capability handle from the most recent service call result. |
+| 12 | `service_invoke_typed` | 5 | 1 | Typed service invocation; caller provides signature descriptor. |
+
+### Group 1 — Temporal Object Operations (IDs 13–22)
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 13 | `temporal_snapshot` | 4 | 1 | Snapshot the current value of a temporal object at a named key. |
+| 14 | `temporal_latest` | 4 | 1 | Read the latest version entry for a temporal object. |
+| 15 | `temporal_read` | 7 | 1 | Read a specific historical version of a temporal object into a buffer. |
+| 16 | `temporal_rollback` | 6 | 1 | Roll back a temporal object to a given version number. |
+| 17 | `temporal_stats` | 1 | 1 | Return stats (version count, size, schema version) for a temporal object. |
+| 18 | `temporal_history` | 7 | 1 | Enumerate version history for a temporal object into a buffer. |
+| 19 | `temporal_branch_create` | 8 | 1 | Create a named branch of a temporal object from a base version. |
+| 20 | `temporal_branch_checkout` | 6 | 1 | Check out a branch of a temporal object (make it the active head). |
+| 21 | `temporal_branch_list` | 5 | 1 | Enumerate all branches of a temporal object into a buffer. |
+| 22 | `temporal_merge` | 9 | 1 | Merge two branches of a temporal object with a caller-specified strategy (0=FastForwardOnly, 1=Ours, 2=Theirs, 3=ThreeWay). |
+
+### Group 2 — Thread Primitives (IDs 23–27)
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 23 | `thread_spawn` | 2 | 1 | Spawn a WASM thread by (func_index, arg). Returns thread handle or -1. |
+| 24 | `thread_join` | 1 | 1 | Block until a thread handle completes. Returns exit value. |
+| 25 | `thread_id` | 0 | 1 | Return the current thread's numeric ID. |
+| 26 | `thread_yield` | 0 | 0 | Yield the current WASM thread's time slice. |
+| 27 | `thread_exit` | 1 | 0 | Terminate the current WASM thread with a given exit code. |
+
+### Group 3 — Compositor / Windowing (IDs 28–37)
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 28 | `compositor_create_window` | — | 1 | Create a new compositor window surface. Returns window handle. |
+| 29 | `compositor_destroy_window` | — | 1 | Destroy a compositor window by handle. |
+| 30 | `compositor_set_pixel` | — | 1 | Set a single pixel in a window at (x, y, color). |
+| 31 | `compositor_fill_rect` | — | 1 | Fill a rectangular region of a window with a solid color. |
+| 32 | `compositor_flush` | — | 1 | Flush a window's framebuffer to the display. |
+| 33 | `compositor_move_window` | — | 1 | Move a compositor window to (x, y). |
+| 34 | `compositor_set_z_order` | — | 1 | Set the z-order of a compositor window. |
+| 35 | `compositor_get_width` | — | 1 | Return the width of a compositor window in pixels. |
+| 36 | `compositor_get_height` | — | 1 | Return the height of a compositor window in pixels. |
+| 37 | `compositor_draw_text` | — | 1 | Draw a UTF-8 text string at a position within a compositor window. |
+
+### Group 4 — Input Events (IDs 38–44)
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 38 | `input_poll` | — | 1 | Return 1 if any input event is pending, 0 otherwise. |
+| 39 | `input_read` | — | 1 | Read the next raw input event into a buffer. |
+| 40 | `input_event_type` | — | 1 | Return the type tag of the last read input event. |
+| 41 | `input_flush` | — | 1 | Discard all pending input events. |
+| 42 | `input_key_poll` | — | 1 | Return 1 if a keyboard event is pending. |
+| 43 | `input_mouse_poll` | — | 1 | Return 1 if a mouse event is pending. |
+| 44 | `input_gamepad_poll` | — | 1 | Return 1 if a gamepad event is pending. |
+
+### Group 5 — WASI Compatibility Layer (IDs 45–90)
+
+Oreulia implements a WASI preview-1 compatibility surface over the kernel's own VFS and process model. WASM modules compiled for `wasm32-wasi` can import from the `wasi_snapshot_preview1` module and be hosted without modification.
+
+| ID | WASI Function | ID | WASI Function |
+|---|---|---|---|
+| 45 | `args_get` | 68 | `fd_seek` |
+| 46 | `args_sizes_get` | 69 | `fd_stat_set_flags` |
+| 47 | `environ_get` | 70 | `fd_tell` |
+| 48 | `environ_sizes_get` | 71 | `fd_write` |
+| 49 | `clock_res_get` | 72 | `path_create_directory` |
+| 50 | `clock_time_get` | 73 | `path_filestat_get` |
+| 51 | `fd_advise` | 74 | `path_filestat_set_times` |
+| 52 | `fd_allocate` | 75 | `path_link` |
+| 53 | `fd_close` | 76 | `path_open` |
+| 54 | `fd_datasync` | 77 | `path_readlink` |
+| 55 | `fd_fdstat_get` | 78 | `path_remove_directory` |
+| 56 | `fd_fdstat_set_flags` | 79 | `path_rename` |
+| 57 | `fd_fdstat_set_rights` | 80 | `path_symlink` |
+| 58 | `fd_filestat_get` | 81 | `path_unlink_file` |
+| 59 | `fd_filestat_set_size` | 82 | `poll_oneoff` |
+| 60 | `fd_filestat_set_times` | 83 | `proc_exit` |
+| 61 | `fd_pread` | 84 | `proc_raise` |
+| 62 | `fd_prestat_get` | 85 | `sched_yield` |
+| 63 | `fd_prestat_dir_name` | 86 | `random_get` |
+| 64 | `fd_pwrite` | 87 | `sock_accept` |
+| 65 | `fd_read` | 88 | `sock_recv` |
+| 66 | `fd_readdir` | 89 | `sock_send` |
+| 67 | `fd_renumber` | 90 | `sock_shutdown` |
+
+### Group 6 — TLS (IDs 91–99)
+
+| ID | Export Name | Description |
+|---|---|---|
+| 91 | `tls_connect` | Open a TLS session to (host_ptr, host_len, port). Returns session handle or -1. |
+| 92 | `tls_write` | Write bytes to an open TLS session. |
+| 93 | `tls_read` | Read bytes from an open TLS session into a buffer. |
+| 94 | `tls_close` | Close a TLS session by handle. |
+| 95 | `tls_state` | Return the current state tag of a TLS session. |
+| 96 | `tls_error` | Return the last error code of a TLS session. |
+| 97 | `tls_handshake_done` | Return 1 if the TLS handshake for a session is complete. |
+| 98 | `tls_tick` | Drive a TLS session's internal state machine forward by one step. |
+| 99 | `tls_free` | Free all resources associated with a TLS session handle. |
+
+### Group 7 — Process Lifecycle (IDs 100–102)
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 100 | `proc_spawn` | 2 | 1 | Spawn a new process from a WASM function index. Returns PID or -1. |
+| 101 | `proc_yield` | 0 | 0 | Yield the current process's time slice. |
+| 102 | `proc_sleep` | 1 | 0 | Sleep the current process for N milliseconds. |
+
+### Group 8 — Polyglot Runtime (IDs 103–105)
+
+The polyglot subsystem allows multiple WASM language runtimes to coexist in the same kernel session. A module registers its type ABI under a namespace, then other modules resolve and link against it without a shared global registry.
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 103 | `polyglot_register` | 2 | 1 | Register the calling module's type ABI under a (namespace_ptr, namespace_len) key. |
+| 104 | `polyglot_resolve` | 2 | 1 | Resolve a type binding by namespace; returns a handle to the registered ABI. |
+| 105 | `polyglot_link` | 4 | 1 | Link a resolved ABI handle into the caller's import table at a given slot. |
+
+### Group 9 — Observer / Event Bus (IDs 106–108)
+
+The observer subsystem exposes capability lifecycle events to WASM modules. A module subscribes to a capability's event stream; the kernel delivers events (grant, revoke, transfer, violation) without polling.
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 106 | `observer_subscribe` | 1 | 1 | Subscribe to events for a capability ID. Returns a subscription handle. |
+| 107 | `observer_unsubscribe` | 0 | 1 | Unsubscribe the most recent subscription. |
+| 108 | `observer_query` | 2 | 1 | Read the next pending event for a subscription into a buffer. Returns bytes written or -1 if none. |
+
+### Group 10 — Kernel Mesh (IDs 109–115)
+
+The mesh subsystem implements an in-kernel peer table with capability token minting, peer-to-peer token routing, and live process migration. Each peer has a stable local ID; tokens are 256-bit opaque values whose rights are enforced by the issuing kernel instance.
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 109 | `mesh_local_id` | 0 | 1 | Return the local peer ID of the current kernel instance. |
+| 110 | `mesh_peer_register` | 3 | 1 | Register a remote peer by (addr_ptr, addr_len, peer_id). |
+| 111 | `mesh_peer_session` | 2 | 1 | Open an authenticated session to a peer by peer_id and session_key. |
+| 112 | `mesh_token_mint` | 6 | 1 | Mint a new capability token with specified rights for a target peer session. |
+| 113 | `mesh_token_send` | 4 | 1 | Route a previously minted token to a registered peer. |
+| 114 | `mesh_token_recv` | 2 | 1 | Receive an inbound token from a peer into a buffer. |
+| 115 | `mesh_migrate` | 4 | 1 | Initiate a live process migration to a target peer, transferring capability set. |
+
+### Group 11 — Temporal Capability Checkpoints (IDs 116–120)
+
+Temporal capabilities bind authority to a point in time. A grant is recorded in the temporal log; rolling back the object version atomically rolls back both the payload state and the capability rights that were active at that version.
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 116 | `temporal_cap_grant` | 3 | 1 | Grant a temporally-scoped capability to a target PID at the current version. |
+| 117 | `temporal_cap_revoke` | 1 | 1 | Revoke a temporally-scoped capability by handle; records the revocation in the version log. |
+| 118 | `temporal_cap_check` | 1 | 1 | Check whether a temporally-scoped capability is still valid at the current version. Returns 0=valid, 1=expired, 2=revoked. |
+| 119 | `temporal_checkpoint_create` | 0 | 1 | Snapshot the entire current capability set for the calling process into the temporal log. |
+| 120 | `temporal_checkpoint_rollback` | 1 | 1 | Roll back the calling process's capability set to the version recorded at checkpoint N. |
+
+### Group 12 — Policy Contracts (IDs 121–124)
+
+Policy contracts are named rule objects that can be bound to a capability. Every time that capability is exercised, the bound policy is evaluated inline. Policies can be updated at runtime; the change takes effect on the next exercise without restarting the holder.
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 121 | `policy_bind` | 3 | 1 | Bind a named policy to a capability by (cap_id, policy_name_ptr, policy_name_len). Returns 0 on success. |
+| 122 | `policy_unbind` | 1 | 1 | Remove the policy bound to a capability by cap_id. |
+| 123 | `policy_eval` | 3 | 1 | Evaluate the policy currently bound to a capability against a context buffer. Returns 0=allow, 1=deny, 2=no policy. |
+| 124 | `policy_query` | 3 | 1 | Read the policy name and metadata bound to a capability into a caller buffer. |
+
+### Group 13 — Quantum-Inspired Capability Entanglement (IDs 125–128)
+
+Capability entanglement is the kernel's implementation of atomic multi-party revocation. Two capabilities can be entangled pairwise; any number of capabilities can be entangled as a named group. When any member of an entangled set is revoked, the kernel atomically revokes all co-entangled members in the same operation. This eliminates the partial-revocation race that occurs when authority must be withdrawn from multiple holders simultaneously.
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 125 | `cap_entangle` | 2 | 1 | Entangle two capabilities by (cap_id_a, cap_id_b). Returns 0 on success, -1 if either is invalid. |
+| 126 | `cap_entangle_group` | 2 | 1 | Add a capability to a named entanglement group by (cap_id, group_name_hash). Creates the group if it does not exist. |
+| 127 | `cap_disentangle` | 1 | 1 | Remove all entanglement links for a capability. Does not revoke the capability itself. |
+| 128 | `cap_entangle_query` | 3 | 1 | Read the list of capabilities entangled with a given cap_id into a caller buffer. Returns count or -1. |
+
+### Group 14 — Runtime Capability Graph Verification (IDs 129–131)
+
+The runtime capability graph is a live delegation DAG maintained in `kernel/src/capability/cap_graph.rs`. Every `transfer_capability` call passes through `check_invariants` (no-escalation + no-cycle check) before the transfer is committed; the edge is recorded via `record_delegation` after a successful transfer. Every `revoke_capability` call prunes the corresponding edges. The graph is stored as a flat 256-slot edge table protected by a `spin::Mutex`. Cycle detection uses iterative DFS with a 32-deep visited stack; the algorithm is fail-closed (overflow = reject). The lifetime violation counter is monotonic and never resets.
+
+| ID | Export Name | Args | Rets | Description |
+|---|---|---|---|---|
+| 129 | `cap_graph_query` | 3 | 1 | Read up to 16 delegation edges for a (cap_id, buf_ptr, buf_len). Each edge is 20 bytes: `[from_pid:u32][from_cap:u32][to_pid:u32][to_cap:u32][rights:u32]` in little-endian. Returns edge count or -1. |
+| 130 | `cap_graph_verify` | 2 | 1 | Prospectively check whether delegating cap_id to delegatee_pid would violate invariants. Returns 0=safe, 1=rights escalation, 2=would create cycle, 3=cap not found. |
+| 131 | `cap_graph_depth` | 1 | 1 | Return the delegation depth of cap_id from its original grantor. Returns 0 if the capability has no recorded delegation ancestor. |
+
+## WASM SDK Module Reference
+
+The `wasm/sdk` crate provides a Rust `no_std` SDK for WASM modules running on the Oreulia host. All 15 public modules correspond to groups of host functions described above. Modules are declared in `wasm/sdk/src/lib.rs` and each wraps the raw `extern "C"` FFI stubs in `wasm/sdk/src/raw/oreulia.rs` and `wasm/sdk/src/raw/wasi.rs` with safe, ergonomic abstractions.
+
+| Module | Host IDs | Key Types / Functions | Purpose |
+|---|---|---|---|
+| `capgraph` | 129–131 | `DelegationEdge`, `EdgeList`, `VerifyResult`, `query()`, `verify()`, `depth()`, `assert_safe()` | Query the live delegation DAG; prospectively verify a planned delegation; check delegation depth; ergonomic pre-delegation guard. |
+| `entangle` | 125–128 | `EntangleList`, `EntangleGuard`, `GroupEntangleGuard`, `entangle()`, `entangle_group()`, `disentangle()`, `entangle_query()` | Pairwise and group capability entanglement with RAII unlink-on-drop guards. |
+| `fs` | 1–2 | `read()`, `write()` | VFS read/write over host IDs 1–2. |
+| `io` | 0 | `log()` | Kernel serial log write. |
+| `ipc` | 3–4, 10–12 | `send()`, `recv()`, `send_cap()`, `last_cap()` | IPC channel send/receive with optional capability attachment. |
+| `mesh` | 109–115 | `local_id()`, `peer_register()`, `peer_session()`, `token_mint()`, `token_send()`, `token_recv()`, `migrate()` | Full kernel-mesh peer table and capability token lifecycle. |
+| `net` | 5–7 | `http_get()`, `connect()`, `dns_resolve()` | Network I/O via the kernel network stack. |
+| `observer` | 106–108 | `subscribe()`, `unsubscribe()`, `query()` | Capability event bus subscription and delivery. |
+| `policy` | 121–124 | `PolicyResult`, `PolicyInfo`, `PolicyGuard`, `bind()`, `unbind()`, `eval()`, `query()`, `opol_stub()` | Runtime policy contract bind/eval/query with RAII unbind-on-drop guard. |
+| `polyglot` | 103–105 | `register()`, `resolve()`, `link()` | Cross-language WASM type ABI registration and resolution. |
+| `process` | 100–102 | `spawn()`, `yield_()`, `sleep()` | Process lifecycle primitives. |
+| `temporal` | 13–22 | `snapshot()`, `latest()`, `read()`, `rollback()`, `stats()`, `history()`, `branch_create()`, `branch_checkout()`, `branch_list()`, `merge()` | Full temporal object lifecycle. |
+| `thread` | 23–27 | `spawn()`, `join()`, `id()`, `yield_()`, `exit()` | WASM thread primitives. |
+| `time` | 49–50 | `clock_res_get()`, `clock_time_get()` | WASI-compatible clock access. |
+| `raw::oreulia` | 0–131 | All `extern "C"` FFI stubs | Direct FFI declarations for all Oreulia-native host functions. |
+| `raw::wasi` | 45–90 | All WASI `extern "C"` FFI stubs | Direct FFI declarations for the WASI preview-1 compatibility surface. |
+
+## Kernel Module Map
+
+The kernel is a single Rust `no_std` `staticlib` crate (`oreulia-kernel v0.1.0`). Top-level subsystems are declared in `kernel/src/lib.rs`, with most implementation files grouped under subsystem directories. Architecture-conditioned modules use `#[cfg(not(target_arch = "aarch64"))]` (present on x86/i686) or `#[cfg(target_arch = "aarch64")]` (AArch64 only). Unconditional modules compile on all targets.
+
+### Unconditional Modules (all architectures)
+
+| Module | File | Responsibility |
+|---|---|---|
+| `arch` | `arch/` | Per-arch MMU, trap, interrupt, and boot backends |
+| `cap_graph` | `capability/cap_graph.rs` | Live capability delegation DAG; cycle detection; no-escalation enforcement |
+| `capability` | `capability/mod.rs` | Capability table, grant/transfer/revoke lifecycle, rights bitmask |
+| `commands_shared` | `shell/commands_shared.rs` | Commands available on all architectures |
+| `crypto` | `crypto.rs` | In-kernel cryptographic primitives |
+| `exact_rational` | `exact_rational.rs` | Exact rational arithmetic for scheduler and policy math |
+| `fs` | `fs.rs` | Key-value filesystem primitives |
+| `intent_graph` | `intent_graph.rs` | Intent graph construction and predictive revocation |
+| `intent_wasm` | `intent_wasm.rs` | WASM-visible intent graph interface |
+| `interrupt_dag` | `interrupt_dag.rs` | Interrupt dependency graph for ordered delivery |
+| `ipc` | `ipc/mod.rs` | IPC channel table and typed message dispatch |
+| `persistence` | `persistence.rs` | Durable snapshot store for temporal objects |
+| `pit` | `pit.rs` | PIT/timer abstraction (cross-arch) |
+| `process` | `process.rs` | Process table and lifecycle management |
+| `process_platform` | `process_platform.rs` | Architecture-agnostic process platform abstraction |
+| `quantum_scheduler` | `quantum_scheduler.rs` | Preemptive quantum scheduler with entropy-based hints |
+| `registry` | `registry.rs` | Service registry and discovery |
+| `replay` | `replay.rs` | WASM execution replay record/load/verify |
+| `scheduler_platform` | `scheduler_platform.rs` | Scheduler platform abstraction layer |
+| `scheduler_runtime_platform` | `scheduler_runtime_platform.rs` | Runtime-side scheduler hooks |
+| `security` | `security.rs` | Audit log, anomaly detection, and security event stream |
+| `serial` | `serial.rs` | Serial console write (COM1 / PL011) |
+| `temporal` | `temporal.rs` | Temporal object store, versioning, branch/merge |
+| `temporal_asm` | `temporal_asm.rs` | Low-level temporal persistence assembly helpers |
+| `telemetry` | `telemetry.rs` | In-kernel telemetry collection |
+| `tensor_core` | `tensor_core.rs` | Tensor computation primitives for ML workloads |
+| `vfs` | `vfs.rs` | Virtual filesystem with inode table and path resolution |
+| `vfs_platform` | `vfs_platform.rs` | Platform abstraction for VFS block I/O |
+| `virtio_blk` | `virtio_blk.rs` | Virtio block device driver (mmio + pci) |
+| `wait_free_ring` | `wait_free_ring.rs` | Wait-free ring buffer for lock-free IPC fast path |
+
+### x86 / i686-Only Modules
+
+| Module | Responsibility |
+|---|---|
+| `acpi_asm` | ACPI table enumeration via assembly helpers |
+| `advanced_commands` | Extended shell commands specific to the full x86 runtime |
+| `asm_bindings` | Assembly binding stubs for legacy x86 kernel calls |
+| `ata` | ATA/IDE disk driver |
+| `audio` | Audio device driver |
+| `bluetooth` | Bluetooth driver bring-up |
+| `capnet` | CapNet cross-peer capability delegation control plane |
+| `commands` | Full x86 shell command set |
+| `compositor` | Windowed compositor and framebuffer rendering |
+| `console_service` | Console service object and registration |
+| `cpu_security` | CPU feature checks (SMEP, SMAP, KASLR) |
+| `crash_log` | In-kernel crash log and fault capture |
+| `disk` | Disk I/O abstraction layer |
+| `dma_asm` | DMA controller ASM helpers |
+| `e1000` | Intel e1000 NIC driver |
+| `elf` | ELF binary loader for userspace launch |
+| `enclave` | Enclave / secure session state management |
+| `fleet` | Fleet management and OTA coordination |
+| `formal` | In-kernel formal verification pipeline |
+| `framebuffer` | Linear framebuffer driver |
+| `gdt` | GDT and TSS setup |
+| `gpu_support` | GPU/display acceleration bring-up |
+| `hardened_allocator` | Hardened slab allocator with guard pages |
+| `health` | Health check and liveness subsystem |
+| `idt_asm` | IDT programming and trap handler stubs |
+| `input` | Unified input event subsystem |
+| `keyboard` | PS/2 keyboard driver |
+| `kpti` | Kernel Page Table Isolation (KPTI) |
+| `memopt_asm` | Memory optimization assembly primitives |
+| `memory` | Physical memory manager |
+| `memory_isolation` | Memory isolation and sandbox page table helpers |
+| `mouse` | PS/2 mouse driver |
+| `net` | Network stack (TCP/IP, UDP, ICMP) |
+| `net_reactor` | Async network I/O reactor |
+| `netstack` | Protocol stack integration layer |
+| `nvme` | NVMe block device driver |
+| `ota` | Over-the-air update pipeline |
+| `paging` | Legacy i686 page table management |
+| `pci` | PCI bus enumeration and device configuration |
+| `process_asm` | Process context-switch ASM stubs |
+| `rtl8139` | Realtek RTL8139 NIC driver |
+| `scheduler` | Legacy i686 preemptive scheduler |
+| `syscall` | Syscall entry (`INT 0x80`, `SYSENTER`) |
+| `tasks` | Task control block management |
+| `terminal` | In-kernel terminal/line-discipline |
+| `tls` | In-kernel TLS session state |
+| `usermode` | Ring-3 transition and user-mode management |
+| `usb` | USB host controller driver |
+| `vga` | VGA text-mode console |
+| `wasi` | WASI host implementation |
+| `wasm` | WASM interpreter, JIT dispatch, host ABI (IDs 0–131) |
+| `wasm_jit` | WASM JIT compiler backend |
+| `wasm_thread` | WASM threading and cooperative scheduling |
+| `wifi` | WiFi driver and association state |
+
+### AArch64-Only Modules
+
+| Module | Responsibility |
+|---|---|
+| `commands` (aarch64 variant) | AArch64 bring-up shell command set |
+
+## Capability System Internals
+
+### CapabilityTable
+
+The capability system lives in `kernel/src/capability/mod.rs` (2,150 lines). The primary structure is `CapabilityTable`, a fixed-size flat array of `CapabilityEntry` objects protected by a `spin::Mutex`. Each entry records:
+
+- `cap_type`: The authority class (filesystem, IPC channel, network socket, service pointer, WASM module, temporal object, CapNet lease, etc.).
+- `rights`: A bitmask (`bitflags`-generated) encoding the permitted operations (read, write, exec, delegate, revoke, transfer, etc.).
+- `owner_pid`: The PID that holds this capability.
+- `object_id`: The kernel object this capability references.
+- `active`: Whether this entry is live.
+- `temporal_version`: If temporally-scoped, the version at which this capability was granted.
+
+### Rights Bitmask
+
+Capability rights are composed from a `bitflags` set. The defined bits include:
+
+- `READ` — read the referenced object's data.
+- `WRITE` — mutate the referenced object.
+- `EXEC` — invoke the referenced object (service call, WASM invocation).
+- `DELEGATE` — transfer a copy to another process (subject to no-escalation).
+- `REVOKE` — revoke a capability previously delegated to a child.
+- `TRANSFER` — move (not copy) the capability to another process.
+- `GRANT_TEMPORAL` — attach a temporal scope to a delegation.
+
+The no-escalation rule enforced by `cap_graph::check_invariants` means a delegating process cannot grant a rights superset of its own entry. Any proposed delegation where `proposed_rights & !delegator_rights != 0` is rejected with `CapabilityError::SecurityViolation` before the transfer is committed.
+
+### CapabilityError Variants
+
+| Variant | `as_str()` | When Raised |
+|---|---|---|
+| `NotFound` | `"Capability not found"` | Lookup by cap_id or (pid, type) finds no active entry. |
+| `PermissionDenied` | `"Permission denied"` | Caller's rights do not include the requested operation. |
+| `InvalidType` | `"Invalid capability type"` | Cap type field does not match the expected operation. |
+| `TableFull` | `"Capability table full"` | All slots in the fixed-size table are occupied. |
+| `AlreadyExists` | `"Capability already exists"` | Attempt to insert a duplicate entry. |
+| `Revoked` | `"Capability has been revoked"` | Operation attempted on a previously revoked entry. |
+| `SecurityViolation` | `"Capability graph security violation"` | `cap_graph::check_invariants` detected rights escalation or a delegation cycle. |
+
+### cap_graph Internals (`kernel/src/capability/cap_graph.rs`, 306 lines)
+
+The capability delegation graph maintains a flat 256-slot edge table in static memory:
+
+```text
+CAP_GRAPH: spin::Mutex<CapGraph>
+  .edges: [CapDelegationEdge; 256]
+  .edge_count: usize
+  .violations: u64
+```
+
+Each `CapDelegationEdge` records:
+- `active: bool`
+- `from_pid: u32`, `from_cap: u32` — the delegating (pid, cap_id) pair.
+- `to_pid: u32`, `to_cap: u32` — the receiving (pid, cap_id) pair.
+- `rights_bits: u32` — the rights bitmask at the time of transfer.
+
+**`check_invariants(from_pid, from_cap, to_pid, delegator_rights, proposed_rights)`**
+- Verifies `proposed_rights & !delegator_rights == 0` (no escalation).
+- Calls `would_create_cycle(from_pid, from_cap, to_pid)` before recording.
+- Returns `Err("rights escalation")` or `Err("cycle detected")` on violation; increments `violations`; logs via `serial_println!`.
+
+**`would_create_cycle(from_pid, from_cap, to_pid)`**
+- Iterative DFS using a 32-slot on-stack `[u32; 32]` visited set and a 32-slot `[(u32, u32); 32]` traversal stack.
+- Fail-closed: stack overflow returns `true` (reject the delegation).
+- Returns `true` if following existing edges from `(to_pid, to_cap)` can reach `(from_pid, from_cap)`.
+
+**`record_delegation`** — called by `transfer_capability` after a successful invariant check.
+
+**`prune_edges_for(pid, cap_id)`** — called by `revoke_capability`; marks all edges where `from` or `to` matches `(pid, cap_id)` as inactive.
+
+**`prune_edges_for_pid(pid)`** — called on process teardown; prunes all edges touching any capability owned by `pid`.
+
+**`delegation_depth(pid, cap_id)`** — recursive DFS, depth capped at 32; returns how many delegation hops separate this capability from its original grant.
+
+**`violation_count()`** — returns the lifetime monotonic count of invariant breaches.
+
+## Continuous Integration
+
+### GitHub Actions Workflows
+
+Five workflows run on every push and pull request:
+
+| Workflow File | Trigger | What It Runs |
+|---|---|---|
+| `.github/workflows/multiarch-qemu-smoke.yml` | Push / PR | Smoke tests for i686, x86_64, and AArch64 under QEMU. Boot, serial shell, and immediate-exit checks. |
+| `.github/workflows/multiarch-qemu-extended.yml` | Push / PR | Extended QEMU tests for all three architectures. Includes trap/MMU/IRQ/JIT/CapNet/temporal/VFS scenario scripts. |
+| `.github/workflows/capnet-regression.yml` | Push / PR | CapNet parser, enforcer, and cross-peer delegation regression. Runs fuzz corpus and known-bad input set. |
+| `.github/workflows/wasm-jit-regression.yml` | Push / PR | WASM interpreter vs JIT differential validation. Runs deterministic seed fuzz and corpus replay. |
+| `.github/workflows/proof-check.yml` | Push / PR | Runs the 8-stage formal verification pipeline (`formal-verify`) via `kernel/formal-verify.sh`. |
+
+### Shell CI Scripts (`kernel/ci/`)
+
+14 shell scripts cover three architectures at three test depths:
+
+| Script | Arch | Depth | Description |
+|---|---|---|---|
+| `smoke-i686.sh` / `.expect` | i686 | Smoke | Boot and minimal shell responsiveness check. |
+| `smoke-x86_64.sh` / `.expect` | x86_64 | Smoke | MB2 boot, serial shell, and command availability. |
+| `smoke-aarch64.sh` / `.expect` | AArch64 | Smoke | QEMU `virt` boot, PL011 shell, basic command echo. |
+| `extended-x86_64.sh` / `.expect` | x86_64 | Extended | Traps, MMU, timer IRQ, JIT toggle, CapNet, temporal, VFS. |
+| `extended-aarch64.sh` / `.expect` | AArch64 | Extended | Exception vectors, GICv2, generic timer, virtio-mmio. |
+| `extended-all.sh` | All | Extended | Orchestrator that runs all three extended scripts in sequence. |
+| `soak-x86_64.sh` | x86_64 | Soak | Long-duration stability run: JIT fuzz-soak, CapNet fuzz-soak, temporal churn. |
+| `soak-aarch64.sh` | AArch64 | Soak | AArch64 long-duration stability, virtio-blk, and IRQ stability. |
+
+### Formal Verification Pipeline Detail (`formal-verify`)
+
+The `formal-verify` shell command runs an 8-stage in-kernel pipeline. Each stage is self-contained, fail-fast, and reports pass/fail to the serial console:
+
+| Stage | Subject | Checks |
+|---|---|---|
+| 1 | JIT translation proof obligations | Opcode semantics equivalence between interpreter and JIT paths. |
+| 2 | Capability proof obligations | Grant/transfer/revoke invariants; rights monotonicity; table compactness. |
+| 3 | CapNet proof obligations | Token format; replay-guard nonce uniqueness; lease expiry enforcement. |
+| 4 | Service pointer proof obligations | Typed invocation ABI; cross-PID pointer validity; type tag matching. |
+| 5 | WASM control-flow semantics | Stack depth, branch target, and trap-on-unreachable self-check. |
+| 6 | Temporal ABI/VFS/object/persistence/branch/audit/IPC checks | 7-domain temporal correctness sweep. |
+| 7 | WASM binary conformance + negative parser fuzz | Well-formed module parsing + known-malformed input rejection. |
+| 8 | Mechanized backend model checks | Algebraic invariants for the scheduler, capability graph, and temporal merge strategies. |
+
+### Fuzz Admission Gate
+
+Fuzz corpus runs serve as admission gates for capability-adjacent and JIT-adjacent subsystems. A regression is defined as any output divergence between the interpreter and JIT paths on the same seed, or any kernel panic/trap triggered by a corpus input. The corpus is maintained under `kernel/fuzz/` and is replayed on every CI run via `wasm-jit-fuzz-corpus` and `capnet-fuzz-corpus`.
+
+## Cargo Crate Details
+
+```text
+Name:       oreulia-kernel
+Version:    0.1.0
+Edition:    2021
+Crate type: staticlib
+Target:     x86_64-unknown-none (default build)
+            i686-oreulia (custom JSON target)
+            aarch64-unknown-none (AArch64 bring-up)
+```
+
+### Dependencies
+
+| Crate | Version | Feature Flags Used | Purpose |
+|---|---|---|---|
+| `spin` | 0.9 | (default) | `spin::Mutex` for all kernel-internal data structures |
+| `bitflags` | 2.5 | (default) | Rights bitmasks for capabilities and permissions |
+| `lazy_static` | 1.4 | `spin_no_std` | `no_std`-safe lazily-initialized statics |
+
+### Cargo Feature Flags
+
+| Feature | Effect |
+|---|---|
+| `formal-verify` | Enables the 8-stage formal verification pipeline and its proof obligation generators. |
+| `jit-fuzz-24bin` | Enables 24-binary JIT fuzz mode; generates extended opcode coverage test vectors. |
+| `experimental_entropy_sched` | Enables the entropy-based scheduler hint path in `quantum_scheduler`. |
+
+## Honest Gaps (What Isn't Done Yet)
+
+Oreulia makes no false completeness claims. The following items are explicitly acknowledged as incomplete or not yet started:
+
+| Area | Status | Notes |
+|---|---|---|
+| AArch64 full runtime parity | In progress | AArch64 bring-up shell works; full x86 subsystem set (WASM, JIT, CapNet, temporal, IPC) not yet ported to AArch64. |
+| x86_64 JIT opcode parity | In progress | x86_64 JIT path covers the most common opcodes; full WASM opcode coverage parity with i686 interpreter is not yet complete. |
+| Non-QEMU hardware validation | Not started | All three architectures are validated under QEMU. Physical hardware bring-up has not been attempted. |
+| POSIX / Linux ABI compatibility | Explicit non-goal | Oreulia is not a drop-in Linux replacement. No libc, no POSIX process model, no `/proc`. |
+| Production workload benchmarking | Not started | Performance positioning is based on bounded control-path design; no workload-specific benchmarks have been published. |
+| Universal binary merge semantics | Explicit non-goal | The temporal merge path supports defined strategies (FastForwardOnly, Ours, Theirs, ThreeWay) for structured payloads; arbitrary binary object merge is not a goal. |
+| Multi-node CapNet (real network) | Not started | CapNet cross-peer delegation is implemented in-kernel; real multi-machine TCP transport has not been wired up. |
 
 ## Cross-Architecture Implementation
 
@@ -561,17 +1087,40 @@ Suggested measurement commands for reproducible local baselines:
 - [CapNet Scientific Resolution](docs/capnet.md)
 - [Intent Graph Predictive Revocation](docs/oreulia-intent-graph-predictive-revocation.md)
 - [Function/Service Pointer Capabilities](docs/oreulia-service-pointer-capabilities.md)
+- [WASM JIT Pairwise Transition Coverage](docs/oreulia-wasm-jit-pairwise-transition-coverage.md)
+- [WASM/WASI ABI Reference](docs/oreulia-wasm-abi.md)
+- [Assembly Quick Reference](docs/assembly-quick-reference.md)
+- [Code Page Header](docs/codepageheader.md)
 - [Commercial Use Cases](docs/CommercialUseCases.md)
 - [Contributing Guide](docs/CONTRIBUTING.md)
+- [Contributor License Terms](CONTRIBUTOR-LICENSE.md)
 
 ## Project Layout
 
 ```text
 oreulia/
 ├── kernel/              # Kernel source, asm, linker, build/run scripts
+│   ├── src/             # Grouped Rust subsystems (`capability/`, `drivers/`, `execution/`, `fs/`, `memory/`, `platform/`, `scheduler/`, `security/`, `services/`, `shell/`, `temporal/`, …)
+│   ├── ci/              # 14 shell CI scripts (smoke/extended/soak × i686/x86_64/AArch64)
+│   ├── fuzz/            # WASM and CapNet fuzz corpus
+│   └── iso/             # ISO build artifacts
 ├── docs/                # Formal and technical documentation
 ├── services/            # Service prototypes / planned expansions
+│   └── telemetry_daemon/
 ├── wasm/                # WASM modules and examples
+│   └── sdk/             # Rust no_std SDK crate (15 modules, IDs 0–131)
+│       └── src/
+│           ├── lib.rs   # Module declarations
+│           ├── capgraph.rs, entangle.rs, policy.rs, mesh.rs, …
+│           └── raw/     # oreulia.rs + wasi.rs FFI stubs
+├── verification/        # Formal verification specs, proofs, and artifacts
+│   ├── spec/
+│   ├── proof/
+│   ├── theories/
+│   └── mapping/
+├── ThingsYetToDo/       # Design notes and roadmap documents
+├── CONTRIBUTOR-LICENSE.md
+├── COMMERCIAL.md
 ├── README.md            # This file
 └── LICENSE
 ```
@@ -585,9 +1134,14 @@ Contributions are welcome for architecture, verification, runtime hardening, and
 3. Implement and test.
 4. Open a pull request with rationale and evidence.
 
+Inbound contributor rights are defined in
+[CONTRIBUTOR-LICENSE.md](CONTRIBUTOR-LICENSE.md).
+
 ## License
 
-Licensed under the terms in [LICENSE](LICENSE).
+Public use is licensed under [LICENSE](LICENSE). Commercial deployment is
+described in [COMMERCIAL.md](COMMERCIAL.md). Inbound contribution rights are in
+[CONTRIBUTOR-LICENSE.md](CONTRIBUTOR-LICENSE.md).
 
 ## Contact
 

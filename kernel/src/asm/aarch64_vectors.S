@@ -2,7 +2,8 @@
  *
  * The Rust dispatch hook logs synchronous exceptions and may request an
  * `ELR_EL1` advance (e.g. BRK/SVC self-tests) by returning a nonzero byte
- * delta in x0.
+ * delta in x0. The Rust hook also receives a pointer to the saved GPR frame
+ * so lower-EL SVC exceptions can reuse the shared syscall core.
  */
 
     .section .text.aarch64_vectors, "ax"
@@ -65,7 +66,7 @@
     mrs x2, ELR_EL1
     mrs x3, SPSR_EL1
     mrs x4, FAR_EL1
-    add x5, sp, #VEC_FRAME_SIZE
+    mov x5, sp
     mov x0, #\slot
     bl oreulia_aarch64_vector_dispatch
     cbz x0, 9f
@@ -119,4 +120,3 @@ __oreulia_aarch64_vectors_start:
     VECTOR_HANDLER __oreulia_vec_slot13, 13
     VECTOR_HANDLER __oreulia_vec_slot14, 14
     VECTOR_HANDLER __oreulia_vec_slot15, 15
-

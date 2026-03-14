@@ -1,31 +1,16 @@
 /*!
  * Oreulia Kernel Project
  *
- *License-Identifier: Oreulius License (see LICENSE)
+ * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
  * Contributing:
- * - By contributing to this file, you agree to license your work under the same terms.
- * - Please see CONTRIBUTING.md for code style and review guidelines.
+ * - By contributing to this file, you agree that accepted contributions may
+ *   be distributed and relicensed as part of Oreulia.
+ * - Please see docs/CONTRIBUTING.md for contribution terms and review
+ *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
@@ -537,6 +522,147 @@ impl AddressSpace {
         // For x86_64 bring-up, cloning the active root preserves the kernel
         // mappings needed to continue executing Rust after the sandbox CR3 switch.
         Self::new()
+    }
+
+    /// Clone this address space with copy-on-write semantics for writable user pages.
+    ///
+    /// The x86_64 runtime keeps a low identity-mapped kernel image under the same
+    /// PML4 slot as user mappings. To avoid aliasing parent/child page-table edits,
+    /// clone the complete user-visible 0..USER_TOP page-table structure while
+    /// keeping physical user data pages shared and COW-tagged.
+    pub fn clone_cow(&mut self) -> Result<Self, &'static str> {
+        let parent_root = self.cr3_phys;
+        let child_root = alloc_runtime_pt_page()?;
+
+        unsafe {
+            ptr::copy_nonoverlapping(parent_root as *const u8, child_root as *mut u8, PAGE_SIZE);
+
+            let parent_pml4 = X86_64Mmu::pml4_ptr_from_root(parent_root);
+            let child_pml4 = X86_64Mmu::pml4_ptr_from_root(child_root);
+            let user_top = crate::paging::USER_TOP;
+            if user_top == 0 {
+                return Ok(Self { cr3_phys: child_root });
+            }
+
+            let user_end = user_top.saturating_sub(1);
+            let last_pml4 = (user_end >> 39) & 0x1FF;
+
+            for pml4_idx in 0..=last_pml4 {
+                let parent_pml4e = ptr::read_volatile(parent_pml4.add(pml4_idx));
+                if !is_present(parent_pml4e) {
+                    continue;
+                }
+                if (parent_pml4e & PTE_PS) != 0 {
+                    return Err("x86_64 clone_cow: huge PML4 entry unsupported");
+                }
+
+                let parent_pdpt_phys = entry_addr(parent_pml4e);
+                let child_pdpt_phys = alloc_runtime_pt_page()?;
+                ptr::copy_nonoverlapping(
+                    parent_pdpt_phys as *const u8,
+                    child_pdpt_phys as *mut u8,
+                    PAGE_SIZE,
+                );
+                let child_pml4e =
+                    (parent_pml4e & !PTE_ADDR_MASK) | ((child_pdpt_phys as u64) & PTE_ADDR_MASK);
+                ptr::write_volatile(child_pml4.add(pml4_idx), child_pml4e);
+
+                let parent_pdpt = parent_pdpt_phys as *mut u64;
+                let child_pdpt = child_pdpt_phys as *mut u64;
+                let pml4_base = pml4_idx << 39;
+
+                for pdpt_idx in 0..ENTRIES_PER_TABLE {
+                    let region_base = pml4_base | (pdpt_idx << 30);
+                    if region_base >= user_top {
+                        break;
+                    }
+
+                    let parent_pdpte = ptr::read_volatile(parent_pdpt.add(pdpt_idx));
+                    if !is_present(parent_pdpte) {
+                        continue;
+                    }
+                    if (parent_pdpte & PTE_PS) != 0 {
+                        if (parent_pdpte & PTE_USER) != 0 {
+                            return Err("x86_64 clone_cow: 1GiB user pages unsupported");
+                        }
+                        continue;
+                    }
+
+                    let parent_pd_phys = entry_addr(parent_pdpte);
+                    let child_pd_phys = alloc_runtime_pt_page()?;
+                    ptr::copy_nonoverlapping(
+                        parent_pd_phys as *const u8,
+                        child_pd_phys as *mut u8,
+                        PAGE_SIZE,
+                    );
+                    let child_pdpte =
+                        (parent_pdpte & !PTE_ADDR_MASK) | ((child_pd_phys as u64) & PTE_ADDR_MASK);
+                    ptr::write_volatile(child_pdpt.add(pdpt_idx), child_pdpte);
+
+                    let parent_pd = parent_pd_phys as *mut u64;
+                    let child_pd = child_pd_phys as *mut u64;
+
+                    for pde_idx in 0..ENTRIES_PER_TABLE {
+                        let page_dir_base = region_base | (pde_idx << 21);
+                        if page_dir_base >= user_top {
+                            break;
+                        }
+
+                        let parent_pde = ptr::read_volatile(parent_pd.add(pde_idx));
+                        if !is_present(parent_pde) {
+                            continue;
+                        }
+
+                        if is_huge_2m(parent_pde) {
+                            if (parent_pde & PTE_USER) != 0 {
+                                return Err("x86_64 clone_cow: 2MiB user pages unsupported");
+                            }
+                            continue;
+                        }
+
+                        let parent_pt_phys = entry_addr(parent_pde);
+                        let child_pt_phys = alloc_runtime_pt_page()?;
+                        ptr::copy_nonoverlapping(
+                            parent_pt_phys as *const u8,
+                            child_pt_phys as *mut u8,
+                            PAGE_SIZE,
+                        );
+                        let child_pde =
+                            (parent_pde & !PTE_ADDR_MASK) | ((child_pt_phys as u64) & PTE_ADDR_MASK);
+                        ptr::write_volatile(child_pd.add(pde_idx), child_pde);
+
+                        let parent_pt = parent_pt_phys as *mut u64;
+                        let child_pt = child_pt_phys as *mut u64;
+
+                        for pte_idx in 0..ENTRIES_PER_TABLE {
+                            let virt = page_dir_base | (pte_idx << 12);
+                            if virt >= user_top {
+                                break;
+                            }
+
+                            let parent_pte_ptr = parent_pt.add(pte_idx);
+                            let pte = ptr::read_volatile(parent_pte_ptr);
+                            if !is_present(pte) {
+                                continue;
+                            }
+                            if (pte & PTE_USER) == 0 || (pte & PTE_WRITABLE) == 0 {
+                                continue;
+                            }
+
+                            let cow_pte = (pte | PTE_COW_SOFT) & !PTE_WRITABLE;
+                            ptr::write_volatile(parent_pte_ptr, cow_pte);
+                            ptr::write_volatile(child_pt.add(pte_idx), cow_pte);
+                        }
+                    }
+                }
+            }
+        }
+
+        if MMU.read_cr3() == self.cr3_phys {
+            MMU.flush_tlb_all();
+        }
+
+        Ok(Self { cr3_phys: child_root })
     }
 
     pub fn page_table_root_addr(&self) -> usize {

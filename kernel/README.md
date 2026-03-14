@@ -414,4 +414,4 @@ The codebase serves as educational reference for:
 
 ## License
 
-See `OreuliusLiscence` in repository root.
+See `LICENSE` and `COMMERCIAL.md` in the repository root.

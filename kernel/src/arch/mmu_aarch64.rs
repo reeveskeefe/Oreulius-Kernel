@@ -1,7 +1,7 @@
 /*!
  * Oreulia Kernel Project
  *
- *License-Identifier: Oreulius License (see LICENSE)
+ *License-Identifier: Oreulia Community License v1.0 (see LICENSE)
  *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
  */
@@ -10,8 +10,8 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{ArchMmu, PageAttribute};
-use crate::aarch64_alloc::AARCH64_MMU_PT_RESERVE_BYTES;
 use crate::arch::{aarch64_pl011, aarch64_virt};
+use crate::memory::aarch64_alloc::AARCH64_MMU_PT_RESERVE_BYTES;
 
 pub(super) struct AArch64Mmu;
 

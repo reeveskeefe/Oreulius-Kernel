@@ -1,31 +1,16 @@
 /*!
  * Oreulia Kernel Project
  *
- *License-Identifier: Oreulius License (see LICENSE)
+ * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
  * Contributing:
- * - By contributing to this file, you agree to license your work under the same terms.
- * - Please see CONTRIBUTING.md for code style and review guidelines.
+ * - By contributing to this file, you agree that accepted contributions may
+ *   be distributed and relicensed as part of Oreulia.
+ * - Please see docs/CONTRIBUTING.md for contribution terms and review
+ *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
@@ -342,26 +327,31 @@ pub(crate) fn x86_64_debug_recover_stats() -> (usize, usize, u64, usize, u64, u8
 }
 
 #[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
 pub(crate) fn aarch64_alloc_debug_page() -> Result<usize, &'static str> {
     mmu_aarch64::debug_alloc_page()
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[allow(dead_code)]
 pub(crate) fn aarch64_alloc_debug_page() -> Result<usize, &'static str> {
     Err("aarch64 MMU backend not active")
 }
 
 #[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
 pub(crate) fn aarch64_debug_virt_to_phys(virt_addr: usize) -> Option<usize> {
     mmu_aarch64::debug_translate_current(virt_addr)
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[allow(dead_code)]
 pub(crate) fn aarch64_debug_virt_to_phys(_virt_addr: usize) -> Option<usize> {
     None
 }
 
 #[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
 pub(crate) fn aarch64_debug_walk(virt_addr: usize) -> (usize, u64, u64, u64, u64, Option<usize>) {
     let w = mmu_aarch64::debug_walk_current(virt_addr);
     (
@@ -375,6 +365,7 @@ pub(crate) fn aarch64_debug_walk(virt_addr: usize) -> (usize, u64, u64, u64, u64
 }
 
 #[cfg(not(target_arch = "aarch64"))]
+#[allow(dead_code)]
 pub(crate) fn aarch64_debug_walk(_virt_addr: usize) -> (usize, u64, u64, u64, u64, Option<usize>) {
     (0, 0, 0, 0, 0, None)
 }

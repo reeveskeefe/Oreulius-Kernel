@@ -72,9 +72,23 @@ Security is handled via integer handles (indices into the process's capability t
 The following host functions are available to Wasm modules:
 
 ### 4.1 Process & Threading
+- `oreulia_thread_spawn(func_idx: i32, arg: i32) -> tid`: Spawn a cooperative WASM thread.
+- `oreulia_thread_join(tid: i32) -> i32`: Join a cooperative WASM thread.
+- `oreulia_thread_id() -> i32`: Return the current cooperative WASM thread ID.
+- `oreulia_thread_yield()`: Yield the current CPU quantum.
+- `oreulia_thread_exit(code: i32)`: Exit the current cooperative WASM thread.
 - `proc_yield()`: Voluntarily yield the CPU.
-- `proc_sleep(ms: i32)`: Sleep for N milliseconds.
-- `proc_spawn(name_ptr: i32, len: i32) -> pid`: Capabilities-gated process creation.
+- `proc_sleep(ticks: i32)`: Sleep for N PIT ticks (roughly milliseconds).
+- `proc_spawn(bytes_ptr: i32, bytes_len: i32) -> pid`: Spawn a child WASM process from bytecode already in linear memory.
+
+Notes:
+- The import resolver accepts both the plain names above and `oreulia_*` aliases, for example
+  `thread_spawn` and `oreulia_thread_spawn`.
+- Cooperative WASM threads run inside one WasmInstance and share its linear memory; they make
+  progress through the runtime's background thread runner plus explicit yield points.
+- When a foreground `wasm <path>` command returns normally from `_start`, the shell gives that
+  instance a bounded cooperative-thread drain window before teardown and reports if threads are
+  still stalled or over budget.
 
 ### 4.2 IPC (Inter-Process Communication)
 - `ipc_create() -> handle`: Create a new channel.
@@ -117,7 +131,91 @@ Notes:
 - On instance teardown, service pointers attempt hot-swap rebinding to compatible live replacement instances; unmatched pointers are revoked.
 - Formal technical deep dive: `docs/oreulia-service-pointer-capabilities.md`.
 
-### 4.6 Temporal Objects ABI
+### 4.6 Polyglot Kernel Services (IDs 103–105)
+
+Oreulia allows WASM modules written in **any** language to be registered as
+named kernel services and to call each other securely via capability handoffs,
+even across language boundaries.
+
+#### `oreulia_lang` Custom Section
+
+To declare its source language, a WASM module embeds a custom section named
+`oreulia_lang`.  The binary layout (after the standard LEB128 name length +
+name bytes) is:
+
+```
+Offset  Size  Field
+──────  ────  ──────────────────────────────────────────────────
+  0       1   Language tag (u8)
+  1       1   Version: major
+  2       1   Version: minor
+  3       1   Version: patch
+  4       1   Reserved (must be 0)
+```
+
+**Language tag values:**
+
+| Tag  | Language           |
+|------|--------------------|
+| 0x00 | Unknown / unset    |
+| 0x01 | Rust               |
+| 0x02 | Zig                |
+| 0x03 | C / C++            |
+| 0x04 | Python (Pyodide)   |
+| 0x05 | JavaScript (QuickJS) |
+| 0x06 | AssemblyScript     |
+| 0xFF | Other              |
+
+#### Syscalls
+
+- `polyglot_register(name_ptr: i32, name_len: i32) -> i32`  
+  Register this module as a named polyglot kernel service.  
+  `name` must be ≤ 32 bytes of UTF-8.  
+  The kernel records the `oreulia_lang` language tag alongside the name.  
+  **Singleton languages** (Python `0x04`, JavaScript `0x05`): if a service
+  with the same name and language already exists, the instance/owner reference
+  is refreshed instead of returning an error.  
+  Returns `0` on success, or a negative error code.
+
+- `polyglot_resolve(name_ptr: i32, name_len: i32) -> i32`  
+  Look up a registered polyglot service by name.  
+  Returns `instance_id` (≥ 0) on success, `-2` if not found.
+
+- `polyglot_link(name_ptr: i32, name_len: i32, export_ptr: i32, export_len: i32) -> i32`  
+  Obtain a cross-language `ServicePointer` capability handle for a specific
+  export on a registered service.  Pass the returned handle to
+  `service_invoke` / `service_invoke_typed`.  
+  Returns capability handle (≥ 0) on success, or a negative error code.
+
+**Error codes:**
+
+| Code | Meaning |
+|------|---------|
+|   0  | Success (`polyglot_register`) |
+|  ≥ 0 | Instance ID (`polyglot_resolve`) or capability handle (`polyglot_link`) |
+|  -1  | Bad arguments (null pointer, zero length, name > 32 bytes) |
+|  -2  | Registry full (`polyglot_register`) or name not found (`polyglot_resolve` / `polyglot_link`) |
+|  -3  | Name taken by a non-singleton module (`polyglot_register`) or service has no registered export (`polyglot_link`) |
+|  -4  | Capability table full (`polyglot_link`) |
+
+**Capability type**: Links created by `polyglot_link` carry a `CrossLanguage`
+(`CapabilityType = 15`) capability with `SERVICE_INVOKE` rights.  The
+`label_hash` field stores the target module's language tag, enabling
+language-aware policy enforcement.
+
+**Registry limits**: Up to 16 polyglot service entries.  Slot 0 is reserved
+for the Python singleton, slot 1 for the JavaScript singleton (by convention).
+
+**SDK**: Use `oreulia_sdk::polyglot` for idiomatic Rust wrappers:
+```rust
+// Service side
+oreulia_sdk::polyglot::register("py_math");
+
+// Client side
+let cap = oreulia_sdk::polyglot::link("py_math", "add").unwrap();
+```
+
+### 4.7 Temporal Objects ABI
 - `temporal_snapshot(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32`:
   captures a snapshot for `path` and writes latest version metadata.
 - `temporal_latest(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32`:
@@ -185,6 +283,56 @@ Capture policy (current kernel profile):
 14. `tick_hi`
 15. `flags` bit0=`has_parent`, bit1=`has_rollback_from`
 16. `record_format_version` (`1`)
+
+---
+
+### 4.7 TLS 1.3 (Host IDs 91–99)
+
+Oreulia provides a minimal in-kernel TLS 1.3 client stack accessible from WASM modules. All
+functions return `i32`; negative values indicate failure. Sessions are identified by an opaque
+`i32` handle allocated by the kernel.
+
+| Host ID | Function signature | Description |
+|---------|--------------------|-------------|
+| 91 | `tls_connect(host_ptr: i32, host_len: i32, server_ip: i32, port: i32) -> i32` | Allocate a new TLS session to `server_ip:port` for SNI host `host_ptr[0..host_len]`. Returns the session handle (≥ 0) or `-1` on failure. `server_ip` is a big-endian packed `u32` (e.g. `0xC0A80001` for `192.168.0.1`). |
+| 92 | `tls_write(handle: i32, buf_ptr: i32, buf_len: i32) -> i32` | Send `buf_len` bytes of application data. Returns bytes queued (≥ 0) or `-1`. |
+| 93 | `tls_read(handle: i32, buf_ptr: i32, buf_len: i32) -> i32` | Receive up to `buf_len` decrypted bytes into the module's linear memory. Returns bytes read (≥ 0). |
+| 94 | `tls_close(handle: i32) -> i32` | Send a TLS `close_notify` alert and release the session. Returns `0`. |
+| 95 | `tls_state(handle: i32) -> i32` | Return the current `HandshakeState` enum value. `Connected = 2`; other values indicate in-progress or error states. |
+| 96 | `tls_error(handle: i32, buf_ptr: i32, buf_len: i32) -> i32` | Copy a human-readable error string into `buf_ptr[0..buf_len]`. Returns the number of bytes written. |
+| 97 | `tls_handshake_done(handle: i32) -> i32` | Returns `1` if the TLS handshake has completed (`HandshakeState::Connected`), `0` otherwise. |
+| 98 | `tls_tick(handle: i32) -> i32` | Drive the TLS state machine forward (process incoming records, advance handshake). Returns `0`. Should be called in a polling loop until `tls_handshake_done` returns `1`. |
+| 99 | `tls_free(handle: i32) -> i32` | Unconditionally free a session handle without sending `close_notify`. Returns `0`. Use `tls_close` for graceful teardown. |
+
+#### Typical usage pattern
+
+```wat
+;; Connect
+(local.set $h (call $tls_connect (i32.const host_ptr) (i32.const 8) (i32.const 0xC0A80001) (i32.const 443)))
+;; Drive handshake
+(block $done
+  (loop $poll
+    (br_if $done (i32.eq (call $tls_handshake_done (local.get $h)) (i32.const 1)))
+    (drop (call $tls_tick (local.get $h)))
+    (br $poll)))
+;; Send/receive application data
+(drop (call $tls_write (local.get $h) (i32.const data_ptr) (i32.const data_len)))
+(local.set $n (call $tls_read (local.get $h) (i32.const buf_ptr) (i32.const buf_len)))
+;; Graceful close
+(drop (call $tls_close (local.get $h)))
+```
+
+#### Notes
+
+- The in-kernel TLS stack performs a simplified TLS 1.3 record-layer handshake. It does not
+  perform full certificate chain validation in the current kernel profile; host identity is
+  supplied by the `host_ptr` SNI string for informational purposes.
+- `tls_tick` must be called from the module's event loop; the kernel does not drive sessions
+  autonomously between WASM host calls.
+- Session handles are scoped to the WASM instance. They are freed automatically when the
+  instance is destroyed (equivalent to calling `tls_free` on each live handle).
+- `tls_connect` calls `tls_tick` once internally after session allocation to begin the
+  handshake; subsequent ticks are the caller's responsibility.
 
 ---
 

@@ -1,31 +1,16 @@
 /*!
  * Oreulia Kernel Project
  *
- *License-Identifier: Oreulius License (see LICENSE)
+ * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
  * Contributing:
- * - By contributing to this file, you agree to license your work under the same terms.
- * - Please see CONTRIBUTING.md for code style and review guidelines.
+ * - By contributing to this file, you agree that accepted contributions may
+ *   be distributed and relicensed as part of Oreulia.
+ * - Please see docs/CONTRIBUTING.md for contribution terms and review
+ *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
@@ -42,12 +27,16 @@ pub(crate) mod aarch64_dtb;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod aarch64_pl011;
 #[cfg(target_arch = "aarch64")]
+pub(crate) mod aarch64_runtime;
+#[cfg(target_arch = "aarch64")]
 pub(crate) mod aarch64_vectors;
 /// Architecture-specific FPU/SIMD context save/restore (PMA §5.1).
 pub mod fpu;
 pub mod mmu;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod x86_64_runtime;
+#[cfg(target_arch = "x86")]
+pub(crate) mod x86_runtime;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BootProtocol {
@@ -198,4 +187,40 @@ pub fn enable_interrupts() {
 #[inline]
 pub fn halt_loop() -> ! {
     active().halt_loop()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn enter_runtime() -> ! {
+    aarch64_runtime::enter_runtime()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn enter_runtime() -> ! {
+    x86_64_runtime::enter_runtime()
+}
+
+#[cfg(target_arch = "x86")]
+#[inline]
+pub fn enter_runtime() -> ! {
+    x86_runtime::enter_runtime()
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+#[inline]
+pub fn enter_runtime() -> ! {
+    halt_loop()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn shell_loop() -> ! {
+    x86_64_runtime::run_serial_shell()
+}
+
+#[cfg(target_arch = "x86")]
+#[inline]
+pub fn shell_loop() -> ! {
+    x86_runtime::shell_loop()
 }

@@ -10,6 +10,7 @@
     .global aarch64_sched_load_context
     .global aarch64_sched_switch_context
     .global aarch64_thread_start_trampoline
+    .global aarch64_kernel_user_entry_trampoline
 
     .set CTX_X19,      0
     .set CTX_X21,      16
@@ -67,11 +68,12 @@ aarch64_sched_switch_context:
     mov x0, x1
 
 .Lrestore_context_x0:
-    /* Keep the scheduler in the active kernel TTBR0 for now.
-     * AArch64 shared scheduler bring-up currently runs kernel threads in the
-     * same address space; reloading TTBR0 here can switch into an incomplete
-     * root during bring-up and fault before the thread starts.
-     */
+    ldr x10, [x0, #(CTX_TTBR0)]
+    cbz x10, 1f
+    msr TTBR0_EL1, x10
+    dsb ish
+    isb
+1:
     ldr x11, [x0, #(CTX_DAIF)]
     msr DAIF, x11
     ldr x12, [x0, #(CTX_SP)]
@@ -92,6 +94,21 @@ aarch64_thread_start_trampoline:
 .Lthread_halt:
     wfe
     b .Lthread_halt
+
+/* Fresh user-process entry point.
+ *
+ * Expected register setup from add_user_process():
+ *   x19 = EL0 entry VA
+ *   x20 = EL0 stack top
+ *   sp  = kernel exception stack
+ */
+aarch64_kernel_user_entry_trampoline:
+    msr SP_EL0, x20
+    mov x9, xzr
+    msr SPSR_EL1, x9
+    msr ELR_EL1, x19
+    isb
+    eret
 
 .Lhalt_forever:
     wfe

@@ -239,7 +239,7 @@ global tss_set_kernel_stack
 tss_set_kernel_stack:
     ; Compatibility shim for legacy signature:
     ;   rdi = TSS base (treated as x86_64 TSS base)
-    ;   esi = esp0 low32 (used as rsp0 low32 during bring-up)
+    ;   esi = esp0 low32 (used as rsp0 low32 during runtime)
     ;   dx  = ss0 (ignored in long mode TSS)
     mov dword [rdi + 4], esi
     mov dword [rdi + 8], 0
@@ -611,6 +611,8 @@ syscall_entry:
     jmp rcx
 
 .normal_return:
+global x86_64_syscall_return_resume
+x86_64_syscall_return_resume:
     mov rbx, [rsp + 1*8]
     mov rcx, [rsp + 2*8]
     mov rsi, [rsp + 4*8]
@@ -719,63 +721,74 @@ IRQ_STUB 14
 IRQ_STUB 15
 
 ; ---- Generic zero-return stubs for unported x86-only backends ----
-STUB_ZERO asm_atomic_add
-STUB_ZERO asm_atomic_and
-STUB_ZERO asm_atomic_cmpxchg
-STUB_ZERO asm_atomic_dec
-STUB_ZERO asm_atomic_inc
-STUB_ZERO asm_atomic_load
-STUB_ZERO asm_atomic_or
-STUB_ZERO asm_atomic_store
-STUB_ZERO asm_atomic_sub
-STUB_ZERO asm_atomic_swap
-STUB_ZERO asm_atomic_xor
-STUB_ZERO asm_benchmark_add
-STUB_ZERO asm_benchmark_div
-STUB_ZERO asm_benchmark_load
-STUB_ZERO asm_benchmark_lock
-STUB_ZERO asm_benchmark_mul
-STUB_ZERO asm_benchmark_nop
-STUB_ZERO asm_benchmark_store
-STUB_ZERO asm_checksum_ip
-STUB_ZERO asm_cpuid
-STUB_ZERO asm_fast_memcmp
-STUB_ZERO asm_fast_memcpy
-STUB_ZERO asm_fast_memset
-STUB_ZERO asm_get_cpu_vendor
-STUB_ZERO asm_has_avx
-STUB_ZERO asm_has_sse
-STUB_ZERO asm_has_sse2
-STUB_ZERO asm_has_sse3
-STUB_ZERO asm_has_sse4_1
-STUB_ZERO asm_has_sse4_2
-STUB_ZERO asm_hash_djb2
-STUB_ZERO asm_hash_fnv1a
-STUB_ZERO asm_hash_sdbm
-STUB_ZERO asm_rdrand
-STUB_ZERO asm_rdtsc_begin
-STUB_ZERO asm_rdtsc_end
-STUB_ZERO asm_read_tsc
-STUB_ZERO asm_spinlock_init
-STUB_ZERO asm_spinlock_lock
-STUB_ZERO asm_spinlock_trylock
-STUB_ZERO asm_spinlock_unlock
-STUB_ZERO asm_swap_endian_16
-STUB_ZERO asm_swap_endian_32
-STUB_ZERO asm_xsave_supported
-STUB_ZERO atomic_dec_refcount
-STUB_ZERO atomic_inc_refcount
-STUB_ZERO get_interrupt_count
-STUB_ZERO increment_interrupt_count
-STUB_ZERO pic_remap
-STUB_ZERO pic_send_eoi
-STUB_ZERO sgx_encls
-STUB_ZERO sgx_enclu
-STUB_ZERO sysenter_entry
-STUB_ZERO temporal_copy_bytes
-STUB_ZERO temporal_fnv1a32
-STUB_ZERO temporal_hash_pair
-STUB_ZERO temporal_merkle_root_u32
+;
+; The following symbols were previously stubbed here and have been migrated to
+; dedicated 64-bit ASM files.  They are intentionally absent from this section
+; to prevent duplicate-symbol linker errors.  The x86_64 build links these
+; object files INSTEAD of the legacy i686 files (which use -f elf32 and are
+; only assembled by build.sh, not build-x86_64-full.sh).
+;
+;   x86_64_atomics.asm (replaces atomic.asm for x86_64):
+;       asm_atomic_{load,store,add,sub,inc,dec,swap,cmpxchg,and,or,xor}
+;       atomic_inc_refcount, atomic_dec_refcount
+;
+;   x86_64_cpu_features.asm (replaces cpu_features.asm + interrupt.asm for x86_64):
+;       asm_cpuid, asm_get_cpu_vendor
+;       asm_has_{sse,sse2,sse3,sse4_1,sse4_2,avx}, asm_xsave_supported
+;       asm_rdrand, asm_rdtsc_begin, asm_rdtsc_end, asm_read_tsc
+;       get_interrupt_count, increment_interrupt_count
+;
+;   x86_64_memory.asm (replaces memory.asm for x86_64):
+;       asm_fast_memcpy, asm_fast_memset, asm_fast_memcmp, asm_checksum_ip
+;
+;   x86_64_crypto.asm (new; SHA-NI + AES-NI + CRC32C hardware acceleration):
+;       asm_sha256_init, asm_sha256_update
+;       sha256_compress_block, sha256_transform_hw
+;       aes128_key_expand, aes128_block_encrypt, aes128_block_decrypt
+;       asm_aesni_encrypt, asm_aesni_decrypt
+;       asm_crc32c_u8, asm_crc32c_u32, asm_crc32c_buf
+;
+;   x86_64_hashes.asm (replaces crypto.asm + network.asm for x86_64):
+;       asm_hash_fnv1a, asm_hash_djb2, asm_hash_sdbm
+;       asm_swap_endian_16, asm_swap_endian_32, asm_swap_endian_64
+;
+;   x86_64_simd_scan.asm (new; SIMD cap-graph edge scanning):
+;       cap_graph_scan_edges_sse2, cap_graph_scan_edges_avx2, cap_graph_find_edge
+;
+;   x86_64_spinlock.asm (replaces spinlock section of atomic.asm for x86_64):
+;       asm_spinlock_init, asm_spinlock_lock, asm_spinlock_trylock
+;       asm_spinlock_unlock, asm_spinlock_lock_timeout
+;
+;   x86_64_perf.asm (replaces perf.asm for x86_64):
+;       asm_benchmark_nop, asm_benchmark_load, asm_benchmark_store
+;       asm_benchmark_add, asm_benchmark_mul, asm_benchmark_div, asm_benchmark_lock
+;
+;   x86_64_fpu.asm (new; XSAVE/FXSAVE context management):
+;       fpu_init, fpu_trap_enable, fpu_trap_disable
+;       fpu_context_save, fpu_context_restore, fpu_context_size
+;
+;   x86_64_temporal.asm (replaces temporal.asm for x86_64):
+;       temporal_copy_bytes, temporal_fnv1a32, temporal_hash_pair
+;       temporal_merkle_root_u32
+;
+;   x86_64_pic.asm (replaces pic_* section of idt.asm for x86_64):
+;       pic_remap, pic_send_eoi, pic_mask_irq, pic_unmask_irq, pic_disable
+;
+;   x86_64_sysenter.asm (replaces sysenter.asm for x86_64):
+;       sysenter_entry, syscall_entry_64
+;       setup_syscall_msrs, setup_sysenter_msrs
+;
+; Remaining stubs — SGX leaf functions — REMOVED.
+;
+; sgx_encls and sgx_enclu are now implemented in x86_64_sgx.asm with the
+; correct 64-bit System V AMD64 ABI:
+;   u32 sgx_encls(u32 leaf, u64 rbx_operand, u64 rcx_operand, u64 rdx_operand)
+;   u32 sgx_enclu(u32 leaf, u64 rbx_operand, u64 rcx_operand, u64 rdx_operand)
+; Also added:
+;   void sgx_cpuid_leaf12(u32 sub, u32 *eax, u32 *ebx, u32 *ecx, u32 *edx)
+;   u64  sgx_read_feature_ctrl(void)
+;   void sgx_write_sgxlepubkeyhash(u64 h0, u64 h1, u64 h2, u64 h3)
+;   u32  sgx_eremove(u64 epc_page_linear_addr)
 
 section .bss
 alignb 8

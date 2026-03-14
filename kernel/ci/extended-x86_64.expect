@@ -328,6 +328,10 @@ expect {
 expect_x64_prompt
 
 run_x64_cmd "help" {Available commands:|commands: help .*jitcall .*jitbench .*jitfuzz .*jitfuzzreg .*jitfuzz24dbg .*halt} "help"
+run_x64_cmd "syscall-test" {=== System Call Interface Test ===} "syscall-test"
+run_x64_cmd "user-test" {user-test ok} "user-test"
+run_x64_cmd "fork-test" {fork-test ok} "fork-test"
+run_x64_cmd "sched-stats" {Scheduler: QuantumScheduler \(x86_64 runtime path\)} "sched-stats"
 run_x64_cmd "mmu" {\[X64\] mmu backend=[^\r\n]+} "mmu"
 run_x64_cmd "regs" {\[X64\] cr0=[^\r\n]+ cr3=[^\r\n]+ cr4=[^\r\n]+ efer=[^\r\n]+} "regs"
 run_x64_cmd "ticks" {\[X64\] ticks=[0-9]+} "ticks"
@@ -360,6 +364,7 @@ expect_x64_prompt
 
 for {set i 0} {$i < $loops} {incr i} {
     run_x64_cmd "int3" {\[X64\] breakpoint count=[0-9]+ last_vec=[^\r\n]+} "int3 loop"
+    run_x64_cmd "fork-test" {fork-test ok} "fork-test loop"
     run_x64_cmd "vmtest" {\[X64\] vmtest ok} "vmtest loop"
     run_x64_cmd "pfstats" {\[X64\] pf-stats faults=[0-9]+ cow=[0-9]+ copies=[0-9]+} "pfstats loop"
     run_x64_cmd "ticks" {\[X64\] ticks=[0-9]+} "ticks loop"

@@ -1,7 +1,7 @@
 /*!
  * Oreulia Kernel Project
  *
- * License-Identifier: Oreulius License (see LICENSE)
+ * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
  *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
  *

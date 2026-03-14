@@ -5,7 +5,7 @@ use std::path::Path;
 /// Build-time Spectral Gap / Cheeger conductance checker (PMA §11.2).
 ///
 /// Rather than using a synthetic hardcoded graph, this build script **parses
-/// the actual `CTMC_Q` matrix from `src/intent_graph.rs`** and constructs the
+/// the actual `CTMC_Q` matrix from `src/security/intent_graph.rs`** and constructs the
 /// weighted adjacency matrix from the off-diagonal transition rates.  The
 /// Fiedler value (λ₂ of the normalised Laplacian) is estimated via a proper
 /// **Lanczos iteration with full re-orthogonalisation**, which gives a
@@ -13,14 +13,14 @@ use std::path::Path;
 ///
 /// If the conductance Φ(G) < ε_safe, compilation is aborted.
 fn main() {
-    println!("cargo:rerun-if-changed=src/intent_graph.rs");
-    println!("cargo:rerun-if-changed=src/capability.rs");
+    println!("cargo:rerun-if-changed=src/security/intent_graph.rs");
+    println!("cargo:rerun-if-changed=src/capability/mod.rs");
 
     // -------------------------------------------------------------------------
     // Step 1 — Parse CTMC_Q from intent_graph.rs
     // -------------------------------------------------------------------------
-    let intent_graph_src = fs::read_to_string("src/intent_graph.rs")
-        .expect("build.rs: cannot read src/intent_graph.rs");
+    let intent_graph_src = fs::read_to_string("src/security/intent_graph.rs")
+        .expect("build.rs: cannot read src/security/intent_graph.rs");
 
     let adj = parse_ctmc_adjacency(&intent_graph_src);
     let num_nodes = adj.len();
@@ -171,7 +171,7 @@ fn main() {
 
     println!("cargo:warning=--- Oreulia Static Spectral Analysis (PMA §11.2) ---");
     println!(
-        "cargo:warning=Graph derived from: src/intent_graph.rs CTMC_Q ({}×{} real topology)",
+        "cargo:warning=Graph derived from: src/security/intent_graph.rs CTMC_Q ({}×{} real topology)",
         num_nodes, num_nodes
     );
     println!(
@@ -184,7 +184,7 @@ fn main() {
             "FATAL [PMA §11.2]: IPC capability graph fails static conductance check!\n\
              Spectral gap γ = {:.6} < ε_safe = {:.6}.\n\
              Risk: isolated subgraph allows hoarded capability escalation.\n\
-             Fix: add edges to CTMC_Q in src/intent_graph.rs to reconnect the graph.",
+             Fix: add edges to CTMC_Q in src/security/intent_graph.rs to reconnect the graph.",
             fiedler, epsilon_safe
         );
     }

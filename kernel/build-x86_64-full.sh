@@ -11,6 +11,19 @@ RUST_LIB="target/${RUST_TARGET}/release/liboreulia_kernel.a"
 OUT_DIR="target/x86_64-mb2"
 BOOT_OBJ="${OUT_DIR}/boot_x86_64_mb2.o"
 SHIM_OBJ="${OUT_DIR}/x86_64_shims.o"
+ASM_ATOMICS="${OUT_DIR}/x86_64_atomics.o"
+ASM_CPU_FEATURES="${OUT_DIR}/x86_64_cpu_features.o"
+ASM_MEMORY="${OUT_DIR}/x86_64_memory.o"
+ASM_CRYPTO="${OUT_DIR}/x86_64_crypto.o"
+ASM_HASHES="${OUT_DIR}/x86_64_hashes.o"
+ASM_SIMD_SCAN="${OUT_DIR}/x86_64_simd_scan.o"
+ASM_SPINLOCK="${OUT_DIR}/x86_64_spinlock.o"
+ASM_PERF="${OUT_DIR}/x86_64_perf.o"
+ASM_FPU="${OUT_DIR}/x86_64_fpu.o"
+ASM_TEMPORAL="${OUT_DIR}/x86_64_temporal.o"
+ASM_PIC="${OUT_DIR}/x86_64_pic.o"
+ASM_SYSENTER="${OUT_DIR}/x86_64_sysenter.o"
+ASM_SGX="${OUT_DIR}/x86_64_sgx.o"
 OUT_ELF="${OUT_DIR}/oreulia-kernel-x86_64"
 
 resolve_tool() {
@@ -40,7 +53,20 @@ mkdir -p "${OUT_DIR}"
 
 echo "[1/3] Assembling x86_64 boot support objects..."
 nasm -f elf64 src/asm/boot_x86_64_mb2.asm -o "${BOOT_OBJ}"
-nasm -f elf64 src/asm/x86_64_shims.asm -o "${SHIM_OBJ}"
+nasm -f elf64 src/asm/x86_64_shims.asm    -o "${SHIM_OBJ}"
+nasm -f elf64 src/asm/x86_64_atomics.asm      -o "${ASM_ATOMICS}"
+nasm -f elf64 src/asm/x86_64_cpu_features.asm -o "${ASM_CPU_FEATURES}"
+nasm -f elf64 src/asm/x86_64_memory.asm       -o "${ASM_MEMORY}"
+nasm -f elf64 src/asm/x86_64_crypto.asm       -o "${ASM_CRYPTO}"
+nasm -f elf64 src/asm/x86_64_hashes.asm       -o "${ASM_HASHES}"
+nasm -f elf64 src/asm/x86_64_simd_scan.asm    -o "${ASM_SIMD_SCAN}"
+nasm -f elf64 src/asm/x86_64_spinlock.asm     -o "${ASM_SPINLOCK}"
+nasm -f elf64 src/asm/x86_64_perf.asm         -o "${ASM_PERF}"
+nasm -f elf64 src/asm/x86_64_fpu.asm          -o "${ASM_FPU}"
+nasm -f elf64 src/asm/x86_64_temporal.asm     -o "${ASM_TEMPORAL}"
+nasm -f elf64 src/asm/x86_64_pic.asm          -o "${ASM_PIC}"
+nasm -f elf64 src/asm/x86_64_sysenter.asm     -o "${ASM_SYSENTER}"
+nasm -f elf64 src/asm/x86_64_sgx.asm          -o "${ASM_SGX}"
 
 echo "[2/3] Building Rust kernel staticlib for x86_64..."
 CARGO_FEATURES="${KERNEL_CARGO_FEATURES:-${CARGO_FEATURES:-}}"
@@ -82,6 +108,19 @@ echo "[3/3] Linking x86_64 kernel ELF..."
   -o "${OUT_ELF}" \
   "${BOOT_OBJ}" \
   "${SHIM_OBJ}" \
+  "${ASM_ATOMICS}" \
+  "${ASM_CPU_FEATURES}" \
+  "${ASM_MEMORY}" \
+  "${ASM_CRYPTO}" \
+  "${ASM_HASHES}" \
+  "${ASM_SIMD_SCAN}" \
+  "${ASM_SPINLOCK}" \
+  "${ASM_PERF}" \
+  "${ASM_FPU}" \
+  "${ASM_TEMPORAL}" \
+  "${ASM_PIC}" \
+  "${ASM_SYSENTER}" \
+  "${ASM_SGX}" \
   --whole-archive "${RUST_LIB}" --no-whole-archive
 
 echo "Built: ${OUT_ELF}"

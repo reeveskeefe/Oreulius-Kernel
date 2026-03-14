@@ -1,31 +1,16 @@
 /*!
  * Oreulia Kernel Project
  *
- *License-Identifier: Oreulius License (see LICENSE)
+ * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
  * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
  * Contributing:
- * - By contributing to this file, you agree to license your work under the same terms.
- * - Please see CONTRIBUTING.md for code style and review guidelines.
+ * - By contributing to this file, you agree that accepted contributions may
+ *   be distributed and relicensed as part of Oreulia.
+ * - Please see docs/CONTRIBUTING.md for contribution terms and review
+ *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
@@ -628,7 +613,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
             }
         }
 
-        // Log a subset of exceptions during bring-up to validate the trap path.
+        // Log a subset of exceptions during early runtime validation.
         if vector == 3 || vector == 13 || vector == 14 {
             if !frame.is_null() {
                 let f = unsafe { &*frame };
@@ -652,6 +637,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
         IRQ_COUNTS[irq as usize].fetch_add(1, Ordering::Relaxed);
         if irq == 0 {
             crate::pit::tick();
+            crate::wasm::on_timer_tick();
             crate::quantum_scheduler::on_timer_tick();
             if !frame.is_null() {
                 let f = unsafe { &mut *frame };
@@ -1177,7 +1163,7 @@ fn ps2_try_read_byte() -> Option<u8> {
 
         let had_extended = PS2_EXTENDED_PREFIX.swap(false, Ordering::Relaxed);
         if had_extended {
-            // Minimal bring-up shell: ignore extended-key sequences for now.
+            // Minimal runtime shell: ignore extended-key sequences for now.
             let mut flags = KBD_FLAG_EXTENDED;
             if (sc & 0x80) != 0 {
                 flags |= KBD_FLAG_RELEASE;
@@ -1238,7 +1224,7 @@ const X64_MINI_HELP: &str = "help help-all help-mini ticks irq0 int3 traps pfsta
      mmu regs halt";
 
 fn x64_print_mini_help() {
-    shell_println!("x86_64 bring-up commands:");
+    shell_println!("x86_64 runtime extension commands:");
     shell_println!("  {}", X64_MINI_HELP);
     shell_println!("[X64] `help` shows the shared command menu plus x86_64 extensions.");
 }
@@ -1246,7 +1232,7 @@ fn x64_print_mini_help() {
 fn x64_print_combined_help() {
     crate::commands::execute("help");
     shell_println!("");
-    shell_println!("[X64] x86_64 window/bring-up shell extensions:");
+    shell_println!("[X64] x86_64 runtime shell extensions:");
     shell_println!("  {}", X64_MINI_HELP);
     shell_println!("[X64] shared JIT commands (full path via commands.rs):");
     shell_println!("  wasm-jit-selftest   (bounds + fixed-vector parity)");
@@ -1255,7 +1241,7 @@ fn x64_print_combined_help() {
     shell_println!("  wasm-jit-fuzz-soak <iters> <rounds>");
     shell_println!("  jitfuzzreg [iters [seeds]] | jitfuzzreg full [iters]");
     shell_println!("  jitfuzz24dbg [iters] [diag]  (24-bin deterministic debug corpus)");
-    shell_println!("[X64] jitcall/jitpre are still x86_64 bring-up specific probes.");
+    shell_println!("[X64] jitcall/jitpre remain x86_64 runtime-specific probes.");
 }
 
 fn x64_parse_u32(s: &str) -> Option<u32> {
@@ -1423,7 +1409,7 @@ fn x64_is_runtime_extension_command(cmd: &str) -> bool {
 
 fn serial_exec_command(cmd: &str) -> bool {
     // Keep shared fuzz commands on the shared command stack regardless of
-    // x86_64 bring-up extension handling order.
+    // x86_64 runtime extension handling order.
     let first = cmd.split_whitespace().next().unwrap_or("");
     if matches!(
         first,
@@ -1663,6 +1649,7 @@ fn cow_self_test() -> Result<(), &'static str> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn native_jit_exec_self_test() -> Result<(), &'static str> {
     // x86_64: mov eax, 0x12345678 ; ret
     const CODE: [u8; 6] = [0xB8, 0x78, 0x56, 0x34, 0x12, 0xC3];
@@ -1705,6 +1692,7 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
         }
     }
 
+    #[allow(dead_code)]
     fn push_uleb128(buf: &mut Vec<u8>, mut value: u32) {
         loop {
             let mut byte = (value & 0x7F) as u8;
@@ -1946,6 +1934,244 @@ pub fn read_efer() -> u64 {
     ((high as u64) << 32) | (low as u64)
 }
 
+fn read_rflags() -> u64 {
+    let flags: u64;
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
+    }
+    flags
+}
+
+extern "C" fn shell_scheduler_task() -> ! {
+    crate::arch::enable_interrupts();
+    run_serial_shell()
+}
+
+extern "C" fn idle_scheduler_task() -> ! {
+    crate::arch::enable_interrupts();
+    loop {
+        crate::quantum_scheduler::yield_now();
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
+/// Init WASM binary — a minimal valid WASM module that immediately calls
+/// `proc_exit(0)`.
+static INIT_WASM_BIN: &[u8] = &[
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x09, 0x02, 0x60, 0x01, 0x7f, 0x00,
+    0x60, 0x00, 0x00, 0x02, 0x0b, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x09, 0x70, 0x72, 0x6f, 0x63,
+    0x5f, 0x65, 0x78, 0x69, 0x74, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x07, 0x09, 0x01, 0x06,
+    0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a, 0x07, 0x01, 0x05, 0x00, 0x41, 0x00,
+    0x10, 0x00, 0x0b,
+];
+
+extern "C" fn init_wasm_task() -> ! {
+    crate::arch::enable_interrupts();
+    crate::serial_println!("[INIT] launching init WASM supervisor (pid=1)");
+
+    let pid = crate::ipc::ProcessId(1);
+    let instance_id = crate::wasm::wasm_runtime().instantiate(INIT_WASM_BIN, pid);
+    match instance_id {
+        Ok(id) => {
+            crate::serial_println!("[INIT] init WASM instance id={}", id);
+            let result = crate::wasm::wasm_runtime().get_instance_mut(id, |inst| inst.call(0));
+            match result {
+                Ok(Ok(_)) => crate::serial_println!("[INIT] init WASM _start returned OK"),
+                Ok(Err(e)) => crate::serial_println!("[INIT] init WASM _start error: {:?}", e),
+                Err(e) => {
+                    crate::serial_println!("[INIT] init WASM: instance access failed: {:?}", e)
+                }
+            }
+        }
+        Err(e) => crate::serial_println!("[INIT] init WASM instantiate failed: {}", e),
+    }
+
+    crate::wasm::drain_pending_spawns();
+
+    crate::serial_println!("[INIT] init supervisor complete; entering idle");
+    loop {
+        crate::wasm::drain_pending_spawns();
+        crate::wasm::tick_background_threads();
+        crate::quantum_scheduler::yield_now();
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
+fn init_shared_runtime() {
+    crate::serial_println!("[X64] init keyboard...");
+    crate::keyboard::init();
+
+    crate::serial_println!("[X64] init fs...");
+    crate::fs::init();
+    crate::serial_println!("[X64] init vfs...");
+    crate::vfs::init();
+    crate::serial_println!("[X64] init persistence...");
+    crate::persistence::init();
+    crate::serial_println!("[X64] init crash log...");
+    crate::crash_log::on_boot();
+    crate::serial_println!("[X64] init ota slots...");
+    crate::ota::init_slots();
+    crate::serial_println!("[X64] verified boot check...");
+    crate::ota::verify_boot_image();
+    match crate::vfs::recover_from_persistence() {
+        Ok(()) => crate::serial_println!("[X64] vfs recovery complete"),
+        Err(e) => crate::serial_println!("[X64] vfs recovery skipped: {}", e),
+    }
+
+    crate::serial_println!("[X64] init temporal...");
+    crate::temporal::init();
+    crate::serial_println!("[X64] init ipc...");
+    crate::ipc::init();
+    crate::serial_println!("[X64] init syscall...");
+    crate::syscall::init();
+    crate::serial_println!("[X64] init registry...");
+    crate::registry::init();
+    crate::serial_println!("[X64] init process...");
+    crate::process::init();
+    crate::serial_println!("[X64] init wasm...");
+    crate::wasm::init();
+    crate::serial_println!("[X64] init security...");
+    crate::security::init();
+    crate::serial_println!("[X64] init capnet...");
+    crate::capnet::init();
+    crate::capnet::offline_certificate::assert_certificate_valid();
+    crate::serial_println!("[X64] init capability...");
+    crate::capability::init();
+    crate::serial_println!("[X64] init console service...");
+    crate::console_service::init();
+    crate::serial_println!("[X64] init quantum scheduler...");
+    crate::quantum_scheduler::init();
+}
+
+pub fn enter_runtime() -> ! {
+    unsafe {
+        let vga = 0xb8000 as *mut u16;
+        *(vga.add(8)) = 0x0E58;
+        *(vga.add(9)) = 0x0E36;
+        *(vga.add(10)) = 0x0E34;
+    }
+
+    crate::serial_println!("[X64] Early runtime path");
+
+    let boot_info = crate::arch::boot_info();
+    let protocol = match boot_info.protocol {
+        crate::arch::BootProtocol::Unknown => "unknown",
+        crate::arch::BootProtocol::Multiboot1 => "multiboot1",
+        crate::arch::BootProtocol::Multiboot2 => "multiboot2",
+    };
+
+    crate::serial_println!("[X64] platform={}", crate::arch::platform_name());
+    crate::serial_println!("[X64] boot protocol={}", protocol);
+    crate::serial_println!(
+        "[X64] raw magic={:#010x} info_ptr={:#018x}",
+        boot_info.raw_boot_magic.unwrap_or(0),
+        boot_info.raw_info_ptr.unwrap_or(0)
+    );
+    crate::serial_println!(
+        "[X64] cmdline ptr={:#018x} text={}",
+        boot_info.cmdline_ptr.unwrap_or(0),
+        boot_info.cmdline_str().unwrap_or("<none>")
+    );
+    crate::serial_println!(
+        "[X64] loader  ptr={:#018x} text={}",
+        boot_info.boot_loader_name_ptr.unwrap_or(0),
+        boot_info.boot_loader_name_str().unwrap_or("<none>")
+    );
+    crate::serial_println!("[X64] acpi rsdp={:#018x}", boot_info.acpi_rsdp_ptr.unwrap_or(0));
+
+    crate::memory::init();
+    crate::serial_println!("[X64] heap allocator initialized");
+
+    if let Err(e) = crate::arch::mmu::init() {
+        crate::serial_println!("[X64] mmu init failed: {}", e);
+        crate::arch::halt_loop();
+    }
+    crate::serial_println!(
+        "[X64] mmu backend={} root={:#018x}",
+        crate::arch::mmu::backend_name(),
+        crate::arch::mmu::current_page_table_root_addr()
+    );
+
+    let (cr0, cr3, cr4) = read_ctrl_regs();
+    let efer = read_efer();
+    crate::serial_println!(
+        "[X64] cr0={:#018x} cr3={:#018x} cr4={:#018x} efer={:#018x}",
+        cr0,
+        cr3,
+        cr4,
+        efer
+    );
+    crate::serial_println!(
+        "[X64] paging sanity pg={} pae={} lme={} lma={}",
+        (cr0 >> 31) & 1,
+        (cr4 >> 5) & 1,
+        (efer >> 8) & 1,
+        (efer >> 10) & 1
+    );
+
+    let rflags_before = read_rflags();
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+    }
+    let rflags_after = read_rflags();
+    crate::serial_println!(
+        "[X64] irq flag sanity IF {} -> {}",
+        (rflags_before >> 9) & 1,
+        (rflags_after >> 9) & 1
+    );
+
+    crate::serial_println!("[X64] init gdt/tss...");
+    crate::arch::init_cpu_tables();
+    crate::serial_println!("[X64] init idt/traps...");
+    crate::arch::init_trap_table();
+    crate::serial_println!("[X64] init pic...");
+    crate::arch::init_interrupt_controller();
+    init_shared_runtime();
+    crate::serial_println!("[X64] init pit...");
+    crate::arch::init_timer();
+    crate::serial_println!("[X64] enabling interrupts...");
+    crate::arch::enable_interrupts();
+    crate::serial_println!("[X64] interrupts enabled");
+
+    self_test_traps_and_timer();
+    crate::asm_bindings::disable_interrupts();
+
+    unsafe {
+        let vga = 0xb8000 as *mut u16;
+        *(vga.add(11)) = 0x0E48;
+        *(vga.add(12)) = 0x0E4C;
+        *(vga.add(13)) = 0x0E53;
+        *(vga.add(14)) = 0x0E48;
+    }
+    crate::serial_println!("[X64] Runtime diagnostics complete; starting shared scheduler");
+
+    {
+        let mut sched = crate::quantum_scheduler::scheduler().lock();
+        if let Err(e) =
+            sched.add_kernel_thread(shell_scheduler_task, crate::process::ProcessPriority::Normal)
+        {
+            crate::serial_println!("[X64] scheduler add shell task failed: {}", e);
+            crate::arch::halt_loop();
+        }
+        if let Err(e) =
+            sched.add_kernel_thread(init_wasm_task, crate::process::ProcessPriority::Low)
+        {
+            crate::serial_println!("[X64] scheduler add init-wasm task failed (non-fatal): {}", e);
+        }
+        if let Err(e) =
+            sched.add_kernel_thread(idle_scheduler_task, crate::process::ProcessPriority::Normal)
+        {
+            crate::serial_println!("[X64] scheduler add idle task failed: {}", e);
+            crate::arch::halt_loop();
+        }
+    }
+    crate::quantum_scheduler::QuantumScheduler::start_scheduling()
+}
+
 pub fn wait_for_ticks(min_delta: u64, max_spin_hlt: usize) -> bool {
     let start = crate::pit::get_ticks();
     for _ in 0..max_spin_hlt {
@@ -1961,9 +2187,9 @@ pub fn wait_for_ticks(min_delta: u64, max_spin_hlt: usize) -> bool {
 
 pub fn run_serial_shell() -> ! {
     crate::terminal::clear_screen();
-    crate::terminal::write_str_no_serial("Oreulia OS (x86_64 bring-up)\n");
+    crate::terminal::write_str_no_serial("Oreulia OS (x86_64)\n");
     crate::terminal::write_str_no_serial(
-        "Type 'help' for the full shared command list.\nType 'help-mini' for x86_64 bring-up commands.\n\n"
+        "Type 'help' for the full shared command list.\nType 'help-mini' for x86_64 runtime extension commands.\n\n"
     );
     shell_println!("[X64] x86_64 shell ready (serial + VGA keyboard)");
     serial_write_prompt();
@@ -1974,6 +2200,8 @@ pub fn run_serial_shell() -> ! {
 
     loop {
         crate::quantum_scheduler::maybe_reschedule();
+        crate::wasm::drain_pending_spawns();
+        crate::wasm::tick_background_threads();
 
         if let Some(byte) = shell_try_read_byte() {
             match byte {
@@ -1981,6 +2209,9 @@ pub fn run_serial_shell() -> ! {
                     shell_println!("");
                     let cmd = core::str::from_utf8(&buf[..len]).unwrap_or("");
                     let keep_running = serial_exec_command(cmd.trim());
+                    // Drain any WASM child processes queued during command execution
+                    // (avoids re-entrant lock deadlock inside call_host_function).
+                    crate::wasm::drain_pending_spawns();
                     len = 0;
                     if !keep_running {
                         crate::arch::halt_loop();

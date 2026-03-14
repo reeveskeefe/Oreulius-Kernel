@@ -1,0 +1,147 @@
+use super::{backpressure, Channel, ChannelCapability};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpcRefusal {
+    PredictiveRestriction,
+    PermissionDenied,
+    InvalidCapability,
+    Closed,
+    Backpressure,
+    QueueFull,
+    QueueEmpty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpcDefer {
+    WaitForCapacity,
+    WaitForMessage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendDecision {
+    Commit,
+    Refuse(IpcRefusal),
+    Defer(IpcDefer),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecvDecision {
+    Deliver,
+    Refuse(IpcRefusal),
+    Defer(IpcDefer),
+}
+
+pub(crate) fn evaluate_send(channel: &Channel, capability: &ChannelCapability) -> SendDecision {
+    let sec = crate::security::security();
+    if sec.is_predictively_restricted(
+        capability.owner,
+        crate::capability::CapabilityType::Channel,
+        crate::capability::Rights::CHANNEL_SEND,
+    ) {
+        return SendDecision::Refuse(IpcRefusal::PredictiveRestriction);
+    }
+
+    if !capability.can_send() {
+        return SendDecision::Refuse(IpcRefusal::PermissionDenied);
+    }
+
+    if capability.channel_id != channel.id {
+        return SendDecision::Refuse(IpcRefusal::InvalidCapability);
+    }
+
+    if channel.closed || channel.closing {
+        return SendDecision::Refuse(IpcRefusal::Closed);
+    }
+
+    if let Some(decision) = backpressure::send_decision(channel) {
+        return decision;
+    }
+
+    SendDecision::Commit
+}
+
+pub(crate) fn evaluate_recv(channel: &Channel, capability: &ChannelCapability) -> RecvDecision {
+    let sec = crate::security::security();
+    if sec.is_predictively_restricted(
+        capability.owner,
+        crate::capability::CapabilityType::Channel,
+        crate::capability::Rights::CHANNEL_RECEIVE,
+    ) {
+        return RecvDecision::Refuse(IpcRefusal::PredictiveRestriction);
+    }
+
+    if !capability.can_receive() {
+        return RecvDecision::Refuse(IpcRefusal::PermissionDenied);
+    }
+
+    if capability.channel_id != channel.id {
+        return RecvDecision::Refuse(IpcRefusal::InvalidCapability);
+    }
+
+    if channel.closed && channel.buffer.is_empty() {
+        return RecvDecision::Refuse(IpcRefusal::Closed);
+    }
+
+    if channel.buffer.is_empty() {
+        return RecvDecision::Defer(IpcDefer::WaitForMessage);
+    }
+
+    RecvDecision::Deliver
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ipc::{ChannelFlags, ChannelId, ChannelRights, ProcessId};
+
+    #[test]
+    fn reliable_full_channel_defers_send() {
+        let id = ChannelId::new(100);
+        let owner = ProcessId::new(1);
+        let mut channel = Channel::new(id, owner);
+        let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+        for _ in 0..crate::ipc::CHANNEL_CAPACITY {
+            let msg = crate::ipc::Message::with_data(owner, b"x").unwrap();
+            channel.send(msg, &send_cap).unwrap();
+        }
+        assert_eq!(
+            evaluate_send(&channel, &send_cap),
+            SendDecision::Defer(IpcDefer::WaitForCapacity)
+        );
+    }
+
+    #[test]
+    fn async_full_channel_refuses_send() {
+        let id = ChannelId::new(101);
+        let owner = ProcessId::new(2);
+        let mut channel = Channel::new_with_flags(
+            id,
+            owner,
+            ChannelFlags::new(
+                ChannelFlags::BOUNDED | ChannelFlags::ASYNC | ChannelFlags::HIGH_PRIORITY,
+            ),
+            128,
+        );
+        let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+        for _ in 0..crate::ipc::CHANNEL_CAPACITY {
+            let msg = crate::ipc::Message::with_data(owner, b"x").unwrap();
+            channel.send(msg, &send_cap).unwrap();
+        }
+        assert_eq!(
+            evaluate_send(&channel, &send_cap),
+            SendDecision::Refuse(IpcRefusal::QueueFull)
+        );
+    }
+
+    #[test]
+    fn empty_channel_defers_recv() {
+        let id = ChannelId::new(102);
+        let owner = ProcessId::new(3);
+        let channel = Channel::new(id, owner);
+        let recv_cap = ChannelCapability::new(1, id, ChannelRights::receive_only(), owner);
+        assert_eq!(
+            evaluate_recv(&channel, &recv_cap),
+            RecvDecision::Defer(IpcDefer::WaitForMessage)
+        );
+    }
+}
