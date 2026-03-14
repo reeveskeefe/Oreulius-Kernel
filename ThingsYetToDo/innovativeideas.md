@@ -42,6 +42,7 @@ Concept: Capabilities aren't static—they're bound to time or "transactional ch
 Why Inventive?: This isn't delegation or timeouts; it's a new primitive where capabilities are temporal objects with built-in rollback. No kernel does this natively—it's a paradigm shift from "access control" to "time-bound trust."
 Alignment: Builds on your Capability Manager and audit logging; WASM JIT enables dynamic enforcement without de-aligning from edge/AI security.
 Implementation Starter: Modify your Capability Manager to include timers (using your 100Hz scheduler) and checkpoint snapshots in memory. WASM modules could define revocation rules.
+✅ IMPLEMENTED — see `docs/oreulia-temporal-capabilities.md`
 
 Runtime Capability Graph Verification with Formal Proofs
 
@@ -53,6 +54,7 @@ Add a graph library (e.g., Rust's petgraph) to the Capability Manager.
 Integrate a verifier that checks properties like "no cycles in delegation" on capability changes.
 Test with WASM modules that attempt privilege escalation.
 Impact: Makes it "provably secure" for high-stakes edge apps (e.g., cybersecurity appliances), ahead of unverified kernels.
+✅ IMPLEMENTED — see `docs/oreulia-cap-graph-verification.md`
 
 
  Live Defragmentation/Introspection via WASM "Kernel Observers" ✅ IMPLEMENTED
@@ -69,6 +71,7 @@ Concept: Kernel services aren't just Rust—they're WASM modules written in any 
 Why Cool/Inventive?: Kernels are monolingual; this invents a "polyglot kernel mesh" where services are language-agnostic and replaceable, like a universal OS API—nothing like this exists.
 Alignment: Extends your modularity and WASM JIT; fits AI edge where different languages handle tasks (e.g., Rust for security, JS for UI).
 Implementation Starter: Add a WASM polyglot loader to your Process Scheduler; enforce capabilities across languages.
+✅ IMPLEMENTED — see `docs/oreulia-polyglot-services.md`
 
 
 Intensional Kernel: Policy as Executable Capability Contracts
@@ -77,6 +80,7 @@ Concept: Attach executable "policy contracts" (WASM modules) to every capability
 Why Cool/Inventive?: Policies become programmable, user-authored "smart contracts" for the kernel, not fixed rules. This originates "intent-driven OS" primitives, shifting security from enforcement to dynamic negotiation.
 Alignment: Ties into your Security Manager; enables runtime policy for multi-tenant appliances.
 Implementation Starter: Bind WASM contracts to capabilities; execute them in your JIT on access.
+✅ IMPLEMENTED — see `docs/oreulia-policy-contracts.md`
 
 Quantum-Inspired Capability Entanglement
 
@@ -84,3 +88,4 @@ Concept: Link capabilities "entangle" like quantum particles—if one revokes, l
 Why Cool/Inventive?: Capabilities are independent; entanglement creates interdependent "security webs," a quantum-inspired paradigm for correlated access control—entirely new for OS kernels.
 Alignment: Builds on your revocable history; secures multi-sensor AI devices.
 Implementation Starter: Add entanglement metadata to capabilities; enforce via your crypto assembly.
+✅ IMPLEMENTED — see `docs/oreulia-capability-entanglement.md`
