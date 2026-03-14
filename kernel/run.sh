@@ -26,11 +26,12 @@ echo ""
 
 QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:-}"
 USE_DEFAULT_SERIAL=1
-if [[ "$QEMU_EXTRA_ARGS" =~ (^|[[:space:]])-nographic($|[[:space:]]) ]]; then
-    USE_DEFAULT_SERIAL=0
-fi
+USE_MONITOR_NONE=0
 if [[ "$QEMU_EXTRA_ARGS" =~ (^|[[:space:]])-serial($|[[:space:]]) ]]; then
     USE_DEFAULT_SERIAL=0
+fi
+if [[ "$QEMU_EXTRA_ARGS" =~ (^|[[:space:]])-nographic($|[[:space:]]) ]]; then
+    USE_MONITOR_NONE=1
 fi
 
 if [ -n "$QEMU_EXTRA_ARGS" ]; then
@@ -39,6 +40,7 @@ if [ -n "$QEMU_EXTRA_ARGS" ]; then
         qemu-system-i386 \
             -cdrom "$ISO_PATH" \
             -serial stdio \
+            $(if [ "$USE_MONITOR_NONE" -eq 1 ]; then printf '%s' "-monitor none"; fi) \
             -chardev socket,path=/tmp/oreulia_ebpf_telemetry,server=on,wait=off,id=telemetry_socket \
             -serial chardev:telemetry_socket \
             $QEMU_EXTRA_ARGS

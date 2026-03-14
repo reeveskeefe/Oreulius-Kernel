@@ -138,6 +138,16 @@ pub enum SecurityEvent {
     ProcessTerminated,
     /// Temporal object operation observed
     TemporalOperation,
+    /// IPC channel entered draining closure state
+    ClosureDraining,
+    /// IPC channel fully sealed after closure
+    ClosureSealed,
+    /// Predictive restriction applied to a process (AdaptiveRestriction activated)
+    RestrictionApplied,
+    /// Predictive restriction lifted (expired or explicitly cleared)
+    RestrictionLifted,
+    /// Capability delegation chain recorded (provenance audit)
+    CapDelegationChain,
 }
 
 impl SecurityEvent {
@@ -157,6 +167,11 @@ impl SecurityEvent {
             SecurityEvent::ProcessSpawned => "ProcSpawned",
             SecurityEvent::ProcessTerminated => "ProcTerminated",
             SecurityEvent::TemporalOperation => "TemporalOp",
+            SecurityEvent::ClosureDraining => "ClosureDraining",
+            SecurityEvent::ClosureSealed => "ClosureSealed",
+            SecurityEvent::RestrictionApplied => "RestrictionApplied",
+            SecurityEvent::RestrictionLifted => "RestrictionLifted",
+            SecurityEvent::CapDelegationChain => "CapDelegationChain",
         }
     }
 }

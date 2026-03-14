@@ -6,6 +6,9 @@ pub enum IpcRefusal {
     PermissionDenied,
     InvalidCapability,
     Closed,
+    /// Channel is in `Draining` state: close initiated, messages still in flight.
+    /// Distinguishable from `Closed` (fully sealed) so callers can adapt.
+    ChannelDraining,
     Backpressure,
     QueueFull,
     QueueEmpty,
@@ -49,8 +52,11 @@ pub(crate) fn evaluate_send(channel: &Channel, capability: &ChannelCapability) -
         return SendDecision::Refuse(IpcRefusal::InvalidCapability);
     }
 
-    if channel.closed || channel.closing {
+    if channel.closure.is_closed() {
         return SendDecision::Refuse(IpcRefusal::Closed);
+    }
+    if channel.closure.is_closing() {
+        return SendDecision::Refuse(IpcRefusal::ChannelDraining);
     }
 
     if let Some(decision) = backpressure::send_decision(channel) {
@@ -78,7 +84,7 @@ pub(crate) fn evaluate_recv(channel: &Channel, capability: &ChannelCapability) -
         return RecvDecision::Refuse(IpcRefusal::InvalidCapability);
     }
 
-    if channel.closed && channel.buffer.is_empty() {
+    if channel.closure.is_closed() && channel.buffer.is_empty() {
         return RecvDecision::Refuse(IpcRefusal::Closed);
     }
 

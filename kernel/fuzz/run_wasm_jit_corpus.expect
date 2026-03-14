@@ -4,7 +4,7 @@
 # Run from `kernel/`:
 #   ./fuzz/run_wasm_jit_corpus.expect 1000
 
-set timeout 0
+set timeout 120
 set iters 1000
 set soak_rounds 0
 if {[llength $argv] >= 1} {
@@ -14,45 +14,80 @@ if {[llength $argv] >= 2} {
     set soak_rounds [lindex $argv 1]
 }
 
-set corpus_path "fuzz/wasm_jit_seed_corpus.txt"
-if {![file exists $corpus_path]} {
-    puts "Corpus file not found: $corpus_path"
-    exit 1
-}
-
 set qemu_extra ""
 if {[info exists env(QEMU_EXTRA_ARGS)]} {
     set qemu_extra $env(QEMU_EXTRA_ARGS)
 }
 
+set qemu_args [list qemu-system-i386 -cdrom oreulia.iso -serial stdio]
+if {![regexp {(^|[[:space:]])-monitor([[:space:]]|$)} $qemu_extra]} {
+    lappend qemu_args -monitor none
+}
+set filtered_extra {}
 if {$qemu_extra eq ""} {
-    spawn ./run.sh
+    set filtered_extra [list -display none -no-reboot -no-shutdown]
 } else {
-    spawn env QEMU_EXTRA_ARGS=$qemu_extra ./run.sh
-}
-expect "> "
-
-set fp [open $corpus_path r]
-while {[gets $fp line] >= 0} {
-    set trimmed [string trim $line]
-    if {$trimmed eq ""} {
-        continue
+    foreach arg $qemu_extra {
+        if {$arg eq "-nographic"} {
+            continue
+        }
+        lappend filtered_extra $arg
     }
-    if {[string first "#" $trimmed] == 0} {
-        continue
-    }
-    send "wasm-jit-fuzz $iters $trimmed\r"
-    expect "> "
 }
-close $fp
+set qemu_args [concat $qemu_args $filtered_extra]
+spawn {*}$qemu_args
+expect {
+    -re {Type 'help' for commands\.} {}
+    timeout { puts "timeout waiting for i686 kernel shell banner"; exit 1 }
+}
+expect {
+    -re {> } {}
+    timeout { puts "timeout waiting for i686 shell prompt"; exit 1 }
+}
+# Clear any stale line noise on the first serial-interactive prompt.
+send "\r"
+expect {
+    -re {> } {}
+    timeout { puts "timeout waiting for clean i686 shell prompt"; exit 1 }
+}
+set timeout 600
 
-# Also run in-kernel corpus aggregate command for a summary.
 send "wasm-jit-fuzz-corpus $iters\r"
-expect "> "
+expect {
+    -re {Seeds passed: [0-9]+ / [0-9]+} {}
+    timeout { puts "timeout waiting for WASM corpus seed summary"; exit 1 }
+}
+expect {
+    -re {Total mismatches: [0-9]+} {}
+    timeout { puts "timeout waiting for WASM corpus mismatch summary"; exit 1 }
+}
+expect {
+    -re {Total compile errors: [0-9]+} {}
+    timeout { puts "timeout waiting for WASM corpus compile summary"; exit 1 }
+}
+expect {
+    -re {> } {}
+    timeout { puts "timeout waiting for i686 shell prompt after WASM corpus"; exit 1 }
+}
 
 if {$soak_rounds > 0} {
     send "wasm-jit-fuzz-soak $iters $soak_rounds\r"
-    expect "> "
+    expect {
+        -re {Rounds passed: [0-9]+ / [0-9]+} {}
+        timeout { puts "timeout waiting for WASM soak rounds summary"; exit 1 }
+    }
+    expect {
+        -re {Total mismatches: [0-9]+} {}
+        timeout { puts "timeout waiting for WASM soak mismatch summary"; exit 1 }
+    }
+    expect {
+        -re {Total compile errors: [0-9]+} {}
+        timeout { puts "timeout waiting for WASM soak compile summary"; exit 1 }
+    }
+    expect {
+        -re {> } {}
+        timeout { puts "timeout waiting for i686 shell prompt after WASM soak"; exit 1 }
+    }
 }
 
 sleep 1

@@ -207,6 +207,163 @@ pub fn violation_count() -> u64 {
     CAP_GRAPH.lock().violations
 }
 
+// ============================================================================
+// ProvenanceChain — Def A.28 capability lineage
+// ============================================================================
+
+/// Maximum delegation depth tracked in a single provenance chain.
+pub const PROVENANCE_MAX_DEPTH: usize = 32;
+
+/// One link in a capability provenance chain.
+#[derive(Clone, Copy, Debug)]
+pub struct ProvenanceLink {
+    /// Capability ID at this depth.
+    pub cap_id: u32,
+    /// Owner process at this depth.
+    pub holder_pid: u32,
+    /// Rights bitmask at the point this link was recorded.
+    pub rights_bits: u32,
+}
+
+impl ProvenanceLink {
+    const fn zero() -> Self {
+        ProvenanceLink { cap_id: 0, holder_pid: 0, rights_bits: 0 }
+    }
+}
+
+/// A linear chain of delegation links from a root capability down to a leaf.
+///
+/// `links[0]` is the *leaf* (most recently delegated) capability;
+/// `links[depth - 1]` is the *root* (directly created by the kernel).
+///
+/// Built by [`build_chain`], which walks the `parent_cap_id` fields embedded
+/// in `OreuliaCapability` structs back toward the root.
+#[derive(Clone, Copy, Debug)]
+pub struct ProvenanceChain {
+    pub links: [ProvenanceLink; PROVENANCE_MAX_DEPTH],
+    /// Number of valid entries in `links`.
+    pub depth: usize,
+    /// Set to `true` if the chain was truncated at `PROVENANCE_MAX_DEPTH`.
+    pub truncated: bool,
+}
+
+impl ProvenanceChain {
+    const fn empty() -> Self {
+        ProvenanceChain {
+            links: [ProvenanceLink::zero(); PROVENANCE_MAX_DEPTH],
+            depth: 0,
+            truncated: false,
+        }
+    }
+
+    /// Serialize the chain into a fixed-size byte array suitable for embedding
+    /// into `AuditEntry::context` or a temporal log record.
+    ///
+    /// Format (little-endian):
+    /// ```text
+    /// [0]        depth as u8
+    /// [1]        truncated as u8 (0 or 1)
+    /// [2..N]     for each link: cap_id (4B LE) | holder_pid (4B LE) | rights (4B LE)
+    /// ```
+    /// Returns the number of bytes written.
+    pub fn serialize(&self, out: &mut [u8]) -> usize {
+        if out.len() < 2 {
+            return 0;
+        }
+        out[0] = self.depth as u8;
+        out[1] = self.truncated as u8;
+        let mut pos = 2usize;
+        let mut i = 0usize;
+        while i < self.depth && i < PROVENANCE_MAX_DEPTH {
+            if pos + 12 > out.len() {
+                break;
+            }
+            let link = &self.links[i];
+            out[pos..pos + 4].copy_from_slice(&link.cap_id.to_le_bytes());
+            out[pos + 4..pos + 8].copy_from_slice(&link.holder_pid.to_le_bytes());
+            out[pos + 8..pos + 12].copy_from_slice(&link.rights_bits.to_le_bytes());
+            pos += 12;
+            i += 1;
+        }
+        pos
+    }
+}
+
+/// Build the provenance chain for `(pid, cap_id)` by walking `parent_cap_id`
+/// links through the live capability tables.
+///
+/// Each hop resolves the parent cap in the *same process's* capability table
+/// (since attenuations are intra-process) or falls back to the `CapGraph` edge
+/// table for cross-process delegations.
+///
+/// Returns a [`ProvenanceChain`] with `depth == 0` if the cap is not found or
+/// has no provenance.
+pub fn build_chain(pid: u32, cap_id: u32) -> ProvenanceChain {
+    let mut chain = ProvenanceChain::empty();
+    let mut current_pid = pid;
+    let mut current_cap = cap_id;
+
+    loop {
+        if chain.depth >= PROVENANCE_MAX_DEPTH {
+            chain.truncated = true;
+            break;
+        }
+
+        // Resolve current cap through the capability manager.
+        let mgr = crate::capability::capability_manager();
+        let (rights_bits, parent_cap_id_opt) = {
+            let tables = mgr.tables.lock();
+            if let Some(table) = tables[current_pid as usize].as_ref() {
+                match table.lookup(current_cap) {
+                    Ok(cap) => (cap.rights.bits(), cap.parent_cap_id),
+                    Err(_) => break,
+                }
+            } else {
+                break;
+            }
+        };
+
+        chain.links[chain.depth] = ProvenanceLink {
+            cap_id: current_cap,
+            holder_pid: current_pid,
+            rights_bits,
+        };
+        chain.depth += 1;
+
+        match parent_cap_id_opt {
+            None => break, // root capability
+            Some(parent_cap) => {
+                // Try intra-process first (attenuated cap in same process).
+                // Then check the CapGraph for an incoming cross-process edge.
+                let g = CAP_GRAPH.lock();
+                let mut found_cross = false;
+                let mut i = 0usize;
+                while i < MAX_GRAPH_EDGES {
+                    let e = &g.edges[i];
+                    if e.active && e.to_pid == current_pid && e.to_cap == current_cap {
+                        // The delegator holds `from_cap` in `from_pid`.
+                        current_pid = e.from_pid;
+                        current_cap = e.from_cap;
+                        found_cross = true;
+                        break;
+                    }
+                    i += 1;
+                }
+                drop(g);
+
+                if !found_cross {
+                    // Intra-process attenuation: parent is in the same process.
+                    current_cap = parent_cap;
+                    // current_pid stays the same.
+                }
+            }
+        }
+    }
+
+    chain
+}
+
+
 /// Write up to `max_edges` raw edges for `(pid, cap_id)` into `out`.
 /// Returns the number of edges written.
 pub fn query_edges_for(
@@ -241,9 +398,8 @@ fn would_create_cycle(from_pid: u32, _from_cap: u32, to_pid: u32) -> bool {
 
     // Iterative DFS from to_pid; if we reach from_pid → cycle.
     let mut stack = [0u32; MAX_CHAIN_DEPTH];
-    let mut depth = 0usize;
+    let mut depth = 1usize;
     stack[0] = to_pid;
-    depth = 1;
 
     let mut visited = [0u32; MAX_CHAIN_DEPTH];
     let mut n_visited = 0usize;

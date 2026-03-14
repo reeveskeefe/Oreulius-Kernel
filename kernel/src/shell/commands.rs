@@ -3319,9 +3319,9 @@ fn print_ipc_flag_bits(bits: u32) {
 }
 
 fn print_ipc_channel_state(channel: &ipc::ChannelDiagnostics) {
-    if channel.closed {
+    if channel.closure.is_closed() {
         vga::print_str("closed");
-    } else if channel.closing {
+    } else if channel.closure.is_closing() {
         vga::print_str("closing");
     } else {
         vga::print_str("open");
@@ -7668,6 +7668,7 @@ fn cmd_formal_verify() {
     }
 
     vga::print_str("\nFormal verification checks: PASSED\n\n");
+    crate::serial_println!("Formal verification checks: PASSED");
 }
 
 struct SharedJitUserMode {
@@ -8254,6 +8255,7 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     }
 
     vga::print_str("\n===== WASM JIT Regression Corpus =====\n\n");
+    crate::serial_println!("===== WASM JIT Regression Corpus =====");
     vga::print_str("Seeds: ");
     print_u32(crate::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
     vga::print_str("\nIterations per seed: ");
@@ -8295,6 +8297,9 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             print_u32(stats.opcode_edges_admissible_total);
             vga::print_str("\nTotal novel programs: ");
             print_u32(stats.total_novel_programs);
+            crate::serial_println!("Seeds passed: {} / {}", stats.seeds_passed, stats.seeds_total);
+            crate::serial_println!("Total mismatches: {}", stats.total_mismatches);
+            crate::serial_println!("Total compile errors: {}", stats.total_compile_errors);
             if let Some(seed) = stats.first_failed_seed {
                 vga::print_str("\nFirst failing seed: ");
                 print_u64(seed);
@@ -8394,6 +8399,7 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             vga::print_str("Regression corpus failed: ");
             vga::print_str(e);
             vga::print_str("\n");
+            crate::serial_println!("Regression corpus failed: {}", e);
         }
     }
     crate::wasm::jit_runtime_recover_transient();
@@ -8473,6 +8479,7 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     }
 
     vga::print_str("\n===== WASM JIT Corpus Soak =====\n\n");
+    crate::serial_println!("===== WASM JIT Corpus Soak =====");
     vga::print_str("Rounds: ");
     print_u32(rounds);
     vga::print_str("\nIterations per seed: ");
@@ -8520,6 +8527,9 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
             print_u32(stats.opcode_edges_admissible_total);
             vga::print_str("\nTotal novel programs: ");
             print_u32(stats.total_novel_programs);
+            crate::serial_println!("Rounds passed: {} / {}", stats.rounds_passed, stats.rounds);
+            crate::serial_println!("Total mismatches: {}", stats.total_mismatches);
+            crate::serial_println!("Total compile errors: {}", stats.total_compile_errors);
 
             if let Some(round_idx) = stats.first_failed_round {
                 vga::print_str("\nFirst failing round: ");
@@ -8539,6 +8549,7 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
             vga::print_str("Corpus soak failed: ");
             vga::print_str(e);
             vga::print_str("\n");
+            crate::serial_println!("Corpus soak failed: {}", e);
         }
     }
 
@@ -8644,6 +8655,7 @@ fn cmd_capnet_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     }
 
     vga::print_str("\n===== CapNet Regression Corpus =====\n\n");
+    crate::serial_println!("===== CapNet Regression Corpus =====");
     vga::print_str("Seeds: ");
     print_u32(crate::capnet::CAPNET_FUZZ_REGRESSION_SEEDS.len() as u32);
     vga::print_str("\nIterations per seed: ");
@@ -8672,6 +8684,8 @@ fn cmd_capnet_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             print_u32(stats.total_control_decode_err);
             vga::print_str("\nTotal process errors: ");
             print_u32(stats.total_process_err);
+            crate::serial_println!("Seeds passed: {} / {}", stats.seeds_passed, stats.seeds_total);
+            crate::serial_println!("Total failures: {}", stats.total_failures);
             if let Some(seed) = stats.first_failed_seed {
                 vga::print_str("\nFirst failing seed: ");
                 print_u64(seed);
@@ -8686,6 +8700,7 @@ fn cmd_capnet_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             vga::print_str("CapNet regression corpus failed: ");
             vga::print_str(e);
             vga::print_str("\n");
+            crate::serial_println!("CapNet regression corpus failed: {}", e);
         }
     }
     vga::print_str("\n");
@@ -8718,6 +8733,7 @@ fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     }
 
     vga::print_str("\n===== CapNet Corpus Soak =====\n\n");
+    crate::serial_println!("===== CapNet Corpus Soak =====");
     vga::print_str("Rounds: ");
     print_u32(rounds);
     vga::print_str("\nIterations per seed: ");
@@ -8746,6 +8762,8 @@ fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
             print_u32(stats.total_replay_rejects);
             vga::print_str("\nTotal constraint rejects: ");
             print_u32(stats.total_constraint_rejects);
+            crate::serial_println!("Rounds passed: {} / {}", stats.rounds_passed, stats.rounds);
+            crate::serial_println!("Total failures: {}", stats.total_failures);
             if let Some(round_idx) = stats.first_failed_round {
                 vga::print_str("\nFirst failing round: ");
                 print_u32(round_idx);
@@ -8764,6 +8782,7 @@ fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
             vga::print_str("CapNet corpus soak failed: ");
             vga::print_str(e);
             vga::print_str("\n");
+            crate::serial_println!("CapNet corpus soak failed: {}", e);
         }
     }
     vga::print_str("\n");

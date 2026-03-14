@@ -191,22 +191,31 @@ pub fn start() -> ! {
     vga::print_str(")\n");
     vga::print_str("[TASK] Shell task registered\n");
 
-    vga::print_str("[TASK] Adding network task to scheduler...\n");
-    let network_pid = {
-        let mut sched = quantum_scheduler::scheduler().lock();
-        sched.add_kernel_thread(network_task, ProcessPriority::Normal)
-    };
-    match network_pid {
-        Ok(pid) => {
-            vga::print_str("[TASK] Network task registered (PID=");
-            crate::commands::print_u32(pid.0);
-            vga::print_str(")\n");
-        }
-        Err(e) => {
-            vga::print_str("[TASK] WARNING: failed to add network task: ");
-            vga::print_str(e);
-            vga::print_str("\n");
-            crate::serial_println!("[TASK] WARNING: failed to add network task: {}", e);
+    #[cfg(target_arch = "x86")]
+    {
+        vga::print_str("[TASK] Skipping network task on x86 legacy path\n");
+        crate::serial_println!("[TASK] Skipping network task on x86 legacy path");
+    }
+
+    #[cfg(not(target_arch = "x86"))]
+    {
+        vga::print_str("[TASK] Adding network task to scheduler...\n");
+        let network_pid = {
+            let mut sched = quantum_scheduler::scheduler().lock();
+            sched.add_kernel_thread(network_task, ProcessPriority::Normal)
+        };
+        match network_pid {
+            Ok(pid) => {
+                vga::print_str("[TASK] Network task registered (PID=");
+                crate::commands::print_u32(pid.0);
+                vga::print_str(")\n");
+            }
+            Err(e) => {
+                vga::print_str("[TASK] WARNING: failed to add network task: ");
+                vga::print_str(e);
+                vga::print_str("\n");
+                crate::serial_println!("[TASK] WARNING: failed to add network task: {}", e);
+            }
         }
     }
 

@@ -180,6 +180,11 @@ pub struct OreuliaCapability {
     pub label_hash: u32,
     /// Cryptographic token (SipHash-2-4 MAC)
     pub token: u64,
+    /// Provenance: the cap_id of the capability this was delegated/derived from
+    /// (Def A.28 provenance chain).  `None` for root capabilities created
+    /// directly by the kernel.  Used by `cap_graph::build_chain` to walk the
+    /// full ancestry of a capability token.
+    pub parent_cap_id: Option<u32>,
 }
 
 impl OreuliaCapability {
@@ -199,6 +204,7 @@ impl OreuliaCapability {
             granted_at: crate::pit::get_ticks() as u64,
             label_hash: 0,
             token: 0,
+            parent_cap_id: None,
         }
     }
 
@@ -210,6 +216,8 @@ impl OreuliaCapability {
 
         let mut attenuated = *self;
         attenuated.rights = new_rights;
+        // Record provenance: the attenuated cap derives from this one.
+        attenuated.parent_cap_id = Some(self.cap_id);
         Ok(attenuated)
     }
 
@@ -915,7 +923,10 @@ impl CapabilityManager {
 
         // Install in destination
         if let Some(to_table) = tables[to_pid.0 as usize].as_mut() {
-            let new_cap_id = to_table.install(cap)?;
+            // Stamp provenance: the new cap in the destination derives from cap_id.
+            let mut delegated_cap = cap;
+            delegated_cap.parent_cap_id = Some(cap_id);
+            let new_cap_id = to_table.install(delegated_cap)?;
 
             // Record the delegation edge.
             let _ = self::cap_graph::record_delegation(

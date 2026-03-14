@@ -83,6 +83,10 @@ impl ReadyQueue {
         }
     }
 
+    fn is_sane(&self) -> bool {
+        self.head < MAX_PROCESSES && self.len <= MAX_PROCESSES
+    }
+
     fn clear(&mut self) {
         self.head = 0;
         self.len = 0;
@@ -93,6 +97,9 @@ impl ReadyQueue {
     }
 
     fn push_back(&mut self, pid: Pid) -> bool {
+        if !self.is_sane() {
+            self.clear();
+        }
         if self.len >= MAX_PROCESSES {
             return false;
         }
@@ -103,6 +110,10 @@ impl ReadyQueue {
     }
 
     fn pop_front(&mut self) -> Option<Pid> {
+        if !self.is_sane() {
+            self.clear();
+            return None;
+        }
         if self.len == 0 {
             return None;
         }
@@ -113,6 +124,9 @@ impl ReadyQueue {
     }
 
     fn for_each<F: FnMut(Pid)>(&self, mut f: F) {
+        if !self.is_sane() {
+            return;
+        }
         let mut i = 0usize;
         while i < self.len {
             let idx = (self.head + i) % MAX_PROCESSES;

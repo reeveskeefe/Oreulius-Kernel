@@ -50,6 +50,52 @@ pub const CHANNEL_CAPACITY: usize = 4;
 /// Maximum number of channels.
 pub const MAX_CHANNELS: usize = 16;
 
+// ============================================================================
+// EventId — causal message identity (Def A.7)
+// ============================================================================
+
+/// An opaque, globally unique identifier stamped on every IPC message.
+///
+/// Format (packed into 64 bits):
+/// ```text
+/// [63..32]  source ProcessId (32 bits)
+/// [31..16]  channel sequence counter lower 16 bits
+/// [15..0]   per-process message counter lower 16 bits
+/// ```
+///
+/// Constructed via [`EventId::new`]; never created by user code.
+/// The `cause` field on [`Message`] carries the `EventId` of the message
+/// that causally preceded this one (if any), enabling causal chain reconstruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventId(pub u64);
+
+impl EventId {
+    /// Combine a source pid, a channel-scoped sequence, and a per-process
+    /// counter into a unique 64-bit identifier.
+    #[inline]
+    pub const fn new(source_pid: u32, channel_seq: u16, msg_seq: u16) -> Self {
+        let v = ((source_pid as u64) << 32)
+            | ((channel_seq as u64) << 16)
+            | (msg_seq as u64);
+        EventId(v)
+    }
+
+    /// Decompose back into constituent parts.
+    #[inline]
+    pub const fn parts(self) -> (u32, u16, u16) {
+        let pid = (self.0 >> 32) as u32;
+        let chan_seq = ((self.0 >> 16) & 0xFFFF) as u16;
+        let msg_seq = (self.0 & 0xFFFF) as u16;
+        (pid, chan_seq, msg_seq)
+    }
+
+    /// The raw u64 value (for embedding into `AuditEntry::context`).
+    #[inline]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 /// Channel identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChannelId(pub u32);

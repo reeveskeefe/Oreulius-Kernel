@@ -40,6 +40,9 @@
 
 #![allow(dead_code)]
 
+extern crate alloc;
+
+use alloc::boxed::Box;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
@@ -383,7 +386,7 @@ pub enum PoolStepResult {
 /// A cooperative thread pool for WASM instances sharing linear memory.
 pub struct WasmThreadPool {
     /// Thread slots.
-    threads: [WasmThread; MAX_WASM_THREADS],
+    threads: Option<Box<[WasmThread; MAX_WASM_THREADS]>>,
     /// Number of live (non-Empty) threads.
     live_count: usize,
     /// Round-robin scheduling cursor.
@@ -403,17 +406,33 @@ unsafe impl Sync for WasmThreadPool {}
 impl WasmThreadPool {
     /// Create an empty pool.
     pub const fn new() -> Self {
-        // Rust's const evaluation cannot use array initialisation with
-        // non-Copy const items directly, so we spell them out via a const fn.
-        const EMPTY_THREAD: WasmThread = WasmThread::empty();
         WasmThreadPool {
-            threads: [EMPTY_THREAD; MAX_WASM_THREADS],
+            threads: None,
             live_count: 0,
             rr_cursor: 0,
             next_tid: 1, // tid 0 is reserved (means "main/no thread")
             shared_mem: SharedLinearMemory::zeroed(),
             initialized: false,
         }
+    }
+
+    fn ensure_threads(&mut self) -> &mut [WasmThread; MAX_WASM_THREADS] {
+        if self.threads.is_none() {
+            const EMPTY_THREAD: WasmThread = WasmThread::empty();
+            self.threads = Some(Box::new([EMPTY_THREAD; MAX_WASM_THREADS]));
+        }
+        self.threads
+            .as_mut()
+            .map(Box::as_mut)
+            .expect("lazy wasm thread pool allocation failed")
+    }
+
+    fn threads(&self) -> Option<&[WasmThread; MAX_WASM_THREADS]> {
+        self.threads.as_ref().map(Box::as_ref)
+    }
+
+    fn threads_mut(&mut self) -> Option<&mut [WasmThread; MAX_WASM_THREADS]> {
+        self.threads.as_mut().map(Box::as_mut)
     }
 
     /// Attach a linear memory region from the owning `WasmInstance`.
@@ -434,12 +453,15 @@ impl WasmThreadPool {
     /// `memory.grow`).
     pub fn notify_grow(&mut self, new_active_bytes: usize) {
         self.shared_mem.active_bytes = new_active_bytes;
+        let shared_mem_ptr = &mut self.shared_mem as *mut SharedLinearMemory;
         // Update every live thread's shared_mem pointer (they all point into
         // the same SharedLinearMemory so updating self is enough, but refresh
         // the pointer in each thread for clarity).
-        for t in self.threads.iter_mut() {
-            if t.is_live() {
-                t.shared_mem = &mut self.shared_mem as *mut SharedLinearMemory;
+        if let Some(threads) = self.threads_mut() {
+            for t in threads.iter_mut() {
+                if t.is_live() {
+                    t.shared_mem = shared_mem_ptr;
+                }
             }
         }
     }
@@ -458,20 +480,20 @@ impl WasmThreadPool {
         if self.live_count >= MAX_WASM_THREADS {
             return Err("thread limit reached");
         }
-        // Find an empty slot.
-        let slot = self
-            .threads
-            .iter()
-            .position(|t| matches!(t.state, ThreadState::Empty))
-            .ok_or("no empty thread slot")?;
-
         let tid = self.next_tid as i32;
         self.next_tid = self.next_tid.wrapping_add(1);
         if self.next_tid == 0 {
             self.next_tid = 1;
         }
+        let shared_mem_ptr = &mut self.shared_mem as *mut SharedLinearMemory;
+        let threads = self.ensure_threads();
+        // Find an empty slot.
+        let slot = threads
+            .iter()
+            .position(|t| matches!(t.state, ThreadState::Empty))
+            .ok_or("no empty thread slot")?;
 
-        let t = &mut self.threads[slot];
+        let t = &mut threads[slot];
         *t = WasmThread::empty();
         t.tid = tid;
         t.func_idx = func_idx;
@@ -480,7 +502,7 @@ impl WasmThreadPool {
         t.pc = initial_pc;
         t.state = ThreadState::Runnable;
         t.fuel = DEFAULT_THREAD_FUEL;
-        t.shared_mem = &mut self.shared_mem as *mut SharedLinearMemory;
+        t.shared_mem = shared_mem_ptr;
         // Set arg in locals[0] so the entry function can access it.
         t.locals[0] = ThreadValue::I32(arg);
         t.locals[1] = ThreadValue::I32(tid); // tid in locals[1] for convenience
@@ -492,22 +514,25 @@ impl WasmThreadPool {
     /// Join a thread: if the target is Finished, return its exit code and reap
     /// the slot.  If it is still running, place the caller in Joining state.
     pub fn join(&mut self, caller_tid: i32, target_tid: i32) -> JoinResult {
-        let target_slot = self.threads.iter().position(|t| t.tid == target_tid);
+        let Some(threads) = self.threads_mut() else {
+            return JoinResult::NotFound;
+        };
+        let target_slot = threads.iter().position(|t| t.tid == target_tid);
         match target_slot {
             None => JoinResult::NotFound,
-            Some(idx) => match self.threads[idx].state {
+            Some(idx) => match threads[idx].state {
                 ThreadState::Finished(code) => {
                     // Reap the finished thread.
-                    self.threads[idx].state = ThreadState::Empty;
+                    threads[idx].state = ThreadState::Empty;
                     self.live_count = self.live_count.saturating_sub(1);
                     JoinResult::Done(code)
                 }
                 ThreadState::Empty => JoinResult::NotFound,
                 _ => {
                     // Mark caller as blocked on target.
-                    if let Some(caller_idx) = self.threads.iter().position(|t| t.tid == caller_tid)
+                    if let Some(caller_idx) = threads.iter().position(|t| t.tid == caller_tid)
                     {
-                        self.threads[caller_idx].state = ThreadState::Joining(target_tid);
+                        threads[caller_idx].state = ThreadState::Joining(target_tid);
                     }
                     JoinResult::Blocked
                 }
@@ -517,28 +542,34 @@ impl WasmThreadPool {
 
     /// Called when a thread exits — unblocks any thread that was joining it.
     fn wake_joiners(&mut self, finished_tid: i32) {
-        for t in self.threads.iter_mut() {
-            if matches!(t.state, ThreadState::Joining(tid) if tid == finished_tid) {
-                t.state = ThreadState::Runnable;
-                t.fuel = DEFAULT_THREAD_FUEL;
+        if let Some(threads) = self.threads_mut() {
+            for t in threads.iter_mut() {
+                if matches!(t.state, ThreadState::Joining(tid) if tid == finished_tid) {
+                    t.state = ThreadState::Runnable;
+                    t.fuel = DEFAULT_THREAD_FUEL;
+                }
             }
         }
     }
 
     /// Mark a thread as finished with the given exit code.
     pub fn exit_thread(&mut self, tid: i32, code: i32) {
-        if let Some(idx) = self.threads.iter().position(|t| t.tid == tid) {
-            self.threads[idx].finish(code);
+        if let Some(threads) = self.threads_mut() {
+            if let Some(idx) = threads.iter().position(|t| t.tid == tid) {
+                threads[idx].finish(code);
+            }
             self.wake_joiners(tid);
         }
     }
 
     /// Advance per-thread timer state without executing bytecode.
     pub fn on_timer_tick(&mut self) {
-        for thread in self.threads.iter_mut() {
-            if matches!(thread.state, ThreadState::Yielded) {
-                thread.state = ThreadState::Runnable;
-                thread.fuel = DEFAULT_THREAD_FUEL;
+        if let Some(threads) = self.threads_mut() {
+            for thread in threads.iter_mut() {
+                if matches!(thread.state, ThreadState::Yielded) {
+                    thread.state = ThreadState::Runnable;
+                    thread.fuel = DEFAULT_THREAD_FUEL;
+                }
             }
         }
         self.gc_finished();
@@ -546,7 +577,7 @@ impl WasmThreadPool {
 
     /// Return the current thread fuel for inspection.
     pub fn thread_fuel(&self, tid: i32) -> Option<u32> {
-        self.threads.iter().find(|t| t.tid == tid).map(|t| t.fuel)
+        self.threads()?.iter().find(|t| t.tid == tid).map(|t| t.fuel)
     }
 
     /// Advance the round-robin cursor and return a mutable reference to the
@@ -564,14 +595,15 @@ impl WasmThreadPool {
         let mut found_idx = None;
         for _ in 0..MAX_WASM_THREADS {
             self.rr_cursor = (self.rr_cursor + 1) % MAX_WASM_THREADS;
-            if self.threads[self.rr_cursor].is_runnable() {
+            if self.threads()?.get(self.rr_cursor)?.is_runnable() {
                 found_idx = Some(self.rr_cursor);
                 break;
             }
         }
         // Phase 2: mutably access the chosen slot.
         let idx = found_idx?;
-        let t = &mut self.threads[idx];
+        let threads = self.threads_mut()?;
+        let t = &mut threads[idx];
         if matches!(t.state, ThreadState::Yielded) {
             t.state = ThreadState::Runnable;
         }
@@ -588,13 +620,14 @@ impl WasmThreadPool {
         let mut found_idx = None;
         for _ in 0..MAX_WASM_THREADS {
             self.rr_cursor = (self.rr_cursor + 1) % MAX_WASM_THREADS;
-            if matches!(self.threads[self.rr_cursor].state, ThreadState::Runnable) {
+            if matches!(self.threads()?.get(self.rr_cursor)?.state, ThreadState::Runnable) {
                 found_idx = Some(self.rr_cursor);
                 break;
             }
         }
         let idx = found_idx?;
-        let thread = core::mem::replace(&mut self.threads[idx], WasmThread::empty());
+        let threads = self.threads_mut()?;
+        let thread = core::mem::replace(&mut threads[idx], WasmThread::empty());
         Some((idx, thread))
     }
 
@@ -604,21 +637,24 @@ impl WasmThreadPool {
         slot_idx: usize,
         thread: WasmThread,
     ) -> Result<(), &'static str> {
-        if slot_idx >= self.threads.len() {
+        let Some(threads) = self.threads_mut() else {
+            return Err("thread pool storage not allocated");
+        };
+        if slot_idx >= threads.len() {
             return Err("invalid thread slot");
         }
-        self.threads[slot_idx] = thread;
+        threads[slot_idx] = thread;
         Ok(())
     }
 
     /// Immutable look-up of a thread by tid.
     pub fn get(&self, tid: i32) -> Option<&WasmThread> {
-        self.threads.iter().find(|t| t.tid == tid)
+        self.threads()?.iter().find(|t| t.tid == tid)
     }
 
     /// Mutable look-up of a thread by tid.
     pub fn get_mut(&mut self, tid: i32) -> Option<&mut WasmThread> {
-        self.threads.iter_mut().find(|t| t.tid == tid)
+        self.threads_mut()?.iter_mut().find(|t| t.tid == tid)
     }
 
     /// Number of live threads.
@@ -647,24 +683,30 @@ impl WasmThreadPool {
         // Phase 1: collect the set of tids that are currently being joined (immutable).
         let mut join_targets = [0i32; MAX_WASM_THREADS];
         let mut join_count = 0usize;
-        for t in self.threads.iter() {
-            if let ThreadState::Joining(j) = t.state {
-                if join_count < MAX_WASM_THREADS {
-                    join_targets[join_count] = j;
-                    join_count += 1;
+        if let Some(threads) = self.threads() {
+            for t in threads.iter() {
+                if let ThreadState::Joining(j) = t.state {
+                    if join_count < MAX_WASM_THREADS {
+                        join_targets[join_count] = j;
+                        join_count += 1;
+                    }
                 }
             }
         }
         // Phase 2: reap Finished threads that nobody is waiting on (mutable).
-        for t in self.threads.iter_mut() {
-            if matches!(t.state, ThreadState::Finished(_)) {
-                let tid = t.tid;
-                let being_joined = join_targets[..join_count].iter().any(|&j| j == tid);
-                if !being_joined {
-                    t.state = ThreadState::Empty;
-                    self.live_count = self.live_count.saturating_sub(1);
+        if let Some(threads) = self.threads_mut() {
+            let mut reaped = 0usize;
+            for t in threads.iter_mut() {
+                if matches!(t.state, ThreadState::Finished(_)) {
+                    let tid = t.tid;
+                    let being_joined = join_targets[..join_count].iter().any(|&j| j == tid);
+                    if !being_joined {
+                        t.state = ThreadState::Empty;
+                        reaped += 1;
+                    }
                 }
             }
+            self.live_count = self.live_count.saturating_sub(reaped);
         }
     }
 
@@ -674,13 +716,15 @@ impl WasmThreadPool {
         let mut joining = 0u32;
         let mut finished = 0u32;
         let mut yielded = 0u32;
-        for t in &self.threads {
-            match t.state {
-                ThreadState::Runnable => runnable += 1,
-                ThreadState::Joining(_) => joining += 1,
-                ThreadState::Finished(_) => finished += 1,
-                ThreadState::Yielded => yielded += 1,
-                ThreadState::Empty => {}
+        if let Some(threads) = self.threads() {
+            for t in threads.iter() {
+                match t.state {
+                    ThreadState::Runnable => runnable += 1,
+                    ThreadState::Joining(_) => joining += 1,
+                    ThreadState::Finished(_) => finished += 1,
+                    ThreadState::Yielded => yielded += 1,
+                    ThreadState::Empty => {}
+                }
             }
         }
         ThreadPoolStatus {

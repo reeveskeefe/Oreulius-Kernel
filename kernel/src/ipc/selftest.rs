@@ -1,10 +1,11 @@
 use super::{
     BackpressureAction, BackpressureLevel, Capability, CapabilityType, Channel, ChannelCapability,
-    ChannelFlags, ChannelId, ChannelRights, IpcError, Message, ProcessId, CHANNEL_CAPACITY,
+    ChannelFlags, ChannelId, ChannelRights, ClosureState, DrainResult, EventId, IpcError, Message,
+    ProcessId, CHANNEL_CAPACITY,
 };
 use crate::process::{Pid, ProcessState};
 
-pub const IPC_SELFTEST_CASES: usize = 8;
+pub const IPC_SELFTEST_CASES: usize = 12;
 
 #[derive(Clone, Copy)]
 pub struct IpcSelftestCase {
@@ -75,6 +76,30 @@ pub fn run_selftest() -> IpcSelftestReport {
         7,
         "runtime_wakeup_surface",
         case_runtime_wakeup_surface(),
+    );
+    record_case(
+        &mut report,
+        8,
+        "causal_chain",
+        case_causal_chain(),
+    );
+    record_case(
+        &mut report,
+        9,
+        "closure_drain_state_machine",
+        case_closure_drain_state_machine(),
+    );
+    record_case(
+        &mut report,
+        10,
+        "event_id_encodes_source_seq",
+        case_event_id_encodes_source_seq(),
+    );
+    record_case(
+        &mut report,
+        11,
+        "channel_draining_admission",
+        case_channel_draining_admission(),
     );
 
     report
@@ -436,6 +461,189 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
     }
     if channel.sender_wakeups() < base_sender_wakeups.saturating_add(2) {
         return Err("sender wakeup counter did not advance");
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// New cases — causal envelope, graceful closure, EventId encoding
+// ============================================================================
+
+/// Verify that three messages can form a causal chain via `cause` field and
+/// that `EventId` round-trips through the sent message.
+fn case_causal_chain() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x30);
+    let owner = ProcessId::new(31);
+    let mut channel = Channel::new(id, owner);
+    let send_cap = ChannelCapability::new(60, id, ChannelRights::send_only(), owner);
+    let recv_cap = ChannelCapability::new(61, id, ChannelRights::receive_only(), owner);
+
+    // Send root message (no cause)
+    let root = Message::with_data(owner, b"root").map_err(|_| "failed to build root message")?;
+    let root_id = root.id;
+    channel.send(root, &send_cap).map_err(|_| "root send failed")?;
+
+    // Drain root so its EventId is observable
+    let received_root = channel.try_recv(&recv_cap).map_err(|_| "root recv failed")?;
+    if received_root.id.raw() != root_id.raw() {
+        return Err("root EventId not preserved through channel");
+    }
+
+    // Send a child message caused by root
+    let child = Message::with_data_and_cause(owner, b"child", root_id)
+        .map_err(|_| "failed to build child message")?;
+    if child.cause.is_none() {
+        return Err("child cause field is None after construction");
+    }
+    if child.cause.unwrap().raw() != root_id.raw() {
+        return Err("child cause EventId does not match root");
+    }
+    let child_id = child.id;
+    channel.send(child, &send_cap).map_err(|_| "child send failed")?;
+
+    // Send a grandchild caused by child
+    let grandchild = Message::with_data_and_cause(owner, b"grandchild", child_id)
+        .map_err(|_| "failed to build grandchild message")?;
+    if grandchild.cause.unwrap().raw() != child_id.raw() {
+        return Err("grandchild cause does not match child");
+    }
+    channel.send(grandchild, &send_cap).map_err(|_| "grandchild send failed")?;
+
+    // Drain both; verify lineage chain is intact
+    let recv_child = channel.try_recv(&recv_cap).map_err(|_| "child recv failed")?;
+    let recv_gc = channel.try_recv(&recv_cap).map_err(|_| "grandchild recv failed")?;
+    if recv_child.cause.unwrap().raw() != root_id.raw() {
+        return Err("received child cause mismatch");
+    }
+    if recv_gc.cause.unwrap().raw() != child_id.raw() {
+        return Err("received grandchild cause mismatch");
+    }
+
+    Ok(())
+}
+
+/// Verify the `ClosureState` machine: Open → Draining → Sealed transitions
+/// and that `drain()` returns `DrainResult::Complete` after the last message.
+fn case_closure_drain_state_machine() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x31);
+    let owner = ProcessId::new(32);
+    let mut channel = Channel::new(id, owner);
+    let send_cap = ChannelCapability::new(62, id, ChannelRights::send_only(), owner);
+    let recv_cap = ChannelCapability::new(63, id, ChannelRights::receive_only(), owner);
+    let close_cap = ChannelCapability::new(64, id, ChannelRights::full(), owner);
+
+    // Initial state must be Open
+    if !matches!(channel.closure_state(), ClosureState::Open) {
+        return Err("initial state is not Open");
+    }
+
+    // Enqueue one message then initiate close
+    let msg = Message::with_data(owner, b"last").map_err(|_| "build failed")?;
+    channel.send(msg, &send_cap).map_err(|_| "send failed")?;
+    channel.close(&close_cap).map_err(|_| "close failed")?;
+
+    // Must be Draining now
+    if !matches!(channel.closure_state(), ClosureState::Draining { .. }) {
+        return Err("state did not transition to Draining after close()");
+    }
+    if !channel.is_closing() {
+        return Err("is_closing() returned false during Draining");
+    }
+    if channel.is_closed() {
+        return Err("is_closed() returned true during Draining");
+    }
+
+    // drain() with a message in the queue must be Pending
+    match channel.drain(&recv_cap) {
+        Ok(DrainResult::Pending(remaining)) => {
+            if remaining != 1 {
+                return Err("drain Pending count mismatch");
+            }
+        }
+        Ok(DrainResult::Complete) => return Err("drain reported Complete with message in queue"),
+        Ok(DrainResult::AlreadySealed) => return Err("drain reported AlreadySealed while Draining"),
+        Err(_) => return Err("drain returned unexpected error"),
+    }
+
+    // Consume the last message manually — state should flip to Sealed
+    let _ = channel.try_recv(&recv_cap).map_err(|_| "final recv failed")?;
+
+    // Now drain() must return AlreadySealed (or channel.is_closed())
+    if !channel.is_closed() {
+        return Err("channel not Sealed after last message drained");
+    }
+    if !matches!(channel.closure_state(), ClosureState::Sealed) {
+        return Err("closure_state() not Sealed after drain");
+    }
+
+    Ok(())
+}
+
+/// Verify that `EventId::new()` correctly encodes source_pid, channel_seq,
+/// and msg_seq, and that `parts()` round-trips them.
+fn case_event_id_encodes_source_seq() -> Result<(), &'static str> {
+    let pid: u32 = 0x0000_00AB;
+    let chan: u16 = 0x0CDE;
+    let seq: u16 = 0xF012;
+    let eid = EventId::new(pid, chan, seq);
+    let (r_pid, r_chan, r_seq) = eid.parts();
+    if r_pid != pid {
+        return Err("EventId source_pid round-trip failed");
+    }
+    if r_chan != chan {
+        return Err("EventId channel_seq round-trip failed");
+    }
+    if r_seq != seq {
+        return Err("EventId msg_seq round-trip failed");
+    }
+    // raw() must be non-zero for non-zero inputs
+    if eid.raw() == 0 {
+        return Err("EventId raw() is zero for non-zero inputs");
+    }
+    // Two distinct EventIds must not be equal
+    let eid2 = EventId::new(pid, chan, seq.wrapping_add(1));
+    if eid.raw() == eid2.raw() {
+        return Err("distinct EventIds have same raw value");
+    }
+    Ok(())
+}
+
+/// Verify that sending to a Draining channel returns `IpcError::Closed`
+/// (the admission policy must block new sends once draining starts).
+fn case_channel_draining_admission() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x32);
+    let owner = ProcessId::new(33);
+    let mut channel = Channel::new(id, owner);
+    let send_cap = ChannelCapability::new(65, id, ChannelRights::send_only(), owner);
+    let recv_cap = ChannelCapability::new(66, id, ChannelRights::receive_only(), owner);
+    let close_cap = ChannelCapability::new(67, id, ChannelRights::full(), owner);
+
+    // Queue a message, then close
+    let m1 = Message::with_data(owner, b"in-flight").map_err(|_| "build failed")?;
+    channel.send(m1, &send_cap).map_err(|_| "send failed")?;
+    channel.close(&close_cap).map_err(|_| "close failed")?;
+
+    // A new send to a draining channel must be rejected
+    let m2 = Message::with_data(owner, b"rejected").map_err(|_| "build m2 failed")?;
+    match channel.send(m2, &send_cap) {
+        Err(IpcError::Closed) => {}
+        Ok(()) => return Err("send to draining channel unexpectedly succeeded"),
+        Err(e) => {
+            let _ = e;
+            return Err("send to draining channel returned unexpected error");
+        }
+    }
+
+    // The queued message must still be receivable
+    let drained = channel.try_recv(&recv_cap).map_err(|_| "drain recv failed")?;
+    if drained.payload() != b"in-flight" {
+        return Err("in-flight message payload corrupted after draining refusal");
+    }
+
+    // After last message drained, channel must be Sealed
+    if !channel.is_closed() {
+        return Err("channel not sealed after queue drained");
     }
 
     Ok(())

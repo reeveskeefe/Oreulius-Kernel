@@ -6,6 +6,67 @@ use super::{
     CHANNEL_CAPACITY, MAX_MESSAGE_SIZE,
 };
 
+// ============================================================================
+// ClosureState — Def A.31 graceful closure protocol
+// ============================================================================
+
+/// Explicit state machine for channel lifecycle (Def A.31).
+///
+/// ```text
+///  Open ──close()──► Draining ──last_msg_drained──► Sealed
+///                        │
+///               new sends → Err(ChannelDraining)
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClosureState {
+    /// Normal operating state.
+    Open,
+    /// `close()` was called while in-flight messages remain.
+    /// New sends are rejected with `IpcError::ChannelDraining`.
+    /// Receivers may still dequeue pending messages.
+    /// Transitions to `Sealed` when the ring buffer reaches zero.
+    Draining {
+        /// Process that initiated the close.
+        initiator: ProcessId,
+        /// Tick at which `close()` was called.
+        initiated_at: u64,
+    },
+    /// Ring is empty and close is complete.
+    /// All further sends *and* recvs return `IpcError::Closed`.
+    Sealed,
+}
+
+impl ClosureState {
+    /// Returns `true` if no new sends should be accepted.
+    #[inline]
+    pub const fn is_closing(&self) -> bool {
+        matches!(self, ClosureState::Draining { .. })
+    }
+
+    /// Returns `true` if the channel is fully sealed.
+    #[inline]
+    pub const fn is_closed(&self) -> bool {
+        matches!(self, ClosureState::Sealed)
+    }
+
+    /// Returns `true` if the channel is either draining or sealed.
+    #[inline]
+    pub const fn is_shutting_down(&self) -> bool {
+        !matches!(self, ClosureState::Open)
+    }
+}
+
+/// Result of an explicit `drain()` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrainResult {
+    /// All in-flight messages have been consumed; the channel is now `Sealed`.
+    Complete,
+    /// Messages remain; `pending` is how many are still in the ring.
+    Pending(usize),
+    /// Channel was already sealed before `drain()` was called.
+    AlreadySealed,
+}
+
 /// Channel configuration flags (bitfield)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChannelFlags {
@@ -50,8 +111,8 @@ impl ChannelFlags {
 pub struct Channel {
     pub id: ChannelId,
     pub(crate) buffer: RingBuffer,
-    pub(crate) closing: bool,
-    pub(crate) closed: bool,
+    /// Closure protocol state (Def A.31).
+    pub(crate) closure: ClosureState,
     pub(crate) creator: ProcessId,
     pub(crate) flags: ChannelFlags,
     pub(crate) priority: u8,
@@ -69,8 +130,7 @@ impl Channel {
         Channel {
             id,
             buffer: RingBuffer::new(),
-            closing: false,
-            closed: false,
+            closure: ClosureState::Open,
             creator,
             flags: ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::RELIABLE),
             priority: 128,
@@ -93,8 +153,7 @@ impl Channel {
         Channel {
             id,
             buffer: RingBuffer::new(),
-            closing: false,
-            closed: false,
+            closure: ClosureState::Open,
             creator,
             flags,
             priority,
@@ -271,6 +330,10 @@ impl Channel {
                 self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
                 Err(IpcError::Closed)
             }
+            IpcRefusal::ChannelDraining => {
+                self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
+                Err(IpcError::ChannelDraining)
+            }
             IpcRefusal::Backpressure | IpcRefusal::QueueFull | IpcRefusal::QueueEmpty => {
                 self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
                 Err(IpcError::WouldBlock)
@@ -360,6 +423,10 @@ impl Channel {
                 self.record_recv_refusal(capability.owner);
                 Err(IpcError::Closed)
             }
+            IpcRefusal::ChannelDraining => {
+                self.record_recv_refusal(capability.owner);
+                Err(IpcError::ChannelDraining)
+            }
             IpcRefusal::Backpressure | IpcRefusal::QueueFull | IpcRefusal::QueueEmpty => {
                 self.record_recv_refusal(capability.owner);
                 Err(IpcError::WouldBlock)
@@ -421,7 +488,7 @@ impl Channel {
 
         match self.buffer.pop() {
             Some(msg) => {
-                let became_closed = self.closing && self.buffer.len() == 0;
+                let became_sealed = self.closure.is_closing() && self.buffer.len() == 0;
                 let sec = crate::security::security();
                 let _ = crate::temporal::record_ipc_channel_event(
                     self.id.0,
@@ -432,12 +499,20 @@ impl Channel {
                     self.buffer.len(),
                 );
                 sec.intent_ipc_recv(capability.owner, self.id.0 as u64);
-                if became_closed {
-                    self.closing = false;
-                    self.closed = true;
+                if became_sealed {
+                    self.closure = ClosureState::Sealed;
+                    // Emit audit event: drain complete → sealed.
+                    sec.log_event(
+                        crate::security::AuditEntry::new(
+                            crate::security::SecurityEvent::ClosureSealed,
+                            capability.owner,
+                            0,
+                        )
+                        .with_context(self.id.0 as u64),
+                    );
                 }
                 self.wake_one_sender();
-                if became_closed {
+                if became_sealed {
                     self.wake_all_receivers();
                     self.wake_all_senders();
                 }
@@ -476,14 +551,34 @@ impl Channel {
             return Err(IpcError::InvalidCap);
         }
 
-        if self.closed || self.closing {
+        if self.closure.is_shutting_down() {
             return Ok(());
         }
 
+        let now_ticks = crate::pit::get_ticks() as u64;
         if self.buffer.is_empty() {
-            self.closed = true;
+            self.closure = ClosureState::Sealed;
+            sec.log_event(
+                crate::security::AuditEntry::new(
+                    crate::security::SecurityEvent::ClosureSealed,
+                    capability.owner,
+                    0,
+                )
+                .with_context(self.id.0 as u64),
+            );
         } else {
-            self.closing = true;
+            self.closure = ClosureState::Draining {
+                initiator: capability.owner,
+                initiated_at: now_ticks,
+            };
+            sec.log_event(
+                crate::security::AuditEntry::new(
+                    crate::security::SecurityEvent::ClosureDraining,
+                    capability.owner,
+                    0,
+                )
+                .with_context(self.id.0 as u64),
+            );
         }
         let _ = crate::temporal::record_ipc_channel_event(
             self.id.0,
@@ -493,7 +588,7 @@ impl Channel {
             0,
             self.buffer.len(),
         );
-        if self.closed {
+        if self.closure.is_closed() {
             self.wake_all_receivers();
         } else {
             self.wake_one_receiver();
@@ -502,12 +597,49 @@ impl Channel {
         Ok(())
     }
 
+    /// Explicit drain API (Def A.31).
+    ///
+    /// Attempt to consume the next in-flight message from a `Draining` channel
+    /// using the supplied receiver capability.  Returns:
+    ///
+    /// - `Ok(DrainResult::Pending(n))` — one message was consumed, `n` remain.
+    /// - `Ok(DrainResult::Complete)` — last message consumed, channel is now `Sealed`.
+    /// - `Ok(DrainResult::AlreadySealed)` — nothing to drain.
+    /// - `Err(_)` — permission error or invalid capability.
+    pub fn drain(
+        &mut self,
+        capability: &ChannelCapability,
+    ) -> Result<DrainResult, IpcError> {
+        if self.closure.is_closed() {
+            return Ok(DrainResult::AlreadySealed);
+        }
+        if !self.closure.is_closing() {
+            // Open channel — nothing to drain.
+            return Ok(DrainResult::AlreadySealed);
+        }
+        match self.try_recv(capability) {
+            Ok(_) => {
+                if self.closure.is_closed() {
+                    Ok(DrainResult::Complete)
+                } else {
+                    Ok(DrainResult::Pending(self.buffer.len()))
+                }
+            }
+            Err(IpcError::WouldBlock) => Ok(DrainResult::AlreadySealed),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn is_closed(&self) -> bool {
-        self.closed || self.closing
+        self.closure.is_closed() || self.closure.is_closing()
     }
 
     pub fn is_closing(&self) -> bool {
-        self.closing
+        self.closure.is_closing()
+    }
+
+    pub fn closure_state(&self) -> ClosureState {
+        self.closure
     }
 
     pub fn pending(&self) -> usize {
@@ -573,8 +705,13 @@ impl Channel {
         payload_len_hint: usize,
         closed: bool,
     ) {
-        self.closed = closed && queue_depth == 0;
-        self.closing = closed && queue_depth > 0;
+        self.closure = if closed && queue_depth == 0 {
+            ClosureState::Sealed
+        } else if closed && queue_depth > 0 {
+            ClosureState::Draining { initiator: owner, initiated_at: 0 }
+        } else {
+            ClosureState::Open
+        };
         self.buffer.clear();
         self.send_refusals = 0;
         self.recv_refusals = 0;

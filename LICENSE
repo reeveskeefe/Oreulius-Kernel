@@ -1,133 +1,250 @@
-Oreulia Community License v1.0
+Oreulia Community License v1.1
+
 Effective Date: 2026-03-14
 
 Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
 All rights reserved except as expressly granted in this License.
 
-This is a source-available community license. It is not an OSI-approved
-open-source license.
+This is a source-available community license.
+It is not an OSI-approved open-source license.
+
+⸻
 
 1. Purpose
 
 The Oreulia Community License is intended to support:
+	•	research
+	•	education
+	•	evaluation
+	•	benchmarking
+	•	security review
+	•	non-commercial experimentation
+	•	public technical discussion
+	•	community contributions
 
-- research
-- education
-- evaluation
-- benchmarking
-- security review
-- non-commercial experimentation
-- public technical discussion
-- community contributions
+while reserving commercial deployment, commercial hosting, and product
+integration rights for separate written agreements with the Licensor.
 
-while reserving commercial deployment and commercialization for separate
-written agreements.
+The goal of this license is to allow the system to be studied, evaluated,
+tested, and improved by the community while preserving the ability to
+commercialize the software responsibly.
 
-2. Granted Rights
+⸻
 
-Subject to this License, You may:
+2. Definitions
 
-- use, reproduce, and run the Software
-- study and modify the Software
-- create derivative works
-- publish benchmarks, evaluations, and comparisons
-- fork the repository publicly
-- distribute source and binary versions for permitted non-commercial uses
-- submit contributions to the project
+“Software”
+The Oreulia kernel, source code, documentation, build artifacts, and any
+associated materials distributed under this License.
 
-3. Evaluation and Internal Review
+“Licensor”
+Keefe Reeves and any project maintainers authorized to manage licensing of
+Oreulia.
 
-Commercial entities may use the Software internally for evaluation, testing,
-benchmarking, interoperability work, security review, and prototype
-development, provided that the Software is not:
+“You”
+Any individual or legal entity exercising rights under this License.
 
-- used in production
-- offered as part of a paid or revenue-generating product or service
-- deployed for commercial operations beyond internal evaluation
+“Contributor”
+Any person or entity that submits code, documentation, or other modifications
+to the Software.
 
-4. Non-Commercial Use
+“Commercial Use”
+Any use of the Software that directly or indirectly generates revenue,
+supports a commercial offering, or is deployed as part of a commercial
+product, service, or operational environment.
+
+⸻
+
+3. Granted Rights
+
+Subject to the terms of this License, You are granted the right to:
+	•	use and run the Software
+	•	study and analyze the Software
+	•	modify the Software
+	•	create derivative works
+	•	fork the repository publicly
+	•	publish benchmarks, research results, and comparisons
+	•	distribute source or binary versions for permitted non-commercial uses
+	•	submit contributions to the project
+
+These rights are granted solely for non-commercial purposes unless a
+separate commercial agreement is obtained.
+
+⸻
+
+4. Evaluation and Internal Review by Commercial Entities
+
+Commercial organizations may use the Software internally for:
+	•	evaluation
+	•	benchmarking
+	•	interoperability testing
+	•	security review
+	•	academic or technical research
+	•	internal prototype development
+
+provided that the Software is not used in production and is not offered
+as part of any commercial product or service.
+
+Internal evaluation must not involve:
+	•	revenue-generating deployment
+	•	customer-facing services
+	•	hosted offerings
+	•	operational infrastructure
+
+⸻
+
+5. Non-Commercial Use
 
 You may use and distribute the Software without additional permission for:
+	•	personal projects
+	•	hobby or experimental systems work
+	•	academic research
+	•	educational use
+	•	open research collaborations
+	•	conference demonstrations
+	•	public technical exploration
+	•	non-commercial prototypes
 
-- personal projects
-- hobby and experimental systems work
-- academic or educational use
-- open research collaborations
-- public demonstrations
-- non-commercial prototypes
+Non-commercial use does not include:
+	•	production use by a commercial entity
+	•	paid hosted services
+	•	commercial SaaS platforms
+	•	revenue-generating deployments
+	•	consulting offerings where the Software is a material component
+	•	embedding the Software into commercial products or services
 
-Non-commercial use does not include production use by or for a commercial
-entity, paid services, revenue-generating deployments, or operation of the
-Software as part of a commercial offering.
+⸻
 
-5. Commercial Use
+6. Commercial Use
 
 Commercial use requires a separate written agreement with the Licensor.
 
-Commercial use includes, without limitation:
-
-- incorporating the Software into a product or service offered for sale
-- operating the Software in production for a commercial entity
-- offering paid hosted, managed, or cloud services built on the Software
-- embedding the Software into proprietary or customer-facing systems
-- providing paid support, integration, or consulting where the Software is a
-  material part of the offering
+Commercial use includes, but is not limited to:
+	•	incorporating the Software into a commercial product
+	•	running the Software in production for a commercial entity
+	•	offering hosted or managed services based on the Software
+	•	embedding the Software into proprietary systems
+	•	distributing the Software as part of a paid platform
+	•	providing paid support or consulting where the Software is central to the offering
 
 Commercial licensing inquiries:
+
 reeveskeefe@gmail.com
 
-6. Redistribution
+⸻
+
+7. Redistribution
 
 You may redistribute the Software in source or binary form for permitted
-non-commercial uses if You:
+non-commercial purposes provided that You:
+	•	include a copy of this License
+	•	preserve copyright notices
+	•	preserve attribution to the Oreulia project
+	•	clearly mark any modifications
+	•	do not misrepresent modified versions as the official project
 
-- keep this License with the redistributed Software
-- preserve copyright and attribution notices
-- clearly document material modifications
-- do not misrepresent modified versions as the original project
+If You distribute modified versions, You must clearly indicate that the
+Software has been modified and must not imply endorsement by the Oreulia
+project or its maintainers.
 
-7. Contributions
+⸻
 
-By submitting a contribution to Oreulia, You represent that You have the right
-to submit it. You retain copyright in Your contribution.
+8. Contributions
 
-You also grant the Licensor and project maintainers a perpetual, irrevocable,
-worldwide, non-exclusive, sublicensable, transferable, royalty-free license
-to use, reproduce, modify, publish, distribute, publicly perform, publicly
-display, and relicense Your contribution as part of Oreulia and derivative or
-combined works.
+By submitting a contribution to the Oreulia project, You represent that:
+	•	You have the legal right to submit the contribution
+	•	the contribution does not knowingly violate third-party rights
 
-8. Patent Grant
+You retain copyright to Your contribution.
+
+However, by submitting the contribution You grant the Licensor and project
+maintainers a perpetual, irrevocable, worldwide, non-exclusive,
+sublicensable, transferable, royalty-free license to:
+	•	use
+	•	reproduce
+	•	modify
+	•	publish
+	•	distribute
+	•	publicly perform
+	•	publicly display
+	•	sublicense
+	•	relicense
+
+Your contribution as part of the Oreulia project or derivative works.
+
+This provision ensures the project can be distributed under both community
+and commercial licensing models.
+
+⸻
+
+9. Patent Grant
 
 Each Contributor grants You a non-exclusive, worldwide, royalty-free patent
-license under patent claims necessarily infringed by that Contributor's
-contribution, alone or in combination with the Software, to use, reproduce,
-modify, distribute, and otherwise exercise the rights granted by this License.
+license under any patent claims necessarily infringed by that Contributor’s
+contribution, alone or in combination with the Software.
 
-If You institute patent litigation alleging that the Software or a
-contribution infringes a patent, any patent licenses granted to You under this
-License terminate as of the filing date of that litigation.
+This license allows You to use, reproduce, modify, and distribute the
+contribution as permitted under this License.
 
-9. No Trademark Grant
+If You initiate patent litigation alleging that the Software or a
+contribution infringes a patent, all patent licenses granted to You under
+this License terminate immediately.
 
-This License does not grant permission to use the Licensor's or project's
-trademarks, logos, or brand identifiers except for truthful attribution.
+⸻
 
-10. No Warranty
+10. No Trademark License
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+This License does not grant any rights to use the Oreulia name, logos,
+or branding except for truthful attribution when redistributing the Software.
 
-11. Limitation of Liability
+You may not imply endorsement or affiliation with the Oreulia project
+without explicit permission.
 
-TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR AND
-CONTRIBUTORS ARE NOT LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY,
-WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+⸻
 
-12. License Versions
+11. Termination
 
-Future versions of Oreulia may be released under updated license terms.
-Existing copies remain governed by the license under which they were received,
-unless You agree to different terms.
+If You violate any terms of this License, the rights granted to You under this
+License terminate automatically.
+
+If the violation is corrected within a reasonable time after written notice,
+the Licensor may choose to reinstate the License.
+
+⸻
+
+12. No Warranty
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF:
+	•	MERCHANTABILITY
+	•	FITNESS FOR A PARTICULAR PURPOSE
+	•	NON-INFRINGEMENT
+
+⸻
+
+13. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR AND CONTRIBUTORS SHALL
+NOT BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM OR
+RELATED TO THE SOFTWARE OR ITS USE.
+
+⸻
+
+14. License Versions
+
+The Licensor may publish updated versions of this License.
+
+Software distributed under a particular version of the License remains
+governed by that version unless You agree to different terms.
+
+⸻
+
+15. Clarification of License Status
+
+The Oreulia Community License is a source-available license designed to
+encourage research collaboration while protecting the project’s commercial
+development path.
+
+It is not an open-source license as defined by the Open Source Initiative
+(OSI).
+

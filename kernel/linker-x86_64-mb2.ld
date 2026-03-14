@@ -61,7 +61,7 @@ SECTIONS {
     . = ALIGN(4096);
     _heap_start = .;
     .heap (NOLOAD) : {
-        . += 0x1000000; /* 16 MB heap */
+        . += 0x8000000; /* 128 MB heap for x86_64 JIT/regression workloads */
     } :NONE
     _heap_end = .;
 }

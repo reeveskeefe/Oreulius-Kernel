@@ -16558,7 +16558,10 @@ pub fn jit_global_module_self_test() -> Result<(), &'static str> {
             23,
         ),
     ];
-    let mut compiler = crate::wasm_jit::FuzzCompiler::new(64, 64)
+    let mut compiler = crate::wasm_jit::FuzzCompiler::new(
+        MAX_FUZZ_JIT_CODE_SIZE,
+        MAX_FUZZ_CODE_SIZE,
+    )
         .map_err(|_| "jit globals self-test: compiler init failed")?;
 
     let mut idx = 0usize;

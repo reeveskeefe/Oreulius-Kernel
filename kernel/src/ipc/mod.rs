@@ -52,7 +52,7 @@ use ring::RingBuffer;
 
 pub use admission::{IpcDefer, IpcRefusal, RecvDecision, SendDecision};
 pub use backpressure::{BackpressureAction, BackpressureLevel, BackpressureSnapshot};
-pub use channel::{Channel, ChannelFlags};
+pub use channel::{Channel, ChannelFlags, ClosureState, DrainResult};
 pub use diagnostics::{ChannelDiagnostics, IpcDiagnostics};
 pub use errors::IpcError;
 pub use message::Message;
@@ -67,7 +67,7 @@ pub use service::{
 pub use selftest::{run_selftest, IpcSelftestCase, IpcSelftestReport, IPC_SELFTEST_CASES};
 pub use table::ChannelTable;
 pub use types::{
-    Capability, CapabilityType, ChannelId, ProcessId, TypedServiceArg, CHANNEL_CAPACITY,
+    Capability, CapabilityType, ChannelId, EventId, ProcessId, TypedServiceArg, CHANNEL_CAPACITY,
     MAX_CAPS_PER_MESSAGE, MAX_CHANNELS, MAX_MESSAGE_SIZE,
 };
 

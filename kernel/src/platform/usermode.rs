@@ -263,10 +263,18 @@ fn allocate_user_test_pid() -> Result<crate::process::Pid, &'static str> {
 }
 
 #[cfg(target_arch = "x86_64")]
+fn cleanup_user_test_process(pid: crate::process::Pid) {
+    let _ = crate::process::process_manager().terminate(pid);
+    let _ = crate::quantum_scheduler::scheduler().lock().remove_process(pid);
+    crate::process::process_manager().reap();
+}
+
+#[cfg(target_arch = "x86_64")]
 pub fn enter_user_mode_test() -> Result<(), &'static str> {
     let pid = allocate_user_test_pid()?;
     let mut space = crate::arch::mmu::AddressSpace::new()?;
     let user_stack = prepare_user_test_space(&mut space)?;
+    let bp_before = crate::arch::x86_64_runtime::exception_count(3);
 
     crate::process::process_manager()
         .temporal_spawn_with_pid(pid, "user-test", None)
@@ -275,12 +283,29 @@ pub fn enter_user_mode_test() -> Result<(), &'static str> {
     let mut process = crate::process::Process::new(pid, "user-test", None);
     process.priority = crate::process::ProcessPriority::Normal;
 
-    crate::quantum_scheduler::scheduler()
-        .lock()
-        .add_user_process(process, Box::new(space), USER_CODE_ADDR as u32, user_stack)?;
+    if let Err(err) = crate::quantum_scheduler::scheduler().lock().add_user_process(
+        process,
+        Box::new(space),
+        USER_CODE_ADDR as u32,
+        user_stack,
+    ) {
+        let _ = crate::process::process_manager().terminate(pid);
+        crate::process::process_manager().reap();
+        return Err(err);
+    }
 
-    crate::quantum_scheduler::yield_now();
-    Ok(())
+    let deadline = crate::pit::get_ticks().saturating_add(300);
+    while crate::pit::get_ticks() < deadline {
+        crate::quantum_scheduler::yield_now();
+        if crate::arch::x86_64_runtime::exception_count(3) == bp_before {
+            continue;
+        }
+        cleanup_user_test_process(pid);
+        return Ok(());
+    }
+
+    cleanup_user_test_process(pid);
+    Err("user-test timed out")
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -306,6 +331,7 @@ fn prepare_user_test_space(
 fn cleanup_user_test_process(pid: crate::process::Pid) {
     let _ = crate::process::process_manager().terminate(pid);
     let _ = crate::quantum_scheduler::scheduler().lock().remove_process(pid);
+    crate::process::process_manager().reap();
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -407,6 +433,7 @@ fn find_child_fork_pid(parent_pid: crate::process::Pid) -> Option<crate::process
 fn cleanup_fork_test_process(pid: crate::process::Pid) {
     let _ = crate::process::process_manager().terminate(pid);
     let _ = crate::quantum_scheduler::scheduler().lock().remove_process(pid);
+    crate::process::process_manager().reap();
 }
 
 #[cfg(target_arch = "x86_64")]

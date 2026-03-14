@@ -501,6 +501,146 @@ pub struct IntentProcessSnapshot {
     pub restricted_rights: u32,
 }
 
+// ============================================================================
+// AdaptiveRestriction — Def A.31 named restriction entity
+// ============================================================================
+
+/// Maximum number of capability IDs that can be quarantined in one
+/// `AdaptiveRestriction`.  Mirrors the inline quarantine array capacity in
+/// `capability::CapabilityManager::predictive_revoke_capabilities`.
+pub const ADAPTIVE_RESTRICTION_MAX_QUARANTINE: usize = 32;
+
+/// A first-class, auditable description of an active predictive restriction on
+/// a process (implements the concept named `AdaptiveRestriction` in the
+/// capability theory documents).
+///
+/// Previously this state was spread across several fields of
+/// `IntentProcessState` with no single named type.  Bundling it here makes
+/// restrictions serialisable, comparable, and easy to log as a single audit
+/// event.
+#[derive(Clone, Copy, Debug)]
+pub struct AdaptiveRestriction {
+    /// The restricted process.
+    pub process: ProcessId,
+    /// Behavioural score that triggered this restriction.
+    pub score_at_trigger: u32,
+    /// Tick at which the restriction was applied.
+    pub began_at_tick: u64,
+    /// Tick at which the restriction expires (0 = already expired).
+    pub expires_at_tick: u64,
+    /// Capability-type bitmask of restricted types.
+    pub restricted_cap_types: u16,
+    /// Rights bitmask that is restricted.
+    pub restricted_rights: u32,
+    /// IDs of capabilities quarantined when the restriction was applied.
+    pub quarantined_caps: [u32; ADAPTIVE_RESTRICTION_MAX_QUARANTINE],
+    /// Number of valid entries in `quarantined_caps`.
+    pub qcount: usize,
+}
+
+impl AdaptiveRestriction {
+    /// Construct from the fields extracted from `IntentProcessState`.
+    pub fn from_process_state(
+        pid: ProcessId,
+        score: u32,
+        began_at: u64,
+        expires_at: u64,
+        cap_types: u16,
+        rights: u32,
+    ) -> Self {
+        AdaptiveRestriction {
+            process: pid,
+            score_at_trigger: score,
+            began_at_tick: began_at,
+            expires_at_tick: expires_at,
+            restricted_cap_types: cap_types,
+            restricted_rights: rights,
+            quarantined_caps: [0u32; ADAPTIVE_RESTRICTION_MAX_QUARANTINE],
+            qcount: 0,
+        }
+    }
+
+    /// Returns `true` if the restriction is still active at `now_ticks`.
+    #[inline]
+    pub fn is_active(&self, now_ticks: u64) -> bool {
+        self.expires_at_tick != 0 && now_ticks < self.expires_at_tick
+    }
+
+    /// Serialize to a fixed-size byte array for inclusion in audit log or
+    /// temporal persistence store.
+    ///
+    /// Layout (little-endian):
+    /// ```text
+    /// [0..4]   process.0 (u32)
+    /// [4..8]   score_at_trigger (u32)
+    /// [8..16]  began_at_tick (u64)
+    /// [16..24] expires_at_tick (u64)
+    /// [24..26] restricted_cap_types (u16)
+    /// [26..30] restricted_rights (u32)
+    /// [30]     qcount as u8
+    /// [31..]   quarantined cap IDs (qcount × 4 bytes)
+    /// ```
+    /// Returns bytes written.
+    pub fn serialize(&self, out: &mut [u8]) -> usize {
+        const HEADER: usize = 31;
+        if out.len() < HEADER {
+            return 0;
+        }
+        out[0..4].copy_from_slice(&self.process.0.to_le_bytes());
+        out[4..8].copy_from_slice(&self.score_at_trigger.to_le_bytes());
+        out[8..16].copy_from_slice(&self.began_at_tick.to_le_bytes());
+        out[16..24].copy_from_slice(&self.expires_at_tick.to_le_bytes());
+        out[24..26].copy_from_slice(&self.restricted_cap_types.to_le_bytes());
+        out[26..30].copy_from_slice(&self.restricted_rights.to_le_bytes());
+        out[30] = self.qcount.min(ADAPTIVE_RESTRICTION_MAX_QUARANTINE) as u8;
+        let mut pos = HEADER;
+        let mut i = 0usize;
+        while i < self.qcount && i < ADAPTIVE_RESTRICTION_MAX_QUARANTINE {
+            if pos + 4 > out.len() {
+                break;
+            }
+            out[pos..pos + 4].copy_from_slice(&self.quarantined_caps[i].to_le_bytes());
+            pos += 4;
+            i += 1;
+        }
+        pos
+    }
+
+    /// Deserialize from a byte slice previously produced by [`serialize`].
+    /// Returns `None` if the slice is too short.
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        const HEADER: usize = 31;
+        if data.len() < HEADER {
+            return None;
+        }
+        let pid = u32::from_le_bytes(data[0..4].try_into().ok()?);
+        let score = u32::from_le_bytes(data[4..8].try_into().ok()?);
+        let began = u64::from_le_bytes(data[8..16].try_into().ok()?);
+        let expires = u64::from_le_bytes(data[16..24].try_into().ok()?);
+        let cap_types = u16::from_le_bytes(data[24..26].try_into().ok()?);
+        let rights = u32::from_le_bytes(data[26..30].try_into().ok()?);
+        let qcount = data[30] as usize;
+        let mut quarantined_caps = [0u32; ADAPTIVE_RESTRICTION_MAX_QUARANTINE];
+        let mut pos = HEADER;
+        let mut i = 0usize;
+        while i < qcount && i < ADAPTIVE_RESTRICTION_MAX_QUARANTINE && pos + 4 <= data.len() {
+            quarantined_caps[i] = u32::from_le_bytes(data[pos..pos + 4].try_into().ok()?);
+            pos += 4;
+            i += 1;
+        }
+        Some(AdaptiveRestriction {
+            process: ProcessId(pid),
+            score_at_trigger: score,
+            began_at_tick: began,
+            expires_at_tick: expires,
+            restricted_cap_types: cap_types,
+            restricted_rights: rights,
+            quarantined_caps,
+            qcount: i,
+        })
+    }
+}
+
 pub struct IntentGraph {
     processes: [IntentProcessState; MAX_INTENT_PROCESSES],
     policy: IntentPolicy,
@@ -1072,6 +1212,43 @@ impl IntentGraph {
         state.window_restrictions = 0;
         state.terminate_recommended = false;
         true
+    }
+
+    // -------------------------------------------------------------------------
+    // AdaptiveRestriction accessors (Def §1.3)
+    // -------------------------------------------------------------------------
+
+    /// Return an [`AdaptiveRestriction`] snapshot for `pid` if a restriction is
+    /// currently active at `now_ticks`, or `None` otherwise.
+    ///
+    /// Internally this calls `clear_restriction_if_expired` so that callers
+    /// always receive a live view — an expired restriction returns `None`.
+    pub fn active_restriction(
+        &mut self,
+        pid: ProcessId,
+        now_ticks: u64,
+    ) -> Option<AdaptiveRestriction> {
+        let state = self.process_mut(pid, false)?;
+        state.clear_restriction_if_expired(now_ticks);
+        if state.restriction_until_tick == 0 {
+            return None;
+        }
+        Some(AdaptiveRestriction::from_process_state(
+            pid,
+            state.last_score,
+            state.last_restrict_tick,
+            state.restriction_until_tick,
+            state.restricted_cap_types,
+            state.restricted_rights,
+        ))
+    }
+
+    /// Return `true` if `pid` has an active `AdaptiveRestriction` at `now_ticks`.
+    ///
+    /// This is a cheap read-path shortcut; for the full restriction record use
+    /// [`active_restriction`].
+    pub fn has_active_restriction(&mut self, pid: ProcessId, now_ticks: u64) -> bool {
+        self.active_restriction(pid, now_ticks).is_some()
     }
 }
 
