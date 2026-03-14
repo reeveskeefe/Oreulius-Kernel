@@ -1,8 +1,33 @@
 {
-  "commit_sha": "TODO",
-  "generated_at": "TODO",
-  "theorems": [],
-  "assumptions_version": "TODO",
-  "ci_runs": [],
-  "runtime_evidence": []
+  "commit_sha": "a2acf53",
+  "generated_at": "2026-03-14T00:00:00Z",
+  "assumptions_version": "v1.0",
+  "theorems": [
+    { "id": "THM-CAP-001",  "status": "InProgress", "artifact": "verification/theories/ipc_flow.v",           "invariant": "INV-CAP-001"  },
+    { "id": "THM-MEM-001",  "status": "InProgress", "artifact": "verification/theories/temporal_logic.v",     "invariant": "INV-MEM-001"  },
+    { "id": "THM-WX-001",   "status": "InProgress", "artifact": "verification/theories/temporal_logic.v",     "invariant": "INV-WX-001"   },
+    { "id": "THM-CFI-001",  "status": "InProgress", "artifact": "verification/theories/temporal_logic.v",     "invariant": "INV-CFI-001"  },
+    { "id": "THM-TMP-001",  "status": "InProgress", "artifact": "verification/theories/temporal_logic.v",     "invariant": "INV-TMP-001"  },
+    { "id": "THM-PER-001",  "status": "InProgress", "artifact": "verification/theories/temporal_logic.v",     "invariant": "INV-PER-001"  },
+    { "id": "THM-NET-001",  "status": "InProgress", "artifact": "verification/theories/ipc_flow.v",           "invariant": "INV-NET-001"  },
+    { "id": "THM-PRIV-001", "status": "InProgress", "artifact": "verification/theories/ipc_flow.v",           "invariant": "INV-PRIV-001" }
+  ],
+  "ci_runs": [
+    {
+      "job": "proof-check / coq-proofs",
+      "result": "pass",
+      "commit": "a2acf53",
+      "artifacts": [
+        "verification/theories/temporal_logic.vo",
+        "verification/theories/temporal_logic.vos",
+        "verification/theories/temporal_logic.vok"
+      ]
+    }
+  ],
+  "runtime_evidence": [
+    { "id": "formal-verify",               "status": "pass", "commit": "a2acf53" },
+    { "id": "temporal-hardening-selftest", "status": "pass", "commit": "a2acf53" },
+    { "id": "capnet-fuzz-corpus",          "status": "pass", "commit": "a2acf53" },
+    { "id": "wasm-jit-fuzz-corpus",        "status": "pass", "commit": "a2acf53" }
+  ]
 }

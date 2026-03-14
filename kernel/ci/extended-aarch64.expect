@@ -40,21 +40,21 @@ expect {
 expect_a64_prompt
 
 run_a64_cmd "commands-help" {\[A64-CMD\] (shared )?commands:} "commands-help"
-run_a64_cmd "uartirq fix" {\[A64\] uartirq fix: .*} "uartirq fix"
-run_a64_cmd "uartirq" {\[A64\] uartirq strict=.*} "uartirq"
-run_a64_cmd "sched" {\[A64\] sched-backend ticks=.*} "sched"
+run_a64_cmd "uartirq fix" {\[A64\] uartirq fix: [^\r\n]*} "uartirq fix"
+run_a64_cmd "uartirq" {\[A64\] uartirq strict=[^\r\n]*} "uartirq"
+run_a64_cmd "sched" {\[A64\] sched-backend ticks=[^\r\n]*} "sched"
 if {[info exists env(A64_INCLUDE_VMTEST)] && $env(A64_INCLUDE_VMTEST) == "1"} {
     run_a64_cmd "vmtest" {\[A64\] vmtest ok} "vmtest"
 }
-run_a64_cmd "virtio" {\[A64\] virtio-active slot=.*} "virtio"
-run_a64_cmd "blk-info" {\[A64-CMD\] blk present=1 .*} "blk-info"
+run_a64_cmd "virtio" {\[A64\] virtio-active slot=[^\r\n]*} "virtio"
+run_a64_cmd "blk-info" {\[A64-CMD\] blk present=1 [^\r\n]*} "blk-info"
 if {[info exists env(A64_INCLUDE_BLK_PARTITIONS)] && $env(A64_INCLUDE_BLK_PARTITIONS) == "1"} {
     after 50
     puts "RUN: blk-partitions"
     send -s -- "blk-partitions\r"
     expect {
         -re {\[A64-CMD\] blk-partitions\r?\n} {}
-        -re {\[A64-CMD\] blk-partitions failed: .*} {}
+        -re {\[A64-CMD\] blk-partitions failed: [^\r\n]*} {}
         timeout { puts "timeout waiting for aarch64 blk-partitions"; exit 1 }
     }
     expect_a64_prompt
@@ -64,29 +64,29 @@ after 50
 puts "RUN: brk"
 send -s -- "brk\r"
 expect {
-    -re {\[A64-EXC\] slot=.*BRK64.*} {}
+    -re {\[A64-EXC\] slot=[^\r\n]*BRK64[^\r\n]*} {}
     timeout { puts "timeout waiting for aarch64 brk trap"; exit 1 }
 }
 expect_a64_prompt
 
-run_a64_cmd "traps" {\[A64\] trap-counts sync=.*} "traps"
+run_a64_cmd "traps" {\[A64\] trap-counts sync=[^\r\n]*} "traps"
 
 if {[info exists env(A64_INCLUDE_STRICT_UART_IRQ)] && $env(A64_INCLUDE_STRICT_UART_IRQ) == "1"} {
     run_a64_cmd "strict-uart-irq on" {\[A64\] strict-uart-irq=on} "strict-uart-irq on"
-    run_a64_cmd "sched" {\[A64\] sched-backend ticks=.*} "sched under strict UART IRQ"
+    run_a64_cmd "sched" {\[A64\] sched-backend ticks=[^\r\n]*} "sched under strict UART IRQ"
     run_a64_cmd "strict-uart-irq off" {\[A64\] strict-uart-irq=off} "strict-uart-irq off"
 }
 
 run_a64_cmd "vfs-mkdir /mntext" {\[A64-CMD\] vfs-mkdir ok /mntext} "vfs-mkdir /mntext"
 run_a64_cmd "vfs-mount-virtio /mntext" {\[A64-CMD\] vfs-mount-virtio ok /mntext} "vfs-mount-virtio"
-run_a64_cmd "vfs-ls /mntext" {\[A64-CMD\] vfs-ls /mntext .*raw.*} "vfs-ls /mntext"
+run_a64_cmd "vfs-ls /mntext" {\[A64-CMD\] vfs-ls /mntext [^\r\n]*raw[^\r\n]*} "vfs-ls /mntext"
 
 for {set i 0} {$i < $loops} {incr i} {
-    run_a64_cmd "blk-rwtest" {\[A64\] blk-rwtest ok lba=.*} "blk-rwtest loop"
-    run_a64_cmd "vfs-blk-read raw 0 1" {\[A64\] blk-read lba=.*} "vfs-blk-read loop"
-    run_a64_cmd "ticks" {\[A64\] ticks=.*} "ticks loop"
+    run_a64_cmd "blk-rwtest" {\[A64\] blk-rwtest ok lba=[^\r\n]*} "blk-rwtest loop"
+    run_a64_cmd "vfs-blk-read raw 0 1" {\[A64\] blk-read lba=[^\r\n]*} "vfs-blk-read loop"
+    run_a64_cmd "ticks" {\[A64\] ticks=[^\r\n]*} "ticks loop"
     if {[expr {$i % 2}] == 0} {
-        run_a64_cmd "virtio" {\[A64\] virtio-active slot=.*} "virtio loop"
+        run_a64_cmd "virtio" {\[A64\] virtio-active slot=[^\r\n]*} "virtio loop"
     }
 }
 

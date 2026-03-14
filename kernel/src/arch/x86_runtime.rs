@@ -19,6 +19,126 @@ static mut SHELL_HISTORY: [[u8; 256]; 16] = [[0; 256]; 16];
 static mut SHELL_HISTORY_LENS: [usize; 16] = [0; 16];
 static mut SHELL_HISTORY_COUNT: usize = 0;
 
+// ---------------------------------------------------------------------------
+// Job control — minimal POSIX-style ^Z / jobs / fg support.
+//
+// The shell has at most JOB_TABLE_MAX concurrent suspended jobs. Each entry
+// records the PID and the command string that was running when ^Z was pressed.
+// `fg` resumes the most-recently suspended job by moving it back to Ready in
+// the scheduler. When no user process is running the foreground slot is None.
+// ---------------------------------------------------------------------------
+const JOB_TABLE_MAX: usize = 8;
+
+#[derive(Copy, Clone)]
+struct Job {
+    pid: crate::process::Pid,
+    cmd: [u8; 64],
+    cmd_len: usize,
+}
+
+static mut JOB_TABLE: [Option<Job>; JOB_TABLE_MAX] = [None; JOB_TABLE_MAX];
+static mut JOB_TABLE_LEN: usize = 0;
+/// PID of the process currently running in the foreground (None = shell owns tty).
+static mut FOREGROUND_PID: Option<crate::process::Pid> = None;
+
+/// Add a stopped job to the job table. Returns the 1-based job number.
+unsafe fn job_add(pid: crate::process::Pid, cmd: &[u8]) -> usize {
+    let slot = if JOB_TABLE_LEN < JOB_TABLE_MAX {
+        let s = JOB_TABLE_LEN;
+        JOB_TABLE_LEN += 1;
+        s
+    } else {
+        // Reclaim first empty slot (oldest job).
+        JOB_TABLE.iter().position(|j| j.is_none()).unwrap_or(0)
+    };
+    let mut entry = Job { pid, cmd: [0u8; 64], cmd_len: 0 };
+    let copy_len = cmd.len().min(63);
+    entry.cmd[..copy_len].copy_from_slice(&cmd[..copy_len]);
+    entry.cmd_len = copy_len;
+    JOB_TABLE[slot] = Some(entry);
+    slot + 1 // 1-based job number
+}
+
+/// Remove a job from the table by PID.
+unsafe fn job_remove(pid: crate::process::Pid) {
+    for slot in JOB_TABLE.iter_mut() {
+        if let Some(j) = slot {
+            if j.pid == pid {
+                *slot = None;
+                return;
+            }
+        }
+    }
+}
+
+/// Print the current job table to the terminal.
+pub fn print_jobs() {
+    let mut any = false;
+    unsafe {
+        for (i, slot) in JOB_TABLE.iter().enumerate() {
+            if let Some(j) = slot {
+                any = true;
+                crate::terminal::write_str("[");
+                // Print job number
+                let n = i + 1;
+                let d = (b'0' + n as u8) as char;
+                crate::terminal::write_char(d);
+                crate::terminal::write_str("] Stopped  ");
+                let cmd = core::str::from_utf8(&j.cmd[..j.cmd_len]).unwrap_or("?");
+                crate::terminal::write_str(cmd);
+                crate::terminal::write_char('\n');
+            }
+        }
+    }
+    if !any {
+        crate::terminal::write_str("No jobs\n");
+    }
+}
+
+/// Resume the most-recently suspended job (last slot).
+pub fn fg_last_job() -> bool {
+    unsafe {
+        // Walk backwards to find the most-recently added job.
+        for i in (0..JOB_TABLE_MAX).rev() {
+            if let Some(j) = JOB_TABLE[i] {
+                // Wake the process in the scheduler.
+                {
+                    let _ = crate::quantum_scheduler::scheduler().lock().wake_one(j.pid.0 as usize);
+                    // If wake_one found no wait queue (process was just Blocked),
+                    // re-enqueue it directly.
+                    let still_blocked = {
+                        let sched = crate::quantum_scheduler::scheduler().lock();
+                        sched.get_process_info(j.pid).map(|info| {
+                            info.process.state == crate::process::ProcessState::Blocked
+                        }).unwrap_or(false)
+                    };
+                    if still_blocked {
+                        {
+                            let mut sched2 = crate::quantum_scheduler::scheduler().lock();
+                            if let Some(info_mut) = sched2
+                                .get_process_info_mut(j.pid)
+                            {
+                                info_mut.process.state =
+                                    crate::process::ProcessState::Ready;
+                                let priority = info_mut.process.priority;
+                                drop(sched2);
+                                crate::quantum_scheduler::enqueue_ready_pid(j.pid, priority);
+                            }
+                        }
+                    }
+                }
+                FOREGROUND_PID = Some(j.pid);
+                let cmd = core::str::from_utf8(&j.cmd[..j.cmd_len]).unwrap_or("?");
+                crate::terminal::write_str(cmd);
+                crate::terminal::write_char('\n');
+                JOB_TABLE[i] = None;
+                return true;
+            }
+        }
+    }
+    false
+}
+
 const COM1_BASE: u16 = 0x3F8;
 const COM_LSR: u16 = COM1_BASE + 5;
 const COM_DATA: u16 = COM1_BASE;
@@ -462,6 +582,41 @@ pub fn shell_loop() -> ! {
                     prompt_pos = crate::terminal::cursor_position();
                     _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
                 }
+                26 => {
+                    // ^Z — suspend foreground process into job table
+                    crate::terminal::set_cursor(prompt_pos.0, prompt_pos.1);
+                    crate::terminal::clear_line_from_cursor();
+                    crate::terminal::write_str("^Z\n");
+                    let suspended = unsafe {
+                        if let Some(fg_pid) = FOREGROUND_PID.take() {
+                            // Block the foreground process.
+                            let mut sched = crate::quantum_scheduler::scheduler().lock();
+                            if let Some(info) = sched.get_process_info_mut(fg_pid) {
+                                info.process.state = crate::process::ProcessState::Blocked;
+                            }
+                            drop(sched);
+                            let job_num = job_add(fg_pid, &input[..len]);
+                            Some((fg_pid, job_num))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((_pid, jnum)) = suspended {
+                        crate::terminal::write_str("[Stopped] job ");
+                        let d = (b'0' + jnum as u8) as char;
+                        crate::terminal::write_char(d);
+                        crate::terminal::write_char('\n');
+                    } else {
+                        crate::terminal::write_str("[No foreground process]\n");
+                    }
+                    input = [0; 256];
+                    len = 0;
+                    cursor = 0;
+                    drain_serial_input();
+                    crate::terminal::write_str("> ");
+                    prompt_pos = crate::terminal::cursor_position();
+                    _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                }
                 b if (0x20..=0x7e).contains(&b) && len < input.len() - 1 => {
                     for i in (cursor..len).rev() {
                         input[i + 1] = input[i];
@@ -571,11 +726,33 @@ pub fn shell_loop() -> ! {
                 crate::keyboard::KeyEvent::Ctrl('z') => {
                     crate::terminal::set_cursor(prompt_pos.0, prompt_pos.1);
                     crate::terminal::clear_line_from_cursor();
-                    crate::terminal::write_str("^Z\nJob control not implemented\n> ");
+                    crate::terminal::write_str("^Z\n");
+                    let suspended = unsafe {
+                        if let Some(fg_pid) = FOREGROUND_PID.take() {
+                            let mut sched = crate::quantum_scheduler::scheduler().lock();
+                            if let Some(info) = sched.get_process_info_mut(fg_pid) {
+                                info.process.state = crate::process::ProcessState::Blocked;
+                            }
+                            drop(sched);
+                            let job_num = job_add(fg_pid, &input[..len]);
+                            Some((fg_pid, job_num))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((_pid, jnum)) = suspended {
+                        crate::terminal::write_str("[Stopped] job ");
+                        let d = (b'0' + jnum as u8) as char;
+                        crate::terminal::write_char(d);
+                        crate::terminal::write_char('\n');
+                    } else {
+                        crate::terminal::write_str("[No foreground process]\n");
+                    }
                     input = [0; 256];
                     len = 0;
                     cursor = 0;
                     drain_serial_input();
+                    crate::terminal::write_str("> ");
                     prompt_pos = crate::terminal::cursor_position();
                     _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
                 }

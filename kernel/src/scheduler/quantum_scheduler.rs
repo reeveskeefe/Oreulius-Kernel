@@ -1013,6 +1013,16 @@ impl QuantumScheduler {
         }
     }
 
+    /// Get mutable process info — used by job control and external state transitions
+    pub fn get_process_info_mut(&mut self, pid: Pid) -> Option<&mut ProcessInfo> {
+        let idx = pid.0 as usize;
+        if idx < MAX_PROCESSES {
+            self.processes[idx].as_mut()
+        } else {
+            None
+        }
+    }
+
     /// List all processes with scheduling info
     pub fn list_processes(&self) -> Vec<(Pid, &ProcessInfo)> {
         let mut result = Vec::new();
@@ -2471,6 +2481,15 @@ pub fn yield_now() {
     } else {
         unsafe { scheduler_platform::irq_restore(flags) };
     }
+}
+
+/// Re-enqueue a PID into the ready queues (used by job control `fg`).
+pub fn enqueue_ready_pid(pid: Pid, priority: ProcessPriority) {
+    let mut sched = QUANTUM_SCHEDULER.lock();
+    if let Some(info) = sched.get_process_info_mut(pid) {
+        info.process.state = ProcessState::Ready;
+    }
+    sched.enqueue_ready(pid, priority);
 }
 
 /// Block on address (futex-like)

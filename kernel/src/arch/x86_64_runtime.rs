@@ -22,6 +22,123 @@ use core::{
 
 use crate::asm_bindings;
 
+// ---------------------------------------------------------------------------
+// Job control — minimal POSIX-style ^Z / jobs / fg support (x86_64 path).
+//
+// The shell has at most JOB_TABLE_MAX concurrent suspended jobs. Each entry
+// records the PID and the command string that was running when ^Z was pressed.
+// `fg` resumes the most-recently suspended job. When no user process is running
+// the foreground slot is None.
+// ---------------------------------------------------------------------------
+const JOB_TABLE_MAX: usize = 8;
+
+#[derive(Copy, Clone)]
+struct Job {
+    pid: crate::process::Pid,
+    cmd: [u8; 64],
+    cmd_len: usize,
+}
+
+static mut JOB_TABLE: [Option<Job>; JOB_TABLE_MAX] = [None; JOB_TABLE_MAX];
+static mut JOB_TABLE_LEN: usize = 0;
+/// PID of the process currently running in the foreground (None = shell owns tty).
+pub(crate) static mut FOREGROUND_PID: Option<crate::process::Pid> = None;
+
+/// Add a stopped job to the job table. Returns the 1-based job number.
+unsafe fn job_add(pid: crate::process::Pid, cmd: &[u8]) -> usize {
+    let slot = if JOB_TABLE_LEN < JOB_TABLE_MAX {
+        let s = JOB_TABLE_LEN;
+        JOB_TABLE_LEN += 1;
+        s
+    } else {
+        JOB_TABLE.iter().position(|j| j.is_none()).unwrap_or(0)
+    };
+    let mut entry = Job { pid, cmd: [0u8; 64], cmd_len: 0 };
+    let copy_len = cmd.len().min(63);
+    entry.cmd[..copy_len].copy_from_slice(&cmd[..copy_len]);
+    entry.cmd_len = copy_len;
+    JOB_TABLE[slot] = Some(entry);
+    slot + 1
+}
+
+/// Remove a job from the table by PID.
+#[allow(dead_code)]
+unsafe fn job_remove(pid: crate::process::Pid) {
+    for slot in JOB_TABLE.iter_mut() {
+        if let Some(j) = slot {
+            if j.pid == pid {
+                *slot = None;
+                return;
+            }
+        }
+    }
+}
+
+/// Print the current job table to the terminal.
+pub fn print_jobs() {
+    let mut any = false;
+    unsafe {
+        for (i, slot) in JOB_TABLE.iter().enumerate() {
+            if let Some(j) = slot {
+                any = true;
+                crate::terminal::write_str("[");
+                let n = i + 1;
+                let d = (b'0' + n as u8) as char;
+                crate::terminal::write_char(d);
+                crate::terminal::write_str("] Stopped  ");
+                let cmd = core::str::from_utf8(&j.cmd[..j.cmd_len]).unwrap_or("?");
+                crate::terminal::write_str(cmd);
+                crate::terminal::write_char('\n');
+            }
+        }
+    }
+    if !any {
+        crate::terminal::write_str("No jobs\n");
+    }
+}
+
+/// Resume the most-recently suspended job (last occupied slot).
+pub fn fg_last_job() -> bool {
+    unsafe {
+        for i in (0..JOB_TABLE_MAX).rev() {
+            if let Some(j) = JOB_TABLE[i] {
+                // Use the public scheduler() accessor to avoid accessing the
+                // private QUANTUM_SCHEDULER static directly.
+                {
+                    let _ = crate::quantum_scheduler::scheduler().lock().wake_one(j.pid.0 as usize);
+                    // If the process is still Blocked (not on a wait queue),
+                    // use the public enqueue_ready_pid free function.
+                    let still_blocked = {
+                        let sched = crate::quantum_scheduler::scheduler().lock();
+                        sched.get_process_info(j.pid).map(|info| {
+                            info.process.state == crate::process::ProcessState::Blocked
+                        }).unwrap_or(false)
+                    };
+                    if still_blocked {
+                        {
+                            let mut sched = crate::quantum_scheduler::scheduler().lock();
+                            if let Some(info_mut) = sched.get_process_info_mut(j.pid) {
+                                info_mut.process.state = crate::process::ProcessState::Ready;
+                                let priority = info_mut.process.priority;
+                                drop(sched);
+                                crate::quantum_scheduler::enqueue_ready_pid(j.pid, priority);
+                            }
+                        }
+                    }
+                }
+                FOREGROUND_PID = Some(j.pid);
+                let cmd = core::str::from_utf8(&j.cmd[..j.cmd_len]).unwrap_or("?");
+                crate::terminal::write_str(cmd);
+                crate::terminal::write_char('\n');
+                JOB_TABLE[i] = None;
+                return true;
+            }
+        }
+    }
+    false
+}
+
+
 pub const KERNEL_CS: u16 = 0x08;
 pub const KERNEL_DS: u16 = 0x10;
 pub const USER_CS: u16 = 0x1B;
@@ -2231,6 +2348,30 @@ pub fn run_serial_shell() -> ! {
                         len += 1;
                         shell_print!("{}", b as char);
                     }
+                }
+                26 => {
+                    // ^Z — suspend foreground process into job table
+                    shell_println!("^Z");
+                    let suspended = unsafe {
+                        if let Some(fg_pid) = FOREGROUND_PID.take() {
+                            let mut sched = crate::quantum_scheduler::scheduler().lock();
+                            if let Some(info) = sched.get_process_info_mut(fg_pid) {
+                                info.process.state = crate::process::ProcessState::Blocked;
+                            }
+                            drop(sched);
+                            let job_num = job_add(fg_pid, &buf[..len]);
+                            Some((fg_pid, job_num))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((_pid, jnum)) = suspended {
+                        shell_println!("[Stopped] job {}", jnum);
+                    } else {
+                        shell_println!("[No foreground process]");
+                    }
+                    len = 0;
+                    serial_write_prompt();
                 }
                 _ => {}
             }

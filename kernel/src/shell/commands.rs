@@ -175,6 +175,8 @@ pub fn execute(input: &str) {
             vga::print_str("  intro-demo   - Demo introduction protocol\n");
             vga::print_str("  spawn        - Spawn a new process (spawn <name>)\n");
             vga::print_str("  ps           - List all processes\n");
+            vga::print_str("  jobs         - List stopped background jobs\n");
+            vga::print_str("  fg           - Resume most-recently stopped job\n");
             vga::print_str("  kill         - Terminate a process (kill <pid>)\n");
             vga::print_str("  yield        - Yield current process\n");
             vga::print_str("  whoami       - Show current process\n");
@@ -467,6 +469,22 @@ pub fn execute(input: &str) {
         }
         "ps" => {
             cmd_ps();
+        }
+        "jobs" => {
+            #[cfg(target_arch = "x86_64")]
+            crate::arch::x86_64_runtime::print_jobs();
+            #[cfg(not(target_arch = "x86_64"))]
+            vga::print_str("jobs: not available on this architecture\n");
+        }
+        "fg" => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if !crate::arch::x86_64_runtime::fg_last_job() {
+                    vga::print_str("fg: no stopped jobs\n");
+                }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            vga::print_str("fg: not available on this architecture\n");
         }
         "kill" => {
             cmd_kill(parts);

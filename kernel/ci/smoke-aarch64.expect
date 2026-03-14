@@ -31,7 +31,7 @@ expect {
 expect_a64_prompt
 
 run_a64_cmd "commands-help" {\[A64-CMD\] (shared )?commands:} "AArch64 commands-help"
-run_a64_cmd "blk-info" {\[A64-CMD\] blk present=1 .*} "AArch64 blk-info"
+run_a64_cmd "blk-info" {\[A64-CMD\] blk present=1 [^\r\n]*} "AArch64 blk-info"
 run_a64_cmd "vfs-mkdir /tmpci" {\[A64-CMD\] vfs-mkdir ok /tmpci} "AArch64 vfs-mkdir /tmpci"
 run_a64_cmd "vfs-write /tmpci/a hello-ci" {\[A64-CMD\] vfs-write ok path=/tmpci/a bytes=8} "AArch64 vfs-write"
 run_a64_cmd "vfs-open /tmpci/a r" {\[A64-CMD\] vfs-open ok fd=3} "AArch64 vfs-open"

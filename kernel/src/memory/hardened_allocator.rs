@@ -54,7 +54,7 @@ struct AllocationHeader {
     #[cfg(debug_assertions)]
     allocation_id: u64,
     #[cfg(debug_assertions)]
-    backtrace: [usize; 4], // Simple backtrace
+    backtrace: [usize; 4], // Caller return addresses (RA0=direct caller, RA1-RA3=frames up)
     canary_post: u32,
 }
 
@@ -152,7 +152,7 @@ impl HardenedAllocator {
             #[cfg(debug_assertions)]
             allocation_id: self.next_id,
             #[cfg(debug_assertions)]
-            backtrace: [0; 4], // TODO: capture actual backtrace
+            backtrace: capture_backtrace(),
             canary_post: CANARY,
         };
         ptr::write(header_ptr, header);
@@ -292,6 +292,71 @@ impl HardenedAllocator {
             0.0
         };
     }
+}
+
+/// Capture up to 4 return-address frames for allocation backtraces.
+///
+/// We read the frame pointer chain (RBP/FP) directly via inline asm. This is
+/// best-effort: if the compiler omits frame pointers the chain will be short or
+/// zero. Never panics — worst case returns [0; 4].
+#[cfg(debug_assertions)]
+#[inline(always)]
+fn capture_backtrace() -> [usize; 4] {
+    let mut frames = [0usize; 4];
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let mut fp: usize;
+        core::arch::asm!("mov {}, rbp", out(reg) fp, options(nostack, nomem));
+        for slot in frames.iter_mut() {
+            if fp == 0 || fp & 0xFFF == 0xFFF {
+                break;
+            }
+            // [fp+8] = return address, [fp] = saved previous fp
+            let ra = *(fp as *const usize).add(1);
+            *slot = ra;
+            let prev_fp = *(fp as *const usize);
+            if prev_fp <= fp {
+                break; // guard against loops / corrupt stack
+            }
+            fp = prev_fp;
+        }
+    }
+    #[cfg(target_arch = "x86")]
+    unsafe {
+        let mut fp: usize;
+        core::arch::asm!("mov {}, ebp", out(reg) fp, options(nostack, nomem));
+        for slot in frames.iter_mut() {
+            if fp == 0 {
+                break;
+            }
+            let ra = *(fp as *const usize).add(1);
+            *slot = ra;
+            let prev_fp = *(fp as *const usize);
+            if prev_fp <= fp {
+                break;
+            }
+            fp = prev_fp;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let mut fp: usize;
+        core::arch::asm!("mov {}, x29", out(reg) fp, options(nostack, nomem));
+        for slot in frames.iter_mut() {
+            if fp == 0 {
+                break;
+            }
+            // AArch64 frame record: [fp] = prev_fp, [fp+8] = lr
+            let ra = *(fp as *const usize).add(1);
+            *slot = ra;
+            let prev_fp = *(fp as *const usize);
+            if prev_fp <= fp {
+                break;
+            }
+            fp = prev_fp;
+        }
+    }
+    frames
 }
 
 /// Align value up to alignment
