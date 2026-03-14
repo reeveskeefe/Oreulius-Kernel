@@ -304,17 +304,17 @@ The `quantum_scheduler` uses a raw `spin::Mutex` rather than `DagSpinlock` becau
 For a directed graph $G = (V, E)$ with source $s$, sink $t$, and capacity function $c : E \to \mathbb{R}_{\geq 0}$, a *feasible flow* is a function $f : E \to \mathbb{R}_{\geq 0}$ satisfying:
 
 1. **Capacity constraint:** $\forall (u,v) \in E.\ 0 \leq f(u,v) \leq c(u,v)$
-2. **Flow conservation:** $\forall v \in V \setminus \{s,t\}.\ \displaystyle\sum_{u:(u,v)\in E} f(u,v) = \sum_{w:(v,w)\in E} f(v,w)$
+2. **Flow conservation:** $\forall v \in V \setminus \{s,t\}.\ \sum_{u:(u,v)\in E} f(u,v) = \sum_{w:(v,w)\in E} f(v,w)$
 
 The *value* of a flow is $|f| = \sum_{(s,v) \in E} f(s,v)$. The **Max-Flow Min-Cut theorem** (Ford-Fulkerson 1956, Elias-Feinstein-Shannon 1956) states:
 
-$$\max_f |f| = \min_{\substack{(S, \bar{S}) \in \text{cuts} \\ s \in S,\, t \in \bar{S}}} \sum_{\substack{(u,v) \in E \\ u \in S,\, v \in \bar{S}}} c(u, v)$$
+$$\max_f |f| = \min_{\begin{smallmatrix}(S, \bar{S}) \in \text{cuts} \\ s \in S,\, t \in \bar{S}\end{smallmatrix}} \sum_{\begin{smallmatrix}(u,v) \in E \\ u \in S,\, v \in \bar{S}\end{smallmatrix}} c(u, v)$$
 
 This is more than a combinatorial identity: it says that *bottleneck capacity constraints propagate globally through a network*. If every edge $(u,v)$ with $u \in S,\, v \in \bar{S}$ in some cut is saturated, no additional flow can cross from $S$ to $\bar{S}$, regardless of the structure of the network on either side.
 
 #### Linear Logic Correspondence
 
-Girard's *linear logic* (1987) introduces a resource-sensitive implication $A \multimap B$ ("consuming $A$ produces $B$"), a multiplicative conjunction $A \otimes B$ ("both $A$ and $B$ simultaneously"), and an additive disjunction $A \oplus B$ ("either $A$ or $B$"). The key structural rules:
+Girard's *linear logic* (1987) introduces a resource-sensitive implication $A \to B$ ("consuming $A$ produces $B$"), a multiplicative conjunction $A \otimes B$ ("both $A$ and $B$ simultaneously"), and an additive disjunction $A \oplus B$ ("either $A$ or $B$"). The key structural rules:
 
 - **Weakening is absent:** you cannot freely discard $A$ — you must use or explicitly garbage-collect it.
 - **Contraction is absent:** you cannot freely duplicate $A$ — there is only one copy.
@@ -324,7 +324,7 @@ This maps to Rust's *move semantics* precisely: a `T: !Copy` value can be consum
 
 The connection to max-flow: a capability with capacity $C$ is a *linear proposition* `Cap(C)`. Splitting into sub-capabilities corresponds to:
 
-$$\text{Cap}(C) \multimap \text{Cap}(A) \otimes \text{Cap}(B) \qquad \text{where } A + B = C$$
+$$\text{Cap}(C) \to \text{Cap}(A) \otimes \text{Cap}(B) \qquad \text{where } A + B = C$$
 
 The constraint $A + B = C$ is the *capacity conservation law* from flow theory. The linear type `Cap(C)` being consumed on the left and $\text{Cap}(A) \otimes \text{Cap}(B)$ produced on the right is a proof of this linear implication. The Rust borrow checker's refusal to allow `Cap(C)` to be used after the split is the enforcement of the "no contraction" structural rule: you cannot have both `Cap(C)` and `Cap(A)` simultaneously.
 
@@ -818,7 +818,7 @@ This is proportional to $\tau_{\text{mix}}$ (with $\epsilon = 0.01$, $n \leq 256
 
 The *conductance* (or Cheeger constant) of $G$ measures the minimum bottleneck fraction of edges leaving any subset of vertices:
 
-$$\Phi(G) = \min_{\substack{S \subset V \\ 0 < \text{vol}(S) \leq \text{vol}(V)/2}} \frac{\displaystyle\sum_{u \in S,\, v \notin S} W_{uv}}{\text{vol}(S)}, \quad \text{where } \text{vol}(S) = \sum_{u \in S} D_{uu}$$
+$$\Phi(G) = \min_{\begin{smallmatrix}S \subset V \\ 0 < \text{vol}(S) \leq \text{vol}(V)/2\end{smallmatrix}} \frac{\sum_{u \in S,\, v \notin S} W_{uv}}{\text{vol}(S)}, \quad \text{where } \text{vol}(S) = \sum_{u \in S} D_{uu}$$
 
 A small $\Phi(G)$ means there exists a small "bottleneck cut" in the graph — a set $S$ of processes that is nearly isolated from the rest of the capability network. Such isolation is a red flag: if a compromised process can partition itself into $S$ with few cross-edges, it can accumulate capabilities with limited opportunity for the telemetry system to observe cross-domain activity.
 
@@ -841,7 +841,7 @@ Working through the algebra (using $\text{vol}(S) + \text{vol}(\bar{S}) = \text{
 
 $$\mathcal{R}(f_S) = \frac{|\text{cut}(S, \bar{S})|}{\text{vol}(S)} \cdot \frac{\text{vol}(V)}{\text{vol}(\bar{S})} \leq 2\Phi(G)$$
 
-Since $\gamma = \min_{f \perp \pi} \mathcal{R}(f) \leq \mathcal{R}(f_S) \leq 2\Phi$, we get $\gamma/2 \leq \Phi$. $\square_{\text{lower}}$
+Since $\gamma = \min_{f \perp \pi} \mathcal{R}(f) \leq \mathcal{R}(f_S) \leq 2\Phi$, we get $\gamma/2 \leq \Phi$. $\square$
 
 **Upper bound ($\Phi \leq \sqrt{2\gamma}$, Alon-Milman 1985):**
 
@@ -849,7 +849,7 @@ Let $v$ be the second eigenvector of $\mathcal{L}$ (normalized, $D$-orthogonal t
 
 $$\Phi(S_t) \leq \frac{2\sqrt{\gamma \cdot v^T \mathcal{L} v / \|v\|_D^2}}{\text{some denominator}} = 2\sqrt{\gamma \cdot \gamma} / 2 = \sqrt{2\gamma}$$
 
-The formal computation applies Cauchy-Schwarz to $v^T \mathcal{L} v = \gamma \|v\|^2$ and the layer-by-layer contribution of the sweep, yielding $\Phi(G) \leq \sqrt{2\lambda_1} = \sqrt{2\gamma}$. $\square_{\text{upper}}$
+The formal computation applies Cauchy-Schwarz to $v^T \mathcal{L} v = \gamma \|v\|^2$ and the layer-by-layer contribution of the sweep, yielding $\Phi(G) \leq \sqrt{2\lambda_1} = \sqrt{2\gamma}$. $\square$
 
 **Practical implication for security:** If $\gamma < 0.0025$, then $\Phi(G) \leq \sqrt{2 \times 0.0025} = \sqrt{0.005} \approx 0.071$. A conductance of 0.071 means there exists a subset $S$ where fewer than 7.1% of the weighted edges cross the boundary — the process community in $S$ is 92.9% isolated. This is the threshold below which the build system halts.
 
@@ -883,7 +883,7 @@ $$P(A \mid B^n) = \frac{P(B^n \mid A) \cdot P(A)}{P(B^n \mid A) \cdot P(A) + P(B
 
 With $P(B^n \mid A) = 1$ (if the JIT is correct, every test passes), $P(B^n \mid \neg A) = \epsilon_{\text{fp}}^n$ (false positive rate per test vector, raised to the $n$th power for independent tests), and $P(A) = p_0$ (prior confidence):
 
-$$P(A \mid B^n) = \frac{p_0}{p_0 + \epsilon_{\text{fp}}^n (1 - p_0)} \xrightarrow{n\to\infty} 1$$
+$$P(A \mid B^n) = \frac{p_0}{p_0 + \epsilon_{\text{fp}}^n (1 - p_0)} \to 1 \quad (n \to \infty)$$
 
 The posterior converges to 1 exponentially fast in $n$, with rate $|\ln \epsilon_{\text{fp}}|$ per test. For $\epsilon_{\text{fp}} = 10^{-4}$ (one false pass in ten thousand test vectors), after $n = 10$ tests: $\epsilon_{\text{fp}}^{10} = 10^{-40}$, making the second term in the denominator negligible even for $p_0 = 0.5$.
 
