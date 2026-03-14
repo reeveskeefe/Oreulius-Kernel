@@ -1,5 +1,8 @@
 #!/usr/bin/expect -f
 set timeout 300
+if {[info exists env(A64_EXPECT_CMD_TIMEOUT)] && $env(A64_EXPECT_CMD_TIMEOUT) ne ""} {
+    set timeout $env(A64_EXPECT_CMD_TIMEOUT)
+}
 
 set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
 cd $kernel_dir
@@ -36,7 +39,7 @@ expect {
 }
 expect_a64_prompt
 
-run_a64_cmd "commands-help" {\[A64-CMD\] commands:} "commands-help"
+run_a64_cmd "commands-help" {\[A64-CMD\] (shared )?commands:} "commands-help"
 run_a64_cmd "uartirq fix" {\[A64\] uartirq fix: .*} "uartirq fix"
 run_a64_cmd "uartirq" {\[A64\] uartirq strict=.*} "uartirq"
 run_a64_cmd "sched" {\[A64\] sched-backend ticks=.*} "sched"

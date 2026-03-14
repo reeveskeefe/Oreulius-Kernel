@@ -31,6 +31,14 @@ on:
         description: "Run strict-uart-irq shell validation (can be flaky depending on QEMU UART IRQ delivery timing)"
         required: false
         default: "0"
+      a64_expect_cmd_timeout:
+        description: "AArch64 per-command expect timeout (seconds)"
+        required: false
+        default: "300"
+      a64_harness_timeout:
+        description: "AArch64 total expect harness timeout (seconds)"
+        required: false
+        default: "420"
       i686_soak_seconds:
         description: "i686 boot soak seconds"
         required: false
@@ -106,6 +114,8 @@ jobs:
           A64_EXT_LOOPS: ${{ github.event.inputs.a64_loops || '4' }}
           A64_INCLUDE_VMTEST: ${{ github.event.inputs.a64_include_vmtest || '1' }}
           A64_INCLUDE_STRICT_UART_IRQ: ${{ github.event.inputs.a64_include_strict_uart_irq || '0' }}
+          A64_EXPECT_CMD_TIMEOUT: ${{ github.event.inputs.a64_expect_cmd_timeout || '300' }}
+          A64_EXPECT_HARNESS_TIMEOUT: ${{ github.event.inputs.a64_harness_timeout || '420' }}
         run: ./ci/extended-aarch64.sh
 
       - name: Upload extended logs
