@@ -44,6 +44,9 @@ jobs:
           toolchain: nightly-2024-01-01
           components: rust-src,llvm-tools
 
+      - name: Add rust-src for build-std target
+        run: rustup component add rust-src --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
+
       - name: Build kernel ISO
         run: ./build.sh
 
