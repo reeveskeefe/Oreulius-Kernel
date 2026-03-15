@@ -146,24 +146,24 @@ The **README** shows a huge list. The following **MUST** have real functionality
 
 The following papers **are present** (with reasonable content):
 
-- docs/oreulia-vision.md (Vision/architecture)
-- docs/oreulia-mvp.md (MVP spec)
-- docs/oreulia-ipc.md (IPC/dataflow)
-- docs/oreulia-filesystem.md (VFS)
-- docs/oreulia-wasm-abi.md (WASM ABI)
-- docs/oreulia-persistence.md (Persistence)
-- docs/capnet.md (CapNet protocol, formalism)
+- docs/project/oreulia-vision.md (Vision/architecture)
+- docs/project/oreulia-mvp.md (MVP spec)
+- docs/ipc/oreulia-ipc.md (IPC/dataflow)
+- docs/storage/oreulia-filesystem.md (VFS)
+- docs/runtime/oreulia-wasm-abi.md (WASM ABI)
+- docs/storage/oreulia-persistence.md (Persistence)
+- docs/capability/capnet.md (CapNet protocol, formalism)
 - docs/CONTRIBUTING.md, docs/codepageheader.md (contrib/process/docs)
 
 ### **But the following are either totally or partially missing, or require careful review for completeness and rigor:**
 
-- **Intent Graph Predictive Revocation** (`docs/oreulia-intent-graph-predictive-revocation.md`):
+- **Intent Graph Predictive Revocation** (`docs/capability/oreulia-intent-graph-predictive-revocation.md`):
   - _MUST_ contain full formal model, definition of features/signals, risk scoring mathematics, state-machine transitions, identify where kernels logs those scores, and evidence of real interface in security or process code.
-- **JIT Security Resolution** (`docs/oreulia-jit-security-resolution.md`):
+- **JIT Security Resolution** (`docs/runtime/oreulia-jit-security-resolution.md`):
   - Must connect theorems/proofs to real code paths and test/fuzz harnesses. Need statement of translation invariants, handling of unsafe opcodes, SFI/CFI enforcement, and how JIT bugs are caught in fuzz/test logs.
-- **Service Pointer Capabilities** (`docs/oreulia-service-pointer-capabilities.md`):
+- **Service Pointer Capabilities** (`docs/services/oreulia-service-pointer-capabilities.md`):
   - Must clearly define “service pointer,” delegate protocol, typing, cross-PID safety, revocation, and link directly to kernel commands and IPC routines.
-- **CapNet Scientific Resolution** (`docs/capnet.md`, _exists_):  
+- **CapNet Scientific Resolution** (`docs/capability/capnet.md`, _exists_):
   - Appears present with a formal model—check if security properties, replay/fail-closed, and revocation are all mapped to code and test.
 - **Security model (in general docs)**:  
   - Threat model, risk enumeration, and proof of mitigation must match current kernel source and shell commands; update for any new attacks.
@@ -281,4 +281,3 @@ You **cannot** pass the "Not Vaporware" validation until:
 **After these “ThingsYetToDo” items are complete, you can then credibly focus directly on the main documentation, traceability, CI/testing, and logs requirements of the checklist.**
 
 ---
-

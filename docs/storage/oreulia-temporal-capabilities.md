@@ -293,7 +293,7 @@ Every grant/revoke is journaled via `temporal::record_capability_event(pid, cap_
 
 ### 7.3 Observer bus
 
-Auto-revocations emit `observer_notify(CAPABILITY_OP, payload)` where `payload[0..3] = pid_le, payload[4] = 0x02 (REVOKE)`. WASM observer modules subscribed to `CAPABILITY_OP` events will receive this notification on their IPC channel (see `oreulia-kernel-observers.md`).
+Auto-revocations emit `observer_notify(CAPABILITY_OP, payload)` where `payload[0..3] = pid_le, payload[4] = 0x02 (REVOKE)`. WASM observer modules subscribed to `CAPABILITY_OP` events will receive this notification on their IPC channel (see `docs/services/oreulia-kernel-observers.md`).
 
 ### 7.4 Intent graph
 

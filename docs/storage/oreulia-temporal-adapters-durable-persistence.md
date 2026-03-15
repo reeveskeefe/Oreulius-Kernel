@@ -546,7 +546,7 @@ These allow user-mode services to perform time-travel without any string-parsing
 
 ### 8.2 IPC Binary Protocol
 
-Temporal traffic over IPC uses a binary framed protocol (see `docs/oreulia-ipc.md`, “Temporal IPC Binary Protocol (v1)”).
+Temporal traffic over IPC uses a binary framed protocol (see `docs/ipc/oreulia-ipc.md`, “Temporal IPC Binary Protocol (v1)”).
 
 ---
 

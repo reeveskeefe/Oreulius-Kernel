@@ -38,33 +38,34 @@ if {$qemu_extra eq ""} {
 set qemu_args [concat $qemu_args $filtered_extra]
 spawn {*}$qemu_args
 
+proc expect_i686_shell_ready {} {
+    expect {
+        -re {Type 'help' for commands\.} { exp_continue }
+        -re {(\r?\n|^)> } {}
+        timeout { puts "timeout waiting for i686 kernel shell readiness"; exit 1 }
+    }
+}
+
 proc expect_i686_prompt {} {
     expect {
-        -re {> } {}
+        -re {(\r?\n|^)> } {}
         timeout { puts "timeout waiting for i686 shell prompt"; exit 1 }
     }
 }
 
-proc sync_and_send_i686_cmd {cmd} {
-    global send_slow
-    after 300
-    send "\r"
-    expect_i686_prompt
-    after 600
-    send -s -- "$cmd\r"
+proc send_i686_cmd {cmd} {
+    after 1200
+    send -- "$cmd\r"
 }
 
-expect {
-    -re {Type 'help' for commands\.} {}
-    timeout { puts "timeout waiting for i686 kernel shell banner"; exit 1 }
-}
-expect_i686_prompt
+expect_i686_shell_ready
 # Clear any stale line noise on the first serial-interactive prompt.
 send "\r"
 expect_i686_prompt
 set timeout 600
 
-sync_and_send_i686_cmd "wfc $iters"
+puts "RUN: wfc $iters"
+send_i686_cmd "wfc $iters"
 expect {
     -re {Seeds passed: [0-9]+ / [0-9]+} {}
     timeout { puts "timeout waiting for WASM corpus seed summary"; exit 1 }
@@ -80,7 +81,8 @@ expect {
 expect_i686_prompt
 
 if {$soak_rounds > 0} {
-    sync_and_send_i686_cmd "wfs $iters $soak_rounds"
+    puts "RUN: wfs $iters $soak_rounds"
+    send_i686_cmd "wfs $iters $soak_rounds"
     expect {
         -re {Rounds passed: [0-9]+ / [0-9]+} {}
         timeout { puts "timeout waiting for WASM soak rounds summary"; exit 1 }

@@ -104,7 +104,7 @@ Create the following files in order:
 | `kernel/src/commands.rs` / `kernel/src/commands_shared.rs` | add inspect, selftest, and liveness diagnostics commands |
 | `kernel/src/wasm.rs` | align host channel send/recv/capability import-export with new admission and transfer semantics |
 | `kernel/src/lib.rs` | initialize any new IPC selftest/diagnostic registration if needed |
-| `docs/oreulia-ipc.md` | keep user-facing design docs aligned with actual milestone state |
+| `docs/ipc/oreulia-ipc.md` | keep user-facing design docs aligned with actual milestone state |
 
 ## 4. Milestones
 
@@ -371,13 +371,13 @@ Required work:
 
 - add commands for channel listing, channel inspect, wait queue inspect, refusal stats, and replay selftest
 - expose a compact status snapshot for scripting and smoke tests
-- update `docs/oreulia-ipc.md` with the real current milestone state
+- update `docs/ipc/oreulia-ipc.md` with the real current milestone state
 
 Files:
 
 - `kernel/src/commands.rs`
 - `kernel/src/commands_shared.rs`
-- `docs/oreulia-ipc.md`
+- `docs/ipc/oreulia-ipc.md`
 
 Exit criteria:
 

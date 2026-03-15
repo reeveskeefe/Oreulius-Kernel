@@ -579,4 +579,4 @@ The fuzz infrastructure (`capnet_fuzz`, `capnet_fuzz_regression_default`, `capne
 | **Linear memory state is not migrated** | A migrated module restarts with empty linear memory. Persistent state must be serialized explicitly via temporal objects before calling `mesh_migrate`. |
 | **64 KiB module size limit** | Large WASM modules must be decomposed into service units or use the polyglot streaming loader. |
 | **Timing channels** | Token processing time is not constant; timing-side-channel analysis is an open research obligation. |
-| **Formal correspondence** | A machine-checkable mapping from the CapNet implementation to the formal model in the Unified Theory paper (`docs/unified-theory-capability-trust-causal-semantics-thermodynamic-liveness.md`) remains a research obligation (R1 in that paper's agenda). |
+| **Formal correspondence** | A machine-checkable mapping from the CapNet implementation to the formal model in the Unified Theory paper (`docs/architecture/unified-theory-capability-trust-causal-semantics-thermodynamic-liveness.md`) remains a research obligation (R1 in that paper's agenda). |

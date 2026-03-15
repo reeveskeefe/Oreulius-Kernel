@@ -12,10 +12,10 @@ A security-hardened, bare-metal operating system kernel implementing advanced sy
 
 Oreulia's formal security records are documented in four companion papers:
 
-- [`../docs/oreulia-jit-security-resolution.md`](../docs/oreulia-jit-security-resolution.md)
-- [`../docs/capnet.md`](../docs/capnet.md)
-- [`../docs/oreulia-intent-graph-predictive-revocation.md`](../docs/oreulia-intent-graph-predictive-revocation.md)
-- [`../docs/oreulia-service-pointer-capabilities.md`](../docs/oreulia-service-pointer-capabilities.md)
+- [`../docs/runtime/oreulia-jit-security-resolution.md`](../docs/runtime/oreulia-jit-security-resolution.md)
+- [`../docs/capability/capnet.md`](../docs/capability/capnet.md)
+- [`../docs/capability/oreulia-intent-graph-predictive-revocation.md`](../docs/capability/oreulia-intent-graph-predictive-revocation.md)
+- [`../docs/services/oreulia-service-pointer-capabilities.md`](../docs/services/oreulia-service-pointer-capabilities.md)
 
 These papers include:
 - formal model, assumptions, definitions, lemmas/theorems/corollaries
@@ -89,14 +89,30 @@ Oreulia implements a **capability-oriented kernel architecture** with explicit i
 - **Constant-time operations**: Timing-attack resistant cryptographic implementations
 - **802.11 frame handling**: Management frame (authentication, association) and data frame transmission via hardware registers
 
+#### **Driver Capability Matrix**
+
+| Driver | Arch | Transport | Capability Required | Status |
+|---|---|---|---|---|
+| `virtio_blk` | x86, x86\_64, AArch64 | VirtIO PCI/MMIO | `BlockRead` / `BlockWrite` | Active |
+| `virtio_net` | x86\_64, AArch64 | VirtIO MMIO | `NetworkSend` / `NetworkRecv` | Active |
+| `e1000` | x86, x86\_64 | PCI | `NetworkSend` / `NetworkRecv` | x86 only |
+| `rtl8139` | x86, x86\_64 | PCI | `NetworkSend` / `NetworkRecv` | x86 only |
+| `wifi` (802.11i) | x86, x86\_64 | PCI/MMIO | `NetworkSend` / `NetworkRecv` | x86 only |
+| `virtio_blk` shell bench | x86, x86\_64, AArch64 | — | `BlockRead` | `blk-bench` command |
+
+> **AArch64 note**: `e1000`/`rtl8139`/`wifi` are not compiled on AArch64 targets.
+> Use `virtio_net` (MMIO base `0x0a000000` on QEMU `virt` board) for network access.
+> `virtio_blk` and the `blk-bench` shell command work on all architectures.
+
 #### **Full TCP/IP Network Stack**
 - **Layer 2**: Ethernet II framing, ARP resolution with caching
 - **Layer 3**: IPv4 packet handling, ICMP echo (ping)
 - **Layer 4**: UDP and TCP (three-way handshake, window/state tracking, retransmit timers)
 - **Application**: DNS query/response parsing with cache; DHCP scaffolding present in network stack
 - **Hardware drivers**: 
-  - **Intel E1000**: PCI-based Gigabit Ethernet with descriptor ring management
-  - **Realtek RTL8139**: Legacy 10/100 Fast Ethernet support
+  - **VirtIO MMIO net** (`virtio_net`): capability-gated TX/RX, works on x86\_64 and AArch64 QEMU
+  - **Intel E1000**: PCI-based Gigabit Ethernet with descriptor ring management (x86 only)
+  - **Realtek RTL8139**: Legacy 10/100 Fast Ethernet support (x86 only)
 - **Zero-copy I/O**: DMA buffers accessed directly, no intermediate copying
 - **Asynchronous I/O reactor**: Event-driven packet processing with IRQ/timer signaling
 

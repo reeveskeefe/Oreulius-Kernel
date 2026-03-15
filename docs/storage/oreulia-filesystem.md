@@ -556,4 +556,4 @@ fs::write(fd, data)
 | `capability` | Channel capability resolution for watch notification channels |
 | `process` | `current_pid()`, `alloc_fd`, `get_fd_handle`, `close_fd` for fd lifecycle |
 
-See also: `docs/capnet.md` for capability theory, `docs/oreulia-persistence.md` for the temporal adapter layer, `docs/oreulia-ipc.md` for the IPC channel model.
+See also: `docs/capability/capnet.md` for capability theory, `docs/storage/oreulia-persistence.md` for the temporal adapter layer, `docs/ipc/oreulia-ipc.md` for the IPC channel model.

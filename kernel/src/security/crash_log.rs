@@ -361,10 +361,126 @@ fn format_u32_decimal(mut n: u32, buf: &mut [u8; 10]) -> usize {
     i
 }
 
-/// Write a short representation of the panic message into `buf`.
-/// Returns the number of bytes written.
+// ============================================================================
+// CrashClass — structured crash taxonomy
+// ============================================================================
+
+/// Structured classification of a kernel panic.
+///
+/// Used for structured telemetry output (`[PANIC] class=…`), OTA rollback
+/// decisions, and formal-verification evidence tagging.  The `as_str()`
+/// representation is emitted verbatim on the serial console so fleet
+/// management tooling can regex-grep across logs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CrashClass {
+    /// An explicit `unreachable!()` / `panic!("…")` assertion in kernel code.
+    KernelAssert,
+    /// Out-of-bounds memory access (slice index, buffer overflow).
+    MemoryBounds,
+    /// Integer arithmetic overflow (debug builds, explicit overflow check).
+    ArithmeticOverflow,
+    /// Stack overflow / stack smashing detected.
+    StackOverflow,
+    /// Global allocator out-of-memory.
+    AllocOom,
+    /// Capability / permission check failed at runtime.
+    CapabilityViolation,
+    /// WASM bytecode validation or execution fault.
+    WasmFault,
+    /// ELF loader rejected an image.
+    ElfLoadError,
+    /// Hardware exception forwarded from the arch exception handler.
+    HardwareFault,
+    /// None of the above patterns matched.
+    Unknown,
+}
+
+impl CrashClass {
+    /// Returns the canonical telemetry string for this class.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CrashClass::KernelAssert      => "kernel_assert",
+            CrashClass::MemoryBounds      => "memory_bounds",
+            CrashClass::ArithmeticOverflow => "arithmetic_overflow",
+            CrashClass::StackOverflow     => "stack_overflow",
+            CrashClass::AllocOom          => "alloc_oom",
+            CrashClass::CapabilityViolation => "capability_violation",
+            CrashClass::WasmFault         => "wasm_fault",
+            CrashClass::ElfLoadError      => "elf_load_error",
+            CrashClass::HardwareFault     => "hardware_fault",
+            CrashClass::Unknown           => "unknown",
+        }
+    }
+}
+
+/// Classify a panic by inspecting its message and source location.
+///
+/// This is intentionally simple (substring matching on the formatted
+/// message) so it can run during the panic handler before any lock is
+/// acquired.  Call this *before* `record_panic`.
+pub fn classify_panic(info: &core::panic::PanicInfo) -> CrashClass {
+    // Format into a stack buffer — no heap involved.
+    let mut buf = [0u8; MSG_CAP];
+    let n = format_panic_message(info, &mut buf);
+    let msg = &buf[..n];
+
+    // Location string check.
+    if let Some(loc) = info.location() {
+        let file = loc.file().as_bytes();
+        if contains(file, b"wasm") {
+            return CrashClass::WasmFault;
+        }
+        if contains(file, b"elf") {
+            return CrashClass::ElfLoadError;
+        }
+        if contains(file, b"capability") || contains(file, b"cap_graph") {
+            return CrashClass::CapabilityViolation;
+        }
+        if contains(file, b"hardened_allocator") || contains(file, b"alloc") {
+            return CrashClass::AllocOom;
+        }
+    }
+
+    // Message content check.
+    if contains(msg, b"index out of bounds") || contains(msg, b"slice index") || contains(msg, b"out of range") {
+        return CrashClass::MemoryBounds;
+    }
+    if contains(msg, b"overflow") || contains(msg, b"attempt to add") || contains(msg, b"attempt to sub") || contains(msg, b"attempt to mul") {
+        return CrashClass::ArithmeticOverflow;
+    }
+    if contains(msg, b"stack overflow") || contains(msg, b"stack smash") {
+        return CrashClass::StackOverflow;
+    }
+    if contains(msg, b"OOM") || contains(msg, b"out of memory") || contains(msg, b"alloc fail") {
+        return CrashClass::AllocOom;
+    }
+    if contains(msg, b"capability") || contains(msg, b"cap violation") || contains(msg, b"permission denied") {
+        return CrashClass::CapabilityViolation;
+    }
+    if contains(msg, b"wasm") || contains(msg, b"WASM") {
+        return CrashClass::WasmFault;
+    }
+    if contains(msg, b"hardware") || contains(msg, b"exception") || contains(msg, b"fault") {
+        return CrashClass::HardwareFault;
+    }
+
+    CrashClass::Unknown
+}
+
+/// Simple byte-slice substring search, no_std compatible.
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Format a `PanicInfo` into a fixed-size byte buffer.  Returns the number of
+/// bytes written.  Never allocates; safe to call from the panic handler.
 fn format_panic_message(info: &core::panic::PanicInfo, buf: &mut [u8; MSG_CAP]) -> usize {
-    // Use a tiny stack-based writer.
     let mut w = ByteWriter { buf, pos: 0 };
     use core::fmt::Write;
     let _ = core::write!(w, "{}", info);

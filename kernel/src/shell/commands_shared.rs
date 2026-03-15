@@ -331,6 +331,7 @@ pub fn print_help<W: Write>(out: &mut W, prefix: &str) {
     write_line(out, prefix, "  blk-partitions");
     write_line(out, prefix, "  blk-read <lba>");
     write_line(out, prefix, "  blk-write <lba> <byte>");
+    write_line(out, prefix, "  blk-bench [sectors] [start_lba]  -- timed sequential read");
     #[cfg(target_arch = "aarch64")]
     {
         write_line(out, prefix, "  pid");
@@ -553,6 +554,52 @@ pub fn try_execute<W: Write>(out: &mut W, input: &str, prefix: &str) -> bool {
                 Err(e) => {
                     let _ = writeln!(out, "{} blk-write failed: {}", prefix, e);
                 }
+            }
+        }
+        "blk-bench" => {
+            // Timed sequential read throughput benchmark.
+            // Usage: blk-bench [sectors] [start_lba]
+            // Reads `sectors` consecutive sectors starting at `start_lba` and
+            // reports elapsed ticks and a throughput estimate.
+            let mut args = rest.split_whitespace();
+            let sectors: u64 = args
+                .next()
+                .and_then(|s| parse_u64_auto(s))
+                .unwrap_or(64);
+            let start_lba: u64 = args
+                .next()
+                .and_then(|s| parse_u64_auto(s))
+                .unwrap_or(0);
+
+            if !crate::virtio_blk::is_present() {
+                let _ = writeln!(out, "{} blk-bench: no block device present", prefix);
+                return true;
+            }
+
+            let tick_start = crate::vfs_platform::ticks_now();
+            let mut errors: u64 = 0;
+            let mut sector = [0u8; 512];
+            for i in 0..sectors {
+                if crate::virtio_blk::read_sector(start_lba + i, &mut sector).is_err() {
+                    errors += 1;
+                }
+            }
+            let tick_end = crate::vfs_platform::ticks_now();
+            let elapsed = tick_end.saturating_sub(tick_start);
+            // PIT tick ≈ 1 ms on x86; on AArch64 timer_ticks() returns the
+            // CNTVCT_EL0 counter at 62.5 MHz (QEMU virt default).
+            let bytes = sectors.saturating_mul(512);
+            let _ = writeln!(
+                out,
+                "{} blk-bench sectors={} start_lba={:#x} errors={} ticks={} bytes={}",
+                prefix, sectors, start_lba, errors, elapsed, bytes
+            );
+            // Report as bytes/tick (caller can convert to MB/s if they know tick rate)
+            if elapsed > 0 {
+                let bpt = bytes / elapsed;
+                let _ = writeln!(out, "{} blk-bench throughput bytes/tick={}", prefix, bpt);
+            } else {
+                let _ = writeln!(out, "{} blk-bench throughput <1 tick", prefix);
             }
         }
         "vfs-mkdir" => {

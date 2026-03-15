@@ -27,7 +27,7 @@
 //! | 101 | `proc_yield`          | Cooperatively yield the CPU |
 //! | 102 | `proc_sleep`          | Sleep for N PIT ticks (~ms) |
 //!
-//! See `docs/oreulia-wasm-abi.md` for the complete stable ABI reference.
+//! See `docs/runtime/oreulia-wasm-abi.md` for the complete stable ABI reference.
 
 #[link(wasm_import_module = "oreulia")]
 extern "C" {

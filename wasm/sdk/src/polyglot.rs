@@ -7,7 +7,7 @@
 //! ## How it works
 //!
 //! 1. A WASM module embeds the `oreulia_lang` custom section (see
-//!    [`docs/oreulia-wasm-abi.md`]) to declare its language and version.
+//!    [`docs/runtime/oreulia-wasm-abi.md`]) to declare its language and version.
 //! 2. At startup it calls [`register`] to publish its name in the kernel's
 //!    polyglot registry (max 16 entries, IDs 103–105).
 //! 3. A *caller* module calls [`resolve`] to look up the target by name and

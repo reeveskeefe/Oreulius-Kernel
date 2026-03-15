@@ -12,13 +12,9 @@ if {![file exists "oreulia.iso"]} {
 spawn qemu-system-i386 -cdrom oreulia.iso -serial stdio -monitor none -display none -no-reboot -no-shutdown
 
 expect {
-    -re {Type 'help' for commands\.} {}
-    timeout { puts "timeout waiting for i686 kernel shell banner"; exit 1 }
-}
-
-expect {
-    -re {> $} {}
-    timeout { puts "timeout waiting for i686 shell prompt"; exit 1 }
+    -re {Type 'help' for commands\.} { exp_continue }
+    -re {(\r?\n|^)> } {}
+    timeout { puts "timeout waiting for i686 kernel shell readiness"; exit 1 }
 }
 
 send "\003"

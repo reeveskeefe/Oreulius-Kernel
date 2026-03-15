@@ -1,0 +1,153 @@
+{
+  "$schema": "https://oreulia.kernel/schemas/parity-matrix-1.0.json",
+  "version": "1.0",
+  "description": "Multi-architecture subsystem parity matrix for the Oreulia kernel.  Each entry declares which targets a subsystem is fully operational on.  'partial' means the subsystem is present but capability-limited (e.g. interpreter-only JIT path).",
+  "generated": "2026-01-01",
+  "targets": ["i686", "x86_64", "aarch64"],
+  "status_legend": {
+    "true":    "fully operational",
+    "false":   "not present / not applicable",
+    "partial": "present with limited functionality (see notes)"
+  },
+  "subsystems": [
+    {
+      "name": "wasm_interpreter",
+      "description": "WASM bytecode interpreter (tree-walking)",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": true,
+      "notes": "All targets share the same interpreter path in execution/wasm.rs"
+    },
+    {
+      "name": "wasm_jit",
+      "description": "Single-pass WASM-to-native JIT compiler",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": "partial",
+      "notes": "AArch64 falls back to interpreter; x86/x86_64 emit native code via wasm_jit.rs"
+    },
+    {
+      "name": "wasm_jit_extended_opcodes",
+      "description": "JIT coverage: narrow loads/stores, i64 arithmetic, call_indirect, clz/ctz",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": false,
+      "notes": "Step 12 expansion: I32Load8U/16U, I32Store8/16, I64Const/Add/Sub/Mul, I32Clz/Ctz, CallIndirect"
+    },
+    {
+      "name": "elf32_loader",
+      "description": "ELF32 static executable loader (ET_EXEC)",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": true,
+      "notes": "Shared path in elf.rs; all arches can load i686 ELF32 binaries for cross-inspection"
+    },
+    {
+      "name": "elf64_loader",
+      "description": "ELF64 static executable loader with RELA relocation support",
+      "i686":   false,
+      "x86_64": true,
+      "aarch64": true,
+      "notes": "Step 6: ELF64/AArch64 RELA support added to elf.rs"
+    },
+    {
+      "name": "virtio_blk",
+      "description": "VirtIO block device driver (PCI + MMIO)",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": true,
+      "notes": "PCI path for x86; MMIO path for AArch64 virt machine"
+    },
+    {
+      "name": "virtio_net",
+      "description": "VirtIO MMIO network driver",
+      "i686":   false,
+      "x86_64": true,
+      "aarch64": true,
+      "notes": "Step 8: virtio_net.rs created; capability-gated send via check_capability(Channel)"
+    },
+    {
+      "name": "e1000_driver",
+      "description": "Intel e1000 PCI Ethernet driver",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": false,
+      "notes": "PCI bus required; not present on AArch64 virt platform"
+    },
+    {
+      "name": "rtl8139_driver",
+      "description": "Realtek RTL8139 PCI Ethernet driver",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": false,
+      "notes": "PCI bus required; not present on AArch64 virt platform"
+    },
+    {
+      "name": "wifi_driver",
+      "description": "IEEE 802.11 WiFi driver shim",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": false,
+      "notes": "PCIe bus required; no MMIO WiFi implementation for AArch64 virt"
+    },
+    {
+      "name": "blk_bench",
+      "description": "Timed sequential-read block benchmark shell command",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": true,
+      "notes": "Step 10: blk-bench handler + help text added to commands_shared.rs"
+    },
+    {
+      "name": "crash_class_telemetry",
+      "description": "CrashClass enum + classify_panic() lock-free ring-buffer telemetry",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": true,
+      "notes": "Step 11: CrashClass taxonomy (MemFault, NullDeref, StackOverflow, etc.) in crash_log.rs"
+    },
+    {
+      "name": "capability_system",
+      "description": "Object-capability security model (Rights, CapabilityType, check_capability)",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": true,
+      "notes": "Shared implementation in capability/mod.rs; all arches benefit"
+    },
+    {
+      "name": "vfs_temporal_persistence",
+      "description": "Write-through temporal persistence layer in VFS",
+      "i686":   true,
+      "x86_64": true,
+      "aarch64": true,
+      "notes": "Step 4: real temporal write-through on AArch64 in vfs_platform.rs; AArch64 bridge shim removed"
+    },
+    {
+      "name": "aarch64_scheduler",
+      "description": "AArch64 context-switch with correct SPSR_EL1 and FP/SIMD scaffolding",
+      "i686":   false,
+      "x86_64": false,
+      "aarch64": true,
+      "notes": "Step 5: SPSR_EL1 fix + FP/SIMD context-save scaffolding in aarch64_scheduler.S"
+    },
+    {
+      "name": "capnet_capability_network",
+      "description": "CapNet intent-graph capability-checked network subsystem",
+      "i686":   "partial",
+      "x86_64": true,
+      "aarch64": "partial",
+      "notes": "See docs/capnet.md; full x86_64 implementation; AArch64/i686 use stub until driver parity"
+    }
+  ],
+  "ci_gates": {
+    "description": "CI jobs that must pass before any subsystem may be marked 'true'",
+    "gates": [
+      { "job": "cargo check --target i686-oreulia",       "required_for": ["i686"] },
+      { "job": "cargo check --target x86_64-unknown-none", "required_for": ["x86_64"] },
+      { "job": "cargo check --target aarch64-unknown-none","required_for": ["aarch64"] },
+      { "job": "smoke-x86_64.sh",   "required_for": ["x86_64"] },
+      { "job": "smoke-aarch64.sh",  "required_for": ["aarch64"] },
+      { "job": "extended-all.sh",   "required_for": ["i686", "x86_64", "aarch64"] }
+    ]
+  }
+}

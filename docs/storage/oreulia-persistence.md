@@ -79,9 +79,9 @@ To make this workable, components should:
 
 v1 can evolve toward exactly-once semantics with stronger constraints.
 
-See also: `docs/oreulia-mvp.md` → “Risks & mitigations” for the MVP impact of at-least-once replay.
+See also: `docs/project/oreulia-mvp.md` → “Risks & mitigations” for the MVP impact of at-least-once replay.
 
-See also: `docs/oreulia-filesystem.md` for how the filesystem service uses logs/snapshots for durable file storage.
+See also: `docs/storage/oreulia-filesystem.md` for how the filesystem service uses logs/snapshots for durable file storage.
 
 ---
 

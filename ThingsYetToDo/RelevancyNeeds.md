@@ -31,7 +31,7 @@ Here’s a brutally honest, technical assessment of the current state of the Ore
 - No clear path for third-party application development—besides WASM, which is promising but needs tooling, SDK, and stable ABI.
 
 #### 3. **Operational Tooling and UX**
-- No operational tooling: No OTA update, crash telemetry, fleet management, logging, or metrics. For significant adoption, especially at the edge, these are crucial.[docs/CommercialUseCases.md#L86-L96](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/docs/CommercialUseCases.md#L86-L96)
+- No operational tooling: No OTA update, crash telemetry, fleet management, logging, or metrics. For significant adoption, especially at the edge, these are crucial.[docs/project/CommercialUseCases.md#L86-L96](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/docs/project/CommercialUseCases.md#L86-L96)
 - The boot process is barebones—no installer, recovery environment, or easy debug path.
 
 #### 4. **Community & Accessibility**
@@ -136,7 +136,7 @@ Here’s a brutally honest, technical assessment of the current state of the Ore
 ## 4. **Operational Tooling & Productionization**  
 **Current state:**  
 - The kernel supports fuzzing and formal verification for security.  
-- No discussed logging, OTA updates, crash reporting, fleet management, or diagnostics ([ref](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/docs/CommercialUseCases.md#L86-L96)).
+- No discussed logging, OTA updates, crash reporting, fleet management, or diagnostics ([ref](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/docs/project/CommercialUseCases.md#L86-L96)).
 
 **Why this matters:**  
 - **Traction = production readiness:** Devices in the field need updates, debugging, and monitoring.  
@@ -343,8 +343,8 @@ Just specify which, and I’ll provide explicit code and structure proposals.
 - [kernel/README.md#L30-L40](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/kernel/README.md#L30-L40)
 - [kernel/README.md#L92-L102](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/kernel/README.md#L92-L102)
 - [kernel/src/GPUsupport/README.md#L3-L27](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/kernel/src/GPUsupport/README.md#L3-L27)
-- [docs/oreulia-mvp.md#L11-L23](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/docs/oreulia-mvp.md#L11-L23)
-- [docs/CommercialUseCases.md#L86-L96](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/docs/CommercialUseCases.md#L86-L96)
+- [docs/project/oreulia-mvp.md#L11-L23](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/docs/project/oreulia-mvp.md#L11-L23)
+- [docs/project/CommercialUseCases.md#L86-L96](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/docs/project/CommercialUseCases.md#L86-L96)
 - [ThingsYetToDo/anyinfrsatructureporting.md#L3-L6](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/ThingsYetToDo/anyinfrsatructureporting.md#L3-L6)
 - [ThingsYetToDo/anyinfrsatructureporting.md#L298-L302](https://github.com/reeveskeefe/Oreulieus-Kernel/blob/509da48dd7ac5d783ac8a085b0ce08f1dac46450/ThingsYetToDo/anyinfrsatructureporting.md#L298-L302)
 

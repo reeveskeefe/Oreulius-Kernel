@@ -33,6 +33,7 @@ pub mod net_reactor;
 pub mod netstack;
 pub mod rtl8139;
 pub mod tls;
+pub mod virtio_net;
 pub mod wifi;
 
 extern crate alloc;

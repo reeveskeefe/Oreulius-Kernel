@@ -18,7 +18,7 @@
 //! Oreulia Capability Security - Enhanced Authority Model
 //!
 //! This module implements Oreulia's capability-based security model as specified
-//! in docs/oreulia-capabilities.md and docs/oreulia-vision.md
+//! in docs/capability/oreulia-capabilities.md and docs/project/oreulia-vision.md
 //!
 //! Key principles:
 //! - NO AMBIENT AUTHORITY: All access requires explicit capabilities

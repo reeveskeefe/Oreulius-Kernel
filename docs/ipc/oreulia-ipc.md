@@ -2,7 +2,7 @@
 
 **Status:** Implemented (v0 core, March 11, 2026)
 
-For the full implementation roadmap from the current `kernel/src/ipc/mod.rs` root module to the target IPC architecture, see [docs/oreulia-ipc-implementation-roadmap.md](./oreulia-ipc-implementation-roadmap.md).
+For the full implementation roadmap from the current `kernel/src/ipc/mod.rs` root module to the target IPC architecture, see [docs/ipc/oreulia-ipc-implementation-roadmap.md](./oreulia-ipc-implementation-roadmap.md).
 
 Current v0 limitations that matter for planning:
 
@@ -213,7 +213,7 @@ All must preserve:
 - bounded resource usage
 - explicit authority
 
-See also: `docs/oreulia-mvp.md` → “Risks & mitigations” for current MVP performance tradeoffs.
+See also: `docs/project/oreulia-mvp.md` → “Risks & mitigations” for current MVP performance tradeoffs.
 
 ---
 

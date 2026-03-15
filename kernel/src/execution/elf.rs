@@ -15,7 +15,7 @@
  * ---------------------------------------------------------------------------
  */
 
-//! ELF loader for native binaries (ELF32, basic ET_DYN support).
+//! ELF loader for native binaries (ELF32 and ELF64, basic ET_DYN support).
 
 #![allow(dead_code)]
 
@@ -36,9 +36,15 @@ const EI_NIDENT: usize = 16;
 const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 
 const ELFCLASS32: u8 = 1;
+const ELFCLASS64: u8 = 2;
 const ELFDATA2LSB: u8 = 1;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
+
+// e_machine values
+const EM_386: u16 = 3;
+const EM_X86_64: u16 = 62;
+const EM_AARCH64: u16 = 183;
 
 const PT_NULL: u32 = 0;
 const PT_LOAD: u32 = 1;
@@ -48,6 +54,7 @@ const PT_INTERP: u32 = 3;
 const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 
+// ELF32 dynamic tags
 const DT_NULL: u32 = 0;
 const DT_REL: u32 = 17;
 const DT_RELSZ: u32 = 18;
@@ -56,10 +63,25 @@ const DT_RELA: u32 = 7;
 const DT_RELASZ: u32 = 8;
 const DT_JMPREL: u32 = 23;
 
-const R_386_RELATIVE: u32 = 8;
+// ELF64 dynamic tags (same numeric value, wider fields)
+const DT64_NULL: u64 = 0;
+const DT64_REL: u64 = 17;
+const DT64_RELSZ: u64 = 18;
+const DT64_RELENT: u64 = 19;
+const DT64_RELA: u64 = 7;
+const DT64_RELASZ: u64 = 8;
+const DT64_RELAENT: u64 = 9;
+const DT64_JMPREL: u64 = 23;
 
-const DEFAULT_BASE: u32 = 0x0040_0000;
-const DEFAULT_STACK_PAGES: usize = 1;
+// Relocation types
+const R_386_RELATIVE: u32 = 8;
+const R_X86_64_RELATIVE: u32 = 8;
+const R_AARCH64_RELATIVE: u64 = 1027;
+const R_AARCH64_JUMP_SLOT: u64 = 1026;
+
+const DEFAULT_BASE32: u32 = 0x0040_0000;
+const DEFAULT_BASE64: u64 = 0x0000_0000_0040_0000;
+const DEFAULT_STACK_PAGES: usize = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -128,7 +150,7 @@ fn check_elf32(bytes: &[u8]) -> Result<Elf32Ehdr, &'static str> {
         return Err("Invalid ELF magic");
     }
     if hdr.e_ident[4] != ELFCLASS32 {
-        return Err("ELF64 not supported");
+        return Err("Not an ELF32 binary");
     }
     if hdr.e_ident[5] != ELFDATA2LSB {
         return Err("Big endian ELF not supported");
@@ -338,7 +360,7 @@ pub fn load_elf32(bytes: &[u8]) -> Result<LoadedElf, &'static str> {
     }
 
     let base = if hdr.e_type == ET_DYN {
-        DEFAULT_BASE
+        DEFAULT_BASE32
     } else {
         0
     };
@@ -422,4 +444,332 @@ pub fn name_from_path(path: &str) -> String {
         }
     }
     name
+}
+
+// ============================================================================
+// ELF64 structures
+// ============================================================================
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Elf64Ehdr {
+    e_ident:     [u8; EI_NIDENT],
+    e_type:      u16,
+    e_machine:   u16,
+    e_version:   u32,
+    e_entry:     u64,
+    e_phoff:     u64,
+    e_shoff:     u64,
+    e_flags:     u32,
+    e_ehsize:    u16,
+    e_phentsize: u16,
+    e_phnum:     u16,
+    e_shentsize: u16,
+    e_shnum:     u16,
+    e_shstrndx:  u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Elf64Phdr {
+    p_type:   u32,
+    p_flags:  u32,
+    p_offset: u64,
+    p_vaddr:  u64,
+    p_paddr:  u64,
+    p_filesz: u64,
+    p_memsz:  u64,
+    p_align:  u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Elf64Dyn {
+    d_tag: u64,
+    d_val: u64,
+}
+
+/// REL entry (no addend — rare on AArch64, but exists for PLT)
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Elf64Rel {
+    r_offset: u64,
+    r_info:   u64,
+}
+
+/// RELA entry (with addend — the standard for AArch64)
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Elf64Rela {
+    r_offset: u64,
+    r_info:   u64,
+    r_addend: i64,
+}
+
+// ============================================================================
+// ELF64 helpers
+// ============================================================================
+
+fn align_down64(value: u64, align: u64) -> u64 {
+    value & !(align - 1)
+}
+
+fn align_up64(value: u64, align: u64) -> u64 {
+    (value + align - 1) & !(align - 1)
+}
+
+fn check_elf64(bytes: &[u8]) -> Result<Elf64Ehdr, &'static str> {
+    let hdr: Elf64Ehdr = read_struct(bytes, 0)?;
+    if hdr.e_ident[0..4] != ELF_MAGIC {
+        return Err("Invalid ELF magic");
+    }
+    if hdr.e_ident[4] != ELFCLASS64 {
+        return Err("Not an ELF64 binary");
+    }
+    if hdr.e_ident[5] != ELFDATA2LSB {
+        return Err("Big endian ELF64 not supported");
+    }
+    if hdr.e_machine != EM_AARCH64 && hdr.e_machine != EM_X86_64 {
+        return Err("ELF64: unsupported e_machine (only x86_64 and AArch64)");
+    }
+    if hdr.e_phentsize as usize != size_of::<Elf64Phdr>() {
+        return Err("ELF64: invalid program header entry size");
+    }
+    Ok(hdr)
+}
+
+fn map_segment64(
+    space: &mut AddressSpace,
+    vaddr: u64,
+    memsz: u64,
+    writable: bool,
+) -> Result<(), &'static str> {
+    if memsz == 0 {
+        return Ok(());
+    }
+    let start = align_down64(vaddr, PAGE_SIZE as u64) as usize;
+    let end   = align_up64(vaddr + memsz, PAGE_SIZE as u64) as usize;
+    if end >= USER_TOP {
+        return Err("ELF64: segment exceeds user space");
+    }
+    let pages = (end - start) / PAGE_SIZE;
+    arch_mmu::alloc_user_pages(space, start, pages, writable)?;
+    Ok(())
+}
+
+fn copy_to_user64(space: &AddressSpace, vaddr: u64, data: &[u8]) -> Result<(), &'static str> {
+    let old = crate::arch::mmu::current_page_table_root_addr();
+    unsafe { space.activate(); }
+    unsafe {
+        ptr::copy_nonoverlapping(data.as_ptr(), vaddr as *mut u8, data.len());
+    }
+    crate::arch::mmu::set_page_table_root(old)?;
+    Ok(())
+}
+
+fn zero_user64(space: &AddressSpace, vaddr: u64, len: usize) -> Result<(), &'static str> {
+    let old = crate::arch::mmu::current_page_table_root_addr();
+    unsafe { space.activate(); }
+    unsafe { ptr::write_bytes(vaddr as *mut u8, 0, len); }
+    crate::arch::mmu::set_page_table_root(old)?;
+    Ok(())
+}
+
+fn parse_program_headers64(bytes: &[u8], hdr: &Elf64Ehdr) -> Result<Vec<Elf64Phdr>, &'static str> {
+    let mut phdrs = Vec::new();
+    let base = hdr.e_phoff as usize;
+    for i in 0..hdr.e_phnum as usize {
+        let off = base + i * hdr.e_phentsize as usize;
+        let ph: Elf64Phdr = read_struct(bytes, off)?;
+        phdrs.push(ph);
+    }
+    Ok(phdrs)
+}
+
+fn addr_in_load_ranges64(phdrs: &[Elf64Phdr], base: u64, addr: u64, len: u64) -> bool {
+    let req_end = addr.saturating_add(len);
+    for ph in phdrs {
+        if ph.p_type != PT_LOAD || ph.p_memsz == 0 { continue; }
+        let seg_start = base.saturating_add(ph.p_vaddr);
+        let seg_end   = seg_start.saturating_add(ph.p_memsz);
+        if addr >= seg_start && req_end <= seg_end { return true; }
+    }
+    false
+}
+
+fn apply_rela_relocations64(
+    space: &AddressSpace,
+    dyns: &[Elf64Dyn],
+    phdrs: &[Elf64Phdr],
+    base: u64,
+) -> Result<(), &'static str> {
+    let mut rela_addr: u64 = 0;
+    let mut rela_size: u64 = 0;
+    let mut rela_ent:  u64 = size_of::<Elf64Rela>() as u64;
+
+    for d in dyns {
+        match d.d_tag {
+            t if t == DT64_RELA    => rela_addr = d.d_val,
+            t if t == DT64_RELASZ  => rela_size = d.d_val,
+            t if t == DT64_RELAENT => rela_ent  = d.d_val,
+            t if t == DT64_NULL    => break,
+            _ => {}
+        }
+    }
+
+    if rela_addr == 0 || rela_size == 0 {
+        return Ok(());
+    }
+    if rela_ent as usize != size_of::<Elf64Rela>() {
+        return Err("ELF64 RELA: invalid entry size");
+    }
+
+    let old = crate::arch::mmu::current_page_table_root_addr();
+    unsafe { space.activate(); }
+
+    let count = rela_size / rela_ent;
+    for i in 0..count {
+        let entry_va = base
+            .checked_add(rela_addr)
+            .and_then(|a| a.checked_add(i.saturating_mul(rela_ent)))
+            .ok_or("ELF64 RELA: address overflow")?;
+        if !addr_in_load_ranges64(phdrs, base, entry_va, size_of::<Elf64Rela>() as u64) {
+            let _ = crate::arch::mmu::set_page_table_root(old);
+            return Err("ELF64 RELA: entry outside load segments");
+        }
+        let rela = unsafe { ptr::read_unaligned(entry_va as *const Elf64Rela) };
+        let r_type = rela.r_info & 0xFFFF_FFFF;
+
+        if r_type == R_AARCH64_RELATIVE {
+            // S + A where S = base (position-independent)
+            let target_va = rela.r_offset
+                .checked_add(base)
+                .ok_or("ELF64 RELA: reloc target overflow")?;
+            if !addr_in_load_ranges64(phdrs, base, target_va, 8) {
+                let _ = crate::arch::mmu::set_page_table_root(old);
+                return Err("ELF64 RELA: reloc target outside load segments");
+            }
+            let value = base.wrapping_add(rela.r_addend as u64);
+            unsafe { ptr::write_unaligned(target_va as *mut u64, value); }
+        }
+        // R_AARCH64_JUMP_SLOT and others require PLT which we don't support yet.
+    }
+
+    crate::arch::mmu::set_page_table_root(old)?;
+    Ok(())
+}
+
+// ============================================================================
+// ELF64 public entry points
+// ============================================================================
+
+pub struct LoadedElf64 {
+    pub space:      AddressSpace,
+    pub entry:      u64,
+    pub user_stack: u64,
+}
+
+pub fn load_elf64(bytes: &[u8]) -> Result<LoadedElf64, &'static str> {
+    let hdr = check_elf64(bytes)?;
+    if hdr.e_type != ET_EXEC && hdr.e_type != ET_DYN {
+        return Err("ELF64: unsupported binary type");
+    }
+
+    let phdrs = parse_program_headers64(bytes, &hdr)?;
+    if phdrs.iter().any(|p| p.p_type == PT_INTERP) {
+        return Err("ELF64: PT_INTERP not supported (no dynamic linker)");
+    }
+
+    let base: u64 = if hdr.e_type == ET_DYN { DEFAULT_BASE64 } else { 0 };
+
+    let mut space = AddressSpace::new()?;
+
+    // Map all PT_LOAD segments
+    for ph in &phdrs {
+        if ph.p_type != PT_LOAD || ph.p_memsz == 0 { continue; }
+        let writable = (ph.p_flags & PF_W) != 0;
+        map_segment64(&mut space, base + ph.p_vaddr, ph.p_memsz, writable)?;
+    }
+
+    // Copy file content + zero BSS
+    for ph in &phdrs {
+        if ph.p_type != PT_LOAD { continue; }
+        if ph.p_filesz == 0 {
+            if ph.p_memsz > 0 {
+                zero_user64(&space, base + ph.p_vaddr, ph.p_memsz as usize)?;
+            }
+            continue;
+        }
+        let off = ph.p_offset as usize;
+        let end = off + ph.p_filesz as usize;
+        if end > bytes.len() {
+            return Err("ELF64: segment data truncated");
+        }
+        copy_to_user64(&space, base + ph.p_vaddr, &bytes[off..end])?;
+        if ph.p_memsz > ph.p_filesz {
+            let bss_start = base + ph.p_vaddr + ph.p_filesz;
+            zero_user64(&space, bss_start, (ph.p_memsz - ph.p_filesz) as usize)?;
+        }
+    }
+
+    // Collect DYNAMIC and apply RELA relocations
+    let dyn_ph = phdrs.iter().find(|p| p.p_type == PT_DYNAMIC);
+    if let Some(dp) = dyn_ph {
+        let dyn_off = dp.p_offset as usize;
+        let dyn_len = dp.p_filesz as usize;
+        if dyn_off + dyn_len > bytes.len() {
+            return Err("ELF64: dynamic segment truncated");
+        }
+        let count = dyn_len / size_of::<Elf64Dyn>();
+        let mut dyns: Vec<Elf64Dyn> = Vec::with_capacity(count);
+        for i in 0..count {
+            let d: Elf64Dyn = read_struct(bytes, dyn_off + i * size_of::<Elf64Dyn>())?;
+            let done = d.d_tag == DT64_NULL;
+            dyns.push(d);
+            if done { break; }
+        }
+        apply_rela_relocations64(&space, &dyns, &phdrs, base)?;
+    }
+
+    // User stack
+    let stack_base = (USER_TOP - DEFAULT_STACK_PAGES * PAGE_SIZE) as u64;
+    arch_mmu::alloc_user_pages(&mut space, stack_base as usize, DEFAULT_STACK_PAGES, true)?;
+    let user_stack = (USER_TOP as u64) - 16; // 16-byte aligned for AArch64 ABI
+
+    let entry = base + hdr.e_entry;
+
+    Ok(LoadedElf64 { space, entry, user_stack })
+}
+
+pub fn spawn_elf64_process(name: &str, bytes: &[u8]) -> Result<(), &'static str> {
+    let loaded = load_elf64(bytes)?;
+    let pid = process::process_manager()
+        .spawn(name, process::current_pid())
+        .map_err(|_| "ELF64: failed to create process")?;
+    let mut proc = process::process_manager()
+        .get(pid)
+        .ok_or("ELF64: process not found after spawn")?;
+    proc.priority = ProcessPriority::Normal;
+    quantum_scheduler::scheduler().lock().add_user_process(
+        proc,
+        Box::new(loaded.space),
+        loaded.entry as u32,   // scheduler stores u32 VA; fine for 4 GiB user space
+        loaded.user_stack as u32,
+    )?;
+    Ok(())
+}
+
+/// Top-level ELF dispatch — detects 32 vs 64 from EI_CLASS and routes accordingly.
+pub fn spawn_elf_process_any(name: &str, bytes: &[u8]) -> Result<(), &'static str> {
+    if bytes.len() < EI_NIDENT {
+        return Err("ELF: image too small");
+    }
+    if bytes[0..4] != ELF_MAGIC {
+        return Err("ELF: invalid magic");
+    }
+    match bytes[4] {
+        ELFCLASS32 => spawn_elf_process(name, bytes),
+        ELFCLASS64 => spawn_elf64_process(name, bytes),
+        _          => Err("ELF: unknown EI_CLASS"),
+    }
 }

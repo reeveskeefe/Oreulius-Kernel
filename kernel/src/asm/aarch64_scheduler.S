@@ -101,10 +101,34 @@ aarch64_thread_start_trampoline:
  *   x19 = EL0 entry VA
  *   x20 = EL0 stack top
  *   sp  = kernel exception stack
+ *
+ * SPSR_EL1 is constructed explicitly to reflect AArch64 EL0t mode:
+ *   [3:0]  M[3:0]  = 0b0000  (EL0t)
+ *   [4]    M[4]    = 0       (AArch64)
+ *   [6]    F       = 0       (FIQ not masked — allow preemption from EL1)
+ *   [7]    I       = 0       (IRQ not masked)
+ *   [8]    A       = 0       (SError not masked)
+ *   [9]    D       = 0       (debug not masked for EL0 watchpoint support)
+ *   [20]   IL      = 0       (instruction length, set by hardware)
+ *   [21]   SS      = 0       (software step, clear)
+ *
+ * FP/SIMD access (CPACR_EL1.FPEN) is set to 0b11 (no trapping) before the
+ * first eret so that EL0 code can use NEON immediately.  This matches the
+ * "trap-on-first-use lazy FP save" model we will add once the FP context
+ * save/restore path is fully validated; for now we grant FP unconditionally
+ * at process creation and save the full V0-V31 register file on each EL0→EL1
+ * transition (cost: 512 bytes per context switch — acceptable for MVP).
  */
 aarch64_kernel_user_entry_trampoline:
     msr SP_EL0, x20
-    mov x9, xzr
+
+    /* Enable FP/SIMD for EL0 (CPACR_EL1.FPEN = 0b11, bits [21:20]) */
+    mrs x9, CPACR_EL1
+    orr x9, x9, #(3 << 20)
+    msr CPACR_EL1, x9
+
+    /* Build SPSR_EL1 = EL0t, all mask bits clear */
+    mov x9, xzr          /* M[4:0]=0b00000 = EL0t, DAIF=0 */
     msr SPSR_EL1, x9
     msr ELR_EL1, x19
     isb

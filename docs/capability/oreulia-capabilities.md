@@ -174,4 +174,4 @@ In record/replay:
 
 - the supervisor can substitute “live” capabilities with “replay” ones.
 
-See also: `docs/oreulia-mvp.md` → “Risks & mitigations” for MVP testing priorities around capability correctness.
+See also: `docs/project/oreulia-mvp.md` → “Risks & mitigations” for MVP testing priorities around capability correctness.

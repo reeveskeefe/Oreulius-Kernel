@@ -19,8 +19,16 @@ trap 'rm -f "${log_file}"' EXIT
 export QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:--display none -nographic -no-reboot -no-shutdown}"
 
 echo "Running CapNet corpus replay (iters=${iters}, soak_rounds=${soak_rounds})..."
+set +e
 ./fuzz/run_capnet_corpus.expect "${iters}" "${soak_rounds}" > "${log_file}" 2>&1
+runner_status=$?
+set -e
 cat "${log_file}"
+
+if (( runner_status != 0 )); then
+    echo "ERROR: CapNet expect runner failed with exit status ${runner_status}"
+    exit "${runner_status}"
+fi
 
 seeds_line="$(grep -E '^Seeds passed:' "${log_file}" | tail -1 || true)"
 failures_line="$(grep -E '^Total failures:' "${log_file}" | head -1 || true)"

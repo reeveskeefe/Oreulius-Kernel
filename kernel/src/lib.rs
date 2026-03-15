@@ -19,7 +19,6 @@
 #![feature(alloc_error_handler)]
 
 extern crate alloc;
-#[cfg(not(target_arch = "aarch64"))]
 use alloc::boxed::Box;
 
 pub mod arch;
@@ -32,7 +31,6 @@ pub mod fs;
 pub mod ipc;
 pub mod math;
 pub mod memory;
-#[cfg(not(target_arch = "aarch64"))]
 pub mod net;
 pub mod platform;
 pub mod scheduler;
@@ -41,46 +39,70 @@ pub mod serial;
 pub mod services;
 pub mod shell;
 pub mod temporal;
-pub use execution::{intent_wasm, replay};
-#[cfg(not(target_arch = "aarch64"))]
-pub use execution::{elf, wasm, wasm_jit, wasm_thread};
+
+// Execution subsystems — wasm/elf/replay/jit available on all arches.
+// On AArch64 the JIT path is stubbed to interpreter-only (see wasm_jit.rs).
+pub use execution::{elf, intent_wasm, replay, wasm, wasm_jit, wasm_thread};
+
+// Filesystem extras — ATA/NVMe/paging are x86 hardware drivers; AArch64 uses
+// virtio-blk + MMU stubs already in place.
 #[cfg(not(target_arch = "aarch64"))]
 pub use fs::{ata, disk, nvme, paging};
+#[cfg(target_arch = "aarch64")]
+pub use fs::paging;
+
 pub use fs::{vfs, vfs_platform, virtio_blk};
 pub use math::exact_rational;
 pub use math::tensor_core;
+
+// Memory helpers — asm_bindings / hardened_allocator are x86-specific inline asm.
 #[cfg(not(target_arch = "aarch64"))]
 pub use memory::{asm_bindings, hardened_allocator};
 pub use memory::wait_free_ring;
+
+// Platform — gdt/idt are x86-only; syscall/usermode/interrupt_dag are shared.
 pub use platform::{interrupt_dag, syscall, usermode};
 #[cfg(not(target_arch = "aarch64"))]
 pub use platform::{gdt, idt_asm};
+
+// Scheduler subsystems — fully shared.
 pub use scheduler::{
     pit, process, process_platform, quantum_scheduler, scheduler_platform,
     scheduler_runtime_platform,
 };
 #[cfg(not(target_arch = "aarch64"))]
 pub use scheduler::{process_asm, tasks};
-pub use security::intent_graph;
-#[cfg(not(target_arch = "aarch64"))]
-pub use security::{cpu_security, crash_log, enclave, formal, kpti, memory_isolation};
-pub use services::registry;
-#[cfg(not(target_arch = "aarch64"))]
-pub use services::{fleet, health, ota, wasi};
+
+// Security — all security modules compiled for all arches.
+// crash_log/enclave/formal/kpti/memory_isolation contain no x86 intrinsics.
+pub use security::{cpu_security, crash_log, enclave, formal, intent_graph, kpti, memory_isolation};
+
+// Services — fleet/health/ota/wasi compiled for all arches.
+pub use services::{fleet, health, ota, registry, wasi};
+
+// Shell — console_service/terminal use VGA on x86; AArch64 uses PL011 serial.
 pub use shell::{commands, commands_shared};
 #[cfg(not(target_arch = "aarch64"))]
 pub use shell::{advanced_commands, console_service, terminal};
+
+// Temporal — fully arch-neutral.
 pub use temporal::{persistence, temporal_asm};
+
+// Drivers — hardware-specific drivers gated per arch.
 #[cfg(not(target_arch = "aarch64"))]
 pub use drivers::{
     acpi_asm, audio, bluetooth, compositor, dma_asm, framebuffer, gpu_support, input,
     keyboard, memopt_asm, mouse, pci, usb, vga,
 };
+
+// Network — the full network stack (capnet, virtio_net, netstack, tls) is
+// available on all arches.  Legacy x86-specific NIC drivers (e1000/rtl8139)
+// remain x86-only.
+pub use net::{capnet, net_reactor, netstack, tls, virtio_net};
 #[cfg(not(target_arch = "aarch64"))]
-pub use net::{capnet, e1000, net_reactor, netstack, rtl8139, tls, wifi};
+pub use net::{e1000, rtl8139, wifi};
 
 /// Helper to ensure Box is available for heap allocations across modules.
-#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 pub fn ensure_heap_available() -> Option<Box<u32>> {
     Some(Box::new(42))
@@ -119,12 +141,16 @@ pub fn runtime_background_maintenance() {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    // Classify the crash for structured telemetry and OTA rollback decisions.
+    let crash_class = crate::crash_log::classify_panic(info);
+
     #[cfg(target_arch = "aarch64")]
     {
         let uart = crate::arch::aarch64_pl011::early_uart();
         uart.init_early();
-        let _ = info;
-        uart.write_str("[PANIC]\n");
+        uart.write_str("[PANIC] class=");
+        uart.write_str(crash_class.as_str());
+        uart.write_str("\n");
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -132,7 +158,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         use core::fmt::Write;
 
         if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
-            let _ = writeln!(serial, "[PANIC] {}", info);
+            let _ = writeln!(serial, "[PANIC] class={} {}", crash_class.as_str(), info);
         }
 
         unsafe {

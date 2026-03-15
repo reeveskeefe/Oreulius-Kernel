@@ -324,10 +324,10 @@ Before writing proofs, the engineer MUST have:
 Read these in order:
 
 1. `README.md` (verification and temporal sections).
-2. `docs/oreulia-jit-security-resolution.md`.
-3. `docs/capnet.md`.
-4. `docs/oreulia-temporal-adapters-durable-persistence.md`.
-5. `docs/oreulia-service-pointer-capabilities.md`.
+2. `docs/runtime/oreulia-jit-security-resolution.md`.
+3. `docs/capability/capnet.md`.
+4. `docs/storage/oreulia-temporal-adapters-durable-persistence.md`.
+5. `docs/services/oreulia-service-pointer-capabilities.md`.
 6. `kernel/src/commands.rs` (verification command implementations).
 7. `kernel/src/temporal.rs`, `kernel/src/capnet.rs`, `kernel/src/wasm_jit.rs`, `kernel/src/syscall.rs`.
 

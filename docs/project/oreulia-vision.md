@@ -71,7 +71,7 @@ Oreulia aims to make executions:
 Wasm is the application ABI, but it is not interpreted slowly.
 - **In-Kernel JIT**: Converts Wasm to x86 machine code.
 - **Sandboxing**: Memory safety is enforced by Wasm limits and bounds checking.
-- **Interface**: A clearly defined ABI (`oreulia-wasm-abi.md`) maps Wasm imports to kernel capabilities.
+- **Interface**: A clearly defined ABI (`docs/runtime/oreulia-wasm-abi.md`) maps Wasm imports to kernel capabilities.
 
 ---
 
@@ -294,8 +294,8 @@ These are intentionally undecided early to keep iteration fast.
 
 Suggested follow-ups:
 
-- `docs/oreulia-mvp.md`: concrete MVP requirements for first bootable QEMU release
-- `docs/oreulia-capabilities.md`: capability taxonomy, attenuation, transfer, revocation
-- `docs/oreulia-ipc.md`: message formats, backpressure, performance path
-- `docs/oreulia-persistence.md`: log/snapshot design, recovery, replay
-- `docs/oreulia-wasm-abi.md`: host interface, imports/exports, safety constraints
+- `docs/project/oreulia-mvp.md`: concrete MVP requirements for first bootable QEMU release
+- `docs/capability/oreulia-capabilities.md`: capability taxonomy, attenuation, transfer, revocation
+- `docs/ipc/oreulia-ipc.md`: message formats, backpressure, performance path
+- `docs/storage/oreulia-persistence.md`: log/snapshot design, recovery, replay
+- `docs/runtime/oreulia-wasm-abi.md`: host interface, imports/exports, safety constraints

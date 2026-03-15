@@ -6,7 +6,7 @@
 
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Written in assembly](https://img.shields.io/badge/written%20in-Assembly-brown.svg)](https://en.wikipedia.org/wiki/Assembly_language)
-[![License: Oreulia](docs/oreulius-license-badge.svg)](LICENSE)
+[![License: Oreulia](docs/assets/oreulius-license-badge.svg)](LICENSE)
 [![i686](https://img.shields.io/badge/i686-legacy%20runtime-success)](https://en.wikipedia.org/wiki/I686)
 [![x86_64](https://img.shields.io/badge/x86__64-Multiboot2%20QEMU%20bringup-blue)](https://en.wikipedia.org/wiki/X86-64)
 [![AArch64](https://img.shields.io/badge/AArch64-QEMU%20virt%20bringup-blue)](https://en.wikipedia.org/wiki/AArch64)
@@ -1075,24 +1075,13 @@ Suggested measurement commands for reproducible local baselines:
 
 ## Documentation Map
 
-- [Vision](docs/oreulia-vision.md)
-- [MVP Specification](docs/oreulia-mvp.md)
-- [Capabilities](docs/oreulia-capabilities.md)
-- [IPC](docs/oreulia-ipc.md)
-- [Persistence](docs/oreulia-persistence.md)
-- [Filesystem](docs/oreulia-filesystem.md)
-- [WASM ABI](docs/oreulia-wasm-abi.md)
-- [Temporal Adapters + Durable Persistence](docs/oreulia-temporal-adapters-durable-persistence.md)
-- [JIT Security Resolution](docs/oreulia-jit-security-resolution.md)
-- [CapNet Scientific Resolution](docs/capnet.md)
-- [Intent Graph Predictive Revocation](docs/oreulia-intent-graph-predictive-revocation.md)
-- [Function/Service Pointer Capabilities](docs/oreulia-service-pointer-capabilities.md)
-- [WASM JIT Pairwise Transition Coverage](docs/oreulia-wasm-jit-pairwise-transition-coverage.md)
-- [WASM/WASI ABI Reference](docs/oreulia-wasm-abi.md)
-- [Assembly Quick Reference](docs/assembly-quick-reference.md)
-- [Code Page Header](docs/codepageheader.md)
-- [Commercial Use Cases](docs/CommercialUseCases.md)
-- [Contributing Guide](docs/CONTRIBUTING.md)
+- [Docs Index](docs/README.md)
+- Project: [Vision](docs/project/oreulia-vision.md), [MVP Specification](docs/project/oreulia-mvp.md), [Commercial Use Cases](docs/project/CommercialUseCases.md)
+- Capability: [Capabilities](docs/capability/oreulia-capabilities.md), [CapNet Scientific Resolution](docs/capability/capnet.md), [Intent Graph Predictive Revocation](docs/capability/oreulia-intent-graph-predictive-revocation.md)
+- IPC and storage: [IPC](docs/ipc/oreulia-ipc.md), [Persistence](docs/storage/oreulia-persistence.md), [Filesystem](docs/storage/oreulia-filesystem.md), [Temporal Adapters + Durable Persistence](docs/storage/oreulia-temporal-adapters-durable-persistence.md)
+- Runtime and services: [WASM ABI](docs/runtime/oreulia-wasm-abi.md), [JIT Security Resolution](docs/runtime/oreulia-jit-security-resolution.md), [Function/Service Pointer Capabilities](docs/services/oreulia-service-pointer-capabilities.md), [WASM JIT Pairwise Transition Coverage](docs/runtime/oreulia-wasm-jit-pairwise-transition-coverage.md)
+- Reference: [Assembly Quick Reference](docs/architecture/assembly-quick-reference.md), [Code Page Header](docs/codepageheader.md)
+- Contributor process: [Contributing Guide](docs/CONTRIBUTING.md)
 - [Contributor License Terms](CONTRIBUTOR-LICENSE.md)
 
 ## Project Layout
@@ -1104,7 +1093,7 @@ oreulia/
 │   ├── ci/              # 14 shell CI scripts (smoke/extended/soak × i686/x86_64/AArch64)
 │   ├── fuzz/            # WASM and CapNet fuzz corpus
 │   └── iso/             # ISO build artifacts
-├── docs/                # Formal and technical documentation
+├── docs/                # Grouped docs (`project/`, `capability/`, `ipc/`, `runtime/`, `services/`, `storage/`, `architecture/`, `assets/`)
 ├── services/            # Service prototypes / planned expansions
 │   └── telemetry_daemon/
 ├── wasm/                # WASM modules and examples

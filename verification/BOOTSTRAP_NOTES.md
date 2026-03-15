@@ -2,10 +2,10 @@
 
 Fresh-state required reading completed:
 - README.md verification + temporal sections
-- docs/oreulia-jit-security-resolution.md
-- docs/capnet.md
-- docs/oreulia-temporal-adapters-durable-persistence.md
-- docs/oreulia-service-pointer-capabilities.md
+- docs/runtime/oreulia-jit-security-resolution.md
+- docs/capability/capnet.md
+- docs/storage/oreulia-temporal-adapters-durable-persistence.md
+- docs/services/oreulia-service-pointer-capabilities.md
 - kernel/src/commands.rs
 - kernel/src/temporal.rs
 - kernel/src/capnet.rs
