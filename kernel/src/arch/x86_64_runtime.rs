@@ -2162,6 +2162,22 @@ fn init_shared_runtime() {
     crate::console_service::init();
     crate::serial_println!("[X64] init quantum scheduler...");
     crate::quantum_scheduler::init();
+    crate::serial_println!("[X64] init gpu...");
+    {
+        let boot_info = crate::arch::boot_info();
+        let mb2_ptr = boot_info.raw_info_ptr.unwrap_or(0) as u32;
+        crate::gpu_support::init(mb2_ptr);
+    }
+
+    // Initialise the new compositor subsystem.  We probe the framebuffer size
+    // from the GPU driver; if no framebuffer is available we initialise at 0×0
+    // (the FbBackend gracefully becomes a no-op in that case).
+    {
+        let (w, h) = crate::gpu_support::active_dimensions();
+        crate::serial_println!("[X64] init compositor ({}x{})...", w, h);
+        crate::compositor::init(w, h);
+        crate::serial_println!("[X64] compositor ready");
+    }
 }
 
 pub fn enter_runtime() -> ! {

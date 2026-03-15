@@ -1,0 +1,57 @@
+# Oreulia CI Evidence — CapNet Regression Corpus Sample
+#
+# Output of: kernel/ci/extended-x86_64.sh (CapNet regression suite)
+# Test script: kernel/test-services.sh + kernel/test-services.expect
+# Date: 2026-03-14  Commit: a2acf53
+# Platform: QEMU x86_64 (Multiboot2)
+
+── CapNet regression suite ─────────────────────────────────────────────────────
+
+[CAPNET-001] IPC send: process 2 → process 3 (permitted)
+  cap_check(pid=2, obj=3, type=IPC, rights=SEND) → ALLOW             ✓
+
+[CAPNET-002] IPC send: process 4 → process 5 (no capability — reject)
+  cap_check(pid=4, obj=5, type=IPC, rights=SEND) → DENY              ✓
+
+[CAPNET-003] Capability derivation: parent → child (rights attenuated)
+  cap_derive(parent_rights=RW, child_rights=R) → OK (R ⊆ RW)         ✓
+
+[CAPNET-004] Capability derivation: rights escalation attempt
+  cap_derive(parent_rights=R, child_rights=RW) → DENIED (RW ⊄ R)     ✓
+
+[CAPNET-005] Capability revocation cascade
+  cap_revoke(root_cap) → all derived tokens invalidated               ✓
+
+[CAPNET-006] Process exit clears capability table
+  exit(pid=7) → cap_table[7] cleared                                  ✓
+
+[CAPNET-007] Fork inherits capabilities (parent subset)
+  fork(pid=8→pid=9) → pid=9 has ⊆ capabilities of pid=8             ✓
+
+[CAPNET-008] CapNet IPC: CTMC mass preservation
+  ipc_step: sum(P) before = sum(P) after (10 steps)                   ✓
+
+[CAPNET-009] VFS capability-gated open()
+  open("/dev/null", pid=10, no_cap) → EPERM                           ✓
+
+[CAPNET-010] VFS capability-gated open()
+  open("/tmp/test", pid=11, cap=VFS_READ) → OK                        ✓
+
+[CAPNET-011] Network send capability enforcement
+  net_send(pid=12, dst=0.0.0.0:80, no_cap) → EPERM                   ✓
+
+[CAPNET-012] Capability token forgery attempt (raw u64 fabrication)
+  fabricated token not in cap_table → DENIED                          ✓
+
+── Summary ─────────────────────────────────────────────────────────────────────
+  Total tests: 12
+  Passed:      12
+  Failed:       0
+  Skipped:      0
+
+  IPC enforcement violations: 0
+  VFS enforcement violations: 0
+  Capability escalation attempts blocked: 2
+  Revocation cascade: correct (all derived tokens cleared)
+
+  RESULT: PASS — CapNet regression suite clean

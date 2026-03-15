@@ -2,6 +2,7 @@
 (* This formalizes the temporal.rs capability mapping using Functors *)
 
 Require Import Stdlib.Init.Logic.
+Require Import Stdlib.Arith.Arith.
 Require Import Stdlib.Structures.Equalities.
 
 (* Abstract representation of a Kernel Capability *)

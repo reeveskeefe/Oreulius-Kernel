@@ -1,0 +1,176 @@
+DIGEST 062ce2d40b8cddfa7b42565b28f12268
+Fscheduler_entropy
+R873:887 Stdlib.Init.Nat <> <> lib
+R905:925 Stdlib.Arith.PeanoNat <> <> lib
+R943:962 Stdlib.micromega.Lia <> <> lib
+def 1200:1210 <> QUANTUM_LOW
+R1215:1217 Corelib.Init.Datatypes <> nat ind
+def 1236:1247 <> QUANTUM_HIGH
+R1251:1253 Corelib.Init.Datatypes <> nat ind
+def 1540:1549 <> MAX_SAMPLE
+R1553:1555 Corelib.Init.Datatypes <> nat ind
+def 1942:1950 <> ewma_step
+R1959:1961 Corelib.Init.Datatypes <> nat ind
+binder 1953:1953 <> e:1
+binder 1955:1955 <> y:2
+R1966:1968 Corelib.Init.Datatypes <> nat ind
+R1973:1973 Stdlib.Arith.PeanoNat <> ::nat_scope:x_'/'_x not
+R1983:1986 Stdlib.Arith.PeanoNat <> ::nat_scope:x_'/'_x not
+R1979:1981 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R1975:1977 Corelib.Init.Nat <> ::nat_scope:x_'*'_x not
+R1978:1978 scheduler_entropy <> e:1 var
+R1982:1982 scheduler_entropy <> y:2 var
+prf 2143:2159 <> ewma_step_bounded
+R2179:2181 Corelib.Init.Datatypes <> nat ind
+binder 2173:2173 <> e:3
+binder 2175:2175 <> y:4
+R2205:2212 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2190:2194 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2189:2189 scheduler_entropy <> e:3 var
+R2195:2204 scheduler_entropy <> MAX_SAMPLE def
+R2229:2236 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2214:2218 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2213:2213 scheduler_entropy <> y:4 var
+R2219:2228 scheduler_entropy <> MAX_SAMPLE def
+R2250:2253 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2237:2245 scheduler_entropy <> ewma_step def
+R2247:2247 scheduler_entropy <> e:3 var
+R2249:2249 scheduler_entropy <> y:4 var
+R2254:2263 scheduler_entropy <> MAX_SAMPLE def
+R2302:2310 scheduler_entropy <> ewma_step def
+R2313:2322 scheduler_entropy <> MAX_SAMPLE def
+R2338:2364 Stdlib.Arith.PeanoNat Nat.Div0 div_le_upper_bound thm
+R2338:2364 Stdlib.Arith.PeanoNat Nat.Div0 div_le_upper_bound thm
+prf 2534:2557 <> ewma_step_monotone_decay
+R2577:2579 Corelib.Init.Datatypes <> nat ind
+binder 2571:2571 <> e:5
+binder 2573:2573 <> y:6
+R2593:2600 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2588:2591 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2587:2587 scheduler_entropy <> y:6 var
+R2592:2592 scheduler_entropy <> e:5 var
+R2614:2617 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2601:2609 scheduler_entropy <> ewma_step def
+R2611:2611 scheduler_entropy <> e:5 var
+R2613:2613 scheduler_entropy <> y:6 var
+R2618:2618 scheduler_entropy <> e:5 var
+R2655:2663 scheduler_entropy <> ewma_step def
+R2738:2764 Stdlib.Arith.PeanoNat Nat.Div0 div_le_upper_bound thm
+R2738:2764 Stdlib.Arith.PeanoNat Nat.Div0 div_le_upper_bound thm
+prf 2943:2963 <> ewma_step_convergence
+R2983:2985 Corelib.Init.Datatypes <> nat ind
+binder 2977:2977 <> e:7
+binder 2979:2979 <> y:8
+R3010:3017 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2994:2997 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2993:2993 scheduler_entropy <> e:7 var
+R2998:3009 scheduler_entropy <> QUANTUM_HIGH def
+R3035:3042 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3019:3022 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R3018:3018 scheduler_entropy <> y:8 var
+R3023:3034 scheduler_entropy <> QUANTUM_HIGH def
+R3056:3059 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R3043:3051 scheduler_entropy <> ewma_step def
+R3053:3053 scheduler_entropy <> e:7 var
+R3055:3055 scheduler_entropy <> y:8 var
+R3060:3071 scheduler_entropy <> QUANTUM_HIGH def
+R3110:3118 scheduler_entropy <> ewma_step def
+R3121:3132 scheduler_entropy <> QUANTUM_HIGH def
+R3148:3174 Stdlib.Arith.PeanoNat Nat.Div0 div_le_upper_bound thm
+R3148:3174 Stdlib.Arith.PeanoNat Nat.Div0 div_le_upper_bound thm
+prf 3568:3590 <> quantum_clamp_in_bounds
+R3608:3610 Corelib.Init.Datatypes <> nat ind
+binder 3604:3604 <> q:9
+R3678:3685 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R3629:3633 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R3618:3628 scheduler_entropy <> QUANTUM_LOW def
+R3634:3640 Stdlib.Arith.PeanoNat Nat max def
+R3642:3652 scheduler_entropy <> QUANTUM_LOW def
+R3655:3661 Stdlib.Arith.PeanoNat Nat min def
+R3663:3674 scheduler_entropy <> QUANTUM_HIGH def
+R3676:3676 scheduler_entropy <> q:9 var
+R3730:3733 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R3686:3692 Stdlib.Arith.PeanoNat Nat max def
+R3694:3704 scheduler_entropy <> QUANTUM_LOW def
+R3707:3713 Stdlib.Arith.PeanoNat Nat min def
+R3715:3726 scheduler_entropy <> QUANTUM_HIGH def
+R3728:3728 scheduler_entropy <> q:9 var
+R3734:3745 scheduler_entropy <> QUANTUM_HIGH def
+R3776:3786 scheduler_entropy <> QUANTUM_LOW def
+R3789:3800 scheduler_entropy <> QUANTUM_HIGH def
+ax 4568:4581 <> entropy_weight
+R4588:4591 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4585:4587 Corelib.Init.Datatypes <> nat ind
+R4592:4594 Corelib.Init.Datatypes <> nat ind
+ax 4603:4624 <> entropy_weight_bounded
+R4642:4644 Corelib.Init.Datatypes <> nat ind
+binder 4638:4638 <> x:12
+R4664:4667 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R4648:4661 scheduler_entropy <> entropy_weight defax
+R4663:4663 scheduler_entropy <> x:12 var
+R4668:4668 scheduler_entropy <> x:12 var
+def 4683:4697 <> entropy_quantum
+R4729:4731 Corelib.Init.Datatypes <> nat ind
+binder 4700:4709 <> ewma_yield:15
+binder 4711:4720 <> ewma_fault:16
+binder 4722:4725 <> base:17
+R4736:4738 Corelib.Init.Datatypes <> nat ind
+R4760:4760 Stdlib.Arith.PeanoNat <> ::nat_scope:x_'/'_x not
+R4799:4802 Stdlib.Arith.PeanoNat <> ::nat_scope:x_'/'_x not
+R4771:4773 Corelib.Init.Nat <> ::nat_scope:x_'*'_x not
+R4761:4770 scheduler_entropy <> ewma_yield:15 var
+R4774:4787 scheduler_entropy <> entropy_weight defax
+R4789:4798 scheduler_entropy <> ewma_yield:15 var
+binder 4749:4754 <> reward:18
+R4826:4826 Stdlib.Arith.PeanoNat <> ::nat_scope:x_'/'_x not
+R4865:4868 Stdlib.Arith.PeanoNat <> ::nat_scope:x_'/'_x not
+R4837:4839 Corelib.Init.Nat <> ::nat_scope:x_'*'_x not
+R4827:4836 scheduler_entropy <> ewma_fault:16 var
+R4840:4853 scheduler_entropy <> entropy_weight defax
+R4855:4864 scheduler_entropy <> ewma_fault:16 var
+binder 4815:4821 <> penalty:19
+R4897:4899 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R4893:4896 scheduler_entropy <> base:17 var
+R4900:4905 scheduler_entropy <> reward:18 var
+binder 4881:4888 <> adjusted:20
+R4980:4986 Stdlib.Arith.PeanoNat Nat leb def
+R4988:4994 scheduler_entropy <> penalty:19 var
+R4996:5003 scheduler_entropy <> adjusted:20 var
+R5018:5020 Corelib.Init.Nat <> ::nat_scope:x_'-'_x not
+R5010:5017 scheduler_entropy <> adjusted:20 var
+R5021:5027 scheduler_entropy <> penalty:19 var
+binder 4964:4972 <> adjusted':21
+R5041:5047 Stdlib.Arith.PeanoNat Nat max def
+R5049:5059 scheduler_entropy <> QUANTUM_LOW def
+R5062:5068 Stdlib.Arith.PeanoNat Nat min def
+R5070:5081 scheduler_entropy <> QUANTUM_HIGH def
+R5083:5091 scheduler_entropy <> adjusted':21 var
+prf 5225:5250 <> entropy_quantum_is_bounded
+R5277:5279 Corelib.Init.Datatypes <> nat ind
+binder 5264:5265 <> ey:22
+binder 5267:5268 <> ef:23
+binder 5270:5273 <> base:24
+R5329:5336 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R5298:5302 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R5287:5297 scheduler_entropy <> QUANTUM_LOW def
+R5303:5317 scheduler_entropy <> entropy_quantum def
+R5319:5320 scheduler_entropy <> ey:22 var
+R5322:5323 scheduler_entropy <> ef:23 var
+R5325:5328 scheduler_entropy <> base:24 var
+R5363:5366 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R5337:5351 scheduler_entropy <> entropy_quantum def
+R5353:5354 scheduler_entropy <> ey:22 var
+R5356:5357 scheduler_entropy <> ef:23 var
+R5359:5362 scheduler_entropy <> base:24 var
+R5367:5378 scheduler_entropy <> QUANTUM_HIGH def
+R5418:5432 scheduler_entropy <> entropy_quantum def
+R5435:5445 scheduler_entropy <> QUANTUM_LOW def
+R5448:5459 scheduler_entropy <> QUANTUM_HIGH def
+prf 5711:5726 <> ewma_step_nonneg
+R5746:5748 Corelib.Init.Datatypes <> nat ind
+binder 5740:5740 <> e:25
+binder 5742:5742 <> y:26
+R5753:5756 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R5757:5765 scheduler_entropy <> ewma_step def
+R5767:5767 scheduler_entropy <> e:25 var
+R5769:5769 scheduler_entropy <> y:26 var

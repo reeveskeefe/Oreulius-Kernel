@@ -1,0 +1,40 @@
+/*!
+ * Display-side damage region tracking.
+ */
+
+pub const MAX_DAMAGE_RECTS: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub struct DisplayDamage {
+    rects: [Option<DamageRect>; MAX_DAMAGE_RECTS],
+    len: usize,
+}
+
+impl DisplayDamage {
+    pub const fn new() -> Self {
+        DisplayDamage {
+            rects: [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None],
+            len: 0,
+        }
+    }
+
+    pub fn push(&mut self, rect: DamageRect) {
+        if self.len < MAX_DAMAGE_RECTS {
+            self.rects[self.len] = Some(rect);
+            self.len += 1;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.rects = [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None];
+        self.len = 0;
+    }
+}
+

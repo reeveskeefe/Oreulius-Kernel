@@ -10430,6 +10430,9 @@ fn cmd_wifi_scan() {
             vga::print_str("Scan failed: ");
             vga::print_str(e.as_str());
             vga::print_str("\n");
+            vga::print_str("[WiFi] Note: wifi-scan requires a physical 802.11 adapter.\n");
+            vga::print_str("[WiFi] This command produces no results in QEMU emulation\n");
+            vga::print_str("[WiFi]   or on hardware without a supported wireless NIC.\n");
             return;
         }
     };
@@ -10525,6 +10528,9 @@ fn cmd_wifi_connect(mut parts: core::str::SplitWhitespace) {
             vga::print_str("Connection failed: ");
             vga::print_str(e.as_str());
             vga::print_str("\n");
+            vga::print_str("[WiFi] Note: wifi-connect requires a physical 802.11 adapter.\n");
+            vga::print_str("[WiFi] This command is not functional in QEMU emulation\n");
+            vga::print_str("[WiFi]   or on hardware without a supported wireless NIC.\n");
         }
     }
 
@@ -10608,6 +10614,9 @@ fn cmd_http_get(mut parts: core::str::SplitWhitespace) {
             vga::print_str("Request failed: ");
             vga::print_str(e.as_str());
             vga::print_str("\n");
+            vga::print_str("[HTTP] Note: http-get requires an active network connection.\n");
+            vga::print_str("[HTTP] In QEMU emulation this command requires a configured\n");
+            vga::print_str("[HTTP]   user-mode or TAP network backend (e.g. -netdev user).\n");
             return;
         }
     };

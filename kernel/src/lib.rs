@@ -24,6 +24,8 @@ use alloc::boxed::Box;
 pub mod arch;
 pub mod capability;
 pub use capability::cap_graph;
+pub mod browser_backend;
+pub mod compositor;
 pub mod crypto;
 pub mod drivers;
 pub mod execution;
@@ -91,7 +93,7 @@ pub use temporal::{persistence, temporal_asm};
 // Drivers — hardware-specific drivers gated per arch.
 #[cfg(not(target_arch = "aarch64"))]
 pub use drivers::{
-    acpi_asm, audio, bluetooth, compositor, dma_asm, framebuffer, gpu_support, input,
+    acpi_asm, audio, bluetooth, dma_asm, framebuffer, gpu_support, input,
     keyboard, memopt_asm, mouse, pci, usb, vga,
 };
 
@@ -223,6 +225,9 @@ pub(crate) fn kernel_timer_tick_hook() {
     {
         crate::quantum_scheduler::on_timer_tick();
     }
+
+    // Pump compositor input + present dirty windows on every tick.
+    crate::compositor::tick();
 }
 
 #[no_mangle]

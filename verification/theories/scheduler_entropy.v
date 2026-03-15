@@ -57,7 +57,7 @@ Lemma ewma_step_bounded :
 Proof.
   intros e y He Hy.
   unfold ewma_step, MAX_SAMPLE in *.
-  lia.
+  apply Nat.Div0.div_le_upper_bound; lia.
 Qed.
 
 (** PMA-SCH-002: EWMA is contractive: if y ≤ e then e' ≤ e.
@@ -70,7 +70,7 @@ Proof.
   intros e y Hle.
   unfold ewma_step.
   (* (7*e + y) / 8 ≤ e  iff  7*e + y ≤ 8*e  iff  y ≤ e *)
-  lia.
+  apply Nat.Div0.div_le_upper_bound; lia.
 Qed.
 
 (** PMA-SCH-003: If e ≤ QUANTUM_HIGH and y ≤ QUANTUM_HIGH,
@@ -84,11 +84,9 @@ Lemma ewma_step_convergence :
 Proof.
   intros e y He Hy.
   unfold ewma_step, QUANTUM_HIGH in *.
-  lia.
+  apply Nat.Div0.div_le_upper_bound; lia.
 Qed.
 
-(* ------------------------------------------------------------------ *)
-(** ** §3  Quantum clamp                                                *)
 (* ------------------------------------------------------------------ *)
 
 (** The adjusted quantum q is clamped to [QUANTUM_LOW, QUANTUM_HIGH]
@@ -130,7 +128,7 @@ Definition entropy_quantum (ewma_yield ewma_fault base : nat) : nat :=
   let reward  := (ewma_yield * entropy_weight ewma_yield) / 16 in
   let penalty := (ewma_fault * entropy_weight ewma_fault) / 16 in
   let adjusted := base + reward in  (* Nat subtraction is saturating by default *)
-  let adjusted' := if adjusted >= penalty then adjusted - penalty else 0 in
+  let adjusted' := if Nat.leb penalty adjusted then adjusted - penalty else 0 in
   Nat.max QUANTUM_LOW (Nat.min QUANTUM_HIGH adjusted').
 
 (** PMA-SCH-005: The composite entropy quantum is always in

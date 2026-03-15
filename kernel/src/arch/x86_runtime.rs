@@ -428,10 +428,7 @@ pub fn enter_runtime() -> ! {
         crate::gpu_support::init(mb2_ptr);
         crate::vga::print_str("[GPU] Framebuffer ready\n");
 
-        let (w, h) = {
-            let fb = crate::gpu_support::GPU_FB.lock();
-            fb.as_ref().map(|f| (f.width(), f.height())).unwrap_or((1024, 768))
-        };
+        let (w, h) = crate::gpu_support::active_dimensions();
         crate::compositor::init(w, h);
     }
 

@@ -13,3 +13,37 @@ jobs:
       - uses: actions/checkout@v4
       - name: Baseline verification structure
         run: bash verification/scripts/proof_check.sh
+
+  coq-proofs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Coq (Rocq Prover)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y coq
+          coqc --version
+      - name: Compile temporal_logic.v
+        working-directory: verification/theories
+        run: coqc temporal_logic.v
+      - name: Compile ipc_flow.v
+        working-directory: verification/theories
+        run: coqc ipc_flow.v
+      - name: Compile wx_cfi.v
+        working-directory: verification/theories
+        run: coqc wx_cfi.v
+      - name: Compile lock_dag.v
+        working-directory: verification/theories
+        run: coqc lock_dag.v
+      - name: Compile scheduler_entropy.v
+        working-directory: verification/theories
+        run: coqc scheduler_entropy.v
+      - name: Upload .vo artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coq-vo-artifacts
+          path: |
+            verification/theories/*.vo
+            verification/theories/*.vok
+            verification/theories/*.vos
+          retention-days: 90

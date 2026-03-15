@@ -1,88 +1,261 @@
-DIGEST 1444a4bcf1c9475329e1f2a3854ac191
+DIGEST 57972959950f07e026d10f9abf74c1d0
 Ftemporal_logic
 R168:184 Stdlib.Init.Logic <> <> lib
-R202:229 Stdlib.Structures.Equalities <> <> lib
-ax 296:305 <> Capability
-ax 325:329 <> Valid
-R343:346 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R333:342 temporal_logic <> Capability defax
-rec 420:433 <> TemporalWindow
-proj 462:466 <> value
-proj 475:483 <> timestamp
-binder 436:436 <> A:5
-R470:470 temporal_logic <> A:5 var
-R487:489 Corelib.Init.Datatypes <> nat ind
-def 551:554 <> fmap
-binder 557:557 <> A:9
-binder 559:559 <> B:10
-R575:578 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R574:574 temporal_logic <> A:9 var
-R579:579 temporal_logic <> B:10 var
-binder 570:570 <> f:11
-R587:600 temporal_logic <> TemporalWindow rec
-R602:602 temporal_logic <> A:9 var
-binder 583:583 <> w:12
-R607:620 temporal_logic <> TemporalWindow rec
-R622:622 temporal_logic <> B:10 var
-R629:636 temporal_logic <> mkWindow constr
-R638:638 temporal_logic <> B:10 var
-R641:641 temporal_logic <> f:11 var
-R644:648 temporal_logic <> value proj
-R650:650 temporal_logic <> A:9 var
-R652:652 temporal_logic <> w:12 var
-R657:665 temporal_logic <> timestamp proj
-R667:667 temporal_logic <> A:9 var
-R669:669 temporal_logic <> w:12 var
-prf 741:759 <> temporal_functor_id
-binder 771:771 <> A:13
-R786:799 temporal_logic <> TemporalWindow rec
-R801:801 temporal_logic <> A:13 var
-binder 782:782 <> w:14
-R826:828 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R807:810 temporal_logic <> fmap def
-R825:825 temporal_logic <> w:14 var
-binder 817:817 <> x:15
-R822:822 temporal_logic <> x:15 var
-R829:829 temporal_logic <> w:14 var
-R876:879 temporal_logic <> fmap def
-prf 909:929 <> temporal_functor_comp
-binder 941:941 <> A:16
-binder 943:943 <> B:17
-binder 945:945 <> C:18
-R961:964 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R960:960 temporal_logic <> A:16 var
-R965:965 temporal_logic <> B:17 var
-binder 956:956 <> f:19
-R974:977 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R973:973 temporal_logic <> B:17 var
-R978:978 temporal_logic <> C:18 var
-binder 969:969 <> g:20
-R986:999 temporal_logic <> TemporalWindow rec
-R1001:1001 temporal_logic <> A:16 var
-binder 982:982 <> w:21
-R1024:1026 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R1007:1010 temporal_logic <> fmap def
-R1015:1018 temporal_logic <> fmap def
-R1022:1022 temporal_logic <> w:21 var
-R1020:1020 temporal_logic <> f:19 var
-R1012:1012 temporal_logic <> g:20 var
-R1027:1030 temporal_logic <> fmap def
-R1051:1051 temporal_logic <> w:21 var
-binder 1037:1037 <> x:22
-R1042:1042 temporal_logic <> g:20 var
-R1045:1045 temporal_logic <> f:19 var
-R1047:1047 temporal_logic <> x:22 var
-R1106:1109 temporal_logic <> fmap def
-ax 1235:1241 <> Revoked
-R1255:1258 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R1245:1254 temporal_logic <> Capability defax
-ax 1271:1282 <> revoke_axiom
-R1298:1307 temporal_logic <> Capability defax
-binder 1294:1294 <> c:25
-R1318:1321 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R1311:1315 temporal_logic <> Valid defax
-R1317:1317 temporal_logic <> c:25 var
-R1331:1334 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R1322:1328 temporal_logic <> Revoked defax
-R1330:1330 temporal_logic <> c:25 var
-R1335:1339 Corelib.Init.Logic <> False ind
+R202:219 Stdlib.Arith.Arith <> <> lib
+R237:264 Stdlib.Structures.Equalities <> <> lib
+ax 331:340 <> Capability
+ax 360:364 <> Valid
+R378:381 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R368:377 temporal_logic <> Capability defax
+ax 398:403 <> Rights
+R417:420 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R407:416 temporal_logic <> Capability defax
+R421:423 Corelib.Init.Datatypes <> nat ind
+rec 493:506 <> TemporalWindow
+proj 535:539 <> value
+proj 548:556 <> timestamp
+binder 509:509 <> A:7
+R543:543 temporal_logic <> A:7 var
+R560:562 Corelib.Init.Datatypes <> nat ind
+def 624:627 <> fmap
+binder 630:630 <> A:11
+binder 632:632 <> B:12
+R648:651 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R647:647 temporal_logic <> A:11 var
+R652:652 temporal_logic <> B:12 var
+binder 643:643 <> f:13
+R660:673 temporal_logic <> TemporalWindow rec
+R675:675 temporal_logic <> A:11 var
+binder 656:656 <> w:14
+R680:693 temporal_logic <> TemporalWindow rec
+R695:695 temporal_logic <> B:12 var
+R702:709 temporal_logic <> mkWindow constr
+R711:711 temporal_logic <> B:12 var
+R714:714 temporal_logic <> f:13 var
+R717:721 temporal_logic <> value proj
+R723:723 temporal_logic <> A:11 var
+R725:725 temporal_logic <> w:14 var
+R730:738 temporal_logic <> timestamp proj
+R740:740 temporal_logic <> A:11 var
+R742:742 temporal_logic <> w:14 var
+prf 814:832 <> temporal_functor_id
+binder 844:844 <> A:15
+R859:872 temporal_logic <> TemporalWindow rec
+R874:874 temporal_logic <> A:15 var
+binder 855:855 <> w:16
+R899:901 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R880:883 temporal_logic <> fmap def
+R898:898 temporal_logic <> w:16 var
+binder 890:890 <> x:17
+R895:895 temporal_logic <> x:17 var
+R902:902 temporal_logic <> w:16 var
+R949:952 temporal_logic <> fmap def
+prf 982:1002 <> temporal_functor_comp
+binder 1014:1014 <> A:18
+binder 1016:1016 <> B:19
+binder 1018:1018 <> C:20
+R1034:1037 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1033:1033 temporal_logic <> A:18 var
+R1038:1038 temporal_logic <> B:19 var
+binder 1029:1029 <> f:21
+R1047:1050 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1046:1046 temporal_logic <> B:19 var
+R1051:1051 temporal_logic <> C:20 var
+binder 1042:1042 <> g:22
+R1059:1072 temporal_logic <> TemporalWindow rec
+R1074:1074 temporal_logic <> A:18 var
+binder 1055:1055 <> w:23
+R1097:1099 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1080:1083 temporal_logic <> fmap def
+R1088:1091 temporal_logic <> fmap def
+R1095:1095 temporal_logic <> w:23 var
+R1093:1093 temporal_logic <> f:21 var
+R1085:1085 temporal_logic <> g:22 var
+R1100:1103 temporal_logic <> fmap def
+R1124:1124 temporal_logic <> w:23 var
+binder 1110:1110 <> x:24
+R1115:1115 temporal_logic <> g:22 var
+R1118:1118 temporal_logic <> f:21 var
+R1120:1120 temporal_logic <> x:24 var
+R1179:1182 temporal_logic <> fmap def
+ax 1308:1314 <> Revoked
+R1328:1331 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1318:1327 temporal_logic <> Capability defax
+ax 1344:1355 <> revoke_axiom
+R1371:1380 temporal_logic <> Capability defax
+binder 1367:1367 <> c:27
+R1391:1394 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1384:1388 temporal_logic <> Valid defax
+R1390:1390 temporal_logic <> c:27 var
+R1404:1407 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1395:1401 temporal_logic <> Revoked defax
+R1403:1403 temporal_logic <> c:27 var
+R1408:1412 Corelib.Init.Logic <> False ind
+def 1549:1553 <> Merge
+binder 1556:1556 <> A:30
+R1573:1586 temporal_logic <> TemporalWindow rec
+R1588:1588 temporal_logic <> A:30 var
+binder 1566:1567 <> w1:31
+binder 1569:1570 <> w2:32
+R1596:1599 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1595:1595 temporal_logic <> A:30 var
+R1601:1604 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1600:1600 temporal_logic <> A:30 var
+R1605:1605 temporal_logic <> A:30 var
+binder 1592:1592 <> f:33
+R1613:1620 temporal_logic <> mkWindow constr
+R1622:1622 temporal_logic <> A:30 var
+R1625:1625 temporal_logic <> f:33 var
+R1641:1645 temporal_logic <> value proj
+R1647:1647 temporal_logic <> A:30 var
+R1649:1650 temporal_logic <> w2:32 var
+R1628:1632 temporal_logic <> value proj
+R1634:1634 temporal_logic <> A:30 var
+R1636:1637 temporal_logic <> w1:31 var
+R1655:1663 temporal_logic <> timestamp proj
+R1665:1665 temporal_logic <> A:30 var
+R1667:1668 temporal_logic <> w2:32 var
+prf 1679:1709 <> temporal_merge_preserves_bounds
+binder 1721:1721 <> A:34
+R1738:1751 temporal_logic <> TemporalWindow rec
+R1753:1753 temporal_logic <> A:34 var
+binder 1731:1732 <> w1:35
+binder 1734:1735 <> w2:36
+R1761:1764 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1760:1760 temporal_logic <> A:34 var
+R1766:1769 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1765:1765 temporal_logic <> A:34 var
+R1770:1770 temporal_logic <> A:34 var
+binder 1757:1757 <> f:37
+R1803:1805 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1776:1784 temporal_logic <> timestamp proj
+R1786:1786 temporal_logic <> A:34 var
+R1789:1793 temporal_logic <> Merge def
+R1801:1801 temporal_logic <> f:37 var
+R1798:1799 temporal_logic <> w2:36 var
+R1795:1796 temporal_logic <> w1:35 var
+R1806:1814 temporal_logic <> timestamp proj
+R1816:1816 temporal_logic <> A:34 var
+R1818:1819 temporal_logic <> w2:36 var
+R1858:1862 temporal_logic <> Merge def
+ax 1949:1957 <> Attenuate
+R1971:1974 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1961:1970 temporal_logic <> Capability defax
+R1975:1984 temporal_logic <> Capability defax
+ax 1993:2014 <> attenuate_rights_axiom
+binder 2025:2025 <> c:40
+R2048:2051 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2028:2033 temporal_logic <> Rights defax
+R2036:2044 temporal_logic <> Attenuate defax
+R2046:2046 temporal_logic <> c:40 var
+R2052:2057 temporal_logic <> Rights defax
+R2059:2059 temporal_logic <> c:40 var
+prf 2069:2095 <> capability_attenuation_safe
+R2111:2120 temporal_logic <> Capability defax
+binder 2107:2107 <> c:43
+R2146:2149 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2126:2131 temporal_logic <> Rights defax
+R2134:2142 temporal_logic <> Attenuate defax
+R2144:2144 temporal_logic <> c:43 var
+R2150:2155 temporal_logic <> Rights defax
+R2157:2157 temporal_logic <> c:43 var
+R2187:2208 temporal_logic <> attenuate_rights_axiom prfax
+R2187:2208 temporal_logic <> attenuate_rights_axiom prfax
+ax 3027:3057 <> attenuate_revocation_propagates
+R3075:3084 temporal_logic <> Capability defax
+binder 3071:3071 <> c:44
+R3097:3100 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3088:3094 temporal_logic <> Revoked defax
+R3096:3096 temporal_logic <> c:44 var
+R3101:3107 temporal_logic <> Revoked defax
+R3110:3118 temporal_logic <> Attenuate defax
+R3120:3120 temporal_logic <> c:44 var
+prf 3350:3384 <> temporal_attenuated_revocation_safe
+R3402:3411 temporal_logic <> Capability defax
+binder 3398:3398 <> c:47
+R3428:3435 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3419:3425 temporal_logic <> Revoked defax
+R3427:3427 temporal_logic <> c:47 var
+R3436:3437 Corelib.Init.Logic <> ::type_scope:'~'_x not
+R3438:3442 temporal_logic <> Valid defax
+R3445:3453 temporal_logic <> Attenuate defax
+R3455:3455 temporal_logic <> c:47 var
+R3502:3532 temporal_logic <> attenuate_revocation_propagates prfax
+R3502:3532 temporal_logic <> attenuate_revocation_propagates prfax
+R3552:3563 temporal_logic <> revoke_axiom prfax
+R3566:3574 temporal_logic <> Attenuate defax
+R3552:3563 temporal_logic <> revoke_axiom prfax
+R3566:3574 temporal_logic <> Attenuate defax
+prf 3807:3833 <> double_attenuation_monotone
+R3851:3860 temporal_logic <> Capability defax
+binder 3847:3847 <> c:48
+R3900:3903 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R3868:3873 temporal_logic <> Rights defax
+R3876:3884 temporal_logic <> Attenuate defax
+R3887:3895 temporal_logic <> Attenuate defax
+R3897:3897 temporal_logic <> c:48 var
+R3904:3909 temporal_logic <> Rights defax
+R3911:3911 temporal_logic <> c:48 var
+R3965:3970 temporal_logic <> Rights defax
+R3973:3981 temporal_logic <> Attenuate defax
+R3941:3952 Stdlib.Arith.PeanoNat Nat le_trans thm
+R3965:3970 temporal_logic <> Rights defax
+R3973:3981 temporal_logic <> Attenuate defax
+R3941:3952 Stdlib.Arith.PeanoNat Nat le_trans thm
+R3998:4019 temporal_logic <> attenuate_rights_axiom prfax
+R3998:4019 temporal_logic <> attenuate_rights_axiom prfax
+R4032:4053 temporal_logic <> attenuate_rights_axiom prfax
+R4032:4053 temporal_logic <> attenuate_rights_axiom prfax
+prf 4138:4161 <> fmap_preserves_timestamp
+binder 4175:4175 <> A:49
+binder 4177:4177 <> B:50
+R4193:4196 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4192:4192 temporal_logic <> A:49 var
+R4197:4197 temporal_logic <> B:50 var
+binder 4188:4188 <> f:51
+R4205:4218 temporal_logic <> TemporalWindow rec
+R4220:4220 temporal_logic <> A:49 var
+binder 4201:4201 <> w:52
+R4250:4252 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4228:4236 temporal_logic <> timestamp proj
+R4238:4238 temporal_logic <> B:50 var
+R4241:4244 temporal_logic <> fmap def
+R4248:4248 temporal_logic <> w:52 var
+R4246:4246 temporal_logic <> f:51 var
+R4253:4261 temporal_logic <> timestamp proj
+R4263:4263 temporal_logic <> A:49 var
+R4265:4265 temporal_logic <> w:52 var
+R4302:4305 temporal_logic <> fmap def
+prf 4522:4554 <> temporal_merge_timestamp_monotone
+binder 4568:4568 <> A:53
+R4587:4600 temporal_logic <> TemporalWindow rec
+R4602:4602 temporal_logic <> A:53 var
+binder 4579:4580 <> w1:54
+binder 4582:4583 <> w2:55
+R4611:4614 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4610:4610 temporal_logic <> A:53 var
+R4616:4619 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4615:4615 temporal_logic <> A:53 var
+R4620:4620 temporal_logic <> A:53 var
+binder 4606:4606 <> f:56
+R4660:4667 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4642:4645 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R4628:4636 temporal_logic <> timestamp proj
+R4638:4638 temporal_logic <> A:53 var
+R4640:4641 temporal_logic <> w1:54 var
+R4646:4654 temporal_logic <> timestamp proj
+R4656:4656 temporal_logic <> A:53 var
+R4658:4659 temporal_logic <> w2:55 var
+R4682:4685 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R4668:4676 temporal_logic <> timestamp proj
+R4678:4678 temporal_logic <> A:53 var
+R4680:4681 temporal_logic <> w1:54 var
+R4686:4694 temporal_logic <> timestamp proj
+R4696:4696 temporal_logic <> A:53 var
+R4699:4703 temporal_logic <> Merge def
+R4711:4711 temporal_logic <> f:56 var
+R4708:4709 temporal_logic <> w2:55 var
+R4705:4706 temporal_logic <> w1:54 var
+R4754:4784 temporal_logic <> temporal_merge_preserves_bounds thm
+R4754:4784 temporal_logic <> temporal_merge_preserves_bounds thm
+R4754:4784 temporal_logic <> temporal_merge_preserves_bounds thm

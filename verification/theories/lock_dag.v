@@ -25,6 +25,7 @@
 
 Require Import Stdlib.Init.Nat.
 Require Import Stdlib.Arith.PeanoNat.
+Require Import Stdlib.Arith.Arith.
 Require Import Stdlib.micromega.Lia.
 
 (* ------------------------------------------------------------------ *)
@@ -161,19 +162,14 @@ Lemma may_acquire_dec :
 Proof.
   intros a b.
   unfold may_acquire.
-  destruct (Nat.lt_decidable b a) as [H | H].
+  destruct (lt_dec b a) as [H | H].
   - left. exact H.
   - right. exact H.
 Qed.
 
-(** Sanity check via native_compute: *)
-Example irq_sched_check :
-  may_acquire DAG_LEVEL_IRQ DAG_LEVEL_SCHEDULER = True \/
-  may_acquire DAG_LEVEL_IRQ DAG_LEVEL_SCHEDULER = False.
+(** Sanity check: IRQ level (10) can acquire Scheduler level (20) since 20 > 10. *)
+Example irq_sched_check : may_acquire DAG_LEVEL_IRQ DAG_LEVEL_SCHEDULER.
 Proof.
-  left.
   unfold may_acquire, DAG_LEVEL_IRQ, DAG_LEVEL_SCHEDULER.
-  (* 10 < 20 is trivially true *)
-  apply PropExtensionality.propext.
-  split; [trivial | lia].
+  lia.
 Qed.
