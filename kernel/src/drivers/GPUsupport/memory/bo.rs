@@ -18,7 +18,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::ipc::ProcessId;
 
@@ -33,7 +33,7 @@ pub const BO_SLAB_SIZE: usize = 256;
 // ID counter
 // ---------------------------------------------------------------------------
 
-static NEXT_BO_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_BO_ID: AtomicU32 = AtomicU32::new(1);
 
 fn alloc_bo_id() -> u64 {
     NEXT_BO_ID.fetch_add(1, Ordering::Relaxed)

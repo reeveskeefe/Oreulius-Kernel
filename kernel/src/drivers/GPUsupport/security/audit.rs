@@ -13,7 +13,7 @@
  */
 
 use spin::Mutex;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -61,12 +61,12 @@ pub struct GpuAuditEntry {
     _pad: [u8; 3],
 }
 
-static NEXT_AUDIT_SEQ: AtomicU64 = AtomicU64::new(1);
+static NEXT_AUDIT_SEQ: AtomicU32 = AtomicU32::new(1);
 
 impl GpuAuditEntry {
     pub fn new(event: GpuAuditEvent, pid: u32, data: u64) -> Self {
         GpuAuditEntry {
-            seq: NEXT_AUDIT_SEQ.fetch_add(1, Ordering::Relaxed),
+            seq: NEXT_AUDIT_SEQ.fetch_add(1, Ordering::Relaxed) as u64,
             data,
             event,
             pid,

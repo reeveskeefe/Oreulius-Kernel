@@ -20,7 +20,7 @@
  * always lives in the table.
  */
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 use crate::drivers::gpu_support::telemetry::counters;
 
@@ -37,7 +37,7 @@ const SPIN_ITER_PER_TICK: usize = 1_000;
 // ID allocator
 // ---------------------------------------------------------------------------
 
-static NEXT_FENCE_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_FENCE_ID: AtomicU32 = AtomicU32::new(1);
 
 fn alloc_fence_id() -> u64 {
     NEXT_FENCE_ID.fetch_add(1, Ordering::Relaxed)
