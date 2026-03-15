@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 echo "=== Building Oreulia kernel (AArch64 QEMU virt bring-up) ==="
 
-TOOLCHAIN="${TOOLCHAIN:-+nightly-2023-11-01}"
+TOOLCHAIN="${TOOLCHAIN:-+nightly-2024-01-01}"
 RUST_TARGET="${RUST_TARGET:-aarch64-unknown-none}"
 RUST_LIB="target/${RUST_TARGET}/release/liboreulia_kernel.a"
 OUT_DIR="target/aarch64-virt"

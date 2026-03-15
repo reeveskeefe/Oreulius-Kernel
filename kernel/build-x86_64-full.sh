@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 echo "=== Building Oreulia kernel (x86_64 Multiboot2 path) ==="
 
-TOOLCHAIN="${TOOLCHAIN:-+nightly-2023-11-01}"
+TOOLCHAIN="${TOOLCHAIN:-+nightly-2024-01-01}"
 RUST_TARGET="x86_64-unknown-none"
 RUST_LIB="target/${RUST_TARGET}/release/liboreulia_kernel.a"
 OUT_DIR="target/x86_64-mb2"

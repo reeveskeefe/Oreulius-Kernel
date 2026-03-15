@@ -40,7 +40,7 @@ const SPIN_ITER_PER_TICK: usize = 1_000;
 static NEXT_FENCE_ID: AtomicU32 = AtomicU32::new(1);
 
 fn alloc_fence_id() -> u64 {
-    NEXT_FENCE_ID.fetch_add(1, Ordering::Relaxed)
+    NEXT_FENCE_ID.fetch_add(1, Ordering::Relaxed) as u64
 }
 
 // ---------------------------------------------------------------------------

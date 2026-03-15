@@ -36,7 +36,7 @@ pub const BO_SLAB_SIZE: usize = 256;
 static NEXT_BO_ID: AtomicU32 = AtomicU32::new(1);
 
 fn alloc_bo_id() -> u64 {
-    NEXT_BO_ID.fetch_add(1, Ordering::Relaxed)
+    NEXT_BO_ID.fetch_add(1, Ordering::Relaxed) as u64
 }
 
 // ---------------------------------------------------------------------------

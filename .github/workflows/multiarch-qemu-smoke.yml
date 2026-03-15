@@ -41,13 +41,17 @@ jobs:
             mtools \
             qemu-system-x86 \
             qemu-system-arm \
-            binutils-aarch64-linux-gnu
+            binutils-aarch64-linux-gnu \
+            lld
 
       - name: Install Rust nightly (kernel toolchain)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2023-11-01
-          components: rust-src
+          toolchain: nightly-2024-01-01
+          components: rust-src,llvm-tools
+
+      - name: Add rust-src for build-std target
+        run: rustup component add rust-src --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
 
       - name: Make scripts executable
         run: chmod +x ./build*.sh ./run*.sh ./ci/*.sh
