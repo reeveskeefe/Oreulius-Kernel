@@ -35,13 +35,14 @@ jobs:
             xorriso \
             grub-pc-bin \
             grub-common \
-            mtools
+            mtools \
+            lld
 
       - name: Install Rust nightly (kernel toolchain)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2023-11-01
-          components: rust-src
+          toolchain: nightly-2024-01-01
+          components: rust-src,llvm-tools
 
       - name: Build kernel ISO
         run: ./build.sh

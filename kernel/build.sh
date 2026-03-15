@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "=== Building Oreulia OS ==="
 
-TOOLCHAIN="+nightly-2023-11-01"
+TOOLCHAIN="+nightly-2024-01-01"
 RUST_TARGET="./i686-oreulia.json"
 RUST_LIB="target/i686-oreulia/release/liboreulia_kernel.a"
 
