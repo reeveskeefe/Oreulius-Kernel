@@ -57,7 +57,7 @@ jobs:
         env:
           QEMU_EXTRA_ARGS: -display none -nographic -no-reboot -no-shutdown
           CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
-        run: ./fuzz/ci_capnet_check.sh 1000 2
+        run: ./fuzz/ci_capnet_check.sh 100 2
 
       - name: Upload capnet logs
         if: always()

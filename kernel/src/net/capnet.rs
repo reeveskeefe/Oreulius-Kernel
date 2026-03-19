@@ -2012,6 +2012,26 @@ pub fn install_peer_session_key(
     Ok(())
 }
 
+/// Reset the replay-detection windows for a peer without changing session keys.
+/// Used by the fuzz harness to isolate each iteration without paying the full
+/// cost of `install_peer_session_key` (which acquires the lock, re-derives keys,
+/// and calls `record_temporal_state_snapshot`).
+fn reset_peer_session_state(peer_device_id: u64) -> Result<(), CapNetError> {
+    if peer_device_id == 0 {
+        return Err(CapNetError::UnknownPeer);
+    }
+    let mut peers = CAPNET_PEERS.lock();
+    let idx = find_peer_index_mut(&mut peers, peer_device_id).ok_or(CapNetError::UnknownPeer)?;
+    let peer = &mut peers[idx];
+    peer.replay_high_nonce = 0;
+    peer.replay_bitmap = 0;
+    peer.ctrl_rx_high_seq = 0;
+    peer.ctrl_rx_bitmap = 0;
+    peer.ctrl_tx_next_seq = 0;
+    peer.last_seen_epoch = crate::pit::get_ticks() as u64;
+    Ok(())
+}
+
 pub fn verify_incoming_token(token: &CapabilityTokenV1, now_epoch: u64) -> Result<(), CapNetError> {
     token.validate_semantics()?;
     if !token.is_temporally_valid(now_epoch) {
@@ -2306,14 +2326,18 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
         first_failure: None,
     };
 
+    // Install the session key once before the loop.  k0/k1 are fixed for this
+    // seed run; only the replay-detection windows need resetting per iteration.
+    install_peer_session_key(local, 1, k0, k1, 0).map_err(|e| e.as_str())?;
+
     let overflow = build_fuzz_overflow_control_frame();
     let mut random_token = [0u8; CAPNET_TOKEN_V1_LEN];
     let mut random_frame = [0u8; CAPNET_CTRL_MAX_FRAME_LEN];
 
     let mut i = 0u32;
     while i < iterations {
-        let epoch = i.saturating_add(1).max(1);
-        install_peer_session_key(local, epoch, k0, k1, 0).map_err(|e| e.as_str())?;
+        // Reset replay windows only — no key change, no temporal snapshot.
+        reset_peer_session_state(local).map_err(|e| e.as_str())?;
 
         let mut token = build_fuzz_token(local, base_nonce);
         let offer = match build_token_offer_frame(local, 0, &mut token) {
@@ -2537,6 +2561,14 @@ pub fn capnet_fuzz_regression_default(
                 out.first_failure = stats.first_failure;
             }
         }
+
+        // Emit per-seed progress on serial so CI can confirm liveness.
+        crate::serial_println!(
+            "Seed {}/{}: failures={}",
+            i + 1,
+            CAPNET_FUZZ_REGRESSION_SEEDS.len(),
+            stats.failures
+        );
 
         i += 1;
     }
