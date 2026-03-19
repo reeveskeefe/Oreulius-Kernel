@@ -18627,89 +18627,95 @@ pub fn jit_fuzz_regression_soak_default(
     Ok(out)
 }
 
+fn deinit_self_check_process(pid: ProcessId) {
+    let _ = revoke_service_pointers_for_owner(pid);
+    let _ = unload_modules_for_owner(pid);
+    capability::capability_manager().deinit_task(pid);
+    crate::security::security().terminate_process(pid);
+}
+
+fn reset_self_check_process(pid: ProcessId) {
+    deinit_self_check_process(pid);
+    crate::security::security().init_process(pid);
+    capability::capability_manager().init_task(pid);
+}
+
 pub fn formal_service_pointer_self_check() -> Result<(), &'static str> {
     let provider = ProcessId(62);
     let consumer = ProcessId(63);
-    capability::capability_manager().init_task(provider);
-    capability::capability_manager().init_task(consumer);
+    reset_self_check_process(provider);
+    reset_self_check_process(consumer);
 
-    // Provider function: i32.const 42; return; end.
-    let code: [u8; 4] = [0x41, 0x2A, 0x0F, 0x0B];
-    let instance_id = wasm_runtime()
-        .instantiate(&code, provider)
-        .map_err(|_| "Service pointer self-check: instance creation failed")?;
+    let mut instance_id: Option<usize> = None;
+    let result = (|| -> Result<(), &'static str> {
+        // Provider function: i32.const 42; return; end.
+        let code: [u8; 4] = [0x41, 0x2A, 0x0F, 0x0B];
+        let id = wasm_runtime()
+            .instantiate(&code, provider)
+            .map_err(|_| "Service pointer self-check: instance creation failed")?;
+        instance_id = Some(id);
 
-    let func = Function {
-        code_offset: 0,
-        code_len: code.len(),
-        param_count: 0,
-        result_count: 1,
-        local_count: 0,
-    };
-    let set_func = wasm_runtime().get_instance_mut(instance_id, |inst| {
-        inst.module.add_function(func).map(|_| ())
-    });
-    if !matches!(set_func, Ok(Ok(()))) {
-        let _ = wasm_runtime().destroy(instance_id);
-        capability::capability_manager().deinit_task(consumer);
-        capability::capability_manager().deinit_task(provider);
-        return Err("Service pointer self-check: failed to install function");
+        let func = Function {
+            code_offset: 0,
+            code_len: code.len(),
+            param_count: 0,
+            result_count: 1,
+            local_count: 0,
+        };
+        let set_func = wasm_runtime().get_instance_mut(id, |inst| {
+            inst.module.add_function(func).map(|_| ())
+        });
+        if !matches!(set_func, Ok(Ok(()))) {
+            return Err("Service pointer self-check: failed to install function");
+        }
+
+        let no_delegate = register_service_pointer(provider, id, 0, false)?;
+        if capability::export_capability_to_ipc(provider, no_delegate.cap_id).is_ok() {
+            return Err("Service pointer self-check: delegate right not enforced");
+        }
+
+        let delegatable = register_service_pointer(provider, id, 0, true)?;
+        let exported = capability::export_capability_to_ipc(provider, delegatable.cap_id)
+            .map_err(|_| "Service pointer self-check: export failed")?;
+        let imported_cap_id = capability::import_capability_from_ipc(consumer, &exported, provider)
+            .map_err(|_| "Service pointer self-check: import failed")?;
+        let (_cap_type, imported_object) = capability::capability_manager()
+            .query_capability(consumer, imported_cap_id)
+            .map_err(|_| "Service pointer self-check: imported capability missing")?;
+
+        let result = invoke_service_pointer(consumer, imported_object, &[])?;
+        if result != 42 {
+            return Err("Service pointer self-check: unexpected invoke result");
+        }
+
+        revoke_service_pointer(provider, imported_object)
+            .map_err(|_| "Service pointer self-check: revoke failed")?;
+        if invoke_service_pointer(consumer, imported_object, &[]).is_ok() {
+            return Err("Service pointer self-check: revoked pointer still invokable");
+        }
+        if capability::capability_manager()
+            .query_capability(consumer, imported_cap_id)
+            .is_ok()
+        {
+            return Err("Service pointer self-check: revoked capability not removed");
+        }
+
+        Ok(())
+    })();
+
+    if let Some(id) = instance_id {
+        let _ = wasm_runtime().destroy(id);
     }
-
-    let no_delegate = register_service_pointer(provider, instance_id, 0, false)?;
-    if capability::export_capability_to_ipc(provider, no_delegate.cap_id).is_ok() {
-        let _ = wasm_runtime().destroy(instance_id);
-        capability::capability_manager().deinit_task(consumer);
-        capability::capability_manager().deinit_task(provider);
-        return Err("Service pointer self-check: delegate right not enforced");
-    }
-
-    let delegatable = register_service_pointer(provider, instance_id, 0, true)?;
-    let exported = capability::export_capability_to_ipc(provider, delegatable.cap_id)
-        .map_err(|_| "Service pointer self-check: export failed")?;
-    let imported_cap_id = capability::import_capability_from_ipc(consumer, &exported, provider)
-        .map_err(|_| "Service pointer self-check: import failed")?;
-    let (_cap_type, imported_object) = capability::capability_manager()
-        .query_capability(consumer, imported_cap_id)
-        .map_err(|_| "Service pointer self-check: imported capability missing")?;
-
-    let result = invoke_service_pointer(consumer, imported_object, &[])?;
-    if result != 42 {
-        let _ = wasm_runtime().destroy(instance_id);
-        capability::capability_manager().deinit_task(consumer);
-        capability::capability_manager().deinit_task(provider);
-        return Err("Service pointer self-check: unexpected invoke result");
-    }
-
-    revoke_service_pointer(provider, imported_object)
-        .map_err(|_| "Service pointer self-check: revoke failed")?;
-    if invoke_service_pointer(consumer, imported_object, &[]).is_ok() {
-        let _ = wasm_runtime().destroy(instance_id);
-        capability::capability_manager().deinit_task(consumer);
-        capability::capability_manager().deinit_task(provider);
-        return Err("Service pointer self-check: revoked pointer still invokable");
-    }
-    if capability::capability_manager()
-        .query_capability(consumer, imported_cap_id)
-        .is_ok()
-    {
-        let _ = wasm_runtime().destroy(instance_id);
-        capability::capability_manager().deinit_task(consumer);
-        capability::capability_manager().deinit_task(provider);
-        return Err("Service pointer self-check: revoked capability not removed");
-    }
-
-    let _ = wasm_runtime().destroy(instance_id);
-    capability::capability_manager().deinit_task(consumer);
-    capability::capability_manager().deinit_task(provider);
-    Ok(())
+    deinit_self_check_process(consumer);
+    deinit_self_check_process(provider);
+    result
 }
 
 pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
     let provider = ProcessId(74);
     let consumer = ProcessId(75);
-    capability::capability_manager().init_task(provider);
-    capability::capability_manager().init_task(consumer);
+    reset_self_check_process(provider);
+    reset_self_check_process(consumer);
 
     let mut provider_instance: Option<usize> = None;
     let mut consumer_instance: Option<usize> = None;
@@ -18869,14 +18875,14 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
     if let Some(id) = provider_instance {
         let _ = wasm_runtime().destroy(id);
     }
-    capability::capability_manager().deinit_task(consumer);
-    capability::capability_manager().deinit_task(provider);
+    deinit_self_check_process(consumer);
+    deinit_self_check_process(provider);
     result
 }
 
 pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
     let pid = ProcessId(76);
-    capability::capability_manager().init_task(pid);
+    reset_self_check_process(pid);
 
     const PATH: &str = "/temporal-selfcheck";
     const INITIAL: &[u8] = b"alpha-temporal";
@@ -19049,7 +19055,7 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
     if let Some(id) = instance_id {
         let _ = wasm_runtime().destroy(id);
     }
-    capability::capability_manager().deinit_task(pid);
+    deinit_self_check_process(pid);
     result
 }
 

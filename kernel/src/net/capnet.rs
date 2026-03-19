@@ -382,7 +382,7 @@ const CAPNET_INCOMING_QUEUE_DEPTH: usize = 8;
 
 struct IncomingFrameSlot {
     active: bool,
-    frame:  EncodedControlFrame,
+    frame: EncodedControlFrame,
 }
 
 impl IncomingFrameSlot {
@@ -401,18 +401,22 @@ impl IncomingFrameSlot {
 
 struct IncomingQueue {
     slots: [IncomingFrameSlot; CAPNET_INCOMING_QUEUE_DEPTH],
-    head:  usize,
-    tail:  usize,
+    head: usize,
+    tail: usize,
 }
 
 impl IncomingQueue {
     const fn new() -> Self {
         IncomingQueue {
             slots: [
-                IncomingFrameSlot::empty(), IncomingFrameSlot::empty(),
-                IncomingFrameSlot::empty(), IncomingFrameSlot::empty(),
-                IncomingFrameSlot::empty(), IncomingFrameSlot::empty(),
-                IncomingFrameSlot::empty(), IncomingFrameSlot::empty(),
+                IncomingFrameSlot::empty(),
+                IncomingFrameSlot::empty(),
+                IncomingFrameSlot::empty(),
+                IncomingFrameSlot::empty(),
+                IncomingFrameSlot::empty(),
+                IncomingFrameSlot::empty(),
+                IncomingFrameSlot::empty(),
+                IncomingFrameSlot::empty(),
             ],
             head: 0,
             tail: 0,
@@ -2032,6 +2036,66 @@ fn reset_peer_session_state(peer_device_id: u64) -> Result<(), CapNetError> {
     Ok(())
 }
 
+fn reset_fuzz_harness_state(
+    peer_device_id: u64,
+    key_epoch: u32,
+    k0: u64,
+    k1: u64,
+) -> Result<(), CapNetError> {
+    if peer_device_id == 0 || key_epoch == 0 {
+        return Err(CapNetError::UnknownPeer);
+    }
+
+    let now = crate::pit::get_ticks() as u64;
+
+    {
+        let mut peers = CAPNET_PEERS.lock();
+        let mut i = 0usize;
+        while i < peers.len() {
+            peers[i] = PeerSession::empty();
+            i += 1;
+        }
+        peers[0] = PeerSession {
+            active: true,
+            peer_device_id,
+            trust: PeerTrustPolicy::Audit,
+            measurement_hash: 0,
+            key_epoch,
+            key_k0: k0,
+            key_k1: k1,
+            replay_high_nonce: 0,
+            replay_bitmap: 0,
+            ctrl_rx_high_seq: 0,
+            ctrl_rx_bitmap: 0,
+            ctrl_tx_next_seq: 0,
+            last_seen_epoch: now,
+        };
+    }
+
+    {
+        let mut records = CAPNET_DELEGATION_RECORDS.lock();
+        let mut i = 0usize;
+        while i < records.len() {
+            records[i] = DelegationRecord::empty();
+            i += 1;
+        }
+    }
+
+    {
+        let mut tombstones = CAPNET_REVOCATION_TOMBSTONES.lock();
+        let mut i = 0usize;
+        while i < tombstones.len() {
+            tombstones[i] = RevocationTombstone::empty();
+            i += 1;
+        }
+    }
+
+    *CAPNET_NEXT_REVOCATION_EPOCH.lock() = 1;
+    *CAPNET_INCOMING_QUEUE.lock() = IncomingQueue::new();
+    crate::capability::clear_remote_leases_for_testing();
+    Ok(())
+}
+
 pub fn verify_incoming_token(token: &CapabilityTokenV1, now_epoch: u64) -> Result<(), CapNetError> {
     token.validate_semantics()?;
     if !token.is_temporally_valid(now_epoch) {
@@ -2298,7 +2362,6 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
 
     init();
     let local = local_device_id().ok_or("CapNet local identity unavailable")?;
-    register_peer(local, PeerTrustPolicy::Audit, 0).map_err(|e| e.as_str())?;
 
     let mut rng = CapNetFuzzRng::new(seed ^ 0xC4A9_7E11_42D8_F00D);
     let mut k0 = seed ^ 0xA5A5_A5A5_A5A5_A5A5;
@@ -2326,18 +2389,15 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
         first_failure: None,
     };
 
-    // Install the session key once before the loop.  k0/k1 are fixed for this
-    // seed run; only the replay-detection windows need resetting per iteration.
-    install_peer_session_key(local, 1, k0, k1, 0).map_err(|e| e.as_str())?;
-
     let overflow = build_fuzz_overflow_control_frame();
     let mut random_token = [0u8; CAPNET_TOKEN_V1_LEN];
     let mut random_frame = [0u8; CAPNET_CTRL_MAX_FRAME_LEN];
 
     let mut i = 0u32;
     while i < iterations {
-        // Reset replay windows only — no key change, no temporal snapshot.
-        reset_peer_session_state(local).map_err(|e| e.as_str())?;
+        // Rebuild the full loopback CapNet state so accepted tokens, revocations,
+        // and remote leases from earlier iterations cannot perturb later checks.
+        reset_fuzz_harness_state(local, 1, k0, k1).map_err(|e| e.as_str())?;
 
         let mut token = build_fuzz_token(local, base_nonce);
         let offer = match build_token_offer_frame(local, 0, &mut token) {
@@ -2507,6 +2567,7 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
         i = i.saturating_add(1);
     }
 
+    reset_fuzz_harness_state(local, 1, k0, k1).map_err(|e| e.as_str())?;
     Ok(stats)
 }
 

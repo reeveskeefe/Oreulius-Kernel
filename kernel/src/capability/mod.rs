@@ -262,7 +262,9 @@ impl OreuliaCapability {
             0,
             object_id,
             CapabilityType::CrossLanguage,
-            Rights { bits: Rights::SERVICE_INVOKE },
+            Rights {
+                bits: Rights::SERVICE_INVOKE,
+            },
             origin,
         );
         cap.label_hash = lang_tag as u32;
@@ -884,15 +886,17 @@ impl CapabilityManager {
             // Notify kernel observers about the capability grant.
             #[cfg(not(target_arch = "aarch64"))]
             let payload = [
-                pid.0.to_le_bytes()[0], pid.0.to_le_bytes()[1],
-                pid.0.to_le_bytes()[2], pid.0.to_le_bytes()[3],
-                cap_type as u8, 0, 0, 0,
+                pid.0.to_le_bytes()[0],
+                pid.0.to_le_bytes()[1],
+                pid.0.to_le_bytes()[2],
+                pid.0.to_le_bytes()[3],
+                cap_type as u8,
+                0,
+                0,
+                0,
             ];
             #[cfg(not(target_arch = "aarch64"))]
-            crate::wasm::observer_notify(
-                crate::wasm::observer_events::CAPABILITY_OP,
-                &payload,
-            );
+            crate::wasm::observer_notify(crate::wasm::observer_events::CAPABILITY_OP, &payload);
             Ok(cap_id)
         } else {
             Err(CapabilityError::TaskNotFound)
@@ -917,9 +921,13 @@ impl CapabilityManager {
 
         // Capability graph: check invariants before completing the transfer.
         self::cap_graph::check_invariants(
-            from_pid.0, cap_id, to_pid.0,
-            cap.rights.bits(), cap.rights.bits(),
-        ).map_err(|_| CapabilityError::SecurityViolation)?;
+            from_pid.0,
+            cap_id,
+            to_pid.0,
+            cap.rights.bits(),
+            cap.rights.bits(),
+        )
+        .map_err(|_| CapabilityError::SecurityViolation)?;
 
         // Install in destination
         if let Some(to_table) = tables[to_pid.0 as usize].as_mut() {
@@ -930,13 +938,18 @@ impl CapabilityManager {
 
             // Record the delegation edge.
             let _ = self::cap_graph::record_delegation(
-                from_pid.0, cap_id,
-                to_pid.0,   new_cap_id,
+                from_pid.0,
+                cap_id,
+                to_pid.0,
+                new_cap_id,
                 cap.rights.bits(),
             );
             crate::serial_println!(
                 "[cap_graph] delegation recorded: pid={} cap={} -> pid={} cap={}",
-                from_pid.0, cap_id, to_pid.0, new_cap_id
+                from_pid.0,
+                cap_id,
+                to_pid.0,
+                new_cap_id
             );
 
             // Audit transfer
@@ -1448,6 +1461,32 @@ impl CapabilityManager {
         let leases = self.remote_leases.lock();
         *leases
     }
+
+    /// Clear all remote leases and any local mappings they installed.
+    ///
+    /// This is used by deterministic self-tests/fuzzing so stale owner-bound
+    /// leases from earlier iterations do not bleed into later checks.
+    pub fn clear_remote_leases_for_testing(&self) {
+        {
+            let mut tables = self.tables.lock();
+            let mut leases = self.remote_leases.lock();
+            for entry in leases.iter_mut() {
+                let lease = match entry.take() {
+                    Some(lease) => lease,
+                    None => continue,
+                };
+                if !lease.owner_any && lease.mapped_cap_id != 0 {
+                    self.remove_remote_cap_mapping(
+                        &mut tables,
+                        lease.owner_pid,
+                        lease.mapped_cap_id,
+                    );
+                }
+            }
+        }
+
+        *self.next_remote_cap_id.lock() = 1;
+    }
 }
 
 // ============================================================================
@@ -1803,6 +1842,10 @@ pub fn revoke_remote_lease_by_token(token_id: u64) -> bool {
     CAPABILITY_MANAGER.revoke_remote_lease_by_token(token_id)
 }
 
+pub fn clear_remote_leases_for_testing() {
+    CAPABILITY_MANAGER.clear_remote_leases_for_testing();
+}
+
 pub fn formal_capability_self_check() -> Result<(), &'static str> {
     let owner = ProcessId::new(42);
     let mut cap = OreuliaCapability::new(
@@ -1924,15 +1967,17 @@ impl CapabilityManager {
         // Notify kernel observers about the capability revocation.
         #[cfg(not(target_arch = "aarch64"))]
         let payload = [
-            pid.0.to_le_bytes()[0], pid.0.to_le_bytes()[1],
-            pid.0.to_le_bytes()[2], pid.0.to_le_bytes()[3],
-            cap.cap_type as u8, 1, 0, 0, // 1 = revoke
+            pid.0.to_le_bytes()[0],
+            pid.0.to_le_bytes()[1],
+            pid.0.to_le_bytes()[2],
+            pid.0.to_le_bytes()[3],
+            cap.cap_type as u8,
+            1,
+            0,
+            0, // 1 = revoke
         ];
         #[cfg(not(target_arch = "aarch64"))]
-        crate::wasm::observer_notify(
-            crate::wasm::observer_events::CAPABILITY_OP,
-            &payload,
-        );
+        crate::wasm::observer_notify(crate::wasm::observer_events::CAPABILITY_OP, &payload);
         Ok(())
     }
 
@@ -1968,12 +2013,14 @@ impl CapabilityManager {
         }
         let tables = self.tables.lock();
         match tables[idx].as_ref() {
-            None        => [None; MAX_CAPABILITIES],
+            None => [None; MAX_CAPABILITIES],
             Some(table) => {
                 let mut out = [None; MAX_CAPABILITIES];
                 let mut k = 0usize;
                 for entry in table.entries.iter() {
-                    if k >= MAX_CAPABILITIES { break; }
+                    if k >= MAX_CAPABILITIES {
+                        break;
+                    }
                     if entry.is_some() {
                         out[k] = *entry;
                         k += 1;
