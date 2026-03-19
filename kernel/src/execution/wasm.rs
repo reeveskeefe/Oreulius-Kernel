@@ -12120,7 +12120,15 @@ impl WasmRuntime {
         if x64_diag {
             crate::serial_println!("[X64-JF] instantiate=instance-new");
         }
-        let mut instance = Box::new(WasmInstance::new(module, process_id, slot_idx));
+        // Allocate on the heap first to avoid constructing the large WasmInstance
+        // (~54 KiB) on the kernel stack, which would cause a stack overflow.
+        let mut instance: Box<WasmInstance> = {
+            let mut uninit = Box::<WasmInstance>::new_uninit();
+            unsafe {
+                uninit.as_mut_ptr().write(WasmInstance::new(module, process_id, slot_idx));
+                uninit.assume_init()
+            }
+        };
         #[cfg(target_arch = "x86_64")]
         if x64_diag {
             crate::serial_println!("[X64-JF] instantiate=init-from-module");

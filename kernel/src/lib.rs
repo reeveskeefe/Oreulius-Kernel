@@ -17,6 +17,7 @@
 
 #![no_std]
 #![feature(alloc_error_handler)]
+#![feature(new_uninit)]
 
 extern crate alloc;
 use alloc::boxed::Box;
