@@ -326,6 +326,20 @@ pub(crate) fn x86_64_debug_recover_stats() -> (usize, usize, u64, usize, u64, u8
     (0, 0, 0, 0, 0, 0)
 }
 
+/// Identity-map a physical MMIO range into the kernel page tables so device
+/// memory is accessible before the first write.  On x86_64 this installs
+/// writable identity PTEs in the live CR3.  On other architectures (or when
+/// the paging module owns the mapping on x86) this is a no-op — callers are
+/// expected to use the arch-appropriate path for those targets.
+#[cfg(target_arch = "x86_64")]
+pub fn map_mmio_identity_range(phys: usize, size: usize) {
+    mmu_x86_64::map_mmio_identity_range(phys, size);
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn map_mmio_identity_range(_phys: usize, _size: usize) {}
+
+
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 pub(crate) fn aarch64_alloc_debug_page() -> Result<usize, &'static str> {

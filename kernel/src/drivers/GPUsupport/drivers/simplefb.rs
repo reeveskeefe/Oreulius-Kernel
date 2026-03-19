@@ -251,12 +251,24 @@ pub fn activate(mb2_ptr: u32) -> Result<VesaMode, GpuError> {
     // write to front_ptr without triggering a page fault.  The kernel page
     // tables only cover low RAM by default; the Bochs/VBE LFB lives at
     // 0xFD000000 which is well above that range.
+    //
+    // On x86 (i686) the legacy paging module owns the active page tables via
+    // KERNEL_ADDRESS_SPACE.  On x86_64 the MMU module owns the live CR3 and
+    // KERNEL_ADDRESS_SPACE is always None, so we call the x86_64-specific
+    // map_mmio_identity_range shim instead.
     let fb_phys = mode.phys_addr as usize;
     let fb_size = mode.framebuffer_bytes();
     if fb_phys != 0 && fb_size != 0 {
-        let mut guard = crate::paging::KERNEL_ADDRESS_SPACE.lock();
-        if let Some(space) = guard.as_mut() {
-            let _ = space.map_mmio_range(fb_phys, fb_size);
+        #[cfg(target_arch = "x86_64")]
+        {
+            crate::arch::mmu::map_mmio_identity_range(fb_phys, fb_size);
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            let mut guard = crate::paging::KERNEL_ADDRESS_SPACE.lock();
+            if let Some(space) = guard.as_mut() {
+                let _ = space.map_mmio_range(fb_phys, fb_size);
+            }
         }
     }
 

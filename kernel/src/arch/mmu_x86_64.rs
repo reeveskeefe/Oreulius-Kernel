@@ -900,6 +900,28 @@ impl ArchMmu for X86_64Mmu {
     }
 }
 
+/// Identity-map a physical MMIO range into the current x86_64 page tables so
+/// that device memory (e.g. the Bochs/VBE LFB at 0xFD000000) is accessible
+/// to the kernel before the first write.  Each page in [phys, phys+size) is
+/// installed as a writable, non-user-accessible identity PTE in the live CR3.
+/// Safe to call from init context before the heap is active (uses the static
+/// boot PT pool).  Silently ignores failures so boot can continue.
+pub(crate) fn map_mmio_identity_range(phys: usize, size: usize) {
+    if size == 0 {
+        return;
+    }
+    let start = align_down(phys, PAGE_SIZE);
+    // align_up: round phys+size up to the next page boundary
+    let end_raw = phys.saturating_add(size);
+    let end = (end_raw.wrapping_add(PAGE_SIZE - 1)) & !(PAGE_SIZE - 1);
+    let root = unsafe { MMU.read_cr3() };
+    let mut page = start;
+    while page < end {
+        let _ = unsafe { X86_64Mmu::map_identity_page_boot(root, page, true) };
+        page = page.saturating_add(PAGE_SIZE);
+    }
+}
+
 pub(crate) fn debug_virt_to_phys(virt_addr: usize) -> Option<usize> {
     unsafe { X86_64Mmu::virt_to_phys_with_root(MMU.read_cr3(), virt_addr) }
 }
