@@ -47,10 +47,22 @@ jobs:
       - name: Add rust-src for build-std target
         run: rustup component add rust-src --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
 
+      - name: Create log directory
+        run: mkdir -p ./ci/logs
+
       - name: Build kernel ISO
         run: ./build.sh
 
       - name: Replay CapNet corpus + soak + formal checks
         env:
           QEMU_EXTRA_ARGS: -display none -nographic -no-reboot -no-shutdown
+          CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
         run: ./fuzz/ci_capnet_check.sh 1000 2
+
+      - name: Upload capnet logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capnet-regression-logs
+          path: kernel/ci/logs/*.log
+          if-no-files-found: ignore

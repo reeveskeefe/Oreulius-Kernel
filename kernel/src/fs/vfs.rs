@@ -4728,7 +4728,7 @@ fn pid_key(pid: Pid) -> u32 {
 
 #[cfg(target_arch = "aarch64")]
 fn pid_key(pid: Pid) -> u32 {
-    pid
+    pid.0
 }
 
 fn allocate_vfs_storage_namespace() -> u64 {

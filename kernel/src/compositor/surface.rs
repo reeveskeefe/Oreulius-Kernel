@@ -57,7 +57,10 @@ impl Surface {
         }
         let pixels = (width as usize).saturating_mul(height as usize);
         let bytes = pixels.saturating_mul(BPP);
+        #[cfg(not(target_arch = "aarch64"))]
         let page_size = crate::paging::PAGE_SIZE;
+        #[cfg(target_arch = "aarch64")]
+        let page_size = 4096usize;
         let pages = (bytes + page_size - 1) / page_size;
 
         let base = memory::allocate_pages(pages).ok()?;
@@ -78,7 +81,10 @@ impl Surface {
             // page allocator.  `free_pages` does not exist in the current
             // allocator (bump-style), so we just zero and mark dead; the
             // pages will be reclaimed on process exit via the page table.
+            #[cfg(not(target_arch = "aarch64"))]
             let page_size = crate::paging::PAGE_SIZE;
+            #[cfg(target_arch = "aarch64")]
+            let page_size = 4096usize;
             unsafe {
                 core::ptr::write_bytes(self.ptr as *mut u8, 0, self.pages * page_size);
             }

@@ -13,9 +13,19 @@ if [[ "${soak_rounds}" -lt 1 || "${soak_rounds}" -gt 50 ]]; then
     exit 1
 fi
 
-log_file="$(mktemp -t oreulia-jit-corpus.XXXXXX.log)"
-trap 'rm -f "${log_file}"' EXIT
+# Write logs to a stable directory so GitHub Actions artifact uploads work.
+log_dir="${CI_LOG_DIR:-}"
+if [[ -z "${log_dir}" ]]; then
+    if [[ -n "${GITHUB_WORKSPACE:-}" ]]; then
+        log_dir="${GITHUB_WORKSPACE}/kernel/ci/logs"
+    else
+        log_dir="$(pwd)/ci/logs"
+    fi
+fi
+mkdir -p "${log_dir}"
+log_file="${log_dir}/wasm_jit_corpus.log"
 
+export LOG_DIR="${log_dir}"
 export QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:--display none -nographic -no-reboot -no-shutdown}"
 
 echo "Running external corpus replay (iters=${iters}, soak_rounds=${soak_rounds})..."

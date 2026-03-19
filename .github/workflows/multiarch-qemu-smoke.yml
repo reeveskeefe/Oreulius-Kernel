@@ -56,16 +56,21 @@ jobs:
       - name: Make scripts executable
         run: chmod +x ./build*.sh ./run*.sh ./ci/*.sh
 
+      - name: Create log directory
+        run: mkdir -p ./ci/logs
+
       - name: Run i686 QEMU shell smoke
         if: matrix.arch == 'i686'
         env:
           QEMU_AUDIO_DRV: none
+          CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
         run: ./ci/smoke-i686.sh
 
       - name: Run x86_64 QEMU shell smoke
         if: matrix.arch == 'x86_64'
         env:
           QEMU_AUDIO_DRV: none
+          CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
         run: ./ci/smoke-x86_64.sh
 
       - name: Run AArch64 QEMU shell smoke (VFS/block)
@@ -75,4 +80,13 @@ jobs:
           LD_BIN: aarch64-linux-gnu-ld
           OBJCOPY_BIN: aarch64-linux-gnu-objcopy
           QEMU_AUDIO_DRV: none
+          CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
         run: ./ci/smoke-aarch64.sh
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiarch-qemu-smoke-${{ matrix.arch }}
+          path: kernel/ci/logs/*.log
+          if-no-files-found: ignore

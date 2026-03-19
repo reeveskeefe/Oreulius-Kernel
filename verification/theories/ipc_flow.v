@@ -22,11 +22,11 @@
  * Traceability: PMA-IPC-001 .. PMA-IPC-004
  *)
 
-Require Import Stdlib.Init.Nat.
-Require Import Stdlib.Init.Datatypes.
-Require Import Stdlib.ZArith.ZArith.
-Require Import Stdlib.micromega.Lia.
-Require Import Stdlib.Lists.List.
+From Coq Require Import Init.Nat.
+From Coq Require Import Init.Datatypes.
+From Coq Require Import ZArith.ZArith.
+From Coq Require Import micromega.Lia.
+From Coq Require Import Lists.List.
 Import ListNotations.
 Open Scope Z_scope.
 

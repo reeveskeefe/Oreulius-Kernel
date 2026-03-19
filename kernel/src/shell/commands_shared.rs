@@ -79,7 +79,7 @@ fn aarch64_spawn_process(parent_pid: Option<u32>) -> Result<u32, &'static str> {
         .spawn("a64-task", parent)
         .map_err(|e| e.as_str())?;
     if let Some(parent_pid) = parent {
-        let _ = crate::vfs::inherit_process_capability(parent_pid.0, spawned.0, None);
+        let _ = crate::vfs::inherit_process_capability(parent_pid, spawned, None);
     }
     Ok(spawned.0)
 }
@@ -90,7 +90,7 @@ fn aarch64_destroy_process(pid: u32) -> Result<(), &'static str> {
     crate::process::process_manager()
         .terminate(pid)
         .map_err(|e| e.as_str())?;
-    crate::vfs::clear_process_capability(pid.0);
+    crate::vfs::clear_process_capability(pid);
     if crate::process::current_pid() == Some(pid) {
         let _ = crate::process::set_current_runtime_pid(crate::process::Pid::new(0));
     }

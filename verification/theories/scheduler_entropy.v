@@ -21,9 +21,9 @@
  * Traceability: PMA-SCH-001 .. PMA-SCH-004
  *)
 
-Require Import Stdlib.Init.Nat.
-Require Import Stdlib.Arith.PeanoNat.
-Require Import Stdlib.micromega.Lia.
+From Coq Require Import Init.Nat.
+From Coq Require Import Arith.PeanoNat.
+From Coq Require Import micromega.Lia.
 
 (* ------------------------------------------------------------------ *)
 (** ** §1  Constants                                                    *)

@@ -293,6 +293,7 @@ impl NetworkStack {
         let prev_has_interface = self.has_interface;
         let prev_mac = self.my_mac;
         self.has_interface = true;
+        #[cfg(not(target_arch = "aarch64"))]
         if let Some(mac) = super::e1000::get_mac_address() {
             self.my_mac = MacAddr(mac);
         }
@@ -305,8 +306,11 @@ impl NetworkStack {
 
     /// Check if network is ready
     pub fn is_ready(&self) -> bool {
-        // Check if E1000 driver is available
-        super::e1000::get_mac_address().is_some()
+        // On AArch64 use virtio-net; on x86 check the E1000 driver.
+        #[cfg(not(target_arch = "aarch64"))]
+        return super::e1000::get_mac_address().is_some();
+        #[cfg(target_arch = "aarch64")]
+        return self.has_interface;
     }
 
     // ========================================================================
@@ -314,6 +318,7 @@ impl NetworkStack {
     // ========================================================================
 
     /// Send ARP request
+    #[cfg(not(target_arch = "aarch64"))]
     fn send_arp_request(&mut self, target_ip: Ipv4Addr) -> Result<(), &'static str> {
         let mut driver = super::e1000::E1000_DRIVER.lock();
         let interface = driver.as_mut().ok_or("No E1000 driver")?;
@@ -350,6 +355,10 @@ impl NetworkStack {
 
         interface.send_frame(&frame)
     }
+    #[cfg(target_arch = "aarch64")]
+    fn send_arp_request(&mut self, _target_ip: Ipv4Addr) -> Result<(), &'static str> {
+        Err("ARP not supported on AArch64")
+    }
 
     /// Process received ARP packet
     fn handle_arp(&mut self, packet: &[u8]) -> Result<(), &'static str> {
@@ -380,6 +389,7 @@ impl NetworkStack {
     }
 
     /// Send ARP reply
+    #[cfg(not(target_arch = "aarch64"))]
     fn send_arp_reply(&mut self, dest_mac: MacAddr, dest_ip: Ipv4Addr) -> Result<(), &'static str> {
         let mut driver = super::e1000::E1000_DRIVER.lock();
         let interface = driver.as_mut().ok_or("No E1000 driver")?;
@@ -416,6 +426,10 @@ impl NetworkStack {
 
         interface.send_frame(&frame)
     }
+    #[cfg(target_arch = "aarch64")]
+    fn send_arp_reply(&mut self, _dest_mac: MacAddr, _dest_ip: Ipv4Addr) -> Result<(), &'static str> {
+        Err("ARP not supported on AArch64")
+    }
 
     /// Resolve IP to MAC address (with ARP)
     fn resolve_mac(&mut self, ip: Ipv4Addr) -> Result<MacAddr, &'static str> {
@@ -451,6 +465,7 @@ impl NetworkStack {
     // ========================================================================
 
     /// Send UDP packet
+    #[cfg(not(target_arch = "aarch64"))]
     fn send_udp(
         &mut self,
         dest_ip: Ipv4Addr,
@@ -547,8 +562,13 @@ impl NetworkStack {
 
         driver.send_frame(&frame[..offset])
     }
+    #[cfg(target_arch = "aarch64")]
+    fn send_udp(&mut self, _dest_ip: Ipv4Addr, _dest_port: u16, _src_port: u16, _data: &[u8]) -> Result<(), &'static str> {
+        Err("UDP send not supported on AArch64")
+    }
 
     /// Receive UDP packet (simplified - returns payload if matches port)
+    #[cfg(not(target_arch = "aarch64"))]
     fn recv_udp(&mut self, expected_port: u16, buffer: &mut [u8]) -> Result<usize, &'static str> {
         // Use E1000 driver directly
         let mut driver = super::e1000::E1000_DRIVER.lock();
@@ -591,8 +611,12 @@ impl NetworkStack {
         buffer[..payload_len].copy_from_slice(&frame[udp_offset + 8..udp_offset + 8 + payload_len]);
         Ok(payload_len)
     }
+    #[cfg(target_arch = "aarch64")]
+    fn recv_udp(&mut self, _expected_port: u16, _buffer: &mut [u8]) -> Result<usize, &'static str> {
+        Err("UDP recv not supported on AArch64")
+    }
 
-    // ========================================================================
+    // ============================================================================
     // CapNet Control Channel (UDP)
     // ========================================================================
 
@@ -1042,6 +1066,7 @@ impl NetworkStack {
     // ========================================================================
 
     /// Poll for incoming packets once (reads from NIC internally).
+    #[cfg(not(target_arch = "aarch64"))]
     pub fn poll_once(&mut self) -> Result<(), &'static str> {
         let mut frame = [0u8; 1514];
         let frame_len = {
@@ -1054,6 +1079,10 @@ impl NetworkStack {
         };
 
         self.dispatch_frame(&frame[..frame_len])
+    }
+    #[cfg(target_arch = "aarch64")]
+    pub fn poll_once(&mut self) -> Result<(), &'static str> {
+        Ok(())
     }
 
     /// Dispatch a pre-read Ethernet frame through the protocol stack.
@@ -2096,6 +2125,7 @@ fn conn_recv_window(conn: &TcpConn) -> u16 {
     free.min(0xFFFF) as u16
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn send_tcp_segment(
     stack: &mut NetworkStack,
     ep: TcpEndpoint,
@@ -2181,6 +2211,7 @@ fn send_tcp_segment(
 ///   kind=2 len=4 MSS=1460  (4 bytes)
 ///   kind=3 len=3 wscale=TCP_WSCALE  NOP  (3+1=4 bytes, aligned)
 /// Total TCP options = 8 bytes → tcp_header_len = 28.
+#[cfg(not(target_arch = "aarch64"))]
 fn send_syn_segment(
     stack: &mut NetworkStack,
     ep: TcpEndpoint,
@@ -2258,6 +2289,31 @@ fn send_syn_segment(
     let mut driver = super::e1000::E1000_DRIVER.lock();
     let interface = driver.as_mut().ok_or("No E1000 driver")?;
     interface.send_frame(&frame[..total_len])
+}
+
+#[cfg(target_arch = "aarch64")]
+fn send_tcp_segment(
+    _stack: &mut NetworkStack,
+    _ep: TcpEndpoint,
+    _seq: u32,
+    _ack: u32,
+    _flags: u16,
+    _payload: &[u8],
+    _adv_window: u16,
+) -> Result<(), &'static str> {
+    Err("TCP not supported on AArch64")
+}
+
+#[cfg(target_arch = "aarch64")]
+fn send_syn_segment(
+    _stack: &mut NetworkStack,
+    _ep: TcpEndpoint,
+    _seq: u32,
+    _ack: u32,
+    _flags: u16,
+    _adv_window: u16,
+) -> Result<(), &'static str> {
+    Err("TCP not supported on AArch64")
 }
 
 fn record_last(conn: &mut TcpConn, flags: u16, seq: u32, ack: u32, payload: &[u8]) {
@@ -2783,6 +2839,23 @@ impl NetworkStack {
 // ============================================================================
 
 fn calculate_checksum(data: &[u8]) -> u16 {
-    // Use assembly implementation for 8x performance boost
-    crate::asm_bindings::ip_checksum(data)
+    // Use assembly implementation on x86; software fallback on AArch64.
+    #[cfg(not(target_arch = "aarch64"))]
+    return crate::asm_bindings::ip_checksum(data);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut sum: u32 = 0;
+        let mut i = 0;
+        while i + 1 < data.len() {
+            sum += u16::from_be_bytes([data[i], data[i + 1]]) as u32;
+            i += 2;
+        }
+        if i < data.len() {
+            sum += (data[i] as u32) << 8;
+        }
+        while sum >> 16 != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        !(sum as u16)
+    }
 }

@@ -173,6 +173,7 @@ static mut NET_STACK: NetworkStack = NetworkStack::new();
 
 /// IRQ hook: ack device and mark pending RX work.
 pub fn on_irq() {
+    #[cfg(not(target_arch = "aarch64"))]
     super::e1000::handle_irq();
     NET_IRQ_PENDING.fetch_add(1, Ordering::Relaxed);
 }
@@ -193,16 +194,22 @@ fn process_irq(stack: &mut NetworkStack) -> usize {
 
     // Drain up to RX_BUDGET frames with one spinlock acquire + one RDT write.
     let received = {
-        let mut driver = super::e1000::E1000_DRIVER.lock();
-        match driver.as_mut() {
-            None => 0,
-            Some(nic) => unsafe {
-                nic.recv_frames_burst(&mut BURST_BUFS, &mut BURST_LENS, RX_BURST_BUFS)
-            },
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let mut driver = super::e1000::E1000_DRIVER.lock();
+            match driver.as_mut() {
+                None => 0,
+                Some(nic) => unsafe {
+                    nic.recv_frames_burst(&mut BURST_BUFS, &mut BURST_LENS, RX_BURST_BUFS)
+                },
+            }
         }
+        #[cfg(target_arch = "aarch64")]
+        { 0usize }
     };
 
     // Update adaptive ITR based on observed burst depth.
+    #[cfg(not(target_arch = "aarch64"))]
     {
         let mut driver = super::e1000::E1000_DRIVER.lock();
         if let Some(nic) = driver.as_mut() {

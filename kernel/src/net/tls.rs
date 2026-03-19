@@ -203,7 +203,10 @@ impl TcpConn {
             self.src_port, self.dst_port,
             self.snd_nxt, self.rcv_nxt,
             flags, opts, payload);
+        #[cfg(not(target_arch = "aarch64"))]
         super::rtl8139::send(&frame[..n]);
+        #[cfg(target_arch = "aarch64")]
+        let _ = (&frame[..n], n);
     }
 
     fn connect(&mut self, dst_ip: Ip4, dst_port: u16, dst_mac: Mac) {
@@ -1059,7 +1062,10 @@ impl TlsSession {
 
     pub fn tick(&mut self) {
         let mut frame = [0u8; 1600];
+        #[cfg(not(target_arch = "aarch64"))]
         let n = super::rtl8139::recv(&mut frame);
+        #[cfg(target_arch = "aarch64")]
+        let n = 0usize;
         if n > 0 { self.tcp.feed_frame(&frame[..n]); }
 
         match self.state {

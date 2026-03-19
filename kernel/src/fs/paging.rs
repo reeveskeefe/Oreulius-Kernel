@@ -658,6 +658,21 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Identity-map a physical MMIO range into the kernel address space (writable, not
+    /// user-accessible).  Use this to make device MMIO regions (e.g. a GPU framebuffer)
+    /// accessible to the kernel before the first write.
+    pub fn map_mmio_range(&mut self, phys_start: usize, size: usize) -> Result<(), &'static str> {
+        if size == 0 {
+            return Ok(());
+        }
+        let start = align_down(phys_start, PAGE_SIZE);
+        let end = align_up(
+            phys_start.checked_add(size).ok_or("MMIO range overflow")?,
+            PAGE_SIZE,
+        );
+        Self::map_range_identity_high(&mut self.page_directory, start, end, true)
+    }
+
     /// Map a physical range into user virtual memory (user-accessible pages).
     pub fn map_user_range_phys(
         &mut self,

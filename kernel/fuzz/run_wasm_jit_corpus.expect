@@ -4,7 +4,16 @@
 # Run from `kernel/`:
 #   ./fuzz/run_wasm_jit_corpus.expect 1000
 
+# ---- whole-harness deadline ----
+set harness_timeout 3300
+after [expr {$harness_timeout * 1000}] {
+    puts "FATAL: WASM JIT harness exceeded ${harness_timeout}s wall-clock limit"
+    catch {exec kill -9 [exp_pid]}
+    exit 2
+}
+
 set timeout 120
+# send_slow: 1 char per 50 ms — avoids QEMU 16550A serial FIFO overruns.
 set send_slow {1 0.05}
 set iters 1000
 set soak_rounds 0
@@ -13,6 +22,12 @@ if {[llength $argv] >= 1} {
 }
 if {[llength $argv] >= 2} {
     set soak_rounds [lindex $argv 1]
+}
+
+# Optional structured log directory.
+if {[info exists env(LOG_DIR)]} {
+    set log_path "$env(LOG_DIR)/wasm_jit_corpus_expect.log"
+    log_file -a $log_path
 }
 
 set qemu_extra ""
@@ -53,9 +68,17 @@ proc expect_i686_prompt {} {
     }
 }
 
+# send_i686_cmd: settle, flush, re-confirm prompt, then slow-send.
 proc send_i686_cmd {cmd} {
-    after 1200
-    send -- "$cmd\r"
+    after 300
+    send -- "\r"
+    after 200
+    expect {
+        -re {(\r?\n|^)> } {}
+        timeout {}
+    }
+    after 300
+    send -s -- "$cmd\r"
 }
 
 expect_i686_shell_ready

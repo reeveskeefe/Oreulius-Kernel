@@ -247,6 +247,19 @@ pub fn activate(mb2_ptr: u32) -> Result<VesaMode, GpuError> {
             mode
         });
 
+    // Identity-map the physical framebuffer region so that swap_buffers() can
+    // write to front_ptr without triggering a page fault.  The kernel page
+    // tables only cover low RAM by default; the Bochs/VBE LFB lives at
+    // 0xFD000000 which is well above that range.
+    let fb_phys = mode.phys_addr as usize;
+    let fb_size = mode.framebuffer_bytes();
+    if fb_phys != 0 && fb_size != 0 {
+        let mut guard = crate::paging::KERNEL_ADDRESS_SPACE.lock();
+        if let Some(space) = guard.as_mut() {
+            let _ = space.map_mmio_range(fb_phys, fb_size);
+        }
+    }
+
     let fb = GpuFramebuffer::new(mode, true);
     fb.clear();
     *GPU_FB.lock() = Some(fb);

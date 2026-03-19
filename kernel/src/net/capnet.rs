@@ -1812,8 +1812,14 @@ pub fn process_incoming_control_payload(
                 return Err(CapNetError::RevokedToken);
             }
             verify_delegation_chain(&token, now_epoch)?;
+            #[cfg(not(target_arch = "aarch64"))]
             crate::capability::install_remote_lease_from_capnet_token(&token)
                 .map_err(|_| CapNetError::LeaseInstallFailed)?;
+            #[cfg(target_arch = "aarch64")]
+            {
+                let _ = &token;
+                return Err(CapNetError::LeaseInstallFailed);
+            }
             record_accepted_token(&token, now_epoch);
             audit_capnet(SecurityEvent::CapabilityTransferred, frame.token_id);
         }

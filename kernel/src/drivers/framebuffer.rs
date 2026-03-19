@@ -738,6 +738,32 @@ pub static DISPLAY: Mutex<DisplayState> = Mutex::new(DisplayState::new());
 // Initialisation entry points
 // ============================================================================
 
+fn map_framebuffer_mmio(base: usize, size: usize) {
+    if size == 0 || !crate::paging::paging_enabled() {
+        return;
+    }
+    if crate::paging::is_kernel_range_mapped(base, size) {
+        return;
+    }
+
+    if let Some(ref mut space) = *crate::paging::kernel_space().lock() {
+        let start = base & !(crate::paging::PAGE_SIZE - 1);
+        let end = match base
+            .checked_add(size)
+            .and_then(|v| v.checked_add(crate::paging::PAGE_SIZE - 1))
+        {
+            Some(v) => v & !(crate::paging::PAGE_SIZE - 1),
+            None => return,
+        };
+
+        let mut addr = start;
+        while addr < end {
+            let _ = space.map_page(addr, addr, true, false);
+            addr += crate::paging::PAGE_SIZE;
+        }
+    }
+}
+
 /// Initialise the framebuffer from an explicit physical address and layout.
 ///
 /// Called by the Multiboot2 bootstrap after parsing the framebuffer info tag.
@@ -752,6 +778,8 @@ pub fn init_from_address(base: usize, width: u32, height: u32, pitch: u32, bpp: 
             PixelFormat::Bgrx32
         }
     };
+    let fb_bytes = (pitch as usize).saturating_mul(height as usize);
+    map_framebuffer_mmio(base, fb_bytes);
     let info = FramebufferInfo { base, width, height, pitch, bpp, format };
     let fb = Framebuffer::new(info);
     let console = FramebufferConsole::new(&fb);

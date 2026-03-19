@@ -20,9 +20,9 @@
  * Status: THM-WX-001 Proven; THM-CFI-001 structural lemmas present (InProgress).
  *)
 
-Require Import Stdlib.Init.Logic.
-Require Import Stdlib.micromega.Lia.
-Require Import Stdlib.Lists.List.
+From Coq Require Import Init.Logic.
+From Coq Require Import micromega.Lia.
+From Coq Require Import Lists.List.
 Import ListNotations.
 
 (* ================================================================== *)

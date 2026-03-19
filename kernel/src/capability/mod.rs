@@ -1285,6 +1285,32 @@ impl CapabilityManager {
     ) -> Result<u32, CapabilityError> {
         let mut tables = self.tables.lock();
         let mut leases = self.remote_leases.lock();
+        let now = crate::pit::get_ticks() as u64;
+
+        for entry in leases.iter_mut() {
+            let should_reclaim = match entry.as_ref() {
+                Some(lease) => {
+                    !lease.active
+                        || lease.revoked
+                        || (lease.expires_at != 0 && now > lease.expires_at)
+                        || (lease.enforce_use_budget && lease.uses_remaining == 0)
+                }
+                None => false,
+            };
+            if !should_reclaim {
+                continue;
+            }
+
+            let (stale_owner_pid, stale_owner_any, stale_mapped_cap_id) = match entry.as_ref() {
+                Some(lease) => (lease.owner_pid, lease.owner_any, lease.mapped_cap_id),
+                None => continue,
+            };
+            if !stale_owner_any && stale_mapped_cap_id != 0 {
+                self.remove_remote_cap_mapping(&mut tables, stale_owner_pid, stale_mapped_cap_id);
+            }
+            *entry = None;
+        }
+
         let mut existing_idx = None;
         for i in 0..leases.len() {
             if let Some(lease) = leases[i].as_ref() {

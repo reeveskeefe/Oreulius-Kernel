@@ -47,10 +47,22 @@ jobs:
       - name: Add rust-src for build-std target
         run: rustup component add rust-src --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
 
+      - name: Create log directory
+        run: mkdir -p ./ci/logs
+
       - name: Build kernel ISO
         run: ./build.sh
 
       - name: Replay external corpus and soak checks
         env:
           QEMU_EXTRA_ARGS: -display none -nographic -no-reboot -no-shutdown
+          CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
         run: ./fuzz/ci_regression_check.sh 1000 2
+
+      - name: Upload wasm-jit logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-jit-regression-logs
+          path: kernel/ci/logs/*.log
+          if-no-files-found: ignore

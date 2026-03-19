@@ -28,18 +28,23 @@
 #![allow(dead_code)]
 
 pub mod capnet;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod e1000;
 pub mod net_reactor;
 pub mod netstack;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod rtl8139;
 pub mod tls;
 pub mod virtio_net;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod wifi;
 
 extern crate alloc;
 
 use crate::ipc::ProcessId;
+#[cfg(not(target_arch = "aarch64"))]
 use crate::pci::PciDevice;
+#[cfg(not(target_arch = "aarch64"))]
 use self::wifi::{WifiNetwork, WifiState};
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -287,6 +292,7 @@ impl NetworkService {
     }
 
     /// Initialize WiFi and network stack
+    #[cfg(not(target_arch = "aarch64"))]
     pub fn init_wifi(&mut self, device: PciDevice) -> Result<(), NetworkError> {
         // Initialize WiFi driver
         self::wifi::init(device)?;
@@ -296,6 +302,7 @@ impl NetworkService {
     }
 
     /// Scan for WiFi networks
+    #[cfg(not(target_arch = "aarch64"))]
     pub fn wifi_scan(&self) -> Result<usize, NetworkError> {
         if !self.wifi_enabled {
             return Err(NetworkError::WiFiNotEnabled);
@@ -307,6 +314,7 @@ impl NetworkService {
     }
 
     /// Get WiFi scan results (call after wifi_scan)
+    #[cfg(not(target_arch = "aarch64"))]
     pub fn wifi_get_scan_results(
         &self,
     ) -> Result<[WifiNetwork; self::wifi::MAX_SCAN_RESULTS], NetworkError> {
@@ -319,6 +327,7 @@ impl NetworkService {
     }
 
     /// Get WiFi scan result count
+    #[cfg(not(target_arch = "aarch64"))]
     pub fn wifi_scan_count(&self) -> usize {
         if !self.wifi_enabled {
             return 0;
@@ -329,6 +338,7 @@ impl NetworkService {
     }
 
     /// Connect to WiFi network
+    #[cfg(not(target_arch = "aarch64"))]
     pub fn wifi_connect(&mut self, ssid: &str, password: Option<&str>) -> Result<(), NetworkError> {
         if !self.wifi_enabled {
             return Err(NetworkError::WiFiNotEnabled);
@@ -347,6 +357,7 @@ impl NetworkService {
     }
 
     /// Get WiFi connection status
+    #[cfg(not(target_arch = "aarch64"))]
     pub fn wifi_status(&self) -> Result<WifiState, NetworkError> {
         if !self.wifi_enabled {
             return Err(NetworkError::WiFiNotEnabled);
@@ -410,17 +421,13 @@ impl NetworkService {
         // Parse URL
         let (host, path, port) = parse_http_url(url);
 
-        crate::vga::print_str("[HTTP] GET ");
-        crate::vga::print_str(host);
-        crate::vga::print_str(path);
-        crate::vga::print_str("\n");
+        crate::serial_println!("[HTTP] GET {}{}", host, path);
 
         // Resolve hostname
         let ip = self.dns_resolve(host)?;
 
-        crate::vga::print_str("[HTTP] Resolved to ");
-        print_ipv4(ip);
-        crate::vga::print_str("\n");
+        crate::serial_println!("[HTTP] Resolved to {}.{}.{}.{}",
+            ip.octets()[0], ip.octets()[1], ip.octets()[2], ip.octets()[3]);
 
         // Create TCP connection
         let conn_id = self.tcp_connect(ip, port)?;
@@ -457,11 +464,8 @@ impl NetworkService {
         self.tcp_count += 1;
         self.next_conn_id = self.next_conn_id.max(conn_id.saturating_add(1));
 
-        crate::vga::print_str("[TCP] Connected to ");
-        print_ipv4(ip);
-        crate::vga::print_str(":");
-        print_u16(port);
-        crate::vga::print_str("\n");
+        crate::serial_println!("[TCP] Connected to {}.{}.{}.{}:{}",
+            ip.octets()[0], ip.octets()[1], ip.octets()[2], ip.octets()[3], port);
 
         self.record_temporal_state_snapshot();
         Ok(conn_id)
@@ -490,7 +494,7 @@ impl NetworkService {
         }
 
         // Send HTTP request through real TCP/IP stack
-        crate::vga::print_str("[HTTP] Sending request...\n");
+        crate::serial_println!("[HTTP] Sending request...");
 
         // Send via network reactor (single-owner TCP stack)
         self.send_tcp_data(conn, &request[..request_len])?;
@@ -571,7 +575,10 @@ impl NetworkService {
         }
 
         let dest_mac = [0xFFu8; 6];
+        #[cfg(not(target_arch = "aarch64"))]
         let src_mac = self::e1000::get_mac_address().unwrap_or([0, 0, 0, 0, 0, 0]);
+        #[cfg(target_arch = "aarch64")]
+        let src_mac = [0u8; 6];
         packet[offset..offset + 6].copy_from_slice(&dest_mac);
         offset += 6;
         packet[offset..offset + 6].copy_from_slice(&src_mac);
@@ -638,10 +645,15 @@ impl NetworkService {
         } else {
             packet.len()
         };
-        let mut driver = self::e1000::E1000_DRIVER.lock();
-        let nic = driver.as_mut().ok_or(NetworkError::SendFailed)?;
-        nic.send_frame(&packet[..frame_len])
-            .map_err(|_| NetworkError::SendFailed)
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let mut driver = self::e1000::E1000_DRIVER.lock();
+            let nic = driver.as_mut().ok_or(NetworkError::SendFailed)?;
+            nic.send_frame(&packet[..frame_len])
+                .map_err(|_| NetworkError::SendFailed)
+        }
+        #[cfg(target_arch = "aarch64")]
+        { let _ = frame_len; Err(NetworkError::SendFailed) }
     }
 
     /// Receive and parse HTTP response
@@ -1104,6 +1116,7 @@ pub struct NetworkStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkError {
     WiFiNotEnabled,
+    #[cfg(not(target_arch = "aarch64"))]
     WiFiError(self::wifi::WifiError),
     NotConnected,
     DnsResolutionFailed,
@@ -1115,6 +1128,7 @@ pub enum NetworkError {
     Timeout,
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 impl From<self::wifi::WifiError> for NetworkError {
     fn from(err: self::wifi::WifiError) -> Self {
         NetworkError::WiFiError(err)
@@ -1125,6 +1139,7 @@ impl NetworkError {
     pub fn as_str(&self) -> &'static str {
         match self {
             NetworkError::WiFiNotEnabled => "WiFi not enabled",
+            #[cfg(not(target_arch = "aarch64"))]
             NetworkError::WiFiError(e) => e.as_str(),
             NetworkError::NotConnected => "Not connected",
             NetworkError::DnsResolutionFailed => "DNS resolution failed",
@@ -1148,6 +1163,7 @@ pub fn network() -> &'static Mutex<NetworkService> {
     &NETWORK
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub fn init(wifi_device: Option<PciDevice>) {
     let mut net = NETWORK.lock();
 
@@ -1165,6 +1181,12 @@ pub fn init(wifi_device: Option<PciDevice>) {
     } else {
         crate::vga::print_str("[NET] No WiFi device found\n");
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn init() {
+    // WiFi/PCI init is x86-only; AArch64 uses virtio-net.
+    let _net = NETWORK.lock();
 }
 
 // ============================================================================
@@ -1455,56 +1477,4 @@ fn decode_chunked_body_in_place(body: &mut [u8], src_len: usize) -> Result<usize
     Ok(dst)
 }
 
-fn print_ipv4(ip: Ipv4Addr) {
-    let octets = ip.octets();
-    for (i, octet) in octets.iter().enumerate() {
-        if i > 0 {
-            crate::vga::print_char('.');
-        }
-        print_u8(*octet);
-    }
-}
 
-fn print_u8(n: u8) {
-    if n == 0 {
-        crate::vga::print_char('0');
-        return;
-    }
-
-    let mut buf = [0u8; 3];
-    let mut i = 0;
-    let mut num = n;
-
-    while num > 0 {
-        buf[i] = (num % 10) + b'0';
-        num /= 10;
-        i += 1;
-    }
-
-    while i > 0 {
-        i -= 1;
-        crate::vga::print_char(buf[i] as char);
-    }
-}
-
-fn print_u16(n: u16) {
-    if n == 0 {
-        crate::vga::print_char('0');
-        return;
-    }
-
-    let mut buf = [0u8; 5];
-    let mut i = 0;
-    let mut num = n;
-
-    while num > 0 {
-        buf[i] = (num % 10) as u8 + b'0';
-        num /= 10;
-        i += 1;
-    }
-
-    while i > 0 {
-        i -= 1;
-        crate::vga::print_char(buf[i] as char);
-    }
-}

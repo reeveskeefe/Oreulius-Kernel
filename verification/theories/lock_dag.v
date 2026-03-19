@@ -23,10 +23,10 @@
  * Traceability: PMA-DAG-001 .. PMA-DAG-008
  *)
 
-Require Import Stdlib.Init.Nat.
-Require Import Stdlib.Arith.PeanoNat.
-Require Import Stdlib.Arith.Arith.
-Require Import Stdlib.micromega.Lia.
+From Coq Require Import Init.Nat.
+From Coq Require Import Arith.PeanoNat.
+From Coq Require Import Arith.Arith.
+From Coq Require Import micromega.Lia.
 
 (* ------------------------------------------------------------------ *)
 (** ** §1  DAG Levels                                                   *)

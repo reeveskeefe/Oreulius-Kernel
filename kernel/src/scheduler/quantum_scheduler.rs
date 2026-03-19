@@ -1640,7 +1640,7 @@ impl QuantumScheduler {
         if let Some(info) = self.processes[idx].as_ref() {
             if let Some(shared_pid) = info.shared_runtime_pid {
                 let _ = crate::process::process_manager().terminate(shared_pid);
-                crate::vfs::clear_process_capability(shared_pid.0);
+                crate::vfs::clear_process_capability(shared_pid);
                 if crate::process::current_pid() == Some(shared_pid) {
                     let _ = crate::process::set_current_runtime_pid(Pid::new(0));
                 }

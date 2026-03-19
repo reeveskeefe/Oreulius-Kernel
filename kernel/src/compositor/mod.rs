@@ -57,16 +57,20 @@ pub mod backend;
 pub mod capability;
 pub mod damage;
 pub mod fb_backend;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod input;
 pub mod policy;
 pub mod present;
 pub mod protocol;
+#[cfg(not(target_arch = "aarch64"))]
 pub mod service;
 pub mod session;
 pub mod surface;
 pub mod window;
 
+#[cfg(not(target_arch = "aarch64"))]
 pub use service::CompositorService;
+#[cfg(not(target_arch = "aarch64"))]
 pub use service::COMPOSITOR_SERVICE;
 
 // ---------------------------------------------------------------------------
@@ -97,12 +101,18 @@ pub fn compositor() -> spin::MutexGuard<'static, crate::drivers::compositor::Com
 /// Call this once after `gpu_support::init()` has configured the display.
 /// On platforms with no framebuffer the compositor still starts but the
 /// backend is a no-op stub.
+#[cfg(not(target_arch = "aarch64"))]
 pub fn init(width: u32, height: u32) {
     service::init(width, height);
 }
+#[cfg(target_arch = "aarch64")]
+pub fn init(_width: u32, _height: u32) {}
 
 /// Perform a compositor present tick.  Call from the kernel timer hook or the
 /// scheduler idle loop.  This is a no-op if nothing is dirty.
+#[cfg(not(target_arch = "aarch64"))]
 pub fn tick() {
     service::tick();
 }
+#[cfg(target_arch = "aarch64")]
+pub fn tick() {}

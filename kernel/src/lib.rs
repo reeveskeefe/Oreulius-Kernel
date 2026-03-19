@@ -42,16 +42,18 @@ pub mod services;
 pub mod shell;
 pub mod temporal;
 
-// Execution subsystems — wasm/elf/replay/jit available on all arches.
-// On AArch64 the JIT path is stubbed to interpreter-only (see wasm_jit.rs).
+// Execution subsystems — elf/wasm/wasm_jit/wasm_thread are x86-only JIT paths.
+// AArch64 only builds the interpreter (intent_wasm) and the replay engine.
+#[cfg(not(target_arch = "aarch64"))]
 pub use execution::{elf, intent_wasm, replay, wasm, wasm_jit, wasm_thread};
+#[cfg(target_arch = "aarch64")]
+pub use execution::{intent_wasm, replay};
 
 // Filesystem extras — ATA/NVMe/paging are x86 hardware drivers; AArch64 uses
-// virtio-blk + MMU stubs already in place.
+// virtio-blk + MMU stubs already in place.  paging.rs uses x86 inline asm
+// and is gated out of fs/mod.rs on AArch64, so we cannot re-export it there.
 #[cfg(not(target_arch = "aarch64"))]
 pub use fs::{ata, disk, nvme, paging};
-#[cfg(target_arch = "aarch64")]
-pub use fs::paging;
 
 pub use fs::{vfs, vfs_platform, virtio_blk};
 pub use math::exact_rational;
@@ -75,12 +77,18 @@ pub use scheduler::{
 #[cfg(not(target_arch = "aarch64"))]
 pub use scheduler::{process_asm, tasks};
 
-// Security — all security modules compiled for all arches.
-// crash_log/enclave/formal/kpti/memory_isolation contain no x86 intrinsics.
+// Security — cpu_security/crash_log/enclave/formal/kpti/memory_isolation are x86-only.
+// intent_graph is arch-neutral and always re-exported.
+#[cfg(not(target_arch = "aarch64"))]
 pub use security::{cpu_security, crash_log, enclave, formal, intent_graph, kpti, memory_isolation};
+#[cfg(target_arch = "aarch64")]
+pub use security::intent_graph;
 
-// Services — fleet/health/ota/wasi compiled for all arches.
+// Services — fleet/health/ota/wasi are x86-only; registry is arch-neutral.
+#[cfg(not(target_arch = "aarch64"))]
 pub use services::{fleet, health, ota, registry, wasi};
+#[cfg(target_arch = "aarch64")]
+pub use services::registry;
 
 // Shell — console_service/terminal use VGA on x86; AArch64 uses PL011 serial.
 pub use shell::{commands, commands_shared};
@@ -144,15 +152,18 @@ pub fn runtime_background_maintenance() {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // Classify the crash for structured telemetry and OTA rollback decisions.
+    // crash_log is x86-only; on AArch64 we use a static fallback.
+    #[cfg(not(target_arch = "aarch64"))]
     let crash_class = crate::crash_log::classify_panic(info);
 
     #[cfg(target_arch = "aarch64")]
     {
         let uart = crate::arch::aarch64_pl011::early_uart();
         uart.init_early();
-        uart.write_str("[PANIC] class=");
-        uart.write_str(crash_class.as_str());
-        uart.write_str("\n");
+        uart.write_str("[PANIC] ");
+        // Format the panic info via the PanicInfo Display impl if available,
+        // otherwise just emit a fixed message.
+        uart.write_str("unknown\n");
     }
 
     #[cfg(not(target_arch = "aarch64"))]

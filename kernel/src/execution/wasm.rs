@@ -4057,9 +4057,51 @@ impl WasmModule {
         if self.function_count >= 64 {
             return Err(WasmError::TooManyFunctions);
         }
+        if func.param_count > MAX_WASM_TYPE_ARITY || func.result_count > MAX_WASM_TYPE_ARITY {
+            return Err(WasmError::InvalidModule);
+        }
 
         let idx = self.function_count;
+        let combined_idx = self
+            .import_function_count
+            .checked_add(idx)
+            .ok_or(WasmError::InvalidModule)?;
+
+        // Synthetic functions added through the legacy/test path do not come
+        // from a parsed type section, so synthesize an all-i32 signature entry.
+        let mut signature = ParsedFunctionType {
+            param_count: func.param_count,
+            result_count: func.result_count,
+            param_types: [ValueType::I32; MAX_WASM_TYPE_ARITY],
+            result_types: [ValueType::I32; MAX_WASM_TYPE_ARITY],
+            all_i32: true,
+        };
+        let mut ty_idx = None;
+        let mut i = 0usize;
+        while i < self.type_count {
+            if let Some(existing) = self.type_signatures[i] {
+                if parsed_signature_equal(existing, signature) {
+                    ty_idx = Some(i);
+                    break;
+                }
+            }
+            i += 1;
+        }
+        let ty_idx = match ty_idx {
+            Some(idx) => idx,
+            None => {
+                if self.type_count >= self.type_signatures.len() {
+                    return Err(WasmError::TooManyFunctions);
+                }
+                let idx = self.type_count;
+                self.type_signatures[idx] = Some(signature);
+                self.type_count += 1;
+                idx
+            }
+        };
+
         self.functions[idx] = Some(func);
+        self.function_type_index[combined_idx] = Some(ty_idx);
         self.function_count += 1;
         Ok(idx)
     }
@@ -18614,8 +18656,7 @@ pub fn formal_service_pointer_self_check() -> Result<(), &'static str> {
         return Err("Service pointer self-check: failed to install function");
     }
 
-    let no_delegate = register_service_pointer(provider, instance_id, 0, false)
-        .map_err(|_| "Service pointer self-check: register no-delegate failed")?;
+    let no_delegate = register_service_pointer(provider, instance_id, 0, false)?;
     if capability::export_capability_to_ipc(provider, no_delegate.cap_id).is_ok() {
         let _ = wasm_runtime().destroy(instance_id);
         capability::capability_manager().deinit_task(consumer);
@@ -18623,8 +18664,7 @@ pub fn formal_service_pointer_self_check() -> Result<(), &'static str> {
         return Err("Service pointer self-check: delegate right not enforced");
     }
 
-    let delegatable = register_service_pointer(provider, instance_id, 0, true)
-        .map_err(|_| "Service pointer self-check: register delegatable failed")?;
+    let delegatable = register_service_pointer(provider, instance_id, 0, true)?;
     let exported = capability::export_capability_to_ipc(provider, delegatable.cap_id)
         .map_err(|_| "Service pointer self-check: export failed")?;
     let imported_cap_id = capability::import_capability_from_ipc(consumer, &exported, provider)
@@ -18633,8 +18673,7 @@ pub fn formal_service_pointer_self_check() -> Result<(), &'static str> {
         .query_capability(consumer, imported_cap_id)
         .map_err(|_| "Service pointer self-check: imported capability missing")?;
 
-    let result = invoke_service_pointer(consumer, imported_object, &[])
-        .map_err(|_| "Service pointer self-check: invoke failed")?;
+    let result = invoke_service_pointer(consumer, imported_object, &[])?;
     if result != 42 {
         let _ = wasm_runtime().destroy(instance_id);
         capability::capability_manager().deinit_task(consumer);

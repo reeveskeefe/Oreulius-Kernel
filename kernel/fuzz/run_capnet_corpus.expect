@@ -4,7 +4,21 @@
 # Run from `kernel/`:
 #   ./fuzz/run_capnet_corpus.expect 1000
 
+# ---- whole-harness deadline ----
+# Set an absolute wall-clock limit so GitHub runner time budgets are never
+# exceeded by a hung QEMU process.  The alarm fires via a background after-
+# timer that calls exit.
+set harness_timeout 3300
+after [expr {$harness_timeout * 1000}] {
+    puts "FATAL: CapNet harness exceeded ${harness_timeout}s wall-clock limit"
+    catch {exec kill -9 [exp_pid]}
+    exit 2
+}
+
 set timeout 120
+# send_slow: 1 char per 50 ms — avoids serial FIFO overruns on QEMU's 16550A
+# emulation which has a 16-byte hardware FIFO.  At 115200 baud one character
+# takes ~87 µs, so 50 ms gives 574x margin against FIFO overflow.
 set send_slow {1 0.05}
 set iters 1000
 set soak_rounds 0
@@ -13,6 +27,13 @@ if {[llength $argv] >= 1} {
 }
 if {[llength $argv] >= 2} {
     set soak_rounds [lindex $argv 1]
+}
+
+# Optional structured log directory.  When CI sets LOG_DIR the harness tees
+# all expect I/O to a stable file rather than a mktemp path that disappears.
+if {[info exists env(LOG_DIR)]} {
+    set log_path "$env(LOG_DIR)/capnet_corpus_expect.log"
+    log_file -a $log_path
 }
 
 set qemu_extra ""
@@ -53,9 +74,21 @@ proc expect_i686_prompt {} {
     }
 }
 
+# send_i686_cmd: drain any pending output, wait for the serial FIFO to settle,
+# then send characters slowly via send_slow to avoid overrunning QEMU's 16550A
+# UART emulation.  A 300 ms pre-send settle is enough for even the slowest
+# post-command output to finish scrolling before we inject a new command.
 proc send_i686_cmd {cmd} {
-    after 1200
-    send -- "$cmd\r"
+    after 300
+    # Flush any partial line noise before sending.
+    send -- "\r"
+    after 200
+    expect {
+        -re {(\r?\n|^)> } {}
+        timeout {}
+    }
+    after 300
+    send -s -- "$cmd\r"
 }
 
 expect_i686_shell_ready

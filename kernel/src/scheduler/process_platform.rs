@@ -27,9 +27,11 @@ pub fn on_process_spawn(pid: Pid, parent: Option<Pid>, name: &str) {
 #[inline]
 pub fn on_process_terminate(pid: Pid) {
     let _ = crate::ipc::purge_channels_for_process(pid);
-    // WASM cleanup runs on all arches; on AArch64 the interpreter-only WASM
-    // backend tracks service-pointer ownership just like x86_64.
+    // WASM cleanup: wasm module is only available on x86; AArch64 uses
+    // interpreter-only path which is handled separately in arch runtime.
+    #[cfg(not(target_arch = "aarch64"))]
     let _ = crate::wasm::revoke_service_pointers_for_owner(pid);
+    #[cfg(not(target_arch = "aarch64"))]
     let _ = crate::wasm::unload_modules_for_owner(pid);
     crate::capability::capability_manager().deinit_task(pid);
     crate::security::security().terminate_process(pid);
