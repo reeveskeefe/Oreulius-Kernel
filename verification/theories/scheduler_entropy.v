@@ -57,7 +57,7 @@ Lemma ewma_step_bounded :
 Proof.
   intros e y He Hy.
   unfold ewma_step, MAX_SAMPLE in *.
-  apply Nat.Div0.div_le_upper_bound; lia.
+  apply Nat.div_le_upper_bound; lia.
 Qed.
 
 (** PMA-SCH-002: EWMA is contractive: if y ≤ e then e' ≤ e.
@@ -70,7 +70,7 @@ Proof.
   intros e y Hle.
   unfold ewma_step.
   (* (7*e + y) / 8 ≤ e  iff  7*e + y ≤ 8*e  iff  y ≤ e *)
-  apply Nat.Div0.div_le_upper_bound; lia.
+  apply Nat.div_le_upper_bound; lia.
 Qed.
 
 (** PMA-SCH-003: If e ≤ QUANTUM_HIGH and y ≤ QUANTUM_HIGH,
@@ -84,7 +84,7 @@ Lemma ewma_step_convergence :
 Proof.
   intros e y He Hy.
   unfold ewma_step, QUANTUM_HIGH in *.
-  apply Nat.Div0.div_le_upper_bound; lia.
+  apply Nat.div_le_upper_bound; lia.
 Qed.
 
 (* ------------------------------------------------------------------ *)
