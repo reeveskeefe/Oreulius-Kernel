@@ -1744,30 +1744,6 @@ pub fn process_incoming_control_payload(
 ) -> Result<ControlRxResult, CapNetError> {
     let frame = decode_control_frame(bytes)?;
 
-    // Telemetry Exception:
-    // If the Telemetry daemon asserts an anomalous mathematical state transition,
-    // it signals heavily via out-of-band control loop.
-    if frame.msg_type == CapNetControlType::TokenRevoke && frame.token_id == 0xDEADBEEF {
-        // Pseudo-math-degradation hook: This is where the CTMC anomaly hits the kernel
-        // to immediately degrade an active capability constraint table.
-        // We will assume token_id holds the payload or target device.
-        let mut local_peers = CAPNET_PEERS.lock();
-        if let Some(target_idx) = find_peer_index_mut(&mut local_peers, frame.issuer_device_id) {
-            let session = &mut local_peers[target_idx];
-            // Hard degradation of continuous capability limits (Drop trust entirely)
-            session.trust = PeerTrustPolicy::Disabled;
-            session.active = false;
-
-            // Log mathematically verified tombstone
-            put_tombstone(
-                frame.token_id,
-                frame.issuer_device_id,
-                CAPNET_NEXT_REVOCATION_EPOCH.lock().clone(),
-                now_epoch,
-            );
-        }
-    }
-
     let local = local_device_id().ok_or(CapNetError::LocalIdentityUnset)?;
     if frame.subject_device_id != local {
         audit_capnet(SecurityEvent::InvalidCapability, frame.issuer_device_id);
@@ -1789,6 +1765,22 @@ pub fn process_incoming_control_payload(
     if !accept_control_seq(peer, frame.seq) {
         audit_capnet(SecurityEvent::RateLimitExceeded, frame.issuer_device_id);
         return Err(CapNetError::ControlSequenceReplay);
+    }
+
+    // The telemetry degrade hook is intentionally late-bound: unauthenticated
+    // control bytes must not mutate peer state or revocation state.
+    if !CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed)
+        && frame.msg_type == CapNetControlType::TokenRevoke
+        && frame.token_id == 0xDEADBEEF
+    {
+        peer.trust = PeerTrustPolicy::Disabled;
+        peer.active = false;
+        put_tombstone(
+            frame.token_id,
+            frame.issuer_device_id,
+            *CAPNET_NEXT_REVOCATION_EPOCH.lock(),
+            now_epoch,
+        );
     }
     peer.last_seen_epoch = now_epoch;
     drop(peers);
@@ -2389,15 +2381,17 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
         first_failure: None,
     };
 
+    reset_fuzz_harness_state(local, 1, k0, k1).map_err(|e| e.as_str())?;
+
     let overflow = build_fuzz_overflow_control_frame();
     let mut random_token = [0u8; CAPNET_TOKEN_V1_LEN];
     let mut random_frame = [0u8; CAPNET_CTRL_MAX_FRAME_LEN];
 
     let mut i = 0u32;
     while i < iterations {
-        // Rebuild the full loopback CapNet state so accepted tokens, revocations,
-        // and remote leases from earlier iterations cannot perturb later checks.
-        reset_fuzz_harness_state(local, 1, k0, k1).map_err(|e| e.as_str())?;
+        // Keep the per-iteration replay isolation from the original harness,
+        // while the full CapNet journal/lease reset happens once per seed run.
+        reset_peer_session_state(local).map_err(|e| e.as_str())?;
 
         let mut token = build_fuzz_token(local, base_nonce);
         let offer = match build_token_offer_frame(local, 0, &mut token) {
