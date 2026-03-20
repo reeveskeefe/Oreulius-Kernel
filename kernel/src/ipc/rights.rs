@@ -1,4 +1,4 @@
-use crate::tensor_core::LinearCapability;
+use crate::linear_capability::LinearCapability;
 
 use super::types::{ChannelId, ProcessId};
 

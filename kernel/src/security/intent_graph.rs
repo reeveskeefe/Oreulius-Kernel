@@ -25,7 +25,7 @@
 use crate::capability::{CapabilityType, Rights};
 use crate::intent_wasm::{self, INTENT_MODEL_FEATURES};
 use crate::ipc::ProcessId;
-use crate::tensor_core::{ScalarTensor, SimdTensor};
+use crate::linear_capability::{ScalarTensor, SimdTensor};
 
 const MAX_INTENT_PROCESSES: usize = 64;
 const INTENT_NODE_COUNT: usize = 9;

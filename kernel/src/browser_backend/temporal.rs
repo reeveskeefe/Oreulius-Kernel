@@ -7,7 +7,8 @@
 #![allow(dead_code)]
 
 use super::session::SessionTable;
-use super::types::BrowserSessionId;
+use super::types::{BrowserCap, BrowserSessionId};
+use crate::ipc::ProcessId;
 
 // ---------------------------------------------------------------------------
 // Snapshot payload layout (version 1)
@@ -91,6 +92,8 @@ pub fn validate_snapshot(payload: &[u8]) -> bool {
 ///
 /// Returns the number of records processed.
 pub fn restore(sessions: &mut SessionTable, payload: &[u8]) -> usize {
+    use super::session::MAX_BROWSER_SESSIONS;
+
     if !validate_snapshot(payload) {
         return 0;
     }
@@ -103,10 +106,44 @@ pub fn restore(sessions: &mut SessionTable, payload: &[u8]) -> usize {
         if pos + RECORD_SIZE > payload.len() {
             break;
         }
+        let session_id = u32::from_le_bytes([
+            payload[pos],
+            payload[pos + 1],
+            payload[pos + 2],
+            payload[pos + 3],
+        ]);
+        let pid = u32::from_le_bytes([
+            payload[pos + 4],
+            payload[pos + 5],
+            payload[pos + 6],
+            payload[pos + 7],
+        ]);
+        let cap = u64::from_le_bytes([
+            payload[pos + 8],
+            payload[pos + 9],
+            payload[pos + 10],
+            payload[pos + 11],
+            payload[pos + 12],
+            payload[pos + 13],
+            payload[pos + 14],
+            payload[pos + 15],
+        ]);
         let alive = payload[pos + 16] != 0;
         if alive {
-            // Nothing to restore without re-issuing capabilities; just count.
-            restored += 1;
+            if let Some(slot_idx) = session_id
+                .checked_sub(1)
+                .map(|v| v as usize)
+                .filter(|idx| *idx < MAX_BROWSER_SESSIONS)
+            {
+                if sessions.restore(
+                    slot_idx,
+                    BrowserSessionId(session_id),
+                    ProcessId(pid),
+                    BrowserCap(cap),
+                ) {
+                    restored += 1;
+                }
+            }
         }
         pos += RECORD_SIZE;
     }

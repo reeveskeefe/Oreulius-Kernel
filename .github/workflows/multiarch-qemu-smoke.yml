@@ -11,19 +11,15 @@ on:
       - "kernel/**"
       - ".github/workflows/multiarch-qemu-smoke.yml"
 
+defaults:
+  run:
+    shell: bash
+    working-directory: kernel
+
 jobs:
-  smoke:
+  smoke-i686:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [i686, x86_64, aarch64]
-
-    defaults:
-      run:
-        shell: bash
-        working-directory: kernel
 
     steps:
       - name: Checkout
@@ -60,21 +56,112 @@ jobs:
         run: mkdir -p ./ci/logs
 
       - name: Run i686 QEMU shell smoke
-        if: matrix.arch == 'i686'
         env:
           QEMU_AUDIO_DRV: none
           CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
         run: ./ci/smoke-i686.sh
 
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiarch-qemu-smoke-i686
+          path: kernel/ci/logs/*.log
+          if-no-files-found: ignore
+
+  smoke-x86_64:
+    needs: smoke-i686
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            nasm \
+            expect \
+            xorriso \
+            grub-pc-bin \
+            grub-common \
+            mtools \
+            qemu-system-x86 \
+            qemu-system-arm \
+            binutils-aarch64-linux-gnu \
+            lld
+
+      - name: Install Rust nightly (kernel toolchain)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2024-01-01
+          components: rust-src,llvm-tools
+
+      - name: Add rust-src for build-std target
+        run: rustup component add rust-src --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
+
+      - name: Make scripts executable
+        run: chmod +x ./build*.sh ./run*.sh ./ci/*.sh
+
+      - name: Create log directory
+        run: mkdir -p ./ci/logs
+
       - name: Run x86_64 QEMU shell smoke
-        if: matrix.arch == 'x86_64'
         env:
           QEMU_AUDIO_DRV: none
           CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
         run: ./ci/smoke-x86_64.sh
 
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiarch-qemu-smoke-x86_64
+          path: kernel/ci/logs/*.log
+          if-no-files-found: ignore
+
+  smoke-aarch64:
+    needs: smoke-x86_64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            nasm \
+            expect \
+            xorriso \
+            grub-pc-bin \
+            grub-common \
+            mtools \
+            qemu-system-x86 \
+            qemu-system-arm \
+            binutils-aarch64-linux-gnu \
+            lld
+
+      - name: Install Rust nightly (kernel toolchain)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2024-01-01
+          components: rust-src,llvm-tools
+
+      - name: Add rust-src for build-std target
+        run: rustup component add rust-src --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
+
+      - name: Make scripts executable
+        run: chmod +x ./build*.sh ./run*.sh ./ci/*.sh
+
+      - name: Create log directory
+        run: mkdir -p ./ci/logs
+
       - name: Run AArch64 QEMU shell smoke (VFS/block)
-        if: matrix.arch == 'aarch64'
         env:
           AS_BIN: aarch64-linux-gnu-as
           LD_BIN: aarch64-linux-gnu-ld
@@ -87,6 +174,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: multiarch-qemu-smoke-${{ matrix.arch }}
+          name: multiarch-qemu-smoke-aarch64
           path: kernel/ci/logs/*.log
           if-no-files-found: ignore

@@ -5,4 +5,4 @@
  */
 
 pub mod exact_rational;
-pub mod tensor_core;
+pub mod linear_capability;

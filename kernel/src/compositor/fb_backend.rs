@@ -7,9 +7,39 @@
 #![allow(dead_code)]
 
 use super::backend::DisplayBackend;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use spin::Mutex;
 
 #[cfg(not(target_arch = "aarch64"))]
 use crate::gpu_support;
+
+static SHADOW_PUT_PIXEL_CALLS: AtomicUsize = AtomicUsize::new(0);
+static SHADOW_FILL_RECT_CALLS: AtomicUsize = AtomicUsize::new(0);
+static SHADOW_FLUSH_CALLS: AtomicUsize = AtomicUsize::new(0);
+static SHADOW_LAST_PIXEL: Mutex<u64> = Mutex::new(0);
+static SHADOW_LAST_RECT: Mutex<u64> = Mutex::new(0);
+
+#[inline]
+fn record_shadow_pixel(x: u32, y: u32, r: u8, g: u8, b: u8) {
+    SHADOW_PUT_PIXEL_CALLS.fetch_add(1, Ordering::Relaxed);
+    *SHADOW_LAST_PIXEL.lock() = ((x as u64) << 32)
+        | ((y as u64) << 16)
+        | ((r as u64) << 8)
+        | ((g as u64) << 4)
+        | (b as u64);
+}
+
+#[inline]
+fn record_shadow_rect(x: u32, y: u32, w: u32, h: u32) {
+    SHADOW_FILL_RECT_CALLS.fetch_add(1, Ordering::Relaxed);
+    *SHADOW_LAST_RECT.lock() =
+        ((x as u64) << 48) | ((y as u64) << 32) | ((w as u64) << 16) | (h as u64);
+}
+
+#[inline]
+fn record_shadow_flush() {
+    SHADOW_FLUSH_CALLS.fetch_add(1, Ordering::Relaxed);
+}
 
 // ---------------------------------------------------------------------------
 // FbBackend
@@ -45,26 +75,39 @@ impl FbBackend {
 impl DisplayBackend for FbBackend {
     fn put_pixel(&self, x: u32, y: u32, r: u8, g: u8, b: u8) {
         if !self.available {
+            record_shadow_pixel(x, y, r, g, b);
             return;
         }
         #[cfg(not(target_arch = "aarch64"))]
         gpu_support::with_active_scanout(|scanout| scanout.put_pixel(x, y, r, g, b));
+        #[cfg(target_arch = "aarch64")]
+        record_shadow_pixel(x, y, r, g, b);
     }
 
     fn fill_rect(&self, x: u32, y: u32, w: u32, h: u32, r: u8, g: u8, b: u8) {
         if !self.available {
+            let _ = (r, g, b);
+            record_shadow_rect(x, y, w, h);
             return;
         }
         #[cfg(not(target_arch = "aarch64"))]
         gpu_support::with_active_scanout(|scanout| scanout.fill_rect(x, y, w, h, r, g, b));
+        #[cfg(target_arch = "aarch64")]
+        {
+            let _ = (r, g, b);
+            record_shadow_rect(x, y, w, h);
+        }
     }
 
     fn flush(&self) {
         if !self.available {
+            record_shadow_flush();
             return;
         }
         #[cfg(not(target_arch = "aarch64"))]
         gpu_support::with_active_scanout(|scanout| scanout.flush());
+        #[cfg(target_arch = "aarch64")]
+        record_shadow_flush();
     }
 
     fn width(&self) -> u32 {

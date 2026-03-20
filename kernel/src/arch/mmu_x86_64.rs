@@ -918,7 +918,7 @@ pub(crate) fn map_mmio_identity_range(phys: usize, size: usize) {
     // align_up: round phys+size up to the next page boundary
     let end_raw = phys.saturating_add(size);
     let end = (end_raw.wrapping_add(PAGE_SIZE - 1)) & !(PAGE_SIZE - 1);
-    let root = unsafe { MMU.read_cr3() };
+    let root = MMU.read_cr3();
     let mut page = start;
     while page < end {
         let _ = unsafe { X86_64Mmu::map_identity_page_boot(root, page, true) };

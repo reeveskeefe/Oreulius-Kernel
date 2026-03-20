@@ -327,7 +327,15 @@ pub fn execute(input: &str) {
             );
             vga::print_str("  ota-commit   - Verify and activate pending slot\n");
             vga::print_str("  ota-rollback - Revert active slot pointer\n");
-            vga::print_str("  fleet-attest - Transmit attestation bundle (fleet-attest <peer-id> <ip> <port>)\n");
+            vga::print_str("  ota-trust-key - Import trusted OTA Ed25519 public key\n");
+            vga::print_str("  ota-set-signature - Import OTA manifest signature\n");
+            vga::print_str("  fleet-attest - Export/record attestation bundle and optionally send CapNet Attest\n");
+            vga::print_str("  fleet-attest-export - Export canonical fleet attestation bundle\n");
+            vga::print_str(
+                "  fleet-attest-verify - Verify exported fleet attestation bundle signature\n",
+            );
+            vga::print_str("  fleet-trust-key - Import trusted fleet Ed25519 public key\n");
+            vga::print_str("  fleet-set-signature - Import detached fleet signature\n");
             vga::print_str("  fleet-diag   - Remote diagnostics summary dump\n");
         }
         "clear" => {
@@ -864,8 +872,26 @@ pub fn execute(input: &str) {
         "ota-rollback" => {
             crate::ota::cmd_ota_rollback();
         }
+        "ota-trust-key" => {
+            crate::ota::cmd_ota_trust_key(parts);
+        }
+        "ota-set-signature" => {
+            crate::ota::cmd_ota_set_signature(parts);
+        }
         "fleet-attest" => {
             crate::fleet::cmd_fleet_attest(parts);
+        }
+        "fleet-attest-export" => {
+            crate::fleet::cmd_fleet_attest_export();
+        }
+        "fleet-attest-verify" => {
+            crate::fleet::cmd_fleet_attest_verify();
+        }
+        "fleet-trust-key" => {
+            crate::fleet::cmd_fleet_trust_key(parts);
+        }
+        "fleet-set-signature" => {
+            crate::fleet::cmd_fleet_set_signature(parts);
         }
         "fleet-diag" => {
             crate::fleet::cmd_fleet_diag();
@@ -8571,6 +8597,7 @@ fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
         Some(v) => v as u32,
         None => {
             vga::print_str("Usage: capnet-fuzz-soak <iters> <rounds>\n");
+            crate::serial_println!("Usage: capnet-fuzz-soak <iters> <rounds>");
             return;
         }
     };
@@ -8578,6 +8605,7 @@ fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
         Some(v) => v as u32,
         None => {
             vga::print_str("Usage: capnet-fuzz-soak <iters> <rounds>\n");
+            crate::serial_println!("Usage: capnet-fuzz-soak <iters> <rounds>");
             return;
         }
     };
@@ -8585,10 +8613,12 @@ fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     const MAX_SOAK_ROUNDS: u32 = 100;
     if iters == 0 || iters > MAX_FUZZ_ITERS {
         vga::print_str("Iterations must be 1..=10000.\n");
+        crate::serial_println!("Iterations must be 1..=10000.");
         return;
     }
     if rounds == 0 || rounds > MAX_SOAK_ROUNDS {
         vga::print_str("Rounds must be 1..=100.\n");
+        crate::serial_println!("Rounds must be 1..=100.");
         return;
     }
 

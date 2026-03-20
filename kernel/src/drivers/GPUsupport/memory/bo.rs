@@ -143,12 +143,8 @@ impl BoAllocator {
     }
 
     pub fn new() -> Self {
-        // Can't use [None; N] for non-Copy types; build via Default.
-        let mut slots: [Option<BufferObject>; BO_SLAB_SIZE] = unsafe { core::mem::zeroed() };
-        // MaybeUninit would be cleaner; zeroed() is safe here because
-        // Option<BufferObject> is valid at all-zeros (None).
-        let _ = slots; // silence "assigned but unused" on nightly
         BoAllocator {
+            // Option<BufferObject> is valid at all-zeros (None), so zeroed() is safe here.
             slots: unsafe { core::mem::zeroed() },
             count: 0,
         }

@@ -360,6 +360,38 @@ pub fn runtime_kernel_stack_sync(stack_top: usize) {
 #[inline]
 pub fn runtime_kernel_stack_sync(_stack_top: usize) {}
 
+/// Returns `true` if hardware IRQs are currently disabled on this CPU core.
+///
+/// x86/x86_64: checks RFLAGS.IF (bit 9) — clear means disabled.
+/// AArch64: checks DAIF.I (bit 7) — set means masked (disabled).
+#[cfg(target_arch = "x86")]
+pub fn irqs_disabled() -> bool {
+    let flags: u32;
+    unsafe {
+        core::arch::asm!("pushfd; pop {}", out(reg) flags, options(nomem, preserves_flags));
+    }
+    (flags & (1u32 << 9)) == 0
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn irqs_disabled() -> bool {
+    let flags: u64;
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
+    }
+    (flags & (1u64 << 9)) == 0
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn irqs_disabled() -> bool {
+    let daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, DAIF", out(reg) daif, options(nomem, nostack, preserves_flags));
+    }
+    // I-bit (bit 7) set means IRQ is masked.
+    (daif & (1u64 << 7)) != 0
+}
+
 #[cfg(target_arch = "x86")]
 pub unsafe fn irq_save_disable() -> IrqFlags {
     crate::idt_asm::fast_cli_save()

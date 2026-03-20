@@ -83,10 +83,12 @@ pub fn probe_display(report: &GpuProbeReport, mb2_ptr: u32) -> GpuProbeReport {
         // Display engine is active and reporting a live resolution.
         // Upgrade to Scanout by routing through simplefb — the firmware / BIOS
         // has already programmed the scanout surface; we just adopt it.
+        let firmware_fb = unsafe { simplefb::detect_mb2_framebuffer(mb2_ptr) };
         crate::serial_println!(
-            "[Intel GPU] Pipe A active: {}×{} — routing to simplefb",
+            "[Intel GPU] Pipe A active: {}×{} — routing to simplefb (mb2_fb={:?})",
             pipe_w,
-            pipe_h
+            pipe_h,
+            firmware_fb.is_some(),
         );
         GpuProbeReport {
             class: GpuClass::IntelFamily,

@@ -27,9 +27,14 @@
 
 extern crate alloc;
 
+use crate::crypto::{
+    build_ota_manifest_signed_message, import_hex_file, read_hex_file, verify_detached_ed25519,
+    DetachedSignatureStatus,
+};
 use crate::persistence;
 use crate::vfs;
 use crate::vga;
+use alloc::string::{String, ToString};
 
 // ============================================================================
 // Constants
@@ -39,6 +44,8 @@ const PATH_SLOT_A: &str = "/ota/slot_a";
 const PATH_SLOT_B: &str = "/ota/slot_b";
 const PATH_ACTIVE: &str = "/ota/active";
 const PATH_MANIFEST: &str = "/ota/manifest";
+const PATH_MANIFEST_SIG: &str = "/ota/manifest.sig";
+const PATH_MANIFEST_PUBKEY: &str = "/ota/manifest.pub";
 const PATH_OTA_DIR: &str = "/ota";
 /// Stores the staged image version string (up to 32 ASCII bytes).
 const PATH_VERSION: &str = "/ota/version";
@@ -162,6 +169,18 @@ fn read_manifest() -> Option<[u8; 32]> {
     Some(out)
 }
 
+fn read_version() -> Option<String> {
+    let size = vfs::path_size(PATH_VERSION).ok()?;
+    if size == 0 {
+        return None;
+    }
+    let mut buf = alloc::vec::Vec::new();
+    buf.resize(size.min(256), 0u8);
+    let n = vfs::read_path(PATH_VERSION, &mut buf).ok()?;
+    buf.truncate(n);
+    core::str::from_utf8(&buf).ok().map(|s| s.to_string())
+}
+
 fn write_manifest(hash: &[u8; 32], version: &str) -> Result<(), &'static str> {
     let mut hex = [0u8; 64];
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -175,6 +194,25 @@ fn write_manifest(hash: &[u8; 32], version: &str) -> Result<(), &'static str> {
     let vlen = vbytes.len().min(32);
     let _ = vfs::write_path(PATH_VERSION, &vbytes[..vlen]);
     Ok(())
+}
+
+fn verify_manifest_signature(
+    hash: &[u8; 32],
+    version: &str,
+) -> Result<DetachedSignatureStatus, &'static str> {
+    let msg = build_ota_manifest_signed_message(hash, version);
+    verify_detached_ed25519(PATH_MANIFEST_PUBKEY, PATH_MANIFEST_SIG, &msg).map_err(|e| match e {
+        "trusted public key configured but detached signature missing" => {
+            "trusted OTA public key configured but manifest signature missing"
+        }
+        "detached signature present but trusted public key missing" => {
+            "manifest signature present but trusted OTA public key missing"
+        }
+        "Ed25519 detached signature verification failed" => {
+            "manifest Ed25519 signature verification failed"
+        }
+        _ => e,
+    })
 }
 
 fn hex_nibble(b: u8) -> Option<u8> {
@@ -278,6 +316,21 @@ pub fn cmd_ota_status() {
     match read_manifest() {
         Some(hash) => print_hash(&hash),
         None => vga::print_str("(none)"),
+    }
+    vga::print_str("\nManifest sig : ");
+    let has_sig = read_hex_file::<64>(PATH_MANIFEST_SIG).is_ok();
+    let has_key = read_hex_file::<32>(PATH_MANIFEST_PUBKEY).is_ok();
+    match (has_key, has_sig, read_manifest(), read_version()) {
+        (false, false, _, _) => vga::print_str("(unsigned)"),
+        (true, true, Some(hash), Some(version)) => match verify_manifest_signature(&hash, &version)
+        {
+            Ok(DetachedSignatureStatus::Verified) => vga::print_str("verified"),
+            Ok(DetachedSignatureStatus::Unsigned) => vga::print_str("(unsigned)"),
+            Err(e) => vga::print_str(e),
+        },
+        (true, false, _, _) => vga::print_str("public key present, signature missing"),
+        (false, true, _, _) => vga::print_str("signature present, public key missing"),
+        _ => vga::print_str("(pending version/manifest)"),
     }
     vga::print_str("\n\n");
 }
@@ -385,6 +438,21 @@ pub fn cmd_ota_commit() {
             return;
         }
     };
+    let version = read_version().unwrap_or_else(|| String::from("unknown"));
+    match verify_manifest_signature(&expected, &version) {
+        Ok(DetachedSignatureStatus::Verified) => {
+            vga::print_str("ota-commit: signed manifest verification OK\n");
+        }
+        Ok(DetachedSignatureStatus::Unsigned) => {
+            vga::print_str("ota-commit: WARNING: manifest is unsigned\n");
+        }
+        Err(e) => {
+            vga::print_str("ota-commit: signature verification failed: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
 
     // Read the pending slot image.
     let size = match vfs::path_size(target_slot.vfs_path()) {
@@ -460,6 +528,19 @@ pub fn verify_boot_image() {
             return;
         }
     };
+    let version = read_version().unwrap_or_else(|| String::from("unknown"));
+    match verify_manifest_signature(&expected, &version) {
+        Ok(DetachedSignatureStatus::Verified) => {
+            crate::serial_println!("[VerifiedBoot] signed manifest verification OK");
+        }
+        Ok(DetachedSignatureStatus::Unsigned) => {
+            crate::serial_println!("[VerifiedBoot] manifest is unsigned");
+        }
+        Err(e) => {
+            crate::serial_println!("[VerifiedBoot] signature verification failed: {}", e);
+            return;
+        }
+    }
 
     // Read active slot image.
     let size = match vfs::path_size(active.vfs_path()) {
@@ -521,4 +602,42 @@ pub fn cmd_ota_rollback() {
     vga::print_str("ota-rollback: active slot is now ");
     vga::print_str(fallback.as_str());
     vga::print_str(". Reboot to take effect.\n");
+}
+
+/// `ota-trust-key <vfs-path>` — import a trusted Ed25519 public key as 64 hex bytes.
+pub fn cmd_ota_trust_key(mut parts: core::str::SplitWhitespace) {
+    let src = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: ota-trust-key <vfs-path>\n");
+            return;
+        }
+    };
+    match import_hex_file::<32>(src, PATH_MANIFEST_PUBKEY) {
+        Ok(()) => vga::print_str("ota-trust-key: imported trusted OTA public key\n"),
+        Err(e) => {
+            vga::print_str("ota-trust-key: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+/// `ota-set-signature <vfs-path>` — import a detached Ed25519 signature as 128 hex bytes.
+pub fn cmd_ota_set_signature(mut parts: core::str::SplitWhitespace) {
+    let src = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: ota-set-signature <vfs-path>\n");
+            return;
+        }
+    };
+    match import_hex_file::<64>(src, PATH_MANIFEST_SIG) {
+        Ok(()) => vga::print_str("ota-set-signature: imported OTA manifest signature\n"),
+        Err(e) => {
+            vga::print_str("ota-set-signature: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
 }

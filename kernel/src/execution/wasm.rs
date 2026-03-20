@@ -4126,7 +4126,7 @@ impl WasmModule {
 
         // Synthetic functions added through the legacy/test path do not come
         // from a parsed type section, so synthesize an all-i32 signature entry.
-        let mut signature = ParsedFunctionType {
+        let signature = ParsedFunctionType {
             param_count: func.param_count,
             result_count: func.result_count,
             param_types: [ValueType::I32; MAX_WASM_TYPE_ARITY],

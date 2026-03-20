@@ -2334,21 +2334,35 @@ fn temporal_apply_vfs_file_payload(
     payload: &[u8],
     _mode: TemporalRestoreMode,
 ) -> Result<(), &'static str> {
-    crate::serial_println!("[TEMPORAL_VFS_APPLY] path={:?}, payload_len={}", path, payload.len());
+    crate::serial_println!(
+        "[TEMPORAL_VFS_APPLY] path={:?}, payload_len={}",
+        path,
+        payload.len()
+    );
     match crate::vfs::temporal_try_apply_backend_payload(path, payload) {
         Ok(true) => {
-            crate::serial_println!("[TEMPORAL_VFS_APPLY] temporal_try_apply_backend_payload returned Ok(true)");
+            crate::serial_println!(
+                "[TEMPORAL_VFS_APPLY] temporal_try_apply_backend_payload returned Ok(true)"
+            );
             Ok(())
         }
         Ok(false) => {
             crate::serial_println!("[TEMPORAL_VFS_APPLY] temporal_try_apply_backend_payload returned Ok(false), calling write_path_untracked");
-            crate::vfs::write_path_untracked(path, payload).map(|_| ()).map_err(|e| {
-                crate::serial_println!("[TEMPORAL_VFS_APPLY] write_path_untracked failed");
-                "write_path_untracked failed"
-            })
+            crate::vfs::write_path_untracked(path, payload)
+                .map(|_| ())
+                .map_err(|e| {
+                    crate::serial_println!(
+                        "[TEMPORAL_VFS_APPLY] write_path_untracked failed: {:?}",
+                        e
+                    );
+                    "write_path_untracked failed"
+                })
         }
         Err(e) => {
-            crate::serial_println!("[TEMPORAL_VFS_APPLY] temporal_try_apply_backend_payload failed with error: {:?}", e);
+            crate::serial_println!(
+                "[TEMPORAL_VFS_APPLY] temporal_try_apply_backend_payload failed with error: {:?}",
+                e
+            );
             Err(e)
         }
     }
@@ -3034,14 +3048,20 @@ fn apply_temporal_payload_to_object(
     payload: &[u8],
     mode: TemporalRestoreMode,
 ) -> Result<(), TemporalError> {
-    crate::serial_println!("[TEMPORAL_ADAPTER] apply_temporal_payload_to_object: path={:?}", path);
+    crate::serial_println!(
+        "[TEMPORAL_ADAPTER] apply_temporal_payload_to_object: path={:?}",
+        path
+    );
     let adapter = find_object_adapter(path).ok_or_else(|| {
         crate::serial_println!("[TEMPORAL_ADAPTER] apply_temporal_payload_to_object: find_object_adapter returned None");
         TemporalError::AdapterApplyFailed
     })?;
     let _replay_guard = TemporalReplayGuard::new();
     (adapter.apply)(path, payload, mode).map_err(|e| {
-        crate::serial_println!("[TEMPORAL_ADAPTER] apply_temporal_payload_to_object: adapter.apply failed");
+        crate::serial_println!(
+            "[TEMPORAL_ADAPTER] apply_temporal_payload_to_object: adapter.apply failed: {:?}",
+            e
+        );
         TemporalError::AdapterApplyFailed
     })
 }

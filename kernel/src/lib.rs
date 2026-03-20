@@ -58,7 +58,7 @@ pub use fs::{ata, disk, nvme, paging};
 
 pub use fs::{vfs, vfs_platform, virtio_blk};
 pub use math::exact_rational;
-pub use math::tensor_core;
+pub use math::linear_capability;
 
 // Memory helpers — asm_bindings / hardened_allocator are x86-specific inline asm.
 pub use memory::wait_free_ring;
@@ -121,16 +121,19 @@ pub fn ensure_heap_available() -> Option<Box<u32>> {
     Some(Box::new(42))
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 pub(crate) unsafe fn early_console_write_word(slot: *mut u16, value: u16) {
     core::ptr::write_volatile(slot, value);
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 pub(crate) unsafe fn early_console_write_cell(cell: usize, value: u16) {
     early_console_write_word((0xb8000 as *mut u16).add(cell), value);
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 pub(crate) unsafe fn early_console_read_cell(cell: usize) -> u16 {
     core::ptr::read_volatile((0xb8000 as *const u16).add(cell))
@@ -193,12 +196,22 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     #[cfg(target_arch = "aarch64")]
     {
+        struct UartWriter;
+        impl core::fmt::Write for UartWriter {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                let uart = crate::arch::aarch64_pl011::early_uart();
+                uart.init_early();
+                uart.write_str(s);
+                Ok(())
+            }
+        }
+
+        use core::fmt::Write;
         let uart = crate::arch::aarch64_pl011::early_uart();
         uart.init_early();
         uart.write_str("[PANIC] ");
-        // Format the panic info via the PanicInfo Display impl if available,
-        // otherwise just emit a fixed message.
-        uart.write_str("unknown\n");
+        let mut out = UartWriter;
+        let _ = writeln!(out, "{}", info);
     }
 
     #[cfg(not(target_arch = "aarch64"))]

@@ -446,16 +446,15 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 // ---------------------------------------------------------------------------
 
 fn build_path(out: &mut [u8; 1024 + 512 + 1], url: &Url) -> usize {
-    let mut w = 0usize;
     let path_len = url.path_len;
     let path = &url.path[..path_len];
-    if path_len == 0 {
+    let mut w = if path_len == 0 {
         out[0] = b'/';
-        w = 1;
+        1
     } else {
         out[..path_len].copy_from_slice(path);
-        w = path_len;
-    }
+        path_len
+    };
     if url.query_len > 0 && w + 1 + url.query_len <= out.len() {
         out[w] = b'?';
         w += 1;

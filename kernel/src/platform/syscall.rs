@@ -325,6 +325,10 @@ fn sys_exit(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
 
 fn sys_fork(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let _flags = args.arg1;
+    crate::scheduler_runtime_platform::logf(format_args!(
+        "[SYSCALL] fork caller_pid={} flags={}",
+        caller_pid.0, args.arg1
+    ));
 
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -354,6 +358,12 @@ fn sys_fork(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
 
 fn sys_yield(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let _yield_hint = args.arg1; // Optional: 0=normal, 1=I/O wait, 2=explicit
+    if args.arg1 > 0 {
+        crate::scheduler_runtime_platform::logf(format_args!(
+            "[SYSCALL] yield caller_pid={} hint={}",
+            caller_pid.0, args.arg1
+        ));
+    }
 
     // Mark process as yielding voluntarily (good for statistics)
     let mut scheduler = crate::quantum_scheduler::scheduler().lock();

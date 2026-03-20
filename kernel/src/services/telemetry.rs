@@ -11,7 +11,7 @@
 //! This ensures the Ring-0 kernel remains completely bounded with zero locks,
 //! no unbounded latency, and leaves floating/SIMD processing to the telemetry daemon.
 
-use crate::tensor_core::ScalarTensor;
+use crate::linear_capability::ScalarTensor;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 

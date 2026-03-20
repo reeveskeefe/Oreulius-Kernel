@@ -1467,8 +1467,10 @@ impl CapabilityManager {
     /// This is used by deterministic self-tests/fuzzing so stale owner-bound
     /// leases from earlier iterations do not bleed into later checks.
     pub fn clear_remote_leases_for_testing(&self) {
+        let mut caps_to_remove = [(ProcessId(0), 0u32); MAX_REMOTE_LEASES];
+        let mut remove_count = 0;
+
         {
-            let mut tables = self.tables.lock();
             let mut leases = self.remote_leases.lock();
             for entry in leases.iter_mut() {
                 let lease = match entry.take() {
@@ -1476,12 +1478,19 @@ impl CapabilityManager {
                     None => continue,
                 };
                 if !lease.owner_any && lease.mapped_cap_id != 0 {
-                    self.remove_remote_cap_mapping(
-                        &mut tables,
-                        lease.owner_pid,
-                        lease.mapped_cap_id,
-                    );
+                    caps_to_remove[remove_count] = (lease.owner_pid, lease.mapped_cap_id);
+                    remove_count += 1;
                 }
+            }
+        }
+
+        {
+            let mut tables = self.tables.lock();
+            let mut i = 0;
+            while i < remove_count {
+                let (pid, cap_id) = caps_to_remove[i];
+                self.remove_remote_cap_mapping(&mut tables, pid, cap_id);
+                i += 1;
             }
         }
 
@@ -1800,7 +1809,6 @@ fn capability_type_from_capnet(cap_type: u8) -> Option<CapabilityType> {
 /// Install/update a remote capability lease from a verified CapNet token.
 ///
 /// `context == 0` in the token means "any local process"; non-zero binds to a PID.
-#[cfg(not(target_arch = "aarch64"))]
 pub fn install_remote_lease_from_capnet_token(
     token: &crate::capnet::CapabilityTokenV1,
 ) -> Result<u32, &'static str> {

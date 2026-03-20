@@ -263,6 +263,25 @@ impl SessionTable {
         }
     }
 
+    pub fn restore(
+        &mut self,
+        idx: usize,
+        id: BrowserSessionId,
+        pid: ProcessId,
+        cap: BrowserCap,
+    ) -> bool {
+        if idx >= MAX_BROWSER_SESSIONS {
+            return false;
+        }
+        self.slots[idx] = BrowserSession::empty();
+        self.slots[idx].id = id;
+        self.slots[idx].pid = pid;
+        self.slots[idx].cap = cap;
+        self.slots[idx].policy = PolicyProfile::DEFAULT;
+        self.slots[idx].alive = true;
+        true
+    }
+
     pub fn find_by_pid(&self, pid: ProcessId) -> Option<usize> {
         self.slots.iter().position(|s| s.alive && s.pid == pid)
     }

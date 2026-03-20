@@ -2137,6 +2137,8 @@ fn init_shared_runtime() {
     crate::crash_log::on_boot();
     crate::serial_println!("[X64] init ota slots...");
     crate::ota::init_slots();
+    crate::serial_println!("[X64] init fleet store...");
+    crate::fleet::init_store();
     crate::serial_println!("[X64] verified boot check...");
     crate::ota::verify_boot_image();
     match crate::vfs::recover_from_persistence() {

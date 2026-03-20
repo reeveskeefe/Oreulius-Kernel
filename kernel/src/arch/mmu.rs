@@ -317,19 +317,9 @@ pub(crate) fn handle_page_fault(fault_addr: usize, error: u64) -> bool {
     mmu_x86_64::handle_page_fault(fault_addr, error)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-pub(crate) fn handle_page_fault(_fault_addr: usize, _error: u64) -> bool {
-    false
-}
-
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn x86_64_debug_mark_page_cow(virt_addr: usize) -> Result<(), &'static str> {
     mmu_x86_64::debug_mark_page_cow(virt_addr)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub(crate) fn x86_64_debug_mark_page_cow(_virt_addr: usize) -> Result<(), &'static str> {
-    Err("x86_64 MMU backend not active")
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -337,29 +327,14 @@ pub(crate) fn x86_64_debug_virt_to_phys(virt_addr: usize) -> Option<usize> {
     mmu_x86_64::debug_virt_to_phys(virt_addr)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-pub(crate) fn x86_64_debug_virt_to_phys(_virt_addr: usize) -> Option<usize> {
-    None
-}
-
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn x86_64_debug_pf_stats() -> (u64, u64, u64) {
     mmu_x86_64::debug_pf_stats()
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-pub(crate) fn x86_64_debug_pf_stats() -> (u64, u64, u64) {
-    (0, 0, 0)
-}
-
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn x86_64_debug_recover_stats() -> (usize, usize, u64, usize, u64, u8) {
     mmu_x86_64::debug_recover_stats()
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub(crate) fn x86_64_debug_recover_stats() -> (usize, usize, u64, usize, u64, u8) {
-    (0, 0, 0, 0, 0, 0)
 }
 
 /// Identity-map a physical MMIO range into the kernel page tables so device

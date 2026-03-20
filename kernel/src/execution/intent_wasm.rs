@@ -24,7 +24,7 @@
 
 #![allow(dead_code)]
 
-use crate::tensor_core::{ScalarTensor, SimdTensor};
+use crate::linear_capability::{ScalarTensor, SimdTensor};
 
 /// Number of model input features.
 pub const INTENT_MODEL_FEATURES: usize = 10;

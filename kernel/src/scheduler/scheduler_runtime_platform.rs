@@ -95,29 +95,12 @@ pub fn halt_cpu() -> ! {
 
 #[inline]
 pub fn temporal_is_replay_active() -> bool {
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        crate::temporal::is_replay_active()
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        false
-    }
+    crate::temporal::is_replay_active()
 }
 
 #[inline]
 pub fn temporal_record_scheduler_state_event(payload: &[u8]) -> Result<(), &'static str> {
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        crate::temporal::record_scheduler_state_event(payload)
-            .map(|_| ())
-            .map_err(|_| "temporal scheduler record failed")
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        let _ = payload;
-        Ok(())
-    }
+    crate::temporal::record_scheduler_state_event(payload)
+        .map(|_| ())
+        .map_err(|_| "temporal scheduler record failed")
 }

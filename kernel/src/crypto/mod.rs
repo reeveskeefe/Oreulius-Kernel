@@ -15,6 +15,28 @@
 extern crate alloc;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+pub mod aes_gcm_nist_sp800_38d;
+pub mod ed25519_twisted_edwards;
+pub mod ghash_gf128;
+pub mod hkdf_rfc5869;
+pub mod merkle_damgard_domain;
+pub mod sha512;
+pub mod signing_formats;
+pub mod x25519_montgomery;
+
+pub use aes_gcm_nist_sp800_38d::{aes128_gcm_decrypt, aes128_gcm_encrypt};
+pub use ed25519_twisted_edwards::ed25519_verify;
+pub use hkdf_rfc5869::{hkdf_expand, hkdf_expand_label_sha256, hkdf_extract};
+pub use merkle_damgard_domain::{
+    merkle_damgard_domain_hash, merkle_damgard_leaf_hash, merkle_damgard_node_hash,
+};
+pub use sha512::{sha512, Sha512};
+pub use signing_formats::{
+    build_fleet_attestation_signed_message, build_ota_manifest_signed_message, import_hex_file,
+    read_hex_file, read_small_vfs_file, verify_detached_ed25519, DetachedSignatureStatus,
+};
+pub use x25519_montgomery::{x25519, x25519_public_key, x25519_shared_secret};
+
 static AES128_CTR_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // =============================================================================

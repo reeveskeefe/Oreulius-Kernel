@@ -2172,7 +2172,6 @@ impl QuantumScheduler {
         Some(payload)
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
     fn record_temporal_state_snapshot_locked(&self, event: u8) {
         if scheduler_rt::temporal_is_replay_active() {
             return;
@@ -2183,9 +2182,6 @@ impl QuantumScheduler {
         };
         let _ = scheduler_rt::temporal_record_scheduler_state_event(&payload);
     }
-
-    #[cfg(target_arch = "aarch64")]
-    fn record_temporal_state_snapshot_locked(&self, _event: u8) {}
 
     /// Get current PID
     pub fn get_current_pid(&self) -> Option<Pid> {

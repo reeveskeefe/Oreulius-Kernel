@@ -1121,8 +1121,7 @@ fn emit_code_into(
                 #[cfg(target_arch = "x86_64")]
                 {
                     emitter.emit_instr_fuel_check();
-                    let (type_idx, n1) =
-                        read_uleb128(code, pc).ok_or("Bad call_indirect type")?;
+                    let (type_idx, n1) = read_uleb128(code, pc).ok_or("Bad call_indirect type")?;
                     pc += n1;
                     let (table_idx, n2) =
                         read_uleb128(code, pc).ok_or("Bad call_indirect table")?;
@@ -1344,10 +1343,15 @@ fn contains_subseq(haystack: &[u8], needle: &[u8]) -> bool {
 #[cfg(not(target_arch = "x86_64"))]
 fn validate_trace_shape(opcode: Opcode, code: &[u8]) -> Result<(), &'static str> {
     let mut at = consume_instr_fuel_check(code, 0)?;
-    let is_mem_op = matches!(opcode,
-        Opcode::I32Load | Opcode::I32Store |
-        Opcode::I32Load8U | Opcode::I32Load16U |
-        Opcode::I32Store8 | Opcode::I32Store16);
+    let is_mem_op = matches!(
+        opcode,
+        Opcode::I32Load
+            | Opcode::I32Store
+            | Opcode::I32Load8U
+            | Opcode::I32Load16U
+            | Opcode::I32Store8
+            | Opcode::I32Store16
+    );
     if is_mem_op {
         at = consume_mem_fuel_check(code, at)?;
     } else if has_prefix_at(code, at, &[0x8B, 0x45, 0xF4, 0x83, 0x38, 0x00, 0x0F, 0x84]) {
@@ -1361,10 +1365,15 @@ fn validate_trace_shape(opcode: Opcode, code: &[u8]) -> Result<(), &'static str>
         return Err("Missing opcode body");
     }
 
-    if matches!(opcode,
-        Opcode::I32Load | Opcode::I32Store |
-        Opcode::I32Load8U | Opcode::I32Load16U |
-        Opcode::I32Store8 | Opcode::I32Store16) {
+    if matches!(
+        opcode,
+        Opcode::I32Load
+            | Opcode::I32Store
+            | Opcode::I32Load8U
+            | Opcode::I32Load16U
+            | Opcode::I32Store8
+            | Opcode::I32Store16
+    ) {
         // Bounds checks must contain jb/ja trap edges.
         if !contains_subseq(code, &[0x0F, 0x82]) || !contains_subseq(code, &[0x0F, 0x87]) {
             return Err("Missing memory bounds trap edges");
@@ -1570,10 +1579,15 @@ fn build_translation_proof(
             return Err("Trace proof opcode mismatch");
         }
 
-        if matches!(trace.opcode,
-            Opcode::I32Load | Opcode::I32Store |
-            Opcode::I32Load8U | Opcode::I32Load16U |
-            Opcode::I32Store8 | Opcode::I32Store16) {
+        if matches!(
+            trace.opcode,
+            Opcode::I32Load
+                | Opcode::I32Store
+                | Opcode::I32Load8U
+                | Opcode::I32Load16U
+                | Opcode::I32Store8
+                | Opcode::I32Store16
+        ) {
             mem_trace_count = mem_trace_count.saturating_add(1);
         }
 
@@ -1629,7 +1643,10 @@ pub fn compile_with_types(
     type_sigs: &[JitTypeSignature],
 ) -> Result<JitFunction, &'static str> {
     #[cfg(target_arch = "aarch64")]
-    { let _ = (code, locals_total, type_sigs); return Err("JIT not available on AArch64; use the WASM interpreter path"); }
+    {
+        let _ = (code, locals_total, type_sigs);
+        return Err("JIT not available on AArch64; use the WASM interpreter path");
+    }
     #[cfg(not(target_arch = "aarch64"))]
     compile_with_env(code, locals_total, type_sigs, &[])
 }
@@ -1641,35 +1658,38 @@ pub fn compile_with_env(
     global_sigs: &[JitGlobalSignature],
 ) -> Result<JitFunction, &'static str> {
     #[cfg(target_arch = "aarch64")]
-    { let _ = (code, locals_total, type_sigs, global_sigs); return Err("JIT not available on AArch64; use the WASM interpreter path"); }
+    {
+        let _ = (code, locals_total, type_sigs, global_sigs);
+        return Err("JIT not available on AArch64; use the WASM interpreter path");
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
-    let blocks = analyze_basic_blocks(code);
-    let mut emitter = Emitter::new();
-    let traces = emit_code(code, locals_total, type_sigs, global_sigs, &mut emitter)?;
-    let block_hashes = validate_translation_per_block(code, &blocks, &traces, &emitter.code)?;
-    let proof = build_translation_proof(code, &traces, &emitter.code)?;
+        let blocks = analyze_basic_blocks(code);
+        let mut emitter = Emitter::new();
+        let traces = emit_code(code, locals_total, type_sigs, global_sigs, &mut emitter)?;
+        let block_hashes = validate_translation_per_block(code, &blocks, &traces, &emitter.code)?;
+        let proof = build_translation_proof(code, &traces, &emitter.code)?;
 
-    let mut exec = JitExecBuffer::new(emitter.code.len())?;
-    exec.write_and_seal(&emitter.code)?;
+        let mut exec = JitExecBuffer::new(emitter.code.len())?;
+        exec.write_and_seal(&emitter.code)?;
 
-    let entry = unsafe { core::mem::transmute::<*const u8, JitFn>(exec.as_ptr()) };
-    let code_hash = hash_jit_code(&emitter.code);
-    let exec_hash = hash_exec_code(exec.as_ptr(), exec.len);
-    Ok(JitFunction {
-        wasm_code: code.to_vec(),
-        code: emitter.code,
-        entry,
-        blocks,
-        code_hash,
-        exec,
-        exec_hash,
-        translation: TranslationValidation {
-            records: traces,
-            block_hashes,
-            proof,
-        },
-    })
+        let entry = unsafe { core::mem::transmute::<*const u8, JitFn>(exec.as_ptr()) };
+        let code_hash = hash_jit_code(&emitter.code);
+        let exec_hash = hash_exec_code(exec.as_ptr(), exec.len);
+        Ok(JitFunction {
+            wasm_code: code.to_vec(),
+            code: emitter.code,
+            entry,
+            blocks,
+            code_hash,
+            exec,
+            exec_hash,
+            translation: TranslationValidation {
+                records: traces,
+                block_hashes,
+                proof,
+            },
+        })
     }
 }
 
@@ -2340,12 +2360,12 @@ impl Emitter {
     fn emit_i32_store8(&mut self, off: u32) {
         self.emit_pop_to_ebx(); // value
         self.emit_pop_to_eax(); // addr
-        // stash value
+                                // stash value
         self.emit(&[0x89, 0x5D, 0xE4]); // mov [ebp-28], ebx
         self.emit_bounds_check(off, 1);
         // restore value
         self.emit(&[0x8B, 0x5D, 0xE4]); // mov ebx, [ebp-28]
-        // mov byte [edx + eax], bl
+                                        // mov byte [edx + eax], bl
         self.emit(&[0x88, 0x1C, 0x02]);
     }
 
@@ -2353,12 +2373,12 @@ impl Emitter {
     fn emit_i32_store16(&mut self, off: u32) {
         self.emit_pop_to_ebx(); // value
         self.emit_pop_to_eax(); // addr
-        // stash value
+                                // stash value
         self.emit(&[0x89, 0x5D, 0xE4]); // mov [ebp-28], ebx
         self.emit_bounds_check(off, 2);
         // restore value
         self.emit(&[0x8B, 0x5D, 0xE4]); // mov ebx, [ebp-28]
-        // mov word [edx + eax], bx  (66h prefix + 89 1C 02)
+                                        // mov word [edx + eax], bx  (66h prefix + 89 1C 02)
         self.emit(&[0x66, 0x89, 0x1C, 0x02]);
     }
 
@@ -2367,8 +2387,10 @@ impl Emitter {
 
     fn emit_i64_const(&mut self, lo: i32, hi: i32) {
         // push hi first (lower in memory = farther from stack top)
-        self.emit(&[0x68]); self.emit_i32(hi);  // push hi
-        self.emit(&[0x68]); self.emit_i32(lo);  // push lo
+        self.emit(&[0x68]);
+        self.emit_i32(hi); // push hi
+        self.emit(&[0x68]);
+        self.emit_i32(lo); // push lo
     }
 
     fn emit_i64_add(&mut self) {
@@ -2376,12 +2398,12 @@ impl Emitter {
         // We need: result_lo = a_lo + b_lo; result_hi = a_hi + b_hi + carry
         self.emit_pop_to_eax(); // a_lo
         self.emit_pop_to_ebx(); // a_hi
-        // pop b_lo into ecx (manual: push/pop via memory slot)
+                                // pop b_lo into ecx (manual: push/pop via memory slot)
         self.emit(&[0x8B, 0x4C, 0x24, 0x00]); // mov ecx, [esp]   b_lo
         self.emit(&[0x8B, 0x54, 0x24, 0x04]); // mov edx, [esp+4] b_hi
-        // add eax, ecx ; adc ebx, edx
+                                              // add eax, ecx ; adc ebx, edx
         self.emit(&[0x01, 0xC8, 0x11, 0xD3]); // add eax,ecx ; adc ebx,edx
-        // overwrite b_lo with result_lo; b_hi with result_hi
+                                              // overwrite b_lo with result_lo; b_hi with result_hi
         self.emit(&[0x89, 0x44, 0x24, 0x00]); // mov [esp], eax
         self.emit(&[0x89, 0x5C, 0x24, 0x04]); // mov [esp+4], ebx
     }
@@ -2391,7 +2413,7 @@ impl Emitter {
         self.emit_pop_to_ebx(); // a_hi
         self.emit(&[0x8B, 0x4C, 0x24, 0x00]); // ecx = b_lo
         self.emit(&[0x8B, 0x54, 0x24, 0x04]); // edx = b_hi
-        // sub eax, ecx ; sbb ebx, edx
+                                              // sub eax, ecx ; sbb ebx, edx
         self.emit(&[0x29, 0xC8, 0x19, 0xD3]); // sub eax,ecx ; sbb ebx,edx
         self.emit(&[0x89, 0x44, 0x24, 0x00]);
         self.emit(&[0x89, 0x5C, 0x24, 0x04]);
@@ -2407,35 +2429,35 @@ impl Emitter {
         self.emit_pop_to_ebx(); // a_hi
         self.emit(&[0x8B, 0x4C, 0x24, 0x00]); // ecx = b_lo
         self.emit(&[0x8B, 0x74, 0x24, 0x04]); // esi = b_hi  (via push esi / note: esi not saved here, used as temp)
-        // mul ecx (EDX:EAX = a_lo * b_lo)
+                                              // mul ecx (EDX:EAX = a_lo * b_lo)
         self.emit(&[0xF7, 0xE1]); // mul ecx
-        // save EAX (result_lo) -> [esp] slot temp
+                                  // save EAX (result_lo) -> [esp] slot temp
         self.emit(&[0x89, 0x44, 0x24, 0x00]); // [esp] = eax (result_lo)
-        // cross terms into result_hi = EDX + a_lo*b_hi + a_hi*b_lo
-        // imul eax_tmp, a_lo, b_hi: imul ebx_save, esi: but registers are trashed.
-        // Simpler: result_hi = edx already has upper half of a_lo*b_lo.
-        //          add imul a_hi (ebx), b_lo (ecx)
-        //          add imul a_lo (was in eax - now trashed), b_hi: re-load from stack slot.
-        // Because eax was the original a_lo, we need to recompute. We stashed result_lo.
-        // Let's use the following approach via stack slot:
-        //   mov eax, b_hi (from [esp+4])
+                                              // cross terms into result_hi = EDX + a_lo*b_hi + a_hi*b_lo
+                                              // imul eax_tmp, a_lo, b_hi: imul ebx_save, esi: but registers are trashed.
+                                              // Simpler: result_hi = edx already has upper half of a_lo*b_lo.
+                                              //          add imul a_hi (ebx), b_lo (ecx)
+                                              //          add imul a_lo (was in eax - now trashed), b_hi: re-load from stack slot.
+                                              // Because eax was the original a_lo, we need to recompute. We stashed result_lo.
+                                              // Let's use the following approach via stack slot:
+                                              //   mov eax, b_hi (from [esp+4])
         self.emit(&[0x8B, 0x44, 0x24, 0x04]); // eax = b_hi
-        //   imul eax, a_hi (ebx) -> eax = a_hi * b_hi_lo (we want low word contribution)
-        // Actually for 64-bit mul result high word:
-        //   hi = (a_lo * b_lo).hi + a_lo * b_hi(low) + a_hi * b_lo(low)
-        // imul ebx, ecx -> ebx = a_hi * b_lo (low 32)
+                                              //   imul eax, a_hi (ebx) -> eax = a_hi * b_hi_lo (we want low word contribution)
+                                              // Actually for 64-bit mul result high word:
+                                              //   hi = (a_lo * b_lo).hi + a_lo * b_hi(low) + a_hi * b_lo(low)
+                                              // imul ebx, ecx -> ebx = a_hi * b_lo (low 32)
         self.emit(&[0x0F, 0xAF, 0xD9]); // imul ebx, ecx
-        // edx += ebx
+                                        // edx += ebx
         self.emit(&[0x01, 0xDA]); // add edx, ebx
-        // imul eax (=b_hi), [we need a_lo again - it's gone]
-        // Workaround: re-derive a_lo from the result_lo and b_lo using an approximation
-        // is complex. Instead, use a simpler sequence where we save a_lo to ebp-scratch.
-        // NOTE: Because emit_i64_mul is called after we've already popped a_lo off stack,
-        // we can stash it in the [ebp-28] temp slot at the start.
-        // This emit sequence is an approximation that handles the common 32×32->64 pattern;
-        // for full correctness we emit a soft-mul call via an emitted helper stub.
-        // For now: skip the a_lo*b_hi cross term (contributes only to result_hi bits 32-63
-        // which are the high word of the 64-bit result -- frequently truncated).
+                                  // imul eax (=b_hi), [we need a_lo again - it's gone]
+                                  // Workaround: re-derive a_lo from the result_lo and b_lo using an approximation
+                                  // is complex. Instead, use a simpler sequence where we save a_lo to ebp-scratch.
+                                  // NOTE: Because emit_i64_mul is called after we've already popped a_lo off stack,
+                                  // we can stash it in the [ebp-28] temp slot at the start.
+                                  // This emit sequence is an approximation that handles the common 32×32->64 pattern;
+                                  // for full correctness we emit a soft-mul call via an emitted helper stub.
+                                  // For now: skip the a_lo*b_hi cross term (contributes only to result_hi bits 32-63
+                                  // which are the high word of the 64-bit result -- frequently truncated).
         self.emit(&[0x89, 0x54, 0x24, 0x04]); // [esp+4] = edx (result_hi)
     }
 
@@ -2453,19 +2475,19 @@ impl Emitter {
         // cmp eax, ebx ; jae trap_cfi
         self.emit(&[0x39, 0xD8]);
         self.emit_trap_cfi_jump(0x83); // jae rel32
-        // mov ebx, [ebp+24]   ; fn_table base ptr
+                                       // mov ebx, [ebp+24]   ; fn_table base ptr
         self.emit(&[0x8B, 0x5D, 0x18]);
         // mov ebx, [ebx + eax*4]  ; load fn ptr
         self.emit(&[0x8B, 0x1C, 0x83]);
         // test ebx, ebx ; je trap_cfi (null slot)
         self.emit(&[0x85, 0xDB]);
         self.emit_trap_cfi_jump(0x84); // je rel32
-        // The arguments are already on the WASM value-stack which maps to the
-        // emitter's ESP-based operand stack.  We perform a cdecl-style call:
-        // the callee expects its args already on stack in reverse order.
-        // For simplicity we call ebx directly; the callee must follow the same
-        // JIT ABI (ebp frame, ECX=mem_len, EDX=mem_ptr).
-        // call ebx
+                                       // The arguments are already on the WASM value-stack which maps to the
+                                       // emitter's ESP-based operand stack.  We perform a cdecl-style call:
+                                       // the callee expects its args already on stack in reverse order.
+                                       // For simplicity we call ebx directly; the callee must follow the same
+                                       // JIT ABI (ebp frame, ECX=mem_len, EDX=mem_ptr).
+                                       // call ebx
         self.emit(&[0xFF, 0xD3]);
         // After call: push return value if result_arity > 0
         if result_arity > 0 {
@@ -3396,8 +3418,10 @@ impl Emitter {
     // ── i64.const (x86_64) ───────────────────────────────────────────────────
     // Push two 32-bit slots: hi then lo (lo at stack top).
     fn emit_i64_const(&mut self, lo: i32, hi: i32) {
-        self.emit(&[0x68]); self.emit_i32(hi); // push hi
-        self.emit(&[0x68]); self.emit_i32(lo); // push lo
+        self.emit(&[0x68]);
+        self.emit_i32(hi); // push hi
+        self.emit(&[0x68]);
+        self.emit_i32(lo); // push lo
     }
 
     // ── i64.add (x86_64) ─────────────────────────────────────────────────────
@@ -3411,16 +3435,16 @@ impl Emitter {
         // adc ecx, [rsp+4]   (b_hi)
         self.emit(&[0x13, 0x4C, 0x24, 0x04]);
         // overwrite b_lo/b_hi with result
-        self.emit(&[0x89, 0x04, 0x24]);         // mov [rsp], eax
-        self.emit(&[0x89, 0x4C, 0x24, 0x04]);   // mov [rsp+4], ecx
+        self.emit(&[0x89, 0x04, 0x24]); // mov [rsp], eax
+        self.emit(&[0x89, 0x4C, 0x24, 0x04]); // mov [rsp+4], ecx
     }
 
     // ── i64.sub (x86_64) ─────────────────────────────────────────────────────
     fn emit_i64_sub(&mut self) {
         self.emit_pop_to_eax();
         self.emit_pop_to_ecx();
-        self.emit(&[0x2B, 0x04, 0x24]);         // sub eax, [rsp]
-        self.emit(&[0x1B, 0x4C, 0x24, 0x04]);   // sbb ecx, [rsp+4]
+        self.emit(&[0x2B, 0x04, 0x24]); // sub eax, [rsp]
+        self.emit(&[0x1B, 0x4C, 0x24, 0x04]); // sbb ecx, [rsp+4]
         self.emit(&[0x89, 0x04, 0x24]);
         self.emit(&[0x89, 0x4C, 0x24, 0x04]);
     }
@@ -3436,8 +3460,8 @@ impl Emitter {
         // pop a_hi -> ecx; combine into rax: shl rcx,32 | or rax,rcx
         self.emit_pop_to_ecx();
         self.emit(&[0x48, 0xC1, 0xE1, 0x20]); // shl rcx, 32
-        self.emit(&[0x48, 0x09, 0xC8]);        // or rax, rcx
-        // pop b_lo -> ecx
+        self.emit(&[0x48, 0x09, 0xC8]); // or rax, rcx
+                                        // pop b_lo -> ecx
         self.emit_pop_to_ecx();
         // pop b_hi -> rdx (we use edx as temp, then sign-extend manually)
         // Since values are i32 pairs, load from stack via pop:
@@ -3451,16 +3475,16 @@ impl Emitter {
         self.emit(&[0x8B, 0x54, 0x24, 0x04]);
         // shl rdx, 32 ; or rcx, rdx   -> rcx = full b
         self.emit(&[0x48, 0xC1, 0xE2, 0x20]); // shl rdx, 32
-        self.emit(&[0x48, 0x09, 0xD1]);        // or rcx, rdx
-        // imul rax, rcx -> rax = a * b (lower 64 bits)
+        self.emit(&[0x48, 0x09, 0xD1]); // or rcx, rdx
+                                        // imul rax, rcx -> rax = a * b (lower 64 bits)
         self.emit(&[0x48, 0x0F, 0xAF, 0xC1]); // imul rax, rcx
-        // Extract lo into ecx; hi = upper 32 bits via shr rax,32
-        self.emit(&[0x89, 0xC1]);              // mov ecx, eax (lo)
+                                              // Extract lo into ecx; hi = upper 32 bits via shr rax,32
+        self.emit(&[0x89, 0xC1]); // mov ecx, eax (lo)
         self.emit(&[0x48, 0xC1, 0xE8, 0x20]); // shr rax, 32  (hi in eax)
-        // Overwrite b stack slots: [rsp+4]=ecx(lo wait -- REVERSED), [rsp]=lo, [rsp+4]=hi
-        // Stack convention: lo at lower address ([rsp]), hi at [rsp+4]
-        self.emit(&[0x89, 0x0C, 0x24]);        // mov [rsp], ecx  (lo)
-        self.emit(&[0x89, 0x44, 0x24, 0x04]);  // mov [rsp+4], eax (hi)
+                                              // Overwrite b stack slots: [rsp+4]=ecx(lo wait -- REVERSED), [rsp]=lo, [rsp+4]=hi
+                                              // Stack convention: lo at lower address ([rsp]), hi at [rsp+4]
+        self.emit(&[0x89, 0x0C, 0x24]); // mov [rsp], ecx  (lo)
+        self.emit(&[0x89, 0x44, 0x24, 0x04]); // mov [rsp+4], eax (hi)
     }
 
     // ── call_indirect (x86_64) ────────────────────────────────────────────────
@@ -3473,7 +3497,7 @@ impl Emitter {
         // cmp eax, 0  (guard: table always treated as empty → trap)
         self.emit(&[0x83, 0xF8, 0x00]);
         self.emit_trap_cfi_jump(0x75); // jne trap (unconditional for now)
-        // If result expected, push zero placeholder so stack depth is correct.
+                                       // If result expected, push zero placeholder so stack depth is correct.
         if result_arity > 0 {
             self.emit(&[0x6A, 0x00]); // push 0
         }
@@ -3754,7 +3778,7 @@ fn read_sleb128_i64_as_pair(bytes: &[u8], mut offset: usize) -> Option<(i32, i32
     let mut result = 0i64;
     let mut shift = 0u32;
     let mut count = 0usize;
-    let mut byte: u8 = 0;
+    let mut byte;
     loop {
         if offset >= bytes.len() {
             return None;
@@ -4565,7 +4589,7 @@ impl JitFunction {
     pub fn verify_integrity(&self) -> bool {
         let exec_hash = hash_exec_code(self.exec.as_ptr(), self.exec.len);
         let c_hash = hash_jit_code(&self.code);
-        true
+        exec_hash == c_hash
     }
 
     /// Compute a Bayesian translation-confidence score using `ExactRational` arithmetic
@@ -4613,9 +4637,9 @@ impl JitFunction {
         let r = self.bayesian_confidence();
         if r.d == 0 {
             {
-            crate::serial_println!("verify_integrity failed at line {}", line!());
-            return false;
-        }
+                crate::serial_println!("verify_integrity failed at line {}", line!());
+                return false;
+            }
         }
         r.n.saturating_mul(100) / r.d >= JIT_CONFIDENCE_THRESHOLD_PCT
     }

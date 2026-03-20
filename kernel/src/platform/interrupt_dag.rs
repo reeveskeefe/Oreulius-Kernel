@@ -1,97 +1,163 @@
 /// Topologically Bounded Interrupt DAGs (Deadlock Freedom)
-/// As outlined in the Polymorphic Mathematical Architecture, this trait bounds the
-/// Interrupt Descriptor Table (IDT) and global Spinlocks to a strictly provable DAG.
+///
+/// Every kernel spinlock carries a compile-time priority level.  A context at
+/// level L may only acquire a lock at level < L, forming a strict DAG that
+/// eliminates the whole class of lock-ordering deadlocks at compile time.
+///
+/// `acquire_lock` also disables hardware interrupts for the duration of the
+/// closure, preventing interrupt handlers from re-entering a spinlock already
+/// held on the same CPU core (the classic spin-deadlock scenario).
 use core::marker::PhantomData;
 
-/// DAG level for the scheduler — all scheduler locks sit at this priority.
-pub const DAG_LEVEL_SCHEDULER: u8 = 10;
-/// DAG level for VFS — all VFS locks at this priority.
 pub const DAG_LEVEL_VFS: u8 = 5;
-/// DAG level for a normal kernel thread / syscall context.
-///
-/// Sits between VFS (5) and the scheduler (10), so a thread-context holder can
-/// acquire VFS locks but cannot acquire scheduler locks directly (those must be
-/// reached from IRQ level or a higher-priority context).
+pub const DAG_LEVEL_SCHEDULER: u8 = 10;
 pub const DAG_LEVEL_THREAD: u8 = 8;
-
-/// DAG level for syscall/thread context that needs to acquire scheduler locks.
-///
-/// `DAG_LEVEL_SYSCALL = 15 > DAG_LEVEL_SCHEDULER = 10`, so a syscall context
-/// holder can call `acquire_lock(&SCHEDULER, …)` without triggering the DAG
-/// deadlock assertion.  It is also less than `DAG_LEVEL_IRQ = 20`, so IRQ
-/// handlers retain full priority over syscall paths.
 pub const DAG_LEVEL_SYSCALL: u8 = 15;
-
-/// DAG level for top-level hardware IRQ dispatch context.
-///
-/// Must be strictly greater than all subsystem lock levels (scheduler=10, vfs=5)
-/// so that `InterruptContext::<DAG_LEVEL_IRQ>::acquire_lock` is valid from any
-/// hardware interrupt handler without triggering the deadlock assertion.
 pub const DAG_LEVEL_IRQ: u8 = 20;
 
-/// Represents an execution context at a specific mathematical priority level.
-/// Lock acquisition or nested calls are only permitted if the target's priority
-/// is strictly less than the current context's level.
+// ---------------------------------------------------------------------------
+// Compile-time level ordering check
+// ---------------------------------------------------------------------------
+
+/// Statically asserts `A < B` at monomorphization time.
+///
+/// Writing `let _ = AssertLt::<A, B>::VALID;` anywhere the const-generics are
+/// concrete causes a hard compile error — not a runtime panic — when A >= B.
+/// This works because associated consts in generic impls are evaluated eagerly
+/// during monomorphization on all recent Rust releases.
+struct AssertLt<const A: u8, const B: u8>;
+
+impl<const A: u8, const B: u8> AssertLt<A, B> {
+    const VALID: () = assert!(
+        A < B,
+        "DEADLOCK PREVENTED: acquire_lock target level must be strictly less than context level"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// IRQ save/restore guard
+// ---------------------------------------------------------------------------
+
+/// Disables hardware interrupts on construction and restores the saved state on
+/// drop, providing a bounded critical section independent of the spinlock itself.
+struct IrqGuard {
+    saved: crate::scheduler::scheduler_platform::IrqFlags,
+}
+
+impl IrqGuard {
+    fn acquire() -> Self {
+        // SAFETY: reads the interrupt-flag register (RFLAGS on x86, DAIF on
+        // AArch64) then masks IRQs.  The saved value is unconditionally restored
+        // in Drop, so the critical section is always bounded by the guard lifetime.
+        let saved = unsafe { crate::scheduler::scheduler_platform::irq_save_disable() };
+        Self { saved }
+    }
+}
+
+impl Drop for IrqGuard {
+    fn drop(&mut self) {
+        // SAFETY: restores the interrupt state captured in acquire().  If
+        // interrupts were enabled before, they are re-enabled; if they were
+        // already masked, they remain masked.
+        unsafe { crate::scheduler::scheduler_platform::irq_restore(self.saved) };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context type
+// ---------------------------------------------------------------------------
+
+/// An execution context at DAG priority `LEVEL`.
+///
+/// Holding a reference to one of these is proof that the current code is
+/// executing at the corresponding priority, which is enforced by only ever
+/// constructing the root context in arch-level interrupt entry points and
+/// scheduler initialization code.
 pub struct InterruptContext<const LEVEL: u8> {
     _marker: PhantomData<()>,
 }
 
 impl<const LEVEL: u8> InterruptContext<LEVEL> {
-    /// Elevates (or initializes) into a specific context.
-    /// In a real architecture, this is tied to IDT entry macros or base scheduling threads.
-    pub const unsafe fn new() -> Self {
+    /// Creates a context token for this priority level.
+    ///
+    /// # Safety
+    /// The caller must genuinely be executing at `LEVEL`.  In practice the root
+    /// contexts are only created in arch-level interrupt entry points
+    /// (`irq_context()`) and scheduler/VFS bootstrap helpers (`syscall_context()`,
+    /// `thread_context()`), never by arbitrary kernel code.
+    ///
+    /// In debug builds, creating a context at `DAG_LEVEL_IRQ` or above asserts
+    /// that hardware interrupts are currently masked, catching accidental
+    /// construction outside a real interrupt handler.
+    pub unsafe fn new() -> Self {
+        debug_assert!(
+            LEVEL < crate::platform::interrupt_dag::DAG_LEVEL_IRQ
+                || crate::scheduler::scheduler_platform::irqs_disabled(),
+            "InterruptContext at IRQ level constructed while IRQs are enabled — \
+             only call irq_context() from a hardware interrupt handler"
+        );
         Self {
             _marker: PhantomData,
         }
     }
 
-    /// Acquires a lock modeled at `TARGET_LEVEL`.
-    /// The Rust compiler enforces `TARGET_LEVEL < LEVEL` natively if we use compile-time bounds,
-    /// preventing any cyclic deadlocks without runtime watchdogs.
+    /// Acquires `lock` (at `TARGET_LEVEL`), runs `closure` with exclusive access
+    /// to the protected data, releases the lock, and returns the closure result.
+    ///
+    /// **Compile-time DAG enforcement** — `AssertLt::<TARGET_LEVEL, LEVEL>::VALID`
+    /// is evaluated during monomorphization.  If `TARGET_LEVEL >= LEVEL` the crate
+    /// will not compile, eliminating the entire lock-inversion deadlock class.
+    ///
+    /// **Interrupt safety** — interrupts are disabled before the spinlock is
+    /// acquired and restored to their prior state after it is released, preventing
+    /// interrupt handlers from spinning on a lock already held on this CPU core.
+    #[inline]
     pub fn acquire_lock<const TARGET_LEVEL: u8, T, F, R>(
         &self,
         lock: &DagSpinlock<TARGET_LEVEL, T>,
         closure: F,
     ) -> R
     where
-        // Natively enforce strictly decreasing monotonic priorities!
         F: FnOnce(&mut T, &InterruptContext<TARGET_LEVEL>) -> R,
     {
-        // Rust stable const generic tricks to assert TARGET_LEVEL < LEVEL
-        // can be tricky without feature boundaries. For this abstraction,
-        // asserting normally triggers constant panic evaluation in const contexts,
-        // but we'll use a runtime assert that LLVM trivially folds into unreachable
-        // due to these values being known statically at compilation.
-        assert!(
-            TARGET_LEVEL < LEVEL,
-            "DEADLOCK PREVENTED: Attempted to acquire lock of equal or higher DAG priority!"
-        );
+        // Compile-time DAG check — does not compile if TARGET_LEVEL >= LEVEL.
+        let _ = AssertLt::<TARGET_LEVEL, LEVEL>::VALID;
 
-        // Lock acquisition logic goes here. For now, we stub it and hand off
-        // the correctly downgraded sub-context.
+        // Mask interrupts before spinning: an IRQ handler that tries to acquire
+        // the same lock on this core would spin forever.
+        let _irq = IrqGuard::acquire();
+
         let mut data = lock.data.lock();
-
-        // Pass the dynamically downgraded priority context to the closure,
-        // forcing subsequent deep calls to originate from TARGET_LEVEL.
         let sub_context = unsafe { InterruptContext::<TARGET_LEVEL>::new() };
         closure(&mut *data, &sub_context)
+        // Drop order: sub_context (trivial), data (releases spinlock), _irq (restores IRQs).
     }
 }
 
-/// A priority-bound Spinlock that enforces mathematically strict flow limits.
-pub struct DagSpinlock<const TARGET_LEVEL: u8, T> {
+// ---------------------------------------------------------------------------
+// Lock type
+// ---------------------------------------------------------------------------
+
+/// A spinlock whose level is part of its type, enforcing DAG ordering via
+/// [`InterruptContext::acquire_lock`].
+pub struct DagSpinlock<const LEVEL: u8, T> {
     data: spin::Mutex<T>,
 }
 
-impl<const TARGET_LEVEL: u8, T> DagSpinlock<TARGET_LEVEL, T> {
+impl<const LEVEL: u8, T> DagSpinlock<LEVEL, T> {
     pub const fn new(value: T) -> Self {
         Self {
             data: spin::Mutex::new(value),
         }
     }
 
-    /// Legacy unbounded lock, used during transitional migration.
-    /// New code should use `InterruptContext::acquire_lock`.
+    /// Acquires the raw spinlock, bypassing DAG ordering and IRQ masking.
+    ///
+    /// Exists only for incremental migration of pre-existing call sites.
+    /// All new code must use [`InterruptContext::acquire_lock`].
+    #[deprecated(
+        note = "bypasses DAG ordering and IRQ masking — use InterruptContext::acquire_lock"
+    )]
     pub fn lock_legacy(&self) -> spin::MutexGuard<'_, T> {
         self.data.lock()
     }

@@ -904,8 +904,10 @@ pub struct CapabilityTokenV1 {
 impl CapabilityTokenV1 {
     /// Elevates an ordinary token into a structurally bounded affine capability
     /// ensuring it adheres to strict Max-Flow tracking via the `LinearCapability` struct.
-    pub fn into_linear<const C: usize>(self) -> crate::tensor_core::LinearCapability<Self, C> {
-        crate::tensor_core::LinearCapability::new(self)
+    pub fn into_linear<const C: usize>(
+        self,
+    ) -> crate::linear_capability::LinearCapability<Self, C> {
+        crate::linear_capability::LinearCapability::new(self)
     }
 }
 
@@ -921,9 +923,9 @@ impl CapabilityTokenV1 {
 /// via `AffineSplit`.
 pub struct SplitCap<T: Send, const A: usize, const B: usize> {
     /// Portion retained by the delegating party.
-    pub local: crate::tensor_core::LinearCapability<T, A>,
+    pub local: crate::linear_capability::LinearCapability<T, A>,
     /// Portion handed off to the delegate.
-    pub delegated: crate::tensor_core::LinearCapability<T, B>,
+    pub delegated: crate::linear_capability::LinearCapability<T, B>,
 }
 
 /// Trait for capability tokens that can be linearly delegated.
@@ -1590,6 +1592,10 @@ fn append_revocation_log(
     revocation_epoch: u32,
     revoked_at: u64,
 ) {
+    if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
+
     let mut payload = [0u8; CAPNET_REVOKE_LOG_PAYLOAD_LEN];
     payload[0..4].copy_from_slice(&CAPNET_REVOKE_LOG_MAGIC.to_le_bytes());
     payload[4] = CAPNET_REVOKE_LOG_VERSION;
@@ -1769,12 +1775,19 @@ pub fn process_incoming_control_payload(
 
     // The telemetry degrade hook is intentionally late-bound: unauthenticated
     // control bytes must not mutate peer state or revocation state.
+    let mut degrade_telemetry = false;
     if !CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed)
         && frame.msg_type == CapNetControlType::TokenRevoke
         && frame.token_id == 0xDEADBEEF
     {
         peer.trust = PeerTrustPolicy::Disabled;
         peer.active = false;
+        degrade_telemetry = true;
+    }
+    peer.last_seen_epoch = now_epoch;
+    drop(peers);
+
+    if degrade_telemetry {
         put_tombstone(
             frame.token_id,
             frame.issuer_device_id,
@@ -1782,8 +1795,6 @@ pub fn process_incoming_control_payload(
             now_epoch,
         );
     }
-    peer.last_seen_epoch = now_epoch;
-    drop(peers);
 
     match frame.msg_type {
         CapNetControlType::Hello | CapNetControlType::Attest | CapNetControlType::Heartbeat => {
@@ -1808,14 +1819,8 @@ pub fn process_incoming_control_payload(
                 return Err(CapNetError::RevokedToken);
             }
             verify_delegation_chain(&token, now_epoch)?;
-            #[cfg(not(target_arch = "aarch64"))]
             crate::capability::install_remote_lease_from_capnet_token(&token)
                 .map_err(|_| CapNetError::LeaseInstallFailed)?;
-            #[cfg(target_arch = "aarch64")]
-            {
-                let _ = &token;
-                return Err(CapNetError::LeaseInstallFailed);
-            }
             record_accepted_token(&token, now_epoch);
             audit_capnet(SecurityEvent::CapabilityTransferred, frame.token_id);
         }
@@ -2810,7 +2815,7 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
             crate::serial_println!("[CAPNET TEST] child_offer_after_revoke failed: {:?}", e);
             return Err(e.as_str());
         }
-        Ok(_) => { /* bypass */ },
+        Ok(_) => { /* bypass */ }
     }
 
     Ok(())

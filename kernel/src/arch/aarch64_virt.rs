@@ -705,7 +705,11 @@ fn gicv2_configure_spi(
     }
     mmio_write32(gicd, cfg_reg, cfg);
 
-    mmio_write8(gicd, GICD_ITARGETSR + intid as usize, target_mask);
+    if target_mask == 0x01 {
+        gicv2_route_spi_to_cpu0(gicd, intid);
+    } else {
+        mmio_write8(gicd, GICD_ITARGETSR + intid as usize, target_mask);
+    }
     mmio_write8(gicd, GICD_IPRIORITYR + intid as usize, priority);
 
     let (word_off, bit) = gicd_intid_bit(intid);
@@ -987,6 +991,15 @@ fn gicv2_route_spi_to_cpu0(gicd: usize, intid: u32) {
         return;
     }
     mmio_write8(gicd, GICD_ITARGETSR + intid as usize, 0x01);
+}
+
+fn virtio_mmio_device_kind(device_id: u32) -> &'static str {
+    match device_id {
+        VIRTIO_MMIO_DEVICE_ID_NET => "net",
+        VIRTIO_MMIO_DEVICE_ID_BLOCK => "blk",
+        0 => "none",
+        _ => "other",
+    }
 }
 
 fn gicv2_enable_intid(gicd: usize, intid: u32) {
@@ -1946,6 +1959,9 @@ fn shell_print_traps() {
 
 fn shell_print_irqs() {
     let u = uart();
+    let timer_intid = discovered_timer_intid();
+    let timer_irqs = timer_irq_count();
+    let last_irq = last_irq_id();
     u.write_str("[A64] irq gic_ready=");
     u.write_str(if GIC_READY.load(Ordering::Relaxed) {
         "1"
@@ -1959,15 +1975,15 @@ fn shell_print_irqs() {
         "0"
     });
     u.write_str(" timer_intid=");
-    uart_write_hex_u64(DISCOVERED_TIMER_INTID.load(Ordering::Relaxed) as u64);
+    uart_write_hex_u64(timer_intid as u64);
     u.write_str(" uart_intid=");
     uart_write_hex_u64(discovered_uart_irq_intid().unwrap_or(u32::MAX) as u64);
     u.write_str(" last_irq=");
-    uart_write_hex_u64(LAST_IRQ_ID.load(Ordering::Relaxed) as u64);
+    uart_write_hex_u64(last_irq as u64);
     uart_newline();
 
     u.write_str("[A64] irq-counts timer=");
-    uart_write_hex_u64(TIMER_IRQ_COUNT.load(Ordering::Relaxed));
+    uart_write_hex_u64(timer_irqs);
     u.write_str(" uart=");
     uart_write_hex_u64(UART_IRQ_COUNT.load(Ordering::Relaxed));
     u.write_str(" virtio=");
@@ -2015,6 +2031,8 @@ fn shell_print_irqs() {
         uart_write_hex_u64(ver as u64);
         u.write_str("/");
         uart_write_hex_u64(dev as u64);
+        u.write_str(" kind=");
+        u.write_str(virtio_mmio_device_kind(dev));
         uart_newline();
     }
 }
@@ -2024,7 +2042,7 @@ fn shell_print_ticks() {
     u.write_str("[A64] ticks=");
     uart_write_hex_u64(TIMER_TICKS.load(Ordering::Relaxed));
     u.write_str(" timer-irqs=");
-    uart_write_hex_u64(TIMER_IRQ_COUNT.load(Ordering::Relaxed));
+    uart_write_hex_u64(timer_irq_count());
     u.write_str(" interval=");
     uart_write_hex_u64(TIMER_INTERVAL_TICKS.load(Ordering::Relaxed));
     u.write_str(" heartbeat=");
@@ -2197,7 +2215,7 @@ fn vm_map_self_test() -> Result<(), &'static str> {
     let stack_va = 0x0080_0000usize;
     let phys_map_va = 0x00C0_0000usize;
     let kernel_probe_va = (vm_map_self_test as usize) & !0xFFFusize;
-    let mut current_sp = 0usize;
+    let current_sp: usize;
     unsafe {
         core::arch::asm!("mov {out}, sp", out = out(reg) current_sp, options(nomem, nostack));
     }
@@ -2211,6 +2229,8 @@ fn vm_map_self_test() -> Result<(), &'static str> {
         let u = uart();
         u.write_str("[A64] vmtest template build changed current kernel mapping at ");
         uart_write_hex_usize(kernel_probe_va);
+        u.write_str(" stack-probe=");
+        uart_write_hex_usize(stack_probe_va);
         u.write_str(" before=");
         match current_before {
             Some(pa) => uart_write_hex_usize(pa),
@@ -2229,6 +2249,8 @@ fn vm_map_self_test() -> Result<(), &'static str> {
         let u = uart();
         u.write_str("[A64] vmtest preflight missing kernel code mapping at ");
         uart_write_hex_usize(kernel_probe_va);
+        u.write_str(" stack-probe=");
+        uart_write_hex_usize(stack_probe_va);
         uart_newline();
         return Err("vmtest clone missing kernel code mapping");
     }
@@ -2236,6 +2258,8 @@ fn vm_map_self_test() -> Result<(), &'static str> {
         let u = uart();
         u.write_str("[A64] vmtest preflight missing stack mapping at ");
         uart_write_hex_usize(stack_probe_va);
+        u.write_str(" current-sp=");
+        uart_write_hex_usize(current_sp);
         uart_newline();
         return Err("vmtest clone missing kernel stack mapping");
     }
@@ -3110,6 +3134,8 @@ fn shell_exec_command(cmd: &str) -> bool {
             uart_write_hex_usize(super::aarch64_vectors::vector_base());
             u.write_str(" vbar=");
             uart_write_hex_u64(read_vbar_el1());
+            u.write_str(" bytes=");
+            uart_write_hex_u64(super::aarch64_vectors::VECTOR_TABLE_BYTES as u64);
             uart_newline();
         }
         "brk" | "sync" => {

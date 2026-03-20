@@ -30,7 +30,13 @@
  *    OTA slot.  Intended for a serial console session by a remote operator.
  */
 
+extern crate alloc;
+
 use crate::capnet;
+use crate::crypto::{
+    build_fleet_attestation_signed_message, import_hex_file, read_small_vfs_file,
+    verify_detached_ed25519, DetachedSignatureStatus,
+};
 use crate::net_reactor;
 use crate::persistence;
 use crate::vga;
@@ -38,6 +44,26 @@ use crate::vga;
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+const PATH_FLEET_DIR: &str = "/fleet";
+const PATH_ATTEST_PUBKEY: &str = "/fleet/attest.pub";
+const PATH_ATTEST_SIG: &str = "/fleet/attest.sig";
+const PATH_ATTEST_MSG: &str = "/fleet/attest.msg";
+const PATH_ATTEST_TXT: &str = "/fleet/attest.txt";
+
+#[derive(Clone, Copy)]
+struct FleetAttestationBundle {
+    boot_session: u32,
+    crash_count: u32,
+    boot_tick: u64,
+    measurement: [u8; 32],
+    active_slot_hash: [u8; 32],
+    sched_switches: u64,
+}
+
+pub fn init_store() {
+    let _ = crate::vfs::mkdir(PATH_FLEET_DIR);
+}
 
 fn read_active_slot_hash() -> [u8; 32] {
     // Read the manifest hash (SHA-256 of the active OTA slot image).
@@ -82,8 +108,25 @@ fn record_attestation(session: u32, crash_count: u32, boot_tick: u64, measuremen
     }
 }
 
-/// Build the 32-byte measurement hash.
-pub fn build_measurement() -> [u8; 32] {
+fn build_measurement_hash(
+    boot_tick: u64,
+    crash_count: u32,
+    boot_session: u32,
+    slot_hash: &[u8; 32],
+    sched_switches: u64,
+) -> [u8; 32] {
+    // Assemble input buffer.
+    let mut input = [0u8; 56];
+    input[0..8].copy_from_slice(&boot_tick.to_le_bytes());
+    input[8..12].copy_from_slice(&crash_count.to_le_bytes());
+    input[12..16].copy_from_slice(&boot_session.to_le_bytes());
+    input[16..48].copy_from_slice(slot_hash);
+    input[48..56].copy_from_slice(&sched_switches.to_le_bytes());
+
+    crate::crypto::sha256(&input)
+}
+
+fn build_current_bundle() -> FleetAttestationBundle {
     let boot_tick = crate::asm_bindings::rdtsc_begin();
     let crash_count = crate::crash_log::crash_count();
     let boot_session = crate::crash_log::boot_session();
@@ -96,15 +139,146 @@ pub fn build_measurement() -> [u8; 32] {
         overview.total_switches
     };
 
-    // Assemble input buffer.
-    let mut input = [0u8; 56];
-    input[0..8].copy_from_slice(&boot_tick.to_le_bytes());
-    input[8..12].copy_from_slice(&crash_count.to_le_bytes());
-    input[12..16].copy_from_slice(&boot_session.to_le_bytes());
-    input[16..48].copy_from_slice(&slot_hash);
-    input[48..56].copy_from_slice(&sched_switches.to_le_bytes());
+    let measurement = build_measurement_hash(
+        boot_tick,
+        crash_count,
+        boot_session,
+        &slot_hash,
+        sched_switches,
+    );
 
-    crate::crypto::sha256(&input)
+    FleetAttestationBundle {
+        boot_session,
+        crash_count,
+        boot_tick,
+        measurement,
+        active_slot_hash: slot_hash,
+        sched_switches,
+    }
+}
+
+/// Build the 32-byte measurement hash.
+pub fn build_measurement() -> [u8; 32] {
+    build_current_bundle().measurement
+}
+
+fn canonical_message_for_bundle(bundle: &FleetAttestationBundle) -> alloc::vec::Vec<u8> {
+    build_fleet_attestation_signed_message(
+        bundle.boot_session,
+        bundle.crash_count,
+        bundle.boot_tick,
+        &bundle.measurement,
+        &bundle.active_slot_hash,
+        bundle.sched_switches,
+    )
+}
+
+fn bundle_text_summary(bundle: &FleetAttestationBundle) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(256);
+    out.extend_from_slice(b"Fleet Attestation Bundle\n");
+    out.extend_from_slice(b"boot_session=");
+    append_u32_ascii(&mut out, bundle.boot_session);
+    out.extend_from_slice(b"\ncrash_count=");
+    append_u32_ascii(&mut out, bundle.crash_count);
+    out.extend_from_slice(b"\nboot_tick=");
+    append_u64_ascii(&mut out, bundle.boot_tick);
+    out.extend_from_slice(b"\nmeasurement=");
+    append_hex_ascii(&mut out, &bundle.measurement);
+    out.extend_from_slice(b"\nactive_slot_hash=");
+    append_hex_ascii(&mut out, &bundle.active_slot_hash);
+    out.extend_from_slice(b"\nsched_switches=");
+    append_u64_ascii(&mut out, bundle.sched_switches);
+    out.push(b'\n');
+    out
+}
+
+fn write_bundle_exports(bundle: &FleetAttestationBundle) -> Result<(), &'static str> {
+    init_store();
+    let canonical = canonical_message_for_bundle(bundle);
+    let summary = bundle_text_summary(bundle);
+    crate::vfs::write_path(PATH_ATTEST_MSG, &canonical).map(|_| ())?;
+    crate::vfs::write_path(PATH_ATTEST_TXT, &summary).map(|_| ())
+}
+
+fn verify_exported_bundle_signature() -> Result<DetachedSignatureStatus, &'static str> {
+    let msg = read_small_vfs_file(PATH_ATTEST_MSG, 1024)?;
+    verify_detached_ed25519(PATH_ATTEST_PUBKEY, PATH_ATTEST_SIG, &msg)
+}
+
+fn print_signature_state(prefix: &str, status: Result<DetachedSignatureStatus, &'static str>) {
+    vga::print_str(prefix);
+    match status {
+        Ok(DetachedSignatureStatus::Unsigned) => vga::print_str("unsigned"),
+        Ok(DetachedSignatureStatus::Verified) => vga::print_str("verified"),
+        Err(e) => {
+            vga::print_str("invalid: ");
+            vga::print_str(e);
+        }
+    }
+    vga::print_str("\n");
+}
+
+fn print_bundle(bundle: &FleetAttestationBundle) {
+    vga::print_str("\n=== Fleet Attestation Bundle ===\n");
+    vga::print_str("Boot session : ");
+    print_u32(bundle.boot_session);
+    vga::print_str("\nCrash count  : ");
+    print_u32(bundle.crash_count);
+    vga::print_str("\nBoot tick    : ");
+    print_u64(bundle.boot_tick);
+    vga::print_str("\nMeasurement  : ");
+    print_hash(&bundle.measurement);
+    vga::print_str("\nSlot hash    : ");
+    print_hash(&bundle.active_slot_hash);
+    vga::print_str("\nSched switch : ");
+    print_u64(bundle.sched_switches);
+    vga::print_str("\n");
+}
+
+fn append_u32_ascii(out: &mut alloc::vec::Vec<u8>, value: u32) {
+    if value == 0 {
+        out.push(b'0');
+        return;
+    }
+    let mut v = value;
+    let mut buf = [0u8; 10];
+    let mut len = 0usize;
+    while v > 0 {
+        buf[len] = b'0' + (v % 10) as u8;
+        v /= 10;
+        len += 1;
+    }
+    while len > 0 {
+        len -= 1;
+        out.push(buf[len]);
+    }
+}
+
+fn append_u64_ascii(out: &mut alloc::vec::Vec<u8>, value: u64) {
+    if value == 0 {
+        out.push(b'0');
+        return;
+    }
+    let mut v = value;
+    let mut buf = [0u8; 20];
+    let mut len = 0usize;
+    while v > 0 {
+        buf[len] = b'0' + (v % 10) as u8;
+        v /= 10;
+        len += 1;
+    }
+    while len > 0 {
+        len -= 1;
+        out.push(buf[len]);
+    }
+}
+
+fn append_hex_ascii(out: &mut alloc::vec::Vec<u8>, bytes: &[u8]) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    for &b in bytes {
+        out.push(DIGITS[(b >> 4) as usize]);
+        out.push(DIGITS[(b & 0xF) as usize]);
+    }
 }
 
 fn print_hash(hash: &[u8; 32]) {
@@ -198,29 +372,38 @@ fn parse_ipv4(s: &str) -> Option<crate::netstack::Ipv4Addr> {
 ///   fleet-attest                          — print + record only
 ///   fleet-attest <peer-id> <ip> <port>    — also transmit via UDP
 pub fn cmd_fleet_attest(mut parts: core::str::SplitWhitespace) {
-    let measurement = build_measurement();
-    let crash_count = crate::crash_log::crash_count();
-    let boot_session = crate::crash_log::boot_session();
-    let boot_tick = crate::asm_bindings::rdtsc_begin();
+    let bundle = build_current_bundle();
+    print_bundle(&bundle);
+    match write_bundle_exports(&bundle) {
+        Ok(()) => {
+            vga::print_str("Canonical message exported to ");
+            vga::print_str(PATH_ATTEST_MSG);
+            vga::print_str("\nHuman summary exported to ");
+            vga::print_str(PATH_ATTEST_TXT);
+            vga::print_str("\n");
+        }
+        Err(e) => {
+            vga::print_str("fleet-attest: export failed: ");
+            vga::print_str(e);
+            vga::print_str("\n\n");
+            return;
+        }
+    }
 
-    vga::print_str("\n=== Fleet Attestation Bundle ===\n");
-    vga::print_str("Boot session : ");
-    print_u32(boot_session);
-    vga::print_str("\nCrash count  : ");
-    print_u32(crash_count);
-    vga::print_str("\nBoot tick    : ");
-    print_u64(boot_tick);
-    vga::print_str("\nMeasurement  : ");
-    print_hash(&measurement);
-    vga::print_str("\n");
-
-    record_attestation(boot_session, crash_count, boot_tick, &measurement);
+    record_attestation(
+        bundle.boot_session,
+        bundle.crash_count,
+        bundle.boot_tick,
+        &bundle.measurement,
+    );
     vga::print_str("Attestation record written to persistence.\n");
+    print_signature_state("Signature   : ", verify_exported_bundle_signature());
 
     // Optionally send CapNet Attest frame: fleet-attest <peer-id> <ip> <port>
     let peer_str = match parts.next() {
         Some(s) => s,
         None => {
+            vga::print_str("Detached signature status applies to local export only.\n\n");
             vga::print_str("\n");
             return;
         }
@@ -292,7 +475,11 @@ pub fn cmd_fleet_attest(mut parts: core::str::SplitWhitespace) {
             print_u64(peer_id);
             vga::print_str(" seq=");
             print_u32(seq);
-            vga::print_str("\n");
+            vga::print_str("\nNote: the signed bundle remains local/exported at ");
+            vga::print_str(PATH_ATTEST_MSG);
+            vga::print_str(
+                "; the CapNet Attest frame does not carry the detached signature in this phase.\n",
+            );
         }
         Err(e) => {
             vga::print_str("CapNet Attest TX failed: ");
@@ -301,6 +488,84 @@ pub fn cmd_fleet_attest(mut parts: core::str::SplitWhitespace) {
         }
     }
     vga::print_str("\n");
+}
+
+pub fn cmd_fleet_attest_export() {
+    let bundle = build_current_bundle();
+    print_bundle(&bundle);
+    match write_bundle_exports(&bundle) {
+        Ok(()) => {
+            vga::print_str("Canonical message exported to ");
+            vga::print_str(PATH_ATTEST_MSG);
+            vga::print_str("\nHuman summary exported to ");
+            vga::print_str(PATH_ATTEST_TXT);
+            vga::print_str("\n");
+            print_signature_state("Signature   : ", verify_exported_bundle_signature());
+        }
+        Err(e) => {
+            vga::print_str("fleet-attest-export: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+    vga::print_str("\n");
+}
+
+pub fn cmd_fleet_attest_verify() {
+    init_store();
+    vga::print_str("fleet-attest-verify: ");
+    match verify_exported_bundle_signature() {
+        Ok(DetachedSignatureStatus::Unsigned) => {
+            vga::print_str("bundle is unsigned\n\n");
+        }
+        Ok(DetachedSignatureStatus::Verified) => {
+            vga::print_str("detached signature verified for ");
+            vga::print_str(PATH_ATTEST_MSG);
+            vga::print_str("\n\n");
+        }
+        Err(e) => {
+            vga::print_str(e);
+            vga::print_str("\n\n");
+        }
+    }
+}
+
+pub fn cmd_fleet_trust_key(mut parts: core::str::SplitWhitespace) {
+    let src = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: fleet-trust-key <vfs-path>\n");
+            return;
+        }
+    };
+    init_store();
+    match import_hex_file::<32>(src, PATH_ATTEST_PUBKEY) {
+        Ok(()) => vga::print_str("fleet-trust-key: imported trusted fleet Ed25519 public key\n"),
+        Err(e) => {
+            vga::print_str("fleet-trust-key: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
+}
+
+pub fn cmd_fleet_set_signature(mut parts: core::str::SplitWhitespace) {
+    let src = match parts.next() {
+        Some(p) => p,
+        None => {
+            vga::print_str("Usage: fleet-set-signature <vfs-path>\n");
+            return;
+        }
+    };
+    init_store();
+    match import_hex_file::<64>(src, PATH_ATTEST_SIG) {
+        Ok(()) => vga::print_str("fleet-set-signature: imported detached fleet signature\n"),
+        Err(e) => {
+            vga::print_str("fleet-set-signature: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+        }
+    }
 }
 
 /// `fleet-diag` — compact remote-diagnostics dump for serial console operators.
@@ -348,9 +613,17 @@ pub fn cmd_fleet_diag() {
 
     // --- Measurement ---
     vga::print_str("[Attestation]\n");
-    let measurement = build_measurement();
+    let bundle = build_current_bundle();
     vga::print_str("  Measurement hash        : ");
-    print_hash(&measurement);
+    print_hash(&bundle.measurement);
+    vga::print_str("\n  Slot hash               : ");
+    print_hash(&bundle.active_slot_hash);
+    vga::print_str("\n  Signed bundle           : ");
+    match verify_exported_bundle_signature() {
+        Ok(DetachedSignatureStatus::Unsigned) => vga::print_str("unsigned"),
+        Ok(DetachedSignatureStatus::Verified) => vga::print_str("verified"),
+        Err(_) => vga::print_str("invalid"),
+    }
     vga::print_str("\n");
 
     // --- Scheduler overview ---

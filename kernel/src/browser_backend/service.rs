@@ -26,14 +26,15 @@ use super::fetch::{fetch_request, FetchContext, FetchOutcome};
 use super::origin::{OriginCheckResult, OriginPolicy, OriginTable};
 use super::policy::BrowserPolicy;
 use super::protocol::{
-    BrowserError, BrowserEvent, BrowserRequest, BrowserResponse, PolicyBlockReason,
-    TlsHandshakeResult, BODY_CHUNK_MAX,
+    BrowserError, BrowserEvent, BrowserRequest, BrowserResponse, FetchErrorKind, PolicyBlockReason,
+    TlsHandshakeResult, BODY_CHUNK_MAX, ERROR_MSG_MAX,
 };
 use super::session::{BrowserSession, SessionTable, MAX_BROWSER_SESSIONS};
 use super::storage::StorageTable;
 use super::temporal;
 use super::types::{
-    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, Origin, RequestId, Scheme, Url, URL_MAX,
+    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, Origin, RedirectPolicy, RequestId,
+    Scheme, Url, URL_MAX,
 };
 use crate::ipc::ProcessId;
 
@@ -58,6 +59,29 @@ pub struct BrowserBackendService {
     /// Monotonic epoch counter (incremented by each `tick()` call).
     epoch: u64,
     initialised: bool,
+}
+
+fn policy_reason_bytes(reason: PolicyBlockReason) -> &'static [u8] {
+    match reason {
+        PolicyBlockReason::MixedContent => b"mixed-content",
+        PolicyBlockReason::OriginNotAllowed => b"origin-not-allowed",
+        PolicyBlockReason::SchemeNotAllowed => b"scheme-not-allowed",
+        PolicyBlockReason::Filtered => b"filtered",
+        PolicyBlockReason::TlsCertificateError => b"tls-certificate-error",
+    }
+}
+
+fn fetch_error_kind_bytes(kind: FetchErrorKind) -> &'static [u8] {
+    match kind {
+        FetchErrorKind::DnsFailure => b"dns-failure",
+        FetchErrorKind::ConnectionFailed => b"connection-failed",
+        FetchErrorKind::TlsHandshakeFailed => b"tls-handshake-failed",
+        FetchErrorKind::ConnectionReset => b"connection-reset",
+        FetchErrorKind::ProtocolError => b"protocol-error",
+        FetchErrorKind::TooManyRedirects => b"too-many-redirects",
+        FetchErrorKind::Aborted => b"aborted",
+        FetchErrorKind::InternalError => b"internal-error",
+    }
 }
 
 impl BrowserBackendService {
@@ -108,7 +132,14 @@ impl BrowserBackendService {
                 body,
                 body_len,
                 redirect,
-            } => self.do_navigate(session, cap, &url[..url_len], method, &body[..body_len]),
+            } => self.do_navigate(
+                session,
+                cap,
+                &url[..url_len],
+                method,
+                &body[..body_len],
+                redirect,
+            ),
             BrowserRequest::Subscribe { session, cap } => self.do_subscribe(session, cap),
             BrowserRequest::Unsubscribe { session, cap } => self.do_unsubscribe(session, cap),
             BrowserRequest::AbortRequest {
@@ -192,6 +223,7 @@ impl BrowserBackendService {
         url_raw: &[u8],
         method: HttpMethod,
         body: &[u8],
+        redirect: RedirectPolicy,
     ) -> BrowserResponse {
         if !self.verify_cap(session, cap) {
             return BrowserResponse::Error(BrowserError::InvalidCapability);
@@ -242,6 +274,8 @@ impl BrowserBackendService {
 
                 let mut body_chunk = [0u8; BODY_CHUNK_MAX];
                 let read = self.cache.read_body(cache_idx, &mut body_chunk);
+                let is_last = read >= body_len
+                    && body_off.saturating_add(read) <= super::cache::CACHE_BODY_POOL;
                 s.enqueue(BrowserEvent::Headers {
                     request_id,
                     status,
@@ -255,7 +289,7 @@ impl BrowserBackendService {
                         request_id,
                         data: body_chunk,
                         data_len: read,
-                        is_last: true,
+                        is_last,
                     });
                 }
                 s.enqueue(BrowserEvent::Complete { request_id });
@@ -270,7 +304,9 @@ impl BrowserBackendService {
 
         let profile = {
             let s = self.sessions.get(idx).unwrap();
-            s.policy
+            let mut profile = s.policy;
+            profile.max_redirects = core::cmp::min(profile.max_redirects, redirect.max_redirects);
+            profile
         };
 
         let mut events: [Option<BrowserEvent>; 64] = [None; 64];
@@ -310,19 +346,53 @@ impl BrowserBackendService {
             }
             FetchOutcome::PolicyBlocked(reason) => {
                 self.audit
-                    .policy_blocked(session, request_id, b"policy-blocked");
+                    .policy_blocked(session, request_id, policy_reason_bytes(reason));
             }
             FetchOutcome::Error(kind) => {
                 self.audit
-                    .internal_error(session, request_id, b"fetch-error");
+                    .internal_error(session, request_id, fetch_error_kind_bytes(kind));
             }
             FetchOutcome::Redirect {
                 status,
                 location,
                 location_len,
             } => {
-                // Redirect is surfaced as an event; the client re-issues Navigate.
                 let s = self.sessions.get_mut(idx).unwrap();
+                if redirect.max_redirects == 0 {
+                    let mut message = [0u8; ERROR_MSG_MAX];
+                    let msg = b"redirects disabled by policy";
+                    let msg_len = msg.len().min(ERROR_MSG_MAX);
+                    message[..msg_len].copy_from_slice(&msg[..msg_len]);
+                    s.enqueue(BrowserEvent::FetchError {
+                        request_id,
+                        kind: FetchErrorKind::TooManyRedirects,
+                        message,
+                        msg_len,
+                    });
+                    self.audit
+                        .internal_error(session, request_id, b"redirect-disabled");
+                    return BrowserResponse::RequestAccepted { request_id };
+                }
+                if !redirect.follow_cross_origin {
+                    if let Some(target_url) = Url::parse(&location[..location_len]) {
+                        let from_origin = Origin::from_url(&url);
+                        let to_origin = Origin::from_url(&target_url);
+                        if !from_origin.same_origin(&to_origin) {
+                            s.enqueue(BrowserEvent::PolicyBlocked {
+                                request_id,
+                                reason: PolicyBlockReason::OriginNotAllowed,
+                            });
+                            self.audit.policy_blocked(
+                                session,
+                                request_id,
+                                b"redirect-cross-origin",
+                            );
+                            return BrowserResponse::RequestAccepted { request_id };
+                        }
+                    }
+                }
+                self.audit
+                    .redirect_followed(session, request_id, &location[..location_len]);
                 // Reconstruct "from" URL from the Url struct fields.
                 let mut from = [0u8; URL_MAX];
                 let mut fpos = 0usize;

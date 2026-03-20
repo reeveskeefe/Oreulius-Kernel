@@ -46,6 +46,29 @@ fn uart_log_hex_line(prefix: &str, value: usize) {
     uart.write_str("\n");
 }
 
+fn init_shared_runtime_step(name: &str, init: impl FnOnce()) {
+    let uart = crate::arch::aarch64_pl011::early_uart();
+    uart.init_early();
+    uart.write_str("[A64] init ");
+    uart.write_str(name);
+    uart.write_str("...\n");
+    init();
+}
+
+fn init_shared_runtime() {
+    init_shared_runtime_step("memory", crate::memory::init);
+    init_shared_runtime_step("fs", crate::fs::init);
+    init_shared_runtime_step("vfs", crate::vfs::init);
+    init_shared_runtime_step("persistence", crate::persistence::init);
+    init_shared_runtime_step("temporal", crate::temporal::init);
+    init_shared_runtime_step("ipc", crate::ipc::init);
+    init_shared_runtime_step("registry", crate::registry::init);
+    init_shared_runtime_step("capability", crate::capability::init);
+    init_shared_runtime_step("security", crate::security::init);
+    init_shared_runtime_step("process backend", crate::process::init);
+    init_shared_runtime_step("syscall core", crate::syscall::init);
+}
+
 extern "C" fn shell_scheduler_task() -> ! {
     crate::arch::enable_interrupts();
     crate::arch::aarch64_virt::run_serial_shell()
@@ -86,10 +109,7 @@ pub fn enter_runtime() -> ! {
         }
     }
 
-    uart_log_line("[A64] init process backend...");
-    crate::process::init();
-    uart_log_line("[A64] init syscall core...");
-    crate::syscall::init();
+    init_shared_runtime();
 
     match boot_info.raw_info_ptr {
         Some(ptr) => match crate::arch::aarch64_dtb::parse_dtb_header(ptr) {
