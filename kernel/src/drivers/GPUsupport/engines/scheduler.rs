@@ -34,9 +34,9 @@ pub const MAX_SCHEDULER_SLOTS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SchedulerPriority {
-    Low    = 0,
+    Low = 0,
     Normal = 1,
-    High   = 2,
+    High = 2,
 }
 
 // ---------------------------------------------------------------------------
@@ -45,22 +45,25 @@ pub enum SchedulerPriority {
 
 #[derive(Clone, Copy)]
 struct SchedulerSlot {
-    packet:   CommandPacket,
-    fence:    GpuFence,
+    packet: CommandPacket,
+    fence: GpuFence,
     priority: SchedulerPriority,
-    active:   bool,
+    active: bool,
 }
 
 impl SchedulerSlot {
     const EMPTY: Self = Self {
-        packet:   CommandPacket::Transfer(super::packets::TransferPacket {
+        packet: CommandPacket::Transfer(super::packets::TransferPacket {
             src_bo: 0,
             dst_bo: 0,
-            bytes:  0,
+            bytes: 0,
         }),
-        fence:    GpuFence { id: 0, state: FenceState::Signaled },
+        fence: GpuFence {
+            id: 0,
+            state: FenceState::Signaled,
+        },
         priority: SchedulerPriority::Normal,
-        active:   false,
+        active: false,
     };
 }
 
@@ -84,9 +87,9 @@ pub enum DrainResult {
 
 pub struct GpuScheduler {
     pub max_inflight: u16,
-    ring:     [SchedulerSlot; MAX_SCHEDULER_SLOTS],
-    len:      usize,
-    head:     usize,   // next write position
+    ring: [SchedulerSlot; MAX_SCHEDULER_SLOTS],
+    len: usize,
+    head: usize, // next write position
     inflight: u16,
 }
 
@@ -94,9 +97,9 @@ impl GpuScheduler {
     pub const fn new(max_inflight: u16) -> Self {
         GpuScheduler {
             max_inflight,
-            ring:     [SchedulerSlot::EMPTY; MAX_SCHEDULER_SLOTS],
-            len:      0,
-            head:     0,
+            ring: [SchedulerSlot::EMPTY; MAX_SCHEDULER_SLOTS],
+            len: 0,
+            head: 0,
             inflight: 0,
         }
     }
@@ -130,7 +133,12 @@ impl GpuScheduler {
             let next = (i + 1) % MAX_SCHEDULER_SLOTS;
             self.ring[next] = self.ring[i];
         }
-        self.ring[insert] = SchedulerSlot { packet, fence, priority, active: true };
+        self.ring[insert] = SchedulerSlot {
+            packet,
+            fence,
+            priority,
+            active: true,
+        };
         self.head = (self.head + 1) % MAX_SCHEDULER_SLOTS;
         self.len += 1;
         self.inflight += 1;
@@ -203,10 +211,18 @@ impl GpuScheduler {
     // Queries
     // -----------------------------------------------------------------------
 
-    pub fn inflight_count(&self) -> u16 { self.inflight }
-    pub fn pending_count(&self)  -> usize { self.len }
-    pub fn is_full(&self)        -> bool { self.inflight >= self.max_inflight }
-    pub fn is_empty(&self)       -> bool { self.len == 0 }
+    pub fn inflight_count(&self) -> u16 {
+        self.inflight
+    }
+    pub fn pending_count(&self) -> usize {
+        self.len
+    }
+    pub fn is_full(&self) -> bool {
+        self.inflight >= self.max_inflight
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 
     // -----------------------------------------------------------------------
     // Internal helpers
@@ -231,5 +247,3 @@ impl GpuScheduler {
         self.head % MAX_SCHEDULER_SLOTS
     }
 }
-
-

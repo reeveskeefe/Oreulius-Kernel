@@ -530,8 +530,7 @@ impl WasmThreadPool {
                 ThreadState::Empty => JoinResult::NotFound,
                 _ => {
                     // Mark caller as blocked on target.
-                    if let Some(caller_idx) = threads.iter().position(|t| t.tid == caller_tid)
-                    {
+                    if let Some(caller_idx) = threads.iter().position(|t| t.tid == caller_tid) {
                         threads[caller_idx].state = ThreadState::Joining(target_tid);
                     }
                     JoinResult::Blocked
@@ -577,7 +576,10 @@ impl WasmThreadPool {
 
     /// Return the current thread fuel for inspection.
     pub fn thread_fuel(&self, tid: i32) -> Option<u32> {
-        self.threads()?.iter().find(|t| t.tid == tid).map(|t| t.fuel)
+        self.threads()?
+            .iter()
+            .find(|t| t.tid == tid)
+            .map(|t| t.fuel)
     }
 
     /// Advance the round-robin cursor and return a mutable reference to the
@@ -620,7 +622,10 @@ impl WasmThreadPool {
         let mut found_idx = None;
         for _ in 0..MAX_WASM_THREADS {
             self.rr_cursor = (self.rr_cursor + 1) % MAX_WASM_THREADS;
-            if matches!(self.threads()?.get(self.rr_cursor)?.state, ThreadState::Runnable) {
+            if matches!(
+                self.threads()?.get(self.rr_cursor)?.state,
+                ThreadState::Runnable
+            ) {
                 found_idx = Some(self.rr_cursor);
                 break;
             }

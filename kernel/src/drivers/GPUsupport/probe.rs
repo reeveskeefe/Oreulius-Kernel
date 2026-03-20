@@ -75,7 +75,11 @@ fn bars_for_device(dev: &PciDevice) -> [Option<GpuBarInfo>; 6] {
         let is_mmio = raw & 0x1 == 0;
         let is_64bit = is_mmio && ((raw >> 1) & 0x3) == 0x2;
         let prefetchable = is_mmio && (raw & 0x8) != 0;
-        let base = if is_mmio { (raw & !0xFu32) as u64 } else { (raw & !0x3u32) as u64 };
+        let base = if is_mmio {
+            (raw & !0xFu32) as u64
+        } else {
+            (raw & !0x3u32) as u64
+        };
         bars[idx as usize] = Some(GpuBarInfo {
             index: idx,
             base,
@@ -103,10 +107,10 @@ pub fn probe_pci_device(dev: PciDevice, mb2_ptr: u32) -> GpuProbeReport {
     // Give vendor-specific drivers a chance to upgrade the tier to Scanout
     // based on live register reads (e.g. pipe-active, CRTC-enabled).
     match base_report.class {
-        GpuClass::IntelFamily   => intel::probe_display(&base_report, mb2_ptr),
-        GpuClass::AmdFamily     => amd::probe_display(&base_report, mb2_ptr),
-        GpuClass::NvidiaFamily  => nvidia::probe_display(&base_report, mb2_ptr),
-        _                       => base_report,
+        GpuClass::IntelFamily => intel::probe_display(&base_report, mb2_ptr),
+        GpuClass::AmdFamily => amd::probe_display(&base_report, mb2_ptr),
+        GpuClass::NvidiaFamily => nvidia::probe_display(&base_report, mb2_ptr),
+        _ => base_report,
     }
 }
 
@@ -143,4 +147,3 @@ pub fn probe_all(mb2_ptr: u32) -> [Option<GpuProbeReport>; MAX_PROBE_REPORTS] {
 
     out
 }
-

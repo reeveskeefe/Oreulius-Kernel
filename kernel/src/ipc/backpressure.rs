@@ -127,7 +127,11 @@ pub(crate) fn snapshot(channel: &Channel) -> BackpressureSnapshot {
 
 const fn high_pressure_threshold() -> usize {
     let threshold = (CHANNEL_CAPACITY * HIGH_PRESSURE_NUMERATOR) / HIGH_PRESSURE_DENOMINATOR;
-    if threshold == 0 { 1 } else { threshold }
+    if threshold == 0 {
+        1
+    } else {
+        threshold
+    }
 }
 
 #[cfg(test)]
@@ -140,8 +144,7 @@ mod tests {
         let id = ChannelId::new(200);
         let owner = ProcessId::new(1);
         let mut channel = Channel::new(id, owner);
-        let send_cap =
-            crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+        let send_cap = crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
 
         assert_eq!(level(&channel), BackpressureLevel::Idle);
 
@@ -168,8 +171,7 @@ mod tests {
             ),
             128,
         );
-        let send_cap =
-            crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+        let send_cap = crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
 
         while !channel.is_full() {
             let msg = Message::with_data(owner, b"x").unwrap();
@@ -192,8 +194,7 @@ mod tests {
             ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::ASYNC),
             128,
         );
-        let send_cap =
-            crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+        let send_cap = crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
 
         while level(&channel) != BackpressureLevel::High {
             let msg = Message::with_data(owner, b"x").unwrap();
@@ -201,7 +202,10 @@ mod tests {
         }
 
         assert!(!channel.is_full());
-        assert_eq!(recommended_send_action(&channel), BackpressureAction::Refuse);
+        assert_eq!(
+            recommended_send_action(&channel),
+            BackpressureAction::Refuse
+        );
         assert_eq!(
             send_decision(&channel),
             Some(SendDecision::Refuse(IpcRefusal::Backpressure))
@@ -213,8 +217,7 @@ mod tests {
         let id = ChannelId::new(202);
         let owner = ProcessId::new(3);
         let mut channel = Channel::new(id, owner);
-        let send_cap =
-            crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+        let send_cap = crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
 
         while level(&channel) != BackpressureLevel::High {
             let msg = Message::with_data(owner, b"x").unwrap();

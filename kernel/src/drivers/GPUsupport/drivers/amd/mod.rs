@@ -18,9 +18,9 @@
 use crate::drivers::gpu_support::caps::GpuCapabilities;
 use crate::drivers::gpu_support::core::{GpuClass, GpuProbeReport, GpuTier};
 use crate::drivers::gpu_support::display::scanout::ScanoutBackendId;
+use crate::drivers::gpu_support::drivers::simplefb;
 use crate::drivers::gpu_support::errors::GpuError;
 use crate::drivers::gpu_support::transport::mmio::MmioRegion;
-use crate::drivers::gpu_support::drivers::simplefb;
 
 // ---------------------------------------------------------------------------
 // Public AMD DCE/DCN register offsets
@@ -71,7 +71,11 @@ pub fn dce_primary_surface_addr(bar0_base: usize) -> Option<u64> {
 /// If BAR0 is MMIO-accessible and CRTC0 is active, upgrades the tier to
 /// Scanout and routes through simplefb.
 pub fn probe_display(report: &GpuProbeReport, _mb2_ptr: u32) -> GpuProbeReport {
-    let bar0 = report.bars.iter().flatten().find(|b| b.index == 0 && b.is_mmio);
+    let bar0 = report
+        .bars
+        .iter()
+        .flatten()
+        .find(|b| b.index == 0 && b.is_mmio);
 
     let crtc_active = bar0
         .map(|b| b.base > 0 && detect_dce_crtc0(b.base as usize))
@@ -81,8 +85,8 @@ pub fn probe_display(report: &GpuProbeReport, _mb2_ptr: u32) -> GpuProbeReport {
         crate::serial_println!("[AMD GPU] DCE CRTC0 active — routing to simplefb");
         GpuProbeReport {
             class: GpuClass::AmdFamily,
-            tier:  GpuTier::Scanout,
-            caps:  GpuCapabilities::scanout(),
+            tier: GpuTier::Scanout,
+            caps: GpuCapabilities::scanout(),
             backend: ScanoutBackendId::SimpleFramebuffer,
             ..(*report)
         }
@@ -97,12 +101,18 @@ pub fn activate(mb2_ptr: u32) -> Result<(), GpuError> {
     simplefb::activate(mb2_ptr).map(|_| ())
 }
 
-pub fn put_pixel(x: u32, y: u32, r: u8, g: u8, b: u8) { simplefb::put_pixel(x, y, r, g, b); }
+pub fn put_pixel(x: u32, y: u32, r: u8, g: u8, b: u8) {
+    simplefb::put_pixel(x, y, r, g, b);
+}
 pub fn fill_rect(x: u32, y: u32, w: u32, h: u32, r: u8, g: u8, b: u8) {
     simplefb::fill_rect(x, y, w, h, r, g, b);
 }
-pub fn flush() { simplefb::flush(); }
-pub fn dimensions() -> (u32, u32) { simplefb::dimensions() }
-pub fn is_available() -> bool { simplefb::is_available() }
-
-
+pub fn flush() {
+    simplefb::flush();
+}
+pub fn dimensions() -> (u32, u32) {
+    simplefb::dimensions()
+}
+pub fn is_available() -> bool {
+    simplefb::is_available()
+}

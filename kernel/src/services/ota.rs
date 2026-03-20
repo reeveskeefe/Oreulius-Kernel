@@ -197,9 +197,7 @@ fn record_ota_event(phase: OtaPhase, slot: SlotId, hash: &[u8; 32]) {
         SlotId::B => 1,
     };
     payload[2..34].copy_from_slice(hash);
-    if let Ok(record) =
-        persistence::LogRecord::new(persistence::RecordType::OtaUpdate, &payload)
-    {
+    if let Ok(record) = persistence::LogRecord::new(persistence::RecordType::OtaUpdate, &payload) {
         let mut svc = persistence::persistence().lock();
         let _ = svc.append_log(&cap, record);
     }
@@ -250,18 +248,28 @@ pub fn cmd_ota_status() {
 
     // Check if each slot has content.
     let mut dummy = [0u8; 1];
-    let a_has = vfs::read_path(PATH_SLOT_A, &mut dummy).map(|n| n).unwrap_or(0);
-    let b_has = vfs::read_path(PATH_SLOT_B, &mut dummy).map(|n| n).unwrap_or(0);
+    let a_has = vfs::read_path(PATH_SLOT_A, &mut dummy)
+        .map(|n| n)
+        .unwrap_or(0);
+    let b_has = vfs::read_path(PATH_SLOT_B, &mut dummy)
+        .map(|n| n)
+        .unwrap_or(0);
 
     vga::print_str("Slot A size  : ");
     match vfs::path_size(PATH_SLOT_A) {
-        Ok(n) => { print_u32(n as u32); vga::print_str(" bytes"); }
+        Ok(n) => {
+            print_u32(n as u32);
+            vga::print_str(" bytes");
+        }
         Err(_) => vga::print_str("(empty)"),
     }
     let _ = a_has;
     vga::print_str("\nSlot B size  : ");
     match vfs::path_size(PATH_SLOT_B) {
-        Ok(n) => { print_u32(n as u32); vga::print_str(" bytes"); }
+        Ok(n) => {
+            print_u32(n as u32);
+            vga::print_str(" bytes");
+        }
         Err(_) => vga::print_str("(empty)"),
     }
     let _ = b_has;
@@ -457,7 +465,10 @@ pub fn verify_boot_image() {
     let size = match vfs::path_size(active.vfs_path()) {
         Ok(n) if n > 0 => n,
         _ => {
-            crate::serial_println!("[VerifiedBoot] slot {} is empty — skipping", active.as_str());
+            crate::serial_println!(
+                "[VerifiedBoot] slot {} is empty — skipping",
+                active.as_str()
+            );
             return;
         }
     };

@@ -24,7 +24,9 @@ pub struct BrowserCap(pub u64);
 
 impl BrowserCap {
     pub const INVALID: BrowserCap = BrowserCap(0);
-    pub fn is_valid(self) -> bool { self.0 != 0 }
+    pub fn is_valid(self) -> bool {
+        self.0 != 0
+    }
 }
 
 /// Identifies a download job.
@@ -51,7 +53,7 @@ pub enum Scheme {
 impl Scheme {
     pub fn default_port(self) -> u16 {
         match self {
-            Scheme::Http  => 80,
+            Scheme::Http => 80,
             Scheme::Https => 443,
             Scheme::Unknown => 0,
         }
@@ -63,7 +65,9 @@ impl Scheme {
             Scheme::Unknown => "",
         }
     }
-    pub fn is_secure(self) -> bool { matches!(self, Scheme::Https) }
+    pub fn is_secure(self) -> bool {
+        matches!(self, Scheme::Https)
+    }
 }
 
 /// A parsed URL, represented as fixed-size byte arrays.
@@ -73,12 +77,12 @@ impl Scheme {
 #[derive(Clone, Copy)]
 pub struct Url {
     pub scheme: Scheme,
-    pub host:   [u8; HOST_MAX],
+    pub host: [u8; HOST_MAX],
     pub host_len: usize,
-    pub port:   u16,
-    pub path:   [u8; PATH_MAX],
+    pub port: u16,
+    pub path: [u8; PATH_MAX],
     pub path_len: usize,
-    pub query:  [u8; QUERY_MAX],
+    pub query: [u8; QUERY_MAX],
     pub query_len: usize,
 }
 
@@ -127,19 +131,26 @@ impl Url {
             (authority, scheme.default_port())
         };
 
-        if host_bytes.is_empty() || host_bytes.len() > HOST_MAX { return None; }
+        if host_bytes.is_empty() || host_bytes.len() > HOST_MAX {
+            return None;
+        }
         url.host[..host_bytes.len()].copy_from_slice(host_bytes);
         url.host_len = host_bytes.len();
         url.port = port;
 
         // --- Path ---
-        let (path_bytes, query_bytes) = if let Some(q) = path_and_query.iter().position(|&b| b == b'?') {
-            (&path_and_query[..q], &path_and_query[q + 1..])
-        } else {
-            (path_and_query, &b""[..])
-        };
+        let (path_bytes, query_bytes) =
+            if let Some(q) = path_and_query.iter().position(|&b| b == b'?') {
+                (&path_and_query[..q], &path_and_query[q + 1..])
+            } else {
+                (path_and_query, &b""[..])
+            };
 
-        let path_effective = if path_bytes.is_empty() { b"/" as &[u8] } else { path_bytes };
+        let path_effective = if path_bytes.is_empty() {
+            b"/" as &[u8]
+        } else {
+            path_bytes
+        };
         let plen = path_effective.len().min(PATH_MAX);
         url.path[..plen].copy_from_slice(&path_effective[..plen]);
         url.path_len = plen;
@@ -151,19 +162,31 @@ impl Url {
         Some(url)
     }
 
-    pub fn host_str(&self) -> &[u8] { &self.host[..self.host_len] }
-    pub fn path_str(&self) -> &[u8] { &self.path[..self.path_len] }
-    pub fn query_str(&self) -> &[u8] { &self.query[..self.query_len] }
+    pub fn host_str(&self) -> &[u8] {
+        &self.host[..self.host_len]
+    }
+    pub fn path_str(&self) -> &[u8] {
+        &self.path[..self.path_len]
+    }
+    pub fn query_str(&self) -> &[u8] {
+        &self.query[..self.query_len]
+    }
 }
 
 fn parse_decimal_u16(bytes: &[u8]) -> Option<u16> {
-    if bytes.is_empty() || bytes.len() > 5 { return None; }
+    if bytes.is_empty() || bytes.len() > 5 {
+        return None;
+    }
     let mut v = 0u32;
     for &b in bytes {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         v = v * 10 + (b - b'0') as u32;
     }
-    if v > 65535 { return None; }
+    if v > 65535 {
+        return None;
+    }
     Some(v as u16)
 }
 
@@ -175,9 +198,9 @@ fn parse_decimal_u16(bytes: &[u8]) -> Option<u16> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Origin {
     pub scheme: Scheme,
-    pub host:   [u8; HOST_MAX],
+    pub host: [u8; HOST_MAX],
     pub host_len: usize,
-    pub port:   u16,
+    pub port: u16,
 }
 
 impl Origin {
@@ -197,7 +220,9 @@ impl Origin {
         }
     }
 
-    pub fn is_opaque(&self) -> bool { self.scheme == Scheme::Unknown }
+    pub fn is_opaque(&self) -> bool {
+        self.scheme == Scheme::Unknown
+    }
 
     pub fn same_origin(&self, other: &Origin) -> bool {
         self.scheme == other.scheme
@@ -223,11 +248,11 @@ pub enum HttpMethod {
 impl HttpMethod {
     pub fn as_str(self) -> &'static str {
         match self {
-            HttpMethod::Get     => "GET",
-            HttpMethod::Post    => "POST",
-            HttpMethod::Head    => "HEAD",
-            HttpMethod::Put     => "PUT",
-            HttpMethod::Delete  => "DELETE",
+            HttpMethod::Get => "GET",
+            HttpMethod::Post => "POST",
+            HttpMethod::Head => "HEAD",
+            HttpMethod::Put => "PUT",
+            HttpMethod::Delete => "DELETE",
             HttpMethod::Options => "OPTIONS",
         }
     }
@@ -245,14 +270,23 @@ pub const MIME_MAX: usize = 128;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct MimeType {
     pub bytes: [u8; MIME_MAX],
-    pub len:   usize,
+    pub len: usize,
 }
 
 impl MimeType {
-    pub const fn empty() -> Self { MimeType { bytes: [0; MIME_MAX], len: 0 } }
+    pub const fn empty() -> Self {
+        MimeType {
+            bytes: [0; MIME_MAX],
+            len: 0,
+        }
+    }
 
     pub const fn from_bytes(b: &[u8]) -> Self {
-        let l = if b.len() < MIME_MAX { b.len() } else { MIME_MAX };
+        let l = if b.len() < MIME_MAX {
+            b.len()
+        } else {
+            MIME_MAX
+        };
         let mut bytes = [0u8; MIME_MAX];
         let mut i = 0;
         while i < l {
@@ -262,18 +296,18 @@ impl MimeType {
         MimeType { bytes, len: l }
     }
 
-    pub fn as_bytes(&self) -> &[u8] { &self.bytes[..self.len] }
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
 
     pub fn is_text(&self) -> bool {
         self.as_bytes().starts_with(b"text/")
     }
     pub fn is_html(&self) -> bool {
-        self.as_bytes() == b"text/html"
-            || self.as_bytes().starts_with(b"text/html;")
+        self.as_bytes() == b"text/html" || self.as_bytes().starts_with(b"text/html;")
     }
     pub fn is_json(&self) -> bool {
-        self.as_bytes() == b"application/json"
-            || self.as_bytes().starts_with(b"application/json;")
+        self.as_bytes() == b"application/json" || self.as_bytes().starts_with(b"application/json;")
     }
     pub fn is_binary(&self) -> bool {
         self.as_bytes() == b"application/octet-stream"
@@ -311,8 +345,16 @@ impl RedirectPolicy {
 pub struct StatusCode(pub u16);
 
 impl StatusCode {
-    pub fn is_success(self) -> bool { self.0 >= 200 && self.0 < 300 }
-    pub fn is_redirect(self) -> bool { self.0 == 301 || self.0 == 302 || self.0 == 303 || self.0 == 307 || self.0 == 308 }
-    pub fn is_client_error(self) -> bool { self.0 >= 400 && self.0 < 500 }
-    pub fn is_server_error(self) -> bool { self.0 >= 500 && self.0 < 600 }
+    pub fn is_success(self) -> bool {
+        self.0 >= 200 && self.0 < 300
+    }
+    pub fn is_redirect(self) -> bool {
+        self.0 == 301 || self.0 == 302 || self.0 == 303 || self.0 == 307 || self.0 == 308
+    }
+    pub fn is_client_error(self) -> bool {
+        self.0 >= 400 && self.0 < 500
+    }
+    pub fn is_server_error(self) -> bool {
+        self.0 >= 500 && self.0 < 600
+    }
 }

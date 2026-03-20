@@ -66,7 +66,11 @@ pub fn merkle_root(words: &mut [u32]) -> u32 {
         let mut src = 0usize;
         while src < count {
             let left = words[src];
-            let right = if src + 1 < count { words[src + 1] } else { left };
+            let right = if src + 1 < count {
+                words[src + 1]
+            } else {
+                left
+            };
             words[dst] = hash_pair(left, right);
             dst += 1;
             src += 2;

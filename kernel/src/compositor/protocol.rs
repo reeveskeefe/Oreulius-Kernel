@@ -33,7 +33,9 @@ pub struct CompositorCap(pub u64);
 
 impl CompositorCap {
     pub const INVALID: Self = CompositorCap(0);
-    pub fn is_valid(self) -> bool { self.0 != 0 }
+    pub fn is_valid(self) -> bool {
+        self.0 != 0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -45,9 +47,7 @@ impl CompositorCap {
 pub enum CompositorRequest {
     /// Ask the compositor to create a session for the calling process.
     /// On success the compositor responds with `SessionGranted`.
-    OpenSession {
-        pid: ProcessId,
-    },
+    OpenSession { pid: ProcessId },
 
     /// Close an existing session and destroy all its windows/surfaces.
     CloseSession {
@@ -221,16 +221,16 @@ pub enum CompositorError {
 impl CompositorError {
     pub fn as_str(self) -> &'static str {
         match self {
-            CompositorError::InvalidCapability  => "invalid capability",
-            CompositorError::InvalidSession     => "invalid session",
-            CompositorError::InvalidWindow      => "invalid window",
-            CompositorError::InvalidSurface     => "invalid surface",
-            CompositorError::QuotaExceeded      => "quota exceeded",
+            CompositorError::InvalidCapability => "invalid capability",
+            CompositorError::InvalidSession => "invalid session",
+            CompositorError::InvalidWindow => "invalid window",
+            CompositorError::InvalidSurface => "invalid surface",
+            CompositorError::QuotaExceeded => "quota exceeded",
             CompositorError::DimensionsTooLarge => "dimensions too large",
-            CompositorError::InvalidSize        => "invalid size",
-            CompositorError::OutOfMemory        => "out of memory",
-            CompositorError::PermissionDenied   => "permission denied",
-            CompositorError::InternalError      => "internal error",
+            CompositorError::InvalidSize => "invalid size",
+            CompositorError::OutOfMemory => "out of memory",
+            CompositorError::PermissionDenied => "permission denied",
+            CompositorError::InternalError => "internal error",
         }
     }
 }
@@ -259,6 +259,10 @@ pub enum CompositorInputEvent {
         dy: i16,
         buttons: u8,
     },
-    FocusGained { window: WindowId },
-    FocusLost   { window: WindowId },
+    FocusGained {
+        window: WindowId,
+    },
+    FocusLost {
+        window: WindowId,
+    },
 }

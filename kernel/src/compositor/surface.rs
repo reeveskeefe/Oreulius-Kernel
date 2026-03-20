@@ -68,7 +68,13 @@ impl Surface {
         // Zero the buffer so the window starts transparent/black.
         unsafe { core::ptr::write_bytes(ptr as *mut u8, 0, pages * page_size) };
 
-        Some(Surface { ptr, width, height, pages, alive: true })
+        Some(Surface {
+            ptr,
+            width,
+            height,
+            pages,
+            alive: true,
+        })
     }
 
     /// Free the page allocation and mark the surface dead.
@@ -115,7 +121,9 @@ impl Surface {
             return;
         }
         let offset = (y as usize) * (self.width as usize) + (x as usize);
-        unsafe { *self.ptr.add(offset) = argb; }
+        unsafe {
+            *self.ptr.add(offset) = argb;
+        }
     }
 
     /// Fill a rectangle with a solid colour.
@@ -174,7 +182,8 @@ impl Surface {
     /// Caller must ensure `(x, y)` is in bounds and the surface is alive.
     #[inline]
     pub unsafe fn raw_ptr_at(&self, x: u32, y: u32) -> *const u32 {
-        self.ptr.add((y as usize) * (self.width as usize) + (x as usize))
+        self.ptr
+            .add((y as usize) * (self.width as usize) + (x as usize))
     }
 }
 
@@ -193,7 +202,9 @@ pub struct SurfacePool {
 impl SurfacePool {
     pub const fn new() -> Self {
         const EMPTY: Surface = Surface::empty();
-        SurfacePool { slots: [EMPTY; MAX_SURFACES] }
+        SurfacePool {
+            slots: [EMPTY; MAX_SURFACES],
+        }
     }
 
     /// Allocate a surface and return its slot index, or `None`.

@@ -32,27 +32,27 @@ pub const MAX_GPU_IRQ_HANDLERS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuInterruptStatus {
-    pub fence_complete:   bool,
-    pub page_fault:       bool,
-    pub engine_hang:      bool,
-    pub completed_fence:  Option<u64>,   // fence ID if fence_complete
-    pub hung_fence:       Option<u64>,   // fence ID if engine_hang
+    pub fence_complete: bool,
+    pub page_fault: bool,
+    pub engine_hang: bool,
+    pub completed_fence: Option<u64>, // fence ID if fence_complete
+    pub hung_fence: Option<u64>,      // fence ID if engine_hang
 }
 
 impl GpuInterruptStatus {
     pub const fn empty() -> Self {
         GpuInterruptStatus {
-            fence_complete:  false,
-            page_fault:      false,
-            engine_hang:     false,
+            fence_complete: false,
+            page_fault: false,
+            engine_hang: false,
             completed_fence: None,
-            hung_fence:      None,
+            hung_fence: None,
         }
     }
 
     pub fn with_fence_complete(fence_id: u64) -> Self {
         GpuInterruptStatus {
-            fence_complete:  true,
+            fence_complete: true,
             completed_fence: Some(fence_id),
             ..Self::empty()
         }
@@ -60,8 +60,8 @@ impl GpuInterruptStatus {
 
     pub fn with_engine_hang(fence_id: u64) -> Self {
         GpuInterruptStatus {
-            engine_hang:  true,
-            hung_fence:   Some(fence_id),
+            engine_hang: true,
+            hung_fence: Some(fence_id),
             ..Self::empty()
         }
     }
@@ -96,15 +96,15 @@ pub type GpuIrqHandler = fn(irq_line: u8) -> GpuInterruptStatus;
 #[derive(Clone, Copy)]
 struct IrqEntry {
     irq_line: u8,
-    handler:  GpuIrqHandler,
-    active:   bool,
+    handler: GpuIrqHandler,
+    active: bool,
 }
 
 impl IrqEntry {
     const EMPTY: Self = IrqEntry {
         irq_line: 0,
-        handler:  default_handler,
-        active:   false,
+        handler: default_handler,
+        active: false,
     };
 }
 
@@ -114,14 +114,14 @@ fn default_handler(_irq: u8) -> GpuInterruptStatus {
 
 struct IrqTable {
     entries: [IrqEntry; MAX_GPU_IRQ_HANDLERS],
-    count:   usize,
+    count: usize,
 }
 
 impl IrqTable {
     const fn new() -> Self {
         IrqTable {
             entries: [IrqEntry::EMPTY; MAX_GPU_IRQ_HANDLERS],
-            count:   0,
+            count: 0,
         }
     }
 
@@ -140,8 +140,8 @@ impl IrqTable {
         for entry in self.entries.iter_mut() {
             if !entry.active {
                 entry.irq_line = irq_line;
-                entry.handler  = handler;
-                entry.active   = true;
+                entry.handler = handler;
+                entry.active = true;
                 self.count += 1;
                 return true;
             }
@@ -153,7 +153,9 @@ impl IrqTable {
         for entry in self.entries.iter_mut() {
             if entry.active && entry.irq_line == irq_line {
                 entry.active = false;
-                if self.count > 0 { self.count -= 1; }
+                if self.count > 0 {
+                    self.count -= 1;
+                }
                 return;
             }
         }
@@ -224,5 +226,3 @@ pub fn complete_fence(fence_id: u64) {
     fence::signal_by_id(fence_id);
     counters::GPU_QUEUE_SUBMITS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
-
-

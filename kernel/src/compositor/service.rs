@@ -26,12 +26,12 @@ use super::backend::DisplayBackend;
 use super::capability::{CapKind, CompositorCapRegistry};
 use super::damage::DamageAccumulator;
 use super::fb_backend::FbBackend;
-use super::input::{CursorState, FocusState, route_input};
+use super::input::{route_input, CursorState, FocusState};
 use super::policy::CompositorPolicy;
 use super::present::present_frame;
 use super::protocol::{
-    CompositorCap, CompositorError, CompositorRequest, CompositorResponse,
-    SessionId, SurfaceId, WindowId,
+    CompositorCap, CompositorError, CompositorRequest, CompositorResponse, SessionId, SurfaceId,
+    WindowId,
 };
 use super::session::SessionTable;
 use super::surface::SurfacePool;
@@ -42,45 +42,44 @@ use crate::ipc::ProcessId;
 // Global service singleton
 // ---------------------------------------------------------------------------
 
-pub static COMPOSITOR_SERVICE: Mutex<CompositorService> =
-    Mutex::new(CompositorService::new());
+pub static COMPOSITOR_SERVICE: Mutex<CompositorService> = Mutex::new(CompositorService::new());
 
 // ---------------------------------------------------------------------------
 // Service struct
 // ---------------------------------------------------------------------------
 
 pub struct CompositorService {
-    sessions:    SessionTable,
-    windows:     WindowTable,
-    surfaces:    SurfacePool,
-    caps:        CompositorCapRegistry,
-    damage:      DamageAccumulator,
-    focus:       FocusState,
-    cursor:      CursorState,
-    backend:     FbBackend,
-    policy:      CompositorPolicy,
-    audit:       AuditLog,
-    screen_width:  u32,
+    sessions: SessionTable,
+    windows: WindowTable,
+    surfaces: SurfacePool,
+    caps: CompositorCapRegistry,
+    damage: DamageAccumulator,
+    focus: FocusState,
+    cursor: CursorState,
+    backend: FbBackend,
+    policy: CompositorPolicy,
+    audit: AuditLog,
+    screen_width: u32,
     screen_height: u32,
-    initialised:   bool,
+    initialised: bool,
 }
 
 impl CompositorService {
     pub const fn new() -> Self {
         CompositorService {
-            sessions:      SessionTable::new(),
-            windows:       WindowTable::new(),
-            surfaces:      SurfacePool::new(),
-            caps:          CompositorCapRegistry::new(),
-            damage:        DamageAccumulator::new(0, 0),
-            focus:         FocusState::new(),
-            cursor:        CursorState::new(),
-            backend:       FbBackend::new(0, 0),
-            policy:        CompositorPolicy::new(),
-            audit:         AuditLog::new(),
-            screen_width:  0,
+            sessions: SessionTable::new(),
+            windows: WindowTable::new(),
+            surfaces: SurfacePool::new(),
+            caps: CompositorCapRegistry::new(),
+            damage: DamageAccumulator::new(0, 0),
+            focus: FocusState::new(),
+            cursor: CursorState::new(),
+            backend: FbBackend::new(0, 0),
+            policy: CompositorPolicy::new(),
+            audit: AuditLog::new(),
+            screen_width: 0,
             screen_height: 0,
-            initialised:   false,
+            initialised: false,
         }
     }
 }
@@ -141,11 +140,8 @@ pub fn tick() {
         if let Some(re) = routed {
             // In the future: push `re.event` onto session's event channel.
             // For now we just record the routing in the audit log.
-            svc.audit.record(
-                AuditKind::InputRouted,
-                re.session_idx as i32,
-                0,
-            );
+            svc.audit
+                .record(AuditKind::InputRouted, re.session_idx as i32, 0);
         }
     }
 
@@ -200,49 +196,67 @@ impl CompositorService {
     fn dispatch(&mut self, req: CompositorRequest) -> CompositorResponse {
         match req {
             // ----------------------------------------------------------------
-            CompositorRequest::OpenSession { pid } => {
-                self.do_open_session(pid)
-            }
+            CompositorRequest::OpenSession { pid } => self.do_open_session(pid),
 
-            CompositorRequest::CloseSession { session, cap } => {
-                self.do_close_session(session, cap)
-            }
+            CompositorRequest::CloseSession { session, cap } => self.do_close_session(session, cap),
 
-            CompositorRequest::CreateWindow { session, cap, x, y, width, height } => {
-                self.do_create_window(session, cap, x, y, width, height)
-            }
+            CompositorRequest::CreateWindow {
+                session,
+                cap,
+                x,
+                y,
+                width,
+                height,
+            } => self.do_create_window(session, cap, x, y, width, height),
 
-            CompositorRequest::DestroyWindow { window, cap } => {
-                self.do_destroy_window(window, cap)
-            }
+            CompositorRequest::DestroyWindow { window, cap } => self.do_destroy_window(window, cap),
 
             CompositorRequest::MoveWindow { window, cap, x, y } => {
                 self.do_move_window(window, cap, x, y)
             }
 
-            CompositorRequest::ResizeWindow { window, cap, new_width, new_height } => {
-                self.do_resize_window(window, cap, new_width, new_height)
-            }
+            CompositorRequest::ResizeWindow {
+                window,
+                cap,
+                new_width,
+                new_height,
+            } => self.do_resize_window(window, cap, new_width, new_height),
 
-            CompositorRequest::SetZOrder { window, cap, z } => {
-                self.do_set_z_order(window, cap, z)
-            }
+            CompositorRequest::SetZOrder { window, cap, z } => self.do_set_z_order(window, cap, z),
 
-            CompositorRequest::SetPixel { surface, cap, x, y, argb } => {
-                self.do_set_pixel(surface, cap, x, y, argb)
-            }
+            CompositorRequest::SetPixel {
+                surface,
+                cap,
+                x,
+                y,
+                argb,
+            } => self.do_set_pixel(surface, cap, x, y, argb),
 
-            CompositorRequest::FillRect { surface, cap, x, y, width, height, argb } => {
-                self.do_fill_rect(surface, cap, x, y, width, height, argb)
-            }
+            CompositorRequest::FillRect {
+                surface,
+                cap,
+                x,
+                y,
+                width,
+                height,
+                argb,
+            } => self.do_fill_rect(surface, cap, x, y, width, height, argb),
 
-            CompositorRequest::DrawText { surface, cap, x, y, text, text_len, fg_argb } => {
-                self.do_draw_text(surface, cap, x, y, &text, text_len as usize, fg_argb)
-            }
+            CompositorRequest::DrawText {
+                surface,
+                cap,
+                x,
+                y,
+                text,
+                text_len,
+                fg_argb,
+            } => self.do_draw_text(surface, cap, x, y, &text, text_len as usize, fg_argb),
 
-            CompositorRequest::CommitSurface { surface, cap, dirty } => {
-                self.do_commit_surface(surface, cap, dirty)
-            }
+            CompositorRequest::CommitSurface {
+                surface,
+                cap,
+                dirty,
+            } => self.do_commit_surface(surface, cap, dirty),
 
             CompositorRequest::SubscribeInput { session, cap } => {
                 self.do_subscribe_input(session, cap)
@@ -261,15 +275,16 @@ impl CompositorService {
     fn do_open_session(&mut self, pid: ProcessId) -> CompositorResponse {
         let idx = match self.sessions.open(pid) {
             Some(i) => i,
-            None    => return CompositorResponse::Error(CompositorError::QuotaExceeded),
+            None => return CompositorResponse::Error(CompositorError::QuotaExceeded),
         };
         let session = self.sessions.get(idx).unwrap();
         let resp = CompositorResponse::SessionGranted {
-            session:     session.id,
+            session: session.id,
             session_cap: session.cap,
-            input_cap:   session.input_cap,
+            input_cap: session.input_cap,
         };
-        self.audit.record(AuditKind::SessionOpened, idx as i32, pid.0 as u64);
+        self.audit
+            .record(AuditKind::SessionOpened, idx as i32, pid.0 as u64);
         resp
     }
 
@@ -280,7 +295,7 @@ impl CompositorService {
     fn do_close_session(&mut self, session: SessionId, cap: CompositorCap) -> CompositorResponse {
         let idx = match self.sessions.find(session) {
             Some(i) => i,
-            None    => return CompositorResponse::Error(CompositorError::InvalidSession),
+            None => return CompositorResponse::Error(CompositorError::InvalidSession),
         };
         {
             let s = self.sessions.get(idx).unwrap();
@@ -298,7 +313,10 @@ impl CompositorService {
             for &wid in &sorted[..n] {
                 if let Some(win) = self.windows.find(wid) {
                     if win.session_idx == idx {
-                        if wcount < 64 { wids_to_destroy[wcount] = wid; wcount += 1; }
+                        if wcount < 64 {
+                            wids_to_destroy[wcount] = wid;
+                            wcount += 1;
+                        }
                     }
                 }
             }
@@ -328,7 +346,7 @@ impl CompositorService {
     ) -> CompositorResponse {
         let idx = match self.sessions.find(session) {
             Some(i) => i,
-            None    => return CompositorResponse::Error(CompositorError::InvalidSession),
+            None => return CompositorResponse::Error(CompositorError::InvalidSession),
         };
         {
             let s = self.sessions.get(idx).unwrap();
@@ -343,14 +361,14 @@ impl CompositorService {
         }
 
         // Clamp position.
-        let (cx, cy) = self.policy.clamp_position(
-            x, y, width, height, self.screen_width, self.screen_height,
-        );
+        let (cx, cy) =
+            self.policy
+                .clamp_position(x, y, width, height, self.screen_width, self.screen_height);
 
         // Allocate backing surface.
         let surface_idx = match self.surfaces.alloc(width, height) {
             Some(i) => i,
-            None    => return CompositorResponse::Error(CompositorError::OutOfMemory),
+            None => return CompositorResponse::Error(CompositorError::OutOfMemory),
         };
 
         // Allocate window record.
@@ -366,17 +384,22 @@ impl CompositorService {
         self.sessions.get_mut(idx).unwrap().add_window(window_id);
 
         // Issue capabilities.
-        let surface_id  = SurfaceId(surface_idx as u32);
-        let window_cap  = self.caps.issue(CapKind::WindowManage,  idx, window_id.0 as u64);
-        let surface_cap = self.caps.issue(CapKind::SurfaceWrite,  idx, surface_idx as u64);
+        let surface_id = SurfaceId(surface_idx as u32);
+        let window_cap = self
+            .caps
+            .issue(CapKind::WindowManage, idx, window_id.0 as u64);
+        let surface_cap = self
+            .caps
+            .issue(CapKind::SurfaceWrite, idx, surface_idx as u64);
 
         self.damage.add_region(cx, cy, width, height);
-        self.audit.record(AuditKind::WindowCreated, idx as i32, window_id.0 as u64);
+        self.audit
+            .record(AuditKind::WindowCreated, idx as i32, window_id.0 as u64);
 
         CompositorResponse::WindowCreated {
-            window:      window_id,
+            window: window_id,
             window_cap,
-            surface:     surface_id,
+            surface: surface_id,
             surface_cap,
         }
     }
@@ -410,7 +433,8 @@ impl CompositorService {
             let surf_idx = win.surface_idx;
             // Add damage for the vacated area.
             self.damage.add_region(win.x, win.y, win.width, win.height);
-            self.audit.record(AuditKind::WindowDestroyed, sidx as i32, wid.0 as u64);
+            self.audit
+                .record(AuditKind::WindowDestroyed, sidx as i32, wid.0 as u64);
             self.surfaces.free(surf_idx);
             self.sessions.get_mut(sidx).map(|s| s.remove_window(wid));
         }
@@ -421,7 +445,13 @@ impl CompositorService {
     // MoveWindow
     // ----------------------------------------------------------------
 
-    fn do_move_window(&mut self, window: WindowId, cap: CompositorCap, x: i32, y: i32) -> CompositorResponse {
+    fn do_move_window(
+        &mut self,
+        window: WindowId,
+        cap: CompositorCap,
+        x: i32,
+        y: i32,
+    ) -> CompositorResponse {
         let (session_idx, _) = match self.caps.validate(cap, CapKind::WindowManage) {
             Some(v) => v,
             None => return CompositorResponse::Error(CompositorError::InvalidCapability),
@@ -438,7 +468,12 @@ impl CompositorService {
         self.damage.add_region(win.x, win.y, win.width, win.height);
 
         let (cx, cy) = self.policy.clamp_position(
-            x, y, win.width, win.height, self.screen_width, self.screen_height,
+            x,
+            y,
+            win.width,
+            win.height,
+            self.screen_width,
+            self.screen_height,
         );
         self.windows.move_to(window, cx, cy);
 
@@ -486,16 +521,19 @@ impl CompositorService {
         // Revoke the old surface capability.
         // (We don't track surface-specific caps by surface_idx easily here,
         //  so we revoke-all for the session and reissue — acceptable at resize.)
-        self.windows.resize(window, new_width, new_height, new_surf_idx);
+        self.windows
+            .resize(window, new_width, new_height, new_surf_idx);
 
-        let new_surface_id  = SurfaceId(new_surf_idx as u32);
-        let new_surface_cap = self.caps.issue(CapKind::SurfaceWrite, session_idx, new_surf_idx as u64);
+        let new_surface_id = SurfaceId(new_surf_idx as u32);
+        let new_surface_cap =
+            self.caps
+                .issue(CapKind::SurfaceWrite, session_idx, new_surf_idx as u64);
 
         self.damage.add_region(win.x, win.y, new_width, new_height);
 
         CompositorResponse::WindowResized {
             window,
-            new_surface:     new_surface_id,
+            new_surface: new_surface_id,
             new_surface_cap,
         }
     }
@@ -504,7 +542,12 @@ impl CompositorService {
     // SetZOrder
     // ----------------------------------------------------------------
 
-    fn do_set_z_order(&mut self, window: WindowId, cap: CompositorCap, z: u8) -> CompositorResponse {
+    fn do_set_z_order(
+        &mut self,
+        window: WindowId,
+        cap: CompositorCap,
+        z: u8,
+    ) -> CompositorResponse {
         let (session_idx, _) = match self.caps.validate(cap, CapKind::WindowManage) {
             Some(v) => v,
             None => return CompositorResponse::Error(CompositorError::InvalidCapability),
@@ -680,7 +723,11 @@ impl CompositorService {
         CompositorResponse::Ok
     }
 
-    fn do_unsubscribe_input(&mut self, session: SessionId, cap: CompositorCap) -> CompositorResponse {
+    fn do_unsubscribe_input(
+        &mut self,
+        session: SessionId,
+        cap: CompositorCap,
+    ) -> CompositorResponse {
         let idx = match self.sessions.find(session) {
             Some(i) => i,
             None => return CompositorResponse::Error(CompositorError::InvalidSession),

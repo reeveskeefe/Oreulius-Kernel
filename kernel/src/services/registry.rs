@@ -86,29 +86,29 @@ impl ServiceType {
 
     pub fn as_u32(&self) -> u32 {
         match self {
-            ServiceType::Filesystem  => 1,
+            ServiceType::Filesystem => 1,
             ServiceType::Persistence => 2,
-            ServiceType::Network     => 3,
-            ServiceType::Timer       => 4,
-            ServiceType::Console     => 5,
-            ServiceType::Temporal    => 6,
-            ServiceType::Compositor    => 7,
+            ServiceType::Network => 3,
+            ServiceType::Timer => 4,
+            ServiceType::Console => 5,
+            ServiceType::Temporal => 6,
+            ServiceType::Compositor => 7,
             ServiceType::BrowserBackend => 8,
-            ServiceType::Custom(v)      => *v,
+            ServiceType::Custom(v) => *v,
         }
     }
 
     pub fn name(&self) -> &'static str {
         match self {
-            ServiceType::Filesystem  => "Filesystem",
+            ServiceType::Filesystem => "Filesystem",
             ServiceType::Persistence => "Persistence",
-            ServiceType::Network     => "Network",
-            ServiceType::Timer       => "Timer",
-            ServiceType::Console     => "Console",
-            ServiceType::Temporal    => "Temporal",
-            ServiceType::Compositor    => "Compositor",
+            ServiceType::Network => "Network",
+            ServiceType::Timer => "Timer",
+            ServiceType::Console => "Console",
+            ServiceType::Temporal => "Temporal",
+            ServiceType::Compositor => "Compositor",
             ServiceType::BrowserBackend => "BrowserBackend",
-            ServiceType::Custom(_)      => "Custom",
+            ServiceType::Custom(_) => "Custom",
         }
     }
 }

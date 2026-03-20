@@ -4,4 +4,3 @@ fn fence_ids_increase() {
     let b = crate::drivers::gpu_support::GpuFence::alloc();
     assert!(b.id > a.id);
 }
-

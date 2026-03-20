@@ -67,16 +67,53 @@ const TEMPORAL_SCHEDULER_HEADER_BYTES: usize = 60;
 const TEMPORAL_SCHEDULER_PROCESS_ENTRY_BYTES: usize = 44;
 const TEMPORAL_SCHEDULER_WAIT_QUEUE_HEADER_BYTES: usize = 12;
 const READY_QUEUE_LEVELS: usize = 3;
+const ERR_PROCESS_DATA_MISSING: &str = "Process data missing";
+const ERR_NO_CURRENT_PROCESS: &str = "No current process";
+const ERR_SCHED_SWITCH_PREVIOUS_PROCESS_MISSING: &str = "Scheduler switch missing previous process";
+const ERR_SCHED_SWITCH_NEXT_PROCESS_MISSING: &str = "Scheduler switch missing next process";
+const ERR_BLOCK_ON_CURRENT_PROCESS_MISSING: &str = "block_on_with_state: current process missing";
+const ERR_BLOCK_PROCESS_NO_CURRENT_PROCESS: &str = "block_process: no current process";
+const ERR_BLOCK_PROCESS_CURRENT_PROCESS_MISSING: &str = "block_process: current process missing";
+const ERR_BLOCK_PROCESS_PID_NOT_CURRENT: &str = "block_process: pid is not current";
+const ERR_EXEC_CURRENT_WASM_NO_CURRENT_PROCESS: &str = "exec_current_wasm: no current process";
+const ERR_EXEC_CURRENT_WASM_CURRENT_PROCESS_MISSING: &str =
+    "exec_current_wasm: current process missing";
+const ERR_READY_QUEUE_INVARIANT: &str = "ReadyQueue invariant violated";
 #[cfg(target_arch = "x86")]
 const KERNEL_THREAD_FRAME_BYTES: usize = 8;
 #[cfg(not(target_arch = "x86"))]
 const KERNEL_THREAD_FRAME_BYTES: usize = 16;
 
+const fn priority_to_queue_idx(priority: ProcessPriority) -> usize {
+    match priority {
+        ProcessPriority::High => 0,
+        ProcessPriority::Normal => 1,
+        ProcessPriority::Low => 2,
+    }
+}
+
+const fn base_quantum_for_priority(priority: ProcessPriority) -> u32 {
+    match priority {
+        ProcessPriority::High => QUANTUM_HIGH,
+        ProcessPriority::Normal => QUANTUM_NORMAL,
+        ProcessPriority::Low => QUANTUM_LOW,
+    }
+}
+
+/// Compute the first byte of the bootstrap frame for a kernel thread stack.
+///
+/// Callers must pass an already ABI-aligned `stack_top`; this helper only
+/// validates the range and derives the frame start from that aligned top.
 fn kernel_thread_frame_top(
     stack_base: usize,
     stack_top: usize,
     required_bytes: usize,
 ) -> Result<usize, &'static str> {
+    debug_assert_eq!(
+        stack_top & 0xF,
+        0,
+        "kernel_thread_frame_top requires 16-byte aligned stack_top"
+    );
     let frame_top = stack_top
         .checked_sub(required_bytes)
         .ok_or("Stack address invalid")?;
@@ -84,6 +121,85 @@ fn kernel_thread_frame_top(
         return Err("Stack address invalid");
     }
     Ok(frame_top)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EntropyWindowState {
+    ewma_yield: u32,
+    ewma_fault: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntropyBenchResult {
+    pub name: &'static str,
+    pub base_quantum: u32,
+    pub rolled_yield_ewma: u32,
+    pub rolled_fault_ewma: u32,
+    pub adjusted_quantum: u32,
+}
+
+// 7/8 previous value + 1/8 new sample, implemented as a cheap right shift.
+// This keeps the scheduler accounting stable without any floating-point.
+fn roll_entropy_signal(ewma: u32, sample: u32) -> u32 {
+    ((ewma.saturating_mul(7)).saturating_add(sample)) >> 3
+}
+
+fn roll_entropy_window(
+    previous: EntropyWindowState,
+    yield_count: u32,
+    fault_count: u32,
+) -> EntropyWindowState {
+    EntropyWindowState {
+        ewma_yield: roll_entropy_signal(previous.ewma_yield, yield_count),
+        ewma_fault: roll_entropy_signal(previous.ewma_fault, fault_count),
+    }
+}
+
+/// Compute a per-process quantum adapted by Shannon entropy of its behavior.
+///
+/// Uses the bit-shift EWMA approximation:
+///   ΔS ≈ -( ewma_yield * log2(ewma_yield+1) + ewma_fault * log2(ewma_fault+1) ) / 64
+///
+/// The kernel-friendly integer approximation replaces log2 with the position of the
+/// highest set bit (floor(log2(x+1))), avoiding any floating-point in ring-0.
+///
+/// The `>> 4` scaling keeps the reward/penalty terms in the same rough range as the
+/// 5/10/20 tick base quanta used by the scheduler and by `sched-entropy-bench`.
+/// Values that exceed that envelope are clamped to `[QUANTUM_LOW, QUANTUM_HIGH]`
+/// so tuning the EWMA inputs cannot starve or overrun the MLFQ bands.
+fn compute_entropy_quantum(ewma_yield: u32, ewma_fault: u32, base: u32) -> u32 {
+    let log2_yield = 31u32.saturating_sub((ewma_yield.saturating_add(1)).leading_zeros());
+    let log2_fault = 31u32.saturating_sub((ewma_fault.saturating_add(1)).leading_zeros());
+
+    let reward = ewma_yield.saturating_mul(log2_yield) >> 4;
+    let penalty = ewma_fault.saturating_mul(log2_fault) >> 4;
+    let adjusted = base.saturating_add(reward).saturating_sub(penalty);
+    adjusted.clamp(QUANTUM_LOW, QUANTUM_HIGH)
+}
+
+fn entropy_adjusted_quantum(priority: ProcessPriority, rolled: EntropyWindowState) -> u32 {
+    compute_entropy_quantum(
+        rolled.ewma_yield,
+        rolled.ewma_fault,
+        base_quantum_for_priority(priority),
+    )
+}
+
+fn entropy_bench_result(
+    name: &'static str,
+    priority: ProcessPriority,
+    previous: EntropyWindowState,
+    yield_count: u32,
+    fault_count: u32,
+) -> EntropyBenchResult {
+    let rolled = roll_entropy_window(previous, yield_count, fault_count);
+    EntropyBenchResult {
+        name,
+        base_quantum: base_quantum_for_priority(priority),
+        rolled_yield_ewma: rolled.ewma_yield,
+        rolled_fault_ewma: rolled.ewma_fault,
+        adjusted_quantum: entropy_adjusted_quantum(priority, rolled),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -108,7 +224,13 @@ impl ReadyQueue {
 
     #[inline]
     fn assert_sane(&self) {
-        assert!(self.is_sane(), "ReadyQueue invariant violated");
+        assert!(
+            self.is_sane(),
+            "{ERR_READY_QUEUE_INVARIANT}: head={} len={} capacity={}",
+            self.head,
+            self.len,
+            MAX_PROCESSES
+        );
     }
 
     fn clear(&mut self) {
@@ -358,14 +480,30 @@ impl QuantumScheduler {
         self.processes
             .get(idx)
             .and_then(Option::as_ref)
-            .ok_or("Process data missing")
+            .ok_or(ERR_PROCESS_DATA_MISSING)
     }
 
     fn process_slot_mut(&mut self, idx: usize) -> Result<&mut ProcessInfo, &'static str> {
         self.processes
             .get_mut(idx)
             .and_then(Option::as_mut)
-            .ok_or("Process data missing")
+            .ok_or(ERR_PROCESS_DATA_MISSING)
+    }
+
+    fn process_info(&self, pid: Pid, err: &'static str) -> Result<&ProcessInfo, &'static str> {
+        self.process_slot(pid.0 as usize).map_err(|_| err)
+    }
+
+    fn process_info_mut(
+        &mut self,
+        pid: Pid,
+        err: &'static str,
+    ) -> Result<&mut ProcessInfo, &'static str> {
+        self.process_slot_mut(pid.0 as usize).map_err(|_| err)
+    }
+
+    fn require_current_pid(&self, err: &'static str) -> Result<Pid, &'static str> {
+        self.current_pid.ok_or(err)
     }
 
     fn remove_from_ready_queues(&mut self, pid: Pid) {
@@ -417,11 +555,7 @@ impl QuantumScheduler {
             return Err("PID already in use");
         }
 
-        let quantum = match priority {
-            ProcessPriority::High => QUANTUM_HIGH,
-            ProcessPriority::Normal => QUANTUM_NORMAL,
-            ProcessPriority::Low => QUANTUM_LOW,
-        };
+        let quantum = base_quantum_for_priority(priority);
 
         let info = ProcessInfo {
             process,
@@ -450,28 +584,6 @@ impl QuantumScheduler {
         self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
 
         Ok(())
-    }
-
-    /// Compute a per-process quantum adapted by Shannon entropy of its behavior.
-    ///
-    /// Uses the bit-shift EWMA approximation:
-    ///   ΔS ≈ -( ewma_yield * log2(ewma_yield+1) + ewma_fault * log2(ewma_fault+1) ) / 64
-    ///
-    /// The kernel-friendly integer approximation replaces log2 with the position of the
-    /// highest set bit (floor(log2(x+1))), avoiding any floating-point in ring-0.
-    ///
-    /// Result is clamped to [QUANTUM_LOW, QUANTUM_HIGH].
-    #[cfg(feature = "experimental_entropy_sched")]
-    fn compute_entropy_quantum(ewma_yield: u32, ewma_fault: u32, base: u32) -> u32 {
-        // floor(log2(x+1)) via leading-zeros count — always well-defined on u32.
-        let log2_yield = 31u32.saturating_sub((ewma_yield.saturating_add(1)).leading_zeros());
-        let log2_fault = 31u32.saturating_sub((ewma_fault.saturating_add(1)).leading_zeros());
-
-        // Entropy proxy: high cooperative yield → increase quantum (reward); high faults → shrink.
-        let reward = ewma_yield.saturating_mul(log2_yield) >> 4;
-        let penalty = ewma_fault.saturating_mul(log2_fault) >> 4;
-        let adjusted = base.saturating_add(reward).saturating_sub(penalty);
-        adjusted.clamp(QUANTUM_LOW, QUANTUM_HIGH)
     }
 
     /// Decide the next context to switch to (returns context pointers if switching).
@@ -507,31 +619,21 @@ impl QuantumScheduler {
                     // Refill quantum
                     #[cfg(not(feature = "experimental_entropy_sched"))]
                     {
-                        info.quantum_remaining = match priority {
-                            ProcessPriority::High => QUANTUM_HIGH,
-                            ProcessPriority::Normal => QUANTUM_NORMAL,
-                            ProcessPriority::Low => QUANTUM_LOW,
-                        };
+                        info.quantum_remaining = base_quantum_for_priority(priority);
                     }
                     #[cfg(feature = "experimental_entropy_sched")]
                     {
-                        let base = match priority {
-                            ProcessPriority::High => QUANTUM_HIGH,
-                            ProcessPriority::Normal => QUANTUM_NORMAL,
-                            ProcessPriority::Low => QUANTUM_LOW,
-                        };
-                        info.quantum_remaining = Self::compute_entropy_quantum(
-                            info.ewma_yield,
+                        let rolled = roll_entropy_window(
+                            EntropyWindowState {
+                                ewma_yield: info.ewma_yield,
+                                ewma_fault: info.ewma_fault,
+                            },
+                            info.yield_count,
                             info.pagefault_count,
-                            base,
                         );
-                        // Roll EWMA: ewma = (ewma*7 + yield_count) >> 3
-                        info.ewma_yield = ((info.ewma_yield.saturating_mul(7))
-                            .saturating_add(info.yield_count))
-                            >> 3;
-                        info.ewma_fault = ((info.ewma_fault.saturating_mul(7))
-                            .saturating_add(info.pagefault_count))
-                            >> 3;
+                        info.ewma_yield = rolled.ewma_yield;
+                        info.ewma_fault = rolled.ewma_fault;
+                        info.quantum_remaining = entropy_adjusted_quantum(priority, rolled);
                         info.yield_count = 0;
                         info.pagefault_count = 0;
                     }
@@ -609,14 +711,19 @@ impl QuantumScheduler {
         self.stats.total_switches += 1;
 
         let from_ptr = prev_pid.and_then(|from_pid| {
-            let from_idx = from_pid.0 as usize;
-            self.processes[from_idx]
-                .as_mut()
-                .map(|info| &mut info.context as *mut ProcessContext)
+            Some({
+                let info = self
+                    .process_info_mut(from_pid, ERR_SCHED_SWITCH_PREVIOUS_PROCESS_MISSING)
+                    .expect(ERR_SCHED_SWITCH_PREVIOUS_PROCESS_MISSING);
+                &mut info.context as *mut ProcessContext
+            })
         })?;
-        let to_ptr = self.processes[next_pid.0 as usize]
-            .as_ref()
-            .map(|info| &info.context as *const ProcessContext)?;
+        let to_ptr = {
+            let info = self
+                .process_info(next_pid, ERR_SCHED_SWITCH_NEXT_PROCESS_MISSING)
+                .expect(ERR_SCHED_SWITCH_NEXT_PROCESS_MISSING);
+            &info.context as *const ProcessContext
+        };
 
         Some((from_ptr, to_ptr))
     }
@@ -729,12 +836,7 @@ impl QuantumScheduler {
 
     /// Enqueue process to ready queue
     fn enqueue_ready(&mut self, pid: Pid, priority: ProcessPriority) {
-        let queue_idx = match priority {
-            ProcessPriority::High => 0,
-            ProcessPriority::Normal => 1,
-            ProcessPriority::Low => 2,
-        };
-
+        let queue_idx = priority_to_queue_idx(priority);
         let _ = self.ready_queues[queue_idx].push_back(pid);
     }
 
@@ -796,7 +898,8 @@ impl QuantumScheduler {
         addr: usize,
         wait_state: ProcessState,
     ) -> Result<Option<(*mut ProcessContext, *const ProcessContext)>, &'static str> {
-        let current_pid = self.current_pid.ok_or("No current process")?;
+        let current_pid = self.require_current_pid(ERR_NO_CURRENT_PROCESS)?;
+        let _ = self.process_info(current_pid, ERR_BLOCK_ON_CURRENT_PROCESS_MISSING)?;
         let prev = Some(current_pid);
 
         // Find or create wait queue
@@ -806,9 +909,9 @@ impl QuantumScheduler {
         self.wait_queues[queue_idx].waiting.push_back(current_pid);
 
         // Mark process as blocked
-        if let Some(ref mut info) = self.processes[current_pid.0 as usize] {
-            info.process.state = wait_state;
-        }
+        self.process_info_mut(current_pid, ERR_BLOCK_ON_CURRENT_PROCESS_MISSING)?
+            .process
+            .state = wait_state;
 
         self.current_pid = None;
         self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
@@ -1204,7 +1307,7 @@ impl QuantumScheduler {
             kernel_stack_top: stack_top,
             stack: None, // Stack is static, not heap-allocated
             address_space: None,
-            quantum_remaining: QUANTUM_NORMAL,
+            quantum_remaining: base_quantum_for_priority(priority),
             total_cpu_time: 0,
             total_wait_time: 0,
             last_scheduled: 0,
@@ -1261,17 +1364,21 @@ impl QuantumScheduler {
                 scheduler_rt::logf(format_args!(
                     "[SCHED] Ready queues empty at scheduler start, scanning process table"
                 ));
-                let recovered = self.processes.iter().enumerate().find_map(|(idx, info_opt)| {
-                    let info = info_opt.as_ref()?;
-                    if matches!(
-                        info.process.state,
-                        ProcessState::Ready | ProcessState::Running
-                    ) {
-                        Some(Pid(idx as u32))
-                    } else {
-                        None
-                    }
-                });
+                let recovered = self
+                    .processes
+                    .iter()
+                    .enumerate()
+                    .find_map(|(idx, info_opt)| {
+                        let info = info_opt.as_ref()?;
+                        if matches!(
+                            info.process.state,
+                            ProcessState::Ready | ProcessState::Running
+                        ) {
+                            Some(Pid(idx as u32))
+                        } else {
+                            None
+                        }
+                    });
                 match recovered {
                     Some(pid) => {
                         scheduler_rt::logf(format_args!(
@@ -1318,7 +1425,7 @@ impl QuantumScheduler {
                 info.kernel_stack_top,
             )
         } else {
-            panic!("Process data missing");
+            panic!("{ERR_PROCESS_DATA_MISSING}");
         }
     }
 
@@ -1347,6 +1454,8 @@ impl QuantumScheduler {
         }
 
         unsafe {
+            // The runtime pid/stack handoff above makes this context fully owned by the
+            // low-level arch trampoline; no scheduler references are used after this call.
             scheduler_platform::load_context(ctx_ptr);
         }
     }
@@ -1406,11 +1515,7 @@ impl QuantumScheduler {
             process.program_counter = entry as usize;
 
             let priority = process.priority;
-            let quantum = match priority {
-                ProcessPriority::High => QUANTUM_HIGH,
-                ProcessPriority::Normal => QUANTUM_NORMAL,
-                ProcessPriority::Low => QUANTUM_LOW,
-            };
+            let quantum = base_quantum_for_priority(priority);
 
             let frame_top = (stack_top - 8) as *mut u32;
             unsafe {
@@ -1487,7 +1592,9 @@ impl QuantumScheduler {
             let stack_top =
                 (kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
             let page_dir_phys = PhysAddr::new(space.phys_addr());
-            let frame_top = stack_top.checked_sub(32).ok_or("add_user_process: invalid stack")?;
+            let frame_top = stack_top
+                .checked_sub(32)
+                .ok_or("add_user_process: invalid stack")?;
 
             unsafe {
                 let frame = frame_top as *mut u64;
@@ -1503,11 +1610,7 @@ impl QuantumScheduler {
             process.program_counter = entry as usize;
 
             let priority = process.priority;
-            let quantum = match priority {
-                ProcessPriority::High => QUANTUM_HIGH,
-                ProcessPriority::Normal => QUANTUM_NORMAL,
-                ProcessPriority::Low => QUANTUM_LOW,
-            };
+            let quantum = base_quantum_for_priority(priority);
 
             let mut ctx = scheduler_platform::context_new();
             ctx.rip = crate::asm_bindings::kernel_user_entry_trampoline as usize as u64;
@@ -1546,7 +1649,10 @@ impl QuantumScheduler {
 
             scheduler_rt::logf(format_args!(
                 "[SCHED] add_user_process: pid={} entry={:#010x} user_sp={:#010x} cr3={:#018x}",
-                pid.0, entry, user_stack, page_dir_phys.as_u64(),
+                pid.0,
+                entry,
+                user_stack,
+                page_dir_phys.as_u64(),
             ));
 
             Ok(pid)
@@ -1598,15 +1704,11 @@ impl QuantumScheduler {
 
             process.state = ProcessState::Ready;
             process.page_dir_phys = page_dir_phys;
-            process.stack_ptr    = user_stack as usize;
+            process.stack_ptr = user_stack as usize;
             process.program_counter = entry as usize;
 
             let priority = process.priority;
-            let quantum = match priority {
-                ProcessPriority::High   => QUANTUM_HIGH,
-                ProcessPriority::Normal => QUANTUM_NORMAL,
-                ProcessPriority::Low    => QUANTUM_LOW,
-            };
+            let quantum = base_quantum_for_priority(priority);
 
             // Build the initial register context.
             let mut ctx = scheduler_platform::context_new();
@@ -1770,18 +1872,15 @@ impl QuantumScheduler {
             let child_kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
                 Box::new([0u8; crate::process::STACK_SIZE]);
 
-            let quantum = match parent_priority {
-                ProcessPriority::High => QUANTUM_HIGH,
-                ProcessPriority::Normal => QUANTUM_NORMAL,
-                ProcessPriority::Low => QUANTUM_LOW,
-            };
+            let quantum = base_quantum_for_priority(parent_priority);
 
             let now = scheduler_platform::ticks_now();
             let child_info = ProcessInfo {
                 process: child_process,
                 context: child_ctx,
                 shared_runtime_pid: None,
-                kernel_stack_top: (child_kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE)
+                kernel_stack_top: (child_kernel_stack.as_ptr() as usize
+                    + crate::process::STACK_SIZE)
                     & !15usize,
                 stack: Some(child_kernel_stack),
                 address_space: Some(child_address_space),
@@ -1879,11 +1978,7 @@ impl QuantumScheduler {
             child_ctx.cr3 = child_cr3.as_u64();
             child_ctx.rflags = 0x0000_0002;
 
-            let quantum = match parent_priority {
-                ProcessPriority::High => QUANTUM_HIGH,
-                ProcessPriority::Normal => QUANTUM_NORMAL,
-                ProcessPriority::Low => QUANTUM_LOW,
-            };
+            let quantum = base_quantum_for_priority(parent_priority);
 
             let now = scheduler_platform::ticks_now();
             let child_info = ProcessInfo {
@@ -1915,7 +2010,9 @@ impl QuantumScheduler {
 
             scheduler_rt::logf(format_args!(
                 "[SCHED] fork_current_cow(x64): parent={} -> child={} cr3={:#018x}",
-                parent_pid.0, child_pid.0, child_cr3.as_u64(),
+                parent_pid.0,
+                child_pid.0,
+                child_cr3.as_u64(),
             ));
 
             Ok(child_pid)
@@ -1938,21 +2035,19 @@ impl QuantumScheduler {
         pid: Pid,
         wake_time: u64,
     ) -> Result<Option<(*mut ProcessContext, *const ProcessContext)>, &'static str> {
-        let current_pid = self
-            .current_pid
-            .ok_or("block_process: no current process")?;
+        let current_pid = self.require_current_pid(ERR_BLOCK_PROCESS_NO_CURRENT_PROCESS)?;
         if current_pid != pid {
-            return Err("block_process: pid is not current");
+            return Err(ERR_BLOCK_PROCESS_PID_NOT_CURRENT);
         }
+        let _ = self.process_info(current_pid, ERR_BLOCK_PROCESS_CURRENT_PROCESS_MISSING)?;
 
         let prev = Some(current_pid);
         let queue_idx = self.find_or_create_sleep_queue(wake_time)?;
         self.wait_queues[queue_idx].waiting.push_back(current_pid);
 
-        if let Some(info) = self.processes[current_pid.0 as usize].as_mut() {
-            info.process.state = ProcessState::Blocked;
-            info.last_scheduled = scheduler_platform::ticks_now();
-        }
+        let info = self.process_info_mut(current_pid, ERR_BLOCK_PROCESS_CURRENT_PROCESS_MISSING)?;
+        info.process.state = ProcessState::Blocked;
+        info.last_scheduled = scheduler_platform::ticks_now();
 
         self.current_pid = None;
         self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
@@ -1961,23 +2056,16 @@ impl QuantumScheduler {
 
     /// Execute WASM in current process
     pub fn exec_current_wasm(&mut self, module_id: u32) -> Result<(), &'static str> {
-        let current_pid = self
-            .current_pid
-            .ok_or("exec_current_wasm: no current process")?;
-        let info = self.processes[current_pid.0 as usize]
-            .as_mut()
-            .ok_or("exec_current_wasm: current process missing")?;
+        let current_pid = self.require_current_pid(ERR_EXEC_CURRENT_WASM_NO_CURRENT_PROCESS)?;
+        let info =
+            self.process_info_mut(current_pid, ERR_EXEC_CURRENT_WASM_CURRENT_PROCESS_MISSING)?;
 
         // Until usermode WASM replaces the whole process image, treat exec as
         // rebinding the current task to a new module entry. The actual module
         // execution happens outside the scheduler lock in the syscall path.
         info.process.program_counter = module_id as usize;
         info.process.state = ProcessState::Running;
-        info.quantum_remaining = match info.process.priority {
-            ProcessPriority::High => QUANTUM_HIGH,
-            ProcessPriority::Normal => QUANTUM_NORMAL,
-            ProcessPriority::Low => QUANTUM_LOW,
-        };
+        info.quantum_remaining = base_quantum_for_priority(info.process.priority);
         self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
         scheduler_rt::logf(format_args!(
             "[SCHED] exec_current_wasm: pid={} module_id={}",
@@ -2131,6 +2219,41 @@ pub fn init() {
 /// Get reference to global scheduler
 pub fn scheduler() -> &'static Mutex<QuantumScheduler> {
     &QUANTUM_SCHEDULER
+}
+
+pub fn entropy_bench_results() -> [EntropyBenchResult; 3] {
+    [
+        entropy_bench_result(
+            "yield-heavy",
+            ProcessPriority::Normal,
+            EntropyWindowState {
+                ewma_yield: 20,
+                ewma_fault: 2,
+            },
+            24,
+            0,
+        ),
+        entropy_bench_result(
+            "fault-heavy",
+            ProcessPriority::Normal,
+            EntropyWindowState {
+                ewma_yield: 2,
+                ewma_fault: 20,
+            },
+            1,
+            18,
+        ),
+        entropy_bench_result(
+            "mixed",
+            ProcessPriority::Normal,
+            EntropyWindowState {
+                ewma_yield: 8,
+                ewma_fault: 8,
+            },
+            6,
+            5,
+        ),
+    ]
 }
 
 pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static str> {
@@ -2446,6 +2569,8 @@ pub fn maybe_reschedule() {
             scheduler_platform::runtime_kernel_stack_sync(stack_top);
         }
         unsafe {
+            // The scheduler lock is dropped and interrupts are masked, so the arch backend
+            // can atomically swap register sets using the prepared raw context pointers.
             scheduler_platform::switch_context(from_ptr, to_ptr);
         }
         unsafe { scheduler_platform::irq_restore(flags) };
@@ -2480,6 +2605,8 @@ pub fn sleep_until(pid: Pid, wake_time: u64) -> Result<(), &'static str> {
                 core::arch::asm!("mov cr0, {0}", in(reg) cr0);
             }
             unsafe {
+                // The sleep queue state is already committed under the scheduler lock, so
+                // this raw switch only transfers execution to the selected runnable task.
                 scheduler_platform::switch_context(from_ptr, to_ptr);
             }
             unsafe { scheduler_platform::irq_restore(flags) };
@@ -2523,6 +2650,8 @@ pub fn yield_now() {
             core::arch::asm!("mov cr0, {0}", in(reg) cr0);
         }
         unsafe {
+            // Yield has already published the outgoing task as Ready; the arch switch only
+            // consumes the raw contexts selected by the scheduler core.
             scheduler_platform::switch_context(from_ptr, to_ptr);
         }
         // When this thread is resumed, restore its original interrupt state.
@@ -2592,6 +2721,8 @@ pub fn commit_block(plan: BlockOnPlan) {
                 core::arch::asm!("mov cr0, {0}", in(reg) cr0);
             }
             unsafe {
+                // Blocking state is committed before we leave the scheduler; the backend now
+                // owns both raw context pointers for the actual architectural swap.
                 scheduler_platform::switch_context(from_ptr, to_ptr);
             }
             unsafe { scheduler_platform::irq_restore(plan.irq_flags) };
@@ -2658,7 +2789,8 @@ pub(crate) fn selftest_remove_process(pid: Pid) -> Result<(), &'static str> {
 /// Inspect the scheduler-visible state of a synthetic selftest process.
 pub(crate) fn selftest_process_state(pid: Pid) -> Option<ProcessState> {
     let sched = QUANTUM_SCHEDULER.lock();
-    sched.processes
+    sched
+        .processes
         .get(pid.0 as usize)
         .and_then(|info| info.as_ref().map(|info| info.process.state))
 }
@@ -2720,6 +2852,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn priority_helpers_are_canonical() {
+        assert_eq!(priority_to_queue_idx(ProcessPriority::High), 0);
+        assert_eq!(priority_to_queue_idx(ProcessPriority::Normal), 1);
+        assert_eq!(priority_to_queue_idx(ProcessPriority::Low), 2);
+
+        assert_eq!(
+            base_quantum_for_priority(ProcessPriority::High),
+            QUANTUM_HIGH
+        );
+        assert_eq!(
+            base_quantum_for_priority(ProcessPriority::Normal),
+            QUANTUM_NORMAL
+        );
+        assert_eq!(base_quantum_for_priority(ProcessPriority::Low), QUANTUM_LOW);
+    }
+
+    #[test]
     fn ready_queue_wraparound_and_full_behavior() {
         let mut queue = ReadyQueue::new();
         assert!(queue.push_back(Pid(1)));
@@ -2743,10 +2892,7 @@ mod tests {
 
     #[test]
     fn kernel_thread_frame_top_accepts_valid_range() {
-        assert_eq!(
-            kernel_thread_frame_top(0x2000, 0x3000, 16).unwrap(),
-            0x2ff0
-        );
+        assert_eq!(kernel_thread_frame_top(0x2000, 0x3000, 16).unwrap(), 0x2ff0);
     }
 
     #[test]
@@ -2765,11 +2911,154 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "kernel_thread_frame_top requires 16-byte aligned stack_top")]
+    fn kernel_thread_frame_top_requires_aligned_stack_top() {
+        let _ = kernel_thread_frame_top(0x2000, 0x2fff, 16);
+    }
+
     #[test]
     #[should_panic(expected = "ReadyQueue invariant violated")]
     fn ready_queue_panics_on_corruption() {
         let mut queue = ReadyQueue::new();
         queue.len = MAX_PROCESSES + 1;
         let _ = queue.len();
+    }
+
+    #[test]
+    fn entropy_roll_zero_inputs_stays_zero() {
+        let rolled = roll_entropy_window(
+            EntropyWindowState {
+                ewma_yield: 0,
+                ewma_fault: 0,
+            },
+            0,
+            0,
+        );
+        assert_eq!(
+            rolled,
+            EntropyWindowState {
+                ewma_yield: 0,
+                ewma_fault: 0,
+            }
+        );
+        assert_eq!(
+            entropy_adjusted_quantum(ProcessPriority::Normal, rolled),
+            QUANTUM_NORMAL
+        );
+    }
+
+    #[test]
+    fn entropy_high_yield_low_fault_rewards_quantum() {
+        let rolled = roll_entropy_window(
+            EntropyWindowState {
+                ewma_yield: 40,
+                ewma_fault: 0,
+            },
+            24,
+            0,
+        );
+        let adjusted = entropy_adjusted_quantum(ProcessPriority::Normal, rolled);
+        assert!(adjusted > QUANTUM_NORMAL);
+        assert!(adjusted <= QUANTUM_HIGH);
+    }
+
+    #[test]
+    fn entropy_low_yield_high_fault_penalizes_quantum() {
+        let rolled = roll_entropy_window(
+            EntropyWindowState {
+                ewma_yield: 0,
+                ewma_fault: 48,
+            },
+            0,
+            24,
+        );
+        let adjusted = entropy_adjusted_quantum(ProcessPriority::Normal, rolled);
+        assert!(adjusted < QUANTUM_NORMAL);
+        assert!(adjusted >= QUANTUM_LOW);
+    }
+
+    #[test]
+    fn entropy_quantum_clamps_to_bounds() {
+        let reward_clamped = compute_entropy_quantum(512, 0, QUANTUM_NORMAL);
+        let penalty_clamped = compute_entropy_quantum(0, 512, QUANTUM_NORMAL);
+        assert_eq!(reward_clamped, QUANTUM_HIGH);
+        assert_eq!(penalty_clamped, QUANTUM_LOW);
+    }
+
+    #[test]
+    fn entropy_rolls_repeated_windows_consistently() {
+        let first = roll_entropy_window(
+            EntropyWindowState {
+                ewma_yield: 0,
+                ewma_fault: 0,
+            },
+            64,
+            16,
+        );
+        let second = roll_entropy_window(first, 64, 16);
+        assert_eq!(
+            first,
+            EntropyWindowState {
+                ewma_yield: 8,
+                ewma_fault: 2,
+            }
+        );
+        assert_eq!(
+            second,
+            EntropyWindowState {
+                ewma_yield: 15,
+                ewma_fault: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn entropy_adjustment_uses_rolled_fault_ewma_consistently() {
+        let rolled = roll_entropy_window(
+            EntropyWindowState {
+                ewma_yield: 32,
+                ewma_fault: 64,
+            },
+            4,
+            0,
+        );
+        let adjusted = entropy_adjusted_quantum(ProcessPriority::Normal, rolled);
+        let mixed_source = compute_entropy_quantum(
+            rolled.ewma_yield,
+            0,
+            base_quantum_for_priority(ProcessPriority::Normal),
+        );
+        assert_eq!(
+            adjusted,
+            compute_entropy_quantum(
+                rolled.ewma_yield,
+                rolled.ewma_fault,
+                base_quantum_for_priority(ProcessPriority::Normal),
+            )
+        );
+        assert_ne!(adjusted, mixed_source);
+    }
+
+    #[test]
+    fn block_process_requires_existing_current_process() {
+        let mut scheduler = QuantumScheduler::new();
+        scheduler.current_pid = Some(Pid(7));
+        assert_eq!(
+            scheduler.block_process(Pid(7), 42),
+            Err(ERR_BLOCK_PROCESS_CURRENT_PROCESS_MISSING)
+        );
+        assert_eq!(scheduler.wait_queue_count, 0);
+    }
+
+    #[test]
+    fn exec_current_wasm_requires_existing_current_process() {
+        let mut scheduler = QuantumScheduler::new();
+        scheduler.current_pid = Some(Pid(3));
+        assert_eq!(
+            scheduler.exec_current_wasm(99),
+            Err(ERR_EXEC_CURRENT_WASM_CURRENT_PROCESS_MISSING)
+        );
     }
 }

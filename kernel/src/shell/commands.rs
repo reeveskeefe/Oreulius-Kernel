@@ -294,6 +294,7 @@ pub fn execute(input: &str) {
             vga::print_str("  spinlock-test  - Test spinlock implementation\n");
             vga::print_str("\nAdvanced System Commands:\n");
             vga::print_str("  quantum-stats  - Show quantum scheduler statistics\n");
+            vga::print_str("  sched-entropy-bench - Show entropy scheduler bench scenarios\n");
             vga::print_str("  sched-net-soak - Scheduler/network soak test (sched-net-soak <seconds> [probe_ms])\n");
             vga::print_str("  alloc-stats    - Show hardened allocator statistics\n");
             vga::print_str("  leak-check     - Check for memory leaks (debug only)\n");
@@ -321,7 +322,9 @@ pub fn execute(input: &str) {
             vga::print_str("  crash-log    - Show crash ring buffer entries\n");
             vga::print_str("  crash-clear  - Informational: ring auto-overwrites oldest\n");
             vga::print_str("  ota-status   - Show OTA slot states and manifest hash\n");
-            vga::print_str("  ota-apply    - Stage image to inactive slot (ota-apply <vfs-path> [version])\n");
+            vga::print_str(
+                "  ota-apply    - Stage image to inactive slot (ota-apply <vfs-path> [version])\n",
+            );
             vga::print_str("  ota-commit   - Verify and activate pending slot\n");
             vga::print_str("  ota-rollback - Revert active slot pointer\n");
             vga::print_str("  fleet-attest - Transmit attestation bundle (fleet-attest <peer-id> <ip> <port>)\n");
@@ -785,6 +788,9 @@ pub fn execute(input: &str) {
         }
         "quantum-stats" => {
             crate::advanced_commands::cmd_quantum_stats();
+        }
+        "sched-entropy-bench" => {
+            crate::advanced_commands::cmd_sched_entropy_bench();
         }
         "sched-net-soak" => {
             cmd_sched_net_soak(parts);
@@ -3309,7 +3315,12 @@ fn demo_channel_caps(chan_id: u32) -> Option<(ipc::ChannelCapability, ipc::Chann
 }
 
 fn count_demo_channels() -> usize {
-    unsafe { DEMO_CHANNELS.iter().filter(|(_, caps)| caps.is_some()).count() }
+    unsafe {
+        DEMO_CHANNELS
+            .iter()
+            .filter(|(_, caps)| caps.is_some())
+            .count()
+    }
 }
 
 fn print_ipc_flag_bits(bits: u32) {
@@ -8340,7 +8351,11 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             print_u32(stats.opcode_edges_admissible_total);
             vga::print_str("\nTotal novel programs: ");
             print_u32(stats.total_novel_programs);
-            crate::serial_println!("Seeds passed: {} / {}", stats.seeds_passed, stats.seeds_total);
+            crate::serial_println!(
+                "Seeds passed: {} / {}",
+                stats.seeds_passed,
+                stats.seeds_total
+            );
             crate::serial_println!("Total mismatches: {}", stats.total_mismatches);
             crate::serial_println!("Total compile errors: {}", stats.total_compile_errors);
             if let Some(seed) = stats.first_failed_seed {
@@ -8737,7 +8752,11 @@ fn cmd_capnet_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             print_u32(stats.total_control_decode_err);
             vga::print_str("\nTotal process errors: ");
             print_u32(stats.total_process_err);
-            crate::serial_println!("Seeds passed: {} / {}", stats.seeds_passed, stats.seeds_total);
+            crate::serial_println!(
+                "Seeds passed: {} / {}",
+                stats.seeds_passed,
+                stats.seeds_total
+            );
             crate::serial_println!("Total failures: {}", stats.total_failures);
             if let Some(seed) = stats.first_failed_seed {
                 vga::print_str("\nFirst failing seed: ");

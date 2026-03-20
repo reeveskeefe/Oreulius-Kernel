@@ -60,7 +60,9 @@ pub struct HealthSnapshot {
 impl HealthSnapshot {
     pub fn take() -> Self {
         // Scheduler
-        let sched = crate::quantum_scheduler::scheduler().lock().snapshot_overview();
+        let sched = crate::quantum_scheduler::scheduler()
+            .lock()
+            .snapshot_overview();
 
         // Crash log
         let crash_count = crate::crash_log::crash_count();

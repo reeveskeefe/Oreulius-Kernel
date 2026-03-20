@@ -45,33 +45,33 @@ use spin::Mutex;
 // HCI packet types (USB framing)
 // ============================================================================
 
-const HCI_CMD_PKT:   u8 = 0x01;
-const HCI_ACL_PKT:   u8 = 0x02;
+const HCI_CMD_PKT: u8 = 0x01;
+const HCI_ACL_PKT: u8 = 0x02;
 const HCI_EVENT_PKT: u8 = 0x04;
 
 // HCI opcode groups (OGF/OCF encoded as 16-bit LE)
 // opcode = (OGF << 10) | OCF
-const HCI_OGF_LINK_CTRL:  u16 = 0x01;
-const HCI_OGF_CTRL_BB:    u16 = 0x03;
-const HCI_OGF_INFO:        u16 = 0x04;
-const HCI_OGF_LE:          u16 = 0x08;
+const HCI_OGF_LINK_CTRL: u16 = 0x01;
+const HCI_OGF_CTRL_BB: u16 = 0x03;
+const HCI_OGF_INFO: u16 = 0x04;
+const HCI_OGF_LE: u16 = 0x08;
 
 // Common OCFs
-const HCI_OCF_RESET:              u16 = 0x0003;
-const HCI_OCF_READ_BD_ADDR:       u16 = 0x0009;
-const HCI_OCF_INQUIRY:            u16 = 0x0001;
-const HCI_OCF_LE_SET_SCAN_PARAM:  u16 = 0x000B;
-const HCI_OCF_LE_SET_SCAN_EN:     u16 = 0x000C;
-const HCI_OCF_LE_READ_BD_ADDR:    u16 = 0x0009;
+const HCI_OCF_RESET: u16 = 0x0003;
+const HCI_OCF_READ_BD_ADDR: u16 = 0x0009;
+const HCI_OCF_INQUIRY: u16 = 0x0001;
+const HCI_OCF_LE_SET_SCAN_PARAM: u16 = 0x000B;
+const HCI_OCF_LE_SET_SCAN_EN: u16 = 0x000C;
+const HCI_OCF_LE_READ_BD_ADDR: u16 = 0x0009;
 
 // HCI event codes
-const HCI_EVENT_INQUIRY_RESULT:     u8 = 0x02;
-const HCI_EVENT_CMD_COMPLETE:       u8 = 0x0E;
-const HCI_EVENT_CMD_STATUS:         u8 = 0x0F;
-const HCI_EVENT_LE_META:            u8 = 0x3E;
+const HCI_EVENT_INQUIRY_RESULT: u8 = 0x02;
+const HCI_EVENT_CMD_COMPLETE: u8 = 0x0E;
+const HCI_EVENT_CMD_STATUS: u8 = 0x0F;
+const HCI_EVENT_LE_META: u8 = 0x3E;
 
 // LE sub-event codes
-const HCI_LE_SUBEVENT_ADV_REPORT:   u8 = 0x02;
+const HCI_LE_SUBEVENT_ADV_REPORT: u8 = 0x02;
 
 fn hci_opcode(ogf: u16, ocf: u16) -> u16 {
     (ogf << 10) | (ocf & 0x03FF)
@@ -81,13 +81,13 @@ fn hci_opcode(ogf: u16, ocf: u16) -> u16 {
 // Static HCI buffers
 // ============================================================================
 
-const HCI_CMD_BUF_LEN:   usize = 258; // 1 (type) + 3 (hdr) + 254 (params)
+const HCI_CMD_BUF_LEN: usize = 258; // 1 (type) + 3 (hdr) + 254 (params)
 const HCI_EVENT_BUF_LEN: usize = 258;
-const HCI_ACL_BUF_LEN:   usize = 1028;
+const HCI_ACL_BUF_LEN: usize = 1028;
 
-static mut HCI_CMD_BUF:   [u8; HCI_CMD_BUF_LEN]   = [0u8; HCI_CMD_BUF_LEN];
+static mut HCI_CMD_BUF: [u8; HCI_CMD_BUF_LEN] = [0u8; HCI_CMD_BUF_LEN];
 static mut HCI_EVENT_BUF: [u8; HCI_EVENT_BUF_LEN] = [0u8; HCI_EVENT_BUF_LEN];
-static mut HCI_ACL_BUF:   [u8; HCI_ACL_BUF_LEN]   = [0u8; HCI_ACL_BUF_LEN];
+static mut HCI_ACL_BUF: [u8; HCI_ACL_BUF_LEN] = [0u8; HCI_ACL_BUF_LEN];
 
 // ============================================================================
 // BD_ADDR type
@@ -104,7 +104,9 @@ impl BdAddr {
         a[..n].copy_from_slice(&b[..n]);
         BdAddr(a)
     }
-    pub fn is_zero(&self) -> bool { self.0 == [0u8; 6] }
+    pub fn is_zero(&self) -> bool {
+        self.0 == [0u8; 6]
+    }
 }
 
 // ============================================================================
@@ -115,9 +117,9 @@ const BT_MAX_DEVICES: usize = 16;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BluetoothDevice {
-    pub addr:    BdAddr,
-    pub rssi:    i8,
-    pub is_le:   bool,
+    pub addr: BdAddr,
+    pub rssi: i8,
+    pub is_le: bool,
     /// First 8 bytes of advertising data / EIR (if available)
     pub adv_data: [u8; 8],
 }
@@ -142,27 +144,31 @@ pub enum BluetoothEvent {
 /// USB device identifiers we need from `usb.rs`.
 #[derive(Clone, Copy)]
 pub struct UsbHandle {
-    pub dev_addr:   u8,
-    pub ctrl_idx:   usize,
-    pub ep_event:   u8,   // interrupt-IN endpoint (HCI events), usually 0x81
-    pub ep_acl_in:  u8,   // bulk-IN  endpoint (HCI ACL data)
-    pub ep_acl_out: u8,   // bulk-OUT endpoint (HCI ACL data)
-    pub speed:      u8,   // 0=LS 1=FS 2=HS
+    pub dev_addr: u8,
+    pub ctrl_idx: usize,
+    pub ep_event: u8,   // interrupt-IN endpoint (HCI events), usually 0x81
+    pub ep_acl_in: u8,  // bulk-IN  endpoint (HCI ACL data)
+    pub ep_acl_out: u8, // bulk-OUT endpoint (HCI ACL data)
+    pub speed: u8,      // 0=LS 1=FS 2=HS
     /// Controller kind + BAR for reconstructing a UHCI/EHCI handle.
-    pub ctrl_kind:  BtCtrlKind,
-    pub bar_value:  u32, // BAR0 (MMIO) for EHCI, or BAR4 (I/O) for UHCI
+    pub ctrl_kind: BtCtrlKind,
+    pub bar_value: u32, // BAR0 (MMIO) for EHCI, or BAR4 (I/O) for UHCI
     /// PCI device record for the host controller (needed to construct UHCI/EHCI).
-    pub pci:        crate::pci::PciDevice,
+    pub pci: crate::pci::PciDevice,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum BtCtrlKind { Uhci, Ehci, Other }
+pub enum BtCtrlKind {
+    Uhci,
+    Ehci,
+    Other,
+}
 
 pub struct BluetoothController {
-    pub usb:      UsbHandle,
-    pub bd_addr:  BdAddr,
-    pub ready:    bool,
-    pub devices:  [BluetoothDevice; BT_MAX_DEVICES],
+    pub usb: UsbHandle,
+    pub bd_addr: BdAddr,
+    pub ready: bool,
+    pub devices: [BluetoothDevice; BT_MAX_DEVICES],
     pub dev_count: usize,
     /// Pending ACL connection handle (0 = none)
     pub acl_handle: u16,
@@ -193,7 +199,9 @@ impl BluetoothController {
     ///   wLength       = total command length
     unsafe fn send_command(&mut self, opcode: u16, params: &[u8]) -> bool {
         let total = 3 + params.len();
-        if total > HCI_CMD_BUF_LEN { return false; }
+        if total > HCI_CMD_BUF_LEN {
+            return false;
+        }
         HCI_CMD_BUF[0] = (opcode & 0xFF) as u8;
         HCI_CMD_BUF[1] = ((opcode >> 8) & 0xFF) as u8;
         HCI_CMD_BUF[2] = params.len() as u8;
@@ -207,26 +215,25 @@ impl BluetoothController {
             w_length: total as u16,
         };
 
-        let dev   = self.usb.dev_addr;
-        let ls    = self.usb.speed == 0;
-        let hs    = self.usb.speed == 2;
-        let pci   = self.usb.pci;
+        let dev = self.usb.dev_addr;
+        let ls = self.usb.speed == 0;
+        let hs = self.usb.speed == 2;
+        let pci = self.usb.pci;
 
         match self.usb.ctrl_kind {
             BtCtrlKind::Uhci => {
                 let io_base = (self.usb.bar_value & !0x1F) as u16;
                 let mut ctrl = crate::usb::UhciController::new(io_base, pci);
                 ctrl.init();
-                let res = ctrl.control_transfer(dev, ls, &setup,
-                                                Some(&mut HCI_CMD_BUF[..total]), false);
+                let res =
+                    ctrl.control_transfer(dev, ls, &setup, Some(&mut HCI_CMD_BUF[..total]), false);
                 res == crate::usb::UhciXferResult::Ok
             }
             BtCtrlKind::Ehci => {
                 let mmio = (self.usb.bar_value & !0x0F) as usize;
                 let mut ctrl = crate::usb::EhciController::new(mmio, pci);
                 ctrl.init();
-                ctrl.control_transfer(dev, hs, ls, &setup,
-                                      Some(&mut HCI_CMD_BUF[..total]), false)
+                ctrl.control_transfer(dev, hs, ls, &setup, Some(&mut HCI_CMD_BUF[..total]), false)
             }
             BtCtrlKind::Other => false,
         }
@@ -236,9 +243,9 @@ impl BluetoothController {
     /// Returns the number of bytes received (0 = no data).
     unsafe fn recv_event(&mut self) -> usize {
         let dev = self.usb.dev_addr;
-        let ep  = self.usb.ep_event & 0x0F;
-        let ls  = self.usb.speed == 0;
-        let hs  = self.usb.speed == 2;
+        let ep = self.usb.ep_event & 0x0F;
+        let ls = self.usb.speed == 0;
+        let hs = self.usb.speed == 2;
         let pci = self.usb.pci;
         let mut toggle = false;
 
@@ -247,21 +254,23 @@ impl BluetoothController {
                 let io_base = (self.usb.bar_value & !0x1F) as u16;
                 let mut ctrl = crate::usb::UhciController::new(io_base, pci);
                 ctrl.init();
-                let res = ctrl.bulk_transfer(dev, ep, ls, true,
-                                             64, &mut HCI_EVENT_BUF, &mut toggle);
+                let res =
+                    ctrl.bulk_transfer(dev, ep, ls, true, 64, &mut HCI_EVENT_BUF, &mut toggle);
                 if res == crate::usb::UhciXferResult::Ok {
                     HCI_EVENT_BUF[1] as usize + 2
-                } else { 0 }
+                } else {
+                    0
+                }
             }
             BtCtrlKind::Ehci => {
                 let mmio = (self.usb.bar_value & !0x0F) as usize;
                 let mut ctrl = crate::usb::EhciController::new(mmio, pci);
                 ctrl.init();
-                if ctrl.bulk_transfer(dev, ep, hs, true,
-                                      64, &mut HCI_EVENT_BUF, &mut toggle)
-                {
+                if ctrl.bulk_transfer(dev, ep, hs, true, 64, &mut HCI_EVENT_BUF, &mut toggle) {
                     HCI_EVENT_BUF[1] as usize + 2
-                } else { 0 }
+                } else {
+                    0
+                }
             }
             BtCtrlKind::Other => 0,
         }
@@ -274,7 +283,9 @@ impl BluetoothController {
     pub fn hci_reset(&mut self) -> bool {
         let opcode = hci_opcode(HCI_OGF_CTRL_BB, HCI_OCF_RESET);
         unsafe {
-            if !self.send_command(opcode, &[]) { return false; }
+            if !self.send_command(opcode, &[]) {
+                return false;
+            }
             // Wait for Command Complete event
             for _ in 0..500_000u32 {
                 let n = self.recv_event();
@@ -293,14 +304,17 @@ impl BluetoothController {
     pub fn hci_read_bd_addr(&mut self) -> BdAddr {
         let opcode = hci_opcode(HCI_OGF_INFO, HCI_OCF_READ_BD_ADDR);
         unsafe {
-            if !self.send_command(opcode, &[]) { return BdAddr::default(); }
+            if !self.send_command(opcode, &[]) {
+                return BdAddr::default();
+            }
             for _ in 0..500_000u32 {
                 let n = self.recv_event();
                 if n >= 10
                     && HCI_EVENT_BUF[0] == HCI_EVENT_CMD_COMPLETE
                     && HCI_EVENT_BUF[2] == (opcode & 0xFF) as u8
                     && HCI_EVENT_BUF[3] == ((opcode >> 8) & 0xFF) as u8
-                    && HCI_EVENT_BUF[4] == 0x00 // success
+                    && HCI_EVENT_BUF[4] == 0x00
+                // success
                 {
                     return BdAddr::from_bytes(&HCI_EVENT_BUF[5..11]);
                 }
@@ -330,8 +344,10 @@ impl BluetoothController {
         let opcode = hci_opcode(HCI_OGF_LE, HCI_OCF_LE_SET_SCAN_PARAM);
         let params = [
             scan_type,
-            (interval & 0xFF) as u8, ((interval >> 8) & 0xFF) as u8,
-            (window   & 0xFF) as u8, ((window   >> 8) & 0xFF) as u8,
+            (interval & 0xFF) as u8,
+            ((interval >> 8) & 0xFF) as u8,
+            (window & 0xFF) as u8,
+            ((window >> 8) & 0xFF) as u8,
             own_addr_type,
             filter_policy,
         ];
@@ -352,22 +368,32 @@ impl BluetoothController {
     /// interrupt handler.
     pub fn poll(&mut self) -> BluetoothEvent {
         let n = unsafe { self.recv_event() };
-        if n < 2 { return BluetoothEvent::None; }
+        if n < 2 {
+            return BluetoothEvent::None;
+        }
         let evt_code = unsafe { HCI_EVENT_BUF[0] };
         match evt_code {
             HCI_EVENT_CMD_COMPLETE => {
-                if n < 6 { return BluetoothEvent::None; }
-                let opcode = unsafe {
-                    (HCI_EVENT_BUF[2] as u16) | ((HCI_EVENT_BUF[3] as u16) << 8)
-                };
+                if n < 6 {
+                    return BluetoothEvent::None;
+                }
+                let opcode =
+                    unsafe { (HCI_EVENT_BUF[2] as u16) | ((HCI_EVENT_BUF[3] as u16) << 8) };
                 let status = unsafe { HCI_EVENT_BUF[4] };
                 BluetoothEvent::CommandComplete { opcode, status }
             }
             HCI_EVENT_INQUIRY_RESULT => {
-                if n < 15 { return BluetoothEvent::None; }
+                if n < 15 {
+                    return BluetoothEvent::None;
+                }
                 let addr = unsafe { BdAddr::from_bytes(&HCI_EVENT_BUF[3..9]) };
                 // RSSI not available in standard inquiry result; use 0
-                let dev = BluetoothDevice { addr, rssi: 0, is_le: false, adv_data: [0u8; 8] };
+                let dev = BluetoothDevice {
+                    addr,
+                    rssi: 0,
+                    is_le: false,
+                    adv_data: [0u8; 8],
+                };
                 if self.dev_count < BT_MAX_DEVICES {
                     self.devices[self.dev_count] = dev;
                     self.dev_count += 1;
@@ -375,7 +401,9 @@ impl BluetoothController {
                 BluetoothEvent::InquiryResult(dev)
             }
             HCI_EVENT_LE_META => {
-                if n < 3 { return BluetoothEvent::None; }
+                if n < 3 {
+                    return BluetoothEvent::None;
+                }
                 let subevent = unsafe { HCI_EVENT_BUF[1] };
                 if subevent == HCI_LE_SUBEVENT_ADV_REPORT && n >= 14 {
                     // Subevent + num_reports + event_type + addr_type + addr[6] + data_len + data + RSSI
@@ -390,7 +418,12 @@ impl BluetoothController {
                             adv_data[..copy_len].copy_from_slice(&HCI_EVENT_BUF[12..12 + copy_len]);
                         }
                     }
-                    let dev = BluetoothDevice { addr, rssi, is_le: true, adv_data };
+                    let dev = BluetoothDevice {
+                        addr,
+                        rssi,
+                        is_le: true,
+                        adv_data,
+                    };
                     if self.dev_count < BT_MAX_DEVICES {
                         self.devices[self.dev_count] = dev;
                         self.dev_count += 1;
@@ -416,8 +449,12 @@ impl BluetoothController {
         self.bd_addr = self.hci_read_bd_addr();
         crate::serial_println!(
             "[BT] Local BD_ADDR: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            self.bd_addr.0[5], self.bd_addr.0[4], self.bd_addr.0[3],
-            self.bd_addr.0[2], self.bd_addr.0[1], self.bd_addr.0[0]
+            self.bd_addr.0[5],
+            self.bd_addr.0[4],
+            self.bd_addr.0[3],
+            self.bd_addr.0[2],
+            self.bd_addr.0[1],
+            self.bd_addr.0[0]
         );
 
         // Start passive LE scan (10 ms interval, 10 ms window)
@@ -439,17 +476,26 @@ pub static BLUETOOTH: Mutex<Option<BluetoothController>> = Mutex::new(None);
 ///
 /// Call once during kernel startup after `usb::init()`.
 pub fn init() {
-    use crate::usb::{USB_BUS, UsbControllerKind};
+    use crate::usb::{UsbControllerKind, USB_BUS};
 
     // Collect matching device info without holding the lock.
     let found = {
         let usb = USB_BUS.lock();
         let mut result: Option<UsbHandle> = None;
-        for d in usb.devices[..usb.device_count].iter().filter_map(|d| d.as_ref()) {
+        for d in usb.devices[..usb.device_count]
+            .iter()
+            .filter_map(|d| d.as_ref())
+        {
             // Bluetooth USB class 0xE0 / subclass 0x01 / protocol 0x01
-            if d.descriptor.b_device_class    != 0xE0 { continue; }
-            if d.descriptor.b_device_sub_class != 0x01 { continue; }
-            if d.descriptor.b_device_protocol  != 0x01 { continue; }
+            if d.descriptor.b_device_class != 0xE0 {
+                continue;
+            }
+            if d.descriptor.b_device_sub_class != 0x01 {
+                continue;
+            }
+            if d.descriptor.b_device_protocol != 0x01 {
+                continue;
+            }
 
             let ci = d.controller_index;
             let (ctrl_kind, bar_value, pci) = match usb.controllers[ci] {
@@ -473,16 +519,16 @@ pub fn init() {
             };
 
             let speed = match d.speed {
-                crate::usb::UsbSpeed::Low  => 0u8,
+                crate::usb::UsbSpeed::Low => 0u8,
                 crate::usb::UsbSpeed::Full => 1u8,
                 crate::usb::UsbSpeed::High => 2u8,
                 crate::usb::UsbSpeed::Super | crate::usb::UsbSpeed::Super20 => 2u8,
             };
             result = Some(UsbHandle {
-                dev_addr:   d.address,
-                ctrl_idx:   ci,
-                ep_event:   0x81,
-                ep_acl_in:  0x82,
+                dev_addr: d.address,
+                ctrl_idx: ci,
+                ep_event: 0x81,
+                ep_acl_in: 0x82,
                 ep_acl_out: 0x02,
                 speed,
                 ctrl_kind,
@@ -510,7 +556,7 @@ pub fn init() {
 pub fn poll() -> BluetoothEvent {
     match BLUETOOTH.lock().as_mut() {
         Some(c) => c.poll(),
-        None    => BluetoothEvent::None,
+        None => BluetoothEvent::None,
     }
 }
 

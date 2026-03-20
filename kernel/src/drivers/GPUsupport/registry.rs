@@ -44,7 +44,10 @@ impl GpuRegistry {
             return None;
         }
         let idx = self.len;
-        self.devices[idx] = Some(RegisteredGpu { report, active: false });
+        self.devices[idx] = Some(RegisteredGpu {
+            report,
+            active: false,
+        });
         self.len += 1;
         Some(idx)
     }
@@ -108,4 +111,3 @@ pub fn active_probe_report() -> Option<GpuProbeReport> {
 pub fn active_backend() -> ScanoutBackendId {
     GPU_REGISTRY.lock().active_backend()
 }
-

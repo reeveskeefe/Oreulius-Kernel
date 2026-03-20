@@ -77,12 +77,7 @@ pub fn run_selftest() -> IpcSelftestReport {
         "runtime_wakeup_surface",
         case_runtime_wakeup_surface(),
     );
-    record_case(
-        &mut report,
-        8,
-        "causal_chain",
-        case_causal_chain(),
-    );
+    record_case(&mut report, 8, "causal_chain", case_causal_chain());
     record_case(
         &mut report,
         9,
@@ -242,8 +237,7 @@ fn case_recv_aliases_try_recv_on_empty() -> Result<(), &'static str> {
 
     let try_recv = channel.try_recv(&recv_cap);
     let recv = channel.recv(&recv_cap);
-    if matches!(try_recv, Err(IpcError::WouldBlock)) && matches!(recv, Err(IpcError::WouldBlock))
-    {
+    if matches!(try_recv, Err(IpcError::WouldBlock)) && matches!(recv, Err(IpcError::WouldBlock)) {
         if channel.recv_refusals() != 2 {
             return Err("recv refusal counter mismatch");
         }
@@ -264,7 +258,10 @@ fn case_cap_attachment_surface() -> Result<(), &'static str> {
         return Err("cap count mismatch");
     }
 
-    let attached = msg.capabilities().next().ok_or("missing attached capability")?;
+    let attached = msg
+        .capabilities()
+        .next()
+        .ok_or("missing attached capability")?;
     if attached.cap_id != 88
         || attached.object_id != 99
         || attached.rights != 0xA5
@@ -289,7 +286,9 @@ fn case_backpressure_metrics() -> Result<(), &'static str> {
 
     for _ in 0..CHANNEL_CAPACITY {
         let msg = Message::with_data(owner, b"x").map_err(|_| "failed to build metric message")?;
-        channel.send(msg, &send_cap).map_err(|_| "metric send failed")?;
+        channel
+            .send(msg, &send_cap)
+            .map_err(|_| "metric send failed")?;
     }
 
     if channel.high_watermark() != CHANNEL_CAPACITY {
@@ -311,7 +310,9 @@ fn case_backpressure_metrics() -> Result<(), &'static str> {
     }
 
     for _ in 0..CHANNEL_CAPACITY {
-        let _ = channel.try_recv(&recv_cap).map_err(|_| "metric recv failed")?;
+        let _ = channel
+            .try_recv(&recv_cap)
+            .map_err(|_| "metric recv failed")?;
     }
 
     if channel.high_watermark() != CHANNEL_CAPACITY {
@@ -428,10 +429,8 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
                 .map_err(|_| "sender wake fill failed")?;
         }
 
-        let waiter = SyntheticWaiterGuard::stage(
-            "ipc-selftest-tx",
-            super::channel_capacity_wait_addr(id),
-        )?;
+        let waiter =
+            SyntheticWaiterGuard::stage("ipc-selftest-tx", super::channel_capacity_wait_addr(id))?;
         if crate::quantum_scheduler::waiter_count(super::channel_capacity_wait_addr(id)) != 1 {
             return Err("sender waiter was not staged");
         }
@@ -482,10 +481,14 @@ fn case_causal_chain() -> Result<(), &'static str> {
     // Send root message (no cause)
     let root = Message::with_data(owner, b"root").map_err(|_| "failed to build root message")?;
     let root_id = root.id;
-    channel.send(root, &send_cap).map_err(|_| "root send failed")?;
+    channel
+        .send(root, &send_cap)
+        .map_err(|_| "root send failed")?;
 
     // Drain root so its EventId is observable
-    let received_root = channel.try_recv(&recv_cap).map_err(|_| "root recv failed")?;
+    let received_root = channel
+        .try_recv(&recv_cap)
+        .map_err(|_| "root recv failed")?;
     if received_root.id.raw() != root_id.raw() {
         return Err("root EventId not preserved through channel");
     }
@@ -500,7 +503,9 @@ fn case_causal_chain() -> Result<(), &'static str> {
         return Err("child cause EventId does not match root");
     }
     let child_id = child.id;
-    channel.send(child, &send_cap).map_err(|_| "child send failed")?;
+    channel
+        .send(child, &send_cap)
+        .map_err(|_| "child send failed")?;
 
     // Send a grandchild caused by child
     let grandchild = Message::with_data_and_cause(owner, b"grandchild", child_id)
@@ -508,11 +513,17 @@ fn case_causal_chain() -> Result<(), &'static str> {
     if grandchild.cause.unwrap().raw() != child_id.raw() {
         return Err("grandchild cause does not match child");
     }
-    channel.send(grandchild, &send_cap).map_err(|_| "grandchild send failed")?;
+    channel
+        .send(grandchild, &send_cap)
+        .map_err(|_| "grandchild send failed")?;
 
     // Drain both; verify lineage chain is intact
-    let recv_child = channel.try_recv(&recv_cap).map_err(|_| "child recv failed")?;
-    let recv_gc = channel.try_recv(&recv_cap).map_err(|_| "grandchild recv failed")?;
+    let recv_child = channel
+        .try_recv(&recv_cap)
+        .map_err(|_| "child recv failed")?;
+    let recv_gc = channel
+        .try_recv(&recv_cap)
+        .map_err(|_| "grandchild recv failed")?;
     if recv_child.cause.unwrap().raw() != root_id.raw() {
         return Err("received child cause mismatch");
     }
@@ -562,12 +573,16 @@ fn case_closure_drain_state_machine() -> Result<(), &'static str> {
             }
         }
         Ok(DrainResult::Complete) => return Err("drain reported Complete with message in queue"),
-        Ok(DrainResult::AlreadySealed) => return Err("drain reported AlreadySealed while Draining"),
+        Ok(DrainResult::AlreadySealed) => {
+            return Err("drain reported AlreadySealed while Draining")
+        }
         Err(_) => return Err("drain returned unexpected error"),
     }
 
     // Consume the last message manually — state should flip to Sealed
-    let _ = channel.try_recv(&recv_cap).map_err(|_| "final recv failed")?;
+    let _ = channel
+        .try_recv(&recv_cap)
+        .map_err(|_| "final recv failed")?;
 
     // Now drain() must return AlreadySealed (or channel.is_closed())
     if !channel.is_closed() {
@@ -636,7 +651,9 @@ fn case_channel_draining_admission() -> Result<(), &'static str> {
     }
 
     // The queued message must still be receivable
-    let drained = channel.try_recv(&recv_cap).map_err(|_| "drain recv failed")?;
+    let drained = channel
+        .try_recv(&recv_cap)
+        .map_err(|_| "drain recv failed")?;
     if drained.payload() != b"in-flight" {
         return Err("in-flight message payload corrupted after draining refusal");
     }

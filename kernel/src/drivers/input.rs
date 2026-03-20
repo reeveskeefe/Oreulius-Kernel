@@ -31,8 +31,8 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 // ---------------------------------------------------------------------------
 // Public event types
@@ -42,17 +42,17 @@ use core::cell::UnsafeCell;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum InputEventKind {
-    None     = 0,
-    Key      = 1,
-    Mouse    = 2,
-    Gamepad  = 3,
+    None = 0,
+    Key = 1,
+    Mouse = 2,
+    Gamepad = 3,
 }
 
 /// Keyboard key state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum KeyState {
-    Pressed  = 1,
+    Pressed = 1,
     Released = 2,
 }
 
@@ -97,9 +97,9 @@ pub struct InputEvent {
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub union InputEventData {
-    pub key:   KeyInputEvent,
+    pub key: KeyInputEvent,
     pub mouse: MouseInputEvent,
-    pub raw:   [u8; 8],
+    pub raw: [u8; 8],
 }
 
 impl core::fmt::Debug for InputEventData {
@@ -138,7 +138,13 @@ impl InputEvent {
             kind: InputEventKind::Mouse,
             _pad: [0; 3],
             data: InputEventData {
-                mouse: MouseInputEvent { dx, dy, dwheel, buttons, _pad: [0; 2] },
+                mouse: MouseInputEvent {
+                    dx,
+                    dy,
+                    dwheel,
+                    buttons,
+                    _pad: [0; 2],
+                },
             },
         }
     }
@@ -150,7 +156,9 @@ impl InputEvent {
             return 0;
         }
         out[0] = self.kind as u8;
-        out[1] = 0; out[2] = 0; out[3] = 0;
+        out[1] = 0;
+        out[2] = 0;
+        out[3] = 0;
         // Safely copy the 8 raw union bytes.
         let raw = unsafe { self.data.raw };
         out[4..12].copy_from_slice(&raw);
@@ -168,9 +176,9 @@ pub const INPUT_EVENT_BYTES: usize = 12;
 const RING_SIZE: usize = 256; // must be power of two
 
 struct InputRing {
-    buf:  UnsafeCell<[InputEvent; RING_SIZE]>,
-    head: AtomicUsize,  // consumer reads here
-    tail: AtomicUsize,  // producer writes here
+    buf: UnsafeCell<[InputEvent; RING_SIZE]>,
+    head: AtomicUsize, // consumer reads here
+    tail: AtomicUsize, // producer writes here
     overflow: AtomicU32,
 }
 
@@ -181,7 +189,7 @@ unsafe impl Send for InputRing {}
 impl InputRing {
     const fn new() -> Self {
         InputRing {
-            buf:  UnsafeCell::new([InputEvent::empty(); RING_SIZE]),
+            buf: UnsafeCell::new([InputEvent::empty(); RING_SIZE]),
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
             overflow: AtomicU32::new(0),
@@ -209,7 +217,8 @@ impl InputRing {
             return None;
         }
         let ev = unsafe { (*self.buf.get())[head] };
-        self.head.store((head + 1) & (RING_SIZE - 1), Ordering::Release);
+        self.head
+            .store((head + 1) & (RING_SIZE - 1), Ordering::Release);
         Some(ev)
     }
 
@@ -252,8 +261,8 @@ use core::sync::atomic::AtomicU8;
 
 pub mod modifier {
     pub const SHIFT: u8 = 1 << 0;
-    pub const CTRL:  u8 = 1 << 1;
-    pub const ALT:   u8 = 1 << 2;
+    pub const CTRL: u8 = 1 << 1;
+    pub const ALT: u8 = 1 << 2;
     pub const SUPER: u8 = 1 << 3;
 }
 
@@ -301,12 +310,7 @@ pub fn pump() {
 
     // Drain mouse events.
     while let Some(mev) = crate::mouse::pop_event() {
-        let ev = InputEvent::mouse_event(
-            mev.dx  as i16,
-            mev.dy  as i16,
-            mev.dwheel,
-            mev.buttons.0,
-        );
+        let ev = InputEvent::mouse_event(mev.dx as i16, mev.dy as i16, mev.dwheel, mev.buttons.0);
         INPUT_RING.push(ev);
     }
 }
@@ -315,24 +319,24 @@ pub fn pump() {
 fn decode_key_event(kev: &crate::keyboard::KeyEvent) -> (u32, u8, bool) {
     use crate::keyboard::KeyEvent;
     match kev {
-        KeyEvent::Char(c)     => (*c as u32, 0, true),
-        KeyEvent::Enter       => ('\n' as u32, 0x1C, true),
-        KeyEvent::Backspace   => ('\x08' as u32, 0x0E, true),
-        KeyEvent::Tab         => ('\t' as u32, 0x0F, true),
-        KeyEvent::Escape      => (0x1B, 0x01, true),
-        KeyEvent::Up          => (0, 0x48, true),
-        KeyEvent::Down        => (0, 0x50, true),
-        KeyEvent::Left        => (0, 0x4B, true),
-        KeyEvent::Right       => (0, 0x4D, true),
-        KeyEvent::Home        => (0, 0x47, true),
-        KeyEvent::End         => (0, 0x4F, true),
-        KeyEvent::Delete      => (0x7F, 0x53, true),
-        KeyEvent::PageUp      => (0, 0x49, true),
-        KeyEvent::PageDown    => (0, 0x51, true),
-        KeyEvent::Ctrl(c)     => (*c as u32, 0, true),
-        KeyEvent::AltChar(c)  => (*c as u32, 0, true),
-        KeyEvent::AltFn(n)    => (0, 0x3A + *n as u8, true),
-        KeyEvent::None        => (0, 0, false),
+        KeyEvent::Char(c) => (*c as u32, 0, true),
+        KeyEvent::Enter => ('\n' as u32, 0x1C, true),
+        KeyEvent::Backspace => ('\x08' as u32, 0x0E, true),
+        KeyEvent::Tab => ('\t' as u32, 0x0F, true),
+        KeyEvent::Escape => (0x1B, 0x01, true),
+        KeyEvent::Up => (0, 0x48, true),
+        KeyEvent::Down => (0, 0x50, true),
+        KeyEvent::Left => (0, 0x4B, true),
+        KeyEvent::Right => (0, 0x4D, true),
+        KeyEvent::Home => (0, 0x47, true),
+        KeyEvent::End => (0, 0x4F, true),
+        KeyEvent::Delete => (0x7F, 0x53, true),
+        KeyEvent::PageUp => (0, 0x49, true),
+        KeyEvent::PageDown => (0, 0x51, true),
+        KeyEvent::Ctrl(c) => (*c as u32, 0, true),
+        KeyEvent::AltChar(c) => (*c as u32, 0, true),
+        KeyEvent::AltFn(n) => (0, 0x3A + *n as u8, true),
+        KeyEvent::None => (0, 0, false),
     }
 }
 
@@ -341,7 +345,9 @@ fn decode_key_event(kev: &crate::keyboard::KeyEvent) -> (u32, u8, bool) {
 // ---------------------------------------------------------------------------
 
 /// Returns `true` if there is at least one event waiting.
-pub fn poll() -> bool { !INPUT_RING.is_empty() }
+pub fn poll() -> bool {
+    !INPUT_RING.is_empty()
+}
 
 /// Returns `true` if there is at least one keyboard event waiting.
 pub fn poll_key() -> bool {

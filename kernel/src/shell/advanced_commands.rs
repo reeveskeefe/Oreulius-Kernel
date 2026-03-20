@@ -96,6 +96,30 @@ pub fn cmd_quantum_stats() {
     vga::print_str("\n");
 }
 
+pub fn cmd_sched_entropy_bench() {
+    use crate::quantum_scheduler;
+
+    vga::print_str("Scheduler Entropy Bench\n");
+    vga::print_str("=======================\n\n");
+    vga::print_str(
+        "Scenarios use the scheduler's canonical EWMA roll + quantum adjust helpers.\n\n",
+    );
+
+    for scenario in quantum_scheduler::entropy_bench_results() {
+        vga::print_str("Scenario: ");
+        vga::print_str(scenario.name);
+        vga::print_str("\n  Base quantum:      ");
+        print_u32(scenario.base_quantum);
+        vga::print_str("\n  Rolled yield EWMA: ");
+        print_u32(scenario.rolled_yield_ewma);
+        vga::print_str("\n  Rolled fault EWMA: ");
+        print_u32(scenario.rolled_fault_ewma);
+        vga::print_str("\n  Adjusted quantum:  ");
+        print_u32(scenario.adjusted_quantum);
+        vga::print_str("\n\n");
+    }
+}
+
 /// Show hardened allocator statistics
 pub fn cmd_alloc_stats() {
     use crate::hardened_allocator;

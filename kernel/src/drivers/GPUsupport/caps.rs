@@ -17,7 +17,9 @@ impl GpuEngineMask {
     }
 
     pub const fn display_only() -> Self {
-        GpuEngineMask { bits: Self::DISPLAY }
+        GpuEngineMask {
+            bits: Self::DISPLAY,
+        }
     }
 
     pub const fn with_transfer() -> Self {
@@ -101,4 +103,3 @@ impl GpuCapabilities {
         }
     }
 }
-

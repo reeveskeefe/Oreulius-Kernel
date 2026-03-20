@@ -63,7 +63,9 @@ unsafe fn outb(port: u16, val: u8) {
 #[inline(always)]
 unsafe fn wait_input_empty() {
     for _ in 0..100_000u32 {
-        if inb(KBD_STATUS) & 0x02 == 0 { return; }
+        if inb(KBD_STATUS) & 0x02 == 0 {
+            return;
+        }
     }
 }
 
@@ -71,7 +73,9 @@ unsafe fn wait_input_empty() {
 #[inline(always)]
 unsafe fn wait_output_full() -> bool {
     for _ in 0..100_000u32 {
-        if inb(KBD_STATUS) & 0x01 != 0 { return true; }
+        if inb(KBD_STATUS) & 0x01 != 0 {
+            return true;
+        }
     }
     false
 }
@@ -114,15 +118,21 @@ unsafe fn mouse_read() -> Option<u8> {
 pub struct MouseButtons(pub u8);
 
 impl MouseButtons {
-    pub const LEFT:   u8 = 0x01;
-    pub const RIGHT:  u8 = 0x02;
+    pub const LEFT: u8 = 0x01;
+    pub const RIGHT: u8 = 0x02;
     pub const MIDDLE: u8 = 0x04;
-    pub const BTN4:   u8 = 0x08;
-    pub const BTN5:   u8 = 0x10;
+    pub const BTN4: u8 = 0x08;
+    pub const BTN5: u8 = 0x10;
 
-    pub fn left(self)   -> bool { self.0 & Self::LEFT   != 0 }
-    pub fn right(self)  -> bool { self.0 & Self::RIGHT  != 0 }
-    pub fn middle(self) -> bool { self.0 & Self::MIDDLE != 0 }
+    pub fn left(self) -> bool {
+        self.0 & Self::LEFT != 0
+    }
+    pub fn right(self) -> bool {
+        self.0 & Self::RIGHT != 0
+    }
+    pub fn middle(self) -> bool {
+        self.0 & Self::MIDDLE != 0
+    }
 }
 
 // ============================================================================
@@ -172,10 +182,14 @@ unsafe impl Sync for MouseEventRing {}
 impl MouseEventRing {
     const fn new() -> Self {
         MouseEventRing {
-            buf: UnsafeCell::new([MouseEvent {
-                dx: 0, dy: 0, dwheel: 0,
-                buttons: MouseButtons(0),
-            }; EVT_BUF_SIZE]),
+            buf: UnsafeCell::new(
+                [MouseEvent {
+                    dx: 0,
+                    dy: 0,
+                    dwheel: 0,
+                    buttons: MouseButtons(0),
+                }; EVT_BUF_SIZE],
+            ),
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
         }
@@ -184,16 +198,23 @@ impl MouseEventRing {
     fn push(&self, ev: MouseEvent) {
         let tail = self.tail.load(Ordering::Acquire);
         let next = (tail + 1) % EVT_BUF_SIZE;
-        if next == self.head.load(Ordering::Acquire) { return; } // full, drop
-        unsafe { (*self.buf.get())[tail] = ev; }
+        if next == self.head.load(Ordering::Acquire) {
+            return;
+        } // full, drop
+        unsafe {
+            (*self.buf.get())[tail] = ev;
+        }
         self.tail.store(next, Ordering::Release);
     }
 
     fn pop(&self) -> Option<MouseEvent> {
         let head = self.head.load(Ordering::Acquire);
-        if head == self.tail.load(Ordering::Acquire) { return None; }
+        if head == self.tail.load(Ordering::Acquire) {
+            return None;
+        }
         let ev = unsafe { (*self.buf.get())[head] };
-        self.head.store((head + 1) % EVT_BUF_SIZE, Ordering::Release);
+        self.head
+            .store((head + 1) % EVT_BUF_SIZE, Ordering::Release);
         Some(ev)
     }
 }
@@ -206,17 +227,21 @@ static EVENT_RING: MouseEventRing = MouseEventRing::new();
 
 /// Initialisation state of the PS/2 mouse.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum InitState { Uninit, Standard, IntelliMouse }
+enum InitState {
+    Uninit,
+    Standard,
+    IntelliMouse,
+}
 
 /// IRQ-driven PS/2 mouse packet assembler.
 pub struct Ps2Mouse {
-    init_state:   InitState,
+    init_state: InitState,
     /// Packet byte accumulator (up to 4 bytes).
-    packet:       [u8; 4],
+    packet: [u8; 4],
     /// Number of bytes collected so far for the current packet.
-    packet_len:   u8,
+    packet_len: u8,
     /// Expected packet size: 3 (standard) or 4 (IntelliMouse with scroll).
-    packet_size:  u8,
+    packet_size: u8,
     overflow_cnt: u32,
 }
 
@@ -245,48 +270,62 @@ impl Ps2Mouse {
             cmd(0xA8);
 
             // Enable AUX interrupt in the CW byte.
-            cmd(0x20);                 // read current CW
+            cmd(0x20); // read current CW
             let mut cw = inb(KBD_DATA);
-            cw |= 0x02;               // enable AUX IRQ (bit 1)
-            cw &= !0x20;              // clear "disable mouse clock" (bit 5)
-            cmd(0x60);                // write CW
+            cw |= 0x02; // enable AUX IRQ (bit 1)
+            cw &= !0x20; // clear "disable mouse clock" (bit 5)
+            cmd(0x60); // write CW
             data(cw);
 
             // Reset the mouse.
             mouse_write(0xFF);
             // Expect ACK (0xFA) + BAT result (0xAA) + device ID (0x00).
-            for _ in 0..3 { let _ = mouse_read(); }
+            for _ in 0..3 {
+                let _ = mouse_read();
+            }
 
             // Attempt to enable IntelliMouse (Z-axis / scroll wheel):
             //   Set sample rate 200, 100, 80 → then GET_DEVICE_ID.
             //   If ID == 0x03, scroll wheel is available.
             for rate in [200u8, 100, 80] {
-                mouse_write(0xF3); let _ = mouse_read(); // SET_SAMPLE_RATE + ACK
-                mouse_write(rate); let _ = mouse_read(); // rate value + ACK
+                mouse_write(0xF3);
+                let _ = mouse_read(); // SET_SAMPLE_RATE + ACK
+                mouse_write(rate);
+                let _ = mouse_read(); // rate value + ACK
             }
-            mouse_write(0xF2); let _ = mouse_read();     // GET_DEVICE_ID + ACK
+            mouse_write(0xF2);
+            let _ = mouse_read(); // GET_DEVICE_ID + ACK
             let dev_id = mouse_read().unwrap_or(0);
             if dev_id == 0x03 {
                 self.packet_size = 4;
-                self.init_state  = InitState::IntelliMouse;
+                self.init_state = InitState::IntelliMouse;
             } else {
                 self.packet_size = 3;
-                self.init_state  = InitState::Standard;
+                self.init_state = InitState::Standard;
             }
 
             // Set default resolution (4 counts/mm) and sample rate (100 Hz).
-            mouse_write(0xE8); let _ = mouse_read(); // SET_RESOLUTION
-            mouse_write(0x02); let _ = mouse_read(); // 4 counts/mm
-            mouse_write(0xF3); let _ = mouse_read(); // SET_SAMPLE_RATE
-            mouse_write(100);  let _ = mouse_read(); // 100 Hz
+            mouse_write(0xE8);
+            let _ = mouse_read(); // SET_RESOLUTION
+            mouse_write(0x02);
+            let _ = mouse_read(); // 4 counts/mm
+            mouse_write(0xF3);
+            let _ = mouse_read(); // SET_SAMPLE_RATE
+            mouse_write(100);
+            let _ = mouse_read(); // 100 Hz
 
             // Enable data reporting (stream mode).
-            mouse_write(0xF4); let _ = mouse_read();
+            mouse_write(0xF4);
+            let _ = mouse_read();
         }
 
         crate::serial_println!(
             "[MOUSE] PS/2 {} mouse initialised (packet_size={})",
-            if self.init_state == InitState::IntelliMouse { "IntelliMouse" } else { "standard" },
+            if self.init_state == InitState::IntelliMouse {
+                "IntelliMouse"
+            } else {
+                "standard"
+            },
             self.packet_size
         );
     }
@@ -330,7 +369,9 @@ impl Ps2Mouse {
         if flags & 0xC0 != 0 {
             self.overflow_cnt += 1;
             let ev = MouseEvent {
-                dx: 0, dy: 0, dwheel: 0,
+                dx: 0,
+                dy: 0,
+                dwheel: 0,
                 buttons: MouseButtons(flags & 0x07),
             };
             EVENT_RING.push(ev);
@@ -339,9 +380,17 @@ impl Ps2Mouse {
         }
 
         // Sign-extend the 9-bit deltas using the sign bits in the flags byte.
-        let dx = if flags & 0x10 != 0 { raw_dx | !0xFF } else { raw_dx };
+        let dx = if flags & 0x10 != 0 {
+            raw_dx | !0xFF
+        } else {
+            raw_dx
+        };
         // Y is inverted: PS/2 positive Y = up, screen positive Y = down.
-        let dy_raw = if flags & 0x20 != 0 { raw_dy | !0xFF } else { raw_dy };
+        let dy_raw = if flags & 0x20 != 0 {
+            raw_dy | !0xFF
+        } else {
+            raw_dy
+        };
         let dy = -dy_raw;
 
         let dwheel: i8 = if self.packet_size == 4 {
@@ -349,7 +398,11 @@ impl Ps2Mouse {
             // Bits 3:0 are the signed scroll delta.
             let w = (self.packet[3] & 0x0F) as i8;
             // Sign-extend 4-bit value.
-            if w & 0x08 != 0 { w | !0x07 } else { w }
+            if w & 0x08 != 0 {
+                w | !0x07
+            } else {
+                w
+            }
         } else {
             0
         };
@@ -361,7 +414,12 @@ impl Ps2Mouse {
         MOUSE_STATE.y.fetch_add(dy as i32, Ordering::Relaxed);
         MOUSE_STATE.buttons.store(buttons.0, Ordering::Release);
 
-        EVENT_RING.push(MouseEvent { dx, dy, dwheel, buttons });
+        EVENT_RING.push(MouseEvent {
+            dx,
+            dy,
+            dwheel,
+            buttons,
+        });
     }
 }
 
@@ -376,7 +434,9 @@ static MOUSE_INIT: AtomicBool = AtomicBool::new(false);
 
 /// Initialise the PS/2 mouse.  Call once during kernel boot.
 pub fn init() {
-    unsafe { PS2_MOUSE_INNER.init(); }
+    unsafe {
+        PS2_MOUSE_INNER.init();
+    }
     MOUSE_INIT.store(true, Ordering::Release);
 }
 
@@ -385,11 +445,17 @@ pub fn init() {
 /// # Safety
 /// Must only be called from an interrupt handler on the CPU that owns IRQ12.
 pub unsafe fn handle_irq() {
-    if !MOUSE_INIT.load(Ordering::Acquire) { return; }
+    if !MOUSE_INIT.load(Ordering::Acquire) {
+        return;
+    }
 
     let status = inb(KBD_STATUS);
-    if status & 0x01 == 0 { return; }          // no data
-    if status & 0x20 == 0 { return; }          // data is from keyboard, not mouse
+    if status & 0x01 == 0 {
+        return;
+    } // no data
+    if status & 0x20 == 0 {
+        return;
+    } // data is from keyboard, not mouse
 
     let byte = inb(KBD_DATA);
     PS2_MOUSE_INNER.handle_byte(byte);

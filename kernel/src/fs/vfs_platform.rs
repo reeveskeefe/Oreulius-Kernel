@@ -85,11 +85,7 @@ pub fn destroy_process(pid: Pid) -> Result<(), &'static str> {
 #[inline]
 pub fn process_fd_stats() -> (usize, usize, Pid) {
     let (proc_count, fd_count, current) = crate::process::runtime_fd_stats();
-    (
-        proc_count,
-        fd_count,
-        current.unwrap_or(Pid::new(1)),
-    )
+    (proc_count, fd_count, current.unwrap_or(Pid::new(1)))
 }
 
 // ---------------------------------------------------------------------------

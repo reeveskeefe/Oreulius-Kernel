@@ -20,7 +20,10 @@ pub struct DisplayDamage {
 impl DisplayDamage {
     pub const fn new() -> Self {
         DisplayDamage {
-            rects: [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None],
+            rects: [
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None,
+            ],
             len: 0,
         }
     }
@@ -33,8 +36,10 @@ impl DisplayDamage {
     }
 
     pub fn clear(&mut self) {
-        self.rects = [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None];
+        self.rects = [
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            None, None,
+        ];
         self.len = 0;
     }
 }
-

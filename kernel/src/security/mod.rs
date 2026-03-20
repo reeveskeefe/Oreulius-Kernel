@@ -875,8 +875,14 @@ impl SecurityManager {
                 let score_bytes = (score as u32).to_le_bytes();
                 #[cfg(not(target_arch = "aarch64"))]
                 let payload = [
-                    pid_bytes[0], pid_bytes[1], pid_bytes[2], pid_bytes[3],
-                    score_bytes[0], score_bytes[1], score_bytes[2], score_bytes[3],
+                    pid_bytes[0],
+                    pid_bytes[1],
+                    pid_bytes[2],
+                    pid_bytes[3],
+                    score_bytes[0],
+                    score_bytes[1],
+                    score_bytes[2],
+                    score_bytes[3],
                 ];
                 #[cfg(not(target_arch = "aarch64"))]
                 crate::wasm::observer_notify(

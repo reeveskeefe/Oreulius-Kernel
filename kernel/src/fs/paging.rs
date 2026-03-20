@@ -975,7 +975,10 @@ impl AddressSpace {
 
     /// Activate this address space (load into CR3)
     pub unsafe fn activate(&self) {
-        load_page_directory(self.phys_addr as u32);
+        let phys_addr = PhysAddr::new(self.phys_addr)
+            .try_as_u32()
+            .expect("page directory exceeds u32");
+        load_page_directory(phys_addr);
     }
 
     /// Flush TLB for a single page (uses assembly implementation)
@@ -1188,7 +1191,9 @@ pub fn kernel_space() -> &'static Mutex<Option<AddressSpace>> {
 /// Get the kernel page directory physical address (CR3).
 pub fn kernel_page_directory_addr() -> Option<u32> {
     let guard = KERNEL_ADDRESS_SPACE.lock();
-    guard.as_ref().map(|space| space.phys_addr() as u32)
+    guard
+        .as_ref()
+        .and_then(|space| PhysAddr::new(space.phys_addr()).try_as_u32().ok())
 }
 
 /// Set writable flag for a range of kernel-mapped pages.
@@ -1392,7 +1397,7 @@ pub extern "C" fn rust_copy_page_table(parent_pid_raw: u32, child_pid_raw: u32) 
     // 1. Get Parent PD (Physical Address)
     // If parent has no PD recorded (e.g. init), use current CR3
     let parent_pd_phys = match pm.get_process_page_dir(parent_pid) {
-        Some(addr) if addr != PhysAddr::new(0) => addr.as_usize(),
+        Some(addr) if !addr.is_zero() => addr.as_usize(),
         _ => unsafe { get_page_directory() as usize },
     };
 

@@ -41,11 +41,11 @@ pub mod wifi;
 
 extern crate alloc;
 
+#[cfg(not(target_arch = "aarch64"))]
+use self::wifi::{WifiNetwork, WifiState};
 use crate::ipc::ProcessId;
 #[cfg(not(target_arch = "aarch64"))]
 use crate::pci::PciDevice;
-#[cfg(not(target_arch = "aarch64"))]
-use self::wifi::{WifiNetwork, WifiState};
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -426,8 +426,13 @@ impl NetworkService {
         // Resolve hostname
         let ip = self.dns_resolve(host)?;
 
-        crate::serial_println!("[HTTP] Resolved to {}.{}.{}.{}",
-            ip.octets()[0], ip.octets()[1], ip.octets()[2], ip.octets()[3]);
+        crate::serial_println!(
+            "[HTTP] Resolved to {}.{}.{}.{}",
+            ip.octets()[0],
+            ip.octets()[1],
+            ip.octets()[2],
+            ip.octets()[3]
+        );
 
         // Create TCP connection
         let conn_id = self.tcp_connect(ip, port)?;
@@ -464,8 +469,14 @@ impl NetworkService {
         self.tcp_count += 1;
         self.next_conn_id = self.next_conn_id.max(conn_id.saturating_add(1));
 
-        crate::serial_println!("[TCP] Connected to {}.{}.{}.{}:{}",
-            ip.octets()[0], ip.octets()[1], ip.octets()[2], ip.octets()[3], port);
+        crate::serial_println!(
+            "[TCP] Connected to {}.{}.{}.{}:{}",
+            ip.octets()[0],
+            ip.octets()[1],
+            ip.octets()[2],
+            ip.octets()[3],
+            port
+        );
 
         self.record_temporal_state_snapshot();
         Ok(conn_id)
@@ -653,7 +664,10 @@ impl NetworkService {
                 .map_err(|_| NetworkError::SendFailed)
         }
         #[cfg(target_arch = "aarch64")]
-        { let _ = frame_len; Err(NetworkError::SendFailed) }
+        {
+            let _ = frame_len;
+            Err(NetworkError::SendFailed)
+        }
     }
 
     /// Receive and parse HTTP response
@@ -1476,5 +1490,3 @@ fn decode_chunked_body_in_place(body: &mut [u8], src_len: usize) -> Result<usize
     }
     Ok(dst)
 }
-
-

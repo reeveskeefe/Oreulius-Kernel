@@ -44,12 +44,12 @@ pub mod types;
 // ---------------------------------------------------------------------------
 
 pub use protocol::{
-    BrowserError, BrowserEvent, BrowserRequest, BrowserResponse,
-    FetchErrorKind, PolicyBlockReason, ResponseHeader, TlsHandshakeResult,
+    BrowserError, BrowserEvent, BrowserRequest, BrowserResponse, FetchErrorKind, PolicyBlockReason,
+    ResponseHeader, TlsHandshakeResult,
 };
 pub use types::{
-    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, MimeType, Origin,
-    RequestId, Scheme, StatusCode, Url,
+    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, MimeType, Origin, RequestId, Scheme,
+    StatusCode, Url,
 };
 
 // ---------------------------------------------------------------------------

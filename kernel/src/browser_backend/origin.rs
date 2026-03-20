@@ -33,8 +33,8 @@ pub struct OriginPolicy {
     pub allow_cross_origin: bool,
     /// Allowlisted origins — subresource loads to non-listed origins are
     /// blocked regardless of `allow_cross_origin`.
-    pub allowlist:      [Origin; MAX_ORIGIN_ALLOWLIST],
-    pub allowlist_len:  usize,
+    pub allowlist: [Origin; MAX_ORIGIN_ALLOWLIST],
+    pub allowlist_len: usize,
 }
 
 impl OriginPolicy {
@@ -104,7 +104,9 @@ pub fn classify(context: &Origin, target: &Origin) -> OriginClassification {
 /// regardless of port.  We approximate this as: same scheme + same host
 /// (the last two hostname labels).
 fn same_site(a: &Origin, b: &Origin) -> bool {
-    if a.scheme != b.scheme { return false; }
+    if a.scheme != b.scheme {
+        return false;
+    }
     let a_host = &a.host[..a.host_len];
     let b_host = &b.host[..b.host_len];
     registrable_domain(a_host) == registrable_domain(b_host)
@@ -166,11 +168,7 @@ pub fn check_subresource(policy: &OriginPolicy, resource_url: &Url) -> OriginChe
     check_origin(policy, &target_origin, /* is_top_level */ false)
 }
 
-fn check_origin(
-    policy: &OriginPolicy,
-    target: &Origin,
-    is_top_level: bool,
-) -> OriginCheckResult {
+fn check_origin(policy: &OriginPolicy, target: &Origin, is_top_level: bool) -> OriginCheckResult {
     if target.is_opaque() {
         return OriginCheckResult::BlockedOpaque;
     }
@@ -196,22 +194,22 @@ fn check_origin(
 /// The kernel service (`service.rs`) holds one instance; checked on every
 /// `Navigate` and subresource dispatch.
 pub struct OriginTable {
-    entries:  [OriginEntry; MAX_SESSION_ORIGINS],
-    count:    usize,
+    entries: [OriginEntry; MAX_SESSION_ORIGINS],
+    count: usize,
 }
 
 #[derive(Copy, Clone)]
 struct OriginEntry {
     session: BrowserSessionId,
-    policy:  OriginPolicy,
-    active:  bool,
+    policy: OriginPolicy,
+    active: bool,
 }
 
 impl OriginEntry {
     const EMPTY: Self = Self {
         session: BrowserSessionId(0),
-        policy:  OriginPolicy::same_origin_only(Origin::OPAQUE),
-        active:  false,
+        policy: OriginPolicy::same_origin_only(Origin::OPAQUE),
+        active: false,
     };
 }
 
@@ -226,13 +224,15 @@ impl OriginTable {
     /// Register a new session with an initial policy.
     /// Returns `false` if the table is full.
     pub fn register(&mut self, session: BrowserSessionId, policy: OriginPolicy) -> bool {
-        if self.count >= MAX_SESSION_ORIGINS { return false; }
+        if self.count >= MAX_SESSION_ORIGINS {
+            return false;
+        }
         // Reuse a free slot first.
         for e in &mut self.entries {
             if !e.active {
                 e.session = session;
-                e.policy  = policy;
-                e.active  = true;
+                e.policy = policy;
+                e.active = true;
                 self.count += 1;
                 return true;
             }
@@ -274,24 +274,24 @@ impl OriginTable {
     /// Check a navigation for `session`.
     pub fn check_navigation(
         &self,
-        session:    BrowserSessionId,
+        session: BrowserSessionId,
         target_url: &Url,
     ) -> OriginCheckResult {
         match self.policy(session) {
             Some(p) => check_navigation(p, target_url),
-            None    => OriginCheckResult::Allowed, // session not yet registered
+            None => OriginCheckResult::Allowed, // session not yet registered
         }
     }
 
     /// Check a subresource for `session`.
     pub fn check_subresource(
         &self,
-        session:      BrowserSessionId,
+        session: BrowserSessionId,
         resource_url: &Url,
     ) -> OriginCheckResult {
         match self.policy(session) {
             Some(p) => check_subresource(p, resource_url),
-            None    => OriginCheckResult::Allowed,
+            None => OriginCheckResult::Allowed,
         }
     }
 }

@@ -52,7 +52,9 @@ pub mod tests;
 
 pub use caps::{GpuCapabilities, GpuEngineMask};
 pub use core::{GpuClass, GpuProbeReport, GpuTier};
-pub use display::scanout::{active_present_target, with_active_scanout, PresentTarget, ScanoutBackendId, ScanoutDevice};
+pub use display::scanout::{
+    active_present_target, with_active_scanout, PresentTarget, ScanoutBackendId, ScanoutDevice,
+};
 pub use drivers::simplefb::{with_framebuffer, GpuFramebuffer, VesaMode, GPU_FB};
 pub use engines::packets::{CommandPacket, ComputePacket, TransferPacket};
 pub use errors::GpuError;

@@ -19,7 +19,7 @@ use spin::Mutex;
 // Constants
 // ---------------------------------------------------------------------------
 
-pub const MAX_IOMMU_DOMAINS:  usize = 16;
+pub const MAX_IOMMU_DOMAINS: usize = 16;
 pub const MAX_IOMMU_BINDINGS: usize = 64; // per-table
 
 // ---------------------------------------------------------------------------
@@ -31,22 +31,22 @@ pub struct IommuBinding {
     /// Identifier of the domain this binding lives in.
     pub domain_id: u32,
     /// Buffer Object identifier (matches `BufferObject::object_id`).
-    pub bo_id:     u64,
+    pub bo_id: u64,
     /// Physical base address of the mapped region.
     pub phys_base: u64,
     /// Length of the mapped region in bytes.
-    pub size:      usize,
+    pub size: usize,
     /// Binding is live.
-    pub enabled:   bool,
+    pub enabled: bool,
 }
 
 impl IommuBinding {
     const EMPTY: Self = IommuBinding {
         domain_id: 0,
-        bo_id:     0,
+        bo_id: 0,
         phys_base: 0,
-        size:      0,
-        enabled:   false,
+        size: 0,
+        enabled: false,
     };
 }
 
@@ -57,11 +57,14 @@ impl IommuBinding {
 #[derive(Debug, Clone, Copy)]
 struct IommuDomain {
     domain_id: u32,
-    active:    bool,
+    active: bool,
 }
 
 impl IommuDomain {
-    const EMPTY: Self = IommuDomain { domain_id: 0, active: false };
+    const EMPTY: Self = IommuDomain {
+        domain_id: 0,
+        active: false,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -69,18 +72,18 @@ impl IommuDomain {
 // ---------------------------------------------------------------------------
 
 struct IommuTable {
-    domains:  [IommuDomain; MAX_IOMMU_DOMAINS],
+    domains: [IommuDomain; MAX_IOMMU_DOMAINS],
     bindings: [IommuBinding; MAX_IOMMU_BINDINGS],
-    n_domains:  usize,
+    n_domains: usize,
     n_bindings: usize,
 }
 
 impl IommuTable {
     const fn new() -> Self {
         IommuTable {
-            domains:    [IommuDomain::EMPTY; MAX_IOMMU_DOMAINS],
-            bindings:   [IommuBinding::EMPTY; MAX_IOMMU_BINDINGS],
-            n_domains:  0,
+            domains: [IommuDomain::EMPTY; MAX_IOMMU_DOMAINS],
+            bindings: [IommuBinding::EMPTY; MAX_IOMMU_BINDINGS],
+            n_domains: 0,
             n_bindings: 0,
         }
     }
@@ -91,7 +94,11 @@ impl IommuTable {
 
     fn create_domain(&mut self, domain_id: u32) -> bool {
         // Idempotent — already exists?
-        if self.domains.iter().any(|d| d.active && d.domain_id == domain_id) {
+        if self
+            .domains
+            .iter()
+            .any(|d| d.active && d.domain_id == domain_id)
+        {
             return true;
         }
         if self.n_domains >= MAX_IOMMU_DOMAINS {
@@ -100,7 +107,7 @@ impl IommuTable {
         for slot in self.domains.iter_mut() {
             if !slot.active {
                 slot.domain_id = domain_id;
-                slot.active    = true;
+                slot.active = true;
                 self.n_domains += 1;
                 return true;
             }
@@ -113,13 +120,17 @@ impl IommuTable {
         for b in self.bindings.iter_mut() {
             if b.enabled && b.domain_id == domain_id {
                 b.enabled = false;
-                if self.n_bindings > 0 { self.n_bindings -= 1; }
+                if self.n_bindings > 0 {
+                    self.n_bindings -= 1;
+                }
             }
         }
         for d in self.domains.iter_mut() {
             if d.active && d.domain_id == domain_id {
                 d.active = false;
-                if self.n_domains > 0 { self.n_domains -= 1; }
+                if self.n_domains > 0 {
+                    self.n_domains -= 1;
+                }
                 return;
             }
         }
@@ -129,22 +140,20 @@ impl IommuTable {
     // Binding management
     // ------------------------------------------------------------------
 
-    fn bind(
-        &mut self,
-        domain_id: u32,
-        bo_id:     u64,
-        phys_base: u64,
-        size:      usize,
-    ) -> bool {
+    fn bind(&mut self, domain_id: u32, bo_id: u64, phys_base: u64, size: usize) -> bool {
         // Refuse to bind into non-existent domain.
-        if !self.domains.iter().any(|d| d.active && d.domain_id == domain_id) {
+        if !self
+            .domains
+            .iter()
+            .any(|d| d.active && d.domain_id == domain_id)
+        {
             return false;
         }
         // Already bound — update in place.
         for b in self.bindings.iter_mut() {
             if b.enabled && b.domain_id == domain_id && b.bo_id == bo_id {
                 b.phys_base = phys_base;
-                b.size      = size;
+                b.size = size;
                 return true;
             }
         }
@@ -154,10 +163,10 @@ impl IommuTable {
         for slot in self.bindings.iter_mut() {
             if !slot.enabled {
                 slot.domain_id = domain_id;
-                slot.bo_id     = bo_id;
+                slot.bo_id = bo_id;
                 slot.phys_base = phys_base;
-                slot.size      = size;
-                slot.enabled   = true;
+                slot.size = size;
+                slot.enabled = true;
                 self.n_bindings += 1;
                 return true;
             }
@@ -169,7 +178,9 @@ impl IommuTable {
         for b in self.bindings.iter_mut() {
             if b.enabled && b.domain_id == domain_id && b.bo_id == bo_id {
                 b.enabled = false;
-                if self.n_bindings > 0 { self.n_bindings -= 1; }
+                if self.n_bindings > 0 {
+                    self.n_bindings -= 1;
+                }
                 return;
             }
         }
@@ -178,7 +189,9 @@ impl IommuTable {
     /// Returns `true` if `phys_addr` falls inside any binding for `domain_id`.
     fn validate_access(&self, domain_id: u32, phys_addr: u64) -> bool {
         for b in self.bindings.iter() {
-            if !b.enabled || b.domain_id != domain_id { continue; }
+            if !b.enabled || b.domain_id != domain_id {
+                continue;
+            }
             let end = b.phys_base.saturating_add(b.size as u64);
             if phys_addr >= b.phys_base && phys_addr < end {
                 return true;
@@ -189,13 +202,18 @@ impl IommuTable {
 
     /// Returns the binding for `(domain_id, bo_id)` if live.
     fn get_binding(&self, domain_id: u32, bo_id: u64) -> Option<IommuBinding> {
-        self.bindings.iter().find(|b| {
-            b.enabled && b.domain_id == domain_id && b.bo_id == bo_id
-        }).copied()
+        self.bindings
+            .iter()
+            .find(|b| b.enabled && b.domain_id == domain_id && b.bo_id == bo_id)
+            .copied()
     }
 
-    fn binding_count(&self) -> usize { self.n_bindings }
-    fn domain_count(&self)  -> usize { self.n_domains  }
+    fn binding_count(&self) -> usize {
+        self.n_bindings
+    }
+    fn domain_count(&self) -> usize {
+        self.n_domains
+    }
 }
 
 static IOMMU_TABLE: Mutex<IommuTable> = Mutex::new(IommuTable::new());
@@ -245,5 +263,3 @@ pub fn binding_count() -> usize {
 pub fn domain_count() -> usize {
     IOMMU_TABLE.lock().domain_count()
 }
-
-

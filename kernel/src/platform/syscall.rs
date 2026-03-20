@@ -302,11 +302,11 @@ fn sys_exit(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
     // Log the exit
     #[cfg(not(target_arch = "aarch64"))]
     {
-    vga::print_str("[SYSCALL] Process ");
-    crate::commands::print_u32(caller_pid.0);
-    vga::print_str(" exiting with code ");
-    crate::commands::print_u32(exit_code as u32);
-    vga::print_str("\n");
+        vga::print_str("[SYSCALL] Process ");
+        crate::commands::print_u32(caller_pid.0);
+        vga::print_str(" exiting with code ");
+        crate::commands::print_u32(exit_code as u32);
+        vga::print_str("\n");
     }
 
     // Remove process from process/security/capability subsystems.
@@ -328,9 +328,9 @@ fn sys_fork(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-    vga::print_str("[SYSCALL] Fork requested by PID ");
-    crate::commands::print_u32(caller_pid.0);
-    vga::print_str("\n");
+        vga::print_str("[SYSCALL] Fork requested by PID ");
+        crate::commands::print_u32(caller_pid.0);
+        vga::print_str("\n");
     }
 
     let mut scheduler = crate::quantum_scheduler::scheduler().lock();
@@ -338,9 +338,9 @@ fn sys_fork(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
         Ok(child_pid) => {
             #[cfg(not(target_arch = "aarch64"))]
             {
-            vga::print_str("[SYSCALL] Fork successful, child PID=");
-            crate::commands::print_u32(child_pid.0);
-            vga::print_str("\n");
+                vga::print_str("[SYSCALL] Fork successful, child PID=");
+                crate::commands::print_u32(child_pid.0);
+                vga::print_str("\n");
             }
             SyscallResult::ok(child_pid.0 as i32)
         }
@@ -488,9 +488,9 @@ fn sys_channel_create(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
         Ok(channel_id) => {
             #[cfg(not(target_arch = "aarch64"))]
             {
-            vga::print_str("[SYSCALL] Created channel ID=");
-            crate::commands::print_u32(channel_id as u32);
-            vga::print_str("\n");
+                vga::print_str("[SYSCALL] Created channel ID=");
+                crate::commands::print_u32(channel_id as u32);
+                vga::print_str("\n");
             }
             SyscallResult::ok(channel_id as i32)
         }
@@ -1836,7 +1836,10 @@ pub fn init() {
     #[cfg(target_arch = "x86_64")]
     {
         let handler_addr = syscall_entry as usize;
-        crate::serial_println!("[SYSCALL] Registered x86_64 INT 0x80 handler at 0x{:016X}", handler_addr);
+        crate::serial_println!(
+            "[SYSCALL] Registered x86_64 INT 0x80 handler at 0x{:016X}",
+            handler_addr
+        );
         vga::print_str("[SYSCALL] x86_64 INT 0x80 dispatch enabled\n");
     }
 

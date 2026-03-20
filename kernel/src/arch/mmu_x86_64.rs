@@ -541,7 +541,9 @@ impl AddressSpace {
             let child_pml4 = X86_64Mmu::pml4_ptr_from_root(child_root);
             let user_top = crate::paging::USER_TOP;
             if user_top == 0 {
-                return Ok(Self { cr3_phys: child_root });
+                return Ok(Self {
+                    cr3_phys: child_root,
+                });
             }
 
             let user_end = user_top.saturating_sub(1);
@@ -627,8 +629,8 @@ impl AddressSpace {
                             child_pt_phys as *mut u8,
                             PAGE_SIZE,
                         );
-                        let child_pde =
-                            (parent_pde & !PTE_ADDR_MASK) | ((child_pt_phys as u64) & PTE_ADDR_MASK);
+                        let child_pde = (parent_pde & !PTE_ADDR_MASK)
+                            | ((child_pt_phys as u64) & PTE_ADDR_MASK);
                         ptr::write_volatile(child_pd.add(pde_idx), child_pde);
 
                         let parent_pt = parent_pt_phys as *mut u64;
@@ -662,7 +664,9 @@ impl AddressSpace {
             MMU.flush_tlb_all();
         }
 
-        Ok(Self { cr3_phys: child_root })
+        Ok(Self {
+            cr3_phys: child_root,
+        })
     }
 
     pub fn page_table_root_addr(&self) -> usize {

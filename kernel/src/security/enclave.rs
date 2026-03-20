@@ -153,7 +153,7 @@ struct EnclaveSession {
     data_len: usize,
     mem_phys: usize,
     mem_len: usize,
-    backend_cookie: u64,   // SGX: TCS linear address (full 64-bit); TrustZone: SMC handle
+    backend_cookie: u64, // SGX: TCS linear address (full 64-bit); TrustZone: SMC handle
     epc_base: usize,
     epc_pages: usize,
     launch_token_mac: u64,
@@ -484,9 +484,13 @@ impl EpcManager {
                         // the kernel runs with a 1:1 map).
                         self.base = epc_pa;
                         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                        { self.virt_base = epc_phys_to_virt(epc_pa); }
+                        {
+                            self.virt_base = epc_phys_to_virt(epc_pa);
+                        }
                         #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-                        { self.virt_base = epc_pa; }
+                        {
+                            self.virt_base = epc_pa;
+                        }
                         self.pages = EPC_POOL_PAGES.min(epc_size / PAGE_SIZE);
                         return Ok(());
                     }
@@ -967,17 +971,18 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
             )
         } else {
             (
-                temporal_read_u32(payload, offset + 16).ok_or("temporal enclave cookie missing")? as u64,
+                temporal_read_u32(payload, offset + 16).ok_or("temporal enclave cookie missing")?
+                    as u64,
                 4usize,
             )
         };
         let base_off = 16 + cookie_stride; // offset of launch_token_mac
-        let launch_token_mac =
-            temporal_read_u64(payload, offset + base_off).ok_or("temporal enclave launch mac missing")?;
+        let launch_token_mac = temporal_read_u64(payload, offset + base_off)
+            .ok_or("temporal enclave launch mac missing")?;
         let launch_nonce = temporal_read_u32(payload, offset + base_off + 8)
             .ok_or("temporal enclave launch nonce missing")?;
-        let runtime_key_handle =
-            temporal_read_u32(payload, offset + base_off + 12).ok_or("temporal enclave key handle missing")?;
+        let runtime_key_handle = temporal_read_u32(payload, offset + base_off + 12)
+            .ok_or("temporal enclave key handle missing")?;
         let remote_verifier_id = temporal_read_u32(payload, offset + base_off + 16)
             .ok_or("temporal enclave verifier id missing")?;
         let remote_quote_nonce = temporal_read_u64(payload, offset + base_off + 20)
@@ -986,8 +991,8 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
             .ok_or("temporal enclave attest issued missing")?;
         let remote_attest_expires_epoch = temporal_read_u32(payload, offset + base_off + 32)
             .ok_or("temporal enclave attest expires missing")?;
-        let remote_attest_mac =
-            temporal_read_u64(payload, offset + base_off + 36).ok_or("temporal enclave attest mac missing")?;
+        let remote_attest_mac = temporal_read_u64(payload, offset + base_off + 36)
+            .ok_or("temporal enclave attest mac missing")?;
         let (code_phys, code_len, data_phys, data_len, mem_phys, mem_len, epc_base, epc_pages) =
             if schema == TEMPORAL_ENCLAVE_SCHEMA_V2 || schema == TEMPORAL_ENCLAVE_SCHEMA_V3 {
                 // Physical address block follows launch fields.
@@ -1322,11 +1327,11 @@ pub fn temporal_active_session_reentry_self_check() -> Result<(), &'static str> 
     probe[session_off..session_off + 4].copy_from_slice(&requested_active_session.to_le_bytes());
     probe[session_off + 4] = EnclaveState::Initialized as u8;
     probe[session_off + 68..session_off + 72].copy_from_slice(&0x0010_0000u32.to_le_bytes()); // code_phys
-    probe[session_off + 72..session_off + 76].copy_from_slice(&16u32.to_le_bytes());          // code_len
+    probe[session_off + 72..session_off + 76].copy_from_slice(&16u32.to_le_bytes()); // code_len
     probe[session_off + 76..session_off + 80].copy_from_slice(&0x0011_0000u32.to_le_bytes()); // data_phys
-    probe[session_off + 80..session_off + 84].copy_from_slice(&16u32.to_le_bytes());          // data_len
+    probe[session_off + 80..session_off + 84].copy_from_slice(&16u32.to_le_bytes()); // data_len
     probe[session_off + 84..session_off + 88].copy_from_slice(&0x0012_0000u32.to_le_bytes()); // mem_phys
-    probe[session_off + 88..session_off + 92].copy_from_slice(&16u32.to_le_bytes());          // mem_len
+    probe[session_off + 88..session_off + 92].copy_from_slice(&16u32.to_le_bytes()); // mem_len
 
     let result = (|| -> Result<(), &'static str> {
         temporal_apply_enclave_state_payload(&probe)
@@ -2426,12 +2431,7 @@ pub fn init() {
         // bit 0 (lock) is NOT yet set.
         if (fctrl & FEAT_CTRL_SGX_LC_ENABLE) != 0 && (fctrl & FEAT_CTRL_LOCK_BIT) == 0 {
             unsafe {
-                sgx_write_sgxlepubkeyhash(
-                    flc_hash[0],
-                    flc_hash[1],
-                    flc_hash[2],
-                    flc_hash[3],
-                );
+                sgx_write_sgxlepubkeyhash(flc_hash[0], flc_hash[1], flc_hash[2], flc_hash[3]);
             }
             crate::vga::print_str("[ENCLAVE] FLC: launch key hash written\n");
         } else {
@@ -2785,44 +2785,44 @@ extern "C" {
 
 // ---- ENCLS leaf numbers (Intel SDM Vol 3D Table 38-3) ----
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const SGX_ENCLS_ECREATE: u32 = 0x0;   // Create SECS
+const SGX_ENCLS_ECREATE: u32 = 0x0; // Create SECS
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const SGX_ENCLS_EADD: u32 = 0x1;      // Add a page to an uninitialized enclave
+const SGX_ENCLS_EADD: u32 = 0x1; // Add a page to an uninitialized enclave
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const SGX_ENCLS_EINIT: u32 = 0x2;     // Initialize enclave; verify SIGSTRUCT
+const SGX_ENCLS_EINIT: u32 = 0x2; // Initialize enclave; verify SIGSTRUCT
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const SGX_ENCLS_EREMOVE: u32 = 0x3;   // Remove page from EPC and return to OS
+const SGX_ENCLS_EREMOVE: u32 = 0x3; // Remove page from EPC and return to OS
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const SGX_ENCLS_EDBGRD: u32 = 0x4;    // Debug read of EPC page (DEBUG enclaves only)
+const SGX_ENCLS_EDBGRD: u32 = 0x4; // Debug read of EPC page (DEBUG enclaves only)
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const SGX_ENCLS_EDBGWR: u32 = 0x5;    // Debug write of EPC page (DEBUG enclaves only)
+const SGX_ENCLS_EDBGWR: u32 = 0x5; // Debug write of EPC page (DEBUG enclaves only)
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const SGX_ENCLS_EEXTEND: u32 = 0x6;   // Extend enclave measurement by 256 bytes
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[allow(dead_code)]
-const SGX_ENCLS_ELDU: u32 = 0x8;      // Load an EPC page as unblocked (paging)
-// ---- ENCLU leaf numbers (Intel SDM Vol 3D Table 38-4) ----
+const SGX_ENCLS_EEXTEND: u32 = 0x6; // Extend enclave measurement by 256 bytes
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(dead_code)]
-const SGX_ENCLU_EREPORT: u32 = 0x0;   // Create attestation report
+const SGX_ENCLS_ELDU: u32 = 0x8; // Load an EPC page as unblocked (paging)
+                                 // ---- ENCLU leaf numbers (Intel SDM Vol 3D Table 38-4) ----
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(dead_code)]
-const SGX_ENCLU_EGETKEY: u32 = 0x1;   // Retrieve a sealing or attestation key
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const SGX_ENCLU_EENTER: u32 = 0x2;    // Enter enclave from OS
+const SGX_ENCLU_EREPORT: u32 = 0x0; // Create attestation report
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(dead_code)]
-const SGX_ENCLU_ERESUME: u32 = 0x3;   // Re-enter enclave after AEX
+const SGX_ENCLU_EGETKEY: u32 = 0x1; // Retrieve a sealing or attestation key
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+const SGX_ENCLU_EENTER: u32 = 0x2; // Enter enclave from OS
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(dead_code)]
-const SGX_ENCLU_EEXIT: u32 = 0x4;     // Exit enclave (called from enclave code)
+const SGX_ENCLU_ERESUME: u32 = 0x3; // Re-enter enclave after AEX
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(dead_code)]
-const SGX_ENCLU_EACCEPT: u32 = 0x5;   // SGX2: accept EPC page changes
+const SGX_ENCLU_EEXIT: u32 = 0x4; // Exit enclave (called from enclave code)
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(dead_code)]
-const SGX_ENCLU_EMODPE: u32 = 0x6;    // SGX2: extend page permissions
-// ---- FLC: Flexible Launch Control MSR numbers ----
+const SGX_ENCLU_EACCEPT: u32 = 0x5; // SGX2: accept EPC page changes
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(dead_code)]
+const SGX_ENCLU_EMODPE: u32 = 0x6; // SGX2: extend page permissions
+                                   // ---- FLC: Flexible Launch Control MSR numbers ----
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(dead_code)]
 const MSR_IA32_FEATURE_CONTROL: u32 = 0x3A;
@@ -2929,7 +2929,7 @@ struct SgxSigstruct {
     /// Bytes 1052..1435: RSA-3072 q1 verification value
     q1: [u8; 384],
     /// Bytes 1436..1819: RSA-3072 q2 verification value (total = 1808 bytes)
-    q2: [u8; 372],  // 1808 - 1436 = 372
+    q2: [u8; 372], // 1808 - 1436 = 372
 }
 
 const _SIGSTRUCT_SIZE_CHECK: () = {
@@ -2940,13 +2940,11 @@ const _SIGSTRUCT_SIZE_CHECK: () = {
 
 // Canonical SIGSTRUCT header magic bytes (SDM Vol 3D Table 38-14).
 const SIGSTRUCT_HEADER1: [u8; 12] = [
-    0x06, 0x00, 0x00, 0x00, 0xE1, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x01, 0x00,
+    0x06, 0x00, 0x00, 0x00, 0xE1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
 ];
 // Second header word (bytes 20..35): fixed by the SDM.
 const SIGSTRUCT_HEADER2: [u8; 16] = [
-    0x01, 0x01, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00,
-    0x60, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x01, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
 ];
 
 // ---------------------------------------------------------------------------
@@ -3058,7 +3056,10 @@ fn derive_flc_launch_key_hash() -> [u64; 4] {
     let mut seed1 = OREULIA_BUILD_KEY_BYTES;
     let mut seed2 = OREULIA_BUILD_KEY_BYTES;
     let mut seed3 = OREULIA_BUILD_KEY_BYTES;
-    seed0[0] ^= 0xA1; seed1[0] ^= 0xB2; seed2[0] ^= 0xC3; seed3[0] ^= 0xD4;
+    seed0[0] ^= 0xA1;
+    seed1[0] ^= 0xB2;
+    seed2[0] ^= 0xC3;
+    seed3[0] ^= 0xD4;
     [
         fnv1a64(&seed0),
         fnv1a64(&seed1),
@@ -3078,7 +3079,12 @@ fn derive_flc_launch_key_hash() -> [u64; 4] {
 // key.  For production the signing tool must fill those fields offline.
 // ---------------------------------------------------------------------------
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn build_sigstruct(ws: &mut SgxWorkspace, measurement: u64, _enclave_base: usize, _enclave_size: usize) {
+fn build_sigstruct(
+    ws: &mut SgxWorkspace,
+    measurement: u64,
+    _enclave_base: usize,
+    _enclave_size: usize,
+) {
     let b = &mut ws.sigstruct.bytes;
     *b = [0u8; PAGE_SIZE];
 
@@ -3270,8 +3276,8 @@ fn sgx_open_session(
 
         ws.pageinfo.linaddr = 0;
         ws.pageinfo.srcpge = ws.secs.bytes.as_ptr() as u64; // source SECS page (unencrypted)
-        ws.pageinfo.secinfo = 0;                              // not used for ECREATE
-        ws.pageinfo.secs = 0;                                 // not used for ECREATE
+        ws.pageinfo.secinfo = 0; // not used for ECREATE
+        ws.pageinfo.secs = 0; // not used for ECREATE
         ws.pageinfo.reserved = [0; 32];
 
         // Build SIGSTRUCT and EINITTOKEN before EINIT.
@@ -3311,14 +3317,14 @@ fn sgx_open_session(
         // OFSBASGX (u64, @0x20): FS base — 0 = no enclave FS override.
         // OGSBASGX (u64, @0x28): GS base — 0 = no enclave GS override.
         ws.tcs.bytes = [0u8; PAGE_SIZE];
-        let ssa_offset = PAGE_SIZE as u64;            // OSSA = 1 page in
-        let entry_offset = (2 * PAGE_SIZE) as u64;    // OENTRY = 2 pages in
-        write_u64_le(&mut ws.tcs.bytes, 0x00, ssa_offset);   // OSSA
-        write_u32_le(&mut ws.tcs.bytes, 0x08, 0u32);          // CSSA = 0
-        write_u32_le(&mut ws.tcs.bytes, 0x0C, 1u32);          // NSSA = 1
-        write_u64_le(&mut ws.tcs.bytes, 0x10, entry_offset);  // OENTRY
-        write_u64_le(&mut ws.tcs.bytes, 0x20, 0u64);           // OFSBASGX
-        write_u64_le(&mut ws.tcs.bytes, 0x28, 0u64);           // OGSBASGX
+        let ssa_offset = PAGE_SIZE as u64; // OSSA = 1 page in
+        let entry_offset = (2 * PAGE_SIZE) as u64; // OENTRY = 2 pages in
+        write_u64_le(&mut ws.tcs.bytes, 0x00, ssa_offset); // OSSA
+        write_u32_le(&mut ws.tcs.bytes, 0x08, 0u32); // CSSA = 0
+        write_u32_le(&mut ws.tcs.bytes, 0x0C, 1u32); // NSSA = 1
+        write_u64_le(&mut ws.tcs.bytes, 0x10, entry_offset); // OENTRY
+        write_u64_le(&mut ws.tcs.bytes, 0x20, 0u64); // OFSBASGX
+        write_u64_le(&mut ws.tcs.bytes, 0x28, 0u64); // OGSBASGX
 
         // Add TCS page at enclave_base + 0*PAGE.
         let tcs_lin = enclave_base;

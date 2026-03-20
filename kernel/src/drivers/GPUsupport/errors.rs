@@ -15,4 +15,3 @@ pub enum GpuError {
     FirmwareInvalid,
     FenceTimeout,
 }
-

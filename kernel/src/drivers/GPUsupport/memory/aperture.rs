@@ -15,4 +15,3 @@ pub struct ApertureMapping {
     pub len: usize,
     pub policy: CachePolicy,
 }
-

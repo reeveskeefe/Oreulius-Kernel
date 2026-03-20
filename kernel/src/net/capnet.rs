@@ -2721,7 +2721,10 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
     match process_incoming_control_payload(&parent_offer.bytes[..parent_offer.len], 10_000) {
         Ok(v) if v.msg_type == CapNetControlType::TokenOffer => {}
         Ok(_) => return Err("Formal CapNet self-check: parent offer wrong control type"),
-        Err(e) => return Err(e.as_str()),
+        Err(e) => {
+            crate::serial_println!("[CAPNET TEST] parent_offer failed: {:?}", e);
+            return Err(e.as_str());
+        }
     }
 
     install_peer_session_key(local, 2, k0, k1, 0).map_err(|e| e.as_str())?;
@@ -2735,7 +2738,10 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
     match process_incoming_control_payload(&child_offer.bytes[..child_offer.len], 10_001) {
         Ok(v) if v.msg_type == CapNetControlType::TokenOffer => {}
         Ok(_) => return Err("Formal CapNet self-check: child offer wrong control type"),
-        Err(e) => return Err(e.as_str()),
+        Err(e) => {
+            crate::serial_println!("[CAPNET TEST] child_offer failed: {:?}", e);
+            return Err(e.as_str());
+        }
     }
 
     install_peer_session_key(local, 3, k0, k1, 0).map_err(|e| e.as_str())?;
@@ -2746,17 +2752,25 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
         build_token_offer_frame(local, 0, &mut escalated).map_err(|e| e.as_str())?;
     match process_incoming_control_payload(&escalated_offer.bytes[..escalated_offer.len], 10_002) {
         Err(CapNetError::DelegationRightsEscalation) => {}
-        Err(e) => return Err(e.as_str()),
+        Err(e) => {
+            crate::serial_println!("[CAPNET TEST] escalated_offer failed: {:?}", e);
+            return Err(e.as_str());
+        }
         Ok(_) => return Err("Formal CapNet self-check: rights escalation accepted"),
     }
 
     install_peer_session_key(local, 4, k0, k1, 0).map_err(|e| e.as_str())?;
     let replay = build_heartbeat_frame(local, 0, false).map_err(|e| e.as_str())?;
-    process_incoming_control_payload(&replay.bytes[..replay.len], 10_003)
-        .map_err(|e| e.as_str())?;
+    if let Err(e) = process_incoming_control_payload(&replay.bytes[..replay.len], 10_003) {
+        crate::serial_println!("[CAPNET TEST] replay frame 10_003 failed: {:?}", e);
+        return Err(e.as_str());
+    }
     match process_incoming_control_payload(&replay.bytes[..replay.len], 10_004) {
         Err(CapNetError::ControlSequenceReplay) => {}
-        Err(e) => return Err(e.as_str()),
+        Err(e) => {
+            crate::serial_println!("[CAPNET TEST] replay frame 10_004 failed: {:?}", e);
+            return Err(e.as_str());
+        }
         Ok(_) => return Err("Formal CapNet self-check: duplicate control sequence accepted"),
     }
 
@@ -2766,7 +2780,10 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
     invalid_temporal.expires_at = 30;
     match invalid_temporal.validate_semantics() {
         Err(CapNetError::InvalidTemporalWindow) => {}
-        Err(e) => return Err(e.as_str()),
+        Err(e) => {
+            crate::serial_println!("[CAPNET TEST] invalid temporal failed: {:?}", e);
+            return Err(e.as_str());
+        }
         Ok(()) => return Err("Formal CapNet self-check: invalid temporal window accepted"),
     }
 
@@ -2775,7 +2792,10 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
     match process_incoming_control_payload(&revoke.bytes[..revoke.len], 10_005) {
         Ok(v) if v.msg_type == CapNetControlType::TokenRevoke => {}
         Ok(_) => return Err("Formal CapNet self-check: revoke wrong control type"),
-        Err(e) => return Err(e.as_str()),
+        Err(e) => {
+            crate::serial_println!("[CAPNET TEST] revoke frame 10_005 failed: {:?}", e);
+            return Err(e.as_str());
+        }
     }
 
     install_peer_session_key(local, 6, k0, k1, 0).map_err(|e| e.as_str())?;
@@ -2786,7 +2806,10 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
         10_006,
     ) {
         Err(CapNetError::RevokedToken) => {}
-        Err(e) => return Err(e.as_str()),
+        Err(e) => {
+            crate::serial_println!("[CAPNET TEST] child_offer_after_revoke failed: {:?}", e);
+            return Err(e.as_str());
+        }
         Ok(_) => return Err("Formal CapNet self-check: revoked delegation accepted"),
     }
 

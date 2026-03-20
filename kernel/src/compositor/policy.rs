@@ -13,11 +13,11 @@ pub const MAX_WINDOWS_PER_SESSION: usize = 8;
 pub const MAX_SURFACES_PER_SESSION: usize = 8;
 
 /// Maximum surface / window dimensions (pixels).
-pub const MAX_WINDOW_WIDTH: u32  = 1920;
+pub const MAX_WINDOW_WIDTH: u32 = 1920;
 pub const MAX_WINDOW_HEIGHT: u32 = 1080;
 
 /// Minimum sensible size (avoids zero-area allocation attempts).
-pub const MIN_WINDOW_WIDTH: u32  = 1;
+pub const MIN_WINDOW_WIDTH: u32 = 1;
 pub const MIN_WINDOW_HEIGHT: u32 = 1;
 
 // ---------------------------------------------------------------------------

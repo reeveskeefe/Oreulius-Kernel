@@ -20,9 +20,9 @@
  * always lives in the table.
  */
 
+use crate::drivers::gpu_support::telemetry::counters;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
-use crate::drivers::gpu_support::telemetry::counters;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -60,7 +60,7 @@ pub enum FenceState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuFence {
-    pub id:    u64,
+    pub id: u64,
     pub state: FenceState,
 }
 
@@ -68,7 +68,10 @@ impl GpuFence {
     /// Allocate a new pending fence and register it in the global table.
     pub fn alloc() -> Self {
         let id = alloc_fence_id();
-        let fence = GpuFence { id, state: FenceState::Pending };
+        let fence = GpuFence {
+            id,
+            state: FenceState::Pending,
+        };
         FENCE_TABLE.lock().register(fence);
         fence
     }
@@ -76,16 +79,25 @@ impl GpuFence {
     /// Construct a pre-signaled fence with the given ID (for testing /
     /// cache-hit paths where work is already complete).
     pub const fn signaled(id: u64) -> Self {
-        GpuFence { id, state: FenceState::Signaled }
+        GpuFence {
+            id,
+            state: FenceState::Signaled,
+        }
     }
 
     // -----------------------------------------------------------------------
     // State queries
     // -----------------------------------------------------------------------
 
-    pub fn is_pending(&self)  -> bool { self.state == FenceState::Pending  }
-    pub fn is_signaled(&self) -> bool { self.state == FenceState::Signaled }
-    pub fn is_error(&self)    -> bool { self.state == FenceState::Error    }
+    pub fn is_pending(&self) -> bool {
+        self.state == FenceState::Pending
+    }
+    pub fn is_signaled(&self) -> bool {
+        self.state == FenceState::Signaled
+    }
+    pub fn is_error(&self) -> bool {
+        self.state == FenceState::Error
+    }
 
     // -----------------------------------------------------------------------
     // Polling — reads current state from the global table
@@ -143,8 +155,8 @@ impl GpuFence {
 // ---------------------------------------------------------------------------
 
 struct FenceEntry {
-    id:     u64,
-    state:  FenceState,
+    id: u64,
+    state: FenceState,
     active: bool,
 }
 
@@ -155,7 +167,11 @@ struct FenceTable {
 
 impl FenceTable {
     const fn new() -> Self {
-        const EMPTY: FenceEntry = FenceEntry { id: 0, state: FenceState::Pending, active: false };
+        const EMPTY: FenceEntry = FenceEntry {
+            id: 0,
+            state: FenceState::Pending,
+            active: false,
+        };
         FenceTable {
             slots: [EMPTY; MAX_LIVE_FENCES],
             count: 0,
@@ -169,8 +185,8 @@ impl FenceTable {
         }
         for slot in self.slots.iter_mut() {
             if !slot.active {
-                slot.id     = fence.id;
-                slot.state  = fence.state;
+                slot.id = fence.id;
+                slot.state = fence.state;
                 slot.active = true;
                 self.count += 1;
                 return;
@@ -213,12 +229,16 @@ impl FenceTable {
         for slot in self.slots.iter_mut() {
             if slot.active && slot.state != FenceState::Pending {
                 slot.active = false;
-                if self.count > 0 { self.count -= 1; }
+                if self.count > 0 {
+                    self.count -= 1;
+                }
             }
         }
     }
 
-    fn live_count(&self) -> usize { self.count }
+    fn live_count(&self) -> usize {
+        self.count
+    }
 }
 
 static FENCE_TABLE: Mutex<FenceTable> = Mutex::new(FenceTable::new());
@@ -238,5 +258,3 @@ pub fn signal_by_id(id: u64) {
 pub fn error_by_id(id: u64) {
     FENCE_TABLE.lock().error(id);
 }
-
-

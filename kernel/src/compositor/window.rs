@@ -148,7 +148,13 @@ impl WindowTable {
     }
 
     /// Resize a window.  The caller must allocate a new surface externally.
-    pub fn resize(&mut self, id: WindowId, width: u32, height: u32, new_surface_idx: usize) -> bool {
+    pub fn resize(
+        &mut self,
+        id: WindowId,
+        width: u32,
+        height: u32,
+        new_surface_idx: usize,
+    ) -> bool {
         match self.find_mut(id) {
             Some(w) => {
                 w.width = width;
@@ -258,7 +264,10 @@ impl WindowTable {
 
     /// Returns true if any window has pending damage.
     pub fn any_dirty(&self) -> bool {
-        self.slots.iter().filter_map(|s| s.as_ref()).any(|w| w.dirty)
+        self.slots
+            .iter()
+            .filter_map(|s| s.as_ref())
+            .any(|w| w.dirty)
     }
 
     /// Clear dirty flag on all windows (called after a full present).

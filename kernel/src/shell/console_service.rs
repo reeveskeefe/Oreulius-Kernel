@@ -192,11 +192,7 @@ pub fn console_write(pid: ProcessId, cap_id: u32, data: &[u8]) -> Result<usize, 
 /// Drains bytes from the keyboard character ring buffer into `buffer`.
 /// Returns the number of bytes copied (may be 0 if no input is pending —
 /// callers should poll rather than block).
-pub fn console_read(
-    pid: ProcessId,
-    cap_id: u32,
-    buffer: &mut [u8],
-) -> Result<usize, ConsoleError> {
+pub fn console_read(pid: ProcessId, cap_id: u32, buffer: &mut [u8]) -> Result<usize, ConsoleError> {
     // Verify capability
     let _object_id = capability_manager()
         .verify_and_get_object(pid, cap_id, CapabilityType::Console, Rights::CONSOLE_READ)
@@ -206,8 +202,11 @@ pub fn console_read(
     let mut count = 0usize;
     while count < buffer.len() {
         match crate::keyboard::poll() {
-            Some(c) => { buffer[count] = c as u8; count += 1; }
-            None    => break,
+            Some(c) => {
+                buffer[count] = c as u8;
+                count += 1;
+            }
+            None => break,
         }
     }
     Ok(count)

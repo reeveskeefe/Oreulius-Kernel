@@ -8,4 +8,3 @@ pub enum CoherencyModel {
     Coherent,
     FlushRequired,
 }
-

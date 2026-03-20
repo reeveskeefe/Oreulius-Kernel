@@ -255,7 +255,9 @@ pub extern "C" fn oreulia_aarch64_vector_dispatch(
         }
 
         if slot_u8 == VectorSlot::LowerElA64Sync as u8 && ec == EC_SVC64 {
-            crate::syscall::aarch64_syscall_from_exception(frame_ptr as *mut crate::syscall::SavedRegisters);
+            crate::syscall::aarch64_syscall_from_exception(
+                frame_ptr as *mut crate::syscall::SavedRegisters,
+            );
             return 4;
         }
 

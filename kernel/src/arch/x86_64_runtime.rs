@@ -53,7 +53,11 @@ unsafe fn job_add(pid: crate::process::Pid, cmd: &[u8]) -> usize {
     } else {
         JOB_TABLE.iter().position(|j| j.is_none()).unwrap_or(0)
     };
-    let mut entry = Job { pid, cmd: [0u8; 64], cmd_len: 0 };
+    let mut entry = Job {
+        pid,
+        cmd: [0u8; 64],
+        cmd_len: 0,
+    };
     let copy_len = cmd.len().min(63);
     entry.cmd[..copy_len].copy_from_slice(&cmd[..copy_len]);
     entry.cmd_len = copy_len;
@@ -105,14 +109,17 @@ pub fn fg_last_job() -> bool {
                 // Use the public scheduler() accessor to avoid accessing the
                 // private QUANTUM_SCHEDULER static directly.
                 {
-                    let _ = crate::quantum_scheduler::scheduler().lock().wake_one(j.pid.0 as usize);
+                    let _ = crate::quantum_scheduler::scheduler()
+                        .lock()
+                        .wake_one(j.pid.0 as usize);
                     // If the process is still Blocked (not on a wait queue),
                     // use the public enqueue_ready_pid free function.
                     let still_blocked = {
                         let sched = crate::quantum_scheduler::scheduler().lock();
-                        sched.get_process_info(j.pid).map(|info| {
-                            info.process.state == crate::process::ProcessState::Blocked
-                        }).unwrap_or(false)
+                        sched
+                            .get_process_info(j.pid)
+                            .map(|info| info.process.state == crate::process::ProcessState::Blocked)
+                            .unwrap_or(false)
                     };
                     if still_blocked {
                         {
@@ -137,7 +144,6 @@ pub fn fg_last_job() -> bool {
     }
     false
 }
-
 
 pub const KERNEL_CS: u16 = 0x08;
 pub const KERNEL_DS: u16 = 0x10;
@@ -2077,11 +2083,10 @@ extern "C" fn idle_scheduler_task() -> ! {
 /// Init WASM binary — a minimal valid WASM module that immediately calls
 /// `proc_exit(0)`.
 static INIT_WASM_BIN: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x09, 0x02, 0x60, 0x01, 0x7f, 0x00,
-    0x60, 0x00, 0x00, 0x02, 0x0b, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x09, 0x70, 0x72, 0x6f, 0x63,
-    0x5f, 0x65, 0x78, 0x69, 0x74, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x07, 0x09, 0x01, 0x06,
-    0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a, 0x07, 0x01, 0x05, 0x00, 0x41, 0x00,
-    0x10, 0x00, 0x0b,
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x09, 0x02, 0x60, 0x01, 0x7f, 0x00, 0x60,
+    0x00, 0x00, 0x02, 0x0b, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x09, 0x70, 0x72, 0x6f, 0x63, 0x5f, 0x65,
+    0x78, 0x69, 0x74, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x07, 0x09, 0x01, 0x06, 0x5f, 0x73, 0x74,
+    0x61, 0x72, 0x74, 0x00, 0x01, 0x0a, 0x07, 0x01, 0x05, 0x00, 0x41, 0x00, 0x10, 0x00, 0x0b,
 ];
 
 extern "C" fn init_wasm_task() -> ! {
@@ -2182,10 +2187,9 @@ fn init_shared_runtime() {
 
 pub fn enter_runtime() -> ! {
     unsafe {
-        let vga = 0xb8000 as *mut u16;
-        *(vga.add(8)) = 0x0E58;
-        *(vga.add(9)) = 0x0E36;
-        *(vga.add(10)) = 0x0E34;
+        crate::early_console_write_cell(8, 0x0E58);
+        crate::early_console_write_cell(9, 0x0E36);
+        crate::early_console_write_cell(10, 0x0E34);
     }
 
     crate::serial_println!("[X64] Early runtime path");
@@ -2214,7 +2218,10 @@ pub fn enter_runtime() -> ! {
         boot_info.boot_loader_name_ptr.unwrap_or(0),
         boot_info.boot_loader_name_str().unwrap_or("<none>")
     );
-    crate::serial_println!("[X64] acpi rsdp={:#018x}", boot_info.acpi_rsdp_ptr.unwrap_or(0));
+    crate::serial_println!(
+        "[X64] acpi rsdp={:#018x}",
+        boot_info.acpi_rsdp_ptr.unwrap_or(0)
+    );
 
     crate::memory::init();
     crate::serial_println!("[X64] heap allocator initialized");
@@ -2274,26 +2281,29 @@ pub fn enter_runtime() -> ! {
     crate::asm_bindings::disable_interrupts();
 
     unsafe {
-        let vga = 0xb8000 as *mut u16;
-        *(vga.add(11)) = 0x0E48;
-        *(vga.add(12)) = 0x0E4C;
-        *(vga.add(13)) = 0x0E53;
-        *(vga.add(14)) = 0x0E48;
+        crate::early_console_write_cell(11, 0x0E48);
+        crate::early_console_write_cell(12, 0x0E4C);
+        crate::early_console_write_cell(13, 0x0E53);
+        crate::early_console_write_cell(14, 0x0E48);
     }
     crate::serial_println!("[X64] Runtime diagnostics complete; starting shared scheduler");
 
     {
         let mut sched = crate::quantum_scheduler::scheduler().lock();
-        if let Err(e) =
-            sched.add_kernel_thread(shell_scheduler_task, crate::process::ProcessPriority::Normal)
-        {
+        if let Err(e) = sched.add_kernel_thread(
+            shell_scheduler_task,
+            crate::process::ProcessPriority::Normal,
+        ) {
             crate::serial_println!("[X64] scheduler add shell task failed: {}", e);
             crate::arch::halt_loop();
         }
         if let Err(e) =
             sched.add_kernel_thread(init_wasm_task, crate::process::ProcessPriority::Low)
         {
-            crate::serial_println!("[X64] scheduler add init-wasm task failed (non-fatal): {}", e);
+            crate::serial_println!(
+                "[X64] scheduler add init-wasm task failed (non-fatal): {}",
+                e
+            );
         }
         if let Err(e) =
             sched.add_kernel_thread(idle_scheduler_task, crate::process::ProcessPriority::Normal)

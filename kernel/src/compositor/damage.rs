@@ -72,7 +72,12 @@ pub struct DamageAccumulator {
 impl DamageAccumulator {
     pub const fn new(screen_w: u32, screen_h: u32) -> Self {
         DamageAccumulator {
-            rects: [DamageRect { x: 0, y: 0, w: 0, h: 0 }; MAX_DAMAGE_RECTS],
+            rects: [DamageRect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+            }; MAX_DAMAGE_RECTS],
             count: 0,
             overflowed: false,
             screen_w,

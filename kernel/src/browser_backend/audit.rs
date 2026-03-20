@@ -21,24 +21,24 @@ pub const AUDIT_LOG_SIZE: usize = 128;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum AuditKind {
-    SessionOpened      = 0,
-    SessionClosed      = 1,
-    NavigateStart      = 2,
-    NavigateCommit     = 3,
-    FetchStart         = 4,
-    FetchComplete      = 5,
-    PolicyBlocked      = 6,
-    TlsEstablished     = 7,
-    TlsFailed          = 8,
-    DownloadOffered    = 9,
-    DownloadComplete   = 10,
-    CookieSet          = 11,
-    CacheHit           = 12,
-    CacheMiss          = 13,
-    RequestAborted     = 14,
-    RedirectFollowed   = 15,
-    ContentFiltered    = 16,
-    InternalError      = 17,
+    SessionOpened = 0,
+    SessionClosed = 1,
+    NavigateStart = 2,
+    NavigateCommit = 3,
+    FetchStart = 4,
+    FetchComplete = 5,
+    PolicyBlocked = 6,
+    TlsEstablished = 7,
+    TlsFailed = 8,
+    DownloadOffered = 9,
+    DownloadComplete = 10,
+    CookieSet = 11,
+    CacheHit = 12,
+    CacheMiss = 13,
+    RequestAborted = 14,
+    RedirectFollowed = 15,
+    ContentFiltered = 16,
+    InternalError = 17,
 }
 
 // ---------------------------------------------------------------------------
@@ -50,41 +50,41 @@ pub enum AuditKind {
 #[repr(C)]
 pub struct AuditEntry {
     /// Monotonic sequence number (wraps at u32::MAX).
-    pub seq:      u32,
+    pub seq: u32,
     /// Which session this event belongs to (0 = kernel / no session).
-    pub session:  BrowserSessionId,
+    pub session: BrowserSessionId,
     /// Which request triggered the event (0 = not applicable).
-    pub request:  RequestId,
-    pub kind:     AuditKind,
+    pub request: RequestId,
+    pub kind: AuditKind,
     /// Free-form 32-byte annotation (ASCII, zero-padded).
-    pub note:     [u8; 32],
+    pub note: [u8; 32],
     /// Spare byte for alignment.
-    _pad:         [u8; 13],
+    _pad: [u8; 13],
 }
 
 impl AuditEntry {
     pub const EMPTY: Self = Self {
-        seq:     0,
+        seq: 0,
         session: BrowserSessionId(0),
         request: RequestId(0),
-        kind:    AuditKind::InternalError,
-        note:    [0u8; 32],
-        _pad:    [0u8; 13],
+        kind: AuditKind::InternalError,
+        note: [0u8; 32],
+        _pad: [0u8; 13],
     };
 
     /// Build an entry with a short ASCII annotation.
     pub fn new(
-        seq:     u32,
+        seq: u32,
         session: BrowserSessionId,
         request: RequestId,
-        kind:    AuditKind,
-        note:    &[u8],
+        kind: AuditKind,
+        note: &[u8],
     ) -> Self {
         let mut entry = Self::EMPTY;
-        entry.seq     = seq;
+        entry.seq = seq;
         entry.session = session;
         entry.request = request;
-        entry.kind    = kind;
+        entry.kind = kind;
         let len = note.len().min(32);
         entry.note[..len].copy_from_slice(&note[..len]);
         entry
@@ -96,9 +96,9 @@ impl AuditEntry {
 // ---------------------------------------------------------------------------
 
 pub struct AuditLog {
-    ring:  [AuditEntry; AUDIT_LOG_SIZE],
-    head:  usize,
-    seq:   u32,
+    ring: [AuditEntry; AUDIT_LOG_SIZE],
+    head: usize,
+    seq: u32,
 }
 
 impl AuditLog {
@@ -106,7 +106,7 @@ impl AuditLog {
         Self {
             ring: [AuditEntry::EMPTY; AUDIT_LOG_SIZE],
             head: 0,
-            seq:  0,
+            seq: 0,
         }
     }
 
@@ -115,10 +115,10 @@ impl AuditLog {
         &mut self,
         session: BrowserSessionId,
         request: RequestId,
-        kind:    AuditKind,
-        note:    &[u8],
+        kind: AuditKind,
+        note: &[u8],
     ) {
-        let seq  = self.seq;
+        let seq = self.seq;
         self.seq = self.seq.wrapping_add(1);
         self.ring[self.head] = AuditEntry::new(seq, session, request, kind, note);
         self.head = (self.head + 1) % AUDIT_LOG_SIZE;
@@ -205,7 +205,7 @@ impl AuditLog {
     /// Iterate entries in insertion order (oldest first).
     pub fn iter(&self) -> impl Iterator<Item = &AuditEntry> {
         let start = self.head;
-        let ring  = &self.ring;
+        let ring = &self.ring;
         (0..AUDIT_LOG_SIZE).map(move |i| &ring[(start + i) % AUDIT_LOG_SIZE])
     }
 

@@ -90,10 +90,10 @@ pub mod pci_class {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsbSpeed {
-    Low,    //   1.5 Mb/s (USB 1.0)
-    Full,   //    12 Mb/s (USB 1.1)
-    High,   //   480 Mb/s (USB 2.0)
-    Super,  //  5000 Mb/s (USB 3.0)
+    Low,     //   1.5 Mb/s (USB 1.0)
+    Full,    //    12 Mb/s (USB 1.1)
+    High,    //   480 Mb/s (USB 2.0)
+    Super,   //  5000 Mb/s (USB 3.0)
     Super20, // 10000 Mb/s (USB 3.1 Gen 2)
 }
 
@@ -104,19 +104,19 @@ pub enum UsbSpeed {
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C, packed)]
 pub struct UsbDeviceDescriptor {
-    pub b_length:            u8,
-    pub b_descriptor_type:   u8,
-    pub bcd_usb:             u16, // BCD-encoded USB version, e.g. 0x0200 = USB 2.0
-    pub b_device_class:      u8,
-    pub b_device_sub_class:  u8,
-    pub b_device_protocol:   u8,
-    pub b_max_packet_size0:  u8,
-    pub id_vendor:           u16,
-    pub id_product:          u16,
-    pub bcd_device:          u16,
-    pub i_manufacturer:      u8,
-    pub i_product:           u8,
-    pub i_serial_number:     u8,
+    pub b_length: u8,
+    pub b_descriptor_type: u8,
+    pub bcd_usb: u16, // BCD-encoded USB version, e.g. 0x0200 = USB 2.0
+    pub b_device_class: u8,
+    pub b_device_sub_class: u8,
+    pub b_device_protocol: u8,
+    pub b_max_packet_size0: u8,
+    pub id_vendor: u16,
+    pub id_product: u16,
+    pub bcd_device: u16,
+    pub i_manufacturer: u8,
+    pub i_product: u8,
+    pub i_serial_number: u8,
     pub b_num_configurations: u8,
 }
 
@@ -162,7 +162,7 @@ impl UsbDeviceDescriptor {
             0xEF => "Miscellaneous",
             0xFE => "Application Specific",
             0xFF => "Vendor Specific",
-            _    => "Unknown",
+            _ => "Unknown",
         }
     }
 }
@@ -215,53 +215,68 @@ impl UsbDevice {
 #[derive(Clone, Copy)]
 pub struct UhciTd {
     /// Link Pointer — physical address of next TD or QH, or 0x0000_0001 (Terminate).
-    pub link:    u32,
+    pub link: u32,
     /// Control and Status dword.
-    pub ctrl:    u32,
+    pub ctrl: u32,
     /// Token dword: MaxLen | DataToggle | EndPt | DevAddr | PID.
-    pub token:   u32,
+    pub token: u32,
     /// Buffer Pointer — physical address of the data buffer.
-    pub buffer:  u32,
+    pub buffer: u32,
     // Software-use (not visible to hardware)
     _sw: [u32; 4],
 }
 
 // TD.link bits
-const TD_LINK_TERM:  u32 = 1 << 0; // Terminate (no next TD/QH)
-const TD_LINK_QH:    u32 = 1 << 1; // Next element is a QH
-const TD_LINK_VF:    u32 = 1 << 2; // Depth-first traversal
+const TD_LINK_TERM: u32 = 1 << 0; // Terminate (no next TD/QH)
+const TD_LINK_QH: u32 = 1 << 1; // Next element is a QH
+const TD_LINK_VF: u32 = 1 << 2; // Depth-first traversal
 
 // TD.ctrl bits
-const TD_CTRL_ACTLEN_MASK: u32 = 0x7FF;        // Actual length (bits 10:0)
-const TD_CTRL_STATUS_MASK: u32 = 0xFF << 16;   // Status byte (bits 23:16)
-const TD_CTRL_ACTIVE:      u32 = 1 << 23;      // Active (HC should process)
-const TD_CTRL_STALLED:     u32 = 1 << 22;      // Stalled by HC
-const TD_CTRL_DBUFERR:     u32 = 1 << 21;      // Data Buffer Error
-const TD_CTRL_BABBLE:      u32 = 1 << 20;      // Babble detected
-const TD_CTRL_NAK:         u32 = 1 << 19;      // NAK received
-const TD_CTRL_CRCTERR:     u32 = 1 << 18;      // CRC/Timeout error
-const TD_CTRL_BITSTUFF:    u32 = 1 << 17;      // Bit Stuff error
-const TD_CTRL_IOC:         u32 = 1 << 24;      // Interrupt on Complete
-const TD_CTRL_ISO:         u32 = 1 << 25;      // Isochronous TD
-const TD_CTRL_LS:          u32 = 1 << 26;      // Low Speed Device
-const TD_CTRL_ERRCNT_MASK: u32 = 3 << 27;      // Error counter (2 bits)
-const TD_CTRL_SPD:         u32 = 1 << 29;      // Short Packet Detect
+const TD_CTRL_ACTLEN_MASK: u32 = 0x7FF; // Actual length (bits 10:0)
+const TD_CTRL_STATUS_MASK: u32 = 0xFF << 16; // Status byte (bits 23:16)
+const TD_CTRL_ACTIVE: u32 = 1 << 23; // Active (HC should process)
+const TD_CTRL_STALLED: u32 = 1 << 22; // Stalled by HC
+const TD_CTRL_DBUFERR: u32 = 1 << 21; // Data Buffer Error
+const TD_CTRL_BABBLE: u32 = 1 << 20; // Babble detected
+const TD_CTRL_NAK: u32 = 1 << 19; // NAK received
+const TD_CTRL_CRCTERR: u32 = 1 << 18; // CRC/Timeout error
+const TD_CTRL_BITSTUFF: u32 = 1 << 17; // Bit Stuff error
+const TD_CTRL_IOC: u32 = 1 << 24; // Interrupt on Complete
+const TD_CTRL_ISO: u32 = 1 << 25; // Isochronous TD
+const TD_CTRL_LS: u32 = 1 << 26; // Low Speed Device
+const TD_CTRL_ERRCNT_MASK: u32 = 3 << 27; // Error counter (2 bits)
+const TD_CTRL_SPD: u32 = 1 << 29; // Short Packet Detect
 
 // TD.token PID codes
 const PID_SETUP: u8 = 0x2D;
-const PID_IN:    u8 = 0x69;
-const PID_OUT:   u8 = 0xE1;
+const PID_IN: u8 = 0x69;
+const PID_OUT: u8 = 0xE1;
 
 impl UhciTd {
     pub const fn zeroed() -> Self {
-        UhciTd { link: TD_LINK_TERM, ctrl: 0, token: 0, buffer: 0, _sw: [0; 4] }
+        UhciTd {
+            link: TD_LINK_TERM,
+            ctrl: 0,
+            token: 0,
+            buffer: 0,
+            _sw: [0; 4],
+        }
     }
 
     /// Encode the token dword.
     /// `max_packet_len` is the maximum packet length (0 → encode as 0x7FF per spec).
-    pub fn encode_token(pid: u8, dev_addr: u8, endpoint: u8,
-                        toggle: bool, max_packet_len: usize) -> u32 {
-        let len_field = if max_packet_len == 0 { 0x7FF } else { (max_packet_len as u32 - 1) & 0x7FF };
+    pub fn encode_token(
+        pid: u8,
+        dev_addr: u8,
+        endpoint: u8,
+        toggle: bool,
+        max_packet_len: usize,
+    ) -> u32 {
+        let len_field = if max_packet_len == 0 {
+            0x7FF
+        } else {
+            (max_packet_len as u32 - 1) & 0x7FF
+        };
         ((len_field & 0x7FF) << 21)
             | (if toggle { 1u32 << 19 } else { 0 })
             | ((endpoint as u32 & 0xF) << 15)
@@ -277,9 +292,15 @@ impl UhciTd {
             | (if ioc { TD_CTRL_IOC } else { 0 });
     }
 
-    pub fn is_active(&self) -> bool   { self.ctrl & TD_CTRL_ACTIVE  != 0 }
-    pub fn is_stalled(&self) -> bool  { self.ctrl & TD_CTRL_STALLED != 0 }
-    pub fn actual_len(&self) -> usize { ((self.ctrl & TD_CTRL_ACTLEN_MASK) as usize + 1) & 0x7FF }
+    pub fn is_active(&self) -> bool {
+        self.ctrl & TD_CTRL_ACTIVE != 0
+    }
+    pub fn is_stalled(&self) -> bool {
+        self.ctrl & TD_CTRL_STALLED != 0
+    }
+    pub fn actual_len(&self) -> usize {
+        ((self.ctrl & TD_CTRL_ACTLEN_MASK) as usize + 1) & 0x7FF
+    }
 }
 
 /// UHCI Queue Head (8 bytes, 16-byte aligned)
@@ -294,7 +315,10 @@ pub struct UhciQh {
 
 impl UhciQh {
     pub const fn terminated() -> Self {
-        UhciQh { hlp: TD_LINK_TERM, vlp: TD_LINK_TERM }
+        UhciQh {
+            hlp: TD_LINK_TERM,
+            vlp: TD_LINK_TERM,
+        }
     }
 }
 
@@ -308,8 +332,8 @@ const UHCI_QH_POOL_SIZE: usize = 16;
 /// Per-controller transfer pool.  Embedded in `UhciController` to avoid
 /// requiring a global allocator at driver init time.
 pub struct UhciPool {
-    tds:  [UhciTd; UHCI_TD_POOL_SIZE],
-    qhs:  [UhciQh; UHCI_QH_POOL_SIZE],
+    tds: [UhciTd; UHCI_TD_POOL_SIZE],
+    qhs: [UhciQh; UHCI_QH_POOL_SIZE],
     td_used: [bool; UHCI_TD_POOL_SIZE],
     qh_used: [bool; UHCI_QH_POOL_SIZE],
 }
@@ -317,9 +341,17 @@ pub struct UhciPool {
 impl UhciPool {
     pub const fn new() -> Self {
         UhciPool {
-            tds: [UhciTd { link: TD_LINK_TERM, ctrl: 0, token: 0, buffer: 0, _sw: [0;4] };
-                  UHCI_TD_POOL_SIZE],
-            qhs:     [UhciQh { hlp: TD_LINK_TERM, vlp: TD_LINK_TERM }; UHCI_QH_POOL_SIZE],
+            tds: [UhciTd {
+                link: TD_LINK_TERM,
+                ctrl: 0,
+                token: 0,
+                buffer: 0,
+                _sw: [0; 4],
+            }; UHCI_TD_POOL_SIZE],
+            qhs: [UhciQh {
+                hlp: TD_LINK_TERM,
+                vlp: TD_LINK_TERM,
+            }; UHCI_QH_POOL_SIZE],
             td_used: [false; UHCI_TD_POOL_SIZE],
             qh_used: [false; UHCI_QH_POOL_SIZE],
         }
@@ -351,12 +383,16 @@ impl UhciPool {
 
     /// Return a TD to the pool.
     pub fn free_td(&mut self, idx: usize) {
-        if idx < UHCI_TD_POOL_SIZE { self.td_used[idx] = false; }
+        if idx < UHCI_TD_POOL_SIZE {
+            self.td_used[idx] = false;
+        }
     }
 
     /// Return a QH to the pool.
     pub fn free_qh(&mut self, idx: usize) {
-        if idx < UHCI_QH_POOL_SIZE { self.qh_used[idx] = false; }
+        if idx < UHCI_QH_POOL_SIZE {
+            self.qh_used[idx] = false;
+        }
     }
 
     pub fn td_phys(&self, idx: usize) -> u32 {
@@ -379,7 +415,9 @@ pub struct UhciFrameList {
 
 impl UhciFrameList {
     pub const fn new() -> Self {
-        UhciFrameList { entries: [TD_LINK_TERM; 1024] }
+        UhciFrameList {
+            entries: [TD_LINK_TERM; 1024],
+        }
     }
 }
 
@@ -396,34 +434,34 @@ static mut UHCI_FRAME_LIST: UhciFrameList = UhciFrameList::new();
 const UHCI_MAX_PORTS: usize = 2;
 
 /// UHCI Command Register (USBCMD)
-const UHCI_USBCMD:     u16 = 0x00;
+const UHCI_USBCMD: u16 = 0x00;
 /// UHCI Status Register (USBSTS)
-const UHCI_USBSTS:     u16 = 0x02;
+const UHCI_USBSTS: u16 = 0x02;
 /// UHCI Interrupt Enable (USBINTR)
-const UHCI_USBINTR:    u16 = 0x04;
+const UHCI_USBINTR: u16 = 0x04;
 /// UHCI Frame Number Register
-const UHCI_FRNUM:      u16 = 0x06;
+const UHCI_FRNUM: u16 = 0x06;
 /// UHCI Frame List Base Address (32-bit physical)
 const UHCI_FLBASEADDR: u16 = 0x08;
 /// UHCI Start-of-Frame Modify Register
-const UHCI_SOFMOD:     u16 = 0x0C;
+const UHCI_SOFMOD: u16 = 0x0C;
 /// UHCI Port Status/Control register base
 const UHCI_PORTSC_BASE: u16 = 0x10;
 
 // USBCMD bits
-const UHCI_CMD_RS:      u16 = 1 << 0;
+const UHCI_CMD_RS: u16 = 1 << 0;
 const UHCI_CMD_HCRESET: u16 = 1 << 1;
-const UHCI_CMD_GRESET:  u16 = 1 << 2;
-const UHCI_CMD_EGSM:    u16 = 1 << 3;
-const UHCI_CMD_FGR:     u16 = 1 << 4;
+const UHCI_CMD_GRESET: u16 = 1 << 2;
+const UHCI_CMD_EGSM: u16 = 1 << 3;
+const UHCI_CMD_FGR: u16 = 1 << 4;
 
 // PORTSC bits
-const UHCI_PORT_CCS:  u16 = 1 << 0;
-const UHCI_PORT_CSC:  u16 = 1 << 1;
-const UHCI_PORT_PED:  u16 = 1 << 2;
+const UHCI_PORT_CCS: u16 = 1 << 0;
+const UHCI_PORT_CSC: u16 = 1 << 1;
+const UHCI_PORT_PED: u16 = 1 << 2;
 const UHCI_PORT_PEDC: u16 = 1 << 3;
 const UHCI_PORT_LSDA: u16 = 1 << 8;
-const UHCI_PORT_PR:   u16 = 1 << 9;
+const UHCI_PORT_PR: u16 = 1 << 9;
 
 #[inline]
 unsafe fn inw_port(port: u16) -> u16 {
@@ -463,17 +501,20 @@ pub enum UhciXferResult {
 
 /// UHCI host controller — full implementation.
 pub struct UhciController {
-    pub io_base:     u16,
-    pub port_count:  usize,
+    pub io_base: u16,
+    pub port_count: usize,
     pub initialised: bool,
-    pub pci:         PciDevice,
-    pub pool:        UhciPool,
+    pub pci: PciDevice,
+    pub pool: UhciPool,
 }
 
 impl UhciController {
     pub const fn new(io_base: u16, pci: PciDevice) -> Self {
         UhciController {
-            io_base, port_count: 0, initialised: false, pci,
+            io_base,
+            port_count: 0,
+            initialised: false,
+            pci,
             pool: UhciPool::new(),
         }
     }
@@ -481,10 +522,18 @@ impl UhciController {
     // ----------------------------------------------------------------
     // Register I/O helpers
     // ----------------------------------------------------------------
-    unsafe fn read_cmd(&self) -> u16   { inw_port(self.io_base + UHCI_USBCMD) }
-    unsafe fn read_sts(&self) -> u16   { inw_port(self.io_base + UHCI_USBSTS) }
-    unsafe fn write_cmd(&self, v: u16) { outw_port(self.io_base + UHCI_USBCMD, v); }
-    unsafe fn write_sts(&self, v: u16) { outw_port(self.io_base + UHCI_USBSTS, v); }
+    unsafe fn read_cmd(&self) -> u16 {
+        inw_port(self.io_base + UHCI_USBCMD)
+    }
+    unsafe fn read_sts(&self) -> u16 {
+        inw_port(self.io_base + UHCI_USBSTS)
+    }
+    unsafe fn write_cmd(&self, v: u16) {
+        outw_port(self.io_base + UHCI_USBCMD, v);
+    }
+    unsafe fn write_sts(&self, v: u16) {
+        outw_port(self.io_base + UHCI_USBSTS, v);
+    }
 
     unsafe fn portsc(&self, port: usize) -> u16 {
         inw_port(self.io_base + UHCI_PORTSC_BASE + (port as u16) * 2)
@@ -500,13 +549,17 @@ impl UhciController {
         unsafe {
             // Global reset (~10 ms)
             self.write_cmd(UHCI_CMD_GRESET);
-            for _ in 0..10_000 { core::hint::spin_loop(); }
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
             self.write_cmd(0);
 
             // Host controller reset — wait for completion
             self.write_cmd(UHCI_CMD_HCRESET);
             for _ in 0..50_000 {
-                if self.read_cmd() & UHCI_CMD_HCRESET == 0 { break; }
+                if self.read_cmd() & UHCI_CMD_HCRESET == 0 {
+                    break;
+                }
                 core::hint::spin_loop();
             }
 
@@ -530,7 +583,9 @@ impl UhciController {
             self.port_count = 0;
             for p in 0..UHCI_MAX_PORTS {
                 let v = self.portsc(p);
-                if v & 0x0080 != 0 { self.port_count += 1; }
+                if v & 0x0080 != 0 {
+                    self.port_count += 1;
+                }
             }
         }
         self.initialised = true;
@@ -541,32 +596,48 @@ impl UhciController {
     // ----------------------------------------------------------------
 
     pub fn reset_port(&self, port: usize) -> Option<UsbSpeed> {
-        if port >= self.port_count { return None; }
+        if port >= self.port_count {
+            return None;
+        }
         unsafe {
             self.write_portsc(port, UHCI_PORT_PR);
-            for _ in 0..500_000 { core::hint::spin_loop(); }
+            for _ in 0..500_000 {
+                core::hint::spin_loop();
+            }
             let v = self.portsc(port) & !UHCI_PORT_PR;
             self.write_portsc(port, v);
-            for _ in 0..4 { core::hint::spin_loop(); }
+            for _ in 0..4 {
+                core::hint::spin_loop();
+            }
 
             let v2 = self.portsc(port);
             self.write_portsc(port, v2 | UHCI_PORT_CSC | UHCI_PORT_PEDC);
 
             let v3 = self.portsc(port);
-            if v3 & UHCI_PORT_CCS == 0 { return None; }
+            if v3 & UHCI_PORT_CCS == 0 {
+                return None;
+            }
 
             self.write_portsc(port, v3 | UHCI_PORT_PED);
-            for _ in 0..4 { core::hint::spin_loop(); }
+            for _ in 0..4 {
+                core::hint::spin_loop();
+            }
 
             let v4 = self.portsc(port);
-            Some(if v4 & UHCI_PORT_LSDA != 0 { UsbSpeed::Low } else { UsbSpeed::Full })
+            Some(if v4 & UHCI_PORT_LSDA != 0 {
+                UsbSpeed::Low
+            } else {
+                UsbSpeed::Full
+            })
         }
     }
 
     pub fn probe_ports(&self) -> alloc::vec::Vec<(usize, UsbSpeed)> {
         let mut found = alloc::vec::Vec::new();
         for p in 0..self.port_count {
-            if let Some(spd) = self.reset_port(p) { found.push((p, spd)); }
+            if let Some(spd) = self.reset_port(p) {
+                found.push((p, spd));
+            }
         }
         found
     }
@@ -597,11 +668,22 @@ impl UhciController {
             let mut p = head_phys as *mut UhciTd;
             loop {
                 let ctrl = core::ptr::read_volatile(&(*p).ctrl);
-                if ctrl & TD_CTRL_ACTIVE != 0 { all_done = false; break; }
-                if ctrl & (TD_CTRL_STALLED | TD_CTRL_DBUFERR | TD_CTRL_BABBLE
-                           | TD_CTRL_CRCTERR | TD_CTRL_BITSTUFF) != 0 {
+                if ctrl & TD_CTRL_ACTIVE != 0 {
+                    all_done = false;
+                    break;
+                }
+                if ctrl
+                    & (TD_CTRL_STALLED
+                        | TD_CTRL_DBUFERR
+                        | TD_CTRL_BABBLE
+                        | TD_CTRL_CRCTERR
+                        | TD_CTRL_BITSTUFF)
+                    != 0
+                {
                     // Remove from schedule
-                    for slot in UHCI_FRAME_LIST.entries.iter_mut() { *slot = TD_LINK_TERM; }
+                    for slot in UHCI_FRAME_LIST.entries.iter_mut() {
+                        *slot = TD_LINK_TERM;
+                    }
                     let ctrl2 = core::ptr::read_volatile(&(*p).ctrl);
                     return if ctrl2 & TD_CTRL_STALLED != 0 {
                         UhciXferResult::Stalled
@@ -610,18 +692,24 @@ impl UhciController {
                     };
                 }
                 let link = core::ptr::read_volatile(&(*p).link);
-                if link & TD_LINK_TERM != 0 { break; }
+                if link & TD_LINK_TERM != 0 {
+                    break;
+                }
                 p = (link & !0x0F) as *mut UhciTd;
             }
             let _ = td_ptr; // suppress unused warning
 
             if all_done {
-                for slot in UHCI_FRAME_LIST.entries.iter_mut() { *slot = TD_LINK_TERM; }
+                for slot in UHCI_FRAME_LIST.entries.iter_mut() {
+                    *slot = TD_LINK_TERM;
+                }
                 return UhciXferResult::Ok;
             }
             iters += 1;
             if iters >= timeout_iters {
-                for slot in UHCI_FRAME_LIST.entries.iter_mut() { *slot = TD_LINK_TERM; }
+                for slot in UHCI_FRAME_LIST.entries.iter_mut() {
+                    *slot = TD_LINK_TERM;
+                }
                 return UhciXferResult::Timeout;
             }
             core::hint::spin_loop();
@@ -645,16 +733,22 @@ impl UhciController {
         dev_addr: u8,
         low_speed: bool,
         setup: &UsbSetupPacket,
-        data: Option<&mut [u8]>,   // None for zero-length data stage
-        dir_in: bool,              // true = device→host in data stage
+        data: Option<&mut [u8]>, // None for zero-length data stage
+        dir_in: bool,            // true = device→host in data stage
     ) -> UhciXferResult {
         // We need at minimum 2 TDs (SETUP + STATUS) and up to 2 + N data TDs.
         let data_len = data.as_ref().map_or(0, |b| b.len());
-        let max_pkt  = 8usize; // EP0 max packet size always 8 for low-speed
-        let data_tds = if data_len == 0 { 0 } else { (data_len + max_pkt - 1) / max_pkt };
+        let max_pkt = 8usize; // EP0 max packet size always 8 for low-speed
+        let data_tds = if data_len == 0 {
+            0
+        } else {
+            (data_len + max_pkt - 1) / max_pkt
+        };
         let total_tds = 2 + data_tds;
 
-        if total_tds > UHCI_TD_POOL_SIZE { return UhciXferResult::NoTds; }
+        if total_tds > UHCI_TD_POOL_SIZE {
+            return UhciXferResult::NoTds;
+        }
 
         // Allocate TDs
         let mut td_indices = [0usize; 16];
@@ -662,20 +756,22 @@ impl UhciController {
             match self.pool.alloc_td() {
                 Some(idx) => td_indices[i] = idx,
                 None => {
-                    for j in 0..i { self.pool.free_td(td_indices[j]); }
+                    for j in 0..i {
+                        self.pool.free_td(td_indices[j]);
+                    }
                     return UhciXferResult::NoTds;
                 }
             }
         }
 
-        let setup_phys  = setup as *const UsbSetupPacket as u32;
+        let setup_phys = setup as *const UsbSetupPacket as u32;
         let low_speed_flag = low_speed;
         let err = 3u8;
 
         // ---- SETUP TD (index 0) ----
         {
             let td = &mut self.pool.tds[td_indices[0]];
-            td.token  = UhciTd::encode_token(PID_SETUP, dev_addr, 0, false, 8);
+            td.token = UhciTd::encode_token(PID_SETUP, dev_addr, 0, false, 8);
             td.buffer = setup_phys;
             td.activate(low_speed_flag, false, err);
         }
@@ -685,10 +781,10 @@ impl UhciController {
         if let Some(ref buf) = data {
             for i in 0..data_tds {
                 let offset = i * max_pkt;
-                let chunk  = core::cmp::min(max_pkt, data_len - offset);
-                let pid    = if dir_in { PID_IN } else { PID_OUT };
+                let chunk = core::cmp::min(max_pkt, data_len - offset);
+                let pid = if dir_in { PID_IN } else { PID_OUT };
                 let td = &mut self.pool.tds[td_indices[1 + i]];
-                td.token  = UhciTd::encode_token(pid, dev_addr, 0, toggle, chunk);
+                td.token = UhciTd::encode_token(pid, dev_addr, 0, toggle, chunk);
                 td.buffer = (buf.as_ptr() as usize + offset) as u32;
                 td.activate(low_speed_flag, false, err);
                 toggle = !toggle;
@@ -698,11 +794,15 @@ impl UhciController {
         // ---- STATUS TD (last) ----
         {
             // Status PID is opposite of data stage direction
-            let pid = if dir_in || data_len == 0 { PID_OUT } else { PID_IN };
+            let pid = if dir_in || data_len == 0 {
+                PID_OUT
+            } else {
+                PID_IN
+            };
             let td = &mut self.pool.tds[td_indices[total_tds - 1]];
-            td.token  = UhciTd::encode_token(pid, dev_addr, 0, true, 0);
+            td.token = UhciTd::encode_token(pid, dev_addr, 0, true, 0);
             td.buffer = 0;
-            td.ctrl   |= TD_CTRL_SPD; // Short Packet Detect
+            td.ctrl |= TD_CTRL_SPD; // Short Packet Detect
             td.activate(low_speed_flag, true, err);
         }
 
@@ -716,7 +816,9 @@ impl UhciController {
         let head_phys = self.pool.td_phys(td_indices[0]);
         let result = unsafe { self.schedule_and_wait(head_phys) };
 
-        for i in 0..total_tds { self.pool.free_td(td_indices[i]); }
+        for i in 0..total_tds {
+            self.pool.free_td(td_indices[i]);
+        }
         result
     }
 
@@ -730,15 +832,17 @@ impl UhciController {
     pub fn bulk_transfer(
         &mut self,
         dev_addr: u8,
-        endpoint:  u8,
+        endpoint: u8,
         low_speed: bool,
-        dir_in:    bool,
-        max_pkt:   usize,
-        data:      &mut [u8],
-        toggle:    &mut bool,
+        dir_in: bool,
+        max_pkt: usize,
+        data: &mut [u8],
+        toggle: &mut bool,
     ) -> UhciXferResult {
         let total = data.len();
-        if total == 0 { return UhciXferResult::Ok; }
+        if total == 0 {
+            return UhciXferResult::Ok;
+        }
 
         let pid = if dir_in { PID_IN } else { PID_OUT };
         let mut offset = 0;
@@ -747,13 +851,13 @@ impl UhciController {
             let chunk = core::cmp::min(max_pkt, total - offset);
             let td_idx = match self.pool.alloc_td() {
                 Some(i) => i,
-                None    => return UhciXferResult::NoTds,
+                None => return UhciXferResult::NoTds,
             };
             {
                 let td = &mut self.pool.tds[td_idx];
-                td.token  = UhciTd::encode_token(pid, dev_addr, endpoint, *toggle, chunk);
+                td.token = UhciTd::encode_token(pid, dev_addr, endpoint, *toggle, chunk);
                 td.buffer = (data.as_mut_ptr() as usize + offset) as u32;
-                td.link   = TD_LINK_TERM;
+                td.link = TD_LINK_TERM;
                 td.activate(low_speed, true, 3);
             }
             let phys = self.pool.td_phys(td_idx);
@@ -791,17 +895,17 @@ impl UhciController {
         let td_idx = self.pool.alloc_td()?;
         {
             let td = &mut self.pool.tds[td_idx];
-            td.token  = UhciTd::encode_token(PID_IN, dev_addr, endpoint, toggle, max_pkt);
+            td.token = UhciTd::encode_token(PID_IN, dev_addr, endpoint, toggle, max_pkt);
             td.buffer = buf.as_mut_ptr() as u32;
-            td.link   = TD_LINK_TERM;
-            td.ctrl   = TD_CTRL_ACTIVE
-                | TD_CTRL_IOC
-                | (3 << 27)
-                | (if low_speed { TD_CTRL_LS } else { 0 });
+            td.link = TD_LINK_TERM;
+            td.ctrl =
+                TD_CTRL_ACTIVE | TD_CTRL_IOC | (3 << 27) | (if low_speed { TD_CTRL_LS } else { 0 });
         }
         let phys = self.pool.td_phys(td_idx);
         // Insert into frame 0 only (8 ms period for full-speed, 8 ms for low-speed)
-        unsafe { UHCI_FRAME_LIST.entries[0] = phys; }
+        unsafe {
+            UHCI_FRAME_LIST.entries[0] = phys;
+        }
         Some(phys)
     }
 }
@@ -814,10 +918,10 @@ impl UhciController {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UsbSetupPacket {
     pub bm_request_type: u8,
-    pub b_request:       u8,
-    pub w_value:         u16,
-    pub w_index:         u16,
-    pub w_length:        u16,
+    pub b_request: u8,
+    pub w_value: u16,
+    pub w_index: u16,
+    pub w_length: u16,
 }
 
 // bmRequestType directions
@@ -825,29 +929,29 @@ pub const RT_HOST_TO_DEV: u8 = 0x00;
 pub const RT_DEV_TO_HOST: u8 = 0x80;
 // bmRequestType types
 pub const RT_STANDARD: u8 = 0x00;
-pub const RT_CLASS:    u8 = 0x20;
+pub const RT_CLASS: u8 = 0x20;
 // bmRequestType recipients
-pub const RT_DEVICE:    u8 = 0x00;
+pub const RT_DEVICE: u8 = 0x00;
 pub const RT_INTERFACE: u8 = 0x01;
-pub const RT_ENDPOINT:  u8 = 0x02;
+pub const RT_ENDPOINT: u8 = 0x02;
 
 // Standard requests (bRequest)
-pub const REQ_GET_STATUS:        u8 = 0x00;
-pub const REQ_CLEAR_FEATURE:     u8 = 0x01;
-pub const REQ_SET_FEATURE:       u8 = 0x03;
-pub const REQ_SET_ADDRESS:       u8 = 0x05;
-pub const REQ_GET_DESCRIPTOR:    u8 = 0x06;
-pub const REQ_SET_DESCRIPTOR:    u8 = 0x07;
+pub const REQ_GET_STATUS: u8 = 0x00;
+pub const REQ_CLEAR_FEATURE: u8 = 0x01;
+pub const REQ_SET_FEATURE: u8 = 0x03;
+pub const REQ_SET_ADDRESS: u8 = 0x05;
+pub const REQ_GET_DESCRIPTOR: u8 = 0x06;
+pub const REQ_SET_DESCRIPTOR: u8 = 0x07;
 pub const REQ_GET_CONFIGURATION: u8 = 0x08;
 pub const REQ_SET_CONFIGURATION: u8 = 0x09;
-pub const REQ_GET_INTERFACE:     u8 = 0x0A;
-pub const REQ_SET_INTERFACE:     u8 = 0x0B;
+pub const REQ_GET_INTERFACE: u8 = 0x0A;
+pub const REQ_SET_INTERFACE: u8 = 0x0B;
 // Descriptor types (wValue high byte)
-pub const DESC_DEVICE:        u8 = 0x01;
+pub const DESC_DEVICE: u8 = 0x01;
 pub const DESC_CONFIGURATION: u8 = 0x02;
-pub const DESC_STRING:        u8 = 0x03;
-pub const DESC_INTERFACE:     u8 = 0x04;
-pub const DESC_ENDPOINT:      u8 = 0x05;
+pub const DESC_STRING: u8 = 0x03;
+pub const DESC_INTERFACE: u8 = 0x04;
+pub const DESC_ENDPOINT: u8 = 0x05;
 
 impl UsbSetupPacket {
     /// Build a GET_DESCRIPTOR(Device) request.
@@ -936,22 +1040,33 @@ pub struct OhciEd {
 }
 
 // ED.ctrl bits
-const ED_CTRL_FA_MASK:  u32 = 0x7F;          // Function Address (device addr)
-const ED_CTRL_EN_SHIFT: u32 = 7;             // Endpoint Number
-const ED_CTRL_D_SHIFT:  u32 = 11;            // Direction: 0=GetFromTD,1=Out,2=In
-const ED_CTRL_S:        u32 = 1 << 13;       // Speed: 0=full, 1=low
-const ED_CTRL_K:        u32 = 1 << 14;       // Skip (halt this ED)
-const ED_CTRL_MPS_SHIFT: u32 = 16;           // MaxPacketSize
+const ED_CTRL_FA_MASK: u32 = 0x7F; // Function Address (device addr)
+const ED_CTRL_EN_SHIFT: u32 = 7; // Endpoint Number
+const ED_CTRL_D_SHIFT: u32 = 11; // Direction: 0=GetFromTD,1=Out,2=In
+const ED_CTRL_S: u32 = 1 << 13; // Speed: 0=full, 1=low
+const ED_CTRL_K: u32 = 1 << 14; // Skip (halt this ED)
+const ED_CTRL_MPS_SHIFT: u32 = 16; // MaxPacketSize
 
-const ED_HEADP_HALT:  u32 = 1 << 0;          // Halted
-const ED_HEADP_CARRY: u32 = 1 << 1;          // Data toggle carry
+const ED_HEADP_HALT: u32 = 1 << 0; // Halted
+const ED_HEADP_CARRY: u32 = 1 << 1; // Data toggle carry
 
 impl OhciEd {
     pub const fn zeroed() -> Self {
-        OhciEd { ctrl: 0, tail_p: 0, head_p: 0, next_ed: 0 }
+        OhciEd {
+            ctrl: 0,
+            tail_p: 0,
+            head_p: 0,
+            next_ed: 0,
+        }
     }
-    pub fn setup(&mut self, dev_addr: u8, endpoint: u8, low_speed: bool,
-                 max_pkt: u16, dir_from_td: bool) {
+    pub fn setup(
+        &mut self,
+        dev_addr: u8,
+        endpoint: u8,
+        low_speed: bool,
+        max_pkt: u16,
+        dir_from_td: bool,
+    ) {
         let d = if dir_from_td { 0u32 } else { 0u32 }; // always GetFromTD for control
         let _ = d;
         self.ctrl = (dev_addr as u32 & ED_CTRL_FA_MASK)
@@ -969,92 +1084,97 @@ impl OhciEd {
 #[derive(Clone, Copy)]
 pub struct OhciTd {
     /// Control: CC | EC | T | DI | DP | R
-    pub ctrl:     u32,
+    pub ctrl: u32,
     /// CBP — Current Buffer Pointer (physical)
-    pub cbp:      u32,
+    pub cbp: u32,
     /// NextTD — physical address of next TD (or 0)
-    pub next_td:  u32,
+    pub next_td: u32,
     /// BE — Buffer End (physical address of last byte)
-    pub be:       u32,
+    pub be: u32,
 }
 
 // TD.ctrl bits
-const OHCI_TD_CC_SHIFT:  u32 = 28; // Condition Code (error status) bits 31:28
-const OHCI_TD_CC_NOERR:  u32 = 0xE << 28; // Not yet processed
-const OHCI_TD_R:         u32 = 1 << 18;   // Buffer Rounding
-const OHCI_TD_DP_MASK:   u32 = 3 << 19;   // Direction/PID: 0=SETUP,1=OUT,2=IN
-const OHCI_TD_DP_SETUP:  u32 = 0 << 19;
-const OHCI_TD_DP_OUT:    u32 = 1 << 19;
-const OHCI_TD_DP_IN:     u32 = 2 << 19;
-const OHCI_TD_DI_MASK:   u32 = 7 << 21;   // Delay Interrupt (0=immediate,7=none)
-const OHCI_TD_DI_NONE:   u32 = 7 << 21;
-const OHCI_TD_T_MASK:    u32 = 3 << 24;   // Data Toggle
-const OHCI_TD_T_DATA0:   u32 = 2 << 24;   // Force DATA0
-const OHCI_TD_T_DATA1:   u32 = 3 << 24;   // Force DATA1
-const OHCI_TD_T_CARRY:   u32 = 0 << 24;   // Use ED carry bit
+const OHCI_TD_CC_SHIFT: u32 = 28; // Condition Code (error status) bits 31:28
+const OHCI_TD_CC_NOERR: u32 = 0xE << 28; // Not yet processed
+const OHCI_TD_R: u32 = 1 << 18; // Buffer Rounding
+const OHCI_TD_DP_MASK: u32 = 3 << 19; // Direction/PID: 0=SETUP,1=OUT,2=IN
+const OHCI_TD_DP_SETUP: u32 = 0 << 19;
+const OHCI_TD_DP_OUT: u32 = 1 << 19;
+const OHCI_TD_DP_IN: u32 = 2 << 19;
+const OHCI_TD_DI_MASK: u32 = 7 << 21; // Delay Interrupt (0=immediate,7=none)
+const OHCI_TD_DI_NONE: u32 = 7 << 21;
+const OHCI_TD_T_MASK: u32 = 3 << 24; // Data Toggle
+const OHCI_TD_T_DATA0: u32 = 2 << 24; // Force DATA0
+const OHCI_TD_T_DATA1: u32 = 3 << 24; // Force DATA1
+const OHCI_TD_T_CARRY: u32 = 0 << 24; // Use ED carry bit
 
 impl OhciTd {
     pub const fn zeroed() -> Self {
-        OhciTd { ctrl: 0, cbp: 0, next_td: 0, be: 0 }
+        OhciTd {
+            ctrl: 0,
+            cbp: 0,
+            next_td: 0,
+            be: 0,
+        }
     }
 }
 
 // OHCI MMIO register offsets
-const OHCI_HCREVISION:       usize = 0x00;
-const OHCI_HCCONTROL:        usize = 0x04;
-const OHCI_HCCOMMANDSTATUS:  usize = 0x08;
+const OHCI_HCREVISION: usize = 0x00;
+const OHCI_HCCONTROL: usize = 0x04;
+const OHCI_HCCOMMANDSTATUS: usize = 0x08;
 const OHCI_HCINTERRUPTSTATUS: usize = 0x0C;
 const OHCI_HCINTERRUPTENABLE: usize = 0x10;
-const OHCI_HCINTERRUPTDISABLE:usize = 0x14;
-const OHCI_HCHCCA:           usize = 0x18;
+const OHCI_HCINTERRUPTDISABLE: usize = 0x14;
+const OHCI_HCHCCA: usize = 0x18;
 const OHCI_HCPERIODCURRENTED: usize = 0x1C;
-const OHCI_HCCONTROLHEADED:  usize = 0x20;
-const OHCI_HCCONTROLCURRENTED:usize = 0x24;
-const OHCI_HCBULKHEADED:     usize = 0x28;
-const OHCI_HCBULKCURRENTED:  usize = 0x2C;
-const OHCI_HCDONEHEAD:       usize = 0x30;
-const OHCI_HCFMINTERVAL:     usize = 0x34;
-const OHCI_HCFMREMAINING:    usize = 0x38;
-const OHCI_HCFMNUMBER:       usize = 0x3C;
-const OHCI_HCPERIODICSTART:  usize = 0x40;
-const OHCI_HCLSTHRESHOLD:    usize = 0x44;
-const OHCI_HCRHDESCRIPTORA:  usize = 0x48;
-const OHCI_HCRHDESCRIPTORB:  usize = 0x4C;
-const OHCI_HCRHSTATUS:       usize = 0x50;
-const OHCI_HCRHPORTSTATUS:   usize = 0x54; // +4 per port
+const OHCI_HCCONTROLHEADED: usize = 0x20;
+const OHCI_HCCONTROLCURRENTED: usize = 0x24;
+const OHCI_HCBULKHEADED: usize = 0x28;
+const OHCI_HCBULKCURRENTED: usize = 0x2C;
+const OHCI_HCDONEHEAD: usize = 0x30;
+const OHCI_HCFMINTERVAL: usize = 0x34;
+const OHCI_HCFMREMAINING: usize = 0x38;
+const OHCI_HCFMNUMBER: usize = 0x3C;
+const OHCI_HCPERIODICSTART: usize = 0x40;
+const OHCI_HCLSTHRESHOLD: usize = 0x44;
+const OHCI_HCRHDESCRIPTORA: usize = 0x48;
+const OHCI_HCRHDESCRIPTORB: usize = 0x4C;
+const OHCI_HCRHSTATUS: usize = 0x50;
+const OHCI_HCRHPORTSTATUS: usize = 0x54; // +4 per port
 
 // HcControl bits
-const OHCI_CTL_CBSR_MASK: u32 = 3 << 0;  // ControlBulkServiceRatio
-const OHCI_CTL_PLE:       u32 = 1 << 2;  // PeriodicListEnable
-const OHCI_CTL_IE:        u32 = 1 << 3;  // IsochronousEnable
-const OHCI_CTL_CLE:       u32 = 1 << 4;  // ControlListEnable
-const OHCI_CTL_BLE:       u32 = 1 << 5;  // BulkListEnable
-const OHCI_CTL_HCFS_MASK: u32 = 3 << 6;  // HostControllerFunctionalState
-const OHCI_CTL_HCFS_RESET:u32 = 0 << 6;
+const OHCI_CTL_CBSR_MASK: u32 = 3 << 0; // ControlBulkServiceRatio
+const OHCI_CTL_PLE: u32 = 1 << 2; // PeriodicListEnable
+const OHCI_CTL_IE: u32 = 1 << 3; // IsochronousEnable
+const OHCI_CTL_CLE: u32 = 1 << 4; // ControlListEnable
+const OHCI_CTL_BLE: u32 = 1 << 5; // BulkListEnable
+const OHCI_CTL_HCFS_MASK: u32 = 3 << 6; // HostControllerFunctionalState
+const OHCI_CTL_HCFS_RESET: u32 = 0 << 6;
 const OHCI_CTL_HCFS_RESM: u32 = 1 << 6;
-const OHCI_CTL_HCFS_OPER: u32 = 2 << 6;  // Operational
+const OHCI_CTL_HCFS_OPER: u32 = 2 << 6; // Operational
 const OHCI_CTL_HCFS_SUSP: u32 = 3 << 6;
-const OHCI_CTL_IR:        u32 = 1 << 8;  // InterruptRouting (BIOS owns)
+const OHCI_CTL_IR: u32 = 1 << 8; // InterruptRouting (BIOS owns)
 
 // HcCommandStatus bits
-const OHCI_CS_HCR: u32 = 1 << 0;         // HostControllerReset
-const OHCI_CS_OCR: u32 = 1 << 3;         // OwnershipChangeRequest
+const OHCI_CS_HCR: u32 = 1 << 0; // HostControllerReset
+const OHCI_CS_OCR: u32 = 1 << 3; // OwnershipChangeRequest
 
 // HcRhPortStatus bits (OHCI spec §7.4.4)
-const OHCI_PORT_CCS:  u32 = 1 << 0;  // CurrentConnectStatus
-const OHCI_PORT_PES:  u32 = 1 << 1;  // PortEnableStatus
-const OHCI_PORT_PSS:  u32 = 1 << 2;  // PortSuspendStatus
-const OHCI_PORT_POCI: u32 = 1 << 3;  // PortOverCurrentIndicator
-const OHCI_PORT_PRS:  u32 = 1 << 4;  // PortResetStatus
-const OHCI_PORT_PPS:  u32 = 1 << 8;  // PortPowerStatus
-const OHCI_PORT_LSDA: u32 = 1 << 9;  // LowSpeedDeviceAttached
-const OHCI_PORT_CSC:  u32 = 1 << 16; // ConnectStatusChange
+const OHCI_PORT_CCS: u32 = 1 << 0; // CurrentConnectStatus
+const OHCI_PORT_PES: u32 = 1 << 1; // PortEnableStatus
+const OHCI_PORT_PSS: u32 = 1 << 2; // PortSuspendStatus
+const OHCI_PORT_POCI: u32 = 1 << 3; // PortOverCurrentIndicator
+const OHCI_PORT_PRS: u32 = 1 << 4; // PortResetStatus
+const OHCI_PORT_PPS: u32 = 1 << 8; // PortPowerStatus
+const OHCI_PORT_LSDA: u32 = 1 << 9; // LowSpeedDeviceAttached
+const OHCI_PORT_CSC: u32 = 1 << 16; // ConnectStatusChange
 const OHCI_PORT_PESC: u32 = 1 << 17; // PortEnableStatusChange
 const OHCI_PORT_PRSC: u32 = 1 << 20; // PortResetStatusChange
 
 // Write to port: set individual features
-const OHCI_PORT_SET_RESET:  u32 = 1 << 4;  // SetPortReset
-const OHCI_PORT_SET_ENABLE: u32 = 1 << 1;  // SetPortEnable
+const OHCI_PORT_SET_RESET: u32 = 1 << 4; // SetPortReset
+const OHCI_PORT_SET_ENABLE: u32 = 1 << 1; // SetPortEnable
 
 const OHCI_ED_POOL: usize = 8;
 const OHCI_TD_POOL: usize = 32;
@@ -1071,41 +1191,78 @@ pub struct OhciPool {
 impl OhciPool {
     pub const fn new() -> Self {
         OhciPool {
-            eds: [OhciEd { ctrl: 0, tail_p: 0, head_p: 0, next_ed: 0 }; OHCI_ED_POOL],
-            tds: [OhciTd { ctrl: 0, cbp: 0, next_td: 0, be: 0 }; OHCI_TD_POOL],
+            eds: [OhciEd {
+                ctrl: 0,
+                tail_p: 0,
+                head_p: 0,
+                next_ed: 0,
+            }; OHCI_ED_POOL],
+            tds: [OhciTd {
+                ctrl: 0,
+                cbp: 0,
+                next_td: 0,
+                be: 0,
+            }; OHCI_TD_POOL],
             ed_used: [false; OHCI_ED_POOL],
             td_used: [false; OHCI_TD_POOL],
         }
     }
     pub fn alloc_ed(&mut self) -> Option<usize> {
-        self.ed_used.iter_mut().enumerate()
+        self.ed_used
+            .iter_mut()
+            .enumerate()
             .find(|(_, u)| !**u)
-            .map(|(i, u)| { *u = true; self.eds[i] = OhciEd::zeroed(); i })
+            .map(|(i, u)| {
+                *u = true;
+                self.eds[i] = OhciEd::zeroed();
+                i
+            })
     }
     pub fn alloc_td(&mut self) -> Option<usize> {
-        self.td_used.iter_mut().enumerate()
+        self.td_used
+            .iter_mut()
+            .enumerate()
             .find(|(_, u)| !**u)
-            .map(|(i, u)| { *u = true; self.tds[i] = OhciTd::zeroed(); i })
+            .map(|(i, u)| {
+                *u = true;
+                self.tds[i] = OhciTd::zeroed();
+                i
+            })
     }
-    pub fn free_ed(&mut self, i: usize) { if i < OHCI_ED_POOL { self.ed_used[i] = false; } }
-    pub fn free_td(&mut self, i: usize) { if i < OHCI_TD_POOL { self.td_used[i] = false; } }
-    pub fn ed_phys(&self, i: usize) -> u32 { &self.eds[i] as *const OhciEd as u32 }
-    pub fn td_phys(&self, i: usize) -> u32 { &self.tds[i] as *const OhciTd as u32 }
+    pub fn free_ed(&mut self, i: usize) {
+        if i < OHCI_ED_POOL {
+            self.ed_used[i] = false;
+        }
+    }
+    pub fn free_td(&mut self, i: usize) {
+        if i < OHCI_TD_POOL {
+            self.td_used[i] = false;
+        }
+    }
+    pub fn ed_phys(&self, i: usize) -> u32 {
+        &self.eds[i] as *const OhciEd as u32
+    }
+    pub fn td_phys(&self, i: usize) -> u32 {
+        &self.tds[i] as *const OhciTd as u32
+    }
 }
 
 /// OHCI host controller — full implementation.
 pub struct OhciController {
-    pub mmio_base:   usize,
+    pub mmio_base: usize,
     pub initialised: bool,
-    pub port_count:  usize,
-    pub pci:         PciDevice,
-    pub pool:        OhciPool,
+    pub port_count: usize,
+    pub pci: PciDevice,
+    pub pool: OhciPool,
 }
 
 impl OhciController {
     pub const fn new(mmio_base: usize, pci: PciDevice) -> Self {
         OhciController {
-            mmio_base, initialised: false, port_count: 0, pci,
+            mmio_base,
+            initialised: false,
+            port_count: 0,
+            pci,
             pool: OhciPool::new(),
         }
     }
@@ -1131,9 +1288,13 @@ impl OhciController {
             self.write32(OHCI_HCCOMMANDSTATUS, OHCI_CS_OCR);
             let mut i = 0u32;
             loop {
-                if self.read32(OHCI_HCCONTROL) & OHCI_CTL_IR == 0 { break; }
+                if self.read32(OHCI_HCCONTROL) & OHCI_CTL_IR == 0 {
+                    break;
+                }
                 i += 1;
-                if i > 100_000 { break; }
+                if i > 100_000 {
+                    break;
+                }
                 core::hint::spin_loop();
             }
         }
@@ -1147,7 +1308,9 @@ impl OhciController {
         unsafe {
             // Software reset
             self.write32(OHCI_HCCOMMANDSTATUS, OHCI_CS_HCR);
-            for _ in 0..10_000 { core::hint::spin_loop(); }
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
 
             // Configure HCCA
             let hcca_phys = &OHCI_HCCA as *const OhciHcca as u32;
@@ -1173,7 +1336,9 @@ impl OhciController {
                 self.write_port(p, 1 << 8); // SetPortPower
             }
             // Wait for ports to stabilise
-            for _ in 0..200_000 { core::hint::spin_loop(); }
+            for _ in 0..200_000 {
+                core::hint::spin_loop();
+            }
         }
         self.initialised = true;
     }
@@ -1188,20 +1353,28 @@ impl OhciController {
             let mut i = 0u32;
             loop {
                 let st = self.port_status(port);
-                if st & OHCI_PORT_PRS == 0 { break; }
+                if st & OHCI_PORT_PRS == 0 {
+                    break;
+                }
                 i += 1;
-                if i > 500_000 { return None; }
+                if i > 500_000 {
+                    return None;
+                }
                 core::hint::spin_loop();
             }
             // Clear status-change bits
             self.write_port(port, OHCI_PORT_CSC | OHCI_PORT_PESC | OHCI_PORT_PRSC);
 
             let st = self.port_status(port);
-            if st & OHCI_PORT_CCS == 0 { return None; }
+            if st & OHCI_PORT_CCS == 0 {
+                return None;
+            }
 
             // Enable port
             self.write_port(port, OHCI_PORT_SET_ENABLE);
-            for _ in 0..4 { core::hint::spin_loop(); }
+            for _ in 0..4 {
+                core::hint::spin_loop();
+            }
 
             Some(if self.port_status(port) & OHCI_PORT_LSDA != 0 {
                 UsbSpeed::Low
@@ -1214,7 +1387,9 @@ impl OhciController {
     pub fn probe_ports(&self) -> alloc::vec::Vec<(usize, UsbSpeed)> {
         let mut out = alloc::vec::Vec::new();
         for p in 0..self.port_count {
-            if let Some(spd) = self.reset_port(p) { out.push((p, spd)); }
+            if let Some(spd) = self.reset_port(p) {
+                out.push((p, spd));
+            }
         }
         out
     }
@@ -1224,50 +1399,78 @@ impl OhciController {
     // ----------------------------------------------------------------
     pub fn control_transfer(
         &mut self,
-        dev_addr:  u8,
+        dev_addr: u8,
         low_speed: bool,
-        setup:     &UsbSetupPacket,
-        data:      Option<&mut [u8]>,
-        dir_in:    bool,
+        setup: &UsbSetupPacket,
+        data: Option<&mut [u8]>,
+        dir_in: bool,
     ) -> bool {
         let data_len = data.as_ref().map_or(0, |b| b.len());
 
-        let ed_idx = match self.pool.alloc_ed() { Some(i) => i, None => return false };
-        let setup_td = match self.pool.alloc_td() { Some(i) => i, None => { self.pool.free_ed(ed_idx); return false; } };
-        let status_td = match self.pool.alloc_td() { Some(i) => i, None => { self.pool.free_td(setup_td); self.pool.free_ed(ed_idx); return false; } };
+        let ed_idx = match self.pool.alloc_ed() {
+            Some(i) => i,
+            None => return false,
+        };
+        let setup_td = match self.pool.alloc_td() {
+            Some(i) => i,
+            None => {
+                self.pool.free_ed(ed_idx);
+                return false;
+            }
+        };
+        let status_td = match self.pool.alloc_td() {
+            Some(i) => i,
+            None => {
+                self.pool.free_td(setup_td);
+                self.pool.free_ed(ed_idx);
+                return false;
+            }
+        };
         // Optionally a single data TD (multi-packet not needed for 18-byte descriptor)
-        let data_td_opt = if data_len > 0 { self.pool.alloc_td() } else { None };
+        let data_td_opt = if data_len > 0 {
+            self.pool.alloc_td()
+        } else {
+            None
+        };
 
         // SETUP TD
         {
             let td = &mut self.pool.tds[setup_td];
-            td.ctrl   = OHCI_TD_CC_NOERR | OHCI_TD_DP_SETUP | OHCI_TD_T_DATA0 | OHCI_TD_DI_NONE;
-            td.cbp    = setup as *const UsbSetupPacket as u32;
-            td.be     = td.cbp + 7;
+            td.ctrl = OHCI_TD_CC_NOERR | OHCI_TD_DP_SETUP | OHCI_TD_T_DATA0 | OHCI_TD_DI_NONE;
+            td.cbp = setup as *const UsbSetupPacket as u32;
+            td.be = td.cbp + 7;
         }
 
         // Optional DATA TD
         if let (Some(dt), Some(ref buf)) = (data_td_opt, &data) {
-            let dp = if dir_in { OHCI_TD_DP_IN } else { OHCI_TD_DP_OUT };
+            let dp = if dir_in {
+                OHCI_TD_DP_IN
+            } else {
+                OHCI_TD_DP_OUT
+            };
             let td = &mut self.pool.tds[dt];
             td.ctrl = OHCI_TD_CC_NOERR | dp | OHCI_TD_T_DATA1 | OHCI_TD_DI_NONE | OHCI_TD_R;
-            td.cbp  = buf.as_ptr() as u32;
-            td.be   = td.cbp + data_len as u32 - 1;
+            td.cbp = buf.as_ptr() as u32;
+            td.be = td.cbp + data_len as u32 - 1;
         }
 
         // STATUS TD
         {
-            let dp = if dir_in || data_len == 0 { OHCI_TD_DP_OUT } else { OHCI_TD_DP_IN };
+            let dp = if dir_in || data_len == 0 {
+                OHCI_TD_DP_OUT
+            } else {
+                OHCI_TD_DP_IN
+            };
             let td = &mut self.pool.tds[status_td];
             td.ctrl = OHCI_TD_CC_NOERR | dp | OHCI_TD_T_DATA1 | (0 << 21); // DI=immediate
-            td.cbp  = 0;
-            td.be   = 0;
+            td.cbp = 0;
+            td.be = 0;
         }
 
         // Link TDs: setup → [data] → status → 0
         let status_phys = self.pool.td_phys(status_td);
-        let data_phys   = data_td_opt.map(|i| self.pool.td_phys(i));
-        let setup_phys  = self.pool.td_phys(setup_td);
+        let data_phys = data_td_opt.map(|i| self.pool.td_phys(i));
+        let setup_phys = self.pool.td_phys(setup_td);
 
         if let Some(dp) = data_phys {
             self.pool.tds[setup_td].next_td = dp;
@@ -1295,19 +1498,24 @@ impl OhciController {
             let mut iters = 0u32;
             let ok = loop {
                 let ctrl = core::ptr::read_volatile(&self.pool.tds[status_td].ctrl);
-                let cc   = ctrl >> 28;
-                if cc != 0xE { // no longer "not accessed"
+                let cc = ctrl >> 28;
+                if cc != 0xE {
+                    // no longer "not accessed"
                     break cc == 0; // CC=0 means NoError
                 }
                 iters += 1;
-                if iters > 5_000_000 { break false; }
+                if iters > 5_000_000 {
+                    break false;
+                }
                 core::hint::spin_loop();
             };
 
             // Remove from control list
             self.write32(OHCI_HCCONTROLHEADED, 0);
 
-            if let Some(dt) = data_td_opt { self.pool.free_td(dt); }
+            if let Some(dt) = data_td_opt {
+                self.pool.free_td(dt);
+            }
             self.pool.free_td(setup_td);
             self.pool.free_td(status_td);
             self.pool.free_ed(ed_idx);
@@ -1331,34 +1539,39 @@ impl OhciController {
 #[derive(Clone, Copy)]
 pub struct EhciQtd {
     /// Next qTD pointer (physical, or TERMINATE bit set)
-    pub next:       u32,
+    pub next: u32,
     /// Alternate next qTD pointer
-    pub alt_next:   u32,
+    pub alt_next: u32,
     /// Token: dt | total_bytes | ioc | c_page | err_count | pid | status
-    pub token:      u32,
+    pub token: u32,
     /// Buffer page pointers (0–4)
     pub buf: [u32; 5],
 }
 
 // qTD Token bits
-const QTD_ACTIVE:    u32 = 1 << 7;
-const QTD_HALTED:    u32 = 1 << 6;
-const QTD_DBUFERR:   u32 = 1 << 5;
-const QTD_BABBLE:    u32 = 1 << 4;
-const QTD_XACT:      u32 = 1 << 3;  // Transaction Error
-const QTD_MMISMATCH: u32 = 1 << 2;  // Missed Micro-frame
-const QTD_SPLIT:     u32 = 1 << 1;  // Split Transaction state
-const QTD_PING:      u32 = 1 << 0;  // Ping state
-const QTD_IOC:       u32 = 1 << 15;
-const QTD_TOGGLE:    u32 = 1 << 31;
-const QTD_PID_OUT:   u32 = 0 << 8;
-const QTD_PID_IN:    u32 = 1 << 8;
+const QTD_ACTIVE: u32 = 1 << 7;
+const QTD_HALTED: u32 = 1 << 6;
+const QTD_DBUFERR: u32 = 1 << 5;
+const QTD_BABBLE: u32 = 1 << 4;
+const QTD_XACT: u32 = 1 << 3; // Transaction Error
+const QTD_MMISMATCH: u32 = 1 << 2; // Missed Micro-frame
+const QTD_SPLIT: u32 = 1 << 1; // Split Transaction state
+const QTD_PING: u32 = 1 << 0; // Ping state
+const QTD_IOC: u32 = 1 << 15;
+const QTD_TOGGLE: u32 = 1 << 31;
+const QTD_PID_OUT: u32 = 0 << 8;
+const QTD_PID_IN: u32 = 1 << 8;
 const QTD_PID_SETUP: u32 = 2 << 8;
-const QTD_TERM:      u32 = 1;
+const QTD_TERM: u32 = 1;
 
 impl EhciQtd {
     pub const fn zeroed() -> Self {
-        EhciQtd { next: QTD_TERM, alt_next: QTD_TERM, token: 0, buf: [0; 5] }
+        EhciQtd {
+            next: QTD_TERM,
+            alt_next: QTD_TERM,
+            token: 0,
+            buf: [0; 5],
+        }
     }
     pub fn set_token(&mut self, pid: u32, toggle: bool, len: usize, ioc: bool) {
         self.token = QTD_ACTIVE
@@ -1375,152 +1588,207 @@ impl EhciQtd {
 #[derive(Clone, Copy)]
 pub struct EhciQh {
     /// Horizontal link pointer (next QH in async list)
-    pub hlp:        u32,
+    pub hlp: u32,
     /// Endpoint characteristics
     pub endpt_char: u32,
     /// Endpoint capabilities
-    pub endpt_cap:  u32,
+    pub endpt_cap: u32,
     /// Current qTD pointer (written by HC)
-    pub cur_qtd:    u32,
+    pub cur_qtd: u32,
     // --- Transfer overlay (written by HC, mirrors qTD) ---
-    pub next_qtd:   u32,
-    pub alt_qtd:    u32,
-    pub status:     u32,
+    pub next_qtd: u32,
+    pub alt_qtd: u32,
+    pub status: u32,
     pub buf: [u32; 5],
 }
 
 // QH.hlp bits
-const QH_HLP_T:  u32 = 1;      // Terminate
+const QH_HLP_T: u32 = 1; // Terminate
 const QH_HLP_QH: u32 = 1 << 1; // Type = QH
 
 // QH.endpt_char bits
-const QH_CHAR_RL_SHIFT:   u32 = 28;
-const QH_CHAR_C:          u32 = 1 << 27; // Control endpoint flag
+const QH_CHAR_RL_SHIFT: u32 = 28;
+const QH_CHAR_C: u32 = 1 << 27; // Control endpoint flag
 const QH_CHAR_MAXPKT_SHIFT: u32 = 16;
-const QH_CHAR_H:          u32 = 1 << 15; // Head of Reclamation List
-const QH_CHAR_DTC:        u32 = 1 << 14; // Data Toggle Control (from qTD)
-const QH_CHAR_EPS_FS:     u32 = 0 << 12; // Full Speed
-const QH_CHAR_EPS_LS:     u32 = 1 << 12; // Low Speed
-const QH_CHAR_EPS_HS:     u32 = 2 << 12; // High Speed
-const QH_CHAR_EN_SHIFT:   u32 = 8;
-const QH_CHAR_I:          u32 = 1 << 7;  // Inactivate on Next Transaction
-const QH_CHAR_DA_SHIFT:   u32 = 0;
+const QH_CHAR_H: u32 = 1 << 15; // Head of Reclamation List
+const QH_CHAR_DTC: u32 = 1 << 14; // Data Toggle Control (from qTD)
+const QH_CHAR_EPS_FS: u32 = 0 << 12; // Full Speed
+const QH_CHAR_EPS_LS: u32 = 1 << 12; // Low Speed
+const QH_CHAR_EPS_HS: u32 = 2 << 12; // High Speed
+const QH_CHAR_EN_SHIFT: u32 = 8;
+const QH_CHAR_I: u32 = 1 << 7; // Inactivate on Next Transaction
+const QH_CHAR_DA_SHIFT: u32 = 0;
 
 impl EhciQh {
     pub const fn zeroed() -> Self {
         EhciQh {
-            hlp: QH_HLP_T, endpt_char: 0, endpt_cap: 0,
-            cur_qtd: 0, next_qtd: QTD_TERM, alt_qtd: QTD_TERM,
-            status: 0, buf: [0; 5],
+            hlp: QH_HLP_T,
+            endpt_char: 0,
+            endpt_cap: 0,
+            cur_qtd: 0,
+            next_qtd: QTD_TERM,
+            alt_qtd: QTD_TERM,
+            status: 0,
+            buf: [0; 5],
         }
     }
-    pub fn setup(&mut self, dev_addr: u8, endpoint: u8, max_pkt: u16,
-                 high_speed: bool, low_speed: bool, control: bool) {
-        let eps = if high_speed { QH_CHAR_EPS_HS }
-                  else if low_speed { QH_CHAR_EPS_LS }
-                  else { QH_CHAR_EPS_FS };
+    pub fn setup(
+        &mut self,
+        dev_addr: u8,
+        endpoint: u8,
+        max_pkt: u16,
+        high_speed: bool,
+        low_speed: bool,
+        control: bool,
+    ) {
+        let eps = if high_speed {
+            QH_CHAR_EPS_HS
+        } else if low_speed {
+            QH_CHAR_EPS_LS
+        } else {
+            QH_CHAR_EPS_FS
+        };
         self.endpt_char = (dev_addr as u32)
             | ((endpoint as u32) << QH_CHAR_EN_SHIFT)
             | eps
             | ((max_pkt as u32) << QH_CHAR_MAXPKT_SHIFT)
             | QH_CHAR_DTC
             | (if control { QH_CHAR_C } else { 0 });
-        self.endpt_cap  = 1 << 30; // Mult=1 (one transaction per micro-frame)
-        self.next_qtd   = QTD_TERM;
-        self.alt_qtd    = QTD_TERM;
-        self.status     = 0;
+        self.endpt_cap = 1 << 30; // Mult=1 (one transaction per micro-frame)
+        self.next_qtd = QTD_TERM;
+        self.alt_qtd = QTD_TERM;
+        self.status = 0;
     }
 }
 
 // EHCI MMIO register offsets (capability registers base = mmio_base)
-const EHCI_CAPLENGTH:   usize = 0x00; // 1-byte cap length
-const EHCI_HCIVERSION:  usize = 0x02;
-const EHCI_HCSPARAMS:   usize = 0x04;
-const EHCI_HCCPARAMS:   usize = 0x08;
+const EHCI_CAPLENGTH: usize = 0x00; // 1-byte cap length
+const EHCI_HCIVERSION: usize = 0x02;
+const EHCI_HCSPARAMS: usize = 0x04;
+const EHCI_HCCPARAMS: usize = 0x08;
 
 // Operational registers offset = mmio_base + cap_length
-const EHCI_USBCMD:      usize = 0x00;
-const EHCI_USBSTS:      usize = 0x04;
-const EHCI_USBINTR:     usize = 0x08;
-const EHCI_FRINDEX:     usize = 0x0C;
-const EHCI_CTRLDSEGMENT:usize = 0x10;
+const EHCI_USBCMD: usize = 0x00;
+const EHCI_USBSTS: usize = 0x04;
+const EHCI_USBINTR: usize = 0x08;
+const EHCI_FRINDEX: usize = 0x0C;
+const EHCI_CTRLDSEGMENT: usize = 0x10;
 const EHCI_PERIODICLISTBASE: usize = 0x14;
 const EHCI_ASYNCLISTADDR: usize = 0x18;
-const EHCI_CONFIGFLAG:  usize = 0x40;
-const EHCI_PORTSC:      usize = 0x44; // +4 per port
+const EHCI_CONFIGFLAG: usize = 0x40;
+const EHCI_PORTSC: usize = 0x44; // +4 per port
 
 // USBCMD bits
-const EHCI_CMD_RS:     u32 = 1 << 0;  // Run/Stop
-const EHCI_CMD_HCRST:  u32 = 1 << 1;  // Host Controller Reset
-const EHCI_CMD_ASE:    u32 = 1 << 5;  // Async Schedule Enable
-const EHCI_CMD_PSE:    u32 = 1 << 4;  // Periodic Schedule Enable
-const EHCI_CMD_ITC_1:  u32 = 1 << 16; // Interrupt Threshold (1 micro-frame)
+const EHCI_CMD_RS: u32 = 1 << 0; // Run/Stop
+const EHCI_CMD_HCRST: u32 = 1 << 1; // Host Controller Reset
+const EHCI_CMD_ASE: u32 = 1 << 5; // Async Schedule Enable
+const EHCI_CMD_PSE: u32 = 1 << 4; // Periodic Schedule Enable
+const EHCI_CMD_ITC_1: u32 = 1 << 16; // Interrupt Threshold (1 micro-frame)
 
 // USBSTS bits
-const EHCI_STS_ASS:    u32 = 1 << 15; // Async Schedule Status
-const EHCI_STS_HALT:   u32 = 1 << 12; // HC Halted
+const EHCI_STS_ASS: u32 = 1 << 15; // Async Schedule Status
+const EHCI_STS_HALT: u32 = 1 << 12; // HC Halted
 
 // PORTSC bits (EHCI)
-const EHCI_PORT_CCS:   u32 = 1 << 0;  // Current Connect Status
-const EHCI_PORT_CSC:   u32 = 1 << 1;  // Connect Status Change
-const EHCI_PORT_PED:   u32 = 1 << 2;  // Port Enable
-const EHCI_PORT_PR:    u32 = 1 << 8;  // Port Reset
+const EHCI_PORT_CCS: u32 = 1 << 0; // Current Connect Status
+const EHCI_PORT_CSC: u32 = 1 << 1; // Connect Status Change
+const EHCI_PORT_PED: u32 = 1 << 2; // Port Enable
+const EHCI_PORT_PR: u32 = 1 << 8; // Port Reset
 const EHCI_PORT_OWNER: u32 = 1 << 13; // Port Owner (1 = companion HC)
-const EHCI_PORT_LS:    u32 = 3 << 10; // Line Status
-const EHCI_PORT_LS_K:  u32 = 1 << 10; // K-state (low-speed device indicator)
+const EHCI_PORT_LS: u32 = 3 << 10; // Line Status
+const EHCI_PORT_LS_K: u32 = 1 << 10; // K-state (low-speed device indicator)
 
 const EHCI_QH_POOL: usize = 8;
 const EHCI_QTD_POOL: usize = 32;
 
 pub struct EhciPool {
-    qhs:     [EhciQh;  EHCI_QH_POOL],
-    qtds:    [EhciQtd; EHCI_QTD_POOL],
-    qh_used: [bool;    EHCI_QH_POOL],
-    qtd_used:[bool;    EHCI_QTD_POOL],
+    qhs: [EhciQh; EHCI_QH_POOL],
+    qtds: [EhciQtd; EHCI_QTD_POOL],
+    qh_used: [bool; EHCI_QH_POOL],
+    qtd_used: [bool; EHCI_QTD_POOL],
 }
 
 impl EhciPool {
     pub const fn new() -> Self {
         EhciPool {
-            qhs:      [EhciQh  { hlp: QH_HLP_T, endpt_char: 0, endpt_cap: 0,
-                                  cur_qtd: 0, next_qtd: QTD_TERM, alt_qtd: QTD_TERM,
-                                  status: 0, buf: [0;5] }; EHCI_QH_POOL],
-            qtds:     [EhciQtd { next: QTD_TERM, alt_next: QTD_TERM, token: 0, buf: [0;5] };
-                       EHCI_QTD_POOL],
-            qh_used:  [false; EHCI_QH_POOL],
+            qhs: [EhciQh {
+                hlp: QH_HLP_T,
+                endpt_char: 0,
+                endpt_cap: 0,
+                cur_qtd: 0,
+                next_qtd: QTD_TERM,
+                alt_qtd: QTD_TERM,
+                status: 0,
+                buf: [0; 5],
+            }; EHCI_QH_POOL],
+            qtds: [EhciQtd {
+                next: QTD_TERM,
+                alt_next: QTD_TERM,
+                token: 0,
+                buf: [0; 5],
+            }; EHCI_QTD_POOL],
+            qh_used: [false; EHCI_QH_POOL],
             qtd_used: [false; EHCI_QTD_POOL],
         }
     }
-    pub fn alloc_qh(&mut self)  -> Option<usize> {
-        self.qh_used.iter_mut().enumerate()
+    pub fn alloc_qh(&mut self) -> Option<usize> {
+        self.qh_used
+            .iter_mut()
+            .enumerate()
             .find(|(_, u)| !**u)
-            .map(|(i, u)| { *u = true; self.qhs[i]  = EhciQh::zeroed();  i })
+            .map(|(i, u)| {
+                *u = true;
+                self.qhs[i] = EhciQh::zeroed();
+                i
+            })
     }
     pub fn alloc_qtd(&mut self) -> Option<usize> {
-        self.qtd_used.iter_mut().enumerate()
+        self.qtd_used
+            .iter_mut()
+            .enumerate()
             .find(|(_, u)| !**u)
-            .map(|(i, u)| { *u = true; self.qtds[i] = EhciQtd::zeroed(); i })
+            .map(|(i, u)| {
+                *u = true;
+                self.qtds[i] = EhciQtd::zeroed();
+                i
+            })
     }
-    pub fn free_qh(&mut self,  i: usize) { if i < EHCI_QH_POOL  { self.qh_used[i]  = false; } }
-    pub fn free_qtd(&mut self, i: usize) { if i < EHCI_QTD_POOL { self.qtd_used[i] = false; } }
-    pub fn qh_phys(&self, i: usize)  -> u32 { &self.qhs[i]  as *const EhciQh  as u32 }
-    pub fn qtd_phys(&self, i: usize) -> u32 { &self.qtds[i] as *const EhciQtd as u32 }
+    pub fn free_qh(&mut self, i: usize) {
+        if i < EHCI_QH_POOL {
+            self.qh_used[i] = false;
+        }
+    }
+    pub fn free_qtd(&mut self, i: usize) {
+        if i < EHCI_QTD_POOL {
+            self.qtd_used[i] = false;
+        }
+    }
+    pub fn qh_phys(&self, i: usize) -> u32 {
+        &self.qhs[i] as *const EhciQh as u32
+    }
+    pub fn qtd_phys(&self, i: usize) -> u32 {
+        &self.qtds[i] as *const EhciQtd as u32
+    }
 }
 
 /// EHCI host controller — full implementation.
 pub struct EhciController {
-    pub mmio_base:   usize,
-    pub op_base:     usize,   // mmio_base + cap_length
+    pub mmio_base: usize,
+    pub op_base: usize, // mmio_base + cap_length
     pub initialised: bool,
-    pub port_count:  usize,
-    pub pci:         PciDevice,
-    pub pool:        EhciPool,
+    pub port_count: usize,
+    pub pci: PciDevice,
+    pub pool: EhciPool,
 }
 
 impl EhciController {
     pub const fn new(mmio_base: usize, pci: PciDevice) -> Self {
         EhciController {
-            mmio_base, op_base: 0, initialised: false, port_count: 0, pci,
+            mmio_base,
+            op_base: 0,
+            initialised: false,
+            port_count: 0,
+            pci,
             pool: EhciPool::new(),
         }
     }
@@ -1560,9 +1828,13 @@ impl EhciController {
                     let mut i = 0u32;
                     loop {
                         let v = pci_read32_by_offset(self.pci, eecp);
-                        if v & (1 << 16) == 0 { break; }
+                        if v & (1 << 16) == 0 {
+                            break;
+                        }
                         i += 1;
-                        if i > 100_000 { break; }
+                        if i > 100_000 {
+                            break;
+                        }
                         core::hint::spin_loop();
                     }
                     break;
@@ -1584,7 +1856,9 @@ impl EhciController {
             // HC reset
             self.op_write32(EHCI_USBCMD, EHCI_CMD_HCRST);
             for _ in 0..200_000 {
-                if self.op_read32(EHCI_USBCMD) & EHCI_CMD_HCRST == 0 { break; }
+                if self.op_read32(EHCI_USBCMD) & EHCI_CMD_HCRST == 0 {
+                    break;
+                }
                 core::hint::spin_loop();
             }
 
@@ -1610,7 +1884,9 @@ impl EhciController {
                 let v = self.port_read(p);
                 self.port_write(p, v | (1 << 12)); // PortPower
             }
-            for _ in 0..200_000 { core::hint::spin_loop(); }
+            for _ in 0..200_000 {
+                core::hint::spin_loop();
+            }
         }
         self.initialised = true;
     }
@@ -1621,7 +1897,9 @@ impl EhciController {
     pub fn reset_port(&self, port: usize) -> Option<UsbSpeed> {
         unsafe {
             let v = self.port_read(port);
-            if v & EHCI_PORT_CCS == 0 { return None; }
+            if v & EHCI_PORT_CCS == 0 {
+                return None;
+            }
 
             // If line status shows K-state, this is a low-/full-speed device →
             // release port ownership to companion HC and report Full speed.
@@ -1633,11 +1911,15 @@ impl EhciController {
             // Assert reset
             let v2 = (v & !EHCI_PORT_PED) | EHCI_PORT_PR;
             self.port_write(port, v2);
-            for _ in 0..500_000 { core::hint::spin_loop(); }
+            for _ in 0..500_000 {
+                core::hint::spin_loop();
+            }
             // Deassert reset
             self.port_write(port, self.port_read(port) & !EHCI_PORT_PR);
             // Wait for PED to be set by HC
-            for _ in 0..100_000 { core::hint::spin_loop(); }
+            for _ in 0..100_000 {
+                core::hint::spin_loop();
+            }
 
             let v3 = self.port_read(port);
             // Clear CSC
@@ -1654,7 +1936,9 @@ impl EhciController {
     pub fn probe_ports(&self) -> alloc::vec::Vec<(usize, UsbSpeed)> {
         let mut out = alloc::vec::Vec::new();
         for p in 0..self.port_count {
-            if let Some(spd) = self.reset_port(p) { out.push((p, spd)); }
+            if let Some(spd) = self.reset_port(p) {
+                out.push((p, spd));
+            }
         }
         out
     }
@@ -1676,7 +1960,9 @@ impl EhciController {
         self.op_write32(EHCI_USBCMD, cmd);
         // Wait for ASS to set
         for _ in 0..100_000 {
-            if self.op_read32(EHCI_USBSTS) & EHCI_STS_ASS != 0 { break; }
+            if self.op_read32(EHCI_USBSTS) & EHCI_STS_ASS != 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
 
@@ -1695,7 +1981,9 @@ impl EhciController {
         let cmd2 = self.op_read32(EHCI_USBCMD) & !EHCI_CMD_ASE;
         self.op_write32(EHCI_USBCMD, cmd2);
         for _ in 0..100_000 {
-            if self.op_read32(EHCI_USBSTS) & EHCI_STS_ASS == 0 { break; }
+            if self.op_read32(EHCI_USBSTS) & EHCI_STS_ASS == 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
         ok
@@ -1706,20 +1994,40 @@ impl EhciController {
     // ----------------------------------------------------------------
     pub fn control_transfer(
         &mut self,
-        dev_addr:  u8,
+        dev_addr: u8,
         high_speed: bool,
-        low_speed:  bool,
-        setup:      &UsbSetupPacket,
-        data:       Option<&mut [u8]>,
-        dir_in:     bool,
+        low_speed: bool,
+        setup: &UsbSetupPacket,
+        data: Option<&mut [u8]>,
+        dir_in: bool,
     ) -> bool {
         let data_len = data.as_ref().map_or(0, |b| b.len());
         let max_pkt: u16 = if high_speed { 64 } else { 8 };
 
-        let qh_idx    = match self.pool.alloc_qh()  { Some(i) => i, None => return false };
-        let setup_qtd = match self.pool.alloc_qtd() { Some(i) => i, None => { self.pool.free_qh(qh_idx); return false; } };
-        let status_qtd= match self.pool.alloc_qtd() { Some(i) => i, None => { self.pool.free_qtd(setup_qtd); self.pool.free_qh(qh_idx); return false; } };
-        let data_qtd_opt = if data_len > 0 { self.pool.alloc_qtd() } else { None };
+        let qh_idx = match self.pool.alloc_qh() {
+            Some(i) => i,
+            None => return false,
+        };
+        let setup_qtd = match self.pool.alloc_qtd() {
+            Some(i) => i,
+            None => {
+                self.pool.free_qh(qh_idx);
+                return false;
+            }
+        };
+        let status_qtd = match self.pool.alloc_qtd() {
+            Some(i) => i,
+            None => {
+                self.pool.free_qtd(setup_qtd);
+                self.pool.free_qh(qh_idx);
+                return false;
+            }
+        };
+        let data_qtd_opt = if data_len > 0 {
+            self.pool.alloc_qtd()
+        } else {
+            None
+        };
 
         self.pool.qhs[qh_idx].setup(dev_addr, 0, max_pkt, high_speed, low_speed, true);
 
@@ -1745,20 +2053,24 @@ impl EhciController {
 
         // STATUS qTD
         {
-            let pid = if dir_in || data_len == 0 { QTD_PID_OUT } else { QTD_PID_IN };
+            let pid = if dir_in || data_len == 0 {
+                QTD_PID_OUT
+            } else {
+                QTD_PID_IN
+            };
             let qtd = &mut self.pool.qtds[status_qtd];
             qtd.set_token(pid, true, 0, true);
         }
 
         // Link qTDs
         let status_phys = self.pool.qtd_phys(status_qtd);
-        let setup_phys  = self.pool.qtd_phys(setup_qtd);
+        let setup_phys = self.pool.qtd_phys(setup_qtd);
         if let Some(dq) = data_qtd_opt {
             let data_phys = self.pool.qtd_phys(dq);
-            self.pool.qtds[setup_qtd].next   = data_phys;
-            self.pool.qtds[dq].next          = status_phys;
+            self.pool.qtds[setup_qtd].next = data_phys;
+            self.pool.qtds[dq].next = status_phys;
         } else {
-            self.pool.qtds[setup_qtd].next   = status_phys;
+            self.pool.qtds[setup_qtd].next = status_phys;
         }
         self.pool.qtds[status_qtd].next = QTD_TERM;
 
@@ -1767,7 +2079,9 @@ impl EhciController {
 
         let ok = unsafe { self.run_async_qh(qh_idx) };
 
-        if let Some(dq) = data_qtd_opt { self.pool.free_qtd(dq); }
+        if let Some(dq) = data_qtd_opt {
+            self.pool.free_qtd(dq);
+        }
         self.pool.free_qtd(setup_qtd);
         self.pool.free_qtd(status_qtd);
         self.pool.free_qh(qh_idx);
@@ -1779,24 +2093,30 @@ impl EhciController {
     // ----------------------------------------------------------------
     pub fn bulk_transfer(
         &mut self,
-        dev_addr:  u8,
-        endpoint:  u8,
+        dev_addr: u8,
+        endpoint: u8,
         high_speed: bool,
-        dir_in:    bool,
-        max_pkt:   u16,
-        data:      &mut [u8],
-        toggle:    &mut bool,
+        dir_in: bool,
+        max_pkt: u16,
+        data: &mut [u8],
+        toggle: &mut bool,
     ) -> bool {
-        let qh_idx = match self.pool.alloc_qh() { Some(i) => i, None => return false };
+        let qh_idx = match self.pool.alloc_qh() {
+            Some(i) => i,
+            None => return false,
+        };
         self.pool.qhs[qh_idx].setup(dev_addr, endpoint, max_pkt, high_speed, false, false);
 
-        let total   = data.len();
+        let total = data.len();
         let mut off = 0usize;
 
         while off < total {
-            let chunk    = core::cmp::min(max_pkt as usize, total - off);
-            let qtd_idx  = match self.pool.alloc_qtd() { Some(i) => i, None => break };
-            let pid      = if dir_in { QTD_PID_IN } else { QTD_PID_OUT };
+            let chunk = core::cmp::min(max_pkt as usize, total - off);
+            let qtd_idx = match self.pool.alloc_qtd() {
+                Some(i) => i,
+                None => break,
+            };
+            let pid = if dir_in { QTD_PID_IN } else { QTD_PID_OUT };
             {
                 let qtd = &mut self.pool.qtds[qtd_idx];
                 qtd.set_token(pid, *toggle, chunk, off + chunk == total);
@@ -1806,7 +2126,10 @@ impl EhciController {
 
             let ok = unsafe { self.run_async_qh(qh_idx) };
             self.pool.free_qtd(qtd_idx);
-            if !ok { self.pool.free_qh(qh_idx); return false; }
+            if !ok {
+                self.pool.free_qh(qh_idx);
+                return false;
+            }
 
             *toggle = !*toggle;
             off += chunk;
@@ -1843,33 +2166,33 @@ impl EhciController {
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Default)]
 pub struct XhciTrb {
-    pub param:  u64,
+    pub param: u64,
     pub status: u32,
-    pub ctrl:   u32,
+    pub ctrl: u32,
 }
 
 // TRB type codes (ctrl bits 15:10)
-const TRB_TYPE_NORMAL:          u32 = 1  << 10;
-const TRB_TYPE_SETUP_STAGE:     u32 = 2  << 10;
-const TRB_TYPE_DATA_STAGE:      u32 = 3  << 10;
-const TRB_TYPE_STATUS_STAGE:    u32 = 4  << 10;
-const TRB_TYPE_LINK:            u32 = 6  << 10;
-const TRB_TYPE_ENABLE_SLOT_CMD: u32 = 9  << 10;
-const TRB_TYPE_ADDR_DEV_CMD:    u32 = 11 << 10;
-const TRB_TYPE_CONFIG_EP_CMD:   u32 = 12 << 10;
-const TRB_TYPE_NO_OP_CMD:       u32 = 23 << 10;
-const TRB_TYPE_CMD_COMPLETION:  u32 = 33 << 10;
+const TRB_TYPE_NORMAL: u32 = 1 << 10;
+const TRB_TYPE_SETUP_STAGE: u32 = 2 << 10;
+const TRB_TYPE_DATA_STAGE: u32 = 3 << 10;
+const TRB_TYPE_STATUS_STAGE: u32 = 4 << 10;
+const TRB_TYPE_LINK: u32 = 6 << 10;
+const TRB_TYPE_ENABLE_SLOT_CMD: u32 = 9 << 10;
+const TRB_TYPE_ADDR_DEV_CMD: u32 = 11 << 10;
+const TRB_TYPE_CONFIG_EP_CMD: u32 = 12 << 10;
+const TRB_TYPE_NO_OP_CMD: u32 = 23 << 10;
+const TRB_TYPE_CMD_COMPLETION: u32 = 33 << 10;
 const TRB_TYPE_PORT_STATUS_CHG: u32 = 34 << 10;
-const TRB_TYPE_XFER_EVENT:      u32 = 32 << 10;
+const TRB_TYPE_XFER_EVENT: u32 = 32 << 10;
 
 // TRB control bit
-const TRB_CYCLE:    u32 = 1 << 0;
-const TRB_TOGGLE:   u32 = 1 << 1; // Link TRB toggle cycle
-const TRB_ENT:      u32 = 1 << 1; // Evaluate Next TRB
-const TRB_ISP:      u32 = 1 << 2; // Interrupt on Short Packet
-const TRB_IOC:      u32 = 1 << 5; // Interrupt on Completion
-const TRB_IDT:      u32 = 1 << 6; // Immediate Data (setup stage)
-const TRB_DIR_IN:   u32 = 1 << 16; // Data Stage direction
+const TRB_CYCLE: u32 = 1 << 0;
+const TRB_TOGGLE: u32 = 1 << 1; // Link TRB toggle cycle
+const TRB_ENT: u32 = 1 << 1; // Evaluate Next TRB
+const TRB_ISP: u32 = 1 << 2; // Interrupt on Short Packet
+const TRB_IOC: u32 = 1 << 5; // Interrupt on Completion
+const TRB_IDT: u32 = 1 << 6; // Immediate Data (setup stage)
+const TRB_DIR_IN: u32 = 1 << 16; // Data Stage direction
 
 // XHCI capability register offsets (from mmio_base)
 const XHCI_CAPLENGTH: usize = 0x00;
@@ -1878,38 +2201,38 @@ const XHCI_HCSPARAMS2: usize = 0x08;
 const XHCI_HCCPARAMS1: usize = 0x10;
 
 // XHCI operational register offsets (from op_base = mmio_base + cap_length)
-const XHCI_USBCMD:    usize = 0x00;
-const XHCI_USBSTS:    usize = 0x04;
-const XHCI_PAGESIZE:  usize = 0x08;
-const XHCI_DNCTRL:    usize = 0x14;
-const XHCI_CRCR_LO:   usize = 0x18;
-const XHCI_CRCR_HI:   usize = 0x1C;
+const XHCI_USBCMD: usize = 0x00;
+const XHCI_USBSTS: usize = 0x04;
+const XHCI_PAGESIZE: usize = 0x08;
+const XHCI_DNCTRL: usize = 0x14;
+const XHCI_CRCR_LO: usize = 0x18;
+const XHCI_CRCR_HI: usize = 0x1C;
 const XHCI_DCBAAP_LO: usize = 0x30;
 const XHCI_DCBAAP_HI: usize = 0x34;
-const XHCI_CONFIG:    usize = 0x38;
+const XHCI_CONFIG: usize = 0x38;
 
 // XHCI runtime register base offset from mmio_base: read from RTSOFF
 const XHCI_RTSOFF: usize = 0x18;
 
 // Runtime register offsets (from runtime_base = mmio_base + rtsoff)
-const XHCI_IMAN:  usize = 0x20; // Interrupter 0 management
+const XHCI_IMAN: usize = 0x20; // Interrupter 0 management
 const XHCI_ERDP_LO: usize = 0x38; // Event ring dequeue ptr lo
 const XHCI_ERDP_HI: usize = 0x3C;
 const XHCI_ERSTBA_LO: usize = 0x30; // ERST base lo
 const XHCI_ERSTBA_HI: usize = 0x34;
-const XHCI_ERSTSZ:  usize = 0x28;  // ERST size
+const XHCI_ERSTSZ: usize = 0x28; // ERST size
 
 // Doorbell register array: offset from mmio_base = DBOFF (at cap+0x14)
 const XHCI_DBOFF: usize = 0x14;
 
 // USBCMD bits
-const XHCI_CMD_RS:    u32 = 1 << 0;
+const XHCI_CMD_RS: u32 = 1 << 0;
 const XHCI_CMD_HCRST: u32 = 1 << 1;
-const XHCI_CMD_INTE:  u32 = 1 << 2; // Interrupter enable
+const XHCI_CMD_INTE: u32 = 1 << 2; // Interrupter enable
 
 // USBSTS bits
-const XHCI_STS_HCH:  u32 = 1 << 0; // Host Controller Halted
-const XHCI_STS_CNR:  u32 = 1 << 11; // Controller Not Ready
+const XHCI_STS_HCH: u32 = 1 << 0; // Host Controller Halted
+const XHCI_STS_CNR: u32 = 1 << 11; // Controller Not Ready
 
 // Number of TRBs in each ring (must be power of 2; last slot is Link TRB).
 const XHCI_RING_SIZE: usize = 64;
@@ -1936,13 +2259,26 @@ struct XhciRing {
     trbs: [XhciTrb; XHCI_RING_SIZE],
 }
 impl XhciRing {
-    const fn new() -> Self { XhciRing { trbs: [XhciTrb { param: 0, status: 0, ctrl: 0 }; XHCI_RING_SIZE] } }
+    const fn new() -> Self {
+        XhciRing {
+            trbs: [XhciTrb {
+                param: 0,
+                status: 0,
+                ctrl: 0,
+            }; XHCI_RING_SIZE],
+        }
+    }
 }
 
-static mut XHCI_CMD_RING:  XhciRing = XhciRing::new();
-static mut XHCI_EVT_RING:  XhciRing = XhciRing::new();
+static mut XHCI_CMD_RING: XhciRing = XhciRing::new();
+static mut XHCI_EVT_RING: XhciRing = XhciRing::new();
 static mut XHCI_XFER_RING: XhciRing = XhciRing::new();
-static mut XHCI_ERST:      [XhciErstEntry; XHCI_ERST_SIZE] = [XhciErstEntry { base_lo: 0, base_hi: 0, ring_seg_size: 0, _rsvd: 0 }];
+static mut XHCI_ERST: [XhciErstEntry; XHCI_ERST_SIZE] = [XhciErstEntry {
+    base_lo: 0,
+    base_hi: 0,
+    ring_seg_size: 0,
+    _rsvd: 0,
+}];
 
 // Device Context Base Address Array (DCBAA).
 // Slot 0 = scratchpad (set to 0); slots 1..=max_slots = output device contexts.
@@ -1968,34 +2304,42 @@ static mut XHCI_INPUT_CTX: XhciInputCtx = XhciInputCtx { data: [0u32; 128] };
 
 /// xHCI host controller — full implementation.
 pub struct XhciController {
-    pub mmio_base:  usize,
-    op_base:        usize, // mmio_base + cap_length
-    db_base:        usize, // doorbell array base
-    rt_base:        usize, // runtime register base
+    pub mmio_base: usize,
+    op_base: usize, // mmio_base + cap_length
+    db_base: usize, // doorbell array base
+    rt_base: usize, // runtime register base
     pub initialised: bool,
-    pub pci:        PciDevice,
-    max_slots:      u8,
-    max_ports:      u8,
+    pub pci: PciDevice,
+    max_slots: u8,
+    max_ports: u8,
     /// Command ring enqueue pointer index and cycle state.
-    cmd_enq:   usize,
+    cmd_enq: usize,
     cmd_cycle: bool,
     /// Event ring dequeue pointer index and cycle state.
-    evt_deq:   usize,
+    evt_deq: usize,
     evt_cycle: bool,
     /// Transfer ring enqueue pointer index and cycle state.
-    xfer_enq:   usize,
+    xfer_enq: usize,
     xfer_cycle: bool,
 }
 
 impl XhciController {
     pub const fn new(mmio_base: usize, pci: PciDevice) -> Self {
         XhciController {
-            mmio_base, op_base: 0, db_base: 0, rt_base: 0,
-            initialised: false, pci,
-            max_slots: 0, max_ports: 0,
-            cmd_enq: 0, cmd_cycle: true,
-            evt_deq: 0, evt_cycle: true,
-            xfer_enq: 0, xfer_cycle: true,
+            mmio_base,
+            op_base: 0,
+            db_base: 0,
+            rt_base: 0,
+            initialised: false,
+            pci,
+            max_slots: 0,
+            max_ports: 0,
+            cmd_enq: 0,
+            cmd_cycle: true,
+            evt_deq: 0,
+            evt_cycle: true,
+            xfer_enq: 0,
+            xfer_cycle: true,
         }
     }
 
@@ -2015,18 +2359,28 @@ impl XhciController {
         lo | (hi << 32)
     }
     unsafe fn write64(&self, base: usize, offset: usize, v: u64) {
-        self.write32(base, offset,       v as u32);
+        self.write32(base, offset, v as u32);
         self.write32(base, offset + 4, (v >> 32) as u32);
     }
 
     // Capability register shortcuts
-    unsafe fn cap_read32(&self, off: usize) -> u32 { self.read32(self.mmio_base, off) }
+    unsafe fn cap_read32(&self, off: usize) -> u32 {
+        self.read32(self.mmio_base, off)
+    }
     // Operational register shortcuts
-    unsafe fn op_read32(&self, off: usize)  -> u32 { self.read32(self.op_base, off) }
-    unsafe fn op_write32(&self, off: usize, v: u32) { self.write32(self.op_base, off, v); }
+    unsafe fn op_read32(&self, off: usize) -> u32 {
+        self.read32(self.op_base, off)
+    }
+    unsafe fn op_write32(&self, off: usize, v: u32) {
+        self.write32(self.op_base, off, v);
+    }
     // Runtime register shortcuts
-    unsafe fn rt_write32(&self, off: usize, v: u32) { self.write32(self.rt_base, off, v); }
-    unsafe fn rt_write64(&self, off: usize, v: u64) { self.write64(self.rt_base, off, v); }
+    unsafe fn rt_write32(&self, off: usize, v: u32) {
+        self.write32(self.rt_base, off, v);
+    }
+    unsafe fn rt_write64(&self, off: usize, v: u64) {
+        self.write64(self.rt_base, off, v);
+    }
     // Doorbell shortcuts
     unsafe fn ring_doorbell(&self, slot: u8, endpoint: u8) {
         self.write32(self.db_base, (slot as usize) * 4, endpoint as u32);
@@ -2034,7 +2388,7 @@ impl XhciController {
 
     const USB_LEGACY_SUPPORT: u32 = 0x01;
     const XHCI_USBLEGSUP_BIOS_SEM: u32 = 1 << 16;
-    const XHCI_USBLEGSUP_OS_SEM:   u32 = 1 << 24;
+    const XHCI_USBLEGSUP_OS_SEM: u32 = 1 << 24;
 
     // ----------------------------------------------------------------
     // BIOS hand-off
@@ -2047,16 +2401,23 @@ impl XhciController {
             while xecp != 0 {
                 let cap_hdr = self.read32(self.mmio_base, xecp * 4);
                 if cap_hdr & 0xFF == Self::USB_LEGACY_SUPPORT {
-                    self.write32(self.mmio_base, xecp * 4,
-                                 cap_hdr | Self::XHCI_USBLEGSUP_OS_SEM);
+                    self.write32(
+                        self.mmio_base,
+                        xecp * 4,
+                        cap_hdr | Self::XHCI_USBLEGSUP_OS_SEM,
+                    );
                     for _ in 0..200_000u32 {
                         let v = self.read32(self.mmio_base, xecp * 4);
-                        if v & Self::XHCI_USBLEGSUP_BIOS_SEM == 0 { break; }
+                        if v & Self::XHCI_USBLEGSUP_BIOS_SEM == 0 {
+                            break;
+                        }
                     }
                     break;
                 }
                 let next = (cap_hdr >> 8) & 0xFF;
-                if next == 0 { break; }
+                if next == 0 {
+                    break;
+                }
                 xecp += next as usize;
             }
         }
@@ -2092,14 +2453,19 @@ impl XhciController {
             self.op_write32(XHCI_USBCMD, cmd);
             // Wait for HCH
             for _ in 0..100_000u32 {
-                if self.op_read32(XHCI_USBSTS) & XHCI_STS_HCH != 0 { break; }
+                if self.op_read32(XHCI_USBSTS) & XHCI_STS_HCH != 0 {
+                    break;
+                }
             }
 
             // ---- Reset ----
             self.op_write32(XHCI_USBCMD, XHCI_CMD_HCRST);
             for _ in 0..500_000u32 {
-                if self.op_read32(XHCI_USBCMD) & XHCI_CMD_HCRST == 0 &&
-                   self.op_read32(XHCI_USBSTS) & XHCI_STS_CNR  == 0 { break; }
+                if self.op_read32(XHCI_USBCMD) & XHCI_CMD_HCRST == 0
+                    && self.op_read32(XHCI_USBSTS) & XHCI_STS_CNR == 0
+                {
+                    break;
+                }
             }
 
             // ---- Configure max device slots ----
@@ -2117,9 +2483,9 @@ impl XhciController {
             // ---- Set up Command Ring ----
             // Insert a Link TRB at the last slot pointing back to the start.
             let cmd_phys = XHCI_CMD_RING.trbs.as_ptr() as u64;
-            XHCI_CMD_RING.trbs[XHCI_RING_SIZE - 1].param  = cmd_phys;
+            XHCI_CMD_RING.trbs[XHCI_RING_SIZE - 1].param = cmd_phys;
             XHCI_CMD_RING.trbs[XHCI_RING_SIZE - 1].status = 0;
-            XHCI_CMD_RING.trbs[XHCI_RING_SIZE - 1].ctrl   = TRB_TYPE_LINK | TRB_TOGGLE | TRB_CYCLE;
+            XHCI_CMD_RING.trbs[XHCI_RING_SIZE - 1].ctrl = TRB_TYPE_LINK | TRB_TOGGLE | TRB_CYCLE;
             // Write CRCR: base address + cycle bit
             self.write64(self.op_base, XHCI_CRCR_LO, cmd_phys | 1);
 
@@ -2138,19 +2504,24 @@ impl XhciController {
 
             // ---- Set up Transfer Ring (one global ring for now) ----
             let xfer_phys = XHCI_XFER_RING.trbs.as_ptr() as u64;
-            XHCI_XFER_RING.trbs[XHCI_RING_SIZE - 1].param  = xfer_phys;
-            XHCI_XFER_RING.trbs[XHCI_RING_SIZE - 1].ctrl   = TRB_TYPE_LINK | TRB_TOGGLE | TRB_CYCLE;
+            XHCI_XFER_RING.trbs[XHCI_RING_SIZE - 1].param = xfer_phys;
+            XHCI_XFER_RING.trbs[XHCI_RING_SIZE - 1].ctrl = TRB_TYPE_LINK | TRB_TOGGLE | TRB_CYCLE;
 
             // ---- Start the controller ----
             self.op_write32(XHCI_USBCMD, XHCI_CMD_RS);
             for _ in 0..100_000u32 {
-                if self.op_read32(XHCI_USBSTS) & XHCI_STS_HCH == 0 { break; }
+                if self.op_read32(XHCI_USBSTS) & XHCI_STS_HCH == 0 {
+                    break;
+                }
             }
         }
 
         self.initialised = true;
-        crate::serial_println!("[xHCI] Initialised: max_slots={} max_ports={}",
-                               self.max_slots, self.max_ports);
+        crate::serial_println!(
+            "[xHCI] Initialised: max_slots={} max_ports={}",
+            self.max_slots,
+            self.max_ports
+        );
         true
     }
 
@@ -2179,17 +2550,24 @@ impl XhciController {
 
                 let portsc = self.op_read32(portsc_off);
                 // CCS = bit 0: device connected
-                if portsc & 0x01 == 0 { continue; }
+                if portsc & 0x01 == 0 {
+                    continue;
+                }
 
                 // Reset the port (PR bit 4)
                 self.op_write32(portsc_off, portsc | (1 << 4));
                 for _ in 0..500_000u32 {
-                    if self.op_read32(portsc_off) & (1 << 4) == 0 { break; }
+                    if self.op_read32(portsc_off) & (1 << 4) == 0 {
+                        break;
+                    }
                 }
 
                 let portsc = self.op_read32(portsc_off);
-                let speed  = ((portsc >> 10) & 0xF) as u8; // Port Speed bits 13:10
-                if found < 16 { result[found] = (port as u8 + 1, speed); found += 1; }
+                let speed = ((portsc >> 10) & 0xF) as u8; // Port Speed bits 13:10
+                if found < 16 {
+                    result[found] = (port as u8 + 1, speed);
+                    found += 1;
+                }
                 crate::serial_println!("[xHCI] Port {} connected, speed={}", port + 1, speed);
             }
         }
@@ -2204,21 +2582,35 @@ impl XhciController {
     /// Returns false if the ring is full.
     pub fn enqueue_command(&mut self, mut trb: XhciTrb) -> bool {
         let idx = self.cmd_enq;
-        if idx >= XHCI_RING_SIZE - 1 { return false; } // Link TRB slot reserved
-        // Set cycle bit
-        if self.cmd_cycle { trb.ctrl |= TRB_CYCLE; } else { trb.ctrl &= !TRB_CYCLE; }
-        unsafe { XHCI_CMD_RING.trbs[idx] = trb; }
+        if idx >= XHCI_RING_SIZE - 1 {
+            return false;
+        } // Link TRB slot reserved
+          // Set cycle bit
+        if self.cmd_cycle {
+            trb.ctrl |= TRB_CYCLE;
+        } else {
+            trb.ctrl &= !TRB_CYCLE;
+        }
+        unsafe {
+            XHCI_CMD_RING.trbs[idx] = trb;
+        }
         self.cmd_enq += 1;
         if self.cmd_enq == XHCI_RING_SIZE - 1 {
             // Wrap: update Link TRB cycle bit and toggle parity.
             unsafe {
                 let link = &mut XHCI_CMD_RING.trbs[XHCI_RING_SIZE - 1];
-                if self.cmd_cycle { link.ctrl |= TRB_CYCLE; } else { link.ctrl &= !TRB_CYCLE; }
+                if self.cmd_cycle {
+                    link.ctrl |= TRB_CYCLE;
+                } else {
+                    link.ctrl &= !TRB_CYCLE;
+                }
             }
             self.cmd_enq = 0;
             self.cmd_cycle = !self.cmd_cycle;
         }
-        unsafe { self.ring_doorbell(0, 0); }
+        unsafe {
+            self.ring_doorbell(0, 0);
+        }
         true
     }
 
@@ -2229,10 +2621,13 @@ impl XhciController {
             unsafe {
                 let trb = &XHCI_EVT_RING.trbs[self.evt_deq];
                 let trb_cycle = (trb.ctrl & TRB_CYCLE) != 0;
-                if trb_cycle != self.evt_cycle { continue; } // no new event
+                if trb_cycle != self.evt_cycle {
+                    continue;
+                } // no new event
                 let trb_type = (trb.ctrl >> 10) & 0x3F;
-                if trb_type == 33 { // CMD_COMPLETION
-                    let cc   = ((trb.status >> 24) & 0xFF) as u8;
+                if trb_type == 33 {
+                    // CMD_COMPLETION
+                    let cc = ((trb.status >> 24) & 0xFF) as u8;
                     let slot = ((trb.ctrl >> 24) & 0xFF) as u8;
                     self.advance_event_deq();
                     return Some((cc, slot));
@@ -2246,7 +2641,9 @@ impl XhciController {
 
     fn advance_event_deq(&mut self) {
         self.evt_deq = (self.evt_deq + 1) % (XHCI_RING_SIZE - 1);
-        if self.evt_deq == 0 { self.evt_cycle = !self.evt_cycle; }
+        if self.evt_deq == 0 {
+            self.evt_cycle = !self.evt_cycle;
+        }
         unsafe {
             let ptr = &XHCI_EVT_RING.trbs[self.evt_deq] as *const _ as u64;
             self.rt_write64(XHCI_ERDP_LO, ptr | (1 << 3)); // EHB bit
@@ -2259,10 +2656,20 @@ impl XhciController {
 
     /// Issue ENABLE_SLOT command and return the assigned slot ID.
     pub fn enable_slot(&mut self) -> Option<u8> {
-        let trb = XhciTrb { param: 0, status: 0, ctrl: TRB_TYPE_ENABLE_SLOT_CMD };
-        if !self.enqueue_command(trb) { return None; }
+        let trb = XhciTrb {
+            param: 0,
+            status: 0,
+            ctrl: TRB_TYPE_ENABLE_SLOT_CMD,
+        };
+        if !self.enqueue_command(trb) {
+            return None;
+        }
         let (cc, slot) = self.poll_command_completion()?;
-        if cc == 1 { Some(slot) } else { None } // cc=1 = Success
+        if cc == 1 {
+            Some(slot)
+        } else {
+            None
+        } // cc=1 = Success
     }
 
     /// Issue ADDRESS_DEVICE command.
@@ -2272,31 +2679,33 @@ impl XhciController {
     pub fn address_device(&mut self, slot: u8, port: u8, speed: u8) -> bool {
         unsafe {
             let ic = &mut XHCI_INPUT_CTX;
-            for w in ic.data.iter_mut() { *w = 0; }
+            for w in ic.data.iter_mut() {
+                *w = 0;
+            }
 
             // Input Control Context (dword 0/1): A0 + A1 = add slot + EP0 context.
-            ic.data[0] = 0;            // Drop flags
-            ic.data[1] = 0b11;         // Add flags: bit0=slot, bit1=EP0
+            ic.data[0] = 0; // Drop flags
+            ic.data[1] = 0b11; // Add flags: bit0=slot, bit1=EP0
 
             // Slot Context (starts at dword 8 = offset 32 bytes from IC base).
             let sc = &mut ic.data[8..]; // Slot Context: 8 dwords
             sc[0] = ((speed as u32 & 0xF) << 20)  // speed
-                  | (1 << 27);                      // Context Entries = 1
-            sc[1] = (port as u32) << 16;            // Root hub port number
+                  | (1 << 27); // Context Entries = 1
+            sc[1] = (port as u32) << 16; // Root hub port number
 
             // EP0 Context (starts at dword 16 = offset 64 bytes).
             let ep0 = &mut ic.data[16..]; // EP0 Context: 8 dwords
-            // Max packet size per speed (Table 56 of xHCI spec):
+                                          // Max packet size per speed (Table 56 of xHCI spec):
             let max_pkt: u16 = match speed {
-                1 => 8,    // Full
-                2 => 8,    // Low
-                3 => 64,   // High
-                4 => 512,  // SuperSpeed
+                1 => 8,   // Full
+                2 => 8,   // Low
+                3 => 64,  // High
+                4 => 512, // SuperSpeed
                 _ => 8,
             };
             ep0[1] = (max_pkt as u32) << 16 // Max Packet Size
                    | (3 << 3)               // EP Type: Control
-                   | (0 << 1);              // EP State: Disabled → 0 (set by HW)
+                   | (0 << 1); // EP State: Disabled → 0 (set by HW)
 
             // Transfer Ring dequeue pointer for EP0 (physical address + DCS=1).
             let xfer_phys = XHCI_XFER_RING.trbs.as_ptr() as u64;
@@ -2309,11 +2718,13 @@ impl XhciController {
 
             let ic_phys = &XHCI_INPUT_CTX as *const _ as u64;
             let trb = XhciTrb {
-                param:  ic_phys,
+                param: ic_phys,
                 status: 0,
-                ctrl:   TRB_TYPE_ADDR_DEV_CMD | ((slot as u32) << 24),
+                ctrl: TRB_TYPE_ADDR_DEV_CMD | ((slot as u32) << 24),
             };
-            if !self.enqueue_command(trb) { return false; }
+            if !self.enqueue_command(trb) {
+                return false;
+            }
             if let Some((cc, _)) = self.poll_command_completion() {
                 cc == 1
             } else {
@@ -2332,25 +2743,31 @@ impl XhciController {
     /// `data`:  optional data buffer (host ← device if `dir_in`).
     pub fn control_transfer(
         &mut self,
-        slot:   u8,
-        setup:  &UsbSetupPacket,
-        data:   Option<&mut [u8]>,
+        slot: u8,
+        setup: &UsbSetupPacket,
+        data: Option<&mut [u8]>,
         dir_in: bool,
     ) -> bool {
         unsafe {
-            let setup_raw = core::slice::from_raw_parts(
-                setup as *const UsbSetupPacket as *const u8, 8);
+            let setup_raw =
+                core::slice::from_raw_parts(setup as *const UsbSetupPacket as *const u8, 8);
             let mut setup_param = 0u64;
             for (i, &b) in setup_raw.iter().enumerate() {
                 setup_param |= (b as u64) << (i * 8);
             }
 
             // SETUP stage TRB (IDT=immediate data, TRT in bits 17:16)
-            let trt: u32 = if data.is_none() { 0 } else if dir_in { 3 } else { 2 };
+            let trt: u32 = if data.is_none() {
+                0
+            } else if dir_in {
+                3
+            } else {
+                2
+            };
             let setup_trb = XhciTrb {
-                param:  setup_param,
+                param: setup_param,
                 status: 8, // TRB Transfer Length = 8
-                ctrl:   TRB_TYPE_SETUP_STAGE | TRB_IDT | TRB_IOC | (trt << 16),
+                ctrl: TRB_TYPE_SETUP_STAGE | TRB_IDT | TRB_IOC | (trt << 16),
             };
             self.enqueue_transfer(setup_trb);
 
@@ -2360,20 +2777,18 @@ impl XhciController {
             if let Some(buf) = data {
                 let buf_phys = buf.as_ptr() as u64;
                 let data_trb = XhciTrb {
-                    param:  buf_phys,
+                    param: buf_phys,
                     status: buf.len() as u32,
-                    ctrl:   TRB_TYPE_DATA_STAGE | TRB_IOC
-                            | if dir_in { TRB_DIR_IN } else { 0 },
+                    ctrl: TRB_TYPE_DATA_STAGE | TRB_IOC | if dir_in { TRB_DIR_IN } else { 0 },
                 };
                 self.enqueue_transfer(data_trb);
             }
 
             // STATUS stage
             let status_trb = XhciTrb {
-                param:  0,
+                param: 0,
                 status: 0,
-                ctrl:   TRB_TYPE_STATUS_STAGE | TRB_IOC
-                        | if status_dir_in { TRB_DIR_IN } else { 0 },
+                ctrl: TRB_TYPE_STATUS_STAGE | TRB_IOC | if status_dir_in { TRB_DIR_IN } else { 0 },
             };
             self.enqueue_transfer(status_trb);
 
@@ -2387,13 +2802,23 @@ impl XhciController {
 
     fn enqueue_transfer(&mut self, mut trb: XhciTrb) {
         let idx = self.xfer_enq;
-        if self.xfer_cycle { trb.ctrl |= TRB_CYCLE; } else { trb.ctrl &= !TRB_CYCLE; }
-        unsafe { XHCI_XFER_RING.trbs[idx] = trb; }
+        if self.xfer_cycle {
+            trb.ctrl |= TRB_CYCLE;
+        } else {
+            trb.ctrl &= !TRB_CYCLE;
+        }
+        unsafe {
+            XHCI_XFER_RING.trbs[idx] = trb;
+        }
         self.xfer_enq += 1;
         if self.xfer_enq == XHCI_RING_SIZE - 1 {
             unsafe {
                 let link = &mut XHCI_XFER_RING.trbs[XHCI_RING_SIZE - 1];
-                if self.xfer_cycle { link.ctrl |= TRB_CYCLE; } else { link.ctrl &= !TRB_CYCLE; }
+                if self.xfer_cycle {
+                    link.ctrl |= TRB_CYCLE;
+                } else {
+                    link.ctrl &= !TRB_CYCLE;
+                }
             }
             self.xfer_enq = 0;
             self.xfer_cycle = !self.xfer_cycle;
@@ -2405,9 +2830,12 @@ impl XhciController {
             unsafe {
                 let trb = &XHCI_EVT_RING.trbs[self.evt_deq];
                 let trb_cycle = (trb.ctrl & TRB_CYCLE) != 0;
-                if trb_cycle != self.evt_cycle { continue; }
+                if trb_cycle != self.evt_cycle {
+                    continue;
+                }
                 let trb_type = (trb.ctrl >> 10) & 0x3F;
-                if trb_type == 32 { // XFER_EVENT
+                if trb_type == 32 {
+                    // XFER_EVENT
                     let cc = ((trb.status >> 24) & 0xFF) as u8;
                     self.advance_event_deq();
                     return cc == 1 || cc == 13; // 1=Success, 13=Short Packet
@@ -2426,12 +2854,16 @@ impl XhciController {
     /// ADDRESS_DEVICE → GET_DESCRIPTOR → SET_CONFIGURATION.
     pub fn enumerate_port(&mut self, port: u8, speed: u8) -> Option<(u8, [u8; 18])> {
         let slot = self.enable_slot()?;
-        if !self.address_device(slot, port, speed) { return None; }
+        if !self.address_device(slot, port, speed) {
+            return None;
+        }
 
         // GET_DEVICE_DESCRIPTOR
         let mut desc_buf = [0u8; 18];
         let setup = UsbSetupPacket::get_device_descriptor();
-        if !self.control_transfer(slot, &setup, Some(&mut desc_buf), true) { return None; }
+        if !self.control_transfer(slot, &setup, Some(&mut desc_buf), true) {
+            return None;
+        }
 
         // SET_CONFIGURATION(1)
         let setup_cfg = UsbSetupPacket::set_configuration(1);
@@ -2580,7 +3012,7 @@ impl UsbBus {
                 pci_class::PROGIF_OHCI => UsbControllerKind::Ohci,
                 pci_class::PROGIF_EHCI => UsbControllerKind::Ehci,
                 pci_class::PROGIF_XHCI => UsbControllerKind::Xhci,
-                _                      => continue,
+                _ => continue,
             };
             if self.controller_count < MAX_USB_CONTROLLERS {
                 self.controllers[self.controller_count] = Some(UsbControllerInfo {
@@ -2615,7 +3047,9 @@ impl UsbBus {
             match kind {
                 UsbControllerKind::Uhci => {
                     let io_base = (bar4 & !0x1F) as u16;
-                    if io_base == 0 { continue; }
+                    if io_base == 0 {
+                        continue;
+                    }
                     let pci = self.controllers[i].unwrap().pci;
                     let mut ctrl = UhciController::new(io_base, pci);
                     ctrl.init();
@@ -2630,7 +3064,9 @@ impl UsbBus {
                 }
                 UsbControllerKind::Ohci => {
                     let mmio = (bar0 & !0x0F) as usize;
-                    if mmio == 0 { continue; }
+                    if mmio == 0 {
+                        continue;
+                    }
                     let pci = self.controllers[i].unwrap().pci;
                     let mut ctrl = OhciController::new(mmio, pci);
                     ctrl.init();
@@ -2645,7 +3081,9 @@ impl UsbBus {
                 }
                 UsbControllerKind::Ehci => {
                     let mmio = (bar0 & !0x0F) as usize;
-                    if mmio == 0 { continue; }
+                    if mmio == 0 {
+                        continue;
+                    }
                     let pci = self.controllers[i].unwrap().pci;
                     let mut ctrl = EhciController::new(mmio, pci);
                     ctrl.init();
@@ -2661,13 +3099,17 @@ impl UsbBus {
                 }
                 UsbControllerKind::Xhci => {
                     let mmio = (bar0 & !0x0F) as usize;
-                    if mmio == 0 { continue; }
+                    if mmio == 0 {
+                        continue;
+                    }
                     let pci = self.controllers[i].unwrap().pci;
                     let mut ctrl = XhciController::new(mmio, pci);
                     if ctrl.init() {
                         let ports = ctrl.probe_ports();
                         for &(port, speed_code) in ports.iter() {
-                            if port == 0 { continue; } // sentinel
+                            if port == 0 {
+                                continue;
+                            } // sentinel
                             let speed = match speed_code {
                                 2 => UsbSpeed::Low,
                                 3 => UsbSpeed::High,
@@ -2676,7 +3118,14 @@ impl UsbBus {
                             };
                             if let Some((_slot, desc_buf)) = ctrl.enumerate_port(port, speed_code) {
                                 let new_addr = self.next_address;
-                                self.register_device(new_addr, port as usize, 0, speed, desc_buf, i);
+                                self.register_device(
+                                    new_addr,
+                                    port as usize,
+                                    0,
+                                    speed,
+                                    desc_buf,
+                                    i,
+                                );
                             }
                         }
                     }
@@ -2695,28 +3144,33 @@ impl UsbBus {
     /// Full enumeration for a device attached to a UHCI port.
     fn enumerate_via_uhci(
         &mut self,
-        ctrl:     &mut UhciController,
-        port:     usize,
-        speed:    UsbSpeed,
-        ls:       bool,
+        ctrl: &mut UhciController,
+        port: usize,
+        speed: UsbSpeed,
+        ls: bool,
         ctrl_idx: usize,
     ) {
         // Step 1: SET_ADDRESS at device address 0
         let new_addr = self.next_address;
         let setup_sa = UsbSetupPacket::set_address(new_addr);
         let res = ctrl.control_transfer(0, ls, &setup_sa, None, false);
-        if res != UhciXferResult::Ok { return; }
+        if res != UhciXferResult::Ok {
+            return;
+        }
         // Short recovery delay after SET_ADDRESS
-        for _ in 0..2_000 { unsafe { core::arch::asm!("nop"); } }
+        for _ in 0..2_000 {
+            unsafe {
+                core::arch::asm!("nop");
+            }
+        }
 
         // Step 2: GET_DESCRIPTOR(Device, 18 bytes)
         let mut desc_buf = [0u8; 18];
         let setup_gd = UsbSetupPacket::get_device_descriptor();
-        let res2 = ctrl.control_transfer(
-            new_addr, ls, &setup_gd,
-            Some(&mut desc_buf), true,
-        );
-        if res2 != UhciXferResult::Ok { return; }
+        let res2 = ctrl.control_transfer(new_addr, ls, &setup_gd, Some(&mut desc_buf), true);
+        if res2 != UhciXferResult::Ok {
+            return;
+        }
 
         // Step 3: SET_CONFIGURATION(1)
         let setup_sc = UsbSetupPacket::set_configuration(1);
@@ -2728,20 +3182,28 @@ impl UsbBus {
     /// Full enumeration for a device attached to an OHCI port.
     fn enumerate_via_ohci(
         &mut self,
-        ctrl:     &mut OhciController,
-        port:     usize,
-        speed:    UsbSpeed,
-        ls:       bool,
+        ctrl: &mut OhciController,
+        port: usize,
+        speed: UsbSpeed,
+        ls: bool,
         ctrl_idx: usize,
     ) {
         let new_addr = self.next_address;
         let setup_sa = UsbSetupPacket::set_address(new_addr);
-        if !ctrl.control_transfer(0, ls, &setup_sa, None, false) { return; }
-        for _ in 0..2_000 { unsafe { core::arch::asm!("nop"); } }
+        if !ctrl.control_transfer(0, ls, &setup_sa, None, false) {
+            return;
+        }
+        for _ in 0..2_000 {
+            unsafe {
+                core::arch::asm!("nop");
+            }
+        }
 
         let mut desc_buf = [0u8; 18];
         let setup_gd = UsbSetupPacket::get_device_descriptor();
-        if !ctrl.control_transfer(new_addr, ls, &setup_gd, Some(&mut desc_buf), true) { return; }
+        if !ctrl.control_transfer(new_addr, ls, &setup_gd, Some(&mut desc_buf), true) {
+            return;
+        }
 
         let setup_sc = UsbSetupPacket::set_configuration(1);
         let _ = ctrl.control_transfer(new_addr, ls, &setup_sc, None, false);
@@ -2752,21 +3214,29 @@ impl UsbBus {
     /// Full enumeration for a device attached to an EHCI port.
     fn enumerate_via_ehci(
         &mut self,
-        ctrl:     &mut EhciController,
-        port:     usize,
-        speed:    UsbSpeed,
-        hs:       bool,
-        ls:       bool,
+        ctrl: &mut EhciController,
+        port: usize,
+        speed: UsbSpeed,
+        hs: bool,
+        ls: bool,
         ctrl_idx: usize,
     ) {
         let new_addr = self.next_address;
         let setup_sa = UsbSetupPacket::set_address(new_addr);
-        if !ctrl.control_transfer(0, hs, ls, &setup_sa, None, false) { return; }
-        for _ in 0..2_000 { unsafe { core::arch::asm!("nop"); } }
+        if !ctrl.control_transfer(0, hs, ls, &setup_sa, None, false) {
+            return;
+        }
+        for _ in 0..2_000 {
+            unsafe {
+                core::arch::asm!("nop");
+            }
+        }
 
         let mut desc_buf = [0u8; 18];
         let setup_gd = UsbSetupPacket::get_device_descriptor();
-        if !ctrl.control_transfer(new_addr, hs, ls, &setup_gd, Some(&mut desc_buf), true) { return; }
+        if !ctrl.control_transfer(new_addr, hs, ls, &setup_gd, Some(&mut desc_buf), true) {
+            return;
+        }
 
         let setup_sc = UsbSetupPacket::set_configuration(1);
         let _ = ctrl.control_transfer(new_addr, hs, ls, &setup_sc, None, false);
@@ -2777,30 +3247,32 @@ impl UsbBus {
     /// Parse the 18-byte descriptor buffer and add a device record.
     fn register_device(
         &mut self,
-        addr:     u8,
-        port:     usize,
+        addr: u8,
+        port: usize,
         hub_addr: u8,
-        speed:    UsbSpeed,
-        buf:      [u8; 18],
+        speed: UsbSpeed,
+        buf: [u8; 18],
         ctrl_idx: usize,
     ) {
-        if self.device_count >= MAX_USB_DEVICES { return; }
+        if self.device_count >= MAX_USB_DEVICES {
+            return;
+        }
 
         // Parse UsbDeviceDescriptor from raw bytes (little-endian)
         let desc = UsbDeviceDescriptor {
-            b_length:             buf[0],
-            b_descriptor_type:    buf[1],
-            bcd_usb:              u16::from_le_bytes([buf[2], buf[3]]),
-            b_device_class:       buf[4],
-            b_device_sub_class:   buf[5],
-            b_device_protocol:    buf[6],
-            b_max_packet_size0:   buf[7],
-            id_vendor:            u16::from_le_bytes([buf[8],  buf[9]]),
-            id_product:           u16::from_le_bytes([buf[10], buf[11]]),
-            bcd_device:           u16::from_le_bytes([buf[12], buf[13]]),
-            i_manufacturer:       buf[14],
-            i_product:            buf[15],
-            i_serial_number:      buf[16],
+            b_length: buf[0],
+            b_descriptor_type: buf[1],
+            bcd_usb: u16::from_le_bytes([buf[2], buf[3]]),
+            b_device_class: buf[4],
+            b_device_sub_class: buf[5],
+            b_device_protocol: buf[6],
+            b_max_packet_size0: buf[7],
+            id_vendor: u16::from_le_bytes([buf[8], buf[9]]),
+            id_product: u16::from_le_bytes([buf[10], buf[11]]),
+            bcd_device: u16::from_le_bytes([buf[12], buf[13]]),
+            i_manufacturer: buf[14],
+            i_product: buf[15],
+            i_serial_number: buf[16],
             b_num_configurations: buf[17],
         };
 
@@ -2817,7 +3289,9 @@ impl UsbBus {
 
         // Advance address counter
         self.next_address = self.next_address.wrapping_add(1);
-        if self.next_address == 0 { self.next_address = 1; }
+        if self.next_address == 0 {
+            self.next_address = 1;
+        }
     }
 
     // ----------------------------------------------------------------
@@ -2924,22 +3398,21 @@ const CSW_SIGNATURE: u32 = 0x53425355;
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct BotCbw {
-    pub d_cbw_signature:          u32,
-    pub d_cbw_tag:                u32,
+    pub d_cbw_signature: u32,
+    pub d_cbw_tag: u32,
     pub d_cbw_data_transfer_length: u32,
     /// 0x80 = Data-In (device to host), 0x00 = Data-Out (host to device)
-    pub bm_cbw_flags:             u8,
+    pub bm_cbw_flags: u8,
     /// Target LUN (usually 0)
-    pub b_cbw_lun:                u8,
+    pub b_cbw_lun: u8,
     /// Length of the CDB (1–16)
-    pub b_cbwcb_length:           u8,
+    pub b_cbwcb_length: u8,
     /// SCSI Command Descriptor Block (padded to 16 bytes)
     pub cbwcb: [u8; 16],
 }
 
 impl BotCbw {
-    pub fn new(tag: u32, data_len: u32, dir_in: bool, lun: u8,
-               cdb: &[u8]) -> Self {
+    pub fn new(tag: u32, data_len: u32, dir_in: bool, lun: u8, cdb: &[u8]) -> Self {
         let mut c = BotCbw {
             d_cbw_signature: CBW_SIGNATURE,
             d_cbw_tag: tag,
@@ -2959,35 +3432,35 @@ impl BotCbw {
 #[repr(C, packed)]
 #[derive(Clone, Copy, Default)]
 pub struct BotCsw {
-    pub d_csw_signature:   u32,
-    pub d_csw_tag:         u32,
+    pub d_csw_signature: u32,
+    pub d_csw_tag: u32,
     pub d_csw_data_residue: u32,
     /// 0 = Command Passed, 1 = Command Failed, 2 = Phase Error
-    pub b_csw_status:      u8,
+    pub b_csw_status: u8,
 }
 
 // SCSI command codes
 const SCSI_TEST_UNIT_READY: u8 = 0x00;
-const SCSI_INQUIRY:         u8 = 0x12;
+const SCSI_INQUIRY: u8 = 0x12;
 const SCSI_READ_CAPACITY10: u8 = 0x25;
-const SCSI_READ10:          u8 = 0x28;
-const SCSI_WRITE10:         u8 = 0x2A;
+const SCSI_READ10: u8 = 0x28;
+const SCSI_WRITE10: u8 = 0x2A;
 
 /// SCSI INQUIRY response (first 36 bytes, SPC-4 §6.4.2)
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct ScsiInquiryData {
-    pub peripheral:     u8,  // bits 4:0 = device type
-    pub removable:      u8,  // bit 7 = RMB
-    pub version:        u8,
-    pub response_fmt:   u8,
+    pub peripheral: u8, // bits 4:0 = device type
+    pub removable: u8,  // bit 7 = RMB
+    pub version: u8,
+    pub response_fmt: u8,
     pub additional_len: u8,
-    pub flags1:         u8,
-    pub flags2:         u8,
-    pub flags3:         u8,
-    pub vendor_id:      [u8; 8],
-    pub product_id:     [u8; 16],
-    pub product_rev:    [u8; 4],
+    pub flags1: u8,
+    pub flags2: u8,
+    pub flags3: u8,
+    pub vendor_id: [u8; 8],
+    pub product_id: [u8; 16],
+    pub product_rev: [u8; 4],
 }
 
 /// READ CAPACITY(10) response (8 bytes)
@@ -2995,15 +3468,21 @@ pub struct ScsiInquiryData {
 #[derive(Clone, Copy, Default)]
 pub struct ScsiReadCapacity10 {
     /// LBA of last logical block (big-endian)
-    pub last_lba:   u32,
+    pub last_lba: u32,
     /// Block length in bytes (big-endian)
     pub block_size: u32,
 }
 
 impl ScsiReadCapacity10 {
-    pub fn last_lba_native(&self) -> u32 { u32::from_be(self.last_lba) }
-    pub fn block_size_native(&self) -> u32 { u32::from_be(self.block_size) }
-    pub fn total_sectors(&self) -> u64 { self.last_lba_native() as u64 + 1 }
+    pub fn last_lba_native(&self) -> u32 {
+        u32::from_be(self.last_lba)
+    }
+    pub fn block_size_native(&self) -> u32 {
+        u32::from_be(self.block_size)
+    }
+    pub fn total_sectors(&self) -> u64 {
+        self.last_lba_native() as u64 + 1
+    }
     pub fn capacity_bytes(&self) -> u64 {
         self.total_sectors() * self.block_size_native() as u64
     }
@@ -3029,25 +3508,25 @@ pub enum MscError {
 /// Holds all state needed to issue BOT transactions.  Created by
 /// `MassStorageDevice::open()`, which looks up the device in `UsbBus`.
 pub struct MassStorageDevice {
-    pub dev_addr:     u8,
-    pub ctrl_idx:     usize,
-    pub ctrl_kind:    UsbControllerKind,
-    pub speed:        UsbSpeed,
+    pub dev_addr: u8,
+    pub ctrl_idx: usize,
+    pub ctrl_kind: UsbControllerKind,
+    pub speed: UsbSpeed,
     /// Bulk-OUT endpoint number
-    pub ep_out:       u8,
+    pub ep_out: u8,
     /// Bulk-IN endpoint number
-    pub ep_in:        u8,
+    pub ep_in: u8,
     pub max_pkt_bulk: u16,
     /// Running CBW tag counter
     tag: u32,
     /// Current bulk-OUT toggle
     tog_out: bool,
     /// Current bulk-IN toggle
-    tog_in:  bool,
+    tog_in: bool,
     /// Block size from READ CAPACITY
-    pub block_size:   u32,
+    pub block_size: u32,
     /// Total block count from READ CAPACITY
-    pub block_count:  u64,
+    pub block_count: u64,
 }
 
 impl MassStorageDevice {
@@ -3056,8 +3535,13 @@ impl MassStorageDevice {
     /// Returns `Err(MscError::NoDevice)` if no mass-storage device is present.
     pub fn open() -> Result<Self, MscError> {
         let guard = USB_BUS.lock();
-        for d in guard.devices[..guard.device_count].iter().filter_map(|d| d.as_ref()) {
-            if !d.is_mass_storage() { continue; }
+        for d in guard.devices[..guard.device_count]
+            .iter()
+            .filter_map(|d| d.as_ref())
+        {
+            if !d.is_mass_storage() {
+                continue;
+            }
             // Assume EP1 OUT / EP1 IN; correct value comes from config descriptor.
             // A full implementation would parse the Configuration Descriptor here.
             let ctrl_kind = guard.controllers[d.controller_index]
@@ -3065,7 +3549,7 @@ impl MassStorageDevice {
                 .unwrap_or(UsbControllerKind::Uhci);
             let max_pkt = match d.speed {
                 UsbSpeed::High => 512,
-                _              => 64,
+                _ => 64,
             };
             return Ok(MassStorageDevice {
                 dev_addr: d.address,
@@ -3073,11 +3557,11 @@ impl MassStorageDevice {
                 ctrl_kind,
                 speed: d.speed,
                 ep_out: 1,
-                ep_in:  1,
+                ep_in: 1,
                 max_pkt_bulk: max_pkt,
                 tag: 1,
                 tog_out: false,
-                tog_in:  false,
+                tog_in: false,
                 block_size: 512,
                 block_count: 0,
             });
@@ -3102,23 +3586,37 @@ impl MassStorageDevice {
         uhci: Option<&mut UhciController>,
         ehci: Option<&mut EhciController>,
     ) -> Result<(), MscError> {
-        let buf = unsafe {
-            core::slice::from_raw_parts_mut(
-                cbw as *const BotCbw as *mut u8, 31)
-        };
+        let buf = unsafe { core::slice::from_raw_parts_mut(cbw as *const BotCbw as *mut u8, 31) };
         let hs = self.speed == UsbSpeed::High;
         let ls = self.speed == UsbSpeed::Low;
         let ok = if let Some(h) = uhci {
-            h.bulk_transfer(self.dev_addr, self.ep_out, ls, false,
-                            self.max_pkt_bulk as usize, buf, &mut self.tog_out)
-                == UhciXferResult::Ok
+            h.bulk_transfer(
+                self.dev_addr,
+                self.ep_out,
+                ls,
+                false,
+                self.max_pkt_bulk as usize,
+                buf,
+                &mut self.tog_out,
+            ) == UhciXferResult::Ok
         } else if let Some(h) = ehci {
-            h.bulk_transfer(self.dev_addr, self.ep_out, hs, false,
-                            self.max_pkt_bulk, buf, &mut self.tog_out)
+            h.bulk_transfer(
+                self.dev_addr,
+                self.ep_out,
+                hs,
+                false,
+                self.max_pkt_bulk,
+                buf,
+                &mut self.tog_out,
+            )
         } else {
             false
         };
-        if ok { Ok(()) } else { Err(MscError::TransferError) }
+        if ok {
+            Ok(())
+        } else {
+            Err(MscError::TransferError)
+        }
     }
 
     /// Receive a 13-byte CSW from the bulk-IN endpoint, verify its signature.
@@ -3129,27 +3627,42 @@ impl MassStorageDevice {
         ehci: Option<&mut EhciController>,
     ) -> Result<BotCsw, MscError> {
         let mut csw = BotCsw::default();
-        let buf = unsafe {
-            core::slice::from_raw_parts_mut(
-                &mut csw as *mut BotCsw as *mut u8, 13)
-        };
+        let buf =
+            unsafe { core::slice::from_raw_parts_mut(&mut csw as *mut BotCsw as *mut u8, 13) };
         let hs = self.speed == UsbSpeed::High;
         let ls = self.speed == UsbSpeed::Low;
         let ok = if let Some(h) = uhci {
-            h.bulk_transfer(self.dev_addr, self.ep_in, ls, true,
-                            self.max_pkt_bulk as usize, buf, &mut self.tog_in)
-                == UhciXferResult::Ok
+            h.bulk_transfer(
+                self.dev_addr,
+                self.ep_in,
+                ls,
+                true,
+                self.max_pkt_bulk as usize,
+                buf,
+                &mut self.tog_in,
+            ) == UhciXferResult::Ok
         } else if let Some(h) = ehci {
-            h.bulk_transfer(self.dev_addr, self.ep_in, hs, true,
-                            self.max_pkt_bulk, buf, &mut self.tog_in)
+            h.bulk_transfer(
+                self.dev_addr,
+                self.ep_in,
+                hs,
+                true,
+                self.max_pkt_bulk,
+                buf,
+                &mut self.tog_in,
+            )
         } else {
             false
         };
-        if !ok { return Err(MscError::TransferError); }
+        if !ok {
+            return Err(MscError::TransferError);
+        }
         if csw.d_csw_signature != CSW_SIGNATURE || csw.d_csw_tag != expected_tag {
             return Err(MscError::ProtocolError);
         }
-        if csw.b_csw_status == 2 { return Err(MscError::ProtocolError); }
+        if csw.b_csw_status == 2 {
+            return Err(MscError::ProtocolError);
+        }
         Ok(csw)
     }
 
@@ -3158,9 +3671,7 @@ impl MassStorageDevice {
     // ----------------------------------------------------------------
 
     /// Issue SCSI INQUIRY and return the 36-byte response (UHCI path).
-    pub fn inquiry_uhci(&mut self, ctrl: &mut UhciController)
-        -> Result<ScsiInquiryData, MscError>
-    {
+    pub fn inquiry_uhci(&mut self, ctrl: &mut UhciController) -> Result<ScsiInquiryData, MscError> {
         let cdb = [SCSI_INQUIRY, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let tag = self.next_tag();
         let cbw = BotCbw::new(tag, 36, true, 0, &cdb);
@@ -3168,16 +3679,23 @@ impl MassStorageDevice {
 
         let mut data = [0u8; 36];
         let ls = self.speed == UsbSpeed::Low;
-        if ctrl.bulk_transfer(self.dev_addr, self.ep_in, ls, true,
-                              self.max_pkt_bulk as usize, &mut data,
-                              &mut self.tog_in)
-            != UhciXferResult::Ok
+        if ctrl.bulk_transfer(
+            self.dev_addr,
+            self.ep_in,
+            ls,
+            true,
+            self.max_pkt_bulk as usize,
+            &mut data,
+            &mut self.tog_in,
+        ) != UhciXferResult::Ok
         {
             return Err(MscError::TransferError);
         }
 
         let csw = self.recv_csw(tag, Some(ctrl), None)?;
-        if csw.b_csw_status != 0 { return Err(MscError::ScsiError(csw.b_csw_status)); }
+        if csw.b_csw_status != 0 {
+            return Err(MscError::ScsiError(csw.b_csw_status));
+        }
 
         // Parse into ScsiInquiryData
         let inq = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const ScsiInquiryData) };
@@ -3189,35 +3707,62 @@ impl MassStorageDevice {
         let cdb = [SCSI_TEST_UNIT_READY; 16];
         let tag = self.next_tag();
         let cbw = BotCbw::new(tag, 0, false, 0, &cdb);
-        if self.send_cbw(&cbw, Some(ctrl), None).is_err() { return false; }
+        if self.send_cbw(&cbw, Some(ctrl), None).is_err() {
+            return false;
+        }
         self.recv_csw(tag, Some(ctrl), None)
             .map_or(false, |csw| csw.b_csw_status == 0)
     }
 
     /// Issue SCSI READ CAPACITY(10) and update `self.block_size`/`block_count`.
-    pub fn read_capacity_uhci(&mut self, ctrl: &mut UhciController)
-        -> Result<ScsiReadCapacity10, MscError>
-    {
-        let cdb = [SCSI_READ_CAPACITY10, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+    pub fn read_capacity_uhci(
+        &mut self,
+        ctrl: &mut UhciController,
+    ) -> Result<ScsiReadCapacity10, MscError> {
+        let cdb = [
+            SCSI_READ_CAPACITY10,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
         let tag = self.next_tag();
         let cbw = BotCbw::new(tag, 8, true, 0, &cdb);
         self.send_cbw(&cbw, Some(ctrl), None)?;
 
         let mut data = [0u8; 8];
         let ls = self.speed == UsbSpeed::Low;
-        if ctrl.bulk_transfer(self.dev_addr, self.ep_in, ls, true,
-                              self.max_pkt_bulk as usize, &mut data,
-                              &mut self.tog_in)
-            != UhciXferResult::Ok
+        if ctrl.bulk_transfer(
+            self.dev_addr,
+            self.ep_in,
+            ls,
+            true,
+            self.max_pkt_bulk as usize,
+            &mut data,
+            &mut self.tog_in,
+        ) != UhciXferResult::Ok
         {
             return Err(MscError::TransferError);
         }
 
         let csw = self.recv_csw(tag, Some(ctrl), None)?;
-        if csw.b_csw_status != 0 { return Err(MscError::ScsiError(csw.b_csw_status)); }
+        if csw.b_csw_status != 0 {
+            return Err(MscError::ScsiError(csw.b_csw_status));
+        }
 
         let cap = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const ScsiReadCapacity10) };
-        self.block_size  = cap.block_size_native();
+        self.block_size = cap.block_size_native();
         self.block_count = cap.total_sectors();
         Ok(cap)
     }
@@ -3227,84 +3772,122 @@ impl MassStorageDevice {
     /// `buf` must be at least `count * block_size` bytes.
     pub fn read_sectors_uhci(
         &mut self,
-        ctrl:  &mut UhciController,
-        lba:   u32,
+        ctrl: &mut UhciController,
+        lba: u32,
         count: u16,
-        buf:   &mut [u8],
+        buf: &mut [u8],
     ) -> Result<(), MscError> {
         let xfer_len = count as u32 * self.block_size;
-        if buf.len() < xfer_len as usize { return Err(MscError::BufferTooSmall); }
+        if buf.len() < xfer_len as usize {
+            return Err(MscError::BufferTooSmall);
+        }
 
         let cdb = [
             SCSI_READ10,
             0,
-            (lba >> 24) as u8, (lba >> 16) as u8, (lba >> 8) as u8, lba as u8,
+            (lba >> 24) as u8,
+            (lba >> 16) as u8,
+            (lba >> 8) as u8,
+            lba as u8,
             0,
-            (count >> 8) as u8, count as u8,
-            0, 0, 0, 0, 0, 0, 0,
+            (count >> 8) as u8,
+            count as u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         ];
         let tag = self.next_tag();
         let cbw = BotCbw::new(tag, xfer_len, true, 0, &cdb);
         self.send_cbw(&cbw, Some(ctrl), None)?;
 
         let ls = self.speed == UsbSpeed::Low;
-        if ctrl.bulk_transfer(self.dev_addr, self.ep_in, ls, true,
-                              self.max_pkt_bulk as usize,
-                              &mut buf[..xfer_len as usize],
-                              &mut self.tog_in)
-            != UhciXferResult::Ok
+        if ctrl.bulk_transfer(
+            self.dev_addr,
+            self.ep_in,
+            ls,
+            true,
+            self.max_pkt_bulk as usize,
+            &mut buf[..xfer_len as usize],
+            &mut self.tog_in,
+        ) != UhciXferResult::Ok
         {
             return Err(MscError::TransferError);
         }
 
         let csw = self.recv_csw(tag, Some(ctrl), None)?;
-        if csw.b_csw_status != 0 { Err(MscError::ScsiError(csw.b_csw_status)) } else { Ok(()) }
+        if csw.b_csw_status != 0 {
+            Err(MscError::ScsiError(csw.b_csw_status))
+        } else {
+            Ok(())
+        }
     }
 
     /// Write `count` sectors starting at LBA `lba` from `buf` (UHCI path).
     pub fn write_sectors_uhci(
         &mut self,
-        ctrl:  &mut UhciController,
-        lba:   u32,
+        ctrl: &mut UhciController,
+        lba: u32,
         count: u16,
-        buf:   &mut [u8],
+        buf: &mut [u8],
     ) -> Result<(), MscError> {
         let xfer_len = count as u32 * self.block_size;
-        if buf.len() < xfer_len as usize { return Err(MscError::BufferTooSmall); }
+        if buf.len() < xfer_len as usize {
+            return Err(MscError::BufferTooSmall);
+        }
 
         let cdb = [
             SCSI_WRITE10,
             0,
-            (lba >> 24) as u8, (lba >> 16) as u8, (lba >> 8) as u8, lba as u8,
+            (lba >> 24) as u8,
+            (lba >> 16) as u8,
+            (lba >> 8) as u8,
+            lba as u8,
             0,
-            (count >> 8) as u8, count as u8,
-            0, 0, 0, 0, 0, 0, 0,
+            (count >> 8) as u8,
+            count as u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         ];
         let tag = self.next_tag();
         let cbw = BotCbw::new(tag, xfer_len, false, 0, &cdb);
         self.send_cbw(&cbw, Some(ctrl), None)?;
 
         let ls = self.speed == UsbSpeed::Low;
-        if ctrl.bulk_transfer(self.dev_addr, self.ep_out, ls, false,
-                              self.max_pkt_bulk as usize,
-                              &mut buf[..xfer_len as usize],
-                              &mut self.tog_out)
-            != UhciXferResult::Ok
+        if ctrl.bulk_transfer(
+            self.dev_addr,
+            self.ep_out,
+            ls,
+            false,
+            self.max_pkt_bulk as usize,
+            &mut buf[..xfer_len as usize],
+            &mut self.tog_out,
+        ) != UhciXferResult::Ok
         {
             return Err(MscError::TransferError);
         }
 
         let csw = self.recv_csw(tag, Some(ctrl), None)?;
-        if csw.b_csw_status != 0 { Err(MscError::ScsiError(csw.b_csw_status)) } else { Ok(()) }
+        if csw.b_csw_status != 0 {
+            Err(MscError::ScsiError(csw.b_csw_status))
+        } else {
+            Ok(())
+        }
     }
 
     // ----------------------------------------------------------------
     // SCSI commands — EHCI path (mirrors UHCI; speed=High, max_pkt=512)
     // ----------------------------------------------------------------
 
-    pub fn inquiry_ehci(&mut self, ctrl: &mut EhciController)
-        -> Result<ScsiInquiryData, MscError>
-    {
+    pub fn inquiry_ehci(&mut self, ctrl: &mut EhciController) -> Result<ScsiInquiryData, MscError> {
         let cdb = [SCSI_INQUIRY, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let tag = self.next_tag();
         let cbw = BotCbw::new(tag, 36, true, 0, &cdb);
@@ -3312,98 +3895,178 @@ impl MassStorageDevice {
 
         let mut data = [0u8; 36];
         let hs = self.speed == UsbSpeed::High;
-        if !ctrl.bulk_transfer(self.dev_addr, self.ep_in, hs, true,
-                               self.max_pkt_bulk, &mut data, &mut self.tog_in)
-        {
+        if !ctrl.bulk_transfer(
+            self.dev_addr,
+            self.ep_in,
+            hs,
+            true,
+            self.max_pkt_bulk,
+            &mut data,
+            &mut self.tog_in,
+        ) {
             return Err(MscError::TransferError);
         }
 
         let csw = self.recv_csw(tag, None, Some(ctrl))?;
-        if csw.b_csw_status != 0 { return Err(MscError::ScsiError(csw.b_csw_status)); }
+        if csw.b_csw_status != 0 {
+            return Err(MscError::ScsiError(csw.b_csw_status));
+        }
         let inq = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const ScsiInquiryData) };
         Ok(inq)
     }
 
-    pub fn read_capacity_ehci(&mut self, ctrl: &mut EhciController)
-        -> Result<ScsiReadCapacity10, MscError>
-    {
-        let cdb = [SCSI_READ_CAPACITY10, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+    pub fn read_capacity_ehci(
+        &mut self,
+        ctrl: &mut EhciController,
+    ) -> Result<ScsiReadCapacity10, MscError> {
+        let cdb = [
+            SCSI_READ_CAPACITY10,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
         let tag = self.next_tag();
         let cbw = BotCbw::new(tag, 8, true, 0, &cdb);
         self.send_cbw(&cbw, None, Some(ctrl))?;
 
         let mut data = [0u8; 8];
         let hs = self.speed == UsbSpeed::High;
-        if !ctrl.bulk_transfer(self.dev_addr, self.ep_in, hs, true,
-                               self.max_pkt_bulk, &mut data, &mut self.tog_in)
-        {
+        if !ctrl.bulk_transfer(
+            self.dev_addr,
+            self.ep_in,
+            hs,
+            true,
+            self.max_pkt_bulk,
+            &mut data,
+            &mut self.tog_in,
+        ) {
             return Err(MscError::TransferError);
         }
 
         let csw = self.recv_csw(tag, None, Some(ctrl))?;
-        if csw.b_csw_status != 0 { return Err(MscError::ScsiError(csw.b_csw_status)); }
+        if csw.b_csw_status != 0 {
+            return Err(MscError::ScsiError(csw.b_csw_status));
+        }
         let cap = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const ScsiReadCapacity10) };
-        self.block_size  = cap.block_size_native();
+        self.block_size = cap.block_size_native();
         self.block_count = cap.total_sectors();
         Ok(cap)
     }
 
     pub fn read_sectors_ehci(
         &mut self,
-        ctrl:  &mut EhciController,
-        lba:   u32,
+        ctrl: &mut EhciController,
+        lba: u32,
         count: u16,
-        buf:   &mut [u8],
+        buf: &mut [u8],
     ) -> Result<(), MscError> {
         let xfer_len = count as u32 * self.block_size;
-        if buf.len() < xfer_len as usize { return Err(MscError::BufferTooSmall); }
+        if buf.len() < xfer_len as usize {
+            return Err(MscError::BufferTooSmall);
+        }
         let cdb = [
-            SCSI_READ10, 0,
-            (lba>>24) as u8,(lba>>16) as u8,(lba>>8) as u8, lba as u8, 0,
-            (count>>8) as u8, count as u8,
-            0,0,0,0,0,0,0,
+            SCSI_READ10,
+            0,
+            (lba >> 24) as u8,
+            (lba >> 16) as u8,
+            (lba >> 8) as u8,
+            lba as u8,
+            0,
+            (count >> 8) as u8,
+            count as u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         ];
         let tag = self.next_tag();
         let cbw = BotCbw::new(tag, xfer_len, true, 0, &cdb);
         self.send_cbw(&cbw, None, Some(ctrl))?;
         let hs = self.speed == UsbSpeed::High;
-        if !ctrl.bulk_transfer(self.dev_addr, self.ep_in, hs, true,
-                               self.max_pkt_bulk, &mut buf[..xfer_len as usize],
-                               &mut self.tog_in)
-        {
+        if !ctrl.bulk_transfer(
+            self.dev_addr,
+            self.ep_in,
+            hs,
+            true,
+            self.max_pkt_bulk,
+            &mut buf[..xfer_len as usize],
+            &mut self.tog_in,
+        ) {
             return Err(MscError::TransferError);
         }
         let csw = self.recv_csw(tag, None, Some(ctrl))?;
-        if csw.b_csw_status != 0 { Err(MscError::ScsiError(csw.b_csw_status)) } else { Ok(()) }
+        if csw.b_csw_status != 0 {
+            Err(MscError::ScsiError(csw.b_csw_status))
+        } else {
+            Ok(())
+        }
     }
 
     pub fn write_sectors_ehci(
         &mut self,
-        ctrl:  &mut EhciController,
-        lba:   u32,
+        ctrl: &mut EhciController,
+        lba: u32,
         count: u16,
-        buf:   &mut [u8],
+        buf: &mut [u8],
     ) -> Result<(), MscError> {
         let xfer_len = count as u32 * self.block_size;
-        if buf.len() < xfer_len as usize { return Err(MscError::BufferTooSmall); }
+        if buf.len() < xfer_len as usize {
+            return Err(MscError::BufferTooSmall);
+        }
         let cdb = [
-            SCSI_WRITE10, 0,
-            (lba>>24) as u8,(lba>>16) as u8,(lba>>8) as u8, lba as u8, 0,
-            (count>>8) as u8, count as u8,
-            0,0,0,0,0,0,0,
+            SCSI_WRITE10,
+            0,
+            (lba >> 24) as u8,
+            (lba >> 16) as u8,
+            (lba >> 8) as u8,
+            lba as u8,
+            0,
+            (count >> 8) as u8,
+            count as u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         ];
         let tag = self.next_tag();
         let cbw = BotCbw::new(tag, xfer_len, false, 0, &cdb);
         self.send_cbw(&cbw, None, Some(ctrl))?;
         let hs = self.speed == UsbSpeed::High;
-        if !ctrl.bulk_transfer(self.dev_addr, self.ep_out, hs, false,
-                               self.max_pkt_bulk, &mut buf[..xfer_len as usize],
-                               &mut self.tog_out)
-        {
+        if !ctrl.bulk_transfer(
+            self.dev_addr,
+            self.ep_out,
+            hs,
+            false,
+            self.max_pkt_bulk,
+            &mut buf[..xfer_len as usize],
+            &mut self.tog_out,
+        ) {
             return Err(MscError::TransferError);
         }
         let csw = self.recv_csw(tag, None, Some(ctrl))?;
-        if csw.b_csw_status != 0 { Err(MscError::ScsiError(csw.b_csw_status)) } else { Ok(()) }
+        if csw.b_csw_status != 0 {
+            Err(MscError::ScsiError(csw.b_csw_status))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -3424,31 +4087,31 @@ impl MassStorageDevice {
 //   Mouse:    4-byte report — buttons, dx, dy, wheel
 //
 // HID class-specific requests
-const HID_REQ_GET_REPORT:    u8 = 0x01;
-const HID_REQ_SET_IDLE:      u8 = 0x0A;
-const HID_REQ_SET_PROTOCOL:  u8 = 0x0B;
+const HID_REQ_GET_REPORT: u8 = 0x01;
+const HID_REQ_SET_IDLE: u8 = 0x0A;
+const HID_REQ_SET_PROTOCOL: u8 = 0x0B;
 // bRequest / wValue selectors for GET_DESCRIPTOR
-const DESC_HID:    u8 = 0x21;
+const DESC_HID: u8 = 0x21;
 const DESC_REPORT: u8 = 0x22;
 // Protocol values
-const HID_PROTO_BOOT:   u16 = 0;
+const HID_PROTO_BOOT: u16 = 0;
 const HID_PROTO_REPORT: u16 = 1;
 // Subclass / protocol
 const HID_SUBCLASS_BOOT: u8 = 1;
-const HID_PROTO_KBD:     u8 = 1;
-const HID_PROTO_MOUSE:   u8 = 2;
+const HID_PROTO_KBD: u8 = 1;
+const HID_PROTO_MOUSE: u8 = 2;
 
 /// Modifier byte bit masks (USB HID keyboard boot report byte 0).
 #[allow(dead_code)]
 pub mod kbd_mod {
-    pub const L_CTRL:  u8 = 1 << 0;
+    pub const L_CTRL: u8 = 1 << 0;
     pub const L_SHIFT: u8 = 1 << 1;
-    pub const L_ALT:   u8 = 1 << 2;
-    pub const L_GUI:   u8 = 1 << 3;
-    pub const R_CTRL:  u8 = 1 << 4;
+    pub const L_ALT: u8 = 1 << 2;
+    pub const L_GUI: u8 = 1 << 3;
+    pub const R_CTRL: u8 = 1 << 4;
     pub const R_SHIFT: u8 = 1 << 5;
-    pub const R_ALT:   u8 = 1 << 6;
-    pub const R_GUI:   u8 = 1 << 7;
+    pub const R_ALT: u8 = 1 << 6;
+    pub const R_GUI: u8 = 1 << 7;
 }
 
 /// A decoded USB HID boot-protocol keyboard report.
@@ -3457,7 +4120,7 @@ pub struct HidKeyboardReport {
     /// Modifier byte (see `kbd_mod` constants).
     pub modifiers: u8,
     /// Currently held key codes (up to 6, USB HID page 0x07).
-    pub keycodes:  [u8; 6],
+    pub keycodes: [u8; 6],
 }
 
 impl HidKeyboardReport {
@@ -3465,7 +4128,10 @@ impl HidKeyboardReport {
     pub fn from_bytes(b: &[u8; 8]) -> Self {
         let mut kc = [0u8; 6];
         kc.copy_from_slice(&b[2..8]);
-        HidKeyboardReport { modifiers: b[0], keycodes: kc }
+        HidKeyboardReport {
+            modifiers: b[0],
+            keycodes: kc,
+        }
     }
 
     pub fn shift(&self) -> bool {
@@ -3483,40 +4149,64 @@ impl HidKeyboardReport {
 #[derive(Clone, Copy, Default)]
 pub struct HidMouseReport {
     pub buttons: u8,
-    pub dx:      i8,
-    pub dy:      i8,
-    pub wheel:   i8,
+    pub dx: i8,
+    pub dy: i8,
+    pub wheel: i8,
 }
 
 impl HidMouseReport {
     pub fn from_bytes(b: &[u8; 4]) -> Self {
-        HidMouseReport { buttons: b[0], dx: b[1] as i8, dy: b[2] as i8, wheel: b[3] as i8 }
+        HidMouseReport {
+            buttons: b[0],
+            dx: b[1] as i8,
+            dy: b[2] as i8,
+            wheel: b[3] as i8,
+        }
     }
 }
 
 /// Which boot-protocol device class this HID device is.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum HidKind { Keyboard, Mouse, Other }
+pub enum HidKind {
+    Keyboard,
+    Mouse,
+    Other,
+}
 
 /// A USB HID device handle.
 pub struct UsbHidDevice {
-    pub dev_addr:   u8,
-    pub ctrl_idx:   usize,
-    pub ctrl_kind:  UsbControllerKind,
-    pub speed:      UsbSpeed,
+    pub dev_addr: u8,
+    pub ctrl_idx: usize,
+    pub ctrl_kind: UsbControllerKind,
+    pub speed: UsbSpeed,
     /// Interrupt-IN endpoint number (e.g. 0x81)
-    pub ep_in:      u8,
-    pub max_pkt:    u16,
-    pub kind:       HidKind,
-    toggle:         bool,
+    pub ep_in: u8,
+    pub max_pkt: u16,
+    pub kind: HidKind,
+    toggle: bool,
 }
 
 impl UsbHidDevice {
     /// Construct a new HID device handle (does not communicate with device).
-    pub fn new(dev_addr: u8, ctrl_idx: usize, ctrl_kind: UsbControllerKind,
-               speed: UsbSpeed, ep_in: u8, max_pkt: u16, kind: HidKind) -> Self {
-        UsbHidDevice { dev_addr, ctrl_idx, ctrl_kind, speed,
-                       ep_in, max_pkt, kind, toggle: false }
+    pub fn new(
+        dev_addr: u8,
+        ctrl_idx: usize,
+        ctrl_kind: UsbControllerKind,
+        speed: UsbSpeed,
+        ep_in: u8,
+        max_pkt: u16,
+        kind: HidKind,
+    ) -> Self {
+        UsbHidDevice {
+            dev_addr,
+            ctrl_idx,
+            ctrl_kind,
+            speed,
+            ep_in,
+            max_pkt,
+            kind,
+            toggle: false,
+        }
     }
 
     // ----------------------------------------------------------------
@@ -3533,7 +4223,9 @@ impl UsbHidDevice {
         let idle = UsbSetupPacket {
             bm_request_type: RT_HOST_TO_DEV | RT_CLASS | RT_INTERFACE,
             b_request: HID_REQ_SET_IDLE,
-            w_value: 0, w_index: 0, w_length: 0,
+            w_value: 0,
+            w_index: 0,
+            w_length: 0,
         };
         let _ = ctrl.control_transfer(self.dev_addr, ls, &idle, None, false);
 
@@ -3541,7 +4233,9 @@ impl UsbHidDevice {
         let proto = UsbSetupPacket {
             bm_request_type: RT_HOST_TO_DEV | RT_CLASS | RT_INTERFACE,
             b_request: HID_REQ_SET_PROTOCOL,
-            w_value: HID_PROTO_BOOT, w_index: 0, w_length: 0,
+            w_value: HID_PROTO_BOOT,
+            w_index: 0,
+            w_length: 0,
         };
         ctrl.control_transfer(self.dev_addr, ls, &proto, None, false) == UhciXferResult::Ok
     }
@@ -3554,14 +4248,18 @@ impl UsbHidDevice {
         let idle = UsbSetupPacket {
             bm_request_type: RT_HOST_TO_DEV | RT_CLASS | RT_INTERFACE,
             b_request: HID_REQ_SET_IDLE,
-            w_value: 0, w_index: 0, w_length: 0,
+            w_value: 0,
+            w_index: 0,
+            w_length: 0,
         };
         let _ = ctrl.control_transfer(self.dev_addr, hs, ls, &idle, None, false);
 
         let proto = UsbSetupPacket {
             bm_request_type: RT_HOST_TO_DEV | RT_CLASS | RT_INTERFACE,
             b_request: HID_REQ_SET_PROTOCOL,
-            w_value: HID_PROTO_BOOT, w_index: 0, w_length: 0,
+            w_value: HID_PROTO_BOOT,
+            w_index: 0,
+            w_length: 0,
         };
         ctrl.control_transfer(self.dev_addr, hs, ls, &proto, None, false)
     }
@@ -3573,38 +4271,46 @@ impl UsbHidDevice {
     /// Poll the interrupt-IN endpoint for a keyboard report (UHCI).
     ///
     /// Returns `None` if no report is available yet (NAK) or on error.
-    pub fn poll_keyboard_uhci(&mut self, ctrl: &mut UhciController)
-        -> Option<HidKeyboardReport>
-    {
+    pub fn poll_keyboard_uhci(&mut self, ctrl: &mut UhciController) -> Option<HidKeyboardReport> {
         let ls = self.speed == UsbSpeed::Low;
         let mut buf = [0u8; 8];
         let ep = self.ep_in & 0x0F;
-        match ctrl.bulk_transfer(self.dev_addr, ep, ls, true,
-                                  self.max_pkt as usize, &mut buf, &mut self.toggle)
-        {
+        match ctrl.bulk_transfer(
+            self.dev_addr,
+            ep,
+            ls,
+            true,
+            self.max_pkt as usize,
+            &mut buf,
+            &mut self.toggle,
+        ) {
             UhciXferResult::Ok => Some(HidKeyboardReport::from_bytes(&buf)),
             _ => None,
         }
     }
 
     /// Poll the interrupt-IN endpoint for a mouse report (UHCI).
-    pub fn poll_mouse_uhci(&mut self, ctrl: &mut UhciController)
-        -> Option<HidMouseReport>
-    {
+    pub fn poll_mouse_uhci(&mut self, ctrl: &mut UhciController) -> Option<HidMouseReport> {
         let ls = self.speed == UsbSpeed::Low;
         let mut buf = [0u8; 4];
         let ep = self.ep_in & 0x0F;
-        match ctrl.bulk_transfer(self.dev_addr, ep, ls, true,
-                                  self.max_pkt as usize, &mut buf, &mut self.toggle)
-        {
+        match ctrl.bulk_transfer(
+            self.dev_addr,
+            ep,
+            ls,
+            true,
+            self.max_pkt as usize,
+            &mut buf,
+            &mut self.toggle,
+        ) {
             UhciXferResult::Ok => {
                 let report = HidMouseReport::from_bytes(&buf);
                 // Forward mouse deltas into the shared mouse event pipeline.
                 crate::mouse::submit_usb_report(crate::mouse::UsbMouseReport {
                     buttons: report.buttons,
-                    dx:      report.dx,
-                    dy:      report.dy,
-                    dwheel:  report.wheel,
+                    dx: report.dx,
+                    dy: report.dy,
+                    dwheel: report.wheel,
                 });
                 Some(report)
             }
@@ -3613,15 +4319,19 @@ impl UsbHidDevice {
     }
 
     /// Poll the interrupt-IN endpoint for a keyboard report (EHCI).
-    pub fn poll_keyboard_ehci(&mut self, ctrl: &mut EhciController)
-        -> Option<HidKeyboardReport>
-    {
+    pub fn poll_keyboard_ehci(&mut self, ctrl: &mut EhciController) -> Option<HidKeyboardReport> {
         let hs = self.speed == UsbSpeed::High;
         let mut buf = [0u8; 8];
         let ep = self.ep_in & 0x0F;
-        if ctrl.bulk_transfer(self.dev_addr, ep, hs, true,
-                               self.max_pkt, &mut buf, &mut self.toggle)
-        {
+        if ctrl.bulk_transfer(
+            self.dev_addr,
+            ep,
+            hs,
+            true,
+            self.max_pkt,
+            &mut buf,
+            &mut self.toggle,
+        ) {
             Some(HidKeyboardReport::from_bytes(&buf))
         } else {
             None
@@ -3629,21 +4339,25 @@ impl UsbHidDevice {
     }
 
     /// Poll the interrupt-IN endpoint for a mouse report (EHCI).
-    pub fn poll_mouse_ehci(&mut self, ctrl: &mut EhciController)
-        -> Option<HidMouseReport>
-    {
+    pub fn poll_mouse_ehci(&mut self, ctrl: &mut EhciController) -> Option<HidMouseReport> {
         let hs = self.speed == UsbSpeed::High;
         let mut buf = [0u8; 4];
         let ep = self.ep_in & 0x0F;
-        if ctrl.bulk_transfer(self.dev_addr, ep, hs, true,
-                               self.max_pkt, &mut buf, &mut self.toggle)
-        {
+        if ctrl.bulk_transfer(
+            self.dev_addr,
+            ep,
+            hs,
+            true,
+            self.max_pkt,
+            &mut buf,
+            &mut self.toggle,
+        ) {
             let report = HidMouseReport::from_bytes(&buf);
             crate::mouse::submit_usb_report(crate::mouse::UsbMouseReport {
                 buttons: report.buttons,
-                dx:      report.dx,
-                dy:      report.dy,
-                dwheel:  report.wheel,
+                dx: report.dx,
+                dy: report.dy,
+                dwheel: report.wheel,
             });
             Some(report)
         } else {
@@ -3655,15 +4369,26 @@ impl UsbHidDevice {
 /// Open the first enumerated USB HID keyboard.
 pub fn open_hid_keyboard() -> Option<UsbHidDevice> {
     let guard = USB_BUS.lock();
-    for d in guard.devices[..guard.device_count].iter().filter_map(|d| d.as_ref()) {
+    for d in guard.devices[..guard.device_count]
+        .iter()
+        .filter_map(|d| d.as_ref())
+    {
         if d.descriptor.b_device_class == 0x03 {
             let kind = guard.controllers[d.controller_index]
                 .map(|c| c.kind)
                 .unwrap_or(UsbControllerKind::Uhci);
-            let max_pkt = match d.speed { UsbSpeed::High => 64, _ => 8 };
+            let max_pkt = match d.speed {
+                UsbSpeed::High => 64,
+                _ => 8,
+            };
             return Some(UsbHidDevice::new(
-                d.address, d.controller_index, kind, d.speed,
-                0x81, max_pkt, HidKind::Keyboard,
+                d.address,
+                d.controller_index,
+                kind,
+                d.speed,
+                0x81,
+                max_pkt,
+                HidKind::Keyboard,
             ));
         }
     }
@@ -3673,15 +4398,26 @@ pub fn open_hid_keyboard() -> Option<UsbHidDevice> {
 /// Open the first enumerated USB HID mouse.
 pub fn open_hid_mouse() -> Option<UsbHidDevice> {
     let guard = USB_BUS.lock();
-    for d in guard.devices[..guard.device_count].iter().filter_map(|d| d.as_ref()) {
+    for d in guard.devices[..guard.device_count]
+        .iter()
+        .filter_map(|d| d.as_ref())
+    {
         if d.descriptor.b_device_class == 0x03 {
             let kind = guard.controllers[d.controller_index]
                 .map(|c| c.kind)
                 .unwrap_or(UsbControllerKind::Uhci);
-            let max_pkt = match d.speed { UsbSpeed::High => 64, _ => 8 };
+            let max_pkt = match d.speed {
+                UsbSpeed::High => 64,
+                _ => 8,
+            };
             return Some(UsbHidDevice::new(
-                d.address, d.controller_index, kind, d.speed,
-                0x81, max_pkt, HidKind::Mouse,
+                d.address,
+                d.controller_index,
+                kind,
+                d.speed,
+                0x81,
+                max_pkt,
+                HidKind::Mouse,
             ));
         }
     }

@@ -82,7 +82,9 @@ struct ShadowBuf {
     data: [u8; SHADOW_BUF_MAX],
 }
 
-static mut SHADOW_BUF: ShadowBuf = ShadowBuf { data: [0u8; SHADOW_BUF_MAX] };
+static mut SHADOW_BUF: ShadowBuf = ShadowBuf {
+    data: [0u8; SHADOW_BUF_MAX],
+};
 
 pub struct GpuFramebuffer {
     #[allow(dead_code)]
@@ -113,7 +115,11 @@ impl GpuFramebuffer {
             return;
         }
         let offset = (y * self.mode.pitch + x * (self.mode.bpp as u32 / 8)) as usize;
-        let dst = if self.double_buffer { self.shadow_ptr } else { self.front_ptr };
+        let dst = if self.double_buffer {
+            self.shadow_ptr
+        } else {
+            self.front_ptr
+        };
         unsafe {
             match self.mode.bpp {
                 32 => {
@@ -127,9 +133,8 @@ impl GpuFramebuffer {
                     core::ptr::write_volatile((dst as usize + offset + 2) as *mut u8, r);
                 }
                 16 => {
-                    let px: u16 = ((r as u16 & 0xF8) << 8)
-                        | ((g as u16 & 0xFC) << 3)
-                        | (b as u16 >> 3);
+                    let px: u16 =
+                        ((r as u16 & 0xF8) << 8) | ((g as u16 & 0xFC) << 3) | (b as u16 >> 3);
                     core::ptr::write_volatile((dst as usize + offset) as *mut u16, px);
                 }
                 _ => {}
@@ -149,8 +154,14 @@ impl GpuFramebuffer {
 
     pub fn clear(&self) {
         let bytes = self.mode.framebuffer_bytes();
-        let dst = if self.double_buffer { self.shadow_ptr } else { self.front_ptr };
-        unsafe { core::ptr::write_bytes(dst, 0, core::cmp::min(bytes, SHADOW_BUF_MAX)); }
+        let dst = if self.double_buffer {
+            self.shadow_ptr
+        } else {
+            self.front_ptr
+        };
+        unsafe {
+            core::ptr::write_bytes(dst, 0, core::cmp::min(bytes, SHADOW_BUF_MAX));
+        }
     }
 
     pub fn swap_buffers(&self) {
@@ -178,8 +189,12 @@ impl GpuFramebuffer {
         }
     }
 
-    pub fn width(&self) -> u32 { self.mode.width }
-    pub fn height(&self) -> u32 { self.mode.height }
+    pub fn width(&self) -> u32 {
+        self.mode.width
+    }
+    pub fn height(&self) -> u32 {
+        self.mode.height
+    }
 }
 
 pub static GPU_FB: Mutex<Option<GpuFramebuffer>> = Mutex::new(None);
@@ -306,4 +321,3 @@ pub fn dimensions() -> (u32, u32) {
 pub fn is_available() -> bool {
     GPU_FB.lock().is_some()
 }
-

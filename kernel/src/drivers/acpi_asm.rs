@@ -67,21 +67,21 @@ pub struct AcpiTableHeader {
 ///   +68  PM1b_CNT_BLK   u32
 #[repr(C, packed)]
 pub struct FadtTable {
-    pub header:          AcpiTableHeader, // 0..36
-    pub firmware_ctrl:   u32,             // 36
-    pub dsdt:            u32,             // 40
-    pub _reserved:       u8,              // 44
-    pub preferred_pm:    u8,              // 45
-    pub sci_int:         u16,             // 46
-    pub smi_cmd:         u32,             // 48
-    pub acpi_enable:     u8,              // 52
-    pub acpi_disable:    u8,              // 53
-    pub s4bios_req:      u8,              // 54
-    pub pstate_cnt:      u8,              // 55
-    pub pm1a_evt_blk:    u32,             // 56
-    pub pm1b_evt_blk:    u32,             // 60
-    pub pm1a_cnt_blk:    u32,             // 64  ← PM1a Control Block I/O port
-    pub pm1b_cnt_blk:    u32,             // 68
+    pub header: AcpiTableHeader, // 0..36
+    pub firmware_ctrl: u32,      // 36
+    pub dsdt: u32,               // 40
+    pub _reserved: u8,           // 44
+    pub preferred_pm: u8,        // 45
+    pub sci_int: u16,            // 46
+    pub smi_cmd: u32,            // 48
+    pub acpi_enable: u8,         // 52
+    pub acpi_disable: u8,        // 53
+    pub s4bios_req: u8,          // 54
+    pub pstate_cnt: u8,          // 55
+    pub pm1a_evt_blk: u32,       // 56
+    pub pm1b_evt_blk: u32,       // 60
+    pub pm1a_cnt_blk: u32,       // 64  ← PM1a Control Block I/O port
+    pub pm1b_cnt_blk: u32,       // 68
 }
 
 /// Power states
@@ -212,7 +212,11 @@ impl Acpi {
                     let blk: u32 = unsafe {
                         core::ptr::read_unaligned(core::ptr::addr_of!(fadt.pm1a_cnt_blk))
                     };
-                    crate::serial_println!("[ACPI] FADT found at 0x{:08X}, PM1a_CNT_BLK=0x{:04X}", fadt_addr, blk);
+                    crate::serial_println!(
+                        "[ACPI] FADT found at 0x{:08X}, PM1a_CNT_BLK=0x{:04X}",
+                        fadt_addr,
+                        blk
+                    );
                     blk as u16
                 } else {
                     crate::serial_println!("[ACPI] FADT not found — pm1a_base defaulting to 0");

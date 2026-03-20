@@ -11,16 +11,20 @@ use super::types::{BrowserSessionId, Origin, Scheme};
 // Constants
 // ---------------------------------------------------------------------------
 
-pub const COOKIE_NAME_MAX:  usize = 128;
+pub const COOKIE_NAME_MAX: usize = 128;
 pub const COOKIE_VALUE_MAX: usize = 4096;
-pub const MAX_COOKIES:      usize = 128;
+pub const MAX_COOKIES: usize = 128;
 
 // ---------------------------------------------------------------------------
 // SameSite
 // ---------------------------------------------------------------------------
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum SameSite { Strict, Lax, None }
+pub enum SameSite {
+    Strict,
+    Lax,
+    None,
+}
 
 // ---------------------------------------------------------------------------
 // CookieEntry
@@ -28,41 +32,41 @@ pub enum SameSite { Strict, Lax, None }
 
 #[derive(Copy, Clone)]
 pub struct CookieEntry {
-    pub name:       [u8; COOKIE_NAME_MAX],
-    pub name_len:   usize,
-    pub value:      [u8; COOKIE_VALUE_MAX],
-    pub value_len:  usize,
+    pub name: [u8; COOKIE_NAME_MAX],
+    pub name_len: usize,
+    pub value: [u8; COOKIE_VALUE_MAX],
+    pub value_len: usize,
     /// Domain scope (lowercase, leading dot stripped).
-    pub domain:     [u8; 253],
+    pub domain: [u8; 253],
     pub domain_len: usize,
     /// Path scope.
-    pub path:       [u8; 256],
-    pub path_len:   usize,
-    pub session:    BrowserSessionId,
-    pub http_only:  bool,
-    pub secure:     bool,
-    pub same_site:  SameSite,
+    pub path: [u8; 256],
+    pub path_len: usize,
+    pub session: BrowserSessionId,
+    pub http_only: bool,
+    pub secure: bool,
+    pub same_site: SameSite,
     /// Absolute expiry epoch (0 = session cookie).
-    pub expires:    u64,
-    pub active:     bool,
+    pub expires: u64,
+    pub active: bool,
 }
 
 impl CookieEntry {
     pub const EMPTY: Self = Self {
-        name:       [0; COOKIE_NAME_MAX],
-        name_len:   0,
-        value:      [0; COOKIE_VALUE_MAX],
-        value_len:  0,
-        domain:     [0; 253],
+        name: [0; COOKIE_NAME_MAX],
+        name_len: 0,
+        value: [0; COOKIE_VALUE_MAX],
+        value_len: 0,
+        domain: [0; 253],
         domain_len: 0,
-        path:       [0; 256],
-        path_len:   0,
-        session:    BrowserSessionId(0),
-        http_only:  false,
-        secure:     false,
-        same_site:  SameSite::Lax,
-        expires:    0,
-        active:     false,
+        path: [0; 256],
+        path_len: 0,
+        session: BrowserSessionId(0),
+        http_only: false,
+        secure: false,
+        same_site: SameSite::Lax,
+        expires: 0,
+        active: false,
     };
 }
 
@@ -73,27 +77,27 @@ impl CookieEntry {
 /// Parsed attributes from a `Set-Cookie` header value.
 #[derive(Clone, Copy)]
 pub struct SetCookieDirectives {
-    pub domain:     [u8; 253],
+    pub domain: [u8; 253],
     pub domain_len: usize,
-    pub path:       [u8; 256],
-    pub path_len:   usize,
-    pub http_only:  bool,
-    pub secure:     bool,
-    pub same_site:  Option<SameSite>,
-    pub max_age:    Option<i64>,
+    pub path: [u8; 256],
+    pub path_len: usize,
+    pub http_only: bool,
+    pub secure: bool,
+    pub same_site: Option<SameSite>,
+    pub max_age: Option<i64>,
 }
 
 impl Default for SetCookieDirectives {
     fn default() -> Self {
         Self {
-            domain:     [0u8; 253],
+            domain: [0u8; 253],
             domain_len: 0,
-            path:       [0u8; 256],
-            path_len:   0,
-            http_only:  false,
-            secure:     false,
-            same_site:  None,
-            max_age:    None,
+            path: [0u8; 256],
+            path_len: 0,
+            http_only: false,
+            secure: false,
+            same_site: None,
+            max_age: None,
         }
     }
 }
@@ -111,7 +115,9 @@ pub fn parse_set_cookie_attrs(attrs: &[u8], out: &mut SetCookieDirectives) {
         let attr = trim_ascii(&attrs[pos..end]);
         pos = end + 1; // skip ';'
 
-        if attr.is_empty() { continue; }
+        if attr.is_empty() {
+            continue;
+        }
 
         // Split on '='.
         if let Some(eq) = attr.iter().position(|&b| b == b'=') {
@@ -119,7 +125,11 @@ pub fn parse_set_cookie_attrs(attrs: &[u8], out: &mut SetCookieDirectives) {
             let val = trim_ascii(&attr[eq + 1..]);
             if key.eq_ignore_ascii_case(b"domain") {
                 // Strip leading dot.
-                let v = if !val.is_empty() && val[0] == b'.' { &val[1..] } else { val };
+                let v = if !val.is_empty() && val[0] == b'.' {
+                    &val[1..]
+                } else {
+                    val
+                };
                 let len = v.len().min(253);
                 out.domain[..len].copy_from_slice(&v[..len]);
                 out.domain_len = len;
@@ -150,18 +160,33 @@ pub fn parse_set_cookie_attrs(attrs: &[u8], out: &mut SetCookieDirectives) {
 }
 
 fn trim_ascii(s: &[u8]) -> &[u8] {
-    let start = s.iter().position(|&b| b != b' ' && b != b'\t').unwrap_or(s.len());
-    let end = s.iter().rposition(|&b| b != b' ' && b != b'\t').map(|i| i + 1).unwrap_or(start);
+    let start = s
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t')
+        .unwrap_or(s.len());
+    let end = s
+        .iter()
+        .rposition(|&b| b != b' ' && b != b'\t')
+        .map(|i| i + 1)
+        .unwrap_or(start);
     &s[start..end]
 }
 
 fn parse_i64(b: &[u8]) -> Option<i64> {
     let b = trim_ascii(b);
-    if b.is_empty() { return None; }
-    let (neg, b) = if b[0] == b'-' { (true, &b[1..]) } else { (false, b) };
+    if b.is_empty() {
+        return None;
+    }
+    let (neg, b) = if b[0] == b'-' {
+        (true, &b[1..])
+    } else {
+        (false, b)
+    };
     let mut v = 0i64;
     for &c in b {
-        if !c.is_ascii_digit() { return None; }
+        if !c.is_ascii_digit() {
+            return None;
+        }
         v = v.saturating_mul(10).saturating_add((c - b'0') as i64);
     }
     Some(if neg { -v } else { v })
@@ -173,14 +198,14 @@ fn parse_i64(b: &[u8]) -> Option<i64> {
 
 pub struct CookieJar {
     entries: [CookieEntry; MAX_COOKIES],
-    count:   usize,
+    count: usize,
 }
 
 impl CookieJar {
     pub const fn new() -> Self {
         Self {
             entries: [CookieEntry::EMPTY; MAX_COOKIES],
-            count:   0,
+            count: 0,
         }
     }
 
@@ -196,16 +221,18 @@ impl CookieJar {
     /// `request_host` is the normalized hostname.
     pub fn set(
         &mut self,
-        session:         BrowserSessionId,
-        name:            &[u8],
-        value:           &[u8],
-        attrs:           &SetCookieDirectives,
-        request_scheme:  Scheme,
-        request_host:    &[u8],
-        current_epoch:   u64,
+        session: BrowserSessionId,
+        name: &[u8],
+        value: &[u8],
+        attrs: &SetCookieDirectives,
+        request_scheme: Scheme,
+        request_host: &[u8],
+        current_epoch: u64,
     ) -> bool {
         // Secure cookies must only arrive over HTTPS.
-        if attrs.secure && request_scheme != Scheme::Https { return false; }
+        if attrs.secure && request_scheme != Scheme::Https {
+            return false;
+        }
 
         // If `Domain` attribute is absent, scope to request host.
         let (dom, dom_len) = if attrs.domain_len > 0 {
@@ -219,7 +246,7 @@ impl CookieJar {
 
         // Compute expiry.
         let expires = match attrs.max_age {
-            Some(age) if age > 0  => current_epoch.saturating_add(age as u64),
+            Some(age) if age > 0 => current_epoch.saturating_add(age as u64),
             Some(age) if age <= 0 => {
                 // Delete the cookie.
                 self.delete(session, name, &dom[..dom_len]);
@@ -228,9 +255,9 @@ impl CookieJar {
             _ => 0, // session cookie
         };
 
-        let name_len  = name.len().min(COOKIE_NAME_MAX);
+        let name_len = name.len().min(COOKIE_NAME_MAX);
         let value_len = value.len().min(COOKIE_VALUE_MAX);
-        let path_len  = attrs.path_len.min(256);
+        let path_len = attrs.path_len.min(256);
 
         // Update existing entry first.
         for e in &mut self.entries {
@@ -240,12 +267,12 @@ impl CookieJar {
                 && e.domain[..e.domain_len] == dom[..dom_len]
             {
                 e.value[..value_len].copy_from_slice(&value[..value_len]);
-                e.value_len  = value_len;
-                e.http_only  = attrs.http_only;
-                e.secure     = attrs.secure;
-                e.same_site  = attrs.same_site.unwrap_or(SameSite::Lax);
-                e.expires    = expires;
-                e.path_len   = path_len;
+                e.value_len = value_len;
+                e.http_only = attrs.http_only;
+                e.secure = attrs.secure;
+                e.same_site = attrs.same_site.unwrap_or(SameSite::Lax);
+                e.expires = expires;
+                e.path_len = path_len;
                 if path_len > 0 {
                     e.path[..path_len].copy_from_slice(&attrs.path[..path_len]);
                 }
@@ -254,26 +281,28 @@ impl CookieJar {
         }
 
         // Insert new entry.
-        if self.count >= MAX_COOKIES { return false; }
+        if self.count >= MAX_COOKIES {
+            return false;
+        }
         for e in &mut self.entries {
             if !e.active {
-                e.session    = session;
-                e.name_len   = name_len;
+                e.session = session;
+                e.name_len = name_len;
                 e.name[..name_len].copy_from_slice(&name[..name_len]);
-                e.value_len  = value_len;
+                e.value_len = value_len;
                 e.value[..value_len].copy_from_slice(&value[..value_len]);
-                e.domain     = dom;
+                e.domain = dom;
                 e.domain_len = dom_len;
-                e.path_len   = path_len;
+                e.path_len = path_len;
                 if path_len > 0 {
                     e.path[..path_len].copy_from_slice(&attrs.path[..path_len]);
                 }
-                e.http_only  = attrs.http_only;
-                e.secure     = attrs.secure;
-                e.same_site  = attrs.same_site.unwrap_or(SameSite::Lax);
-                e.expires    = expires;
-                e.active     = true;
-                self.count  += 1;
+                e.http_only = attrs.http_only;
+                e.secure = attrs.secure;
+                e.same_site = attrs.same_site.unwrap_or(SameSite::Lax);
+                e.expires = expires;
+                e.active = true;
+                self.count += 1;
                 return true;
             }
         }
@@ -294,19 +323,21 @@ impl CookieJar {
     /// - `is_cross_site`:   for SameSite enforcement
     pub fn build_cookie_header(
         &mut self,
-        session:        BrowserSessionId,
-        out:            &mut [u8],
+        session: BrowserSessionId,
+        out: &mut [u8],
         request_scheme: Scheme,
-        request_host:   &[u8],
-        request_path:   &[u8],
-        current_epoch:  u64,
-        is_cross_site:  bool,
+        request_host: &[u8],
+        request_path: &[u8],
+        current_epoch: u64,
+        is_cross_site: bool,
     ) -> usize {
         let mut w = 0usize;
         let mut first = true;
 
         for e in &mut self.entries {
-            if !e.active || e.session != session { continue; }
+            if !e.active || e.session != session {
+                continue;
+            }
 
             // Expired?
             if e.expires != 0 && current_epoch > e.expires {
@@ -316,35 +347,45 @@ impl CookieJar {
             }
 
             // Secure flag.
-            if e.secure && request_scheme != Scheme::Https { continue; }
+            if e.secure && request_scheme != Scheme::Https {
+                continue;
+            }
 
             // SameSite.
             if is_cross_site {
                 match e.same_site {
-                    SameSite::Strict           => continue,
-                    SameSite::Lax              => {}, // allowed on cross-site top-level nav
-                    SameSite::None if e.secure => {},
-                    SameSite::None             => continue,
+                    SameSite::Strict => continue,
+                    SameSite::Lax => {} // allowed on cross-site top-level nav
+                    SameSite::None if e.secure => {}
+                    SameSite::None => continue,
                 }
             }
 
             // Domain matching.
-            if !domain_matches(request_host, &e.domain[..e.domain_len]) { continue; }
+            if !domain_matches(request_host, &e.domain[..e.domain_len]) {
+                continue;
+            }
 
             // Path matching.
-            if e.path_len > 0 && !path_matches(request_path, &e.path[..e.path_len]) { continue; }
+            if e.path_len > 0 && !path_matches(request_path, &e.path[..e.path_len]) {
+                continue;
+            }
 
             // Write "name=value" pair.
             if !first {
-                if w + 2 > out.len() { break; }
-                out[w]     = b';';
+                if w + 2 > out.len() {
+                    break;
+                }
+                out[w] = b';';
                 out[w + 1] = b' ';
                 w += 2;
             }
             first = false;
 
             let pair_needed = e.name_len + 1 + e.value_len;
-            if w + pair_needed > out.len() { break; }
+            if w + pair_needed > out.len() {
+                break;
+            }
             out[w..w + e.name_len].copy_from_slice(&e.name[..e.name_len]);
             w += e.name_len;
             out[w] = b'=';
@@ -390,12 +431,13 @@ impl CookieJar {
 
 fn domain_matches(request_host: &[u8], cookie_domain: &[u8]) -> bool {
     // Exact match.
-    if request_host.eq_ignore_ascii_case(cookie_domain) { return true; }
+    if request_host.eq_ignore_ascii_case(cookie_domain) {
+        return true;
+    }
     // Suffix match: request_host ends with ".cookie_domain".
     if cookie_domain.len() < request_host.len() {
         let off = request_host.len() - cookie_domain.len();
-        if request_host[off - 1] == b'.'
-            && request_host[off..].eq_ignore_ascii_case(cookie_domain)
+        if request_host[off - 1] == b'.' && request_host[off..].eq_ignore_ascii_case(cookie_domain)
         {
             return true;
         }
@@ -404,10 +446,14 @@ fn domain_matches(request_host: &[u8], cookie_domain: &[u8]) -> bool {
 }
 
 fn path_matches(request_path: &[u8], cookie_path: &[u8]) -> bool {
-    if cookie_path == b"/" { return true; }
+    if cookie_path == b"/" {
+        return true;
+    }
     if request_path.starts_with(cookie_path) {
         let after = request_path.len() > cookie_path.len();
-        if !after { return true; }
+        if !after {
+            return true;
+        }
         return request_path[cookie_path.len()] == b'/';
     }
     false

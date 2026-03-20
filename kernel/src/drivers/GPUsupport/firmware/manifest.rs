@@ -8,4 +8,3 @@ pub struct FirmwareManifest {
     pub device_id: u16,
     pub min_version: u32,
 }
-

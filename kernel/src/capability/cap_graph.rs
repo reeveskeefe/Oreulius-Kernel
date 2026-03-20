@@ -43,11 +43,11 @@ pub const MAX_CHAIN_DEPTH: usize = 32;
 /// which received it as `to_cap`, with rights `rights_bits`."
 #[derive(Clone, Copy)]
 pub struct CapDelegationEdge {
-    pub active:      bool,
-    pub from_pid:    u32,
-    pub from_cap:    u32,
-    pub to_pid:      u32,
-    pub to_cap:      u32,
+    pub active: bool,
+    pub from_pid: u32,
+    pub from_cap: u32,
+    pub to_pid: u32,
+    pub to_cap: u32,
     /// Rights bitmask on the delegated capability (for escalation checks).
     pub rights_bits: u32,
 }
@@ -56,8 +56,10 @@ impl CapDelegationEdge {
     const fn empty() -> Self {
         CapDelegationEdge {
             active: false,
-            from_pid: 0, from_cap: 0,
-            to_pid: 0, to_cap: 0,
+            from_pid: 0,
+            from_cap: 0,
+            to_pid: 0,
+            to_cap: 0,
             rights_bits: 0,
         }
     }
@@ -96,17 +98,20 @@ static CAP_GRAPH: Mutex<CapGraph> = Mutex::new(CapGraph::new());
 /// Returns `Ok(())` on success or `Err` on graph full.  Callers should treat
 /// `Err` as a reason to deny the delegation.
 pub fn record_delegation(
-    from_pid:    u32,
-    from_cap:    u32,
-    to_pid:      u32,
-    to_cap:      u32,
+    from_pid: u32,
+    from_cap: u32,
+    to_pid: u32,
+    to_cap: u32,
     rights_bits: u32,
 ) -> Result<(), &'static str> {
     let mut g = CAP_GRAPH.lock();
     let mut slot = None;
     let mut i = 0usize;
     while i < MAX_GRAPH_EDGES {
-        if !g.edges[i].active { slot = Some(i); break; }
+        if !g.edges[i].active {
+            slot = Some(i);
+            break;
+        }
         i += 1;
     }
     match slot {
@@ -114,8 +119,10 @@ pub fn record_delegation(
         Some(idx) => {
             g.edges[idx] = CapDelegationEdge {
                 active: true,
-                from_pid, from_cap,
-                to_pid,   to_cap,
+                from_pid,
+                from_cap,
+                to_pid,
+                to_cap,
                 rights_bits,
             };
             Ok(())
@@ -132,11 +139,11 @@ pub fn record_delegation(
 /// Returns `Ok(())` if the delegation is safe, `Err(&str)` describing the
 /// violated invariant.
 pub fn check_invariants(
-    from_pid:          u32,
-    from_cap:          u32,
-    to_pid:            u32,
-    delegator_rights:  u32,
-    proposed_rights:   u32,
+    from_pid: u32,
+    from_cap: u32,
+    to_pid: u32,
+    delegator_rights: u32,
+    proposed_rights: u32,
 ) -> Result<(), &'static str> {
     // Invariant 1 — no rights escalation.
     if proposed_rights & !delegator_rights != 0 {
@@ -155,7 +162,8 @@ pub fn check_invariants(
         g.violations = g.violations.wrapping_add(1);
         crate::serial_println!(
             "[cap_graph] VIOLATION: delegation cycle detected from_pid={} to_pid={}",
-            from_pid, to_pid
+            from_pid,
+            to_pid
         );
         return Err("cap_graph: delegation cycle");
     }
@@ -227,7 +235,11 @@ pub struct ProvenanceLink {
 
 impl ProvenanceLink {
     const fn zero() -> Self {
-        ProvenanceLink { cap_id: 0, holder_pid: 0, rights_bits: 0 }
+        ProvenanceLink {
+            cap_id: 0,
+            holder_pid: 0,
+            rights_bits: 0,
+        }
     }
 }
 
@@ -363,15 +375,10 @@ pub fn build_chain(pid: u32, cap_id: u32) -> ProvenanceChain {
     chain
 }
 
-
 /// Write up to `max_edges` raw edges for `(pid, cap_id)` into `out`.
 /// Returns the number of edges written.
-pub fn query_edges_for(
-    pid:    u32,
-    cap_id: u32,
-    out:    &mut [CapDelegationEdge],
-) -> usize {
-    let g   = CAP_GRAPH.lock();
+pub fn query_edges_for(pid: u32, cap_id: u32, out: &mut [CapDelegationEdge]) -> usize {
+    let g = CAP_GRAPH.lock();
     let mut n = 0usize;
     let mut i = 0usize;
     while i < MAX_GRAPH_EDGES && n < out.len() {
@@ -416,11 +423,19 @@ fn would_create_cycle(from_pid: u32, _from_cap: u32, to_pid: u32) -> bool {
         let mut already = false;
         let mut vi = 0usize;
         while vi < n_visited {
-            if visited[vi] == current { already = true; break; }
+            if visited[vi] == current {
+                already = true;
+                break;
+            }
             vi += 1;
         }
-        if already { continue; }
-        if n_visited < MAX_CHAIN_DEPTH { visited[n_visited] = current; n_visited += 1; }
+        if already {
+            continue;
+        }
+        if n_visited < MAX_CHAIN_DEPTH {
+            visited[n_visited] = current;
+            n_visited += 1;
+        }
 
         // Push all successors of `current` onto the stack.
         let mut i = 0usize;
@@ -453,7 +468,9 @@ fn dfs_depth(g: &CapGraph, pid: u32, cap_id: u32, depth: u32) -> u32 {
         let e = &g.edges[i];
         if e.active && e.from_pid == pid && e.from_cap == cap_id {
             let child_depth = dfs_depth(g, e.to_pid, e.to_cap, depth + 1);
-            if child_depth > max_child { max_child = child_depth; }
+            if child_depth > max_child {
+                max_child = child_depth;
+            }
         }
         i += 1;
     }

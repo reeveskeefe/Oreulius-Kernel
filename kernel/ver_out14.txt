@@ -1,0 +1,454 @@
+Building kernel before verification...
+=== Building Oreulia OS ===
+[1/6] Assembling optimized assembly modules...
+  ✓ context_switch.o, memory.o, interrupt.o, network.o, crypto.o
+  ✓ cpu_features.o, atomic.o, perf.o, cow.o, process.o, idt.o
+  ✓ dma.o, acpi.o, memopt.o, gdt.o, sysenter.o, syscall_entry.o, sgx.o, temporal.o
+[2/6] Building Rust kernel (staticlib, i686)...
+    Blocking waiting for file lock on build directory
+warning: oreulia-kernel@0.1.0: --- Oreulia Static Spectral Analysis (PMA §11.2) ---
+warning: oreulia-kernel@0.1.0: Graph derived from: src/security/intent_graph.rs CTMC_Q (9×9 real topology)
+warning: oreulia-kernel@0.1.0: Lanczos k=6 | λ₂(T)=0.483634 | Fiedler γ=0.516366 | Φ(G)≥0.258183 | residual=5.40e-1
+warning: oreulia-kernel@0.1.0: SUCCESS: Cheeger conductance bound verified (real CTMC topology).
+warning: oreulia-kernel@0.1.0: Preemptive compiler pipeline complete — PMA §11.2 satisfied.
+   Compiling oreulia-kernel v0.1.0 (/Users/keefereeves/Desktop/oreulia/kernel)
+warning: unused import: `MAX_WASM_TYPE_ARITY`
+  --> src/execution/wasm_jit.rs:30:5
+   |
+30 |     MAX_WASM_TYPE_ARITY,
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: value assigned to `w` is never read
+   --> src/browser_backend/fetch.rs:449:13
+    |
+449 |     let mut w = 0usize;
+    |             ^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` on by default
+
+warning: unused variable: `redirect`
+   --> src/browser_backend/service.rs:110:17
+    |
+110 |                 redirect,
+    |                 ^^^^^^^^ help: try ignoring the field: `redirect: _`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `body_off`
+   --> src/browser_backend/service.rs:241:21
+    |
+241 |                 let body_off = entry.body_offset;
+    |                     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_body_off`
+
+warning: unused variable: `reason`
+   --> src/browser_backend/service.rs:311:41
+    |
+311 |             FetchOutcome::PolicyBlocked(reason) => {
+    |                                         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_reason`
+
+warning: unused variable: `kind`
+   --> src/browser_backend/service.rs:315:33
+    |
+315 |             FetchOutcome::Error(kind) => {
+    |                                 ^^^^ help: if this is intentional, prefix it with an underscore: `_kind`
+
+warning: unused variable: `sessions`
+  --> src/browser_backend/temporal.rs:93:16
+   |
+93 | pub fn restore(sessions: &mut SessionTable, payload: &[u8]) -> usize {
+   |                ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_sessions`
+
+warning: unused variable: `mb2_ptr`
+  --> src/drivers/GPUsupport/drivers/intel/mod.rs:73:47
+   |
+73 | pub fn probe_display(report: &GpuProbeReport, mb2_ptr: u32) -> GpuProbeReport {
+   |                                               ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mb2_ptr`
+
+warning: variable does not need to be mutable
+   --> src/drivers/GPUsupport/memory/bo.rs:147:13
+    |
+147 |         let mut slots: [Option<BufferObject>; BO_SLAB_SIZE] = unsafe { core::mem::zeroed() };
+    |             ----^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+    --> src/execution/wasm.rs:4129:13
+     |
+4129 |         let mut signature = ParsedFunctionType {
+     |             ----^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `globals_ptr`
+    --> src/execution/wasm.rs:5344:13
+     |
+5344 |             globals_ptr,
+     |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_globals_ptr`
+
+warning: unused variable: `globals_ptr`
+    --> src/execution/wasm.rs:5650:13
+     |
+5650 |             globals_ptr,
+     |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_globals_ptr`
+
+warning: unused variable: `globals_off`
+     --> src/execution/wasm.rs:14887:9
+      |
+14887 |     let globals_off = unsafe { core::ptr::addr_of!((*state_ptr).globals) as usize } - base;
+      |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_globals_off`
+
+warning: variable does not need to be mutable
+     --> src/execution/wasm.rs:14699:9
+      |
+14699 |     let mut mem_ptr_usize = mem_ptr as usize;
+      |         ----^^^^^^^^^^^^^
+      |         |
+      |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+     --> src/execution/wasm.rs:14735:9
+      |
+14735 |     let mut state_ptr = jit_state_base as usize;
+      |         ----^^^^^^^^^
+      |         |
+      |         help: remove this `mut`
+
+warning: unused variable: `type_sigs`
+   --> src/execution/wasm_jit.rs:430:5
+    |
+430 |     type_sigs: &[JitTypeSignature],
+    |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_type_sigs`
+
+warning: unused variable: `global_sigs`
+   --> src/execution/wasm_jit.rs:431:5
+    |
+431 |     global_sigs: &[JitGlobalSignature],
+    |     ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_global_sigs`
+
+warning: value assigned to `byte` is never read
+    --> src/execution/wasm_jit.rs:3781:13
+     |
+3781 |     let mut byte: u8 = 0;
+     |             ^^^^
+     |
+     = help: maybe it is overwritten before being read?
+
+warning: unused variable: `e`
+    --> src/execution/wasm_jit.rs:4617:17
+     |
+4617 |             Err(e) => {
+     |                 ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+    --> src/execution/wasm_jit.rs:4636:21
+     |
+4636 |                 Err(e) => {
+     |                     ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: unused variable: `e`
+    --> src/temporal/mod.rs:3030:51
+     |
+3030 |     (adapter.apply)(path, payload, mode).map_err(|e| {
+     |                                                   ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: function `handle_page_fault` is never used
+   --> src/arch/mmu.rs:321:15
+    |
+321 | pub(crate) fn handle_page_fault(_fault_addr: usize, _error: u64) -> bool {
+    |               ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: function `x86_64_debug_mark_page_cow` is never used
+   --> src/arch/mmu.rs:331:15
+    |
+331 | pub(crate) fn x86_64_debug_mark_page_cow(_virt_addr: usize) -> Result<(), &'static str> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `x86_64_debug_virt_to_phys` is never used
+   --> src/arch/mmu.rs:341:15
+    |
+341 | pub(crate) fn x86_64_debug_virt_to_phys(_virt_addr: usize) -> Option<usize> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `x86_64_debug_pf_stats` is never used
+   --> src/arch/mmu.rs:351:15
+    |
+351 | pub(crate) fn x86_64_debug_pf_stats() -> (u64, u64, u64) {
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `x86_64_debug_recover_stats` is never used
+   --> src/arch/mmu.rs:361:15
+    |
+361 | pub(crate) fn x86_64_debug_recover_stats() -> (usize, usize, u64, usize, u64, u8) {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `pid` is never read
+  --> src/arch/x86_runtime.rs:34:5
+   |
+33 | struct Job {
+   |        --- field in this struct
+34 |     pid: crate::process::Pid,
+   |     ^^^
+   |
+   = note: `Job` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: function `job_remove` is never used
+  --> src/arch/x86_runtime.rs:67:11
+   |
+67 | unsafe fn job_remove(pid: crate::process::Pid) {
+   |           ^^^^^^^^^^
+
+warning: function `print_jobs` is never used
+  --> src/arch/x86_runtime.rs:79:8
+   |
+79 | pub fn print_jobs() {
+   |        ^^^^^^^^^^
+
+warning: function `fg_last_job` is never used
+   --> src/arch/x86_runtime.rs:103:8
+    |
+103 | pub fn fg_last_job() -> bool {
+    |        ^^^^^^^^^^^
+
+warning: `oreulia-kernel` (lib) generated 30 warnings (run `cargo fix --lib -p oreulia-kernel` to apply 19 suggestions)
+    Finished release [optimized] target(s) in 36.01s
+[3/6] Assembling boot stub (boot.asm)...
+[4/6] Linking kernel (boot.o + asm/*.o + liboreulia_kernel.a)...
+x86_64-elf-ld: warning: target/temporal.o: missing .note.GNU-stack section implies executable stack
+x86_64-elf-ld: NOTE: This behaviour is deprecated and will be removed in a future version of the linker
+[5/6] Creating ISO...
+Writing to 'stdio:oreulia.iso' completed successfully.
+
+=== Verification ===
+Boot: qemu-system-i386 -cdrom oreulia.iso
+Running formal verification...
+  hardening self-test: enabled
+  QEMU_EXTRA_ARGS: -display none -no-reboot -no-shutdown
+  expect timeout: 900s
+  log: /var/folders/xy/8b_74z9j6zdcb1gtgqypmv3w0000gn/T/oreulia-formal-verify.XXXXXX.log.1KYebab4EP
+spawn ./run.sh
+Starting Oreulia OS in QEMU...
+Press Ctrl+C to exit
+
+[MEMORY] Heap allocator initialized
+[ARCH] Platform: x86-legacy
+[BOOT] Protocol: multiboot1
+[BOOT] Cmdline ptr: 0x10078
+[BOOT] Cmdline: 
+[BOOT] Loader ptr: 0x1007C
+[BOOT] Loader: GRUB 2.12
+[BOOT] ACPI RSDP ptr: 0x0
+[MMU] Backend: i686-paging
+[MEMORY] Heap allocation test passed
+[GDT] Initializing GDT/TSS...
+[GDT] GDT loaded, TSS ready
+[IDT] Initializing interrupt descriptor table...
+[IDT] IDT loaded
+[IRQCTL] Initializing interrupt controller...
+[PIC] Masks set to M:FC S:FF (Read back: M:FC S:FF)
+[IRQCTL] Controller initialized
+[KEYBOARD] PS/2 Controller initialized (Translation enabled)
+[PAGING] Enabling virtual memory...
+[PAGING] Initializing virtual memory...
+[PAGING] Building kernel address space...
+[PAGING] Mapping kernel memory (0 to D800000)...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Mapping chunk...
+[PAGING] Kernel mappings complete
+[PAGING] Loading CR3...
+[PAGING] CR3 loaded
+[PAGING] Enabling paging (CR0.PG)...
+[PAGING] Paging enabled
+[PAGING] CR0.WP enabled (kernel W^X enforced)
+[PAGING] Virtual memory enabled
+[PAGING] Virtual memory enabled (4KB pages, user/kernel separation)
+[PAGING] Kernel root addr: 0x5534000
+[CPU] SMEP: unsupported, SMAP: unsupported
+[KPTI] Trampoline + user IDT ready
+[ISOLATION] Memory tagging enabled
+[ISOLATION] SGX: unsupported, TrustZone: unsupported
+[ENCLAVE] Backend: none
+[SYSCALL] Setting up system call interface...
+[SYSCALL] WARNING: Handler address in user space!
+[SYSCALL] Registered handler at 0x00101B40
+[SYSCALL] IDT vector: 0x80 (INT 0x80)
+[SYSCALL] Handler: syscall_entry -> syscall_handler_rust
+[SYSCALL] IDT entry verification: assembly-managed
+[SYSCALL] System call interface initialized (INT 0x80)
+[SYSCALL] Handler: syscall_entry -> syscall_handler_rust
+[SYSCALL] SYSENTER configured
+[SYSCALL] INT 0x80 handler registered
+[DEBUG] About to initialize WASM runtime...
+[WASM] Runtime initialized
+[DEBUG] About to init fs...
+[DEBUG] About to init vfs...
+[DEBUG] About to init persistence...
+[VFS] Recovery skipped: vfs flat snapshot missing
+[DEBUG] About to init temporal...
+[DEBUG] About to init ipc...
+[DEBUG] About to init registry...
+[DEBUG] About to init process...
+[DEBUG] About to init wasm...
+[WASM-JIT] compiler-init stage=lock
+[WASM-JIT] compiler-init stage=locked present=0
+[WASM-JIT] compiler-init stage=create
+[WASM-JIT] compiler-init stage=created
+[WASM-JIT] compiler-init stage=done
+[WASM] Runtime initialized
+[SECURITY] Initializing security manager...
+[SECURITY] Audit logging enabled
+[CAPNET] Peer token subsystem initialized (spectral certificate OK)
+[CAPABILITY] Initializing capability manager...
+[CAPABILITY] Authority model enabled
+[CONSOLE] Initializing console service...
+[CONSOLE-DEBUG] create_console start
+[CONSOLE-DEBUG] object created
+[CONSOLE-DEBUG] registering console
+[CONSOLE-DEBUG] registered
+[CONSOLE-DEBUG] granting capability
+[CONSOLE-DEBUG] capability granted
+[CONSOLE] Default console created
+[CONSOLE] Capability-based I/O ready
+[DEBUG] About to initialize timer...
+[TIMER] Initializing PIT (100 Hz)...
+[SCHED] Preemptive scheduler ready
+[IRQ] Enabling interrupts...
+[IRQ] Interrupts enabled
+[DEBUG] Timer initialized successfully
+[PCI] Scanning for devices...
+[BLOCK] No VirtIO block device found
+[NET] Ethernet device detected, initializing...
+[NET] Mapping MMIO region...
+MMIO Base: 0xFEBC0000
+MMIO Base Mapped successfully
+[E1000] MAC address read from EEPROM: 52:54:00:12:34:56
+[NET] Rx Buffers: 0x13f4000 - 0x1474000
+[NET] Rx Descriptors: 0x14f4000
+[NET] Tx Buffers: 0x1474000 - 0x14f4000
+[NET] Tx Descriptors: 0x14f5000
+[NET] Tx Buffers: 0x1474000 - 0x14f4000
+[NET] Tx Descriptors: 0x14f5000
+[NET] E1000 initialized - Ready for DNS/ARP/UDP
+[USB] No USB controllers found
+[GPU] Initializing framebuffer...
+[GPU] active class=Bochs tier=Scanout backend=Bochs
+[GPU] Framebuffer ready
+[MOUSE] Enabling PS/2 auxiliary port...
+[MOUSE] PS/2 IntelliMouse mouse initialised (packet_size=4)
+[MOUSE] PS/2 mouse ready
+[INPUT] Unified input queue ready
+
+[INIT] Initialization complete, starting scheduler...
+[TASK] Starting scheduler setup...
+[PIC] Masks set to M:F8 S:37 (Read back: M:F8 S:37)
+[TASK] Getting init PID...
+[TASK] Found existing init PID=1
+[TASK] Validating init process (PID=1)...
+[TASK] Init process validated: name='init', state=Running
+[TASK] Getting init process...
+[TASK] Adding shell task to scheduler...
+
+[SCHED] Assigned PID 0 stack: 0xe69000 - 0xea9000
+[TASK] Shell task added successfully (PID=0)
+[TASK] Shell task registered
+[TASK] Skipping network task on x86 legacy path
+[TASK] Skipping network task on x86 legacy path
+[TASK] Ready to start scheduler (interrupts will be enabled in tasks)...
+[TASK] Entering scheduler...
+[SCHED] Starting scheduler (safe)
+[SCHED] Lock dropped, loading context
+[SCHED] Jumping to task...
+[SCHED] ctx_ptr=0xdfa910 eip=0x001001d4 esp=0x00ea8ff8 ebp=0x00ea8ff8 eflags=0x00000002 cr3=0x05534000
+[SCHED] stack slots: [esp]=0x00000000 [esp+4]=0x0028aef0
+[SCHED] esp=0x00546e00 top=0x00546e1c ctx_ptr=0x00dfa910
+[TASK] Shell task entered
+[TASK] Shell interrupts verified enabled
+[TASK] Unmasking IRQs...
+[PIC] Masks set to M:F8 S:37 (Read back: M:F8 S:37)
+[TASK] Enabling interrupts for scheduler...
+[TASK] Scheduler interrupts verified active
+[TASK] Interrupts enabled, starting shell...
+[SHELL] Starting shell loop...
+[SHELL] Screen cleared
+Oreulia OS
+[SHELL] Banner printed
+Type 'help' for commands.
+
+> 
+
+===== Formal Verification =====
+
+[1/8] JIT translation proof obligations...
+[WASM-JIT] compile failed integrity check for sample len 3
+  ✗ JIT translation verification failed: Formal translation self-check failed integrity
+> 
+
+===== Temporal Hardening Self-Test =====
+
+Temporal v2->v3 decode compatibility self-check: PASS
+Temporal integrity-tag tamper rejection self-check: PASS
+Temporal deterministic divergent merge self-check: PASS
+Temporal WiFi required-reconnect failure-path self-check: PASS
+Temporal enclave active-session re-entry-path self-check: PASS
+
+> qemu-system-i386: terminating on signal 2 from pid 34764 (<unknown process>)
+ERROR: formal-verify did not report PASS

@@ -453,33 +453,33 @@ pub fn name_from_path(path: &str) -> String {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Elf64Ehdr {
-    e_ident:     [u8; EI_NIDENT],
-    e_type:      u16,
-    e_machine:   u16,
-    e_version:   u32,
-    e_entry:     u64,
-    e_phoff:     u64,
-    e_shoff:     u64,
-    e_flags:     u32,
-    e_ehsize:    u16,
+    e_ident: [u8; EI_NIDENT],
+    e_type: u16,
+    e_machine: u16,
+    e_version: u32,
+    e_entry: u64,
+    e_phoff: u64,
+    e_shoff: u64,
+    e_flags: u32,
+    e_ehsize: u16,
     e_phentsize: u16,
-    e_phnum:     u16,
+    e_phnum: u16,
     e_shentsize: u16,
-    e_shnum:     u16,
-    e_shstrndx:  u16,
+    e_shnum: u16,
+    e_shstrndx: u16,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Elf64Phdr {
-    p_type:   u32,
-    p_flags:  u32,
+    p_type: u32,
+    p_flags: u32,
     p_offset: u64,
-    p_vaddr:  u64,
-    p_paddr:  u64,
+    p_vaddr: u64,
+    p_paddr: u64,
     p_filesz: u64,
-    p_memsz:  u64,
-    p_align:  u64,
+    p_memsz: u64,
+    p_align: u64,
 }
 
 #[repr(C)]
@@ -494,7 +494,7 @@ struct Elf64Dyn {
 #[derive(Clone, Copy)]
 struct Elf64Rel {
     r_offset: u64,
-    r_info:   u64,
+    r_info: u64,
 }
 
 /// RELA entry (with addend — the standard for AArch64)
@@ -502,7 +502,7 @@ struct Elf64Rel {
 #[derive(Clone, Copy)]
 struct Elf64Rela {
     r_offset: u64,
-    r_info:   u64,
+    r_info: u64,
     r_addend: i64,
 }
 
@@ -548,7 +548,7 @@ fn map_segment64(
         return Ok(());
     }
     let start = align_down64(vaddr, PAGE_SIZE as u64) as usize;
-    let end   = align_up64(vaddr + memsz, PAGE_SIZE as u64) as usize;
+    let end = align_up64(vaddr + memsz, PAGE_SIZE as u64) as usize;
     if end >= USER_TOP {
         return Err("ELF64: segment exceeds user space");
     }
@@ -559,7 +559,9 @@ fn map_segment64(
 
 fn copy_to_user64(space: &AddressSpace, vaddr: u64, data: &[u8]) -> Result<(), &'static str> {
     let old = crate::arch::mmu::current_page_table_root_addr();
-    unsafe { space.activate(); }
+    unsafe {
+        space.activate();
+    }
     unsafe {
         ptr::copy_nonoverlapping(data.as_ptr(), vaddr as *mut u8, data.len());
     }
@@ -569,8 +571,12 @@ fn copy_to_user64(space: &AddressSpace, vaddr: u64, data: &[u8]) -> Result<(), &
 
 fn zero_user64(space: &AddressSpace, vaddr: u64, len: usize) -> Result<(), &'static str> {
     let old = crate::arch::mmu::current_page_table_root_addr();
-    unsafe { space.activate(); }
-    unsafe { ptr::write_bytes(vaddr as *mut u8, 0, len); }
+    unsafe {
+        space.activate();
+    }
+    unsafe {
+        ptr::write_bytes(vaddr as *mut u8, 0, len);
+    }
     crate::arch::mmu::set_page_table_root(old)?;
     Ok(())
 }
@@ -589,10 +595,14 @@ fn parse_program_headers64(bytes: &[u8], hdr: &Elf64Ehdr) -> Result<Vec<Elf64Phd
 fn addr_in_load_ranges64(phdrs: &[Elf64Phdr], base: u64, addr: u64, len: u64) -> bool {
     let req_end = addr.saturating_add(len);
     for ph in phdrs {
-        if ph.p_type != PT_LOAD || ph.p_memsz == 0 { continue; }
+        if ph.p_type != PT_LOAD || ph.p_memsz == 0 {
+            continue;
+        }
         let seg_start = base.saturating_add(ph.p_vaddr);
-        let seg_end   = seg_start.saturating_add(ph.p_memsz);
-        if addr >= seg_start && req_end <= seg_end { return true; }
+        let seg_end = seg_start.saturating_add(ph.p_memsz);
+        if addr >= seg_start && req_end <= seg_end {
+            return true;
+        }
     }
     false
 }
@@ -605,14 +615,14 @@ fn apply_rela_relocations64(
 ) -> Result<(), &'static str> {
     let mut rela_addr: u64 = 0;
     let mut rela_size: u64 = 0;
-    let mut rela_ent:  u64 = size_of::<Elf64Rela>() as u64;
+    let mut rela_ent: u64 = size_of::<Elf64Rela>() as u64;
 
     for d in dyns {
         match d.d_tag {
-            t if t == DT64_RELA    => rela_addr = d.d_val,
-            t if t == DT64_RELASZ  => rela_size = d.d_val,
-            t if t == DT64_RELAENT => rela_ent  = d.d_val,
-            t if t == DT64_NULL    => break,
+            t if t == DT64_RELA => rela_addr = d.d_val,
+            t if t == DT64_RELASZ => rela_size = d.d_val,
+            t if t == DT64_RELAENT => rela_ent = d.d_val,
+            t if t == DT64_NULL => break,
             _ => {}
         }
     }
@@ -625,7 +635,9 @@ fn apply_rela_relocations64(
     }
 
     let old = crate::arch::mmu::current_page_table_root_addr();
-    unsafe { space.activate(); }
+    unsafe {
+        space.activate();
+    }
 
     let count = rela_size / rela_ent;
     for i in 0..count {
@@ -642,7 +654,8 @@ fn apply_rela_relocations64(
 
         if r_type == R_AARCH64_RELATIVE {
             // S + A where S = base (position-independent)
-            let target_va = rela.r_offset
+            let target_va = rela
+                .r_offset
                 .checked_add(base)
                 .ok_or("ELF64 RELA: reloc target overflow")?;
             if !addr_in_load_ranges64(phdrs, base, target_va, 8) {
@@ -650,7 +663,9 @@ fn apply_rela_relocations64(
                 return Err("ELF64 RELA: reloc target outside load segments");
             }
             let value = base.wrapping_add(rela.r_addend as u64);
-            unsafe { ptr::write_unaligned(target_va as *mut u64, value); }
+            unsafe {
+                ptr::write_unaligned(target_va as *mut u64, value);
+            }
         }
         // R_AARCH64_JUMP_SLOT and others require PLT which we don't support yet.
     }
@@ -664,8 +679,8 @@ fn apply_rela_relocations64(
 // ============================================================================
 
 pub struct LoadedElf64 {
-    pub space:      AddressSpace,
-    pub entry:      u64,
+    pub space: AddressSpace,
+    pub entry: u64,
     pub user_stack: u64,
 }
 
@@ -680,20 +695,28 @@ pub fn load_elf64(bytes: &[u8]) -> Result<LoadedElf64, &'static str> {
         return Err("ELF64: PT_INTERP not supported (no dynamic linker)");
     }
 
-    let base: u64 = if hdr.e_type == ET_DYN { DEFAULT_BASE64 } else { 0 };
+    let base: u64 = if hdr.e_type == ET_DYN {
+        DEFAULT_BASE64
+    } else {
+        0
+    };
 
     let mut space = AddressSpace::new()?;
 
     // Map all PT_LOAD segments
     for ph in &phdrs {
-        if ph.p_type != PT_LOAD || ph.p_memsz == 0 { continue; }
+        if ph.p_type != PT_LOAD || ph.p_memsz == 0 {
+            continue;
+        }
         let writable = (ph.p_flags & PF_W) != 0;
         map_segment64(&mut space, base + ph.p_vaddr, ph.p_memsz, writable)?;
     }
 
     // Copy file content + zero BSS
     for ph in &phdrs {
-        if ph.p_type != PT_LOAD { continue; }
+        if ph.p_type != PT_LOAD {
+            continue;
+        }
         if ph.p_filesz == 0 {
             if ph.p_memsz > 0 {
                 zero_user64(&space, base + ph.p_vaddr, ph.p_memsz as usize)?;
@@ -726,7 +749,9 @@ pub fn load_elf64(bytes: &[u8]) -> Result<LoadedElf64, &'static str> {
             let d: Elf64Dyn = read_struct(bytes, dyn_off + i * size_of::<Elf64Dyn>())?;
             let done = d.d_tag == DT64_NULL;
             dyns.push(d);
-            if done { break; }
+            if done {
+                break;
+            }
         }
         apply_rela_relocations64(&space, &dyns, &phdrs, base)?;
     }
@@ -738,7 +763,11 @@ pub fn load_elf64(bytes: &[u8]) -> Result<LoadedElf64, &'static str> {
 
     let entry = base + hdr.e_entry;
 
-    Ok(LoadedElf64 { space, entry, user_stack })
+    Ok(LoadedElf64 {
+        space,
+        entry,
+        user_stack,
+    })
 }
 
 pub fn spawn_elf64_process(name: &str, bytes: &[u8]) -> Result<(), &'static str> {
@@ -753,7 +782,7 @@ pub fn spawn_elf64_process(name: &str, bytes: &[u8]) -> Result<(), &'static str>
     quantum_scheduler::scheduler().lock().add_user_process(
         proc,
         Box::new(loaded.space),
-        loaded.entry as u32,   // scheduler stores u32 VA; fine for 4 GiB user space
+        loaded.entry as u32, // scheduler stores u32 VA; fine for 4 GiB user space
         loaded.user_stack as u32,
     )?;
     Ok(())
@@ -770,6 +799,6 @@ pub fn spawn_elf_process_any(name: &str, bytes: &[u8]) -> Result<(), &'static st
     match bytes[4] {
         ELFCLASS32 => spawn_elf_process(name, bytes),
         ELFCLASS64 => spawn_elf64_process(name, bytes),
-        _          => Err("ELF: unknown EI_CLASS"),
+        _ => Err("ELF: unknown EI_CLASS"),
     }
 }

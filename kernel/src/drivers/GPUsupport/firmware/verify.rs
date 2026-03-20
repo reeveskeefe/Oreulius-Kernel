@@ -14,5 +14,3 @@ pub fn verify_blob(bytes: &[u8]) -> Result<(), GpuError> {
     }
     Ok(())
 }
-
-

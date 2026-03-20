@@ -51,14 +51,22 @@ pub struct BufferFlags {
 impl BufferFlags {
     pub const CPU_VISIBLE: u32 = 1 << 0;
     pub const GPU_VISIBLE: u32 = 1 << 1;
-    pub const SCANOUT:     u32 = 1 << 2;
-    pub const CURSOR:      u32 = 1 << 3;
-    pub const IMPORT:      u32 = 1 << 4;  // imported from external memory
+    pub const SCANOUT: u32 = 1 << 2;
+    pub const CURSOR: u32 = 1 << 3;
+    pub const IMPORT: u32 = 1 << 4; // imported from external memory
 
-    pub const fn new(bits: u32) -> Self { BufferFlags { bits } }
-    pub const fn cpu_gpu() -> Self { Self::new(Self::CPU_VISIBLE | Self::GPU_VISIBLE) }
-    pub const fn scanout() -> Self { Self::new(Self::CPU_VISIBLE | Self::GPU_VISIBLE | Self::SCANOUT) }
-    pub fn contains(&self, bit: u32) -> bool { self.bits & bit == bit }
+    pub const fn new(bits: u32) -> Self {
+        BufferFlags { bits }
+    }
+    pub const fn cpu_gpu() -> Self {
+        Self::new(Self::CPU_VISIBLE | Self::GPU_VISIBLE)
+    }
+    pub const fn scanout() -> Self {
+        Self::new(Self::CPU_VISIBLE | Self::GPU_VISIBLE | Self::SCANOUT)
+    }
+    pub fn contains(&self, bit: u32) -> bool {
+        self.bits & bit == bit
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -99,16 +107,22 @@ impl BufferObject {
             owner,
             size,
             flags: BufferFlags::new(
-                BufferFlags::GPU_VISIBLE | BufferFlags::SCANOUT | BufferFlags::IMPORT
+                BufferFlags::GPU_VISIBLE | BufferFlags::SCANOUT | BufferFlags::IMPORT,
             ),
             bytes: Vec::new(),
             phys_base,
         }
     }
 
-    pub fn is_scanout(&self) -> bool { self.flags.contains(BufferFlags::SCANOUT) }
-    pub fn is_cpu_visible(&self) -> bool { self.flags.contains(BufferFlags::CPU_VISIBLE) }
-    pub fn is_imported(&self) -> bool { self.flags.contains(BufferFlags::IMPORT) }
+    pub fn is_scanout(&self) -> bool {
+        self.flags.contains(BufferFlags::SCANOUT)
+    }
+    pub fn is_cpu_visible(&self) -> bool {
+        self.flags.contains(BufferFlags::CPU_VISIBLE)
+    }
+    pub fn is_imported(&self) -> bool {
+        self.flags.contains(BufferFlags::IMPORT)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,12 +138,13 @@ pub struct BoAllocator {
 }
 
 impl BoAllocator {
-    pub const fn empty_slot() -> Option<BufferObject> { None }
+    pub const fn empty_slot() -> Option<BufferObject> {
+        None
+    }
 
     pub fn new() -> Self {
         // Can't use [None; N] for non-Copy types; build via Default.
-        let mut slots: [Option<BufferObject>; BO_SLAB_SIZE] =
-            unsafe { core::mem::zeroed() };
+        let mut slots: [Option<BufferObject>; BO_SLAB_SIZE] = unsafe { core::mem::zeroed() };
         // MaybeUninit would be cleaner; zeroed() is safe here because
         // Option<BufferObject> is valid at all-zeros (None).
         let _ = slots; // silence "assigned but unused" on nightly
@@ -167,7 +182,10 @@ impl BoAllocator {
 
     /// Mutable lookup by ID.
     pub fn get_mut(&mut self, id: u64) -> Option<&mut BufferObject> {
-        self.slots.iter_mut().flatten().find(|bo| bo.object_id == id)
+        self.slots
+            .iter_mut()
+            .flatten()
+            .find(|bo| bo.object_id == id)
     }
 
     /// Remove and return a BO by ID.
@@ -219,8 +237,10 @@ impl BoAllocator {
     // Stats
     // -----------------------------------------------------------------------
 
-    pub fn live_count(&self) -> usize { self.count }
-    pub fn is_full(&self)   -> bool   { self.count >= BO_SLAB_SIZE }
+    pub fn live_count(&self) -> usize {
+        self.count
+    }
+    pub fn is_full(&self) -> bool {
+        self.count >= BO_SLAB_SIZE
+    }
 }
-
-

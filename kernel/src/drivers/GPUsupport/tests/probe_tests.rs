@@ -16,4 +16,3 @@ fn unknown_gpu_is_probe_only() {
     let report = crate::drivers::gpu_support::probe::probe_pci_device(dev, 0);
     assert_eq!(report.tier, crate::drivers::gpu_support::GpuTier::ProbeOnly);
 }
-

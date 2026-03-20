@@ -63,7 +63,10 @@ pub fn enter_runtime() -> ! {
         uart.write_str(crate::arch::platform_name());
         uart.write_str("\n");
     }
-    uart_log_hex_line("[A64] boot raw_info_ptr=", boot_info.raw_info_ptr.unwrap_or(0));
+    uart_log_hex_line(
+        "[A64] boot raw_info_ptr=",
+        boot_info.raw_info_ptr.unwrap_or(0),
+    );
     uart_log_hex_line("[A64] boot dtb_ptr=", boot_info.dtb_ptr.unwrap_or(0));
 
     uart_log_line("[A64] mmu init...");
@@ -97,7 +100,10 @@ pub fn enter_runtime() -> ! {
                 uart_log_hex_line("[A64] dtb off_dt_strings=", hdr.off_dt_strings);
                 uart_log_hex_line("[A64] dtb off_mem_rsvmap=", hdr.off_mem_rsvmap);
                 uart_log_hex_line("[A64] dtb version=", hdr.version as usize);
-                uart_log_hex_line("[A64] dtb last_comp_version=", hdr.last_comp_version as usize);
+                uart_log_hex_line(
+                    "[A64] dtb last_comp_version=",
+                    hdr.last_comp_version as usize,
+                );
                 uart_log_hex_line("[A64] dtb size_dt_struct=", hdr.size_dt_struct);
                 uart_log_hex_line("[A64] dtb size_dt_strings=", hdr.size_dt_strings);
             }
@@ -134,8 +140,6 @@ pub fn enter_runtime() -> ! {
         sched.prepare_start_locked()
     };
     crate::quantum_scheduler::QuantumScheduler::launch_prepared_context(
-        launch.0,
-        launch.1,
-        launch.2,
+        launch.0, launch.1, launch.2,
     )
 }

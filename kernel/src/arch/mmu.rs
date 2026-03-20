@@ -20,6 +20,11 @@
 //! This starts as a thin wrapper over the existing i686 paging subsystem so
 //! callers can migrate away from directly depending on `crate::paging`.
 
+/// Physical address newtype used for page-table roots and MMU handoff.
+///
+/// `PhysAddr::new(0)` is the internal "unset / no physical root recorded"
+/// sentinel in the current kernel. Callers should prefer [`PhysAddr::is_zero`]
+/// over open-coded raw `0` comparisons.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct PhysAddr(usize);
@@ -38,6 +43,11 @@ impl PhysAddr {
     #[inline]
     pub const fn as_u64(self) -> u64 {
         self.0 as u64
+    }
+
+    #[inline]
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
     }
 
     #[inline]
@@ -365,7 +375,6 @@ pub fn map_mmio_identity_range(phys: usize, size: usize) {
 #[cfg(not(target_arch = "x86_64"))]
 pub fn map_mmio_identity_range(_phys: usize, _size: usize) {}
 
-
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 pub(crate) fn aarch64_alloc_debug_page() -> Result<usize, &'static str> {
@@ -419,7 +428,17 @@ mod tests {
         let addr = PhysAddr::new(0x1234);
         assert_eq!(addr.as_usize(), 0x1234);
         assert_eq!(addr.as_u64(), 0x1234);
+        assert!(!addr.is_zero());
         assert_eq!(addr.try_as_u32().unwrap(), 0x1234);
+    }
+
+    #[test]
+    fn phys_addr_zero_is_sentinel() {
+        let addr = PhysAddr::new(0);
+        assert!(addr.is_zero());
+        assert_eq!(addr.as_usize(), 0);
+        assert_eq!(addr.as_u64(), 0);
+        assert_eq!(addr.try_as_u32().unwrap(), 0);
     }
 
     #[cfg(target_pointer_width = "64")]

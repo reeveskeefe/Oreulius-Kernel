@@ -2334,10 +2334,23 @@ fn temporal_apply_vfs_file_payload(
     payload: &[u8],
     _mode: TemporalRestoreMode,
 ) -> Result<(), &'static str> {
+    crate::serial_println!("[TEMPORAL_VFS_APPLY] path={:?}, payload_len={}", path, payload.len());
     match crate::vfs::temporal_try_apply_backend_payload(path, payload) {
-        Ok(true) => Ok(()),
-        Ok(false) => crate::vfs::write_path_untracked(path, payload).map(|_| ()),
-        Err(e) => Err(e),
+        Ok(true) => {
+            crate::serial_println!("[TEMPORAL_VFS_APPLY] temporal_try_apply_backend_payload returned Ok(true)");
+            Ok(())
+        }
+        Ok(false) => {
+            crate::serial_println!("[TEMPORAL_VFS_APPLY] temporal_try_apply_backend_payload returned Ok(false), calling write_path_untracked");
+            crate::vfs::write_path_untracked(path, payload).map(|_| ()).map_err(|e| {
+                crate::serial_println!("[TEMPORAL_VFS_APPLY] write_path_untracked failed");
+                "write_path_untracked failed"
+            })
+        }
+        Err(e) => {
+            crate::serial_println!("[TEMPORAL_VFS_APPLY] temporal_try_apply_backend_payload failed with error: {:?}", e);
+            Err(e)
+        }
     }
 }
 
@@ -2418,7 +2431,15 @@ fn temporal_apply_tcp_conn_payload(
     #[cfg(target_arch = "aarch64")]
     {
         let _ = (
-            conn_id, state, local_ip, local_port, remote_ip, remote_port, event, aux, preview,
+            conn_id,
+            state,
+            local_ip,
+            local_port,
+            remote_ip,
+            remote_port,
+            event,
+            aux,
+            preview,
         );
         Err("temporal tcp connection replay unsupported on AArch64")
     }
@@ -3013,9 +3034,16 @@ fn apply_temporal_payload_to_object(
     payload: &[u8],
     mode: TemporalRestoreMode,
 ) -> Result<(), TemporalError> {
-    let adapter = find_object_adapter(path).ok_or(TemporalError::AdapterApplyFailed)?;
+    crate::serial_println!("[TEMPORAL_ADAPTER] apply_temporal_payload_to_object: path={:?}", path);
+    let adapter = find_object_adapter(path).ok_or_else(|| {
+        crate::serial_println!("[TEMPORAL_ADAPTER] apply_temporal_payload_to_object: find_object_adapter returned None");
+        TemporalError::AdapterApplyFailed
+    })?;
     let _replay_guard = TemporalReplayGuard::new();
-    (adapter.apply)(path, payload, mode).map_err(|_| TemporalError::AdapterApplyFailed)
+    (adapter.apply)(path, payload, mode).map_err(|e| {
+        crate::serial_println!("[TEMPORAL_ADAPTER] apply_temporal_payload_to_object: adapter.apply failed");
+        TemporalError::AdapterApplyFailed
+    })
 }
 
 fn temporal_current_pid() -> crate::ipc::ProcessId {

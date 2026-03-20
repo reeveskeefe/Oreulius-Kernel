@@ -26,4 +26,3 @@ impl ComputeQueue {
         Ok(GpuFence::alloc())
     }
 }
-

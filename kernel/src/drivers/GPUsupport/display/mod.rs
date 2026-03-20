@@ -7,4 +7,3 @@ pub mod damage;
 pub mod edid;
 pub mod modeset;
 pub mod scanout;
-

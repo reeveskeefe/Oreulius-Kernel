@@ -22,4 +22,3 @@ pub enum CommandPacket {
     Transfer(TransferPacket),
     Compute(ComputePacket),
 }
-

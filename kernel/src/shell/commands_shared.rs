@@ -331,7 +331,11 @@ pub fn print_help<W: Write>(out: &mut W, prefix: &str) {
     write_line(out, prefix, "  blk-partitions");
     write_line(out, prefix, "  blk-read <lba>");
     write_line(out, prefix, "  blk-write <lba> <byte>");
-    write_line(out, prefix, "  blk-bench [sectors] [start_lba]  -- timed sequential read");
+    write_line(
+        out,
+        prefix,
+        "  blk-bench [sectors] [start_lba]  -- timed sequential read",
+    );
     #[cfg(target_arch = "aarch64")]
     {
         write_line(out, prefix, "  pid");
@@ -562,14 +566,8 @@ pub fn try_execute<W: Write>(out: &mut W, input: &str, prefix: &str) -> bool {
             // Reads `sectors` consecutive sectors starting at `start_lba` and
             // reports elapsed ticks and a throughput estimate.
             let mut args = rest.split_whitespace();
-            let sectors: u64 = args
-                .next()
-                .and_then(|s| parse_u64_auto(s))
-                .unwrap_or(64);
-            let start_lba: u64 = args
-                .next()
-                .and_then(|s| parse_u64_auto(s))
-                .unwrap_or(0);
+            let sectors: u64 = args.next().and_then(|s| parse_u64_auto(s)).unwrap_or(64);
+            let start_lba: u64 = args.next().and_then(|s| parse_u64_auto(s)).unwrap_or(0);
 
             if !crate::virtio_blk::is_present() {
                 let _ = writeln!(out, "{} blk-bench: no block device present", prefix);

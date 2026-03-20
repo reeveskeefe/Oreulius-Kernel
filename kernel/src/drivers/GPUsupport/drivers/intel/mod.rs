@@ -20,9 +20,9 @@
 use crate::drivers::gpu_support::caps::GpuCapabilities;
 use crate::drivers::gpu_support::core::{GpuBarInfo, GpuClass, GpuProbeReport, GpuTier};
 use crate::drivers::gpu_support::display::scanout::ScanoutBackendId;
+use crate::drivers::gpu_support::drivers::simplefb;
 use crate::drivers::gpu_support::errors::GpuError;
 use crate::drivers::gpu_support::transport::mmio::MmioRegion;
-use crate::drivers::gpu_support::drivers::simplefb;
 
 // ---------------------------------------------------------------------------
 // Public well-documented Intel display register offsets
@@ -71,11 +71,13 @@ pub fn detect_pipe_a_size(bar0: &GpuBarInfo) -> (u32, u32) {
 /// If BAR0 is accessible and PIPEASRC shows a live mode, the report is
 /// upgraded to `Tier::Scanout` and we attempt simplefb-based activation.
 pub fn probe_display(report: &GpuProbeReport, mb2_ptr: u32) -> GpuProbeReport {
-    let bar0 = report.bars.iter().flatten().find(|b| b.index == 0 && b.is_mmio);
+    let bar0 = report
+        .bars
+        .iter()
+        .flatten()
+        .find(|b| b.index == 0 && b.is_mmio);
 
-    let (pipe_w, pipe_h) = bar0
-        .map(|b| detect_pipe_a_size(b))
-        .unwrap_or((0, 0));
+    let (pipe_w, pipe_h) = bar0.map(|b| detect_pipe_a_size(b)).unwrap_or((0, 0));
 
     if pipe_w > 0 && pipe_h > 0 {
         // Display engine is active and reporting a live resolution.
@@ -88,8 +90,8 @@ pub fn probe_display(report: &GpuProbeReport, mb2_ptr: u32) -> GpuProbeReport {
         );
         GpuProbeReport {
             class: GpuClass::IntelFamily,
-            tier:  GpuTier::Scanout,
-            caps:  GpuCapabilities::scanout(),
+            tier: GpuTier::Scanout,
+            caps: GpuCapabilities::scanout(),
             backend: ScanoutBackendId::SimpleFramebuffer,
             ..(*report)
         }
@@ -108,12 +110,18 @@ pub fn activate(mb2_ptr: u32) -> Result<(), GpuError> {
     simplefb::activate(mb2_ptr).map(|_| ())
 }
 
-pub fn put_pixel(x: u32, y: u32, r: u8, g: u8, b: u8) { simplefb::put_pixel(x, y, r, g, b); }
+pub fn put_pixel(x: u32, y: u32, r: u8, g: u8, b: u8) {
+    simplefb::put_pixel(x, y, r, g, b);
+}
 pub fn fill_rect(x: u32, y: u32, w: u32, h: u32, r: u8, g: u8, b: u8) {
     simplefb::fill_rect(x, y, w, h, r, g, b);
 }
-pub fn flush() { simplefb::flush(); }
-pub fn dimensions() -> (u32, u32) { simplefb::dimensions() }
-pub fn is_available() -> bool { simplefb::is_available() }
-
-
+pub fn flush() {
+    simplefb::flush();
+}
+pub fn dimensions() -> (u32, u32) {
+    simplefb::dimensions()
+}
+pub fn is_available() -> bool {
+    simplefb::is_available()
+}

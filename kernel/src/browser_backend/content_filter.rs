@@ -81,9 +81,9 @@ impl ContentFilter {
     /// sniffing (pass an empty slice to skip sniffing).
     pub fn classify(
         &self,
-        declared_mime:  &MimeType,
-        is_attachment:  bool,
-        sniff_bytes:    &[u8],
+        declared_mime: &MimeType,
+        is_attachment: bool,
+        sniff_bytes: &[u8],
     ) -> SniffResult {
         // Explicit attachment → always a download.
         if is_attachment {
@@ -106,10 +106,10 @@ impl ContentFilter {
         if !sniff_bytes.is_empty() {
             match sniff_mime_signature(sniff_bytes) {
                 SniffedMime::Executable => return SniffResult::Download,
-                SniffedMime::Archive    => return SniffResult::Download,
-                SniffedMime::Image      => return SniffResult::Inline,
-                SniffedMime::Html       => return SniffResult::Inline,
-                SniffedMime::Unknown    => {}
+                SniffedMime::Archive => return SniffResult::Download,
+                SniffedMime::Image => return SniffResult::Inline,
+                SniffedMime::Html => return SniffResult::Inline,
+                SniffedMime::Unknown => {}
             }
         }
 
@@ -142,7 +142,9 @@ impl ContentFilter {
                 .position(|&b| b == b';')
                 .map(|p| p + pos + 1)
                 .unwrap_or(content_disposition.len());
-            if start >= content_disposition.len() { break; }
+            if start >= content_disposition.len() {
+                break;
+            }
             pos = start;
 
             let seg_end = content_disposition[pos..]
@@ -190,29 +192,54 @@ enum SniffedMime {
 }
 
 fn sniff_mime_signature(b: &[u8]) -> SniffedMime {
-    if b.len() >= 4 && &b[..4] == b"\x7fELF" { return SniffedMime::Executable; }
-    if b.len() >= 2 && ((&b[..2] == b"MZ") || (&b[..2] == b"ZM")) { return SniffedMime::Executable; }
-    if b.len() >= 4 && &b[..4] == b"PK\x03\x04" { return SniffedMime::Archive; }
-    if b.len() >= 6 && b.starts_with(b"GIF89a") { return SniffedMime::Image; }
-    if b.len() >= 6 && b.starts_with(b"GIF87a") { return SniffedMime::Image; }
-    if b.len() >= 4 && &b[..4] == b"\x89PNG" { return SniffedMime::Image; }
-    if b.len() >= 2 && &b[..2] == b"\xff\xd8" { return SniffedMime::Image; } // JPEG
+    if b.len() >= 4 && &b[..4] == b"\x7fELF" {
+        return SniffedMime::Executable;
+    }
+    if b.len() >= 2 && ((&b[..2] == b"MZ") || (&b[..2] == b"ZM")) {
+        return SniffedMime::Executable;
+    }
+    if b.len() >= 4 && &b[..4] == b"PK\x03\x04" {
+        return SniffedMime::Archive;
+    }
+    if b.len() >= 6 && b.starts_with(b"GIF89a") {
+        return SniffedMime::Image;
+    }
+    if b.len() >= 6 && b.starts_with(b"GIF87a") {
+        return SniffedMime::Image;
+    }
+    if b.len() >= 4 && &b[..4] == b"\x89PNG" {
+        return SniffedMime::Image;
+    }
+    if b.len() >= 2 && &b[..2] == b"\xff\xd8" {
+        return SniffedMime::Image;
+    } // JPEG
     if b.len() >= 5 {
         let lower = to_lower5(b);
-        if &lower == b"<html" || &lower == b"<!doc" { return SniffedMime::Html; }
+        if &lower == b"<html" || &lower == b"<!doc" {
+            return SniffedMime::Html;
+        }
     }
     SniffedMime::Unknown
 }
 
 fn to_lower5(b: &[u8]) -> [u8; 5] {
     let mut out = [0u8; 5];
-    for i in 0..5 { out[i] = b[i].to_ascii_lowercase(); }
+    for i in 0..5 {
+        out[i] = b[i].to_ascii_lowercase();
+    }
     out
 }
 
 fn trim_ascii(s: &[u8]) -> &[u8] {
-    let start = s.iter().position(|&b| b != b' ' && b != b'\t').unwrap_or(s.len());
-    let end = s.iter().rposition(|&b| b != b' ' && b != b'\t').map(|i| i + 1).unwrap_or(start);
+    let start = s
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t')
+        .unwrap_or(s.len());
+    let end = s
+        .iter()
+        .rposition(|&b| b != b' ' && b != b'\t')
+        .map(|i| i + 1)
+        .unwrap_or(start);
     &s[start..end]
 }
 

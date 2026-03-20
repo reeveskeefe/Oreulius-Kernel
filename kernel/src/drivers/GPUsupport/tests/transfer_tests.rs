@@ -8,4 +8,3 @@ fn transfer_queue_rejects_zero_length() {
     };
     assert!(queue.submit(&packet).is_err());
 }
-

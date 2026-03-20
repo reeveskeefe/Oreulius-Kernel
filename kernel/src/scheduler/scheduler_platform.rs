@@ -94,18 +94,60 @@ impl ProcessContext {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(any(test, feature = "host-tests"))))]
 extern "C" {
     fn aarch64_sched_load_context(ctx: *const ProcessContext) -> !;
     fn aarch64_sched_switch_context(old_ctx: *mut ProcessContext, new_ctx: *const ProcessContext);
     fn aarch64_thread_start_trampoline() -> !;
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "aarch64", any(test, feature = "host-tests")))]
+#[no_mangle]
+extern "C" fn aarch64_sched_load_context(_ctx: *const ProcessContext) -> ! {
+    panic!("host-tests stub: aarch64_sched_load_context");
+}
+
+#[cfg(all(target_arch = "aarch64", any(test, feature = "host-tests")))]
+#[no_mangle]
+extern "C" fn aarch64_sched_switch_context(
+    _old_ctx: *mut ProcessContext,
+    _new_ctx: *const ProcessContext,
+) {
+    panic!("host-tests stub: aarch64_sched_switch_context");
+}
+
+#[cfg(all(target_arch = "aarch64", any(test, feature = "host-tests")))]
+#[no_mangle]
+extern "C" fn aarch64_thread_start_trampoline() -> ! {
+    panic!("host-tests stub: aarch64_thread_start_trampoline");
+}
+
+#[cfg(all(target_arch = "x86_64", not(any(test, feature = "host-tests"))))]
 extern "C" {
     fn x86_64_sched_load_context(ctx: *const ProcessContext) -> !;
     fn x86_64_sched_switch_context(old_ctx: *mut ProcessContext, new_ctx: *const ProcessContext);
     fn x86_64_thread_start_trampoline() -> !;
+}
+
+#[cfg(all(target_arch = "x86_64", any(test, feature = "host-tests")))]
+#[no_mangle]
+extern "C" fn x86_64_sched_load_context(_ctx: *const ProcessContext) -> ! {
+    panic!("host-tests stub: x86_64_sched_load_context");
+}
+
+#[cfg(all(target_arch = "x86_64", any(test, feature = "host-tests")))]
+#[no_mangle]
+extern "C" fn x86_64_sched_switch_context(
+    _old_ctx: *mut ProcessContext,
+    _new_ctx: *const ProcessContext,
+) {
+    panic!("host-tests stub: x86_64_sched_switch_context");
+}
+
+#[cfg(all(target_arch = "x86_64", any(test, feature = "host-tests")))]
+#[no_mangle]
+extern "C" fn x86_64_thread_start_trampoline() -> ! {
+    panic!("host-tests stub: x86_64_thread_start_trampoline");
 }
 
 #[cfg(target_arch = "x86")]
@@ -155,6 +197,10 @@ pub fn init_kernel_thread_context(
 ) -> Result<(ProcessContext, usize, usize), &'static str> {
     let entry_addr = entry as *const () as usize;
     let trampoline_addr = crate::asm_bindings::thread_start_trampoline as usize;
+    let current_root =
+        crate::arch::mmu::PhysAddr::new(crate::arch::mmu::current_page_table_root_addr())
+            .try_as_u32()
+            .map_err(|_| "kernel thread page-table root exceeds u32")?;
 
     let mut ctx = ProcessContext::new();
     ctx.eip = trampoline_addr as u32;
@@ -162,7 +208,7 @@ pub fn init_kernel_thread_context(
     // than the pushed entry pointer.
     ctx.esp = (stack_top - 8) as u32;
     ctx.ebp = (stack_top - 8) as u32;
-    ctx.cr3 = crate::arch::mmu::current_page_table_root_addr() as u32;
+    ctx.cr3 = current_root;
     // Keep IF cleared until thread entry explicitly enables interrupts.
     ctx.eflags = 0x0000_0002;
 
@@ -178,6 +224,8 @@ pub fn init_kernel_thread_context(
     let trampoline_addr = x86_64_thread_start_trampoline as usize as u64;
     let stack_top = stack_top & !15usize;
     let bootstrap_sp = stack_top.checked_sub(16).ok_or("invalid kernel stack")?;
+    let current_root =
+        crate::arch::mmu::PhysAddr::new(crate::arch::mmu::current_page_table_root_addr());
 
     if bootstrap_sp < 0x1000 {
         return Err("invalid kernel stack");
@@ -193,7 +241,7 @@ pub fn init_kernel_thread_context(
     ctx.rsp = bootstrap_sp as u64;
     ctx.rbp = bootstrap_sp as u64;
     ctx.rip = trampoline_addr;
-    ctx.cr3 = crate::arch::mmu::current_page_table_root_addr() as u64;
+    ctx.cr3 = current_root.as_u64();
     // Keep IF cleared until thread entry explicitly enables interrupts.
     ctx.rflags = 0x0000_0002;
 
@@ -208,6 +256,8 @@ pub fn init_kernel_thread_context(
     let entry_addr = entry as usize as u64;
     let trampoline_addr = aarch64_thread_start_trampoline as usize as u64;
     let sp = (stack_top as u64) & !0xFu64;
+    let current_root =
+        crate::arch::mmu::PhysAddr::new(crate::arch::mmu::current_page_table_root_addr());
 
     if sp < 0x1000 {
         return Err("invalid kernel stack");
@@ -220,7 +270,7 @@ pub fn init_kernel_thread_context(
     ctx.pc = trampoline_addr;
     // Mirror current TTBR0 so future per-task address-space switching can work
     // through the same context structure once the scheduler is enabled on AArch64.
-    ctx.ttbr0_el1 = crate::arch::mmu::current_page_table_root_addr() as u64;
+    ctx.ttbr0_el1 = current_root.as_u64();
     // Keep IRQ masked until the thread entry explicitly enables interrupts.
     ctx.daif = 1u64 << 7;
     ctx.esp = sp as u32;

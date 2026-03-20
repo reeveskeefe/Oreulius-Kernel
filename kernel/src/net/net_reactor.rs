@@ -205,7 +205,9 @@ fn process_irq(stack: &mut NetworkStack) -> usize {
             }
         }
         #[cfg(target_arch = "aarch64")]
-        { 0usize }
+        {
+            0usize
+        }
     };
 
     // Update adaptive ITR based on observed burst depth.
@@ -220,7 +222,9 @@ fn process_irq(stack: &mut NetworkStack) -> usize {
     // Process each frame through the network stack (no NIC lock held).
     for i in 0..received {
         let len = unsafe { BURST_LENS[i] };
-        if len < 14 { continue; }
+        if len < 14 {
+            continue;
+        }
         let _ = stack.dispatch_frame(unsafe { &BURST_BUFS[i][..len] });
     }
 

@@ -84,23 +84,23 @@ const REG_DEV_CONTROL: u16 = 0; // write
 // ATA Status Register Bits
 // ============================================================================
 
-const STATUS_ERR: u8  = 1 << 0; // Error
-const STATUS_DRQ: u8  = 1 << 3; // Data request ready
-const STATUS_SRV: u8  = 1 << 4; // Service request
-const STATUS_DF:  u8  = 1 << 5; // Drive fault
-const STATUS_RDY: u8  = 1 << 6; // Drive ready
-const STATUS_BSY: u8  = 1 << 7; // Drive busy
+const STATUS_ERR: u8 = 1 << 0; // Error
+const STATUS_DRQ: u8 = 1 << 3; // Data request ready
+const STATUS_SRV: u8 = 1 << 4; // Service request
+const STATUS_DF: u8 = 1 << 5; // Drive fault
+const STATUS_RDY: u8 = 1 << 6; // Drive ready
+const STATUS_BSY: u8 = 1 << 7; // Drive busy
 
 // ============================================================================
 // ATA Command Bytes
 // ============================================================================
 
-const CMD_READ_PIO28:  u8 = 0x20;
-const CMD_READ_PIO48:  u8 = 0x24;
+const CMD_READ_PIO28: u8 = 0x20;
+const CMD_READ_PIO48: u8 = 0x24;
 const CMD_WRITE_PIO28: u8 = 0x30;
 const CMD_WRITE_PIO48: u8 = 0x34;
 const CMD_CACHE_FLUSH: u8 = 0xE7;
-const CMD_IDENTIFY:    u8 = 0xEC;
+const CMD_IDENTIFY: u8 = 0xEC;
 const CMD_IDENTIFY_PACKET: u8 = 0xA1; // ATAPI
 
 // ============================================================================
@@ -108,8 +108,8 @@ const CMD_IDENTIFY_PACKET: u8 = 0xA1; // ATAPI
 // ============================================================================
 
 const DRIVE_MASTER: u8 = 0xA0; // 1010_0000
-const DRIVE_SLAVE:  u8 = 0xB0; // 1011_0000
-const DRIVE_LBA:    u8 = 0x40; // bit 6: LBA mode
+const DRIVE_SLAVE: u8 = 0xB0; // 1011_0000
+const DRIVE_LBA: u8 = 0x40; // bit 6: LBA mode
 
 // ============================================================================
 // Sector geometry
@@ -121,7 +121,7 @@ pub const SECTOR_SIZE: usize = 512;
 // IRQ counters (populated from the interrupt handler in disk.rs)
 // ============================================================================
 
-static ATA_PRIMARY_IRQS:   AtomicU32 = AtomicU32::new(0);
+static ATA_PRIMARY_IRQS: AtomicU32 = AtomicU32::new(0);
 static ATA_SECONDARY_IRQS: AtomicU32 = AtomicU32::new(0);
 
 /// Called from the IRQ 14 handler.
@@ -226,7 +226,7 @@ impl AtaIdentity {
 /// One physical drive (master or slave) on an IDE channel.
 pub struct AtaDrive {
     pub present: bool,
-    pub slave:   bool,
+    pub slave: bool,
     pub identity: AtaIdentity,
     /// IO base port of the owning channel.
     io_base: u16,
@@ -256,10 +256,16 @@ impl AtaDrive {
 
     /// Select this drive and wait for BSY to clear.
     unsafe fn select(&self) {
-        let sel = if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER };
+        let sel = if self.slave {
+            DRIVE_SLAVE
+        } else {
+            DRIVE_MASTER
+        };
         outb(self.io_base + REG_DRIVE_HEAD, sel);
         // 400 ns delay: read alt-status 4×
-        for _ in 0..4 { let _ = self.alt_status(); }
+        for _ in 0..4 {
+            let _ = self.alt_status();
+        }
         self.wait_not_busy();
     }
 
@@ -291,8 +297,10 @@ impl AtaDrive {
     /// Send a software reset on this channel.
     unsafe fn soft_reset(&self) {
         outb(self.ctrl_base + REG_DEV_CONTROL, 0x04); // SRST
-        // hold at least 5 µs
-        for _ in 0..4 { let _ = self.alt_status(); }
+                                                      // hold at least 5 µs
+        for _ in 0..4 {
+            let _ = self.alt_status();
+        }
         outb(self.ctrl_base + REG_DEV_CONTROL, 0x00); // clear SRST
         self.wait_not_busy();
     }
@@ -309,9 +317,9 @@ impl AtaDrive {
 
         // Clear the high LBA / sector count registers
         outb(self.io_base + REG_SECTOR_COUNT, 0);
-        outb(self.io_base + REG_LBA_LO,       0);
-        outb(self.io_base + REG_LBA_MID,       0);
-        outb(self.io_base + REG_LBA_HI,        0);
+        outb(self.io_base + REG_LBA_LO, 0);
+        outb(self.io_base + REG_LBA_MID, 0);
+        outb(self.io_base + REG_LBA_HI, 0);
         outb(self.io_base + REG_COMMAND, CMD_IDENTIFY);
 
         let status = inb(self.io_base + REG_STATUS);
@@ -322,7 +330,7 @@ impl AtaDrive {
 
         // Check for ATAPI signature
         let lba_mid = inb(self.io_base + REG_LBA_MID);
-        let lba_hi  = inb(self.io_base + REG_LBA_HI);
+        let lba_hi = inb(self.io_base + REG_LBA_HI);
         let is_atapi = lba_mid == 0x14 && lba_hi == 0xEB;
 
         if is_atapi {
@@ -346,7 +354,7 @@ impl AtaDrive {
         // Words 27–46: model string (byte-swapped)
         for i in 0..20usize {
             let w = buf[27 + i];
-            id.model[i * 2]     = (w >> 8) as u8;
+            id.model[i * 2] = (w >> 8) as u8;
             id.model[i * 2 + 1] = (w & 0xFF) as u8;
         }
 
@@ -359,11 +367,10 @@ impl AtaDrive {
 
         // Word 83 bit 10: LBA48 supported
         if buf[83] & (1 << 10) != 0 {
-            id.lba48_sectors =
-                (buf[103] as u64) << 48 |
-                (buf[102] as u64) << 32 |
-                (buf[101] as u64) << 16 |
-                 buf[100] as u64;
+            id.lba48_sectors = (buf[103] as u64) << 48
+                | (buf[102] as u64) << 32
+                | (buf[101] as u64) << 16
+                | buf[100] as u64;
         }
 
         // Word 117–118: logical sector size (if word 106 bit 12 set)
@@ -375,7 +382,7 @@ impl AtaDrive {
         }
 
         self.identity = id;
-        self.present  = true;
+        self.present = true;
         true
     }
 
@@ -444,26 +451,31 @@ impl AtaDrive {
             let n = remaining.min(sectors_per_cmd);
             let this_lba = lba + done as u32;
 
-            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER })
-                | DRIVE_LBA
+            let sel = (if self.slave {
+                DRIVE_SLAVE
+            } else {
+                DRIVE_MASTER
+            }) | DRIVE_LBA
                 | ((this_lba >> 24) & 0x0F) as u8;
             outb(self.io_base + REG_DRIVE_HEAD, sel);
-            for _ in 0..4 { let _ = self.alt_status(); }
+            for _ in 0..4 {
+                let _ = self.alt_status();
+            }
             self.wait_not_busy();
 
             outb(self.io_base + REG_SECTOR_COUNT, (n & 0xFF) as u8);
-            outb(self.io_base + REG_LBA_LO,  (this_lba & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_LO, (this_lba & 0xFF) as u8);
             outb(self.io_base + REG_LBA_MID, ((this_lba >> 8) & 0xFF) as u8);
-            outb(self.io_base + REG_LBA_HI,  ((this_lba >> 16) & 0xFF) as u8);
-            outb(self.io_base + REG_COMMAND,  CMD_READ_PIO28);
+            outb(self.io_base + REG_LBA_HI, ((this_lba >> 16) & 0xFF) as u8);
+            outb(self.io_base + REG_COMMAND, CMD_READ_PIO28);
 
             for s in 0..n {
                 self.wait_drq()?;
                 let off = (done + s) * SECTOR_SIZE;
                 for i in (0..SECTOR_SIZE).step_by(2) {
                     let w = inw(self.io_base + REG_DATA);
-                    buf[off + i]     = (w & 0xFF) as u8;
-                    buf[off + i + 1] = (w >> 8)   as u8;
+                    buf[off + i] = (w & 0xFF) as u8;
+                    buf[off + i + 1] = (w >> 8) as u8;
                 }
             }
 
@@ -482,18 +494,23 @@ impl AtaDrive {
             let n = remaining.min(sectors_per_cmd);
             let this_lba = lba + done as u32;
 
-            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER })
-                | DRIVE_LBA
+            let sel = (if self.slave {
+                DRIVE_SLAVE
+            } else {
+                DRIVE_MASTER
+            }) | DRIVE_LBA
                 | ((this_lba >> 24) & 0x0F) as u8;
             outb(self.io_base + REG_DRIVE_HEAD, sel);
-            for _ in 0..4 { let _ = self.alt_status(); }
+            for _ in 0..4 {
+                let _ = self.alt_status();
+            }
             self.wait_not_busy();
 
             outb(self.io_base + REG_SECTOR_COUNT, (n & 0xFF) as u8);
-            outb(self.io_base + REG_LBA_LO,  (this_lba & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_LO, (this_lba & 0xFF) as u8);
             outb(self.io_base + REG_LBA_MID, ((this_lba >> 8) & 0xFF) as u8);
-            outb(self.io_base + REG_LBA_HI,  ((this_lba >> 16) & 0xFF) as u8);
-            outb(self.io_base + REG_COMMAND,  CMD_WRITE_PIO28);
+            outb(self.io_base + REG_LBA_HI, ((this_lba >> 16) & 0xFF) as u8);
+            outb(self.io_base + REG_COMMAND, CMD_WRITE_PIO28);
 
             for s in 0..n {
                 self.wait_drq()?;
@@ -523,14 +540,14 @@ impl AtaDrive {
         // Send high bytes first (HOB bit must be set in DEV_CONTROL for reads,
         // but it is cleaner to write the register pairs in the documented order)
         outb(self.io_base + REG_SECTOR_COUNT, (count >> 8) as u8);
-        outb(self.io_base + REG_LBA_LO,   ((lba >> 24) & 0xFF) as u8);
-        outb(self.io_base + REG_LBA_MID,  ((lba >> 32) & 0xFF) as u8);
-        outb(self.io_base + REG_LBA_HI,   ((lba >> 40) & 0xFF) as u8);
+        outb(self.io_base + REG_LBA_LO, ((lba >> 24) & 0xFF) as u8);
+        outb(self.io_base + REG_LBA_MID, ((lba >> 32) & 0xFF) as u8);
+        outb(self.io_base + REG_LBA_HI, ((lba >> 40) & 0xFF) as u8);
         // Send low bytes
         outb(self.io_base + REG_SECTOR_COUNT, (count & 0xFF) as u8);
-        outb(self.io_base + REG_LBA_LO,  (lba & 0xFF) as u8);
+        outb(self.io_base + REG_LBA_LO, (lba & 0xFF) as u8);
         outb(self.io_base + REG_LBA_MID, ((lba >> 8) & 0xFF) as u8);
-        outb(self.io_base + REG_LBA_HI,  ((lba >> 16) & 0xFF) as u8);
+        outb(self.io_base + REG_LBA_HI, ((lba >> 16) & 0xFF) as u8);
     }
 
     unsafe fn read_lba48(&self, lba: u64, count: usize, buf: &mut [u8]) -> Result<(), AtaError> {
@@ -542,9 +559,15 @@ impl AtaDrive {
             let n = remaining.min(max_per_cmd);
             let this_lba = lba + done as u64;
 
-            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER }) | DRIVE_LBA;
+            let sel = (if self.slave {
+                DRIVE_SLAVE
+            } else {
+                DRIVE_MASTER
+            }) | DRIVE_LBA;
             outb(self.io_base + REG_DRIVE_HEAD, sel);
-            for _ in 0..4 { let _ = self.alt_status(); }
+            for _ in 0..4 {
+                let _ = self.alt_status();
+            }
             self.wait_not_busy();
 
             self.setup_lba48(this_lba, n as u16);
@@ -555,8 +578,8 @@ impl AtaDrive {
                 let off = (done + s) * SECTOR_SIZE;
                 for i in (0..SECTOR_SIZE).step_by(2) {
                     let w = inw(self.io_base + REG_DATA);
-                    buf[off + i]     = (w & 0xFF) as u8;
-                    buf[off + i + 1] = (w >> 8)   as u8;
+                    buf[off + i] = (w & 0xFF) as u8;
+                    buf[off + i + 1] = (w >> 8) as u8;
                 }
             }
 
@@ -575,9 +598,15 @@ impl AtaDrive {
             let n = remaining.min(max_per_cmd);
             let this_lba = lba + done as u64;
 
-            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER }) | DRIVE_LBA;
+            let sel = (if self.slave {
+                DRIVE_SLAVE
+            } else {
+                DRIVE_MASTER
+            }) | DRIVE_LBA;
             outb(self.io_base + REG_DRIVE_HEAD, sel);
-            for _ in 0..4 { let _ = self.alt_status(); }
+            for _ in 0..4 {
+                let _ = self.alt_status();
+            }
             self.wait_not_busy();
 
             self.setup_lba48(this_lba, n as u16);
@@ -626,12 +655,12 @@ pub enum AtaError {
 impl AtaError {
     pub fn as_str(self) -> &'static str {
         match self {
-            AtaError::NoDrive         => "no drive",
-            AtaError::NoLbaSupport    => "drive does not support LBA",
-            AtaError::BufferTooSmall  => "buffer too small",
-            AtaError::OutOfRange      => "LBA out of range",
-            AtaError::DeviceError(_)  => "device error",
-            AtaError::NotInitialised  => "channel not initialised",
+            AtaError::NoDrive => "no drive",
+            AtaError::NoLbaSupport => "drive does not support LBA",
+            AtaError::BufferTooSmall => "buffer too small",
+            AtaError::OutOfRange => "LBA out of range",
+            AtaError::DeviceError(_) => "device error",
+            AtaError::NotInitialised => "channel not initialised",
         }
     }
 }
@@ -641,22 +670,22 @@ impl AtaError {
 // ============================================================================
 
 /// Standard port addresses for the two legacy IDE channels.
-pub const PRIMARY_IO_BASE:   u16 = 0x1F0;
+pub const PRIMARY_IO_BASE: u16 = 0x1F0;
 pub const PRIMARY_CTRL_BASE: u16 = 0x3F6;
-pub const PRIMARY_IRQ:       u8  = 14;
+pub const PRIMARY_IRQ: u8 = 14;
 
-pub const SECONDARY_IO_BASE:   u16 = 0x170;
+pub const SECONDARY_IO_BASE: u16 = 0x170;
 pub const SECONDARY_CTRL_BASE: u16 = 0x376;
-pub const SECONDARY_IRQ:       u8  = 15;
+pub const SECONDARY_IRQ: u8 = 15;
 
 /// An IDE controller with a master and a slave drive.
 pub struct AtaController {
-    pub io_base:   u16,
+    pub io_base: u16,
     pub ctrl_base: u16,
-    pub irq:       u8,
+    pub irq: u8,
     pub initialised: bool,
     pub master: AtaDrive,
-    pub slave:  AtaDrive,
+    pub slave: AtaDrive,
 }
 
 impl AtaController {
@@ -667,7 +696,7 @@ impl AtaController {
             irq,
             initialised: false,
             master: AtaDrive::absent(io_base, ctrl_base, false),
-            slave:  AtaDrive::absent(io_base, ctrl_base, true),
+            slave: AtaDrive::absent(io_base, ctrl_base, true),
         }
     }
 
@@ -676,15 +705,21 @@ impl AtaController {
         unsafe {
             // Software reset
             outb(self.ctrl_base + REG_DEV_CONTROL, 0x04);
-            for _ in 0..4 { let _ = inb(self.ctrl_base + REG_ALT_STATUS); }
+            for _ in 0..4 {
+                let _ = inb(self.ctrl_base + REG_ALT_STATUS);
+            }
             outb(self.ctrl_base + REG_DEV_CONTROL, 0x00);
             // Wait for BSY to clear after reset
             let mut spin = 0u32;
             loop {
                 let s = inb(self.io_base + REG_STATUS);
-                if s & STATUS_BSY == 0 { break; }
+                if s & STATUS_BSY == 0 {
+                    break;
+                }
                 spin += 1;
-                if spin > 100_000 { break; } // bail out rather than hang
+                if spin > 100_000 {
+                    break;
+                } // bail out rather than hang
             }
 
             self.master.identify();
@@ -695,8 +730,12 @@ impl AtaController {
 
     /// Return the first present drive (master first, then slave).
     pub fn first_drive(&self) -> Option<&AtaDrive> {
-        if self.master.present { return Some(&self.master); }
-        if self.slave.present  { return Some(&self.slave);  }
+        if self.master.present {
+            return Some(&self.master);
+        }
+        if self.slave.present {
+            return Some(&self.slave);
+        }
         None
     }
 
@@ -710,10 +749,16 @@ impl AtaController {
 // Global singletons
 // ============================================================================
 
-static PRIMARY:   Mutex<AtaController> = Mutex::new(AtaController::new(
-    PRIMARY_IO_BASE, PRIMARY_CTRL_BASE, PRIMARY_IRQ));
+static PRIMARY: Mutex<AtaController> = Mutex::new(AtaController::new(
+    PRIMARY_IO_BASE,
+    PRIMARY_CTRL_BASE,
+    PRIMARY_IRQ,
+));
 static SECONDARY: Mutex<AtaController> = Mutex::new(AtaController::new(
-    SECONDARY_IO_BASE, SECONDARY_CTRL_BASE, SECONDARY_IRQ));
+    SECONDARY_IO_BASE,
+    SECONDARY_CTRL_BASE,
+    SECONDARY_IRQ,
+));
 
 /// Initialise both IDE channels.  Safe to call from any context.
 pub fn init() {
@@ -771,10 +816,10 @@ pub enum StorageKind {
 impl StorageDevice {
     pub fn description(&self) -> &'static str {
         match self.kind {
-            StorageKind::Ide  => "IDE controller",
-            StorageKind::Ata  => "ATA controller",
+            StorageKind::Ide => "IDE controller",
+            StorageKind::Ata => "ATA controller",
             StorageKind::Sata => "SATA / AHCI controller",
-            StorageKind::Sas  => "Serial Attached SCSI",
+            StorageKind::Sas => "Serial Attached SCSI",
             StorageKind::Nvme => "NVM Express (NVMe)",
             StorageKind::Other => "Unknown storage controller",
         }
@@ -782,7 +827,9 @@ impl StorageDevice {
 }
 
 /// Scan `pci_devices` and return all storage controllers.
-pub fn detect_storage_devices(pci_devices: &[Option<crate::pci::PciDevice>]) -> alloc::vec::Vec<StorageDevice> {
+pub fn detect_storage_devices(
+    pci_devices: &[Option<crate::pci::PciDevice>],
+) -> alloc::vec::Vec<StorageDevice> {
     extern crate alloc;
     use alloc::vec::Vec;
 
@@ -793,12 +840,12 @@ pub fn detect_storage_devices(pci_devices: &[Option<crate::pci::PciDevice>]) -> 
             continue;
         }
         let kind = match dev.subclass {
-            pci_class::SUBCLASS_IDE  => StorageKind::Ide,
-            pci_class::SUBCLASS_ATA  => StorageKind::Ata,
+            pci_class::SUBCLASS_IDE => StorageKind::Ide,
+            pci_class::SUBCLASS_ATA => StorageKind::Ata,
             pci_class::SUBCLASS_SATA => StorageKind::Sata,
-            pci_class::SUBCLASS_SAS  => StorageKind::Sas,
+            pci_class::SUBCLASS_SAS => StorageKind::Sas,
             pci_class::SUBCLASS_NVME => StorageKind::Nvme,
-            _                        => StorageKind::Other,
+            _ => StorageKind::Other,
         };
         out.push(StorageDevice { pci: *dev, kind });
     }
@@ -824,11 +871,11 @@ pub fn health() -> AtaHealth {
     let pri = PRIMARY.lock();
     let sec = SECONDARY.lock();
     AtaHealth {
-        primary_irqs:             ATA_PRIMARY_IRQS.load(Ordering::Relaxed),
-        secondary_irqs:           ATA_SECONDARY_IRQS.load(Ordering::Relaxed),
-        primary_master_present:   pri.master.present,
-        primary_slave_present:    pri.slave.present,
+        primary_irqs: ATA_PRIMARY_IRQS.load(Ordering::Relaxed),
+        secondary_irqs: ATA_SECONDARY_IRQS.load(Ordering::Relaxed),
+        primary_master_present: pri.master.present,
+        primary_slave_present: pri.slave.present,
         secondary_master_present: sec.master.present,
-        secondary_slave_present:  sec.slave.present,
+        secondary_slave_present: sec.slave.present,
     }
 }

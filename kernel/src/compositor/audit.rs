@@ -12,19 +12,19 @@ pub const AUDIT_LOG_SIZE: usize = 128;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum AuditKind {
-    SessionOpened    = 0,
-    SessionClosed    = 1,
-    WindowCreated    = 2,
-    WindowDestroyed  = 3,
+    SessionOpened = 0,
+    SessionClosed = 1,
+    WindowCreated = 2,
+    WindowDestroyed = 3,
     SurfaceAllocated = 4,
-    SurfaceFreed     = 5,
-    SurfaceCommit    = 6,
-    InputRouted      = 7,
-    FocusChanged     = 8,
-    PolicyViolation  = 9,
-    PresentComplete  = 10,
-    CapIssued        = 11,
-    CapRevoked       = 12,
+    SurfaceFreed = 5,
+    SurfaceCommit = 6,
+    InputRouted = 7,
+    FocusChanged = 8,
+    PolicyViolation = 9,
+    PresentComplete = 10,
+    CapIssued = 11,
+    CapRevoked = 12,
 }
 
 /// One audit record.
@@ -115,7 +115,11 @@ impl AuditLog {
         };
         for i in 0..n {
             out[i] = self.entries[read];
-            read = if read == 0 { AUDIT_LOG_SIZE - 1 } else { read - 1 };
+            read = if read == 0 {
+                AUDIT_LOG_SIZE - 1
+            } else {
+                read - 1
+            };
         }
         n
     }

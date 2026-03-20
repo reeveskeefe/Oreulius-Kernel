@@ -36,7 +36,6 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use crate::arch::mmu as arch_mmu;
 use crate::capability::{self, CapabilityType, Rights};
 use crate::fs;
@@ -51,6 +50,7 @@ use crate::paging;
 use crate::process_asm;
 use crate::replay::{self, ReplayEventStatus, ReplayMode};
 use crate::syscall::SYSCALL_JIT_RETURN;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -909,44 +909,44 @@ fn resolve_host_import(
         "proc_sleep" | "oreulia_proc_sleep" => (102, 1, 0),
         // ── Polyglot kernel services (IDs 103-105) ───────────────────────────
         "polyglot_register" | "oreulia_polyglot_register" => (103, 2, 1),
-        "polyglot_resolve"  | "oreulia_polyglot_resolve"  => (104, 2, 1),
-        "polyglot_link"     | "oreulia_polyglot_link"     => (105, 4, 1),
+        "polyglot_resolve" | "oreulia_polyglot_resolve" => (104, 2, 1),
+        "polyglot_link" | "oreulia_polyglot_link" => (105, 4, 1),
         // ── Kernel Observer services (IDs 106-108) ───────────────────────────
-        "observer_subscribe"   | "oreulia_observer_subscribe"   => (106, 1, 1),
+        "observer_subscribe" | "oreulia_observer_subscribe" => (106, 1, 1),
         "observer_unsubscribe" | "oreulia_observer_unsubscribe" => (107, 0, 1),
-        "observer_query"       | "oreulia_observer_query"       => (108, 2, 1),
+        "observer_query" | "oreulia_observer_query" => (108, 2, 1),
         // ── Decentralized Kernel Mesh (IDs 109-115) ─────────────────────────
-        "mesh_local_id"      | "oreulia_mesh_local_id"      => (109, 0, 1),
+        "mesh_local_id" | "oreulia_mesh_local_id" => (109, 0, 1),
         "mesh_peer_register" | "oreulia_mesh_peer_register" => (110, 3, 1),
-        "mesh_peer_session"  | "oreulia_mesh_peer_session"  => (111, 2, 1),
-        "mesh_token_mint"    | "oreulia_mesh_token_mint"    => (112, 6, 1),
-        "mesh_token_send"    | "oreulia_mesh_token_send"    => (113, 4, 1),
-        "mesh_token_recv"    | "oreulia_mesh_token_recv"    => (114, 2, 1),
-        "mesh_migrate"       | "oreulia_mesh_migrate"       => (115, 4, 1),
+        "mesh_peer_session" | "oreulia_mesh_peer_session" => (111, 2, 1),
+        "mesh_token_mint" | "oreulia_mesh_token_mint" => (112, 6, 1),
+        "mesh_token_send" | "oreulia_mesh_token_send" => (113, 4, 1),
+        "mesh_token_recv" | "oreulia_mesh_token_recv" => (114, 2, 1),
+        "mesh_migrate" | "oreulia_mesh_migrate" => (115, 4, 1),
 
         // ── Temporal Capabilities with Revocable History (IDs 116-120) ────
-        "temporal_cap_grant"         | "oreulia_temporal_cap_grant"         => (116, 3, 1),
-        "temporal_cap_revoke"        | "oreulia_temporal_cap_revoke"        => (117, 1, 1),
-        "temporal_cap_check"         | "oreulia_temporal_cap_check"         => (118, 1, 1),
+        "temporal_cap_grant" | "oreulia_temporal_cap_grant" => (116, 3, 1),
+        "temporal_cap_revoke" | "oreulia_temporal_cap_revoke" => (117, 1, 1),
+        "temporal_cap_check" | "oreulia_temporal_cap_check" => (118, 1, 1),
         "temporal_checkpoint_create" | "oreulia_temporal_checkpoint_create" => (119, 0, 1),
-        "temporal_checkpoint_rollback"| "oreulia_temporal_checkpoint_rollback" => (120, 1, 1),
+        "temporal_checkpoint_rollback" | "oreulia_temporal_checkpoint_rollback" => (120, 1, 1),
 
         // ── Intensional Kernel: Policy-as-Capability-Contracts (IDs 121-124) ─
-        "policy_bind"   | "oreulia_policy_bind"   => (121, 3, 1),
+        "policy_bind" | "oreulia_policy_bind" => (121, 3, 1),
         "policy_unbind" | "oreulia_policy_unbind" => (122, 1, 1),
-        "policy_eval"   | "oreulia_policy_eval"   => (123, 3, 1),
-        "policy_query"  | "oreulia_policy_query"  => (124, 3, 1),
+        "policy_eval" | "oreulia_policy_eval" => (123, 3, 1),
+        "policy_query" | "oreulia_policy_query" => (124, 3, 1),
 
         // ── Quantum-Inspired Capability Entanglement (IDs 125–128) ──────────
-        "cap_entangle"       | "oreulia_cap_entangle"       => (125, 2, 1),
+        "cap_entangle" | "oreulia_cap_entangle" => (125, 2, 1),
         "cap_entangle_group" | "oreulia_cap_entangle_group" => (126, 2, 1),
-        "cap_disentangle"    | "oreulia_cap_disentangle"    => (127, 1, 1),
+        "cap_disentangle" | "oreulia_cap_disentangle" => (127, 1, 1),
         "cap_entangle_query" | "oreulia_cap_entangle_query" => (128, 3, 1),
 
         // ── Runtime Capability Graph Verification (IDs 129–131) ─────────────
-        "cap_graph_query"  | "oreulia_cap_graph_query"  => (129, 3, 1),
+        "cap_graph_query" | "oreulia_cap_graph_query" => (129, 3, 1),
         "cap_graph_verify" | "oreulia_cap_graph_verify" => (130, 2, 1),
-        "cap_graph_depth"  | "oreulia_cap_graph_depth"  => (131, 1, 1),
+        "cap_graph_depth" | "oreulia_cap_graph_depth" => (131, 1, 1),
 
         _ => return Err(WasmError::InvalidModule),
     };
@@ -1960,27 +1960,27 @@ const MAX_POLYGLOT_ENTRIES: usize = 16;
 
 #[derive(Clone, Copy)]
 struct PolyglotEntry {
-    active:      bool,
-    name:        [u8; 32],
-    name_len:    u8,
+    active: bool,
+    name: [u8; 32],
+    name_len: u8,
     instance_id: usize,
-    language:    LanguageTag,
-    cap_object:  u64,           // cap object_id for ServicePointer, 0 if none yet
-    owner_pid:   crate::ipc::ProcessId,
-    singleton:   bool,          // true = shared language-runtime service
+    language: LanguageTag,
+    cap_object: u64, // cap object_id for ServicePointer, 0 if none yet
+    owner_pid: crate::ipc::ProcessId,
+    singleton: bool, // true = shared language-runtime service
 }
 
 impl PolyglotEntry {
     const fn empty() -> Self {
         PolyglotEntry {
-            active:      false,
-            name:        [0u8; 32],
-            name_len:    0,
+            active: false,
+            name: [0u8; 32],
+            name_len: 0,
             instance_id: 0,
-            language:    LanguageTag::Unknown,
-            cap_object:  0,
-            owner_pid:   crate::ipc::ProcessId(0),
-            singleton:   false,
+            language: LanguageTag::Unknown,
+            cap_object: 0,
+            owner_pid: crate::ipc::ProcessId(0),
+            singleton: false,
         }
     }
 }
@@ -1991,15 +1991,15 @@ struct PolyglotRegistry {
 
 impl PolyglotRegistry {
     const fn new() -> Self {
-        Self { entries: [PolyglotEntry::empty(); MAX_POLYGLOT_ENTRIES] }
+        Self {
+            entries: [PolyglotEntry::empty(); MAX_POLYGLOT_ENTRIES],
+        }
     }
     fn find_by_name(&self, name: &[u8]) -> Option<usize> {
         let mut i = 0;
         while i < self.entries.len() {
             let e = &self.entries[i];
-            if e.active && e.name_len as usize == name.len()
-                && &e.name[..name.len()] == name
-            {
+            if e.active && e.name_len as usize == name.len() && &e.name[..name.len()] == name {
                 return Some(i);
             }
             i += 1;
@@ -2009,15 +2009,16 @@ impl PolyglotRegistry {
     fn find_empty(&self) -> Option<usize> {
         let mut i = 0;
         while i < self.entries.len() {
-            if !self.entries[i].active { return Some(i); }
+            if !self.entries[i].active {
+                return Some(i);
+            }
             i += 1;
         }
         None
     }
 }
 
-static POLYGLOT_REGISTRY: Mutex<PolyglotRegistry> =
-    Mutex::new(PolyglotRegistry::new());
+static POLYGLOT_REGISTRY: Mutex<PolyglotRegistry> = Mutex::new(PolyglotRegistry::new());
 
 // ── Kernel Observer Registry ─────────────────────────────────────────────────
 // Up to MAX_OBSERVER_SLOTS WASM modules can subscribe as kernel observers.
@@ -2026,19 +2027,19 @@ static POLYGLOT_REGISTRY: Mutex<PolyglotRegistry> =
 /// Event mask bits for kernel observers.
 pub mod observer_events {
     /// A capability operation was performed (grant/revoke/transfer).
-    pub const CAPABILITY_OP:  u32 = 1 << 0;
+    pub const CAPABILITY_OP: u32 = 1 << 0;
     /// A process was spawned or exited.
     pub const PROCESS_LIFECYCLE: u32 = 1 << 1;
     /// An anomaly was detected by the SecurityManager.
     pub const ANOMALY_DETECTED: u32 = 1 << 2;
     /// An IPC channel send/recv completed.
-    pub const IPC_ACTIVITY:   u32 = 1 << 3;
+    pub const IPC_ACTIVITY: u32 = 1 << 3;
     /// A memory allocation exceeded a threshold.
     pub const MEMORY_PRESSURE: u32 = 1 << 4;
     /// A cross-language polyglot link was established.
-    pub const POLYGLOT_LINK:  u32 = 1 << 5;
+    pub const POLYGLOT_LINK: u32 = 1 << 5;
     /// All events (catch-all mask).
-    pub const ALL:            u32 = 0x0000_003F;
+    pub const ALL: u32 = 0x0000_003F;
 }
 
 const MAX_OBSERVER_SLOTS: usize = 4;
@@ -2103,8 +2104,7 @@ impl ObserverRegistry {
     }
 }
 
-static OBSERVER_REGISTRY: Mutex<ObserverRegistry> =
-    Mutex::new(ObserverRegistry::new());
+static OBSERVER_REGISTRY: Mutex<ObserverRegistry> = Mutex::new(ObserverRegistry::new());
 
 // ── Kernel Mesh Migration Queue ───────────────────────────────────────────────
 // Holds pending `mesh_migrate` requests.  A background task or the next
@@ -2113,13 +2113,13 @@ static OBSERVER_REGISTRY: Mutex<ObserverRegistry> =
 const MAX_MESH_MIGRATE_SLOTS: usize = 4;
 
 struct MeshMigrateRequest {
-    active:          bool,
-    peer_id:         u64,
+    active: bool,
+    peer_id: u64,
     /// Snapshot of the WASM bytecode to send (heap-allocated via the kernel
     /// alloc shim when `alloc` is available; otherwise up to 64 KiB inline).
-    bytecode:        [u8; 65536],
-    bytecode_len:    usize,
-    requester_pid:   crate::ipc::ProcessId,
+    bytecode: [u8; 65536],
+    bytecode_len: usize,
+    requester_pid: crate::ipc::ProcessId,
 }
 
 impl MeshMigrateRequest {
@@ -2152,7 +2152,9 @@ impl MeshMigrateQueue {
     fn find_empty(&self) -> Option<usize> {
         let mut i = 0usize;
         while i < self.slots.len() {
-            if !self.slots[i].active { return Some(i); }
+            if !self.slots[i].active {
+                return Some(i);
+            }
             i += 1;
         }
         None
@@ -2166,8 +2168,8 @@ pub fn mesh_migrate_flush() {
     let mut i = 0usize;
     while i < q.slots.len() {
         if q.slots[i].active {
-            let peer_id   = q.slots[i].peer_id;
-            let len       = q.slots[i].bytecode_len;
+            let peer_id = q.slots[i].peer_id;
+            let len = q.slots[i].bytecode_len;
             // Build a TokenOffer frame carrying the WASM bytecode as payload.
             // We encode: [8-byte peer_id LE][4-byte len LE][bytecode…]
             // Real transport would use the NetworkService TCP layer; here we
@@ -2175,7 +2177,8 @@ pub fn mesh_migrate_flush() {
             // userspace can complete the handshake via mesh_token_send.
             crate::serial_println!(
                 "[mesh] migrate: peer={:#018x} bytes={} queued",
-                peer_id, len
+                peer_id,
+                len
             );
             // Notify observers.
             let mut payload = [0u8; 12];
@@ -2188,8 +2191,7 @@ pub fn mesh_migrate_flush() {
     }
 }
 
-static MESH_MIGRATE_QUEUE: Mutex<MeshMigrateQueue> =
-    Mutex::new(MeshMigrateQueue::new());
+static MESH_MIGRATE_QUEUE: Mutex<MeshMigrateQueue> = Mutex::new(MeshMigrateQueue::new());
 
 // ── Temporal Capability Expiry Table ────────────────────────────────────────
 // Tracks capabilities granted through the `temporal_cap_grant` host function
@@ -2199,24 +2201,30 @@ const MAX_TEMPORAL_CAP_SLOTS: usize = 32;
 
 #[derive(Clone, Copy)]
 struct TemporalCapSlot {
-    active:     bool,
-    pid:        u32,
-    cap_id:     u32,
-    expires_at: u64,  // absolute PIT tick
-    cap_type:   u8,
-    object_id:  u64,
+    active: bool,
+    pid: u32,
+    cap_id: u32,
+    expires_at: u64, // absolute PIT tick
+    cap_type: u8,
+    object_id: u64,
 }
 
 impl TemporalCapSlot {
     const fn empty() -> Self {
-        TemporalCapSlot { active: false, pid: 0, cap_id: 0, expires_at: 0,
-                          cap_type: 0, object_id: 0 }
+        TemporalCapSlot {
+            active: false,
+            pid: 0,
+            cap_id: 0,
+            expires_at: 0,
+            cap_type: 0,
+            object_id: 0,
+        }
     }
 }
 
 struct TemporalCapTable {
-    slots:    [TemporalCapSlot; MAX_TEMPORAL_CAP_SLOTS],
-    next_id:  u32,   // monotonic slot counter, used as "checkpoint ID" too
+    slots: [TemporalCapSlot; MAX_TEMPORAL_CAP_SLOTS],
+    next_id: u32, // monotonic slot counter, used as "checkpoint ID" too
 }
 
 impl TemporalCapTable {
@@ -2228,64 +2236,71 @@ impl TemporalCapTable {
     }
 }
 
-static TEMPORAL_CAP_TABLE: Mutex<TemporalCapTable> =
-    Mutex::new(TemporalCapTable::new());
+static TEMPORAL_CAP_TABLE: Mutex<TemporalCapTable> = Mutex::new(TemporalCapTable::new());
 
 // ── Temporal Checkpoint Store ────────────────────────────────────────────────
 // Lightweight per-process capability snapshots for WASM rollback.
 
 const MAX_TEMPORAL_CHECKPOINTS: usize = 8;
-const MAX_CAPS_PER_CHECKPOINT:  usize = 16;
+const MAX_CAPS_PER_CHECKPOINT: usize = 16;
 
 #[derive(Clone, Copy)]
 struct TemporalCheckpointEntry {
-    cap_id:    u32,
+    cap_id: u32,
     object_id: u64,
-    cap_type:  u8,
-    rights:    u32,
+    cap_type: u8,
+    rights: u32,
 }
 
 impl TemporalCheckpointEntry {
     const fn empty() -> Self {
-        TemporalCheckpointEntry { cap_id: 0, object_id: 0, cap_type: 0, rights: 0 }
+        TemporalCheckpointEntry {
+            cap_id: 0,
+            object_id: 0,
+            cap_type: 0,
+            rights: 0,
+        }
     }
 }
 
 #[derive(Clone, Copy)]
 struct TemporalCheckpoint {
-    active:     bool,
-    id:         u32,
-    pid:        u32,
-    tick:       u64,
-    cap_count:  u8,
-    caps:       [TemporalCheckpointEntry; MAX_CAPS_PER_CHECKPOINT],
+    active: bool,
+    id: u32,
+    pid: u32,
+    tick: u64,
+    cap_count: u8,
+    caps: [TemporalCheckpointEntry; MAX_CAPS_PER_CHECKPOINT],
 }
 
 impl TemporalCheckpoint {
     const fn empty() -> Self {
         TemporalCheckpoint {
-            active: false, id: 0, pid: 0, tick: 0, cap_count: 0,
+            active: false,
+            id: 0,
+            pid: 0,
+            tick: 0,
+            cap_count: 0,
             caps: [TemporalCheckpointEntry::empty(); MAX_CAPS_PER_CHECKPOINT],
         }
     }
 }
 
 struct CheckpointStore {
-    slots:   [TemporalCheckpoint; MAX_TEMPORAL_CHECKPOINTS],
+    slots: [TemporalCheckpoint; MAX_TEMPORAL_CHECKPOINTS],
     next_id: u32,
 }
 
 impl CheckpointStore {
     const fn new() -> Self {
         CheckpointStore {
-            slots:   [TemporalCheckpoint::empty(); MAX_TEMPORAL_CHECKPOINTS],
+            slots: [TemporalCheckpoint::empty(); MAX_TEMPORAL_CHECKPOINTS],
             next_id: 1,
         }
     }
 }
 
-static TEMPORAL_CHECKPOINT_STORE: Mutex<CheckpointStore> =
-    Mutex::new(CheckpointStore::new());
+static TEMPORAL_CHECKPOINT_STORE: Mutex<CheckpointStore> = Mutex::new(CheckpointStore::new());
 
 // ── Intensional Kernel: Policy-as-Capability-Contracts ───────────────────────
 // A "policy contract" is a small WASM module (≤ 4 KiB) whose exported
@@ -2293,28 +2308,28 @@ static TEMPORAL_CHECKPOINT_STORE: Mutex<CheckpointStore> =
 // 0 = permit or 1 = deny.  Contracts are bound to specific `cap_id` values;
 // before any access using that capability the kernel evaluates the contract.
 
-const MAX_POLICY_SLOTS:    usize = 16;
+const MAX_POLICY_SLOTS: usize = 16;
 const MAX_POLICY_WASM_LEN: usize = 4096;
 
 #[derive(Clone, Copy)]
 struct PolicySlot {
-    active:     bool,
-    pid:        u32,
-    cap_id:     u32,
-    wasm_hash:  u64,          // SipHash of the contract bytecode
-    wasm_len:   u16,
-    bytecode:   [u8; MAX_POLICY_WASM_LEN],
+    active: bool,
+    pid: u32,
+    cap_id: u32,
+    wasm_hash: u64, // SipHash of the contract bytecode
+    wasm_len: u16,
+    bytecode: [u8; MAX_POLICY_WASM_LEN],
 }
 
 impl PolicySlot {
     const fn empty() -> Self {
         PolicySlot {
-            active:    false,
-            pid:       0,
-            cap_id:    0,
+            active: false,
+            pid: 0,
+            cap_id: 0,
             wasm_hash: 0,
-            wasm_len:  0,
-            bytecode:  [0u8; MAX_POLICY_WASM_LEN],
+            wasm_len: 0,
+            bytecode: [0u8; MAX_POLICY_WASM_LEN],
         }
     }
 }
@@ -2360,7 +2375,13 @@ struct EntangleLink {
 
 impl EntangleLink {
     const fn empty() -> Self {
-        EntangleLink { active: false, pid: 0, cap_a: 0, cap_b: 0, group_id: 0 }
+        EntangleLink {
+            active: false,
+            pid: 0,
+            cap_a: 0,
+            cap_b: 0,
+            group_id: 0,
+        }
     }
 }
 
@@ -2399,7 +2420,11 @@ pub fn entangle_cascade_revoke(pid: u32, cap_id: u32) {
                 continue;
             }
             if lnk.cap_a == cap_id || lnk.cap_b == cap_id {
-                let peer = if lnk.cap_a == cap_id { lnk.cap_b } else { lnk.cap_a };
+                let peer = if lnk.cap_a == cap_id {
+                    lnk.cap_b
+                } else {
+                    lnk.cap_a
+                };
                 // Deactivate this link so we don't re-enter.
                 lnk.active = false;
                 if n < MAX_ENTANGLE_LINKS {
@@ -2415,7 +2440,9 @@ pub fn entangle_cascade_revoke(pid: u32, cap_id: u32) {
     while k < n {
         let peer_cap = to_revoke[k];
         k += 1;
-        if peer_cap == 0 { continue; }
+        if peer_cap == 0 {
+            continue;
+        }
         // Cascade-revoke the peer (will itself call entangle_cascade_revoke
         // transitively via the capability manager hook, but since we already
         // deactivated the link we won't loop).
@@ -2423,10 +2450,12 @@ pub fn entangle_cascade_revoke(pid: u32, cap_id: u32) {
             .revoke_capability(crate::ipc::ProcessId(pid), peer_cap);
         crate::serial_println!(
             "[entangle] cascade-revoked cap {} (entangled with {}) for pid {}",
-            peer_cap, cap_id, pid);
+            peer_cap,
+            cap_id,
+            pid
+        );
     }
 }
-
 
 ///
 /// Returns `true` (permit) if no policy is bound, or if the bound contract
@@ -2439,9 +2468,7 @@ pub fn policy_check_for_cap(pid: u32, cap_id: u32, ctx: &[u8]) -> bool {
         let mut found = None;
         let mut i = 0usize;
         while i < MAX_POLICY_SLOTS {
-            if store.slots[i].active
-                && store.slots[i].pid == pid
-                && store.slots[i].cap_id == cap_id
+            if store.slots[i].active && store.slots[i].pid == pid && store.slots[i].cap_id == cap_id
             {
                 found = Some((store.slots[i].bytecode, store.slots[i].wasm_len as usize));
                 break;
@@ -2451,8 +2478,8 @@ pub fn policy_check_for_cap(pid: u32, cap_id: u32, ctx: &[u8]) -> bool {
         found
     };
     match policy {
-        None             => true, // no policy bound → permit
-        Some((bc, len))  => run_policy_contract(&bc[..len], ctx),
+        None => true, // no policy bound → permit
+        Some((bc, len)) => run_policy_contract(&bc[..len], ctx),
     }
 }
 
@@ -2475,24 +2502,31 @@ pub fn policy_check_for_cap(pid: u32, cap_id: u32, ctx: &[u8]) -> bool {
 ///
 /// On any parse/runtime error the function fails **open** (returns `true`).
 fn run_policy_contract(bytecode: &[u8], ctx: &[u8]) -> bool {
-    if bytecode.len() < 4 { return true; }
+    if bytecode.len() < 4 {
+        return true;
+    }
 
     // Mode 2: Oreulia Policy Stub (OPOL)
     if bytecode[0] == b'O' && bytecode[1] == b'P' && bytecode[2] == b'O' && bytecode[3] == b'L' {
-        if bytecode.len() < 8 { return true; }
-        let default_permit  = bytecode[4] != 0;
-        let min_ctx_len     = bytecode[5] as usize;
-        let ctx_byte0_eq    = bytecode[6] != 0;
-        let ctx_byte0_val   = bytecode[7];
-        if ctx.len() < min_ctx_len { return false; }
-        if ctx_byte0_eq && (ctx.is_empty() || ctx[0] != ctx_byte0_val) { return false; }
+        if bytecode.len() < 8 {
+            return true;
+        }
+        let default_permit = bytecode[4] != 0;
+        let min_ctx_len = bytecode[5] as usize;
+        let ctx_byte0_eq = bytecode[6] != 0;
+        let ctx_byte0_val = bytecode[7];
+        if ctx.len() < min_ctx_len {
+            return false;
+        }
+        if ctx_byte0_eq && (ctx.is_empty() || ctx[0] != ctx_byte0_val) {
+            return false;
+        }
         return default_permit;
     }
 
     // Mode 1: Full WASM — fail open (evaluated by future engine integration)
     true
 }
-
 
 pub fn temporal_cap_tick() {
     let now = crate::pit::get_ticks() as u64;
@@ -2504,7 +2538,10 @@ pub fn temporal_cap_tick() {
         while i < MAX_TEMPORAL_CAP_SLOTS {
             let s = &tbl.slots[i];
             if s.active && now >= s.expires_at {
-                if k < MAX_TEMPORAL_CAP_SLOTS { out[k] = (s.pid, s.cap_id); k += 1; }
+                if k < MAX_TEMPORAL_CAP_SLOTS {
+                    out[k] = (s.pid, s.cap_id);
+                    k += 1;
+                }
             }
             i += 1;
         }
@@ -2514,24 +2551,34 @@ pub fn temporal_cap_tick() {
     while k < MAX_TEMPORAL_CAP_SLOTS {
         let (pid, cap_id) = expired[k];
         k += 1;
-        if pid == 0 && cap_id == 0 { continue; }
+        if pid == 0 && cap_id == 0 {
+            continue;
+        }
         let _ = crate::capability::capability_manager()
             .revoke_capability(crate::ipc::ProcessId(pid), cap_id);
         crate::serial_println!(
-            "[temporal] auto-revoked cap {} for pid {} (expired)", cap_id, pid);
-        observer_notify(observer_events::CAPABILITY_OP, &[
-            pid.to_le_bytes()[0], pid.to_le_bytes()[1],
-            pid.to_le_bytes()[2], pid.to_le_bytes()[3],
-            0x02, 0, 0, 0, // 0x02 = REVOKE event tag
-        ]);
+            "[temporal] auto-revoked cap {} for pid {} (expired)",
+            cap_id,
+            pid
+        );
+        observer_notify(
+            observer_events::CAPABILITY_OP,
+            &[
+                pid.to_le_bytes()[0],
+                pid.to_le_bytes()[1],
+                pid.to_le_bytes()[2],
+                pid.to_le_bytes()[3],
+                0x02,
+                0,
+                0,
+                0, // 0x02 = REVOKE event tag
+            ],
+        );
         // Mark slot as inactive.
         let mut tbl = TEMPORAL_CAP_TABLE.lock();
         let mut i = 0usize;
         while i < MAX_TEMPORAL_CAP_SLOTS {
-            if tbl.slots[i].active
-                && tbl.slots[i].pid == pid
-                && tbl.slots[i].cap_id == cap_id
-            {
+            if tbl.slots[i].active && tbl.slots[i].pid == pid && tbl.slots[i].cap_id == cap_id {
                 tbl.slots[i].active = false;
                 break;
             }
@@ -2539,7 +2586,6 @@ pub fn temporal_cap_tick() {
         }
     }
 }
-
 
 ///
 /// Called from the security manager, scheduler tick, and IPC layer.
@@ -2552,7 +2598,10 @@ pub fn observer_notify(event_type: u32, payload: &[u8]) {
     // Encode the event message (32 bytes max).
     let mut msg_buf = [0u8; 32];
     let el = event_type.to_le_bytes();
-    msg_buf[0] = el[0]; msg_buf[1] = el[1]; msg_buf[2] = el[2]; msg_buf[3] = el[3];
+    msg_buf[0] = el[0];
+    msg_buf[1] = el[1];
+    msg_buf[2] = el[2];
+    msg_buf[3] = el[3];
     let copy_len = payload.len().min(28);
     let mut i = 0;
     while i < copy_len {
@@ -2563,8 +2612,8 @@ pub fn observer_notify(event_type: u32, payload: &[u8]) {
     // Snapshot the list of active observers to avoid holding the registry
     // lock while calling into the IPC layer.
     let mut channels = [0u32; MAX_OBSERVER_SLOTS];
-    let mut masks    = [0u32; MAX_OBSERVER_SLOTS];
-    let mut n        = 0usize;
+    let mut masks = [0u32; MAX_OBSERVER_SLOTS];
+    let mut n = 0usize;
     {
         let registry = OBSERVER_REGISTRY.lock();
         let mut s = 0usize;
@@ -2572,7 +2621,7 @@ pub fn observer_notify(event_type: u32, payload: &[u8]) {
             let e = &registry.entries[s];
             if e.active && (e.event_mask & event_type) != 0 {
                 channels[n] = e.channel_id;
-                masks[n]    = e.event_mask;
+                masks[n] = e.event_mask;
                 n += 1;
             }
             s += 1;
@@ -2583,7 +2632,7 @@ pub fn observer_notify(event_type: u32, payload: &[u8]) {
     let kernel_pid = crate::ipc::ProcessId(0);
     let mut d = 0usize;
     while d < n {
-        let ch_id    = crate::ipc::ChannelId::new(channels[d]);
+        let ch_id = crate::ipc::ChannelId::new(channels[d]);
         let send_cap = crate::ipc::ChannelCapability::new(
             0,
             ch_id,
@@ -3142,7 +3191,10 @@ pub fn invoke_service_pointer_typed(
             Ok(ret)
         }
         Err(WasmError::TypeMismatch) => Err("Service pointer invocation type mismatch"),
-        Err(_) => Err("Service pointer invocation failed"),
+        Err(e) => {
+            crate::serial_println!("[WASM TEST] service pointer invoke failed with {:?}", e);
+            Err("Service pointer invocation failed")
+        }
     }
 }
 
@@ -3259,14 +3311,14 @@ enum CallTarget {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum LanguageTag {
-    Unknown  = 0x00,
-    Rust     = 0x01,
-    Zig      = 0x02,
-    C        = 0x03,
-    Python   = 0x04, // Pyodide runtime service or Python-compiled WASM
-    JS       = 0x05, // QuickJS runtime service or JS-compiled WASM
+    Unknown = 0x00,
+    Rust = 0x01,
+    Zig = 0x02,
+    C = 0x03,
+    Python = 0x04, // Pyodide runtime service or Python-compiled WASM
+    JS = 0x05,     // QuickJS runtime service or JS-compiled WASM
     AssemblyScript = 0x06,
-    Other    = 0xFF,
+    Other = 0xFF,
 }
 
 impl LanguageTag {
@@ -3279,19 +3331,19 @@ impl LanguageTag {
             0x05 => LanguageTag::JS,
             0x06 => LanguageTag::AssemblyScript,
             0xFF => LanguageTag::Other,
-            _    => LanguageTag::Unknown,
+            _ => LanguageTag::Unknown,
         }
     }
     pub fn as_str(self) -> &'static str {
         match self {
-            LanguageTag::Rust     => "rust",
-            LanguageTag::Zig      => "zig",
-            LanguageTag::C        => "c",
-            LanguageTag::Python   => "python",
-            LanguageTag::JS       => "js",
+            LanguageTag::Rust => "rust",
+            LanguageTag::Zig => "zig",
+            LanguageTag::C => "c",
+            LanguageTag::Python => "python",
+            LanguageTag::JS => "js",
             LanguageTag::AssemblyScript => "assemblyscript",
-            LanguageTag::Other    => "other",
-            LanguageTag::Unknown  => "unknown",
+            LanguageTag::Other => "other",
+            LanguageTag::Unknown => "unknown",
         }
     }
 }
@@ -3479,16 +3531,21 @@ impl WasmModule {
                     // Custom section: parse `oreulia_lang` if present.
                     // Format: LEB128 name_len, name bytes, then 1-byte tag + 4-byte version.
                     if cursor < section_end {
-                        if let Ok(name_len) = read_uleb128_at(bytes, &mut cursor).map(|v| v as usize) {
+                        if let Ok(name_len) =
+                            read_uleb128_at(bytes, &mut cursor).map(|v| v as usize)
+                        {
                             let name_end = cursor.saturating_add(name_len);
                             if name_end <= section_end && name_len == 12 {
                                 let name_bytes = &bytes[cursor..name_end];
                                 if name_bytes == b"oreulia_lang" {
                                     let data_start = name_end;
                                     if data_start < section_end {
-                                        self.language_tag = LanguageTag::from_byte(bytes[data_start]);
+                                        self.language_tag =
+                                            LanguageTag::from_byte(bytes[data_start]);
                                         if data_start + 5 <= section_end {
-                                            self.lang_version.copy_from_slice(&bytes[data_start+1..data_start+5]);
+                                            self.lang_version.copy_from_slice(
+                                                &bytes[data_start + 1..data_start + 5],
+                                            );
                                         }
                                     }
                                 }
@@ -8618,17 +8675,42 @@ impl WasmInstance {
         let mut encoded = [0u8; TEMPORAL_ROLLBACK_BYTES];
         let mut encoded_len = 0usize;
 
+        crate::serial_println!(
+            "[TEMPORAL_ROLLBACK] Start: target={:?}, version_id={}",
+            path_bytes,
+            version_id
+        );
+
         if let Ok(path) = core::str::from_utf8(&path_bytes) {
+            crate::serial_println!("[TEMPORAL_ROLLBACK] Valid UTF-8: {:?}", path);
             if let Ok(key) = fs::FileKey::new(path) {
+                crate::serial_println!("[TEMPORAL_ROLLBACK] Valid FileKey: {:?}", key);
+                crate::serial_println!("[TEMPORAL_ROLLBACK] Cap Rights: {:?}", fs_cap.rights);
                 if fs_cap.rights.has(fs::FilesystemRights::WRITE) && fs_cap.can_access(&key) {
-                    if let Ok(rollback) = crate::temporal::rollback_path(path, version_id) {
-                        encoded = Self::encode_temporal_rollback(&rollback);
-                        self.memory.write(out_ptr, &encoded)?;
-                        encoded_len = TEMPORAL_ROLLBACK_BYTES;
-                        result_code = 0;
+                    crate::serial_println!("[TEMPORAL_ROLLBACK] Write capability checks passed. Calling temporal::rollback_path");
+                    match crate::temporal::rollback_path(path, version_id) {
+                        Ok(rollback) => {
+                            crate::serial_println!("[TEMPORAL_ROLLBACK] Rollback successful");
+                            encoded = Self::encode_temporal_rollback(&rollback);
+                            self.memory.write(out_ptr, &encoded)?;
+                            encoded_len = TEMPORAL_ROLLBACK_BYTES;
+                            result_code = 0;
+                        }
+                        Err(e) => {
+                            crate::serial_println!(
+                                "[TEMPORAL_ROLLBACK] Rollback failed with error: {:?}",
+                                e
+                            );
+                        }
                     }
+                } else {
+                    crate::serial_println!("[TEMPORAL_ROLLBACK] Write capability or access check failed. Rights: {:?}, Can Access: {}", fs_cap.rights, fs_cap.can_access(&key));
                 }
+            } else {
+                crate::serial_println!("[TEMPORAL_ROLLBACK] Invalid FileKey");
             }
+        } else {
+            crate::serial_println!("[TEMPORAL_ROLLBACK] Invalid UTF-8");
         }
 
         self.stack.push(Value::I32(result_code))?;
@@ -9849,10 +9931,14 @@ impl WasmInstance {
         let parent_pid = self.process_id.0;
         let child_pid_raw = child_pid.0;
         let payload = [
-            parent_pid.to_le_bytes()[0], parent_pid.to_le_bytes()[1],
-            parent_pid.to_le_bytes()[2], parent_pid.to_le_bytes()[3],
-            child_pid_raw.to_le_bytes()[0], child_pid_raw.to_le_bytes()[1],
-            child_pid_raw.to_le_bytes()[2], child_pid_raw.to_le_bytes()[3],
+            parent_pid.to_le_bytes()[0],
+            parent_pid.to_le_bytes()[1],
+            parent_pid.to_le_bytes()[2],
+            parent_pid.to_le_bytes()[3],
+            child_pid_raw.to_le_bytes()[0],
+            child_pid_raw.to_le_bytes()[1],
+            child_pid_raw.to_le_bytes()[2],
+            child_pid_raw.to_le_bytes()[3],
         ];
         observer_notify(observer_events::PROCESS_LIFECYCLE, &payload);
         self.stack.push(Value::I32(child_pid.0 as i32))
@@ -9942,7 +10028,7 @@ impl WasmInstance {
             if e.singleton && e.language == lang {
                 // Singleton upgrade: refresh instance/owner.
                 registry.entries[idx].instance_id = inst_id;
-                registry.entries[idx].owner_pid   = owner;
+                registry.entries[idx].owner_pid = owner;
                 crate::serial_println!(
                     "[polyglot] singleton '{}' refreshed by pid={}",
                     core::str::from_utf8(&name_arr[..name_len]).unwrap_or("?"),
@@ -9959,20 +10045,23 @@ impl WasmInstance {
         };
 
         registry.entries[slot] = PolyglotEntry {
-            active:      true,
-            name:        name_arr,
-            name_len:    name_len as u8,
+            active: true,
+            name: name_arr,
+            name_len: name_len as u8,
             instance_id: inst_id,
-            language:    lang,
-            cap_object:  0,
-            owner_pid:   owner,
-            singleton:   is_singleton,
+            language: lang,
+            cap_object: 0,
+            owner_pid: owner,
+            singleton: is_singleton,
         };
 
         crate::serial_println!(
             "[polyglot] registered '{}' lang={} pid={} inst={} singleton={}",
             core::str::from_utf8(&name_arr[..name_len]).unwrap_or("?"),
-            lang.as_str(), owner.0, inst_id, is_singleton
+            lang.as_str(),
+            owner.0,
+            inst_id,
+            is_singleton
         );
 
         self.stack.push(Value::I32(0))
@@ -10006,7 +10095,7 @@ impl WasmInstance {
         let registry = POLYGLOT_REGISTRY.lock();
         let result = match registry.find_by_name(&name_arr[..name_len]) {
             Some(idx) => registry.entries[idx].instance_id as i32,
-            None      => -2,
+            None => -2,
         };
         self.stack.push(Value::I32(result))
     }
@@ -10033,8 +10122,8 @@ impl WasmInstance {
     fn host_polyglot_link(&mut self) -> Result<(), WasmError> {
         let export_len = self.stack.pop()?.as_i32()? as usize;
         let export_ptr = self.stack.pop()?.as_i32()? as usize;
-        let name_len   = self.stack.pop()?.as_i32()? as usize;
-        let name_ptr   = self.stack.pop()?.as_i32()? as usize;
+        let name_len = self.stack.pop()?.as_i32()? as usize;
+        let name_ptr = self.stack.pop()?.as_i32()? as usize;
 
         if name_len == 0 || name_len > 32 || export_len == 0 || export_len > 32 {
             return self.stack.push(Value::I32(-1));
@@ -10054,9 +10143,11 @@ impl WasmInstance {
         let (target_instance_id, target_lang) = {
             let registry = POLYGLOT_REGISTRY.lock();
             match registry.find_by_name(&name_arr[..name_len]) {
-                Some(idx) => (registry.entries[idx].instance_id,
-                              registry.entries[idx].language),
-                None      => return self.stack.push(Value::I32(-2)),
+                Some(idx) => (
+                    registry.entries[idx].instance_id,
+                    registry.entries[idx].language,
+                ),
+                None => return self.stack.push(Value::I32(-2)),
             }
         };
 
@@ -10077,7 +10168,7 @@ impl WasmInstance {
             }
             match found {
                 Some(oid) => oid,
-                None      => return self.stack.push(Value::I32(-3)),
+                None => return self.stack.push(Value::I32(-3)),
             }
         };
 
@@ -10087,12 +10178,10 @@ impl WasmInstance {
             object_id,
             target_lang,
         );
-        let wasm_cap = WasmCapability::ServicePointer(
-            ServicePointerCapability {
-                object_id,
-                cap_id: 0,
-            },
-        );
+        let wasm_cap = WasmCapability::ServicePointer(ServicePointerCapability {
+            object_id,
+            cap_id: 0,
+        });
         let handle = match self.capabilities.inject(wasm_cap) {
             Ok(handle) => handle,
             Err(_) => return self.stack.push(Value::I32(-4)),
@@ -10128,7 +10217,7 @@ impl WasmInstance {
         }
 
         let instance_id = self.instance_id;
-        let owner_pid   = self.process_id;
+        let owner_pid = self.process_id;
 
         // Use the high-level IPC helper to create a channel owned by the kernel
         // (kernel will write, observer will read).
@@ -10151,15 +10240,17 @@ impl WasmInstance {
             }
             Some(slot) => {
                 registry.entries[slot] = ObserverEntry {
-                    active:      true,
+                    active: true,
                     instance_id,
-                    channel_id:  ch_id.0,
+                    channel_id: ch_id.0,
                     event_mask,
                     owner_pid,
                 };
                 crate::serial_println!(
                     "[observer] subscribe: instance={} mask={:#x} ch={}",
-                    instance_id, event_mask, ch_id.0
+                    instance_id,
+                    event_mask,
+                    ch_id.0
                 );
                 drop(registry);
                 // Notify existing observers that a new observer just joined.
@@ -10189,14 +10280,16 @@ impl WasmInstance {
                 // IPC close path. If it fails (e.g., missing capability) we
                 // still consider unsubscription successful.
                 let close_cap = crate::ipc::ChannelCapability::new(
-                    0, ch_id,
+                    0,
+                    ch_id,
                     crate::ipc::ChannelRights::all(),
                     crate::ipc::ProcessId(0),
                 );
                 let _ = crate::ipc::ipc().close(&close_cap);
                 crate::serial_println!(
                     "[observer] unsubscribe: instance={} ch={}",
-                    instance_id, ch_raw
+                    instance_id,
+                    ch_raw
                 );
                 self.stack.push(Value::I32(0))
             }
@@ -10211,10 +10304,10 @@ impl WasmInstance {
     /// writes at most `buf_len / 32` events and returns the number written.
     /// Returns -1 if the caller is not a registered observer.
     fn host_observer_query(&mut self) -> Result<(), WasmError> {
-        let buf_len     = self.stack.pop()?.as_i32()? as usize;
-        let buf_ptr     = self.stack.pop()?.as_i32()? as usize;
+        let buf_len = self.stack.pop()?.as_i32()? as usize;
+        let buf_ptr = self.stack.pop()?.as_i32()? as usize;
         let instance_id = self.instance_id;
-        let max_events  = buf_len / 32;
+        let max_events = buf_len / 32;
 
         if max_events == 0 {
             return self.stack.push(Value::I32(0));
@@ -10224,13 +10317,15 @@ impl WasmInstance {
         let (ch_raw, owner_pid) = {
             let registry = OBSERVER_REGISTRY.lock();
             match registry.find_by_instance(instance_id) {
-                None    => return self.stack.push(Value::I32(-1)),
-                Some(s) => (registry.entries[s].channel_id,
-                            registry.entries[s].owner_pid),
+                None => return self.stack.push(Value::I32(-1)),
+                Some(s) => (
+                    registry.entries[s].channel_id,
+                    registry.entries[s].owner_pid,
+                ),
             }
         };
 
-        let ch_id    = crate::ipc::ChannelId::new(ch_raw);
+        let ch_id = crate::ipc::ChannelId::new(ch_raw);
         let recv_cap = crate::ipc::ChannelCapability::new(
             0,
             ch_id,
@@ -10243,8 +10338,8 @@ impl WasmInstance {
             let msg_result = crate::ipc::ipc().try_recv(&recv_cap);
             match msg_result {
                 Ok(msg) => {
-                    let data    = msg.payload();
-                    let offset  = buf_ptr + count * 32;
+                    let data = msg.payload();
+                    let offset = buf_ptr + count * 32;
                     let to_copy = data.len().min(32);
                     // Zero-fill the slot first, then write the actual payload.
                     let zeroes = [0u8; 32];
@@ -10283,10 +10378,10 @@ impl WasmInstance {
     /// Returns 0 on success, -1 on error.
     fn host_mesh_peer_register(&mut self) -> Result<(), WasmError> {
         let trust_val = self.stack.pop()?.as_i32()?;
-        let peer_hi   = self.stack.pop()?.as_i32()? as u64;
-        let peer_lo   = self.stack.pop()?.as_i32()? as u64;
-        let peer_id   = (peer_hi << 32) | (peer_lo & 0xFFFF_FFFF);
-        let trust     = if trust_val == 0 {
+        let peer_hi = self.stack.pop()?.as_i32()? as u64;
+        let peer_lo = self.stack.pop()?.as_i32()? as u64;
+        let peer_id = (peer_hi << 32) | (peer_lo & 0xFFFF_FFFF);
+        let trust = if trust_val == 0 {
             crate::capnet::PeerTrustPolicy::Audit
         } else {
             crate::capnet::PeerTrustPolicy::Enforce
@@ -10307,7 +10402,7 @@ impl WasmInstance {
         let peer_lo = self.stack.pop()?.as_i32()? as u64;
         let peer_id = (peer_hi << 32) | (peer_lo & 0xFFFF_FFFF);
         match crate::capnet::peer_snapshot(peer_id) {
-            None    => self.stack.push(Value::I32(-1)),
+            None => self.stack.push(Value::I32(-1)),
             Some(s) => self.stack.push(Value::I32(s.key_epoch as i32)),
         }
     }
@@ -10320,43 +10415,43 @@ impl WasmInstance {
     /// `expires_ticks` is added to the current PIT tick to compute `expires_at`.
     /// Returns 0 on success, negative on failure.
     fn host_mesh_token_mint(&mut self) -> Result<(), WasmError> {
-        let buf_ptr       = self.stack.pop()?.as_i32()? as usize;
+        let buf_ptr = self.stack.pop()?.as_i32()? as usize;
         let expires_ticks = self.stack.pop()?.as_i32()? as u64;
-        let rights        = self.stack.pop()?.as_i32()? as u32;
-        let cap_type_val  = self.stack.pop()?.as_i32()? as u8;
-        let obj_hi        = self.stack.pop()?.as_i32()? as u64;
-        let obj_lo        = self.stack.pop()?.as_i32()? as u64;
-        let object_id     = (obj_hi << 32) | (obj_lo & 0xFFFF_FFFF);
+        let rights = self.stack.pop()?.as_i32()? as u32;
+        let cap_type_val = self.stack.pop()?.as_i32()? as u8;
+        let obj_hi = self.stack.pop()?.as_i32()? as u64;
+        let obj_lo = self.stack.pop()?.as_i32()? as u64;
+        let object_id = (obj_hi << 32) | (obj_lo & 0xFFFF_FFFF);
 
         let now = crate::pit::get_ticks() as u64;
         let local_id = match crate::capnet::local_device_id() {
             Some(id) => id,
-            None     => return self.stack.push(Value::I32(-1)),
+            None => return self.stack.push(Value::I32(-1)),
         };
 
         let mut token = crate::capnet::CapabilityTokenV1 {
-            version:          1,
-            alg_id:           1,
-            cap_type:         cap_type_val,
-            token_flags:      0,
+            version: 1,
+            alg_id: 1,
+            cap_type: cap_type_val,
+            token_flags: 0,
             issuer_device_id: local_id,
             subject_device_id: local_id, // self-issued; caller can re-send to peer
             object_id,
             rights,
             constraints_flags: 0,
-            issued_at:        now,
-            not_before:       now,
-            expires_at:       now.saturating_add(expires_ticks),
-            nonce:            crate::security::security().random_u32() as u64,
+            issued_at: now,
+            not_before: now,
+            expires_at: now.saturating_add(expires_ticks),
+            nonce: crate::security::security().random_u32() as u64,
             delegation_depth: 0,
-            max_uses:         0,
+            max_uses: 0,
             parent_token_hash: 0,
             measurement_hash: 0,
-            session_id:       self.process_id.0,
-            context:          0,
-            max_bytes:        0,
-            resource_quota:   0,
-            mac:              0,
+            session_id: self.process_id.0,
+            context: 0,
+            max_bytes: 0,
+            resource_quota: 0,
+            mac: 0,
         };
         token.sign_with_kernel_key();
 
@@ -10364,7 +10459,10 @@ impl WasmInstance {
         self.memory.write(buf_ptr, &encoded)?;
         crate::serial_println!(
             "[mesh] token minted: obj={:#018x} type={} rights={:#x} exp={}",
-            object_id, cap_type_val, rights, token.expires_at
+            object_id,
+            cap_type_val,
+            rights,
+            token.expires_at
         );
         self.stack.push(Value::I32(0))
     }
@@ -10388,23 +10486,24 @@ impl WasmInstance {
 
         let raw = self.memory.read(buf_ptr, buf_len)?;
         let mut token = match crate::capnet::CapabilityTokenV1::decode_checked(raw) {
-            Ok(t)  => t,
+            Ok(t) => t,
             Err(_) => return self.stack.push(Value::I32(-2)),
         };
 
         let frame = match crate::capnet::build_token_offer_frame(peer_id, 0, &mut token) {
-            Ok(f)  => f,
+            Ok(f) => f,
             Err(_) => return self.stack.push(Value::I32(-3)),
         };
 
         // Emit via observer bus so an observer WASM module (or the host net
         // driver) can pick it up and forward it over the wire.
         let frame_bytes = &frame.bytes[..frame.len];
-        let copy_len    = frame_bytes.len().min(28);
+        let copy_len = frame_bytes.len().min(28);
         observer_notify(observer_events::IPC_ACTIVITY, &frame_bytes[..copy_len]);
         crate::serial_println!(
             "[mesh] token_send: peer={:#018x} frame_len={}",
-            peer_id, frame.len
+            peer_id,
+            frame.len
         );
         self.stack.push(Value::I32(frame.len as i32))
     }
@@ -10454,10 +10553,13 @@ impl WasmInstance {
                 token.parent_token_hash = lease.token_id;
                 token.measurement_hash = lease.measurement_hash;
                 token.session_id = lease.session_id;
-                token.context = if lease.owner_any { 0 } else { lease.owner_pid.0 };
+                token.context = if lease.owner_any {
+                    0
+                } else {
+                    lease.owner_pid.0
+                };
                 if lease.enforce_use_budget {
-                    token.constraints_flags |=
-                        crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
+                    token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
                     token.max_uses = lease.uses_remaining;
                 }
                 let encoded = token.encode();
@@ -10477,9 +10579,9 @@ impl WasmInstance {
     fn host_mesh_migrate(&mut self) -> Result<(), WasmError> {
         let wasm_len = self.stack.pop()?.as_i32()? as usize;
         let wasm_ptr = self.stack.pop()?.as_i32()? as usize;
-        let peer_hi  = self.stack.pop()?.as_i32()? as u64;
-        let peer_lo  = self.stack.pop()?.as_i32()? as u64;
-        let peer_id  = (peer_hi << 32) | (peer_lo & 0xFFFF_FFFF);
+        let peer_hi = self.stack.pop()?.as_i32()? as u64;
+        let peer_lo = self.stack.pop()?.as_i32()? as u64;
+        let peer_id = (peer_hi << 32) | (peer_lo & 0xFFFF_FFFF);
 
         if wasm_len > 65536 {
             return self.stack.push(Value::I32(-2));
@@ -10498,8 +10600,8 @@ impl WasmInstance {
                 return self.stack.push(Value::I32(-1));
             }
             Some(slot) => {
-                q.slots[slot].active       = true;
-                q.slots[slot].peer_id      = peer_id;
+                q.slots[slot].active = true;
+                q.slots[slot].peer_id = peer_id;
                 q.slots[slot].requester_pid = self.process_id;
                 let copy_len = data.len().min(65536);
                 q.slots[slot].bytecode_len = copy_len;
@@ -10511,7 +10613,8 @@ impl WasmInstance {
                 drop(q);
                 crate::serial_println!(
                     "[mesh] migrate queued: peer={:#018x} bytes={}",
-                    peer_id, copy_len
+                    peer_id,
+                    copy_len
                 );
                 // Kick the flush immediately.
                 mesh_migrate_flush();
@@ -10529,19 +10632,23 @@ impl WasmInstance {
     /// Returns the `cap_id` (≥ 0) on success, negative on failure.
     fn host_temporal_cap_grant(&mut self) -> Result<(), WasmError> {
         let expires_ticks = self.stack.pop()?.as_i32()? as u64;
-        let rights_raw    = self.stack.pop()?.as_i32()? as u32;
-        let cap_type_raw  = self.stack.pop()?.as_i32()? as u8;
+        let rights_raw = self.stack.pop()?.as_i32()? as u32;
+        let cap_type_raw = self.stack.pop()?.as_i32()? as u8;
 
         let cap_type = match crate::capability::CapabilityType::from_raw(cap_type_raw) {
             Some(t) => t,
-            None    => return self.stack.push(Value::I32(-1)),
+            None => return self.stack.push(Value::I32(-1)),
         };
         let rights = crate::capability::Rights::new(rights_raw);
-        let now    = crate::pit::get_ticks() as u64;
+        let now = crate::pit::get_ticks() as u64;
         let object_id = now ^ (self.process_id.0 as u64).wrapping_mul(0x9E3779B97F4A7C15);
 
         let cap_id = match crate::capability::capability_manager().grant_capability(
-            self.process_id, object_id, cap_type, rights, self.process_id,
+            self.process_id,
+            object_id,
+            cap_type,
+            rights,
+            self.process_id,
         ) {
             Ok(id) => id,
             Err(_) => return self.stack.push(Value::I32(-2)),
@@ -10554,11 +10661,11 @@ impl WasmInstance {
         while i < MAX_TEMPORAL_CAP_SLOTS {
             if !tbl.slots[i].active {
                 tbl.slots[i] = TemporalCapSlot {
-                    active:     true,
-                    pid:        self.process_id.0,
+                    active: true,
+                    pid: self.process_id.0,
                     cap_id,
                     expires_at: now.saturating_add(expires_ticks),
-                    cap_type:   cap_type_raw,
+                    cap_type: cap_type_raw,
                     object_id,
                 };
                 placed = true;
@@ -10570,8 +10677,8 @@ impl WasmInstance {
 
         if !placed {
             // Table full — revoke the cap we just granted and fail.
-            let _ = crate::capability::capability_manager()
-                .revoke_capability(self.process_id, cap_id);
+            let _ =
+                crate::capability::capability_manager().revoke_capability(self.process_id, cap_id);
             return self.stack.push(Value::I32(-3));
         }
 
@@ -10590,7 +10697,9 @@ impl WasmInstance {
 
         crate::serial_println!(
             "[temporal] cap_grant: pid={} cap_id={} type={} expires_at={}",
-            self.process_id.0, cap_id, cap_type_raw,
+            self.process_id.0,
+            cap_id,
+            cap_type_raw,
             crate::pit::get_ticks() as u64 + expires_ticks
         );
         self.stack.push(Value::I32(cap_id as i32))
@@ -10603,9 +10712,7 @@ impl WasmInstance {
     fn host_temporal_cap_revoke(&mut self) -> Result<(), WasmError> {
         let cap_id = self.stack.pop()?.as_i32()? as u32;
 
-        match crate::capability::capability_manager()
-            .revoke_capability(self.process_id, cap_id)
-        {
+        match crate::capability::capability_manager().revoke_capability(self.process_id, cap_id) {
             Ok(()) => {
                 // Remove from expiry table.
                 let mut tbl = TEMPORAL_CAP_TABLE.lock();
@@ -10622,11 +10729,18 @@ impl WasmInstance {
                 }
                 drop(tbl);
                 crate::serial_println!(
-                    "[temporal] cap_revoke: pid={} cap_id={}", self.process_id.0, cap_id);
+                    "[temporal] cap_revoke: pid={} cap_id={}",
+                    self.process_id.0,
+                    cap_id
+                );
                 // Record revocation in temporal log.
                 if !crate::temporal::is_replay_active() {
                     let _ = crate::temporal::record_capability_event(
-                        self.process_id.0, 0, 0, 0, self.process_id.0,
+                        self.process_id.0,
+                        0,
+                        0,
+                        0,
+                        self.process_id.0,
                         crate::temporal::TEMPORAL_CAPABILITY_EVENT_REVOKE,
                         cap_id,
                     );
@@ -10644,8 +10758,8 @@ impl WasmInstance {
     /// not time-bound.
     fn host_temporal_cap_check(&mut self) -> Result<(), WasmError> {
         let cap_id = self.stack.pop()?.as_i32()? as u32;
-        let now    = crate::pit::get_ticks() as u64;
-        let tbl    = TEMPORAL_CAP_TABLE.lock();
+        let now = crate::pit::get_ticks() as u64;
+        let tbl = TEMPORAL_CAP_TABLE.lock();
         let mut remaining: i32 = -1;
         let mut i = 0usize;
         while i < MAX_TEMPORAL_CAP_SLOTS {
@@ -10669,9 +10783,9 @@ impl WasmInstance {
     /// Snapshot the calling process's current capability set.  Returns a
     /// `checkpoint_id` (≥ 1) on success or -1 if the store is full.
     fn host_temporal_checkpoint_create(&mut self) -> Result<(), WasmError> {
-        let now  = crate::pit::get_ticks() as u64;
-        let snap = crate::capability::capability_manager()
-            .list_capabilities_for_pid(self.process_id);
+        let now = crate::pit::get_ticks() as u64;
+        let snap =
+            crate::capability::capability_manager().list_capabilities_for_pid(self.process_id);
 
         let mut store = TEMPORAL_CHECKPOINT_STORE.lock();
         // Find an empty slot.
@@ -10685,16 +10799,19 @@ impl WasmInstance {
             i += 1;
         }
         let idx = match slot_idx {
-            None    => { drop(store); return self.stack.push(Value::I32(-1)); }
+            None => {
+                drop(store);
+                return self.stack.push(Value::I32(-1));
+            }
             Some(i) => i,
         };
 
         let id = store.next_id;
         store.next_id = store.next_id.wrapping_add(1).max(1);
-        store.slots[idx].active    = true;
-        store.slots[idx].id        = id;
-        store.slots[idx].pid       = self.process_id.0;
-        store.slots[idx].tick      = now;
+        store.slots[idx].active = true;
+        store.slots[idx].id = id;
+        store.slots[idx].pid = self.process_id.0;
+        store.slots[idx].tick = now;
         store.slots[idx].cap_count = 0;
 
         let mut j = 0usize;
@@ -10702,10 +10819,10 @@ impl WasmInstance {
         while j < snap.len() && k < MAX_CAPS_PER_CHECKPOINT {
             if let Some(c) = snap[j] {
                 store.slots[idx].caps[k] = TemporalCheckpointEntry {
-                    cap_id:    c.cap_id,
+                    cap_id: c.cap_id,
                     object_id: c.object_id,
-                    cap_type:  c.cap_type as u8,
-                    rights:    c.rights.bits(),
+                    cap_type: c.cap_type as u8,
+                    rights: c.rights.bits(),
                 };
                 k += 1;
             }
@@ -10716,7 +10833,10 @@ impl WasmInstance {
 
         crate::serial_println!(
             "[temporal] checkpoint_create: pid={} id={} caps={} tick={}",
-            self.process_id.0, id, k, now
+            self.process_id.0,
+            id,
+            k,
+            now
         );
         self.stack.push(Value::I32(id as i32))
     }
@@ -10749,7 +10869,7 @@ impl WasmInstance {
         };
 
         let cp = match checkpoint {
-            None    => return self.stack.push(Value::I32(-1)),
+            None => return self.stack.push(Value::I32(-1)),
             Some(c) => c,
         };
 
@@ -10762,7 +10882,10 @@ impl WasmInstance {
             let entry = &cp.caps[i];
             let cap_type = match crate::capability::CapabilityType::from_raw(entry.cap_type) {
                 Some(t) => t,
-                None    => { i += 1; continue; }
+                None => {
+                    i += 1;
+                    continue;
+                }
             };
             let _ = crate::capability::capability_manager().grant_capability(
                 self.process_id,
@@ -10776,22 +10899,35 @@ impl WasmInstance {
 
         crate::serial_println!(
             "[temporal] checkpoint_rollback: pid={} id={} caps_restored={}",
-            self.process_id.0, checkpoint_id, cp.cap_count
+            self.process_id.0,
+            checkpoint_id,
+            cp.cap_count
         );
         // Record rollback in temporal log.
         if !crate::temporal::is_replay_active() {
             let _ = crate::temporal::record_capability_event(
-                self.process_id.0, 0, checkpoint_id as u64, 0,
-                self.process_id.0, 0x10, 0,
+                self.process_id.0,
+                0,
+                checkpoint_id as u64,
+                0,
+                self.process_id.0,
+                0x10,
+                0,
             );
         }
-        observer_notify(observer_events::CAPABILITY_OP, &[
-            self.process_id.0.to_le_bytes()[0],
-            self.process_id.0.to_le_bytes()[1],
-            self.process_id.0.to_le_bytes()[2],
-            self.process_id.0.to_le_bytes()[3],
-            0x10, 0, 0, 0, // 0x10 = ROLLBACK tag
-        ]);
+        observer_notify(
+            observer_events::CAPABILITY_OP,
+            &[
+                self.process_id.0.to_le_bytes()[0],
+                self.process_id.0.to_le_bytes()[1],
+                self.process_id.0.to_le_bytes()[2],
+                self.process_id.0.to_le_bytes()[3],
+                0x10,
+                0,
+                0,
+                0, // 0x10 = ROLLBACK tag
+            ],
+        );
         self.stack.push(Value::I32(0))
     }
 
@@ -10809,7 +10945,7 @@ impl WasmInstance {
     fn host_policy_bind(&mut self) -> Result<(), WasmError> {
         let wasm_len = self.stack.pop()?.as_i32()? as usize;
         let wasm_ptr = self.stack.pop()?.as_i32()? as usize;
-        let cap_id   = self.stack.pop()?.as_i32()? as u32;
+        let cap_id = self.stack.pop()?.as_i32()? as u32;
 
         if wasm_len > MAX_POLICY_WASM_LEN {
             return self.stack.push(Value::I32(-2));
@@ -10827,7 +10963,8 @@ impl WasmInstance {
         let mut hash = 0u64;
         let mut i = 0usize;
         while i < bytecode.len() {
-            hash = hash.wrapping_mul(0x9E3779B97F4A7C15)
+            hash = hash
+                .wrapping_mul(0x9E3779B97F4A7C15)
                 .wrapping_add(bytecode[i] as u64);
             i += 1;
         }
@@ -10852,14 +10989,17 @@ impl WasmInstance {
         }
         let idx = match found_slot.or(empty_slot) {
             Some(i) => i,
-            None    => { drop(store); return self.stack.push(Value::I32(-3)); }
+            None => {
+                drop(store);
+                return self.stack.push(Value::I32(-3));
+            }
         };
 
-        store.slots[idx].active    = true;
-        store.slots[idx].pid       = self.process_id.0;
-        store.slots[idx].cap_id    = cap_id;
+        store.slots[idx].active = true;
+        store.slots[idx].pid = self.process_id.0;
+        store.slots[idx].cap_id = cap_id;
         store.slots[idx].wasm_hash = hash;
-        store.slots[idx].wasm_len  = wasm_len as u16;
+        store.slots[idx].wasm_len = wasm_len as u16;
         let mut j = 0usize;
         while j < wasm_len {
             store.slots[idx].bytecode[j] = bytecode[j];
@@ -10869,7 +11009,10 @@ impl WasmInstance {
 
         crate::serial_println!(
             "[policy] bind: pid={} cap_id={} wasm_len={} hash={:#018x}",
-            self.process_id.0, cap_id, wasm_len, hash
+            self.process_id.0,
+            cap_id,
+            wasm_len,
+            hash
         );
         self.stack.push(Value::I32(0))
     }
@@ -10890,7 +11033,10 @@ impl WasmInstance {
                 store.slots[i].active = false;
                 drop(store);
                 crate::serial_println!(
-                    "[policy] unbind: pid={} cap_id={}", self.process_id.0, cap_id);
+                    "[policy] unbind: pid={} cap_id={}",
+                    self.process_id.0,
+                    cap_id
+                );
                 return self.stack.push(Value::I32(0));
             }
             i += 1;
@@ -10908,7 +11054,7 @@ impl WasmInstance {
     fn host_policy_eval(&mut self) -> Result<(), WasmError> {
         let ctx_len = self.stack.pop()?.as_i32()? as usize;
         let ctx_ptr = self.stack.pop()?.as_i32()? as usize;
-        let cap_id  = self.stack.pop()?.as_i32()? as u32;
+        let cap_id = self.stack.pop()?.as_i32()? as u32;
 
         let ctx_len = ctx_len.min(256);
         let ctx_bytes = self.memory.read(ctx_ptr, ctx_len)?;
@@ -10932,12 +11078,14 @@ impl WasmInstance {
         };
 
         match bytecode {
-            None => self.stack.push(Value::I32(-1)),  // no policy → implicit permit
+            None => self.stack.push(Value::I32(-1)), // no policy → implicit permit
             Some((bc, bc_len)) => {
                 let permit = run_policy_contract(&bc[..bc_len], ctx_bytes);
                 crate::serial_println!(
                     "[policy] eval: pid={} cap_id={} ctx_len={} result={}",
-                    self.process_id.0, cap_id, ctx_len,
+                    self.process_id.0,
+                    cap_id,
+                    ctx_len,
                     if permit { "permit" } else { "deny" }
                 );
                 self.stack.push(Value::I32(if permit { 0 } else { 1 }))
@@ -10957,7 +11105,7 @@ impl WasmInstance {
     fn host_policy_query(&mut self) -> Result<(), WasmError> {
         let buf_len = self.stack.pop()?.as_i32()? as usize;
         let buf_ptr = self.stack.pop()?.as_i32()? as usize;
-        let cap_id  = self.stack.pop()?.as_i32()? as u32;
+        let cap_id = self.stack.pop()?.as_i32()? as u32;
 
         if buf_len < 16 {
             return self.stack.push(Value::I32(-2));
@@ -10984,14 +11132,20 @@ impl WasmInstance {
                 let mut out = [0u8; 16];
                 let hb = hash.to_le_bytes();
                 let mut j = 0usize;
-                while j < 8 { out[j] = hb[j]; j += 1; }
+                while j < 8 {
+                    out[j] = hb[j];
+                    j += 1;
+                }
                 let lb = wasm_len.to_le_bytes();
-                out[8]  = lb[0];
-                out[9]  = lb[1];
+                out[8] = lb[0];
+                out[9] = lb[1];
                 out[10] = 1; // bound = true
                 out[11] = 0; // reserved
                 let cb = cap_id.to_le_bytes();
-                out[12] = cb[0]; out[13] = cb[1]; out[14] = cb[2]; out[15] = cb[3];
+                out[12] = cb[0];
+                out[13] = cb[1];
+                out[14] = cb[2];
+                out[15] = cb[3];
                 self.memory.write(buf_ptr, &out)?;
                 self.stack.push(Value::I32(0))
             }
@@ -11012,16 +11166,18 @@ impl WasmInstance {
     fn host_cap_entangle(&mut self) -> Result<(), WasmError> {
         let cap_b = self.stack.pop()?.as_i32()? as u32;
         let cap_a = self.stack.pop()?.as_i32()? as u32;
-        let pid   = self.process_id.0;
+        let pid = self.process_id.0;
 
         // Verify both caps exist for this process.
         if crate::capability::capability_manager()
-            .query_capability(crate::ipc::ProcessId(pid), cap_a).is_err()
+            .query_capability(crate::ipc::ProcessId(pid), cap_a)
+            .is_err()
         {
             return self.stack.push(Value::I32(-1));
         }
         if crate::capability::capability_manager()
-            .query_capability(crate::ipc::ProcessId(pid), cap_b).is_err()
+            .query_capability(crate::ipc::ProcessId(pid), cap_b)
+            .is_err()
         {
             return self.stack.push(Value::I32(-2));
         }
@@ -11031,7 +11187,10 @@ impl WasmInstance {
         let mut slot = None;
         let mut i = 0usize;
         while i < MAX_ENTANGLE_LINKS {
-            if !tbl.links[i].active { slot = Some(i); break; }
+            if !tbl.links[i].active {
+                slot = Some(i);
+                break;
+            }
             i += 1;
         }
         match slot {
@@ -11040,10 +11199,20 @@ impl WasmInstance {
                 self.stack.push(Value::I32(-3))
             }
             Some(idx) => {
-                tbl.links[idx] = EntangleLink { active: true, pid, cap_a, cap_b, group_id: 0 };
+                tbl.links[idx] = EntangleLink {
+                    active: true,
+                    pid,
+                    cap_a,
+                    cap_b,
+                    group_id: 0,
+                };
                 drop(tbl);
                 crate::serial_println!(
-                    "[entangle] pairwise: pid={} cap_a={} cap_b={}", pid, cap_a, cap_b);
+                    "[entangle] pairwise: pid={} cap_a={} cap_b={}",
+                    pid,
+                    cap_a,
+                    cap_b
+                );
                 self.stack.push(Value::I32(0))
             }
         }
@@ -11059,7 +11228,7 @@ impl WasmInstance {
     fn host_cap_entangle_group(&mut self) -> Result<(), WasmError> {
         let group_len = self.stack.pop()?.as_i32()? as usize;
         let group_ptr = self.stack.pop()?.as_i32()? as usize;
-        let pid       = self.process_id.0;
+        let pid = self.process_id.0;
 
         // Validate: max 32 caps in a group, must be > 1.
         if group_len < 2 || group_len > 32 {
@@ -11067,14 +11236,17 @@ impl WasmInstance {
         }
 
         // Read cap IDs from WASM memory (4 bytes each, LE).
-        let byte_len  = group_len * 4;
+        let byte_len = group_len * 4;
         let raw_bytes = self.memory.read(group_ptr, byte_len)?;
-        let mut caps  = [0u32; 32];
+        let mut caps = [0u32; 32];
         let mut gi = 0usize;
         while gi < group_len {
             let b = gi * 4;
             caps[gi] = u32::from_le_bytes([
-                raw_bytes[b], raw_bytes[b+1], raw_bytes[b+2], raw_bytes[b+3],
+                raw_bytes[b],
+                raw_bytes[b + 1],
+                raw_bytes[b + 2],
+                raw_bytes[b + 3],
             ]);
             gi += 1;
         }
@@ -11083,7 +11255,8 @@ impl WasmInstance {
         let mut vi = 0usize;
         while vi < group_len {
             if crate::capability::capability_manager()
-                .query_capability(crate::ipc::ProcessId(pid), caps[vi]).is_err()
+                .query_capability(crate::ipc::ProcessId(pid), caps[vi])
+                .is_err()
             {
                 return self.stack.push(Value::I32(-2));
             }
@@ -11100,7 +11273,9 @@ impl WasmInstance {
         let mut free_count = 0usize;
         let mut fi = 0usize;
         while fi < MAX_ENTANGLE_LINKS {
-            if !tbl.links[fi].active { free_count += 1; }
+            if !tbl.links[fi].active {
+                free_count += 1;
+            }
             fi += 1;
         }
         if free_count < needed {
@@ -11109,28 +11284,37 @@ impl WasmInstance {
         }
 
         // Star topology: anchor = caps[0], link it to every other cap.
-        let anchor   = caps[0];
-        let mut li   = 1usize;
+        let anchor = caps[0];
+        let mut li = 1usize;
         let mut slot = 0usize;
         'outer: while li < group_len {
             while slot < MAX_ENTANGLE_LINKS {
                 if !tbl.links[slot].active {
                     tbl.links[slot] = EntangleLink {
-                        active: true, pid, cap_a: anchor,
-                        cap_b: caps[li], group_id,
+                        active: true,
+                        pid,
+                        cap_a: anchor,
+                        cap_b: caps[li],
+                        group_id,
                     };
                     slot += 1;
                     break;
                 }
                 slot += 1;
-                if slot >= MAX_ENTANGLE_LINKS { break 'outer; }
+                if slot >= MAX_ENTANGLE_LINKS {
+                    break 'outer;
+                }
             }
             li += 1;
         }
         drop(tbl);
 
         crate::serial_println!(
-            "[entangle] group {}: pid={} size={}", group_id, pid, group_len);
+            "[entangle] group {}: pid={} size={}",
+            group_id,
+            pid,
+            group_len
+        );
         self.stack.push(Value::I32(group_id as i32))
     }
 
@@ -11141,16 +11325,14 @@ impl WasmInstance {
     /// Returns `0`=ok (at least one link removed), `-1`=no links found.
     fn host_cap_disentangle(&mut self) -> Result<(), WasmError> {
         let cap_id = self.stack.pop()?.as_i32()? as u32;
-        let pid    = self.process_id.0;
+        let pid = self.process_id.0;
 
-        let mut tbl   = ENTANGLE_TABLE.lock();
+        let mut tbl = ENTANGLE_TABLE.lock();
         let mut found = false;
-        let mut i     = 0usize;
+        let mut i = 0usize;
         while i < MAX_ENTANGLE_LINKS {
             let lnk = &mut tbl.links[i];
-            if lnk.active && lnk.pid == pid
-                && (lnk.cap_a == cap_id || lnk.cap_b == cap_id)
-            {
+            if lnk.active && lnk.pid == pid && (lnk.cap_a == cap_id || lnk.cap_b == cap_id) {
                 lnk.active = false;
                 found = true;
             }
@@ -11159,7 +11341,11 @@ impl WasmInstance {
         drop(tbl);
 
         crate::serial_println!(
-            "[entangle] disentangle: pid={} cap_id={} found={}", pid, cap_id, found);
+            "[entangle] disentangle: pid={} cap_id={} found={}",
+            pid,
+            cap_id,
+            found
+        );
         self.stack.push(Value::I32(if found { 0 } else { -1 }))
     }
 
@@ -11172,20 +11358,22 @@ impl WasmInstance {
     fn host_cap_entangle_query(&mut self) -> Result<(), WasmError> {
         let buf_len = self.stack.pop()?.as_i32()? as usize; // slots, not bytes
         let buf_ptr = self.stack.pop()?.as_i32()? as usize;
-        let cap_id  = self.stack.pop()?.as_i32()? as u32;
-        let pid     = self.process_id.0;
+        let cap_id = self.stack.pop()?.as_i32()? as u32;
+        let pid = self.process_id.0;
 
-        let tbl    = ENTANGLE_TABLE.lock();
+        let tbl = ENTANGLE_TABLE.lock();
         let mut peers = [0u32; MAX_ENTANGLE_LINKS];
-        let mut n     = 0usize;
-        let mut i     = 0usize;
+        let mut n = 0usize;
+        let mut i = 0usize;
         while i < MAX_ENTANGLE_LINKS {
             let lnk = &tbl.links[i];
             if lnk.active && lnk.pid == pid {
                 if lnk.cap_a == cap_id && n < buf_len {
-                    peers[n] = lnk.cap_b; n += 1;
+                    peers[n] = lnk.cap_b;
+                    n += 1;
                 } else if lnk.cap_b == cap_id && n < buf_len {
-                    peers[n] = lnk.cap_a; n += 1;
+                    peers[n] = lnk.cap_a;
+                    n += 1;
                 }
             }
             i += 1;
@@ -11198,12 +11386,15 @@ impl WasmInstance {
 
         // Write packed LE u32s.
         let write_len = n.min(buf_len);
-        let mut out   = [0u8; MAX_ENTANGLE_LINKS * 4];
-        let mut wi    = 0usize;
+        let mut out = [0u8; MAX_ENTANGLE_LINKS * 4];
+        let mut wi = 0usize;
         while wi < write_len {
             let b = wi * 4;
             let le = peers[wi].to_le_bytes();
-            out[b] = le[0]; out[b+1] = le[1]; out[b+2] = le[2]; out[b+3] = le[3];
+            out[b] = le[0];
+            out[b + 1] = le[1];
+            out[b + 2] = le[2];
+            out[b + 3] = le[3];
             wi += 1;
         }
         self.memory.write(buf_ptr, &out[..write_len * 4])?;
@@ -11226,15 +11417,19 @@ impl WasmInstance {
     fn host_cap_graph_query(&mut self) -> Result<(), WasmError> {
         let buf_len = self.stack.pop()?.as_i32()? as usize; // edge slots
         let buf_ptr = self.stack.pop()?.as_i32()? as usize;
-        let cap_id  = self.stack.pop()?.as_i32()? as u32;
-        let pid     = self.process_id.0;
+        let cap_id = self.stack.pop()?.as_i32()? as u32;
+        let pid = self.process_id.0;
 
         // MAX 16 edges per query.
         const MAX_Q: usize = 16;
         let limit = buf_len.min(MAX_Q);
         let mut edges = [crate::cap_graph::CapDelegationEdge {
-            active: false, from_pid: 0, from_cap: 0,
-            to_pid: 0, to_cap: 0, rights_bits: 0,
+            active: false,
+            from_pid: 0,
+            from_cap: 0,
+            to_pid: 0,
+            to_cap: 0,
+            rights_bits: 0,
         }; MAX_Q];
         let n = crate::cap_graph::query_edges_for(pid, cap_id, &mut edges[..limit]);
 
@@ -11244,21 +11439,40 @@ impl WasmInstance {
 
         // Serialize: 20 bytes per edge.
         let mut out = [0u8; MAX_Q * 20];
-        let mut wi  = 0usize;
+        let mut wi = 0usize;
         while wi < n {
-            let e   = &edges[wi];
+            let e = &edges[wi];
             let off = wi * 20;
-            let b0  = e.from_pid.to_le_bytes();
-            let b1  = e.from_cap.to_le_bytes();
-            let b2  = e.to_pid.to_le_bytes();
-            let b3  = e.to_cap.to_le_bytes();
-            let b4  = e.rights_bits.to_le_bytes();
+            let b0 = e.from_pid.to_le_bytes();
+            let b1 = e.from_cap.to_le_bytes();
+            let b2 = e.to_pid.to_le_bytes();
+            let b3 = e.to_cap.to_le_bytes();
+            let b4 = e.rights_bits.to_le_bytes();
             let mut j = 0usize;
-            while j < 4 { out[off+j]    = b0[j]; j += 1; } j = 0;
-            while j < 4 { out[off+4+j]  = b1[j]; j += 1; } j = 0;
-            while j < 4 { out[off+8+j]  = b2[j]; j += 1; } j = 0;
-            while j < 4 { out[off+12+j] = b3[j]; j += 1; } j = 0;
-            while j < 4 { out[off+16+j] = b4[j]; j += 1; }
+            while j < 4 {
+                out[off + j] = b0[j];
+                j += 1;
+            }
+            j = 0;
+            while j < 4 {
+                out[off + 4 + j] = b1[j];
+                j += 1;
+            }
+            j = 0;
+            while j < 4 {
+                out[off + 8 + j] = b2[j];
+                j += 1;
+            }
+            j = 0;
+            while j < 4 {
+                out[off + 12 + j] = b3[j];
+                j += 1;
+            }
+            j = 0;
+            while j < 4 {
+                out[off + 16 + j] = b4[j];
+                j += 1;
+            }
             wi += 1;
         }
         self.memory.write(buf_ptr, &out[..n * 20])?;
@@ -11274,8 +11488,8 @@ impl WasmInstance {
     /// be created, `3`=cap not found.
     fn host_cap_graph_verify(&mut self) -> Result<(), WasmError> {
         let delegatee_pid = self.stack.pop()?.as_i32()? as u32;
-        let cap_id        = self.stack.pop()?.as_i32()? as u32;
-        let pid           = self.process_id.0;
+        let cap_id = self.stack.pop()?.as_i32()? as u32;
+        let pid = self.process_id.0;
 
         // Look up the cap's current rights.
         match crate::capability::capability_manager()
@@ -11286,12 +11500,14 @@ impl WasmInstance {
                 // The definitive rights check happens at actual transfer time;
                 // here we do a prospective cycle check only.
                 let result = crate::cap_graph::check_invariants(
-                    pid, cap_id, delegatee_pid,
+                    pid,
+                    cap_id,
+                    delegatee_pid,
                     u32::MAX, // delegator rights: conservative pass-through
                     u32::MAX, // proposed rights: same as delegator (no escalation)
                 );
                 match result {
-                    Ok(())   => self.stack.push(Value::I32(0)),
+                    Ok(()) => self.stack.push(Value::I32(0)),
                     Err(msg) => {
                         let code = if msg.contains("cycle") { 2 } else { 1 };
                         self.stack.push(Value::I32(code))
@@ -11309,8 +11525,8 @@ impl WasmInstance {
     /// hops).  Capped at 32.
     fn host_cap_graph_depth(&mut self) -> Result<(), WasmError> {
         let cap_id = self.stack.pop()?.as_i32()? as u32;
-        let pid    = self.process_id.0;
-        let depth  = crate::cap_graph::delegation_depth(pid, cap_id);
+        let pid = self.process_id.0;
+        let depth = crate::cap_graph::delegation_depth(pid, cap_id);
         self.stack.push(Value::I32(depth as i32))
     }
 
@@ -11320,7 +11536,7 @@ impl WasmInstance {
     /// index with a single i32 argument.  Returns the thread ID (>= 1) on
     /// success, or -1 on failure.
     fn host_thread_spawn(&mut self) -> Result<(), WasmError> {
-        let arg      = self.stack.pop()?.as_i32()?;
+        let arg = self.stack.pop()?.as_i32()?;
         let func_idx = self.stack.pop()?.as_i32()?;
 
         let fidx = func_idx as usize;
@@ -12125,7 +12341,9 @@ impl WasmRuntime {
         let mut instance: Box<WasmInstance> = {
             let mut uninit = Box::<WasmInstance>::new_uninit();
             unsafe {
-                uninit.as_mut_ptr().write(WasmInstance::new(module, process_id, slot_idx));
+                uninit
+                    .as_mut_ptr()
+                    .write(WasmInstance::new(module, process_id, slot_idx));
                 uninit.assume_init()
             }
         };
@@ -16648,11 +16866,9 @@ pub fn jit_global_module_self_test() -> Result<(), &'static str> {
             23,
         ),
     ];
-    let mut compiler = crate::wasm_jit::FuzzCompiler::new(
-        MAX_FUZZ_JIT_CODE_SIZE,
-        MAX_FUZZ_CODE_SIZE,
-    )
-        .map_err(|_| "jit globals self-test: compiler init failed")?;
+    let mut compiler =
+        crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
+            .map_err(|_| "jit globals self-test: compiler init failed")?;
 
     let mut idx = 0usize;
     while idx < cases.len() {
@@ -18670,9 +18886,8 @@ pub fn formal_service_pointer_self_check() -> Result<(), &'static str> {
             result_count: 1,
             local_count: 0,
         };
-        let set_func = wasm_runtime().get_instance_mut(id, |inst| {
-            inst.module.add_function(func).map(|_| ())
-        });
+        let set_func =
+            wasm_runtime().get_instance_mut(id, |inst| inst.module.add_function(func).map(|_| ()));
         if !matches!(set_func, Ok(Ok(()))) {
             return Err("Service pointer self-check: failed to install function");
         }
@@ -18932,6 +19147,7 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
                 instance.host_temporal_snapshot()?;
                 if instance.stack.pop()?.as_i32()? != 0 {
                     instance.stack.clear();
+                    crate::serial_println!("[TEMPORAL_TEST] snapshot 1 failed");
                     return Err(WasmError::SyscallFailed);
                 }
 
@@ -18940,7 +19156,10 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
                 let v0_hi = u32::from_le_bytes([meta0[4], meta0[5], meta0[6], meta0[7]]);
                 let version0 = ((v0_hi as u64) << 32) | (v0_lo as u64);
 
-                crate::vfs::write_path(PATH, UPDATED).map_err(|_| WasmError::SyscallFailed)?;
+                crate::vfs::write_path(PATH, UPDATED).map_err(|_| {
+                    crate::serial_println!("[TEMPORAL_TEST] write_path failed");
+                    WasmError::SyscallFailed
+                })?;
 
                 // Snapshot updated state.
                 instance.stack.clear();
@@ -18951,6 +19170,7 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
                 instance.host_temporal_snapshot()?;
                 if instance.stack.pop()?.as_i32()? != 0 {
                     instance.stack.clear();
+                    crate::serial_println!("[TEMPORAL_TEST] snapshot 2 failed");
                     return Err(WasmError::SyscallFailed);
                 }
 
@@ -18976,6 +19196,7 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
                 let written = instance.stack.pop()?.as_i32()? as usize;
                 if written < 2 {
                     instance.stack.clear();
+                    crate::serial_println!("[TEMPORAL_TEST] ABI history returned < 2: {}", written);
                     return Err(WasmError::TypeMismatch);
                 }
 
@@ -18998,6 +19219,11 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
                 let newest_version = ((newest_hi as u64) << 32) | (newest_lo as u64);
                 if newest_version != version1 {
                     instance.stack.clear();
+                    crate::serial_println!(
+                        "[TEMPORAL_TEST] ABI history newest_version {} != version1 {}",
+                        newest_version,
+                        version1
+                    );
                     return Err(WasmError::TypeMismatch);
                 }
 
@@ -19012,6 +19238,7 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
                 instance.host_temporal_rollback()?;
                 if instance.stack.pop()?.as_i32()? != 0 {
                     instance.stack.clear();
+                    crate::serial_println!("[TEMPORAL_TEST] rollback failed");
                     return Err(WasmError::SyscallFailed);
                 }
 
@@ -19057,7 +19284,10 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
             })
             .map_err(|_| "Temporal self-check: execution unavailable")?;
 
-        invoke.map_err(|_| "Temporal self-check: host ABI path failed")
+        invoke.map_err(|e| {
+            crate::serial_println!("Temporal self-check: host ABI path failed with {:?}", e);
+            "Temporal self-check: host ABI path failed"
+        })
     })();
 
     if let Some(id) = instance_id {

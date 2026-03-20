@@ -12,6 +12,7 @@ default = []
 formal-verify = []
 jit-fuzz-24bin = []
 experimental_entropy_sched = []
+host-tests = []
 
 [dependencies]
 spin = "0.9"

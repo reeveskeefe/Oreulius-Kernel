@@ -26,4 +26,3 @@ impl TransferQueue {
         Ok(GpuFence::alloc())
     }
 }
-

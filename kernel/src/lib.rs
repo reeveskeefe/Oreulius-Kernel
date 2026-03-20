@@ -61,14 +61,14 @@ pub use math::exact_rational;
 pub use math::tensor_core;
 
 // Memory helpers — asm_bindings / hardened_allocator are x86-specific inline asm.
+pub use memory::wait_free_ring;
 #[cfg(not(target_arch = "aarch64"))]
 pub use memory::{asm_bindings, hardened_allocator};
-pub use memory::wait_free_ring;
 
 // Platform — gdt/idt are x86-only; syscall/usermode/interrupt_dag are shared.
-pub use platform::{interrupt_dag, syscall, usermode};
 #[cfg(not(target_arch = "aarch64"))]
 pub use platform::{gdt, idt_asm};
+pub use platform::{interrupt_dag, syscall, usermode};
 
 // Scheduler subsystems — fully shared.
 pub use scheduler::{
@@ -80,21 +80,23 @@ pub use scheduler::{process_asm, tasks};
 
 // Security — cpu_security/crash_log/enclave/formal/kpti/memory_isolation are x86-only.
 // intent_graph is arch-neutral and always re-exported.
-#[cfg(not(target_arch = "aarch64"))]
-pub use security::{cpu_security, crash_log, enclave, formal, intent_graph, kpti, memory_isolation};
 #[cfg(target_arch = "aarch64")]
 pub use security::intent_graph;
+#[cfg(not(target_arch = "aarch64"))]
+pub use security::{
+    cpu_security, crash_log, enclave, formal, intent_graph, kpti, memory_isolation,
+};
 
 // Services — fleet/health/ota/wasi are x86-only; registry is arch-neutral.
-#[cfg(not(target_arch = "aarch64"))]
-pub use services::{fleet, health, ota, registry, wasi};
 #[cfg(target_arch = "aarch64")]
 pub use services::registry;
+#[cfg(not(target_arch = "aarch64"))]
+pub use services::{fleet, health, ota, registry, wasi};
 
 // Shell — console_service/terminal use VGA on x86; AArch64 uses PL011 serial.
-pub use shell::{commands, commands_shared};
 #[cfg(not(target_arch = "aarch64"))]
 pub use shell::{advanced_commands, console_service, terminal};
+pub use shell::{commands, commands_shared};
 
 // Temporal — fully arch-neutral.
 pub use temporal::{persistence, temporal_asm};
@@ -102,8 +104,8 @@ pub use temporal::{persistence, temporal_asm};
 // Drivers — hardware-specific drivers gated per arch.
 #[cfg(not(target_arch = "aarch64"))]
 pub use drivers::{
-    acpi_asm, audio, bluetooth, dma_asm, framebuffer, gpu_support, input,
-    keyboard, memopt_asm, mouse, pci, usb, vga,
+    acpi_asm, audio, bluetooth, dma_asm, framebuffer, gpu_support, input, keyboard, memopt_asm,
+    mouse, pci, usb, vga,
 };
 
 // Network — the full network stack (capnet, virtio_net, netstack, tls) is
@@ -122,6 +124,16 @@ pub fn ensure_heap_available() -> Option<Box<u32>> {
 #[inline]
 pub(crate) unsafe fn early_console_write_word(slot: *mut u16, value: u16) {
     core::ptr::write_volatile(slot, value);
+}
+
+#[inline]
+pub(crate) unsafe fn early_console_write_cell(cell: usize, value: u16) {
+    early_console_write_word((0xb8000 as *mut u16).add(cell), value);
+}
+
+#[inline]
+pub(crate) unsafe fn early_console_read_cell(cell: usize) -> u16 {
+    core::ptr::read_volatile((0xb8000 as *const u16).add(cell))
 }
 
 #[inline]
@@ -155,6 +167,23 @@ pub fn runtime_background_maintenance() {
     }
 }
 
+// Host-side lib tests link against the platform test harness instead of the
+// kernel linker script, so these symbols are provided as inert placeholders to
+// satisfy any non-executed references outside the allocator fast paths.
+#[cfg(any(test, feature = "host-tests"))]
+#[no_mangle]
+pub static _heap_start: u8 = 0;
+#[cfg(any(test, feature = "host-tests"))]
+#[no_mangle]
+pub static _heap_end: u8 = 0;
+#[cfg(any(test, feature = "host-tests"))]
+#[no_mangle]
+pub static _jit_arena_start: u8 = 0;
+#[cfg(any(test, feature = "host-tests"))]
+#[no_mangle]
+pub static _jit_arena_end: u8 = 0;
+
+#[cfg(not(any(test, feature = "host-tests")))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // Classify the crash for structured telemetry and OTA rollback decisions.
@@ -181,10 +210,9 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         }
 
         unsafe {
-            let vga_buf = 0xb8000 as *mut u16;
             let s = "PANIC";
             for (i, byte) in s.bytes().enumerate() {
-                early_console_write_word(vga_buf.add(i), 0x4F00 | (byte as u16));
+                early_console_write_cell(i, 0x4F00 | (byte as u16));
             }
         }
 
@@ -194,6 +222,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     crate::arch::halt_loop()
 }
 
+#[cfg(not(any(test, feature = "host-tests")))]
 #[alloc_error_handler]
 fn alloc_error(layout: core::alloc::Layout) -> ! {
     #[cfg(target_arch = "aarch64")]
@@ -213,10 +242,9 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
         }
 
         unsafe {
-            let vga = 0xb8000 as *mut u16;
             let msg = b"ALLOC FAIL";
             for (i, &b) in msg.iter().enumerate() {
-                early_console_write_word(vga.add(i), 0x4F00 | (b as u16));
+                early_console_write_cell(i, 0x4F00 | (b as u16));
             }
         }
     }
@@ -234,7 +262,10 @@ mod tests {
         unsafe {
             early_console_write_word(&mut slot as *mut u16, 0x4F50);
         }
-        assert_eq!(unsafe { core::ptr::read_volatile(&slot as *const u16) }, 0x4F50);
+        assert_eq!(
+            unsafe { core::ptr::read_volatile(&slot as *const u16) },
+            0x4F50
+        );
     }
 }
 

@@ -291,10 +291,8 @@ pub fn flush_to_persistence() {
         return; // Already flushed this session.
     }
 
-    let cap = crate::persistence::StoreCapability::new(
-        0xCCCC,
-        crate::persistence::StoreRights::all(),
-    );
+    let cap =
+        crate::persistence::StoreCapability::new(0xCCCC, crate::persistence::StoreRights::all());
 
     for_each_crash(|seq, tick, session, loc, msg| {
         // Build a 8 + MSG_CAP + MSG_CAP = 264-byte payload.
@@ -319,19 +317,16 @@ pub fn flush_to_persistence() {
 
 /// Emit a BootEvent record into persistence.
 fn emit_boot_event(session: u32) {
-    let cap = crate::persistence::StoreCapability::new(
-        0xBBBB,
-        crate::persistence::StoreRights::all(),
-    );
+    let cap =
+        crate::persistence::StoreCapability::new(0xBBBB, crate::persistence::StoreRights::all());
     // Payload: [session:u32LE, crash_count:u32LE]
     let mut payload = [0u8; 8];
     payload[0..4].copy_from_slice(&session.to_le_bytes());
     payload[4..8].copy_from_slice(&CRASH_COUNT.load(Ordering::SeqCst).to_le_bytes());
 
-    if let Ok(record) = crate::persistence::LogRecord::new(
-        crate::persistence::RecordType::BootEvent,
-        &payload,
-    ) {
+    if let Ok(record) =
+        crate::persistence::LogRecord::new(crate::persistence::RecordType::BootEvent, &payload)
+    {
         let mut svc = crate::persistence::persistence().lock();
         let _ = svc.append_log(&cap, record);
     }
@@ -399,16 +394,16 @@ impl CrashClass {
     /// Returns the canonical telemetry string for this class.
     pub fn as_str(self) -> &'static str {
         match self {
-            CrashClass::KernelAssert      => "kernel_assert",
-            CrashClass::MemoryBounds      => "memory_bounds",
+            CrashClass::KernelAssert => "kernel_assert",
+            CrashClass::MemoryBounds => "memory_bounds",
             CrashClass::ArithmeticOverflow => "arithmetic_overflow",
-            CrashClass::StackOverflow     => "stack_overflow",
-            CrashClass::AllocOom          => "alloc_oom",
+            CrashClass::StackOverflow => "stack_overflow",
+            CrashClass::AllocOom => "alloc_oom",
             CrashClass::CapabilityViolation => "capability_violation",
-            CrashClass::WasmFault         => "wasm_fault",
-            CrashClass::ElfLoadError      => "elf_load_error",
-            CrashClass::HardwareFault     => "hardware_fault",
-            CrashClass::Unknown           => "unknown",
+            CrashClass::WasmFault => "wasm_fault",
+            CrashClass::ElfLoadError => "elf_load_error",
+            CrashClass::HardwareFault => "hardware_fault",
+            CrashClass::Unknown => "unknown",
         }
     }
 }
@@ -442,10 +437,17 @@ pub fn classify_panic(info: &core::panic::PanicInfo) -> CrashClass {
     }
 
     // Message content check.
-    if contains(msg, b"index out of bounds") || contains(msg, b"slice index") || contains(msg, b"out of range") {
+    if contains(msg, b"index out of bounds")
+        || contains(msg, b"slice index")
+        || contains(msg, b"out of range")
+    {
         return CrashClass::MemoryBounds;
     }
-    if contains(msg, b"overflow") || contains(msg, b"attempt to add") || contains(msg, b"attempt to sub") || contains(msg, b"attempt to mul") {
+    if contains(msg, b"overflow")
+        || contains(msg, b"attempt to add")
+        || contains(msg, b"attempt to sub")
+        || contains(msg, b"attempt to mul")
+    {
         return CrashClass::ArithmeticOverflow;
     }
     if contains(msg, b"stack overflow") || contains(msg, b"stack smash") {
@@ -454,7 +456,10 @@ pub fn classify_panic(info: &core::panic::PanicInfo) -> CrashClass {
     if contains(msg, b"OOM") || contains(msg, b"out of memory") || contains(msg, b"alloc fail") {
         return CrashClass::AllocOom;
     }
-    if contains(msg, b"capability") || contains(msg, b"cap violation") || contains(msg, b"permission denied") {
+    if contains(msg, b"capability")
+        || contains(msg, b"cap violation")
+        || contains(msg, b"permission denied")
+    {
         return CrashClass::CapabilityViolation;
     }
     if contains(msg, b"wasm") || contains(msg, b"WASM") {

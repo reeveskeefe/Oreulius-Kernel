@@ -9,8 +9,8 @@
 
 #![allow(dead_code)]
 
-use crate::ipc::ProcessId;
 use super::protocol::{CompositorCap, SessionId, WindowId};
+use crate::ipc::ProcessId;
 
 /// Maximum windows per session.
 pub const MAX_WINDOWS_PER_SESSION: usize = 8;

@@ -10,10 +10,10 @@
 
 #![allow(dead_code)]
 
-use crate::drivers::input::{InputEvent, InputEventKind, KeyState};
 use super::protocol::{CompositorInputEvent, WindowId};
-use super::window::WindowTable;
 use super::session::SessionTable;
+use super::window::WindowTable;
+use crate::drivers::input::{InputEvent, InputEventKind, KeyState};
 
 // ---------------------------------------------------------------------------
 // Pointer cursor state (accumulated absolute position from relative deltas)
@@ -27,7 +27,11 @@ pub struct CursorState {
 
 impl CursorState {
     pub const fn new() -> Self {
-        CursorState { x: 0, y: 0, buttons: 0 }
+        CursorState {
+            x: 0,
+            y: 0,
+            buttons: 0,
+        }
     }
 
     /// Apply a relative mouse delta, clamped to screen bounds.
@@ -63,10 +67,7 @@ impl FocusState {
 
     /// Transfer keyboard focus to `wid`.
     /// Returns `(old_focus, new_focus)` so the caller can issue focus-change events.
-    pub fn set_focus(
-        &mut self,
-        wid: Option<WindowId>,
-    ) -> (Option<WindowId>, Option<WindowId>) {
+    pub fn set_focus(&mut self, wid: Option<WindowId>) -> (Option<WindowId>, Option<WindowId>) {
         let old = self.focused;
         self.focused = wid;
         (old, wid)
@@ -115,9 +116,7 @@ pub fn route_input(
     screen_h: u32,
 ) -> Option<RoutedEvent> {
     match raw.kind {
-        InputEventKind::Key => {
-            route_key(raw, windows, sessions, focus)
-        }
+        InputEventKind::Key => route_key(raw, windows, sessions, focus),
         InputEventKind::Mouse => {
             route_mouse(raw, windows, sessions, focus, cursor, screen_w, screen_h)
         }
@@ -175,12 +174,18 @@ fn route_mouse(
     // SAFETY: kind == Mouse, so the mouse union arm is valid.
     let mouse_ev = unsafe { raw.data.mouse };
     let prev_buttons = cursor.buttons;
-    cursor.apply_delta(mouse_ev.dx, mouse_ev.dy, mouse_ev.buttons, screen_w, screen_h);
+    cursor.apply_delta(
+        mouse_ev.dx,
+        mouse_ev.dy,
+        mouse_ev.buttons,
+        screen_w,
+        screen_h,
+    );
     let px = cursor.x;
     let py = cursor.y;
 
     // Button-press: any new button that wasn't held before.
-    let newly_pressed  = mouse_ev.buttons & !prev_buttons;
+    let newly_pressed = mouse_ev.buttons & !prev_buttons;
     let newly_released = prev_buttons & !mouse_ev.buttons;
 
     // Determine which window gets the event.

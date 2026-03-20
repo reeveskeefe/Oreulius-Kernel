@@ -74,9 +74,7 @@ impl EventId {
     /// counter into a unique 64-bit identifier.
     #[inline]
     pub const fn new(source_pid: u32, channel_seq: u16, msg_seq: u16) -> Self {
-        let v = ((source_pid as u64) << 32)
-            | ((channel_seq as u64) << 16)
-            | (msg_seq as u64);
+        let v = ((source_pid as u64) << 32) | ((channel_seq as u64) << 16) | (msg_seq as u64);
         EventId(v)
     }
 

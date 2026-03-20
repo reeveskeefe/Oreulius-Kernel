@@ -9,9 +9,15 @@ impl ScanoutOps for FakeGpu {
     fn put_pixel(&self, _x: u32, _y: u32, _r: u8, _g: u8, _b: u8) {}
     fn fill_rect(&self, _x: u32, _y: u32, _w: u32, _h: u32, _r: u8, _g: u8, _b: u8) {}
     fn flush(&self) {}
-    fn width(&self) -> u32 { 64 }
-    fn height(&self) -> u32 { 64 }
-    fn is_available(&self) -> bool { true }
+    fn width(&self) -> u32 {
+        64
+    }
+    fn height(&self) -> u32 {
+        64
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
 }
 
 impl FakeGpu {
@@ -29,4 +35,3 @@ impl FakeGpu {
         Ok(GpuFence::alloc())
     }
 }
-

@@ -3,9 +3,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use spin::{Mutex, Once};
 
 use super::{
-    admission, backpressure, Capability, ChannelCapability, ChannelFlags, ChannelId,
-    ChannelRights, ChannelTable, IpcDefer, IpcError, Message, ProcessId, RecvDecision,
-    SendDecision, CHANNEL_CAPACITY, MAX_CAPS_PER_MESSAGE, MAX_CHANNELS,
+    admission, backpressure, Capability, ChannelCapability, ChannelFlags, ChannelId, ChannelRights,
+    ChannelTable, IpcDefer, IpcError, Message, ProcessId, RecvDecision, SendDecision,
+    CHANNEL_CAPACITY, MAX_CAPS_PER_MESSAGE, MAX_CHANNELS,
 };
 
 /// The main IPC service.
@@ -114,7 +114,9 @@ impl IpcService {
 
                 match admission::evaluate_recv(channel, capability) {
                     RecvDecision::Deliver => return channel.try_recv(capability),
-                    RecvDecision::Refuse(refusal) => return channel.reject_recv(refusal, capability),
+                    RecvDecision::Refuse(refusal) => {
+                        return channel.reject_recv(refusal, capability)
+                    }
                     RecvDecision::Defer(IpcDefer::WaitForMessage) => {
                         match crate::quantum_scheduler::prepare_block_on(
                             channel.message_wait_addr(),

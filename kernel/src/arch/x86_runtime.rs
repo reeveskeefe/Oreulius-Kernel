@@ -51,7 +51,11 @@ unsafe fn job_add(pid: crate::process::Pid, cmd: &[u8]) -> usize {
         // Reclaim first empty slot (oldest job).
         JOB_TABLE.iter().position(|j| j.is_none()).unwrap_or(0)
     };
-    let mut entry = Job { pid, cmd: [0u8; 64], cmd_len: 0 };
+    let mut entry = Job {
+        pid,
+        cmd: [0u8; 64],
+        cmd_len: 0,
+    };
     let copy_len = cmd.len().min(63);
     entry.cmd[..copy_len].copy_from_slice(&cmd[..copy_len]);
     entry.cmd_len = copy_len;
@@ -103,23 +107,23 @@ pub fn fg_last_job() -> bool {
             if let Some(j) = JOB_TABLE[i] {
                 // Wake the process in the scheduler.
                 {
-                    let _ = crate::quantum_scheduler::scheduler().lock().wake_one(j.pid.0 as usize);
+                    let _ = crate::quantum_scheduler::scheduler()
+                        .lock()
+                        .wake_one(j.pid.0 as usize);
                     // If wake_one found no wait queue (process was just Blocked),
                     // re-enqueue it directly.
                     let still_blocked = {
                         let sched = crate::quantum_scheduler::scheduler().lock();
-                        sched.get_process_info(j.pid).map(|info| {
-                            info.process.state == crate::process::ProcessState::Blocked
-                        }).unwrap_or(false)
+                        sched
+                            .get_process_info(j.pid)
+                            .map(|info| info.process.state == crate::process::ProcessState::Blocked)
+                            .unwrap_or(false)
                     };
                     if still_blocked {
                         {
                             let mut sched2 = crate::quantum_scheduler::scheduler().lock();
-                            if let Some(info_mut) = sched2
-                                .get_process_info_mut(j.pid)
-                            {
-                                info_mut.process.state =
-                                    crate::process::ProcessState::Ready;
+                            if let Some(info_mut) = sched2.get_process_info_mut(j.pid) {
+                                info_mut.process.state = crate::process::ProcessState::Ready;
                                 let priority = info_mut.process.priority;
                                 drop(sched2);
                                 crate::quantum_scheduler::enqueue_ready_pid(j.pid, priority);
@@ -159,15 +163,13 @@ fn drain_serial_input() {
 
 pub fn enter_runtime() -> ! {
     unsafe {
-        let vga = 0xb8000 as *mut u16;
-        *(vga.add(8)) = 0x0252; // 'R' in green at position 8 (after "BOOTCALL")
+        crate::early_console_write_cell(8, 0x0252); // 'R' in green at position 8
     }
 
     crate::memory::init();
 
     unsafe {
-        let vga = 0xb8000 as *mut u16;
-        *(vga.add(9)) = 0x024d; // 'M' in green - memory initialized
+        crate::early_console_write_cell(9, 0x024d); // 'M' in green - memory initialized
     }
 
     crate::vga::print_str("[MEMORY] Heap allocator initialized\n");
@@ -499,27 +501,23 @@ pub fn shell_loop() -> ! {
                 let dropped = crate::keyboard::get_dropped_packets();
                 *vga.add(row_offset + 20) = 0x0F44;
                 *vga.add(row_offset + 21) = 0x0F3A;
-                *vga.add(row_offset + 22) =
-                    0x0F00 | (hex[((dropped >> 4) & 0xF) as usize] as u16);
+                *vga.add(row_offset + 22) = 0x0F00 | (hex[((dropped >> 4) & 0xF) as usize] as u16);
                 *vga.add(row_offset + 23) = 0x0F00 | (hex[(dropped & 0xF) as usize] as u16);
 
                 let (pushed, _popped, none, errors) = crate::keyboard::get_event_stats();
                 *vga.add(row_offset + 30) = 0x0F50;
                 *vga.add(row_offset + 31) = 0x0F3A;
-                *vga.add(row_offset + 32) =
-                    0x0F00 | (hex[((pushed >> 4) & 0xF) as usize] as u16);
+                *vga.add(row_offset + 32) = 0x0F00 | (hex[((pushed >> 4) & 0xF) as usize] as u16);
                 *vga.add(row_offset + 33) = 0x0F00 | (hex[(pushed & 0xF) as usize] as u16);
 
                 *vga.add(row_offset + 35) = 0x0F4E;
                 *vga.add(row_offset + 36) = 0x0F3A;
-                *vga.add(row_offset + 37) =
-                    0x0F00 | (hex[((none >> 4) & 0xF) as usize] as u16);
+                *vga.add(row_offset + 37) = 0x0F00 | (hex[((none >> 4) & 0xF) as usize] as u16);
                 *vga.add(row_offset + 38) = 0x0F00 | (hex[(none & 0xF) as usize] as u16);
 
                 *vga.add(row_offset + 40) = 0x0F45;
                 *vga.add(row_offset + 41) = 0x0F3A;
-                *vga.add(row_offset + 42) =
-                    0x0F00 | (hex[((errors >> 4) & 0xF) as usize] as u16);
+                *vga.add(row_offset + 42) = 0x0F00 | (hex[((errors >> 4) & 0xF) as usize] as u16);
                 *vga.add(row_offset + 43) = 0x0F00 | (hex[(errors & 0xF) as usize] as u16);
             }
         }
@@ -824,9 +822,7 @@ pub fn shell_loop() -> ! {
                 }
                 crate::keyboard::KeyEvent::Char(c) => {
                     unsafe {
-                        let vga_buffer = 0xb8000 as *mut u8;
-                        *vga_buffer.offset(240) = b'*';
-                        *vga_buffer.offset(241) = 0x0E;
+                        crate::early_console_write_cell(120, 0x0E2A);
                     }
 
                     if (c.is_ascii_graphic() || c == ' ') && len < input.len() - 1 {

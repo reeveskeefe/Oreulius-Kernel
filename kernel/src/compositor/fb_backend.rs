@@ -27,7 +27,11 @@ impl FbBackend {
     /// reported by the framebuffer driver (or 0 if unavailable).
     pub const fn new(width: u32, height: u32) -> Self {
         let available = width > 0 && height > 0;
-        FbBackend { width, height, available }
+        FbBackend {
+            width,
+            height,
+            available,
+        }
     }
 
     /// Update the screen size (e.g. after a mode change).

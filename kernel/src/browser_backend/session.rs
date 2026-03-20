@@ -10,9 +10,7 @@ use super::origin::{OriginPolicy, OriginTable};
 use super::policy::PolicyProfile;
 use super::protocol::{BrowserError, BrowserEvent, BrowserRequest, BrowserResponse};
 use super::storage::StorageTable;
-use super::types::{
-    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, RequestId, Url, URL_MAX,
-};
+use super::types::{BrowserCap, BrowserSessionId, DownloadId, HttpMethod, RequestId, Url, URL_MAX};
 use crate::ipc::ProcessId;
 
 // ---------------------------------------------------------------------------
@@ -34,16 +32,16 @@ pub const EVENT_QUEUE_DEPTH: usize = 64;
 
 #[derive(Copy, Clone)]
 pub struct NavigationEntry {
-    pub url:     [u8; URL_MAX],
+    pub url: [u8; URL_MAX],
     pub url_len: usize,
-    pub active:  bool,
+    pub active: bool,
 }
 
 impl NavigationEntry {
     pub const EMPTY: Self = Self {
-        url:     [0; URL_MAX],
+        url: [0; URL_MAX],
         url_len: 0,
-        active:  false,
+        active: false,
     };
 }
 
@@ -52,24 +50,24 @@ impl NavigationEntry {
 // ---------------------------------------------------------------------------
 
 pub struct BrowserSession {
-    pub id:       BrowserSessionId,
-    pub pid:      ProcessId,
-    pub cap:      BrowserCap,
-    pub policy:   PolicyProfile,
+    pub id: BrowserSessionId,
+    pub pid: ProcessId,
+    pub cap: BrowserCap,
+    pub policy: PolicyProfile,
     /// Input-event subscription flag.
     pub subscribed: bool,
-    pub alive:    bool,
+    pub alive: bool,
 
     // Navigation history ring.
-    nav_history:  [NavigationEntry; NAV_HISTORY_DEPTH],
-    nav_head:     usize,
-    nav_count:    usize,
+    nav_history: [NavigationEntry; NAV_HISTORY_DEPTH],
+    nav_head: usize,
+    nav_count: usize,
 
     // Pending events outbox.
-    event_queue:  [Option<BrowserEvent>; EVENT_QUEUE_DEPTH],
-    eq_head:      usize,
-    eq_tail:      usize,
-    eq_count:     usize,
+    event_queue: [Option<BrowserEvent>; EVENT_QUEUE_DEPTH],
+    eq_head: usize,
+    eq_tail: usize,
+    eq_count: usize,
 
     // Active request counter.
     pub next_request_id: u32,
@@ -78,19 +76,19 @@ pub struct BrowserSession {
 impl BrowserSession {
     pub const fn empty() -> Self {
         Self {
-            id:       BrowserSessionId(0),
-            pid:      ProcessId(0),
-            cap:      BrowserCap(0),
-            policy:   PolicyProfile::DEFAULT,
+            id: BrowserSessionId(0),
+            pid: ProcessId(0),
+            cap: BrowserCap(0),
+            policy: PolicyProfile::DEFAULT,
             subscribed: false,
-            alive:    false,
-            nav_history:  [NavigationEntry::EMPTY; NAV_HISTORY_DEPTH],
-            nav_head:     0,
-            nav_count:    0,
-            event_queue:  [None; EVENT_QUEUE_DEPTH],
-            eq_head:      0,
-            eq_tail:      0,
-            eq_count:     0,
+            alive: false,
+            nav_history: [NavigationEntry::EMPTY; NAV_HISTORY_DEPTH],
+            nav_head: 0,
+            nav_count: 0,
+            event_queue: [None; EVENT_QUEUE_DEPTH],
+            eq_head: 0,
+            eq_tail: 0,
+            eq_count: 0,
             next_request_id: 1,
         }
     }
@@ -114,28 +112,38 @@ impl BrowserSession {
         let mut pos = 0usize;
         let scheme_str = url.scheme.as_str().as_bytes();
         let sc = scheme_str.len().min(URL_MAX - pos);
-        buf[pos..pos+sc].copy_from_slice(&scheme_str[..sc]); pos += sc;
-        if pos + 3 < URL_MAX { buf[pos..pos+3].copy_from_slice(b"://"); pos += 3; }
+        buf[pos..pos + sc].copy_from_slice(&scheme_str[..sc]);
+        pos += sc;
+        if pos + 3 < URL_MAX {
+            buf[pos..pos + 3].copy_from_slice(b"://");
+            pos += 3;
+        }
         let hc = url.host_len.min(URL_MAX - pos);
-        buf[pos..pos+hc].copy_from_slice(&url.host[..hc]); pos += hc;
+        buf[pos..pos + hc].copy_from_slice(&url.host[..hc]);
+        pos += hc;
         if url.port != url.scheme.default_port() && pos + 7 < URL_MAX {
-            buf[pos] = b':'; pos += 1;
+            buf[pos] = b':';
+            pos += 1;
             let mut num = [0u8; 6];
             let nl = write_u16_buf(&mut num, url.port);
             let nc = nl.min(URL_MAX - pos);
-            buf[pos..pos+nc].copy_from_slice(&num[..nc]); pos += nc;
+            buf[pos..pos + nc].copy_from_slice(&num[..nc]);
+            pos += nc;
         }
         let pc = url.path_len.min(URL_MAX - pos);
-        buf[pos..pos+pc].copy_from_slice(&url.path[..pc]); pos += pc;
+        buf[pos..pos + pc].copy_from_slice(&url.path[..pc]);
+        pos += pc;
         if url.query_len > 0 && pos + 1 + url.query_len < URL_MAX {
-            buf[pos] = b'?'; pos += 1;
+            buf[pos] = b'?';
+            pos += 1;
             let qc = url.query_len.min(URL_MAX - pos);
-            buf[pos..pos+qc].copy_from_slice(&url.query[..qc]); pos += qc;
+            buf[pos..pos + qc].copy_from_slice(&url.query[..qc]);
+            pos += qc;
         }
         let len = pos.min(URL_MAX);
         entry.url[..len].copy_from_slice(&buf[..len]);
         entry.url_len = len;
-        entry.active  = true;
+        entry.active = true;
         self.nav_head = (self.nav_head + 1) % NAV_HISTORY_DEPTH;
         if self.nav_count < NAV_HISTORY_DEPTH {
             self.nav_count += 1;
@@ -144,10 +152,16 @@ impl BrowserSession {
 
     /// Return the most recent navigation URL, if any.
     pub fn current_url(&self) -> Option<&[u8]> {
-        if self.nav_count == 0 { return None; }
+        if self.nav_count == 0 {
+            return None;
+        }
         let idx = self.nav_head.wrapping_sub(1) % NAV_HISTORY_DEPTH;
         let e = &self.nav_history[idx];
-        if e.active { Some(&e.url[..e.url_len]) } else { None }
+        if e.active {
+            Some(&e.url[..e.url_len])
+        } else {
+            None
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -156,17 +170,16 @@ impl BrowserSession {
 
     /// Enqueue an event.  Drops the event if the queue is full.
     pub fn enqueue(&mut self, ev: BrowserEvent) {
-        if self.eq_count >= EVENT_QUEUE_DEPTH { return; }
+        if self.eq_count >= EVENT_QUEUE_DEPTH {
+            return;
+        }
         self.event_queue[self.eq_tail] = Some(ev);
         self.eq_tail = (self.eq_tail + 1) % EVENT_QUEUE_DEPTH;
         self.eq_count += 1;
     }
 
     /// Drain up to `max` events into `out`.  Returns count drained.
-    pub fn drain_events(
-        &mut self,
-        out: &mut [Option<BrowserEvent>; 8],
-    ) -> usize {
+    pub fn drain_events(&mut self, out: &mut [Option<BrowserEvent>; 8]) -> usize {
         let n = self.eq_count.min(8);
         for i in 0..n {
             out[i] = self.event_queue[self.eq_head].take();
@@ -182,7 +195,7 @@ impl BrowserSession {
 // ---------------------------------------------------------------------------
 
 pub struct SessionTable {
-    slots:    [BrowserSession; MAX_BROWSER_SESSIONS],
+    slots: [BrowserSession; MAX_BROWSER_SESSIONS],
     cap_seed: u64,
 }
 
@@ -190,7 +203,7 @@ impl SessionTable {
     pub const fn new() -> Self {
         const EMPTY: BrowserSession = BrowserSession::empty();
         Self {
-            slots:    [EMPTY; MAX_BROWSER_SESSIONS],
+            slots: [EMPTY; MAX_BROWSER_SESSIONS],
             cap_seed: 0xDEAD_BEEF_1234_5678,
         }
     }
@@ -198,7 +211,8 @@ impl SessionTable {
     fn next_cap(&mut self) -> BrowserCap {
         // LCG — same pattern as compositor/capability.rs.
         let x = self.cap_seed;
-        self.cap_seed = x.wrapping_mul(6364136223846793005)
+        self.cap_seed = x
+            .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         BrowserCap(self.cap_seed | 1)
     }
@@ -206,13 +220,13 @@ impl SessionTable {
     /// Open a new session for `pid`.  Returns slot index or `None`.
     pub fn open(&mut self, pid: ProcessId) -> Option<usize> {
         let slot = self.slots.iter().position(|s| !s.alive)?;
-        let id  = BrowserSessionId((slot + 1) as u32);
+        let id = BrowserSessionId((slot + 1) as u32);
         let cap = self.next_cap();
         self.slots[slot] = BrowserSession::empty();
-        self.slots[slot].id     = id;
-        self.slots[slot].pid    = pid;
-        self.slots[slot].cap    = cap;
-        self.slots[slot].alive  = true;
+        self.slots[slot].id = id;
+        self.slots[slot].pid = pid;
+        self.slots[slot].cap = cap;
+        self.slots[slot].alive = true;
         Some(slot)
     }
 
@@ -226,10 +240,7 @@ impl SessionTable {
     /// Find by `BrowserSessionId`.
     pub fn find(&self, id: BrowserSessionId) -> Option<usize> {
         let idx = id.0.checked_sub(1)? as usize;
-        if idx < MAX_BROWSER_SESSIONS
-            && self.slots[idx].alive
-            && self.slots[idx].id == id
-        {
+        if idx < MAX_BROWSER_SESSIONS && self.slots[idx].alive && self.slots[idx].id == id {
             Some(idx)
         } else {
             None

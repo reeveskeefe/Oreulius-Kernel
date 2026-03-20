@@ -26,15 +26,14 @@ use super::fetch::{fetch_request, FetchContext, FetchOutcome};
 use super::origin::{OriginCheckResult, OriginPolicy, OriginTable};
 use super::policy::BrowserPolicy;
 use super::protocol::{
-    BrowserError, BrowserEvent, BrowserRequest, BrowserResponse,
-    PolicyBlockReason, TlsHandshakeResult, BODY_CHUNK_MAX,
+    BrowserError, BrowserEvent, BrowserRequest, BrowserResponse, PolicyBlockReason,
+    TlsHandshakeResult, BODY_CHUNK_MAX,
 };
 use super::session::{BrowserSession, SessionTable, MAX_BROWSER_SESSIONS};
 use super::storage::StorageTable;
 use super::temporal;
 use super::types::{
-    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, Origin,
-    RequestId, Scheme, Url, URL_MAX,
+    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, Origin, RequestId, Scheme, Url, URL_MAX,
 };
 use crate::ipc::ProcessId;
 
@@ -42,37 +41,36 @@ use crate::ipc::ProcessId;
 // Global singleton
 // ---------------------------------------------------------------------------
 
-pub static BROWSER_SERVICE: Mutex<BrowserBackendService> =
-    Mutex::new(BrowserBackendService::new());
+pub static BROWSER_SERVICE: Mutex<BrowserBackendService> = Mutex::new(BrowserBackendService::new());
 
 // ---------------------------------------------------------------------------
 // Service struct
 // ---------------------------------------------------------------------------
 
 pub struct BrowserBackendService {
-    sessions:  SessionTable,
-    origins:   OriginTable,
-    cookies:   CookieJar,
-    cache:     ResponseCache,
+    sessions: SessionTable,
+    origins: OriginTable,
+    cookies: CookieJar,
+    cache: ResponseCache,
     downloads: DownloadManager,
-    storage:   StorageTable,
-    audit:     AuditLog,
+    storage: StorageTable,
+    audit: AuditLog,
     /// Monotonic epoch counter (incremented by each `tick()` call).
-    epoch:     u64,
+    epoch: u64,
     initialised: bool,
 }
 
 impl BrowserBackendService {
     pub const fn new() -> Self {
         Self {
-            sessions:  SessionTable::new(),
-            origins:   OriginTable::new(),
-            cookies:   CookieJar::new(),
-            cache:     ResponseCache::new(),
+            sessions: SessionTable::new(),
+            origins: OriginTable::new(),
+            cookies: CookieJar::new(),
+            cache: ResponseCache::new(),
             downloads: DownloadManager::new(),
-            storage:   StorageTable::new(),
-            audit:     AuditLog::new(),
-            epoch:     0,
+            storage: StorageTable::new(),
+            audit: AuditLog::new(),
+            epoch: 0,
             initialised: false,
         }
     }
@@ -82,7 +80,9 @@ impl BrowserBackendService {
     // -----------------------------------------------------------------------
 
     pub fn init(&mut self) {
-        if self.initialised { return; }
+        if self.initialised {
+            return;
+        }
         self.initialised = true;
     }
 
@@ -97,35 +97,38 @@ impl BrowserBackendService {
 
     pub fn handle_request(&mut self, req: BrowserRequest) -> BrowserResponse {
         match req {
-            BrowserRequest::OpenSession { pid, .. } => {
-                self.do_open_session(pid)
-            }
-            BrowserRequest::CloseSession { session, cap } => {
-                self.do_close_session(session, cap)
-            }
+            BrowserRequest::OpenSession { pid, .. } => self.do_open_session(pid),
+            BrowserRequest::CloseSession { session, cap } => self.do_close_session(session, cap),
             BrowserRequest::Navigate {
-                session, cap, url, url_len, method, body, body_len, redirect,
-            } => {
-                self.do_navigate(session, cap, &url[..url_len], method, &body[..body_len])
-            }
-            BrowserRequest::Subscribe { session, cap } => {
-                self.do_subscribe(session, cap)
-            }
-            BrowserRequest::Unsubscribe { session, cap } => {
-                self.do_unsubscribe(session, cap)
-            }
-            BrowserRequest::AbortRequest { session, cap, request_id } => {
-                self.do_abort(session, cap, request_id)
-            }
-            BrowserRequest::AcceptDownload { session, cap, download_id, dest_path, dest_len } => {
-                self.do_accept_download(session, cap, download_id, &dest_path[..dest_len])
-            }
-            BrowserRequest::RejectDownload { session, cap, download_id } => {
-                self.do_reject_download(session, cap, download_id)
-            }
-            BrowserRequest::PollEvents { session, cap } => {
-                self.do_poll_events(session, cap)
-            }
+                session,
+                cap,
+                url,
+                url_len,
+                method,
+                body,
+                body_len,
+                redirect,
+            } => self.do_navigate(session, cap, &url[..url_len], method, &body[..body_len]),
+            BrowserRequest::Subscribe { session, cap } => self.do_subscribe(session, cap),
+            BrowserRequest::Unsubscribe { session, cap } => self.do_unsubscribe(session, cap),
+            BrowserRequest::AbortRequest {
+                session,
+                cap,
+                request_id,
+            } => self.do_abort(session, cap, request_id),
+            BrowserRequest::AcceptDownload {
+                session,
+                cap,
+                download_id,
+                dest_path,
+                dest_len,
+            } => self.do_accept_download(session, cap, download_id, &dest_path[..dest_len]),
+            BrowserRequest::RejectDownload {
+                session,
+                cap,
+                download_id,
+            } => self.do_reject_download(session, cap, download_id),
+            BrowserRequest::PollEvents { session, cap } => self.do_poll_events(session, cap),
         }
     }
 
@@ -140,14 +143,15 @@ impl BrowserBackendService {
         }
         let idx = match self.sessions.open(pid) {
             Some(i) => i,
-            None    => return BrowserResponse::Error(BrowserError::SessionQuotaExceeded),
+            None => return BrowserResponse::Error(BrowserError::SessionQuotaExceeded),
         };
-        let s   = self.sessions.get(idx).unwrap();
-        let id  = s.id;
+        let s = self.sessions.get(idx).unwrap();
+        let id = s.id;
         let cap = s.cap;
 
         // Register in origin table (open policy by default).
-        self.origins.register(id, OriginPolicy::open(Origin::OPAQUE));
+        self.origins
+            .register(id, OriginPolicy::open(Origin::OPAQUE));
         // Ensure VFS storage directory.
         self.storage.register(id);
 
@@ -159,17 +163,13 @@ impl BrowserBackendService {
     // CloseSession
     // -----------------------------------------------------------------------
 
-    fn do_close_session(
-        &mut self,
-        session: BrowserSessionId,
-        cap:     BrowserCap,
-    ) -> BrowserResponse {
+    fn do_close_session(&mut self, session: BrowserSessionId, cap: BrowserCap) -> BrowserResponse {
         if !self.verify_cap(session, cap) {
             return BrowserResponse::Error(BrowserError::InvalidCapability);
         }
         let idx = match self.sessions.find(session) {
             Some(i) => i,
-            None    => return BrowserResponse::Error(BrowserError::InvalidSession),
+            None => return BrowserResponse::Error(BrowserError::InvalidSession),
         };
         self.sessions.close(idx);
         self.origins.unregister(session);
@@ -187,24 +187,24 @@ impl BrowserBackendService {
 
     fn do_navigate(
         &mut self,
-        session:  BrowserSessionId,
-        cap:      BrowserCap,
-        url_raw:  &[u8],
-        method:   HttpMethod,
-        body:     &[u8],
+        session: BrowserSessionId,
+        cap: BrowserCap,
+        url_raw: &[u8],
+        method: HttpMethod,
+        body: &[u8],
     ) -> BrowserResponse {
         if !self.verify_cap(session, cap) {
             return BrowserResponse::Error(BrowserError::InvalidCapability);
         }
         let idx = match self.sessions.find(session) {
             Some(i) => i,
-            None    => return BrowserResponse::Error(BrowserError::InvalidSession),
+            None => return BrowserResponse::Error(BrowserError::InvalidSession),
         };
 
         // Parse URL.
         let url = match Url::parse(url_raw) {
             Some(u) => u,
-            None    => return BrowserResponse::Error(BrowserError::InvalidUrl),
+            None => return BrowserResponse::Error(BrowserError::InvalidUrl),
         };
 
         // Scheme check.
@@ -216,12 +216,9 @@ impl BrowserBackendService {
         // Origin check.
         match self.origins.check_navigation(session, &url) {
             OriginCheckResult::Allowed => {}
-            _                          => {
-                self.audit.policy_blocked(
-                    session,
-                    RequestId(0),
-                    b"origin-blocked",
-                );
+            _ => {
+                self.audit
+                    .policy_blocked(session, RequestId(0), b"origin-blocked");
                 return BrowserResponse::Error(BrowserError::InternalError);
             }
         }
@@ -239,7 +236,7 @@ impl BrowserBackendService {
                 let s = self.sessions.get_mut(idx).unwrap();
                 let entry = &self.cache.entries[cache_idx];
                 let status = entry.status;
-                let mime   = entry.mime;
+                let mime = entry.mime;
                 let body_len = entry.body_len;
                 let body_off = entry.body_offset;
 
@@ -250,7 +247,7 @@ impl BrowserBackendService {
                     status,
                     mime,
                     content_length: Some(body_len as u64),
-                    headers:     [super::protocol::ResponseHeader::empty(); 32],
+                    headers: [super::protocol::ResponseHeader::empty(); 32],
                     header_count: 0,
                 });
                 if read > 0 {
@@ -306,17 +303,24 @@ impl BrowserBackendService {
             FetchOutcome::Complete => {
                 self.audit.fetch_complete(session, request_id);
                 // Update top origin on successful navigation.
-                self.origins.update_top_origin(session, Origin::from_url(&url));
+                self.origins
+                    .update_top_origin(session, Origin::from_url(&url));
                 let s = self.sessions.get_mut(idx).unwrap();
                 s.push_nav(&url);
             }
             FetchOutcome::PolicyBlocked(reason) => {
-                self.audit.policy_blocked(session, request_id, b"policy-blocked");
+                self.audit
+                    .policy_blocked(session, request_id, b"policy-blocked");
             }
             FetchOutcome::Error(kind) => {
-                self.audit.internal_error(session, request_id, b"fetch-error");
+                self.audit
+                    .internal_error(session, request_id, b"fetch-error");
             }
-            FetchOutcome::Redirect { status, location, location_len } => {
+            FetchOutcome::Redirect {
+                status,
+                location,
+                location_len,
+            } => {
                 // Redirect is surfaced as an event; the client re-issues Navigate.
                 let s = self.sessions.get_mut(idx).unwrap();
                 // Reconstruct "from" URL from the Url struct fields.
@@ -324,12 +328,18 @@ impl BrowserBackendService {
                 let mut fpos = 0usize;
                 let sstr = url.scheme.as_str().as_bytes();
                 let sc = sstr.len().min(URL_MAX - fpos);
-                from[fpos..fpos+sc].copy_from_slice(&sstr[..sc]); fpos += sc;
-                if fpos + 3 < URL_MAX { from[fpos..fpos+3].copy_from_slice(b"://"); fpos += 3; }
+                from[fpos..fpos + sc].copy_from_slice(&sstr[..sc]);
+                fpos += sc;
+                if fpos + 3 < URL_MAX {
+                    from[fpos..fpos + 3].copy_from_slice(b"://");
+                    fpos += 3;
+                }
                 let hc = url.host_len.min(URL_MAX - fpos);
-                from[fpos..fpos+hc].copy_from_slice(&url.host[..hc]); fpos += hc;
+                from[fpos..fpos + hc].copy_from_slice(&url.host[..hc]);
+                fpos += hc;
                 let pc = url.path_len.min(URL_MAX - fpos);
-                from[fpos..fpos+pc].copy_from_slice(&url.path[..pc]); fpos += pc;
+                from[fpos..fpos + pc].copy_from_slice(&url.path[..pc]);
+                fpos += pc;
                 let fl = fpos;
                 let mut to = [0u8; URL_MAX];
                 let tl = location_len.min(URL_MAX);
@@ -382,8 +392,8 @@ impl BrowserBackendService {
 
     fn do_abort(
         &mut self,
-        session:    BrowserSessionId,
-        cap:        BrowserCap,
+        session: BrowserSessionId,
+        cap: BrowserCap,
         request_id: RequestId,
     ) -> BrowserResponse {
         if !self.verify_cap(session, cap) {
@@ -401,10 +411,10 @@ impl BrowserBackendService {
 
     fn do_accept_download(
         &mut self,
-        session:     BrowserSessionId,
-        cap:         BrowserCap,
+        session: BrowserSessionId,
+        cap: BrowserCap,
         download_id: DownloadId,
-        dest_path:   &[u8],
+        dest_path: &[u8],
     ) -> BrowserResponse {
         if !self.verify_cap(session, cap) {
             return BrowserResponse::Error(BrowserError::InvalidCapability);
@@ -418,8 +428,8 @@ impl BrowserBackendService {
 
     fn do_reject_download(
         &mut self,
-        session:     BrowserSessionId,
-        cap:         BrowserCap,
+        session: BrowserSessionId,
+        cap: BrowserCap,
         download_id: DownloadId,
     ) -> BrowserResponse {
         if !self.verify_cap(session, cap) {
@@ -436,20 +446,20 @@ impl BrowserBackendService {
     // PollEvents
     // -----------------------------------------------------------------------
 
-    fn do_poll_events(
-        &mut self,
-        session: BrowserSessionId,
-        cap:     BrowserCap,
-    ) -> BrowserResponse {
+    fn do_poll_events(&mut self, session: BrowserSessionId, cap: BrowserCap) -> BrowserResponse {
         if !self.verify_cap(session, cap) {
             return BrowserResponse::Error(BrowserError::InvalidCapability);
         }
         let idx = match self.sessions.find(session) {
             Some(i) => i,
-            None    => return BrowserResponse::Error(BrowserError::InvalidSession),
+            None => return BrowserResponse::Error(BrowserError::InvalidSession),
         };
         let mut events = [None; 8];
-        let count = self.sessions.get_mut(idx).unwrap().drain_events(&mut events);
+        let count = self
+            .sessions
+            .get_mut(idx)
+            .unwrap()
+            .drain_events(&mut events);
         BrowserResponse::Events { events, count }
     }
 
@@ -459,10 +469,12 @@ impl BrowserBackendService {
 
     fn verify_cap(&self, session: BrowserSessionId, cap: BrowserCap) -> bool {
         match self.sessions.find(session) {
-            Some(idx) => self.sessions.get(idx)
+            Some(idx) => self
+                .sessions
+                .get(idx)
                 .map(|s| s.cap == cap && cap.is_valid())
                 .unwrap_or(false),
-            None      => false,
+            None => false,
         }
     }
 }

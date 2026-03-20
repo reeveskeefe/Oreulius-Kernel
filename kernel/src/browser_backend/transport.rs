@@ -10,9 +10,9 @@
 
 #![allow(dead_code)]
 
-use crate::net::tls;
 use crate::net::net_reactor;
 use crate::net::netstack::Ipv4Addr;
+use crate::net::tls;
 
 use super::types::Scheme;
 
@@ -21,16 +21,16 @@ use super::types::Scheme;
 // ---------------------------------------------------------------------------
 
 /// Size of the internal send scratch buffer (one HTTP/1.1 request line).
-const REQ_BUF:       usize = 4096;
+const REQ_BUF: usize = 4096;
 
 /// Maximum number of spin-ticks while waiting for TCP to deliver data.
-const MAX_TICKS:     usize = 512;
+const MAX_TICKS: usize = 512;
 
 /// Sentinel for an unused TCP connection handle.
-const NO_TCP_CONN:   u16  = u16::MAX;
+const NO_TCP_CONN: u16 = u16::MAX;
 
 /// Sentinel for an unused TLS session handle.
-const NO_TLS_HANDLE: i32  = -1;
+const NO_TLS_HANDLE: i32 = -1;
 
 // ---------------------------------------------------------------------------
 // TransportError
@@ -56,9 +56,9 @@ pub enum TransportError {
 /// (HTTP).  Drop-equivalent is `close()`; callers **must** call `close()`
 /// explicitly because there is no `Drop` in `no_std` without alloc.
 pub struct TransportHandle {
-    scheme:     Scheme,
-    tls_handle: i32,       // valid when scheme == Https
-    tcp_conn:   u16,       // valid when scheme == Http
+    scheme: Scheme,
+    tls_handle: i32, // valid when scheme == Https
+    tcp_conn: u16,   // valid when scheme == Http
     /// Resolved server IP — kept for reconnect on redirect.
     pub server_ip: [u8; 4],
 }
@@ -73,28 +73,32 @@ impl TransportHandle {
         let host_str = core::str::from_utf8(host)
             .unwrap_or("")
             .trim_end_matches('\0');
-        let ip: Ipv4Addr = net_reactor::dns_resolve(host_str)
-            .map_err(|_| TransportError::DnsFailure)?;
+        let ip: Ipv4Addr =
+            net_reactor::dns_resolve(host_str).map_err(|_| TransportError::DnsFailure)?;
         let ip_bytes: [u8; 4] = ip.0;
 
         match scheme {
             Scheme::Https => Self::connect_tls(host, port, ip_bytes),
-            Scheme::Http  => Self::connect_tcp(port, ip_bytes),
-            _             => Err(TransportError::InvalidState),
+            Scheme::Http => Self::connect_tcp(port, ip_bytes),
+            _ => Err(TransportError::InvalidState),
         }
     }
 
     fn connect_tls(host: &[u8], port: u16, ip: [u8; 4]) -> Result<Self, TransportError> {
         let handle = tls::alloc_session(host, port, ip);
-        if handle < 0 { return Err(TransportError::TlsAllocFailed); }
+        if handle < 0 {
+            return Err(TransportError::TlsAllocFailed);
+        }
 
         // Drive the handshake.
         for _ in 0..MAX_TICKS {
             tls::tick_all();
             match tls::session_mut(handle) {
-                None    => return Err(TransportError::TlsHandshakeFailed),
+                None => return Err(TransportError::TlsHandshakeFailed),
                 Some(s) => {
-                    if s.handshake_done() { break; }
+                    if s.handshake_done() {
+                        break;
+                    }
                     // Error state: bail.
                     if !s.error_str().is_empty() {
                         tls::free_session(handle);
@@ -112,22 +116,22 @@ impl TransportHandle {
             }
         }
         Ok(Self {
-            scheme:     Scheme::Https,
+            scheme: Scheme::Https,
             tls_handle: handle,
-            tcp_conn:   NO_TCP_CONN,
-            server_ip:  ip,
+            tcp_conn: NO_TCP_CONN,
+            server_ip: ip,
         })
     }
 
     fn connect_tcp(port: u16, ip: [u8; 4]) -> Result<Self, TransportError> {
         let remote = Ipv4Addr(ip);
-        let conn_id = net_reactor::tcp_connect(remote, port)
-            .map_err(|_| TransportError::TcpConnectFailed)?;
+        let conn_id =
+            net_reactor::tcp_connect(remote, port).map_err(|_| TransportError::TcpConnectFailed)?;
         Ok(Self {
-            scheme:     Scheme::Http,
+            scheme: Scheme::Http,
             tls_handle: NO_TLS_HANDLE,
-            tcp_conn:   conn_id,
-            server_ip:  ip,
+            tcp_conn: conn_id,
+            server_ip: ip,
         })
     }
 
@@ -142,10 +146,10 @@ impl TransportHandle {
     /// `body` may be empty.
     pub fn send_http_request(
         &mut self,
-        method:   &[u8],
-        path:     &[u8],
+        method: &[u8],
+        path: &[u8],
         host_hdr: &[u8],
-        body:     &[u8],
+        body: &[u8],
     ) -> Result<(), TransportError> {
         let mut buf = [0u8; REQ_BUF];
         let len = Self::build_request(&mut buf, method, path, host_hdr, body)?;
@@ -160,11 +164,11 @@ impl TransportHandle {
     /// bytes written, or `TransportError::SendFailed` if the buffer is too
     /// small.
     fn build_request(
-        buf:      &mut [u8; REQ_BUF],
-        method:   &[u8],
-        path:     &[u8],
+        buf: &mut [u8; REQ_BUF],
+        method: &[u8],
+        path: &[u8],
         host_hdr: &[u8],
-        body:     &[u8],
+        body: &[u8],
     ) -> Result<usize, TransportError> {
         let mut w = BufWriter::new(buf);
         w.write(method)?;
@@ -193,16 +197,14 @@ impl TransportHandle {
     pub fn read_raw(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
         match self.scheme {
             Scheme::Https => {
-                let s = tls::session_mut(self.tls_handle)
-                    .ok_or(TransportError::InvalidState)?;
+                let s = tls::session_mut(self.tls_handle).ok_or(TransportError::InvalidState)?;
                 // Drive TLS state machine briefly before reading.
                 s.tick();
                 let n = s.read(out);
                 Ok(n)
             }
             Scheme::Http => {
-                net_reactor::tcp_recv(self.tcp_conn, out)
-                    .map_err(|_| TransportError::RecvFailed)
+                net_reactor::tcp_recv(self.tcp_conn, out).map_err(|_| TransportError::RecvFailed)
             }
             _ => Err(TransportError::InvalidState),
         }
@@ -210,17 +212,16 @@ impl TransportHandle {
 
     /// Block-read until `out` is full or EOF/error.
     /// Returns `(bytes_read, eof)`.
-    pub fn read_exact_or_eof(
-        &mut self,
-        out: &mut [u8],
-    ) -> Result<(usize, bool), TransportError> {
+    pub fn read_exact_or_eof(&mut self, out: &mut [u8]) -> Result<(usize, bool), TransportError> {
         let mut total = 0usize;
         let mut ticks = 0usize;
         while total < out.len() {
             let n = self.read_raw(&mut out[total..])?;
             if n == 0 {
                 ticks += 1;
-                if ticks > MAX_TICKS { return Ok((total, true)); }
+                if ticks > MAX_TICKS {
+                    return Ok((total, true));
+                }
                 if self.scheme == Scheme::Https {
                     tls::tick_all();
                 }
@@ -260,7 +261,9 @@ impl TransportHandle {
         let mut sent = 0usize;
         while sent < data.len() {
             let n = self.send_chunk(&data[sent..])?;
-            if n == 0 { return Err(TransportError::SendFailed); }
+            if n == 0 {
+                return Err(TransportError::SendFailed);
+            }
             sent += n;
         }
         Ok(())
@@ -269,13 +272,11 @@ impl TransportHandle {
     fn send_chunk(&mut self, data: &[u8]) -> Result<usize, TransportError> {
         match self.scheme {
             Scheme::Https => {
-                let s = tls::session_mut(self.tls_handle)
-                    .ok_or(TransportError::InvalidState)?;
+                let s = tls::session_mut(self.tls_handle).ok_or(TransportError::InvalidState)?;
                 Ok(s.write(data))
             }
             Scheme::Http => {
-                net_reactor::tcp_send(self.tcp_conn, data)
-                    .map_err(|_| TransportError::SendFailed)
+                net_reactor::tcp_send(self.tcp_conn, data).map_err(|_| TransportError::SendFailed)
             }
             _ => Err(TransportError::InvalidState),
         }

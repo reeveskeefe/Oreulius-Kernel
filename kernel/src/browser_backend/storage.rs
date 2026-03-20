@@ -56,7 +56,10 @@ impl OriginStorage {
     pub fn new(session: BrowserSessionId) -> Self {
         let mut base = [0u8; 64];
         let len = build_base_path(&mut base, session);
-        Self { base, base_len: len }
+        Self {
+            base,
+            base_len: len,
+        }
     }
 
     /// Ensure the session's storage directory exists in the VFS.
@@ -69,11 +72,7 @@ impl OriginStorage {
     /// Write `value` to key `key` within the session's storage.
     ///
     /// Overwrites any existing file with the same key.
-    pub fn write(
-        &self,
-        key:   &[u8],
-        value: &[u8],
-    ) -> Result<(), StorageError> {
+    pub fn write(&self, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
         validate_key(key)?;
         let path = self.key_path(key)?;
         let path_str = core::str::from_utf8(&path[..self.key_path_len(key)])
@@ -84,11 +83,7 @@ impl OriginStorage {
     }
 
     /// Read key `key` into `out`.  Returns bytes read.
-    pub fn read(
-        &self,
-        key: &[u8],
-        out: &mut [u8],
-    ) -> Result<usize, StorageError> {
+    pub fn read(&self, key: &[u8], out: &mut [u8]) -> Result<usize, StorageError> {
         validate_key(key)?;
         let path = self.key_path(key)?;
         let path_str = core::str::from_utf8(&path[..self.key_path_len(key)])
@@ -144,16 +139,16 @@ impl OriginStorage {
 
 fn build_base_path(buf: &mut [u8; 64], session: BrowserSessionId) -> usize {
     // "/browser/<decimal>/"
-    let prefix    = b"/browser/";
+    let prefix = b"/browser/";
     let prefix_len = prefix.len();
     buf[..prefix_len].copy_from_slice(prefix);
     let mut pos = prefix_len;
-    let mut id  = session.0;
+    let mut id = session.0;
     let mut tmp = [0u8; 10];
     let mut tlen = 0usize;
     if id == 0 {
         tmp[0] = b'0';
-        tlen   = 1;
+        tlen = 1;
     } else {
         while id > 0 {
             tmp[tlen] = b'0' + (id % 10) as u8;
@@ -162,9 +157,15 @@ fn build_base_path(buf: &mut [u8; 64], session: BrowserSessionId) -> usize {
         }
     }
     for i in 0..tlen {
-        if pos < 63 { buf[pos] = tmp[tlen - 1 - i]; pos += 1; }
+        if pos < 63 {
+            buf[pos] = tmp[tlen - 1 - i];
+            pos += 1;
+        }
     }
-    if pos < 63 { buf[pos] = b'/'; pos += 1; }
+    if pos < 63 {
+        buf[pos] = b'/';
+        pos += 1;
+    }
     pos
 }
 
@@ -189,22 +190,25 @@ fn validate_key(key: &[u8]) -> Result<(), StorageError> {
 ///
 /// The kernel service holds one instance; storage views are allocated lazily.
 pub struct StorageTable {
-    entries:  [StorageEntry; 16],
-    count:    usize,
+    entries: [StorageEntry; 16],
+    count: usize,
 }
 
 #[derive(Clone)]
 struct StorageEntry {
     session: BrowserSessionId,
     storage: OriginStorage,
-    active:  bool,
+    active: bool,
 }
 
 impl StorageEntry {
     const EMPTY: Self = Self {
         session: BrowserSessionId(0),
-        storage: OriginStorage { base: [0; 64], base_len: 0 },
-        active:  false,
+        storage: OriginStorage {
+            base: [0; 64],
+            base_len: 0,
+        },
+        active: false,
     };
 }
 
@@ -212,20 +216,22 @@ impl StorageTable {
     pub const fn new() -> Self {
         Self {
             entries: [StorageEntry::EMPTY; 16],
-            count:   0,
+            count: 0,
         }
     }
 
     /// Register a session and ensure its storage directory exists.
     pub fn register(&mut self, session: BrowserSessionId) -> bool {
-        if self.count >= 16 { return false; }
+        if self.count >= 16 {
+            return false;
+        }
         for e in &mut self.entries {
             if !e.active {
                 let storage = OriginStorage::new(session);
                 let _ = storage.ensure_dir();
                 e.session = session;
                 e.storage = storage;
-                e.active  = true;
+                e.active = true;
                 self.count += 1;
                 return true;
             }

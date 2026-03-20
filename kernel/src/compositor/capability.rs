@@ -75,12 +75,7 @@ impl CompositorCapRegistry {
 
     /// Issue a new capability token.  Returns `CompositorCap(0)` if the
     /// table is full (should never happen in practice).
-    pub fn issue(
-        &mut self,
-        kind: CapKind,
-        session_idx: usize,
-        resource_id: u64,
-    ) -> CompositorCap {
+    pub fn issue(&mut self, kind: CapKind, session_idx: usize, resource_id: u64) -> CompositorCap {
         // Find the first free slot index.
         let slot_idx = self.entries.iter().position(|e| !e.alive);
         if let Some(idx) = slot_idx {
@@ -104,11 +99,7 @@ impl CompositorCapRegistry {
 
     /// Validate a token of a specific kind.
     /// Returns `(session_idx, resource_id)` on success.
-    pub fn validate(
-        &self,
-        cap: CompositorCap,
-        kind: CapKind,
-    ) -> Option<(usize, u64)> {
+    pub fn validate(&self, cap: CompositorCap, kind: CapKind) -> Option<(usize, u64)> {
         if !cap.is_valid() {
             return None;
         }
@@ -149,14 +140,15 @@ impl CompositorCapRegistry {
 
     fn next_token(&mut self, kind: CapKind) -> CompositorCap {
         let salt: u64 = match kind {
-            CapKind::Session        => 0xAAAA_0000_0000_0001,
-            CapKind::WindowManage   => 0xBBBB_0000_0000_0002,
-            CapKind::SurfaceWrite   => 0xCCCC_0000_0000_0003,
+            CapKind::Session => 0xAAAA_0000_0000_0001,
+            CapKind::WindowManage => 0xBBBB_0000_0000_0002,
+            CapKind::SurfaceWrite => 0xCCCC_0000_0000_0003,
             CapKind::InputSubscribe => 0xDDDD_0000_0000_0004,
         };
         let v = self.counter ^ salt;
         // Advance counter: simple LCG to spread values.
-        self.counter = self.counter
+        self.counter = self
+            .counter
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         CompositorCap(v)

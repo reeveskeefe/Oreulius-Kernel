@@ -34,13 +34,11 @@ pub fn alpha_blend(dst: u32, src: u32) -> u32 {
 
     let out_a = sa + ((da * inv_sa + 127) / 255);
 
-    let blend_chan = |s: u32, d: u32| -> u32 {
-        (s * sa + d * inv_sa + 127) / 255
-    };
+    let blend_chan = |s: u32, d: u32| -> u32 { (s * sa + d * inv_sa + 127) / 255 };
 
     let r = blend_chan((src >> 16) & 0xFF, (dst >> 16) & 0xFF);
-    let g = blend_chan((src >>  8) & 0xFF, (dst >>  8) & 0xFF);
-    let b = blend_chan( src        & 0xFF,  dst        & 0xFF);
+    let g = blend_chan((src >> 8) & 0xFF, (dst >> 8) & 0xFF);
+    let b = blend_chan(src & 0xFF, dst & 0xFF);
 
     (out_a << 24) | (r << 16) | (g << 8) | b
 }
@@ -110,8 +108,12 @@ fn present_rect(
 
         // Composite windows bottom-to-top.
         for &wid in sorted_ids {
-            let Some(win) = windows.find(wid) else { continue };
-            let Some(surf) = surfaces.get(win.surface_idx) else { continue };
+            let Some(win) = windows.find(wid) else {
+                continue;
+            };
+            let Some(surf) = surfaces.get(win.surface_idx) else {
+                continue;
+            };
 
             if !surf.alive {
                 continue;
@@ -138,8 +140,8 @@ fn present_rect(
         for i in 0..scan_len {
             let argb = scanline[i];
             let r = ((argb >> 16) & 0xFF) as u8;
-            let g = ((argb >>  8) & 0xFF) as u8;
-            let b = ( argb        & 0xFF) as u8;
+            let g = ((argb >> 8) & 0xFF) as u8;
+            let b = (argb & 0xFF) as u8;
             backend.put_pixel(x0 + i as u32, sy, r, g, b);
         }
     }

@@ -66,8 +66,8 @@ pub struct EdidInfo {
 impl EdidInfo {
     pub const fn empty() -> Self {
         EdidInfo {
-            width_mm:        0,
-            height_mm:       0,
+            width_mm: 0,
+            height_mm: 0,
             preferred_width: 0,
             preferred_height: 0,
             pixel_clock_khz: 0,
@@ -91,13 +91,13 @@ fn parse_dtd(block: &[u8], start: usize) -> Option<(u16, u16, u32)> {
     }
 
     // H active: byte 2 low byte + bits[7:4] of byte 4 as high nibble.
-    let h_lo  = block[start + 2] as u16;
-    let h_hi  = ((block[start + 4] >> 4) & 0x0F) as u16;
+    let h_lo = block[start + 2] as u16;
+    let h_hi = ((block[start + 4] >> 4) & 0x0F) as u16;
     let h_active = h_lo | (h_hi << 8);
 
     // V active: byte 5 low byte + bits[7:4] of byte 7 as high nibble.
-    let v_lo  = block[start + 5] as u16;
-    let v_hi  = ((block[start + 7] >> 4) & 0x0F) as u16;
+    let v_lo = block[start + 5] as u16;
+    let v_hi = ((block[start + 7] >> 4) & 0x0F) as u16;
     let v_active = v_lo | (v_hi << 8);
 
     // Pixel clock: value × 10 kHz.
@@ -123,7 +123,7 @@ pub fn parse_edid(block: &[u8]) -> Option<EdidInfo> {
     }
 
     // Bytes 21/22 hold screen size in cm; multiply by 10 for mm.
-    let width_mm  = (block[21] as u16).saturating_mul(10);
+    let width_mm = (block[21] as u16).saturating_mul(10);
     let height_mm = (block[22] as u16).saturating_mul(10);
 
     // Try the four 18-byte descriptor slots (bytes 54, 72, 90, 108).
@@ -138,9 +138,9 @@ pub fn parse_edid(block: &[u8]) -> Option<EdidInfo> {
         }
         if let Some((w, h, pclk)) = parse_dtd(block, offset) {
             if w > 0 && h > 0 {
-                preferred_width  = w;
+                preferred_width = w;
                 preferred_height = h;
-                pixel_clock_khz  = pclk;
+                pixel_clock_khz = pclk;
                 break; // First valid timing descriptor wins.
             }
         }
@@ -154,4 +154,3 @@ pub fn parse_edid(block: &[u8]) -> Option<EdidInfo> {
         pixel_clock_khz,
     })
 }
-

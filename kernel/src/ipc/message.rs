@@ -1,9 +1,7 @@
 use core::fmt;
 
 use super::errors::IpcError;
-use super::types::{
-    Capability, EventId, ProcessId, MAX_CAPS_PER_MESSAGE, MAX_MESSAGE_SIZE,
-};
+use super::types::{Capability, EventId, ProcessId, MAX_CAPS_PER_MESSAGE, MAX_MESSAGE_SIZE};
 
 /// Per-channel message sequence counter — wraps at u16 max.
 /// Updated atomically inside `Message::with_id`.

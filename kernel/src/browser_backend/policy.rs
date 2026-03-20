@@ -61,14 +61,11 @@ impl BrowserPolicy {
     /// that is handled by the redirect policy.
     pub fn check_mixed_content(
         &self,
-        page_scheme:     Scheme,
+        page_scheme: Scheme,
         resource_scheme: Scheme,
-        is_subresource:  bool,
+        is_subresource: bool,
     ) -> Option<PolicyBlockReason> {
-        if is_subresource
-            && page_scheme    == Scheme::Https
-            && resource_scheme == Scheme::Http
-        {
+        if is_subresource && page_scheme == Scheme::Https && resource_scheme == Scheme::Http {
             Some(PolicyBlockReason::MixedContent)
         } else {
             None
@@ -86,8 +83,8 @@ impl BrowserPolicy {
     /// - Enforces `max_redirects` counter.
     pub fn check_redirect(
         &self,
-        from_scheme:   Scheme,
-        to_url:        &Url,
+        from_scheme: Scheme,
+        to_url: &Url,
         redirect_count: u8,
     ) -> Option<PolicyBlockReason> {
         if redirect_count >= MAX_REDIRECTS {
@@ -113,22 +110,20 @@ impl BrowserPolicy {
     pub fn body_too_large(&self, content_length: Option<u64>) -> bool {
         match content_length {
             Some(n) => n > MAX_BODY_BYTES as u64,
-            None    => false, // streaming — enforce lazily in fetch.rs
+            None => false, // streaming — enforce lazily in fetch.rs
         }
     }
 
     /// Returns `true` if the response should be treated as a download offer
     /// rather than an inline body (either the MIME type is binary, or the
     /// content-length is large).
-    pub fn should_offer_download(
-        &self,
-        is_attachment:  bool,
-        content_length: Option<u64>,
-    ) -> bool {
-        if is_attachment { return true; }
+    pub fn should_offer_download(&self, is_attachment: bool, content_length: Option<u64>) -> bool {
+        if is_attachment {
+            return true;
+        }
         match content_length {
             Some(n) => n >= DOWNLOAD_PROMPT_THRESHOLD,
-            None    => false,
+            None => false,
         }
     }
 
@@ -155,7 +150,7 @@ impl BrowserPolicy {
     /// `Some(OriginNotAllowed)` if the request host is found.
     pub fn check_denylist(
         &self,
-        host:     &[u8],
+        host: &[u8],
         host_len: usize,
         denylist: &[[u8; 253]],
     ) -> Option<PolicyBlockReason> {
@@ -180,25 +175,27 @@ impl BrowserPolicy {
 #[derive(Copy, Clone, Debug)]
 pub struct PolicyProfile {
     pub allow_mixed_content: bool,
-    pub max_redirects:       u8,
-    pub max_body_bytes:      usize,
+    pub max_redirects: u8,
+    pub max_body_bytes: usize,
     /// Compact denylist — zero-terminated ASCII hostnames.
-    pub denylist:            [[u8; 253]; 8],
-    pub denylist_len:        usize,
+    pub denylist: [[u8; 253]; 8],
+    pub denylist_len: usize,
 }
 
 impl PolicyProfile {
     pub const DEFAULT: Self = Self {
         allow_mixed_content: false,
-        max_redirects:       MAX_REDIRECTS,
-        max_body_bytes:      MAX_BODY_BYTES,
-        denylist:            [[0u8; 253]; 8],
-        denylist_len:        0,
+        max_redirects: MAX_REDIRECTS,
+        max_body_bytes: MAX_BODY_BYTES,
+        denylist: [[0u8; 253]; 8],
+        denylist_len: 0,
     };
 
     /// Add a hostname to the denylist.  No-op if full.
     pub fn add_denylist(&mut self, host: &[u8]) {
-        if self.denylist_len >= 8 { return; }
+        if self.denylist_len >= 8 {
+            return;
+        }
         let len = host.len().min(253);
         let mut entry = [0u8; 253];
         for (i, &b) in host[..len].iter().enumerate() {

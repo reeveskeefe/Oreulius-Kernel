@@ -181,7 +181,9 @@ impl PixelBufPool {
         if slot.ptr.is_null() {
             return 0;
         }
-        let offset = (y as usize).wrapping_mul(w as usize).wrapping_add(x as usize);
+        let offset = (y as usize)
+            .wrapping_mul(w as usize)
+            .wrapping_add(x as usize);
         let max_pixels = slot.pages * crate::paging::PAGE_SIZE / BPP;
         if offset >= max_pixels {
             return 0;
@@ -198,10 +200,14 @@ impl PixelBufPool {
         if slot.ptr.is_null() {
             return;
         }
-        let offset = (y as usize).wrapping_mul(w as usize).wrapping_add(x as usize);
+        let offset = (y as usize)
+            .wrapping_mul(w as usize)
+            .wrapping_add(x as usize);
         let max_pixels = slot.pages * crate::paging::PAGE_SIZE / BPP;
         if offset < max_pixels {
-            unsafe { *slot.ptr.add(offset) = argb; }
+            unsafe {
+                *slot.ptr.add(offset) = argb;
+            }
         }
     }
 }
@@ -424,14 +430,7 @@ impl Compositor {
 
     /// Draw text into a window using the built-in 8×8 bitmap font.
     /// Returns the number of characters drawn.
-    pub fn draw_text(
-        &mut self,
-        window_id: u32,
-        x: u32,
-        y: u32,
-        text: &str,
-        fg_argb: u32,
-    ) -> u32 {
+    pub fn draw_text(&mut self, window_id: u32, x: u32, y: u32, text: &str, fg_argb: u32) -> u32 {
         let (lw, lh, buf_idx) = match self.find_layer_ref(window_id) {
             Some(l) => (l.width, l.height, l.pixel_buf_idx),
             None => return 0,

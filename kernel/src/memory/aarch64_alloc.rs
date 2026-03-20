@@ -36,6 +36,9 @@ static HEAP_NEXT: AtomicUsize = AtomicUsize::new(0);
 static HEAP_START: AtomicUsize = AtomicUsize::new(0);
 static HEAP_END: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(any(test, feature = "host-tests"))]
+static HOST_TEST_AARCH64_HEAP: [u8; 2 * 1024 * 1024] = [0; 2 * 1024 * 1024];
+
 #[inline]
 fn align_up(value: usize, align: usize) -> usize {
     debug_assert!(align.is_power_of_two());
@@ -47,11 +50,19 @@ fn ensure_heap_initialized() {
         return;
     }
 
+    #[cfg(any(test, feature = "host-tests"))]
+    let (start, end) = (
+        HOST_TEST_AARCH64_HEAP.as_ptr() as usize,
+        HOST_TEST_AARCH64_HEAP.as_ptr() as usize + HOST_TEST_AARCH64_HEAP.len(),
+    );
+
+    #[cfg(not(any(test, feature = "host-tests")))]
     extern "C" {
         static _heap_start: u8;
         static _heap_end: u8;
     }
 
+    #[cfg(not(any(test, feature = "host-tests")))]
     let (start, end) = unsafe {
         (
             core::ptr::addr_of!(_heap_start) as usize,

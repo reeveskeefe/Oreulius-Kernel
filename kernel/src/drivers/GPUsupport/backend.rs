@@ -34,4 +34,3 @@ pub trait ComputeOps {
 pub trait CommandOps {
     fn submit_packet(&self, packet: &CommandPacket) -> Result<GpuFence, GpuError>;
 }
-

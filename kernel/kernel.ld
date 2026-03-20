@@ -61,7 +61,7 @@ SECTIONS {
     . = ALIGN(4096);
     _heap_start = .;
     .heap (NOLOAD) : {
-        . += 0x1000000;  /* 16 MB heap */
+        . += 0x8000000;  /* 128 MB heap to support leak in bump allocator */
     } :NONE
     _heap_end = .;
 }

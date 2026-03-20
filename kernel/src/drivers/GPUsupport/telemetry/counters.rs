@@ -15,4 +15,3 @@ pub fn snapshot() -> (u32, u32, u32) {
         GPU_QUEUE_SUBMITS.load(Ordering::Relaxed),
     )
 }
-

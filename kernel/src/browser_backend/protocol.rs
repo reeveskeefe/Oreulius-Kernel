@@ -7,8 +7,8 @@
 #![allow(dead_code)]
 
 use super::types::{
-    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, MimeType,
-    RedirectPolicy, RequestId, StatusCode, Url, URL_MAX,
+    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, MimeType, RedirectPolicy, RequestId,
+    StatusCode, Url, URL_MAX,
 };
 use crate::ipc::ProcessId;
 
@@ -21,7 +21,7 @@ pub enum BrowserRequest {
     /// Open a new browser session (one per tab / navigation context).
     /// The caller supplies its own PID for capability bookkeeping.
     OpenSession {
-        pid:     ProcessId,
+        pid: ProcessId,
         /// Human-readable profile name (e.g. b"default\0…").
         profile: [u8; 32],
     },
@@ -29,18 +29,18 @@ pub enum BrowserRequest {
     /// Close a session and revoke all its capabilities.
     CloseSession {
         session: BrowserSessionId,
-        cap:     BrowserCap,
+        cap: BrowserCap,
     },
 
     /// Navigate the session to a URL (starts a fetch, streams events back).
     Navigate {
-        session:  BrowserSessionId,
-        cap:      BrowserCap,
-        url:      [u8; URL_MAX],
-        url_len:  usize,
-        method:   HttpMethod,
+        session: BrowserSessionId,
+        cap: BrowserCap,
+        url: [u8; URL_MAX],
+        url_len: usize,
+        method: HttpMethod,
         /// Request body (POST/PUT).  Ignored for GET/HEAD.
-        body:     [u8; 4096],
+        body: [u8; 4096],
         body_len: usize,
         redirect: RedirectPolicy,
     },
@@ -48,42 +48,42 @@ pub enum BrowserRequest {
     /// Subscribe to events for a session (returns an event-channel capability).
     Subscribe {
         session: BrowserSessionId,
-        cap:     BrowserCap,
+        cap: BrowserCap,
     },
 
     /// Unsubscribe from events.
     Unsubscribe {
         session: BrowserSessionId,
-        cap:     BrowserCap,
+        cap: BrowserCap,
     },
 
     /// Abort an in-flight request.
     AbortRequest {
-        session:    BrowserSessionId,
-        cap:        BrowserCap,
+        session: BrowserSessionId,
+        cap: BrowserCap,
         request_id: RequestId,
     },
 
     /// Accept or reject a download offered via `BrowserEvent::DownloadOffered`.
     AcceptDownload {
-        session:     BrowserSessionId,
-        cap:         BrowserCap,
+        session: BrowserSessionId,
+        cap: BrowserCap,
         download_id: DownloadId,
         /// VFS path for the output file (capability-gated write).
-        dest_path:   [u8; 256],
-        dest_len:    usize,
+        dest_path: [u8; 256],
+        dest_len: usize,
     },
 
     RejectDownload {
-        session:     BrowserSessionId,
-        cap:         BrowserCap,
+        session: BrowserSessionId,
+        cap: BrowserCap,
         download_id: DownloadId,
     },
 
     /// Poll for pending events (non-blocking).
     PollEvents {
         session: BrowserSessionId,
-        cap:     BrowserCap,
+        cap: BrowserCap,
     },
 }
 
@@ -96,13 +96,11 @@ pub enum BrowserResponse {
     /// Session was opened successfully.
     SessionGranted {
         session: BrowserSessionId,
-        cap:     BrowserCap,
+        cap: BrowserCap,
     },
 
     /// A `Navigate` was accepted; `request_id` identifies the in-flight fetch.
-    RequestAccepted {
-        request_id: RequestId,
-    },
+    RequestAccepted { request_id: RequestId },
 
     /// Subscribe accepted; events will be delivered via poll or push.
     Subscribed,
@@ -116,7 +114,7 @@ pub enum BrowserResponse {
     /// One or more pending events (up to 8 per poll).
     Events {
         events: [Option<BrowserEvent>; 8],
-        count:  usize,
+        count: usize,
     },
 }
 
@@ -125,26 +123,26 @@ pub enum BrowserResponse {
 // ---------------------------------------------------------------------------
 
 pub const HEADER_VALUE_MAX: usize = 256;
-pub const HEADER_NAME_MAX:  usize = 64;
+pub const HEADER_NAME_MAX: usize = 64;
 pub const MAX_RESPONSE_HEADERS: usize = 32;
-pub const BODY_CHUNK_MAX:   usize = 4096;
-pub const ERROR_MSG_MAX:    usize = 128;
+pub const BODY_CHUNK_MAX: usize = 4096;
+pub const ERROR_MSG_MAX: usize = 128;
 
 /// A single HTTP response header.
 #[derive(Clone, Copy)]
 pub struct ResponseHeader {
-    pub name:     [u8; HEADER_NAME_MAX],
+    pub name: [u8; HEADER_NAME_MAX],
     pub name_len: usize,
-    pub value:    [u8; HEADER_VALUE_MAX],
+    pub value: [u8; HEADER_VALUE_MAX],
     pub value_len: usize,
 }
 
 impl ResponseHeader {
     pub const fn empty() -> Self {
         ResponseHeader {
-            name:      [0; HEADER_NAME_MAX],
-            name_len:  0,
-            value:     [0; HEADER_VALUE_MAX],
+            name: [0; HEADER_NAME_MAX],
+            name_len: 0,
+            value: [0; HEADER_VALUE_MAX],
             value_len: 0,
         }
     }
@@ -167,54 +165,54 @@ pub enum BrowserEvent {
     /// Response headers received.  Emitted once per redirect and once for
     /// the final response.
     Headers {
-        request_id:   RequestId,
-        status:       StatusCode,
-        mime:         MimeType,
+        request_id: RequestId,
+        status: StatusCode,
+        mime: MimeType,
         content_length: Option<u64>,
-        headers:      [ResponseHeader; MAX_RESPONSE_HEADERS],
+        headers: [ResponseHeader; MAX_RESPONSE_HEADERS],
         header_count: usize,
     },
 
     /// A chunk of the response body.  May fire many times for large resources.
     BodyChunk {
         request_id: RequestId,
-        data:       [u8; BODY_CHUNK_MAX],
-        data_len:   usize,
+        data: [u8; BODY_CHUNK_MAX],
+        data_len: usize,
         /// True when this is the last chunk.
-        is_last:    bool,
+        is_last: bool,
     },
 
     /// The server issued a redirect.  Emitted before following it.
     Redirect {
-        request_id:    RequestId,
-        from_url:      [u8; URL_MAX],
-        from_url_len:  usize,
-        to_url:        [u8; URL_MAX],
-        to_url_len:    usize,
-        status:        StatusCode,
+        request_id: RequestId,
+        from_url: [u8; URL_MAX],
+        from_url_len: usize,
+        to_url: [u8; URL_MAX],
+        to_url_len: usize,
+        status: StatusCode,
     },
 
     /// A request was blocked by policy (CSP-like, mixed-content, allowlist).
     PolicyBlocked {
         request_id: RequestId,
-        reason:     PolicyBlockReason,
+        reason: PolicyBlockReason,
     },
 
     /// TLS handshake result for the current navigation.
     TlsState {
         request_id: RequestId,
-        result:     TlsHandshakeResult,
+        result: TlsHandshakeResult,
     },
 
     /// A response with a `Content-Disposition: attachment` or binary MIME
     /// type was received and needs user approval before writing to disk.
     DownloadOffered {
-        request_id:   RequestId,
-        download_id:  DownloadId,
-        filename:     [u8; 256],
+        request_id: RequestId,
+        download_id: DownloadId,
+        filename: [u8; 256],
         filename_len: usize,
-        mime:         MimeType,
-        size_hint:    Option<u64>,
+        mime: MimeType,
+        size_hint: Option<u64>,
     },
 
     /// A download job completed.
@@ -224,16 +222,14 @@ pub enum BrowserEvent {
     },
 
     /// The request completed without error.
-    Complete {
-        request_id: RequestId,
-    },
+    Complete { request_id: RequestId },
 
     /// The request failed.
     FetchError {
         request_id: RequestId,
-        kind:       FetchErrorKind,
-        message:    [u8; ERROR_MSG_MAX],
-        msg_len:    usize,
+        kind: FetchErrorKind,
+        message: [u8; ERROR_MSG_MAX],
+        msg_len: usize,
     },
 }
 

@@ -6,9 +6,7 @@
 
 #![allow(dead_code)]
 
-use super::protocol::{
-    ResponseHeader, HEADER_NAME_MAX, HEADER_VALUE_MAX, MAX_RESPONSE_HEADERS,
-};
+use super::protocol::{ResponseHeader, HEADER_NAME_MAX, HEADER_VALUE_MAX, MAX_RESPONSE_HEADERS};
 use super::types::MimeType;
 
 // ---------------------------------------------------------------------------
@@ -42,10 +40,10 @@ pub fn parse_headers(block: &[u8], out: &mut [ResponseHeader; MAX_RESPONSE_HEADE
         // Split on the first ':'.
         let colon = match line.iter().position(|&b| b == b':') {
             Some(c) => c,
-            None    => continue, // malformed line — skip
+            None => continue, // malformed line — skip
         };
 
-        let raw_name  = &line[..colon];
+        let raw_name = &line[..colon];
         let raw_value = skip_ows(&line[colon + 1..]);
 
         // Validate name: only token characters allowed (RFC 7230 §3.2.6).
@@ -53,7 +51,7 @@ pub fn parse_headers(block: &[u8], out: &mut [ResponseHeader; MAX_RESPONSE_HEADE
             continue;
         }
 
-        let name_len  = raw_name.len().min(HEADER_NAME_MAX);
+        let name_len = raw_name.len().min(HEADER_NAME_MAX);
         let value_len = raw_value.len().min(HEADER_VALUE_MAX);
 
         let mut hdr = ResponseHeader::empty();
@@ -114,8 +112,8 @@ fn is_token_char(b: u8) -> bool {
 /// Find the value of a header by lowercase name.  Returns `None` if absent.
 pub fn get_header<'a>(
     headers: &'a [ResponseHeader],
-    count:    usize,
-    name:     &[u8],
+    count: usize,
+    name: &[u8],
 ) -> Option<&'a [u8]> {
     for h in &headers[..count] {
         if h.name[..h.name_len].eq_ignore_ascii_case(name) {
@@ -142,24 +140,26 @@ pub fn parse_status_line(response_bytes: &[u8]) -> (u16, usize) {
     // Find first \r\n
     let line_end = match find_crlf(response_bytes, 0) {
         Some(e) => e,
-        None    => return (0, 0),
+        None => return (0, 0),
     };
     let line = &response_bytes[..line_end];
 
     // Status code starts at offset 9 (after "HTTP/1.x ")
-    if line.len() < 12 { return (0, 0); }
+    if line.len() < 12 {
+        return (0, 0);
+    }
     let code = parse_3digit(&line[9..12]);
     (code, line_end + 2) // skip the \r\n
 }
 
 fn parse_3digit(b: &[u8]) -> u16 {
-    if b.len() < 3 { return 0; }
+    if b.len() < 3 {
+        return 0;
+    }
     if !b[0].is_ascii_digit() || !b[1].is_ascii_digit() || !b[2].is_ascii_digit() {
         return 0;
     }
-    (b[0] - b'0') as u16 * 100
-        + (b[1] - b'0') as u16 * 10
-        + (b[2] - b'0') as u16
+    (b[0] - b'0') as u16 * 100 + (b[1] - b'0') as u16 * 10 + (b[2] - b'0') as u16
 }
 
 // ---------------------------------------------------------------------------
@@ -170,10 +170,7 @@ fn parse_3digit(b: &[u8]) -> u16 {
 ///
 /// Strips any parameters (e.g. `; charset=utf-8`).
 pub fn parse_content_type(value: &[u8]) -> MimeType {
-    let end = value
-        .iter()
-        .position(|&b| b == b';')
-        .unwrap_or(value.len());
+    let end = value.iter().position(|&b| b == b';').unwrap_or(value.len());
     let raw = skip_ows(&value[..end]);
     MimeType::from_bytes(raw)
 }
@@ -185,10 +182,14 @@ pub fn parse_content_type(value: &[u8]) -> MimeType {
 /// Parse the `Content-Length` header value to a u64.
 pub fn parse_content_length(value: &[u8]) -> Option<u64> {
     let trimmed = skip_ows(value);
-    if trimmed.is_empty() || trimmed.len() > 20 { return None; }
+    if trimmed.is_empty() || trimmed.len() > 20 {
+        return None;
+    }
     let mut v = 0u64;
     for &b in trimmed {
-        if !b.is_ascii_digit() { return None; }
+        if !b.is_ascii_digit() {
+            return None;
+        }
         v = v.saturating_mul(10).saturating_add((b - b'0') as u64);
     }
     Some(v)
@@ -202,7 +203,9 @@ pub fn parse_content_length(value: &[u8]) -> Option<u64> {
 /// Returns a slice of `out` containing the normalized URL, or `None`.
 pub fn parse_location<'a>(value: &[u8], out: &'a mut [u8; 2048]) -> Option<&'a [u8]> {
     let trimmed = skip_ows(value);
-    if trimmed.is_empty() { return None; }
+    if trimmed.is_empty() {
+        return None;
+    }
     let len = trimmed.len().min(2048);
     out[..len].copy_from_slice(&trimmed[..len]);
     Some(&out[..len])
@@ -219,7 +222,11 @@ pub fn parse_set_cookie(value: &[u8]) -> (&[u8], &[u8]) {
     // "name=value; attr1; attr2"
     let semi = value.iter().position(|&b| b == b';').unwrap_or(value.len());
     let cookie_pair = skip_ows(&value[..semi]);
-    let attrs       = if semi < value.len() { &value[semi + 1..] } else { &[] };
+    let attrs = if semi < value.len() {
+        &value[semi + 1..]
+    } else {
+        &[]
+    };
     (cookie_pair, attrs)
 }
 
@@ -230,7 +237,9 @@ pub fn parse_set_cookie(value: &[u8]) -> (&[u8], &[u8]) {
 pub fn is_chunked_transfer(headers: &[ResponseHeader], count: usize) -> bool {
     if let Some(te) = get_header(headers, count, b"transfer-encoding") {
         return te.eq_ignore_ascii_case(b"chunked")
-            || te.windows(b"chunked".len()).any(|w| w.eq_ignore_ascii_case(b"chunked"));
+            || te
+                .windows(b"chunked".len())
+                .any(|w| w.eq_ignore_ascii_case(b"chunked"));
     }
     false
 }
@@ -251,7 +260,7 @@ pub fn decode_chunked(src: &[u8], dst: &mut [u8]) -> (usize, usize, bool) {
         // Read chunk-size line.
         let line_end = match find_crlf(src, rpos) {
             Some(e) => e,
-            None    => break,
+            None => break,
         };
         let size_hex = &src[rpos..line_end];
         let size = parse_hex_usize(size_hex);
@@ -267,7 +276,9 @@ pub fn decode_chunked(src: &[u8], dst: &mut [u8]) -> (usize, usize, bool) {
 
         // Copy chunk data.
         let available = src.len().saturating_sub(rpos);
-        if available < size { break; }  // incomplete chunk — wait for more data
+        if available < size {
+            break;
+        } // incomplete chunk — wait for more data
 
         let copy = size.min(dst.len() - wpos);
         dst[wpos..wpos + copy].copy_from_slice(&src[rpos..rpos + copy]);
@@ -285,14 +296,18 @@ pub fn decode_chunked(src: &[u8], dst: &mut [u8]) -> (usize, usize, bool) {
 
 fn parse_hex_usize(b: &[u8]) -> usize {
     // Only read the actual hex digits; ignore chunk extensions after ';'.
-    let b = b.iter().position(|&c| c == b';').map(|p| &b[..p]).unwrap_or(b);
+    let b = b
+        .iter()
+        .position(|&c| c == b';')
+        .map(|p| &b[..p])
+        .unwrap_or(b);
     let mut v = 0usize;
     for &c in b {
         let digit = match c {
             b'0'..=b'9' => (c - b'0') as usize,
             b'a'..=b'f' => (c - b'a') as usize + 10,
             b'A'..=b'F' => (c - b'A') as usize + 10,
-            _           => return v,
+            _ => return v,
         };
         v = v.saturating_mul(16).saturating_add(digit);
     }

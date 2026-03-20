@@ -30,10 +30,10 @@
  *    OTA slot.  Intended for a serial console session by a remote operator.
  */
 
+use crate::capnet;
+use crate::net_reactor;
 use crate::persistence;
 use crate::vga;
-use crate::net_reactor;
-use crate::capnet;
 
 // ============================================================================
 // Internal helpers
@@ -74,10 +74,9 @@ fn record_attestation(session: u32, crash_count: u32, boot_tick: u64, measuremen
     payload[4..8].copy_from_slice(&crash_count.to_le_bytes());
     payload[8..16].copy_from_slice(&boot_tick.to_le_bytes());
     payload[16..48].copy_from_slice(measurement);
-    if let Ok(record) = persistence::LogRecord::new(
-        persistence::RecordType::AttestationRecord,
-        &payload,
-    ) {
+    if let Ok(record) =
+        persistence::LogRecord::new(persistence::RecordType::AttestationRecord, &payload)
+    {
         let mut svc = persistence::persistence().lock();
         let _ = svc.append_log(&cap, record);
     }
@@ -167,7 +166,9 @@ fn parse_ipv4(s: &str) -> Option<crate::netstack::Ipv4Addr> {
     let mut digits = 0usize;
     for ch in s.bytes() {
         if ch == b'.' {
-            if idx >= 3 || digits == 0 || acc > 255 { return None; }
+            if idx >= 3 || digits == 0 || acc > 255 {
+                return None;
+            }
             octets[idx] = acc as u8;
             idx += 1;
             acc = 0;
@@ -179,9 +180,13 @@ fn parse_ipv4(s: &str) -> Option<crate::netstack::Ipv4Addr> {
             return None;
         }
     }
-    if idx != 3 || digits == 0 || acc > 255 { return None; }
+    if idx != 3 || digits == 0 || acc > 255 {
+        return None;
+    }
     octets[3] = acc as u8;
-    Some(crate::netstack::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]))
+    Some(crate::netstack::Ipv4Addr::new(
+        octets[0], octets[1], octets[2], octets[3],
+    ))
 }
 
 /// `fleet-attest [peer-id <ip> <port>]`
@@ -215,7 +220,10 @@ pub fn cmd_fleet_attest(mut parts: core::str::SplitWhitespace) {
     // Optionally send CapNet Attest frame: fleet-attest <peer-id> <ip> <port>
     let peer_str = match parts.next() {
         Some(s) => s,
-        None => { vga::print_str("\n"); return; }
+        None => {
+            vga::print_str("\n");
+            return;
+        }
     };
 
     // Parse peer-id as decimal u64.
@@ -223,7 +231,9 @@ pub fn cmd_fleet_attest(mut parts: core::str::SplitWhitespace) {
     let mut valid = true;
     for ch in peer_str.bytes() {
         if ch >= b'0' && ch <= b'9' {
-            peer_id = peer_id.saturating_mul(10).saturating_add((ch - b'0') as u64);
+            peer_id = peer_id
+                .saturating_mul(10)
+                .saturating_add((ch - b'0') as u64);
         } else {
             valid = false;
             break;
@@ -239,7 +249,10 @@ pub fn cmd_fleet_attest(mut parts: core::str::SplitWhitespace) {
     // Parse dotted-decimal IP (a.b.c.d).
     let ip_str = match parts.next() {
         Some(s) => s,
-        None => { vga::print_str("Usage: fleet-attest <peer-id> <ip> <port>\n\n"); return; }
+        None => {
+            vga::print_str("Usage: fleet-attest <peer-id> <ip> <port>\n\n");
+            return;
+        }
     };
     let dest_ip = match parse_ipv4(ip_str) {
         Some(ip) => ip,
@@ -254,7 +267,10 @@ pub fn cmd_fleet_attest(mut parts: core::str::SplitWhitespace) {
     // Parse port.
     let port_str = match parts.next() {
         Some(s) => s,
-        None => { vga::print_str("Usage: fleet-attest <peer-id> <ip> <port>\n\n"); return; }
+        None => {
+            vga::print_str("Usage: fleet-attest <peer-id> <ip> <port>\n\n");
+            return;
+        }
     };
     let mut port: u32 = 0;
     for ch in port_str.bytes() {

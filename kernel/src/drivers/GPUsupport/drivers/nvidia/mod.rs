@@ -20,9 +20,9 @@
 use crate::drivers::gpu_support::caps::GpuCapabilities;
 use crate::drivers::gpu_support::core::{GpuClass, GpuProbeReport, GpuTier};
 use crate::drivers::gpu_support::display::scanout::ScanoutBackendId;
+use crate::drivers::gpu_support::drivers::simplefb;
 use crate::drivers::gpu_support::errors::GpuError;
 use crate::drivers::gpu_support::transport::mmio::MmioRegion;
-use crate::drivers::gpu_support::drivers::simplefb;
 
 // ---------------------------------------------------------------------------
 // NV_PMC — Master Control registers
@@ -34,7 +34,7 @@ use crate::drivers::gpu_support::drivers::simplefb;
 const REG_NV_PMC_BOOT_0: usize = 0x0000_0000;
 
 /// NV_PMC_ENABLE — engine enable bitfield.
-const REG_NV_PMC_ENABLE:  usize = 0x0000_0200;
+const REG_NV_PMC_ENABLE: usize = 0x0000_0200;
 
 // ---------------------------------------------------------------------------
 // NV_PDISP — Display Engine registers (NV50+)
@@ -50,15 +50,15 @@ const REG_NV_PDISP_SOR0_STATUS: usize = 0x0061_C004;
 /// GPU architecture extracted from NV_PMC_BOOT_0 bits [31:20].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvArch {
-    Nv50,     // G80–GT2xx
-    Fermi,    // GF1xx
-    Kepler,   // GK1xx / GK2xx
-    Maxwell,  // GM1xx / GM2xx
-    Pascal,   // GP1xx
-    Volta,    // GV1xx
-    Turing,   // TU1xx
-    Ampere,   // GA1xx
-    Ada,      // AD1xx
+    Nv50,    // G80–GT2xx
+    Fermi,   // GF1xx
+    Kepler,  // GK1xx / GK2xx
+    Maxwell, // GM1xx / GM2xx
+    Pascal,  // GP1xx
+    Volta,   // GV1xx
+    Turing,  // TU1xx
+    Ampere,  // GA1xx
+    Ada,     // AD1xx
     Unknown(u32),
 }
 
@@ -75,7 +75,7 @@ impl NvArch {
             0x160..=0x16F => NvArch::Turing,
             0x170..=0x17F => NvArch::Ampere,
             0x190..=0x19F => NvArch::Ada,
-            v             => NvArch::Unknown(v),
+            v => NvArch::Unknown(v),
         }
     }
 
@@ -106,7 +106,7 @@ pub fn display_engine_enabled(bar0_base: usize) -> bool {
     let region = MmioRegion::new(bar0_base, 0x1000);
     match unsafe { region.read_u32(REG_NV_PMC_ENABLE) } {
         Some(v) => (v & (1 << 30)) != 0,
-        None    => false,
+        None => false,
     }
 }
 
@@ -115,7 +115,11 @@ pub fn display_engine_enabled(bar0_base: usize) -> bool {
 /// If BAR0 is MMIO-accessible, NV_PMC_BOOT_0 returns a known architecture,
 /// and the display engine enable bit is set, upgrades to Scanout via simplefb.
 pub fn probe_display(report: &GpuProbeReport, _mb2_ptr: u32) -> GpuProbeReport {
-    let bar0 = report.bars.iter().flatten().find(|b| b.index == 0 && b.is_mmio);
+    let bar0 = report
+        .bars
+        .iter()
+        .flatten()
+        .find(|b| b.index == 0 && b.is_mmio);
 
     let arch = bar0
         .filter(|b| b.base > 0)
@@ -133,9 +137,9 @@ pub fn probe_display(report: &GpuProbeReport, _mb2_ptr: u32) -> GpuProbeReport {
                 a
             );
             GpuProbeReport {
-                class:   GpuClass::NvidiaFamily,
-                tier:    GpuTier::Scanout,
-                caps:    GpuCapabilities::scanout(),
+                class: GpuClass::NvidiaFamily,
+                tier: GpuTier::Scanout,
+                caps: GpuCapabilities::scanout(),
                 backend: ScanoutBackendId::SimpleFramebuffer,
                 ..(*report)
             }
@@ -156,12 +160,18 @@ pub fn activate(mb2_ptr: u32) -> Result<(), GpuError> {
     simplefb::activate(mb2_ptr).map(|_| ())
 }
 
-pub fn put_pixel(x: u32, y: u32, r: u8, g: u8, b: u8) { simplefb::put_pixel(x, y, r, g, b); }
+pub fn put_pixel(x: u32, y: u32, r: u8, g: u8, b: u8) {
+    simplefb::put_pixel(x, y, r, g, b);
+}
 pub fn fill_rect(x: u32, y: u32, w: u32, h: u32, r: u8, g: u8, b: u8) {
     simplefb::fill_rect(x, y, w, h, r, g, b);
 }
-pub fn flush() { simplefb::flush(); }
-pub fn dimensions() -> (u32, u32) { simplefb::dimensions() }
-pub fn is_available() -> bool { simplefb::is_available() }
-
-
+pub fn flush() {
+    simplefb::flush();
+}
+pub fn dimensions() -> (u32, u32) {
+    simplefb::dimensions()
+}
+pub fn is_available() -> bool {
+    simplefb::is_available()
+}

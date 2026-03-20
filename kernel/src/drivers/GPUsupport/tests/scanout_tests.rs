@@ -7,4 +7,3 @@ fn null_scanout_is_headless() {
     };
     assert_eq!(target.width, 0);
 }
-

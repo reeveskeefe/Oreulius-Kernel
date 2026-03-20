@@ -42,8 +42,8 @@ mod errors;
 mod message;
 mod rights;
 mod ring;
-mod service;
 mod selftest;
+mod service;
 mod table;
 mod types;
 
@@ -57,14 +57,14 @@ pub use diagnostics::{ChannelDiagnostics, IpcDiagnostics};
 pub use errors::IpcError;
 pub use message::Message;
 pub use rights::{AffineEndpoint, ChannelCapability, ChannelRights};
+pub use selftest::{run_selftest, IpcSelftestCase, IpcSelftestReport, IPC_SELFTEST_CASES};
 pub use service::{
     close_channel, close_channel_for_process, create_channel, create_channel_for_process,
-    create_channel_for_process_with_flags, init, ipc, purge_channels_for_process,
-    receive_message, receive_message_for_process, receive_message_with_caps_for_process,
-    send_message, send_message_for_process, send_message_with_caps_for_process,
-    temporal_apply_channel_event, temporal_apply_channel_payload, IpcService,
+    create_channel_for_process_with_flags, init, ipc, purge_channels_for_process, receive_message,
+    receive_message_for_process, receive_message_with_caps_for_process, send_message,
+    send_message_for_process, send_message_with_caps_for_process, temporal_apply_channel_event,
+    temporal_apply_channel_payload, IpcService,
 };
-pub use selftest::{run_selftest, IpcSelftestCase, IpcSelftestReport, IPC_SELFTEST_CASES};
 pub use table::ChannelTable;
 pub use types::{
     Capability, CapabilityType, ChannelId, EventId, ProcessId, TypedServiceArg, CHANNEL_CAPACITY,
@@ -172,7 +172,10 @@ mod tests {
         }
 
         let msg = Message::with_data(ProcessId::new(43), b"overflow").unwrap();
-        assert!(matches!(service.send(msg, &send_cap), Err(IpcError::WouldBlock)));
+        assert!(matches!(
+            service.send(msg, &send_cap),
+            Err(IpcError::WouldBlock)
+        ));
     }
 
     #[test]

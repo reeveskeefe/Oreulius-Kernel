@@ -219,6 +219,9 @@ pub struct Process {
     /// File descriptor table (per-process)
     pub fd_table: [Option<u64>; MAX_FD],
     /// Physical address of the process page-table root.
+    ///
+    /// `PhysAddr::new(0)` means the process does not currently have an owned
+    /// page-table root recorded.
     pub page_dir_phys: PhysAddr,
     /// FPU/SIMD state buffer
     pub fpu_state: FpuState,
@@ -634,8 +637,8 @@ impl ProcessManager {
             .fork_process_with_pid(parent_pid, child_pid)?;
 
         process_platform::on_process_spawn(child_pid, Some(parent_pid), child.name_str());
-        let _ = crate::capability::capability_manager()
-            .clone_task_capabilities(parent_pid, child_pid);
+        let _ =
+            crate::capability::capability_manager().clone_task_capabilities(parent_pid, child_pid);
 
         Ok(child)
     }

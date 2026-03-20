@@ -200,6 +200,7 @@ impl Default for IntentPolicy {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntentPolicyError {
     WindowSecondsOutOfRange,
     AlertScoreOutOfRange,

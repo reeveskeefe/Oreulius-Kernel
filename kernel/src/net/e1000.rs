@@ -424,7 +424,10 @@ impl E1000Driver {
         // Enable RX timer (RXT0), TX write-back (TXDW) and link-state-change (LSC)
         // interrupts so the hardware wakes the reactor rather than relying on
         // the scheduler round-tripping through yield_now().
-        self.write_reg(E1000_REG_IMS, E1000_IMS_TXDW | E1000_IMS_LSC | E1000_IMS_RXT0);
+        self.write_reg(
+            E1000_REG_IMS,
+            E1000_IMS_TXDW | E1000_IMS_LSC | E1000_IMS_RXT0,
+        );
     }
 
     /// Write to an E1000 register
@@ -525,7 +528,10 @@ impl E1000Driver {
         if !self.enabled {
             return 0;
         }
-        let budget = budget.min(out_bufs.len()).min(out_lens.len()).min(NUM_RX_DESC);
+        let budget = budget
+            .min(out_bufs.len())
+            .min(out_lens.len())
+            .min(NUM_RX_DESC);
         let mut received = 0usize;
         unsafe {
             while received < budget {

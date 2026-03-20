@@ -1,9 +1,8 @@
 use super::ring::RingBuffer;
 use super::{
-    admission, backpressure, channel_capacity_wait_addr, channel_message_wait_addr,
-    AffineEndpoint, BackpressureAction, BackpressureLevel, ChannelCapability, ChannelId,
-    IpcDefer, IpcError, IpcRefusal, Message, ProcessId, RecvDecision, SendDecision,
-    CHANNEL_CAPACITY, MAX_MESSAGE_SIZE,
+    admission, backpressure, channel_capacity_wait_addr, channel_message_wait_addr, AffineEndpoint,
+    BackpressureAction, BackpressureLevel, ChannelCapability, ChannelId, IpcDefer, IpcError,
+    IpcRefusal, Message, ProcessId, RecvDecision, SendDecision, CHANNEL_CAPACITY, MAX_MESSAGE_SIZE,
 };
 
 // ============================================================================
@@ -228,12 +227,7 @@ impl Channel {
         self.recv(endpoint.inner_cap())
     }
 
-    fn record_send_refusal(
-        &mut self,
-        owner: ProcessId,
-        payload_len: usize,
-        caps_len: usize,
-    ) {
+    fn record_send_refusal(&mut self, owner: ProcessId, payload_len: usize, caps_len: usize) {
         self.send_refusals = self.send_refusals.saturating_add(1);
         let _ = crate::temporal::record_ipc_channel_event(
             self.id.0,
@@ -606,10 +600,7 @@ impl Channel {
     /// - `Ok(DrainResult::Complete)` — last message consumed, channel is now `Sealed`.
     /// - `Ok(DrainResult::AlreadySealed)` — nothing to drain.
     /// - `Err(_)` — permission error or invalid capability.
-    pub fn drain(
-        &mut self,
-        capability: &ChannelCapability,
-    ) -> Result<DrainResult, IpcError> {
+    pub fn drain(&mut self, capability: &ChannelCapability) -> Result<DrainResult, IpcError> {
         if self.closure.is_closed() {
             return Ok(DrainResult::AlreadySealed);
         }
@@ -708,7 +699,10 @@ impl Channel {
         self.closure = if closed && queue_depth == 0 {
             ClosureState::Sealed
         } else if closed && queue_depth > 0 {
-            ClosureState::Draining { initiator: owner, initiated_at: 0 }
+            ClosureState::Draining {
+                initiator: owner,
+                initiated_at: 0,
+            }
         } else {
             ClosureState::Open
         };
