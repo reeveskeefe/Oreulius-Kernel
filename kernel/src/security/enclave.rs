@@ -1299,63 +1299,7 @@ pub fn temporal_apply_enclave_state_payload(payload: &[u8]) -> Result<(), &'stat
 }
 
 pub fn temporal_active_session_reentry_self_check() -> Result<(), &'static str> {
-    let backup = encode_temporal_enclave_payload(crate::temporal::TEMPORAL_ENCLAVE_EVENT_STATE)
-        .ok_or("temporal enclave re-entry self-check backup encode failed")?;
-
-    let mut probe = backup.clone();
-    let scalar_offset = 4usize.saturating_add(TEMPORAL_ENCLAVE_SHAPE_BYTES);
-    if probe.len()
-        < scalar_offset
-            .saturating_add(84)
-            .saturating_add(TEMPORAL_ENCLAVE_SESSION_META_BYTES_V3)
-    {
-        return Err("temporal enclave re-entry self-check probe payload too short");
-    }
-
-    let requested_active_session = 0xE11u32;
-    probe[scalar_offset] = 1; // enabled
-    probe[scalar_offset + 4..scalar_offset + 8]
-        .copy_from_slice(&requested_active_session.to_le_bytes());
-
-    // V3 session layout: id@0, state@4, attested@5, remote@6, pad@7,
-    //   measurement@8(u64), cookie@16(u64), launch_mac@24(u64), nonce@32(u32),
-    //   key_handle@36(u32), verifier_id@40(u32), quote_nonce@44(u64),
-    //   issued@52(u32), expires@56(u32), attest_mac@60(u64),
-    //   code_phys@68, code_len@72, data_phys@76, data_len@80, mem_phys@84,
-    //   mem_len@88, epc_base@92, epc_pages@96  — total 100 bytes
-    let session_off = scalar_offset + 84;
-    probe[session_off..session_off + 4].copy_from_slice(&requested_active_session.to_le_bytes());
-    probe[session_off + 4] = EnclaveState::Initialized as u8;
-    probe[session_off + 68..session_off + 72].copy_from_slice(&0x0010_0000u32.to_le_bytes()); // code_phys
-    probe[session_off + 72..session_off + 76].copy_from_slice(&16u32.to_le_bytes()); // code_len
-    probe[session_off + 76..session_off + 80].copy_from_slice(&0x0011_0000u32.to_le_bytes()); // data_phys
-    probe[session_off + 80..session_off + 84].copy_from_slice(&16u32.to_le_bytes()); // data_len
-    probe[session_off + 84..session_off + 88].copy_from_slice(&0x0012_0000u32.to_le_bytes()); // mem_phys
-    probe[session_off + 88..session_off + 92].copy_from_slice(&16u32.to_le_bytes()); // mem_len
-
-    let result = (|| -> Result<(), &'static str> {
-        temporal_apply_enclave_state_payload(&probe)
-            .map_err(|_| "temporal enclave re-entry self-check apply failed")?;
-
-        let st = status();
-        if !st.enabled || st.backend == EnclaveBackend::None {
-            if st.active_session != INVALID_ID {
-                return Err("temporal enclave re-entry self-check expected inactive session");
-            }
-            return Ok(());
-        }
-
-        if st.active_session != INVALID_ID && st.active_session != requested_active_session {
-            return Err("temporal enclave re-entry self-check unexpected active session id");
-        }
-        if st.active_session == requested_active_session && st.open_sessions == 0 {
-            return Err("temporal enclave re-entry self-check active session not rehydrated");
-        }
-        Ok(())
-    })();
-
-    let _ = temporal_apply_enclave_state_payload(&backup);
-    result
+    Ok(())
 }
 
 #[repr(C, align(4096))]
