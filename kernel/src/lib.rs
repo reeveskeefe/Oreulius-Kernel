@@ -120,6 +120,11 @@ pub fn ensure_heap_available() -> Option<Box<u32>> {
 }
 
 #[inline]
+pub(crate) unsafe fn early_console_write_word(slot: *mut u16, value: u16) {
+    core::ptr::write_volatile(slot, value);
+}
+
+#[inline]
 pub fn runtime_page_size() -> usize {
     crate::arch::mmu::page_size()
 }
@@ -179,7 +184,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
             let vga_buf = 0xb8000 as *mut u16;
             let s = "PANIC";
             for (i, byte) in s.bytes().enumerate() {
-                *vga_buf.add(i) = 0x4F00 | (byte as u16);
+                early_console_write_word(vga_buf.add(i), 0x4F00 | (byte as u16));
             }
         }
 
@@ -211,12 +216,26 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
             let vga = 0xb8000 as *mut u16;
             let msg = b"ALLOC FAIL";
             for (i, &b) in msg.iter().enumerate() {
-                *vga.add(i) = 0x4F00 | (b as u16);
+                early_console_write_word(vga.add(i), 0x4F00 | (b as u16));
             }
         }
     }
 
     crate::arch::halt_loop()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::early_console_write_word;
+
+    #[test]
+    fn early_console_write_word_updates_target() {
+        let mut slot = 0u16;
+        unsafe {
+            early_console_write_word(&mut slot as *mut u16, 0x4F50);
+        }
+        assert_eq!(unsafe { core::ptr::read_volatile(&slot as *const u16) }, 0x4F50);
+    }
 }
 
 /// Arch-neutral timer tick hook.

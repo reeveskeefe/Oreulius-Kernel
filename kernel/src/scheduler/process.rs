@@ -28,6 +28,7 @@
 
 #![allow(dead_code)]
 
+use crate::arch::mmu::PhysAddr;
 use crate::process_platform::{self, ChannelCapability};
 use core::fmt;
 use spin::Mutex;
@@ -217,8 +218,8 @@ pub struct Process {
     pub created_at: u64,
     /// File descriptor table (per-process)
     pub fd_table: [Option<u64>; MAX_FD],
-    /// Physical address of Page Directory (CR3)
-    pub page_dir_phys: u32,
+    /// Physical address of the process page-table root.
+    pub page_dir_phys: PhysAddr,
     /// FPU/SIMD state buffer
     pub fpu_state: FpuState,
     /// Whether this process has ever used the FPU
@@ -245,7 +246,7 @@ impl Process {
             cpu_time: 0,
             created_at: 0,
             fd_table: [None; MAX_FD],
-            page_dir_phys: 0, // Will be set by caller or init
+            page_dir_phys: PhysAddr::new(0), // Will be set by caller or init
             fpu_state: FpuState([0; 512]),
             has_used_fpu: false,
         }
@@ -445,12 +446,12 @@ impl ProcessTable {
     }
 
     /// Get the page directory physical address for a process
-    pub fn get_page_dir(&self, pid: Pid) -> Option<u32> {
+    pub fn get_page_dir(&self, pid: Pid) -> Option<PhysAddr> {
         self.get(pid).map(|p| p.page_dir_phys)
     }
 
     /// Set the page directory physical address for a process
-    pub fn set_page_dir(&mut self, pid: Pid, pd_phys: u32) -> Result<(), ProcessError> {
+    pub fn set_page_dir(&mut self, pid: Pid, pd_phys: PhysAddr) -> Result<(), ProcessError> {
         if let Some(proc) = self.get_mut(pid) {
             proc.page_dir_phys = pd_phys;
             Ok(())
@@ -645,12 +646,12 @@ impl ProcessManager {
     }
 
     /// Helper to access page directory (needs to be public for paging module)
-    pub fn get_process_page_dir(&self, pid: Pid) -> Option<u32> {
+    pub fn get_process_page_dir(&self, pid: Pid) -> Option<PhysAddr> {
         self.table.lock().get_page_dir(pid)
     }
 
     /// Helper to set page directory
-    pub fn set_process_page_dir(&self, pid: Pid, pd_phys: u32) -> Result<(), ProcessError> {
+    pub fn set_process_page_dir(&self, pid: Pid, pd_phys: PhysAddr) -> Result<(), ProcessError> {
         self.table.lock().set_page_dir(pid, pd_phys)
     }
 

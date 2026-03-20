@@ -29,6 +29,8 @@ use alloc::boxed::Box;
 use core::ptr;
 use spin::Mutex;
 
+use crate::arch::mmu::PhysAddr;
+
 extern "C" {
     static _heap_end: usize;
     static _text_start: usize;
@@ -1390,7 +1392,7 @@ pub extern "C" fn rust_copy_page_table(parent_pid_raw: u32, child_pid_raw: u32) 
     // 1. Get Parent PD (Physical Address)
     // If parent has no PD recorded (e.g. init), use current CR3
     let parent_pd_phys = match pm.get_process_page_dir(parent_pid) {
-        Some(addr) if addr != 0 => addr as usize,
+        Some(addr) if addr != PhysAddr::new(0) => addr.as_usize(),
         _ => unsafe { get_page_directory() as usize },
     };
 
@@ -1495,7 +1497,7 @@ pub extern "C" fn rust_copy_page_table(parent_pid_raw: u32, child_pid_raw: u32) 
     }
 
     // Save to process manager
-    if let Err(_) = pm.set_process_page_dir(child_pid, child_pd_phys as u32) {
+    if let Err(_) = pm.set_process_page_dir(child_pid, PhysAddr::new(child_pd_phys)) {
         return -1;
     }
 

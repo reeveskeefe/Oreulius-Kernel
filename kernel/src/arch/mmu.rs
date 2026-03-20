@@ -20,6 +20,32 @@
 //! This starts as a thin wrapper over the existing i686 paging subsystem so
 //! callers can migrate away from directly depending on `crate::paging`.
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct PhysAddr(usize);
+
+impl PhysAddr {
+    #[inline]
+    pub const fn new(raw: usize) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub const fn as_usize(self) -> usize {
+        self.0
+    }
+
+    #[inline]
+    pub const fn as_u64(self) -> u64 {
+        self.0 as u64
+    }
+
+    #[inline]
+    pub fn try_as_u32(self) -> Result<u32, &'static str> {
+        u32::try_from(self.0).map_err(|_| "physical address exceeds u32")
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PageAttribute {
     Writable,
@@ -382,4 +408,25 @@ pub(crate) fn aarch64_debug_walk(virt_addr: usize) -> (usize, u64, u64, u64, u64
 #[allow(dead_code)]
 pub(crate) fn aarch64_debug_walk(_virt_addr: usize) -> (usize, u64, u64, u64, u64, Option<usize>) {
     (0, 0, 0, 0, 0, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PhysAddr;
+
+    #[test]
+    fn phys_addr_round_trips_small_values() {
+        let addr = PhysAddr::new(0x1234);
+        assert_eq!(addr.as_usize(), 0x1234);
+        assert_eq!(addr.as_u64(), 0x1234);
+        assert_eq!(addr.try_as_u32().unwrap(), 0x1234);
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn phys_addr_rejects_u32_overflow() {
+        let addr = PhysAddr::new((u32::MAX as usize) + 1);
+        assert_eq!(addr.as_u64(), (u32::MAX as u64) + 1);
+        assert!(addr.try_as_u32().is_err());
+    }
 }

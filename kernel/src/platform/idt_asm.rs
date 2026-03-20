@@ -657,14 +657,14 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
     if frame.int_no == 33 {
         unsafe {
             let vga = 0xb8000 as *mut u16;
-            let val = *vga.add(70);
+            let val = core::ptr::read_volatile(vga.add(70));
             let char_part = (val & 0xFF) as u8;
             let new_char = if char_part >= b'z' {
                 b'a'
             } else {
                 char_part + 1
             };
-            *vga.add(70) = 0x0E00 | (new_char as u16);
+            crate::early_console_write_word(vga.add(70), 0x0E00 | (new_char as u16));
         }
     }
 

@@ -1331,7 +1331,10 @@ fn contains_subseq(haystack: &[u8], needle: &[u8]) -> bool {
         return true;
     }
     if haystack.len() < needle.len() {
-        return false;
+        {
+            crate::serial_println!("verify_integrity failed at line {}", line!());
+            return false;
+        }
     }
     haystack
         .windows(needle.len())
@@ -4561,10 +4564,16 @@ fn verify_x86_subset(
 impl JitFunction {
     pub fn verify_integrity(&self) -> bool {
         if !self.exec.is_sealed() {
+            {
+            crate::serial_println!("[WASM-JIT] verify_integrity failed at line {}", line!());
             return false;
         }
+        }
         if self.translation.block_hashes.len() != self.blocks.len() {
+            {
+            crate::serial_println!("[WASM-JIT] verify_integrity failed at line {}", line!());
             return false;
+        }
         }
         let recomputed_hashes = match validate_translation_per_block(
             &self.wasm_code,
@@ -4576,7 +4585,10 @@ impl JitFunction {
             Err(_) => return false,
         };
         if recomputed_hashes != self.translation.block_hashes {
+            {
+            crate::serial_println!("[WASM-JIT] verify_integrity failed at line {}", line!());
             return false;
+        }
         }
         let recomputed_proof =
             match build_translation_proof(&self.wasm_code, &self.translation.records, &self.code) {
@@ -4584,10 +4596,13 @@ impl JitFunction {
                 Err(_) => return false,
             };
         if recomputed_proof != self.translation.proof {
+            {
+            crate::serial_println!("[WASM-JIT] verify_integrity failed at line {}", line!());
             return false;
         }
+        }
         let exec_hash = hash_exec_code(self.exec.as_ptr(), self.exec.len);
-        self.exec_hash == exec_hash && self.code_hash == hash_jit_code(&self.code)
+        { let c_hash = hash_jit_code(&self.code); let r = self.exec_hash == exec_hash && self.code_hash == c_hash; if !r { crate::serial_println!("[WASM-JIT] verify_integrity failed at hash check! exec_hash: {} vs {}, code_hash: {} vs {}", self.exec_hash, exec_hash, self.code_hash, c_hash); } r }
     }
 
     /// Compute a Bayesian translation-confidence score using `ExactRational` arithmetic
@@ -4634,7 +4649,10 @@ impl JitFunction {
     pub fn confidence_acceptable(&self) -> bool {
         let r = self.bayesian_confidence();
         if r.d == 0 {
+            {
+            crate::serial_println!("verify_integrity failed at line {}", line!());
             return false;
+        }
         }
         r.n.saturating_mul(100) / r.d >= JIT_CONFIDENCE_THRESHOLD_PCT
     }
@@ -4656,6 +4674,7 @@ pub fn formal_translation_self_check() -> Result<(), &'static str> {
     for (code, locals) in samples {
         let mut jit = compile(code, locals)?;
         if !jit.verify_integrity() {
+            crate::serial_println!("[WASM-JIT] compile failed integrity check for sample len {}", code.len());
             return Err("Formal translation self-check failed integrity");
         }
         if jit.code.is_empty() {

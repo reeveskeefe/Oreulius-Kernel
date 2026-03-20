@@ -24,6 +24,7 @@
 //! - CPU affinity and load balancing (single-core for now)
 //! - Accounting: CPU time, context switches, wait time
 
+use crate::arch::mmu::PhysAddr;
 use crate::process::{Pid, Process, ProcessPriority, ProcessState, MAX_PROCESSES};
 use crate::scheduler_platform::{self, ProcessContext};
 use crate::scheduler_runtime_platform as scheduler_rt;
@@ -66,6 +67,24 @@ const TEMPORAL_SCHEDULER_HEADER_BYTES: usize = 60;
 const TEMPORAL_SCHEDULER_PROCESS_ENTRY_BYTES: usize = 44;
 const TEMPORAL_SCHEDULER_WAIT_QUEUE_HEADER_BYTES: usize = 12;
 const READY_QUEUE_LEVELS: usize = 3;
+#[cfg(target_arch = "x86")]
+const KERNEL_THREAD_FRAME_BYTES: usize = 8;
+#[cfg(not(target_arch = "x86"))]
+const KERNEL_THREAD_FRAME_BYTES: usize = 16;
+
+fn kernel_thread_frame_top(
+    stack_base: usize,
+    stack_top: usize,
+    required_bytes: usize,
+) -> Result<usize, &'static str> {
+    let frame_top = stack_top
+        .checked_sub(required_bytes)
+        .ok_or("Stack address invalid")?;
+    if frame_top < stack_base || frame_top < 0x1000 {
+        return Err("Stack address invalid");
+    }
+    Ok(frame_top)
+}
 
 #[derive(Clone, Copy)]
 struct ReadyQueue {
@@ -87,19 +106,23 @@ impl ReadyQueue {
         self.head < MAX_PROCESSES && self.len <= MAX_PROCESSES
     }
 
+    #[inline]
+    fn assert_sane(&self) {
+        assert!(self.is_sane(), "ReadyQueue invariant violated");
+    }
+
     fn clear(&mut self) {
         self.head = 0;
         self.len = 0;
     }
 
     fn len(&self) -> usize {
+        self.assert_sane();
         self.len
     }
 
     fn push_back(&mut self, pid: Pid) -> bool {
-        if !self.is_sane() {
-            self.clear();
-        }
+        self.assert_sane();
         if self.len >= MAX_PROCESSES {
             return false;
         }
@@ -110,10 +133,7 @@ impl ReadyQueue {
     }
 
     fn pop_front(&mut self) -> Option<Pid> {
-        if !self.is_sane() {
-            self.clear();
-            return None;
-        }
+        self.assert_sane();
         if self.len == 0 {
             return None;
         }
@@ -124,9 +144,7 @@ impl ReadyQueue {
     }
 
     fn for_each<F: FnMut(Pid)>(&self, mut f: F) {
-        if !self.is_sane() {
-            return;
-        }
+        self.assert_sane();
         let mut i = 0usize;
         while i < self.len {
             let idx = (self.head + i) % MAX_PROCESSES;
@@ -334,6 +352,20 @@ impl QuantumScheduler {
                 idle_ticks: 0,
             },
         }
+    }
+
+    fn process_slot(&self, idx: usize) -> Result<&ProcessInfo, &'static str> {
+        self.processes
+            .get(idx)
+            .and_then(Option::as_ref)
+            .ok_or("Process data missing")
+    }
+
+    fn process_slot_mut(&mut self, idx: usize) -> Result<&mut ProcessInfo, &'static str> {
+        self.processes
+            .get_mut(idx)
+            .and_then(Option::as_mut)
+            .ok_or("Process data missing")
     }
 
     fn remove_from_ready_queues(&mut self, pid: Pid) {
@@ -1078,21 +1110,23 @@ impl QuantumScheduler {
             ));
         }
 
-        // Log comprehensive process table state
-        let active_count = self.processes.iter().filter(|p| p.is_some()).count();
-        scheduler_rt::logf(format_args!(
-            "[SCHED] Process Table: {:p} | Capacity: {} | Active: {} | Available: {}",
-            table_ptr,
-            MAX_PROCESSES,
-            active_count,
-            MAX_PROCESSES - active_count
-        ));
-        scheduler_rt::logf(format_args!(
-            "[SCHED] Memory bounds: {:p} - {:p} ({} bytes)",
-            table_ptr,
-            (table_addr + core::mem::size_of_val(&self.processes)) as *const u8,
-            core::mem::size_of_val(&self.processes)
-        ));
+        #[cfg(debug_assertions)]
+        {
+            let active_count = self.processes.iter().filter(|p| p.is_some()).count();
+            scheduler_rt::logf(format_args!(
+                "[SCHED] Process Table: {:p} | Capacity: {} | Active: {} | Available: {}",
+                table_ptr,
+                MAX_PROCESSES,
+                active_count,
+                MAX_PROCESSES - active_count
+            ));
+            scheduler_rt::logf(format_args!(
+                "[SCHED] Memory bounds: {:p} - {:p} ({} bytes)",
+                table_ptr,
+                (table_addr + core::mem::size_of_val(&self.processes)) as *const u8,
+                core::mem::size_of_val(&self.processes)
+            ));
+        }
 
         // Hardware memory barrier to ensure process table consistency across CPUs
         scheduler_rt::memory_barrier();
@@ -1116,17 +1150,15 @@ impl QuantumScheduler {
             }
         };
 
+        let stack_base = stack_slice.as_mut_ptr() as usize;
         let stack_top =
             (unsafe { stack_slice.as_mut_ptr().add(stack_slice.len()) as usize }) & !15usize;
 
         // Verify stack address is sane and currently mapped.
         // Do not enforce a fixed upper bound: kernel image/heap placement can
         // legitimately exceed 32MB on this build configuration.
-        let stack_bottom = stack_top.saturating_sub(8);
-        if stack_bottom < 0x1000 || stack_top <= stack_bottom {
-            return Err("Stack address invalid");
-        }
-        let mapped = scheduler_platform::validate_kernel_stack_mapping(stack_bottom, stack_top);
+        let frame_top = kernel_thread_frame_top(stack_base, stack_top, KERNEL_THREAD_FRAME_BYTES)?;
+        let mapped = scheduler_platform::validate_kernel_stack_mapping(frame_top, stack_top);
         if !mapped {
             return Err("Stack address not mapped");
         }
@@ -1141,13 +1173,14 @@ impl QuantumScheduler {
             }
         }
 
-        let (ctx, _entry_addr_debug, trampoline_addr) =
+        let (ctx, _entry_addr_debug, _trampoline_addr_debug) =
             scheduler_platform::init_kernel_thread_context(entry, stack_top)?;
 
+        #[cfg(debug_assertions)]
         scheduler_rt::logf(format_args!(
             "[SCHED] kernel_thread ctx init: entry={:#x} tramp={:#x} sp={:#x}",
             _entry_addr_debug,
-            trampoline_addr,
+            _trampoline_addr_debug,
             scheduler_platform::context_stack_pointer(&ctx)
         ));
 
@@ -1357,11 +1390,15 @@ impl QuantumScheduler {
                 return Err("add_user_process: user stack in kernel space or null");
             }
 
+            // Non-IRQ process creation path: a dedicated kernel stack is expected here.
             let kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
                 Box::new([0u8; crate::process::STACK_SIZE]);
             let stack_top =
                 (kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
-            let page_dir_phys = space.phys_addr() as u32;
+            let page_dir_phys = PhysAddr::new(space.phys_addr());
+            let page_dir_phys_u32 = page_dir_phys
+                .try_as_u32()
+                .map_err(|_| "add_user_process: page directory address exceeds u32")?;
 
             process.state = ProcessState::Ready;
             process.page_dir_phys = page_dir_phys;
@@ -1385,7 +1422,7 @@ impl QuantumScheduler {
             ctx.eip = crate::asm_bindings::kernel_user_entry_trampoline as u32;
             ctx.esp = frame_top as u32;
             ctx.ebp = frame_top as u32;
-            ctx.cr3 = page_dir_phys;
+            ctx.cr3 = page_dir_phys_u32;
             ctx.eflags = 0x0000_0202;
 
             let now = scheduler_platform::ticks_now();
@@ -1418,7 +1455,7 @@ impl QuantumScheduler {
 
             scheduler_rt::logf(format_args!(
                 "[SCHED] add_user_process: pid={} entry={:#010x} user_sp={:#010x} cr3={:#010x}",
-                pid.0, entry, user_stack, page_dir_phys,
+                pid.0, entry, user_stack, page_dir_phys_u32,
             ));
 
             Ok(pid)
@@ -1444,11 +1481,12 @@ impl QuantumScheduler {
                 return Err("add_user_process: user stack in kernel space or null");
             }
 
+            // Non-IRQ process creation path: a dedicated kernel stack is expected here.
             let kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
                 Box::new([0u8; crate::process::STACK_SIZE]);
             let stack_top =
                 (kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
-            let page_dir_phys = space.phys_addr() as u64;
+            let page_dir_phys = PhysAddr::new(space.phys_addr());
             let frame_top = stack_top.checked_sub(32).ok_or("add_user_process: invalid stack")?;
 
             unsafe {
@@ -1460,7 +1498,7 @@ impl QuantumScheduler {
             }
 
             process.state = ProcessState::Ready;
-            process.page_dir_phys = page_dir_phys as u32;
+            process.page_dir_phys = page_dir_phys;
             process.stack_ptr = user_stack as usize;
             process.program_counter = entry as usize;
 
@@ -1475,7 +1513,7 @@ impl QuantumScheduler {
             ctx.rip = crate::asm_bindings::kernel_user_entry_trampoline as usize as u64;
             ctx.rsp = frame_top as u64;
             ctx.rbp = frame_top as u64;
-            ctx.cr3 = page_dir_phys;
+            ctx.cr3 = page_dir_phys.as_u64();
             ctx.rflags = 0x0000_0002;
 
             let now = scheduler_platform::ticks_now();
@@ -1508,7 +1546,7 @@ impl QuantumScheduler {
 
             scheduler_rt::logf(format_args!(
                 "[SCHED] add_user_process: pid={} entry={:#010x} user_sp={:#010x} cr3={:#018x}",
-                pid.0, entry, user_stack, page_dir_phys,
+                pid.0, entry, user_stack, page_dir_phys.as_u64(),
             ));
 
             Ok(pid)
@@ -1550,15 +1588,16 @@ impl QuantumScheduler {
             }
 
             // Allocate a kernel-mode exception-handler stack (16-byte aligned).
+            // Non-IRQ process creation path: a dedicated kernel stack is expected here.
             let kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
                 Box::new([0u8; crate::process::STACK_SIZE]);
             let stack_top =
                 (kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
 
-            let page_dir_phys = space.phys_addr() as u64;
+            let page_dir_phys = PhysAddr::new(space.phys_addr());
 
             process.state = ProcessState::Ready;
-            process.page_dir_phys = page_dir_phys as u32;
+            process.page_dir_phys = page_dir_phys;
             process.stack_ptr    = user_stack as usize;
             process.program_counter = entry as usize;
 
@@ -1578,7 +1617,7 @@ impl QuantumScheduler {
             // Keep interrupts masked until the trampoline finishes the EL0 enter.
             ctx.daif = 0b1111 << 6;
             // TTBR0_EL1 — physical base of this process's page table.
-            ctx.ttbr0_el1 = page_dir_phys;
+            ctx.ttbr0_el1 = page_dir_phys.as_u64();
             // Legacy 32-bit shadow for shared diagnostics code.
             ctx.esp = user_stack as u32;
 
@@ -1612,7 +1651,7 @@ impl QuantumScheduler {
 
             scheduler_rt::logf(format_args!(
                 "[SCHED] add_user_process(aa64): pid={} entry={:#010x} user_sp={:#010x} ttbr0={:#018x}",
-                pid.0, entry, user_stack, page_dir_phys,
+                pid.0, entry, user_stack, page_dir_phys.as_u64(),
             ));
 
             Ok(pid)
@@ -1686,9 +1725,9 @@ impl QuantumScheduler {
             let child_idx = child_pid.0 as usize;
 
             let (parent_process_clone, parent_ctx, parent_priority) = {
-                let info = self.processes[parent_idx]
-                    .as_ref()
-                    .ok_or("fork_current_cow: parent info missing")?;
+                let info = self
+                    .process_slot(parent_idx)
+                    .map_err(|_| "fork_current_cow: parent info missing")?;
                 (info.process.clone(), info.context, info.process.priority)
             };
 
@@ -1701,11 +1740,14 @@ impl QuantumScheduler {
             child_process.fpu_state = crate::process::FpuState([0u8; 512]);
 
             let child_address_space: Box<crate::arch::mmu::AddressSpace>;
-            let child_cr3: u32;
+            let child_cr3: PhysAddr;
+            let child_cr3_u32: u32;
             {
-                let child_space = self.processes[parent_idx]
+                let child_space = self
+                    .process_slot_mut(parent_idx)
+                    .map_err(|_| "fork_current_cow: parent info missing")?
+                    .address_space
                     .as_mut()
-                    .and_then(|info| info.address_space.as_mut())
                     .ok_or("fork_current_cow: parent has no owned address space")
                     .and_then(|space| {
                         space
@@ -1713,14 +1755,18 @@ impl QuantumScheduler {
                             .map_err(|_| "fork_current_cow: clone_cow failed")
                     })?;
 
-                child_cr3 = child_space.phys_addr() as u32;
+                child_cr3 = PhysAddr::new(child_space.phys_addr());
+                child_cr3_u32 = child_cr3
+                    .try_as_u32()
+                    .map_err(|_| "fork_current_cow: child CR3 exceeds u32")?;
                 child_address_space = Box::new(child_space);
                 child_process.page_dir_phys = child_cr3;
             }
 
             let mut child_ctx = parent_ctx;
-            child_ctx.cr3 = child_cr3;
+            child_ctx.cr3 = child_cr3_u32;
 
+            // Non-IRQ process fork path: child kernel stack allocation is expected here.
             let child_kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
                 Box::new([0u8; crate::process::STACK_SIZE]);
 
@@ -1762,7 +1808,7 @@ impl QuantumScheduler {
 
             scheduler_rt::logf(format_args!(
                 "[SCHED] fork_current_cow: parent={} -> child={} cr3={:#010x}",
-                parent_pid.0, child_pid.0, child_cr3,
+                parent_pid.0, child_pid.0, child_cr3_u32,
             ));
 
             Ok(child_pid)
@@ -1781,15 +1827,17 @@ impl QuantumScheduler {
                 .ok_or("fork_current_cow: process table full")?;
             let child_idx = child_pid.0 as usize;
 
-            let parent_priority = self.processes[parent_idx]
-                .as_ref()
-                .ok_or("fork_current_cow: parent info missing")?
+            let parent_priority = self
+                .process_slot(parent_idx)
+                .map_err(|_| "fork_current_cow: parent info missing")?
                 .process
                 .priority;
 
-            let child_space = self.processes[parent_idx]
+            let child_space = self
+                .process_slot_mut(parent_idx)
+                .map_err(|_| "fork_current_cow: parent info missing")?
+                .address_space
                 .as_mut()
-                .and_then(|info| info.address_space.as_mut())
                 .ok_or("fork_current_cow: parent has no owned address space")
                 .and_then(|space| {
                     space
@@ -1797,7 +1845,8 @@ impl QuantumScheduler {
                         .map_err(|_| "fork_current_cow: clone_cow failed")
                 })?;
 
-            let child_cr3 = child_space.phys_addr() as u64;
+            let child_cr3 = PhysAddr::new(child_space.phys_addr());
+            // Non-IRQ process fork path: child kernel stack allocation is expected here.
             let child_kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
                 Box::new([0u8; crate::process::STACK_SIZE]);
             let child_stack_top =
@@ -1811,12 +1860,12 @@ impl QuantumScheduler {
                 Err(_) => return Err("fork_current_cow: process clone failed"),
             };
 
-            child_process.page_dir_phys = child_cr3 as u32;
+            child_process.page_dir_phys = child_cr3;
             child_process.has_used_fpu = false;
             child_process.fpu_state = crate::process::FpuState([0u8; 512]);
 
             if crate::process::process_manager()
-                .set_process_page_dir(child_pid, child_cr3 as u32)
+                .set_process_page_dir(child_pid, child_cr3)
                 .is_err()
             {
                 let _ = crate::process::process_manager().terminate(child_pid);
@@ -1827,7 +1876,7 @@ impl QuantumScheduler {
             child_ctx.rip = crate::syscall::x86_64_syscall_resume_rip() as u64;
             child_ctx.rsp = child_rsp as u64;
             child_ctx.rbp = 0;
-            child_ctx.cr3 = child_cr3;
+            child_ctx.cr3 = child_cr3.as_u64();
             child_ctx.rflags = 0x0000_0002;
 
             let quantum = match parent_priority {
@@ -1866,7 +1915,7 @@ impl QuantumScheduler {
 
             scheduler_rt::logf(format_args!(
                 "[SCHED] fork_current_cow(x64): parent={} -> child={} cr3={:#018x}",
-                parent_pid.0, child_pid.0, child_cr3,
+                parent_pid.0, child_pid.0, child_cr3.as_u64(),
             ));
 
             Ok(child_pid)
@@ -2663,5 +2712,64 @@ pub fn test_process_state(pid_raw: u32) -> Option<ProcessState> {
 pub fn handle_fpu_trap() {
     unsafe {
         QUANTUM_SCHEDULER.lock().handle_fpu_trap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ready_queue_wraparound_and_full_behavior() {
+        let mut queue = ReadyQueue::new();
+        assert!(queue.push_back(Pid(1)));
+        assert!(queue.push_back(Pid(2)));
+        assert_eq!(queue.pop_front(), Some(Pid(1)));
+        assert!(queue.push_back(Pid(3)));
+        assert_eq!(queue.pop_front(), Some(Pid(2)));
+        assert_eq!(queue.pop_front(), Some(Pid(3)));
+        assert_eq!(queue.pop_front(), None);
+
+        let mut full = ReadyQueue::new();
+        for i in 0..MAX_PROCESSES {
+            assert!(full.push_back(Pid(i as u32)));
+        }
+        assert!(!full.push_back(Pid(MAX_PROCESSES as u32)));
+        for i in 0..MAX_PROCESSES {
+            assert_eq!(full.pop_front(), Some(Pid(i as u32)));
+        }
+        assert_eq!(full.pop_front(), None);
+    }
+
+    #[test]
+    fn kernel_thread_frame_top_accepts_valid_range() {
+        assert_eq!(
+            kernel_thread_frame_top(0x2000, 0x3000, 16).unwrap(),
+            0x2ff0
+        );
+    }
+
+    #[test]
+    fn kernel_thread_frame_top_rejects_underflow() {
+        assert_eq!(
+            kernel_thread_frame_top(0x2000, 8, 16),
+            Err("Stack address invalid")
+        );
+    }
+
+    #[test]
+    fn kernel_thread_frame_top_rejects_frame_below_stack_base() {
+        assert_eq!(
+            kernel_thread_frame_top(0x2000, 0x2008, 16),
+            Err("Stack address invalid")
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ReadyQueue invariant violated")]
+    fn ready_queue_panics_on_corruption() {
+        let mut queue = ReadyQueue::new();
+        queue.len = MAX_PROCESSES + 1;
+        let _ = queue.len();
     }
 }

@@ -158,6 +158,7 @@ expect {
     }
 }
 
+sleep 2
 send "formal-verify\r"
 expect {
     -re $prompt_re {}
