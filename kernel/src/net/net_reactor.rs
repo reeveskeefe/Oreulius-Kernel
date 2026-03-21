@@ -167,6 +167,7 @@ static REQ_SLOT: ReqSlot = ReqSlot {
 static REQ_STATE: AtomicUsize = AtomicUsize::new(0);
 
 static NET_IRQ_PENDING: AtomicUsize = AtomicUsize::new(0);
+static REACTOR_STARTED: AtomicUsize = AtomicUsize::new(0);
 
 // Single-owner network stack storage (static to avoid small task stack overflow).
 static mut NET_STACK: NetworkStack = NetworkStack::new();
@@ -423,6 +424,9 @@ fn handle_request(stack: &mut NetworkStack) -> bool {
 }
 
 fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
+    if REACTOR_STARTED.load(Ordering::Acquire) == 0 {
+        return Err("Network reactor not started");
+    }
     if REQ_STATE
         .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -433,14 +437,17 @@ fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
         *REQ_SLOT.req.get() = req;
     }
 
+    let timeout_ticks = (crate::pit::get_frequency() as u64)
+        .saturating_mul(5)
+        .max(500);
     let start = crate::pit::get_ticks();
     loop {
         if REQ_STATE.load(Ordering::Acquire) == 2 {
             break;
         }
-        if crate::pit::get_ticks().saturating_sub(start) > 500 {
+        if crate::pit::get_ticks().saturating_sub(start) > timeout_ticks {
             REQ_STATE.store(0, Ordering::Release);
-            return Err("Network reactor timeout");
+            return Err("Network reactor request timeout");
         }
         crate::quantum_scheduler::yield_now();
     }
@@ -454,6 +461,7 @@ fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
 pub fn run() -> ! {
     // SAFETY: The network reactor task is the sole owner of the stack.
     let stack = unsafe { &mut NET_STACK };
+    REACTOR_STARTED.store(1, Ordering::Release);
     let mut marked_ready = false;
     let mut last_tick = crate::pit::get_ticks();
 
@@ -503,6 +511,10 @@ pub fn run() -> ! {
 }
 
 pub fn dns_resolve(domain: &str) -> Result<Ipv4Addr, &'static str> {
+    let info = get_info()?;
+    if !info.ready {
+        return Err("Network not ready");
+    }
     let mut data = [0u8; MAX_STR];
     let bytes = domain.as_bytes();
     if bytes.len() > MAX_STR {
@@ -521,6 +533,10 @@ pub fn dns_resolve(domain: &str) -> Result<Ipv4Addr, &'static str> {
 }
 
 pub fn tcp_connect(remote_ip: Ipv4Addr, remote_port: u16) -> Result<u16, &'static str> {
+    let info = get_info()?;
+    if !info.ready {
+        return Err("Network not ready");
+    }
     match request(NetRequest::TcpConnect {
         remote_ip,
         remote_port,

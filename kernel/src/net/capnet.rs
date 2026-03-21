@@ -2447,7 +2447,12 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
             Err(e) => {
                 crate::serial_println!(
                     "MAC-DIAG offer seed={} iter={} err={} local={:#x} k0={:#x} k1={:#x}",
-                    seed, i, e.as_str(), local, k0, k1
+                    seed,
+                    i,
+                    e.as_str(),
+                    local,
+                    k0,
+                    k1
                 );
                 record_fuzz_failure(
                     &mut stats,
@@ -2472,7 +2477,12 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
         {
             crate::serial_println!(
                 "MAC-DIAG hb seed={} iter={} err={} local={:#x} k0={:#x} k1={:#x}",
-                seed, i, e.as_str(), local, k0, k1
+                seed,
+                i,
+                e.as_str(),
+                local,
+                k0,
+                k1
             );
             record_fuzz_failure(
                 &mut stats,

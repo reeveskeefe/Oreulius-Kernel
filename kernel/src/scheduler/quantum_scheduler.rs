@@ -54,6 +54,9 @@ static mut KERNEL_STACK_1: AlignedStack = AlignedStack {
 static mut KERNEL_STACK_2: AlignedStack = AlignedStack {
     data: [0; KERNEL_THREAD_STACK_BYTES],
 };
+static mut KERNEL_STACK_3: AlignedStack = AlignedStack {
+    data: [0; KERNEL_THREAD_STACK_BYTES],
+};
 
 /// Quantum in ticks (100 Hz = 10ms per tick)
 const QUANTUM_HIGH: u32 = 20; // 200ms for high priority
@@ -1249,7 +1252,8 @@ impl QuantumScheduler {
                 0 => &mut KERNEL_STACK_0.data[..],
                 1 => &mut KERNEL_STACK_1.data[..],
                 2 => &mut KERNEL_STACK_2.data[..],
-                _ => return Err("Only 3 kernel threads supported with static stacks"),
+                3 => &mut KERNEL_STACK_3.data[..],
+                _ => return Err("Only 4 kernel threads supported with static stacks"),
             }
         };
 

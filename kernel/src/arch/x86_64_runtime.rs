@@ -2070,6 +2070,12 @@ extern "C" fn shell_scheduler_task() -> ! {
     run_serial_shell()
 }
 
+extern "C" fn network_scheduler_task() -> ! {
+    crate::arch::enable_interrupts();
+    crate::serial_println!("[NET] x86_64 network task started");
+    crate::net_reactor::run()
+}
+
 extern "C" fn idle_scheduler_task() -> ! {
     crate::arch::enable_interrupts();
     loop {
@@ -2169,6 +2175,35 @@ fn init_shared_runtime() {
     crate::console_service::init();
     crate::serial_println!("[X64] init quantum scheduler...");
     crate::quantum_scheduler::init();
+    crate::serial_println!("[X64] init pci/network...");
+    {
+        let mut pci_scanner = crate::pci::PciScanner::new();
+        pci_scanner.scan();
+        if let Some(_wifi_device) = pci_scanner.find_wifi_device() {
+            crate::serial_println!("[NET] WiFi device detected (init disabled)");
+        } else if let Some(eth_device) = pci_scanner.find_ethernet_device() {
+            crate::serial_println!("[NET] Ethernet device detected, initializing...");
+            let bar0 = unsafe { eth_device.read_bar(0) };
+            if bar0 != 0 {
+                let phys_base = (bar0 & !0xF) as usize;
+                let size = 128 * 1024usize;
+                crate::serial_println!("[NET] Mapping MMIO region at {:#x}", phys_base);
+                crate::arch::mmu::map_mmio_identity_range(phys_base, size);
+                crate::serial_println!("[NET] MMIO identity map installed");
+            }
+
+            match crate::e1000::init(eth_device) {
+                Ok(()) => crate::serial_println!("[NET] E1000 initialized - Ready for DNS/ARP/UDP"),
+                Err(e) => crate::serial_println!("[NET] E1000 init failed: {}", e),
+            }
+        } else if let Some(rtl_device) = pci_scanner.find_rtl8139() {
+            crate::serial_println!("[NET] RTL8139 detected, initializing...");
+            crate::rtl8139::init(&[rtl_device]);
+            crate::serial_println!("[NET] RTL8139 ready");
+        } else {
+            crate::serial_println!("[NET] No network device found");
+        }
+    }
     crate::serial_println!("[X64] init gpu...");
     {
         let boot_info = crate::arch::boot_info();
@@ -2306,6 +2341,13 @@ pub fn enter_runtime() -> ! {
                 "[X64] scheduler add init-wasm task failed (non-fatal): {}",
                 e
             );
+        }
+        if let Err(e) = sched.add_kernel_thread(
+            network_scheduler_task,
+            crate::process::ProcessPriority::Normal,
+        ) {
+            crate::serial_println!("[X64] scheduler add network task failed: {}", e);
+            crate::arch::halt_loop();
         }
         if let Err(e) =
             sched.add_kernel_thread(idle_scheduler_task, crate::process::ProcessPriority::Normal)

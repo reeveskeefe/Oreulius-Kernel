@@ -40,11 +40,14 @@ if (( runner_status != 0 )); then
     exit "${runner_status}"
 fi
 
-seeds_line="$(grep -E '^Seeds passed:' "${log_file}" | tail -1 || true)"
-mismatch_line="$(grep -E '^Total mismatches:' "${log_file}" | tail -1 || true)"
-compile_line="$(grep -E '^Total compile errors:' "${log_file}" | tail -1 || true)"
+seeds_line="$(grep -aE '^Seeds passed:' "${log_file}" | tail -1 || true)"
+mismatch_line="$(grep -aE '^Total mismatches:' "${log_file}" | tail -1 || true)"
+compile_line="$(grep -aE '^Total compile errors:' "${log_file}" | tail -1 || true)"
 
 if [[ -z "${seeds_line}" || -z "${mismatch_line}" || -z "${compile_line}" ]]; then
+    echo "DEBUG: seeds_line='${seeds_line}'"
+    echo "DEBUG: mismatch_line='${mismatch_line}'"
+    echo "DEBUG: compile_line='${compile_line}'"
     echo "ERROR: Could not parse corpus summary from output"
     exit 1
 fi
@@ -72,23 +75,32 @@ if (( total_compile_errors != 0 )); then
     exit 1
 fi
 
+# Strip non-printable characters (except newlines) for soak parsing so that
+# stray NUL or control bytes from QEMU serial don't confuse awk.
+clean_log="${log_file}.clean"
+LC_ALL=C tr -cd '[:print:]\n' < "${log_file}" > "${clean_log}"
+
 rounds_line="$(awk '
     /^===== WASM JIT Corpus Soak =====/ {in_soak=1; next}
     in_soak && /^Rounds passed:/ {line=$0}
     END {print line}
-' "${log_file}")"
+' "${clean_log}")"
 soak_mismatch_line="$(awk '
     /^===== WASM JIT Corpus Soak =====/ {in_soak=1; next}
     in_soak && /^Total mismatches:/ {line=$0}
     END {print line}
-' "${log_file}")"
+' "${clean_log}")"
 soak_compile_line="$(awk '
     /^===== WASM JIT Corpus Soak =====/ {in_soak=1; next}
     in_soak && /^Total compile errors:/ {line=$0}
     END {print line}
-' "${log_file}")"
+' "${clean_log}")"
+rm -f "${clean_log}"
 
 if [[ -z "${rounds_line}" || -z "${soak_mismatch_line}" || -z "${soak_compile_line}" ]]; then
+    echo "DEBUG: rounds_line='${rounds_line}'"
+    echo "DEBUG: soak_mismatch_line='${soak_mismatch_line}'"
+    echo "DEBUG: soak_compile_line='${soak_compile_line}'"
     echo "ERROR: Could not parse soak summary from output"
     exit 1
 fi
