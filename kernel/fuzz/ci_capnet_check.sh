@@ -60,6 +60,21 @@ total_failures="${total_failures//$'\r'/}"
 
 if (( seeds_passed != seeds_total )); then
     echo "ERROR: CapNet corpus replay failed (${seeds_passed}/${seeds_total} seeds passed)"
+
+    # ── diagnostic re-run: extract failing seed and replay with extra logging ──
+    failing_seed="$(grep -E '^First failing seed:' "${log_file}" | awk '{print $NF}' | tr -d '\r' || true)"
+    if [[ -n "${failing_seed}" && -x ./fuzz/run_capnet_single_seed.expect ]]; then
+        diag_log="${log_dir}/capnet_diag_seed_${failing_seed}.log"
+        echo "Re-running failing seed ${failing_seed} for diagnostics..."
+        set +e
+        ./fuzz/run_capnet_single_seed.expect "${iters}" "${failing_seed}" > "${diag_log}" 2>&1
+        diag_status=$?
+        set -e
+        echo "---- diagnostic log (seed ${failing_seed}) ----"
+        cat "${diag_log}"
+        echo "---- end diagnostic log ----"
+    fi
+
     exit 1
 fi
 if (( total_failures != 0 )); then

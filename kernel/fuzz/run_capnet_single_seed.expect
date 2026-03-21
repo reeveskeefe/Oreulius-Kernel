@@ -1,0 +1,101 @@
+#!/usr/bin/expect -f
+#
+# Diagnostic re-run for a failing CapNet corpus seed.
+# Boots QEMU and runs the full corpus again; MAC-DIAG serial lines
+# provide the per-frame diagnostics for whichever seed(s) still fail.
+#
+# Usage:  ./fuzz/run_capnet_single_seed.expect <iters> <seed>
+# (seed argument is logged but the kernel always replays the fixed corpus)
+
+set harness_timeout 1200
+after [expr {$harness_timeout * 1000}] {
+    puts "FATAL: diagnostic harness exceeded ${harness_timeout}s wall-clock limit"
+    catch {exec kill -9 [exp_pid]}
+    exit 2
+}
+
+set timeout 120
+set send_slow {1 0.05}
+set iters 100
+set diag_seed 0
+if {[llength $argv] >= 1} {
+    set iters [lindex $argv 0]
+}
+if {[llength $argv] >= 2} {
+    set diag_seed [lindex $argv 1]
+}
+
+if {[info exists env(LOG_DIR)]} {
+    set log_path "$env(LOG_DIR)/capnet_single_seed_expect.log"
+    log_file -a $log_path
+}
+
+set qemu_extra ""
+if {[info exists env(QEMU_EXTRA_ARGS)]} {
+    set qemu_extra $env(QEMU_EXTRA_ARGS)
+}
+
+set qemu_args [list qemu-system-i386 -cdrom oreulia.iso -serial stdio]
+if {![regexp {(^|[[:space:]])-monitor([[:space:]]|$)} $qemu_extra]} {
+    lappend qemu_args -monitor none
+}
+set filtered_extra {}
+if {$qemu_extra eq ""} {
+    set filtered_extra [list -display none -no-reboot -no-shutdown]
+} else {
+    foreach arg $qemu_extra {
+        if {$arg eq "-nographic"} {
+            continue
+        }
+        lappend filtered_extra $arg
+    }
+}
+set qemu_args [concat $qemu_args $filtered_extra]
+spawn {*}$qemu_args
+
+proc expect_i686_shell_ready {} {
+    expect {
+        -re {Type 'help' for commands\.} { exp_continue }
+        -re {(\r?\n|^)> } {}
+        timeout { puts "timeout waiting for i686 kernel shell readiness"; exit 1 }
+    }
+}
+
+proc expect_i686_prompt {} {
+    expect {
+        -re {(\r?\n|^)> } {}
+        timeout { puts "timeout waiting for i686 shell prompt"; exit 1 }
+    }
+}
+
+proc send_i686_cmd {cmd} {
+    after 300
+    send -- "\r"
+    after 200
+    expect {
+        -re {(\r?\n|^)> } {}
+        timeout {}
+    }
+    after 300
+    send -s -- "$cmd\r"
+}
+
+expect_i686_shell_ready
+send "\r"
+expect_i686_prompt
+set timeout 600
+
+puts "DIAG-RUN: cfc $iters (failing seed=$diag_seed)"
+send_i686_cmd "cfc $iters"
+expect {
+    -re {Seeds passed: [0-9]+ / [0-9]+} {}
+    timeout { puts "timeout waiting for CapNet corpus seed summary"; exit 1 }
+}
+expect {
+    -re {Total failures: [0-9]+} {}
+    timeout { puts "timeout waiting for CapNet corpus failure summary"; exit 1 }
+}
+expect_i686_prompt
+
+sleep 1
+send "\003"

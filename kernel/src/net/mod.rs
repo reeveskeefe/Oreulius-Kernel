@@ -260,6 +260,20 @@ impl HttpResponse {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpScheme {
+    Http,
+    Https,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedHttpUrl<'a> {
+    scheme: HttpScheme,
+    host: &'a str,
+    path: &'a str,
+    port: u16,
+}
+
 // ============================================================================
 // Network Service (Production)
 // ============================================================================
@@ -369,7 +383,17 @@ impl NetworkService {
 
     /// Resolve domain name to IP address (real DNS)
     pub fn dns_resolve(&mut self, domain: &str) -> Result<Ipv4Addr, NetworkError> {
-        // Check cache first
+        self.reactor_dns_resolve(domain)
+    }
+
+    /// Perform actual DNS query
+    fn perform_dns_query(&self, domain: &str) -> Result<Ipv4Addr, NetworkError> {
+        let resolved =
+            net_reactor::dns_resolve(domain).map_err(|_| NetworkError::DnsQueryFailed)?;
+        Ok(Ipv4Addr::from_bytes(resolved.0))
+    }
+
+    fn reactor_dns_resolve(&mut self, domain: &str) -> Result<Ipv4Addr, NetworkError> {
         for i in 0..self.dns_cache_count {
             let entry = &self.dns_cache[i];
             if entry.valid && entry.domain_len == domain.len() {
@@ -381,20 +405,9 @@ impl NetworkService {
             }
         }
 
-        // Perform real DNS query
         let ip = self.perform_dns_query(domain)?;
-
-        // Cache result
-        self.cache_dns_entry(domain, ip, 3600); // 1 hour TTL
-
+        self.cache_dns_entry(domain, ip, 3600);
         Ok(ip)
-    }
-
-    /// Perform actual DNS query
-    fn perform_dns_query(&self, domain: &str) -> Result<Ipv4Addr, NetworkError> {
-        let resolved =
-            net_reactor::dns_resolve(domain).map_err(|_| NetworkError::DnsResolutionFailed)?;
-        Ok(Ipv4Addr::from_bytes(resolved.0))
     }
 
     /// Cache DNS entry
@@ -418,13 +431,20 @@ impl NetworkService {
 
     /// Perform HTTP GET request (real implementation)
     pub fn http_get(&mut self, url: &str) -> Result<HttpResponse, NetworkError> {
-        // Parse URL
-        let (host, path, port) = parse_http_url(url);
+        let parsed = parse_http_url(url);
+        let path = if parsed.path.is_empty() {
+            "/"
+        } else {
+            parsed.path
+        };
 
-        crate::serial_println!("[HTTP] GET {}{}", host, path);
+        crate::serial_println!("[HTTP] GET {}{}", parsed.host, path);
 
-        // Resolve hostname
-        let ip = self.dns_resolve(host)?;
+        if parsed.scheme == HttpScheme::Https {
+            return Err(NetworkError::TlsValidationUnavailable);
+        }
+
+        let ip = self.reactor_dns_resolve(parsed.host)?;
 
         crate::serial_println!(
             "[HTTP] Resolved to {}.{}.{}.{}",
@@ -434,98 +454,29 @@ impl NetworkService {
             ip.octets()[3]
         );
 
-        // Create TCP connection
-        let conn_id = self.tcp_connect(ip, port)?;
+        let conn_id = net_reactor::tcp_connect(self::netstack::Ipv4Addr(ip.0), parsed.port)
+            .map_err(|_| NetworkError::TcpConnectFailed)?;
 
-        // Send HTTP request
-        let response = self.http_send_request(conn_id, HttpMethod::GET, host, path)?;
+        let response = (|| {
+            let (request, request_len) =
+                Self::build_http_request(HttpMethod::GET, parsed.host, path, parsed.port);
+            if request_len == 0 {
+                return Err(NetworkError::HttpRequestBuildFailed);
+            }
 
-        // Close connection
-        self.tcp_close(conn_id)?;
+            crate::serial_println!("[HTTP] Sending request...");
+            self.reactor_tcp_send(conn_id, &request[..request_len])?;
+            crate::serial_println!("[HTTP] Sent {} bytes via TCP", request_len);
 
-        Ok(response)
+            self.reactor_receive_http_response(conn_id)
+        })();
+
+        let _ = net_reactor::tcp_close(conn_id);
+        response
     }
 
-    /// Create TCP connection
-    fn tcp_connect(&mut self, ip: Ipv4Addr, port: u16) -> Result<u32, NetworkError> {
-        if self.tcp_count >= MAX_CONNECTIONS {
-            return Err(NetworkError::TooManyConnections);
-        }
-
-        let conn_id = net_reactor::tcp_connect(self::netstack::Ipv4Addr(ip.0), port)
-            .map_err(|_| NetworkError::ConnectionFailed)? as u32;
-
-        let mut conn = TcpConnection::new();
-        conn.id = conn_id;
-        conn.local_addr = SocketAddr::new(self.ip_address, 0);
-        conn.remote_addr = SocketAddr::new(ip, port);
-        conn.state = TcpState::Established;
-        conn.owner = ProcessId(0);
-        conn.seq_num = 0;
-        conn.ack_num = 0;
-        conn.window_size = 65535;
-
-        self.tcp_connections[self.tcp_count] = conn;
-        self.tcp_count += 1;
-        self.next_conn_id = self.next_conn_id.max(conn_id.saturating_add(1));
-
-        crate::serial_println!(
-            "[TCP] Connected to {}.{}.{}.{}:{}",
-            ip.octets()[0],
-            ip.octets()[1],
-            ip.octets()[2],
-            ip.octets()[3],
-            port
-        );
-
-        self.record_temporal_state_snapshot();
-        Ok(conn_id)
-    }
-
-    /// Send HTTP request over TCP connection
-    fn http_send_request(
-        &self,
-        conn_id: u32,
-        method: HttpMethod,
-        host: &str,
-        path: &str,
-    ) -> Result<HttpResponse, NetworkError> {
-        // Find connection
-        let conn = self
-            .tcp_connections
-            .iter()
-            .find(|c| c.id == conn_id)
-            .ok_or(NetworkError::ConnectionNotFound)?;
-
-        // Build HTTP request
-        let (request, request_len) =
-            self.build_http_request(method, host, path, conn.remote_addr.port);
-        if request_len == 0 {
-            return Err(NetworkError::SendFailed);
-        }
-
-        // Send HTTP request through real TCP/IP stack
-        crate::serial_println!("[HTTP] Sending request...");
-
-        // Send via network reactor (single-owner TCP stack)
-        self.send_tcp_data(conn, &request[..request_len])?;
-
-        crate::serial_println!(
-            "[HTTP] Sent {} bytes via TCP to {}:{}",
-            request_len,
-            conn.remote_addr.ip.0[0],
-            conn.remote_addr.port
-        );
-
-        // Receive and parse HTTP response
-        let response = self.receive_and_parse_http_response(conn)?;
-
-        Ok(response)
-    }
-
-    /// Send TCP data to connection
-    fn send_tcp_data(&self, conn: &TcpConnection, data: &[u8]) -> Result<(), NetworkError> {
-        let conn_id = conn.id as u16;
+    /// Send TCP data through the reactor-owned TCP stack.
+    fn reactor_tcp_send(&self, conn_id: u16, data: &[u8]) -> Result<(), NetworkError> {
         let timeout_ticks = (crate::pit::get_frequency() as u64)
             .saturating_mul(10)
             .max(1);
@@ -537,7 +488,7 @@ impl NetworkService {
                 Ok(sent_now) => {
                     if sent_now == 0 {
                         if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
-                            return Err(NetworkError::Timeout);
+                            return Err(NetworkError::TcpTimeout);
                         }
                         crate::quantum_scheduler::yield_now();
                         continue;
@@ -548,17 +499,17 @@ impl NetworkService {
                     // SYN/SYN-ACK progression can race with immediate send attempts.
                     if e == "Connection not established" {
                         if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
-                            return Err(NetworkError::Timeout);
+                            return Err(NetworkError::TcpTimeout);
                         }
                         crate::quantum_scheduler::yield_now();
                         continue;
                     }
-                    return Err(NetworkError::SendFailed);
+                    return Err(NetworkError::TcpSendFailed);
                 }
             }
 
             if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
-                return Err(NetworkError::Timeout);
+                return Err(NetworkError::TcpTimeout);
             }
         }
 
@@ -582,7 +533,7 @@ impl NetworkService {
             .saturating_add(tcp_header_len)
             .saturating_add(data.len());
         if frame_len > packet.len() || frame_len > (MTU + 14) {
-            return Err(NetworkError::SendFailed);
+            return Err(NetworkError::TcpSendFailed);
         }
 
         let dest_mac = [0xFFu8; 6];
@@ -643,7 +594,7 @@ impl NetworkService {
     /// Send raw packet via network interface
     fn send_raw_packet(&self, packet: &[u8]) -> Result<(), NetworkError> {
         if packet.len() < 34 {
-            return Err(NetworkError::SendFailed);
+            return Err(NetworkError::TcpSendFailed);
         }
         let frame_len = if packet.len() >= 18 {
             let ethertype = u16::from_be_bytes([packet[12], packet[13]]);
@@ -659,24 +610,20 @@ impl NetworkService {
         #[cfg(not(target_arch = "aarch64"))]
         {
             let mut driver = self::e1000::E1000_DRIVER.lock();
-            let nic = driver.as_mut().ok_or(NetworkError::SendFailed)?;
+            let nic = driver.as_mut().ok_or(NetworkError::TcpSendFailed)?;
             nic.send_frame(&packet[..frame_len])
-                .map_err(|_| NetworkError::SendFailed)
+                .map_err(|_| NetworkError::TcpSendFailed)
         }
         #[cfg(target_arch = "aarch64")]
         {
             let _ = frame_len;
-            Err(NetworkError::SendFailed)
+            Err(NetworkError::TcpSendFailed)
         }
     }
 
-    /// Receive and parse HTTP response
-    fn receive_and_parse_http_response(
-        &self,
-        conn: &TcpConnection,
-    ) -> Result<HttpResponse, NetworkError> {
+    /// Receive and parse HTTP response through the reactor-owned TCP stack.
+    fn reactor_receive_http_response(&self, conn_id: u16) -> Result<HttpResponse, NetworkError> {
         let mut response = HttpResponse::new();
-        let conn_id = conn.id as u16;
         let timeout_ticks = (crate::pit::get_frequency() as u64)
             .saturating_mul(12)
             .max(1);
@@ -691,7 +638,7 @@ impl NetworkService {
 
         while crate::pit::get_ticks().saturating_sub(start_ticks) <= timeout_ticks {
             let read = net_reactor::tcp_recv(conn_id, &mut chunk)
-                .map_err(|_| NetworkError::ReceiveFailed)?;
+                .map_err(|_| NetworkError::TcpReceiveFailed)?;
             if read == 0 {
                 if headers_done {
                     break;
@@ -703,7 +650,7 @@ impl NetworkService {
             if !headers_done {
                 let available = headers.len().saturating_sub(headers_len);
                 if available == 0 {
-                    return Err(NetworkError::ReceiveFailed);
+                    return Err(NetworkError::HttpParseFailed);
                 }
                 let to_copy = core::cmp::min(read, available);
                 headers[headers_len..headers_len + to_copy].copy_from_slice(&chunk[..to_copy]);
@@ -727,7 +674,7 @@ impl NetworkService {
                         }
                     }
                 } else if to_copy < read {
-                    return Err(NetworkError::ReceiveFailed);
+                    return Err(NetworkError::HttpParseFailed);
                 }
             } else {
                 let space = response.body.len().saturating_sub(body_len);
@@ -749,12 +696,15 @@ impl NetworkService {
         }
 
         if !headers_done {
-            return Err(NetworkError::ReceiveFailed);
+            if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                return Err(NetworkError::HttpTimeout);
+            }
+            return Err(NetworkError::HttpParseFailed);
         }
 
         if chunked {
             response.body_len = decode_chunked_body_in_place(&mut response.body, body_len)
-                .map_err(|_| NetworkError::ReceiveFailed)?;
+                .map_err(|_| NetworkError::HttpParseFailed)?;
         } else if let Some(expected) = content_length {
             response.body_len =
                 core::cmp::min(body_len, core::cmp::min(expected, response.body.len()));
@@ -762,23 +712,11 @@ impl NetworkService {
             response.body_len = body_len;
         }
 
-        let _ = crate::temporal::record_tcp_socket_data_event(
-            conn.id,
-            conn.state as u8,
-            conn.local_addr.ip.0,
-            conn.local_addr.port,
-            conn.remote_addr.ip.0,
-            conn.remote_addr.port,
-            crate::temporal::TEMPORAL_SOCKET_EVENT_RECV,
-            &response.body[..response.body_len],
-        );
-
         Ok(response)
     }
 
     /// Build HTTP/1.1 request
     fn build_http_request(
-        &self,
         method: HttpMethod,
         host: &str,
         path: &str,
@@ -818,46 +756,15 @@ impl NetworkService {
         (buf, pos)
     }
 
-    /// Receive HTTP response
-    fn receive_http_response(&self) -> Result<HttpResponse, NetworkError> {
-        if self.tcp_count == 0 {
-            return Err(NetworkError::ConnectionNotFound);
-        }
-        let conn = &self.tcp_connections[0];
-        if conn.id == 0 {
-            return Err(NetworkError::ConnectionNotFound);
-        }
-        self.receive_and_parse_http_response(conn)
-    }
-
-    /// Close TCP connection
-    fn tcp_close(&mut self, conn_id: u32) -> Result<(), NetworkError> {
-        let mut found_idx = None;
-        for i in 0..self.tcp_count {
-            if self.tcp_connections[i].id == conn_id {
-                found_idx = Some(i);
-                break;
-            }
-        }
-        let idx = found_idx.ok_or(NetworkError::ConnectionNotFound)?;
-        net_reactor::tcp_close(conn_id as u16).map_err(|_| NetworkError::ConnectionFailed)?;
-        for j in idx..self.tcp_count.saturating_sub(1) {
-            self.tcp_connections[j] = self.tcp_connections[j + 1];
-        }
-        if self.tcp_count > 0 {
-            self.tcp_connections[self.tcp_count - 1] = TcpConnection::new();
-            self.tcp_count -= 1;
-        }
-        self.record_temporal_state_snapshot();
-        Ok(())
-    }
-
     /// Get network statistics
     pub fn stats(&self) -> NetworkStats {
+        let reactor_info = net_reactor::get_info().ok();
         NetworkStats {
             wifi_enabled: self.wifi_enabled,
-            ip_address: self.ip_address,
-            tcp_connections: self.tcp_count,
+            ip_address: reactor_info
+                .map(|i| Ipv4Addr::from_bytes(i.ip.0))
+                .unwrap_or(self.ip_address),
+            tcp_connections: reactor_info.map(|i| i.tcp_conns).unwrap_or(self.tcp_count),
             dns_cache_entries: self.dns_cache_count,
         }
     }
@@ -1133,13 +1040,18 @@ pub enum NetworkError {
     #[cfg(not(target_arch = "aarch64"))]
     WiFiError(self::wifi::WifiError),
     NotConnected,
-    DnsResolutionFailed,
+    DnsQueryFailed,
     TooManyConnections,
     ConnectionNotFound,
-    ConnectionFailed,
-    SendFailed,
-    ReceiveFailed,
-    Timeout,
+    TcpConnectFailed,
+    TcpSendFailed,
+    TcpReceiveFailed,
+    TcpTimeout,
+    HttpRequestBuildFailed,
+    HttpParseFailed,
+    HttpTimeout,
+    UnsupportedScheme,
+    TlsValidationUnavailable,
 }
 
 #[cfg(not(target_arch = "aarch64"))]
@@ -1156,13 +1068,20 @@ impl NetworkError {
             #[cfg(not(target_arch = "aarch64"))]
             NetworkError::WiFiError(e) => e.as_str(),
             NetworkError::NotConnected => "Not connected",
-            NetworkError::DnsResolutionFailed => "DNS resolution failed",
+            NetworkError::DnsQueryFailed => "DNS query failed",
             NetworkError::TooManyConnections => "Too many connections",
             NetworkError::ConnectionNotFound => "Connection not found",
-            NetworkError::ConnectionFailed => "Connection failed",
-            NetworkError::SendFailed => "Send failed",
-            NetworkError::ReceiveFailed => "Receive failed",
-            NetworkError::Timeout => "Timeout",
+            NetworkError::TcpConnectFailed => "TCP connect failed",
+            NetworkError::TcpSendFailed => "TCP send failed",
+            NetworkError::TcpReceiveFailed => "TCP receive failed",
+            NetworkError::TcpTimeout => "TCP timeout",
+            NetworkError::HttpRequestBuildFailed => "HTTP request build failed",
+            NetworkError::HttpParseFailed => "HTTP parse failed",
+            NetworkError::HttpTimeout => "HTTP timeout",
+            NetworkError::UnsupportedScheme => "Unsupported URL scheme",
+            NetworkError::TlsValidationUnavailable => {
+                "HTTPS blocked: strict certificate validation is not implemented"
+            }
         }
     }
 }
@@ -1207,13 +1126,13 @@ pub fn init() {
 // Helper Functions
 // ============================================================================
 
-fn parse_http_url(url: &str) -> (&str, &str, u16) {
-    let (rest, default_port) = if url.starts_with("http://") {
-        (&url[7..], 80u16)
+fn parse_http_url(url: &str) -> ParsedHttpUrl<'_> {
+    let (scheme, rest, default_port) = if url.starts_with("http://") {
+        (HttpScheme::Http, &url[7..], 80u16)
     } else if url.starts_with("https://") {
-        (&url[8..], 443u16)
+        (HttpScheme::Https, &url[8..], 443u16)
     } else {
-        (url, 80u16)
+        (HttpScheme::Http, url, 80u16)
     };
 
     let (host_port, path) = if let Some(slash_pos) = rest.find('/') {
@@ -1227,12 +1146,22 @@ fn parse_http_url(url: &str) -> (&str, &str, u16) {
         let port_str = &host_port[colon_pos + 1..];
         if !host.is_empty() {
             if let Some(port) = parse_u16_decimal(port_str.as_bytes()) {
-                return (host, path, port);
+                return ParsedHttpUrl {
+                    scheme,
+                    host,
+                    path,
+                    port,
+                };
             }
         }
     }
 
-    (host_port, path, default_port)
+    ParsedHttpUrl {
+        scheme,
+        host: host_port,
+        path,
+        port: default_port,
+    }
 }
 
 fn parse_u16_decimal(bytes: &[u8]) -> Option<u16> {
@@ -1250,6 +1179,36 @@ fn parse_u16_decimal(bytes: &[u8]) -> Option<u16> {
         }
     }
     Some(value as u16)
+}
+
+#[cfg(test)]
+mod http_client_tests {
+    use super::{parse_http_url, HttpMethod, HttpScheme, NetworkService};
+
+    #[test]
+    fn parse_http_url_preserves_scheme_and_port() {
+        let http = parse_http_url("http://example.com/test");
+        assert_eq!(http.scheme, HttpScheme::Http);
+        assert_eq!(http.host, "example.com");
+        assert_eq!(http.path, "/test");
+        assert_eq!(http.port, 80);
+
+        let https = parse_http_url("https://example.com:8443/secure");
+        assert_eq!(https.scheme, HttpScheme::Https);
+        assert_eq!(https.host, "example.com");
+        assert_eq!(https.path, "/secure");
+        assert_eq!(https.port, 8443);
+    }
+
+    #[test]
+    fn build_http_request_writes_host_path_and_connection_close() {
+        let (req, len) =
+            NetworkService::build_http_request(HttpMethod::GET, "example.com", "/abc", 80);
+        let text = core::str::from_utf8(&req[..len]).unwrap();
+        assert!(text.starts_with("GET /abc HTTP/1.1\r\n"));
+        assert!(text.contains("\r\nHost: example.com\r\n"));
+        assert!(text.contains("\r\nConnection: close\r\n"));
+    }
 }
 
 fn u16_to_ascii(mut value: u16, out: &mut [u8; 5]) -> usize {

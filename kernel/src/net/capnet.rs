@@ -1138,6 +1138,9 @@ fn control_mac_input(
         return Err(CapNetError::PayloadTooLarge);
     }
 
+    // Zero the full buffer so padding bytes are deterministic.
+    *out = [0u8; CAPNET_CTRL_HEADER_NO_MAC_LEN + CAPNET_CTRL_MAX_PAYLOAD];
+
     let mut offset = 0usize;
     write_u32(out, &mut offset, CAPNET_CTRL_MAGIC);
     write_u8(out, &mut offset, CAPNET_CTRL_VERSION);
@@ -2358,6 +2361,27 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
     };
 
     init();
+
+    // Override the random device ID with a deterministic value derived from
+    // the seed so that MAC verification is fully reproducible across boots.
+    let _fuzz_id_guard = {
+        struct FuzzIdGuard {
+            prev: u64,
+        }
+        impl Drop for FuzzIdGuard {
+            fn drop(&mut self) {
+                *CAPNET_LOCAL_DEVICE_ID.lock() = self.prev;
+            }
+        }
+        let prev = {
+            let mut id = CAPNET_LOCAL_DEVICE_ID.lock();
+            let saved = *id;
+            let deterministic = seed ^ 0xF022_1D00_CA5E_F177;
+            *id = if deterministic == 0 { 1 } else { deterministic };
+            saved
+        };
+        FuzzIdGuard { prev }
+    };
     let local = local_device_id().ok_or("CapNet local identity unavailable")?;
 
     let mut rng = CapNetFuzzRng::new(seed ^ 0xC4A9_7E11_42D8_F00D);
@@ -2421,6 +2445,10 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
                 );
             }
             Err(e) => {
+                crate::serial_println!(
+                    "MAC-DIAG offer seed={} iter={} err={} local={:#x} k0={:#x} k1={:#x}",
+                    seed, i, e.as_str(), local, k0, k1
+                );
                 record_fuzz_failure(
                     &mut stats,
                     i,
@@ -2442,6 +2470,10 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
         if let Err(e) =
             process_incoming_control_payload(&replay.bytes[..replay.len], 2048 + i as u64)
         {
+            crate::serial_println!(
+                "MAC-DIAG hb seed={} iter={} err={} local={:#x} k0={:#x} k1={:#x}",
+                seed, i, e.as_str(), local, k0, k1
+            );
             record_fuzz_failure(
                 &mut stats,
                 i,
