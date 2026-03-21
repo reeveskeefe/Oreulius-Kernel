@@ -117,9 +117,30 @@ impl DamageAccumulator {
         if w == 0 || h == 0 {
             return;
         }
-        let cx = (x.max(0)) as u32;
-        let cy = (y.max(0)) as u32;
-        let rect = DamageRect::new(cx, cy, w, h).clip_to(self.screen_w, self.screen_h);
+        let mut rx = x;
+        let mut ry = y;
+        let mut rw = w;
+        let mut rh = h;
+
+        if rx < 0 {
+            let shift = (-rx) as u32;
+            if shift >= rw {
+                return;
+            }
+            rw -= shift;
+            rx = 0;
+        }
+        if ry < 0 {
+            let shift = (-ry) as u32;
+            if shift >= rh {
+                return;
+            }
+            rh -= shift;
+            ry = 0;
+        }
+
+        let rect =
+            DamageRect::new(rx as u32, ry as u32, rw, rh).clip_to(self.screen_w, self.screen_h);
         self.add(rect);
     }
 
@@ -207,5 +228,17 @@ impl<'a> Iterator for DamageIter<'a> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DamageAccumulator, DamageRect};
+
+    #[test]
+    fn add_region_shrinks_negative_origin_to_visible_bounds() {
+        let mut damage = DamageAccumulator::new(100, 100);
+        damage.add_region(-10, -20, 30, 40);
+        assert_eq!(damage.bounding_box(), Some(DamageRect::new(0, 0, 20, 20)));
     }
 }

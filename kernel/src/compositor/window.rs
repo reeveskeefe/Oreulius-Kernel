@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 use super::protocol::WindowId;
+use super::surface::MAX_SURFACES;
 
 pub const MAX_WINDOWS: usize = 64;
 
@@ -63,6 +64,7 @@ impl WindowMeta {
 
 pub struct WindowTable {
     slots: [Option<WindowMeta>; MAX_WINDOWS],
+    surface_owners: [Option<WindowId>; MAX_SURFACES],
     /// Monotonic ID counter.
     next_id: u32,
 }
@@ -71,6 +73,7 @@ impl WindowTable {
     pub const fn new() -> Self {
         WindowTable {
             slots: [None; MAX_WINDOWS],
+            surface_owners: [None; MAX_SURFACES],
             next_id: 1,
         }
     }
@@ -100,6 +103,9 @@ impl WindowTable {
                     dirty: true,
                     alive: true,
                 });
+                if surface_idx < MAX_SURFACES {
+                    self.surface_owners[surface_idx] = Some(id);
+                }
                 self.next_id = self.next_id.wrapping_add(1).max(1);
                 return Some(id);
             }
@@ -110,9 +116,14 @@ impl WindowTable {
     /// Destroy a window by ID, freeing its slot.
     pub fn destroy(&mut self, id: WindowId) -> bool {
         for slot in self.slots.iter_mut() {
-            if matches!(slot, Some(w) if w.id == id) {
-                *slot = None;
-                return true;
+            if let Some(w) = slot.as_ref() {
+                if w.id == id {
+                    if w.surface_idx < MAX_SURFACES {
+                        self.surface_owners[w.surface_idx] = None;
+                    }
+                    *slot = None;
+                    return true;
+                }
             }
         }
         false
@@ -155,12 +166,22 @@ impl WindowTable {
         height: u32,
         new_surface_idx: usize,
     ) -> bool {
+        let old_surface_idx = match self.find(id) {
+            Some(w) => w.surface_idx,
+            None => return false,
+        };
+        if old_surface_idx < MAX_SURFACES {
+            self.surface_owners[old_surface_idx] = None;
+        }
         match self.find_mut(id) {
             Some(w) => {
                 w.width = width;
                 w.height = height;
                 w.surface_idx = new_surface_idx;
                 w.dirty = true;
+                if new_surface_idx < MAX_SURFACES {
+                    self.surface_owners[new_surface_idx] = Some(id);
+                }
                 true
             }
             None => false,
@@ -284,5 +305,13 @@ impl WindowTable {
             .filter_map(|s| s.as_ref())
             .filter(|w| w.session_idx == session_idx)
             .count()
+    }
+
+    /// Find the window that currently owns `surface_idx`.
+    pub fn find_by_surface_idx(&self, surface_idx: usize) -> Option<&WindowMeta> {
+        if surface_idx >= MAX_SURFACES {
+            return None;
+        }
+        self.surface_owners[surface_idx].and_then(|wid| self.find(wid))
     }
 }

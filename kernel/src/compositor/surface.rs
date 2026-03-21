@@ -83,10 +83,8 @@ impl Surface {
     /// Must not be called while any code holds a reference to the pixel data.
     pub fn free(&mut self) {
         if !self.ptr.is_null() && self.pages > 0 {
-            // Zero the buffer (defensive scrub) before returning to the
-            // page allocator.  `free_pages` does not exist in the current
-            // allocator (bump-style), so we just zero and mark dead; the
-            // pages will be reclaimed on process exit via the page table.
+            // Zero the buffer (defensive scrub) before returning it to the
+            // allocator once page reclamation exists.
             #[cfg(not(target_arch = "aarch64"))]
             let page_size = crate::paging::PAGE_SIZE;
             #[cfg(target_arch = "aarch64")]
@@ -94,6 +92,7 @@ impl Surface {
             unsafe {
                 core::ptr::write_bytes(self.ptr as *mut u8, 0, self.pages * page_size);
             }
+            let _ = memory::deallocate_pages(self.ptr as usize, self.pages);
             self.ptr = core::ptr::null_mut();
             self.pages = 0;
         }

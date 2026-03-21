@@ -214,8 +214,8 @@ fn route_mouse(
 
     let compositor_ev = CompositorInputEvent::Pointer {
         window: target_wid,
-        x: px,
-        y: py,
+        x: px - window.x,
+        y: py - window.y,
         dx: mouse_ev.dx,
         dy: mouse_ev.dy,
         buttons: mouse_ev.buttons,
@@ -264,4 +264,108 @@ pub fn focus_gained_event(
         session_idx: window.session_idx,
         event: CompositorInputEvent::FocusGained { window: wid },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{route_input, CursorState, FocusState};
+    use crate::compositor::protocol::CompositorInputEvent;
+    use crate::compositor::session::SessionTable;
+    use crate::compositor::window::WindowTable;
+    use crate::drivers::input::InputEvent;
+    use crate::ipc::ProcessId;
+
+    fn setup_session_and_window() -> (SessionTable, WindowTable) {
+        let mut sessions = SessionTable::new();
+        let session_idx = sessions.open(ProcessId(7)).unwrap();
+        sessions.get_mut(session_idx).unwrap().input_subscribed = true;
+
+        let mut windows = WindowTable::new();
+        let window_id = windows.create(session_idx, 10, 20, 50, 50, 1).unwrap();
+        windows.raise(window_id);
+
+        (sessions, windows)
+    }
+
+    #[test]
+    fn pointer_events_report_window_local_coordinates() {
+        let (sessions, windows) = setup_session_and_window();
+        let mut focus = FocusState::new();
+        let mut cursor = CursorState::new();
+
+        let routed = route_input(
+            &InputEvent::mouse_event(15, 25, 0, 1),
+            &windows,
+            &sessions,
+            &mut focus,
+            &mut cursor,
+            100,
+            100,
+        )
+        .unwrap();
+
+        match routed.event {
+            CompositorInputEvent::Pointer { x, y, .. } => assert_eq!((x, y), (5, 5)),
+            other => panic!("unexpected event: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pointer_capture_routes_until_all_buttons_released() {
+        let (sessions, windows) = setup_session_and_window();
+        let mut focus = FocusState::new();
+        let mut cursor = CursorState::new();
+
+        let press = route_input(
+            &InputEvent::mouse_event(15, 25, 0, 1),
+            &windows,
+            &sessions,
+            &mut focus,
+            &mut cursor,
+            100,
+            100,
+        )
+        .unwrap();
+        let captured = match press.event {
+            CompositorInputEvent::Pointer { window, .. } => window,
+            other => panic!("unexpected event: {:?}", other),
+        };
+        assert_eq!(focus.captured_window(), Some(captured));
+
+        let moved = route_input(
+            &InputEvent::mouse_event(70, 70, 0, 1),
+            &windows,
+            &sessions,
+            &mut focus,
+            &mut cursor,
+            100,
+            100,
+        )
+        .unwrap();
+        match moved.event {
+            CompositorInputEvent::Pointer { window, .. } => assert_eq!(window, captured),
+            other => panic!("unexpected event: {:?}", other),
+        }
+
+        let released = route_input(
+            &InputEvent::mouse_event(0, 0, 0, 0),
+            &windows,
+            &sessions,
+            &mut focus,
+            &mut cursor,
+            100,
+            100,
+        )
+        .unwrap();
+        match released.event {
+            CompositorInputEvent::Pointer {
+                window, buttons, ..
+            } => {
+                assert_eq!(window, captured);
+                assert_eq!(buttons, 0);
+            }
+            other => panic!("unexpected event: {:?}", other),
+        }
+        assert_eq!(focus.captured_window(), None);
+    }
 }

@@ -47,8 +47,8 @@ pub fn alpha_blend(dst: u32, src: u32) -> u32 {
 // Present pass
 // ---------------------------------------------------------------------------
 
-/// Scanline scratch buffer: one ARGB pixel per column (up to 1920 wide).
-const MAX_SCAN_WIDTH: usize = 1920;
+/// Scanline scratch buffer width. Wider damage rects are processed in chunks.
+const MAX_SCAN_WIDTH: usize = super::policy::MAX_WINDOW_WIDTH as usize;
 
 /// Composit all dirty regions onto the display backend.
 ///
@@ -98,51 +98,112 @@ fn present_rect(
     if x1 <= x0 || y1 <= y0 {
         return;
     }
-    let scan_len = (x1 - x0) as usize;
+    for chunk_x0 in (x0..x1).step_by(MAX_SCAN_WIDTH.max(1)) {
+        let chunk_x1 = (chunk_x0 + MAX_SCAN_WIDTH as u32).min(x1);
+        let scan_len = (chunk_x1 - chunk_x0) as usize;
 
-    for sy in y0..y1 {
-        // Clear scanline to opaque black background.
-        for px in &mut scanline[..scan_len] {
-            *px = 0xFF00_0000;
-        }
-
-        // Composite windows bottom-to-top.
-        for &wid in sorted_ids {
-            let Some(win) = windows.find(wid) else {
-                continue;
-            };
-            let Some(surf) = surfaces.get(win.surface_idx) else {
-                continue;
-            };
-
-            if !surf.alive {
-                continue;
+        for sy in y0..y1 {
+            for px in &mut scanline[..scan_len] {
+                *px = 0xFF00_0000;
             }
 
-            let win_y = sy as i32 - win.y;
-            if win_y < 0 || win_y >= win.height as i32 {
-                continue;
-            }
+            for &wid in sorted_ids {
+                let Some(win) = windows.find(wid) else {
+                    continue;
+                };
+                let Some(surf) = surfaces.get(win.surface_idx) else {
+                    continue;
+                };
 
-            for sx_screen in x0..x1 {
-                let sx = sx_screen as i32 - win.x;
-                if sx < 0 || sx >= win.width as i32 {
+                if !surf.alive {
                     continue;
                 }
 
-                let argb = surf.get_pixel(sx as u32, win_y as u32);
-                let slot = (sx_screen - x0) as usize;
-                scanline[slot] = alpha_blend(scanline[slot], argb);
+                let win_y = sy as i32 - win.y;
+                if win_y < 0 || win_y >= win.height as i32 {
+                    continue;
+                }
+
+                for sx_screen in chunk_x0..chunk_x1 {
+                    let sx = sx_screen as i32 - win.x;
+                    if sx < 0 || sx >= win.width as i32 {
+                        continue;
+                    }
+
+                    let argb = surf.get_pixel(sx as u32, win_y as u32);
+                    let slot = (sx_screen - chunk_x0) as usize;
+                    scanline[slot] = alpha_blend(scanline[slot], argb);
+                }
+            }
+
+            for i in 0..scan_len {
+                let argb = scanline[i];
+                let r = ((argb >> 16) & 0xFF) as u8;
+                let g = ((argb >> 8) & 0xFF) as u8;
+                let b = (argb & 0xFF) as u8;
+                backend.put_pixel(chunk_x0 + i as u32, sy, r, g, b);
             }
         }
+    }
+}
 
-        // Write the composited scanline to the backend.
-        for i in 0..scan_len {
-            let argb = scanline[i];
-            let r = ((argb >> 16) & 0xFF) as u8;
-            let g = ((argb >> 8) & 0xFF) as u8;
-            let b = (argb & 0xFF) as u8;
-            backend.put_pixel(x0 + i as u32, sy, r, g, b);
+#[cfg(test)]
+mod tests {
+    use super::present_frame;
+    use crate::compositor::backend::DisplayBackend;
+    use crate::compositor::damage::DamageAccumulator;
+    use crate::compositor::surface::SurfacePool;
+    use crate::compositor::window::WindowTable;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingBackend {
+        width: u32,
+        height: u32,
+        pixels: AtomicUsize,
+    }
+
+    impl CountingBackend {
+        const fn new(width: u32, height: u32) -> Self {
+            CountingBackend {
+                width,
+                height,
+                pixels: AtomicUsize::new(0),
+            }
         }
+    }
+
+    impl DisplayBackend for CountingBackend {
+        fn put_pixel(&self, _x: u32, _y: u32, _r: u8, _g: u8, _b: u8) {
+            self.pixels.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn fill_rect(&self, _x: u32, _y: u32, _w: u32, _h: u32, _r: u8, _g: u8, _b: u8) {}
+
+        fn flush(&self) {}
+
+        fn width(&self) -> u32 {
+            self.width
+        }
+
+        fn height(&self) -> u32 {
+            self.height
+        }
+
+        fn is_available(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn present_frame_handles_backends_wider_than_scanline_chunk() {
+        let backend = CountingBackend::new(2560, 1);
+        let windows = WindowTable::new();
+        let surfaces = SurfacePool::new();
+        let mut damage = DamageAccumulator::new(2560, 1);
+        damage.add_region(0, 0, 2560, 1);
+
+        present_frame(&damage, &windows, &surfaces, &backend);
+
+        assert_eq!(backend.pixels.load(Ordering::Relaxed), 2560);
     }
 }

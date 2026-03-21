@@ -410,10 +410,13 @@ impl CompositorService {
 
     fn do_destroy_window(&mut self, window: WindowId, cap: CompositorCap) -> CompositorResponse {
         // Validate capability.
-        let (session_idx, _) = match self.caps.validate(cap, CapKind::WindowManage) {
+        let (session_idx, resource_id) = match self.caps.validate(cap, CapKind::WindowManage) {
             Some(v) => v,
             None => return CompositorResponse::Error(CompositorError::InvalidCapability),
         };
+        if resource_id != window.0 as u64 {
+            return CompositorResponse::Error(CompositorError::InvalidCapability);
+        }
         let win_meta = match self.windows.find(window) {
             Some(w) => *w,
             None => return CompositorResponse::Error(CompositorError::InvalidWindow),
@@ -435,6 +438,10 @@ impl CompositorService {
             self.damage.add_region(win.x, win.y, win.width, win.height);
             self.audit
                 .record(AuditKind::WindowDestroyed, sidx as i32, wid.0 as u64);
+            self.caps
+                .revoke_resource(CapKind::WindowManage, sidx, wid.0 as u64);
+            self.caps
+                .revoke_resource(CapKind::SurfaceWrite, sidx, surf_idx as u64);
             self.surfaces.free(surf_idx);
             self.sessions.get_mut(sidx).map(|s| s.remove_window(wid));
         }
@@ -452,10 +459,13 @@ impl CompositorService {
         x: i32,
         y: i32,
     ) -> CompositorResponse {
-        let (session_idx, _) = match self.caps.validate(cap, CapKind::WindowManage) {
+        let (session_idx, resource_id) = match self.caps.validate(cap, CapKind::WindowManage) {
             Some(v) => v,
             None => return CompositorResponse::Error(CompositorError::InvalidCapability),
         };
+        if resource_id != window.0 as u64 {
+            return CompositorResponse::Error(CompositorError::InvalidCapability);
+        }
         let win = match self.windows.find(window) {
             Some(w) => *w,
             None => return CompositorResponse::Error(CompositorError::InvalidWindow),
@@ -493,10 +503,13 @@ impl CompositorService {
         new_width: u32,
         new_height: u32,
     ) -> CompositorResponse {
-        let (session_idx, _) = match self.caps.validate(cap, CapKind::WindowManage) {
+        let (session_idx, resource_id) = match self.caps.validate(cap, CapKind::WindowManage) {
             Some(v) => v,
             None => return CompositorResponse::Error(CompositorError::InvalidCapability),
         };
+        if resource_id != window.0 as u64 {
+            return CompositorResponse::Error(CompositorError::InvalidCapability);
+        }
         let win = match self.windows.find(window) {
             Some(w) => *w,
             None => return CompositorResponse::Error(CompositorError::InvalidWindow),
@@ -517,10 +530,9 @@ impl CompositorService {
             Some(i) => i,
             None => return CompositorResponse::Error(CompositorError::OutOfMemory),
         };
+        self.caps
+            .revoke_resource(CapKind::SurfaceWrite, session_idx, win.surface_idx as u64);
         self.surfaces.free(win.surface_idx);
-        // Revoke the old surface capability.
-        // (We don't track surface-specific caps by surface_idx easily here,
-        //  so we revoke-all for the session and reissue — acceptable at resize.)
         self.windows
             .resize(window, new_width, new_height, new_surf_idx);
 
@@ -548,10 +560,13 @@ impl CompositorService {
         cap: CompositorCap,
         z: u8,
     ) -> CompositorResponse {
-        let (session_idx, _) = match self.caps.validate(cap, CapKind::WindowManage) {
+        let (session_idx, resource_id) = match self.caps.validate(cap, CapKind::WindowManage) {
             Some(v) => v,
             None => return CompositorResponse::Error(CompositorError::InvalidCapability),
         };
+        if resource_id != window.0 as u64 {
+            return CompositorResponse::Error(CompositorError::InvalidCapability);
+        }
         let win = match self.windows.find(window) {
             Some(w) => *w,
             None => return CompositorResponse::Error(CompositorError::InvalidWindow),
@@ -577,10 +592,13 @@ impl CompositorService {
         argb: u32,
     ) -> CompositorResponse {
         let surf_idx = surface.0 as usize;
-        let (_, _) = match self.caps.validate(cap, CapKind::SurfaceWrite) {
+        let (_, resource_id) = match self.caps.validate(cap, CapKind::SurfaceWrite) {
             Some(v) => v,
             None => return CompositorResponse::Error(CompositorError::InvalidCapability),
         };
+        if resource_id != surf_idx as u64 {
+            return CompositorResponse::Error(CompositorError::InvalidCapability);
+        }
         let surf = match self.surfaces.get_mut(surf_idx) {
             Some(s) => s,
             None => return CompositorResponse::Error(CompositorError::InvalidSurface),
@@ -604,10 +622,13 @@ impl CompositorService {
         argb: u32,
     ) -> CompositorResponse {
         let surf_idx = surface.0 as usize;
-        let (_, _) = match self.caps.validate(cap, CapKind::SurfaceWrite) {
+        let (_, resource_id) = match self.caps.validate(cap, CapKind::SurfaceWrite) {
             Some(v) => v,
             None => return CompositorResponse::Error(CompositorError::InvalidCapability),
         };
+        if resource_id != surf_idx as u64 {
+            return CompositorResponse::Error(CompositorError::InvalidCapability);
+        }
         let surf = match self.surfaces.get_mut(surf_idx) {
             Some(s) => s,
             None => return CompositorResponse::Error(CompositorError::InvalidSurface),
@@ -631,10 +652,13 @@ impl CompositorService {
         fg_argb: u32,
     ) -> CompositorResponse {
         let surf_idx = surface.0 as usize;
-        let (_, _) = match self.caps.validate(cap, CapKind::SurfaceWrite) {
+        let (_, resource_id) = match self.caps.validate(cap, CapKind::SurfaceWrite) {
             Some(v) => v,
             None => return CompositorResponse::Error(CompositorError::InvalidCapability),
         };
+        if resource_id != surf_idx as u64 {
+            return CompositorResponse::Error(CompositorError::InvalidCapability);
+        }
         let surf = match self.surfaces.get_mut(surf_idx) {
             Some(s) => s,
             None => return CompositorResponse::Error(CompositorError::InvalidSurface),
@@ -657,40 +681,28 @@ impl CompositorService {
         dirty: (u32, u32, u32, u32),
     ) -> CompositorResponse {
         let surf_idx = surface.0 as usize;
-        let (_, _) = match self.caps.validate(cap, CapKind::SurfaceWrite) {
+        let (_, resource_id) = match self.caps.validate(cap, CapKind::SurfaceWrite) {
             Some(v) => v,
             None => return CompositorResponse::Error(CompositorError::InvalidCapability),
         };
+        if resource_id != surf_idx as u64 {
+            return CompositorResponse::Error(CompositorError::InvalidCapability);
+        }
         if self.surfaces.get(surf_idx).is_none() {
             return CompositorResponse::Error(CompositorError::InvalidSurface);
         }
 
-        // Find the window that owns this surface and mark it dirty.
-        let mut found_wid = None;
-        let mut sorted = [WindowId(0); super::window::MAX_WINDOWS];
-        let n = self.windows.sorted_ids(&mut sorted);
-        for &wid in &sorted[..n] {
-            if let Some(win) = self.windows.find(wid) {
-                if win.surface_idx == surf_idx {
-                    found_wid = Some(wid);
-                    break;
-                }
-            }
-        }
-
-        if let Some(wid) = found_wid {
-            self.windows.mark_dirty(wid);
-            if let Some(win) = self.windows.find(wid) {
-                if dirty.2 > 0 && dirty.3 > 0 {
-                    self.damage.add_region(
-                        win.x + dirty.0 as i32,
-                        win.y + dirty.1 as i32,
-                        dirty.2,
-                        dirty.3,
-                    );
-                } else {
-                    self.damage.add_region(win.x, win.y, win.width, win.height);
-                }
+        if let Some(win) = self.windows.find_by_surface_idx(surf_idx).copied() {
+            self.windows.mark_dirty(win.id);
+            if dirty.2 > 0 && dirty.3 > 0 {
+                self.damage.add_region(
+                    win.x + dirty.0 as i32,
+                    win.y + dirty.1 as i32,
+                    dirty.2,
+                    dirty.3,
+                );
+            } else {
+                self.damage.add_region(win.x, win.y, win.width, win.height);
             }
         }
 
@@ -740,5 +752,268 @@ impl CompositorService {
         }
         self.sessions.get_mut(idx).unwrap().input_subscribed = false;
         CompositorResponse::Ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Once;
+
+    static TEST_MEMORY_INIT: Once = Once::new();
+
+    fn init_test_memory() {
+        TEST_MEMORY_INIT.call_once(crate::memory::init);
+    }
+
+    fn test_service() -> CompositorService {
+        init_test_memory();
+        let mut svc = CompositorService::new();
+        svc.screen_width = 800;
+        svc.screen_height = 600;
+        svc.backend.set_size(800, 600);
+        svc.damage.set_screen_size(800, 600);
+        svc.initialised = true;
+        svc
+    }
+
+    fn expect_error(resp: CompositorResponse, expected: CompositorError) {
+        match resp {
+            CompositorResponse::Error(err) => assert_eq!(err, expected),
+            other => panic!("unexpected response: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn surface_caps_are_resource_bound() {
+        let mut svc = test_service();
+        let (session, session_cap) =
+            match svc.dispatch(CompositorRequest::OpenSession { pid: ProcessId(1) }) {
+                CompositorResponse::SessionGranted {
+                    session,
+                    session_cap,
+                    ..
+                } => (session, session_cap),
+                other => panic!("unexpected response: {:?}", other),
+            };
+
+        let (surface_a, _surface_cap_a) = match svc.dispatch(CompositorRequest::CreateWindow {
+            session,
+            cap: session_cap,
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        }) {
+            CompositorResponse::WindowCreated {
+                surface,
+                surface_cap,
+                ..
+            } => (surface, surface_cap),
+            other => panic!("unexpected response: {:?}", other),
+        };
+        let (_surface_b, surface_cap_b) = match svc.dispatch(CompositorRequest::CreateWindow {
+            session,
+            cap: session_cap,
+            x: 20,
+            y: 20,
+            width: 10,
+            height: 10,
+        }) {
+            CompositorResponse::WindowCreated {
+                surface,
+                surface_cap,
+                ..
+            } => (surface, surface_cap),
+            other => panic!("unexpected response: {:?}", other),
+        };
+
+        expect_error(
+            svc.dispatch(CompositorRequest::SetPixel {
+                surface: surface_a,
+                cap: surface_cap_b,
+                x: 0,
+                y: 0,
+                argb: 0xFFFF_FFFF,
+            }),
+            CompositorError::InvalidCapability,
+        );
+    }
+
+    #[test]
+    fn window_caps_are_resource_bound() {
+        let mut svc = test_service();
+        let (session, session_cap) =
+            match svc.dispatch(CompositorRequest::OpenSession { pid: ProcessId(2) }) {
+                CompositorResponse::SessionGranted {
+                    session,
+                    session_cap,
+                    ..
+                } => (session, session_cap),
+                other => panic!("unexpected response: {:?}", other),
+            };
+
+        let (window_a, _window_cap_a) = match svc.dispatch(CompositorRequest::CreateWindow {
+            session,
+            cap: session_cap,
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        }) {
+            CompositorResponse::WindowCreated {
+                window, window_cap, ..
+            } => (window, window_cap),
+            other => panic!("unexpected response: {:?}", other),
+        };
+        let (_window_b, window_cap_b) = match svc.dispatch(CompositorRequest::CreateWindow {
+            session,
+            cap: session_cap,
+            x: 20,
+            y: 20,
+            width: 10,
+            height: 10,
+        }) {
+            CompositorResponse::WindowCreated {
+                window, window_cap, ..
+            } => (window, window_cap),
+            other => panic!("unexpected response: {:?}", other),
+        };
+
+        expect_error(
+            svc.dispatch(CompositorRequest::MoveWindow {
+                window: window_a,
+                cap: window_cap_b,
+                x: 30,
+                y: 30,
+            }),
+            CompositorError::InvalidCapability,
+        );
+    }
+
+    #[test]
+    fn old_surface_caps_are_revoked_after_resize() {
+        let mut svc = test_service();
+        let (session, session_cap) =
+            match svc.dispatch(CompositorRequest::OpenSession { pid: ProcessId(3) }) {
+                CompositorResponse::SessionGranted {
+                    session,
+                    session_cap,
+                    ..
+                } => (session, session_cap),
+                other => panic!("unexpected response: {:?}", other),
+            };
+
+        let (window, window_cap, surface, surface_cap) =
+            match svc.dispatch(CompositorRequest::CreateWindow {
+                session,
+                cap: session_cap,
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            }) {
+                CompositorResponse::WindowCreated {
+                    window,
+                    window_cap,
+                    surface,
+                    surface_cap,
+                } => (window, window_cap, surface, surface_cap),
+                other => panic!("unexpected response: {:?}", other),
+            };
+
+        let (new_surface, new_surface_cap) = match svc.dispatch(CompositorRequest::ResizeWindow {
+            window,
+            cap: window_cap,
+            new_width: 20,
+            new_height: 20,
+        }) {
+            CompositorResponse::WindowResized {
+                new_surface,
+                new_surface_cap,
+                ..
+            } => (new_surface, new_surface_cap),
+            other => panic!("unexpected response: {:?}", other),
+        };
+
+        expect_error(
+            svc.dispatch(CompositorRequest::SetPixel {
+                surface,
+                cap: surface_cap,
+                x: 0,
+                y: 0,
+                argb: 0xFFFF_FFFF,
+            }),
+            CompositorError::InvalidCapability,
+        );
+
+        match svc.dispatch(CompositorRequest::SetPixel {
+            surface: new_surface,
+            cap: new_surface_cap,
+            x: 0,
+            y: 0,
+            argb: 0xFFFF_FFFF,
+        }) {
+            CompositorResponse::Ok => {}
+            other => panic!("unexpected response: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn destroyed_resources_revoke_caps() {
+        let mut svc = test_service();
+        let (session, session_cap) =
+            match svc.dispatch(CompositorRequest::OpenSession { pid: ProcessId(4) }) {
+                CompositorResponse::SessionGranted {
+                    session,
+                    session_cap,
+                    ..
+                } => (session, session_cap),
+                other => panic!("unexpected response: {:?}", other),
+            };
+
+        let (window, window_cap, surface, surface_cap) =
+            match svc.dispatch(CompositorRequest::CreateWindow {
+                session,
+                cap: session_cap,
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            }) {
+                CompositorResponse::WindowCreated {
+                    window,
+                    window_cap,
+                    surface,
+                    surface_cap,
+                } => (window, window_cap, surface, surface_cap),
+                other => panic!("unexpected response: {:?}", other),
+            };
+
+        match svc.dispatch(CompositorRequest::DestroyWindow {
+            window,
+            cap: window_cap,
+        }) {
+            CompositorResponse::Ok => {}
+            other => panic!("unexpected response: {:?}", other),
+        }
+
+        expect_error(
+            svc.dispatch(CompositorRequest::DestroyWindow {
+                window,
+                cap: window_cap,
+            }),
+            CompositorError::InvalidCapability,
+        );
+        expect_error(
+            svc.dispatch(CompositorRequest::SetPixel {
+                surface,
+                cap: surface_cap,
+                x: 0,
+                y: 0,
+                argb: 0xFFFF_FFFF,
+            }),
+            CompositorError::InvalidCapability,
+        );
     }
 }

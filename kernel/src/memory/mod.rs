@@ -323,3 +323,12 @@ pub fn allocate_pages(count: usize) -> Result<usize, &'static str> {
         Ok(base)
     }
 }
+
+/// Release multiple contiguous pages previously returned by `allocate_pages`.
+///
+/// The current heap allocator is bump-only and cannot reclaim pages yet. This
+/// hook exists so long-lived subsystems can adopt real reclamation without
+/// changing their call sites again.
+pub fn deallocate_pages(_base: usize, _count: usize) -> Result<(), &'static str> {
+    Err("Page deallocation is not supported by the current allocator")
+}

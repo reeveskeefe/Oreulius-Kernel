@@ -134,6 +134,19 @@ impl CompositorCapRegistry {
         }
     }
 
+    /// Revoke all capabilities for a specific resource.
+    pub fn revoke_resource(&mut self, kind: CapKind, session_idx: usize, resource_id: u64) {
+        for entry in self.entries.iter_mut() {
+            if entry.alive
+                && entry.kind == kind
+                && entry.session_idx == session_idx
+                && entry.resource_id == resource_id
+            {
+                *entry = CapEntry::empty();
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------
