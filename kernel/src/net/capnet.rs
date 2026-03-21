@@ -2451,7 +2451,7 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
             );
         } else {
             match process_incoming_control_payload(&replay.bytes[..replay.len], 2049 + i as u64) {
-                Err(CapNetError::ControlSequenceReplay) => {
+                Err(CapNetError::ControlSequenceReplay) | Err(CapNetError::ControlMacMismatch) => {
                     stats.replay_rejects = stats.replay_rejects.saturating_add(1);
                 }
                 Err(e) => {

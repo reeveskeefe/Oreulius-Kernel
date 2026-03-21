@@ -1,0 +1,12 @@
+=== Building Oreulia kernel (x86_64 Multiboot2 path) ===
+[1/3] Assembling x86_64 boot support objects...
+src/asm/x86_64_atomics.asm:89: warning: superfluous LOCK prefix on XCHG instruction [-w+prefix-lock-xchg]
+src/asm/x86_64_perf.asm:73: warning: signed dword immediate exceeds bounds [-w+number-overflow]
+src/asm/x86_64_perf.asm:73: warning: dword data exceeds bounds [-w+number-overflow]
+[2/3] Building Rust kernel staticlib for x86_64...
+warning: oreulia-kernel@0.1.0: --- Oreulia Static Spectral Analysis (PMA §11.2) ---
+warning: oreulia-kernel@0.1.0: Graph derived from: src/security/intent_graph.rs CTMC_Q (9×9 real topology)
+warning: oreulia-kernel@0.1.0: Lanczos k=6 | λ₂(T)=0.483634 | Fiedler γ=0.516366 | Φ(G)≥0.258183 | residual=5.40e-1
+warning: oreulia-kernel@0.1.0: SUCCESS: Cheeger conductance bound verified (real CTMC topology).
+warning: oreulia-kernel@0.1.0: Preemptive compiler pipeline complete — PMA §11.2 satisfied.
+   Compiling oreulia-kernel v0.1.0 (/Users/keefereeves/Desktop/OreuliusKernel/TheActualKernelProject/oreulia/kernel)
