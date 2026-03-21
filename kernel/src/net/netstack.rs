@@ -290,17 +290,10 @@ impl NetworkStack {
 
     /// Mark interface as available
     pub fn mark_ready(&mut self) {
-        let prev_has_interface = self.has_interface;
-        let prev_mac = self.my_mac;
         self.has_interface = true;
         #[cfg(not(target_arch = "aarch64"))]
         if let Some(mac) = super::e1000::get_mac_address() {
             self.my_mac = MacAddr(mac);
-        }
-        if self.has_interface != prev_has_interface || self.my_mac != prev_mac {
-            self.record_temporal_network_config_event(
-                crate::temporal::TEMPORAL_NETWORK_CONFIG_EVENT_STATE,
-            );
         }
     }
 

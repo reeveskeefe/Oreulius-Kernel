@@ -93,6 +93,7 @@ const E1000_TXD_STAT_DD: u8 = 0x01; // Descriptor Done
 /// Must be a power-of-two and \u2265 8; hardware ring length register expects multiples of 8.
 const NUM_RX_DESC: usize = 256;
 const NUM_TX_DESC: usize = 256;
+const ETH_MIN_FRAME_NO_FCS: usize = 60;
 
 // Simple buffer pool (static memory for MVP)
 #[repr(align(4096))]
@@ -568,20 +569,22 @@ impl E1000Driver {
         if !self.enabled {
             return Err("E1000: Device not enabled");
         }
-        if data.len() > 2048 {
+        let frame_len = data.len().max(ETH_MIN_FRAME_NO_FCS);
+        if frame_len > 2048 {
             return Err("Frame too large");
         }
         unsafe {
             if TX_DESCS[self.tx_tail].status & E1000_TXD_STAT_DD == 0 {
                 return Err("TX busy");
             }
+            TX_BUFFERS.data[self.tx_tail][..frame_len].fill(0);
             crate::asm_bindings::fast_memcpy(
                 &mut TX_BUFFERS.data[self.tx_tail][..data.len()],
                 data,
             );
             // Only the last descriptor in the batch needs RS; intermediate ones
             // use EOP alone so the NIC doesn't generate a write-back per frame.
-            TX_DESCS[self.tx_tail].length = data.len() as u16;
+            TX_DESCS[self.tx_tail].length = frame_len as u16;
             TX_DESCS[self.tx_tail].cmd = E1000_TXD_CMD_EOP; // RS added on flush
             TX_DESCS[self.tx_tail].status = 0;
             self.tx_tail = (self.tx_tail + 1) % NUM_TX_DESC;

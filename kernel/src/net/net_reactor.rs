@@ -163,7 +163,7 @@ static REQ_SLOT: ReqSlot = ReqSlot {
     resp: UnsafeCell::new(NetResponse::None),
 };
 
-// 0 = idle, 1 = pending, 2 = response ready
+// 0 = idle, 1 = claim in progress, 2 = request pending, 3 = response ready
 static REQ_STATE: AtomicUsize = AtomicUsize::new(0);
 
 static NET_IRQ_PENDING: AtomicUsize = AtomicUsize::new(0);
@@ -239,7 +239,7 @@ fn process_irq(stack: &mut NetworkStack) -> usize {
 }
 
 fn handle_request(stack: &mut NetworkStack) -> bool {
-    if REQ_STATE.load(Ordering::Acquire) != 1 {
+    if REQ_STATE.load(Ordering::Acquire) != 2 {
         return false;
     }
     let req = unsafe { *REQ_SLOT.req.get() };
@@ -419,7 +419,7 @@ fn handle_request(stack: &mut NetworkStack) -> bool {
     unsafe {
         *REQ_SLOT.resp.get() = resp;
     }
-    REQ_STATE.store(2, Ordering::Release);
+    REQ_STATE.store(3, Ordering::Release);
     true
 }
 
@@ -435,14 +435,17 @@ fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
     }
     unsafe {
         *REQ_SLOT.req.get() = req;
+        *REQ_SLOT.resp.get() = NetResponse::None;
     }
+    core::sync::atomic::fence(Ordering::Release);
+    REQ_STATE.store(2, Ordering::Release);
 
     let timeout_ticks = (crate::pit::get_frequency() as u64)
         .saturating_mul(5)
         .max(500);
     let start = crate::pit::get_ticks();
     loop {
-        if REQ_STATE.load(Ordering::Acquire) == 2 {
+        if REQ_STATE.load(Ordering::Acquire) == 3 {
             break;
         }
         if crate::pit::get_ticks().saturating_sub(start) > timeout_ticks {
@@ -503,7 +506,7 @@ pub fn run() -> ! {
         // continuously so we never surrender the CPU unnecessarily.
         if !did_work
             && NET_IRQ_PENDING.load(Ordering::Relaxed) == 0
-            && REQ_STATE.load(Ordering::Relaxed) == 0
+            && REQ_STATE.load(Ordering::Relaxed) != 2
         {
             crate::quantum_scheduler::yield_now();
         }

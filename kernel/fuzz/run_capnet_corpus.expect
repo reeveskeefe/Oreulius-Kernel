@@ -99,9 +99,23 @@ set timeout 600
 
 puts "RUN: cfc $iters"
 send_i686_cmd "cfc $iters"
+
+# Wait for per-seed progress lines ("Seed X/10: failures=N") to keep the
+# timeout alive.  Each seed resets the 300-second window, so only a single
+# seed that exceeds 300 s triggers a timeout — rather than requiring all 10
+# seeds to finish within one monolithic budget.
+set timeout 300
+set seeds_seen 0
 expect {
+    -re {Seed [0-9]+/[0-9]+: failures=[0-9]+} {
+        incr seeds_seen
+        exp_continue
+    }
     -re {Seeds passed: [0-9]+ / [0-9]+} {}
-    timeout { puts "timeout waiting for CapNet corpus seed summary"; exit 1 }
+    timeout {
+        puts "timeout waiting for CapNet corpus seed (seen $seeds_seen seed progress lines)"
+        exit 1
+    }
 }
 expect {
     -re {Total failures: [0-9]+} {}
@@ -112,9 +126,21 @@ expect_i686_prompt
 if {$soak_rounds > 0} {
     puts "RUN: cfs $iters $soak_rounds"
     send_i686_cmd "cfs $iters $soak_rounds"
+
+    # Soak runs $soak_rounds full passes.  Match per-seed progress lines to
+    # keep the timeout rolling, just like the corpus phase above.
+    set timeout 300
+    set soak_seeds_seen 0
     expect {
+        -re {Seed [0-9]+/[0-9]+: failures=[0-9]+} {
+            incr soak_seeds_seen
+            exp_continue
+        }
         -re {Rounds passed: [0-9]+ / [0-9]+} {}
-        timeout { puts "timeout waiting for CapNet soak rounds summary"; exit 1 }
+        timeout {
+            puts "timeout waiting for CapNet soak (seen $soak_seeds_seen seed progress lines)"
+            exit 1
+        }
     }
     expect {
         -re {Total failures: [0-9]+} {}

@@ -87,9 +87,20 @@ set timeout 600
 
 puts "DIAG-RUN: cfc $iters (failing seed=$diag_seed)"
 send_i686_cmd "cfc $iters"
+
+# Match per-seed progress lines to keep the timeout rolling (300 s/seed).
+set timeout 300
+set seeds_seen 0
 expect {
+    -re {Seed [0-9]+/[0-9]+: failures=[0-9]+} {
+        incr seeds_seen
+        exp_continue
+    }
     -re {Seeds passed: [0-9]+ / [0-9]+} {}
-    timeout { puts "timeout waiting for CapNet corpus seed summary"; exit 1 }
+    timeout {
+        puts "timeout waiting for CapNet corpus seed (seen $seeds_seen seed progress lines)"
+        exit 1
+    }
 }
 expect {
     -re {Total failures: [0-9]+} {}

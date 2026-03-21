@@ -41,11 +41,13 @@ if (( runner_status != 0 )); then
     exit "${runner_status}"
 fi
 
-seeds_line="$(grep -E '^Seeds passed:' "${log_file}" | tail -1 || true)"
-failures_line="$(grep -E '^Total failures:' "${log_file}" | head -1 || true)"
-formal_line="$(grep -E '^Formal verification checks: PASSED' "${log_file}" | tail -1 || true)"
+seeds_line="$(grep -aE '^Seeds passed:' "${log_file}" | tail -1 || true)"
+failures_line="$(grep -aE '^Total failures:' "${log_file}" | head -1 || true)"
+formal_line="$(grep -aE '^Formal verification checks: PASSED' "${log_file}" | tail -1 || true)"
 
 if [[ -z "${seeds_line}" || -z "${failures_line}" ]]; then
+    echo "DEBUG: seeds_line='${seeds_line}'"
+    echo "DEBUG: failures_line='${failures_line}'"
     echo "ERROR: Could not parse CapNet corpus summary from output"
     exit 1
 fi
@@ -62,7 +64,7 @@ if (( seeds_passed != seeds_total )); then
     echo "ERROR: CapNet corpus replay failed (${seeds_passed}/${seeds_total} seeds passed)"
 
     # ── diagnostic re-run: extract failing seed and replay with extra logging ──
-    failing_seed="$(grep -E '^First failing seed:' "${log_file}" | awk '{print $NF}' | tr -d '\r' || true)"
+    failing_seed="$(grep -aE '^First failing seed:' "${log_file}" | awk '{print $NF}' | tr -d '\r' || true)"
     if [[ -n "${failing_seed}" && -x ./fuzz/run_capnet_single_seed.expect ]]; then
         diag_log="${log_dir}/capnet_diag_seed_${failing_seed}.log"
         echo "Re-running failing seed ${failing_seed} for diagnostics..."
@@ -82,18 +84,24 @@ if (( total_failures != 0 )); then
     exit 1
 fi
 
+# Sanitize binary/control bytes from QEMU serial output before awk parsing.
+clean_log="${log_file}.clean"
+LC_ALL=C tr -cd '[:print:]\n' < "${log_file}" > "${clean_log}" || true
+
 rounds_line="$(awk '
     /^===== CapNet Corpus Soak =====/ {in_soak=1; next}
     in_soak && /^Rounds passed:/ {line=$0}
     END {print line}
-' "${log_file}")"
+' "${clean_log}")"
 soak_failures_line="$(awk '
     /^===== CapNet Corpus Soak =====/ {in_soak=1; next}
     in_soak && /^Total failures:/ {line=$0}
     END {print line}
-' "${log_file}")"
+' "${clean_log}")"
 
 if [[ -z "${rounds_line}" || -z "${soak_failures_line}" ]]; then
+    echo "DEBUG: rounds_line='${rounds_line}'"
+    echo "DEBUG: soak_failures_line='${soak_failures_line}'"
     echo "ERROR: Could not parse CapNet soak summary from output"
     exit 1
 fi
