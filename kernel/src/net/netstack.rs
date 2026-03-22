@@ -67,6 +67,16 @@ const ARP_OP_REPLY: u16 = 2;
 const CAPNET_MAX_RETX: usize = 8;
 const CAPNET_RETX_INTERVAL_TICKS: u64 = 25;
 const CAPNET_RETX_MAX_RETRIES: u8 = 4;
+const DNS_CLIENT_SRC_PORT: u16 = 53000;
+const DNS_SERVER_PORT: u16 = 53;
+const UDP_RX_QUEUE_SIZE: usize = 8;
+const UDP_RX_PAYLOAD_MAX: usize = 512;
+const NET_READY_DEFAULT_WAIT_TICKS: u64 = 1000;
+const ARP_DEFAULT_TIMEOUT_TICKS: u64 = 1000;
+const DNS_RESPONSE_TIMEOUT_SECS: u64 = 4;
+const DNS_DEBUG_ENABLED: bool = false;
+const TCP_TEMPORAL_EVENTS_ENABLED: bool = false;
+const NETWORK_CONFIG_TEMPORAL_EVENTS_ENABLED: bool = false;
 
 // DNS negative-cache: remember NXDOMAIN/timeout results for DNS_NEG_TTL_TICKS ticks
 // to avoid hammering the network for domains we know are unreachable.
@@ -89,6 +99,29 @@ impl DnsNegEntry {
             expires: 0,
             domain: [0u8; DNS_DOMAIN_MAX],
             domain_len: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct UdpRxEntry {
+    valid: bool,
+    src_ip: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    payload_len: usize,
+    payload: [u8; UDP_RX_PAYLOAD_MAX],
+}
+
+impl UdpRxEntry {
+    const fn empty() -> Self {
+        UdpRxEntry {
+            valid: false,
+            src_ip: Ipv4Addr([0, 0, 0, 0]),
+            src_port: 0,
+            dst_port: 0,
+            payload_len: 0,
+            payload: [0u8; UDP_RX_PAYLOAD_MAX],
         }
     }
 }
@@ -269,15 +302,40 @@ pub struct NetworkStack {
     tcp: TcpManager,
     http_server: HttpServer,
     dns_neg_cache: [DnsNegEntry; DNS_NEG_CACHE_SIZE],
+    udp_rx_queue: [UdpRxEntry; UDP_RX_QUEUE_SIZE],
+    dns_debug_active: bool,
+    dns_debug_txid: u16,
+    dns_debug_miss_logged: bool,
 }
 
 impl NetworkStack {
+    #[inline]
+    fn wait_timeout_ticks(default_ticks: u64) -> u64 {
+        let freq = crate::pit::get_frequency() as u64;
+        if freq == 0 {
+            return default_ticks;
+        }
+        freq.max(default_ticks)
+    }
+
+    #[inline]
+    fn link_ready(&self) -> bool {
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            super::e1000::get_mac_address().is_some() && super::e1000::is_link_up()
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.has_interface
+        }
+    }
+
     pub const fn new() -> Self {
         NetworkStack {
             my_ip: Ipv4Addr([10, 0, 2, 15]),                       // QEMU default
             my_mac: MacAddr([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]), // QEMU default
             gateway_ip: Ipv4Addr([10, 0, 2, 2]),                   // QEMU default gateway
-            dns_server: Ipv4Addr([8, 8, 8, 8]),                    // Google DNS
+            dns_server: Ipv4Addr([10, 0, 2, 3]),                   // QEMU usernet DNS proxy
             arp_cache: ArpCache::new(),
             dhcp_enabled: false,
             has_interface: false,
@@ -285,6 +343,10 @@ impl NetworkStack {
             tcp: TcpManager::new(),
             http_server: HttpServer::new(),
             dns_neg_cache: [DnsNegEntry::empty(); DNS_NEG_CACHE_SIZE],
+            udp_rx_queue: [UdpRxEntry::empty(); UDP_RX_QUEUE_SIZE],
+            dns_debug_active: false,
+            dns_debug_txid: 0,
+            dns_debug_miss_logged: false,
         }
     }
 
@@ -301,7 +363,7 @@ impl NetworkStack {
     pub fn is_ready(&self) -> bool {
         // On AArch64 use virtio-net; on x86 check the E1000 driver.
         #[cfg(not(target_arch = "aarch64"))]
-        return super::e1000::get_mac_address().is_some();
+        return self.link_ready();
         #[cfg(target_arch = "aarch64")]
         return self.has_interface;
     }
@@ -435,22 +497,25 @@ impl NetworkStack {
             return Ok(mac);
         }
 
+        let link_deadline =
+            crate::pit::get_ticks() + Self::wait_timeout_ticks(NET_READY_DEFAULT_WAIT_TICKS);
+        while !self.link_ready() {
+            if crate::pit::get_ticks() >= link_deadline {
+                return Err("Link down");
+            }
+            let _ = self.poll_once()?;
+        }
+
         // Send ARP request
         self.send_arp_request(ip)?;
 
-        // Poll for response (simple timeout)
-        for _ in 0..1000 {
-            self.poll_once()?;
+        let deadline =
+            crate::pit::get_ticks() + Self::wait_timeout_ticks(ARP_DEFAULT_TIMEOUT_TICKS);
+        while crate::pit::get_ticks() < deadline {
+            let _ = self.poll_once()?;
 
             if let Some(mac) = self.arp_cache.lookup(ip) {
                 return Ok(mac);
-            }
-
-            // Simple delay
-            for _ in 0..10000 {
-                unsafe {
-                    core::arch::asm!("nop");
-                }
             }
         }
 
@@ -517,7 +582,7 @@ impl NetworkStack {
         frame[offset] = IP_PROTOCOL_UDP;
         offset += 1;
         frame[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Checksum (filled later)
-        let ip_checksum_offset = offset - 2;
+        let ip_checksum_offset = offset;
         offset += 2;
         frame[offset..offset + 4].copy_from_slice(&self.my_ip.0);
         offset += 4;
@@ -545,17 +610,16 @@ impl NetworkStack {
         frame[offset..offset + data.len()].copy_from_slice(data);
         offset += data.len();
 
-        // RFC 768 / RFC 1071: compute UDP checksum over pseudo-header + UDP segment.
-        // Use the same tcp_checksum() helper (pseudo-header is protocol-agnostic).
-        let udp_seg_len = (2 + 2 + 2 + 2 + data.len()) as u16; // src+dst port + len + cksum + payload
-        let udp_ck = tcp_checksum(
+        let udp_seg_len = udp_len as u16;
+        let udp_checksum = tcp_checksum(
             &self.my_ip.0,
             &dest_ip.0,
             IP_PROTOCOL_UDP,
             udp_seg_len,
-            &frame[udp_checksum_offset - 4..offset], // full UDP header+payload
+            &frame[udp_checksum_offset - 6..offset],
         );
-        frame[udp_checksum_offset..udp_checksum_offset + 2].copy_from_slice(&udp_ck.to_be_bytes());
+        frame[udp_checksum_offset..udp_checksum_offset + 2]
+            .copy_from_slice(&udp_checksum.to_be_bytes());
 
         driver.send_frame(&frame[..offset])
     }
@@ -573,46 +637,54 @@ impl NetworkStack {
     /// Receive UDP packet (simplified - returns payload if matches port)
     #[cfg(not(target_arch = "aarch64"))]
     fn recv_udp(&mut self, expected_port: u16, buffer: &mut [u8]) -> Result<usize, &'static str> {
-        // Use E1000 driver directly
-        let mut driver = super::e1000::E1000_DRIVER.lock();
-        let driver = driver.as_mut().ok_or("No E1000 driver")?;
+        for slot in &mut self.udp_rx_queue {
+            if !slot.valid || slot.dst_port != expected_port {
+                continue;
+            }
 
-        let mut frame = [0u8; 1514];
-        let frame_len = driver.recv_frame(&mut frame)?;
+            if slot.payload_len > buffer.len() {
+                return Err("Buffer too small");
+            }
 
-        if frame_len < 42 {
-            // Min: Eth(14) + IP(20) + UDP(8)
-            return Err("Frame too short");
+            if expected_port == DNS_CLIENT_SRC_PORT && self.dns_debug_active {
+                let rx_txid = if slot.payload_len >= 2 {
+                    u16::from_be_bytes([slot.payload[0], slot.payload[1]])
+                } else {
+                    0
+                };
+                crate::serial_println!(
+                    "[DNS-DEBUG] recv_udp dequeue src={}.{}.{}.{}:{} dst_port={} len={} txid=0x{:04x}",
+                    slot.src_ip.0[0],
+                    slot.src_ip.0[1],
+                    slot.src_ip.0[2],
+                    slot.src_ip.0[3],
+                    slot.src_port,
+                    slot.dst_port,
+                    slot.payload_len,
+                    rx_txid
+                );
+            }
+            buffer[..slot.payload_len].copy_from_slice(&slot.payload[..slot.payload_len]);
+            let payload_len = slot.payload_len;
+            *slot = UdpRxEntry::empty();
+            return Ok(payload_len);
         }
 
-        // Check EtherType
-        let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
-        if ethertype != ETHERTYPE_IPV4 {
-            return Err("Not IPv4");
+        if expected_port == DNS_CLIENT_SRC_PORT
+            && self.dns_debug_active
+            && !self.dns_debug_miss_logged
+        {
+            let queued = self.udp_rx_queue.iter().filter(|slot| slot.valid).count();
+            crate::serial_println!(
+                "[DNS-DEBUG] recv_udp queue miss expected_port={} queued_slots={} txid=0x{:04x}",
+                expected_port,
+                queued,
+                self.dns_debug_txid
+            );
+            self.dns_debug_miss_logged = true;
         }
 
-        // Check IP protocol
-        if frame[23] != IP_PROTOCOL_UDP {
-            return Err("Not UDP");
-        }
-
-        // Parse UDP header
-        let udp_offset = 14 + 20; // After Ethernet + IP
-        let dest_port = u16::from_be_bytes([frame[udp_offset + 2], frame[udp_offset + 3]]);
-
-        if dest_port != expected_port {
-            return Err("Wrong port");
-        }
-
-        let udp_len = u16::from_be_bytes([frame[udp_offset + 4], frame[udp_offset + 5]]) as usize;
-        let payload_len = udp_len - 8; // Subtract UDP header
-
-        if payload_len > buffer.len() {
-            return Err("Buffer too small");
-        }
-
-        buffer[..payload_len].copy_from_slice(&frame[udp_offset + 8..udp_offset + 8 + payload_len]);
-        Ok(payload_len)
+        Err("No UDP packet available")
     }
     #[cfg(target_arch = "aarch64")]
     fn recv_udp(&mut self, _expected_port: u16, _buffer: &mut [u8]) -> Result<usize, &'static str> {
@@ -867,6 +939,19 @@ impl NetworkStack {
 
     /// Resolve domain name to IP address
     pub fn dns_resolve(&mut self, domain: &str) -> Result<Ipv4Addr, &'static str> {
+        self.dns_resolve_with_progress(domain, |stack| {
+            let _ = stack.poll_once();
+        })
+    }
+
+    pub fn dns_resolve_with_progress<F>(
+        &mut self,
+        domain: &str,
+        mut progress: F,
+    ) -> Result<Ipv4Addr, &'static str>
+    where
+        F: FnMut(&mut Self),
+    {
         if domain.len() > 253 {
             return Err("Domain name too long");
         }
@@ -928,27 +1013,81 @@ impl NetworkStack {
         let query_len = offset;
 
         // Send DNS query (UDP port 53)
-        self.send_udp(self.dns_server, 53, 53000, &query[..query_len])?;
+        self.dns_debug_begin(txid);
+        if self.dns_debug_active {
+            crate::serial_println!(
+                "[DNS-DEBUG] tx query domain={} txid=0x{:04x} server={}.{}.{}.{} src_port={}",
+                domain,
+                txid,
+                self.dns_server.0[0],
+                self.dns_server.0[1],
+                self.dns_server.0[2],
+                self.dns_server.0[3],
+                DNS_CLIENT_SRC_PORT
+            );
+        }
+
+        if let Err(e) = self.send_udp(
+            self.dns_server,
+            DNS_SERVER_PORT,
+            DNS_CLIENT_SRC_PORT,
+            &query[..query_len],
+        ) {
+            self.dns_debug_finish();
+            return Err(e);
+        }
 
         // Receive DNS response
         let mut response = [0u8; 512];
 
-        // Poll for response with timeout
-        for _ in 0..100 {
-            match self.recv_udp(53000, &mut response) {
+        let dns_timeout_ticks = (crate::pit::get_frequency() as u64)
+            .saturating_mul(DNS_RESPONSE_TIMEOUT_SECS)
+            .max(200);
+        let deadline = crate::pit::get_ticks().saturating_add(dns_timeout_ticks);
+        while crate::pit::get_ticks() < deadline {
+            match self.recv_udp(DNS_CLIENT_SRC_PORT, &mut response) {
                 Ok(len) => {
-                    return self.parse_dns_response(&response[..len]);
+                    let rx_txid = if len >= 2 {
+                        u16::from_be_bytes([response[0], response[1]])
+                    } else {
+                        0
+                    };
+                    if self.dns_debug_active {
+                        crate::serial_println!(
+                            "[DNS-DEBUG] rx queued response len={} txid=0x{:04x} expected=0x{:04x}",
+                            len,
+                            rx_txid,
+                            txid
+                        );
+                    }
+                    if rx_txid != txid {
+                        if self.dns_debug_active {
+                            crate::serial_println!(
+                                "[DNS-DEBUG] ignore mismatched txid got=0x{:04x} expected=0x{:04x}",
+                                rx_txid,
+                                txid
+                            );
+                        }
+                        continue;
+                    }
+                    let parse_result = self.parse_dns_response(&response[..len]);
+                    self.dns_debug_finish();
+                    return parse_result;
                 }
                 Err(_) => {
-                    // Wait and retry
-                    for _ in 0..50000 {
-                        unsafe {
-                            core::arch::asm!("nop");
-                        }
-                    }
+                    progress(self);
                 }
             }
         }
+
+        if self.dns_debug_active {
+            crate::serial_println!(
+                "[DNS-DEBUG] timeout waiting for response txid=0x{:04x} domain={}",
+                txid,
+                domain
+            );
+        }
+        self.dns_debug_finish();
 
         // ---- Insert into negative cache on timeout ----
         let now = crate::pit::get_ticks();
@@ -1075,22 +1214,23 @@ impl NetworkStack {
 
     /// Poll for incoming packets once (reads from NIC internally).
     #[cfg(not(target_arch = "aarch64"))]
-    pub fn poll_once(&mut self) -> Result<(), &'static str> {
+    pub fn poll_once(&mut self) -> Result<bool, &'static str> {
         let mut frame = [0u8; 1514];
         let frame_len = {
             let mut driver = super::e1000::E1000_DRIVER.lock();
             let interface = driver.as_mut().ok_or("No E1000 driver")?;
             match interface.recv_frame(&mut frame) {
                 Ok(len) => len,
-                Err(_) => return Ok(()), // No packet available
+                Err(_) => return Ok(false), // No packet available
             }
         };
 
-        self.dispatch_frame(&frame[..frame_len])
+        self.dispatch_frame(&frame[..frame_len])?;
+        Ok(true)
     }
     #[cfg(target_arch = "aarch64")]
-    pub fn poll_once(&mut self) -> Result<(), &'static str> {
-        Ok(())
+    pub fn poll_once(&mut self) -> Result<bool, &'static str> {
+        Ok(false)
     }
 
     /// Dispatch a pre-read Ethernet frame through the protocol stack.
@@ -1107,9 +1247,41 @@ impl NetworkStack {
 
         match ethertype {
             ETHERTYPE_ARP => {
+                if self.dns_debug_active {
+                    crate::serial_println!("[DNS-DEBUG] dispatch eth=arp len={}", frame.len());
+                }
                 let _ = self.handle_arp(&frame[14..]);
             }
             ETHERTYPE_IPV4 => {
+                if self.dns_debug_active {
+                    if frame.len() >= 34 {
+                        let src = Ipv4Addr([frame[26], frame[27], frame[28], frame[29]]);
+                        let dst = Ipv4Addr([frame[30], frame[31], frame[32], frame[33]]);
+                        let proto = frame[23];
+                        if self.dns_debug_ipv4_relevant(src, dst) {
+                            crate::serial_println!(
+                                "[DNS-DEBUG] dispatch eth=ipv4 src={}.{}.{}.{} dst={}.{}.{}.{} proto={} len={} txid=0x{:04x}",
+                                src.0[0],
+                                src.0[1],
+                                src.0[2],
+                                src.0[3],
+                                dst.0[0],
+                                dst.0[1],
+                                dst.0[2],
+                                dst.0[3],
+                                proto,
+                                frame.len(),
+                                self.dns_debug_txid
+                            );
+                        }
+                    } else {
+                        crate::serial_println!(
+                            "[DNS-DEBUG] dispatch eth=ipv4 short len={} txid=0x{:04x}",
+                            frame.len(),
+                            self.dns_debug_txid
+                        );
+                    }
+                }
                 let _ = self.handle_ipv4(&frame[14..]);
             }
             _ => {}
@@ -1135,7 +1307,7 @@ impl NetworkStack {
                 if conn.retries >= 5 {
                     conn.state = TcpState::Closed;
                     conn.in_use = false;
-                    let _ = crate::temporal::record_tcp_socket_state_event(
+                    Self::maybe_record_tcp_socket_state_event(
                         conn.id as u32,
                         conn.state as u8,
                         conn.local_ip.0,
@@ -1188,6 +1360,84 @@ impl NetworkStack {
         self.my_ip
     }
 
+    pub fn get_dns_server(&self) -> Ipv4Addr {
+        self.dns_server
+    }
+
+    #[inline]
+    fn dns_debug_begin(&mut self, txid: u16) {
+        if !DNS_DEBUG_ENABLED {
+            return;
+        }
+        self.dns_debug_active = true;
+        self.dns_debug_txid = txid;
+        self.dns_debug_miss_logged = false;
+    }
+
+    #[inline]
+    fn dns_debug_finish(&mut self) {
+        self.dns_debug_active = false;
+        self.dns_debug_txid = 0;
+        self.dns_debug_miss_logged = false;
+    }
+
+    #[inline]
+    fn dns_debug_ipv4_relevant(&self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr) -> bool {
+        self.dns_debug_active
+            && (src_ip == self.dns_server
+                || src_ip == self.my_ip
+                || dst_ip == self.my_ip
+                || dst_ip == self.dns_server)
+    }
+
+    #[inline]
+    fn dns_debug_udp_relevant(&self, src_ip: Ipv4Addr, src_port: u16, dst_port: u16) -> bool {
+        self.dns_debug_active
+            && (src_ip == self.dns_server
+                || src_port == DNS_SERVER_PORT
+                || dst_port == DNS_CLIENT_SRC_PORT)
+    }
+
+    fn dns_debug_log_ipv4_reason(
+        &self,
+        reason: &str,
+        src_ip: Option<Ipv4Addr>,
+        dst_ip: Option<Ipv4Addr>,
+        proto: Option<u8>,
+        packet_len: usize,
+        extra: usize,
+    ) {
+        if !self.dns_debug_active {
+            return;
+        }
+
+        match (src_ip, dst_ip, proto) {
+            (Some(src), Some(dst), Some(proto)) => crate::serial_println!(
+                "[DNS-DEBUG] ipv4 {} src={}.{}.{}.{} dst={}.{}.{}.{} proto={} len={} extra={} txid=0x{:04x}",
+                reason,
+                src.0[0],
+                src.0[1],
+                src.0[2],
+                src.0[3],
+                dst.0[0],
+                dst.0[1],
+                dst.0[2],
+                dst.0[3],
+                proto,
+                packet_len,
+                extra,
+                self.dns_debug_txid
+            ),
+            _ => crate::serial_println!(
+                "[DNS-DEBUG] ipv4 {} len={} extra={} txid=0x{:04x}",
+                reason,
+                packet_len,
+                extra,
+                self.dns_debug_txid
+            ),
+        }
+    }
+
     pub fn set_dns_server(&mut self, dns: Ipv4Addr) {
         if self.dns_server == dns {
             return;
@@ -1199,7 +1449,7 @@ impl NetworkStack {
     }
 
     fn record_temporal_network_config_event(&self, event: u8) {
-        if crate::temporal::is_replay_active() {
+        if !NETWORK_CONFIG_TEMPORAL_EVENTS_ENABLED || crate::temporal::is_replay_active() {
             return;
         }
         let mut payload = [0u8; TEMPORAL_NETWORK_CONFIG_BYTES];
@@ -1220,6 +1470,63 @@ impl NetworkStack {
         payload[18..22].copy_from_slice(&self.dns_server.0);
         payload[22..30].copy_from_slice(&crate::pit::get_ticks().to_le_bytes());
         let _ = crate::temporal::record_network_config_event(&payload);
+    }
+
+    #[inline]
+    fn maybe_record_tcp_socket_listener_event(listener_id: u32, port: u16, event: u8) {
+        if TCP_TEMPORAL_EVENTS_ENABLED {
+            let _ = crate::temporal::record_tcp_socket_listener_event(listener_id, port, event);
+        }
+    }
+
+    #[inline]
+    fn maybe_record_tcp_socket_state_event(
+        conn_id: u32,
+        state: u8,
+        local_ip: [u8; 4],
+        local_port: u16,
+        remote_ip: [u8; 4],
+        remote_port: u16,
+        event: u8,
+        detail: u32,
+    ) {
+        if TCP_TEMPORAL_EVENTS_ENABLED {
+            let _ = crate::temporal::record_tcp_socket_state_event(
+                conn_id,
+                state,
+                local_ip,
+                local_port,
+                remote_ip,
+                remote_port,
+                event,
+                detail,
+            );
+        }
+    }
+
+    #[inline]
+    fn maybe_record_tcp_socket_data_event(
+        conn_id: u32,
+        state: u8,
+        local_ip: [u8; 4],
+        local_port: u16,
+        remote_ip: [u8; 4],
+        remote_port: u16,
+        event: u8,
+        payload: &[u8],
+    ) {
+        if TCP_TEMPORAL_EVENTS_ENABLED {
+            let _ = crate::temporal::record_tcp_socket_data_event(
+                conn_id,
+                state,
+                local_ip,
+                local_port,
+                remote_ip,
+                remote_port,
+                event,
+                payload,
+            );
+        }
     }
 
     pub fn temporal_apply_network_config_event(
@@ -1250,7 +1557,7 @@ impl NetworkStack {
     pub fn tcp_listen(&mut self, port: u16) -> Result<u16, &'static str> {
         let result = self.tcp.listen(port);
         if let Ok(listener_id) = result {
-            let _ = crate::temporal::record_tcp_socket_listener_event(
+            Self::maybe_record_tcp_socket_listener_event(
                 listener_id as u32,
                 port,
                 crate::temporal::TEMPORAL_SOCKET_EVENT_LISTEN,
@@ -1263,7 +1570,7 @@ impl NetworkStack {
         let accepted = self.tcp.accept(listener);
         if let Some(conn_id) = accepted {
             if let Some(conn) = self.tcp.find_conn_id(conn_id) {
-                let _ = crate::temporal::record_tcp_socket_state_event(
+                Self::maybe_record_tcp_socket_state_event(
                     conn.id as u32,
                     conn.state as u8,
                     conn.local_ip.0,
@@ -1288,7 +1595,7 @@ impl NetworkStack {
         self.tcp = tcp;
         if let Ok(conn_id) = res {
             if let Some(conn) = self.tcp.find_conn_id(conn_id) {
-                let _ = crate::temporal::record_tcp_socket_state_event(
+                Self::maybe_record_tcp_socket_state_event(
                     conn.id as u32,
                     conn.state as u8,
                     conn.local_ip.0,
@@ -1309,7 +1616,7 @@ impl NetworkStack {
         if let Ok(sent) = res {
             if sent > 0 {
                 if let Some(conn) = tcp.find_conn_id(conn_id) {
-                    let _ = crate::temporal::record_tcp_socket_data_event(
+                    Self::maybe_record_tcp_socket_data_event(
                         conn.id as u32,
                         conn.state as u8,
                         conn.local_ip.0,
@@ -1337,7 +1644,7 @@ impl NetworkStack {
         };
         if read_len > 0 {
             if let Some(conn) = tcp.find_conn_id(conn_id) {
-                let _ = crate::temporal::record_tcp_socket_data_event(
+                Self::maybe_record_tcp_socket_data_event(
                     conn.id as u32,
                     conn.state as u8,
                     conn.local_ip.0,
@@ -1374,7 +1681,7 @@ impl NetworkStack {
                 } else {
                     conn.state = TcpState::Closed;
                 }
-                let _ = crate::temporal::record_tcp_socket_state_event(
+                Self::maybe_record_tcp_socket_state_event(
                     conn.id as u32,
                     conn.state as u8,
                     conn.local_ip.0,
@@ -1885,9 +2192,23 @@ impl TcpManager {
         conn.rtt_start = crate::pit::get_ticks();
         let ep = tcp_endpoint(conn);
         let adv_win = conn_recv_window(conn);
-        if let Err(e) =
-            send_syn_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_SYN, adv_win)
-        {
+        let mut syn_result = Err("TX busy");
+        for _ in 0..8 {
+            match send_syn_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_SYN, adv_win) {
+                Ok(()) => {
+                    syn_result = Ok(());
+                    break;
+                }
+                Err("TX busy") => {
+                    let _ = stack.poll_once();
+                }
+                Err(e) => {
+                    syn_result = Err(e);
+                    break;
+                }
+            }
+        }
+        if let Err(e) = syn_result {
             conn.state = TcpState::Closed;
             conn.in_use = false;
             return Err(e);
@@ -1929,15 +2250,30 @@ impl TcpManager {
             let chunk = &data[sent_total..sent_total + chunk_max];
             let ep = tcp_endpoint(conn);
             let adv_win = conn_recv_window(conn);
-            send_tcp_segment(
-                stack,
-                ep,
-                conn.snd_nxt,
-                conn.rcv_nxt,
-                TCP_FLAG_ACK | TCP_FLAG_PSH,
-                chunk,
-                adv_win,
-            )?;
+            let mut sent = false;
+            for _ in 0..8 {
+                match send_tcp_segment(
+                    stack,
+                    ep,
+                    conn.snd_nxt,
+                    conn.rcv_nxt,
+                    TCP_FLAG_ACK | TCP_FLAG_PSH,
+                    chunk,
+                    adv_win,
+                ) {
+                    Ok(()) => {
+                        sent = true;
+                        break;
+                    }
+                    Err("TX busy") => {
+                        let _ = stack.poll_once();
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            if !sent {
+                return Err("TX busy");
+            }
             record_last(
                 conn,
                 TCP_FLAG_ACK | TCP_FLAG_PSH,
@@ -2180,12 +2516,12 @@ fn send_tcp_segment(
     payload: &[u8],
     adv_window: u16,
 ) -> Result<(), &'static str> {
-    let dest_mac = if let Some(mac) = stack.arp_cache.lookup(ep.remote_ip) {
-        mac
+    let next_hop = if stack.is_local(ep.remote_ip) {
+        ep.remote_ip
     } else {
-        stack.send_arp_request(ep.remote_ip)?;
-        return Err("ARP unresolved");
+        stack.gateway_ip
     };
+    let dest_mac = stack.resolve_mac(next_hop)?;
 
     let tcp_header_len = 20;
     let ip_header_len = 20;
@@ -2265,12 +2601,12 @@ fn send_syn_segment(
     flags: u16,
     adv_window: u16,
 ) -> Result<(), &'static str> {
-    let dest_mac = if let Some(mac) = stack.arp_cache.lookup(ep.remote_ip) {
-        mac
+    let next_hop = if stack.is_local(ep.remote_ip) {
+        ep.remote_ip
     } else {
-        stack.send_arp_request(ep.remote_ip)?;
-        return Err("ARP unresolved");
+        stack.gateway_ip
     };
+    let dest_mac = stack.resolve_mac(next_hop)?;
 
     // TCP options: MSS(4) + NOP + WSCALE(3) + NOP = 8 bytes (32-bit aligned)
     let options: [u8; 8] = [
@@ -2420,28 +2756,86 @@ fn finalize_checksum(mut sum: u32) -> u16 {
 impl NetworkStack {
     fn handle_ipv4(&mut self, packet: &[u8]) -> Result<(), &'static str> {
         if packet.len() < 20 {
+            self.dns_debug_log_ipv4_reason(
+                "reject packet-too-short",
+                None,
+                None,
+                None,
+                packet.len(),
+                20,
+            );
             return Err("IPv4 packet too short");
         }
+        let src = Ipv4Addr([packet[12], packet[13], packet[14], packet[15]]);
+        let dst = Ipv4Addr([packet[16], packet[17], packet[18], packet[19]]);
+        let proto = packet[9];
+        let dns_relevant = self.dns_debug_ipv4_relevant(src, dst);
         let ihl = (packet[0] & 0x0F) as usize * 4;
         if ihl < 20 || packet.len() < ihl {
+            if dns_relevant {
+                self.dns_debug_log_ipv4_reason(
+                    "reject invalid-ihl",
+                    Some(src),
+                    Some(dst),
+                    Some(proto),
+                    packet.len(),
+                    ihl,
+                );
+            }
             return Err("Invalid IPv4 header");
         }
         let total_len = u16::from_be_bytes([packet[2], packet[3]]) as usize;
         if total_len > packet.len() {
+            if dns_relevant {
+                self.dns_debug_log_ipv4_reason(
+                    "reject length-mismatch",
+                    Some(src),
+                    Some(dst),
+                    Some(proto),
+                    packet.len(),
+                    total_len,
+                );
+            }
             return Err("IPv4 length mismatch");
         }
-        let proto = packet[9];
-        let dst = Ipv4Addr([packet[16], packet[17], packet[18], packet[19]]);
         if dst != self.my_ip {
+            if dns_relevant {
+                self.dns_debug_log_ipv4_reason(
+                    "reject dst-mismatch",
+                    Some(src),
+                    Some(dst),
+                    Some(proto),
+                    total_len,
+                    self.my_ip.to_u32() as usize,
+                );
+            }
             return Ok(());
+        }
+        if proto != IP_PROTOCOL_UDP && dns_relevant {
+            self.dns_debug_log_ipv4_reason(
+                "reject proto-not-udp",
+                Some(src),
+                Some(dst),
+                Some(proto),
+                total_len,
+                IP_PROTOCOL_UDP as usize,
+            );
         }
         match proto {
             IP_PROTOCOL_TCP => {
-                let src = Ipv4Addr([packet[12], packet[13], packet[14], packet[15]]);
                 self.handle_tcp(src, &packet[ihl..total_len])?;
             }
             IP_PROTOCOL_UDP => {
-                let src = Ipv4Addr([packet[12], packet[13], packet[14], packet[15]]);
+                if dns_relevant {
+                    self.dns_debug_log_ipv4_reason(
+                        "accept udp",
+                        Some(src),
+                        Some(dst),
+                        Some(proto),
+                        total_len,
+                        ihl,
+                    );
+                }
                 self.handle_udp(src, &packet[ihl..total_len])?;
             }
             _ => {}
@@ -2460,10 +2854,69 @@ impl NetworkStack {
             return Err("UDP length invalid");
         }
         let payload = &datagram[8..udp_len];
+        if self.dns_debug_udp_relevant(src_ip, src_port, dst_port) {
+            crate::serial_println!(
+                "[DNS-DEBUG] udp ingress src={}.{}.{}.{}:{} dst_port={} payload_len={}",
+                src_ip.0[0],
+                src_ip.0[1],
+                src_ip.0[2],
+                src_ip.0[3],
+                src_port,
+                dst_port,
+                payload.len()
+            );
+        }
         if dst_port == super::capnet::CAPNET_CONTROL_PORT {
             self.handle_capnet_control(src_ip, src_port, payload)?;
+            return Ok(());
         }
+        self.enqueue_udp(src_ip, src_port, dst_port, payload);
         Ok(())
+    }
+
+    fn enqueue_udp(&mut self, src_ip: Ipv4Addr, src_port: u16, dst_port: u16, payload: &[u8]) {
+        if payload.len() > UDP_RX_PAYLOAD_MAX {
+            if self.dns_debug_udp_relevant(src_ip, src_port, dst_port) {
+                crate::serial_println!(
+                    "[DNS-DEBUG] drop oversized UDP src_port={} dst_port={} len={}",
+                    src_port,
+                    dst_port,
+                    payload.len()
+                );
+            }
+            return;
+        }
+
+        for slot in &mut self.udp_rx_queue {
+            if slot.valid {
+                continue;
+            }
+
+            slot.valid = true;
+            slot.src_ip = src_ip;
+            slot.src_port = src_port;
+            slot.dst_port = dst_port;
+            slot.payload_len = payload.len();
+            slot.payload[..payload.len()].copy_from_slice(payload);
+            if self.dns_debug_udp_relevant(src_ip, src_port, dst_port) {
+                crate::serial_println!(
+                    "[DNS-DEBUG] queued UDP src_port={} dst_port={} len={}",
+                    src_port,
+                    dst_port,
+                    payload.len()
+                );
+            }
+            return;
+        }
+
+        if self.dns_debug_udp_relevant(src_ip, src_port, dst_port) {
+            crate::serial_println!(
+                "[DNS-DEBUG] drop full UDP queue src_port={} dst_port={} len={}",
+                src_port,
+                dst_port,
+                payload.len()
+            );
+        }
     }
 
     fn handle_capnet_control(
@@ -2563,7 +3016,7 @@ impl NetworkStack {
                 if flags & TCP_FLAG_RST != 0 {
                     conn.state = TcpState::Closed;
                     conn.in_use = false;
-                    let _ = crate::temporal::record_tcp_socket_state_event(
+                    Self::maybe_record_tcp_socket_state_event(
                         conn.id as u32,
                         conn.state as u8,
                         conn.local_ip.0,
@@ -2609,7 +3062,7 @@ impl NetworkStack {
                     conn.irs = seq;
                     conn.rcv_nxt = seq.wrapping_add(1);
                     conn.snd_una = ack;
-                    let _ = crate::temporal::record_tcp_socket_state_event(
+                    Self::maybe_record_tcp_socket_state_event(
                         conn.id as u32,
                         conn.state as u8,
                         conn.local_ip.0,
@@ -2624,7 +3077,7 @@ impl NetworkStack {
 
                 if conn.state == TcpState::SynReceived && (flags & TCP_FLAG_ACK != 0) {
                     conn.state = TcpState::Established;
-                    let _ = crate::temporal::record_tcp_socket_state_event(
+                    Self::maybe_record_tcp_socket_state_event(
                         conn.id as u32,
                         conn.state as u8,
                         conn.local_ip.0,
@@ -2654,7 +3107,7 @@ impl NetworkStack {
                     }
                     conn.recv_tail = conn.recv_tail.wrapping_add(copy_len);
                     conn.rcv_nxt = conn.rcv_nxt.wrapping_add(payload.len() as u32);
-                    let _ = crate::temporal::record_tcp_socket_data_event(
+                    Self::maybe_record_tcp_socket_data_event(
                         conn.id as u32,
                         conn.state as u8,
                         conn.local_ip.0,
@@ -2690,7 +3143,7 @@ impl NetworkStack {
                     ack_action = Some((tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt));
                     if conn.state == TcpState::Established {
                         conn.state = TcpState::CloseWait;
-                        let _ = crate::temporal::record_tcp_socket_state_event(
+                        Self::maybe_record_tcp_socket_state_event(
                             conn.id as u32,
                             conn.state as u8,
                             conn.local_ip.0,
@@ -2704,7 +3157,7 @@ impl NetworkStack {
                         // Simultaneous close: FIN before our ACK for FIN — go to Closed.
                         conn.state = TcpState::Closed;
                         conn.in_use = false;
-                        let _ = crate::temporal::record_tcp_socket_state_event(
+                        Self::maybe_record_tcp_socket_state_event(
                             conn.id as u32,
                             conn.state as u8,
                             conn.local_ip.0,
@@ -2719,7 +3172,7 @@ impl NetworkStack {
                         // Enter TIME_WAIT for 2×MSL before freeing the port.
                         conn.state = TcpState::TimeWait;
                         conn.last_send_tick = crate::pit::get_ticks(); // start timer
-                        let _ = crate::temporal::record_tcp_socket_state_event(
+                        Self::maybe_record_tcp_socket_state_event(
                             conn.id as u32,
                             conn.state as u8,
                             conn.local_ip.0,
@@ -2738,7 +3191,7 @@ impl NetworkStack {
                 if conn.state == TcpState::LastAck && (flags & TCP_FLAG_ACK != 0) {
                     conn.state = TcpState::Closed;
                     conn.in_use = false;
-                    let _ = crate::temporal::record_tcp_socket_state_event(
+                    Self::maybe_record_tcp_socket_state_event(
                         conn.id as u32,
                         conn.state as u8,
                         conn.local_ip.0,
@@ -2806,7 +3259,7 @@ impl NetworkStack {
                     conn.peer_wscale = peer_wscale_opt.unwrap_or(0);
                     // Initial send window from the SYN (scaled by client's wscale).
                     conn.snd_wnd = (raw_window as u32) << (conn.peer_wscale as u32);
-                    let _ = crate::temporal::record_tcp_socket_state_event(
+                    Self::maybe_record_tcp_socket_state_event(
                         conn.id as u32,
                         conn.state as u8,
                         conn.local_ip.0,
@@ -2906,27 +3359,67 @@ impl NetworkStack {
 }
 
 // ============================================================================
-// Checksum Calculation (using optimized assembly)
+// Checksum Calculation
 // ============================================================================
 
 fn calculate_checksum(data: &[u8]) -> u16 {
-    // Use assembly implementation on x86; software fallback on AArch64.
-    #[cfg(not(target_arch = "aarch64"))]
-    return crate::asm_bindings::ip_checksum(data);
-    #[cfg(target_arch = "aarch64")]
-    {
-        let mut sum: u32 = 0;
-        let mut i = 0;
-        while i + 1 < data.len() {
-            sum += u16::from_be_bytes([data[i], data[i + 1]]) as u32;
-            i += 2;
-        }
-        if i < data.len() {
-            sum += (data[i] as u32) << 8;
-        }
-        while sum >> 16 != 0 {
-            sum = (sum & 0xFFFF) + (sum >> 16);
-        }
-        !(sum as u16)
+    finalize_checksum(checksum_accum(data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Ipv4Addr, NetworkStack};
+
+    #[test]
+    fn handle_udp_queues_non_capnet_payloads() {
+        let mut stack = NetworkStack::new();
+        let payload = b"dns reply bytes";
+        let udp_len = (8 + payload.len()) as u16;
+        let mut datagram = [0u8; 8 + 15];
+        datagram[0..2].copy_from_slice(&53u16.to_be_bytes());
+        datagram[2..4].copy_from_slice(&53000u16.to_be_bytes());
+        datagram[4..6].copy_from_slice(&udp_len.to_be_bytes());
+        datagram[8..8 + payload.len()].copy_from_slice(payload);
+
+        stack
+            .handle_udp(Ipv4Addr::new(8, 8, 8, 8), &datagram[..8 + payload.len()])
+            .expect("queue UDP payload");
+
+        let mut out = [0u8; 32];
+        let len = stack.recv_udp(53000, &mut out).expect("receive queued UDP");
+        assert_eq!(&out[..len], payload);
+    }
+
+    #[test]
+    fn recv_udp_keeps_non_matching_packets_queued() {
+        let mut stack = NetworkStack::new();
+        let payload = b"queued later";
+        let udp_len = (8 + payload.len()) as u16;
+        let mut datagram = [0u8; 8 + 12];
+        datagram[0..2].copy_from_slice(&53u16.to_be_bytes());
+        datagram[2..4].copy_from_slice(&53000u16.to_be_bytes());
+        datagram[4..6].copy_from_slice(&udp_len.to_be_bytes());
+        datagram[8..8 + payload.len()].copy_from_slice(payload);
+
+        stack
+            .handle_udp(Ipv4Addr::new(1, 1, 1, 1), &datagram[..8 + payload.len()])
+            .expect("queue UDP payload");
+
+        let mut out = [0u8; 32];
+        assert_eq!(
+            stack.recv_udp(9999, &mut out),
+            Err("No UDP packet available")
+        );
+        let len = stack.recv_udp(53000, &mut out).expect("receive queued UDP");
+        assert_eq!(&out[..len], payload);
+    }
+
+    #[test]
+    fn ipv4_checksum_matches_known_dns_header() {
+        let header = [
+            0x45, 0x00, 0x00, 0x39, 0x00, 0x01, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00, 0x0a, 0x00,
+            0x02, 0x0f, 0x0a, 0x00, 0x02, 0x03,
+        ];
+        assert_eq!(super::calculate_checksum(&header), 0x62a2);
     }
 }

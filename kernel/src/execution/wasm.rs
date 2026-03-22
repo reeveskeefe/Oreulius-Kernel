@@ -7544,7 +7544,7 @@ impl WasmInstance {
 
         match crate::ipc::ipc().try_recv(&channel_cap) {
             Ok(msg) => {
-                let msg_data = &msg.payload[..msg.payload_len];
+                let msg_data = &msg.payload[..msg.payload.len()];
                 let copy_len = msg_data.len().min(buf_len);
                 self.memory.write(buf_ptr, &msg_data[..copy_len])?;
                 self.import_service_caps_from_message(&msg);

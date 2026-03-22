@@ -1,0 +1,79 @@
+#!/usr/bin/expect -f
+set timeout 240
+
+set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
+cd $kernel_dir
+
+proc expect_x64_prompt {} {
+    expect {
+        -re {x64> $} {}
+        timeout { puts "timeout waiting for x86_64 prompt"; exit 1 }
+    }
+}
+
+spawn ./run-x86_64-mb2-grub.sh
+
+expect {
+    -re {\[X64\] minimal serial shell ready} {}
+    -re {\[X64\] x86_64 shell ready} {}
+    timeout { puts "timeout waiting for x86_64 shell banner"; exit 1 }
+}
+expect_x64_prompt
+
+send -- "netstack-info\r"
+expect {
+    -re {Status: READY} {}
+    timeout { puts "netstack-info did not report READY"; exit 1 }
+}
+expect {
+    -re {DNS server: ([0-9]{1,3}\.){3}[0-9]{1,3}} {}
+    timeout { puts "netstack-info did not print DNS server"; exit 1 }
+}
+expect_x64_prompt
+
+send -- "eth-status\r"
+expect {
+    -re {Link Status: UP} {}
+    timeout { puts "eth-status did not report link up"; exit 1 }
+}
+expect_x64_prompt
+
+send -- "dns-resolve example.com\r"
+expect {
+    -re {Success! IP: ([0-9]{1,3}\.){3}[0-9]{1,3}} {}
+    timeout { puts "first dns-resolve failed"; exit 1 }
+}
+expect_x64_prompt
+
+send -- "dns-resolve example.com\r"
+expect {
+    -re {Success! IP: ([0-9]{1,3}\.){3}[0-9]{1,3}} {}
+    timeout { puts "second dns-resolve failed"; exit 1 }
+}
+expect_x64_prompt
+
+send -- "http-get http://example.com/\r"
+expect {
+    -re {Status: [23][0-9][0-9]} {}
+    timeout { puts "plain HTTP status line not observed"; exit 1 }
+}
+expect {
+    -re {Total: [1-9][0-9]* bytes} {}
+    timeout { puts "plain HTTP body length not observed"; exit 1 }
+}
+expect_x64_prompt
+
+send -- "http-get https://example.com/\r"
+expect {
+    -re {strict certificate validation is not implemented} {}
+    timeout { puts "HTTPS fail-closed message not observed"; exit 1 }
+}
+expect_x64_prompt
+
+send -- "halt\r"
+expect {
+    -re {\[X64\] halting} {}
+    timeout { puts "timeout waiting for x86_64 halt"; exit 1 }
+}
+send "\003"
+expect eof

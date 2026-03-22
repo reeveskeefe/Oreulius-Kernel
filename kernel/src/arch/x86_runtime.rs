@@ -522,7 +522,7 @@ pub fn shell_loop() -> ! {
             }
         }
 
-        if let Some(byte) = serial_try_read_byte() {
+        while let Some(byte) = serial_try_read_byte() {
             match byte {
                 b'\r' | b'\n' => {
                     crate::terminal::write_char('\n');

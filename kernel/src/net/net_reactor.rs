@@ -134,6 +134,7 @@ enum NetRequest {
 pub struct NetInfo {
     pub ready: bool,
     pub ip: Ipv4Addr,
+    pub dns_server: Ipv4Addr,
     pub tcp_conns: usize,
     pub tcp_listeners: usize,
     pub http_running: bool,
@@ -238,17 +239,43 @@ fn process_irq(stack: &mut NetworkStack) -> usize {
     received
 }
 
-fn handle_request(stack: &mut NetworkStack) -> bool {
-    if REQ_STATE.load(Ordering::Acquire) != 2 {
-        return false;
+fn drive_runtime_progress(stack: &mut NetworkStack, last_tick: &mut u64) -> bool {
+    let mut did_work = false;
+
+    if let Ok(polled) = stack.poll_once() {
+        if polled {
+            did_work = true;
+        }
     }
-    let req = unsafe { *REQ_SLOT.req.get() };
-    let resp = match req {
+
+    let burst_frames = process_irq(stack);
+    if burst_frames > 0 {
+        did_work = true;
+    }
+
+    let now = crate::pit::get_ticks();
+    if *last_tick < now {
+        while *last_tick < now {
+            stack.tick();
+            *last_tick += 1;
+        }
+        did_work = true;
+    }
+
+    did_work
+}
+
+fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u64) -> NetResponse {
+    match req {
         NetRequest::None => NetResponse::Ok,
         NetRequest::DnsResolve { len, data } => {
             let len = len as usize;
             let domain = core::str::from_utf8(&data[..len]).unwrap_or("");
-            match stack.dns_resolve(domain) {
+            match stack.dns_resolve_with_progress(domain, |stack| {
+                if !drive_runtime_progress(stack, last_tick) {
+                    crate::quantum_scheduler::yield_now();
+                }
+            }) {
                 Ok(ip) => NetResponse::DnsResult(ip),
                 Err(e) => NetResponse::Err(e),
             }
@@ -350,6 +377,7 @@ fn handle_request(stack: &mut NetworkStack) -> bool {
             NetResponse::Info(NetInfo {
                 ready: stack.is_ready(),
                 ip: stack.get_ip(),
+                dns_server: stack.get_dns_server(),
                 tcp_conns,
                 tcp_listeners,
                 http_running,
@@ -414,8 +442,15 @@ fn handle_request(stack: &mut NetworkStack) -> bool {
             Ok(seq) => NetResponse::U64(seq as u64),
             Err(e) => NetResponse::Err(e),
         },
-    };
+    }
+}
 
+fn handle_request(stack: &mut NetworkStack, last_tick: &mut u64) -> bool {
+    if REQ_STATE.load(Ordering::Acquire) != 2 {
+        return false;
+    }
+    let req = unsafe { *REQ_SLOT.req.get() };
+    let resp = dispatch_request(stack, req, last_tick);
     unsafe {
         *REQ_SLOT.resp.get() = resp;
     }
@@ -423,7 +458,21 @@ fn handle_request(stack: &mut NetworkStack) -> bool {
     true
 }
 
+fn inline_request(req: NetRequest) -> Result<NetResponse, &'static str> {
+    let stack = unsafe { &mut NET_STACK };
+    if stack.is_ready() {
+        stack.mark_ready();
+    }
+    let mut last_tick = crate::pit::get_ticks();
+    Ok(dispatch_request(stack, req, &mut last_tick))
+}
+
 fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
+    #[cfg(target_arch = "x86")]
+    if REACTOR_STARTED.load(Ordering::Acquire) == 0 {
+        return inline_request(req);
+    }
+
     if REACTOR_STARTED.load(Ordering::Acquire) == 0 {
         return Err("Network reactor not started");
     }
@@ -477,27 +526,12 @@ pub fn run() -> ! {
         // Track whether this iteration did any real work.
         let mut did_work = false;
 
-        if handle_request(stack) {
+        if handle_request(stack, &mut last_tick) {
             did_work = true;
         }
 
-        // --- Unconditional RX poll (one frame via existing path) --------------
-        // Catches frames that arrived between the last IRQ and now.
-        if stack.poll_once().is_ok() {
-            // poll_once returns Ok(()) whether or not a frame was received;
-            // rely on process_irq for work-done accounting.
-        }
-
-        // --- Burst RX drain (IRQ-signalled frames, single lock) ---------------
-        let burst_frames = process_irq(stack);
-        if burst_frames > 0 {
+        if drive_runtime_progress(stack, &mut last_tick) {
             did_work = true;
-        }
-
-        let now = crate::pit::get_ticks();
-        while last_tick < now {
-            stack.tick();
-            last_tick += 1;
         }
 
         // --- Smart yield -----------------------------------------------------

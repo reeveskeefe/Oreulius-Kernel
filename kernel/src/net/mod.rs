@@ -53,6 +53,7 @@ const TEMPORAL_NETWORK_LEGACY_SCHEMA_V1: u8 = 1;
 const TEMPORAL_NETWORK_LEGACY_HEADER_BYTES: usize = 32;
 const TEMPORAL_NETWORK_LEGACY_TCP_ENTRY_BYTES: usize = 36;
 const TEMPORAL_NETWORK_LEGACY_DNS_ENTRY_BYTES: usize = 80;
+const NETWORK_SERVICE_TEMPORAL_EVENTS_ENABLED: bool = false;
 
 // ============================================================================
 // Network Configuration
@@ -296,7 +297,7 @@ impl NetworkService {
             wifi_enabled: false,
             ip_address: Ipv4Addr([0, 0, 0, 0]),
             gateway: Ipv4Addr([192, 168, 1, 1]),
-            dns_server: Ipv4Addr([8, 8, 8, 8]), // Google DNS
+            dns_server: Ipv4Addr([10, 0, 2, 3]), // QEMU usernet DNS proxy
             tcp_connections: [TcpConnection::new(); MAX_CONNECTIONS],
             tcp_count: 0,
             dns_cache: [DnsEntry::new(); MAX_DNS_CACHE],
@@ -892,7 +893,7 @@ impl NetworkService {
     }
 
     fn record_temporal_state_snapshot(&self) {
-        if crate::temporal::is_replay_active() {
+        if !NETWORK_SERVICE_TEMPORAL_EVENTS_ENABLED || crate::temporal::is_replay_active() {
             return;
         }
         let payload = match self

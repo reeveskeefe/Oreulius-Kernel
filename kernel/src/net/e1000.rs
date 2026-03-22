@@ -94,6 +94,8 @@ const E1000_TXD_STAT_DD: u8 = 0x01; // Descriptor Done
 const NUM_RX_DESC: usize = 256;
 const NUM_TX_DESC: usize = 256;
 const ETH_MIN_FRAME_NO_FCS: usize = 60;
+const TX_DESC_READY_SPINS: usize = 1_000_000;
+const TX_DESC_READY_TIMEOUT_TICKS: u64 = 5;
 
 // Simple buffer pool (static memory for MVP)
 #[repr(align(4096))]
@@ -169,6 +171,9 @@ pub struct E1000Driver {
     mmio_base: u32,
     mac_address: [u8; 6],
     enabled: bool,
+    /// Descriptor index the software will inspect next for completed RX data.
+    rx_next: usize,
+    /// Descriptor index most recently returned to hardware via RDT.
     rx_tail: usize,
     tx_tail: usize,
     /// Number of TX descriptors enqueued since the last RDT write.
@@ -189,6 +194,7 @@ impl E1000Driver {
             mmio_base: 0,
             mac_address: [0; 6],
             enabled: false,
+            rx_next: 0,
             rx_tail: 0,
             tx_tail: 0,
             tx_batch_pending: 0,
@@ -353,6 +359,7 @@ impl E1000Driver {
             // Set head and tail
             self.write_reg(E1000_REG_RDH, 0);
             self.write_reg(E1000_REG_RDT, (NUM_RX_DESC - 1) as u32);
+            self.rx_next = 0;
             self.rx_tail = NUM_RX_DESC - 1;
 
             // Enable receiver with promiscuous mode
@@ -492,7 +499,8 @@ impl E1000Driver {
         }
 
         unsafe {
-            let desc = &RX_DESCS[self.rx_tail];
+            let desc_idx = self.rx_next;
+            let desc = &RX_DESCS[desc_idx];
             if desc.status & 0x01 == 0 {
                 return Err("No packet available");
             }
@@ -502,14 +510,12 @@ impl E1000Driver {
                 return Err("Buffer too small");
             }
 
-            crate::asm_bindings::fast_memcpy(
-                &mut buffer[..len],
-                &RX_BUFFERS.data[self.rx_tail][..len],
-            );
+            crate::asm_bindings::fast_memcpy(&mut buffer[..len], &RX_BUFFERS.data[desc_idx][..len]);
 
-            RX_DESCS[self.rx_tail].status = 0;
-            self.rx_tail = (self.rx_tail + 1) % NUM_RX_DESC;
+            RX_DESCS[desc_idx].status = 0;
+            self.rx_tail = desc_idx;
             self.write_reg(E1000_REG_RDT, self.rx_tail as u32);
+            self.rx_next = (desc_idx + 1) % NUM_RX_DESC;
 
             Ok(len)
         }
@@ -536,18 +542,20 @@ impl E1000Driver {
         let mut received = 0usize;
         unsafe {
             while received < budget {
-                let desc = &RX_DESCS[self.rx_tail];
+                let desc_idx = self.rx_next;
+                let desc = &RX_DESCS[desc_idx];
                 if desc.status & 0x01 == 0 {
                     break; // ring empty
                 }
                 let len = (desc.length as usize).min(2048);
                 crate::asm_bindings::fast_memcpy(
                     &mut out_bufs[received][..len],
-                    &RX_BUFFERS.data[self.rx_tail][..len],
+                    &RX_BUFFERS.data[desc_idx][..len],
                 );
                 out_lens[received] = len;
-                RX_DESCS[self.rx_tail].status = 0;
-                self.rx_tail = (self.rx_tail + 1) % NUM_RX_DESC;
+                RX_DESCS[desc_idx].status = 0;
+                self.rx_tail = desc_idx;
+                self.rx_next = (desc_idx + 1) % NUM_RX_DESC;
                 received += 1;
             }
             if received > 0 {
@@ -574,8 +582,17 @@ impl E1000Driver {
             return Err("Frame too large");
         }
         unsafe {
-            if TX_DESCS[self.tx_tail].status & E1000_TXD_STAT_DD == 0 {
-                return Err("TX busy");
+            let start_ticks = crate::pit::get_ticks();
+            let mut spins = 0usize;
+            while TX_DESCS[self.tx_tail].status & E1000_TXD_STAT_DD == 0 {
+                if spins >= TX_DESC_READY_SPINS
+                    || crate::pit::get_ticks().saturating_sub(start_ticks)
+                        >= TX_DESC_READY_TIMEOUT_TICKS
+                {
+                    return Err("TX busy");
+                }
+                spins += 1;
+                core::hint::spin_loop();
             }
             TX_BUFFERS.data[self.tx_tail][..frame_len].fill(0);
             crate::asm_bindings::fast_memcpy(

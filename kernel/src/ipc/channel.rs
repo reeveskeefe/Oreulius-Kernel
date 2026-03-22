@@ -106,7 +106,6 @@ impl ChannelFlags {
 }
 
 /// A bidirectional channel for message passing.
-#[derive(Clone, Copy)]
 pub struct Channel {
     pub id: ChannelId,
     pub(crate) buffer: RingBuffer,
@@ -122,6 +121,8 @@ pub struct Channel {
     pub(crate) saturated_hits: u32,
     pub(crate) sender_wakeups: u32,
     pub(crate) receiver_wakeups: u32,
+    pub(crate) waiting_receivers: WaitQueue,
+    pub(crate) waiting_senders: WaitQueue,
 }
 
 impl Channel {
@@ -140,6 +141,8 @@ impl Channel {
             saturated_hits: 0,
             sender_wakeups: 0,
             receiver_wakeups: 0,
+            waiting_receivers: WaitQueue::new(),
+            waiting_senders: WaitQueue::new(),
         }
     }
 
@@ -163,6 +166,8 @@ impl Channel {
             saturated_hits: 0,
             sender_wakeups: 0,
             receiver_wakeups: 0,
+            waiting_receivers: WaitQueue::new(),
+            waiting_senders: WaitQueue::new(),
         }
     }
 
@@ -185,25 +190,43 @@ impl Channel {
     }
 
     fn wake_one_receiver(&mut self) {
-        if let Ok(true) = crate::quantum_scheduler::wake_one(self.message_wait_addr()) {
-            self.note_receiver_wakeups(1);
+        while let Some(pid) = self.waiting_receivers.pop_front() {
+            if let Ok(true) = crate::quantum_scheduler::wake_process(crate::process::Pid(pid.0)) {
+                self.note_receiver_wakeups(1);
+                break;
+            }
         }
     }
 
     fn wake_all_receivers(&mut self) {
-        if let Ok(count) = crate::quantum_scheduler::wake_all(self.message_wait_addr()) {
+        let mut count = 0;
+        while let Some(pid) = self.waiting_receivers.pop_front() {
+            if let Ok(true) = crate::quantum_scheduler::wake_process(crate::process::Pid(pid.0)) {
+                count += 1;
+            }
+        }
+        if count > 0 {
             self.note_receiver_wakeups(count);
         }
     }
 
     fn wake_one_sender(&mut self) {
-        if let Ok(true) = crate::quantum_scheduler::wake_one(self.capacity_wait_addr()) {
-            self.note_sender_wakeups(1);
+        while let Some(pid) = self.waiting_senders.pop_front() {
+            if let Ok(true) = crate::quantum_scheduler::wake_process(crate::process::Pid(pid.0)) {
+                self.note_sender_wakeups(1);
+                break;
+            }
         }
     }
 
     fn wake_all_senders(&mut self) {
-        if let Ok(count) = crate::quantum_scheduler::wake_all(self.capacity_wait_addr()) {
+        let mut count = 0;
+        while let Some(pid) = self.waiting_senders.pop_front() {
+            if let Ok(true) = crate::quantum_scheduler::wake_process(crate::process::Pid(pid.0)) {
+                count += 1;
+            }
+        }
+        if count > 0 {
             self.note_sender_wakeups(count);
         }
     }
@@ -281,7 +304,7 @@ impl Channel {
                     )
                     .with_context(self.id.0 as u64),
                 );
-                self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
+                self.record_send_refusal(capability.owner, msg.payload.len(), msg.caps_len);
                 Err(IpcError::PermissionDenied)
             }
             IpcRefusal::PermissionDenied => {
@@ -299,7 +322,7 @@ impl Channel {
                     )
                     .with_context(self.id.0 as u64),
                 );
-                self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
+                self.record_send_refusal(capability.owner, msg.payload.len(), msg.caps_len);
                 Err(IpcError::PermissionDenied)
             }
             IpcRefusal::InvalidCapability => {
@@ -317,19 +340,19 @@ impl Channel {
                     )
                     .with_context(self.id.0 as u64),
                 );
-                self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
+                self.record_send_refusal(capability.owner, msg.payload.len(), msg.caps_len);
                 Err(IpcError::InvalidCap)
             }
             IpcRefusal::Closed => {
-                self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
+                self.record_send_refusal(capability.owner, msg.payload.len(), msg.caps_len);
                 Err(IpcError::Closed)
             }
             IpcRefusal::ChannelDraining => {
-                self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
+                self.record_send_refusal(capability.owner, msg.payload.len(), msg.caps_len);
                 Err(IpcError::ChannelDraining)
             }
             IpcRefusal::Backpressure | IpcRefusal::QueueFull | IpcRefusal::QueueEmpty => {
-                self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
+                self.record_send_refusal(capability.owner, msg.payload.len(), msg.caps_len);
                 Err(IpcError::WouldBlock)
             }
         }
@@ -341,7 +364,7 @@ impl Channel {
         capability: &ChannelCapability,
         msg: &Message,
     ) -> Result<(), IpcError> {
-        self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
+        self.record_send_refusal(capability.owner, msg.payload.len(), msg.caps_len);
         Err(IpcError::WouldBlock)
     }
 
@@ -448,6 +471,8 @@ impl Channel {
             SendDecision::Defer(defer) => return self.defer_send(defer, capability, &msg),
         }
 
+        let payload_len = msg.payload.len();
+        let caps_len = msg.caps_len;
         let result = self.buffer.push(msg);
         if result.is_ok() {
             self.note_queue_occupancy();
@@ -456,14 +481,14 @@ impl Channel {
                 self.id.0,
                 crate::temporal::TEMPORAL_CHANNEL_EVENT_SEND,
                 capability.owner.0,
-                msg.payload_len,
-                msg.caps_len,
+                payload_len,
+                caps_len,
                 self.buffer.len(),
             );
             sec.intent_ipc_send(capability.owner, self.id.0 as u64);
             self.wake_one_receiver();
         } else {
-            self.record_send_refusal(capability.owner, msg.payload_len, msg.caps_len);
+            self.record_send_refusal(capability.owner, payload_len, caps_len);
         }
         result
     }
@@ -488,7 +513,7 @@ impl Channel {
                     self.id.0,
                     crate::temporal::TEMPORAL_CHANNEL_EVENT_RECV,
                     capability.owner.0,
-                    msg.payload_len,
+                    msg.payload.len(),
                     msg.caps_len,
                     self.buffer.len(),
                 );
@@ -728,5 +753,43 @@ impl Channel {
             self.note_queue_occupancy();
             remaining -= 1;
         }
+    }
+}
+#[derive(Debug, Clone)]
+pub struct WaitQueue {
+    items: [ProcessId; 16],
+    head: usize,
+    tail: usize,
+    len: usize,
+}
+
+impl WaitQueue {
+    pub const fn new() -> Self {
+        Self {
+            items: [ProcessId(0); 16],
+            head: 0,
+            tail: 0,
+            len: 0,
+        }
+    }
+    pub fn push_back(&mut self, pid: ProcessId) {
+        if self.len < 16 {
+            self.items[self.tail] = pid;
+            self.tail = (self.tail + 1) % 16;
+            self.len += 1;
+        }
+    }
+    pub fn pop_front(&mut self) -> Option<ProcessId> {
+        if self.len == 0 {
+            None
+        } else {
+            let pid = self.items[self.head];
+            self.head = (self.head + 1) % 16;
+            self.len -= 1;
+            Some(pid)
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.len
     }
 }

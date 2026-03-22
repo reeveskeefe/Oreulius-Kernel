@@ -95,7 +95,7 @@ impl EventId {
 }
 
 /// Channel identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChannelId(pub u32);
 
 impl ChannelId {

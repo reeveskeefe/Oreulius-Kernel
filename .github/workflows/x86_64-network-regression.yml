@@ -1,0 +1,67 @@
+name: x86_64-network-regression
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "kernel/**"
+      - "README.md"
+      - ".github/workflows/x86_64-network-regression.yml"
+  pull_request:
+    paths:
+      - "kernel/**"
+      - "README.md"
+      - ".github/workflows/x86_64-network-regression.yml"
+
+jobs:
+  x86_64-network-regression:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: kernel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            nasm \
+            qemu-system-x86 \
+            expect \
+            xorriso \
+            grub-pc-bin \
+            grub-common \
+            mtools \
+            lld
+
+      - name: Install Rust nightly (kernel toolchain)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2024-01-01
+          components: rust-src,llvm-tools
+
+      - name: Add rust-src for build-std target
+        run: rustup component add rust-src --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
+
+      - name: Create log directory
+        run: mkdir -p ./ci/logs
+
+      - name: Run x86_64 network regression
+        env:
+          CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
+          QEMU_EXTRA_ARGS: -display none -monitor none -nographic -no-reboot -no-shutdown -m 512M -netdev user,id=n0 -device e1000,netdev=n0
+        run: ./ci/network-x86_64.sh
+
+      - name: Upload x86_64 network logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86_64-network-regression-logs
+          path: kernel/ci/logs/network-x86_64.log
+          if-no-files-found: ignore

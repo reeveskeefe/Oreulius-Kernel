@@ -428,11 +428,23 @@ pub struct WaitQueue {
     pub wake_time: u64, // Non-zero only for timer sleep queues
 }
 
+pub enum BlockAction {
+    Custom(ProcessState),
+    OnAddr(usize, ProcessState),
+}
+
 pub struct BlockOnPlan {
     irq_flags: scheduler_platform::IrqFlags,
-    switch: Option<(*mut ProcessContext, *const ProcessContext)>,
-    next_runtime_pid: Option<u32>,
-    next_kernel_stack_top: Option<usize>,
+    action: BlockAction,
+    is_committed: bool,
+}
+
+impl Drop for BlockOnPlan {
+    fn drop(&mut self) {
+        if !self.is_committed {
+            unsafe { scheduler_platform::irq_restore(self.irq_flags) };
+        }
+    }
 }
 
 /// Scheduler statistics
@@ -896,6 +908,23 @@ impl QuantumScheduler {
         self.block_on_with_state(addr, ProcessState::Blocked)
     }
 
+    pub fn block_current_process_custom(
+        &mut self,
+        wait_state: ProcessState,
+    ) -> Result<Option<(*mut ProcessContext, *const ProcessContext)>, &'static str> {
+        let current_pid = self.require_current_pid(ERR_NO_CURRENT_PROCESS)?;
+        let _ = self.process_info(current_pid, ERR_BLOCK_ON_CURRENT_PROCESS_MISSING)?;
+        let prev = Some(current_pid);
+
+        self.process_info_mut(current_pid, ERR_BLOCK_ON_CURRENT_PROCESS_MISSING)?
+            .process
+            .state = wait_state;
+
+        self.current_pid = None;
+        self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
+        Ok(self.plan_switch(prev))
+    }
+
     pub fn block_on_with_state(
         &mut self,
         addr: usize,
@@ -919,6 +948,24 @@ impl QuantumScheduler {
         self.current_pid = None;
         self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
         Ok(self.plan_switch(prev))
+    }
+
+    pub fn wake_process(&mut self, pid: Pid) -> Result<bool, &'static str> {
+        if let Some(ref mut info) = self.processes[pid.0 as usize] {
+            if matches!(
+                info.process.state,
+                ProcessState::Blocked | ProcessState::WaitingOnChannel
+            ) {
+                info.process.state = ProcessState::Ready;
+                let priority = info.process.priority;
+                self.enqueue_ready(pid, priority);
+                self.record_temporal_state_snapshot_locked(
+                    scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE,
+                );
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Wake one process from wait queue
@@ -2677,40 +2724,78 @@ pub fn block_on(addr: usize) -> Result<(), &'static str> {
     Ok(())
 }
 
+pub fn prepare_block_custom(wait_state: ProcessState) -> Result<(Pid, BlockOnPlan), &'static str> {
+    let irq_flags = unsafe { scheduler_platform::irq_save_disable() };
+    let pid = {
+        let sched = QUANTUM_SCHEDULER.lock();
+        if let Some(pid) = sched.current_pid {
+            // Also might want to check if process exists and wait state is valid?
+            pid
+        } else {
+            unsafe { scheduler_platform::irq_restore(irq_flags) };
+            return Err("No current process");
+        }
+    };
+
+    Ok((
+        pid,
+        BlockOnPlan {
+            irq_flags,
+            action: BlockAction::Custom(wait_state),
+            is_committed: false,
+        },
+    ))
+}
+
 pub fn prepare_block_on(
     addr: usize,
     wait_state: ProcessState,
 ) -> Result<BlockOnPlan, &'static str> {
     let irq_flags = unsafe { scheduler_platform::irq_save_disable() };
-    let (result, next_runtime_pid, next_kernel_stack_top) = {
-        let mut sched = QUANTUM_SCHEDULER.lock();
-        let result = sched.block_on_with_state(addr, wait_state);
-        let next_runtime_pid = sched.current_runtime_pid_raw();
-        let next_kernel_stack_top = sched.current_kernel_stack_top();
-        (result, next_runtime_pid, next_kernel_stack_top)
-    };
-
-    match result {
-        Ok(switch) => Ok(BlockOnPlan {
-            irq_flags,
-            switch,
-            next_runtime_pid,
-            next_kernel_stack_top,
-        }),
-        Err(e) => {
+    {
+        let sched = QUANTUM_SCHEDULER.lock();
+        if sched.current_pid.is_none() {
             unsafe { scheduler_platform::irq_restore(irq_flags) };
-            Err(e)
+            return Err("No current process");
         }
     }
+
+    Ok(BlockOnPlan {
+        irq_flags,
+        action: BlockAction::OnAddr(addr, wait_state),
+        is_committed: false,
+    })
 }
 
-pub fn commit_block(plan: BlockOnPlan) {
-    match plan.switch {
+pub fn commit_block(mut plan: BlockOnPlan) {
+    plan.is_committed = true;
+
+    let (switch_opt, next_runtime_pid, next_kernel_stack_top) = {
+        let mut sched = QUANTUM_SCHEDULER.lock();
+        let result = match plan.action {
+            BlockAction::Custom(state) => sched.block_current_process_custom(state),
+            BlockAction::OnAddr(addr, state) => sched.block_on_with_state(addr, state),
+        };
+        match result {
+            Ok(switch) => (
+                switch,
+                sched.current_runtime_pid_raw(),
+                sched.current_kernel_stack_top(),
+            ),
+            Err(_) => (
+                None,
+                sched.current_runtime_pid_raw(),
+                sched.current_kernel_stack_top(),
+            ),
+        }
+    };
+
+    match switch_opt {
         Some((from_ptr, to_ptr)) => {
-            if let Some(pid_raw) = plan.next_runtime_pid {
+            if let Some(pid_raw) = next_runtime_pid {
                 scheduler_platform::runtime_pid_sync(pid_raw);
             }
-            if let Some(stack_top) = plan.next_kernel_stack_top {
+            if let Some(stack_top) = next_kernel_stack_top {
                 scheduler_platform::runtime_kernel_stack_sync(stack_top);
             }
             #[cfg(target_arch = "x86")]
@@ -2729,6 +2814,10 @@ pub fn commit_block(plan: BlockOnPlan) {
         }
         None => unsafe { scheduler_platform::irq_restore(plan.irq_flags) },
     }
+}
+
+pub fn wake_process(pid: Pid) -> Result<bool, &'static str> {
+    QUANTUM_SCHEDULER.lock().wake_process(pid)
 }
 
 /// Wake one waiter on address

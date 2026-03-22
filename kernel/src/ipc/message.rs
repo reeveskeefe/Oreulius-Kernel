@@ -1,23 +1,16 @@
 use core::fmt;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use super::errors::IpcError;
 use super::types::{Capability, EventId, ProcessId, MAX_CAPS_PER_MESSAGE, MAX_MESSAGE_SIZE};
 
 /// Per-channel message sequence counter — wraps at u16 max.
 /// Updated atomically inside `Message::with_id`.
-///
-/// In the current single-CPU kernel this is a plain cell; on SMP it would
-/// need to be an `AtomicU16`.
-static mut MSG_SEQ: u16 = 0;
+static MSG_SEQ: AtomicU16 = AtomicU16::new(0);
 
 #[inline]
 fn next_msg_seq() -> u16 {
-    // SAFETY: single-threaded kernel; no concurrent mutation.
-    unsafe {
-        let v = MSG_SEQ;
-        MSG_SEQ = MSG_SEQ.wrapping_add(1);
-        v
-    }
+    MSG_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
 /// A message sent through a channel.
@@ -47,7 +40,7 @@ impl Message {
         Message {
             id: EventId::new(source.0, 0, seq),
             cause: None,
-            payload: [0u8; MAX_MESSAGE_SIZE],
+            payload: [0; MAX_MESSAGE_SIZE],
             payload_len: 0,
             caps: [None; MAX_CAPS_PER_MESSAGE],
             caps_len: 0,

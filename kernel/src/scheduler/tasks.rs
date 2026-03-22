@@ -193,8 +193,8 @@ pub fn start() -> ! {
 
     #[cfg(target_arch = "x86")]
     {
-        vga::print_str("[TASK] Skipping network task on x86 legacy path\n");
-        crate::serial_println!("[TASK] Skipping network task on x86 legacy path");
+        vga::print_str("[TASK] Using inline network reactor on x86 legacy path\n");
+        crate::serial_println!("[TASK] Using inline network reactor on x86 legacy path");
     }
 
     #[cfg(not(target_arch = "x86"))]

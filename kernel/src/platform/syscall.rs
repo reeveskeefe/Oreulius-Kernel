@@ -523,8 +523,11 @@ fn sys_channel_send(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
         return SyscallResult::err(EFAULT);
     }
 
-    // Copy message from user space (for now, treat as kernel space for testing)
-    let message = unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len) };
+    // Copy message from user space to kernel
+    let mut message_vec = alloc::vec![0u8; msg_len];
+    let user_slice = unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len) };
+    message_vec.copy_from_slice(user_slice);
+    let message = &message_vec;
 
     // Send via IPC
     match crate::ipc::send_message_for_process(
@@ -558,14 +561,23 @@ fn sys_channel_recv(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
     }
 
     // Receive from IPC
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+    let mut buffer_vec = alloc::vec![0u8; buf_len];
 
     match crate::ipc::receive_message_for_process(
         crate::ipc::ProcessId(caller_pid.0),
         crate::ipc::ChannelId(channel_id as u32),
-        buffer,
+        &mut buffer_vec,
     ) {
-        Ok(bytes_received) => SyscallResult::ok(bytes_received as i32),
+        Ok(bytes_received) => {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    buffer_vec.as_ptr(),
+                    buf_ptr as *mut u8,
+                    bytes_received,
+                );
+            }
+            SyscallResult::ok(bytes_received as i32)
+        }
         Err(e) => {
             if e == "Missing channel capability" {
                 SyscallResult::err(EACCES)
@@ -624,7 +636,10 @@ fn sys_channel_send_caps(args: SyscallArgs, caller_pid: capability::ProcessId) -
         }
     }
 
-    let message = unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len) };
+    let mut message_vec = alloc::vec![0u8; msg_len];
+    let user_slice = unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len) };
+    message_vec.copy_from_slice(user_slice);
+    let message = &message_vec;
     let mut caps = [crate::ipc::Capability::new(0, 0, 0); crate::ipc::MAX_CAPS_PER_MESSAGE];
     if caps_count > 0 {
         let raw_caps =
@@ -679,16 +694,23 @@ fn sys_channel_recv_caps(args: SyscallArgs, caller_pid: capability::ProcessId) -
         return SyscallResult::err(EFAULT);
     }
 
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+    let mut buffer_vec = alloc::vec![0u8; buf_len];
     let mut caps = [crate::ipc::Capability::new(0, 0, 0); crate::ipc::MAX_CAPS_PER_MESSAGE];
 
     match crate::ipc::receive_message_with_caps_for_process(
         crate::ipc::ProcessId(caller_pid.0),
         crate::ipc::ChannelId(channel_id as u32),
-        buffer,
+        &mut buffer_vec,
         &mut caps,
     ) {
         Ok((bytes_received, caps_received)) => {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    buffer_vec.as_ptr(),
+                    buf_ptr as *mut u8,
+                    bytes_received,
+                );
+            }
             let caps_out = unsafe {
                 core::slice::from_raw_parts_mut(
                     caps_ptr as *mut SysIpcCapability,
@@ -809,10 +831,15 @@ fn sys_file_read(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
 
     // Read from file
     crate::security::security().intent_fs_read(caller_pid, fd as u64);
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count) };
+    let mut buffer_vec = alloc::vec![0u8; count];
 
-    match crate::fs::read(fd as usize, buffer) {
-        Ok(bytes_read) => SyscallResult::ok(bytes_read as i32),
+    match crate::fs::read(fd as usize, &mut buffer_vec) {
+        Ok(bytes_read) => {
+            unsafe {
+                core::ptr::copy_nonoverlapping(buffer_vec.as_ptr(), buf_ptr as *mut u8, bytes_read);
+            }
+            SyscallResult::ok(bytes_read as i32)
+        }
         Err(_) => SyscallResult::err(EIO),
     }
 }
@@ -966,10 +993,15 @@ fn sys_dir_list(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscall
         .intent_fs_read(caller_pid, crate::security::hash_data(path.as_bytes()));
 
     // List directory
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+    let mut buffer_vec = alloc::vec![0u8; buf_len];
 
-    match crate::fs::list_dir(path, buffer) {
-        Ok(count) => SyscallResult::ok(count as i32),
+    match crate::fs::list_dir(path, &mut buffer_vec) {
+        Ok(count) => {
+            unsafe {
+                core::ptr::copy_nonoverlapping(buffer_vec.as_ptr(), buf_ptr as *mut u8, buf_len);
+            }
+            SyscallResult::ok(count as i32)
+        }
         Err(_) => SyscallResult::err(ENOENT),
     }
 }
@@ -1280,16 +1312,20 @@ fn sys_console_read(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
     }
 
     // Read from keyboard buffer
-    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+    let mut buffer_vec = alloc::vec![0u8; len];
 
     let mut bytes_read = 0;
     for i in 0..len {
         if let Some(ch) = crate::keyboard::poll() {
-            buffer[i] = ch as u8;
+            buffer_vec[i] = ch as u8;
             bytes_read += 1;
         } else {
             break;
         }
+    }
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(buffer_vec.as_ptr(), buf_ptr as *mut u8, bytes_read);
     }
 
     SyscallResult::ok(bytes_read as i32)

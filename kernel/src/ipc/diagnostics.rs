@@ -71,12 +71,10 @@ impl ChannelTable {
         let mut channels = [None; MAX_CHANNELS];
         let mut write_idx = 0usize;
 
-        for slot in self.channels.iter() {
-            if let Some(channel) = slot.as_ref() {
-                if write_idx < channels.len() {
-                    channels[write_idx] = Some(channel.diagnostics());
-                    write_idx += 1;
-                }
+        for channel in self.channels.values() {
+            if write_idx < channels.len() {
+                channels[write_idx] = Some(channel.diagnostics());
+                write_idx += 1;
             }
         }
 

@@ -14,6 +14,7 @@
 [![WASM Host ABI](https://img.shields.io/badge/WASM%20host%20ABI-IDs%200%E2%80%93131-blueviolet)](#wasm-host-abi-reference)
 [![Multiarch QEMU Smoke](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-smoke.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-smoke.yml)
 [![Multiarch QEMU Extended](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-extended.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-extended.yml)
+[![x86_64 Network Regression](https://github.com/reeveskeefe/oreulia/actions/workflows/x86_64-network-regression.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/x86_64-network-regression.yml)
 [![CapNet Regression](https://github.com/reeveskeefe/oreulia/actions/workflows/capnet-regression.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/capnet-regression.yml)
 [![WASM JIT Regression](https://github.com/reeveskeefe/oreulia/actions/workflows/wasm-jit-regression.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/wasm-jit-regression.yml)
 [![Proof Check](https://github.com/reeveskeefe/oreulia/actions/workflows/proof-check.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/proof-check.yml)
@@ -88,7 +89,7 @@ It is designed for technical audiences who care about:
 - Runtime capability delegation graph (DAG) with cycle detection, no-escalation enforcement, and live violation counting (IDs 129–131).
 - WASM host ABI spans IDs 0–131 across 132 callable host functions.
 - 77+ kernel modules organized into subsystem directories within a single Rust `no_std` crate.
-- 5 GitHub Actions CI workflows (smoke, extended, CapNet regression, WASM JIT regression, proof check).
+- 6 GitHub Actions CI workflows (smoke, extended, x86_64 network regression, CapNet regression, WASM JIT regression, proof check).
 - 14 shell-level CI scripts for i686, x86_64, and AArch64 covering smoke, extended, and soak profiles.
 
 ## Platform And Portability Status
@@ -563,25 +564,27 @@ Each `CapDelegationEdge` records:
 
 ### GitHub Actions Workflows
 
-Five workflows run on every push and pull request:
+Six workflows run on every push and pull request:
 
 | Workflow File | Trigger | What It Runs |
 |---|---|---|
 | `.github/workflows/multiarch-qemu-smoke.yml` | Push / PR | Smoke tests for i686, x86_64, and AArch64 under QEMU. Boot, serial shell, and immediate-exit checks. |
 | `.github/workflows/multiarch-qemu-extended.yml` | Push / PR | Extended QEMU tests for all three architectures. Includes trap/MMU/IRQ/JIT/CapNet/temporal/VFS scenario scripts. |
+| `.github/workflows/x86_64-network-regression.yml` | Push / PR | Dedicated x86_64 QEMU usernet regression. Requires live DNS resolution, plain HTTP success, and HTTPS fail-closed behavior. |
 | `.github/workflows/capnet-regression.yml` | Push / PR | CapNet parser, enforcer, and cross-peer delegation regression. Runs fuzz corpus and known-bad input set. |
 | `.github/workflows/wasm-jit-regression.yml` | Push / PR | WASM interpreter vs JIT differential validation. Runs deterministic seed fuzz and corpus replay. |
 | `.github/workflows/proof-check.yml` | Push / PR | Runs the 8-stage formal verification pipeline (`formal-verify`) via `kernel/formal-verify.sh`. |
 
 ### Shell CI Scripts (`kernel/ci/`)
 
-14 shell scripts cover three architectures at three test depths:
+Shell scripts cover three architectures plus a dedicated x86_64 network regression lane:
 
 | Script | Arch | Depth | Description |
 |---|---|---|---|
 | `smoke-i686.sh` / `.expect` | i686 | Smoke | Boot and minimal shell responsiveness check. |
 | `smoke-x86_64.sh` / `.expect` | x86_64 | Smoke | MB2 boot, serial shell, and command availability. |
 | `smoke-aarch64.sh` / `.expect` | AArch64 | Smoke | QEMU `virt` boot, PL011 shell, basic command echo. |
+| `network-x86_64.sh` / `.expect` | x86_64 | Network | QEMU usernet regression for `netstack-info`, DNS, plain HTTP, and HTTPS fail-closed behavior. |
 | `extended-x86_64.sh` / `.expect` | x86_64 | Extended | Traps, MMU, timer IRQ, JIT toggle, CapNet, temporal, VFS. |
 | `extended-aarch64.sh` / `.expect` | AArch64 | Extended | Exception vectors, GICv2, generic timer, virtio-mmio. |
 | `extended-all.sh` | All | Extended | Orchestrator that runs all three extended scripts in sequence. |

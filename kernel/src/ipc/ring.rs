@@ -1,32 +1,26 @@
 use super::errors::IpcError;
 use super::message::Message;
 use super::types::CHANNEL_CAPACITY;
+use alloc::collections::VecDeque;
 
 /// A bounded ring buffer for messages.
-#[derive(Clone, Copy)]
 pub(crate) struct RingBuffer {
-    buffer: [Option<Message>; CHANNEL_CAPACITY],
-    head: usize,
-    tail: usize,
-    count: usize,
+    buffer: VecDeque<Message>,
 }
 
 impl RingBuffer {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         RingBuffer {
-            buffer: [None; CHANNEL_CAPACITY],
-            head: 0,
-            tail: 0,
-            count: 0,
+            buffer: VecDeque::with_capacity(CHANNEL_CAPACITY),
         }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.count == 0
+        self.buffer.is_empty()
     }
 
     pub(crate) fn is_full(&self) -> bool {
-        self.count >= CHANNEL_CAPACITY
+        self.buffer.len() >= CHANNEL_CAPACITY
     }
 
     pub(crate) fn push(&mut self, msg: Message) -> Result<(), IpcError> {
@@ -34,31 +28,19 @@ impl RingBuffer {
             return Err(IpcError::WouldBlock);
         }
 
-        self.buffer[self.tail] = Some(msg);
-        self.tail = (self.tail + 1) % CHANNEL_CAPACITY;
-        self.count += 1;
+        self.buffer.push_back(msg);
         Ok(())
     }
 
     pub(crate) fn pop(&mut self) -> Option<Message> {
-        if self.is_empty() {
-            return None;
-        }
-
-        let msg = self.buffer[self.head].take();
-        self.head = (self.head + 1) % CHANNEL_CAPACITY;
-        self.count -= 1;
-        msg
+        self.buffer.pop_front()
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.count
+        self.buffer.len()
     }
 
     pub(crate) fn clear(&mut self) {
-        self.buffer = [None; CHANNEL_CAPACITY];
-        self.head = 0;
-        self.tail = 0;
-        self.count = 0;
+        self.buffer.clear();
     }
 }
