@@ -1,0 +1,70 @@
+<svg width="680" viewBox="0 0 680 580" xmlns="http://www.w3.org/2000/svg" style="background:#ffffff;font-family:sans-serif">
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+  <style>
+    .th { font-size:14px; font-weight:600; }
+    .ts { font-size:12px; font-weight:400; fill:#555555; }
+  </style>
+</defs>
+
+<!-- Initial node -->
+<circle cx="340" cy="36" r="12" fill="#1a1a1a"/>
+<circle cx="340" cy="36" r="8" fill="#ffffff"/>
+<circle cx="340" cy="36" r="5" fill="#1a1a1a"/>
+
+<!-- [*] → Idle -->
+<line x1="340" y1="48" x2="340" y2="100" stroke="#888780" stroke-width="1" marker-end="url(#arrow)"/>
+<text class="ts" x="352" y="77" dominant-baseline="central">channel created</text>
+
+<!-- IDLE -->
+<rect x="220" y="100" width="240" height="52" rx="10" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text class="th" x="340" y="126" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">Idle</text>
+
+<!-- Idle → Available -->
+<path d="M366 152 L366 218" fill="none" stroke="#888780" stroke-width="1" marker-end="url(#arrow)"/>
+<text class="ts" x="378" y="188" dominant-baseline="central">push (n: 0→1)</text>
+
+<!-- Available → Idle -->
+<path d="M314 218 L314 152" fill="none" stroke="#888780" stroke-width="1" marker-end="url(#arrow)"/>
+<text class="ts" x="302" y="188" text-anchor="end" dominant-baseline="central">pop (n: 1→0)</text>
+
+<!-- AVAILABLE -->
+<rect x="220" y="218" width="240" height="52" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text class="th" x="340" y="244" text-anchor="middle" dominant-baseline="central" fill="#04342C">Available</text>
+
+<!-- Available → High -->
+<path d="M366 270 L366 336" fill="none" stroke="#888780" stroke-width="1" marker-end="url(#arrow)"/>
+<text class="ts" x="378" y="306" dominant-baseline="central">push (n: 2→3)</text>
+
+<!-- High → Available -->
+<path d="M314 336 L314 270" fill="none" stroke="#888780" stroke-width="1" marker-end="url(#arrow)"/>
+<text class="ts" x="302" y="306" text-anchor="end" dominant-baseline="central">pop (n: 3→2)</text>
+
+<!-- HIGH -->
+<rect x="220" y="336" width="240" height="52" rx="10" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text class="th" x="340" y="362" text-anchor="middle" dominant-baseline="central" fill="#412402">High</text>
+
+<!-- High → Saturated -->
+<path d="M366 388 L366 454" fill="none" stroke="#888780" stroke-width="1" marker-end="url(#arrow)"/>
+<text class="ts" x="378" y="424" dominant-baseline="central">push (n: 3→4)</text>
+
+<!-- Saturated → High -->
+<path d="M314 454 L314 388" fill="none" stroke="#888780" stroke-width="1" marker-end="url(#arrow)"/>
+<text class="ts" x="302" y="424" text-anchor="end" dominant-baseline="central">pop (n: 4→3)</text>
+
+<!-- SATURATED -->
+<rect x="220" y="454" width="240" height="52" rx="10" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+<text class="th" x="340" y="480" text-anchor="middle" dominant-baseline="central" fill="#4A1B0C">Saturated</text>
+
+<!-- Legend -->
+<rect x="40" y="534" width="12" height="12" rx="2" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+<text class="ts" x="58" y="540" dominant-baseline="central">Empty</text>
+<rect x="118" y="534" width="12" height="12" rx="2" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text class="ts" x="136" y="540" dominant-baseline="central">Normal</text>
+<rect x="204" y="534" width="12" height="12" rx="2" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text class="ts" x="222" y="540" dominant-baseline="central">Pressure building</text>
+<rect x="350" y="534" width="12" height="12" rx="2" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+<text class="ts" x="368" y="540" dominant-baseline="central">Full / backpressure</text>
+</svg>

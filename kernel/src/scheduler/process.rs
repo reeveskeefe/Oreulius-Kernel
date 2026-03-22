@@ -792,6 +792,38 @@ impl ProcessManager {
         scheduler.set_current(Some(pid));
         Ok(())
     }
+
+    /// Ensure a runtime-visible PID exists in the shared process backend and
+    /// is marked current. Used by legacy bring-up before full process/scheduler
+    /// parity exists.
+    pub fn ensure_runtime_pid(&self, pid: Pid, name: &str) -> Result<(), ProcessError> {
+        let mut scheduler = self.scheduler.lock();
+        let mut table = self.table.lock();
+
+        if pid.0 == 0 {
+            scheduler.set_current(None);
+            return Ok(());
+        }
+
+        if table.get(pid).is_none() {
+            let parent = if pid.0 == 1 { None } else { Some(Pid::new(1)) };
+            table.spawn_with_pid(pid, name, parent)?;
+        }
+
+        if let Some(prev_pid) = scheduler.current() {
+            if prev_pid != pid {
+                if let Some(prev) = table.get_mut(prev_pid) {
+                    prev.mark_ready();
+                }
+            }
+        }
+
+        if let Some(proc) = table.get_mut(pid) {
+            proc.mark_running();
+        }
+        scheduler.set_current(Some(pid));
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -884,6 +916,12 @@ pub fn current_pid() -> Option<Pid> {
 pub fn set_current_runtime_pid(pid: Pid) -> Result<(), &'static str> {
     process_manager()
         .set_current_runtime_pid(pid)
+        .map_err(|e| e.as_str())
+}
+
+pub fn ensure_runtime_pid(pid: Pid, name: &str) -> Result<(), &'static str> {
+    process_manager()
+        .ensure_runtime_pid(pid, name)
         .map_err(|e| e.as_str())
 }
 

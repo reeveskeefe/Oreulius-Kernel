@@ -75,6 +75,106 @@ fn print_usize(n: usize) {
     print_u32(n as u32);
 }
 
+fn normalize_command_token<'a>(token: &'a str, scratch: &'a mut [u8; 32]) -> &'a str {
+    let mut len = 0usize;
+    for byte in token.bytes() {
+        if byte.is_ascii_alphanumeric() && len < scratch.len() {
+            scratch[len] = byte.to_ascii_lowercase();
+            len += 1;
+        }
+    }
+    core::str::from_utf8(&scratch[..len]).unwrap_or("")
+}
+
+fn command_matches_with_one_edit(command: &str, candidate: &str) -> bool {
+    let a = command.as_bytes();
+    let b = candidate.as_bytes();
+
+    if a == b {
+        return true;
+    }
+
+    let len_a = a.len();
+    let len_b = b.len();
+    if len_a.abs_diff(len_b) > 1 {
+        return false;
+    }
+
+    let mut i = 0usize;
+    let mut j = 0usize;
+    let mut edits = 0usize;
+
+    while i < len_a && j < len_b {
+        if a[i] == b[j] {
+            i += 1;
+            j += 1;
+            continue;
+        }
+
+        edits += 1;
+        if edits > 1 {
+            return false;
+        }
+
+        if len_a == len_b {
+            i += 1;
+            j += 1;
+        } else if len_a > len_b {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+
+    if i < len_a || j < len_b {
+        edits += 1;
+    }
+
+    edits <= 1
+}
+
+fn canonicalize_network_command<'a>(command: &'a str) -> &'a str {
+    const NETWORK_COMMANDS: [(&str, &str); 8] = [
+        ("eth-status", "es"),
+        ("eth-info", "ei"),
+        ("dns-resolve", "dr"),
+        ("http-get", "hg"),
+        ("http-server-start", "hss"),
+        ("http-server-stop", "hst"),
+        ("netstack-info", "ns"),
+        ("net-info", "ni"),
+    ];
+
+    let mut normalized_buf = [0u8; 32];
+    let normalized = normalize_command_token(command, &mut normalized_buf);
+
+    for (canonical, alias) in NETWORK_COMMANDS {
+        let mut canonical_buf = [0u8; 32];
+        let canonical_norm = normalize_command_token(canonical, &mut canonical_buf);
+        let mut alias_buf = [0u8; 32];
+        let alias_norm = normalize_command_token(alias, &mut alias_buf);
+
+        if normalized == canonical_norm || normalized == alias_norm {
+            return canonical;
+        }
+    }
+
+    for (canonical, alias) in NETWORK_COMMANDS {
+        let mut canonical_buf = [0u8; 32];
+        let canonical_norm = normalize_command_token(canonical, &mut canonical_buf);
+        let mut alias_buf = [0u8; 32];
+        let alias_norm = normalize_command_token(alias, &mut alias_buf);
+
+        if command_matches_with_one_edit(normalized, canonical_norm)
+            || command_matches_with_one_edit(normalized, alias_norm)
+        {
+            return canonical;
+        }
+    }
+
+    command
+}
+
 pub fn execute(input: &str) {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -87,7 +187,12 @@ pub fn execute(input: &str) {
     }
 
     let mut parts = trimmed.split_whitespace();
-    let command = parts.next().unwrap_or("");
+    let command = canonicalize_network_command(parts.next().unwrap_or(""));
+
+    #[cfg(target_arch = "x86")]
+    {
+        crate::serial_println!("[CMD-DISPATCH] raw='{}' canonical='{}'", trimmed, command);
+    }
 
     match command {
         "help" => {
@@ -635,7 +740,7 @@ pub fn execute(input: &str) {
         "network-help" => {
             cmd_network_help();
         }
-        "net-info" => {
+        "net-info" | "ni" => {
             cmd_net_info();
         }
         "pci-list" => {
@@ -662,25 +767,25 @@ pub fn execute(input: &str) {
         "wifi-status" => {
             cmd_wifi_status();
         }
-        "http-get" => {
+        "http-get" | "hg" | "h" => {
             cmd_http_get(parts);
         }
-        "http-server-start" => {
+        "http-server-start" | "hss" => {
             cmd_http_server_start(parts);
         }
-        "http-server-stop" => {
+        "http-server-stop" | "hst" => {
             cmd_http_server_stop();
         }
-        "dns-resolve" => {
+        "dns-resolve" | "dr" | "d" => {
             cmd_dns_resolve(parts);
         }
-        "eth-status" => {
+        "eth-status" | "es" | "e" => {
             cmd_eth_status();
         }
-        "eth-info" => {
+        "eth-info" | "ei" => {
             cmd_eth_info();
         }
-        "netstack-info" => {
+        "netstack-info" | "ns" | "n" => {
             cmd_netstack_info();
         }
         "capnet-local" => {
@@ -10429,10 +10534,13 @@ fn cmd_wifi_status() {
 
 fn cmd_http_get(mut parts: core::str::SplitWhitespace) {
     let url = match parts.next() {
+        Some("ex") => "http://example.com/",
+        Some("exs") => "https://example.com/",
         Some(u) => u,
         None => {
             vga::print_str("Usage: http-get <url>\n");
             vga::print_str("Example: http-get http://example.com\n");
+            vga::print_str("Shortcuts: http-get ex | http-get exs\n");
             return;
         }
     };
@@ -10518,10 +10626,12 @@ fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
     use crate::net_reactor;
 
     let domain = match parts.next() {
+        Some("ex") => "example.com",
         Some(d) => d,
         None => {
             vga::print_str("Usage: dns-resolve <domain>\n");
             vga::print_str("Example: dns-resolve google.com\n");
+            vga::print_str("Shortcut: dns-resolve ex\n");
             return;
         }
     };

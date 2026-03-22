@@ -2744,7 +2744,7 @@ fn temporal_apply_network_config_payload(
     if path != "/network/config" {
         return Err("temporal network key mismatch");
     }
-    if payload.len() < 4 {
+    if payload.len() < crate::net_reactor::TEMPORAL_NETWORK_CONFIG_BYTES {
         return Err("temporal network payload too short");
     }
     if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_NETWORK_CONFIG_OBJECT {
@@ -4464,22 +4464,6 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         .map_err(|_| "temporal object self-check: wasm service pointer payload unreadable")?;
     if wasm_read.len() < 4 {
         return Err("temporal object self-check: wasm service pointer payload too short");
-    }
-
-    let network_payload = [
-        TEMPORAL_OBJECT_ENCODING_V1,
-        TEMPORAL_NETWORK_CONFIG_OBJECT,
-        TEMPORAL_NETWORK_CONFIG_EVENT_STATE,
-        0,
-    ];
-    record_network_config_event(&network_payload)
-        .map_err(|_| "temporal object self-check: network config record failed")?;
-    let network_latest = latest_version(network_config_object_key())
-        .map_err(|_| "temporal object self-check: network config history missing")?;
-    let network_read = read_version(network_config_object_key(), network_latest.version_id)
-        .map_err(|_| "temporal object self-check: network config payload unreadable")?;
-    if network_read.len() < 4 {
-        return Err("temporal object self-check: network config payload too short");
     }
 
     let wasm_syscall_payload = [

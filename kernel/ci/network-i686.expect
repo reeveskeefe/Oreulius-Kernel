@@ -1,0 +1,155 @@
+#!/usr/bin/expect -f
+set timeout 240
+set send_slow {1 0.08}
+
+set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
+cd $kernel_dir
+
+proc expect_i686_shell_ready {} {
+    expect {
+        -re {Type 'help' for commands\.} { exp_continue }
+        -re {(\r?\n|^)> } {}
+        timeout { puts "timeout waiting for i686 kernel shell readiness"; exit 1 }
+    }
+}
+
+proc send_i686_cmd {cmd} {
+    after 1200
+    send -s -- $cmd
+    after 500
+    send -- "\r"
+}
+
+proc expect_i686_ready {} {
+    for {set attempt 0} {$attempt < 6} {incr attempt} {
+        send_i686_cmd "n"
+        expect {
+            -re {Status: READY} {
+                expect {
+                    -re {My IP: (?!0\.0\.0\.0)([0-9]{1,3}\.){3}[0-9]{1,3}} {
+                        after 1200
+                        return
+                    }
+                    -re {My IP: 0\.0\.0\.0} {
+                        after 1500
+                    }
+                    timeout {
+                        puts "netstack-info timed out waiting for configured IP"
+                        exit 1
+                    }
+                }
+            }
+            -re {Status: NOT READY} {
+                after 1500
+            }
+            -re {Error: (.+)} {
+                puts "netstack-info failed: $expect_out(1,string)"
+                exit 1
+            }
+            timeout {
+                puts "netstack-info timed out"
+                exit 1
+            }
+        }
+    }
+    puts "network never became ready on i686"
+    exit 1
+}
+
+proc expect_i686_phase_until_prompt {label success_re} {
+    expect {
+        -re $success_re {
+            after 1200
+            return
+        }
+        -re {Resolution failed: (.+)} {
+            puts "$label failed: $expect_out(1,string)"
+            exit 1
+        }
+        -re {Request failed: (.+)} {
+            puts "$label failed: $expect_out(1,string)"
+            exit 1
+        }
+        -re {Error: (.+)} {
+            puts "$label failed: $expect_out(1,string)"
+            exit 1
+        }
+        -re {Unknown command: (.+)} {
+            puts "$label failed: unknown command $expect_out(1,string)"
+            exit 1
+        }
+        timeout {
+            puts "$label timed out"
+            exit 1
+        }
+    }
+}
+
+proc expect_i686_http_success {label} {
+    expect {
+        -re {Status: [23][0-9][0-9]} {}
+        -re {Request failed: (.+)} {
+            puts "$label failed: $expect_out(1,string)"
+            exit 1
+        }
+        -re {Error: (.+)} {
+            puts "$label failed: $expect_out(1,string)"
+            exit 1
+        }
+        -re {Unknown command: (.+)} {
+            puts "$label failed: unknown command $expect_out(1,string)"
+            exit 1
+        }
+        timeout {
+            puts "$label timed out waiting for HTTP status"
+            exit 1
+        }
+    }
+
+    expect {
+        -re {Total: [1-9][0-9]* bytes} {
+            after 1200
+            return
+        }
+        -re {Request failed: (.+)} {
+            puts "$label failed: $expect_out(1,string)"
+            exit 1
+        }
+        -re {Error: (.+)} {
+            puts "$label failed: $expect_out(1,string)"
+            exit 1
+        }
+        timeout {
+            puts "$label timed out waiting for HTTP body length"
+            exit 1
+        }
+    }
+}
+
+spawn qemu-system-i386 -cdrom oreulia.iso -serial stdio -monitor none -display none -no-reboot -no-shutdown -m 512M -netdev user,id=n0 -device e1000,netdev=n0
+
+expect_i686_shell_ready
+expect_i686_ready
+
+send_i686_cmd "e"
+expect_i686_phase_until_prompt "eth-status" {Link Status: UP}
+
+send_i686_cmd "d ex"
+expect_i686_phase_until_prompt "first dns-resolve" {Success! IP: ([0-9]{1,3}\.){3}[0-9]{1,3}}
+
+send_i686_cmd "d ex"
+expect_i686_phase_until_prompt "second dns-resolve" {Success! IP: ([0-9]{1,3}\.){3}[0-9]{1,3}}
+
+send_i686_cmd "h ex"
+expect_i686_http_success "plain HTTP"
+
+send_i686_cmd "h exs"
+expect_i686_phase_until_prompt "HTTPS fail-closed" {strict certificate validation is not implemented}
+
+send_i686_cmd "halt"
+expect {
+    -re {Halting system|System halted|CPU halted} {}
+    timeout {}
+}
+send "\003"
+expect eof

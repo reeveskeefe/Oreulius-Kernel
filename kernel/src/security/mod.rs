@@ -226,8 +226,16 @@ impl AuditLog {
 
     /// Log a security event
     pub fn log(&mut self, entry: AuditEntry) {
-        self.entries[self.next_index] = Some(entry);
-        self.next_index = (self.next_index + 1) % MAX_AUDIT_ENTRIES;
+        let idx = if self.next_index < MAX_AUDIT_ENTRIES {
+            self.next_index
+        } else {
+            0
+        };
+        self.entries[idx] = Some(entry);
+        self.next_index = (idx + 1) % MAX_AUDIT_ENTRIES;
+        if self.count > MAX_AUDIT_ENTRIES {
+            self.count = MAX_AUDIT_ENTRIES;
+        }
         if self.count < MAX_AUDIT_ENTRIES {
             self.count += 1;
         }

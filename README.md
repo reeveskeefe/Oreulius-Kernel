@@ -14,6 +14,7 @@
 [![WASM Host ABI](https://img.shields.io/badge/WASM%20host%20ABI-IDs%200%E2%80%93131-blueviolet)](#wasm-host-abi-reference)
 [![Multiarch QEMU Smoke](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-smoke.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-smoke.yml)
 [![Multiarch QEMU Extended](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-extended.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/multiarch-qemu-extended.yml)
+[![i686 Network Regression](https://github.com/reeveskeefe/oreulia/actions/workflows/i686-network-regression.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/i686-network-regression.yml)
 [![x86_64 Network Regression](https://github.com/reeveskeefe/oreulia/actions/workflows/x86_64-network-regression.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/x86_64-network-regression.yml)
 [![CapNet Regression](https://github.com/reeveskeefe/oreulia/actions/workflows/capnet-regression.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/capnet-regression.yml)
 [![WASM JIT Regression](https://github.com/reeveskeefe/oreulia/actions/workflows/wasm-jit-regression.yml/badge.svg)](https://github.com/reeveskeefe/oreulia/actions/workflows/wasm-jit-regression.yml)
@@ -89,7 +90,7 @@ It is designed for technical audiences who care about:
 - Runtime capability delegation graph (DAG) with cycle detection, no-escalation enforcement, and live violation counting (IDs 129–131).
 - WASM host ABI spans IDs 0–131 across 132 callable host functions.
 - 77+ kernel modules organized into subsystem directories within a single Rust `no_std` crate.
-- 6 GitHub Actions CI workflows (smoke, extended, x86_64 network regression, CapNet regression, WASM JIT regression, proof check).
+- 7 GitHub Actions CI workflows (smoke, extended, i686 network regression, x86_64 network regression, CapNet regression, WASM JIT regression, proof check).
 - 14 shell-level CI scripts for i686, x86_64, and AArch64 covering smoke, extended, and soak profiles.
 
 ## Platform And Portability Status

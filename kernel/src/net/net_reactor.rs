@@ -29,14 +29,16 @@ use super::netstack::{Ipv4Addr, MacAddr, NetworkStack};
 const MAX_STR: usize = 128;
 const RX_BUDGET: usize = 64;
 const MAX_TCP_IO: usize = 65_535;
-/// Max bytes per `NetRequest::TcpSend` variant — raised to 16 KiB so a
-/// typical 64 KiB window fits in 4 reactor dispatches instead of 16.
-const MAX_TCP_SEND_CHUNK: usize = 16_384;
+/// Max bytes per `NetRequest::TcpSend` variant.
+///
+/// Keep this bounded to avoid blowing the legacy x86 shell thread stack when
+/// the inline reactor path stages a send request locally.
+const MAX_TCP_SEND_CHUNK: usize = 2048;
 /// Number of per-burst RX frame slots used by `recv_frames_burst`.
 /// Must be ≤ RX_BUDGET and fits in a single poll cycle.
 const RX_BURST_BUFS: usize = RX_BUDGET;
 const MAX_TEMPORAL_SOCKET_PREVIEW: usize = crate::temporal::TEMPORAL_SOCKET_PAYLOAD_PREVIEW_BYTES;
-const TEMPORAL_NETWORK_CONFIG_BYTES: usize = 32;
+pub const TEMPORAL_NETWORK_CONFIG_BYTES: usize = 32;
 
 #[derive(Clone, Copy)]
 enum NetRequest {
@@ -52,7 +54,6 @@ enum NetRequest {
     TcpSend {
         conn_id: u16,
         len: u16,
-        data: [u8; MAX_TCP_SEND_CHUNK],
     },
     TcpRecv {
         conn_id: u16,
@@ -163,6 +164,7 @@ static REQ_SLOT: ReqSlot = ReqSlot {
     req: UnsafeCell::new(NetRequest::None),
     resp: UnsafeCell::new(NetResponse::None),
 };
+static mut TCP_SEND_STAGE: [u8; MAX_TCP_SEND_CHUNK] = [0u8; MAX_TCP_SEND_CHUNK];
 
 // 0 = idle, 1 = claim in progress, 2 = request pending, 3 = response ready
 static REQ_STATE: AtomicUsize = AtomicUsize::new(0);
@@ -265,15 +267,27 @@ fn drive_runtime_progress(stack: &mut NetworkStack, last_tick: &mut u64) -> bool
     did_work
 }
 
-fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u64) -> NetResponse {
+fn wait_for_runtime_progress() {
+    #[cfg(target_arch = "x86")]
+    {
+        if REACTOR_STARTED.load(Ordering::Acquire) == 0 {
+            core::hint::spin_loop();
+            return;
+        }
+    }
+
+    crate::quantum_scheduler::yield_now();
+}
+
+fn dispatch_request(stack: &mut NetworkStack, req: &NetRequest, last_tick: &mut u64) -> NetResponse {
     match req {
         NetRequest::None => NetResponse::Ok,
         NetRequest::DnsResolve { len, data } => {
-            let len = len as usize;
+            let len = *len as usize;
             let domain = core::str::from_utf8(&data[..len]).unwrap_or("");
             match stack.dns_resolve_with_progress(domain, |stack| {
                 if !drive_runtime_progress(stack, last_tick) {
-                    crate::quantum_scheduler::yield_now();
+                    wait_for_runtime_progress();
                 }
             }) {
                 Ok(ip) => NetResponse::DnsResult(ip),
@@ -283,21 +297,67 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
         NetRequest::TcpConnect {
             remote_ip,
             remote_port,
-        } => match stack.tcp_connect(remote_ip, remote_port) {
-            Ok(conn_id) => NetResponse::U64(conn_id as u64),
+        } => {
+            crate::serial_println!(
+                "[HTTP-TCP] connect request remote={}.{}.{}.{}:{}",
+                remote_ip.0[0],
+                remote_ip.0[1],
+                remote_ip.0[2],
+                remote_ip.0[3],
+                remote_port
+            );
+            match stack.tcp_connect(*remote_ip, *remote_port) {
+            Ok(conn_id) => {
+                crate::serial_println!(
+                    "[HTTP-TCP] connect start conn_id={} remote={}.{}.{}.{}:{}",
+                    conn_id,
+                    remote_ip.0[0],
+                    remote_ip.0[1],
+                    remote_ip.0[2],
+                    remote_ip.0[3],
+                    remote_port
+                );
+                let timeout_ticks = (crate::pit::get_frequency() as u64)
+                    .saturating_mul(5)
+                    .max(1);
+                let start_ticks = crate::pit::get_ticks();
+                loop {
+                    match stack.tcp_connection_state(conn_id) {
+                        Some(4) | Some(7) => {
+                            crate::serial_println!("[HTTP-TCP] connect established conn_id={}", conn_id);
+                            break NetResponse::U64(conn_id as u64);
+                        }
+                        Some(state) => {
+                            crate::serial_println!("[HTTP-TCP] connect state conn_id={} state={}", conn_id, state);
+                        }
+                        None => break NetResponse::Err("TCP connect failed"),
+                    }
+
+                    if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                        break NetResponse::Err("TCP connect timeout");
+                    }
+
+                    crate::serial_println!("[HTTP-TCP] connect waiting conn_id={}", conn_id);
+                    if !drive_runtime_progress(stack, last_tick) {
+                        wait_for_runtime_progress();
+                    }
+                }
+            }
             Err(e) => NetResponse::Err(e),
+        }
         },
-        NetRequest::TcpSend { conn_id, len, data } => {
-            let len = core::cmp::min(len as usize, data.len());
-            match stack.tcp_send(conn_id, &data[..len]) {
+        NetRequest::TcpSend { conn_id, len } => {
+            let len = core::cmp::min(*len as usize, MAX_TCP_SEND_CHUNK);
+            let data = unsafe { &TCP_SEND_STAGE[..len] };
+            match stack.tcp_send(*conn_id, data) {
                 Ok(sent) => NetResponse::U64(sent as u64),
                 Err(e) => NetResponse::Err(e),
             }
         }
         NetRequest::TcpRecv { conn_id, max_len } => {
             let mut out = [0u8; MAX_TCP_IO];
-            let limit = core::cmp::min(max_len as usize, out.len());
-            match stack.tcp_recv(conn_id, &mut out[..limit]) {
+            let limit = core::cmp::min(*max_len as usize, out.len());
+            match stack.tcp_recv(*conn_id, &mut out[..limit]) {
                 Ok(read_len) => NetResponse::TcpData {
                     len: read_len as u16,
                     data: out,
@@ -305,7 +365,7 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
                 Err(e) => NetResponse::Err(e),
             }
         }
-        NetRequest::TcpClose { conn_id } => match stack.tcp_close(conn_id) {
+        NetRequest::TcpClose { conn_id } => match stack.tcp_close(*conn_id) {
             Ok(()) => NetResponse::Ok,
             Err(e) => NetResponse::Err(e),
         },
@@ -313,7 +373,7 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
             listener_id,
             port,
             event,
-        } => match stack.temporal_apply_tcp_listener_event(listener_id, port, event) {
+        } => match stack.temporal_apply_tcp_listener_event(*listener_id, *port, *event) {
             Ok(()) => NetResponse::Ok,
             Err(e) => NetResponse::Err(e),
         },
@@ -329,16 +389,16 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
             preview_len,
             preview,
         } => {
-            let preview_len = core::cmp::min(preview_len as usize, preview.len());
+            let preview_len = core::cmp::min(*preview_len as usize, preview.len());
             match stack.temporal_apply_tcp_connection_event(
-                conn_id,
-                state,
-                local_ip,
-                local_port,
-                remote_ip,
-                remote_port,
-                event,
-                aux,
+                *conn_id,
+                *state,
+                *local_ip,
+                *local_port,
+                *remote_ip,
+                *remote_port,
+                *event,
+                *aux,
                 &preview[..preview_len],
             ) {
                 Ok(()) => NetResponse::Ok,
@@ -353,17 +413,17 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
             flags,
             event,
         } => match stack.temporal_apply_network_config_event(
-            my_ip,
-            MacAddr(my_mac),
-            gateway_ip,
-            dns_server,
-            flags,
-            event,
+            *my_ip,
+            MacAddr(*my_mac),
+            *gateway_ip,
+            *dns_server,
+            *flags,
+            *event,
         ) {
             Ok(()) => NetResponse::Ok,
             Err(e) => NetResponse::Err(e),
         },
-        NetRequest::HttpServerStart { port } => match stack.http_server_start(port) {
+        NetRequest::HttpServerStart { port } => match stack.http_server_start(*port) {
             Ok(()) => NetResponse::Ok,
             Err(e) => NetResponse::Err(e),
         },
@@ -388,7 +448,7 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
             peer_device_id,
             dest_ip,
             dest_port,
-        } => match stack.capnet_send_hello(dest_ip, dest_port, peer_device_id) {
+        } => match stack.capnet_send_hello(*dest_ip, *dest_port, *peer_device_id) {
             Ok(seq) => NetResponse::U64(seq as u64),
             Err(e) => NetResponse::Err(e),
         },
@@ -398,7 +458,7 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
             dest_port,
             ack,
             ack_only,
-        } => match stack.capnet_send_heartbeat(dest_ip, dest_port, peer_device_id, ack, ack_only) {
+        } => match stack.capnet_send_heartbeat(*dest_ip, *dest_port, *peer_device_id, *ack, *ack_only) {
             Ok(seq) => NetResponse::U64(seq as u64),
             Err(e) => NetResponse::Err(e),
         },
@@ -407,7 +467,7 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
             dest_ip,
             dest_port,
             token,
-        } => match stack.capnet_send_token_offer(dest_ip, dest_port, peer_device_id, token) {
+        } => match stack.capnet_send_token_offer(*dest_ip, *dest_port, *peer_device_id, *token) {
             Ok(token_id) => NetResponse::U64(token_id),
             Err(e) => NetResponse::Err(e),
         },
@@ -418,7 +478,7 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
             token_id,
             ack,
         } => {
-            match stack.capnet_send_token_accept(dest_ip, dest_port, peer_device_id, token_id, ack)
+            match stack.capnet_send_token_accept(*dest_ip, *dest_port, *peer_device_id, *token_id, *ack)
             {
                 Ok(seq) => NetResponse::U64(seq as u64),
                 Err(e) => NetResponse::Err(e),
@@ -429,7 +489,7 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
             dest_ip,
             dest_port,
             token_id,
-        } => match stack.capnet_send_token_revoke(dest_ip, dest_port, peer_device_id, token_id) {
+        } => match stack.capnet_send_token_revoke(*dest_ip, *dest_port, *peer_device_id, *token_id) {
             Ok(seq) => NetResponse::U64(seq as u64),
             Err(e) => NetResponse::Err(e),
         },
@@ -438,7 +498,7 @@ fn dispatch_request(stack: &mut NetworkStack, req: NetRequest, last_tick: &mut u
             dest_ip,
             dest_port,
             ack,
-        } => match stack.capnet_send_attest(dest_ip, dest_port, peer_device_id, ack) {
+        } => match stack.capnet_send_attest(*dest_ip, *dest_port, *peer_device_id, *ack) {
             Ok(seq) => NetResponse::U64(seq as u64),
             Err(e) => NetResponse::Err(e),
         },
@@ -449,7 +509,7 @@ fn handle_request(stack: &mut NetworkStack, last_tick: &mut u64) -> bool {
     if REQ_STATE.load(Ordering::Acquire) != 2 {
         return false;
     }
-    let req = unsafe { *REQ_SLOT.req.get() };
+    let req = unsafe { &*REQ_SLOT.req.get() };
     let resp = dispatch_request(stack, req, last_tick);
     unsafe {
         *REQ_SLOT.resp.get() = resp;
@@ -459,12 +519,38 @@ fn handle_request(stack: &mut NetworkStack, last_tick: &mut u64) -> bool {
 }
 
 fn inline_request(req: NetRequest) -> Result<NetResponse, &'static str> {
-    let stack = unsafe { &mut NET_STACK };
-    if stack.is_ready() {
-        stack.mark_ready();
+    if REQ_STATE
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err("Network busy");
     }
+    unsafe {
+        *REQ_SLOT.req.get() = req;
+        *REQ_SLOT.resp.get() = NetResponse::None;
+    }
+    let stack = unsafe { &mut NET_STACK };
+    #[cfg(target_arch = "x86")]
+    crate::serial_println!(
+        "[NET-INLINE] begin ready={} ip={}.{}.{}.{} dns={}.{}.{}.{}",
+        if stack.is_ready() { 1 } else { 0 },
+        stack.get_ip().0[0],
+        stack.get_ip().0[1],
+        stack.get_ip().0[2],
+        stack.get_ip().0[3],
+        stack.get_dns_server().0[0],
+        stack.get_dns_server().0[1],
+        stack.get_dns_server().0[2],
+        stack.get_dns_server().0[3]
+    );
     let mut last_tick = crate::pit::get_ticks();
-    Ok(dispatch_request(stack, req, &mut last_tick))
+    let req_ref = unsafe { &*REQ_SLOT.req.get() };
+    let resp = dispatch_request(stack, req_ref, &mut last_tick);
+    unsafe {
+        *REQ_SLOT.resp.get() = resp;
+    }
+    REQ_STATE.store(0, Ordering::Release);
+    Ok(resp)
 }
 
 fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
@@ -501,7 +587,7 @@ fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
             REQ_STATE.store(0, Ordering::Release);
             return Err("Network reactor request timeout");
         }
-        crate::quantum_scheduler::yield_now();
+        wait_for_runtime_progress();
     }
 
     let resp = unsafe { *REQ_SLOT.resp.get() };
@@ -589,15 +675,17 @@ pub fn tcp_send(conn_id: u16, data: &[u8]) -> Result<usize, &'static str> {
     while sent_total < data.len() {
         let remain = data.len() - sent_total;
         let chunk_len = core::cmp::min(remain, MAX_TCP_SEND_CHUNK);
-        let mut chunk = [0u8; MAX_TCP_SEND_CHUNK];
-        chunk[..chunk_len].copy_from_slice(&data[sent_total..sent_total + chunk_len]);
+        unsafe {
+            TCP_SEND_STAGE[..chunk_len].copy_from_slice(&data[sent_total..sent_total + chunk_len]);
+        }
+        crate::serial_println!("[HTTP-TCP] request chunk_len={}", chunk_len);
         match request(NetRequest::TcpSend {
             conn_id,
             len: chunk_len as u16,
-            data: chunk,
         })? {
             NetResponse::U64(sent) => {
                 let sent = sent as usize;
+                crate::serial_println!("[HTTP-TCP] sent={}", sent);
                 if sent == 0 {
                     break;
                 }
@@ -606,7 +694,10 @@ pub fn tcp_send(conn_id: u16, data: &[u8]) -> Result<usize, &'static str> {
                     break;
                 }
             }
-            NetResponse::Err(e) => return Err(e),
+            NetResponse::Err(e) => {
+                crate::serial_println!("[HTTP-TCP] send error={}", e);
+                return Err(e);
+            }
             _ => return Err("Unexpected response"),
         }
     }
@@ -718,6 +809,12 @@ pub fn temporal_apply_network_config_payload(payload: &[u8]) -> Result<(), &'sta
         NetResponse::Err(e) => Err(e),
         _ => Err("Unexpected response"),
     }
+}
+
+#[cfg(target_arch = "x86")]
+pub fn seed_legacy_x86_qemu_defaults() {
+    let stack = unsafe { &mut NET_STACK };
+    let _ = stack.seed_legacy_x86_qemu_defaults();
 }
 
 pub fn http_server_start(port: u16) -> Result<(), &'static str> {

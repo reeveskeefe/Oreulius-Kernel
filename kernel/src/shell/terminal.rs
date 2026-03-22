@@ -555,6 +555,12 @@ pub fn write_char(c: char) {
     });
 }
 
+pub fn write_char_no_serial(c: char) {
+    without_interrupts(|| {
+        TERMINAL.lock().write_char(c);
+    });
+}
+
 pub fn clear_screen() {
     without_interrupts(|| {
         TERMINAL.lock().clear_screen();

@@ -640,6 +640,7 @@ impl NetworkService {
         while crate::pit::get_ticks().saturating_sub(start_ticks) <= timeout_ticks {
             let read = net_reactor::tcp_recv(conn_id, &mut chunk)
                 .map_err(|_| NetworkError::TcpReceiveFailed)?;
+            crate::serial_println!("[HTTP-RX] conn_id={} read={}", conn_id, read);
             if read == 0 {
                 if headers_done {
                     break;
@@ -659,6 +660,11 @@ impl NetworkService {
                 if let Some(end) = find_http_header_end(&headers[..headers_len]) {
                     headers_done = true;
                     response.status_code = parse_http_status_code(&headers[..end]).unwrap_or(200);
+                    crate::serial_println!(
+                        "[HTTP-RX] headers complete conn_id={} status={}",
+                        conn_id,
+                        response.status_code
+                    );
                     content_length = parse_http_content_length(&headers[..end]);
                     chunked = http_transfer_chunked(&headers[..end]);
                     let payload_start = end.saturating_add(4);
@@ -698,6 +704,7 @@ impl NetworkService {
 
         if !headers_done {
             if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                crate::serial_println!("[HTTP-RX] timeout conn_id={}", conn_id);
                 return Err(NetworkError::HttpTimeout);
             }
             return Err(NetworkError::HttpParseFailed);

@@ -161,6 +161,71 @@ fn drain_serial_input() {
     while serial_try_read_byte().is_some() {}
 }
 
+fn reset_shell_line(input: &mut [u8; 256], len: &mut usize, cursor: &mut usize) {
+    *input = [0; 256];
+    *len = 0;
+    *cursor = 0;
+}
+
+fn refresh_shell_prompt(prompt_pos: &mut (usize, usize), max_len: &mut usize) {
+    crate::terminal::write_str("> ");
+    *prompt_pos = crate::terminal::cursor_position();
+    *max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+}
+
+fn push_shell_history(input: &[u8; 256], len: usize, history_index: &mut usize) {
+    if len == 0 {
+        return;
+    }
+
+    unsafe {
+        if SHELL_HISTORY_COUNT < 16 {
+            SHELL_HISTORY[SHELL_HISTORY_COUNT] = *input;
+            SHELL_HISTORY_LENS[SHELL_HISTORY_COUNT] = len;
+            SHELL_HISTORY_COUNT += 1;
+        } else {
+            for i in 1..16 {
+                SHELL_HISTORY[i - 1] = SHELL_HISTORY[i];
+                SHELL_HISTORY_LENS[i - 1] = SHELL_HISTORY_LENS[i];
+            }
+            SHELL_HISTORY[15] = *input;
+            SHELL_HISTORY_LENS[15] = len;
+        }
+        *history_index = SHELL_HISTORY_COUNT;
+    }
+}
+
+fn commit_shell_line(
+    input: &mut [u8; 256],
+    len: &mut usize,
+    cursor: &mut usize,
+    history_index: &mut usize,
+    prompt_pos: &mut (usize, usize),
+    max_len: &mut usize,
+) {
+    crate::terminal::write_char('\n');
+
+    let line_buf = *input;
+    let line_len = *len;
+    let line = core::str::from_utf8(&line_buf[..line_len])
+        .unwrap_or("")
+        .trim_start_matches('?');
+
+    #[cfg(target_arch = "x86")]
+    {
+        crate::serial_print!("[SHELL-CMD] len=");
+        crate::serial_print!("{}", line_len);
+        crate::serial_print!(" line='");
+        crate::serial_print!("{}", line);
+        crate::serial_println!("'");
+    }
+
+    push_shell_history(&line_buf, line_len, history_index);
+    crate::commands::execute(line);
+    reset_shell_line(input, len, cursor);
+    refresh_shell_prompt(prompt_pos, max_len);
+}
+
 pub fn enter_runtime() -> ! {
     unsafe {
         crate::early_console_write_cell(8, 0x0252); // 'R' in green at position 8
@@ -376,6 +441,7 @@ pub fn enter_runtime() -> ! {
         }
 
         if crate::e1000::init(eth_device).is_ok() {
+            crate::net_reactor::seed_legacy_x86_qemu_defaults();
             crate::vga::print_str("[NET] E1000 initialized - Ready for DNS/ARP/UDP\n");
         } else {
             crate::vga::print_str("[NET] E1000 init failed\n");
@@ -424,15 +490,8 @@ pub fn enter_runtime() -> ! {
         crate::vga::print_str("[AUDIO] Audio ready\n");
     }
 
-    {
-        let mb2_ptr = boot_info.raw_info_ptr.unwrap_or(0) as u32;
-        crate::vga::print_str("[GPU] Initializing framebuffer...\n");
-        crate::gpu_support::init(mb2_ptr);
-        crate::vga::print_str("[GPU] Framebuffer ready\n");
-
-        let (w, h) = crate::gpu_support::active_dimensions();
-        crate::compositor::init(w, h);
-    }
+    crate::vga::print_str("[GPU] Skipping framebuffer init on x86 legacy path\n");
+    crate::compositor::init(0, 0);
 
     crate::vga::print_str("[MOUSE] Enabling PS/2 auxiliary port...\n");
     crate::mouse::init();
@@ -463,6 +522,8 @@ pub fn shell_loop() -> ! {
     let mut _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
 
     let mut loops: usize = 0;
+    let mut serial_rx: [u8; 128] = [0; 128];
+    let mut serial_skip_lf = false;
     const HEARTBEAT: &[u8] = b"|/-\\";
 
     loop {
@@ -522,47 +583,40 @@ pub fn shell_loop() -> ! {
             }
         }
 
+        let mut serial_rx_len = 0usize;
         while let Some(byte) = serial_try_read_byte() {
+            if serial_rx_len < serial_rx.len() {
+                serial_rx[serial_rx_len] = byte;
+                serial_rx_len += 1;
+            }
+        }
+
+        for &byte in serial_rx[..serial_rx_len].iter() {
+            if serial_skip_lf && byte == b'\n' {
+                serial_skip_lf = false;
+                continue;
+            }
+            serial_skip_lf = false;
+
             match byte {
                 b'\r' | b'\n' => {
-                    crate::terminal::write_char('\n');
-                    let line = core::str::from_utf8(&input[..len])
-                        .unwrap_or("")
-                        .trim_start_matches('?');
-                    if len > 0 {
-                        unsafe {
-                            if SHELL_HISTORY_COUNT < 16 {
-                                SHELL_HISTORY[SHELL_HISTORY_COUNT] = input;
-                                SHELL_HISTORY_LENS[SHELL_HISTORY_COUNT] = len;
-                                SHELL_HISTORY_COUNT += 1;
-                            } else {
-                                for i in 1..16 {
-                                    SHELL_HISTORY[i - 1] = SHELL_HISTORY[i];
-                                    SHELL_HISTORY_LENS[i - 1] = SHELL_HISTORY_LENS[i];
-                                }
-                                SHELL_HISTORY[15] = input;
-                                SHELL_HISTORY_LENS[15] = len;
-                            }
-                            history_index = SHELL_HISTORY_COUNT;
-                        }
+                    if byte == b'\r' {
+                        serial_skip_lf = true;
                     }
-                    crate::commands::execute(line);
-                    len = 0;
-                    cursor = 0;
-                    input = [0; 256];
-                    drain_serial_input();
-                    crate::terminal::write_str("> ");
-                    prompt_pos = crate::terminal::cursor_position();
-                    _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    commit_shell_line(
+                        &mut input,
+                        &mut len,
+                        &mut cursor,
+                        &mut history_index,
+                        &mut prompt_pos,
+                        &mut _max_len,
+                    );
                 }
                 8 | 127 => {
-                    if cursor > 0 {
-                        let start = cursor - 1;
-                        for i in start..len.saturating_sub(1) {
-                            input[i] = input[i + 1];
-                        }
+                    if len > 0 {
                         len -= 1;
-                        cursor -= 1;
+                        cursor = len;
+                        input[len] = 0;
                         redraw_line(&input, len, cursor, prompt_pos);
                     }
                 }
@@ -570,10 +624,7 @@ pub fn shell_loop() -> ! {
                     crate::terminal::set_cursor(prompt_pos.0, prompt_pos.1);
                     crate::terminal::clear_line_from_cursor();
                     crate::terminal::write_str("^C\n> ");
-                    input = [0; 256];
-                    len = 0;
-                    cursor = 0;
-                    drain_serial_input();
+                    reset_shell_line(&mut input, &mut len, &mut cursor);
                     prompt_pos = crate::terminal::cursor_position();
                     _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
                 }
@@ -604,69 +655,37 @@ pub fn shell_loop() -> ! {
                     } else {
                         crate::terminal::write_str("[No foreground process]\n");
                     }
-                    input = [0; 256];
-                    len = 0;
-                    cursor = 0;
-                    drain_serial_input();
-                    crate::terminal::write_str("> ");
-                    prompt_pos = crate::terminal::cursor_position();
-                    _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    reset_shell_line(&mut input, &mut len, &mut cursor);
+                    refresh_shell_prompt(&mut prompt_pos, &mut _max_len);
                 }
                 b if (0x20..=0x7e).contains(&b) && len < input.len() - 1 => {
-                    for i in (cursor..len).rev() {
-                        input[i + 1] = input[i];
-                    }
-                    input[cursor] = b;
+                    input[len] = b;
                     len += 1;
-                    cursor += 1;
-                    redraw_line(&input, len, cursor, prompt_pos);
+                    cursor = len;
+                    crate::terminal::write_char_no_serial(b as char);
                 }
                 _ => {}
             }
         }
 
+        #[cfg(not(target_arch = "x86"))]
         if let Some(ev) = crate::keyboard::poll_event() {
             match ev {
                 crate::keyboard::KeyEvent::AltFn(n) => {
                     crate::terminal::switch_terminal((n.saturating_sub(1)) as usize);
-                    crate::terminal::write_str("\n> ");
-                    input = [0; 256];
-                    len = 0;
-                    cursor = 0;
-                    drain_serial_input();
-                    prompt_pos = crate::terminal::cursor_position();
-                    _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    crate::terminal::write_char('\n');
+                    reset_shell_line(&mut input, &mut len, &mut cursor);
+                    refresh_shell_prompt(&mut prompt_pos, &mut _max_len);
                 }
                 crate::keyboard::KeyEvent::Enter => {
-                    crate::terminal::write_char('\n');
-                    let line = core::str::from_utf8(&input[..len])
-                        .unwrap_or("")
-                        .trim_start_matches('?');
-                    if len > 0 {
-                        unsafe {
-                            if SHELL_HISTORY_COUNT < 16 {
-                                SHELL_HISTORY[SHELL_HISTORY_COUNT] = input;
-                                SHELL_HISTORY_LENS[SHELL_HISTORY_COUNT] = len;
-                                SHELL_HISTORY_COUNT += 1;
-                            } else {
-                                for i in 1..16 {
-                                    SHELL_HISTORY[i - 1] = SHELL_HISTORY[i];
-                                    SHELL_HISTORY_LENS[i - 1] = SHELL_HISTORY_LENS[i];
-                                }
-                                SHELL_HISTORY[15] = input;
-                                SHELL_HISTORY_LENS[15] = len;
-                            }
-                            history_index = SHELL_HISTORY_COUNT;
-                        }
-                    }
-                    crate::commands::execute(line);
-                    len = 0;
-                    cursor = 0;
-                    input = [0; 256];
-                    drain_serial_input();
-                    crate::terminal::write_str("> ");
-                    prompt_pos = crate::terminal::cursor_position();
-                    _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    commit_shell_line(
+                        &mut input,
+                        &mut len,
+                        &mut cursor,
+                        &mut history_index,
+                        &mut prompt_pos,
+                        &mut _max_len,
+                    );
                 }
                 crate::keyboard::KeyEvent::Backspace => {
                     if cursor > 0 {
@@ -711,10 +730,7 @@ pub fn shell_loop() -> ! {
                     crate::terminal::set_cursor(prompt_pos.0, prompt_pos.1);
                     crate::terminal::clear_line_from_cursor();
                     crate::terminal::write_str("^C\n> ");
-                    input = [0; 256];
-                    len = 0;
-                    cursor = 0;
-                    drain_serial_input();
+                    reset_shell_line(&mut input, &mut len, &mut cursor);
                     prompt_pos = crate::terminal::cursor_position();
                     _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
                 }
@@ -743,13 +759,8 @@ pub fn shell_loop() -> ! {
                     } else {
                         crate::terminal::write_str("[No foreground process]\n");
                     }
-                    input = [0; 256];
-                    len = 0;
-                    cursor = 0;
-                    drain_serial_input();
-                    crate::terminal::write_str("> ");
-                    prompt_pos = crate::terminal::cursor_position();
-                    _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    reset_shell_line(&mut input, &mut len, &mut cursor);
+                    refresh_shell_prompt(&mut prompt_pos, &mut _max_len);
                 }
                 crate::keyboard::KeyEvent::Ctrl(c) => {
                     if (c.is_ascii_graphic() || c == ' ') && len < input.len() - 1 {

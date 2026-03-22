@@ -309,6 +309,10 @@ pub struct NetworkStack {
 }
 
 impl NetworkStack {
+    const QEMU_USERNET_IP: Ipv4Addr = Ipv4Addr([10, 0, 2, 15]);
+    const QEMU_USERNET_GATEWAY: Ipv4Addr = Ipv4Addr([10, 0, 2, 2]);
+    const QEMU_USERNET_DNS: Ipv4Addr = Ipv4Addr([10, 0, 2, 3]);
+
     #[inline]
     fn wait_timeout_ticks(default_ticks: u64) -> u64 {
         let freq = crate::pit::get_frequency() as u64;
@@ -330,12 +334,19 @@ impl NetworkStack {
         }
     }
 
+    #[inline]
+    fn interface_configured(&self) -> bool {
+        self.my_ip.0 != [0, 0, 0, 0]
+            && self.gateway_ip.0 != [0, 0, 0, 0]
+            && self.dns_server.0 != [0, 0, 0, 0]
+    }
+
     pub const fn new() -> Self {
         NetworkStack {
-            my_ip: Ipv4Addr([10, 0, 2, 15]),                       // QEMU default
+            my_ip: Self::QEMU_USERNET_IP,                         // QEMU default
             my_mac: MacAddr([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]), // QEMU default
-            gateway_ip: Ipv4Addr([10, 0, 2, 2]),                   // QEMU default gateway
-            dns_server: Ipv4Addr([10, 0, 2, 3]),                   // QEMU usernet DNS proxy
+            gateway_ip: Self::QEMU_USERNET_GATEWAY,               // QEMU default gateway
+            dns_server: Self::QEMU_USERNET_DNS,                   // QEMU usernet DNS proxy
             arp_cache: ArpCache::new(),
             dhcp_enabled: false,
             has_interface: false,
@@ -348,6 +359,44 @@ impl NetworkStack {
             dns_debug_txid: 0,
             dns_debug_miss_logged: false,
         }
+    }
+
+    fn log_config_state(&self, reason: &str) {
+        crate::serial_println!(
+            "[NET-CONFIG] {} ip={}.{}.{}.{} gw={}.{}.{}.{} dns={}.{}.{}.{} has_if={}",
+            reason,
+            self.my_ip.0[0],
+            self.my_ip.0[1],
+            self.my_ip.0[2],
+            self.my_ip.0[3],
+            self.gateway_ip.0[0],
+            self.gateway_ip.0[1],
+            self.gateway_ip.0[2],
+            self.gateway_ip.0[3],
+            self.dns_server.0[0],
+            self.dns_server.0[1],
+            self.dns_server.0[2],
+            self.dns_server.0[3],
+            if self.has_interface { 1 } else { 0 }
+        );
+    }
+
+    pub fn seed_legacy_x86_qemu_defaults(&mut self) -> bool {
+        if self.interface_configured() && self.has_interface {
+            return false;
+        }
+
+        self.my_ip = Self::QEMU_USERNET_IP;
+        self.gateway_ip = Self::QEMU_USERNET_GATEWAY;
+        self.dns_server = Self::QEMU_USERNET_DNS;
+        self.has_interface = true;
+        self.dhcp_enabled = false;
+        #[cfg(not(target_arch = "aarch64"))]
+        if let Some(mac) = super::e1000::get_mac_address() {
+            self.my_mac = MacAddr(mac);
+        }
+        self.log_config_state("seeded legacy-x86 qemu defaults");
+        true
     }
 
     /// Mark interface as available
@@ -363,9 +412,9 @@ impl NetworkStack {
     pub fn is_ready(&self) -> bool {
         // On AArch64 use virtio-net; on x86 check the E1000 driver.
         #[cfg(not(target_arch = "aarch64"))]
-        return self.link_ready();
+        return self.has_interface && self.link_ready() && self.interface_configured();
         #[cfg(target_arch = "aarch64")]
-        return self.has_interface;
+        return self.has_interface && self.interface_configured();
     }
 
     // ========================================================================
@@ -952,6 +1001,30 @@ impl NetworkStack {
     where
         F: FnMut(&mut Self),
     {
+        if !self.is_ready() {
+            if DNS_DEBUG_ENABLED {
+                crate::serial_println!(
+                    "[DNS-DEBUG] preflight ready={} has_if={} link={} ip={}.{}.{}.{} gw={}.{}.{}.{} dns={}.{}.{}.{}",
+                    if self.is_ready() { 1 } else { 0 },
+                    if self.has_interface { 1 } else { 0 },
+                    if self.link_ready() { 1 } else { 0 },
+                    self.my_ip.0[0],
+                    self.my_ip.0[1],
+                    self.my_ip.0[2],
+                    self.my_ip.0[3],
+                    self.gateway_ip.0[0],
+                    self.gateway_ip.0[1],
+                    self.gateway_ip.0[2],
+                    self.gateway_ip.0[3],
+                    self.dns_server.0[0],
+                    self.dns_server.0[1],
+                    self.dns_server.0[2],
+                    self.dns_server.0[3],
+                );
+            }
+            return Err("Network not ready");
+        }
+
         if domain.len() > 253 {
             return Err("Domain name too long");
         }
@@ -1541,12 +1614,63 @@ impl NetworkStack {
         if event != crate::temporal::TEMPORAL_NETWORK_CONFIG_EVENT_STATE {
             return Err("Temporal network config event unsupported");
         }
+        let has_interface = (flags & TEMPORAL_NETWORK_CONFIG_FLAG_HAS_INTERFACE) != 0;
+        let ip_is_zero = my_ip.0 == [0, 0, 0, 0];
+        let gateway_is_zero = gateway_ip.0 == [0, 0, 0, 0];
+        let dns_is_zero = dns_server.0 == [0, 0, 0, 0];
+        if !has_interface && ip_is_zero && gateway_is_zero && dns_is_zero {
+            if self.interface_configured() {
+                self.log_config_state("rejected empty temporal config over valid live state");
+            } else {
+                crate::serial_println!(
+                    "[NET-CONFIG] rejecting empty temporal config state while interface absent"
+                );
+            }
+            return Ok(());
+        }
+        if has_interface && (ip_is_zero || gateway_is_zero || dns_is_zero) {
+            crate::serial_println!(
+                "[NET-CONFIG] ignoring invalid temporal config ip={}.{}.{}.{} gw={}.{}.{}.{} dns={}.{}.{}.{}",
+                my_ip.0[0],
+                my_ip.0[1],
+                my_ip.0[2],
+                my_ip.0[3],
+                gateway_ip.0[0],
+                gateway_ip.0[1],
+                gateway_ip.0[2],
+                gateway_ip.0[3],
+                dns_server.0[0],
+                dns_server.0[1],
+                dns_server.0[2],
+                dns_server.0[3],
+            );
+            return Ok(());
+        }
+        if !has_interface && (!ip_is_zero || !gateway_is_zero || !dns_is_zero) {
+            crate::serial_println!(
+                "[NET-CONFIG] rejecting inconsistent temporal config ip={}.{}.{}.{} gw={}.{}.{}.{} dns={}.{}.{}.{} has_if=0",
+                my_ip.0[0],
+                my_ip.0[1],
+                my_ip.0[2],
+                my_ip.0[3],
+                gateway_ip.0[0],
+                gateway_ip.0[1],
+                gateway_ip.0[2],
+                gateway_ip.0[3],
+                dns_server.0[0],
+                dns_server.0[1],
+                dns_server.0[2],
+                dns_server.0[3],
+            );
+            return Ok(());
+        }
         self.my_ip = my_ip;
         self.my_mac = my_mac;
         self.gateway_ip = gateway_ip;
         self.dns_server = dns_server;
         self.dhcp_enabled = (flags & TEMPORAL_NETWORK_CONFIG_FLAG_DHCP) != 0;
-        self.has_interface = (flags & TEMPORAL_NETWORK_CONFIG_FLAG_HAS_INTERFACE) != 0;
+        self.has_interface = has_interface;
+        self.log_config_state("accepted temporal config");
         Ok(())
     }
 
@@ -1585,14 +1709,18 @@ impl NetworkStack {
         accepted
     }
 
+    fn with_tcp_manager<R>(&mut self, f: impl FnOnce(&mut TcpManager, &mut Self) -> R) -> R {
+        let stack_ptr = self as *mut Self;
+        let tcp_ptr = &mut self.tcp as *mut TcpManager;
+        unsafe { f(&mut *tcp_ptr, &mut *stack_ptr) }
+    }
+
     pub fn tcp_connect(
         &mut self,
         remote_ip: Ipv4Addr,
         remote_port: u16,
     ) -> Result<u16, &'static str> {
-        let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
-        let res = tcp.connect(self, remote_ip, remote_port);
-        self.tcp = tcp;
+        let res = self.with_tcp_manager(|tcp, stack| tcp.connect(stack, remote_ip, remote_port));
         if let Ok(conn_id) = res {
             if let Some(conn) = self.tcp.find_conn_id(conn_id) {
                 Self::maybe_record_tcp_socket_state_event(
@@ -1610,12 +1738,15 @@ impl NetworkStack {
         res
     }
 
+    pub fn tcp_connection_state(&self, conn_id: u16) -> Option<u8> {
+        self.tcp.find_conn_id(conn_id).map(|conn| conn.state as u8)
+    }
+
     pub fn tcp_send(&mut self, conn_id: u16, data: &[u8]) -> Result<usize, &'static str> {
-        let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
-        let res = tcp.send(self, conn_id, data);
+        let res = self.with_tcp_manager(|tcp, stack| tcp.send(stack, conn_id, data));
         if let Ok(sent) = res {
             if sent > 0 {
-                if let Some(conn) = tcp.find_conn_id(conn_id) {
+                if let Some(conn) = self.tcp.find_conn_id(conn_id) {
                     Self::maybe_record_tcp_socket_data_event(
                         conn.id as u32,
                         conn.state as u8,
@@ -1629,21 +1760,13 @@ impl NetworkStack {
                 }
             }
         }
-        self.tcp = tcp;
         res
     }
 
     pub fn tcp_recv(&mut self, conn_id: u16, out: &mut [u8]) -> Result<usize, &'static str> {
-        let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
-        let (read_len, was_full) = match tcp.recv(conn_id, out) {
-            Ok(pair) => pair,
-            Err(e) => {
-                self.tcp = tcp;
-                return Err(e);
-            }
-        };
+        let (read_len, was_full) = self.tcp.recv(conn_id, out)?;
         if read_len > 0 {
-            if let Some(conn) = tcp.find_conn_id(conn_id) {
+            if let Some(conn) = self.tcp.find_conn_id(conn_id) {
                 Self::maybe_record_tcp_socket_data_event(
                     conn.id as u32,
                     conn.state as u8,
@@ -1656,7 +1779,6 @@ impl NetworkStack {
                 );
             }
         }
-        self.tcp = tcp;
         // Send window-update ACK if buffer was full before the read (peer's window was 0).
         if was_full {
             if let Some(conn) = self.tcp.find_conn_id(conn_id) {
@@ -1672,11 +1794,10 @@ impl NetworkStack {
 
     pub fn tcp_close(&mut self, conn_id: u16) -> Result<(), &'static str> {
         let pre_close_snapshot = self.tcp.find_conn_id(conn_id).copied();
-        let mut tcp = core::mem::replace(&mut self.tcp, TcpManager::new());
-        let res = tcp.close(self, conn_id);
+        let res = self.with_tcp_manager(|tcp, stack| tcp.close(stack, conn_id));
         if res.is_ok() {
             if let Some(mut conn) = pre_close_snapshot {
-                if let Some(updated) = tcp.find_conn_id(conn_id) {
+                if let Some(updated) = self.tcp.find_conn_id(conn_id) {
                     conn = *updated;
                 } else {
                     conn.state = TcpState::Closed;
@@ -1693,7 +1814,6 @@ impl NetworkStack {
                 );
             }
         }
-        self.tcp = tcp;
         res
     }
 
@@ -2164,6 +2284,18 @@ impl TcpManager {
         remote_ip: Ipv4Addr,
         remote_port: u16,
     ) -> Result<u16, &'static str> {
+        crate::serial_println!(
+            "[HTTP-TCP] tcp.connect start remote={}.{}.{}.{}:{} local_ip={}.{}.{}.{}",
+            remote_ip.0[0],
+            remote_ip.0[1],
+            remote_ip.0[2],
+            remote_ip.0[3],
+            remote_port,
+            stack.my_ip.0[0],
+            stack.my_ip.0[1],
+            stack.my_ip.0[2],
+            stack.my_ip.0[3]
+        );
         let local_port = 40000 + (self.next_id % 10000);
         // RFC 6528: derive ISN from a keyed hash of the 4-tuple + tick to prevent
         // ISN prediction attacks.  SipHash-2-4 is already in the kernel.
@@ -2196,13 +2328,16 @@ impl TcpManager {
         for _ in 0..8 {
             match send_syn_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_SYN, adv_win) {
                 Ok(()) => {
+                    crate::serial_println!("[HTTP-TCP] syn sent conn_id={}", conn.id);
                     syn_result = Ok(());
                     break;
                 }
                 Err("TX busy") => {
+                    crate::serial_println!("[HTTP-TCP] syn tx busy conn_id={}", conn.id);
                     let _ = stack.poll_once();
                 }
                 Err(e) => {
+                    crate::serial_println!("[HTTP-TCP] syn error conn_id={} err={}", conn.id, e);
                     syn_result = Err(e);
                     break;
                 }

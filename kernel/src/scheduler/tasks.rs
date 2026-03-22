@@ -125,47 +125,74 @@ pub fn start() -> ! {
 
     vga::print_str("[TASK] Getting init PID...\n");
 
-    // Init process is created in process::init(); reuse it for shell task.
-    let init_pid = match process::current_pid() {
-        Some(pid) => {
-            vga::print_str("[TASK] Found existing init PID=");
-            crate::commands::print_u32(pid.0);
+    // Init process is created in process::init(); reuse it for shell task when
+    // the shared process backend is in sync. On legacy x86, do not hard-stop
+    // boot if that backend is out of sync; the shell/network lane can still
+    // run while we preserve the mismatch as a warning.
+    let init_pid = if let Some(pid) = process::current_pid() {
+        vga::print_str("[TASK] Found existing current PID=");
+        crate::commands::print_u32(pid.0);
+        vga::print_str("\n");
+        Some(pid)
+    } else if process::process_manager().get(process::Pid(1)).is_some() {
+        vga::print_str("[TASK] Syncing existing init PID=1 into runtime scheduler\n");
+        if let Err(e) = process::ensure_runtime_pid(process::Pid(1), "init") {
+            vga::print_str("[TASK] FATAL: failed to sync init PID=1: ");
+            vga::print_str(e);
             vga::print_str("\n");
-            pid
+            loop {
+                unsafe { core::arch::asm!("hlt") };
+            }
         }
-        None => {
-            vga::print_str("[TASK] Creating new init process...\n");
-            // Fallback: create init process if missing
-            let pid = process::process_manager()
-                .spawn("init", None)
-                .unwrap_or(process::Pid(1));
-            vga::print_str("[TASK] Created init PID=");
-            crate::commands::print_u32(pid.0);
-            vga::print_str("\n");
-            pid
+        Some(process::Pid(1))
+    } else {
+        #[cfg(target_arch = "x86")]
+        {
+            vga::print_str(
+                "[TASK] WARNING: shared process backend missing PID=1; continuing legacy boot without runtime sync\n",
+            );
+            crate::serial_println!(
+                "[TASK] WARNING: shared process backend missing PID=1; continuing legacy boot without runtime sync"
+            );
+            None
+        }
+        #[cfg(not(target_arch = "x86"))]
+        {
+            vga::print_str("[TASK] PID=1 missing; reconstructing init runtime state\n");
+            if let Err(e) = process::ensure_runtime_pid(process::Pid(1), "init") {
+                vga::print_str("[TASK] FATAL: failed to reconstruct init PID=1: ");
+                vga::print_str(e);
+                vga::print_str("\n");
+                loop {
+                    unsafe { core::arch::asm!("hlt") };
+                }
+            }
+            Some(process::Pid(1))
         }
     };
 
     // Validate that init process exists before starting scheduler
-    vga::print_str("[TASK] Validating init process (PID=");
-    crate::commands::print_u32(init_pid.0);
-    vga::print_str(")...\n");
+    if let Some(init_pid) = init_pid {
+        vga::print_str("[TASK] Validating init process (PID=");
+        crate::commands::print_u32(init_pid.0);
+        vga::print_str(")...\n");
 
-    let pm = process::process_manager();
-    if let Some(init_proc) = pm.get(init_pid) {
-        vga::print_str("[TASK] Init process validated: name='");
-        vga::print_str(init_proc.name_str());
-        vga::print_str("', state=");
-        match init_proc.state {
-            process::ProcessState::Ready => vga::print_str("Ready"),
-            process::ProcessState::Running => vga::print_str("Running"),
-            process::ProcessState::Blocked => vga::print_str("Blocked"),
-            process::ProcessState::Terminated => vga::print_str("Terminated"),
-            process::ProcessState::WaitingOnChannel => vga::print_str("WaitingOnChannel"),
+        let pm = process::process_manager();
+        if let Some(init_proc) = pm.get(init_pid) {
+            vga::print_str("[TASK] Init process validated: name='");
+            vga::print_str(init_proc.name_str());
+            vga::print_str("', state=");
+            match init_proc.state {
+                process::ProcessState::Ready => vga::print_str("Ready"),
+                process::ProcessState::Running => vga::print_str("Running"),
+                process::ProcessState::Blocked => vga::print_str("Blocked"),
+                process::ProcessState::Terminated => vga::print_str("Terminated"),
+                process::ProcessState::WaitingOnChannel => vga::print_str("WaitingOnChannel"),
+            }
+            vga::print_str("\n");
+        } else {
+            vga::print_str("[TASK] WARNING: Init process not found in process table!\n");
         }
-        vga::print_str("\n");
-    } else {
-        vga::print_str("[TASK] WARNING: Init process not found in process table!\n");
     }
 
     vga::print_str("[TASK] Getting init process...\n");
