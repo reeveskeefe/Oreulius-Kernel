@@ -638,9 +638,11 @@ impl NetworkService {
         let mut chunked = false;
 
         while crate::pit::get_ticks().saturating_sub(start_ticks) <= timeout_ticks {
-            let read = net_reactor::tcp_recv(conn_id, &mut chunk)
-                .map_err(|_| NetworkError::TcpReceiveFailed)?;
-            crate::serial_println!("[HTTP-RX] conn_id={} read={}", conn_id, read);
+            let read = match net_reactor::tcp_recv(conn_id, &mut chunk) {
+                Ok(read) => read,
+                Err(_) if headers_done => break,
+                Err(_) => return Err(NetworkError::TcpReceiveFailed),
+            };
             if read == 0 {
                 if headers_done {
                     break;
@@ -660,11 +662,6 @@ impl NetworkService {
                 if let Some(end) = find_http_header_end(&headers[..headers_len]) {
                     headers_done = true;
                     response.status_code = parse_http_status_code(&headers[..end]).unwrap_or(200);
-                    crate::serial_println!(
-                        "[HTTP-RX] headers complete conn_id={} status={}",
-                        conn_id,
-                        response.status_code
-                    );
                     content_length = parse_http_content_length(&headers[..end]);
                     chunked = http_transfer_chunked(&headers[..end]);
                     let payload_start = end.saturating_add(4);
@@ -704,7 +701,6 @@ impl NetworkService {
 
         if !headers_done {
             if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
-                crate::serial_println!("[HTTP-RX] timeout conn_id={}", conn_id);
                 return Err(NetworkError::HttpTimeout);
             }
             return Err(NetworkError::HttpParseFailed);
@@ -1191,7 +1187,7 @@ fn parse_u16_decimal(bytes: &[u8]) -> Option<u16> {
 
 #[cfg(test)]
 mod http_client_tests {
-    use super::{parse_http_url, HttpMethod, HttpScheme, NetworkService};
+    use super::{http_transfer_chunked, parse_http_url, HttpMethod, HttpScheme, NetworkService};
 
     #[test]
     fn parse_http_url_preserves_scheme_and_port() {
@@ -1216,6 +1212,13 @@ mod http_client_tests {
         assert!(text.starts_with("GET /abc HTTP/1.1\r\n"));
         assert!(text.contains("\r\nHost: example.com\r\n"));
         assert!(text.contains("\r\nConnection: close\r\n"));
+    }
+
+    #[test]
+    fn chunked_transfer_header_detection_is_case_insensitive() {
+        let headers =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\nConnection: close\r\n\r\n";
+        assert!(http_transfer_chunked(headers));
     }
 }
 
@@ -1381,12 +1384,18 @@ fn http_transfer_chunked(headers: &[u8]) -> bool {
         } else {
             line
         };
-        if starts_with_ascii_nocase(line, b"transfer-encoding:")
-            && line
-                .windows(7)
-                .any(|w| starts_with_ascii_nocase(w, b"chunked"))
-        {
-            return true;
+        if !starts_with_ascii_nocase(line, b"transfer-encoding:") {
+            continue;
+        }
+        if line.len() < 7 {
+            continue;
+        }
+        let mut i = 0usize;
+        while i + 7 <= line.len() {
+            if starts_with_ascii_nocase(&line[i..i + 7], b"chunked") {
+                return true;
+            }
+            i += 1;
         }
     }
     false
@@ -1396,7 +1405,14 @@ fn has_chunked_terminator(body: &[u8]) -> bool {
     if body.len() < 5 {
         return false;
     }
-    body.windows(5).any(|w| w == b"0\r\n\r\n")
+    let mut i = 0usize;
+    while i + 5 <= body.len() {
+        if &body[i..i + 5] == b"0\r\n\r\n" {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 fn decode_hex_size(line: &[u8]) -> Option<usize> {

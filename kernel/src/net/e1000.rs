@@ -96,6 +96,9 @@ const NUM_TX_DESC: usize = 256;
 const ETH_MIN_FRAME_NO_FCS: usize = 60;
 const TX_DESC_READY_SPINS: usize = 1_000_000;
 const TX_DESC_READY_TIMEOUT_TICKS: u64 = 5;
+const E1000_RESET_TIMEOUT_SPINS: usize = 100_000;
+const E1000_EEPROM_TIMEOUT_SPINS: usize = 10_000;
+const E1000_REG_VERIFY_TIMEOUT_SPINS: usize = 10_000;
 
 // Simple buffer pool (static memory for MVP)
 #[repr(align(4096))]
@@ -187,6 +190,11 @@ pub struct E1000Driver {
 static E1000_MMIO_BASE: AtomicU32 = AtomicU32::new(0);
 
 impl E1000Driver {
+    #[inline]
+    fn cached_mac_valid(&self) -> bool {
+        self.mac_address != [0; 6] && self.mac_address != [0xFF; 6]
+    }
+
     /// Create a new E1000 driver instance
     pub fn new(pci_device: PciDevice) -> Self {
         E1000Driver {
@@ -204,41 +212,85 @@ impl E1000Driver {
 
     /// Initialize the E1000 device
     pub fn init(&mut self) -> Result<(), &'static str> {
-        // Enable bus mastering for DMA
-        unsafe {
-            self.pci_device.enable_bus_mastering();
-        }
-
-        // Get MMIO base address from BAR0
+        // Capture BAR0 before mutating PCI command bits so the MMIO base is stable.
         let bar0 = unsafe { self.pci_device.read_bar(0) };
         if bar0 == 0 {
             return Err("E1000: No MMIO base address");
         }
+        let mmio_base = bar0 & !0xF; // Clear flag bits
+        if mmio_base < 0x0010_0000 {
+            return Err("E1000: MMIO base below minimum");
+        }
 
-        self.mmio_base = bar0 & !0xF; // Clear flag bits
+        // Enable memory decoding + bus mastering for MMIO/DMA.
+        unsafe {
+            self.pci_device.enable_memory_space();
+            self.pci_device.enable_bus_mastering();
+        }
+
+        // Enable bus mastering for DMA
+        self.mmio_base = mmio_base;
         if self.mmio_base < 0x0010_0000 {
             return Err("E1000: MMIO base below minimum");
         }
         E1000_MMIO_BASE.store(self.mmio_base, Ordering::Release);
 
+        self.verify_mmio_sanity()?;
+
         // Reset the device
-        self.reset();
+        self.reset()?;
 
         // Read MAC address from EEPROM
-        self.read_mac_address();
+        self.read_mac_address()?;
 
         // Initialize multicast table
         self.init_multicast_table()?;
 
         // Initialize RX/TX
-        self.init_rx();
-        self.init_tx();
+        self.init_rx()?;
+        self.init_tx()?;
 
         // Enable device
-        self.enable();
+        self.enable()?;
 
         self.enabled = true;
         Ok(())
+    }
+
+    #[inline]
+    fn initialized(&self) -> bool {
+        self.mmio_base >= 0x0010_0000
+    }
+
+    #[inline]
+    fn hardware_enabled(&self) -> bool {
+        if !self.initialized() {
+            return false;
+        }
+        let rctl = self.read_reg(E1000_REG_RCTL);
+        let tctl = self.read_reg(E1000_REG_TCTL);
+        (rctl & E1000_RCTL_EN) != 0 && (tctl & E1000_TCTL_EN) != 0
+    }
+
+    #[inline]
+    fn ensure_enabled(&mut self) -> bool {
+        if !self.initialized() {
+            return false;
+        }
+        if self.enabled || self.hardware_enabled() {
+            self.enabled = true;
+            return true;
+        }
+
+        // The driver object is only published after init() fully succeeds.
+        // On legacy x86 the software `enabled` bit has proven less stable than
+        // the actual device state, so the hot path treats a fully initialized
+        // NIC as usable and only performs best-effort re-arming here.
+        let _ = self.init_rx();
+        let _ = self.init_tx();
+        let _ = self.enable();
+        self.enabled = true;
+        true
     }
 
     #[inline(never)]
@@ -252,67 +304,62 @@ impl E1000Driver {
 
     /// Reset the E1000 device
     #[inline(never)]
-    fn reset(&mut self) {
+    fn reset(&mut self) -> Result<(), &'static str> {
         // Set reset bit
         self.write_reg(E1000_REG_CTRL, E1000_CTRL_RST);
 
-        // Wait for reset to complete (simple delay)
-        for _ in 0..1000 {
-            unsafe {
-                core::arch::asm!("nop");
+        for _ in 0..E1000_RESET_TIMEOUT_SPINS {
+            let ctrl = self.read_reg(E1000_REG_CTRL);
+            if ctrl != 0xFFFF_FFFF && (ctrl & E1000_CTRL_RST) == 0 {
+                self.write_reg(E1000_REG_IMS, 0);
+                return Ok(());
             }
+            core::hint::spin_loop();
         }
 
-        // Clear interrupt mask
-        self.write_reg(E1000_REG_IMS, 0);
+        Err("E1000: Reset timeout")
     }
 
     /// Read MAC address from EEPROM
     #[inline(never)]
-    fn read_mac_address(&mut self) {
+    fn read_mac_address(&mut self) -> Result<(), &'static str> {
         // Read MAC address from EEPROM using E1000_REG_EEPROM
         // MAC is stored in EEPROM words 0-2 (6 bytes total)
         for i in 0..3 {
-            let word = self.read_eeprom(i);
+            let word = self.read_eeprom(i)?;
             let idx = (i * 2) as usize;
             self.mac_address[idx] = (word & 0xFF) as u8;
             self.mac_address[idx + 1] = ((word >> 8) & 0xFF) as u8;
         }
+        if self.mac_address == [0; 6] || self.mac_address == [0xFF; 6] {
+            return Err("E1000: EEPROM MAC invalid");
+        }
 
-        crate::serial_println!(
-            "[E1000] MAC address read from EEPROM: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            self.mac_address[0],
-            self.mac_address[1],
-            self.mac_address[2],
-            self.mac_address[3],
-            self.mac_address[4],
-            self.mac_address[5]
-        );
+        crate::serial_print!("[E1000] MAC address read from EEPROM: ");
+        crate::serial_print!("{:02X}", self.mac_address[0]);
+        crate::serial_print!(":{:02X}", self.mac_address[1]);
+        crate::serial_print!(":{:02X}", self.mac_address[2]);
+        crate::serial_print!(":{:02X}", self.mac_address[3]);
+        crate::serial_print!(":{:02X}", self.mac_address[4]);
+        crate::serial_println!(":{:02X}", self.mac_address[5]);
+        Ok(())
     }
 
     /// Read a 16-bit word from EEPROM
     #[inline(never)]
-    fn read_eeprom(&mut self, addr: u16) -> u16 {
+    fn read_eeprom(&mut self, addr: u16) -> Result<u16, &'static str> {
         // Write EEPROM read request: address | start bit
         self.write_reg(E1000_REG_EEPROM, 0x00000001 | ((addr as u32) << 8));
 
         // Poll for done bit (bit 4)
-        let mut result = 0;
-        for _ in 0..1000 {
-            result = self.read_reg(E1000_REG_EEPROM);
+        for _ in 0..E1000_EEPROM_TIMEOUT_SPINS {
+            let result = self.read_reg(E1000_REG_EEPROM);
             if (result & 0x10) != 0 {
-                break;
+                return Ok(((result >> 16) & 0xFFFF) as u16);
             }
-            // Small delay
-            for _ in 0..100 {
-                unsafe {
-                    core::arch::asm!("nop");
-                }
-            }
+            core::hint::spin_loop();
         }
-
-        // Extract data from bits 16-31
-        ((result >> 16) & 0xFFFF) as u16
+        Err("E1000: EEPROM timeout")
     }
 
     /// Initialize multicast table array (128 entries)
@@ -327,7 +374,7 @@ impl E1000Driver {
 
     /// Initialize receive descriptors
     #[inline(never)]
-    fn init_rx(&mut self) {
+    fn init_rx(&mut self) -> Result<(), &'static str> {
         unsafe {
             let rx_phys = RX_BUFFERS.data.as_ptr() as u32;
             crate::serial_println!(
@@ -371,11 +418,12 @@ impl E1000Driver {
                 | E1000_RCTL_SECRC;
             self.write_reg(E1000_REG_RCTL, rctl);
         }
+        self.verify_rx_registers()
     }
 
     /// Initialize transmit descriptors
     #[inline(never)]
-    fn init_tx(&mut self) {
+    fn init_tx(&mut self) -> Result<(), &'static str> {
         unsafe {
             let tx_phys = TX_BUFFERS.data.as_ptr() as u32;
             crate::serial_println!(
@@ -410,11 +458,12 @@ impl E1000Driver {
                        ((64 << 12) & E1000_TCTL_COLD); // Collision distance
             self.write_reg(E1000_REG_TCTL, tctl);
         }
+        self.verify_tx_registers()
     }
 
     /// Enable the device
     #[inline(never)]
-    fn enable(&mut self) {
+    fn enable(&mut self) -> Result<(), &'static str> {
         let ctrl = E1000_CTRL_ASDE | E1000_CTRL_SLU;
         self.write_reg(E1000_REG_CTRL, ctrl);
 
@@ -429,13 +478,119 @@ impl E1000Driver {
         // Clear any stale interrupt causes before unmasking
         let _ = self.read_reg(E1000_REG_ICR);
 
-        // Enable RX timer (RXT0), TX write-back (TXDW) and link-state-change (LSC)
-        // interrupts so the hardware wakes the reactor rather than relying on
-        // the scheduler round-tripping through yield_now().
+        #[cfg(target_arch = "x86")]
+        {
+            // Legacy x86 uses the inline network reactor and does not need NIC IRQs
+            // during early boot. Unmasking E1000 interrupts before the scheduler is
+            // fully established can re-enter the half-initialized switch path and
+            // fault on a null context.
+            self.write_reg(E1000_REG_IMS, 0);
+        }
+
+        #[cfg(not(target_arch = "x86"))]
+        {
+            // Enable RX timer (RXT0), TX write-back (TXDW) and link-state-change (LSC)
+            // interrupts so the hardware wakes the reactor rather than relying on
+            // the scheduler round-tripping through yield_now().
+            self.write_reg(
+                E1000_REG_IMS,
+                E1000_IMS_TXDW | E1000_IMS_LSC | E1000_IMS_RXT0,
+            );
+        }
+        let ctrl_readback = self.read_reg(E1000_REG_CTRL);
+        if ctrl_readback == 0 || ctrl_readback == 0xFFFF_FFFF {
+            return Err("E1000: Enable register readback invalid");
+        }
+        Ok(())
+    }
+
+    fn enable_runtime_interrupts(&mut self) {
+        if !self.ensure_enabled() {
+            return;
+        }
+        let _ = self.read_reg(E1000_REG_ICR);
         self.write_reg(
             E1000_REG_IMS,
             E1000_IMS_TXDW | E1000_IMS_LSC | E1000_IMS_RXT0,
         );
+    }
+
+    fn ensure_runtime_link(&mut self) -> bool {
+        if !self.ensure_enabled() {
+            return false;
+        }
+        if self.is_link_up() {
+            return true;
+        }
+
+        let ctrl = self.read_reg(E1000_REG_CTRL);
+        self.write_reg(E1000_REG_CTRL, ctrl | E1000_CTRL_ASDE | E1000_CTRL_SLU);
+
+        for _ in 0..E1000_REG_VERIFY_TIMEOUT_SPINS {
+            if self.is_link_up() {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+
+        false
+    }
+
+    fn verify_mmio_sanity(&self) -> Result<(), &'static str> {
+        let ctrl = self.read_reg(E1000_REG_CTRL);
+        let status = self.read_reg(E1000_REG_STATUS);
+        if (ctrl == 0 && status == 0) || (ctrl == 0xFFFF_FFFF && status == 0xFFFF_FFFF) {
+            return Err("E1000: MMIO read sanity check failed");
+        }
+        Ok(())
+    }
+
+    fn verify_rx_registers(&self) -> Result<(), &'static str> {
+        let expected_base = unsafe { RX_DESCS.as_ptr() as u32 };
+        self.wait_for_reg(
+            E1000_REG_RDBAL,
+            expected_base,
+            "E1000: RX ring register verify failed",
+        )?;
+        self.wait_for_reg(E1000_REG_RDBAH, 0, "E1000: RX ring register verify failed")?;
+        self.wait_for_reg(
+            E1000_REG_RDLEN,
+            (NUM_RX_DESC * 16) as u32,
+            "E1000: RX ring register verify failed",
+        )?;
+        self.wait_for_reg(E1000_REG_RDH, 0, "E1000: RX ring register verify failed")?;
+        self.wait_for_reg(
+            E1000_REG_RDT,
+            (NUM_RX_DESC - 1) as u32,
+            "E1000: RX ring register verify failed",
+        )
+    }
+
+    fn verify_tx_registers(&self) -> Result<(), &'static str> {
+        let expected_base = unsafe { TX_DESCS.as_ptr() as u32 };
+        self.wait_for_reg(
+            E1000_REG_TDBAL,
+            expected_base,
+            "E1000: TX ring register verify failed",
+        )?;
+        self.wait_for_reg(E1000_REG_TDBAH, 0, "E1000: TX ring register verify failed")?;
+        self.wait_for_reg(
+            E1000_REG_TDLEN,
+            (NUM_TX_DESC * 16) as u32,
+            "E1000: TX ring register verify failed",
+        )?;
+        self.wait_for_reg(E1000_REG_TDH, 0, "E1000: TX ring register verify failed")?;
+        self.wait_for_reg(E1000_REG_TDT, 0, "E1000: TX ring register verify failed")
+    }
+
+    fn wait_for_reg(&self, reg: u32, expected: u32, err: &'static str) -> Result<(), &'static str> {
+        for _ in 0..E1000_REG_VERIFY_TIMEOUT_SPINS {
+            if self.read_reg(reg) == expected {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+        Err(err)
     }
 
     /// Write to an E1000 register
@@ -489,12 +644,12 @@ impl E1000Driver {
 
     /// Check if device is enabled
     pub fn is_enabled(&self) -> bool {
-        self.enabled
+        self.initialized() && (self.enabled || self.hardware_enabled())
     }
 
     /// Receive an Ethernet frame (non-blocking, single frame).
     pub fn recv_frame(&mut self, buffer: &mut [u8]) -> Result<usize, &'static str> {
-        if !self.enabled {
+        if !self.ensure_enabled() {
             return Err("E1000: Device not enabled");
         }
 
@@ -532,7 +687,7 @@ impl E1000Driver {
         out_lens: &mut [usize],
         budget: usize,
     ) -> usize {
-        if !self.enabled {
+        if !self.ensure_enabled() {
             return 0;
         }
         let budget = budget
@@ -574,7 +729,7 @@ impl E1000Driver {
     /// for burst sends.
     #[inline]
     pub fn enqueue_tx_frame(&mut self, data: &[u8]) -> Result<(), &'static str> {
-        if !self.enabled {
+        if !self.ensure_enabled() {
             return Err("E1000: Device not enabled");
         }
         let frame_len = data.len().max(ETH_MIN_FRAME_NO_FCS);
@@ -702,7 +857,33 @@ pub fn init(pci_device: PciDevice) -> Result<(), &'static str> {
 
 /// Get MAC address
 pub fn get_mac_address() -> Option<[u8; 6]> {
-    E1000_DRIVER.lock().as_ref().map(|d| d.mac_address())
+    E1000_DRIVER.lock().as_ref().and_then(|d| {
+        if d.cached_mac_valid() {
+            Some(d.mac_address())
+        } else {
+            None
+        }
+    })
+}
+
+/// Enable runtime IRQ delivery after the dedicated network task is live.
+pub fn enable_runtime_interrupts() {
+    let mut driver = E1000_DRIVER.lock();
+    if let Some(nic) = driver.as_mut() {
+        nic.enable_runtime_interrupts();
+    }
+}
+
+pub fn ensure_runtime_link() -> bool {
+    let mut driver = E1000_DRIVER.lock();
+    driver
+        .as_mut()
+        .map(|nic| nic.ensure_runtime_link())
+        .unwrap_or(false)
+}
+
+pub fn driver_present() -> bool {
+    E1000_DRIVER.lock().as_ref().is_some()
 }
 
 /// Check if link is up

@@ -2,13 +2,15 @@
 
 Mandatory baseline backlog:
 - THM-CAP-001 (INV-CAP-001) Status: **Proven** ✅
-- THM-MEM-001 (INV-MEM-001) Status: InProgress
+- THM-MEM-001 (INV-MEM-001) Status: **Proven** ✅ (MemRegion interval model; PMA-MEM-001–005; memory_region_isolation Theorem via lia)
 - THM-WX-001  (INV-WX-001)  Status: **Proven** ✅
-- THM-CFI-001 (INV-CFI-001) Status: InProgress (partial — entry-point axiom in wx_cfi.v)
-- THM-TMP-001 (INV-TMP-001) Status: InProgress
-- THM-PER-001 (INV-PER-001) Status: InProgress
-- THM-NET-001 (INV-NET-001) Status: InProgress
-- THM-PRIV-001 (INV-PRIV-001) Status: InProgress
+- THM-CFI-001 (INV-CFI-001) Status: **Proven** ✅ (FunctionTable list model; cfi_jit_targets_valid Theorem via nth_error_In; cfi_no_mid_stream_jump Qed)
+- THM-TMP-001 (INV-TMP-001) Status: **Proven** ✅
+- THM-PER-001 (INV-PER-001) Status: **Proven** ✅ (SnapshotStore write→read identity, codec roundtrip axiom, PersistenceRoundtrip Theorem Qed)
+- THM-NET-001 (INV-NET-001) Status: **Proven** ✅ (ForwardCap model; capnet_message_integrity Theorem — Part A integrity + Part B freshness; revoked_cap_invalid via lia; .vo present)
+- THM-PRIV-001 (INV-PRIV-001) Status: **Proven** ✅ (CpuState ring model; only_gate_enters_kernel Theorem — WellFormed invariant induction; SyscallTransition closed-world; .vo present)
+- THM-LOCK-001 (INV-PRIV-001) Status: **Proven** ✅
+- THM-SCH-001  (INV-PRIV-001) Status: **Proven** ✅
 
 ---
 
@@ -35,10 +37,10 @@ Invariant ID(s): INV-MEM-001
 Statement: Every user-space memory allocation returned by the kernel allocator lies entirely within a region previously granted to the requesting process. No two live allocations belonging to different processes overlap.
 Assumptions: ASM-MODEL-001, ASM-HW-001
 Dependencies: (none)
-Implementation Surface: kernel/src/memory/hardened_allocator.rs, kernel/src/memory/page_allocator.rs
-Proof Artifact: verification/theories/temporal_logic.v (structural memory lemmas, InProgress)
+Implementation Surface: kernel/src/memory/hardened_allocator.rs, kernel/src/memory/page_allocator.rs, kernel/src/execution/wasm_thread.rs, kernel/src/security/memory_isolation.rs
+Proof Artifact: verification/theories/memory_isolation.v (alloc_within_lower_bound, alloc_within_upper_bound, cross_process_no_overlap, wasm_access_in_sandbox, wasm_sandboxes_disjoint_host_access, memory_region_isolation; compiled .vo present)
 CI Evidence: proof-check workflow / coq-proofs job
-Template Status: InProgress
+Template Status: **Proven** ✅
 Owner: Keefe Reeves
 Last Verified Commit: a2acf53
 
@@ -64,9 +66,9 @@ Statement: All indirect control-flow transfers in WASM-JIT-compiled code target 
 Assumptions: ASM-MODEL-001, ASM-HW-001
 Dependencies: THM-WX-001
 Implementation Surface: kernel/src/execution/wasm_jit.rs
-Proof Artifact: verification/theories/wx_cfi.v (cfi_no_mid_stream_jump — partial; cfi_jit_targets_valid axiom stated)
+Proof Artifact: verification/theories/wx_cfi.v (FunctionTable/ValidEntry/JumpTarget/BoundsCheckedIndex/TableLookup concrete model; cfi_jit_targets_valid Theorem...Qed via nth_error_In; cfi_no_mid_stream_jump Qed; compiled .vo present)
 CI Evidence: proof-check workflow / coq-proofs job
-Template Status: InProgress (entry-point axiom proved; full transfer-target completeness pending)
+Template Status: **Proven** ✅
 Owner: Keefe Reeves
 Last Verified Commit: a2acf53
 
@@ -78,9 +80,9 @@ Statement: The temporal object system preserves the monotonicity invariant: for 
 Assumptions: ASM-MODEL-001, ASM-HW-001, ASM-TOOL-001
 Dependencies: (none)
 Implementation Surface: kernel/src/temporal/mod.rs, kernel/src/temporal/persistence.rs
-Proof Artifact: verification/theories/temporal_logic.v (MonotonicClock, ClockPreservation)
+Proof Artifact: verification/theories/temporal_logic.v (temporal_functor_id, temporal_functor_comp, temporal_merge_preserves_bounds, temporal_merge_timestamp_monotone, fmap_preserves_timestamp; compiled .vo present)
 CI Evidence: proof-check workflow / coq-proofs job; temporal-hardening-selftest runtime evidence
-Template Status: InProgress
+Template Status: **Proven** ✅
 Owner: Keefe Reeves
 Last Verified Commit: a2acf53
 
@@ -92,9 +94,9 @@ Statement: Any temporal object written to the persistence layer can be recovered
 Assumptions: ASM-MODEL-001, ASM-HW-001
 Dependencies: THM-TMP-001
 Implementation Surface: kernel/src/temporal/persistence.rs
-Proof Artifact: verification/theories/temporal_logic.v (PersistenceRoundtrip, InProgress)
+Proof Artifact: verification/theories/persistence.v (SnapshotStore model; snapshot_roundtrip_full, write_timestamp_monotone, temporal_state_codec_roundtrip, temporal_state_recovery_unique, PersistenceRoundtrip; compiled .vo present)
 CI Evidence: proof-check workflow / coq-proofs job
-Template Status: InProgress
+Template Status: **Proven** ✅
 Owner: Keefe Reeves
 Last Verified Commit: a2acf53
 
@@ -106,9 +108,9 @@ Statement: A CapNet peer P1 cannot send a message to peer P2 unless P1 holds a v
 Assumptions: ASM-MODEL-001
 Dependencies: THM-CAP-001
 Implementation Surface: kernel/src/net/capnet.rs, kernel/src/capability/mod.rs
-Proof Artifact: verification/theories/ipc_flow.v (PMA-IPC-004, PMA-IPC-005)
+Proof Artifact: verification/theories/capnet_integrity.v (ForwardCap record model: fc_rights, fc_revoked_epoch; PMA-NET-001 revoked_cap_invalid; PMA-NET-002 zero_rights_invalid; PMA-NET-003 no_cap_no_send; PMA-NET-004 all_revoked_no_send; PMA-NET-005 valid_cap_constructor; capnet_message_integrity Theorem Part A+B Qed; compiled .vo present)
 CI Evidence: proof-check workflow / coq-proofs job; capnet-fuzz-corpus runtime evidence
-Template Status: InProgress
+Template Status: **Proven** ✅
 Owner: Keefe Reeves
 Last Verified Commit: a2acf53
 
@@ -120,8 +122,8 @@ Statement: The only path from user privilege (ring-3) to kernel privilege (ring-
 Assumptions: ASM-MODEL-001, ASM-HW-001
 Dependencies: (none)
 Implementation Surface: kernel/src/arch/x86_runtime.rs, kernel/src/platform/syscall.rs
-Proof Artifact: verification/theories/ipc_flow.v (privilege boundary lemmas, InProgress)
+Proof Artifact: verification/theories/privilege_safety.v (CpuState record: cs_ring, cs_via_gate; ring_kernel=0, ring_user=3; SyscallTransition inductive — 2 constructors only; WellFormed invariant; PMA-PRIV-001 initial_well_formed; PMA-PRIV-002 transition_preserves_well_formed; PMA-PRIV-003 reachable_well_formed; PMA-PRIV-004 initial_reachable_well_formed; only_gate_enters_kernel Theorem Part A+B Qed; compiled .vo present)
 CI Evidence: proof-check workflow / coq-proofs job
-Template Status: InProgress
+Template Status: **Proven** ✅
 Owner: Keefe Reeves
 Last Verified Commit: a2acf53

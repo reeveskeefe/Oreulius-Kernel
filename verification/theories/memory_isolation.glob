@@ -1,0 +1,266 @@
+DIGEST 258aab027db85763ca0f191c60630dca
+Fmemory_isolation
+R1569:1576 Stdlib.Init.Nat <> <> lib
+R1606:1619 Stdlib.Arith.PeanoNat <> <> lib
+R1649:1661 Stdlib.micromega.Lia <> <> lib
+rec 2069:2077 <> MemRegion
+proj 2102:2105 <> base
+proj 2117:2119 <> len
+R2109:2111 Corelib.Init.Datatypes <> nat ind
+R2124:2126 Corelib.Init.Datatypes <> nat ind
+def 2502:2510 <> in_bounds
+R2519:2527 memory_isolation <> MemRegion rec
+binder 2513:2513 <> a:4
+binder 2515:2515 <> g:5
+R2562:2567 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R2550:2553 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2545:2548 memory_isolation <> base proj
+R2542:2542 memory_isolation <> g:5 var
+R2557:2560 memory_isolation <> base proj
+R2554:2554 memory_isolation <> a:4 var
+R2586:2589 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2576:2578 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R2571:2574 memory_isolation <> base proj
+R2568:2568 memory_isolation <> a:4 var
+R2582:2584 memory_isolation <> len proj
+R2579:2579 memory_isolation <> a:4 var
+R2598:2600 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R2593:2596 memory_isolation <> base proj
+R2590:2590 memory_isolation <> g:5 var
+R2604:2606 memory_isolation <> len proj
+R2601:2601 memory_isolation <> g:5 var
+def 2875:2882 <> disjoint
+R2893:2901 memory_isolation <> MemRegion rec
+binder 2885:2886 <> r1:6
+binder 2888:2889 <> r2:7
+R2949:2954 Corelib.Init.Logic <> ::type_scope:x_'\/'_x not
+R2936:2939 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2925:2927 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R2920:2923 memory_isolation <> base proj
+R2916:2917 memory_isolation <> r1:6 var
+R2932:2934 memory_isolation <> len proj
+R2928:2929 memory_isolation <> r1:6 var
+R2944:2947 memory_isolation <> base proj
+R2940:2941 memory_isolation <> r2:7 var
+R2975:2978 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R2964:2966 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R2959:2962 memory_isolation <> base proj
+R2955:2956 memory_isolation <> r2:7 var
+R2971:2973 memory_isolation <> len proj
+R2967:2968 memory_isolation <> r2:7 var
+R2983:2986 memory_isolation <> base proj
+R2979:2980 memory_isolation <> r1:6 var
+def 3294:3310 <> wasm_access_valid
+R3343:3345 Corelib.Init.Datatypes <> nat ind
+binder 3313:3318 <> offset:8
+binder 3320:3326 <> acc_len:9
+binder 3328:3339 <> active_bytes:10
+R3376:3379 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R3366:3368 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R3360:3365 memory_isolation <> offset:8 var
+R3369:3375 memory_isolation <> acc_len:9 var
+R3380:3391 memory_isolation <> active_bytes:10 var
+prf 3827:3850 <> alloc_within_upper_bound
+R3870:3878 memory_isolation <> MemRegion rec
+binder 3864:3864 <> a:11
+binder 3866:3866 <> g:12
+R3899:3906 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3886:3894 memory_isolation <> in_bounds def
+R3896:3896 memory_isolation <> a:11 var
+R3898:3898 memory_isolation <> g:12 var
+R3925:3928 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R3915:3917 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R3910:3913 memory_isolation <> base proj
+R3907:3907 memory_isolation <> a:11 var
+R3921:3923 memory_isolation <> len proj
+R3918:3918 memory_isolation <> a:11 var
+R3937:3939 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R3932:3935 memory_isolation <> base proj
+R3929:3929 memory_isolation <> g:12 var
+R3943:3945 memory_isolation <> len proj
+R3940:3940 memory_isolation <> g:12 var
+prf 4199:4222 <> alloc_within_lower_bound
+R4242:4250 memory_isolation <> MemRegion rec
+binder 4236:4236 <> a:13
+binder 4238:4238 <> g:14
+R4271:4278 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4258:4266 memory_isolation <> in_bounds def
+R4268:4268 memory_isolation <> a:13 var
+R4270:4270 memory_isolation <> g:14 var
+R4287:4290 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R4282:4285 memory_isolation <> base proj
+R4279:4279 memory_isolation <> g:14 var
+R4294:4297 memory_isolation <> base proj
+R4291:4291 memory_isolation <> a:13 var
+prf 4777:4800 <> cross_process_no_overlap
+R4828:4836 memory_isolation <> MemRegion rec
+binder 4814:4815 <> a1:15
+binder 4817:4818 <> a2:16
+binder 4820:4821 <> g1:17
+binder 4823:4824 <> g2:18
+R4859:4866 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4844:4852 memory_isolation <> in_bounds def
+R4854:4855 memory_isolation <> a1:15 var
+R4857:4858 memory_isolation <> g1:17 var
+R4882:4889 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4867:4875 memory_isolation <> in_bounds def
+R4877:4878 memory_isolation <> a2:16 var
+R4880:4881 memory_isolation <> g2:18 var
+R4904:4911 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4890:4897 memory_isolation <> disjoint def
+R4899:4900 memory_isolation <> g1:17 var
+R4902:4903 memory_isolation <> g2:18 var
+R4912:4919 memory_isolation <> disjoint def
+R4921:4922 memory_isolation <> a1:15 var
+R4924:4925 memory_isolation <> a2:16 var
+R4992:4999 memory_isolation <> disjoint def
+prf 5371:5392 <> wasm_access_in_sandbox
+R5449:5451 Corelib.Init.Datatypes <> nat ind
+binder 5406:5417 <> sandbox_base:19
+binder 5419:5424 <> offset:20
+binder 5426:5432 <> acc_len:21
+binder 5434:5445 <> active_bytes:22
+R5504:5511 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5459:5475 memory_isolation <> wasm_access_valid def
+R5477:5482 memory_isolation <> offset:20 var
+R5484:5490 memory_isolation <> acc_len:21 var
+R5492:5503 memory_isolation <> active_bytes:22 var
+R5549:5556 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R5524:5527 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R5512:5523 memory_isolation <> sandbox_base:19 var
+R5540:5542 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R5528:5539 memory_isolation <> sandbox_base:19 var
+R5543:5548 memory_isolation <> offset:20 var
+R5588:5591 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R5578:5580 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R5569:5571 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R5557:5568 memory_isolation <> sandbox_base:19 var
+R5572:5577 memory_isolation <> offset:20 var
+R5581:5587 memory_isolation <> acc_len:21 var
+R5604:5606 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R5592:5603 memory_isolation <> sandbox_base:19 var
+R5607:5618 memory_isolation <> active_bytes:22 var
+R5663:5679 memory_isolation <> wasm_access_valid def
+prf 6076:6110 <> wasm_sandboxes_disjoint_host_access
+R6174:6176 Corelib.Init.Datatypes <> nat ind
+binder 6124:6128 <> base1:23
+binder 6130:6134 <> base2:24
+binder 6136:6139 <> off1:25
+binder 6141:6144 <> off2:26
+binder 6146:6149 <> len1:27
+binder 6151:6154 <> len2:28
+binder 6156:6162 <> active1:29
+binder 6164:6170 <> active2:30
+R6219:6226 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6184:6200 memory_isolation <> wasm_access_valid def
+R6202:6205 memory_isolation <> off1:25 var
+R6207:6210 memory_isolation <> len1:27 var
+R6212:6218 memory_isolation <> active1:29 var
+R6262:6269 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6227:6243 memory_isolation <> wasm_access_valid def
+R6245:6248 memory_isolation <> off2:26 var
+R6250:6253 memory_isolation <> len2:28 var
+R6255:6261 memory_isolation <> active2:30 var
+R6328:6335 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6270:6277 memory_isolation <> disjoint def
+R6280:6287 memory_isolation <> mkRegion constr
+R6289:6293 memory_isolation <> base1:23 var
+R6295:6301 memory_isolation <> active1:29 var
+R6305:6312 memory_isolation <> mkRegion constr
+R6314:6318 memory_isolation <> base2:24 var
+R6320:6326 memory_isolation <> active2:30 var
+R6336:6343 memory_isolation <> disjoint def
+R6346:6353 memory_isolation <> mkRegion constr
+R6361:6363 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R6356:6360 memory_isolation <> base1:23 var
+R6364:6367 memory_isolation <> off1:25 var
+R6370:6373 memory_isolation <> len1:27 var
+R6377:6384 memory_isolation <> mkRegion constr
+R6392:6394 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R6387:6391 memory_isolation <> base2:24 var
+R6395:6398 memory_isolation <> off2:26 var
+R6401:6404 memory_isolation <> len2:28 var
+R6472:6488 memory_isolation <> wasm_access_valid def
+R6545:6552 memory_isolation <> mkRegion constr
+R6572:6579 memory_isolation <> mkRegion constr
+R6504:6527 memory_isolation <> cross_process_no_overlap thm
+R6545:6552 memory_isolation <> mkRegion constr
+R6572:6579 memory_isolation <> mkRegion constr
+R6504:6527 memory_isolation <> cross_process_no_overlap thm
+R6600:6608 memory_isolation <> in_bounds def
+R6634:6642 memory_isolation <> in_bounds def
+prf 7927:7949 <> memory_region_isolation
+R7977:7985 memory_isolation <> MemRegion rec
+binder 7963:7964 <> a1:31
+binder 7966:7967 <> a2:32
+binder 7969:7970 <> g1:33
+binder 7972:7973 <> g2:34
+R8008:8015 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R7993:8001 memory_isolation <> in_bounds def
+R8003:8004 memory_isolation <> a1:31 var
+R8006:8007 memory_isolation <> g1:33 var
+R8031:8038 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R8016:8024 memory_isolation <> in_bounds def
+R8026:8027 memory_isolation <> a2:32 var
+R8029:8030 memory_isolation <> g2:34 var
+R8053:8087 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R8039:8046 memory_isolation <> disjoint def
+R8048:8049 memory_isolation <> g1:33 var
+R8051:8052 memory_isolation <> g2:34 var
+R8110:8117 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R8097:8100 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R8092:8095 memory_isolation <> base proj
+R8088:8089 memory_isolation <> g1:33 var
+R8105:8108 memory_isolation <> base proj
+R8101:8102 memory_isolation <> a1:31 var
+R8162:8196 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R8138:8141 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R8127:8129 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R8122:8125 memory_isolation <> base proj
+R8118:8119 memory_isolation <> a1:31 var
+R8134:8136 memory_isolation <> len proj
+R8130:8131 memory_isolation <> a1:31 var
+R8151:8153 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R8146:8149 memory_isolation <> base proj
+R8142:8143 memory_isolation <> g1:33 var
+R8158:8160 memory_isolation <> len proj
+R8154:8155 memory_isolation <> g1:33 var
+R8219:8226 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R8206:8209 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R8201:8204 memory_isolation <> base proj
+R8197:8198 memory_isolation <> g2:34 var
+R8214:8217 memory_isolation <> base proj
+R8210:8211 memory_isolation <> a2:32 var
+R8271:8318 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R8247:8250 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R8236:8238 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R8231:8234 memory_isolation <> base proj
+R8227:8228 memory_isolation <> a2:32 var
+R8243:8245 memory_isolation <> len proj
+R8239:8240 memory_isolation <> a2:32 var
+R8260:8262 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R8255:8258 memory_isolation <> base proj
+R8251:8252 memory_isolation <> g2:34 var
+R8267:8269 memory_isolation <> len proj
+R8263:8264 memory_isolation <> g2:34 var
+R8319:8326 memory_isolation <> disjoint def
+R8328:8329 memory_isolation <> a1:31 var
+R8331:8332 memory_isolation <> a2:32 var
+R8388:8391 Corelib.Init.Logic <> conj constr
+R8396:8399 Corelib.Init.Logic <> conj constr
+R8404:8407 Corelib.Init.Logic <> conj constr
+R8412:8415 Corelib.Init.Logic <> conj constr
+R8388:8391 Corelib.Init.Logic <> conj constr
+R8396:8399 Corelib.Init.Logic <> conj constr
+R8404:8407 Corelib.Init.Logic <> conj constr
+R8412:8415 Corelib.Init.Logic <> conj constr
+R8437:8460 memory_isolation <> alloc_within_lower_bound thm
+R8437:8460 memory_isolation <> alloc_within_lower_bound thm
+R8485:8508 memory_isolation <> alloc_within_upper_bound thm
+R8485:8508 memory_isolation <> alloc_within_upper_bound thm
+R8533:8556 memory_isolation <> alloc_within_lower_bound thm
+R8533:8556 memory_isolation <> alloc_within_lower_bound thm
+R8581:8604 memory_isolation <> alloc_within_upper_bound thm
+R8581:8604 memory_isolation <> alloc_within_upper_bound thm
+R8629:8652 memory_isolation <> cross_process_no_overlap thm
+R8629:8652 memory_isolation <> cross_process_no_overlap thm

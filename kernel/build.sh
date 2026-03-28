@@ -121,9 +121,24 @@ echo "[4/6] Linking kernel (boot.o + asm/*.o + liboreulia_kernel.a)..."
   "${RUST_LIB}"
 
 echo "[5/6] Creating ISO..."
-mkdir -p iso/boot/grub
-cp target/oreulia-kernel iso/boot/
-"${GRUB_MKRESCUE_BIN}" -o oreulia.iso iso/ 2>&1 | grep -i "success" || true
+ISO_ROOT="target/iso"
+BOOT_ARGS="${OREULIA_BOOT_ARGS:-}"
+rm -rf "${ISO_ROOT}"
+mkdir -p "${ISO_ROOT}/boot/grub"
+cp target/oreulia-kernel "${ISO_ROOT}/boot/"
+cat > "${ISO_ROOT}/boot/grub/grub.cfg" <<EOF
+set timeout=3
+set default=0
+terminal_output console
+
+menuentry "Oreulia OS" {
+    echo "Loading Oreulia kernel..."
+    multiboot /boot/oreulia-kernel${BOOT_ARGS:+ ${BOOT_ARGS}}
+    echo "Kernel loaded, booting..."
+    boot
+}
+EOF
+"${GRUB_MKRESCUE_BIN}" -o oreulia.iso "${ISO_ROOT}/" 2>&1 | grep -i "success" || true
 
 echo ""
 echo "=== Verification ==="

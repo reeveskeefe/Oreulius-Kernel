@@ -59,7 +59,4 @@ Contact the Licensor using the address listed in the repository.
 
 ## Contact
 
-# Email 
-```bash
-reeveskeefe@gmail.com
-```
+**Email:** reeveskeefe@gmail.com

@@ -2,7 +2,9 @@ Oreulia Contributor License Terms
 
 Effective Date: 2026-03-14
 
-These Contributor License Terms govern rights granted by contributors to the Oreulia project maintainers when submitting contributions.
+Oreulia is a WASM-first, capability-native unikernel.  These Contributor
+License Terms govern the rights granted by contributors to the Oreulia
+project maintainers when submitting contributions.
 
 These terms apply only to contributions submitted to the Oreulia project. They do not replace the project’s public license contained in the LICENSE file or any commercial licensing guidance in COMMERCIAL.md.
 

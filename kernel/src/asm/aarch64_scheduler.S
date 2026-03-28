@@ -134,6 +134,65 @@ aarch64_kernel_user_entry_trampoline:
     isb
     eret
 
+/* AArch64 fork child entry point.
+ *
+ * The child's ProcessContext is set up by fork_current_cow() as follows:
+ *   pc  = aarch64_fork_child_trampoline
+ *   sp  = base of the 256-byte saved GPR frame on the child's kernel stack
+ *         (copy of parent's exception frame, with x0 already set to 0)
+ *   x19 = ELR_EL1 + 4  (user PC past the SVC instruction)
+ *   x20 = SPSR_EL1      (user processor state at time of SVC)
+ *   x21 = SP_EL0        (user stack pointer at time of SVC)
+ *
+ * This trampoline restores ELR_EL1/SPSR_EL1/SP_EL0, reloads all GPRs from
+ * the saved exception frame, forces x0=0 (fork returns 0 in child), and
+ * executes eret to return to EL0 at the instruction after the SVC.
+ */
+    .global aarch64_fork_child_trampoline
+aarch64_fork_child_trampoline:
+    /* x19=ELR_EL1+4, x20=SPSR_EL1, x21=SP_EL0 (restored by context switch) */
+    msr ELR_EL1, x19
+    msr SPSR_EL1, x20
+    msr SP_EL0,   x21
+    isb
+
+    /* Enable FP/SIMD for EL0 (same as kernel-user entry trampoline) */
+    mrs x9, CPACR_EL1
+    orr x9, x9, #(3 << 20)
+    msr CPACR_EL1, x9
+
+    /* Reload all general-purpose registers from the copied exception frame.
+     * Frame layout (VEC_FRAME_SIZE=256, matching SAVE_GPRS / SavedRegisters):
+     *   offset  0 : x0, x1
+     *   offset 16 : x2, x3
+     *   ...
+     *   offset 240: x30
+     * After the loads, x19-x30 will hold the values from the parent's frame
+     * (overwriting the values that context-switch restored into them above,
+     * which is intentional — ELR/SPSR/SP_EL0 have already been committed).
+     */
+    ldp x0,  x1,  [sp, #0]
+    ldp x2,  x3,  [sp, #16]
+    ldp x4,  x5,  [sp, #32]
+    ldp x6,  x7,  [sp, #48]
+    ldp x8,  x9,  [sp, #64]
+    ldp x10, x11, [sp, #80]
+    ldp x12, x13, [sp, #96]
+    ldp x14, x15, [sp, #112]
+    ldp x16, x17, [sp, #128]
+    ldp x18, x19, [sp, #144]
+    ldp x20, x21, [sp, #160]
+    ldp x22, x23, [sp, #176]
+    ldp x24, x25, [sp, #192]
+    ldp x26, x27, [sp, #208]
+    ldp x28, x29, [sp, #224]
+    ldr x30,      [sp, #240]
+    add sp, sp, #256
+
+    /* fork() returns 0 in the child — override x0 from the copied frame. */
+    mov x0, xzr
+    eret
+
 .Lhalt_forever:
     wfe
     b .Lhalt_forever

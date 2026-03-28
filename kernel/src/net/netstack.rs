@@ -74,6 +74,7 @@ const UDP_RX_PAYLOAD_MAX: usize = 512;
 const NET_READY_DEFAULT_WAIT_TICKS: u64 = 1000;
 const ARP_DEFAULT_TIMEOUT_TICKS: u64 = 1000;
 const DNS_RESPONSE_TIMEOUT_SECS: u64 = 4;
+const DNS_QUERY_MAX_ATTEMPTS: usize = 2;
 const DNS_DEBUG_ENABLED: bool = false;
 const TCP_TEMPORAL_EVENTS_ENABLED: bool = false;
 const NETWORK_CONFIG_TEMPORAL_EVENTS_ENABLED: bool = false;
@@ -128,6 +129,14 @@ impl UdpRxEntry {
 const TEMPORAL_NETWORK_CONFIG_BYTES: usize = 32;
 const TEMPORAL_NETWORK_CONFIG_FLAG_DHCP: u8 = 1 << 0;
 const TEMPORAL_NETWORK_CONFIG_FLAG_HAS_INTERFACE: u8 = 1 << 1;
+
+// Reactor-owned staging buffers keep the hot DNS/UDP paths off the legacy x86
+// task stack. The dedicated network task is the sole live owner of this stack.
+static mut UDP_TX_STAGE: [u8; 1514] = [0u8; 1514];
+static mut DNS_QUERY_STAGE: [u8; 512] = [0u8; 512];
+static mut DNS_RESPONSE_STAGE: [u8; 512] = [0u8; 512];
+static mut POLL_RX_STAGE: [u8; 1514] = [0u8; 1514];
+static mut TCP_TX_STAGE: [u8; 1514] = [0u8; 1514];
 
 // ============================================================================
 // Network Types
@@ -303,6 +312,7 @@ pub struct NetworkStack {
     http_server: HttpServer,
     dns_neg_cache: [DnsNegEntry; DNS_NEG_CACHE_SIZE],
     udp_rx_queue: [UdpRxEntry; UDP_RX_QUEUE_SIZE],
+    dns_next_txid: u16,
     dns_debug_active: bool,
     dns_debug_txid: u16,
     dns_debug_miss_logged: bool,
@@ -335,18 +345,47 @@ impl NetworkStack {
     }
 
     #[inline]
+    fn operational_link_ready(&self) -> bool {
+        if self.link_ready() {
+            return true;
+        }
+
+        #[cfg(target_arch = "x86")]
+        {
+            let mac_valid = self.my_mac.0 != [0; 6] && self.my_mac.0 != [0xFF; 6];
+            return self.has_interface
+                && self.interface_configured()
+                && mac_valid
+                && super::e1000::driver_present();
+        }
+
+        #[cfg(not(target_arch = "x86"))]
+        {
+            false
+        }
+    }
+
+    #[inline]
     fn interface_configured(&self) -> bool {
         self.my_ip.0 != [0, 0, 0, 0]
             && self.gateway_ip.0 != [0, 0, 0, 0]
             && self.dns_server.0 != [0, 0, 0, 0]
     }
 
+    #[inline]
+    pub fn readiness_prereqs_met(&self) -> bool {
+        #[cfg(not(target_arch = "aarch64"))]
+        return self.interface_configured() && self.operational_link_ready();
+        #[cfg(target_arch = "aarch64")]
+        return self.interface_configured();
+    }
+
     pub const fn new() -> Self {
         NetworkStack {
-            my_ip: Self::QEMU_USERNET_IP,                         // QEMU default
+            my_ip: Self::QEMU_USERNET_IP,                          // QEMU default
             my_mac: MacAddr([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]), // QEMU default
-            gateway_ip: Self::QEMU_USERNET_GATEWAY,               // QEMU default gateway
-            dns_server: Self::QEMU_USERNET_DNS,                   // QEMU usernet DNS proxy
+            gateway_ip: Self::QEMU_USERNET_GATEWAY,                // QEMU default gateway
+            dns_server: Self::QEMU_USERNET_DNS,                    // QEMU usernet DNS proxy
             arp_cache: ArpCache::new(),
             dhcp_enabled: false,
             has_interface: false,
@@ -355,30 +394,54 @@ impl NetworkStack {
             http_server: HttpServer::new(),
             dns_neg_cache: [DnsNegEntry::empty(); DNS_NEG_CACHE_SIZE],
             udp_rx_queue: [UdpRxEntry::empty(); UDP_RX_QUEUE_SIZE],
+            dns_next_txid: 0,
             dns_debug_active: false,
             dns_debug_txid: 0,
             dns_debug_miss_logged: false,
         }
     }
 
+    fn config_trace_enabled() -> bool {
+        let Some(cmdline) = crate::arch::boot_info().cmdline_str() else {
+            return false;
+        };
+        cmdline.split_whitespace().any(|token| {
+            token == "oreulia.net_config_debug"
+                || matches!(
+                    token.strip_prefix("oreulia.net_config_debug="),
+                    Some("1" | "true" | "on" | "yes")
+                )
+        })
+    }
+
     fn log_config_state(&self, reason: &str) {
-        crate::serial_println!(
-            "[NET-CONFIG] {} ip={}.{}.{}.{} gw={}.{}.{}.{} dns={}.{}.{}.{} has_if={}",
-            reason,
+        if !Self::config_trace_enabled() {
+            return;
+        }
+        crate::serial_print!("[NET-CONFIG] ");
+        crate::serial_print!("{}", reason);
+        crate::serial_print!(
+            " ip={}.{}.{}.{}",
             self.my_ip.0[0],
             self.my_ip.0[1],
             self.my_ip.0[2],
-            self.my_ip.0[3],
+            self.my_ip.0[3]
+        );
+        crate::serial_print!(
+            " gw={}.{}.{}.{}",
             self.gateway_ip.0[0],
             self.gateway_ip.0[1],
             self.gateway_ip.0[2],
-            self.gateway_ip.0[3],
+            self.gateway_ip.0[3]
+        );
+        crate::serial_print!(
+            " dns={}.{}.{}.{}",
             self.dns_server.0[0],
             self.dns_server.0[1],
             self.dns_server.0[2],
-            self.dns_server.0[3],
-            if self.has_interface { 1 } else { 0 }
+            self.dns_server.0[3]
         );
+        crate::serial_println!(" has_if={}", if self.has_interface { 1 } else { 0 });
     }
 
     pub fn seed_legacy_x86_qemu_defaults(&mut self) -> bool {
@@ -410,11 +473,15 @@ impl NetworkStack {
 
     /// Check if network is ready
     pub fn is_ready(&self) -> bool {
-        // On AArch64 use virtio-net; on x86 check the E1000 driver.
-        #[cfg(not(target_arch = "aarch64"))]
-        return self.has_interface && self.link_ready() && self.interface_configured();
-        #[cfg(target_arch = "aarch64")]
-        return self.has_interface && self.interface_configured();
+        self.has_interface && self.readiness_prereqs_met()
+    }
+
+    pub fn link_up(&self) -> bool {
+        self.operational_link_ready()
+    }
+
+    pub fn get_mac(&self) -> [u8; 6] {
+        self.my_mac.0
     }
 
     // ========================================================================
@@ -548,7 +615,7 @@ impl NetworkStack {
 
         let link_deadline =
             crate::pit::get_ticks() + Self::wait_timeout_ticks(NET_READY_DEFAULT_WAIT_TICKS);
-        while !self.link_ready() {
+        while !self.operational_link_ready() {
             if crate::pit::get_ticks() >= link_deadline {
                 return Err("Link down");
             }
@@ -602,7 +669,7 @@ impl NetworkStack {
         let driver = driver.as_mut().ok_or("No E1000 driver")?;
 
         // Build packet
-        let mut frame = [0u8; 1514];
+        let frame = unsafe { &mut *core::ptr::addr_of_mut!(UDP_TX_STAGE) };
         let mut offset = 0;
 
         // Ethernet header (14 bytes)
@@ -683,19 +750,82 @@ impl NetworkStack {
         Err("UDP send not supported on AArch64")
     }
 
-    /// Receive UDP packet (simplified - returns payload if matches port)
+    /// Dequeue the oldest valid UDP slot whose `dst_port` matches `expected_port`.
+    ///
+    /// Source validation is applied for well-known ports:
+    ///   • `DNS_CLIENT_SRC_PORT` — slot must originate from `self.dns_server:53`.
+    ///     Slots from any other source are silently discarded; accepting a DNS
+    ///     response from an unexpected peer is equivalent to a spoofed injection.
+    ///
+    /// Oversized slots (payload > buffer) are **discarded** rather than left in the
+    /// queue. Leaving them valid would stall every subsequent receive on that port.
+    /// The caller receives `Err("Buffer too small")` only when at least one
+    /// matching, source-valid slot was discarded for being oversized and no
+    /// same-port slot of acceptable size was found. If no matching slot exists at
+    /// all the error is `Err("No UDP packet available")`.
     #[cfg(not(target_arch = "aarch64"))]
     fn recv_udp(&mut self, expected_port: u16, buffer: &mut [u8]) -> Result<usize, &'static str> {
+        let is_dns = expected_port == DNS_CLIENT_SRC_PORT;
+        let mut found_oversized = false;
+
         for slot in &mut self.udp_rx_queue {
             if !slot.valid || slot.dst_port != expected_port {
                 continue;
             }
 
-            if slot.payload_len > buffer.len() {
-                return Err("Buffer too small");
+            // Source validation: DNS responses must originate from the
+            // configured DNS server on port 53.  Any other source (stale
+            // broadcast, spoofed reply, wrong-server reply) is dropped so it
+            // cannot poison the caller's response buffer.
+            if is_dns {
+                let from_dns_server =
+                    slot.src_ip == self.dns_server && slot.src_port == DNS_SERVER_PORT;
+                if !from_dns_server {
+                    if self.dns_debug_active {
+                        crate::serial_println!(
+                            "[DNS-DEBUG] recv_udp discard unexpected source \
+                             src={}.{}.{}.{}:{} expected_server={}.{}.{}.{}:{}",
+                            slot.src_ip.0[0],
+                            slot.src_ip.0[1],
+                            slot.src_ip.0[2],
+                            slot.src_ip.0[3],
+                            slot.src_port,
+                            self.dns_server.0[0],
+                            self.dns_server.0[1],
+                            self.dns_server.0[2],
+                            self.dns_server.0[3],
+                            DNS_SERVER_PORT,
+                        );
+                    }
+                    *slot = UdpRxEntry::empty();
+                    continue;
+                }
             }
 
-            if expected_port == DNS_CLIENT_SRC_PORT && self.dns_debug_active {
+            // Oversized: discard the slot so it cannot permanently block the
+            // queue, then continue scanning for a smaller matching packet.
+            if slot.payload_len > buffer.len() {
+                if is_dns && self.dns_debug_active {
+                    crate::serial_println!(
+                        "[DNS-DEBUG] recv_udp discard oversized slot \
+                         src={}.{}.{}.{}:{} dst_port={} payload_len={} buffer_len={}",
+                        slot.src_ip.0[0],
+                        slot.src_ip.0[1],
+                        slot.src_ip.0[2],
+                        slot.src_ip.0[3],
+                        slot.src_port,
+                        slot.dst_port,
+                        slot.payload_len,
+                        buffer.len(),
+                    );
+                }
+                *slot = UdpRxEntry::empty();
+                found_oversized = true;
+                continue;
+            }
+
+            // Valid, source-validated, correctly-sized slot — dequeue it.
+            if is_dns && self.dns_debug_active {
                 let rx_txid = if slot.payload_len >= 2 {
                     u16::from_be_bytes([slot.payload[0], slot.payload[1]])
                 } else {
@@ -710,7 +840,7 @@ impl NetworkStack {
                     slot.src_port,
                     slot.dst_port,
                     slot.payload_len,
-                    rx_txid
+                    rx_txid,
                 );
             }
             buffer[..slot.payload_len].copy_from_slice(&slot.payload[..slot.payload_len]);
@@ -719,16 +849,17 @@ impl NetworkStack {
             return Ok(payload_len);
         }
 
-        if expected_port == DNS_CLIENT_SRC_PORT
-            && self.dns_debug_active
-            && !self.dns_debug_miss_logged
-        {
-            let queued = self.udp_rx_queue.iter().filter(|slot| slot.valid).count();
+        if found_oversized {
+            return Err("Buffer too small");
+        }
+
+        if is_dns && self.dns_debug_active && !self.dns_debug_miss_logged {
+            let queued = self.udp_rx_queue.iter().filter(|s| s.valid).count();
             crate::serial_println!(
                 "[DNS-DEBUG] recv_udp queue miss expected_port={} queued_slots={} txid=0x{:04x}",
                 expected_port,
                 queued,
-                self.dns_debug_txid
+                self.dns_debug_txid,
             );
             self.dns_debug_miss_logged = true;
         }
@@ -1046,121 +1177,132 @@ impl NetworkStack {
             }
         }
 
-        // Build DNS query
-        let mut query = [0u8; 512];
-        let mut offset = 0;
+        for attempt in 0..DNS_QUERY_MAX_ATTEMPTS {
+            self.clear_stale_dns_responses();
 
-        // DNS header
-        let txid = (crate::pit::get_ticks() as u16).wrapping_add(0xA5C3); // pseudo-random TX ID
-        query[offset..offset + 2].copy_from_slice(&txid.to_be_bytes()); // Transaction ID (randomized)
-        offset += 2;
-        query[offset..offset + 2].copy_from_slice(&[0x01, 0x00]); // Flags: standard query
-        offset += 2;
-        query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Questions: 1
-        offset += 2;
-        query[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Answer RRs: 0
-        offset += 2;
-        query[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Authority RRs: 0
-        offset += 2;
-        query[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Additional RRs: 0
-        offset += 2;
+            // Build DNS query
+            let query = unsafe { &mut DNS_QUERY_STAGE };
+            query.fill(0);
+            let mut offset = 0;
 
-        // Question: encode domain name
-        for label in domain.split('.') {
-            if label.len() > 63 {
-                return Err("Label too long");
+            // DNS header
+            let txid = self.next_dns_txid();
+            query[offset..offset + 2].copy_from_slice(&txid.to_be_bytes());
+            offset += 2;
+            query[offset..offset + 2].copy_from_slice(&[0x01, 0x00]); // Flags: standard query
+            offset += 2;
+            query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Questions: 1
+            offset += 2;
+            query[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Answer RRs: 0
+            offset += 2;
+            query[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Authority RRs: 0
+            offset += 2;
+            query[offset..offset + 2].copy_from_slice(&[0x00, 0x00]); // Additional RRs: 0
+            offset += 2;
+
+            // Question: encode domain name
+            for label in domain.split('.') {
+                if label.len() > 63 {
+                    return Err("Label too long");
+                }
+                query[offset] = label.len() as u8;
+                offset += 1;
+                query[offset..offset + label.len()].copy_from_slice(label.as_bytes());
+                offset += label.len();
             }
-            query[offset] = label.len() as u8;
+            query[offset] = 0; // End of domain name
             offset += 1;
-            query[offset..offset + label.len()].copy_from_slice(label.as_bytes());
-            offset += label.len();
-        }
-        query[offset] = 0; // End of domain name
-        offset += 1;
 
-        query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Type: A (IPv4)
-        offset += 2;
-        query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Class: IN (Internet)
-        offset += 2;
+            query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Type: A (IPv4)
+            offset += 2;
+            query[offset..offset + 2].copy_from_slice(&[0x00, 0x01]); // Class: IN (Internet)
+            offset += 2;
 
-        let query_len = offset;
+            let query_len = offset;
 
-        // Send DNS query (UDP port 53)
-        self.dns_debug_begin(txid);
-        if self.dns_debug_active {
-            crate::serial_println!(
-                "[DNS-DEBUG] tx query domain={} txid=0x{:04x} server={}.{}.{}.{} src_port={}",
-                domain,
-                txid,
-                self.dns_server.0[0],
-                self.dns_server.0[1],
-                self.dns_server.0[2],
-                self.dns_server.0[3],
-                DNS_CLIENT_SRC_PORT
-            );
-        }
+            self.dns_debug_begin(txid);
+            if self.dns_debug_active {
+                crate::serial_println!(
+                    "[DNS-DEBUG] tx query domain={} txid=0x{:04x} attempt={} server={}.{}.{}.{} src_port={}",
+                    domain,
+                    txid,
+                    attempt + 1,
+                    self.dns_server.0[0],
+                    self.dns_server.0[1],
+                    self.dns_server.0[2],
+                    self.dns_server.0[3],
+                    DNS_CLIENT_SRC_PORT
+                );
+            }
 
-        if let Err(e) = self.send_udp(
-            self.dns_server,
-            DNS_SERVER_PORT,
-            DNS_CLIENT_SRC_PORT,
-            &query[..query_len],
-        ) {
-            self.dns_debug_finish();
-            return Err(e);
-        }
+            if let Err(e) = self.send_udp(
+                self.dns_server,
+                DNS_SERVER_PORT,
+                DNS_CLIENT_SRC_PORT,
+                &query[..query_len],
+            ) {
+                self.dns_debug_finish();
+                return Err(e);
+            }
 
-        // Receive DNS response
-        let mut response = [0u8; 512];
+            // Receive DNS response
+            let response = unsafe { &mut DNS_RESPONSE_STAGE };
+            response.fill(0);
 
-        let dns_timeout_ticks = (crate::pit::get_frequency() as u64)
-            .saturating_mul(DNS_RESPONSE_TIMEOUT_SECS)
-            .max(200);
-        let deadline = crate::pit::get_ticks().saturating_add(dns_timeout_ticks);
-        while crate::pit::get_ticks() < deadline {
-            match self.recv_udp(DNS_CLIENT_SRC_PORT, &mut response) {
-                Ok(len) => {
-                    let rx_txid = if len >= 2 {
-                        u16::from_be_bytes([response[0], response[1]])
-                    } else {
-                        0
-                    };
-                    if self.dns_debug_active {
-                        crate::serial_println!(
-                            "[DNS-DEBUG] rx queued response len={} txid=0x{:04x} expected=0x{:04x}",
-                            len,
-                            rx_txid,
-                            txid
-                        );
-                    }
-                    if rx_txid != txid {
+            let dns_timeout_ticks = (crate::pit::get_frequency() as u64)
+                .saturating_mul(DNS_RESPONSE_TIMEOUT_SECS)
+                .max(200);
+            let deadline = crate::pit::get_ticks().saturating_add(dns_timeout_ticks);
+            while crate::pit::get_ticks() < deadline {
+                match self.recv_udp(DNS_CLIENT_SRC_PORT, response) {
+                    Ok(len) => {
+                        let rx_txid = if len >= 2 {
+                            u16::from_be_bytes([response[0], response[1]])
+                        } else {
+                            0
+                        };
                         if self.dns_debug_active {
                             crate::serial_println!(
-                                "[DNS-DEBUG] ignore mismatched txid got=0x{:04x} expected=0x{:04x}",
+                                "[DNS-DEBUG] rx queued response len={} txid=0x{:04x} expected=0x{:04x}",
+                                len,
                                 rx_txid,
                                 txid
                             );
                         }
-                        continue;
+                        if rx_txid != txid {
+                            if self.dns_debug_active {
+                                crate::serial_println!(
+                                    "[DNS-DEBUG] ignore mismatched txid got=0x{:04x} expected=0x{:04x}",
+                                    rx_txid,
+                                    txid
+                                );
+                            }
+                            continue;
+                        }
+                        let parse_result = self.parse_dns_response(&response[..len]);
+                        self.dns_debug_finish();
+                        return parse_result;
                     }
-                    let parse_result = self.parse_dns_response(&response[..len]);
-                    self.dns_debug_finish();
-                    return parse_result;
-                }
-                Err(_) => {
-                    progress(self);
+                    Err(_) => {
+                        progress(self);
+                    }
                 }
             }
-        }
 
-        if self.dns_debug_active {
-            crate::serial_println!(
-                "[DNS-DEBUG] timeout waiting for response txid=0x{:04x} domain={}",
-                txid,
-                domain
-            );
+            if self.dns_debug_active {
+                crate::serial_println!(
+                    "[DNS-DEBUG] timeout waiting for response txid=0x{:04x} attempt={} domain={}",
+                    txid,
+                    attempt + 1,
+                    domain
+                );
+            }
+            self.dns_debug_finish();
+
+            if attempt + 1 < DNS_QUERY_MAX_ATTEMPTS {
+                progress(self);
+            }
         }
-        self.dns_debug_finish();
 
         // ---- Insert into negative cache on timeout ----
         let now = crate::pit::get_ticks();
@@ -1194,6 +1336,31 @@ impl NetworkStack {
         }
 
         Err("DNS timeout")
+    }
+
+    fn next_dns_txid(&mut self) -> u16 {
+        if self.dns_next_txid == 0 {
+            self.dns_next_txid = (crate::pit::get_ticks() as u16).wrapping_add(0xA5C3);
+            if self.dns_next_txid == 0 {
+                self.dns_next_txid = 1;
+            }
+        }
+
+        let txid = self.dns_next_txid;
+        self.dns_next_txid = self.dns_next_txid.wrapping_add(1);
+        if self.dns_next_txid == 0 {
+            self.dns_next_txid = 1;
+        }
+        txid
+    }
+
+    fn clear_stale_dns_responses(&mut self) {
+        for slot in &mut self.udp_rx_queue {
+            if !slot.valid || slot.dst_port != DNS_CLIENT_SRC_PORT {
+                continue;
+            }
+            *slot = UdpRxEntry::empty();
+        }
     }
 
     /// Parse DNS response
@@ -1238,6 +1405,9 @@ impl NetworkStack {
             offset += 1 + len as usize;
         }
 
+        if offset + 4 > response.len() {
+            return Err("Invalid DNS question");
+        }
         offset += 4; // Skip QTYPE and QCLASS
 
         // Parse answer section
@@ -1251,19 +1421,31 @@ impl NetworkStack {
                 offset += 2;
             } else {
                 loop {
+                    if offset >= response.len() {
+                        return Err("Invalid answer name");
+                    }
                     let len = response[offset];
                     if len == 0 {
                         offset += 1;
                         break;
                     }
+                    if offset + 1 + len as usize > response.len() {
+                        return Err("Invalid answer label");
+                    }
                     offset += 1 + len as usize;
                 }
             }
 
+            if offset + 10 > response.len() {
+                return Err("Invalid answer header");
+            }
             let rtype = u16::from_be_bytes([response[offset], response[offset + 1]]);
             let rdlength =
                 u16::from_be_bytes([response[offset + 8], response[offset + 9]]) as usize;
             offset += 10;
+            if offset + rdlength > response.len() {
+                return Err("Invalid answer data");
+            }
 
             // Check for A record (IPv4)
             if rtype == 1 && rdlength == 4 {
@@ -1288,11 +1470,11 @@ impl NetworkStack {
     /// Poll for incoming packets once (reads from NIC internally).
     #[cfg(not(target_arch = "aarch64"))]
     pub fn poll_once(&mut self) -> Result<bool, &'static str> {
-        let mut frame = [0u8; 1514];
+        let frame = unsafe { &mut *core::ptr::addr_of_mut!(POLL_RX_STAGE) };
         let frame_len = {
             let mut driver = super::e1000::E1000_DRIVER.lock();
             let interface = driver.as_mut().ok_or("No E1000 driver")?;
-            match interface.recv_frame(&mut frame) {
+            match interface.recv_frame(frame) {
                 Ok(len) => len,
                 Err(_) => return Ok(false), // No packet available
             }
@@ -1414,7 +1596,7 @@ impl NetworkStack {
                     ack,
                     flags,
                     &payload[..len],
-                    TCP_BUF_SIZE as u16,
+                    TCP_ADVERTISED_WINDOW_MAX,
                 );
             }
         }
@@ -1469,6 +1651,52 @@ impl NetworkStack {
             && (src_ip == self.dns_server
                 || src_port == DNS_SERVER_PORT
                 || dst_port == DNS_CLIENT_SRC_PORT)
+    }
+
+    #[inline]
+    fn tcp_connect_debug_active(&self) -> bool {
+        false
+    }
+
+    #[inline]
+    fn tcp_connect_debug_relevant_ipv4(
+        &self,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+        proto: u8,
+    ) -> bool {
+        self.tcp_connect_debug_active()
+            && proto == IP_PROTOCOL_TCP
+            && (src_ip == self.my_ip || dst_ip == self.my_ip)
+    }
+
+    fn tcp_connect_debug_log_ipv4(
+        &self,
+        reason: &str,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+        proto: u8,
+        packet_len: usize,
+        extra: usize,
+    ) {
+        if !self.tcp_connect_debug_relevant_ipv4(src_ip, dst_ip, proto) {
+            return;
+        }
+        crate::serial_println!(
+            "[TCP-CONNECT] ipv4 {} src={}.{}.{}.{} dst={}.{}.{}.{} proto={} len={} extra={}",
+            reason,
+            src_ip.0[0],
+            src_ip.0[1],
+            src_ip.0[2],
+            src_ip.0[3],
+            dst_ip.0[0],
+            dst_ip.0[1],
+            dst_ip.0[2],
+            dst_ip.0[3],
+            proto,
+            packet_len,
+            extra
+        );
     }
 
     fn dns_debug_log_ipv4_reason(
@@ -1933,6 +2161,14 @@ impl NetworkStack {
     }
 }
 
+#[inline]
+fn tcp_http_debug_conn(conn: &TcpConn) -> bool {
+    conn.remote_port == 80
+        || conn.remote_port == 443
+        || conn.local_port == 80
+        || conn.local_port == 443
+}
+
 // ============================================================================
 // TCP Implementation
 // ============================================================================
@@ -1967,6 +2203,7 @@ const TCP_DELAYED_ACK_TICKS: u64 = 20;
 const TCP_WSCALE: u8 = 4;
 /// Effective maximum receive window after applying wscale.
 const TCP_MAX_WINDOW: u32 = (TCP_BUF_SIZE as u32) << TCP_WSCALE;
+const TCP_ADVERTISED_WINDOW_MAX: u16 = u16::MAX;
 
 #[derive(Clone, Copy)]
 struct TcpConn {
@@ -2048,6 +2285,16 @@ impl TcpConn {
             snd_wnd: 65_535, // conservative default until first ACK
         }
     }
+}
+
+#[inline]
+fn clear_retransmit_if_fully_acked(conn: &mut TcpConn) {
+    if conn.snd_una < conn.snd_nxt {
+        return;
+    }
+    conn.last_send_tick = 0;
+    conn.last_payload_len = 0;
+    conn.retries = 0;
 }
 
 fn tcp_endpoint(conn: &TcpConn) -> TcpEndpoint {
@@ -2201,6 +2448,9 @@ impl TcpManager {
     }
 
     fn alloc_conn(&mut self) -> Result<&mut TcpConn, &'static str> {
+        if self.next_id == 0 {
+            self.next_id = 1;
+        }
         for conn in &mut self.conns {
             if !conn.in_use {
                 *conn = TcpConn::empty();
@@ -2284,18 +2534,6 @@ impl TcpManager {
         remote_ip: Ipv4Addr,
         remote_port: u16,
     ) -> Result<u16, &'static str> {
-        crate::serial_println!(
-            "[HTTP-TCP] tcp.connect start remote={}.{}.{}.{}:{} local_ip={}.{}.{}.{}",
-            remote_ip.0[0],
-            remote_ip.0[1],
-            remote_ip.0[2],
-            remote_ip.0[3],
-            remote_port,
-            stack.my_ip.0[0],
-            stack.my_ip.0[1],
-            stack.my_ip.0[2],
-            stack.my_ip.0[3]
-        );
         let local_port = 40000 + (self.next_id % 10000);
         // RFC 6528: derive ISN from a keyed hash of the 4-tuple + tick to prevent
         // ISN prediction attacks.  SipHash-2-4 is already in the kernel.
@@ -2328,16 +2566,13 @@ impl TcpManager {
         for _ in 0..8 {
             match send_syn_segment(stack, ep, conn.snd_nxt, conn.rcv_nxt, TCP_FLAG_SYN, adv_win) {
                 Ok(()) => {
-                    crate::serial_println!("[HTTP-TCP] syn sent conn_id={}", conn.id);
                     syn_result = Ok(());
                     break;
                 }
                 Err("TX busy") => {
-                    crate::serial_println!("[HTTP-TCP] syn tx busy conn_id={}", conn.id);
                     let _ = stack.poll_once();
                 }
                 Err(e) => {
-                    crate::serial_println!("[HTTP-TCP] syn error conn_id={} err={}", conn.id, e);
                     syn_result = Err(e);
                     break;
                 }
@@ -2566,7 +2801,7 @@ impl TcpManager {
                     ack_out,
                     TCP_FLAG_ACK,
                     &[],
-                    TCP_BUF_SIZE as u16,
+                    TCP_ADVERTISED_WINDOW_MAX,
                 );
             }
             if let Some((ep, seq, ack, flags, payload, len)) = action {
@@ -2577,7 +2812,7 @@ impl TcpManager {
                     ack,
                     flags,
                     &payload[..len],
-                    TCP_BUF_SIZE as u16,
+                    TCP_ADVERTISED_WINDOW_MAX,
                 );
             }
         }
@@ -2665,7 +2900,7 @@ fn send_tcp_segment(
         return Err("Packet too large");
     }
 
-    let mut frame = [0u8; 1514];
+    let frame = unsafe { &mut *core::ptr::addr_of_mut!(TCP_TX_STAGE) };
     let mut off = 0;
 
     frame[off..off + 6].copy_from_slice(&dest_mac.0);
@@ -2752,7 +2987,7 @@ fn send_syn_segment(
     let tcp_header_len = 20 + options.len(); // 28
     let ip_header_len = 20;
     let total_len = 14 + ip_header_len + tcp_header_len;
-    let mut frame = [0u8; 1514];
+    let frame = unsafe { &mut *core::ptr::addr_of_mut!(TCP_TX_STAGE) };
     let mut off = 0;
 
     frame[off..off + 6].copy_from_slice(&dest_mac.0);
@@ -2891,6 +3126,26 @@ fn finalize_checksum(mut sum: u32) -> u16 {
 impl NetworkStack {
     fn handle_ipv4(&mut self, packet: &[u8]) -> Result<(), &'static str> {
         if packet.len() < 20 {
+            let src = if packet.len() >= 16 {
+                Some(Ipv4Addr([packet[12], packet[13], packet[14], packet[15]]))
+            } else {
+                None
+            };
+            let dst = if packet.len() >= 20 {
+                Some(Ipv4Addr([packet[16], packet[17], packet[18], packet[19]]))
+            } else {
+                None
+            };
+            if let (Some(src), Some(dst)) = (src, dst) {
+                self.tcp_connect_debug_log_ipv4(
+                    "reject packet-too-short",
+                    src,
+                    dst,
+                    if packet.len() > 9 { packet[9] } else { 0 },
+                    packet.len(),
+                    20,
+                );
+            }
             self.dns_debug_log_ipv4_reason(
                 "reject packet-too-short",
                 None,
@@ -2905,8 +3160,19 @@ impl NetworkStack {
         let dst = Ipv4Addr([packet[16], packet[17], packet[18], packet[19]]);
         let proto = packet[9];
         let dns_relevant = self.dns_debug_ipv4_relevant(src, dst);
+        if self.tcp_connect_debug_relevant_ipv4(src, dst, proto) {
+            self.tcp_connect_debug_log_ipv4("dispatch", src, dst, proto, packet.len(), 0);
+        }
         let ihl = (packet[0] & 0x0F) as usize * 4;
         if ihl < 20 || packet.len() < ihl {
+            self.tcp_connect_debug_log_ipv4(
+                "reject invalid-ihl",
+                src,
+                dst,
+                proto,
+                packet.len(),
+                ihl,
+            );
             if dns_relevant {
                 self.dns_debug_log_ipv4_reason(
                     "reject invalid-ihl",
@@ -2921,6 +3187,14 @@ impl NetworkStack {
         }
         let total_len = u16::from_be_bytes([packet[2], packet[3]]) as usize;
         if total_len > packet.len() {
+            self.tcp_connect_debug_log_ipv4(
+                "reject length-mismatch",
+                src,
+                dst,
+                proto,
+                packet.len(),
+                total_len,
+            );
             if dns_relevant {
                 self.dns_debug_log_ipv4_reason(
                     "reject length-mismatch",
@@ -2934,6 +3208,14 @@ impl NetworkStack {
             return Err("IPv4 length mismatch");
         }
         if dst != self.my_ip {
+            self.tcp_connect_debug_log_ipv4(
+                "reject dst-mismatch",
+                src,
+                dst,
+                proto,
+                total_len,
+                self.my_ip.to_u32() as usize,
+            );
             if dns_relevant {
                 self.dns_debug_log_ipv4_reason(
                     "reject dst-mismatch",
@@ -2945,6 +3227,9 @@ impl NetworkStack {
                 );
             }
             return Ok(());
+        }
+        if self.tcp_connect_debug_relevant_ipv4(src, dst, proto) {
+            self.tcp_connect_debug_log_ipv4("accept", src, dst, proto, total_len, ihl);
         }
         if proto != IP_PROTOCOL_UDP && dns_relevant {
             self.dns_debug_log_ipv4_reason(
@@ -3132,7 +3417,6 @@ impl NetworkStack {
             return Err("TCP header invalid");
         }
         let payload = &segment[data_off..];
-
         // Parse TCP options to extract wscale (kind=3) and MSS (kind=2).
         // Only present when data_off > 20 (i.e. there are options bytes).
         let peer_wscale_opt: Option<u8> = if data_off > 20 && data_off <= segment.len() {
@@ -3183,6 +3467,7 @@ impl NetworkStack {
                         conn.srtt = (7 * conn.srtt + sample) / 8;
                     }
                     conn.rto_ticks = core::cmp::max(1, conn.srtt + 4 * conn.rttvar);
+                    clear_retransmit_if_fully_acked(conn);
                 }
 
                 if conn.state == TcpState::SynSent
@@ -3347,7 +3632,7 @@ impl NetworkStack {
                     ack_out,
                     TCP_FLAG_ACK,
                     &[],
-                    TCP_BUF_SIZE as u16,
+                    TCP_ADVERTISED_WINDOW_MAX,
                 );
             }
             if let Some((idx, conn_id)) = established_from_listen {
@@ -3410,7 +3695,7 @@ impl NetworkStack {
                     record_last(conn, TCP_FLAG_SYN | TCP_FLAG_ACK, seq_out, ack_out, &[]);
                     conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
                     let _ = idx;
-                    let adv_win = TCP_BUF_SIZE as u16;
+                    let adv_win = TCP_ADVERTISED_WINDOW_MAX;
                     let _ = send_syn_segment(
                         self,
                         ep,
@@ -3450,7 +3735,7 @@ impl NetworkStack {
             ack,
             TCP_FLAG_ACK | TCP_FLAG_PSH,
             body,
-            TCP_BUF_SIZE as u16,
+            TCP_ADVERTISED_WINDOW_MAX,
         );
 
         let (ep2, seq2, ack2) = {
@@ -3478,7 +3763,7 @@ impl NetworkStack {
             ack2,
             TCP_FLAG_FIN | TCP_FLAG_ACK,
             &[],
-            TCP_BUF_SIZE as u16,
+            TCP_ADVERTISED_WINDOW_MAX,
         );
         if let Some(conn) = self.tcp.find_conn_id_mut(conn_id) {
             record_last(
@@ -3503,7 +3788,7 @@ fn calculate_checksum(data: &[u8]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ipv4Addr, NetworkStack};
+    use super::{Ipv4Addr, NetworkStack, DNS_CLIENT_SRC_PORT, DNS_SERVER_PORT};
 
     #[test]
     fn handle_udp_queues_non_capnet_payloads() {
@@ -3547,6 +3832,68 @@ mod tests {
         );
         let len = stack.recv_udp(53000, &mut out).expect("receive queued UDP");
         assert_eq!(&out[..len], payload);
+    }
+
+    #[test]
+    fn next_dns_txid_advances_monotonically() {
+        let mut stack = NetworkStack::new();
+        let first = stack.next_dns_txid();
+        let second = stack.next_dns_txid();
+        let third = stack.next_dns_txid();
+
+        assert_ne!(first, 0);
+        assert_eq!(second, first.wrapping_add(1));
+        assert_eq!(third, second.wrapping_add(1));
+    }
+
+    #[test]
+    fn clear_stale_dns_responses_removes_only_dns_client_port_entries() {
+        let mut stack = NetworkStack::new();
+        stack.enqueue_udp(
+            Ipv4Addr::new(10, 0, 2, 3),
+            DNS_SERVER_PORT,
+            DNS_CLIENT_SRC_PORT,
+            &[0x12, 0x34],
+        );
+        stack.enqueue_udp(
+            Ipv4Addr::new(1, 1, 1, 1),
+            1111,
+            9999,
+            b"keep me",
+        );
+
+        stack.clear_stale_dns_responses();
+
+        let mut dns_out = [0u8; 16];
+        assert_eq!(
+            stack.recv_udp(DNS_CLIENT_SRC_PORT, &mut dns_out),
+            Err("No UDP packet available")
+        );
+
+        let mut other_out = [0u8; 16];
+        let len = stack.recv_udp(9999, &mut other_out).expect("non-DNS slot kept");
+        assert_eq!(&other_out[..len], b"keep me");
+    }
+
+    #[test]
+    fn fully_acked_segments_stop_retransmit_timer() {
+        let mut conn = super::TcpConn::empty();
+        conn.snd_una = 100;
+        conn.snd_nxt = 120;
+        conn.last_send_tick = 55;
+        conn.last_payload_len = 20;
+        conn.retries = 3;
+
+        super::clear_retransmit_if_fully_acked(&mut conn);
+        assert_eq!(conn.last_send_tick, 55);
+        assert_eq!(conn.last_payload_len, 20);
+        assert_eq!(conn.retries, 3);
+
+        conn.snd_una = 120;
+        super::clear_retransmit_if_fully_acked(&mut conn);
+        assert_eq!(conn.last_send_tick, 0);
+        assert_eq!(conn.last_payload_len, 0);
+        assert_eq!(conn.retries, 0);
     }
 
     #[test]

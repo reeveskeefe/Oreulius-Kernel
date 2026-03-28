@@ -1860,9 +1860,9 @@ impl QuantumScheduler {
     ///
     /// Returns `Ok(child_pid)` on success.
     ///
-    /// # Limitations / TODO
-    /// - File descriptors are not duplicated (handles are copied by value only).
-    /// - AArch64 still returns `Err("fork_current_cow: not supported on this arch")`.
+    /// The child's FD table is fully duplicated: each open VFS handle is cloned
+    /// via `vfs::dup_fds_for_fork` so parent and child have independent handles
+    /// that share the same initial file offset.  AArch64 is fully supported.
     pub fn fork_current_cow(&mut self) -> Result<Pid, &'static str> {
         #[cfg(target_arch = "x86")]
         {
@@ -1891,6 +1891,10 @@ impl QuantumScheduler {
             child_process.cpu_time = 0;
             child_process.has_used_fpu = false;
             child_process.fpu_state = crate::process::FpuState([0u8; 512]);
+            // Duplicate VFS handles so parent and child each hold independent
+            // handle entries that share the same initial file offset.
+            child_process.fd_table =
+                crate::fs::vfs::dup_fds_for_fork(child_pid, &child_process.fd_table);
 
             let child_address_space: Box<crate::arch::mmu::AddressSpace>;
             let child_cr3: PhysAddr;
@@ -2013,6 +2017,9 @@ impl QuantumScheduler {
             child_process.page_dir_phys = child_cr3;
             child_process.has_used_fpu = false;
             child_process.fpu_state = crate::process::FpuState([0u8; 512]);
+            // Duplicate VFS handles for the child.
+            child_process.fd_table =
+                crate::fs::vfs::dup_fds_for_fork(child_pid, &child_process.fd_table);
 
             if crate::process::process_manager()
                 .set_process_page_dir(child_pid, child_cr3)
@@ -2071,7 +2078,121 @@ impl QuantumScheduler {
 
         #[cfg(target_arch = "aarch64")]
         {
-            Err("fork_current_cow: not supported on this arch")
+            let parent_pid = self
+                .current_pid
+                .ok_or("fork_current_cow: no current process")?;
+            let parent_idx = parent_pid.0 as usize;
+
+            let child_pid = (0..MAX_PROCESSES)
+                .map(|i| Pid(i as u32))
+                .find(|&p| self.processes[p.0 as usize].is_none())
+                .ok_or("fork_current_cow: process table full")?;
+            let child_idx = child_pid.0 as usize;
+
+            let (parent_process_clone, parent_priority) = {
+                let info = self
+                    .process_slot(parent_idx)
+                    .map_err(|_| "fork_current_cow: parent info missing")?;
+                (info.process.clone(), info.process.priority)
+            };
+
+            // Clone address space COW — must happen before we borrow child_process.
+            let child_space = self
+                .process_slot_mut(parent_idx)
+                .map_err(|_| "fork_current_cow: parent info missing")?
+                .address_space
+                .as_mut()
+                .ok_or("fork_current_cow: parent has no owned address space")
+                .and_then(|space| {
+                    space
+                        .clone_cow()
+                        .map_err(|_| "fork_current_cow: clone_cow failed")
+                })?;
+
+            let child_cr3 = PhysAddr::new(child_space.phys_addr());
+
+            // Allocate child kernel stack.
+            let child_kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
+                Box::new([0u8; crate::process::STACK_SIZE]);
+            let child_stack_top = (child_kernel_stack.as_ptr() as usize
+                + crate::process::STACK_SIZE)
+                & !15usize;
+
+            // Copy the parent's SVC exception frame onto the child's kernel stack
+            // with x0 = 0 (fork returns 0 in child).
+            let child_sp =
+                crate::syscall::clone_current_aarch64_syscall_return_frame(child_stack_top)?;
+
+            // Build child PCB.
+            let mut child_process = parent_process_clone;
+            child_process.pid = child_pid;
+            child_process.parent = Some(parent_pid);
+            child_process.state = ProcessState::Ready;
+            child_process.cpu_time = 0;
+            child_process.has_used_fpu = false;
+            child_process.fpu_state = crate::process::FpuState([0u8; 512]);
+            child_process.page_dir_phys = child_cr3;
+            // Duplicate VFS handles for the child.
+            child_process.fd_table =
+                crate::fs::vfs::dup_fds_for_fork(child_pid, &child_process.fd_table);
+
+            // Build child kernel context:
+            //   pc  = aarch64_fork_child_trampoline
+            //   sp  = base of the copied exception frame on child's kernel stack
+            //   x19 = ELR_EL1 + 4   (user PC past the SVC instruction)
+            //   x20 = SPSR_EL1      (user processor state)
+            //   x21 = SP_EL0        (user stack pointer)
+            let elr = crate::arch::aarch64_vectors::last_elr_el1().wrapping_add(4);
+            let spsr = crate::arch::aarch64_vectors::last_spsr_el1();
+            let sp_el0 = crate::arch::aarch64_vectors::last_sp_el0();
+
+            let mut child_ctx = scheduler_platform::context_new();
+            child_ctx.pc = crate::syscall::aarch64_fork_child_resume_rip() as u64;
+            child_ctx.sp = child_sp as u64;
+            child_ctx.x19 = elr;
+            child_ctx.x20 = spsr;
+            child_ctx.x21 = sp_el0;
+            child_ctx.ttbr0_el1 = child_cr3.as_u64();
+            child_ctx.daif = 0;
+
+            let quantum = base_quantum_for_priority(parent_priority);
+            let now = scheduler_platform::ticks_now();
+            let child_info = ProcessInfo {
+                process: child_process,
+                context: child_ctx,
+                shared_runtime_pid: None,
+                kernel_stack_top: child_stack_top,
+                stack: Some(child_kernel_stack),
+                address_space: Some(Box::new(child_space)),
+                quantum_remaining: quantum,
+                total_cpu_time: 0,
+                total_wait_time: 0,
+                last_scheduled: now,
+                switches: 0,
+                yield_count: 0,
+                pagefault_count: 0,
+                ewma_yield: 0,
+                ewma_fault: 0,
+                has_used_fpu: false,
+                fpu_dirty: false,
+                fpu_state: crate::arch::fpu::ExtFpuState::new(),
+            };
+
+            crate::process_platform::on_process_spawn(child_pid, Some(parent_pid), "forked");
+            self.processes[child_idx] = Some(child_info);
+            self.enqueue_ready(child_pid, parent_priority);
+            self.record_temporal_state_snapshot_locked(
+                scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE,
+            );
+
+            scheduler_rt::logf(format_args!(
+                "[SCHED] fork_current_cow(aa64): parent={} -> child={} ttbr0={:#018x}",
+                parent_pid.0,
+                child_pid.0,
+                child_cr3.as_u64(),
+            ));
+
+            Ok(child_pid)
         }
     }
 
@@ -2566,13 +2687,17 @@ pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static s
 }
 
 /// Kernel stack bounds for diagnostics (start, end) for each kernel thread stack.
-pub fn kernel_stack_bounds() -> [(usize, usize); 2] {
+pub fn kernel_stack_bounds() -> [(usize, usize); 4] {
     unsafe {
         let s0 = KERNEL_STACK_0.data.as_ptr() as usize;
         let e0 = s0 + KERNEL_STACK_0.data.len();
         let s1 = KERNEL_STACK_1.data.as_ptr() as usize;
         let e1 = s1 + KERNEL_STACK_1.data.len();
-        [(s0, e0), (s1, e1)]
+        let s2 = KERNEL_STACK_2.data.as_ptr() as usize;
+        let e2 = s2 + KERNEL_STACK_2.data.len();
+        let s3 = KERNEL_STACK_3.data.as_ptr() as usize;
+        let e3 = s3 + KERNEL_STACK_3.data.len();
+        [(s0, e0), (s1, e1), (s2, e2), (s3, e3)]
     }
 }
 

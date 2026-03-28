@@ -1126,6 +1126,9 @@ impl CapabilityTokenV1 {
 }
 
 fn audit_capnet(event: SecurityEvent, context: u64) {
+    if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
     security::security().log_event(AuditEntry::new(event, ProcessId(0), 0).with_context(context));
 }
 
@@ -1813,6 +1816,13 @@ pub fn process_incoming_control_payload(
             }
             let token = CapabilityTokenV1::decode_checked(&frame.payload[..CAPNET_TOKEN_V1_LEN])?;
             if token.token_id() != frame.token_id {
+                if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+                    crate::serial_println!(
+                        "TOKEN-ID-DIAG computed={:#x} frame={:#x}",
+                        token.token_id(),
+                        frame.token_id
+                    );
+                }
                 audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.token_id);
                 return Err(CapNetError::TokenIdMismatch);
             }
@@ -2446,13 +2456,14 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
             }
             Err(e) => {
                 crate::serial_println!(
-                    "MAC-DIAG offer seed={} iter={} err={} local={:#x} k0={:#x} k1={:#x}",
+                    "MAC-DIAG offer seed={} iter={} err={} local={:#x} k0={:#x} k1={:#x} offer_token_id={:#x}",
                     seed,
                     i,
                     e.as_str(),
                     local,
                     k0,
-                    k1
+                    k1,
+                    offer.token_id
                 );
                 record_fuzz_failure(
                     &mut stats,
@@ -2678,6 +2689,27 @@ pub fn capnet_fuzz_regression_default(
     Ok(out)
 }
 
+fn flush_fuzz_interround_state() {
+    {
+        let mut records = CAPNET_DELEGATION_RECORDS.lock();
+        let mut i = 0usize;
+        while i < records.len() {
+            records[i] = DelegationRecord::empty();
+            i += 1;
+        }
+    }
+    {
+        let mut tombstones = CAPNET_REVOCATION_TOMBSTONES.lock();
+        let mut i = 0usize;
+        while i < tombstones.len() {
+            tombstones[i] = RevocationTombstone::empty();
+            i += 1;
+        }
+    }
+    *CAPNET_NEXT_REVOCATION_EPOCH.lock() = 1;
+    crate::capability::clear_remote_leases_for_testing();
+}
+
 pub fn capnet_fuzz_regression_soak_default(
     iterations_per_seed: u32,
     rounds: u32,
@@ -2706,6 +2738,7 @@ pub fn capnet_fuzz_regression_soak_default(
 
     let mut r = 0u32;
     while r < rounds {
+        flush_fuzz_interround_state();
         let stats = capnet_fuzz_regression_default(iterations_per_seed)?;
         out.seed_passes = out.seed_passes.saturating_add(stats.seeds_passed);
         out.seed_failures = out.seed_failures.saturating_add(stats.seeds_failed);

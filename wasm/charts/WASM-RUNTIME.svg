@@ -1,0 +1,107 @@
+<svg width="1080" height="700" viewBox="0 0 1080 700" xmlns="http://www.w3.org/2000/svg" style="background:#ffffff;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .title {
+        font-size: 22px;
+        font-weight: 700;
+        fill: #1f2937;
+      }
+      .box-title {
+        font-size: 17px;
+        font-weight: 700;
+        fill: #1f2937;
+      }
+      .box-sub {
+        font-size: 13px;
+        font-weight: 500;
+        fill: #4b5563;
+      }
+      .edge {
+        fill: none;
+        stroke: #6b7280;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        marker-end: url(#arrow);
+      }
+      .group-label {
+        font-size: 12px;
+        font-weight: 700;
+        fill: #6b7280;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .panel {
+        fill: #fafafa;
+        stroke: #d7dce3;
+        stroke-width: 1;
+      }
+    </style>
+  </defs>
+
+  <text x="540" y="34" text-anchor="middle" class="title">Oreulia WASM Runtime Demo Flow</text>
+
+  <!-- Background panel for examples -->
+  <rect x="40" y="245" width="1000" height="400" rx="16" class="panel"/>
+  <text x="62" y="268" class="group-label">Example programs dispatched through the runtime</text>
+
+  <!-- Top node: shell -->
+  <rect x="390" y="70" width="300" height="72" rx="14" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.2"/>
+  <text x="540" y="99" text-anchor="middle" class="box-title">Oreulia Shell</text>
+  <text x="540" y="121" text-anchor="middle" class="box-sub">wasm &lt;file&gt;.wasm</text>
+
+  <!-- Middle node: runtime -->
+  <rect x="325" y="175" width="430" height="84" rx="16" fill="#EEF4FF" stroke="#3B82F6" stroke-width="1.2"/>
+  <text x="540" y="208" text-anchor="middle" class="box-title">WASM Runtime</text>
+  <text x="540" y="231" text-anchor="middle" class="box-sub">kernel/src/wasm.rs</text>
+  <text x="540" y="251" text-anchor="middle" class="box-sub">132 host-function dispatch arms</text>
+
+  <!-- Edges: shell to runtime -->
+  <path d="M540 142 L540 175" class="edge"/>
+
+  <!-- Bottom row -->
+  <rect x="70" y="320" width="170" height="112" rx="14" fill="#F8F0FF" stroke="#8B5CF6" stroke-width="1.1"/>
+  <text x="155" y="348" text-anchor="middle" class="box-title">hello.wasm</text>
+  <text x="155" y="373" text-anchor="middle" class="box-sub">fd_write → print greeting</text>
+  <text x="155" y="397" text-anchor="middle" class="box-sub">Host ID 71</text>
+
+  <rect x="260" y="320" width="170" height="112" rx="14" fill="#FAECE7" stroke="#993C1D" stroke-width="1.1"/>
+  <text x="345" y="348" text-anchor="middle" class="box-title">echo.wasm</text>
+  <text x="345" y="373" text-anchor="middle" class="box-sub">fd_read + fd_write loop</text>
+  <text x="345" y="397" text-anchor="middle" class="box-sub">Host IDs 65, 71</text>
+
+  <rect x="450" y="320" width="180" height="112" rx="14" fill="#FAEEDA" stroke="#854F0B" stroke-width="1.1"/>
+  <text x="540" y="348" text-anchor="middle" class="box-title">poll_demo.wasm</text>
+  <text x="540" y="373" text-anchor="middle" class="box-sub">poll_oneoff</text>
+  <text x="540" y="393" text-anchor="middle" class="box-sub">CLOCK_MONOTONIC 100ms</text>
+  <text x="540" y="415" text-anchor="middle" class="box-sub">Host ID 79</text>
+
+  <rect x="650" y="320" width="180" height="112" rx="14" fill="#EEFBF5" stroke="#10B981" stroke-width="1.1"/>
+  <text x="740" y="348" text-anchor="middle" class="box-title">spawn_children.wasm</text>
+  <text x="740" y="373" text-anchor="middle" class="box-sub">proc_spawn × 2</text>
+  <text x="740" y="393" text-anchor="middle" class="box-sub">proc_yield + proc_sleep</text>
+  <text x="740" y="415" text-anchor="middle" class="box-sub">Host IDs 100, 101, 102</text>
+
+  <rect x="850" y="320" width="170" height="112" rx="14" fill="#F3F4F6" stroke="#6B7280" stroke-width="1.1"/>
+  <text x="935" y="348" text-anchor="middle" class="box-title">thread_demo.wasm</text>
+  <text x="935" y="373" text-anchor="middle" class="box-sub">thread_spawn + thread_join</text>
+  <text x="935" y="397" text-anchor="middle" class="box-sub">thread_yield</text>
+  <text x="935" y="419" text-anchor="middle" class="box-sub">Host IDs 23–27</text>
+
+  <!-- Fan-out connector trunk -->
+  <path d="M540 259 L540 288" class="edge"/>
+  <path d="M155 288 L935 288" class="edge"/>
+
+  <!-- Downward branches -->
+  <path d="M155 288 L155 320" class="edge"/>
+  <path d="M345 288 L345 320" class="edge"/>
+  <path d="M540 288 L540 320" class="edge"/>
+  <path d="M740 288 L740 320" class="edge"/>
+  <path d="M935 288 L935 320" class="edge"/>
+
+  <!-- Optional footer note -->
+  <text x="540" y="675" text-anchor="middle" class="box-sub">Runtime dispatches shell-invoked WASM programs into host-call-backed demos.</text>
+</svg>

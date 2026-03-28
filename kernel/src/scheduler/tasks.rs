@@ -24,14 +24,13 @@ use crate::vga;
 extern "C" fn shell_task() -> ! {
     vga::print_str("[TASK] Shell task entered\n");
 
-    // CRITICAL: Enable interrupts NOW that task is safely running
-    // This must be the FIRST operation to prevent race condition where
-    // timer interrupt fires during trampoline execution before stack is ready
+    vga::print_str("[TASK] Enabling COM1 RX...\n");
+    crate::serial::enable_rx_interrupts();
+    crate::idt_asm::unmask_irq(crate::idt_asm::Irq::COM1);
 
-    // Enhanced interrupt state management with verification
+    vga::print_str("[TASK] Enabling interrupts for scheduler...\n");
     crate::asm_bindings::enable_interrupts();
 
-    // Verify interrupts are actually enabled by reading EFLAGS IF bit
     #[cfg(target_arch = "x86")]
     {
         let eflags: u32;
@@ -45,21 +44,6 @@ extern "C" fn shell_task() -> ! {
         }
     }
 
-    // Write marker to confirm we reached the task
-    // unsafe {
-    //     let vga = 0xB8000 as *mut u16;
-    //     *vga = 0x0A40; // '@' green - task started!
-    // }
-
-    // Unmask IRQs for keyboard and timer
-    vga::print_str("[TASK] Unmasking IRQs...\n");
-    crate::idt_asm::set_irq_masks(0xF8, 0x37);
-
-    // Enable interrupts for preemptive scheduling
-    vga::print_str("[TASK] Enabling interrupts for scheduler...\n");
-    crate::asm_bindings::enable_interrupts();
-
-    // Verify interrupt state after enabling
     let int_state = unsafe { crate::process_asm::get_interrupt_state() };
     if int_state != 0 {
         vga::print_str("[TASK] Scheduler interrupts verified active\n");
@@ -124,78 +108,65 @@ pub fn start() -> ! {
     crate::idt_asm::set_irq_masks(0xF8, 0x37);
 
     vga::print_str("[TASK] Getting init PID...\n");
-
-    // Init process is created in process::init(); reuse it for shell task when
-    // the shared process backend is in sync. On legacy x86, do not hard-stop
-    // boot if that backend is out of sync; the shell/network lane can still
-    // run while we preserve the mismatch as a warning.
-    let init_pid = if let Some(pid) = process::current_pid() {
-        vga::print_str("[TASK] Found existing current PID=");
-        crate::commands::print_u32(pid.0);
+    let init_pid = process::Pid(1);
+    if let Err(e) = process::validate_kernel_bootstrap() {
+        vga::print_str("[TASK] FATAL: kernel bootstrap invalid: ");
+        vga::print_str(e);
         vga::print_str("\n");
-        Some(pid)
-    } else if process::process_manager().get(process::Pid(1)).is_some() {
-        vga::print_str("[TASK] Syncing existing init PID=1 into runtime scheduler\n");
-        if let Err(e) = process::ensure_runtime_pid(process::Pid(1), "init") {
-            vga::print_str("[TASK] FATAL: failed to sync init PID=1: ");
-            vga::print_str(e);
-            vga::print_str("\n");
+        crate::serial_println!("[TASK] FATAL: kernel bootstrap invalid: {}", e);
+        loop {
+            unsafe { core::arch::asm!("hlt") };
+        }
+    }
+    {
+        let pm = process::process_manager();
+        let Some(init_proc) = pm.get(init_pid) else {
+            vga::print_str("[TASK] FATAL: shared process backend missing PID=1\n");
+            crate::serial_println!("[TASK] FATAL: shared process backend missing PID=1");
             loop {
                 unsafe { core::arch::asm!("hlt") };
             }
-        }
-        Some(process::Pid(1))
-    } else {
-        #[cfg(target_arch = "x86")]
-        {
-            vga::print_str(
-                "[TASK] WARNING: shared process backend missing PID=1; continuing legacy boot without runtime sync\n",
-            );
-            crate::serial_println!(
-                "[TASK] WARNING: shared process backend missing PID=1; continuing legacy boot without runtime sync"
-            );
-            None
-        }
-        #[cfg(not(target_arch = "x86"))]
-        {
-            vga::print_str("[TASK] PID=1 missing; reconstructing init runtime state\n");
-            if let Err(e) = process::ensure_runtime_pid(process::Pid(1), "init") {
-                vga::print_str("[TASK] FATAL: failed to reconstruct init PID=1: ");
+        };
+
+        if process::current_pid() != Some(init_pid) {
+            if let Err(e) = process::set_current_runtime_pid(init_pid) {
+                vga::print_str("[TASK] FATAL: failed to sync init PID=1: ");
                 vga::print_str(e);
                 vga::print_str("\n");
+                crate::serial_println!("[TASK] FATAL: failed to sync init PID=1: {}", e);
                 loop {
                     unsafe { core::arch::asm!("hlt") };
                 }
             }
-            Some(process::Pid(1))
         }
+
+        vga::print_str("[TASK] Init process validated: name='");
+        vga::print_str(init_proc.name_str());
+        vga::print_str("'\n");
+    }
+
+    vga::print_str("[TASK] Adding network task to scheduler...\n");
+    let network_pid = {
+        let mut sched = quantum_scheduler::scheduler().lock();
+        sched.add_kernel_thread(network_task, ProcessPriority::Normal)
     };
-
-    // Validate that init process exists before starting scheduler
-    if let Some(init_pid) = init_pid {
-        vga::print_str("[TASK] Validating init process (PID=");
-        crate::commands::print_u32(init_pid.0);
-        vga::print_str(")...\n");
-
-        let pm = process::process_manager();
-        if let Some(init_proc) = pm.get(init_pid) {
-            vga::print_str("[TASK] Init process validated: name='");
-            vga::print_str(init_proc.name_str());
-            vga::print_str("', state=");
-            match init_proc.state {
-                process::ProcessState::Ready => vga::print_str("Ready"),
-                process::ProcessState::Running => vga::print_str("Running"),
-                process::ProcessState::Blocked => vga::print_str("Blocked"),
-                process::ProcessState::Terminated => vga::print_str("Terminated"),
-                process::ProcessState::WaitingOnChannel => vga::print_str("WaitingOnChannel"),
-            }
+    match network_pid {
+        Ok(pid) => {
+            vga::print_str("[TASK] Network task registered (PID=");
+            crate::commands::print_u32(pid.0);
+            vga::print_str(")\n");
+        }
+        Err(e) => {
+            vga::print_str("[TASK] FATAL: failed to add network task: ");
+            vga::print_str(e);
             vga::print_str("\n");
-        } else {
-            vga::print_str("[TASK] WARNING: Init process not found in process table!\n");
+            crate::serial_println!("[TASK] FATAL: failed to add network task: {}", e);
+            loop {
+                unsafe { core::arch::asm!("hlt") };
+            }
         }
     }
 
-    vga::print_str("[TASK] Getting init process...\n");
     vga::print_str("[TASK] Adding shell task to scheduler...\n");
     let shell_pid = {
         let mut sched = quantum_scheduler::scheduler().lock();
@@ -217,34 +188,6 @@ pub fn start() -> ! {
     crate::commands::print_u32(shell_pid.0);
     vga::print_str(")\n");
     vga::print_str("[TASK] Shell task registered\n");
-
-    #[cfg(target_arch = "x86")]
-    {
-        vga::print_str("[TASK] Using inline network reactor on x86 legacy path\n");
-        crate::serial_println!("[TASK] Using inline network reactor on x86 legacy path");
-    }
-
-    #[cfg(not(target_arch = "x86"))]
-    {
-        vga::print_str("[TASK] Adding network task to scheduler...\n");
-        let network_pid = {
-            let mut sched = quantum_scheduler::scheduler().lock();
-            sched.add_kernel_thread(network_task, ProcessPriority::Normal)
-        };
-        match network_pid {
-            Ok(pid) => {
-                vga::print_str("[TASK] Network task registered (PID=");
-                crate::commands::print_u32(pid.0);
-                vga::print_str(")\n");
-            }
-            Err(e) => {
-                vga::print_str("[TASK] WARNING: failed to add network task: ");
-                vga::print_str(e);
-                vga::print_str("\n");
-                crate::serial_println!("[TASK] WARNING: failed to add network task: {}", e);
-            }
-        }
-    }
 
     // Keep worker disabled for now - test single task first
     // vga::print_str("[TASK] Adding worker task to scheduler...\n");

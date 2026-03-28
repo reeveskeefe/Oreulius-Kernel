@@ -487,6 +487,38 @@ pub fn set_irq_masks(master: u8, slave: u8) {
     set_pic_masks(master, slave);
 }
 
+pub fn current_irq_masks() -> (u8, u8) {
+    unsafe { (inb(PIC1_DATA), inb(PIC2_DATA)) }
+}
+
+pub fn mask_irq(irq: Irq) {
+    let (mut master, mut slave) = current_irq_masks();
+    let bit = 1u8 << ((irq as u8) & 7);
+    if (irq as u8) < 8 {
+        master |= bit;
+    } else {
+        slave |= bit;
+    }
+    unsafe {
+        outb(PIC1_DATA, master);
+        outb(PIC2_DATA, slave);
+    }
+}
+
+pub fn unmask_irq(irq: Irq) {
+    let (mut master, mut slave) = current_irq_masks();
+    let bit = 1u8 << ((irq as u8) & 7);
+    if (irq as u8) < 8 {
+        master &= !bit;
+    } else {
+        slave &= !bit;
+    }
+    unsafe {
+        outb(PIC1_DATA, master);
+        outb(PIC2_DATA, slave);
+    }
+}
+
 /// Initialize IDT, PIC remap, and IRQ masks
 pub fn init() {
     init_trap_table();
@@ -586,6 +618,17 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
         crate::serial::_print(format_args!(
             "[SW-DBG] stage={} old=0x{:08x} new=0x{:08x} save_eip=0x{:08x} load_eip=0x{:08x} load_esp=0x{:08x}\n",
             sw_stage, sw_old_ptr, sw_new_ptr, sw_saved_old_eip, sw_new_eip, sw_new_esp
+        ));
+        crate::serial::_print(format_args!(
+            "[PF-REGS] eax=0x{:08x} ebx=0x{:08x} ecx=0x{:08x} edx=0x{:08x} esi=0x{:08x} edi=0x{:08x} ebp=0x{:08x} esp=0x{:08x}\n",
+            frame.eax,
+            frame.ebx,
+            frame.ecx,
+            frame.edx,
+            frame.esi,
+            frame.edi,
+            frame.ebp,
+            frame.esp
         ));
         crate::paging::rust_page_fault_handler_ex(
             frame.err_code,
@@ -701,6 +744,9 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
             Irq::Keyboard => unsafe {
                 crate::keyboard::handle_irq();
             },
+            Irq::COM1 => {
+                crate::serial::handle_com1_irq();
+            }
             Irq::Mouse => unsafe {
                 crate::keyboard::handle_aux_irq();
             },

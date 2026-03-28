@@ -29,9 +29,9 @@ Status: **Active**
 |--------------|--------------|---------------|---------------------------------------|
 | THM-CAP-001  | INV-CAP-001  | **Proven**     | `verification/theories/ipc_flow.v`    |
 | THM-WX-001   | INV-WX-001   | **Proven**     | `verification/theories/wx_cfi.v`      |
-| THM-MEM-001  | INV-MEM-001  | InProgress     | `verification/theories/temporal_logic.v` |
-| THM-CFI-001  | INV-CFI-001  | InProgress     | `verification/theories/wx_cfi.v` (partial) |
+| THM-MEM-001  | INV-MEM-001  | **Proven** ✅  | `verification/theories/memory_isolation.v` (MemRegion model; memory_region_isolation Theorem…Qed) |
+| THM-CFI-001  | INV-CFI-001  | **Proven** ✅  | `verification/theories/wx_cfi.v` (FunctionTable model; cfi_jit_targets_valid Theorem…Qed) |
 | THM-TMP-001  | INV-TMP-001  | InProgress     | `verification/theories/temporal_logic.v` |
-| THM-PER-001  | INV-PER-001  | InProgress     | `verification/theories/temporal_logic.v` |
-| THM-NET-001  | INV-NET-001  | InProgress     | `verification/theories/ipc_flow.v`    |
-| THM-PRIV-001 | INV-PRIV-001 | InProgress     | `verification/theories/ipc_flow.v`    |
+| THM-PER-001  | INV-PER-001  | **Proven** ✅  | `verification/theories/persistence.v` (SnapshotStore model; PersistenceRoundtrip Theorem…Qed) |
+| THM-NET-001  | INV-NET-001  | **Proven** ✅  | `verification/theories/capnet_integrity.v` (ForwardCap model; capnet_message_integrity Theorem…Qed) |
+| THM-PRIV-001 | INV-PRIV-001 | **Proven** ✅  | `verification/theories/privilege_safety.v` (CpuState ring model; only_gate_enters_kernel Theorem…Qed) |

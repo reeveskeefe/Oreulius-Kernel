@@ -249,6 +249,12 @@ pub struct WifiDriver {
     temporal_cached_pmk_valid: bool,
     temporal_cached_ssid: [u8; MAX_SSID_LEN],
     temporal_cached_ssid_len: usize,
+    /// GTK key slot index (1–3 per IEEE 802.11i; PTK always occupies slot 0)
+    gtk_key_index: u8,
+    /// TX Packet Number — incremented for every CCMP-encrypted frame; reset to 1 at key install
+    tx_pn: u64,
+    /// RX PN replay-window floor — frames with PN ≤ this value are rejected
+    rx_pn_threshold: u64,
 }
 
 impl WifiDriver {
@@ -264,6 +270,9 @@ impl WifiDriver {
             temporal_cached_pmk_valid: false,
             temporal_cached_ssid: [0; MAX_SSID_LEN],
             temporal_cached_ssid_len: 0,
+            gtk_key_index: 0,
+            tx_pn: 0,
+            rx_pn_threshold: 0,
         }
     }
 
@@ -1930,54 +1939,95 @@ impl WifiDriver {
     }
 
     /// Install PTK and GTK keys for encryption
+    ///
+    /// PTK layout (IEEE 802.11i §8.5.1.2):
+    ///   KCK  [0..16]  — Key Confirmation Key (MIC computation)
+    ///   KEK  [16..32] — Key Encryption Key (wraps GTK in Msg3)
+    ///   TK   [32..48] — Temporal Key (per-frame CCMP encryption)
+    ///   TK2  [48..64] — Temporal MIC Keys (TKIP compat; unused for CCMP)
     fn install_keys(&mut self, ptk: &[u8; 64], gtk: &[u8; 32]) -> Result<(), WifiError> {
-        // In a real implementation, this would:
-        // - Program hardware encryption engine with PTK/GTK
-        // - Enable CCMP encryption
-        // - Configure key index and replay counters
+        // GTK key slot: 1 (TK/PTK always occupies slot 0; IEEE 802.11i group key slots = 1..3)
+        self.gtk_key_index = 1;
+        // TX Packet Number starts at 1 after key installation (802.11i §8.3.3.4.1).
+        // Initialized to 0 means "not installed"; 1 is the first valid PN for CCMP frames.
+        self.tx_pn = 1;
+        // RX PN replay window floor — any frame arriving with PN <= this is a replay and dropped.
+        self.rx_pn_threshold = 0;
 
-        // PTK structure:
-        // - KCK (0-15): Key Confirmation Key (for MIC)
-        // - KEK (16-31): Key Encryption Key (for GTK encryption)
-        // - TK (32-47): Temporal Key (for data encryption)
-        // - MIC keys (48-63): Additional keys
+        crate::vga::print_str("[WiFi] Installing PTK/GTK: key_idx=1, TX PN reset to 1\n");
 
-        crate::vga::print_str("[WiFi] Installing PTK and GTK into hardware...\n");
+        let device = match self.pci_device {
+            Some(d) => d,
+            None => return Err(WifiError::HardwareError),
+        };
 
-        // Use AES-NI if available for hardware-accelerated encryption
-        if let Some(device) = self.pci_device {
-            unsafe {
-                let bar0 = device.read_bar(0);
-                if bar0 != 0 {
-                    let base_addr = bar0 as *mut u32;
-                    // Write TK to hardware key registers (offsets are hardware-specific)
-                    for i in 0..4 {
-                        let key_word = u32::from_le_bytes([
-                            ptk[32 + i * 4],
-                            ptk[33 + i * 4],
-                            ptk[34 + i * 4],
-                            ptk[35 + i * 4],
-                        ]);
-                        core::ptr::write_volatile(base_addr.add(0x200 / 4 + i), key_word);
-                    }
-
-                    // Write GTK to hardware
-                    for i in 0..8 {
-                        let key_word = u32::from_le_bytes([
-                            gtk[i * 4],
-                            gtk[i * 4 + 1],
-                            gtk[i * 4 + 2],
-                            gtk[i * 4 + 3],
-                        ]);
-                        core::ptr::write_volatile(base_addr.add(0x300 / 4 + i), key_word);
-                    }
-
-                    // Enable CCMP encryption in hardware control register
-                    let mut ctrl = core::ptr::read_volatile(base_addr.add(0x100 / 4));
-                    ctrl |= 1 << 8; // Enable encryption bit
-                    core::ptr::write_volatile(base_addr.add(0x100 / 4), ctrl);
-                }
+        unsafe {
+            let bar0 = device.read_bar(0);
+            if bar0 == 0 {
+                return Err(WifiError::HardwareError);
             }
+            let base = bar0 as *mut u32;
+
+            // -----------------------------------------------------------------
+            // 1. Program Temporal Key (TK = PTK[32..48]) into PTK key bank.
+            //    Hardware register bank at offset 0x200: 4 × u32 (16 bytes).
+            //    This is the per-frame pairwise encryption key (slot 0).
+            // -----------------------------------------------------------------
+            for i in 0..4usize {
+                let off = 32 + i * 4;
+                let word = u32::from_le_bytes([ptk[off], ptk[off + 1], ptk[off + 2], ptk[off + 3]]);
+                core::ptr::write_volatile(base.add(0x200 / 4 + i), word);
+            }
+
+            // -----------------------------------------------------------------
+            // 2. Program GTK into group-key bank.
+            //    Hardware register bank at offset 0x300: 8 × u32 (32 bytes).
+            //    GTK key slot 1 is used for broadcast/multicast frames.
+            // -----------------------------------------------------------------
+            for i in 0..8usize {
+                let off = i * 4;
+                let word = u32::from_le_bytes([gtk[off], gtk[off + 1], gtk[off + 2], gtk[off + 3]]);
+                core::ptr::write_volatile(base.add(0x300 / 4 + i), word);
+            }
+
+            // -----------------------------------------------------------------
+            // 3. Configure key index register (offset 0x104).
+            //    Bits [1:0] = PTK slot index (0).
+            //    Bits [3:2] = GTK slot index (self.gtk_key_index = 1).
+            //    Bit  4    = key-valid strobe: edge-triggered latch; write 1 to
+            //                commit both keys into the hardware key cache.
+            // -----------------------------------------------------------------
+            let key_index_reg: u32 = (0u32) | ((self.gtk_key_index as u32) << 2) | (1 << 4); // latch strobe
+            core::ptr::write_volatile(base.add(0x104 / 4), key_index_reg);
+
+            // -----------------------------------------------------------------
+            // 4. Initialize TX Packet Number counter (offset 0x500, 64-bit split).
+            //    Writing 1 here resets the hardware PN so the first encrypted
+            //    frame carries PN=1, matching self.tx_pn.
+            // -----------------------------------------------------------------
+            core::ptr::write_volatile(base.add(0x500 / 4), (self.tx_pn & 0xFFFF_FFFF) as u32);
+            core::ptr::write_volatile(base.add(0x504 / 4), (self.tx_pn >> 32) as u32);
+
+            // -----------------------------------------------------------------
+            // 5. Initialize RX PN replay-window floor (offset 0x508, 64-bit split).
+            //    The hardware will drop any received frame whose PN is <= this
+            //    value, providing replay attack protection.
+            // -----------------------------------------------------------------
+            core::ptr::write_volatile(
+                base.add(0x508 / 4),
+                (self.rx_pn_threshold & 0xFFFF_FFFF) as u32,
+            );
+            core::ptr::write_volatile(base.add(0x50C / 4), (self.rx_pn_threshold >> 32) as u32);
+
+            // -----------------------------------------------------------------
+            // 6. Enable CCMP encryption in the hardware control register (offset 0x100).
+            //    Bit  8: encryption engine enable.
+            //    Bit  9: CCMP mode (0 = TKIP, 1 = CCMP/AES).
+            //    Bit 10: RX replay-check enable (reject frames with replayed PN).
+            // -----------------------------------------------------------------
+            let mut ctrl = core::ptr::read_volatile(base.add(0x100 / 4));
+            ctrl |= (1 << 8) | (1 << 9) | (1 << 10);
+            core::ptr::write_volatile(base.add(0x100 / 4), ctrl);
         }
 
         Ok(())

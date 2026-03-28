@@ -154,25 +154,59 @@ asm_load_context:
     mov dword [asm_dbg_stage], 5
     jmp eax
 
-; Thread start trampoline
-; Called when a new thread starts. The entry function pointer is on top of stack.
-; FIX #5: Simplified - no alignment to avoid corrupting stack pointer
+; Thread start trampoline — i686 kernel thread launch point
+;
+; Jumped to (not called) by asm_load_context / asm_switch_context when a new
+; thread is first dispatched by the quantum scheduler.
+;
+; Stack state on arrival, constructed by add_kernel_thread +
+; scheduler_platform::init_kernel_thread_context:
+;
+;   esp  →  [ entry_fn_ptr ]          ← consumed by `pop eax`
+;            (stack grows DOWN into the allocation below)
+;
+; add_kernel_thread writes entry_fn_ptr at (stack_top - 4).
+; init_kernel_thread_context stores ctx.esp = stack_top - 8.
+; asm_load_context loads esp from ctx, then `add esp, 4` skips the synthetic
+; dummy "saved-EIP" slot — so [esp] == entry_fn_ptr when we arrive here.
+;
+; SysV i686 ABI §3.2.2 stack-alignment invariant:
+;   esp % 16 == 0  immediately before any `call` instruction.
+; (`call` pushes a 4-byte return address, leaving the callee's first
+;  instruction with esp ≡ 12 (mod 16), as every function prologue expects.)
+;
+; The scheduler guarantees stack_top is 16-byte aligned (`& !15usize`), so
+; after `pop eax`, esp == stack_top which is already 0 mod 16.  The `and esp`
+; below enforces this invariant defensively, independently of any future
+; change to upstream stack-alignment guarantees, and always rounds DOWN
+; (toward lower, already-mapped addresses — never above the allocation).
 thread_start_trampoline:
 _thread_start_trampoline:
-    mov dword [asm_dbg_stage], 6
-    ; DON'T enable interrupts here - let the task enable them when ready
-    
-    pop eax             ; Pop entry function pointer from stack
-    mov dword [asm_dbg_stage], 7
-    mov [asm_dbg_entry_popped], eax
-    
-    ; Don't align - just use current ESP to avoid moving to unmapped region
-    call eax            ; Call the thread entry function
-    
-    ; If thread returns, halt
+    mov     dword [asm_dbg_stage], 6
+
+    ; Consume the entry function pointer placed here by add_kernel_thread.
+    pop     eax
+    mov     [asm_dbg_entry_popped], eax     ; save before advancing stage
+    mov     dword [asm_dbg_stage], 7
+
+    ; Enforce 16-byte alignment before `call` (SysV ABI pre-call invariant).
+    ; Rounds DOWN — stays within the allocated stack region.
+    and     esp, 0xFFFFFFF0
+
+    ; Call the thread entry point.  All kernel thread functions are declared
+    ; `extern "C" fn() -> !` and must not return.
+    call    eax
+
+    ; -----------------------------------------------------------------------
+    ; Defence-in-depth: thread entry function returned unexpectedly.
+    ; Write a visible sentinel to asm_dbg_stage for post-mortem memory dumps,
+    ; then halt permanently with interrupts disabled.
+    ; -----------------------------------------------------------------------
+    mov     dword [asm_dbg_stage], 0xFF
 .halt:
+    cli
     hlt
-    jmp .halt
+    jmp     .halt
 
 ; User-mode entry trampoline for 32-bit processes.
 ; Expected stack layout:

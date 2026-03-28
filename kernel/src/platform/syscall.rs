@@ -1661,8 +1661,14 @@ fn saved_registers_to_args(regs: &SavedRegisters) -> SyscallArgs {
 }
 
 #[cfg(target_arch = "aarch64")]
+static CURRENT_AARCH64_SYSCALL_FRAME: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(target_arch = "aarch64")]
 pub fn aarch64_syscall_from_exception(regs: *mut SavedRegisters) {
     let regs = unsafe { &mut *regs };
+    // Store the current exception frame pointer so fork_current_cow can clone it.
+    CURRENT_AARCH64_SYSCALL_FRAME.store(regs as *const _ as usize, Ordering::Release);
+
     let args = saved_registers_to_args(regs);
     let caller_pid = get_current_pid();
 
@@ -1683,6 +1689,45 @@ pub fn aarch64_syscall_from_exception(regs: *mut SavedRegisters) {
 
     regs.x0 = result.value as i64 as u64;
     regs.x1 = result.errno as u64;
+
+    CURRENT_AARCH64_SYSCALL_FRAME.store(0, Ordering::Release);
+}
+
+/// Returns the address of `aarch64_fork_child_trampoline` — the AArch64 child
+/// process entry point used by `fork_current_cow`.
+#[cfg(target_arch = "aarch64")]
+pub fn aarch64_fork_child_resume_rip() -> usize {
+    extern "C" {
+        fn aarch64_fork_child_trampoline();
+    }
+    aarch64_fork_child_trampoline as usize
+}
+
+/// Copy the current AArch64 SVC exception frame (x0-x30, 256 bytes) onto
+/// `child_stack_top`, set x0=0 (fork child return value), and return the new
+/// SP value that `fork_current_cow` should place in the child's `ProcessContext.sp`.
+#[cfg(target_arch = "aarch64")]
+pub fn clone_current_aarch64_syscall_return_frame(
+    child_stack_top: usize,
+) -> Result<usize, &'static str> {
+    let frame_src = CURRENT_AARCH64_SYSCALL_FRAME.load(Ordering::Acquire);
+    if frame_src == 0 {
+        return Err("aarch64 syscall frame unavailable for fork");
+    }
+    const FRAME_SIZE: usize = 256; // VEC_FRAME_SIZE in aarch64_vectors.S
+    let frame_base = child_stack_top
+        .checked_sub(FRAME_SIZE)
+        .ok_or("aarch64 fork: kernel stack too small for exception frame")?
+        & !15usize;
+    // SAFETY: frame_src points to a valid SavedRegisters on the current kernel
+    // stack that is live for the duration of the syscall; frame_base points to
+    // allocated child kernel stack memory.  Both are kernel-only addresses.
+    unsafe {
+        core::ptr::copy_nonoverlapping(frame_src as *const u8, frame_base as *mut u8, FRAME_SIZE);
+        // x0 is the first field (offset 0); set to 0 so fork() returns 0 in child.
+        core::ptr::write(frame_base as *mut u64, 0u64);
+    }
+    Ok(frame_base)
 }
 
 #[cfg(target_arch = "x86_64")]

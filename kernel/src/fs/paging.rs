@@ -143,7 +143,49 @@ pub fn copy_physical_page(src_phys: u32, dst_phys: u32) {
     }
 }
 
-/// Disable paging temporarily
+/// Self-test for copy_page_physical.
+///
+/// Allocates two page-aligned frames from the kernel bump allocator (which is
+/// identity-mapped, so virtual addr == physical addr), writes a recognisable
+/// pattern to the source page, copies it via `copy_page_physical`, and
+/// verifies every dword in the destination page.
+///
+/// Returns `true` on pass, `false` on any mismatch or allocation failure.
+#[cfg(target_arch = "x86")]
+pub fn test_copy_page_physical() -> bool {
+    let src_phys = match crate::memory::allocate_frame() {
+        Ok(a) => a as u32,
+        Err(_) => return false,
+    };
+    let dst_phys = match crate::memory::allocate_frame() {
+        Ok(a) => a as u32,
+        Err(_) => return false,
+    };
+
+    unsafe {
+        // Fill src with a recognisable pattern.
+        // allocate_frame() zeroes the page, so dst is already zero — no
+        // separate zeroing step needed.
+        let src_ptr = src_phys as *mut u32;
+        for i in 0..1024_usize {
+            src_ptr.add(i).write_volatile(0xDEAD_0000_u32 | i as u32);
+        }
+
+        // Perform the physical page copy via temporary virtual mappings.
+        copy_page_physical(src_phys, dst_phys);
+
+        // Verify every dword.
+        let dst_ptr = dst_phys as *const u32;
+        for i in 0..1024_usize {
+            let expected = 0xDEAD_0000_u32 | i as u32;
+            if dst_ptr.add(i).read_volatile() != expected {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 pub fn disable_paging_temp() {
     unsafe {
         disable_paging();
@@ -1109,24 +1151,40 @@ pub extern "C" fn rust_page_fault_handler_ex(
     }
 
     let stacks = crate::quantum_scheduler::kernel_stack_bounds();
-    vga::print_str("KSTACK0: 0x");
-    crate::advanced_commands::print_hex(stacks[0].0);
-    vga::print_str(" - 0x");
-    crate::advanced_commands::print_hex(stacks[0].1);
-    vga::print_str("\n");
-    vga::print_str("KSTACK1: 0x");
-    crate::advanced_commands::print_hex(stacks[1].0);
-    vga::print_str(" - 0x");
-    crate::advanced_commands::print_hex(stacks[1].1);
-    vga::print_str("\n");
-    vga::print_str("ESP in KSTACK0: ");
-    let in0 = esp >= stacks[0].0 && esp < stacks[0].1;
-    vga::print_str(if in0 { "yes" } else { "no" });
-    vga::print_str("\n");
-    vga::print_str("ESP in KSTACK1: ");
-    let in1 = esp >= stacks[1].0 && esp < stacks[1].1;
-    vga::print_str(if in1 { "yes" } else { "no" });
-    vga::print_str("\n");
+    let mut esp_in_known_stack = false;
+    for (idx, (start, end)) in stacks.iter().enumerate() {
+        vga::print_str("KSTACK");
+        crate::commands::print_u32(idx as u32);
+        vga::print_str(": 0x");
+        crate::advanced_commands::print_hex(*start);
+        vga::print_str(" - 0x");
+        crate::advanced_commands::print_hex(*end);
+        vga::print_str("\n");
+        vga::print_str("ESP in KSTACK");
+        crate::commands::print_u32(idx as u32);
+        vga::print_str(": ");
+        let in_stack = esp >= *start && esp < *end;
+        if in_stack {
+            esp_in_known_stack = true;
+        }
+        vga::print_str(if in_stack { "yes" } else { "no" });
+        vga::print_str("\n");
+    }
+
+    if esp != 0 && esp_in_known_stack {
+        vga::print_str("Stack words:\n");
+        for word_idx in 0..7usize {
+            let addr = esp + (word_idx * core::mem::size_of::<u32>());
+            let value = unsafe { core::ptr::read_volatile(addr as *const u32) };
+            vga::print_str("  [ESP+0x");
+            crate::advanced_commands::print_hex(word_idx * core::mem::size_of::<u32>());
+            vga::print_str("] @ 0x");
+            crate::advanced_commands::print_hex(addr);
+            vga::print_str(" = 0x");
+            crate::advanced_commands::print_hex(value as usize);
+            vga::print_str("\n");
+        }
+    }
 
     let mmio_base = crate::e1000::mmio_base() as usize;
     if mmio_base != 0 {

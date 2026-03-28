@@ -30,18 +30,34 @@
 
 ## Overview
 
-Oreulia is an experimental kernel that treats capabilities, temporal/versioned kernel state, and WebAssembly execution as first-order primitives.
+Oreulia is a **WASM-first, capability-native unikernel** designed to run
+small, isolated WASI workloads on edge and cloud hosts.  It provides
+deterministic temporal snapshots, capability-based authority transfer, and
+in-kernel verification to enable secure, auditable migration and replay.
+The design targets **security- and audit-sensitive deployments** and
+**systems research** — trusted unikernels, attested services, and
+deterministic debugging — not a drop-in POSIX/Linux replacement.
 
 Oreulia is source-available under the Oreulia Community License. The public
 license allows research, evaluation, modification, public forks, benchmarking,
 and non-commercial distribution. Commercial deployment and production use
 require a separate written agreement. See `LICENSE` and `COMMERCIAL.md`.
 
-It now has active bring-up/build paths for three architectures:
+### What this is (and what it is not)
 
-- `i686` (legacy/full runtime path)
-- `x86_64` (Multiboot2 + GRUB + QEMU bring-up shell path)
-- `AArch64` (QEMU `virt` raw `Image` + DTB bring-up shell path)
+| This is | This is not |
+|---|---|
+| A WASM-first unikernel for isolated WASI workloads | A POSIX or Linux replacement |
+| Capability-native: no ambient authority | A general-purpose OS for running native code |
+| Built for edge/cloud trusted-execution environments | A hypervisor or virtualisation host |
+| Designed for auditable migration and deterministic replay | A real-time or hard-latency kernel |
+| A research vehicle for attested services and formal verification | A drop-in container runtime |
+
+Active bring-up/build paths span three architectures:
+
+- `i686` — legacy/full runtime path
+- `x86_64` — Multiboot2 + GRUB + QEMU bring-up shell path
+- `AArch64` — QEMU `virt` raw `Image` + DTB bring-up shell path
 
 It is designed for technical audiences who care about:
 

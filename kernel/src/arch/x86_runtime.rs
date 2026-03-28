@@ -15,9 +15,13 @@
  * ---------------------------------------------------------------------------
  */
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 static mut SHELL_HISTORY: [[u8; 256]; 16] = [[0; 256]; 16];
 static mut SHELL_HISTORY_LENS: [usize; 16] = [0; 16];
 static mut SHELL_HISTORY_COUNT: usize = 0;
+static SHELL_CI_MODE: AtomicBool = AtomicBool::new(false);
+static SHELL_CI_DEBUG: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // Job control — minimal POSIX-style ^Z / jobs / fg support.
@@ -143,22 +147,127 @@ pub fn fg_last_job() -> bool {
     false
 }
 
-const COM1_BASE: u16 = 0x3F8;
-const COM_LSR: u16 = COM1_BASE + 5;
-const COM_DATA: u16 = COM1_BASE;
+fn drain_serial_input() {
+    let mut scratch = [0u8; 64];
+    while crate::serial::drain_rx_into(&mut scratch) != 0 {}
+}
 
-fn serial_try_read_byte() -> Option<u8> {
-    unsafe {
-        let status = crate::asm_bindings::inb(COM_LSR);
-        if (status & 0x01) == 0 {
-            return None;
+fn boot_flag_enabled(flag: &str) -> bool {
+    let Some(cmdline) = crate::arch::boot_info().cmdline_str() else {
+        return false;
+    };
+    for token in cmdline.split_whitespace() {
+        if token == flag {
+            return true;
         }
-        Some(crate::asm_bindings::inb(COM_DATA))
+        if let Some(value) = token
+            .strip_prefix(flag)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            return matches!(value, "1" | "true" | "on" | "yes");
+        }
+    }
+    false
+}
+
+fn shell_ci_mode() -> bool {
+    SHELL_CI_MODE.load(Ordering::Acquire)
+}
+
+fn shell_ci_debug() -> bool {
+    SHELL_CI_DEBUG.load(Ordering::Acquire)
+}
+
+fn emit_shell_ci_ready() {
+    if shell_ci_mode() {
+        crate::serial_println!("[CI-SHELL] READY");
     }
 }
 
-fn drain_serial_input() {
-    while serial_try_read_byte().is_some() {}
+fn emit_shell_ci_prompt() {
+    if shell_ci_mode() {
+        crate::serial_println!("[CI-SHELL] PROMPT");
+    }
+}
+
+fn emit_shell_ci_commit(seq: Option<u32>, line_len: usize, line: &str) {
+    if shell_ci_mode() {
+        if let Some(seq) = seq {
+            crate::serial_println!(
+                "[CI-SHELL] COMMIT seq={} len={} line='{}'",
+                seq,
+                line_len,
+                line
+            );
+        }
+    }
+}
+
+fn emit_shell_ci_done(seq: Option<u32>, line: &str) {
+    if shell_ci_mode() {
+        if let Some(seq) = seq {
+            crate::serial_println!("[CI-SHELL] DONE seq={} status=ok line='{}'", seq, line);
+        }
+    }
+}
+
+fn decode_ci_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn parse_ci_hex_u32(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() != 8 {
+        return None;
+    }
+    let mut value = 0u32;
+    for &byte in bytes {
+        value = (value << 4) | (decode_ci_hex_nibble(byte)? as u32);
+    }
+    Some(value)
+}
+
+fn parse_ci_hex_u16(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() != 4 {
+        return None;
+    }
+    let mut value = 0u16;
+    for &byte in bytes {
+        value = (value << 4) | (decode_ci_hex_nibble(byte)? as u16);
+    }
+    Some(value)
+}
+
+fn parse_ci_shell_frame(frame: &[u8], input: &mut [u8; 256]) -> Option<(u32, usize)> {
+    if frame.len() < 16 || &frame[..2] != b"~C" {
+        return None;
+    }
+    if frame.get(10) != Some(&b':') || frame.get(15) != Some(&b':') {
+        return None;
+    }
+
+    let seq = parse_ci_hex_u32(&frame[2..10])?;
+    let line_len = parse_ci_hex_u16(&frame[11..15])? as usize;
+    let payload_hex = &frame[16..];
+    if payload_hex.len() != line_len.saturating_mul(2) || line_len >= input.len() {
+        return None;
+    }
+
+    for i in 0..line_len {
+        let hi = decode_ci_hex_nibble(*payload_hex.get(i * 2)?)?;
+        let lo = decode_ci_hex_nibble(*payload_hex.get(i * 2 + 1)?)?;
+        let decoded = (hi << 4) | lo;
+        if !(0x20..=0x7e).contains(&decoded) {
+            return None;
+        }
+        input[i] = decoded;
+    }
+
+    Some((seq, line_len))
 }
 
 fn reset_shell_line(input: &mut [u8; 256], len: &mut usize, cursor: &mut usize) {
@@ -168,9 +277,14 @@ fn reset_shell_line(input: &mut [u8; 256], len: &mut usize, cursor: &mut usize) 
 }
 
 fn refresh_shell_prompt(prompt_pos: &mut (usize, usize), max_len: &mut usize) {
-    crate::terminal::write_str("> ");
+    if shell_ci_mode() {
+        crate::terminal::write_str_no_serial("> ");
+    } else {
+        crate::terminal::write_str("> ");
+    }
     *prompt_pos = crate::terminal::cursor_position();
     *max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+    emit_shell_ci_prompt();
 }
 
 fn push_shell_history(input: &[u8; 256], len: usize, history_index: &mut usize) {
@@ -202,28 +316,40 @@ fn commit_shell_line(
     history_index: &mut usize,
     prompt_pos: &mut (usize, usize),
     max_len: &mut usize,
+    ci_seq: Option<u32>,
 ) {
-    crate::terminal::write_char('\n');
+    if shell_ci_mode() {
+        crate::terminal::write_char_no_serial('\n');
+    } else {
+        crate::terminal::write_char('\n');
+    }
 
     let line_buf = *input;
     let line_len = *len;
-    let line = core::str::from_utf8(&line_buf[..line_len])
+    let raw_line = core::str::from_utf8(&line_buf[..line_len])
         .unwrap_or("")
         .trim_start_matches('?');
+    let line = raw_line.trim();
 
-    #[cfg(target_arch = "x86")]
-    {
-        crate::serial_print!("[SHELL-CMD] len=");
-        crate::serial_print!("{}", line_len);
-        crate::serial_print!(" line='");
-        crate::serial_print!("{}", line);
-        crate::serial_println!("'");
+    if line.is_empty() {
+        reset_shell_line(input, len, cursor);
+        refresh_shell_prompt(prompt_pos, max_len);
+        return;
     }
 
+    emit_shell_ci_commit(ci_seq, line.len(), line);
     push_shell_history(&line_buf, line_len, history_index);
     crate::commands::execute(line);
+    emit_shell_ci_done(ci_seq, line);
     reset_shell_line(input, len, cursor);
     refresh_shell_prompt(prompt_pos, max_len);
+}
+
+fn ci_line_str(line: &[u8], len: usize) -> &str {
+    core::str::from_utf8(&line[..len])
+        .unwrap_or("")
+        .trim_start_matches('?')
+        .trim()
 }
 
 pub fn enter_runtime() -> ! {
@@ -259,6 +385,12 @@ pub fn enter_runtime() -> ! {
         crate::vga::print_str("<none>");
     }
     crate::vga::print_str("\n");
+
+    SHELL_CI_MODE.store(boot_flag_enabled("oreulia.shell_ci"), Ordering::Release);
+    SHELL_CI_DEBUG.store(
+        boot_flag_enabled("oreulia.shell_ci_debug"),
+        Ordering::Release,
+    );
     crate::vga::print_str("[BOOT] Loader ptr: 0x");
     crate::advanced_commands::print_hex(boot_info.boot_loader_name_ptr.unwrap_or(0));
     crate::vga::print_str("\n");
@@ -347,11 +479,14 @@ pub fn enter_runtime() -> ! {
     crate::registry::init();
     crate::vga::print_str("[DEBUG] About to init process...\n");
     crate::process::init();
+    crate::process::debug_kernel_bootstrap("x86:after process init");
+    crate::process::debug_kernel_bootstrap_layout("x86:after process init");
     crate::vga::print_str("[DEBUG] About to init wasm...\n");
     crate::wasm::init();
 
     crate::vga::print_str("[SECURITY] Initializing security manager...\n");
     crate::security::init();
+    crate::process::debug_kernel_bootstrap("x86:after security init");
     crate::vga::print_str("[SECURITY] Audit logging enabled\n");
     crate::capnet::init();
     crate::capnet::offline_certificate::assert_certificate_valid();
@@ -359,20 +494,20 @@ pub fn enter_runtime() -> ! {
 
     crate::vga::print_str("[CAPABILITY] Initializing capability manager...\n");
     crate::capability::init();
+    crate::process::debug_kernel_bootstrap("x86:after capability init");
     crate::vga::print_str("[CAPABILITY] Authority model enabled\n");
 
     crate::vga::print_str("[CONSOLE] Initializing console service...\n");
     crate::console_service::init();
+    crate::process::debug_kernel_bootstrap("x86:after console init");
     crate::vga::print_str("[CONSOLE] Capability-based I/O ready\n");
 
     crate::vga::print_str("[DEBUG] About to initialize timer...\n");
     crate::vga::print_str("[TIMER] Initializing PIT (100 Hz)...\n");
     crate::arch::init_timer();
+    crate::process::debug_kernel_bootstrap("x86:after timer init");
     crate::vga::print_str("[SCHED] Preemptive scheduler ready\n");
-
-    crate::vga::print_str("[IRQ] Enabling interrupts...\n");
-    crate::arch::enable_interrupts();
-    crate::vga::print_str("[IRQ] Interrupts enabled\n");
+    crate::vga::print_str("[IRQ] Deferring interrupt enable until scheduler tasks start\n");
 
     crate::vga::print_str("[DEBUG] Timer initialized successfully\n");
     crate::vga::print_str("[PCI] Scanning for devices...\n");
@@ -420,6 +555,10 @@ pub fn enter_runtime() -> ! {
             let phys_base = (bar0 & !0xF) as usize;
             let size = 128 * 1024;
 
+            crate::vga::print_str("[NET] BAR0 raw: 0x");
+            crate::advanced_commands::print_hex(bar0 as usize);
+            crate::vga::print_str("\n");
+
             crate::vga::print_str("MMIO Base: 0x");
             crate::advanced_commands::print_hex(phys_base);
             crate::vga::print_str("\n");
@@ -440,11 +579,18 @@ pub fn enter_runtime() -> ! {
             }
         }
 
-        if crate::e1000::init(eth_device).is_ok() {
-            crate::net_reactor::seed_legacy_x86_qemu_defaults();
-            crate::vga::print_str("[NET] E1000 initialized - Ready for DNS/ARP/UDP\n");
-        } else {
-            crate::vga::print_str("[NET] E1000 init failed\n");
+        match crate::e1000::init(eth_device) {
+            Ok(()) => {
+                crate::process::debug_kernel_bootstrap_layout("x86:before qemu net seed");
+                crate::process::debug_kernel_bootstrap("x86:after e1000 init");
+                crate::process::debug_kernel_bootstrap_layout("x86:after e1000 init");
+                crate::vga::print_str("[NET] E1000 initialized - Ready for DNS/ARP/UDP\n");
+            }
+            Err(e) => {
+                crate::vga::print_str("[NET] E1000 init failed: ");
+                crate::vga::print_str(e);
+                crate::vga::print_str("\n");
+            }
         }
     } else if let Some(rtl_device) = pci_scanner.find_rtl8139() {
         crate::vga::print_str("[NET] RTL8139 detected, initializing...\n");
@@ -490,15 +636,27 @@ pub fn enter_runtime() -> ! {
         crate::vga::print_str("[AUDIO] Audio ready\n");
     }
 
-    crate::vga::print_str("[GPU] Skipping framebuffer init on x86 legacy path\n");
-    crate::compositor::init(0, 0);
+    crate::vga::print_str("[GPU] Skipping framebuffer/compositor init on x86 legacy path\n");
 
     crate::vga::print_str("[MOUSE] Enabling PS/2 auxiliary port...\n");
     crate::mouse::init();
+    crate::process::debug_kernel_bootstrap("x86:after mouse init");
     crate::vga::print_str("[MOUSE] PS/2 mouse ready\n");
 
     crate::input::init();
+    crate::process::debug_kernel_bootstrap("x86:after input init");
     crate::vga::print_str("[INPUT] Unified input queue ready\n");
+
+    crate::vga::print_str("[PROC] Sealing kernel bootstrap state...\n");
+    if let Err(e) = crate::process::seal_kernel_bootstrap() {
+        crate::vga::print_str("[PROC] FATAL: failed to seal kernel bootstrap: ");
+        crate::vga::print_str(e);
+        crate::vga::print_str("\n");
+        crate::serial_println!("[PROC] FATAL: failed to seal kernel bootstrap: {}", e);
+        loop {
+            unsafe { core::arch::asm!("hlt") };
+        }
+    }
 
     crate::vga::print_str("\n[INIT] Initialization complete, starting scheduler...\n");
     crate::tasks::start();
@@ -508,22 +666,38 @@ pub fn shell_loop() -> ! {
     crate::vga::print_str("[SHELL] Starting shell loop...\n");
     crate::terminal::clear_screen();
     crate::vga::print_str("[SHELL] Screen cleared\n");
-    crate::terminal::write_str("Oreulia OS\n");
+    if shell_ci_mode() {
+        crate::terminal::write_str_no_serial("Oreulia OS\n");
+    } else {
+        crate::terminal::write_str("Oreulia OS\n");
+    }
     crate::vga::print_str("[SHELL] Banner printed\n");
-    crate::terminal::write_str("Type 'help' for commands.\n\n");
+    if shell_ci_mode() {
+        crate::terminal::write_str_no_serial("Type 'help' for commands.\n\n");
+    } else {
+        crate::terminal::write_str("Type 'help' for commands.\n\n");
+    }
     drain_serial_input();
-    crate::terminal::write_str("> ");
+    emit_shell_ci_ready();
 
     let mut input: [u8; 256] = [0; 256];
     let mut len: usize = 0;
     let mut cursor: usize = 0;
     let mut history_index: usize = unsafe { SHELL_HISTORY_COUNT };
-    let mut prompt_pos = crate::terminal::cursor_position();
-    let mut _max_len = crate::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+    let mut prompt_pos = (0usize, 0usize);
+    let mut _max_len = 0usize;
+    refresh_shell_prompt(&mut prompt_pos, &mut _max_len);
 
     let mut loops: usize = 0;
     let mut serial_rx: [u8; 128] = [0; 128];
     let mut serial_skip_lf = false;
+    let mut ci_skip_lf = false;
+    let mut ci_frame: [u8; 1024] = [0; 1024];
+    let mut ci_frame_len = 0usize;
+    let mut ci_frame_overflow = false;
+    let mut ci_last_seq: Option<u32> = None;
+    let mut ci_last_line: [u8; 256] = [0; 256];
+    let mut ci_last_len = 0usize;
     const HEARTBEAT: &[u8] = b"|/-\\";
 
     loop {
@@ -583,15 +757,82 @@ pub fn shell_loop() -> ! {
             }
         }
 
-        let mut serial_rx_len = 0usize;
-        while let Some(byte) = serial_try_read_byte() {
-            if serial_rx_len < serial_rx.len() {
-                serial_rx[serial_rx_len] = byte;
-                serial_rx_len += 1;
-            }
-        }
+        let serial_rx_len = crate::serial::drain_rx_into(&mut serial_rx).min(serial_rx.len());
 
         for &byte in serial_rx[..serial_rx_len].iter() {
+            if shell_ci_mode() {
+                if ci_skip_lf && byte == b'\n' {
+                    ci_skip_lf = false;
+                    continue;
+                }
+                ci_skip_lf = false;
+                match byte {
+                    b'\r' | b'\n' => {
+                        if byte == b'\r' {
+                            ci_skip_lf = true;
+                        }
+                        if !ci_frame_overflow && ci_frame_len > 0 {
+                            reset_shell_line(&mut input, &mut len, &mut cursor);
+                            if let Some((seq, copy_len)) =
+                                parse_ci_shell_frame(&ci_frame[..ci_frame_len], &mut input)
+                            {
+                                if ci_last_seq == Some(seq)
+                                    && ci_last_len == copy_len
+                                    && ci_last_line[..copy_len] == input[..copy_len]
+                                {
+                                    let line = ci_line_str(&ci_last_line, ci_last_len);
+                                    emit_shell_ci_commit(Some(seq), line.len(), line);
+                                    emit_shell_ci_done(Some(seq), line);
+                                    emit_shell_ci_prompt();
+                                } else {
+                                    ci_last_seq = Some(seq);
+                                    ci_last_len = copy_len;
+                                    ci_last_line[..copy_len].copy_from_slice(&input[..copy_len]);
+                                    if copy_len < ci_last_line.len() {
+                                        ci_last_line[copy_len] = 0;
+                                    }
+                                    len = copy_len;
+                                    cursor = copy_len;
+                                    commit_shell_line(
+                                        &mut input,
+                                        &mut len,
+                                        &mut cursor,
+                                        &mut history_index,
+                                        &mut prompt_pos,
+                                        &mut _max_len,
+                                        Some(seq),
+                                    );
+                                }
+                            } else {
+                                if shell_ci_debug() {
+                                    let frame = core::str::from_utf8(&ci_frame[..ci_frame_len])
+                                        .unwrap_or("?");
+                                    crate::serial_println!(
+                                        "[CI-SHELL] DROP len={} frame='{}'",
+                                        ci_frame_len,
+                                        frame
+                                    );
+                                }
+                            }
+                        }
+                        ci_frame_len = 0;
+                        ci_frame_overflow = false;
+                        continue;
+                    }
+                    _ => {
+                        if !ci_frame_overflow {
+                            if ci_frame_len < ci_frame.len() {
+                                ci_frame[ci_frame_len] = byte;
+                                ci_frame_len += 1;
+                            } else {
+                                ci_frame_overflow = true;
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+
             if serial_skip_lf && byte == b'\n' {
                 serial_skip_lf = false;
                 continue;
@@ -610,6 +851,7 @@ pub fn shell_loop() -> ! {
                         &mut history_index,
                         &mut prompt_pos,
                         &mut _max_len,
+                        None,
                     );
                 }
                 8 | 127 => {
@@ -685,6 +927,7 @@ pub fn shell_loop() -> ! {
                         &mut history_index,
                         &mut prompt_pos,
                         &mut _max_len,
+                        None,
                     );
                 }
                 crate::keyboard::KeyEvent::Backspace => {
@@ -850,6 +1093,15 @@ pub fn shell_loop() -> ! {
             }
         }
 
+        #[cfg(target_arch = "x86")]
+        {
+            // Legacy x86 still relies on explicit request/block paths to hand CPU
+            // ownership to the dedicated network task. Avoid yielding from the
+            // giant shell loop itself, because resuming this frame after a
+            // cooperative switch is the current unstable boundary in i686 CI.
+        }
+
+        #[cfg(not(target_arch = "x86"))]
         crate::quantum_scheduler::yield_now();
     }
 }

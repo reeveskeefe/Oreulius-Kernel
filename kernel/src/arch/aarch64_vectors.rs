@@ -57,6 +57,9 @@ static LAST_ESR_EL1: AtomicU64 = AtomicU64::new(0);
 static LAST_ELR_EL1: AtomicU64 = AtomicU64::new(0);
 static LAST_SPSR_EL1: AtomicU64 = AtomicU64::new(0);
 static LAST_FAR_EL1: AtomicU64 = AtomicU64::new(0);
+/// SP_EL0 (user stack pointer) captured on every lower-EL sync exception.
+/// Used by `fork_current_cow` to inherit the parent's user stack in the child.
+static LAST_SP_EL0: AtomicU64 = AtomicU64::new(0);
 static LAST_EC: AtomicU64 = AtomicU64::new(0);
 static SYNC_EXCEPTION_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAST_BRK_SLOT: AtomicU64 = AtomicU64::new(0);
@@ -229,6 +232,15 @@ pub extern "C" fn oreulia_aarch64_vector_dispatch(
     LAST_SPSR_EL1.store(spsr_el1, Ordering::Relaxed);
     LAST_FAR_EL1.store(far_el1, Ordering::Relaxed);
 
+    // Capture user stack pointer for fork() child setup.
+    // SAFETY: reading SP_EL0 here is always safe at EL1 regardless of slot.
+    #[cfg(not(any(test, feature = "host-tests")))]
+    {
+        let sp_el0: u64;
+        unsafe { core::arch::asm!("mrs {}, SP_EL0", out(reg) sp_el0, options(nomem, nostack, preserves_flags)) };
+        LAST_SP_EL0.store(sp_el0, Ordering::Relaxed);
+    }
+
     let ec = ((esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK) as u8;
     LAST_EC.store(ec as u64, Ordering::Relaxed);
 
@@ -328,6 +340,27 @@ pub(crate) fn last_brk_imm16() -> u16 {
 #[inline]
 pub(crate) fn last_exception_ec() -> u8 {
     LAST_EC.load(Ordering::Relaxed) as u8
+}
+
+/// Returns the ELR_EL1 (exception return address) captured on the most recent
+/// lower-EL sync exception (e.g. SVC).  Used by `fork_current_cow` to set the
+/// child's user-space return address.
+#[inline]
+pub(crate) fn last_elr_el1() -> u64 {
+    LAST_ELR_EL1.load(Ordering::Relaxed)
+}
+
+/// Returns the SPSR_EL1 captured on the most recent lower-EL sync exception.
+#[inline]
+pub(crate) fn last_spsr_el1() -> u64 {
+    LAST_SPSR_EL1.load(Ordering::Relaxed)
+}
+
+/// Returns the SP_EL0 (user stack pointer) captured on the most recent
+/// lower-EL sync exception.
+#[inline]
+pub(crate) fn last_sp_el0() -> u64 {
+    LAST_SP_EL0.load(Ordering::Relaxed)
 }
 
 pub(crate) fn dump_last_exception() {

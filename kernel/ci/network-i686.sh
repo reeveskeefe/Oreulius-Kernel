@@ -12,5 +12,11 @@ if [[ -z "${log_dir}" ]]; then
 fi
 mkdir -p "${log_dir}"
 
-./build.sh
-expect -f ci/network-i686.expect | tee "${log_dir}/network-i686.log"
+repeats="${CI_NETWORK_REPEATS:-1}"
+: > "${log_dir}/network-i686.log"
+
+for ((run = 1; run <= repeats; run++)); do
+  echo "=== i686 network run ${run}/${repeats} ===" | tee -a "${log_dir}/network-i686.log"
+  OREULIA_BOOT_ARGS="oreulia.shell_ci=1" ./build.sh
+  python3 ci/network-i686.py 2>&1 | tee -a "${log_dir}/network-i686.log"
+done

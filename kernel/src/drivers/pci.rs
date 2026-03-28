@@ -58,6 +58,17 @@ unsafe fn pci_config_write_u32(bus: u8, slot: u8, func: u8, offset: u8, value: u
     x86::io::outl(PCI_CONFIG_DATA, value);
 }
 
+/// Write 16-bit value to PCI config space while preserving the sibling halfword.
+#[inline]
+unsafe fn pci_config_write_u16(bus: u8, slot: u8, func: u8, offset: u8, value: u16) {
+    let aligned = offset & 0xFC;
+    let shift = ((offset & 2) * 8) as u32;
+    let mut dword = pci_config_read_u32(bus, slot, func, aligned);
+    dword &= !(0xFFFFu32 << shift);
+    dword |= (value as u32) << shift;
+    pci_config_write_u32(bus, slot, func, aligned, dword);
+}
+
 /// Read 16-bit value from PCI config space
 #[inline]
 unsafe fn pci_config_read_u16(bus: u8, slot: u8, func: u8, offset: u8) -> u16 {
@@ -248,37 +259,19 @@ impl PciDevice {
     /// Enable bus mastering (required for DMA)
     pub unsafe fn enable_bus_mastering(&self) {
         let command = pci_config_read_u16(self.bus, self.slot, self.func, 0x04);
-        pci_config_write_u32(
-            self.bus,
-            self.slot,
-            self.func,
-            0x04,
-            (command | 0x04) as u32, // Set bit 2 (Bus Master)
-        );
+        pci_config_write_u16(self.bus, self.slot, self.func, 0x04, command | 0x04);
     }
 
     /// Enable memory space access
     pub unsafe fn enable_memory_space(&self) {
         let command = pci_config_read_u16(self.bus, self.slot, self.func, 0x04);
-        pci_config_write_u32(
-            self.bus,
-            self.slot,
-            self.func,
-            0x04,
-            (command | 0x02) as u32, // Set bit 1 (Memory Space)
-        );
+        pci_config_write_u16(self.bus, self.slot, self.func, 0x04, command | 0x02);
     }
 
     /// Enable I/O space access
     pub unsafe fn enable_io_space(&self) {
         let command = pci_config_read_u16(self.bus, self.slot, self.func, 0x04);
-        pci_config_write_u32(
-            self.bus,
-            self.slot,
-            self.func,
-            0x04,
-            (command | 0x01) as u32, // Set bit 0 (I/O Space)
-        );
+        pci_config_write_u16(self.bus, self.slot, self.func, 0x04, command | 0x01);
     }
 
     /// Get human-readable device type string

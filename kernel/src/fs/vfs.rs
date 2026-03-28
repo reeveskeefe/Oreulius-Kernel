@@ -4256,6 +4256,34 @@ pub fn close_fd(pid: Pid, fd: usize) -> Result<(), &'static str> {
     })
 }
 
+/// Duplicate all open VFS handles from `parent_fd_table` for `child_pid`.
+///
+/// Each occupied FD slot gets a freshly allocated handle in the VFS table
+/// (the `Handle` is cloned with `owner` updated to `child_pid`; `pos` is
+/// preserved so the child inherits the parent's file offset, matching POSIX
+/// `fork()` semantics).  The returned table uses the new child handle IDs.
+/// FD slots that were `None` in the parent remain `None` in the child.
+pub fn dup_fds_for_fork(
+    child_pid: Pid,
+    parent_fd_table: &[Option<u64>; crate::process::MAX_FD],
+) -> [Option<u64>; crate::process::MAX_FD] {
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        let mut child_table = [None; crate::process::MAX_FD];
+        for (slot, &entry) in parent_fd_table.iter().enumerate() {
+            if let Some(parent_handle_id) = entry {
+                let idx = (parent_handle_id as usize).saturating_sub(1);
+                if let Some(Some(parent_handle)) = vfs.handles.get(idx) {
+                    let mut child_handle = parent_handle.clone();
+                    child_handle.owner = child_pid;
+                    let child_handle_id = vfs.alloc_handle(child_handle);
+                    child_table[slot] = Some(child_handle_id);
+                }
+            }
+        }
+        child_table
+    })
+}
+
 pub fn recover_from_persistence() -> Result<(), &'static str> {
     let snapshot = if let Ok(key) = vfs_snapshot_key() {
         let capability = vfs_store_capability();

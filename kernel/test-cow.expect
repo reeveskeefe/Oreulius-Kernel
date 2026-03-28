@@ -1,0 +1,62 @@
+#!/usr/bin/expect -f
+# Smoke-test for copy_page_physical temp-mapping implementation.
+#
+# Boots the kernel in headless QEMU, waits for the shell prompt,
+# runs `cow-test`, and checks the serial output for PASSED/FAILED.
+#
+# Exit 0 = pass, exit 1 = failure or timeout.
+
+set timeout 60
+
+cd [file dirname [info script]]
+
+if {![file exists "oreulia.iso"]} {
+    puts "oreulia.iso not found; run ./build.sh first"
+    exit 1
+}
+
+# Boot in headless mode; drive the primary serial through stdio.
+spawn /opt/homebrew/bin/qemu-system-i386 \
+    -cdrom oreulia.iso \
+    -serial stdio \
+    -display none \
+    -no-reboot
+
+# Wait for the interactive shell prompt.
+# The kernel prints "Type 'help' for commands." then the prompt "> ".
+expect {
+    -re {(\r?\n|^)> } {}
+    timeout {
+        puts "TIMEOUT: kernel shell prompt never appeared"
+        exit 1
+    }
+}
+
+# Settle before sending.
+after 300
+send -- "\r"
+after 200
+expect {
+    -re {(\r?\n|^)> } {}
+    timeout {}
+}
+after 400
+
+# Send the test command.
+send -- "cow-test\r"
+
+# Wait for a definitive result line on the serial port.
+expect {
+    "copy_page_physical: PASSED" {
+        puts "\ncow-test: PASSED"
+        exit 0
+    }
+    "copy_page_physical: FAILED" {
+        puts "\ncow-test: FAILED"
+        exit 1
+    }
+    timeout {
+        puts "\nTIMEOUT: no result from cow-test"
+        exit 1
+    }
+}

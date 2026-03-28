@@ -1,37 +1,117 @@
 #!/usr/bin/expect -f
 set timeout 240
-set send_slow {1 0.08}
-
 set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
 cd $kernel_dir
 
-proc expect_i686_shell_ready {} {
+proc prompt_re {} {
+    return {\[CI-SHELL\] PROMPT}
+}
+
+proc commit_re {cmd} {
+    return [format {\[CI-SHELL\] COMMIT len=[0-9]+ line='%s'} $cmd]
+}
+
+proc done_re {cmd} {
+    return [format {\[CI-SHELL\] DONE status=ok line='%s'} $cmd]
+}
+
+proc wait_i686_prompt {} {
     expect {
-        -re {Type 'help' for commands\.} { exp_continue }
-        -re {(\r?\n|^)> } {}
-        timeout { puts "timeout waiting for i686 kernel shell readiness"; exit 1 }
+        -timeout 60
+        -re [prompt_re] {}
+        timeout {
+            puts "timeout waiting for i686 CI prompt marker"
+            exit 1
+        }
     }
 }
 
+proc wait_i686_commit {cmd label} {
+    expect {
+        -timeout 60
+        -re [commit_re $cmd] {}
+        timeout {
+            puts "$label timed out waiting for command commit"
+            exit 1
+        }
+    }
+}
+
+proc send_i686_cmd_committed {label cmd} {
+    for {set attempt 0} {$attempt < 3} {incr attempt} {
+        send_i686_cmd $cmd
+        expect {
+            -timeout 8
+            -re [commit_re $cmd] {
+                return
+            }
+            -re [prompt_re] {
+                after 400
+            }
+            timeout {
+                after 400
+            }
+        }
+    }
+    puts "$label timed out waiting for command commit"
+    exit 1
+}
+
+proc wait_i686_done {cmd label} {
+    expect {
+        -timeout 60
+        -re [done_re $cmd] {}
+        timeout {
+            puts "$label timed out waiting for command completion marker"
+            exit 1
+        }
+    }
+}
+
+proc settle_i686_shell {} {
+    expect {
+        -timeout 60
+        -re {\[CI-SHELL\] READY} {}
+        timeout {
+            puts "timeout waiting for i686 CI shell ready marker"
+            exit 1
+        }
+    }
+    wait_i686_prompt
+}
+
 proc send_i686_cmd {cmd} {
-    after 1200
-    send -s -- $cmd
-    after 500
+    after 250
+    foreach ch [split $cmd ""] {
+        if {$ch eq ""} {
+            continue
+        }
+        send -- $ch
+        after 90
+    }
+    after 300
     send -- "\r"
 }
 
 proc expect_i686_ready {} {
     for {set attempt 0} {$attempt < 6} {incr attempt} {
-        send_i686_cmd "n"
+        send_i686_cmd_committed "netstack-info" "n"
         expect {
             -re {Status: READY} {
                 expect {
                     -re {My IP: (?!0\.0\.0\.0)([0-9]{1,3}\.){3}[0-9]{1,3}} {
-                        after 1200
+                        wait_i686_done "n" "netstack-info"
+                        wait_i686_prompt
                         return
                     }
                     -re {My IP: 0\.0\.0\.0} {
-                        after 1500
+                        wait_i686_done "n" "netstack-info"
+                        wait_i686_prompt
+                        after 1200
+                    }
+                    -re {Error: (.+)} {
+                        puts "netstack-info failed: $expect_out(1,string)"
+                        exit 1
                     }
                     timeout {
                         puts "netstack-info timed out waiting for configured IP"
@@ -40,7 +120,9 @@ proc expect_i686_ready {} {
                 }
             }
             -re {Status: NOT READY} {
-                after 1500
+                wait_i686_done "n" "netstack-info"
+                wait_i686_prompt
+                after 1200
             }
             -re {Error: (.+)} {
                 puts "netstack-info failed: $expect_out(1,string)"
@@ -56,12 +138,10 @@ proc expect_i686_ready {} {
     exit 1
 }
 
-proc expect_i686_phase_until_prompt {label success_re} {
+proc run_i686_phase {label cmd success_re} {
+    send_i686_cmd_committed $label $cmd
     expect {
-        -re $success_re {
-            after 1200
-            return
-        }
+        -re $success_re {}
         -re {Resolution failed: (.+)} {
             puts "$label failed: $expect_out(1,string)"
             exit 1
@@ -83,9 +163,12 @@ proc expect_i686_phase_until_prompt {label success_re} {
             exit 1
         }
     }
+    wait_i686_done $cmd $label
+    wait_i686_prompt
 }
 
-proc expect_i686_http_success {label} {
+proc run_i686_http_phase {label cmd} {
+    send_i686_cmd_committed $label $cmd
     expect {
         -re {Status: [23][0-9][0-9]} {}
         -re {Request failed: (.+)} {
@@ -96,21 +179,13 @@ proc expect_i686_http_success {label} {
             puts "$label failed: $expect_out(1,string)"
             exit 1
         }
-        -re {Unknown command: (.+)} {
-            puts "$label failed: unknown command $expect_out(1,string)"
-            exit 1
-        }
         timeout {
             puts "$label timed out waiting for HTTP status"
             exit 1
         }
     }
-
     expect {
-        -re {Total: [1-9][0-9]* bytes} {
-            after 1200
-            return
-        }
+        -re {Total: [1-9][0-9]* bytes} {}
         -re {Request failed: (.+)} {
             puts "$label failed: $expect_out(1,string)"
             exit 1
@@ -124,32 +199,43 @@ proc expect_i686_http_success {label} {
             exit 1
         }
     }
+    wait_i686_done $cmd $label
+    wait_i686_prompt
+}
+
+proc run_i686_https_fail_closed {label cmd} {
+    send_i686_cmd_committed $label $cmd
+    expect {
+        -re {Request failed: HTTPS blocked: strict certific} {}
+        -re {strict certificate validation is not implemented} {}
+        -re {Error: (.+)} {
+            puts "$label failed: $expect_out(1,string)"
+            exit 1
+        }
+        -re {Unknown command: (.+)} {
+            puts "$label failed: unknown command $expect_out(1,string)"
+            exit 1
+        }
+        timeout {
+            puts "$label timed out waiting for HTTPS fail-closed result"
+            exit 1
+        }
+    }
+    wait_i686_done $cmd $label
+    wait_i686_prompt
 }
 
 spawn qemu-system-i386 -cdrom oreulia.iso -serial stdio -monitor none -display none -no-reboot -no-shutdown -m 512M -netdev user,id=n0 -device e1000,netdev=n0
 
-expect_i686_shell_ready
+settle_i686_shell
 expect_i686_ready
 
-send_i686_cmd "e"
-expect_i686_phase_until_prompt "eth-status" {Link Status: UP}
+run_i686_phase "eth-status" "e" {Link Status: UP}
+run_i686_phase "first dns-resolve" "d" {Success! IP: ([0-9]{1,3}\.){3}[0-9]{1,3}}
+run_i686_phase "second dns-resolve" "d" {Success! IP: ([0-9]{1,3}\.){3}[0-9]{1,3}}
+run_i686_http_phase "plain HTTP" "h"
+run_i686_https_fail_closed "HTTPS fail-closed" "hs"
 
-send_i686_cmd "d ex"
-expect_i686_phase_until_prompt "first dns-resolve" {Success! IP: ([0-9]{1,3}\.){3}[0-9]{1,3}}
-
-send_i686_cmd "d ex"
-expect_i686_phase_until_prompt "second dns-resolve" {Success! IP: ([0-9]{1,3}\.){3}[0-9]{1,3}}
-
-send_i686_cmd "h ex"
-expect_i686_http_success "plain HTTP"
-
-send_i686_cmd "h exs"
-expect_i686_phase_until_prompt "HTTPS fail-closed" {strict certificate validation is not implemented}
-
-send_i686_cmd "halt"
-expect {
-    -re {Halting system|System halted|CPU halted} {}
-    timeout {}
-}
+wait_i686_prompt
 send "\003"
 expect eof

@@ -49,31 +49,107 @@ page_fault_handler:
 
 global copy_page_physical
 ; void copy_page_physical(u32 src_phys, u32 dst_phys)
-; Copies 4096 bytes from src to dst physical addresses
-; Assumes paging is enabled - uses temporary mappings
+; Copies 4096 bytes from src to dst physical addresses.
+;
+; Strategy: uses a static 4-KB scratch page table (cow_scratch_pt, in .bss,
+; identity-mapped so virt == phys) installed into PDE[1023] of the active
+; page directory.  Two PTE slots in that table are used as temporary windows:
+;
+;   PTE[1022] → src_phys   (virtual 0xFFFFE000)
+;   PTE[1023] → dst_phys   (virtual 0xFFFFF000)
+;
+; PDE[1023] covers virtual 0xFFC00000–0xFFFFFFFF which is reserved / unmapped
+; by the kernel layout, so there are no conflicts.
+;
+; The kernel is loaded at physical 0x100000 with identity paging, therefore
+; CR3 (physical PD base) equals its virtual address, and cow_scratch_pt's
+; symbol value is also its physical address.
 copy_page_physical:
     push ebp
-    mov ebp, esp
+    mov  ebp, esp
     push esi
     push edi
     push ecx
-    
-    mov esi, [ebp + 8]      ; src_phys
-    mov edi, [ebp + 12]     ; dst_phys
-    
-    ; TODO: Map physical addresses to temporary virtual addresses
-    ; For now, assumes identity mapping or uses addresses directly
-    ; In production: use temporary page table entries
-    
-    ; Copy 4096 bytes (1024 dwords)
-    mov ecx, 1024
-    cld                     ; Clear direction flag (forward)
-    rep movsd               ; Copy ECX dwords from DS:ESI to ES:EDI
-    
-    pop ecx
-    pop edi
-    pop esi
-    pop ebp
+    push eax
+    push ebx
+    push edx
+
+    mov  eax, [ebp + 8]          ; eax = src_phys (page-aligned)
+    mov  ebx, [ebp + 12]         ; ebx = dst_phys (page-aligned)
+
+    ; --- 1. Get page directory base (phys == virt, identity mapped) ---
+    mov  edx, cr3                ; edx = physical/virtual PD base
+
+    ; --- 2. Ensure PDE[1023] points to cow_scratch_pt ---
+    ; PDE[1023] byte offset in PD = 1023 * 4 = 4092
+    mov  ecx, [edx + 4092]       ; read PDE[1023]
+    test ecx, 0x1                ; P (present) bit set?
+    jnz  .pt_installed
+
+    ; First-time setup: install cow_scratch_pt into PDE[1023].
+    ; Save registers clobbered by the zeroing rep stosd below.
+    push eax
+    push edi
+
+    mov  ecx, cow_scratch_pt     ; symbol value = physical address (identity mapped)
+    and  ecx, 0xFFFFF000         ; page-align (should already be due to align 4096)
+    or   ecx, 0x3                ; P | W
+    mov  [edx + 4092], ecx       ; PDE[1023] = (phys_of_scratch_pt | P | W)
+
+    ; Zero the scratch page table (defensive; .bss is zeroed at boot but
+    ; be explicit in case copy_page_physical is called unusually early).
+    mov  edi, cow_scratch_pt     ; virtual addr of scratch PT
+    xor  eax, eax
+    mov  ecx, 1024               ; 1024 dwords = 4096 bytes
+    cld
+    rep  stosd
+
+    pop  edi
+    pop  eax                     ; restore eax = src_phys
+
+.pt_installed:
+    ; --- 3. Map src_phys → virt 0xFFFFE000 via PTE[1022] ---
+    ; PTE[1022] byte offset in PT = 1022 * 4 = 4088
+    mov  ecx, eax                ; src_phys
+    and  ecx, 0xFFFFF000
+    or   ecx, 0x3                ; P | W
+    mov  [cow_scratch_pt + 4088], ecx
+
+    ; --- 4. Map dst_phys → virt 0xFFFFF000 via PTE[1023] ---
+    ; PTE[1023] byte offset in PT = 1023 * 4 = 4092
+    mov  ecx, ebx                ; dst_phys
+    and  ecx, 0xFFFFF000
+    or   ecx, 0x3                ; P | W
+    mov  [cow_scratch_pt + 4092], ecx
+
+    ; --- 5. Flush TLB for both virtual windows ---
+    mov  eax, 0xFFFFE000
+    invlpg [eax]
+    mov  eax, 0xFFFFF000
+    invlpg [eax]
+
+    ; --- 6. Copy 4096 bytes through the virtual windows ---
+    mov  esi, 0xFFFFE000
+    mov  edi, 0xFFFFF000
+    mov  ecx, 1024               ; 1024 dwords = 4096 bytes
+    cld
+    rep  movsd
+
+    ; --- 7. Tear down: zero PTEs and flush TLB ---
+    mov  dword [cow_scratch_pt + 4088], 0
+    mov  dword [cow_scratch_pt + 4092], 0
+    mov  eax, 0xFFFFE000
+    invlpg [eax]
+    mov  eax, 0xFFFFF000
+    invlpg [eax]
+
+    pop  edx
+    pop  ebx
+    pop  eax
+    pop  ecx
+    pop  edi
+    pop  esi
+    pop  ebp
     ret
 
 ; ============================================================================
@@ -612,3 +688,21 @@ asm_fork_process:
     pop ebx
     pop ebp
     ret
+
+; ============================================================================
+; BSS: Scratch page table for copy_page_physical temporary mappings
+; ============================================================================
+;
+; cow_scratch_pt is installed into PDE[1023] of the active page directory on
+; the first call to copy_page_physical.  Because the kernel is loaded at
+; physical 0x100000 with identity paging, the symbol value is simultaneously
+; the virtual address and the physical address of this page table.
+;
+; Virtual range served by PDE[1023]: 0xFFC00000-0xFFFFFFFF (4 MB window).
+; Temporary slots used:
+;   PTE[1022] -> src window at virt 0xFFFFE000
+;   PTE[1023] -> dst window at virt 0xFFFFF000
+
+section .bss
+align 4096
+cow_scratch_pt: resb 4096

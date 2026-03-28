@@ -19,7 +19,6 @@ set timeout 120
 # send_slow: 1 char per 50 ms — avoids serial FIFO overruns on QEMU's 16550A
 # emulation which has a 16-byte hardware FIFO.  At 115200 baud one character
 # takes ~87 µs, so 50 ms gives 574x margin against FIFO overflow.
-set send_slow {1 0.05}
 set iters 1000
 set soak_rounds 0
 if {[llength $argv] >= 1} {
@@ -75,20 +74,47 @@ proc expect_i686_prompt {} {
 }
 
 # send_i686_cmd: drain any pending output, wait for the serial FIFO to settle,
-# then send characters slowly via send_slow to avoid overrunning QEMU's 16550A
-# UART emulation.  A 300 ms pre-send settle is enough for even the slowest
-# post-command output to finish scrolling before we inject a new command.
+# then send the command as a single atomic sequence.  All commands sent by
+# this harness are ≤14 bytes which fit within the emulated 16550A's 16-byte
+# RX FIFO.  Retries up to 4 times if QEMU's event loop drops a character
+# (observable as "Unknown command:") before the command is recognized.
 proc send_i686_cmd {cmd} {
-    after 300
-    # Flush any partial line noise before sending.
-    send -- "\r"
-    after 200
-    expect {
-        -re {(\r?\n|^)> } {}
-        timeout {}
+    set retries 0
+    while {$retries < 5} {
+        after 300
+        # Flush any partial line noise before sending.
+        send -- "\r"
+        after 200
+        expect {
+            -re {(\r?\n|^)> } {}
+            timeout {}
+        }
+        # Give QEMU's event loop 600 ms to drain any pending device callbacks
+        # before sending the command; this prevents the first byte of the
+        # command from being dropped while QEMU is still processing timers.
+        after 600
+        send -- "${cmd}\r"
+        # Check whether QEMU mangled the command (short window: 1 s).
+        # If we see "Unknown command:" the bytes were dropped — retry.
+        # Any other output means the command was accepted; return immediately.
+        set timeout 1
+        expect {
+            -re {Unknown command:} {
+                incr retries
+                after 400
+                # Drain the resulting prompt so the next loop iteration is clean.
+                set timeout 3
+                expect {
+                    -re {(\r?\n|^)> } {}
+                    timeout {}
+                }
+            }
+            timeout {
+                # No "Unknown command" in 1 s — command recognised.
+                return
+            }
+        }
     }
-    after 300
-    send -s -- "$cmd\r"
 }
 
 expect_i686_shell_ready

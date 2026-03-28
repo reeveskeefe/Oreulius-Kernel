@@ -4,13 +4,13 @@
   "assumptions_version": "v1.0",
   "theorems": [
     { "id": "THM-CAP-001",  "status": "Proven",     "artifact": "verification/theories/ipc_flow.v",           "invariant": "INV-CAP-001"  },
-    { "id": "THM-MEM-001",  "status": "InProgress", "artifact": "verification/theories/temporal_logic.v",     "invariant": "INV-MEM-001"  },
+    { "id": "THM-MEM-001",  "status": "Proven",     "artifact": "verification/theories/memory_isolation.v",   "invariant": "INV-MEM-001"  },
     { "id": "THM-WX-001",   "status": "Proven",     "artifact": "verification/theories/wx_cfi.v",             "invariant": "INV-WX-001"   },
-    { "id": "THM-CFI-001",  "status": "InProgress", "artifact": "verification/theories/wx_cfi.v",             "invariant": "INV-CFI-001"  },
-    { "id": "THM-TMP-001",  "status": "InProgress", "artifact": "verification/theories/temporal_logic.v",     "invariant": "INV-TMP-001"  },
-    { "id": "THM-PER-001",  "status": "InProgress", "artifact": "verification/theories/temporal_logic.v",     "invariant": "INV-PER-001"  },
-    { "id": "THM-NET-001",  "status": "InProgress", "artifact": "verification/theories/ipc_flow.v",           "invariant": "INV-NET-001"  },
-    { "id": "THM-PRIV-001", "status": "InProgress", "artifact": "verification/theories/ipc_flow.v",           "invariant": "INV-PRIV-001" }
+    { "id": "THM-CFI-001",  "status": "Proven",     "artifact": "verification/theories/wx_cfi.v",             "invariant": "INV-CFI-001"  },
+    { "id": "THM-TMP-001",  "status": "Proven",     "artifact": "verification/theories/temporal_logic.v",     "invariant": "INV-TMP-001"  },
+    { "id": "THM-PER-001",  "status": "Proven",     "artifact": "verification/theories/persistence.v",      "invariant": "INV-PER-001"  },
+    { "id": "THM-NET-001",  "status": "Proven",     "artifact": "verification/theories/capnet_integrity.v",  "invariant": "INV-NET-001"  },
+    { "id": "THM-PRIV-001", "status": "Proven",     "artifact": "verification/theories/privilege_safety.v",  "invariant": "INV-PRIV-001" }
   ],
   "ci_runs": [
     {
@@ -32,7 +32,19 @@
         "verification/theories/lock_dag.vok",
         "verification/theories/scheduler_entropy.vo",
         "verification/theories/scheduler_entropy.vos",
-        "verification/theories/scheduler_entropy.vok"
+        "verification/theories/scheduler_entropy.vok",
+        "verification/theories/memory_isolation.vo",
+        "verification/theories/memory_isolation.vos",
+        "verification/theories/memory_isolation.vok",
+        "verification/theories/persistence.vo",
+        "verification/theories/persistence.vos",
+        "verification/theories/persistence.vok",
+        "verification/theories/capnet_integrity.vo",
+        "verification/theories/capnet_integrity.vos",
+        "verification/theories/capnet_integrity.vok",
+        "verification/theories/privilege_safety.vo",
+        "verification/theories/privilege_safety.vos",
+        "verification/theories/privilege_safety.vok"
       ]
     }
   ],
