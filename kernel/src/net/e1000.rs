@@ -191,6 +191,14 @@ static E1000_MMIO_BASE: AtomicU32 = AtomicU32::new(0);
 
 impl E1000Driver {
     #[inline]
+    fn effective_mmio_base(&self) -> u32 {
+        if self.mmio_base >= 0x0010_0000 {
+            return self.mmio_base;
+        }
+        E1000_MMIO_BASE.load(Ordering::Acquire)
+    }
+
+    #[inline]
     fn cached_mac_valid(&self) -> bool {
         self.mac_address != [0; 6] && self.mac_address != [0xFF; 6]
     }
@@ -259,7 +267,7 @@ impl E1000Driver {
 
     #[inline]
     fn initialized(&self) -> bool {
-        self.mmio_base >= 0x0010_0000
+        self.effective_mmio_base() >= 0x0010_0000
     }
 
     #[inline]
@@ -274,6 +282,12 @@ impl E1000Driver {
 
     #[inline]
     fn ensure_enabled(&mut self) -> bool {
+        if self.mmio_base < 0x0010_0000 {
+            let recovered = E1000_MMIO_BASE.load(Ordering::Acquire);
+            if recovered >= 0x0010_0000 {
+                self.mmio_base = recovered;
+            }
+        }
         if !self.initialized() {
             return false;
         }
@@ -295,7 +309,7 @@ impl E1000Driver {
 
     #[inline(never)]
     fn mmio_addr(&self, reg: u32) -> Option<u32> {
-        let addr = self.mmio_base.checked_add(reg)?;
+        let addr = self.effective_mmio_base().checked_add(reg)?;
         if addr < 0x0010_0000 {
             return None;
         }
