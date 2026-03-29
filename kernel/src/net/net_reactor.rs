@@ -345,7 +345,7 @@ fn dispatch_request(
                         break NetResponse::U64(read_len as u64);
                     }
                     Ok(_) => {
-                        if stack.tcp_connection_state(*conn_id).is_none() {
+                        if stack.tcp_connection_eof(*conn_id) {
                             break NetResponse::U64(0);
                         }
                         if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
@@ -356,6 +356,9 @@ fn dispatch_request(
                         }
                     }
                     Err(e) => {
+                        if e == "Connection not found" || stack.tcp_connection_eof(*conn_id) {
+                            break NetResponse::U64(0);
+                        }
                         break NetResponse::Err(e);
                     }
                 }

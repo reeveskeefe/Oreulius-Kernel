@@ -190,15 +190,29 @@ fn emit_shell_ci_prompt() {
     }
 }
 
+fn emit_shell_ci_hex_line(kind: &str, seq: u32, line_len: usize, line: &str, done: bool) {
+    use core::fmt::Write;
+
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    if let Some(mut serial) = crate::serial::SERIAL1.try_lock() {
+        let _ = write!(serial, "[CI-SHELL] {} seq={} len={}", kind, seq, line_len);
+        if done {
+            let _ = write!(serial, " status=ok");
+        }
+        let _ = write!(serial, " hex=");
+        for &byte in line.as_bytes() {
+            serial.send_byte(HEX[(byte >> 4) as usize]);
+            serial.send_byte(HEX[(byte & 0x0F) as usize]);
+        }
+        serial.send_byte(b'\n');
+    }
+}
+
 fn emit_shell_ci_commit(seq: Option<u32>, line_len: usize, line: &str) {
     if shell_ci_mode() {
         if let Some(seq) = seq {
-            crate::serial_println!(
-                "[CI-SHELL] COMMIT seq={} len={} line='{}'",
-                seq,
-                line_len,
-                line
-            );
+            emit_shell_ci_hex_line("COMMIT", seq, line_len, line, false);
         }
     }
 }
@@ -206,7 +220,7 @@ fn emit_shell_ci_commit(seq: Option<u32>, line_len: usize, line: &str) {
 fn emit_shell_ci_done(seq: Option<u32>, line: &str) {
     if shell_ci_mode() {
         if let Some(seq) = seq {
-            crate::serial_println!("[CI-SHELL] DONE seq={} status=ok line='{}'", seq, line);
+            emit_shell_ci_hex_line("DONE", seq, line.len(), line, true);
         }
     }
 }

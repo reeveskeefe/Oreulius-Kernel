@@ -1567,8 +1567,7 @@ impl NetworkStack {
                     continue;
                 }
                 if conn.retries >= 5 {
-                    conn.state = TcpState::Closed;
-                    conn.in_use = false;
+                    close_conn_preserving_recv(conn);
                     Self::maybe_record_tcp_socket_state_event(
                         conn.id as u32,
                         conn.state as u8,
@@ -1977,6 +1976,22 @@ impl NetworkStack {
         self.tcp.find_conn_id(conn_id).map(|conn| conn.state as u8)
     }
 
+    pub fn tcp_connection_eof(&self, conn_id: u16) -> bool {
+        match self.tcp.find_conn_id(conn_id) {
+            None => true,
+            Some(conn) => {
+                conn_recv_occupied(conn) == 0
+                    && matches!(
+                        conn.state,
+                        TcpState::Closed
+                            | TcpState::CloseWait
+                            | TcpState::LastAck
+                            | TcpState::TimeWait
+                    )
+            }
+        }
+    }
+
     pub fn tcp_send(&mut self, conn_id: u16, data: &[u8]) -> Result<usize, &'static str> {
         let res = self.with_tcp_manager(|tcp, stack| tcp.send(stack, conn_id, data));
         if let Ok(sent) = res {
@@ -2012,6 +2027,11 @@ impl NetworkStack {
                     crate::temporal::TEMPORAL_SOCKET_EVENT_RECV,
                     &out[..read_len],
                 );
+            }
+        }
+        if let Some(conn) = self.tcp.find_conn_id_mut(conn_id) {
+            if conn.state == TcpState::Closed && conn_recv_occupied(conn) == 0 {
+                conn.in_use = false;
             }
         }
         // Send window-update ACK if buffer was full before the read (peer's window was 0).
@@ -2291,6 +2311,19 @@ impl TcpConn {
             peer_wscale: 0,
             snd_wnd: 65_535, // conservative default until first ACK
         }
+    }
+}
+
+#[inline]
+fn conn_recv_occupied(conn: &TcpConn) -> usize {
+    conn.recv_tail.wrapping_sub(conn.recv_head) & TCP_BUF_MASK
+}
+
+#[inline]
+fn close_conn_preserving_recv(conn: &mut TcpConn) {
+    conn.state = TcpState::Closed;
+    if conn_recv_occupied(conn) == 0 {
+        conn.in_use = false;
     }
 }
 
@@ -2735,8 +2768,7 @@ impl TcpManager {
             conn.snd_nxt = conn.snd_nxt.wrapping_add(1);
             return Ok(());
         }
-        conn.state = TcpState::Closed;
-        conn.in_use = false;
+        close_conn_preserving_recv(conn);
         Ok(())
     }
 
@@ -2754,8 +2786,7 @@ impl TcpManager {
                 // TIME_WAIT expiry: hold the port for 2×MSL then free the slot.
                 if conn.state == TcpState::TimeWait {
                     if now >= conn.last_send_tick + TCP_TIME_WAIT_TICKS {
-                        conn.state = TcpState::Closed;
-                        conn.in_use = false;
+                        close_conn_preserving_recv(conn);
                     }
                     continue;
                 }
@@ -2781,8 +2812,7 @@ impl TcpManager {
                         continue;
                     }
                     if conn.retries >= 5 {
-                        conn.state = TcpState::Closed;
-                        conn.in_use = false;
+                        close_conn_preserving_recv(conn);
                         continue;
                     }
                     let mut payload = [0u8; 1460];
@@ -3409,8 +3439,7 @@ impl NetworkStack {
             {
                 let conn = &mut self.tcp.conns[idx];
                 if flags & TCP_FLAG_RST != 0 {
-                    conn.state = TcpState::Closed;
-                    conn.in_use = false;
+                    close_conn_preserving_recv(conn);
                     Self::maybe_record_tcp_socket_state_event(
                         conn.id as u32,
                         conn.state as u8,
@@ -3551,8 +3580,7 @@ impl NetworkStack {
                         );
                     } else if conn.state == TcpState::FinWait1 {
                         // Simultaneous close: FIN before our ACK for FIN — go to Closed.
-                        conn.state = TcpState::Closed;
-                        conn.in_use = false;
+                        close_conn_preserving_recv(conn);
                         Self::maybe_record_tcp_socket_state_event(
                             conn.id as u32,
                             conn.state as u8,
@@ -3585,8 +3613,7 @@ impl NetworkStack {
                     conn.state = TcpState::FinWait2;
                 }
                 if conn.state == TcpState::LastAck && (flags & TCP_FLAG_ACK != 0) {
-                    conn.state = TcpState::Closed;
-                    conn.in_use = false;
+                    close_conn_preserving_recv(conn);
                     Self::maybe_record_tcp_socket_state_event(
                         conn.id as u32,
                         conn.state as u8,

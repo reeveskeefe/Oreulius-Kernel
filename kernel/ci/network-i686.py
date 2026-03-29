@@ -113,8 +113,8 @@ class QemuSerialHarness:
 
 PROMPT_RE = re.compile(r"\[CI-SHELL\] PROMPT")
 READY_RE = re.compile(r"\[CI-SHELL\] READY")
-COMMIT_ANY_RE = re.compile(r"\[CI-SHELL\] COMMIT seq=(\d+) len=(\d+) line='([^']*)'")
-DONE_ANY_RE = re.compile(r"\[CI-SHELL\] DONE seq=(\d+) status=ok line='([^']*)'")
+COMMIT_ANY_RE = re.compile(r"\[CI-SHELL\] COMMIT seq=(\d+) len=(\d+) hex=([0-9A-F]*)")
+DONE_ANY_RE = re.compile(r"\[CI-SHELL\] DONE seq=(\d+) len=(\d+) status=ok hex=([0-9A-F]*)")
 STATUS_READY_RE = re.compile(r"Status: READY")
 STATUS_NOT_READY_RE = re.compile(r"Status: NOT READY")
 NONZERO_IP_RE = re.compile(r"My IP: (?!0\.0\.0\.0)(?:\d{1,3}\.){3}\d{1,3}")
@@ -133,14 +133,16 @@ UNKNOWN_CMD_RE = re.compile(r"Unknown command: (.+)")
 
 
 def commit_re(seq, cmd):
+    hex_cmd = cmd.encode("ascii").hex().upper()
     return re.compile(
-        rf"\[CI-SHELL\] COMMIT seq={seq} len=\d+ line='{re.escape(cmd)}'"
+        rf"\[CI-SHELL\] COMMIT seq={seq} len={len(cmd)} hex={hex_cmd}"
     )
 
 
 def done_re(seq, cmd):
+    hex_cmd = cmd.encode("ascii").hex().upper()
     return re.compile(
-        rf"\[CI-SHELL\] DONE seq={seq} status=ok line='{re.escape(cmd)}'"
+        rf"\[CI-SHELL\] DONE seq={seq} len={len(cmd)} status=ok hex={hex_cmd}"
     )
 
 
@@ -176,7 +178,11 @@ def send_committed(h, label, cmd):
             return seq
         if name == "commit_other":
             committed_seq = match.group(1)
-            committed = match.group(3)
+            committed_hex = match.group(3)
+            try:
+                committed = bytes.fromhex(committed_hex).decode("ascii", errors="replace")
+            except ValueError:
+                committed = committed_hex
             raise HarnessError(
                 f"{label}: saw mismatched commit seq={committed_seq} line={committed!r}"
             )
