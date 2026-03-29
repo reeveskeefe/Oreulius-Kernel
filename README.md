@@ -16,6 +16,8 @@
 [![Multiarch QEMU Extended](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/multiarch-qemu-extended.yml/badge.svg)](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/multiarch-qemu-extended.yml)
 [![i686 Network Regression](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/i686-network-regression.yml/badge.svg)](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/i686-network-regression.yml)
 [![x86_64 Network Regression](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/x86_64-network-regression.yml/badge.svg)](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/x86_64-network-regression.yml)
+[![Aarch64 Network Regression](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/
+aarch64-network-regression.yml/badge.svg)](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/aarch64-network-regression.yml)
 [![CapNet Regression](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/capnet-regression.yml/badge.svg)](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/capnet-regression.yml)
 [![WASM JIT Regression](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/wasm-jit-regression.yml/badge.svg)](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/wasm-jit-regression.yml)
 [![Proof Check](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/proof-check.yml/badge.svg)](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/proof-check.yml)
