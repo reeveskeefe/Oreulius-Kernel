@@ -1829,6 +1829,28 @@ pub fn process_incoming_control_payload(
                         tok.token_id(),
                         frame.token_id
                     );
+                    crate::serial_println!(
+                        "TOKEN-FIELDS: nonce={:#x} issuer={:#x} subject={:#x} cap={} rights={:#x} expiry={:#x} mac={:#x}",
+                        tok.nonce,
+                        tok.issuer_device_id,
+                        tok.subject_device_id,
+                        tok.cap_type,
+                        tok.rights,
+                        tok.expires_at,
+                        tok.mac,
+                    );
+                    crate::serial_println!(
+                        "TOKEN-FIELDS2: issued={} not_before={} obj={:#x} deleg={} max_uses={} session={} ctx={} maxb={} quota={}",
+                        tok.issued_at,
+                        tok.not_before,
+                        tok.object_id,
+                        tok.delegation_depth,
+                        tok.max_uses,
+                        tok.session_id,
+                        tok.context,
+                        tok.max_bytes,
+                        tok.resource_quota,
+                    );
                 }
                 audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.token_id);
                 return Err(CapNetError::TokenIdMismatch);
