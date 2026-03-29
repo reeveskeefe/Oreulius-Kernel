@@ -1830,7 +1830,7 @@ pub fn process_incoming_control_payload(
                         frame.token_id
                     );
                     crate::serial_println!(
-                        "TOKEN-FIELDS: nonce={:#x} issuer={:#x} subject={:#x} cap={} rights={:#x} expiry={:#x} mac={:#x}",
+                        "TOKEN-FIELDS: n={:#x} iss={:#x} sub={:#x} c={} r={:#x} exp={:#x} mac={:#x} obj={:#x} nbf={} dd={} mu={} rq={}",
                         tok.nonce,
                         tok.issuer_device_id,
                         tok.subject_device_id,
@@ -1838,17 +1838,10 @@ pub fn process_incoming_control_payload(
                         tok.rights,
                         tok.expires_at,
                         tok.mac,
-                    );
-                    crate::serial_println!(
-                        "TOKEN-FIELDS2: issued={} not_before={} obj={:#x} deleg={} max_uses={} session={} ctx={} maxb={} quota={}",
-                        tok.issued_at,
-                        tok.not_before,
                         tok.object_id,
+                        tok.not_before,
                         tok.delegation_depth,
                         tok.max_uses,
-                        tok.session_id,
-                        tok.context,
-                        tok.max_bytes,
                         tok.resource_quota,
                     );
                 }

@@ -8995,7 +8995,10 @@ fn cmd_capnet_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
-    let iters = match parts.next().and_then(parse_number) {
+    let iters_str = parts.next();
+    let rounds_str = parts.next();
+    crate::serial_println!("CFS-ARGS: iters={:?} rounds={:?}", iters_str, rounds_str);
+    let iters = match iters_str.and_then(parse_number) {
         Some(v) => v as u32,
         None => {
             vga::print_str("Usage: capnet-fuzz-soak <iters> <rounds>\n");
@@ -9003,7 +9006,7 @@ fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    let rounds = match parts.next().and_then(parse_number) {
+    let rounds = match rounds_str.and_then(parse_number) {
         Some(v) => v as u32,
         None => {
             vga::print_str("Usage: capnet-fuzz-soak <iters> <rounds>\n");
