@@ -78,25 +78,22 @@ pub fn cmd_http_get<W: Write>(out: &mut W, url: Option<&str>) {
     let _ = writeln!(out, "===== Response Body =====");
     let _ = writeln!(out);
 
-    let print_len = response.body_len.min(1024);
-    if let Ok(body) = core::str::from_utf8(&response.body[..print_len]) {
-        let _ = write!(out, "{}", body);
-    } else {
-        for &byte in &response.body[..print_len] {
-            let ch = if (0x20..=0x7e).contains(&byte) || byte == b'\n' || byte == b'\r' {
-                byte as char
-            } else {
-                '.'
-            };
-            let _ = write!(out, "{}", ch);
-        }
+    // Keep shell output bounded and formatter pressure low on legacy x86.
+    let print_len = response.body_len.min(256);
+    for &byte in &response.body[..print_len] {
+        let ch = if (0x20..=0x7e).contains(&byte) || byte == b'\n' || byte == b'\r' {
+            byte as char
+        } else {
+            '.'
+        };
+        let _ = out.write_char(ch);
     }
 
-    if response.body_len > 1024 {
+    if response.body_len > print_len {
         let _ = writeln!(
             out,
             "\n\n[... truncated {} bytes ...]",
-            response.body_len - 1024
+            response.body_len - print_len
         );
     }
 

@@ -17,11 +17,15 @@ set timeout 120
 set send_slow {1 0.05}
 set iters 1000
 set soak_rounds 0
+set phase "both"
 if {[llength $argv] >= 1} {
     set iters [lindex $argv 0]
 }
 if {[llength $argv] >= 2} {
     set soak_rounds [lindex $argv 1]
+}
+if {[llength $argv] >= 3} {
+    set phase [lindex $argv 2]
 }
 
 # Optional structured log directory.
@@ -81,29 +85,44 @@ proc send_i686_cmd {cmd} {
     send -s -- "$cmd\r"
 }
 
+proc terminate_i686_guest {} {
+    after 300
+    send "\003"
+    expect {
+        eof {}
+        timeout {}
+    }
+}
+
 expect_i686_shell_ready
 # Clear any stale line noise on the first serial-interactive prompt.
 send "\r"
 expect_i686_prompt
 set timeout 600
 
-puts "RUN: wfc $iters"
-send_i686_cmd "wfc $iters"
-expect {
-    -re {Seeds passed: [0-9]+ / [0-9]+} {}
-    timeout { puts "timeout waiting for WASM corpus seed summary"; exit 1 }
+if {$phase ne "soak-only"} {
+    puts "RUN: wfc $iters"
+    send_i686_cmd "wfc $iters"
+    expect {
+        -re {Seeds passed: [0-9]+ / [0-9]+} {}
+        timeout { puts "timeout waiting for WASM corpus seed summary"; exit 1 }
+    }
+    expect {
+        -re {Total mismatches: [0-9]+} {}
+        timeout { puts "timeout waiting for WASM corpus mismatch summary"; exit 1 }
+    }
+    expect {
+        -re {Total compile errors: [0-9]+} {}
+        timeout { puts "timeout waiting for WASM corpus compile summary"; exit 1 }
+    }
+    if {$phase eq "corpus-only"} {
+        terminate_i686_guest
+        exit 0
+    }
+    expect_i686_prompt
 }
-expect {
-    -re {Total mismatches: [0-9]+} {}
-    timeout { puts "timeout waiting for WASM corpus mismatch summary"; exit 1 }
-}
-expect {
-    -re {Total compile errors: [0-9]+} {}
-    timeout { puts "timeout waiting for WASM corpus compile summary"; exit 1 }
-}
-expect_i686_prompt
 
-if {$soak_rounds > 0} {
+if {$soak_rounds > 0 && $phase ne "corpus-only"} {
     puts "RUN: wfs $iters $soak_rounds"
     send_i686_cmd "wfs $iters $soak_rounds"
     expect {
@@ -117,6 +136,10 @@ if {$soak_rounds > 0} {
     expect {
         -re {Total compile errors: [0-9]+} {}
         timeout { puts "timeout waiting for WASM soak compile summary"; exit 1 }
+    }
+    if {$phase eq "soak-only"} {
+        terminate_i686_guest
+        exit 0
     }
     expect_i686_prompt
 }

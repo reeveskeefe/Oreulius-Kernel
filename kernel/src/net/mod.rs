@@ -1289,10 +1289,16 @@ fn find_http_header_end(data: &[u8]) -> Option<usize> {
     if data.len() < 4 {
         return None;
     }
-    for i in 0..=data.len() - 4 {
-        if data[i..i + 4] == *b"\r\n\r\n" {
+    let mut i = 0usize;
+    while i + 4 <= data.len() {
+        if data[i] == b'\r'
+            && data[i + 1] == b'\n'
+            && data[i + 2] == b'\r'
+            && data[i + 3] == b'\n'
+        {
             return Some(i);
         }
+        i += 1;
     }
     None
 }
@@ -1408,7 +1414,12 @@ fn has_chunked_terminator(body: &[u8]) -> bool {
     }
     let mut i = 0usize;
     while i + 5 <= body.len() {
-        if &body[i..i + 5] == b"0\r\n\r\n" {
+        if body[i] == b'0'
+            && body[i + 1] == b'\r'
+            && body[i + 2] == b'\n'
+            && body[i + 3] == b'\r'
+            && body[i + 4] == b'\n'
+        {
             return true;
         }
         i += 1;

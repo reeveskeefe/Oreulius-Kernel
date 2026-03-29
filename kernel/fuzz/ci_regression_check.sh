@@ -23,26 +23,27 @@ if [[ -z "${log_dir}" ]]; then
     fi
 fi
 mkdir -p "${log_dir}"
-log_file="${log_dir}/wasm_jit_corpus.log"
+corpus_log="${log_dir}/wasm_jit_corpus.log"
+soak_log="${log_dir}/wasm_jit_soak.log"
 
 export LOG_DIR="${log_dir}"
 export QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:--display none -nographic -no-reboot -no-shutdown}"
 
 echo "Running external corpus replay (iters=${iters}, soak_rounds=${soak_rounds})..."
 set +e
-./fuzz/run_wasm_jit_corpus.expect "${iters}" "${soak_rounds}" > "${log_file}" 2>&1
+./fuzz/run_wasm_jit_corpus.expect "${iters}" 0 corpus-only > "${corpus_log}" 2>&1
 runner_status=$?
 set -e
-cat "${log_file}"
+cat "${corpus_log}"
 
 if (( runner_status != 0 )); then
     echo "ERROR: WASM expect runner failed with exit status ${runner_status}"
     exit "${runner_status}"
 fi
 
-seeds_line="$(grep -aE '^Seeds passed:' "${log_file}" | tail -1 || true)"
-mismatch_line="$(grep -aE '^Total mismatches:' "${log_file}" | tail -1 || true)"
-compile_line="$(grep -aE '^Total compile errors:' "${log_file}" | tail -1 || true)"
+seeds_line="$(grep -aE '^Seeds passed:' "${corpus_log}" | tail -1 || true)"
+mismatch_line="$(grep -aE '^Total mismatches:' "${corpus_log}" | tail -1 || true)"
+compile_line="$(grep -aE '^Total compile errors:' "${corpus_log}" | tail -1 || true)"
 
 if [[ -z "${seeds_line}" || -z "${mismatch_line}" || -z "${compile_line}" ]]; then
     echo "DEBUG: seeds_line='${seeds_line}'"
@@ -75,10 +76,22 @@ if (( total_compile_errors != 0 )); then
     exit 1
 fi
 
+echo "Running external soak replay (iters=${iters}, soak_rounds=${soak_rounds})..."
+set +e
+./fuzz/run_wasm_jit_corpus.expect "${iters}" "${soak_rounds}" soak-only > "${soak_log}" 2>&1
+runner_status=$?
+set -e
+cat "${soak_log}"
+
+if (( runner_status != 0 )); then
+    echo "ERROR: WASM expect soak runner failed with exit status ${runner_status}"
+    exit "${runner_status}"
+fi
+
 # Strip non-printable characters (except newlines) for soak parsing so that
 # stray NUL or control bytes from QEMU serial don't confuse awk.
-clean_log="${log_file}.clean"
-LC_ALL=C tr -cd '[:print:]\n' < "${log_file}" > "${clean_log}"
+clean_log="${soak_log}.clean"
+LC_ALL=C tr -cd '[:print:]\n' < "${soak_log}" > "${clean_log}"
 
 rounds_line="$(awk '
     /^===== WASM JIT Corpus Soak =====/ {in_soak=1; next}

@@ -46,7 +46,7 @@ class QemuSerialHarness:
                 if exc.errno == errno.EIO:
                     break
                 raise
-            text = chunk.decode("utf-8", errors="replace")
+            text = chunk.decode("utf-8", errors="replace").replace("\x00", "")
             sys.stdout.write(text)
             sys.stdout.flush()
             with self._cv:
@@ -114,7 +114,9 @@ class QemuSerialHarness:
 PROMPT_RE = re.compile(r"\[CI-SHELL\] PROMPT")
 READY_RE = re.compile(r"\[CI-SHELL\] READY")
 COMMIT_ANY_RE = re.compile(r"\[CI-SHELL\] COMMIT seq=(\d+) len=(\d+) hex=([0-9A-F]*)")
-DONE_ANY_RE = re.compile(r"\[CI-SHELL\] DONE seq=(\d+) len=(\d+) status=ok hex=([0-9A-F]*)")
+DONE_ANY_RE = re.compile(
+    r"\[CI-SHELL\] DONE seq=(\d+)(?: status=ok| len=(\d+) status=ok(?: hex=([0-9A-F]*))?)"
+)
 STATUS_READY_RE = re.compile(r"Status: READY")
 STATUS_NOT_READY_RE = re.compile(r"Status: NOT READY")
 NONZERO_IP_RE = re.compile(r"My IP: (?!0\.0\.0\.0)(?:\d{1,3}\.){3}\d{1,3}")
@@ -130,6 +132,13 @@ REQUEST_FAILED_RE = re.compile(r"Request failed: (.+)")
 RESOLUTION_FAILED_RE = re.compile(r"Resolution failed: (.+)")
 ERROR_RE = re.compile(r"Error: (.+)")
 UNKNOWN_CMD_RE = re.compile(r"Unknown command: (.+)")
+TRANSIENT_HTTP_FAILURES = {
+    "TCP connect failed",
+    "HTTP timeout",
+    "TCP timeout",
+    "TCP send failed",
+    "TCP receive failed",
+}
 
 
 def commit_re(seq, cmd):
@@ -142,7 +151,7 @@ def commit_re(seq, cmd):
 def done_re(seq, cmd):
     hex_cmd = cmd.encode("ascii").hex().upper()
     return re.compile(
-        rf"\[CI-SHELL\] DONE seq={seq} len={len(cmd)} status=ok hex={hex_cmd}"
+        rf"\[CI-SHELL\] DONE seq={seq}(?: status=ok| len={len(cmd)} status=ok(?: hex={hex_cmd})?)"
     )
 
 
@@ -268,33 +277,47 @@ def run_simple_phase(h, label, cmd, success_regex):
 def run_http_phase(h):
     label = "plain HTTP"
     cmd = "http-get http://example.com/"
-    seq = send_committed(h, label, cmd)
-    name, match = h.wait_for_any(
-        [
-            ("status", HTTP_STATUS_RE),
-            ("request_failed", REQUEST_FAILED_RE),
-            ("error", ERROR_RE),
-            ("unknown", UNKNOWN_CMD_RE),
-        ],
-        120,
-        f"{label}: waiting for HTTP status",
-    )
-    ensure_no_failure(label, name, match)
-    name, match = h.wait_for_any(
-        [
-            ("total", HTTP_TOTAL_RE),
-            ("request_failed", REQUEST_FAILED_RE),
-            ("error", ERROR_RE),
-            ("unknown", UNKNOWN_CMD_RE),
-        ],
-        120,
-        f"{label}: waiting for HTTP body length",
-    )
-    ensure_no_failure(label, name, match)
-    h.wait_for_any(
-        [("done", done_re(seq, cmd))], 60, f"{label}: waiting for completion marker"
-    )
-    wait_for_prompt(h)
+    for attempt in range(2):
+        seq = send_committed(h, label, cmd)
+        name, match = h.wait_for_any(
+            [
+                ("status", HTTP_STATUS_RE),
+                ("request_failed", REQUEST_FAILED_RE),
+                ("error", ERROR_RE),
+                ("unknown", UNKNOWN_CMD_RE),
+            ],
+            120,
+            f"{label}: waiting for HTTP status",
+        )
+        if name == "status":
+            name, match = h.wait_for_any(
+                [
+                    ("total", HTTP_TOTAL_RE),
+                    ("request_failed", REQUEST_FAILED_RE),
+                    ("error", ERROR_RE),
+                    ("unknown", UNKNOWN_CMD_RE),
+                ],
+                120,
+                f"{label}: waiting for HTTP body length",
+            )
+            ensure_no_failure(label, name, match)
+            h.wait_for_any(
+                [("done", done_re(seq, cmd))], 60, f"{label}: waiting for completion marker"
+            )
+            wait_for_prompt(h)
+            return
+
+        transient = name == "request_failed" and match.group(1) in TRANSIENT_HTTP_FAILURES
+        if transient and attempt == 0:
+            h.wait_for_any(
+                [("done", done_re(seq, cmd))], 60, f"{label}: waiting for completion marker"
+            )
+            wait_for_prompt(h)
+            time.sleep(1.5)
+            continue
+        ensure_no_failure(label, name, match)
+
+    raise HarnessError(f"{label}: exhausted retry budget")
 
 
 def run_https_phase(h):

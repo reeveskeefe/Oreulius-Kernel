@@ -5,12 +5,10 @@ on:
   push:
     paths:
       - "kernel/**"
-      - "README.md"
       - ".github/workflows/x86_64-network-regression.yml"
   pull_request:
     paths:
       - "kernel/**"
-      - "README.md"
       - ".github/workflows/x86_64-network-regression.yml"
 
 jobs:
