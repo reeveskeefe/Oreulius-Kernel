@@ -1,11 +1,10 @@
 #!/usr/bin/expect -f
 #
-# Diagnostic re-run for a failing CapNet corpus seed.
-# Boots QEMU and runs the full corpus again; MAC-DIAG serial lines
-# provide the per-frame diagnostics for whichever seed(s) still fail.
+# Diagnostic re-run for a specific CapNet fuzz seed.
+# Boots QEMU and runs `capnet-fuzz <iters> <seed>` so MAC-DIAG serial lines
+# provide per-frame diagnostics for the exact seed under test.
 #
 # Usage:  ./fuzz/run_capnet_single_seed.expect <iters> <seed>
-# (seed argument is logged but the kernel always replays the fixed corpus)
 
 set harness_timeout 1200
 after [expr {$harness_timeout * 1000}] {
@@ -18,6 +17,7 @@ set timeout 120
 set send_slow {1 0.05}
 set iters 100
 set diag_seed 0
+set fixed_seed 3870443198
 if {[llength $argv] >= 1} {
     set iters [lindex $argv 0]
 }
@@ -54,10 +54,24 @@ set qemu_args [concat $qemu_args $filtered_extra]
 spawn {*}$qemu_args
 
 proc expect_i686_shell_ready {} {
+    set saw_shell_banner 0
     expect {
-        -re {Type 'help' for commands\.} { exp_continue }
-        -re {(\r?\n|^)> } {}
-        timeout { puts "timeout waiting for i686 kernel shell readiness"; exit 1 }
+        -re {\[SHELL\] Banner printed} {
+            set saw_shell_banner 1
+            exp_continue
+        }
+        -re {Type 'help' for commands\.} {
+            set saw_shell_banner 1
+            exp_continue
+        }
+        -re {(\r?\n|^)> } { return }
+        timeout {
+            if {$saw_shell_banner} {
+                return
+            }
+            puts "timeout waiting for i686 kernel shell readiness"
+            exit 1
+        }
     }
 }
 
@@ -69,15 +83,51 @@ proc expect_i686_prompt {} {
 }
 
 proc send_i686_cmd {cmd} {
-    after 300
-    send -- "\r"
-    after 200
-    expect {
-        -re {(\r?\n|^)> } {}
-        timeout {}
+    set retries 0
+    while {$retries < 5} {
+        after 300
+        send -- "\r"
+        after 200
+        expect {
+            -re {(\r?\n|^)> } {}
+            timeout {}
+        }
+        after 600
+        send -s -- "$cmd\r"
+        set timeout 1
+        expect {
+            -re {Unknown command:} {
+                incr retries
+                after 400
+                set timeout 3
+                expect {
+                    -re {(\r?\n|^)> } {}
+                    timeout {}
+                }
+            }
+            timeout {
+                return
+            }
+        }
     }
-    after 300
-    send -s -- "$cmd\r"
+    puts "failed to deliver command: $cmd"
+    exit 1
+}
+
+proc start_i686_cmd {cmd start_re label} {
+    set retries 0
+    while {$retries < 5} {
+        send_i686_cmd $cmd
+        set timeout 5
+        expect {
+            -re $start_re { return }
+            timeout {
+                incr retries
+            }
+        }
+    }
+    puts "failed to start $label command: $cmd"
+    exit 1
 }
 
 expect_i686_shell_ready
@@ -85,28 +135,34 @@ send "\r"
 expect_i686_prompt
 set timeout 600
 
-puts "DIAG-RUN: cfc $iters (failing seed=$diag_seed)"
-send_i686_cmd "cfc $iters"
+if {$diag_seed == $fixed_seed} {
+    puts "DIAG-RUN: cfd$iters"
+    start_i686_cmd "cfd$iters" {===== CapNet Fuzz =====|Seed: [0-9]+} "CapNet fixed-seed replay"
+} else {
+    puts "DIAG-RUN: capnet-fuzz $iters $diag_seed"
+    start_i686_cmd "capnet-fuzz $iters $diag_seed" {===== CapNet Fuzz =====|Seed: [0-9]+} "CapNet single-seed replay"
+}
 
-# Match per-seed progress lines to keep the timeout rolling (300 s/seed).
+# Match the summary and fail if the single-seed replay reports any failures.
 set timeout 300
-set seeds_seen 0
+set failures -1
 expect {
-    -re {Seed [0-9]+/[0-9]+: failures=[0-9]+} {
-        incr seeds_seen
-        exp_continue
+    -re {Failures: ([0-9]+)} {
+        set failures $expect_out(1,string)
     }
-    -re {Seeds passed: [0-9]+ / [0-9]+} {}
     timeout {
-        puts "timeout waiting for CapNet corpus seed (seen $seeds_seen seed progress lines)"
+        puts "timeout waiting for CapNet single-seed summary"
         exit 1
     }
 }
-expect {
-    -re {Total failures: [0-9]+} {}
-    timeout { puts "timeout waiting for CapNet corpus failure summary"; exit 1 }
-}
 expect_i686_prompt
+
+if {$failures ne "0"} {
+    puts "CapNet single-seed replay failed (seed=$diag_seed failures=$failures)"
+    sleep 1
+    send "\003"
+    exit 1
+}
 
 sleep 1
 send "\003"

@@ -1018,7 +1018,7 @@ impl CapabilityTokenV1 {
     /// Canonical deterministic identifier for dedup/revocation indexing.
     /// This excludes the MAC so the ID remains stable across re-signing.
     pub fn token_id(&self) -> u64 {
-        fnv1a64(self.encode_without_mac().as_slice())
+        canonical_token_id_from_body(self.encode_without_mac().as_slice())
     }
 
     /// Canonical bytes used for MAC/signature input.
@@ -1174,6 +1174,19 @@ fn compute_control_mac(k0: u64, k1: u64, frame: &CapNetControlFrame) -> Result<u
     let mut input = [0u8; CAPNET_CTRL_HEADER_NO_MAC_LEN + CAPNET_CTRL_MAX_PAYLOAD];
     let len = control_mac_input(frame, &mut input)?;
     Ok(security::security().cap_token_sign_with_key(k0, k1, &input[..len]))
+}
+
+fn canonical_token_id_from_body(body: &[u8]) -> u64 {
+    fnv1a64(body)
+}
+
+fn canonical_token_id_from_encoded_payload(payload: &[u8]) -> Result<u64, CapNetError> {
+    if payload.len() != CAPNET_TOKEN_V1_LEN {
+        return Err(CapNetError::InvalidLength);
+    }
+    Ok(canonical_token_id_from_body(
+        &payload[..CAPNET_TOKEN_V1_BODY_LEN],
+    ))
 }
 
 fn encode_control_frame(
@@ -1388,8 +1401,8 @@ pub fn build_token_offer_frame(
     token: &mut CapabilityTokenV1,
 ) -> Result<EncodedControlFrame, CapNetError> {
     sign_outgoing_token_for_peer(peer_device_id, token)?;
-    let token_id = token.token_id();
     let payload = token.encode();
+    let token_id = canonical_token_id_from_encoded_payload(&payload)?;
     build_control_frame_for_peer(
         peer_device_id,
         CapNetControlType::TokenOffer,
@@ -1820,13 +1833,19 @@ pub fn process_incoming_control_payload(
                 audit_capnet(SecurityEvent::InvalidCapability, frame.token_id);
                 return Err(CapNetError::InvalidControlFrame);
             }
-            let tok =
-                CapabilityTokenV1::decode_checked(&frame.payload[..CAPNET_TOKEN_V1_LEN])?;
-            if tok.token_id() != frame.token_id {
+            let token_payload = &frame.payload[..CAPNET_TOKEN_V1_LEN];
+            let canonical_token_id = canonical_token_id_from_encoded_payload(token_payload)?;
+            let tok = CapabilityTokenV1::decode_checked(token_payload)?;
+            let roundtrip_body = tok.encode_without_mac();
+            if roundtrip_body.as_slice() != &token_payload[..CAPNET_TOKEN_V1_BODY_LEN] {
+                audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.token_id);
+                return Err(CapNetError::InvalidControlFrame);
+            }
+            if canonical_token_id != frame.token_id {
                 if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
                     crate::serial_println!(
                         "TOKEN-ID-DIAG computed={:#x} frame={:#x}",
-                        tok.token_id(),
+                        canonical_token_id,
                         frame.token_id
                     );
                     crate::serial_println!(
@@ -2512,15 +2531,15 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
 
     reset_fuzz_harness_state(local, 1, k0, k1).map_err(|e| e.as_str())?;
 
-    let overflow = build_fuzz_overflow_control_frame();
     let mut random_token = [0u8; CAPNET_TOKEN_V1_LEN];
     let mut random_frame = [0u8; CAPNET_CTRL_MAX_FRAME_LEN];
 
     let mut i = 0u32;
     while i < iterations {
-        // Keep the per-iteration replay isolation from the original harness,
-        // while the full CapNet journal/lease reset happens once per seed run.
-        reset_peer_session_state(local).map_err(|e| e.as_str())?;
+        // Each iteration must start from a fully clean CapNet state.
+        // Valid-offer processing installs remote leases and delegation records,
+        // so replay-only resets allow hidden cross-iteration state to build up.
+        reset_fuzz_harness_state(local, 1, k0, k1).map_err(|e| e.as_str())?;
 
         let mut token = build_fuzz_token(local, base_nonce);
         let offer = match build_token_offer_frame(local, 0, &mut token) {
@@ -2706,6 +2725,7 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
             }
         }
 
+        let overflow = build_fuzz_overflow_control_frame();
         match decode_control_frame(&overflow) {
             Err(CapNetError::PayloadTooLarge) => {}
             Err(e) => {
@@ -2753,11 +2773,8 @@ pub fn capnet_fuzz_regression_default(
 
     let mut i = 0usize;
     while i < CAPNET_FUZZ_REGRESSION_SEEDS.len() {
-        // Flush cross-seed global state (capability remote leases, delegation
-        // records, tombstones) so each seed starts from a clean baseline and
-        // leftover use-budget decrements or stale leases from prior seeds
-        // cannot affect the current seed's verification paths.
-        flush_fuzz_interround_state();
+        // capnet_fuzz() now performs a full harness reset at entry and before
+        // each iteration, so an extra corpus-level preflush is redundant.
         let seed = CAPNET_FUZZ_REGRESSION_SEEDS[i];
         let stats = capnet_fuzz(iterations_per_seed, seed)?;
         out.total_failures = out.total_failures.saturating_add(stats.failures);
@@ -2799,28 +2816,6 @@ pub fn capnet_fuzz_regression_default(
 
     Ok(out)
 }
-
-fn flush_fuzz_interround_state() {
-    {
-        let mut records = CAPNET_DELEGATION_RECORDS.lock();
-        let mut i = 0usize;
-        while i < records.len() {
-            records[i] = DelegationRecord::empty();
-            i += 1;
-        }
-    }
-    {
-        let mut tombstones = CAPNET_REVOCATION_TOMBSTONES.lock();
-        let mut i = 0usize;
-        while i < tombstones.len() {
-            tombstones[i] = RevocationTombstone::empty();
-            i += 1;
-        }
-    }
-    *CAPNET_NEXT_REVOCATION_EPOCH.lock() = 1;
-    crate::capability::clear_remote_leases_for_testing();
-}
-
 pub fn capnet_fuzz_regression_soak_default(
     iterations_per_seed: u32,
     rounds: u32,
@@ -2849,7 +2844,6 @@ pub fn capnet_fuzz_regression_soak_default(
 
     let mut r = 0u32;
     while r < rounds {
-        flush_fuzz_interround_state();
         let stats = capnet_fuzz_regression_default(iterations_per_seed)?;
         out.seed_passes = out.seed_passes.saturating_add(stats.seeds_passed);
         out.seed_failures = out.seed_failures.saturating_add(stats.seeds_failed);
@@ -3134,6 +3128,84 @@ fn read_u64(buf: &[u8], offset: &mut usize) -> Result<u64, CapNetError> {
     Ok(u64::from_le_bytes([
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_token() -> CapabilityTokenV1 {
+        let mut token = CapabilityTokenV1::empty();
+        token.cap_type = 13;
+        token.token_flags = 1;
+        token.issuer_device_id = 0x1122_3344_5566_7788;
+        token.subject_device_id = 0x8877_6655_4433_2211;
+        token.object_id = 0x4341_504E_4554_4655;
+        token.rights = 0x4000;
+        token.constraints_flags = CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
+        token.issued_at = 1;
+        token.not_before = 1;
+        token.expires_at = u64::MAX - 1024;
+        token.nonce = 0xBADC_0FFE_266C_B853;
+        token.delegation_depth = 0;
+        token.max_uses = 4;
+        token.resource_quota = 0;
+        token.max_bytes = 0;
+        token.mac = 0x4CC1_787D_2FCF_14D2;
+        token
+    }
+
+    #[test]
+    fn encoded_token_payload_drives_canonical_token_id() {
+        let token = sample_token();
+        let encoded = token.encode();
+        let decoded = CapabilityTokenV1::decode_checked(&encoded).unwrap();
+
+        let expected = canonical_token_id_from_encoded_payload(&encoded).unwrap();
+        assert_eq!(expected, token.token_id());
+        assert_eq!(expected, decoded.token_id());
+    }
+
+    #[test]
+    fn control_frame_roundtrip_preserves_token_offer_identity() {
+        let token = sample_token();
+        let payload = token.encode();
+        let token_id = canonical_token_id_from_encoded_payload(&payload).unwrap();
+
+        let mut frame = CapNetControlFrame::empty();
+        frame.msg_type = CapNetControlType::TokenOffer;
+        frame.flags = 0;
+        frame.seq = 7;
+        frame.ack = 3;
+        frame.issuer_device_id = token.issuer_device_id;
+        frame.subject_device_id = token.subject_device_id;
+        frame.token_id = token_id;
+        frame.key_epoch = 1;
+        frame.payload_len = payload.len() as u16;
+        frame.payload[..payload.len()].copy_from_slice(&payload);
+        frame.frame_mac = 0xABCD_EF01_2345_6789;
+
+        let (encoded, len) = encode_control_frame(&frame).unwrap();
+        let decoded = decode_control_frame(&encoded[..len]).unwrap();
+
+        assert_eq!(decoded.token_id, token_id);
+        assert_eq!(decoded.payload_len as usize, CAPNET_TOKEN_V1_LEN);
+        assert_eq!(
+            canonical_token_id_from_encoded_payload(&decoded.payload[..CAPNET_TOKEN_V1_LEN]).unwrap(),
+            token_id
+        );
+    }
+
+    #[test]
+    fn fixed_regression_seed_no_longer_fails() {
+        let stats = capnet_fuzz(100, 3_870_443_198).unwrap();
+        assert_eq!(
+            stats.failures, 0,
+            "stage={} reason={}",
+            stats.first_failure.map(|f| f.stage).unwrap_or("none"),
+            stats.first_failure.map(|f| f.reason).unwrap_or("none")
+        );
+    }
 }
 
 /// CapNet Offline Certificate

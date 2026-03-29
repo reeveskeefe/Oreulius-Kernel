@@ -236,7 +236,8 @@ pub fn execute(input: &str) {
         return;
     }
 
-    // Normalize "cfc<N>" → "cfc <N>" and "cfs<N>..." → "cfs <N>..."
+    // Normalize "cfc<N>" → "cfc <N>", "cfs<N>..." → "cfs <N>...",
+    // and "cfd<N>" → "cfd <N>".
     // Handles intermittent space-character drops on QEMU's polled 16550A UART.
     let mut _norm_buf = [0u8; 32];
     let trimmed = {
@@ -244,7 +245,7 @@ pub fn execute(input: &str) {
         let is_fuzz_prefix = b.len() > 3
             && b[0] == b'c'
             && b[1] == b'f'
-            && (b[2] == b'c' || b[2] == b's')
+            && (b[2] == b'c' || b[2] == b's' || b[2] == b'd')
             && b[3].is_ascii_digit();
         if is_fuzz_prefix {
             let rest = b.len() - 3;
@@ -385,6 +386,9 @@ pub fn execute(input: &str) {
             vga::print_str("  jitfuzzreg - JIT fuzz regression runner (jitfuzzreg full [iters] | jitfuzzreg [iters [seeds]])\n");
             vga::print_str(
                 "  capnet-fuzz - Fuzz CapNet parser/enforcer (capnet-fuzz <iters> [seed])\n",
+            );
+            vga::print_str(
+                "  capnet-fuzz-fixed - Run the pinned CapNet regression seed (capnet-fuzz-fixed <iters>)\n",
             );
             vga::print_str(
                 "  capnet-fuzz-corpus - Replay CapNet seed corpus (capnet-fuzz-corpus <iters>)\n",
@@ -750,6 +754,12 @@ pub fn execute(input: &str) {
         }
         "capnet-fuzz" => {
             cmd_capnet_fuzz(parts);
+        }
+        "capnet-fuzz-fixed" => {
+            cmd_capnet_fuzz_fixed(parts);
+        }
+        "cfd" => {
+            cmd_capnet_fuzz_fixed(parts);
         }
         "capnet-fuzz-corpus" => {
             cmd_capnet_fuzz_corpus(parts);
@@ -8863,23 +8873,21 @@ fn print_capnet_fuzz_failure(failure: crate::capnet::CapNetFuzzFailure) {
     }
 }
 
-fn cmd_capnet_fuzz(mut parts: core::str::SplitWhitespace) {
-    let iters = match parts.next().and_then(parse_number) {
-        Some(v) => v as u32,
-        None => {
-            vga::print_str("Usage: capnet-fuzz <iters> [seed]\n");
-            return;
-        }
-    };
+const CAPNET_FIXED_REGRESSION_SEED: u64 = 3_870_443_198;
+
+fn run_capnet_with_irqs_masked<T>(f: impl FnOnce() -> T) -> T {
+    let irq_flags = unsafe { crate::scheduler::scheduler_platform::irq_save_disable() };
+    let out = f();
+    unsafe { crate::scheduler::scheduler_platform::irq_restore(irq_flags) };
+    out
+}
+
+fn run_capnet_fuzz_with_seed(iters: u32, seed: u64) {
     const MAX_FUZZ_ITERS: u32 = 10_000;
     if iters == 0 || iters > MAX_FUZZ_ITERS {
         vga::print_str("Iterations must be 1..=10000.\n");
         return;
     }
-    let seed = parts
-        .next()
-        .and_then(parse_u64_any)
-        .unwrap_or_else(|| crate::security::security().random_u32() as u64);
 
     vga::print_str("\n===== CapNet Fuzz =====\n\n");
     vga::print_str("Iterations: ");
@@ -8888,7 +8896,7 @@ fn cmd_capnet_fuzz(mut parts: core::str::SplitWhitespace) {
     print_u64(seed);
     vga::print_str("\n\n");
 
-    match crate::capnet::capnet_fuzz(iters, seed) {
+    match run_capnet_with_irqs_masked(|| crate::capnet::capnet_fuzz(iters, seed)) {
         Ok(stats) => {
             vga::print_str("Valid path OK: ");
             print_u32(stats.valid_path_ok);
@@ -8925,6 +8933,32 @@ fn cmd_capnet_fuzz(mut parts: core::str::SplitWhitespace) {
     vga::print_str("\n");
 }
 
+fn cmd_capnet_fuzz(mut parts: core::str::SplitWhitespace) {
+    let iters = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: capnet-fuzz <iters> [seed]\n");
+            return;
+        }
+    };
+    let seed = parts
+        .next()
+        .and_then(parse_u64_any)
+        .unwrap_or_else(|| crate::security::security().random_u32() as u64);
+    run_capnet_fuzz_with_seed(iters, seed);
+}
+
+fn cmd_capnet_fuzz_fixed(mut parts: core::str::SplitWhitespace) {
+    let iters = match parts.next().and_then(parse_number) {
+        Some(v) => v as u32,
+        None => {
+            vga::print_str("Usage: capnet-fuzz-fixed <iters>\n");
+            return;
+        }
+    };
+    run_capnet_fuzz_with_seed(iters, CAPNET_FIXED_REGRESSION_SEED);
+}
+
 fn cmd_capnet_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     let iters = parts
         .next()
@@ -8946,7 +8980,7 @@ fn cmd_capnet_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     print_u32(iters);
     vga::print_str("\n\n");
 
-    match crate::capnet::capnet_fuzz_regression_default(iters) {
+    match run_capnet_with_irqs_masked(|| crate::capnet::capnet_fuzz_regression_default(iters)) {
         Ok(stats) => {
             vga::print_str("Seeds passed: ");
             print_u32(stats.seeds_passed);
@@ -9037,7 +9071,7 @@ fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     print_u32(crate::capnet::CAPNET_FUZZ_REGRESSION_SEEDS.len() as u32);
     vga::print_str("\n\n");
 
-    match crate::capnet::capnet_fuzz_regression_soak_default(iters, rounds) {
+    match run_capnet_with_irqs_masked(|| crate::capnet::capnet_fuzz_regression_soak_default(iters, rounds)) {
         Ok(stats) => {
             vga::print_str("Rounds passed: ");
             print_u32(stats.rounds_passed);
@@ -9806,6 +9840,7 @@ fn cmd_network_help() {
     vga::print_str("  capnet-stats\n");
     vga::print_str("  capnet-demo\n");
     vga::print_str("  capnet-fuzz <iters> [seed]\n");
+    vga::print_str("  capnet-fuzz-fixed <iters>\n");
     vga::print_str("  capnet-fuzz-corpus <iters>\n");
     vga::print_str("  capnet-fuzz-soak <iters> <rounds>\n");
     vga::print_str("\n");

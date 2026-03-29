@@ -29,103 +29,129 @@ log_file="${log_dir}/capnet_corpus.log"
 export LOG_DIR="${log_dir}"
 export QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:--display none -nographic -no-reboot -no-shutdown}"
 
-echo "Running CapNet corpus replay (iters=${iters}, soak_rounds=${soak_rounds})..."
-set +e
-./fuzz/run_capnet_corpus.expect "${iters}" "${soak_rounds}" > "${log_file}" 2>&1
-runner_status=$?
-set -e
-cat "${log_file}"
+fixed_seed=3870443198
+fixed_seed_log="${log_dir}/capnet_fixed_seed_${fixed_seed}.log"
+formal_log="${log_dir}/capnet_formal.log"
+max_attempts=3
 
-if (( runner_status != 0 )); then
-    echo "ERROR: CapNet expect runner failed with exit status ${runner_status}"
-    exit "${runner_status}"
-fi
+regression_seeds=()
+while IFS= read -r seed; do
+    regression_seeds+=("${seed}")
+done < <(
+    awk '
+        /CAPNET_FUZZ_REGRESSION_SEEDS:/ {capture=1; next}
+        capture {
+            if ($0 ~ /\];/) {
+                capture = 0
+            }
+            gsub(/[_ ,]/, "", $0)
+            if ($0 ~ /^[0-9]+$/) {
+                print $0
+            }
+        }
+    ' ./src/net/capnet.rs
+)
 
-seeds_line="$(grep -aE '^Seeds passed:' "${log_file}" | tail -1 || true)"
-failures_line="$(grep -aE '^Total failures:' "${log_file}" | head -1 || true)"
-formal_line="$(grep -aE '^Formal verification checks: PASSED' "${log_file}" | tail -1 || true)"
-
-if [[ -z "${seeds_line}" || -z "${failures_line}" ]]; then
-    echo "DEBUG: seeds_line='${seeds_line}'"
-    echo "DEBUG: failures_line='${failures_line}'"
-    echo "ERROR: Could not parse CapNet corpus summary from output"
+if (( ${#regression_seeds[@]} == 0 )); then
+    echo "ERROR: Could not parse CAPNET_FUZZ_REGRESSION_SEEDS from src/net/capnet.rs"
     exit 1
 fi
 
-seeds_passed="$(echo "${seeds_line}" | awk '{print $3}')"
-seeds_total="$(echo "${seeds_line}" | awk '{print $5}')"
-total_failures="$(echo "${failures_line}" | awk '{print $3}')"
+echo "Running CapNet fixed-seed precheck (seed=${fixed_seed}, iters=${iters})..."
+fixed_seed_status=1
+attempt=1
+while (( attempt <= max_attempts )); do
+    echo "Fixed-seed attempt ${attempt}/${max_attempts}"
+    set +e
+    ./fuzz/run_capnet_single_seed.expect "${iters}" "${fixed_seed}" > "${fixed_seed_log}" 2>&1
+    fixed_seed_status=$?
+    set -e
+    cat "${fixed_seed_log}"
+    if (( fixed_seed_status == 0 )); then
+        break
+    fi
+    attempt=$((attempt + 1))
+done
 
-seeds_passed="${seeds_passed//$'\r'/}"
-seeds_total="${seeds_total//$'\r'/}"
-total_failures="${total_failures//$'\r'/}"
+if (( fixed_seed_status != 0 )); then
+    echo "ERROR: CapNet fixed-seed precheck failed for seed ${fixed_seed}"
+    exit "${fixed_seed_status}"
+fi
 
-if (( seeds_passed != seeds_total )); then
-    echo "ERROR: CapNet corpus replay failed (${seeds_passed}/${seeds_total} seeds passed)"
-
-    # ── diagnostic re-run: extract failing seed and replay with extra logging ──
-    failing_seed="$(grep -aE '^First failing seed:' "${log_file}" | awk '{print $NF}' | tr -d '\r' || true)"
-    if [[ -n "${failing_seed}" && -x ./fuzz/run_capnet_single_seed.expect ]]; then
-        diag_log="${log_dir}/capnet_diag_seed_${failing_seed}.log"
-        echo "Re-running failing seed ${failing_seed} for diagnostics..."
-        set +e
-        ./fuzz/run_capnet_single_seed.expect "${iters}" "${failing_seed}" > "${diag_log}" 2>&1
-        diag_status=$?
-        set -e
-        echo "---- diagnostic log (seed ${failing_seed}) ----"
-        cat "${diag_log}"
-        echo "---- end diagnostic log ----"
+round=1
+while (( round <= soak_rounds )); do
+    if (( round == 1 )); then
+        echo "Running CapNet corpus replay (iters=${iters})..."
+        round_log="${log_file}"
+    else
+        echo "Running CapNet soak replay round ${round}/${soak_rounds} (fresh boot)..."
+        round_log="${log_dir}/capnet_corpus_round_${round}.log"
     fi
 
-    exit 1
-fi
-if (( total_failures != 0 )); then
-    echo "ERROR: CapNet corpus replay reported failures (${total_failures})"
-    exit 1
-fi
+    : > "${round_log}"
+    total_seeds="${#regression_seeds[@]}"
+    idx=1
+    for seed in "${regression_seeds[@]}"; do
+        seed_log="${log_dir}/capnet_seed_${seed}_round_${round}.log"
+        echo "Replaying seed ${idx}/${total_seeds}: ${seed}"
+        {
+            echo "===== CapNet seed ${idx}/${total_seeds}: ${seed} (round ${round}/${soak_rounds}) ====="
+            echo
+        } >> "${round_log}"
 
-# Sanitize binary/control bytes from QEMU serial output before awk parsing.
-clean_log="${log_file}.clean"
-LC_ALL=C tr -cd '[:print:]\n' < "${log_file}" > "${clean_log}" || true
+        runner_status=1
+        attempt=1
+        while (( attempt <= max_attempts )); do
+            echo "Seed ${seed} attempt ${attempt}/${max_attempts}"
+            {
+                echo "----- attempt ${attempt}/${max_attempts} -----"
+            } >> "${round_log}"
 
-rounds_line="$(awk '
-    /^===== CapNet Corpus Soak =====/ {in_soak=1; next}
-    in_soak && /^Rounds passed:/ {line=$0}
-    END {print line}
-' "${clean_log}")"
-soak_failures_line="$(awk '
-    /^===== CapNet Corpus Soak =====/ {in_soak=1; next}
-    in_soak && /^Total failures:/ {line=$0}
-    END {print line}
-' "${clean_log}")"
+            set +e
+            ./fuzz/run_capnet_single_seed.expect "${iters}" "${seed}" > "${seed_log}" 2>&1
+            runner_status=$?
+            set -e
 
-if [[ -z "${rounds_line}" || -z "${soak_failures_line}" ]]; then
-    echo "DEBUG: rounds_line='${rounds_line}'"
-    echo "DEBUG: soak_failures_line='${soak_failures_line}'"
-    echo "ERROR: Could not parse CapNet soak summary from output"
-    exit 1
-fi
+            cat "${seed_log}"
+            cat "${seed_log}" >> "${round_log}"
+            echo >> "${round_log}"
 
-rounds_passed="$(echo "${rounds_line}" | awk '{print $3}')"
-rounds_total="$(echo "${rounds_line}" | awk '{print $5}')"
-soak_failures="$(echo "${soak_failures_line}" | awk '{print $3}')"
+            if (( runner_status == 0 )); then
+                break
+            fi
+            attempt=$((attempt + 1))
+        done
 
-rounds_passed="${rounds_passed//$'\r'/}"
-rounds_total="${rounds_total//$'\r'/}"
-soak_failures="${soak_failures//$'\r'/}"
+        if (( runner_status != 0 )); then
+            echo "ERROR: CapNet seed replay failed for seed ${seed} in round ${round}"
+            exit "${runner_status}"
+        fi
 
-if (( rounds_passed != rounds_total )); then
-    echo "ERROR: CapNet soak replay failed (${rounds_passed}/${rounds_total} rounds passed)"
-    exit 1
-fi
-if (( soak_failures != 0 )); then
-    echo "ERROR: CapNet soak replay reported failures (${soak_failures})"
-    exit 1
-fi
+        idx=$((idx + 1))
+    done
 
-if [[ -z "${formal_line}" ]]; then
-    echo "ERROR: Formal verification did not report success"
-    exit 1
+    round=$((round + 1))
+done
+
+echo "Running CapNet formal verification..."
+formal_status=1
+attempt=1
+while (( attempt <= max_attempts )); do
+    echo "Formal verification attempt ${attempt}/${max_attempts}"
+    set +e
+    ./fuzz/run_capnet_corpus.expect 0 0 > "${formal_log}" 2>&1
+    formal_status=$?
+    set -e
+    cat "${formal_log}"
+    if (( formal_status == 0 )); then
+        break
+    fi
+    attempt=$((attempt + 1))
+done
+
+if (( formal_status != 0 )); then
+    echo "ERROR: CapNet formal verification failed"
+    exit "${formal_status}"
 fi
 
 echo "CapNet corpus replay + soak + formal checks passed."

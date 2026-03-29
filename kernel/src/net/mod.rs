@@ -498,7 +498,7 @@ impl NetworkService {
                 }
                 Err(e) => {
                     // SYN/SYN-ACK progression can race with immediate send attempts.
-                    if e == "Connection not established" {
+                    if e == "Connection not established" || e == "TX busy" {
                         if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
                             return Err(NetworkError::TcpTimeout);
                         }

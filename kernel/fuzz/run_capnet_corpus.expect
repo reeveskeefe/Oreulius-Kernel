@@ -16,6 +16,7 @@ after [expr {$harness_timeout * 1000}] {
 }
 
 set timeout 120
+set send_slow {1 0.05}
 # send_slow: 1 char per 50 ms — avoids serial FIFO overruns on QEMU's 16550A
 # emulation which has a 16-byte hardware FIFO.  At 115200 baud one character
 # takes ~87 µs, so 50 ms gives 574x margin against FIFO overflow.
@@ -59,10 +60,24 @@ set qemu_args [concat $qemu_args $filtered_extra]
 spawn {*}$qemu_args
 
 proc expect_i686_shell_ready {} {
+    set saw_shell_banner 0
     expect {
-        -re {Type 'help' for commands\.} { exp_continue }
-        -re {(\r?\n|^)> } {}
-        timeout { puts "timeout waiting for i686 kernel shell readiness"; exit 1 }
+        -re {\[SHELL\] Banner printed} {
+            set saw_shell_banner 1
+            exp_continue
+        }
+        -re {Type 'help' for commands\.} {
+            set saw_shell_banner 1
+            exp_continue
+        }
+        -re {(\r?\n|^)> } { return }
+        timeout {
+            if {$saw_shell_banner} {
+                return
+            }
+            puts "timeout waiting for i686 kernel shell readiness"
+            exit 1
+        }
     }
 }
 
@@ -73,11 +88,9 @@ proc expect_i686_prompt {} {
     }
 }
 
-# send_i686_cmd: drain any pending output, wait for the serial FIFO to settle,
-# then send the command as a single atomic sequence.  All commands sent by
-# this harness are ≤14 bytes which fit within the emulated 16550A's 16-byte
-# RX FIFO.  Retries up to 4 times if QEMU's event loop drops a character
-# (observable as "Unknown command:") before the command is recognized.
+# send_i686_cmd: use the same paced serial delivery as the single-seed
+# diagnostic harness.  The older raw send path could drop the first byte of
+# cfc/cfs on i686, turning valid regression commands into malformed input.
 proc send_i686_cmd {cmd} {
     set retries 0
     while {$retries < 5} {
@@ -93,7 +106,7 @@ proc send_i686_cmd {cmd} {
         # before sending the command; this prevents the first byte of the
         # command from being dropped while QEMU is still processing timers.
         after 600
-        send -- "${cmd}\r"
+        send -s -- "$cmd\r"
         # Check whether QEMU mangled the command (short window: 1 s).
         # If we see "Unknown command:" the bytes were dropped — retry.
         # Any other output means the command was accepted; return immediately.
@@ -115,6 +128,24 @@ proc send_i686_cmd {cmd} {
             }
         }
     }
+    puts "failed to deliver command: $cmd"
+    exit 1
+}
+
+proc start_i686_cmd {cmd start_re label} {
+    set retries 0
+    while {$retries < 5} {
+        send_i686_cmd $cmd
+        set timeout 5
+        expect {
+            -re $start_re { return }
+            timeout {
+                incr retries
+            }
+        }
+    }
+    puts "failed to start $label command: $cmd"
+    exit 1
 }
 
 expect_i686_shell_ready
@@ -123,43 +154,53 @@ send "\r"
 expect_i686_prompt
 set timeout 600
 
-puts "RUN: cfc $iters"
-send_i686_cmd "cfc $iters"
+if {$iters > 0} {
+    puts "RUN: cfc$iters"
+    start_i686_cmd "cfc$iters" {===== CapNet Regression Corpus =====|Seed [0-9]+/[0-9]+: failures=[0-9]+} "CapNet corpus"
 
-# Wait for per-seed progress lines ("Seed X/10: failures=N") to keep the
-# timeout alive.  Each seed resets the 300-second window, so only a single
-# seed that exceeds 300 s triggers a timeout — rather than requiring all 10
-# seeds to finish within one monolithic budget.
-set timeout 300
-set seeds_seen 0
-expect {
-    -re {Seed [0-9]+/[0-9]+: failures=[0-9]+} {
-        incr seeds_seen
-        exp_continue
+    # Wait for per-seed progress lines ("Seed X/10: failures=N") to keep the
+    # timeout alive.  Each seed resets the 300-second window, so only a single
+    # seed that exceeds 300 s triggers a timeout — rather than requiring all 10
+    # seeds to finish within one monolithic budget.
+    set timeout 300
+    set seeds_seen 0
+    set corpus_total_failures 0
+    expect {
+        -re {Seed ([0-9]+)/([0-9]+): failures=([0-9]+)} {
+            incr seeds_seen
+            set corpus_total_failures [expr {$corpus_total_failures + $expect_out(3,string)}]
+            exp_continue
+        }
+        -re {Seeds passed: [0-9]+ / [0-9]+} {}
+        timeout {
+            puts "timeout waiting for CapNet corpus seed (seen $seeds_seen seed progress lines)"
+            exit 1
+        }
     }
-    -re {Seeds passed: [0-9]+ / [0-9]+} {}
-    timeout {
-        puts "timeout waiting for CapNet corpus seed (seen $seeds_seen seed progress lines)"
+    expect {
+        -re {Total failures: [0-9]+} {}
+        timeout { puts "timeout waiting for CapNet corpus failure summary"; exit 1 }
+    }
+    if {$corpus_total_failures != 0} {
+        puts "CapNet corpus replay reported nonzero per-seed failures: $corpus_total_failures"
         exit 1
     }
+    expect_i686_prompt
 }
-expect {
-    -re {Total failures: [0-9]+} {}
-    timeout { puts "timeout waiting for CapNet corpus failure summary"; exit 1 }
-}
-expect_i686_prompt
 
 if {$soak_rounds > 0} {
     puts "RUN: cfs $iters $soak_rounds"
-    send_i686_cmd "cfs $iters $soak_rounds"
+    send_i686_cmd "cfs$iters $soak_rounds"
 
     # Soak runs $soak_rounds full passes.  Match per-seed progress lines to
     # keep the timeout rolling, just like the corpus phase above.
     set timeout 300
     set soak_seeds_seen 0
+    set soak_total_failures 0
     expect {
-        -re {Seed [0-9]+/[0-9]+: failures=[0-9]+} {
+        -re {Seed ([0-9]+)/([0-9]+): failures=([0-9]+)} {
             incr soak_seeds_seen
+            set soak_total_failures [expr {$soak_total_failures + $expect_out(3,string)}]
             exp_continue
         }
         -re {Rounds passed: [0-9]+ / [0-9]+} {}
@@ -172,11 +213,15 @@ if {$soak_rounds > 0} {
         -re {Total failures: [0-9]+} {}
         timeout { puts "timeout waiting for CapNet soak failure summary"; exit 1 }
     }
+    if {$soak_total_failures != 0} {
+        puts "CapNet soak replay reported nonzero per-seed failures: $soak_total_failures"
+        exit 1
+    }
     expect_i686_prompt
 }
 
 puts "RUN: formal-verify"
-send_i686_cmd "formal-verify"
+start_i686_cmd "formal-verify" {===== Formal Verification =====|Formal verification checks: PASSED} "formal verify"
 expect {
     -re {Formal verification checks: PASSED} {}
     timeout { puts "timeout waiting for formal verification success"; exit 1 }
