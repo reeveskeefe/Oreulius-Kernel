@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a correctness, runtime, or CI failure
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What failed?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Exact steps, command, workflow run, or seed
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit, arch, host OS, QEMU version, or workflow link
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output, panic, or artifact excerpts

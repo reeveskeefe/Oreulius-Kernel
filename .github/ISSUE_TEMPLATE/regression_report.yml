@@ -1,0 +1,29 @@
+name: Regression report
+description: Report something that used to pass and now fails
+title: "[regression] "
+labels: ["regression"]
+body:
+  - type: input
+    id: last_good
+    attributes:
+      label: Last known good commit
+    validations:
+      required: true
+  - type: input
+    id: first_bad
+    attributes:
+      label: First known bad commit or workflow run
+  - type: textarea
+    id: surface
+    attributes:
+      label: Regression surface
+      description: Which workflow, script, command, or subsystem regressed?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Logs, links, screenshots, or repro details
+    validations:
+      required: true

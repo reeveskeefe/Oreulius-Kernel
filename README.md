@@ -107,7 +107,7 @@ It is designed for technical audiences who care about:
 - Runtime capability delegation graph (DAG) with cycle detection, no-escalation enforcement, and live violation counting (IDs 129–131).
 - WASM host ABI spans IDs 0–131 across 132 callable host functions.
 - 77+ kernel modules organized into subsystem directories within a single Rust `no_std` crate.
-- 7 GitHub Actions CI workflows (smoke, extended, i686 network regression, x86_64 network regression, CapNet regression, WASM JIT regression, proof check).
+- 8 GitHub Actions CI workflows (smoke, extended, i686 network regression, x86_64 network regression, AArch64 network regression, CapNet regression, WASM JIT regression, proof check).
 - 14 shell-level CI scripts for i686, x86_64, and AArch64 covering smoke, extended, and soak profiles.
 
 ## Platform And Portability Status
@@ -582,13 +582,15 @@ Each `CapDelegationEdge` records:
 
 ### GitHub Actions Workflows
 
-Six workflows run on every push and pull request:
+Eight workflows run on every push and pull request:
 
 | Workflow File | Trigger | What It Runs |
 |---|---|---|
 | `.github/workflows/multiarch-qemu-smoke.yml` | Push / PR | Smoke tests for i686, x86_64, and AArch64 under QEMU. Boot, serial shell, and immediate-exit checks. |
 | `.github/workflows/multiarch-qemu-extended.yml` | Push / PR | Extended QEMU tests for all three architectures. Includes trap/MMU/IRQ/JIT/CapNet/temporal/VFS scenario scripts. |
+| `.github/workflows/i686-network-regression.yml` | Push / PR | Dedicated i686 QEMU usernet regression. Requires stable CI shell framing, live DNS resolution, plain HTTP success, and HTTPS fail-closed behavior. |
 | `.github/workflows/x86_64-network-regression.yml` | Push / PR | Dedicated x86_64 QEMU usernet regression. Requires live DNS resolution, plain HTTP success, and HTTPS fail-closed behavior. |
+| `.github/workflows/aarch64-network-regression.yml` | Push / PR | Dedicated AArch64 QEMU `virt` usernet regression. Requires READY state, DNS success, plain HTTP success, and HTTPS fail-closed behavior. |
 | `.github/workflows/capnet-regression.yml` | Push / PR | CapNet parser, enforcer, and cross-peer delegation regression. Runs fuzz corpus and known-bad input set. |
 | `.github/workflows/wasm-jit-regression.yml` | Push / PR | WASM interpreter vs JIT differential validation. Runs deterministic seed fuzz and corpus replay. |
 | `.github/workflows/proof-check.yml` | Push / PR | Runs the 8-stage formal verification pipeline (`formal-verify`) via `kernel/formal-verify.sh`. |
@@ -1145,7 +1147,8 @@ Contributions are welcome for architecture, verification, runtime hardening, and
 4. Open a pull request with rationale and evidence.
 
 Inbound contributor rights are defined in
-[CONTRIBUTOR-LICENSE.md](CONTRIBUTOR-LICENSE.md).
+[CONTRIBUTOR-LICENSE.md](CONTRIBUTOR-LICENSE.md). See
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for contribution workflow details.
 
 ## License
 

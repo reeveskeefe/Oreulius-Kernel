@@ -77,7 +77,7 @@ part of Oreulia. If you are not comfortable with those terms, do not submit
 the contribution.
 
 The canonical inbound contribution terms are in
-[`CONTRIBUTOR-LICENSE.md`](../CONTRIBUTOR-LICENSE.md).
+[`../CONTRIBUTOR-LICENSE.md`](../CONTRIBUTOR-LICENSE.md).
 
 ## Contact
 ```bash

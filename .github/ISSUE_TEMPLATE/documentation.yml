@@ -1,0 +1,22 @@
+name: Documentation issue
+description: Report stale, unclear, or missing docs
+title: "[docs] "
+labels: ["documentation"]
+body:
+  - type: textarea
+    id: issue
+    attributes:
+      label: Documentation problem
+      description: What is wrong or missing?
+    validations:
+      required: true
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: File, section, or URL
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested fix
+      description: What should it say instead?

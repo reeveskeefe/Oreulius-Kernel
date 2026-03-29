@@ -31,3 +31,7 @@ kernel/test-minimal.o
 kernel/archive/generated-local/
 kernel/archive/local-logs/
 oreulia/.github/agents
+
+# Python bytecode cache
+__pycache__/
+*.pyc

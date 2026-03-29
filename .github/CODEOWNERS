@@ -1,0 +1,8 @@
+# Default owner for the repository.
+* @reeveskeefe
+
+# Core runtime and CI surfaces.
+/kernel/ @reeveskeefe
+/.github/workflows/ @reeveskeefe
+/verification/ @reeveskeefe
+/docs/ @reeveskeefe
