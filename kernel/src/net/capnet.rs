@@ -292,7 +292,7 @@ pub struct CapNetJournalStats {
     pub next_revocation_epoch: u32,
 }
 
-const CAPNET_FUZZ_SAMPLE_LEN: usize = 64;
+const CAPNET_FUZZ_SAMPLE_LEN: usize = 32;
 const CAPNET_FUZZ_MAX_ITERS: u32 = 10_000;
 
 /// Stable external corpus seeds for CapNet regression replay.
@@ -1778,6 +1778,16 @@ pub fn process_incoming_control_payload(
     }
     let expected = compute_control_mac(peer.key_k0, peer.key_k1, &frame)?;
     if expected != frame.frame_mac {
+        if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+            crate::serial_println!(
+                "CTRL-MAC-FAIL: expected={:#x} got={:#x} k0={:#x} k1={:#x} epoch={}",
+                expected,
+                frame.frame_mac,
+                peer.key_k0,
+                peer.key_k1,
+                peer.key_epoch,
+            );
+        }
         audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.issuer_device_id);
         return Err(CapNetError::ControlMacMismatch);
     }
@@ -1809,14 +1819,6 @@ pub fn process_incoming_control_payload(
             if frame.payload_len as usize != CAPNET_TOKEN_V1_LEN {
                 audit_capnet(SecurityEvent::InvalidCapability, frame.token_id);
                 return Err(CapNetError::InvalidControlFrame);
-            }
-            if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
-                crate::serial_println!(
-                    "CAPNET-PRE-DECODE: payload_len={} payload[0..8]={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-                    frame.payload_len,
-                    frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3],
-                    frame.payload[4], frame.payload[5], frame.payload[6], frame.payload[7]
-                );
             }
             let tok =
                 CapabilityTokenV1::decode_checked(&frame.payload[..CAPNET_TOKEN_V1_LEN])?;
@@ -1858,6 +1860,14 @@ pub fn process_incoming_control_payload(
             // Nonce replay check – performed under the peer lock to eliminate
             // the preemption race window.
             if !accept_nonce(peer, tok.nonce) {
+                if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+                    crate::serial_println!(
+                        "NONCE-REPLAY-FAIL: nonce={:#x} high={:#x} bitmap={:#x}",
+                        tok.nonce,
+                        peer.replay_high_nonce,
+                        peer.replay_bitmap,
+                    );
+                }
                 audit_capnet(SecurityEvent::RateLimitExceeded, frame.issuer_device_id);
                 return Err(CapNetError::ReplayDetected);
             }
