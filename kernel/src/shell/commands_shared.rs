@@ -336,6 +336,7 @@ pub fn print_help<W: Write>(out: &mut W, prefix: &str) {
         prefix,
         "  blk-bench [sectors] [start_lba]  -- timed sequential read",
     );
+    crate::shell::network_commands_shared::print_help(out, prefix);
     #[cfg(target_arch = "aarch64")]
     {
         write_line(out, prefix, "  pid");
@@ -362,6 +363,18 @@ pub fn try_execute<W: Write>(out: &mut W, input: &str, prefix: &str) -> bool {
         }
         "help-cmd" | "commands-help" | "shared-help" => {
             print_help(out, prefix);
+        }
+        "netstack-info" => {
+            crate::shell::network_commands_shared::cmd_netstack_info(out);
+        }
+        "eth-status" => {
+            crate::shell::network_commands_shared::cmd_eth_status(out);
+        }
+        "dns-resolve" => {
+            crate::shell::network_commands_shared::cmd_dns_resolve(out, parts.next());
+        }
+        "http-get" => {
+            crate::shell::network_commands_shared::cmd_http_get(out, parts.next());
         }
         #[cfg(target_arch = "aarch64")]
         "pid" => {

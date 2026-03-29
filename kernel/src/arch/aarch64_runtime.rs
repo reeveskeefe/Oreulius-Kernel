@@ -74,6 +74,12 @@ extern "C" fn shell_scheduler_task() -> ! {
     crate::arch::aarch64_virt::run_serial_shell()
 }
 
+extern "C" fn network_scheduler_task() -> ! {
+    crate::arch::enable_interrupts();
+    crate::serial_println!("[NET] AArch64 network task started");
+    crate::net_reactor::run()
+}
+
 pub fn enter_runtime() -> ! {
     uart_log_line("[A64] Early bring-up path");
     uart_log_line("[A64] init early platform...");
@@ -147,6 +153,16 @@ pub fn enter_runtime() -> ! {
     crate::quantum_scheduler::init();
     let launch = {
         let mut sched = crate::quantum_scheduler::scheduler().lock();
+        if let Err(e) = sched.add_kernel_thread(
+            network_scheduler_task,
+            crate::process::ProcessPriority::Normal,
+        ) {
+            let uart = crate::arch::aarch64_pl011::early_uart();
+            uart.write_str("[A64] scheduler add network task failed: ");
+            uart.write_str(e);
+            uart.write_str("\n");
+            crate::arch::halt_loop();
+        }
         if let Err(e) = sched.add_kernel_thread(
             shell_scheduler_task,
             crate::process::ProcessPriority::Normal,

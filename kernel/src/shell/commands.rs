@@ -10830,55 +10830,8 @@ fn cmd_wifi_status() {
 }
 
 fn cmd_http_get(mut parts: core::str::SplitWhitespace) {
-    let url = match parts.next() {
-        Some("ex") => "http://example.com/",
-        Some("exs") => "https://example.com/",
-        Some(u) => u,
-        None => "http://example.com/",
-    };
-
-    vga::print_str("\n");
-    vga::print_str("HTTP GET: ");
-    vga::print_str(url);
-    vga::print_str("\n\n");
-
-    let net_service = net::network();
-    let mut net_lock = net_service.lock();
-
-    let response = match net_lock.http_get(url) {
-        Ok(resp) => resp,
-        Err(e) => {
-            vga::print_str("Request failed: ");
-            vga::print_str(e.as_str());
-            vga::print_str("\n");
-            vga::print_str("[HTTP] Note: http-get requires an active network connection.\n");
-            vga::print_str("[HTTP] In QEMU emulation this command requires a configured\n");
-            vga::print_str("[HTTP]   user-mode or TAP network backend (e.g. -netdev user).\n");
-            return;
-        }
-    };
-
-    vga::print_str("Status: ");
-    print_u16_val(response.status_code);
-    vga::print_str("\n\n");
-
-    vga::print_str("===== Response Body =====\n\n");
-
-    // Print body (limit to 1024 chars for screen)
-    let print_len = response.body_len.min(1024);
-    for i in 0..print_len {
-        vga::print_char(response.body[i] as char);
-    }
-
-    if response.body_len > 1024 {
-        vga::print_str("\n\n[... truncated ");
-        print_usize(response.body_len - 1024);
-        vga::print_str(" bytes ...]\n");
-    }
-
-    vga::print_str("\n\nTotal: ");
-    print_usize(response.body_len);
-    vga::print_str(" bytes\n");
+    let mut out = VgaWriter;
+    crate::shell::network_commands_shared::cmd_http_get(&mut out, parts.next());
 }
 
 fn cmd_http_server_start(mut parts: core::str::SplitWhitespace) {
@@ -10915,66 +10868,11 @@ fn cmd_http_server_stop() {
 }
 
 fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
-    use crate::net_reactor;
-
-    let domain = match parts.next() {
-        Some("ex") => "example.com",
-        Some(d) => d,
-        None => "example.com",
-    };
-
-    vga::print_str("\n");
-    vga::print_str("=== Real DNS Resolution ===\n\n");
-    vga::print_str("Domain: ");
-    vga::print_str(domain);
-    vga::print_str("\n");
-
-    let info = match net_reactor::get_info() {
-        Ok(info) => info,
-        Err(e) => {
-            vga::print_str("Error: ");
-            vga::print_str(e);
-            vga::print_str("\n\n");
-            return;
-        }
-    };
-
-    if !info.ready {
-        vga::print_str("Error: Network not ready\n");
-        vga::print_str("Check: eth-status or pci-list\n\n");
-        return;
-    }
-
-    vga::print_str("Sending UDP DNS query to ");
-    print_ipv4_netstack(info.dns_server);
-    vga::print_str("...\n");
-
-    let ip = match net_reactor::dns_resolve(domain) {
-        Ok(addr) => addr,
-        Err(e) => {
-            vga::print_str("Resolution failed: ");
-            vga::print_str(e);
-            vga::print_str("\n\n");
-            return;
-        }
-    };
-
-    vga::print_str("Success! IP: ");
-    print_ipv4_netstack(ip);
-    vga::print_str("\n\n");
+    let mut out = VgaWriter;
+    crate::shell::network_commands_shared::cmd_dns_resolve(&mut out, parts.next());
 }
 
 // Helper functions for network commands
-fn print_ipv4_netstack(ip: crate::netstack::Ipv4Addr) {
-    let octets = ip.octets();
-    for (i, octet) in octets.iter().enumerate() {
-        if i > 0 {
-            vga::print_char('.');
-        }
-        print_u8_val(*octet);
-    }
-}
-
 fn parse_ipv4_netstack(s: &str) -> Option<crate::netstack::Ipv4Addr> {
     let mut octets = [0u8; 4];
     let mut count = 0usize;
@@ -11451,59 +11349,8 @@ fn print_gpt_name(name: &[u8; 36]) {
 // ============================================================================
 
 fn cmd_eth_status() {
-    use crate::net_reactor;
-
-    vga::print_str("\n");
-    vga::print_str("===== Ethernet Status =====\n\n");
-
-    let info = match net_reactor::get_info() {
-        Ok(info) => info,
-        Err(e) => {
-            vga::print_str("Error: ");
-            vga::print_str(e);
-            vga::print_str("\n\n");
-            return;
-        }
-    };
-
-    let mac = info.mac;
-    let has_mac = mac.iter().any(|&byte| byte != 0);
-    let has_device = has_mac || info.link_up || info.ip.0 != [0, 0, 0, 0];
-
-    if has_device {
-        vga::print_str("Device: Intel E1000 Gigabit Ethernet\n");
-        vga::print_str("MAC Address: ");
-        if has_mac {
-            for (i, byte) in mac.iter().enumerate() {
-                if i > 0 {
-                    vga::print_str(":");
-                }
-                print_hex_u8(*byte);
-            }
-        } else {
-            vga::print_str("Unavailable");
-        }
-        vga::print_str("\n");
-    } else {
-        vga::print_str("No Ethernet device detected\n");
-        vga::print_str("Run 'pci-list' to see available devices\n");
-        vga::print_str("\n");
-        return;
-    }
-
-    vga::print_str("Link Status: ");
-    if info.link_up {
-        vga::print_str("UP\n");
-    } else {
-        vga::print_str("DOWN\n");
-    }
-
-    vga::print_str("Reactor Status: ");
-    vga::print_str(if info.ready { "READY\n" } else { "NOT READY\n" });
-    vga::print_str("Speed: 1000 Mbps (Gigabit)\n");
-    vga::print_str("Duplex: Full\n");
-
-    vga::print_str("\n");
+    let mut out = VgaWriter;
+    crate::shell::network_commands_shared::cmd_eth_status(&mut out);
 }
 
 fn cmd_eth_info() {
@@ -11531,65 +11378,8 @@ fn cmd_eth_info() {
 }
 
 fn cmd_netstack_info() {
-    use crate::net_reactor;
-
-    vga::print_str("\n");
-    vga::print_str("===== Production Network Stack =====\n\n");
-
-    let info = match net_reactor::get_info() {
-        Ok(info) => info,
-        Err(e) => {
-            vga::print_str("Error: ");
-            vga::print_str(e);
-            vga::print_str("\n");
-            return;
-        }
-    };
-
-    vga::print_str("Status: ");
-    if info.ready {
-        vga::print_str("READY\n");
-    } else {
-        vga::print_str("NOT READY\n");
-    }
-
-    vga::print_str("\nFeatures:\n");
-    vga::print_str("  [x] ARP Protocol (address resolution)\n");
-    vga::print_str("  [x] UDP Protocol (for DNS)\n");
-    vga::print_str("  [x] DNS Client (QEMU usernet resolver / configured DNS)\n");
-    vga::print_str("  [x] Real packet I/O via E1000 descriptors\n");
-    vga::print_str("  [x] Universal interface (works with any driver)\n");
-
-    vga::print_str("\nMy IP: ");
-    print_ipv4_netstack(info.ip);
-    vga::print_str("\n");
-    vga::print_str("DNS server: ");
-    print_ipv4_netstack(info.dns_server);
-    vga::print_str("\n");
-    vga::print_str("Link: ");
-    vga::print_str(if info.link_up { "UP\n" } else { "DOWN\n" });
-
-    vga::print_str("\nTCP: ");
-    print_number(info.tcp_conns);
-    vga::print_str(" connections, ");
-    print_number(info.tcp_listeners);
-    vga::print_str(" listeners\n");
-
-    vga::print_str("HTTP server: ");
-    vga::print_str(if info.http_running {
-        "ON (port "
-    } else {
-        "OFF"
-    });
-    if info.http_running {
-        print_number(info.http_port as usize);
-        vga::print_str(")");
-    }
-    vga::print_str("\n");
-
-    vga::print_str("\nTry: dns-resolve google.com\n");
-    vga::print_str("     dns-resolve github.com\n");
-    vga::print_str("\n");
+    let mut out = VgaWriter;
+    crate::shell::network_commands_shared::cmd_netstack_info(&mut out);
 }
 
 fn cmd_asm_test() {

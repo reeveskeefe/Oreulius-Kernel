@@ -138,6 +138,48 @@ static mut DNS_RESPONSE_STAGE: [u8; 512] = [0u8; 512];
 static mut POLL_RX_STAGE: [u8; 1514] = [0u8; 1514];
 static mut TCP_TX_STAGE: [u8; 1514] = [0u8; 1514];
 
+#[inline]
+fn backend_mac_address() -> Option<[u8; 6]> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if super::virtio_net::is_available() {
+            Some(super::virtio_net::mac_address())
+        } else {
+            None
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        super::e1000::get_mac_address()
+    }
+}
+
+#[inline]
+fn backend_link_up() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        super::virtio_net::is_link_up()
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        super::e1000::is_link_up()
+    }
+}
+
+#[inline]
+fn backend_send_frame(frame: &[u8]) -> Result<(), &'static str> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        super::virtio_net::send(frame)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut driver = super::e1000::E1000_DRIVER.lock();
+        let interface = driver.as_mut().ok_or("No E1000 driver")?;
+        interface.send_frame(frame)
+    }
+}
+
 // ============================================================================
 // Network Types
 // ============================================================================
@@ -334,14 +376,7 @@ impl NetworkStack {
 
     #[inline]
     fn link_ready(&self) -> bool {
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            super::e1000::get_mac_address().is_some() && super::e1000::is_link_up()
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            self.has_interface
-        }
+        backend_mac_address().is_some() && backend_link_up()
     }
 
     #[inline]
@@ -374,10 +409,7 @@ impl NetworkStack {
 
     #[inline]
     pub fn readiness_prereqs_met(&self) -> bool {
-        #[cfg(not(target_arch = "aarch64"))]
         return self.interface_configured() && self.operational_link_ready();
-        #[cfg(target_arch = "aarch64")]
-        return self.interface_configured();
     }
 
     pub const fn new() -> Self {
@@ -454,19 +486,32 @@ impl NetworkStack {
         self.dns_server = Self::QEMU_USERNET_DNS;
         self.has_interface = true;
         self.dhcp_enabled = false;
-        #[cfg(not(target_arch = "aarch64"))]
-        if let Some(mac) = super::e1000::get_mac_address() {
+        if let Some(mac) = backend_mac_address() {
             self.my_mac = MacAddr(mac);
         }
         self.log_config_state("seeded legacy-x86 qemu defaults");
         true
     }
 
+    pub fn seed_aarch64_qemu_defaults(&mut self, mac: [u8; 6]) -> bool {
+        if self.interface_configured() && self.my_mac.0 == mac {
+            return false;
+        }
+
+        self.my_ip = Self::QEMU_USERNET_IP;
+        self.gateway_ip = Self::QEMU_USERNET_GATEWAY;
+        self.dns_server = Self::QEMU_USERNET_DNS;
+        self.my_mac = MacAddr(mac);
+        self.has_interface = false;
+        self.dhcp_enabled = false;
+        self.log_config_state("seeded aarch64 qemu defaults");
+        true
+    }
+
     /// Mark interface as available
     pub fn mark_ready(&mut self) {
         self.has_interface = true;
-        #[cfg(not(target_arch = "aarch64"))]
-        if let Some(mac) = super::e1000::get_mac_address() {
+        if let Some(mac) = backend_mac_address() {
             self.my_mac = MacAddr(mac);
         }
     }
@@ -488,12 +533,7 @@ impl NetworkStack {
     // ARP Protocol
     // ========================================================================
 
-    /// Send ARP request
-    #[cfg(not(target_arch = "aarch64"))]
     fn send_arp_request(&mut self, target_ip: Ipv4Addr) -> Result<(), &'static str> {
-        let mut driver = super::e1000::E1000_DRIVER.lock();
-        let interface = driver.as_mut().ok_or("No E1000 driver")?;
-
         let mut frame = [0u8; 42];
         let mut offset = 0;
 
@@ -524,11 +564,7 @@ impl NetworkStack {
         offset += 6;
         frame[offset..offset + 4].copy_from_slice(&target_ip.0); // Target IP
 
-        interface.send_frame(&frame)
-    }
-    #[cfg(target_arch = "aarch64")]
-    fn send_arp_request(&mut self, _target_ip: Ipv4Addr) -> Result<(), &'static str> {
-        Err("ARP not supported on AArch64")
+        backend_send_frame(&frame)
     }
 
     /// Process received ARP packet
@@ -559,12 +595,7 @@ impl NetworkStack {
         Ok(())
     }
 
-    /// Send ARP reply
-    #[cfg(not(target_arch = "aarch64"))]
     fn send_arp_reply(&mut self, dest_mac: MacAddr, dest_ip: Ipv4Addr) -> Result<(), &'static str> {
-        let mut driver = super::e1000::E1000_DRIVER.lock();
-        let interface = driver.as_mut().ok_or("No E1000 driver")?;
-
         let mut frame = [0u8; 42];
         let mut offset = 0;
 
@@ -595,15 +626,7 @@ impl NetworkStack {
         offset += 6;
         frame[offset..offset + 4].copy_from_slice(&dest_ip.0);
 
-        interface.send_frame(&frame)
-    }
-    #[cfg(target_arch = "aarch64")]
-    fn send_arp_reply(
-        &mut self,
-        _dest_mac: MacAddr,
-        _dest_ip: Ipv4Addr,
-    ) -> Result<(), &'static str> {
-        Err("ARP not supported on AArch64")
+        backend_send_frame(&frame)
     }
 
     /// Resolve IP to MAC address (with ARP)
@@ -642,8 +665,6 @@ impl NetworkStack {
     // UDP Protocol
     // ========================================================================
 
-    /// Send UDP packet
-    #[cfg(not(target_arch = "aarch64"))]
     fn send_udp(
         &mut self,
         dest_ip: Ipv4Addr,
@@ -663,10 +684,6 @@ impl NetworkStack {
             self.gateway_ip
         };
         let dest_mac = self.resolve_mac(next_hop)?;
-
-        // Use E1000 driver directly
-        let mut driver = super::e1000::E1000_DRIVER.lock();
-        let driver = driver.as_mut().ok_or("No E1000 driver")?;
 
         // Build packet
         let frame = unsafe { &mut *core::ptr::addr_of_mut!(UDP_TX_STAGE) };
@@ -737,17 +754,7 @@ impl NetworkStack {
         frame[udp_checksum_offset..udp_checksum_offset + 2]
             .copy_from_slice(&udp_checksum.to_be_bytes());
 
-        driver.send_frame(&frame[..offset])
-    }
-    #[cfg(target_arch = "aarch64")]
-    fn send_udp(
-        &mut self,
-        _dest_ip: Ipv4Addr,
-        _dest_port: u16,
-        _src_port: u16,
-        _data: &[u8],
-    ) -> Result<(), &'static str> {
-        Err("UDP send not supported on AArch64")
+        backend_send_frame(&frame[..offset])
     }
 
     /// Dequeue the oldest valid UDP slot whose `dst_port` matches `expected_port`.
@@ -763,7 +770,6 @@ impl NetworkStack {
     /// matching, source-valid slot was discarded for being oversized and no
     /// same-port slot of acceptable size was found. If no matching slot exists at
     /// all the error is `Err("No UDP packet available")`.
-    #[cfg(not(target_arch = "aarch64"))]
     fn recv_udp(&mut self, expected_port: u16, buffer: &mut [u8]) -> Result<usize, &'static str> {
         let is_dns = expected_port == DNS_CLIENT_SRC_PORT;
         let mut found_oversized = false;
@@ -865,10 +871,6 @@ impl NetworkStack {
         }
 
         Err("No UDP packet available")
-    }
-    #[cfg(target_arch = "aarch64")]
-    fn recv_udp(&mut self, _expected_port: u16, _buffer: &mut [u8]) -> Result<usize, &'static str> {
-        Err("UDP recv not supported on AArch64")
     }
 
     // ============================================================================
@@ -1485,7 +1487,12 @@ impl NetworkStack {
     }
     #[cfg(target_arch = "aarch64")]
     pub fn poll_once(&mut self) -> Result<bool, &'static str> {
-        Ok(false)
+        let mut processed = false;
+        super::virtio_net::poll_rx(|frame| {
+            let _ = self.dispatch_frame(frame);
+            processed = true;
+        });
+        Ok(processed)
     }
 
     /// Dispatch a pre-read Ethernet frame through the protocol stack.
@@ -2876,7 +2883,6 @@ fn conn_recv_window(conn: &TcpConn) -> u16 {
     free.min(0xFFFF) as u16
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 fn send_tcp_segment(
     stack: &mut NetworkStack,
     ep: TcpEndpoint,
@@ -2953,16 +2959,13 @@ fn send_tcp_segment(
     );
     frame[tcp_start + 16..tcp_start + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
 
-    let mut driver = super::e1000::E1000_DRIVER.lock();
-    let interface = driver.as_mut().ok_or("No E1000 driver")?;
-    interface.send_frame(&frame[..total_len])
+    backend_send_frame(&frame[..total_len])
 }
 
 /// Send a SYN or SYN-ACK with the full RFC 1323 / RFC 6691 option set:
 ///   kind=2 len=4 MSS=1460  (4 bytes)
 ///   kind=3 len=3 wscale=TCP_WSCALE  NOP  (3+1=4 bytes, aligned)
 /// Total TCP options = 8 bytes → tcp_header_len = 28.
-#[cfg(not(target_arch = "aarch64"))]
 fn send_syn_segment(
     stack: &mut NetworkStack,
     ep: TcpEndpoint,
@@ -3037,34 +3040,7 @@ fn send_syn_segment(
     );
     frame[tcp_start + 16..tcp_start + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
 
-    let mut driver = super::e1000::E1000_DRIVER.lock();
-    let interface = driver.as_mut().ok_or("No E1000 driver")?;
-    interface.send_frame(&frame[..total_len])
-}
-
-#[cfg(target_arch = "aarch64")]
-fn send_tcp_segment(
-    _stack: &mut NetworkStack,
-    _ep: TcpEndpoint,
-    _seq: u32,
-    _ack: u32,
-    _flags: u16,
-    _payload: &[u8],
-    _adv_window: u16,
-) -> Result<(), &'static str> {
-    Err("TCP not supported on AArch64")
-}
-
-#[cfg(target_arch = "aarch64")]
-fn send_syn_segment(
-    _stack: &mut NetworkStack,
-    _ep: TcpEndpoint,
-    _seq: u32,
-    _ack: u32,
-    _flags: u16,
-    _adv_window: u16,
-) -> Result<(), &'static str> {
-    Err("TCP not supported on AArch64")
+    backend_send_frame(&frame[..total_len])
 }
 
 fn record_last(conn: &mut TcpConn, flags: u16, seq: u32, ack: u32, payload: &[u8]) {

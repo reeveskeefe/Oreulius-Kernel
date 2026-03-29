@@ -711,8 +711,12 @@ impl QuantumScheduler {
                 let cpacr: u64;
                 core::arch::asm!("mrs {r}, cpacr_el1", r = out(reg) cpacr, options(nostack));
                 // FPEN = 0b00 → traps from both EL0 and EL1 are enabled
-                core::arch::asm!("msr cpacr_el1, {r}", r = in(reg) cpacr & !(3u64 << 20),
-                                 options(nostack));
+                core::arch::asm!(
+                    "msr cpacr_el1, {r}",
+                    "isb",
+                    r = in(reg) cpacr & !(3u64 << 20),
+                    options(nostack)
+                );
             }
         }
 
@@ -774,9 +778,12 @@ impl QuantumScheduler {
             let cpacr: u64;
             core::arch::asm!("mrs {r}, cpacr_el1", r = out(reg) cpacr, options(nostack));
             // FPEN = 0b11 → no traps from EL0 or EL1
-            core::arch::asm!("msr cpacr_el1, {r}",
-                             r = in(reg) cpacr | (3u64 << 20),
-                             options(nostack));
+            core::arch::asm!(
+                "msr cpacr_el1, {r}",
+                "isb",
+                r = in(reg) cpacr | (3u64 << 20),
+                options(nostack)
+            );
         }
 
         let current = match self.current_pid {
@@ -842,9 +849,12 @@ impl QuantumScheduler {
             {
                 let cpacr: u64;
                 core::arch::asm!("mrs {r}, cpacr_el1", r = out(reg) cpacr, options(nostack));
-                core::arch::asm!("msr cpacr_el1, {r}",
-                                 r = in(reg) cpacr & !(3u64 << 20),
-                                 options(nostack));
+                core::arch::asm!(
+                    "msr cpacr_el1, {r}",
+                    "isb",
+                    r = in(reg) cpacr & !(3u64 << 20),
+                    options(nostack)
+                );
             }
         }
     }

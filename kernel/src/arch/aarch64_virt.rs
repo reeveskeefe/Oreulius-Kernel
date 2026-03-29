@@ -1002,6 +1002,23 @@ fn virtio_mmio_device_kind(device_id: u32) -> &'static str {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn discovered_virtio_net_base() -> Option<usize> {
+    let count = DISCOVERED_VIRTIO_MMIO_COUNT
+        .load(Ordering::Relaxed)
+        .min(MAX_TRACKED_VIRTIO_MMIO);
+    for idx in 0..count {
+        if VIRTIO_MMIO_DEVICE_ID_REG[idx].load(Ordering::Relaxed) != VIRTIO_MMIO_DEVICE_ID_NET {
+            continue;
+        }
+        let base = DISCOVERED_VIRTIO_MMIO_BASES[idx].load(Ordering::Relaxed);
+        if base != 0 {
+            return Some(base);
+        }
+    }
+    None
+}
+
 fn gicv2_enable_intid(gicd: usize, intid: u32) {
     let bit = 1u32 << (intid & 31);
     let icen = GICD_ICENABLER0 + ((intid as usize / 32) * 4);

@@ -15,10 +15,12 @@
  * ---------------------------------------------------------------------------
  */
 
-use core::cell::UnsafeCell;
 use core::fmt;
-use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
+#[cfg(not(target_arch = "aarch64"))]
+use core::cell::UnsafeCell;
+#[cfg(not(target_arch = "aarch64"))]
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Simple serial port implementation (COM1, 0x3F8)
 pub struct SerialPort {

@@ -541,7 +541,7 @@ impl NetworkService {
         #[cfg(not(target_arch = "aarch64"))]
         let src_mac = self::e1000::get_mac_address().unwrap_or([0, 0, 0, 0, 0, 0]);
         #[cfg(target_arch = "aarch64")]
-        let src_mac = [0u8; 6];
+        let src_mac = self::virtio_net::mac_address();
         packet[offset..offset + 6].copy_from_slice(&dest_mac);
         offset += 6;
         packet[offset..offset + 6].copy_from_slice(&src_mac);
@@ -617,8 +617,7 @@ impl NetworkService {
         }
         #[cfg(target_arch = "aarch64")]
         {
-            let _ = frame_len;
-            Err(NetworkError::TcpSendFailed)
+            self::virtio_net::send(&packet[..frame_len]).map_err(|_| NetworkError::TcpSendFailed)
         }
     }
 
@@ -676,6 +675,8 @@ impl NetworkService {
                         if body_len >= expected {
                             break;
                         }
+                    } else if chunked && has_chunked_terminator(&response.body[..body_len]) {
+                        break;
                     }
                 } else if to_copy < read {
                     return Err(NetworkError::HttpParseFailed);

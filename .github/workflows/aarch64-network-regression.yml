@@ -1,0 +1,69 @@
+name: aarch64-network-regression
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "kernel/**"
+      - "README.md"
+      - ".github/workflows/aarch64-network-regression.yml"
+  pull_request:
+    paths:
+      - "kernel/**"
+      - "README.md"
+      - ".github/workflows/aarch64-network-regression.yml"
+
+jobs:
+  aarch64-network-regression:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: kernel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            expect \
+            qemu-system-arm \
+            binutils-aarch64-linux-gnu \
+            lld
+
+      - name: Install Rust nightly (kernel toolchain)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2024-01-01
+          components: rust-src,llvm-tools
+
+      - name: Add rust-src for build-std target
+        run: rustup component add rust-src --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
+
+      - name: Make scripts executable
+        run: chmod +x ./build*.sh ./run*.sh ./ci/*.sh
+
+      - name: Create log directory
+        run: mkdir -p ./ci/logs
+
+      - name: Run AArch64 network regression
+        env:
+          AS_BIN: aarch64-linux-gnu-as
+          LD_BIN: aarch64-linux-gnu-ld
+          OBJCOPY_BIN: aarch64-linux-gnu-objcopy
+          CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
+          QEMU_EXTRA_ARGS: -display none -monitor none -nographic -no-reboot -no-shutdown
+        run: ./ci/network-aarch64.sh
+
+      - name: Upload AArch64 network logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aarch64-network-regression-logs
+          path: kernel/ci/logs/network-aarch64.log
+          if-no-files-found: ignore

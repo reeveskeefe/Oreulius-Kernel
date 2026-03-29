@@ -572,6 +572,23 @@ fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
 pub fn run() -> ! {
     // SAFETY: The network reactor task is the sole owner of the stack.
     let stack = unsafe { &mut NET_STACK };
+    #[cfg(target_arch = "aarch64")]
+    {
+        if let Some(base) = crate::arch::aarch64_virt::discovered_virtio_net_base() {
+            match super::virtio_net::init(base) {
+                Ok(mac) => {
+                    if stack.seed_aarch64_qemu_defaults(mac) {
+                        crate::serial_println!("[NET] aarch64 reactor seeded runtime defaults");
+                    }
+                }
+                Err(e) => {
+                    crate::serial_println!("[NET] aarch64 virtio-net init failed: {}", e);
+                }
+            }
+        } else {
+            crate::serial_println!("[NET] aarch64 virtio-net not discovered");
+        }
+    }
     #[cfg(target_arch = "x86")]
     {
         if super::e1000::driver_present() && stack.seed_legacy_x86_qemu_defaults() {

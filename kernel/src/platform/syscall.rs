@@ -29,7 +29,7 @@ use crate::process_asm::{
 };
 #[cfg(not(target_arch = "aarch64"))]
 use crate::vga;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 // POSIX-style error codes

@@ -115,6 +115,10 @@ impl AddressSpace {
         Self::new()
     }
 
+    pub fn clone_cow(&mut self) -> Result<Self, &'static str> {
+        Self::clone_from_root_phys(self.ttbr0_el1)
+    }
+
     pub fn page_table_root_addr(&self) -> usize {
         self.ttbr0_el1
     }

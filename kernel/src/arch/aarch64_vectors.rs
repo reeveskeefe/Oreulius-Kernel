@@ -191,6 +191,9 @@ fn brk_imm16(esr_el1: u64) -> u16 {
 
 #[inline]
 fn should_log_sync_exception(slot: u8, ec: u8) -> bool {
+    if ec == EC_FP_ASIMD_TRAP {
+        return false;
+    }
     !(slot == VectorSlot::LowerElA64Sync as u8 && ec == EC_SVC64)
 }
 
@@ -251,7 +254,7 @@ pub extern "C" fn oreulia_aarch64_vector_dispatch(
         }
 
         if ec == EC_FP_ASIMD_TRAP {
-            super::aarch64_virt::enable_fp_simd_access();
+            crate::quantum_scheduler::handle_fpu_trap();
             return 0;
         }
 

@@ -68,9 +68,9 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::{fence, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -114,9 +114,11 @@ const VIRTIO_MAGIC: u32 = 0x74726976; // "virt"
 const VIRTIO_NET_DEVICE_ID: u32 = 1;
 
 // VirtIO-net feature bits
-const VIRTIO_NET_F_MAC: u32 = 1 << 5;
-const VIRTIO_NET_F_STATUS: u32 = 1 << 16;
-const VIRTIO_NET_F_MRG_RXBUF: u32 = 1 << 15;
+const VIRTIO_NET_F_MAC: u64 = 1u64 << 5;
+const VIRTIO_NET_F_STATUS: u64 = 1u64 << 16;
+const VIRTIO_NET_F_MRG_RXBUF: u64 = 1u64 << 15;
+const VIRTIO_F_VERSION_1: u64 = 1u64 << 32;
+const VIRTIO_NET_S_LINK_UP: u16 = 1;
 
 // Queue indices
 const VIRTIO_NET_RX_QUEUE: u32 = 0;
@@ -154,6 +156,17 @@ pub struct VirtqAvail {
     pub used_event: u16,
 }
 
+impl VirtqAvail {
+    fn new() -> Self {
+        VirtqAvail {
+            flags: 0,
+            idx: 0,
+            ring: [0u16; QUEUE_SIZE],
+            used_event: 0,
+        }
+    }
+}
+
 /// One used-ring element.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -169,6 +182,17 @@ pub struct VirtqUsed {
     pub idx: u16,
     pub ring: [VirtqUsedElem; QUEUE_SIZE],
     pub avail_event: u16,
+}
+
+impl VirtqUsed {
+    fn new() -> Self {
+        VirtqUsed {
+            flags: 0,
+            idx: 0,
+            ring: [VirtqUsedElem::default(); QUEUE_SIZE],
+            avail_event: 0,
+        }
+    }
 }
 
 // ============================================================================
@@ -197,17 +221,14 @@ const VIRTIO_NET_HDR_SIZE: usize = core::mem::size_of::<VirtioNetHdr>();
 ///
 /// All rings and buffers are allocated from the kernel heap.  In a production
 /// implementation they would be placed in a non-cacheable MMIO-visible region;
-/// here we use `compiler_fence` to prevent the compiler from reordering stores,
-/// and rely on cache coherency (coherent DMA model used by QEMU virtio-mmio).
+/// here we use explicit hardware fences before MMIO notify / after used-ring
+/// observation so descriptor and ring writes become visible to the device on
+/// weakly ordered architectures such as AArch64.
 pub struct VirtQueue {
-    desc: Vec<VirtqDesc>,
-    avail: Vec<u16>, // ring[] portion only; we track flags/idx separately
-    avail_flags: u16,
-    avail_idx: u16,
+    desc: Box<[VirtqDesc; QUEUE_SIZE]>,
+    avail: Box<VirtqAvail>,
     used_idx_shadow: u16,
-    used: Vec<VirtqUsedElem>,
-    used_flags: u16,
-    used_idx: u16,
+    used: Box<VirtqUsed>,
     /// Packet buffers — one per descriptor slot.
     buffers: Vec<Vec<u8>>,
     /// MMIO base address for this queue's NOTIFY register.
@@ -217,41 +238,34 @@ pub struct VirtQueue {
     free_head: u16,
     free_count: u16,
     /// Next chain index in free list.
-    next_free: Vec<u16>,
+    next_free: [u16; QUEUE_SIZE],
 }
 
 impl VirtQueue {
     fn new(mmio_base: usize, queue_index: u32, buf_size: usize) -> Self {
-        let mut desc = Vec::with_capacity(QUEUE_SIZE);
+        let mut desc = Box::new([VirtqDesc::default(); QUEUE_SIZE]);
         let mut buffers = Vec::with_capacity(QUEUE_SIZE);
-        let mut next_free = Vec::with_capacity(QUEUE_SIZE);
+        let mut next_free = [0u16; QUEUE_SIZE];
 
         for i in 0..QUEUE_SIZE {
             let buf = alloc::vec![0u8; buf_size];
             let buf_addr = buf.as_ptr() as u64;
-            desc.push(VirtqDesc {
+            desc[i] = VirtqDesc {
                 addr: buf_addr,
                 len: buf_size as u32,
                 flags: 0,
                 next: (i + 1) as u16,
-            });
+            };
             buffers.push(buf);
-            next_free.push((i + 1) as u16);
+            next_free[i] = (i + 1) as u16;
         }
-        // Last free-list pointer wraps (sentinel)
-        if let Some(last) = next_free.last_mut() {
-            *last = QUEUE_SIZE as u16;
-        }
+        next_free[QUEUE_SIZE - 1] = QUEUE_SIZE as u16;
 
         VirtQueue {
             desc,
-            avail: alloc::vec![0u16; QUEUE_SIZE],
-            avail_flags: 0,
-            avail_idx: 0,
+            avail: Box::new(VirtqAvail::new()),
             used_idx_shadow: 0,
-            used: alloc::vec![VirtqUsedElem::default(); QUEUE_SIZE],
-            used_flags: 0,
-            used_idx: 0,
+            used: Box::new(VirtqUsed::new()),
             buffers,
             mmio_base,
             queue_index,
@@ -279,6 +293,21 @@ impl VirtQueue {
         self.free_count += 1;
     }
 
+    #[inline]
+    fn desc_addr(&self) -> u64 {
+        self.desc.as_ptr() as u64
+    }
+
+    #[inline]
+    fn avail_addr(&self) -> u64 {
+        (&*self.avail) as *const VirtqAvail as u64
+    }
+
+    #[inline]
+    fn used_addr(&self) -> u64 {
+        (&*self.used) as *const VirtqUsed as u64
+    }
+
     /// Copy `data` into the descriptor's buffer and add it to the available ring.
     fn enqueue_tx(&mut self, data: &[u8]) -> Result<(), &'static str> {
         if data.len() + VIRTIO_NET_HDR_SIZE > TX_BUF_SIZE {
@@ -303,11 +332,16 @@ impl VirtQueue {
         self.desc[desc_idx as usize].next = 0;
 
         // Publish to available ring
-        let avail_slot = (self.avail_idx as usize) % QUEUE_SIZE;
-        self.avail[avail_slot] = desc_idx;
-        compiler_fence(Ordering::SeqCst);
-        self.avail_idx = self.avail_idx.wrapping_add(1);
-        compiler_fence(Ordering::SeqCst);
+        let avail_idx = unsafe { read_volatile(&self.avail.idx as *const u16) };
+        let avail_slot = (avail_idx as usize) % QUEUE_SIZE;
+        unsafe {
+            write_volatile(&mut self.avail.ring[avail_slot] as *mut u16, desc_idx);
+        }
+        fence(Ordering::Release);
+        unsafe {
+            write_volatile(&mut self.avail.idx as *mut u16, avail_idx.wrapping_add(1));
+        }
+        fence(Ordering::SeqCst);
 
         // Notify device
         mmio_write32(self.mmio_base + VIRTIO_MMIO_QUEUE_NOTIFY, self.queue_index);
@@ -327,21 +361,28 @@ impl VirtQueue {
             self.desc[desc_idx as usize].flags = VIRTQ_DESC_F_WRITE; // device writes
             self.desc[desc_idx as usize].next = 0;
 
-            let avail_slot = (self.avail_idx as usize) % QUEUE_SIZE;
-            self.avail[avail_slot] = desc_idx;
-            compiler_fence(Ordering::SeqCst);
-            self.avail_idx = self.avail_idx.wrapping_add(1);
+            let avail_idx = unsafe { read_volatile(&self.avail.idx as *const u16) };
+            let avail_slot = (avail_idx as usize) % QUEUE_SIZE;
+            unsafe {
+                write_volatile(&mut self.avail.ring[avail_slot] as *mut u16, desc_idx);
+            }
+            fence(Ordering::Release);
+            unsafe {
+                write_volatile(&mut self.avail.idx as *mut u16, avail_idx.wrapping_add(1));
+            }
         }
-        compiler_fence(Ordering::SeqCst);
+        fence(Ordering::SeqCst);
         mmio_write32(self.mmio_base + VIRTIO_MMIO_QUEUE_NOTIFY, self.queue_index);
     }
 
     /// Poll the used ring and return completed descriptor indices.
     fn poll_used(&mut self, out: &mut Vec<(u16, u32)>) {
-        let used_idx = self.used_idx;
+        let used_idx = unsafe { read_volatile(&self.used.idx as *const u16) };
+        fence(Ordering::Acquire);
         while self.used_idx_shadow != used_idx {
             let slot = (self.used_idx_shadow as usize) % QUEUE_SIZE;
-            let elem = self.used[slot];
+            let elem =
+                unsafe { read_volatile(&self.used.ring[slot] as *const VirtqUsedElem) };
             out.push((elem.id as u16, elem.len));
             self.used_idx_shadow = self.used_idx_shadow.wrapping_add(1);
         }
@@ -358,8 +399,30 @@ fn mmio_read32(addr: usize) -> u32 {
 }
 
 #[inline(always)]
+fn mmio_read8(addr: usize) -> u8 {
+    unsafe { read_volatile(addr as *const u8) }
+}
+
+#[inline(always)]
 fn mmio_write32(addr: usize, val: u32) {
     unsafe { write_volatile(addr as *mut u32, val) }
+}
+
+#[inline(always)]
+fn mmio_read_device_features64(base: usize) -> u64 {
+    mmio_write32(base + VIRTIO_MMIO_DEVICE_FEAT_SEL, 0);
+    let low = mmio_read32(base + VIRTIO_MMIO_DEVICE_FEATURES) as u64;
+    mmio_write32(base + VIRTIO_MMIO_DEVICE_FEAT_SEL, 1);
+    let high = mmio_read32(base + VIRTIO_MMIO_DEVICE_FEATURES) as u64;
+    (high << 32) | low
+}
+
+#[inline(always)]
+fn mmio_write_driver_features64(base: usize, features: u64) {
+    mmio_write32(base + VIRTIO_MMIO_DRIVER_FEAT_SEL, 0);
+    mmio_write32(base + VIRTIO_MMIO_DRIVER_FEATURES, features as u32);
+    mmio_write32(base + VIRTIO_MMIO_DRIVER_FEAT_SEL, 1);
+    mmio_write32(base + VIRTIO_MMIO_DRIVER_FEATURES, (features >> 32) as u32);
 }
 
 // ============================================================================
@@ -368,9 +431,10 @@ fn mmio_write32(addr: usize, val: u32) {
 
 pub struct VirtioNet {
     mmio_base: usize,
-    rx: VirtQueue,
-    tx: VirtQueue,
+    rx: Option<VirtQueue>,
+    tx: Option<VirtQueue>,
     pub mac: [u8; 6],
+    negotiated_features: u64,
     initialized: bool,
 }
 
@@ -379,41 +443,16 @@ impl VirtioNet {
         // SAFETY: zeroed-out placeholder; replaced by `init()` before use.
         VirtioNet {
             mmio_base: 0,
-            rx: VirtQueue {
-                desc: Vec::new(),
-                avail: Vec::new(),
-                avail_flags: 0,
-                avail_idx: 0,
-                used_idx_shadow: 0,
-                used: Vec::new(),
-                used_flags: 0,
-                used_idx: 0,
-                buffers: Vec::new(),
-                mmio_base: 0,
-                queue_index: 0,
-                free_head: 0,
-                free_count: 0,
-                next_free: Vec::new(),
-            },
-            tx: VirtQueue {
-                desc: Vec::new(),
-                avail: Vec::new(),
-                avail_flags: 0,
-                avail_idx: 0,
-                used_idx_shadow: 0,
-                used: Vec::new(),
-                used_flags: 0,
-                used_idx: 0,
-                buffers: Vec::new(),
-                mmio_base: 0,
-                queue_index: 1,
-                free_head: 0,
-                free_count: 0,
-                next_free: Vec::new(),
-            },
+            rx: None,
+            tx: None,
             mac: [0u8; 6],
+            negotiated_features: 0,
             initialized: false,
         }
+    }
+
+    fn reset(&mut self) {
+        *self = VirtioNet::uninit();
     }
 }
 
@@ -445,7 +484,7 @@ pub fn init(base: usize) -> Result<[u8; 6], &'static str> {
 
     // 1. Reset
     mmio_write32(base + VIRTIO_MMIO_STATUS, 0);
-    compiler_fence(Ordering::SeqCst);
+    fence(Ordering::SeqCst);
 
     // 2. Acknowledge
     mmio_write32(base + VIRTIO_MMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
@@ -457,18 +496,22 @@ pub fn init(base: usize) -> Result<[u8; 6], &'static str> {
     );
 
     // 4. Read device features, negotiate
-    mmio_write32(base + VIRTIO_MMIO_DEVICE_FEAT_SEL, 0);
-    let device_features = mmio_read32(base + VIRTIO_MMIO_DEVICE_FEATURES);
+    let device_features = mmio_read_device_features64(base);
+    if (device_features & VIRTIO_F_VERSION_1) == 0 {
+        mmio_write32(base + VIRTIO_MMIO_STATUS, VIRTIO_STATUS_FAILED);
+        return Err("virtio_net: modern device missing VERSION_1 feature");
+    }
 
-    // Negotiate: we want MAC and status; no GSO/checksum offload for MVP.
-    let driver_features = device_features & (VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS);
-    mmio_write32(base + VIRTIO_MMIO_DRIVER_FEAT_SEL, 0);
-    mmio_write32(base + VIRTIO_MMIO_DRIVER_FEATURES, driver_features);
+    // Negotiate: VERSION_1 is mandatory for modern virtio-mmio. MAC and link
+    // status are optional readiness/reporting features.
+    let driver_features =
+        device_features & (VIRTIO_F_VERSION_1 | VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS);
+    mmio_write_driver_features64(base, driver_features);
 
     // 5. Features OK
     let status = VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK;
     mmio_write32(base + VIRTIO_MMIO_STATUS, status);
-    compiler_fence(Ordering::SeqCst);
+    fence(Ordering::SeqCst);
 
     // Confirm features were accepted
     let confirmed = mmio_read32(base + VIRTIO_MMIO_STATUS);
@@ -477,31 +520,35 @@ pub fn init(base: usize) -> Result<[u8; 6], &'static str> {
         return Err("virtio_net: device rejected features");
     }
 
-    // 6. Setup virtqueues
-    setup_queue(base, VIRTIO_NET_RX_QUEUE)?;
-    setup_queue(base, VIRTIO_NET_TX_QUEUE)?;
+    let mut rx = VirtQueue::new(base, VIRTIO_NET_RX_QUEUE, RX_BUF_SIZE);
+    let tx = VirtQueue::new(base, VIRTIO_NET_TX_QUEUE, TX_BUF_SIZE);
 
-    // 7. Driver OK
-    mmio_write32(base + VIRTIO_MMIO_STATUS, status | VIRTIO_STATUS_DRIVER_OK);
-    compiler_fence(Ordering::SeqCst);
+    // 6. Setup virtqueues
+    setup_queue(base, &rx)?;
+    setup_queue(base, &tx)?;
 
     // Read MAC from config space (offset 0x100, 6 bytes)
     let mut mac = [0u8; 6];
     if (driver_features & VIRTIO_NET_F_MAC) != 0 {
         for (i, byte) in mac.iter_mut().enumerate() {
-            *byte = mmio_read32(base + VIRTIO_MMIO_CONFIG + i) as u8;
+            *byte = mmio_read8(base + VIRTIO_MMIO_CONFIG + i);
         }
     }
 
+    // 7. Driver OK
+    mmio_write32(base + VIRTIO_MMIO_STATUS, status | VIRTIO_STATUS_DRIVER_OK);
+    fence(Ordering::SeqCst);
+
+    // Pre-fill RX queue with buffers after the device is live.
+    rx.replenish_rx();
+
     let mut dev = VIRTIO_NET.lock();
     dev.mmio_base = base;
+    dev.rx = Some(rx);
+    dev.tx = Some(tx);
     dev.mac = mac;
-    dev.rx = VirtQueue::new(base, VIRTIO_NET_RX_QUEUE, RX_BUF_SIZE);
-    dev.tx = VirtQueue::new(base, VIRTIO_NET_TX_QUEUE, TX_BUF_SIZE);
+    dev.negotiated_features = driver_features;
     dev.initialized = true;
-
-    // Pre-fill RX queue with buffers
-    dev.rx.replenish_rx();
 
     Ok(mac)
 }
@@ -516,7 +563,13 @@ pub fn send(frame: &[u8]) -> Result<(), &'static str> {
     if !dev.initialized {
         return Err("virtio_net: not initialized");
     }
-    dev.tx.enqueue_tx(frame)
+    let tx = dev.tx.as_mut().ok_or("virtio_net: TX queue missing")?;
+    let mut completed = Vec::new();
+    tx.poll_used(&mut completed);
+    for (desc_idx, _) in completed {
+        tx.free_desc(desc_idx);
+    }
+    tx.enqueue_tx(frame)
 }
 
 /// Poll the RX queue and pass received frames to the callback.
@@ -524,34 +577,42 @@ pub fn send(frame: &[u8]) -> Result<(), &'static str> {
 /// Returns the number of frames delivered.  The callback receives the raw
 /// Ethernet frame bytes (without the VirtIO-net header).
 pub fn poll_rx<F: FnMut(&[u8])>(mut cb: F) -> usize {
-    let mut dev = VIRTIO_NET.lock();
-    if !dev.initialized {
-        return 0;
+    let mut frames = Vec::new();
+    {
+        let mut dev = VIRTIO_NET.lock();
+        if !dev.initialized {
+            return 0;
+        }
+        let Some(rx) = dev.rx.as_mut() else {
+            return 0;
+        };
+
+        let mut completed: Vec<(u16, u32)> = Vec::new();
+        rx.poll_used(&mut completed);
+
+        for (desc_idx, len) in &completed {
+            let idx = *desc_idx as usize;
+            let total = *len as usize;
+            if total > VIRTIO_NET_HDR_SIZE && idx < QUEUE_SIZE {
+                let frame_len = total - VIRTIO_NET_HDR_SIZE;
+                if frame_len <= RX_BUF_SIZE - VIRTIO_NET_HDR_SIZE {
+                    frames.push(
+                        rx.buffers[idx]
+                            [VIRTIO_NET_HDR_SIZE..VIRTIO_NET_HDR_SIZE + frame_len]
+                            .to_vec(),
+                    );
+                }
+            }
+            rx.free_desc(*desc_idx);
+        }
+
+        rx.replenish_rx();
     }
 
-    let mut completed: Vec<(u16, u32)> = Vec::new();
-    dev.rx.poll_used(&mut completed);
-
-    let mut count = 0;
-    for (desc_idx, len) in &completed {
-        let idx = *desc_idx as usize;
-        let total = *len as usize;
-        if total <= VIRTIO_NET_HDR_SIZE {
-            continue;
-        }
-        let frame_len = total - VIRTIO_NET_HDR_SIZE;
-        if idx < QUEUE_SIZE && frame_len <= RX_BUF_SIZE - VIRTIO_NET_HDR_SIZE {
-            let frame = &dev.rx.buffers[idx][VIRTIO_NET_HDR_SIZE..VIRTIO_NET_HDR_SIZE + frame_len];
-            cb(frame);
-            count += 1;
-        }
-        dev.rx.free_desc(*desc_idx);
+    for frame in &frames {
+        cb(frame);
     }
-
-    // Replenish freed descriptors
-    dev.rx.replenish_rx();
-
-    count
+    frames.len()
 }
 
 /// Returns `true` if a VirtIO-net device has been successfully initialised.
@@ -564,22 +625,55 @@ pub fn mac_address() -> [u8; 6] {
     VIRTIO_NET.lock().mac
 }
 
+pub fn is_link_up() -> bool {
+    let dev = VIRTIO_NET.lock();
+    if !dev.initialized {
+        return false;
+    }
+    if (dev.negotiated_features & VIRTIO_NET_F_STATUS) == 0 {
+        return true;
+    }
+    let status =
+        u16::from_le_bytes([mmio_read8(dev.mmio_base + VIRTIO_MMIO_CONFIG + 6), mmio_read8(dev.mmio_base + VIRTIO_MMIO_CONFIG + 7)]);
+    (status & VIRTIO_NET_S_LINK_UP) != 0
+}
+
 // ============================================================================
 // Internal: queue setup
 // ============================================================================
 
-fn setup_queue(base: usize, queue_idx: u32) -> Result<(), &'static str> {
-    mmio_write32(base + VIRTIO_MMIO_QUEUE_SEL, queue_idx);
+fn setup_queue(base: usize, queue: &VirtQueue) -> Result<(), &'static str> {
+    mmio_write32(base + VIRTIO_MMIO_QUEUE_SEL, queue.queue_index);
     let max_size = mmio_read32(base + VIRTIO_MMIO_QUEUE_NUM_MAX);
     if max_size == 0 {
         return Err("virtio_net: queue not available");
     }
     let size = (QUEUE_SIZE as u32).min(max_size);
     mmio_write32(base + VIRTIO_MMIO_QUEUE_NUM, size);
-    // We set QUEUE_READY to 1 after writing descriptor/avail/used addresses.
-    // For the MVP we rely on the host (QEMU) to accept the kernel virtual
-    // addresses directly (no IOMMU; host and guest share address space in
-    // QEMU's TCG mode, which is the development target).
+    mmio_write32(
+        base + VIRTIO_MMIO_QUEUE_DESC_LOW,
+        queue.desc_addr() as u32,
+    );
+    mmio_write32(
+        base + VIRTIO_MMIO_QUEUE_DESC_HIGH,
+        (queue.desc_addr() >> 32) as u32,
+    );
+    mmio_write32(
+        base + VIRTIO_MMIO_QUEUE_DRIVER_LOW,
+        queue.avail_addr() as u32,
+    );
+    mmio_write32(
+        base + VIRTIO_MMIO_QUEUE_DRIVER_HIGH,
+        (queue.avail_addr() >> 32) as u32,
+    );
+    mmio_write32(
+        base + VIRTIO_MMIO_QUEUE_DEVICE_LOW,
+        queue.used_addr() as u32,
+    );
+    mmio_write32(
+        base + VIRTIO_MMIO_QUEUE_DEVICE_HIGH,
+        (queue.used_addr() >> 32) as u32,
+    );
     mmio_write32(base + VIRTIO_MMIO_QUEUE_READY, 1);
     Ok(())
 }
