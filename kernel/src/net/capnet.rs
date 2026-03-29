@@ -1790,6 +1790,67 @@ pub fn process_incoming_control_payload(
         peer.active = false;
         degrade_telemetry = true;
     }
+
+    // For TokenOffer frames, perform all per-token peer authentication (token
+    // MAC and nonce replay check) while the peer lock is still held.  Dropping
+    // the lock before calling accept_nonce creates a scheduler-preemption race:
+    // on a single-core preemptive kernel another task can run between the lock
+    // release and the re-acquisition inside verify_incoming_token, potentially
+    // calling accept_nonce on the same peer and causing a spurious ReplayDetected.
+    let token_offer_verified: Option<CapabilityTokenV1> =
+        if frame.msg_type == CapNetControlType::TokenOffer {
+            if frame.payload_len as usize != CAPNET_TOKEN_V1_LEN {
+                audit_capnet(SecurityEvent::InvalidCapability, frame.token_id);
+                return Err(CapNetError::InvalidControlFrame);
+            }
+            let tok =
+                CapabilityTokenV1::decode_checked(&frame.payload[..CAPNET_TOKEN_V1_LEN])?;
+            if tok.token_id() != frame.token_id {
+                if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+                    crate::serial_println!(
+                        "TOKEN-ID-DIAG computed={:#x} frame={:#x}",
+                        tok.token_id(),
+                        frame.token_id
+                    );
+                }
+                audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.token_id);
+                return Err(CapNetError::TokenIdMismatch);
+            }
+            // Stateless semantic and temporal checks – no lock required but
+            // done here to fail fast before mutating replay state.
+            tok.validate_semantics()?;
+            if !tok.is_temporally_valid(now_epoch) {
+                return Err(CapNetError::TokenExpired);
+            }
+            if tok.subject_device_id != local {
+                return Err(CapNetError::UnknownPeer);
+            }
+            if (tok.constraints_flags & CAPNET_CONSTRAINT_MEASUREMENT_BOUND) != 0
+                && peer.measurement_hash != 0
+                && tok.measurement_hash != peer.measurement_hash
+            {
+                if peer.trust == PeerTrustPolicy::Enforce {
+                    return Err(CapNetError::MeasurementMismatch);
+                }
+            }
+            if peer.key_epoch == 0 {
+                return Err(CapNetError::SessionNotEstablished);
+            }
+            if !tok.verify_with_session_key(peer.key_k0, peer.key_k1) {
+                audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.issuer_device_id);
+                return Err(CapNetError::MacMismatch);
+            }
+            // Nonce replay check – performed under the peer lock to eliminate
+            // the preemption race window.
+            if !accept_nonce(peer, tok.nonce) {
+                audit_capnet(SecurityEvent::RateLimitExceeded, frame.issuer_device_id);
+                return Err(CapNetError::ReplayDetected);
+            }
+            Some(tok)
+        } else {
+            None
+        };
+
     peer.last_seen_epoch = now_epoch;
     drop(peers);
 
@@ -1810,23 +1871,12 @@ pub fn process_incoming_control_payload(
             }
         }
         CapNetControlType::TokenOffer => {
-            if frame.payload_len as usize != CAPNET_TOKEN_V1_LEN {
-                audit_capnet(SecurityEvent::InvalidCapability, frame.token_id);
-                return Err(CapNetError::InvalidControlFrame);
-            }
-            let token = CapabilityTokenV1::decode_checked(&frame.payload[..CAPNET_TOKEN_V1_LEN])?;
-            if token.token_id() != frame.token_id {
-                if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
-                    crate::serial_println!(
-                        "TOKEN-ID-DIAG computed={:#x} frame={:#x}",
-                        token.token_id(),
-                        frame.token_id
-                    );
-                }
-                audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.token_id);
-                return Err(CapNetError::TokenIdMismatch);
-            }
-            verify_incoming_token(&token, now_epoch)?;
+            // Token decode and peer authentication (including accept_nonce) were
+            // performed under the peer lock above; use the pre-verified token.
+            let token = match token_offer_verified {
+                Some(t) => t,
+                None => return Err(CapNetError::InvalidControlFrame),
+            };
             if is_token_revoked(token.issuer_device_id, token.token_id()) {
                 audit_capnet(SecurityEvent::CapabilityRevoked, frame.token_id);
                 return Err(CapNetError::RevokedToken);
@@ -2647,6 +2697,11 @@ pub fn capnet_fuzz_regression_default(
 
     let mut i = 0usize;
     while i < CAPNET_FUZZ_REGRESSION_SEEDS.len() {
+        // Flush cross-seed global state (capability remote leases, delegation
+        // records, tombstones) so each seed starts from a clean baseline and
+        // leftover use-budget decrements or stale leases from prior seeds
+        // cannot affect the current seed's verification paths.
+        flush_fuzz_interround_state();
         let seed = CAPNET_FUZZ_REGRESSION_SEEDS[i];
         let stats = capnet_fuzz(iterations_per_seed, seed)?;
         out.total_failures = out.total_failures.saturating_add(stats.failures);
