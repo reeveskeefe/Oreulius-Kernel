@@ -292,7 +292,7 @@ pub struct CapNetJournalStats {
     pub next_revocation_epoch: u32,
 }
 
-const CAPNET_FUZZ_SAMPLE_LEN: usize = 32;
+const CAPNET_FUZZ_SAMPLE_LEN: usize = 64;
 const CAPNET_FUZZ_MAX_ITERS: u32 = 10_000;
 
 /// Stable external corpus seeds for CapNet regression replay.
@@ -1062,6 +1062,13 @@ impl CapabilityTokenV1 {
 
     pub fn decode_checked(bytes: &[u8]) -> Result<Self, CapNetError> {
         if bytes.len() != CAPNET_TOKEN_V1_LEN {
+            if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+                crate::serial_println!(
+                    "CAPNET-DECODE-LEN-FAIL: got={} expected={}",
+                    bytes.len(),
+                    CAPNET_TOKEN_V1_LEN
+                );
+            }
             return Err(CapNetError::InvalidLength);
         }
 
@@ -1803,6 +1810,14 @@ pub fn process_incoming_control_payload(
                 audit_capnet(SecurityEvent::InvalidCapability, frame.token_id);
                 return Err(CapNetError::InvalidControlFrame);
             }
+            if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+                crate::serial_println!(
+                    "CAPNET-PRE-DECODE: payload_len={} payload[0..8]={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                    frame.payload_len,
+                    frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3],
+                    frame.payload[4], frame.payload[5], frame.payload[6], frame.payload[7]
+                );
+            }
             let tok =
                 CapabilityTokenV1::decode_checked(&frame.payload[..CAPNET_TOKEN_V1_LEN])?;
             if tok.token_id() != frame.token_id {
@@ -2506,15 +2521,31 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
             }
             Err(e) => {
                 crate::serial_println!(
-                    "MAC-DIAG offer seed={} iter={} err={} local={:#x} k0={:#x} k1={:#x} offer_token_id={:#x}",
+                    "MAC-DIAG offer seed={} iter={} err={} local={:#x} k0={:#x} k1={:#x} offer_token_id={:#x} frame_len={}",
                     seed,
                     i,
                     e.as_str(),
                     local,
                     k0,
                     k1,
-                    offer.token_id
+                    offer.token_id,
+                    offer.len,
                 );
+                if offer.len >= CAPNET_CTRL_HEADER_LEN + 8 {
+                    crate::serial_println!(
+                        "MAC-DIAG payload[0..8]={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} payload_len_field={:02x}{:02x}",
+                        offer.bytes[CAPNET_CTRL_HEADER_LEN],
+                        offer.bytes[CAPNET_CTRL_HEADER_LEN + 1],
+                        offer.bytes[CAPNET_CTRL_HEADER_LEN + 2],
+                        offer.bytes[CAPNET_CTRL_HEADER_LEN + 3],
+                        offer.bytes[CAPNET_CTRL_HEADER_LEN + 4],
+                        offer.bytes[CAPNET_CTRL_HEADER_LEN + 5],
+                        offer.bytes[CAPNET_CTRL_HEADER_LEN + 6],
+                        offer.bytes[CAPNET_CTRL_HEADER_LEN + 7],
+                        offer.bytes[44],
+                        offer.bytes[45],
+                    );
+                }
                 record_fuzz_failure(
                     &mut stats,
                     i,
