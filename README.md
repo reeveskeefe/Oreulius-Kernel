@@ -108,7 +108,7 @@ It is designed for technical audiences who care about:
 - WASM host ABI spans IDs 0–131 across 132 callable host functions.
 - 77+ kernel modules organized into subsystem directories within a single Rust `no_std` crate.
 - 8 GitHub Actions CI workflows (smoke, extended, i686 network regression, x86_64 network regression, AArch64 network regression, CapNet regression, WASM JIT regression, proof check).
-- 14 shell-level CI scripts for i686, x86_64, and AArch64 covering smoke, extended, and soak profiles.
+- 10 shell runner scripts plus 10 interactive harnesses (`.expect` / `.py`) for i686, x86_64, and AArch64 covering smoke, network, extended, and soak profiles.
 
 ## Platform And Portability Status
 
@@ -173,7 +173,7 @@ Oreulia is now cross-compatible at the boot/runtime abstraction layer across `i6
 
 ## WASM Host ABI Reference
 
-The Oreulia WASM runtime exposes 132 host functions (IDs 0–131) through a single import module. Functions are resolved by name — both the short form (e.g. `log`) and the fully-qualified `oreulia_` prefix form (e.g. `oreulia_log`) are accepted. Every function call is dispatched through a single match arm in the `WasmInterpreter::call_host_fn` method in `kernel/src/wasm.rs` (19,536 lines).
+The Oreulia WASM runtime exposes 132 host functions (IDs 0–131) through a single import module. Functions are resolved by name — both the short form (e.g. `log`) and the fully-qualified `oreulia_` prefix form (e.g. `oreulia_log`) are accepted. Every function call is dispatched through the `WasmInterpreter::call_host_fn` path in `kernel/src/execution/wasm.rs`.
 
 ### Group 0 — Core I/O and IPC (IDs 0–12)
 
@@ -377,7 +377,7 @@ The runtime capability graph is a live delegation DAG maintained in `kernel/src/
 
 ## WASM SDK Module Reference
 
-The `wasm/sdk` crate provides a Rust `no_std` SDK for WASM modules running on the Oreulia host. All 15 public modules correspond to groups of host functions described above. Modules are declared in `wasm/sdk/src/lib.rs` and each wraps the raw `extern "C"` FFI stubs in `wasm/sdk/src/raw/oreulia.rs` and `wasm/sdk/src/raw/wasi.rs` with safe, ergonomic abstractions.
+The `wasm/sdk` crate provides a Rust `no_std` SDK for WASM modules running on the Oreulia host. All 14 public modules correspond to groups of host functions described above. Modules are declared in `wasm/sdk/src/lib.rs` and each wraps the raw `extern "C"` FFI stubs in `wasm/sdk/src/raw/oreulia.rs` and `wasm/sdk/src/raw/wasi.rs` with safe, ergonomic abstractions.
 
 | Module | Host IDs | Key Types / Functions | Purpose |
 |---|---|---|---|
@@ -582,34 +582,35 @@ Each `CapDelegationEdge` records:
 
 ### GitHub Actions Workflows
 
-Eight workflows run on every push and pull request:
+Eight workflows are available as CI gates. They all support `workflow_dispatch`; push and pull request execution is path-filtered by workflow file:
 
 | Workflow File | Trigger | What It Runs |
 |---|---|---|
-| `.github/workflows/multiarch-qemu-smoke.yml` | Push / PR | Smoke tests for i686, x86_64, and AArch64 under QEMU. Boot, serial shell, and immediate-exit checks. |
-| `.github/workflows/multiarch-qemu-extended.yml` | Push / PR | Extended QEMU tests for all three architectures. Includes trap/MMU/IRQ/JIT/CapNet/temporal/VFS scenario scripts. |
-| `.github/workflows/i686-network-regression.yml` | Push / PR | Dedicated i686 QEMU usernet regression. Requires stable CI shell framing, live DNS resolution, plain HTTP success, and HTTPS fail-closed behavior. |
-| `.github/workflows/x86_64-network-regression.yml` | Push / PR | Dedicated x86_64 QEMU usernet regression. Requires live DNS resolution, plain HTTP success, and HTTPS fail-closed behavior. |
-| `.github/workflows/aarch64-network-regression.yml` | Push / PR | Dedicated AArch64 QEMU `virt` usernet regression. Requires READY state, DNS success, plain HTTP success, and HTTPS fail-closed behavior. |
-| `.github/workflows/capnet-regression.yml` | Push / PR | CapNet parser, enforcer, and cross-peer delegation regression. Runs fuzz corpus and known-bad input set. |
-| `.github/workflows/wasm-jit-regression.yml` | Push / PR | WASM interpreter vs JIT differential validation. Runs deterministic seed fuzz and corpus replay. |
-| `.github/workflows/proof-check.yml` | Push / PR | Runs the 8-stage formal verification pipeline (`formal-verify`) via `kernel/formal-verify.sh`. |
+| `.github/workflows/multiarch-qemu-smoke.yml` | Push / PR (path-filtered) / Dispatch | Smoke tests for i686, x86_64, and AArch64 under QEMU. Boot, serial shell, and immediate-exit checks. |
+| `.github/workflows/multiarch-qemu-extended.yml` | Push / PR (path-filtered) / Dispatch | Extended QEMU tests for all three architectures. Includes trap/MMU/IRQ/JIT/CapNet/temporal/VFS scenario scripts. |
+| `.github/workflows/i686-network-regression.yml` | Push / PR (path-filtered) / Dispatch | Dedicated i686 QEMU usernet regression. Requires stable CI shell framing, live DNS resolution, plain HTTP success, and HTTPS fail-closed behavior. |
+| `.github/workflows/x86_64-network-regression.yml` | Push / PR (path-filtered) / Dispatch | Dedicated x86_64 QEMU usernet regression. Requires live DNS resolution, plain HTTP success, and HTTPS fail-closed behavior. |
+| `.github/workflows/aarch64-network-regression.yml` | Push / PR (path-filtered) / Dispatch | Dedicated AArch64 QEMU `virt` usernet regression. Requires READY state, DNS success, plain HTTP success, and HTTPS fail-closed behavior. |
+| `.github/workflows/capnet-regression.yml` | Push / PR (path-filtered) / Dispatch | CapNet parser, enforcer, and cross-peer delegation regression. Runs fuzz corpus and known-bad input set. |
+| `.github/workflows/wasm-jit-regression.yml` | Push / PR (path-filtered) / Dispatch | WASM interpreter vs JIT differential validation. Runs deterministic seed fuzz and corpus replay. |
+| `.github/workflows/proof-check.yml` | Push / PR (path-filtered) / Dispatch | Runs the 8-stage formal verification pipeline (`formal-verify`) via `kernel/formal-verify.sh`. |
 
 ### Shell CI Scripts (`kernel/ci/`)
 
-Shell scripts cover three architectures plus a dedicated x86_64 network regression lane:
+Shell runners and harnesses cover three architectures plus dedicated network regression lanes:
 
-| Script | Arch | Depth | Description |
+| Script / Harness | Arch | Depth | Description |
 |---|---|---|---|
 | `smoke-i686.sh` / `.expect` | i686 | Smoke | Boot and minimal shell responsiveness check. |
 | `smoke-x86_64.sh` / `.expect` | x86_64 | Smoke | MB2 boot, serial shell, and command availability. |
 | `smoke-aarch64.sh` / `.expect` | AArch64 | Smoke | QEMU `virt` boot, PL011 shell, basic command echo. |
+| `network-i686.sh` / `network-i686.py` | i686 | Network | QEMU usernet regression with framed CI shell transport, DNS, plain HTTP, and HTTPS fail-closed checks. |
 | `network-x86_64.sh` / `.expect` | x86_64 | Network | QEMU usernet regression for `netstack-info`, DNS, plain HTTP, and HTTPS fail-closed behavior. |
+| `network-aarch64.sh` / `.expect` | AArch64 | Network | QEMU `virt` usernet regression for READY state, DNS, plain HTTP, and HTTPS fail-closed behavior. |
 | `extended-x86_64.sh` / `.expect` | x86_64 | Extended | Traps, MMU, timer IRQ, JIT toggle, CapNet, temporal, VFS. |
 | `extended-aarch64.sh` / `.expect` | AArch64 | Extended | Exception vectors, GICv2, generic timer, virtio-mmio. |
 | `extended-all.sh` | All | Extended | Orchestrator that runs all three extended scripts in sequence. |
-| `soak-x86_64.sh` | x86_64 | Soak | Long-duration stability run: JIT fuzz-soak, CapNet fuzz-soak, temporal churn. |
-| `soak-aarch64.sh` | AArch64 | Soak | AArch64 long-duration stability, virtio-blk, and IRQ stability. |
+| `soak-i686.sh` / `.expect` | i686 | Soak | Long-duration legacy-x86 stability run using the serial shell harness. |
 
 ### Formal Verification Pipeline Detail (`formal-verify`)
 
@@ -1113,14 +1114,16 @@ Suggested measurement commands for reproducible local baselines:
 oreulia/
 ├── kernel/              # Kernel source, asm, linker, build/run scripts
 │   ├── src/             # Grouped Rust subsystems (`capability/`, `drivers/`, `execution/`, `fs/`, `memory/`, `platform/`, `scheduler/`, `security/`, `services/`, `shell/`, `temporal/`, …)
-│   ├── ci/              # 14 shell CI scripts (smoke/extended/soak × i686/x86_64/AArch64)
+│   ├── ci/              # Shell CI runners and interactive harnesses (`.sh`, `.expect`, `.py`)
 │   ├── fuzz/            # WASM and CapNet fuzz corpus
 │   └── iso/             # ISO build artifacts
+├── ci/                  # Root-level helper scripts and local CI entrypoints
 ├── docs/                # Grouped docs (`project/`, `capability/`, `ipc/`, `runtime/`, `services/`, `storage/`, `architecture/`, `assets/`)
+├── OtherLiscenceFiles/  # Historical copies of licensing side documents
 ├── services/            # Service prototypes / planned expansions
 │   └── telemetry_daemon/
 ├── wasm/                # WASM modules and examples
-│   └── sdk/             # Rust no_std SDK crate (15 modules, IDs 0–131)
+│   └── sdk/             # Rust no_std SDK crate (14 modules, IDs 0–131)
 │       └── src/
 │           ├── lib.rs   # Module declarations
 │           ├── capgraph.rs, entangle.rs, policy.rs, mesh.rs, …
@@ -1130,9 +1133,9 @@ oreulia/
 │   ├── proof/
 │   ├── theories/
 │   └── mapping/
-├── ThingsYetToDo/       # Design notes and roadmap documents
 ├── CONTRIBUTOR-LICENSE.md
 ├── COMMERCIAL.md
+├── SECURITY.md
 ├── README.md            # This file
 └── LICENSE
 ```
