@@ -153,15 +153,17 @@ pub fn enter_runtime() -> ! {
     crate::quantum_scheduler::init();
     let launch = {
         let mut sched = crate::quantum_scheduler::scheduler().lock();
-        if let Err(e) = sched.add_kernel_thread(
-            network_scheduler_task,
-            crate::process::ProcessPriority::Normal,
-        ) {
-            let uart = crate::arch::aarch64_pl011::early_uart();
-            uart.write_str("[A64] scheduler add network task failed: ");
-            uart.write_str(e);
-            uart.write_str("\n");
-            crate::arch::halt_loop();
+        if crate::arch::aarch64_virt::discovered_virtio_net_base().is_some() {
+            if let Err(e) = sched.add_kernel_thread(
+                network_scheduler_task,
+                crate::process::ProcessPriority::Normal,
+            ) {
+                let uart = crate::arch::aarch64_pl011::early_uart();
+                uart.write_str("[A64] scheduler add network task failed: ");
+                uart.write_str(e);
+                uart.write_str("\n");
+                crate::arch::halt_loop();
+            }
         }
         if let Err(e) = sched.add_kernel_thread(
             shell_scheduler_task,

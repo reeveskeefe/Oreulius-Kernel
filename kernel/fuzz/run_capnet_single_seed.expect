@@ -144,9 +144,14 @@ if {$diag_seed == $fixed_seed} {
 }
 
 # Match the summary and fail if the single-seed replay reports any failures.
+# Support both the legacy "Failures: N" line and the shared-command
+# "failures=N" summary used by the current kernel shell.
 set timeout 300
 set failures -1
 expect {
+    -re {failures=([0-9]+)} {
+        set failures $expect_out(1,string)
+    }
     -re {Failures: ([0-9]+)} {
         set failures $expect_out(1,string)
     }

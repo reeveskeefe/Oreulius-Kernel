@@ -268,6 +268,7 @@ impl ReadyQueue {
         Some(pid)
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     fn for_each<F: FnMut(Pid)>(&self, mut f: F) {
         self.assert_sane();
         let mut i = 0usize;
@@ -279,6 +280,7 @@ impl ReadyQueue {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn scheduler_process_state_to_u8(state: ProcessState) -> u8 {
     match state {
         ProcessState::Ready => 1,
@@ -300,6 +302,7 @@ fn scheduler_process_state_from_u8(value: u8) -> Option<ProcessState> {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn scheduler_priority_to_u8(priority: ProcessPriority) -> u8 {
     match priority {
         ProcessPriority::High => 3,
@@ -317,14 +320,17 @@ fn scheduler_priority_from_u8(value: u8) -> Option<ProcessPriority> {
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn scheduler_append_u16(buf: &mut Vec<u8>, value: u16) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn scheduler_append_u32(buf: &mut Vec<u8>, value: u32) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn scheduler_append_u64(buf: &mut Vec<u8>, value: u64) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
@@ -2256,6 +2262,7 @@ impl QuantumScheduler {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     fn encode_temporal_state_payload_locked(&self, event: u8) -> Option<Vec<u8>> {
         let mut process_count = 0usize;
         let mut i = 0usize;
@@ -2355,13 +2362,24 @@ impl QuantumScheduler {
     }
 
     fn record_temporal_state_snapshot_locked(&self, event: u8) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let _ = event;
+            return;
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
         if scheduler_rt::temporal_is_replay_active() {
             return;
         }
+
+        #[cfg(not(target_arch = "aarch64"))]
         let payload = match self.encode_temporal_state_payload_locked(event) {
             Some(v) => v,
             None => return,
         };
+
+        #[cfg(not(target_arch = "aarch64"))]
         let _ = scheduler_rt::temporal_record_scheduler_state_event(&payload);
     }
 

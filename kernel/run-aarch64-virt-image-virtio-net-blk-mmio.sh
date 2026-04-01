@@ -19,23 +19,26 @@ if [[ ! -f "${DISK_IMAGE}" ]]; then
   truncate -s "${DISK_SIZE}" "${DISK_IMAGE}"
 fi
 
-extra_args=()
+cmd=(
+  qemu-system-aarch64
+  -M virt
+  -cpu cortex-a57
+  -m 512M
+  -nographic
+  -monitor none
+  -serial stdio
+  -kernel "${IMAGE}"
+  -global virtio-mmio.force-legacy=false
+  -drive if=none,id=vd0,file="${DISK_IMAGE}",format=raw
+  -netdev user,id=net0
+  -device "virtio-blk-device,drive=vd0,bus=virtio-mmio-bus.0"
+  -device "virtio-net-device,netdev=net0,mac=${NET_MAC},bus=virtio-mmio-bus.1"
+)
+
 if [[ -n "${QEMU_EXTRA_ARGS:-}" ]]; then
   # shellcheck disable=SC2206
   extra_args=(${QEMU_EXTRA_ARGS})
+  cmd+=("${extra_args[@]}")
 fi
 
-exec qemu-system-aarch64 \
-  -M virt \
-  -cpu cortex-a57 \
-  -m 512M \
-  -nographic \
-  -monitor none \
-  -serial stdio \
-  -kernel "${IMAGE}" \
-  -global virtio-mmio.force-legacy=false \
-  -drive if=none,id=vd0,file="${DISK_IMAGE}",format=raw \
-  -netdev user,id=net0 \
-  -device "virtio-blk-device,drive=vd0,bus=virtio-mmio-bus.0" \
-  -device "virtio-net-device,netdev=net0,mac=${NET_MAC},bus=virtio-mmio-bus.1" \
-  "${extra_args[@]}"
+exec "${cmd[@]}"
