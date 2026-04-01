@@ -665,7 +665,6 @@ Oreulia makes no false completeness claims. The following items are explicitly a
 
 | Area | Status | Notes |
 |---|---|---|
-| AArch64 full runtime parity | In progress | AArch64 now brings up the shared runtime core (`VFS`, persistence, temporal, IPC, registry, capability, security) and has a dedicated network regression lane. Remaining gaps are narrower: WASM/JIT execution, some non-AArch64 service modules (`fleet`, `health`, `ota`, `wasi`), and full shell/CapNet parity with x86. |
 | x86_64 JIT opcode parity | In progress | The x86_64 JIT path covers common opcodes and has a dedicated regression lane, but full opcode parity with the interpreter is not complete yet; `call_indirect` still remains on the incomplete side of that boundary. |
 | Non-QEMU hardware validation | Not started | All three architectures are validated under QEMU. Physical hardware bring-up has not been attempted. |
 | POSIX / Linux ABI compatibility | Explicit non-goal | Oreulia is not a drop-in Linux replacement. No libc, no POSIX process model, no `/proc`. |

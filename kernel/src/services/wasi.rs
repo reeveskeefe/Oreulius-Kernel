@@ -65,6 +65,61 @@
 #![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Network driver abstraction: RTL8139 on x86/x86_64, virtio-net on AArch64.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn net_has_recv() -> bool {
+    crate::rtl8139::has_recv()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn net_recv(buf: &mut [u8]) -> usize {
+    crate::rtl8139::recv(buf)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn net_send(frame: &[u8]) -> bool {
+    crate::rtl8139::send(frame)
+}
+
+/// AArch64: RX buffering via virtio-net is not yet implemented; reports no
+/// pending frames.  sock_recv returns 0 bytes and sock_accept returns EAGAIN.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn net_has_recv() -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn net_recv(_buf: &mut [u8]) -> usize {
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn net_send(frame: &[u8]) -> bool {
+    crate::virtio_net::send(frame).is_ok()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn kbd_has_input() -> bool {
+    crate::keyboard::has_input()
+}
+
+/// AArch64: no PS/2 keyboard; stdin never has input via this path.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn kbd_has_input() -> bool {
+    false
+}
+
 // WASI errno codes (WASI Preview 1 §1.3)
 // ---------------------------------------------------------------------------
 
@@ -664,6 +719,7 @@ pub fn fd_read(
                 }
 
                 let mut written = 0usize;
+                #[cfg(not(target_arch = "aarch64"))]
                 while written < buf_len {
                     crate::input::pump();
                     match crate::input::read() {
@@ -677,6 +733,7 @@ pub fn fd_read(
                         _ => break,
                     }
                 }
+                // AArch64: keyboard input not yet implemented; stdin reads return empty.
                 total += written as u32;
             }
         }
@@ -1099,12 +1156,12 @@ pub fn poll_oneoff(
                     mem[sub_off + 16..sub_off + 20].try_into().unwrap_or([0; 4]),
                 );
                 // stdin (fd 0) — check keyboard ring
-                if _fd == 0 && crate::keyboard::has_input() {
+                if _fd == 0 && kbd_has_input() {
                     any_fd_ready = true;
                     break;
                 }
                 // other fds: check network packet availability
-                if crate::rtl8139::has_recv() {
+                if net_has_recv() {
                     any_fd_ready = true;
                     break;
                 }
@@ -1153,9 +1210,9 @@ pub fn poll_oneoff(
                     mem[sub_off + 16..sub_off + 20].try_into().unwrap_or([0; 4]),
                 );
                 if fd == 0 {
-                    crate::keyboard::has_input()
+                    kbd_has_input()
                 } else {
-                    crate::rtl8139::has_recv()
+                    net_has_recv()
                 }
             }
             EVENTTYPE_FD_WRITE => true,
@@ -1203,7 +1260,7 @@ pub fn sock_recv(
 
     let mut total = 0u32;
     let mut rx_buf = [0u8; 2048];
-    let bytes = crate::rtl8139::recv(&mut rx_buf);
+    let bytes = net_recv(&mut rx_buf);
     if bytes > 0 {
         // Write into first iovec.
         let iov_off = ri_data_ptr as usize;
@@ -1254,7 +1311,7 @@ pub fn sock_send(
         if buf_ptr + buf_len > mem.len() {
             return Errno::Fault;
         }
-        if crate::rtl8139::send(&mem[buf_ptr..buf_ptr + buf_len]) {
+        if net_send(&mem[buf_ptr..buf_ptr + buf_len]) {
             total += buf_len as u32;
         }
     }
@@ -1272,7 +1329,7 @@ pub fn sock_send(
 pub fn sock_accept(ctx: &mut WasiCtx, _fd: Fd, _flags: u16, new_fd_ptr: &mut Fd) -> Errno {
     // Check whether the RTL8139 receive ring has data waiting — we treat a
     // pending packet as a proxy for "a connection is ready to accept".
-    if !crate::rtl8139::has_recv() {
+    if !net_has_recv() {
         return Errno::Again;
     }
 

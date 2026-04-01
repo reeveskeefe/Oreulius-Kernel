@@ -43,12 +43,13 @@ pub mod services;
 pub mod shell;
 pub mod temporal;
 
-// Execution subsystems — elf/wasm/wasm_jit/wasm_thread are x86-only JIT paths.
+// Execution subsystems — elf/wasm/wasm_thread are x86-only JIT paths.
+// wasm_jit is now available on all architectures (AArch64 uses interpreter path).
 // AArch64 only builds the interpreter (intent_wasm) and the replay engine.
 #[cfg(not(target_arch = "aarch64"))]
 pub use execution::{elf, intent_wasm, replay, wasm, wasm_jit, wasm_thread};
 #[cfg(target_arch = "aarch64")]
-pub use execution::{intent_wasm, replay};
+pub use execution::{intent_wasm, replay, wasm_jit};
 
 // Filesystem extras — ATA/NVMe/paging are x86 hardware drivers; AArch64 uses
 // virtio-blk + MMU stubs already in place.  paging.rs uses x86 inline asm
@@ -87,10 +88,7 @@ pub use security::{
     cpu_security, crash_log, enclave, formal, intent_graph, kpti, memory_isolation,
 };
 
-// Services — fleet/health/ota/wasi are x86-only; registry is arch-neutral.
-#[cfg(target_arch = "aarch64")]
-pub use services::registry;
-#[cfg(not(target_arch = "aarch64"))]
+// Services — all modules now available on all architectures.
 pub use services::{fleet, health, ota, registry, wasi};
 
 // Shell — console_service/terminal use VGA on x86; AArch64 uses PL011 serial.

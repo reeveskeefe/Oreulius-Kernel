@@ -323,3 +323,22 @@ macro_rules! serial_println {
     ($fmt:expr) => { $crate::serial_print!(concat!($fmt, "\n")) };
     ($fmt:expr, $($arg:tt)*) => { $crate::serial_print!(concat!($fmt, "\n"), $($arg)*) };
 }
+
+/// Cross-architecture kernel text output: VGA on x86/x86_64, PL011 on AArch64.
+pub fn kprint_str(s: &str) {
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::drivers::vga::print_str(s);
+    #[cfg(target_arch = "aarch64")]
+    crate::arch::aarch64_pl011::early_uart().write_str(s);
+}
+
+/// Cross-architecture single-character output.
+pub fn kprint_char(c: char) {
+    #[cfg(not(target_arch = "aarch64"))]
+    crate::drivers::vga::print_char(c);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut buf = [0u8; 4];
+        crate::arch::aarch64_pl011::early_uart().write_str(c.encode_utf8(&mut buf));
+    }
+}

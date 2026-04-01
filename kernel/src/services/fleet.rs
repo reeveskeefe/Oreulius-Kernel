@@ -39,7 +39,11 @@ use crate::crypto::{
 };
 use crate::net_reactor;
 use crate::persistence;
-use crate::vga;
+// Cross-arch console output: VGA on x86/x86_64, PL011 on AArch64.
+mod vga {
+    pub fn print_str(s: &str) { crate::serial::kprint_str(s); }
+    pub fn print_char(c: char) { crate::serial::kprint_char(c); }
+}
 
 // ============================================================================
 // Internal helpers
@@ -127,9 +131,18 @@ fn build_measurement_hash(
 }
 
 fn build_current_bundle() -> FleetAttestationBundle {
+    #[cfg(not(target_arch = "aarch64"))]
     let boot_tick = crate::asm_bindings::rdtsc_begin();
+    #[cfg(target_arch = "aarch64")]
+    let boot_tick = crate::vfs_platform::ticks_now();
+    #[cfg(not(target_arch = "aarch64"))]
     let crash_count = crate::crash_log::crash_count();
+    #[cfg(target_arch = "aarch64")]
+    let crash_count = 0u32;
+    #[cfg(not(target_arch = "aarch64"))]
     let boot_session = crate::crash_log::boot_session();
+    #[cfg(target_arch = "aarch64")]
+    let boot_session = 0u32;
     let slot_hash = read_active_slot_hash();
 
     let sched_switches: u64 = {
@@ -573,22 +586,26 @@ pub fn cmd_fleet_diag() {
     vga::print_str("\n====== Fleet Remote Diagnostics ======\n");
 
     // --- Crash ring ---
-    vga::print_str("[Crash log]\n");
-    let cnt = crate::crash_log::crash_count();
-    vga::print_str("  Total crashes recorded  : ");
-    print_u32(cnt);
-    vga::print_str("\n");
-    vga::print_str("  Boot session            : ");
-    print_u32(crate::crash_log::boot_session());
-    vga::print_str("\n");
-
-    let mut printed = 0u32;
-    crate::crash_log::for_each_crash(|_idx, _tick, _session, _loc, _msg| {
-        printed += 1;
-    });
-    vga::print_str("  Live ring entries       : ");
-    print_u32(printed);
-    vga::print_str("\n");
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        vga::print_str("[Crash log]\n");
+        let cnt = crate::crash_log::crash_count();
+        vga::print_str("  Total crashes recorded  : ");
+        print_u32(cnt);
+        vga::print_str("\n");
+        vga::print_str("  Boot session            : ");
+        print_u32(crate::crash_log::boot_session());
+        vga::print_str("\n");
+        let mut printed = 0u32;
+        crate::crash_log::for_each_crash(|_idx, _tick, _session, _loc, _msg| {
+            printed += 1;
+        });
+        vga::print_str("  Live ring entries       : ");
+        print_u32(printed);
+        vga::print_str("\n");
+    }
+    #[cfg(target_arch = "aarch64")]
+    vga::print_str("[Crash log] not available on this architecture\n");
 
     // --- OTA status ---
     vga::print_str("[OTA]\n");

@@ -12,7 +12,11 @@
 extern crate alloc;
 
 use crate::persistence;
-use crate::vga;
+// Cross-arch console output: VGA on x86/x86_64, PL011 on AArch64.
+mod vga {
+    pub fn print_str(s: &str) { crate::serial::kprint_str(s); }
+    pub fn print_char(c: char) { crate::serial::kprint_char(c); }
+}
 
 // ============================================================================
 // HealthSnapshot
@@ -65,8 +69,14 @@ impl HealthSnapshot {
             .snapshot_overview();
 
         // Crash log
+        #[cfg(not(target_arch = "aarch64"))]
         let crash_count = crate::crash_log::crash_count();
+        #[cfg(target_arch = "aarch64")]
+        let crash_count = 0u32;
+        #[cfg(not(target_arch = "aarch64"))]
         let boot_session = crate::crash_log::boot_session();
+        #[cfg(target_arch = "aarch64")]
+        let boot_session = 0u32;
 
         // Flat FS
         let fs = crate::fs::filesystem().health();
@@ -271,7 +281,7 @@ pub fn cmd_health() {
     vga::print_str("[health] snapshot written to persistence log\n");
 
     // Emit a TelemetryEvent so the userspace CTMC daemon sees the health probe.
-    let tick = crate::asm_bindings::rdtsc_begin();
+    let tick = crate::vfs_platform::ticks_now();
     let ev = crate::wait_free_ring::TelemetryEvent::new(
         0,    // kernel pid
         8,    // node 8 = Observe (highest-index IntentNode)
@@ -284,53 +294,50 @@ pub fn cmd_health() {
 
 pub fn cmd_crash_log_show() {
     vga::print_str("\n=== Crash Log ===\n");
-    vga::print_str("Total panics this session: ");
-    print_u32(crate::crash_log::crash_count());
-    vga::print_str("\n\n");
-
-    let mut found = 0usize;
-    crate::crash_log::for_each_crash(|seq, tick, session, loc, msg| {
-        found += 1;
-        vga::print_str("--- Crash #");
-        print_u64(seq as u64);
-        vga::print_str(" (session ");
-        print_u32(session);
-        vga::print_str(", tick ");
-        print_u64(tick);
-        vga::print_str(") ---\n");
-
-        vga::print_str("  Location: ");
-        // Print bytes until null terminator.
-        for &b in &loc {
-            if b == 0 {
-                break;
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        vga::print_str("Total panics this session: ");
+        print_u32(crate::crash_log::crash_count());
+        vga::print_str("\n\n");
+        let mut found = 0usize;
+        crate::crash_log::for_each_crash(|seq, tick, session, loc, msg| {
+            found += 1;
+            vga::print_str("--- Crash #");
+            print_u64(seq as u64);
+            vga::print_str(" (session ");
+            print_u32(session);
+            vga::print_str(", tick ");
+            print_u64(tick);
+            vga::print_str(") ---\n");
+            vga::print_str("  Location: ");
+            for &b in &loc {
+                if b == 0 { break; }
+                vga::print_char(b as char);
             }
-            vga::print_char(b as char);
-        }
-        vga::print_str("\n  Message : ");
-        for &b in &msg {
-            if b == 0 {
-                break;
+            vga::print_str("\n  Message : ");
+            for &b in &msg {
+                if b == 0 { break; }
+                vga::print_char(b as char);
             }
-            vga::print_char(b as char);
+            vga::print_str("\n");
+        });
+        if found == 0 {
+            vga::print_str("(no crash records in ring buffer)\n");
         }
-        vga::print_str("\n");
-    });
-
-    if found == 0 {
-        vga::print_str("(no crash records in ring buffer)\n");
     }
+    #[cfg(target_arch = "aarch64")]
+    vga::print_str("(crash log not available on this architecture)\n");
     vga::print_str("\n");
 }
 
 pub fn cmd_crash_log_clear() {
-    // We can't easily zero the ring buffer from here without unsafety,
-    // so instead we just tell the user how many were logged and note
-    // they'll be overwritten by the next RING_CAP panics.
     vga::print_str("crash-clear: the ring buffer is written by atomic index.\n");
     vga::print_str("  Slots will be overwritten as new panics occur.\n");
     vga::print_str("  Crash count: ");
+    #[cfg(not(target_arch = "aarch64"))]
     print_u32(crate::crash_log::crash_count());
+    #[cfg(target_arch = "aarch64")]
+    vga::print_str("(n/a on AArch64)");
     vga::print_str("\n");
 }
 

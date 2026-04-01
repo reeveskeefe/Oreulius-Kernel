@@ -1359,8 +1359,903 @@ pub fn try_execute<W: Write>(out: &mut W, input: &str, prefix: &str) -> bool {
                 }
             }
         }
+        "capnet-local" => {
+            cmd_capnet_local(out, prefix);
+        }
+        "capnet-peer-add" => {
+            cmd_capnet_peer_add(out, prefix, parts);
+        }
+        "capnet-peer-show" => {
+            cmd_capnet_peer_show(out, prefix, parts);
+        }
+        "capnet-peer-list" => {
+            cmd_capnet_peer_list(out, prefix);
+        }
+        "capnet-lease-list" => {
+            cmd_capnet_lease_list(out, prefix);
+        }
+        "capnet-fuzz" => {
+            cmd_capnet_fuzz(out, prefix, parts);
+        }
+        "capnet-fuzz-fixed" | "cfd" => {
+            cmd_capnet_fuzz_fixed(out, prefix, parts);
+        }
+        "capnet-fuzz-corpus" | "cfc" => {
+            cmd_capnet_fuzz_corpus(out, prefix, parts);
+        }
+        "capnet-fuzz-soak" | "cfs" => {
+            cmd_capnet_fuzz_soak(out, prefix, parts);
+        }
+        "capnet-stats" => {
+            cmd_capnet_stats(out, prefix);
+        }
+        "capnet-hello" => {
+            cmd_capnet_hello(out, prefix, parts);
+        }
+        "capnet-heartbeat" => {
+            cmd_capnet_heartbeat(out, prefix, parts);
+        }
+        "capnet-lend" => {
+            cmd_capnet_lend(out, prefix, parts);
+        }
+        "capnet-accept" => {
+            cmd_capnet_accept(out, prefix, parts);
+        }
+        "capnet-revoke" => {
+            cmd_capnet_revoke(out, prefix, parts);
+        }
+        "capnet-demo" => {
+            cmd_capnet_demo(out, prefix);
+        }
         _ => return false,
     }
 
     true
 }
+
+// =============================================================================
+// CapNet shared command implementations
+// =============================================================================
+
+fn parse_capnet_policy(s: &str) -> Option<crate::capnet::PeerTrustPolicy> {
+    if s.eq_ignore_ascii_case("disabled") {
+        return Some(crate::capnet::PeerTrustPolicy::Disabled);
+    }
+    if s.eq_ignore_ascii_case("audit") {
+        return Some(crate::capnet::PeerTrustPolicy::Audit);
+    }
+    if s.eq_ignore_ascii_case("enforce") {
+        return Some(crate::capnet::PeerTrustPolicy::Enforce);
+    }
+    None
+}
+
+fn parse_capnet_cap_type(s: &str) -> Option<u8> {
+    if s.eq_ignore_ascii_case("channel") {
+        return Some(crate::capability::CapabilityType::Channel as u8);
+    }
+    if s.eq_ignore_ascii_case("task") {
+        return Some(crate::capability::CapabilityType::Task as u8);
+    }
+    if s.eq_ignore_ascii_case("spawner") {
+        return Some(crate::capability::CapabilityType::Spawner as u8);
+    }
+    if s.eq_ignore_ascii_case("console") {
+        return Some(crate::capability::CapabilityType::Console as u8);
+    }
+    if s.eq_ignore_ascii_case("clock") {
+        return Some(crate::capability::CapabilityType::Clock as u8);
+    }
+    if s.eq_ignore_ascii_case("store") {
+        return Some(crate::capability::CapabilityType::Store as u8);
+    }
+    if s.eq_ignore_ascii_case("filesystem") || s.eq_ignore_ascii_case("fs") {
+        return Some(crate::capability::CapabilityType::Filesystem as u8);
+    }
+    if s.eq_ignore_ascii_case("service-pointer")
+        || s.eq_ignore_ascii_case("servicepointer")
+        || s.eq_ignore_ascii_case("svcptr")
+    {
+        return Some(crate::capability::CapabilityType::ServicePointer as u8);
+    }
+    let numeric = parse_u32_auto(s)?;
+    if numeric <= u8::MAX as u32 {
+        Some(numeric as u8)
+    } else {
+        None
+    }
+}
+
+fn parse_ipv4_netstack(s: &str) -> Option<crate::netstack::Ipv4Addr> {
+    let mut octets = [0u8; 4];
+    let mut count = 0usize;
+    for part in s.split('.') {
+        if count >= 4 {
+            return None;
+        }
+        let val = parse_u32_auto(part)?;
+        if val > 255 {
+            return None;
+        }
+        octets[count] = val as u8;
+        count += 1;
+    }
+    if count != 4 {
+        return None;
+    }
+    Some(crate::netstack::Ipv4Addr::new(
+        octets[0], octets[1], octets[2], octets[3],
+    ))
+}
+
+fn print_capnet_fuzz_failure<W: Write>(out: &mut W, failure: crate::capnet::CapNetFuzzFailure) {
+    let _ = write!(out, "Iter: {}  Stage: {}\nReason: {}\nSample bytes:\n",
+        failure.iteration, failure.stage, failure.reason);
+    let mut i = 0usize;
+    while i < failure.sample_len as usize {
+        let _ = write!(out, "{:02x} ", failure.sample[i]);
+        if (i + 1) % 16 == 0 {
+            let _ = write!(out, "\n");
+        }
+        i += 1;
+    }
+    if (failure.sample_len as usize) % 16 != 0 {
+        let _ = write!(out, "\n");
+    }
+}
+
+fn run_capnet_with_irqs_masked<T>(f: impl FnOnce() -> T) -> T {
+    let irq_flags = unsafe { crate::scheduler::scheduler_platform::irq_save_disable() };
+    let out = f();
+    unsafe { crate::scheduler::scheduler_platform::irq_restore(irq_flags) };
+    out
+}
+
+const CAPNET_SHARED_FIXED_REGRESSION_SEED: u64 = 3_870_443_198;
+
+fn run_capnet_fuzz_with_seed<W: Write>(out: &mut W, prefix: &str, iters: u32, seed: u64) {
+    const MAX_FUZZ_ITERS: u32 = 10_000;
+    if iters == 0 || iters > MAX_FUZZ_ITERS {
+        let _ = writeln!(out, "{} iterations must be 1..=10000", prefix);
+        return;
+    }
+    let _ = writeln!(out, "{} ===== CapNet Fuzz =====", prefix);
+    let _ = writeln!(out, "{} iterations={} seed={}", prefix, iters, seed);
+    match run_capnet_with_irqs_masked(|| crate::capnet::capnet_fuzz(iters, seed)) {
+        Ok(stats) => {
+            let _ = writeln!(out,
+                "{} valid_ok={} replay_rej={} constraint_rej={} tok_ok/err={}/{} ctrl_ok/err={}/{} proc_ok/err={}/{} failures={}",
+                prefix, stats.valid_path_ok, stats.replay_rejects, stats.constraint_rejects,
+                stats.token_decode_ok, stats.token_decode_err,
+                stats.control_decode_ok, stats.control_decode_err,
+                stats.process_ok, stats.process_err, stats.failures);
+            if let Some(failure) = stats.first_failure {
+                let _ = writeln!(out, "{} first failure:", prefix);
+                print_capnet_fuzz_failure(out, failure);
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} capnet-fuzz failed: {}", prefix, e);
+        }
+    }
+}
+
+fn trust_policy_str(trust: crate::capnet::PeerTrustPolicy) -> &'static str {
+    match trust {
+        crate::capnet::PeerTrustPolicy::Disabled => "disabled",
+        crate::capnet::PeerTrustPolicy::Audit => "audit",
+        crate::capnet::PeerTrustPolicy::Enforce => "enforce",
+    }
+}
+
+fn cmd_capnet_local<W: Write>(out: &mut W, prefix: &str) {
+    let _ = writeln!(out, "{} ===== CapNet Local Identity =====", prefix);
+    match crate::capnet::local_device_id() {
+        Some(id) => {
+            let _ = writeln!(out, "{} Device ID: 0x{:016x}", prefix, id);
+        }
+        None => {
+            let _ = writeln!(out, "{} Local CapNet identity not initialized", prefix);
+        }
+    }
+}
+
+fn cmd_capnet_peer_add<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let peer_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]", prefix);
+            return;
+        }
+    };
+    let policy_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-peer-add <peer_id> <disabled|audit|enforce> [measurement]", prefix);
+            return;
+        }
+    };
+    let peer_id = match parse_u64_auto(peer_str) {
+        Some(v) if v != 0 => v,
+        _ => {
+            let _ = writeln!(out, "{} invalid peer_id (non-zero u64, decimal or 0xhex)", prefix);
+            return;
+        }
+    };
+    let policy = match parse_capnet_policy(policy_str) {
+        Some(p) => p,
+        None => {
+            let _ = writeln!(out, "{} invalid policy: use disabled, audit, or enforce", prefix);
+            return;
+        }
+    };
+    let measurement = parts.next().and_then(parse_u64_auto).unwrap_or(0);
+    match crate::capnet::register_peer(peer_id, policy, measurement) {
+        Ok(()) => {
+            let _ = writeln!(out, "{} capnet peer registered: peer=0x{:016x} policy={} measurement=0x{:016x}",
+                prefix, peer_id, trust_policy_str(policy), measurement);
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} capnet peer add failed: {}", prefix, e.as_str());
+        }
+    }
+}
+
+fn cmd_capnet_peer_show<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let peer_str = match parts.next() {
+        Some(v) => v,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-peer-show <peer_id>", prefix);
+            return;
+        }
+    };
+    let peer_id = match parse_u64_auto(peer_str) {
+        Some(v) if v != 0 => v,
+        _ => {
+            let _ = writeln!(out, "{} invalid peer_id (non-zero u64)", prefix);
+            return;
+        }
+    };
+    match crate::capnet::peer_snapshot(peer_id) {
+        Some(s) => {
+            let _ = writeln!(out, "{} ===== CapNet Peer =====", prefix);
+            let _ = writeln!(out, "{} Peer:              0x{:016x}", prefix, s.peer_device_id);
+            let _ = writeln!(out, "{} Policy:            {}", prefix, trust_policy_str(s.trust));
+            let _ = writeln!(out, "{} Measurement:       0x{:016x}", prefix, s.measurement_hash);
+            let _ = writeln!(out, "{} Key epoch:         {}", prefix, s.key_epoch);
+            let _ = writeln!(out, "{} Replay high nonce: {}", prefix, s.replay_high_nonce);
+            let _ = writeln!(out, "{} Last seen epoch:   {}", prefix, s.last_seen_epoch);
+        }
+        None => {
+            let _ = writeln!(out, "{} capnet peer not found", prefix);
+        }
+    }
+}
+
+fn cmd_capnet_peer_list<W: Write>(out: &mut W, prefix: &str) {
+    let peers = crate::capnet::peer_snapshots();
+    let mut active = 0usize;
+    let _ = writeln!(out, "{} ===== CapNet Peer Table =====", prefix);
+    for i in 0..peers.len() {
+        if let Some(p) = peers[i] {
+            let _ = writeln!(out, "{} [{}] peer=0x{:016x} policy={} key_epoch={}",
+                prefix, active, p.peer_device_id, trust_policy_str(p.trust), p.key_epoch);
+            active += 1;
+        }
+    }
+    if active == 0 {
+        let _ = writeln!(out, "{} (no active peers)", prefix);
+    } else {
+        let _ = writeln!(out, "{} total active: {}", prefix, active);
+    }
+}
+
+fn cmd_capnet_lease_list<W: Write>(out: &mut W, prefix: &str) {
+    let leases = crate::capability::capability_manager().remote_lease_snapshots();
+    let mut active = 0usize;
+    let _ = writeln!(out, "{} ===== CapNet Remote Leases =====", prefix);
+    for i in 0..leases.len() {
+        if let Some(l) = leases[i] {
+            if !l.active || l.revoked {
+                continue;
+            }
+            if l.owner_any {
+                let _ = writeln!(out,
+                    "{} [{}] token=0x{:016x} cap={} owner=* type={} obj=0x{:016x} exp={}",
+                    prefix, active, l.token_id, l.mapped_cap_id, l.cap_type as u32, l.object_id, l.expires_at);
+            } else {
+                let _ = writeln!(out,
+                    "{} [{}] token=0x{:016x} cap={} owner={} type={} obj=0x{:016x} exp={}",
+                    prefix, active, l.token_id, l.mapped_cap_id, l.owner_pid.0, l.cap_type as u32, l.object_id, l.expires_at);
+            }
+            active += 1;
+        }
+    }
+    if active == 0 {
+        let _ = writeln!(out, "{} (no active leases)", prefix);
+    } else {
+        let _ = writeln!(out, "{} total active: {}", prefix, active);
+    }
+}
+
+fn cmd_capnet_fuzz<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let iters = match parts.next().and_then(parse_usize_auto) {
+        Some(v) => v as u32,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-fuzz <iters> [seed]", prefix);
+            return;
+        }
+    };
+    let seed = parts
+        .next()
+        .and_then(parse_u64_auto)
+        .unwrap_or_else(|| crate::security::security().random_u32() as u64);
+    run_capnet_fuzz_with_seed(out, prefix, iters, seed);
+}
+
+fn cmd_capnet_fuzz_fixed<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let iters = match parts.next().and_then(parse_usize_auto) {
+        Some(v) => v as u32,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-fuzz-fixed <iters>", prefix);
+            return;
+        }
+    };
+    run_capnet_fuzz_with_seed(out, prefix, iters, CAPNET_SHARED_FIXED_REGRESSION_SEED);
+}
+
+fn cmd_capnet_fuzz_corpus<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let iters = parts
+        .next()
+        .and_then(parse_usize_auto)
+        .map(|v| v as u32)
+        .unwrap_or(1000);
+    const MAX_FUZZ_ITERS: u32 = 10_000;
+    if iters == 0 || iters > MAX_FUZZ_ITERS {
+        let _ = writeln!(out, "{} usage: capnet-fuzz-corpus [iters]  (1..=10000)", prefix);
+        return;
+    }
+    let _ = writeln!(out, "{} ===== CapNet Regression Corpus =====", prefix);
+    let _ = writeln!(out, "{} seeds={} iters_per_seed={}",
+        prefix, crate::capnet::CAPNET_FUZZ_REGRESSION_SEEDS.len(), iters);
+    match run_capnet_with_irqs_masked(|| crate::capnet::capnet_fuzz_regression_default(iters)) {
+        Ok(stats) => {
+            let _ = writeln!(out, "{} seeds_passed={}/{} seeds_failed={} total_failures={}",
+                prefix, stats.seeds_passed, stats.seeds_total, stats.seeds_failed, stats.total_failures);
+            let _ = writeln!(out, "{} valid_ok={} replay_rej={} constraint_rej={} tok_err={} ctrl_err={} proc_err={}",
+                prefix, stats.total_valid_path_ok, stats.total_replay_rejects,
+                stats.total_constraint_rejects, stats.total_token_decode_err,
+                stats.total_control_decode_err, stats.total_process_err);
+            if let Some(seed) = stats.first_failed_seed {
+                let _ = writeln!(out, "{} first_failing_seed={}", prefix, seed);
+                if let Some(failure) = stats.first_failure {
+                    print_capnet_fuzz_failure(out, failure);
+                }
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} capnet-fuzz-corpus failed: {}", prefix, e);
+        }
+    }
+}
+
+fn cmd_capnet_fuzz_soak<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let iters = match parts.next().and_then(parse_usize_auto) {
+        Some(v) => v as u32,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-fuzz-soak <iters> <rounds>", prefix);
+            return;
+        }
+    };
+    let rounds = match parts.next().and_then(parse_usize_auto) {
+        Some(v) => v as u32,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-fuzz-soak <iters> <rounds>", prefix);
+            return;
+        }
+    };
+    const MAX_FUZZ_ITERS: u32 = 10_000;
+    const MAX_SOAK_ROUNDS: u32 = 100;
+    if iters == 0 || iters > MAX_FUZZ_ITERS {
+        let _ = writeln!(out, "{} iterations must be 1..=10000", prefix);
+        return;
+    }
+    if rounds == 0 || rounds > MAX_SOAK_ROUNDS {
+        let _ = writeln!(out, "{} rounds must be 1..=100", prefix);
+        return;
+    }
+    let _ = writeln!(out, "{} ===== CapNet Corpus Soak =====", prefix);
+    let _ = writeln!(out, "{} rounds={} iters_per_seed={} seeds={}",
+        prefix, rounds, iters, crate::capnet::CAPNET_FUZZ_REGRESSION_SEEDS.len());
+    match run_capnet_with_irqs_masked(|| crate::capnet::capnet_fuzz_regression_soak_default(iters, rounds)) {
+        Ok(stats) => {
+            let _ = writeln!(out, "{} rounds_passed={}/{} rounds_failed={} seed_passes={} seed_failures={} total_failures={}",
+                prefix, stats.rounds_passed, stats.rounds, stats.rounds_failed,
+                stats.seed_passes, stats.seed_failures, stats.total_failures);
+            let _ = writeln!(out, "{} valid_ok={} replay_rej={} constraint_rej={}",
+                prefix, stats.total_valid_path_ok, stats.total_replay_rejects, stats.total_constraint_rejects);
+            if let Some(round_idx) = stats.first_failed_round {
+                let _ = writeln!(out, "{} first_failed_round={}", prefix, round_idx);
+                if let Some(seed) = stats.first_failed_seed {
+                    let _ = writeln!(out, "{} first_failed_seed={}", prefix, seed);
+                }
+                if let Some(failure) = stats.first_failure {
+                    print_capnet_fuzz_failure(out, failure);
+                }
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} capnet-fuzz-soak failed: {}", prefix, e);
+        }
+    }
+}
+
+fn cmd_capnet_stats<W: Write>(out: &mut W, prefix: &str) {
+    let peers = crate::capnet::peer_snapshots();
+    let mut peer_active = 0usize;
+    let mut peer_keyed = 0usize;
+    let mut peer_policy_disabled = 0usize;
+    let mut peer_policy_audit = 0usize;
+    let mut peer_policy_enforce = 0usize;
+    for i in 0..peers.len() {
+        if let Some(peer) = peers[i] {
+            peer_active += 1;
+            if peer.key_epoch != 0 { peer_keyed += 1; }
+            match peer.trust {
+                crate::capnet::PeerTrustPolicy::Disabled => peer_policy_disabled += 1,
+                crate::capnet::PeerTrustPolicy::Audit => peer_policy_audit += 1,
+                crate::capnet::PeerTrustPolicy::Enforce => peer_policy_enforce += 1,
+            }
+        }
+    }
+    let leases = crate::capability::capability_manager().remote_lease_snapshots();
+    let mut lease_active = 0usize;
+    let mut lease_owner_any = 0usize;
+    let mut lease_owner_bound = 0usize;
+    let mut lease_bounded_use = 0usize;
+    for i in 0..leases.len() {
+        if let Some(lease) = leases[i] {
+            if !lease.active || lease.revoked { continue; }
+            lease_active += 1;
+            if lease.owner_any { lease_owner_any += 1; } else { lease_owner_bound += 1; }
+            if lease.enforce_use_budget { lease_bounded_use += 1; }
+        }
+    }
+    let journal = crate::capnet::journal_stats();
+    let _ = writeln!(out, "{} ===== CapNet Stats =====", prefix);
+    match crate::capnet::local_device_id() {
+        Some(id) => { let _ = writeln!(out, "{} local_device=0x{:016x}", prefix, id); }
+        None => { let _ = writeln!(out, "{} local_device=(uninitialized)", prefix); }
+    }
+    let _ = writeln!(out, "{} peers: active={} keyed={} disabled/audit/enforce={}/{}/{}",
+        prefix, peer_active, peer_keyed, peer_policy_disabled, peer_policy_audit, peer_policy_enforce);
+    let _ = writeln!(out, "{} leases: active={} owner_any/bound={}/{} bounded_use={}",
+        prefix, lease_active, lease_owner_any, lease_owner_bound, lease_bounded_use);
+    let _ = writeln!(out, "{} journal: delegations_active={} tombstones_active={} revok_epoch_max/next={}/{}",
+        prefix, journal.delegation_records_active, journal.revocation_tombstones_active,
+        journal.max_revocation_epoch, journal.next_revocation_epoch);
+}
+
+fn cmd_capnet_hello<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(ip) => ip,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-hello <ip> <port> <peer_id>", prefix);
+            return;
+        }
+    };
+    let port = match parts.next().and_then(parse_u32_auto) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        _ => {
+            let _ = writeln!(out, "{} invalid port", prefix);
+            return;
+        }
+    };
+    let peer_id = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v != 0 => v,
+        _ => {
+            let _ = writeln!(out, "{} invalid peer_id", prefix);
+            return;
+        }
+    };
+    match crate::net_reactor::capnet_send_hello(peer_id, ip, port) {
+        Ok(seq) => {
+            let _ = writeln!(out, "{} capnet HELLO sent seq={}", prefix, seq);
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} capnet HELLO failed: {}", prefix, e);
+        }
+    }
+}
+
+fn cmd_capnet_heartbeat<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(ip) => ip,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-heartbeat <ip> <port> <peer_id> [ack] [ack_only]", prefix);
+            return;
+        }
+    };
+    let port = match parts.next().and_then(parse_u32_auto) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        _ => {
+            let _ = writeln!(out, "{} invalid port", prefix);
+            return;
+        }
+    };
+    let peer_id = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v != 0 => v,
+        _ => {
+            let _ = writeln!(out, "{} invalid peer_id", prefix);
+            return;
+        }
+    };
+    let ack = parts.next().and_then(parse_u32_auto).unwrap_or(0);
+    let ack_only = parts.next().and_then(parse_u32_auto).map(|v| v != 0).unwrap_or(false);
+    match crate::net_reactor::capnet_send_heartbeat(peer_id, ip, port, ack, ack_only) {
+        Ok(seq) => {
+            let _ = writeln!(out, "{} capnet heartbeat sent seq={}", prefix, seq);
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} capnet heartbeat failed: {}", prefix, e);
+        }
+    }
+}
+
+fn cmd_capnet_lend<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(ip) => ip,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-lend <ip> <port> <peer_id> <cap_type> <object_id> <rights> <ttl_ticks> [context_pid] [max_uses] [max_bytes] [measurement] [session_id]", prefix);
+            return;
+        }
+    };
+    let port = match parts.next().and_then(parse_u32_auto) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        _ => { let _ = writeln!(out, "{} invalid port", prefix); return; }
+    };
+    let peer_id = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v != 0 => v,
+        _ => { let _ = writeln!(out, "{} invalid peer_id", prefix); return; }
+    };
+    let cap_type = match parts.next().and_then(parse_capnet_cap_type) {
+        Some(v) => v,
+        None => {
+            let _ = writeln!(out, "{} invalid cap_type (channel/task/spawner/console/clock/store/filesystem or numeric)", prefix);
+            return;
+        }
+    };
+    let object_id = match parts.next().and_then(parse_u64_auto) {
+        Some(v) => v,
+        None => { let _ = writeln!(out, "{} invalid object_id", prefix); return; }
+    };
+    let rights = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v <= u32::MAX as u64 => v as u32,
+        _ => { let _ = writeln!(out, "{} invalid rights (u32)", prefix); return; }
+    };
+    let ttl_ticks = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v > 0 => v,
+        _ => { let _ = writeln!(out, "{} invalid ttl_ticks (must be > 0)", prefix); return; }
+    };
+    let context_pid = parts.next().and_then(parse_u32_auto).unwrap_or(0);
+    let max_uses = match parts.next().and_then(parse_u32_auto) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        Some(_) => { let _ = writeln!(out, "{} invalid max_uses (<=65535)", prefix); return; }
+        None => 0,
+    };
+    let max_bytes = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v <= u32::MAX as u64 => v as u32,
+        Some(_) => { let _ = writeln!(out, "{} invalid max_bytes (<=u32::MAX)", prefix); return; }
+        None => 0,
+    };
+    let measurement_hash = parts.next().and_then(parse_u64_auto).unwrap_or(0);
+    let session_id = parts.next().and_then(parse_u32_auto).unwrap_or(0);
+
+    let issuer_device_id = match crate::capnet::local_device_id() {
+        Some(id) => id,
+        None => {
+            let _ = writeln!(out, "{} capnet local identity not initialized", prefix);
+            return;
+        }
+    };
+    let now = crate::pit::get_ticks() as u64;
+    let nonce_hi = crate::security::security().random_u32() as u64;
+    let nonce_lo = crate::security::security().random_u32() as u64;
+
+    let mut token = crate::capnet::CapabilityTokenV1::empty();
+    token.cap_type = cap_type;
+    token.issuer_device_id = issuer_device_id;
+    token.subject_device_id = peer_id;
+    token.object_id = object_id;
+    token.rights = rights;
+    token.issued_at = now;
+    token.not_before = now;
+    token.expires_at = now.saturating_add(ttl_ticks);
+    token.nonce = (nonce_hi << 32) | nonce_lo;
+    token.context = context_pid;
+    token.max_uses = max_uses;
+    token.max_bytes = max_bytes;
+    token.measurement_hash = measurement_hash;
+    token.session_id = session_id;
+    token.constraints_flags = 0;
+    if max_uses > 0 { token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE; }
+    if max_bytes > 0 { token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BYTE_QUOTA; }
+    if measurement_hash != 0 { token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_MEASUREMENT_BOUND; }
+    if session_id != 0 { token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_SESSION_BOUND; }
+
+    match crate::net_reactor::capnet_send_token_offer(peer_id, ip, port, token) {
+        Ok(token_id) => {
+            let _ = writeln!(out, "{} capnet token offer sent: token_id=0x{:016x} cap_type={} rights=0x{:08x} ttl={}",
+                prefix, token_id, cap_type, rights, ttl_ticks);
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} capnet token offer failed: {}", prefix, e);
+        }
+    }
+}
+
+fn cmd_capnet_accept<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(ip) => ip,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-accept <ip> <port> <peer_id> <token_id> [ack]", prefix);
+            return;
+        }
+    };
+    let port = match parts.next().and_then(parse_u32_auto) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        _ => { let _ = writeln!(out, "{} invalid port", prefix); return; }
+    };
+    let peer_id = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v != 0 => v,
+        _ => { let _ = writeln!(out, "{} invalid peer_id", prefix); return; }
+    };
+    let token_id = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v != 0 => v,
+        _ => { let _ = writeln!(out, "{} invalid token_id", prefix); return; }
+    };
+    let ack = parts.next().and_then(parse_u32_auto).unwrap_or(0);
+    match crate::net_reactor::capnet_send_token_accept(peer_id, ip, port, token_id, ack) {
+        Ok(seq) => {
+            let _ = writeln!(out, "{} capnet token accept sent: seq={} token_id=0x{:016x}",
+                prefix, seq, token_id);
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} capnet token accept failed: {}", prefix, e);
+        }
+    }
+}
+
+fn cmd_capnet_revoke<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(ip) => ip,
+        None => {
+            let _ = writeln!(out, "{} usage: capnet-revoke <ip> <port> <peer_id> <token_id>", prefix);
+            return;
+        }
+    };
+    let port = match parts.next().and_then(parse_u32_auto) {
+        Some(v) if v <= u16::MAX as u32 => v as u16,
+        _ => { let _ = writeln!(out, "{} invalid port", prefix); return; }
+    };
+    let peer_id = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v != 0 => v,
+        _ => { let _ = writeln!(out, "{} invalid peer_id", prefix); return; }
+    };
+    let token_id = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v != 0 => v,
+        _ => { let _ = writeln!(out, "{} invalid token_id", prefix); return; }
+    };
+    match crate::net_reactor::capnet_send_token_revoke(peer_id, ip, port, token_id) {
+        Ok(seq) => {
+            let _ = writeln!(out, "{} capnet token revoke sent: seq={} token_id=0x{:016x}",
+                prefix, seq, token_id);
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} capnet token revoke failed: {}", prefix, e);
+        }
+    }
+}
+
+fn cmd_capnet_demo<W: Write>(out: &mut W, prefix: &str) {
+    let local_id = match crate::capnet::local_device_id() {
+        Some(id) => id,
+        None => {
+            let _ = writeln!(out, "{} capnet local identity not initialized", prefix);
+            return;
+        }
+    };
+    let _ = writeln!(out, "{} ===== CapNet End-to-End Demo =====", prefix);
+
+    let loopback_peer = local_id;
+    if let Err(e) = crate::capnet::register_peer(loopback_peer, crate::capnet::PeerTrustPolicy::Audit, 0) {
+        let _ = writeln!(out, "{} demo failed: peer registration: {}", prefix, e.as_str());
+        return;
+    }
+
+    let mut k0 = ((crate::security::security().random_u32() as u64) << 32)
+        | (crate::security::security().random_u32() as u64);
+    let mut k1 = ((crate::security::security().random_u32() as u64) << 32)
+        | (crate::security::security().random_u32() as u64);
+    if k0 == 0 && k1 == 0 { k1 = 1; } else if k0 == 0 { k0 = 1; }
+    let key_epoch = (crate::security::security().random_u32() | 1).max(1);
+    if let Err(e) = crate::capnet::install_peer_session_key(loopback_peer, key_epoch, k0, k1, 0) {
+        let _ = writeln!(out, "{} demo failed: session install: {}", prefix, e.as_str());
+        return;
+    }
+
+    let now = crate::pit::get_ticks() as u64;
+    let mut token = crate::capnet::CapabilityTokenV1::empty();
+    token.cap_type = crate::capability::CapabilityType::Filesystem as u8;
+    token.object_id = 0x4341_504E_4554_0000u64 ^ now.rotate_left(7);
+    token.rights = crate::capability::Rights::FS_READ;
+    token.issued_at = now;
+    token.not_before = now;
+    token.expires_at = now.saturating_add(512);
+    token.nonce = ((crate::security::security().random_u32() as u64) << 32)
+        | (crate::security::security().random_u32() as u64);
+    token.constraints_flags = crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
+    token.max_uses = 2;
+    token.context = 0;
+
+    if token.validate_semantics().is_err() {
+        let _ = writeln!(out, "{} demo failed: token semantic validation", prefix);
+        return;
+    }
+
+    let _ = writeln!(out, "{} step 1: build+process TOKEN_OFFER...", prefix);
+    let offer = match crate::capnet::build_token_offer_frame(loopback_peer, 0, &mut token) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(out, "{} demo failed: build offer: {}", prefix, e.as_str());
+            return;
+        }
+    };
+    let offer_rx = match crate::capnet::process_incoming_control_payload(
+        &offer.bytes[..offer.len],
+        crate::pit::get_ticks() as u64,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(out, "{} demo failed: process offer: {}", prefix, e.as_str());
+            return;
+        }
+    };
+    if offer_rx.msg_type != crate::capnet::CapNetControlType::TokenOffer {
+        let _ = writeln!(out, "{} demo failed: unexpected rx type for offer", prefix);
+        return;
+    }
+
+    let mut lease_present = false;
+    let leases_after_offer = crate::capability::capability_manager().remote_lease_snapshots();
+    let mut i = 0usize;
+    while i < leases_after_offer.len() {
+        if let Some(lease) = leases_after_offer[i] {
+            if lease.active && !lease.revoked && lease.token_id == offer.token_id {
+                lease_present = true;
+                break;
+            }
+        }
+        i += 1;
+    }
+    if !lease_present {
+        let _ = writeln!(out, "{} demo failed: lease not installed after offer", prefix);
+        return;
+    }
+
+    let _ = writeln!(out, "{} step 2: use leased capability before revoke...", prefix);
+    let demo_pid = crate::ipc::ProcessId(1);
+    let allow_before_revoke = crate::capability::check_capability(
+        demo_pid,
+        token.object_id,
+        crate::capability::CapabilityType::Filesystem,
+        crate::capability::Rights::new(crate::capability::Rights::FS_READ),
+    );
+    if !allow_before_revoke {
+        let _ = writeln!(out, "{} demo failed: capability denied before revoke", prefix);
+        return;
+    }
+
+    let _ = writeln!(out, "{} step 3: build+process TOKEN_REVOKE...", prefix);
+    let revoke = match crate::capnet::build_token_revoke_frame(loopback_peer, offer.seq, offer.token_id) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(out, "{} demo failed: build revoke: {}", prefix, e.as_str());
+            return;
+        }
+    };
+    let revoke_rx = match crate::capnet::process_incoming_control_payload(
+        &revoke.bytes[..revoke.len],
+        crate::pit::get_ticks() as u64,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(out, "{} demo failed: process revoke: {}", prefix, e.as_str());
+            return;
+        }
+    };
+    if revoke_rx.msg_type != crate::capnet::CapNetControlType::TokenRevoke {
+        let _ = writeln!(out, "{} demo failed: unexpected rx type for revoke", prefix);
+        return;
+    }
+
+    let allow_after_revoke = crate::capability::check_capability(
+        demo_pid,
+        token.object_id,
+        crate::capability::CapabilityType::Filesystem,
+        crate::capability::Rights::new(crate::capability::Rights::FS_READ),
+    );
+    if allow_after_revoke {
+        let _ = writeln!(out, "{} demo failed: capability still allowed after revoke", prefix);
+        return;
+    }
+
+    let mut lease_still_present = false;
+    let leases_after_revoke = crate::capability::capability_manager().remote_lease_snapshots();
+    let mut j = 0usize;
+    while j < leases_after_revoke.len() {
+        if let Some(lease) = leases_after_revoke[j] {
+            if lease.active && !lease.revoked && lease.token_id == offer.token_id {
+                lease_still_present = true;
+                break;
+            }
+        }
+        j += 1;
+    }
+    if lease_still_present {
+        let _ = writeln!(out, "{} demo failed: lease still active after revoke", prefix);
+        return;
+    }
+
+    let _ = writeln!(out, "{} step 4: result", prefix);
+    let _ = writeln!(out, "{} token_id=0x{:016x}", prefix, offer.token_id);
+    let _ = writeln!(out, "{} use before revoke: allowed", prefix);
+    let _ = writeln!(out, "{} use after revoke: denied", prefix);
+    let _ = writeln!(out, "{} lease install/revoke: verified", prefix);
+    let _ = writeln!(out, "{} capnet end-to-end demo PASSED", prefix);
+}
+
