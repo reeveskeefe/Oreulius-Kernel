@@ -1,479 +1,260 @@
-# Oreulia IPC Full Implementation Roadmap
+# Oreulia IPC — Current State and Remaining Roadmap
 
-**Status:** In progress  
-**Scope:** Full implementation roadmap derived from the current `kernel/src/ipc/mod.rs` codebase, not from the theory paper alone.
+**Status:** Core IPC architecture is implemented. The remaining roadmap is about tightening semantics, finishing stronger transfer guarantees, and deepening replay/protocol fidelity, not about creating the basic subsystem from scratch.
 
-This roadmap is the concrete bridge between the current Oreulia IPC v0 implementation and the target IPC system described by the recent capability, liveness, temporal, and linearity work. It is intentionally file-oriented, milestone-based, and test-gated so the implementation can proceed without losing coherence.
+This document replaces the older milestone plan that still described the `kernel/src/ipc/` split, admission layer, blocking service path, diagnostics, and selftests as future work. Those pieces are already in tree.
+
+---
 
 ## 1. Current State
 
-The current IPC implementation is concentrated in `kernel/src/ipc/mod.rs` and already provides useful primitives:
-
-- `ChannelId`, `ProcessId`, `Capability`, `Message`, `ChannelCapability`, `ChannelRights`
-- bounded per-channel ring buffers
-- `send`, `try_recv`, `recv`, `close`, `create_channel`
-- capability attachment to messages
-- predictive restriction checks through the security subsystem
-- temporal event recording for send, receive, and close
-- a global `IpcService` wrapper and syscall-friendly helper functions
-- Wasm host integration through `kernel/src/wasm.rs`
-
-The current implementation also has clear gaps that block the target IPC architecture:
-
-- the core `Channel::recv()` helper is still the same as `try_recv()`, but `IpcService::recv()` now performs scheduler-backed blocking in real process context
-- `close()` now has an initial draining state and rejects new sends during drain, but it is not yet a full graceful-closure/archive state machine
-- capability attachment signs message-carried capabilities but does not enforce zero-sum linear transfer
-- send and receive admission now go through an explicit decision layer, and the service-layer send/recv APIs now block through scheduler wait queues in real process context
-- backpressure now has explicit pressure levels, recommended actions, and counters, with threshold-driven async refusal at high pressure and saturated reliable defer behavior
-- temporal replay restores queue depth placeholders, not a replayable event-complete channel state
-- protocol/session state is absent; channels are pipes, not protocol-constrained endpoints
-- diagnostics and selftests now exist, including blocked sender/receiver visibility, but they are still thinner than the later milestones require
-
-Implemented so far:
-
-- Milestone 0 foundation is in tree: `ipc-selftest`, `ipc-list`, and `ipc-inspect`
-- Milestone 1 foundation is in tree: stable IPC data structures have been extracted into `kernel/src/ipc/`
-- early Milestone 2 / 4 scaffolding is in tree: explicit admission decisions, refusal accounting hooks, and a `closing` drain state
-- Milestone 3 is partially in tree: per-channel scheduler wait keys, service-layer blocking send/receive, wakeups on send/recv/close, and runtime waiter diagnostics
-- Milestone 5 is partially in tree: explicit backpressure levels, recommended actions, queue high-water tracking, threshold-hit counters, sender/receiver wake counters, and deterministic threshold-crossing tests
-
-## 2. Target End State
+Oreulia IPC already provides:
 
-The target IPC system has the following concrete properties:
+- modularized implementation under [`kernel/src/ipc`](../../kernel/src/ipc)
+- bounded channels with fixed queue capacity
+- explicit channel rights and channel capabilities
+- message payloads with attached capabilities
+- causal `EventId` stamping and optional `cause` linkage
+- admission control for send and receive
+- first-class backpressure levels and counters
+- scheduler-backed blocking send/receive at the `IpcService` layer
+- draining-aware close semantics
+- runtime diagnostics and deterministic selftests
+- service-registry introduction flows built on top of IPC
+- temporal binary protocols that already use IPC as a transport
 
-1. `ipc/mod.rs` becomes a facade and compatibility layer rather than a monolithic implementation file.
-2. Send admission is centralized, decidable, and reusable across kernel callers, Wasm host calls, and future proofs.
-3. Receive and reliable-send paths can actually block and wake through the scheduler.
-4. Closure is graceful: accepted messages are delivered, explicitly refused, or archived before final closure.
-5. Capability transfer is zero-sum in the target path and auditable in the current path.
-6. Channels can optionally carry protocol/session state.
-7. Temporal capture and replay preserve enough structure for channel-state reconstruction.
-8. Commands, selftests, and diagnostics can prove each milestone before the next one starts.
+This means the roadmap is now about **semantic strengthening**, not initial implementation.
 
-## 3. File Plan
+---
 
-The implementation should keep `kernel/src/ipc/mod.rs` as the module root and progressively move logic into `kernel/src/ipc/`.
+## 2. What Is Already Landed
 
-### 3.1 `kernel/src/ipc/mod.rs`
+### 2.1 Module split is complete
 
-Final role:
+The following implementation pieces already exist:
 
-- module root
-- re-export stable public types and helper functions
-- retain compatibility wrappers used by the rest of the kernel and Wasm host layer
-- no longer own the full channel implementation
+- `types.rs`
+- `message.rs`
+- `rights.rs`
+- `errors.rs`
+- `ring.rs`
+- `channel.rs`
+- `admission.rs`
+- `backpressure.rs`
+- `table.rs`
+- `service.rs`
+- `diagnostics.rs`
+- `selftest.rs`
 
-What remains here:
+`mod.rs` is already a façade and re-export layer rather than the old monolith.
 
-- `pub use` re-exports
-- top-level `ipc()` singleton
-- public syscall-facing helpers
-- backwards-compatible wrappers during migration
+### 2.2 Admission and backpressure are real
 
-### 3.2 New `kernel/src/ipc/` files
+Admission is now expressed through:
 
-Create the following files in order:
+- `SendDecision`
+- `RecvDecision`
+- `IpcRefusal`
+- `IpcDefer`
 
-| Path | Responsibility | Notes |
-| --- | --- | --- |
-| `kernel/src/ipc/types.rs` | `ChannelId`, `ProcessId`, common constants, shared scalar types | Pull pure types out first. |
-| `kernel/src/ipc/errors.rs` | `IpcError`, refusal/status enums, display/debug impls | Expand here as semantics get richer. |
-| `kernel/src/ipc/rights.rs` | `ChannelRights`, future attenuation helpers, rights masks | Bridge to `capability.rs`. |
-| `kernel/src/ipc/message.rs` | `Message`, capability attachments, payload helpers | Later split current vs linear attachment path. |
-| `kernel/src/ipc/ring.rs` | `RingBuffer` | Pure data structure, easy first extraction. |
-| `kernel/src/ipc/channel.rs` | `Channel`, core queue mutation logic | Starts thin, grows as admission and closure move out. |
-| `kernel/src/ipc/admission.rs` | send/receive admission predicates and decision enum | This is the proof-bearing heart of the refactor. |
-| `kernel/src/ipc/backpressure.rs` | queue-pressure policy, thresholds, refusal/defer behavior | Required before real liveness semantics are believable. |
-| `kernel/src/ipc/closure.rs` | graceful closure state machine and drain/refuse/archive transitions | Removes abrupt close semantics. |
-| `kernel/src/ipc/session.rs` | optional protocol/session state for channels | Implement only after admission/closure are stable. |
-| `kernel/src/ipc/audit.rs` | audit event creation and security/intent logging glue | Keeps channel code smaller. |
-| `kernel/src/ipc/temporal_bridge.rs` | temporal event encoding, replay, reconstruction helpers | Extends the current queue-depth-only replay. |
-| `kernel/src/ipc/service.rs` | `IpcService`, global table access, compatibility wrappers | Shrinks root file substantially. |
-| `kernel/src/ipc/selftest.rs` | deterministic IPC selftests and scenario drivers | Required before deeper changes. |
+Backpressure is no longer just "queue full or not." The implementation already tracks:
 
-### 3.3 Existing files that must change
+- threshold transitions
+- recommended pressure actions
+- high-water marks
+- sender/receiver wake counters
+- pressure-hit counters
 
-| Path | Required change |
-| --- | --- |
-| `kernel/src/capability.rs` | add or expose zero-sum transfer primitives, export/import helpers, ownership-consuming remove/install path |
-| `kernel/src/temporal.rs` | add richer IPC event forms: refusal, graceful-close, drain-complete, replay metadata |
-| `kernel/src/security.rs` | keep predictive restriction logic but route through central admission decisions |
-| `kernel/src/process.rs` | add wait-state integration for blocking send/recv |
-| `kernel/src/scheduler.rs` | wake blocked receivers/senders, handle channel wait queues |
-| `kernel/src/scheduler_platform.rs` | keep scheduler state compatible with IPC wait/wake hooks |
-| `kernel/src/commands.rs` / `kernel/src/commands_shared.rs` | add inspect, selftest, and liveness diagnostics commands |
-| `kernel/src/wasm.rs` | align host channel send/recv/capability import-export with new admission and transfer semantics |
-| `kernel/src/lib.rs` | initialize any new IPC selftest/diagnostic registration if needed |
-| `docs/ipc/oreulia-ipc.md` | keep user-facing design docs aligned with actual milestone state |
+### 2.3 Blocking service semantics are real
 
-## 4. Milestones
+The service-facing IPC API already stages scheduler blocking when possible:
 
-Implementation should proceed in the following order. Do not skip ahead. Later milestones assume invariants introduced earlier.
+- `IpcService::recv()` blocks on message arrival
+- `IpcService::send()` can block on capacity for reliable bounded channels
 
-### Milestone 0: Freeze and Characterize Current Behavior
+Low-level channel helpers still expose nonblocking behavior, which is intentional. The blocking contract lives at the service layer today.
 
-Goal:
+### 2.4 Close is no longer abrupt
 
-- capture what the current v0 code actually does before changing it
+The system already has a meaningful draining phase:
 
-Required work:
+- accepted queued messages remain deliverable
+- new sends are refused during drain
+- waiters are woken so closure becomes observable
 
-- add deterministic selftests for current `send`, `try_recv`, `recv`, `close`, capability attachments, and temporal event recording
-- add a diagnostic command that prints channel occupancy, flags, priority, and closed state
-- record current gaps explicitly: nonblocking `recv`, abrupt `close`, copyable capability attachments
+This is still not the final target for replay-complete graceful closure, but it is already much better than the older abrupt-close model.
 
-Files:
+### 2.5 Developer tooling exists
 
-- `kernel/src/ipc/mod.rs`
-- `kernel/src/commands.rs`
-- `kernel/src/commands_shared.rs`
-- `kernel/src/ipc/selftest.rs`
+The shell already exposes:
 
-Exit criteria:
+- `ipc-list`
+- `ipc-inspect`
+- `ipc-stats`
+- `ipc-selftest`
 
-- one command can run IPC selftests inside the kernel
-- one command can inspect a live channel
-- the current semantics are frozen in tests before refactoring
+The roadmap no longer needs to treat inspectability as a missing foundation.
 
-### Milestone 1: Refactor Without Behavior Change
+---
 
-Goal:
+## 3. Remaining Gaps
 
-- split `ipc/mod.rs` into modules while keeping runtime behavior identical
+The main unfinished work falls into four categories.
 
-Required work:
+### 3.1 Zero-sum capability transfer
 
-- extract pure types, errors, rights, message, ring buffer, and `IpcService`
-- keep `ipc/mod.rs` as a thin facade
-- add compile-time and runtime parity checks
+Current message-carried capability transfer is signed, validated, and installable, but it is not yet **ownership-consuming by construction**.
 
-Files:
+What remains:
 
-- `kernel/src/ipc/mod.rs`
-- `kernel/src/ipc/types.rs`
-- `kernel/src/ipc/errors.rs`
-- `kernel/src/ipc/rights.rs`
-- `kernel/src/ipc/message.rs`
-- `kernel/src/ipc/ring.rs`
-- `kernel/src/ipc/service.rs`
+- sender-side authority should be consumed or attenuated explicitly when the zero-sum path is used
+- receiver installation should be represented as a first-class transfer outcome rather than a copy-style attachment story
+- selftests should prove that no duplicated live authority remains after a zero-sum transfer
 
-Exit criteria:
+This is the biggest semantic gap between the current implementation and the stronger capability model Oreulia aims for.
 
-- `cargo check` still passes for the active targets
-- IPC selftests from Milestone 0 still pass unchanged
-- no public caller outside `ipc/mod.rs` needs to know the internals moved
+### 3.2 Protocol/session typing
 
-### Milestone 2: Centralize Admission and Refusal
+Channels are still general-purpose payload pipes.
 
-Goal:
+What remains:
 
-- make send/receive validity explicit, local, and testable
+- optional session/protocol state per channel
+- explicit protocol progression checks
+- at least one real kernel or Wasm service that runs on a protocol-constrained channel instead of a convention-only pipe
 
-Required work:
+`TypedServiceArg` and the service registry are already useful building blocks, but they do not yet amount to protocol-typed IPC.
 
-- introduce `SendDecision` and `RecvDecision` enums, for example:
+### 3.3 Replay completeness
 
-```rust
-pub enum SendDecision {
-    Commit,
-    Refuse(IpcRefusal),
-    Defer(IpcDefer),
-}
-```
+Temporal capture exists, but IPC replay is still partial.
 
-- move capability checks, channel-id checks, closure-state checks, predictive restriction checks, queue-capacity checks, and flag-policy checks into `ipc/admission.rs`
-- make `Channel::send` and `Channel::try_recv` dispatch on decisions instead of reimplementing policy inline
-- record explicit refusal events through audit and temporal hooks
+What remains:
 
-Files:
+- richer event vocabulary for refusal, draining, transfer, and terminal closure transitions
+- replayable channel-state reconstruction rather than partial restoration placeholders
+- selftests that round-trip a nontrivial multi-message scenario
 
-- `kernel/src/ipc/admission.rs`
-- `kernel/src/ipc/channel.rs`
-- `kernel/src/ipc/errors.rs`
-- `kernel/src/ipc/audit.rs`
-- `kernel/src/ipc/temporal_bridge.rs`
+The current system records enough for inspection and partial restore, not yet enough for a fully replay-complete IPC state machine.
 
-Exit criteria:
+### 3.4 Secondary surface alignment
 
-- `send` policy is expressed in one place
-- refusal outcomes are explicit and logged
-- unit tests cover every refusal branch independently
+The kernel is ahead of several secondary documentation and wrapper surfaces.
 
-### Milestone 3: Real Blocking and Wakeups
+What remains:
 
-Goal:
+- keep public docs aligned with the real IPC implementation
+- keep Wasm/raw ABI wrapper docs aligned with actual host function ids
+- keep shell/runtime diagnostic docs aligned with the commands in tree
 
-- make `recv` and reliable-send semantics match the documented blocking model
+This is lower risk than the semantic gaps above, but it matters for public correctness.
 
-Required work:
+---
 
-- add per-channel wait queues for receivers and reliable senders
-- block tasks in the scheduler instead of returning `WouldBlock` from the blocking API
-- wake the correct blocked task on enqueue, dequeue, close, and refusal transitions
-- keep nonblocking APIs for callers that need them
+## 4. Recommended Next Sequence
 
-Files:
+The remaining work should proceed in this order.
 
-- `kernel/src/ipc/channel.rs`
-- `kernel/src/ipc/service.rs`
-- `kernel/src/process.rs`
-- `kernel/src/scheduler.rs`
-- `kernel/src/scheduler_platform.rs`
+### Phase 1: zero-sum transfer path
 
-Exit criteria:
+Priority:
 
-- `recv()` blocks instead of aliasing `try_recv()`
-- reliable send can wait for capacity when policy requires it
-- selftests show producer/consumer wakeup works repeatedly
+- highest
 
-Current status note:
+Why first:
 
-- implemented: service-layer `send()` and `recv()` now block through the scheduler, channel transitions wake the relevant wait queues, and the runtime `ipc-selftest` path now stages deterministic receiver/sender wakeup cycles
-- unit-level wakeup regressions still exist for send, receive, and close queue wake behavior
-- still missing: broader policy refinement beyond the current high-pressure async refusal and saturated reliable defer matrix, especially for future unbounded and priority-sensitive modes
+- it strengthens the authority model directly
+- it is a cleaner foundation for future replay and protocol typing
+- it removes the largest mismatch between Oreulia's current theory and message-carried capability behavior
 
-### Milestone 4: Graceful Closure
+Concrete work:
 
-Goal:
+- extend capability-manager support for consuming transfer/install flows
+- represent transfer outcomes explicitly in IPC message handling
+- add selftests for consume/install/attenuate behavior
 
-- remove abrupt-close semantics
+### Phase 2: replay-complete event vocabulary
 
-Required work:
+Priority:
 
-- introduce `CloseState`, for example `Open`, `Draining`, `Closed`
-- define what happens to in-flight messages during closure
-- make accepted messages drain, refuse with explicit terminal status, or archive for replay before final closure
-- update commands and diagnostics to show close state
+- high
 
-Files:
+Why second:
 
-- `kernel/src/ipc/closure.rs`
-- `kernel/src/ipc/channel.rs`
-- `kernel/src/ipc/errors.rs`
-- `kernel/src/ipc/temporal_bridge.rs`
-- `kernel/src/commands.rs`
+- replay needs stable semantics from transfer and closure before it becomes worth deepening
 
-Exit criteria:
+Concrete work:
 
-- no already-accepted message silently disappears because of `close()`
-- close behavior is deterministic and test-covered
-- temporal replay captures closure state transitions
+- extend IPC temporal events beyond send/recv/count placeholders
+- encode refusal, drain, transfer, and terminal close transitions
+- add reconstruction tests for realistic scenarios
 
-### Milestone 5: Backpressure as a First-Class Policy
+### Phase 3: optional protocol/session state
 
-Goal:
+Priority:
 
-- turn `WouldBlock` from a bare error into an admission/backpressure policy
+- medium
 
-Required work:
+Why third:
 
-- add occupancy thresholds and backpressure actions in `ipc/backpressure.rs`
-- distinguish commit, defer, and refuse outcomes
-- add per-channel stats for occupancy history, refusal count, and wake count
-- make async, reliable, bounded, and future unbounded modes all use the same policy surface
+- protocol state should build on already-stable admission, transfer, and closure semantics
 
-Files:
+Concrete work:
 
-- `kernel/src/ipc/backpressure.rs`
-- `kernel/src/ipc/admission.rs`
-- `kernel/src/ipc/channel.rs`
-- `kernel/src/ipc/selftest.rs`
+- define a minimal channel session enum
+- reject invalid protocol transitions deterministically
+- migrate one real service path to a constrained protocol channel
 
-Exit criteria:
+### Phase 4: ongoing doc and SDK cleanup
 
-- every enqueue path goes through a clear backpressure policy
-- liveness-related counters exist and are inspectable
-- there are deterministic tests for threshold crossings and recovery
+Priority:
 
-### Milestone 6: Zero-Sum Capability Transfer
+- continuous
 
-Goal:
+Concrete work:
 
-- implement the target-model capability path instead of only attaching signed copies
+- keep docs in `docs/ipc/` aligned with the kernel source
+- remove stale ABI numbering/comments from secondary wrapper surfaces
+- keep shell command docs synchronized with real commands
 
-Required work:
+---
 
-- add a capability-transfer path that consumes sender ownership and installs receiver ownership explicitly
-- represent message-carried capabilities as transfer descriptors or staged transfer entries rather than as unconstrained copied capability values
-- preserve a compatibility path if needed during migration, but keep it clearly marked as legacy
-- ensure capability transfer can be audited and replayed
+## 5. Verification Gates
 
-Files:
+Every remaining phase should preserve the current behavior that is already landed.
 
-- `kernel/src/ipc/message.rs`
-- `kernel/src/ipc/channel.rs`
-- `kernel/src/capability.rs`
-- `kernel/src/ipc/audit.rs`
-- `kernel/src/ipc/temporal_bridge.rs`
+### 5.1 Must-not-regress invariants
 
-Exit criteria:
+- bounded queue occupancy remains correct
+- no committed send bypasses admission
+- draining channels do not silently drop accepted messages
+- blocking service semantics continue to work through scheduler wait keys
+- diagnostics remain able to explain queue/wait/backpressure state at runtime
 
-- successful capability send removes or attenuates sender-side authority as designed
-- receiver installation is explicit and testable
-- zero-sum selftests prove no duplicate live authority remains after transfer
-
-### Milestone 7: Protocol and Session State
-
-Goal:
-
-- let channels optionally carry protocol state instead of being raw payload pipes
-
-Required work:
-
-- define a minimal protocol/session enum
-- require protocol-state advancement on send/recv for typed channels
-- integrate existing `TypedServiceArg` and service pointer patterns into explicit protocol state
-- keep plain channels as the fallback mode
-
-Files:
-
-- `kernel/src/ipc/session.rs`
-- `kernel/src/ipc/channel.rs`
-- `kernel/src/ipc/message.rs`
-- `kernel/src/wasm.rs`
-
-Exit criteria:
-
-- at least one real kernel or Wasm service runs on a protocol-constrained channel
-- invalid protocol progression is rejected deterministically
-
-### Milestone 8: Temporal and Audit Completeness
-
-Goal:
-
-- make replay and audit sufficient for real IPC-state reconstruction
-
-Required work:
-
-- extend IPC temporal events beyond send/recv/close counts
-- capture refusal events, closure state, and transfer metadata
-- restore more than synthetic queue depth
-- add a replay selftest that round-trips a nontrivial IPC scenario
-
-Files:
-
-- `kernel/src/ipc/temporal_bridge.rs`
-- `kernel/src/temporal.rs`
-- `kernel/src/ipc/selftest.rs`
-
-Exit criteria:
-
-- replay reconstructs a channel state richer than queue-depth placeholders
-- audit and temporal records agree on the same transition sequence
-
-### Milestone 9: Command Surface and Developer Tooling
-
-Goal:
-
-- make the IPC system inspectable and debuggable
-
-Required work:
-
-- add commands for channel listing, channel inspect, wait queue inspect, refusal stats, and replay selftest
-- expose a compact status snapshot for scripting and smoke tests
-- update `docs/ipc/oreulia-ipc.md` with the real current milestone state
-
-Files:
-
-- `kernel/src/commands.rs`
-- `kernel/src/commands_shared.rs`
-- `docs/ipc/oreulia-ipc.md`
-
-Exit criteria:
-
-- a developer can inspect live IPC state from the kernel shell
-- the documentation matches the actual code behavior
-
-## 5. Recommended Type and API Additions
-
-The following API shapes should exist before Milestone 6 is complete.
-
-```rust
-pub enum IpcRefusal {
-    PermissionDenied,
-    InvalidCapability,
-    Closed,
-    Full,
-    Restricted,
-    ProtocolViolation,
-}
-
-pub enum SendDecision {
-    Commit,
-    Refuse(IpcRefusal),
-    Defer,
-}
-
-pub enum RecvDecision {
-    Deliver,
-    Refuse(IpcRefusal),
-    Block,
-}
-
-pub enum CloseState {
-    Open,
-    Draining,
-    Closed,
-}
-```
-
-These types should live in `kernel/src/ipc/errors.rs` or `kernel/src/ipc/channel.rs`, not in callers.
-
-## 6. Tests and Verification Gates
-
-Every milestone should add tests before it adds complexity.
-
-### 6.1 Unit tests
-
-- message encode/decode and capability attachment limits
-- ring buffer occupancy, wraparound, and full/empty behavior
-- rights and capability checks
-- send-admission and refusal decision table
-- graceful closure state transitions
-
-### 6.2 Integration tests
-
-- producer/consumer with real scheduler wakeups
-- reliable send under full buffer pressure
-- capability transfer with sender ownership consumed
-- close-while-buffer-nonempty
-- temporal replay of a multi-message scenario
-
-### 6.3 Command-driven selftests
+### 5.2 Tests that should stay authoritative
 
 - `ipc-selftest`
-- `ipc-selftest-transfer`
-- `ipc-selftest-close`
-- `ipc-selftest-replay`
+- channel inspection and stats commands
+- deterministic wakeup scenarios in `selftest.rs`
+- capability attachment limit tests
+- backpressure threshold tests
 
-### 6.4 Proof-friendly invariants to preserve in code
+### 5.3 New tests to add
 
-- queue count matches actual occupied slots
-- no committed send bypasses admission
-- no accepted message is dropped during graceful closure
-- transfer either consumes, attenuates, or explicitly preserves sender authority by rule
-- refusal outcomes are explicit events, not silent fallthrough
+- zero-sum transfer consume/install cases
+- replay of a nontrivial multi-message multi-transition scenario
+- protocol-state acceptance and rejection cases
 
-## 7. Sequencing Rules
+---
 
-These rules matter.
+## 6. Definition of Done for the Remaining Roadmap
 
-1. Do not implement session types before admission and graceful closure exist.
-2. Do not claim zero-sum capability transfer until `capability.rs` supports consuming transfer semantics.
-3. Do not make replay more detailed until the event vocabulary is stable enough to keep.
-4. Do not update docs to promise reliable-send blocking semantics until the capacity-wait path actually lands.
-5. Do not remove compatibility wrappers from `ipc/mod.rs` until `wasm.rs`, commands, and callers are migrated.
+The IPC subsystem should be considered materially complete for this roadmap when all of the following are true:
 
-## 8. Definition of Done
+1. message-carried capability transfer has a real zero-sum path
+2. draining and terminal closure are replayable as explicit state transitions
+3. at least one real service uses optional protocol/session state successfully
+4. temporal replay can reconstruct materially meaningful IPC state
+5. docs and ABI wrappers no longer materially lag the kernel implementation
 
-The IPC system counts as fully implemented for this roadmap when all of the following are true:
-
-1. `kernel/src/ipc/mod.rs` is a stable facade rather than a monolith.
-2. blocking and nonblocking receive/send semantics are both real and test-covered.
-3. graceful closure is implemented and no accepted message is silently lost.
-4. capability transfer has a target zero-sum path backed by `capability.rs`.
-5. temporal replay can reconstruct materially meaningful IPC state.
-6. commands and selftests can expose and validate live IPC behavior.
-7. documentation reflects the actual implementation state.
-
-At that point, the system is ready for a second pass focused on stronger formal alignment and possible mechanized proofs.
+Oreulia does **not** need to wait for that full end state to claim it already has a real IPC subsystem. It does need that end state to claim the IPC model fully matches the stronger long-range capability and replay design.

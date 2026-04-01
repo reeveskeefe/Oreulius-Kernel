@@ -1,241 +1,172 @@
-# Oreulia — Core Specification (MVP & Beyond)
+# Oreulia — MVP Status and Current Boundary
 
-**Status:** Delivered / Surpassed (Feb 8, 2026)
+**Status:** The original MVP has been passed. This document now describes what that means and where the current project boundary actually is.
 
-This document originally outlined the Minimum Viable Product (MVP) for Oreulia. The project has since met and significantly exceeded these initial goals.
+The old MVP definition assumed a much smaller kernel: boot, a shell, basic capability handling, and an early WASM runtime. The current tree has moved well beyond that. It now includes real networking, a broader temporal model, a richer IPC layer, service registration and typed invocation, multiple architecture bring-up paths, and a dedicated regression workflow set.
 
-**Current State:** A bootable `i686` kernel with advanced networking, a hierarchical filesystem, and a JIT-enabled implementation of WebAssembly.
-
----
-
-## 0. Scope & Achievements
-
-| Feature Area | Original MVP Goal (QEMU-only) | Current Implementation Status |
-| :--- | :--- | :--- |
-| **Boot** | Boot to serial console | **Done** (Multiboot compliant, GRUB2) |
-| **Architecture** | Basic x86/Sched | **Done** (i686, Preemptive Priority Sched) |
-| **Wasm** | Interpreter / Simple Loader | **Exceeded** (In-Kernel JIT Compiler) |
-| **Networking** | **Out of Scope** | **Exceeded** (Full TCP/IP Stack, Drivers) |
-| **Filesystem** | Minimal/Flat Store | **Exceeded** (Unix-like VFS, Mounts, Inodes) |
-| **Security** | Capability Table | **Done** (Handle-based, ACLs) |
+So the useful question is no longer “has the MVP shipped?” It has. The useful question is “what has the project already proven, and what still separates it from a production-ready platform?”
 
 ---
 
-## 1. Platform Target
+## 1. The original MVP is complete
 
-- **Architecture**: `i686` (32-bit x86 Protected Mode).
-- **Environment**: QEMU (primary dev), Bochs, Real Hardware (via ISO).
-- **Drivers**:
-  - **Serial**: 16550 UART (Logging/Console).
-  - **Timer**: 8253 PIT (Scheduling).
-  - **Network**: E1000 (Intel), RTL8139 (Realtek), VirtIO-Net.
-  - **Storage**: VirtIO-Blk, IDE/ATA (Basic).
+The original minimum bar has already been exceeded in several directions.
 
----
+### Landed beyond the original MVP
 
-## 2. Kernel Features
+- bootable kernels across multiple architectures
+- serial shell and broad command surface
+- capability management rather than only a placeholder handle table
+- a real IPC subsystem with diagnostics and selftests
+- a temporal subsystem with snapshot/history/rollback/branch/merge operations
+- persistence and restore machinery
+- a richer filesystem stack than the original flat-store story
+- in-kernel network stack and dedicated network regression lanes
+- WebAssembly runtime with typed service invocation and JIT regression coverage
 
-### 2.1 Networking Subsystem (New)
-The MVP was originally offline-only. The kernel now includes a complete **Network Stack**:
-- **Protocols**: Ethernet II, ARP, IPv4, ICMP, UDP, TCP.
-- **Services**: DNS Resolver, DHCP Client, HTTP (Client & Server).
-- **Abstractions**: Socket-like interface for kernel services, capability-gated for Wasm.
-
-### 2.2 Virtual File System (New)
-Moved beyond simple object storage to a full **VFS**:
-- **Structure**: Hierarchical directory tree (`/`, `/dev`, `/mnt`).
-- ** operations**: `open`, `read`, `write`, `close`, `mkdir`, `stat`.
-- **Drivers**: RamFS (initial), FAT (partial), Ext2 (planned).
-
-### 2.3 WebAssembly Runtime
-- **Execution**: JIT (Just-In-Time) compilation of Wasm opcodes to x86 native code.
-- **Performance**: Significant speedup over interpretation.
-- **Integration**: Wasm modules can import kernel functions like properties.
-
-### 2.4 Scheduler & Processes
-- **Algorithm**: Quantum-based round-robin with priority levels.
-- **Concurrency**: Kernel threads and user processes.
-- **Synchronization**: Spinlocks, Atomics, and Wait Queues.
+That means the project should stop speaking about “the MVP” as if it were still the target state of the codebase.
 
 ---
 
-## 3. Deliverables
+## 2. What the project has already demonstrated
 
-### 3.1 Bootable Artifacts
-- **File**: `oreulia.iso` (Hybrid ISO9660).
-- **Build System**: `build.sh` (Auto-compiles Rust, Assembles startup, Links, and Generates ISO).
+Oreulia has already demonstrated a coherent kernel-shaped system with these properties:
 
-### 3.2 Interaction
-- **Shell**: A rich command-line interface (`>`) with 50+ commands.
-    - `help`, `cpu-info`, `net-info`, `ls`, `wasm-run`, etc.
-- **Demo Capability**:
-    - **`wasm-demo`**: Runs a Wasm module to prove execution.
-    - **`http-get`**: Demonstrates live networking.
-    - **`vfs-ls`**: Demonstrates filesystem hierarchy.
+### 2.1 Boot and runtime bring-up
 
----
+- `i686` full runtime path
+- `x86_64` Multiboot2 QEMU bring-up
+- `AArch64` QEMU `virt` bring-up
 
-## 4. Next Steps (Post-MVP)
+### 2.2 Core subsystem presence
 
-With the core "OS" features (Net, FS, Sched, JIT) in place, the focus shifts to:
-1. **User Mode Hardening**: Strictly enforcing Ring 3 isolation for Wasm payloads.
-2. **SMP**: Multicore support.
-3. **Advanced Persistence**: Completing the snapshot/restore logic.
-4. **GUI**: Framebuffer-based windowing capability.
+- capability enforcement
+- IPC channels and service introduction
+- scheduler/runtime coordination
+- temporal state and persistence
+- WASM execution and typed service-pointer model
+- network stack and HTTP/DNS command surface
+- CapNet and related capability-network control surfaces
 
+### 2.3 Verification posture
 
-- Kernel provides:
-  - per-task capability table
-  - unforgeable handles (integers referencing kernel objects)
-  - rights/permissions associated with handles
-  - enforcement on any privileged operation
+- dedicated GitHub workflow gates for key regressions
+- shell-driven selftests and verification commands
+- fuzz and proof surfaces present in tree
+
+This is a real project boundary. Oreulia is not merely a kernel sketch anymore.
 
 ---
 
-## 4. User-space MVP requirements (supervisor + services)
+## 3. What the current minimum credible platform is
 
-### 4.1 Supervisor responsibilities
+If the original MVP is retired, the current minimum credible Oreulia platform looks like this:
 
-- Create initial component graph.
-- Create per-component capability sets (principle of least privilege).
-- Provide a “time service” abstraction usable by determinism.
-- Start Wasm loader service.
+### Required properties
 
-### 4.2 Services (MVP set)
+- all three public-facing regression-critical lanes remain green:
+  - `i686-network-regression`
+  - `x86_64-network-regression`
+  - `aarch64-network-regression`
+- CapNet and WASM JIT regression lanes remain green
+- the public docs accurately reflect the current implementation
+- the multi-arch shell/runtime surfaces remain bootable and inspectable
 
-**Console service**
-
-- Provides `Console.Write` capability.
-- Writes to serial.
-
-**Clock service (virtual)**
-
-- Provides `Clock.ReadMonotonic` capability.
-- In record/replay, it reads from a log rather than the live timer.
-
-**Persistence service (log + snapshot)**
-
-- Provides `Store.AppendLog`, `Store.ReadLog`, `Store.WriteSnapshot`, `Store.ReadSnapshot`.
-- Storage backend may start as RAM-backed (for quick bring-up) but must have a path to virtio block.
-
-**Filesystem service**
-
-- Provides `Filesystem.Read`, `Filesystem.Write`, `Filesystem.Delete`.
-- Uses persistence service for durable file storage; no ambient paths.
-
-**Wasm loader**
-
-- Loads a prepackaged module.
-- Instantiates with injected capabilities.
+This is the right floor to defend publicly today, not the much smaller 2026-02 “boot plus demo” floor.
 
 ---
 
-## 5. Determinism v0 (record/replay)
+## 4. Current non-goals and limits
 
-### 5.1 What counts as “external input” in MVP
+Oreulia still does **not** claim:
 
-- clock ticks (or clock reads)
-- console input (optional)
+- POSIX or Linux ABI compatibility
+- broad native software support
+- full architecture parity
+- production-hardened hardware validation
+- complete replay fidelity across every subsystem
+- complete formal closure of every security property
 
-### 5.2 Record mode
-
-- Supervisor writes a log of external inputs to the persistence service.
-- Module outputs are deterministic given the recorded inputs.
-
-### 5.3 Replay mode
-
-- Supervisor replays the same external inputs.
-- The module output must match (byte-for-byte) for the same boot seed.
-
-### 5.4 Seed and randomness
-
-- Randomness is not required for MVP.
-- If present, it must be capability-gated and recordable.
+That matters because the project is stronger than its old MVP docs suggested, but weaker than a productized OS.
 
 ---
 
-## 6. Acceptance tests (human-verifiable)
+## 5. What still blocks “production-ready”
 
-MVP is acceptable when:
+The gap between current Oreulia and a production-ready platform is not bootability. It is operational and semantic depth.
 
-- QEMU boots to a promptless demo where logs show:
-  - supervisor start
-  - loader start
-  - module start
-  - module printed output
-- In record mode, a log is produced.
-- In replay mode, the same output is produced.
-- A module without `Console.Write` cannot print.
+### 5.1 Hardware and platform validation
+
+Still needed:
+
+- broader hardware driver coverage
+- non-QEMU validation
+- sustained soak testing beyond the current CI lanes
+
+### 5.2 Runtime parity and consistency
+
+Still needed:
+
+- narrower feature-gap between `i686`, `x86_64`, and `AArch64`
+- more even JIT/runtime support across architectures
+- continued cleanup of stale SDK and documentation surfaces
+
+### 5.3 Hardening
+
+Still needed:
+
+- more proof-aligned documentation across subsystems
+- more aggressive fuzz and replay coverage
+- broader negative testing of authority transfer, policy, and temporal rollback paths
+
+### 5.4 Operational tooling
+
+Still needed:
+
+- stronger fleet/OTA/ops stories beyond the current kernel-facing hooks
+- better external observability and incident-handling ergonomics
+- more mature release discipline and compatibility guarantees
 
 ---
 
-## 7. Repo structure recommendation
+## 6. Revised acceptance standard
 
-Suggested structure (non-binding):
+The old “human-verifiable MVP” acceptance test is outdated. A more realistic current acceptance standard is:
 
-- `kernel/` — kernel crate/project
-- `services/` — supervisor + services
-- `wasm/` — demo modules
-- `docs/` — design docs
+### Project is in a healthy current state when:
 
----
+- main regression workflows stay green on the same SHA
+- docs do not materially overstate subsystem behavior
+- the three architecture bring-up paths still work in QEMU
+- the core authority model remains capability-mediated and inspectable
+- temporal, IPC, and WASM service surfaces still compose coherently
 
-## 8. Next after MVP
-
-- user mode isolation
-- virtio block integration for durable logs
-- richer IPC schemas
-- capability revocation model
-- additional Wasm host calls (net, storage, spawn)
+That is a better description of the current engineering target.
 
 ---
 
-## 9. Risks & mitigations
+## 7. Near-term roadmap after MVP
 
-Oreulia’s v0 is ambitious. The MVP mitigates risk by keeping the initial surface area small (QEMU-first, small capability taxonomy, minimal nondeterminism sources).
+The right post-MVP work is not “add basic OS features.” Those already exist. The right work is:
 
-### 9.1 Performance risks
+- tighten architecture parity
+- deepen capability-transfer semantics
+- improve replay completeness
+- expand hardware and runtime validation
+- keep docs honest as fast-moving subsystems evolve
 
-- **Copy-based IPC overhead**: bounded messages (e.g., 4 KiB data, 16 caps/message) are correct and simple, but can increase latency/CPU for high-throughput pipelines.
-- **Wasm call frequency**: if every interaction funnels through `channel_send`/`channel_recv`, “syscall-like” chatter can become the bottleneck under load.
+The project has crossed the threshold where accuracy and cohesion matter more than simply adding one more subsystem headline.
 
-Mitigations (MVP):
+---
 
-- Treat IPC limits as **prototype defaults**, not promises.
-- Keep demo workloads small; optimize later with shared memory capabilities and/or scatter-gather.
-- Prefer coarse-grained messages for MVP demo modules.
+## 8. Bottom line
 
-### 9.2 Implementation complexity
+Oreulia has already surpassed its original MVP. The old MVP language is still useful as history, but it is no longer a good description of the project’s current state.
 
-- **Capability correctness bugs (high impact)**: unforgeability/attenuation/transfer mistakes can leak authority.
-- **Determinism correctness bugs (high impact)**: subtle nondeterminism leaks (clock use, device jitter, scheduler effects) can break byte-for-byte replay.
-- **No revocation in MVP**: relies on restarts and careful grants; long-lived leaks remain until a revocation mechanism exists.
+The accurate public position is:
 
-Mitigations (MVP):
+- the kernel already has a meaningful execution, authority, temporal, and network story
+- it is still alpha-quality research software
+- the current work is about hardening, parity, and semantic completion rather than proving the kernel can exist at all
 
-- Keep a **small capability taxonomy** and enforce checks centrally.
-- Add tests for:
-  - cap table invariants (no raw object IDs)
-  - attenuation (`derived ⊆ original`)
-  - transfer semantics (sender/receiver rights)
-- Make determinism scope explicit: record/replay only **clock** and optional **console input**.
-
-### 9.3 Scope and portability limits
-
-- **No POSIX / Wasm-only apps**: limits early adoption and “real” app testing.
-- **QEMU/virtio only**: limits device coverage.
-- **At-least-once replay**: component idempotency bugs can appear until stronger semantics are added.
-
-Mitigations (MVP):
-
-- Treat MVP as a concept-proving prototype; add a WASI layer later if desired.
-- Keep components small and replay-safe; store a replay cursor/sequence in durable state.
-
-### 9.4 Summary table
-
-| Risk category | Impact on MVP | Mitigation |
-|---|---:|---|
-| IPC performance | Medium | Keep demo-scale; defer zero-copy/shared memory |
-| Capability bugs | High | Small taxonomy; central enforcement; invariant tests |
-| Determinism correctness | High | Limit nondeterminism sources; log clock (+ console) only |
-| No POSIX / Wasm-only | Low | Prototype goal; consider layering WASI later |
+That is a stronger and more credible statement than the older MVP framing.

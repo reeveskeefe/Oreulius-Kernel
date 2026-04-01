@@ -665,13 +665,13 @@ Oreulia makes no false completeness claims. The following items are explicitly a
 
 | Area | Status | Notes |
 |---|---|---|
-| AArch64 full runtime parity | In progress | AArch64 bring-up shell works; full x86 subsystem set (WASM, JIT, CapNet, temporal, IPC) not yet ported to AArch64. |
-| x86_64 JIT opcode parity | In progress | x86_64 JIT path covers the most common opcodes; full WASM opcode coverage parity with i686 interpreter is not yet complete. |
+| AArch64 full runtime parity | In progress | AArch64 now brings up the shared runtime core (`VFS`, persistence, temporal, IPC, registry, capability, security) and has a dedicated network regression lane. Remaining gaps are narrower: WASM/JIT execution, some non-AArch64 service modules (`fleet`, `health`, `ota`, `wasi`), and full shell/CapNet parity with x86. |
+| x86_64 JIT opcode parity | In progress | The x86_64 JIT path covers common opcodes and has a dedicated regression lane, but full opcode parity with the interpreter is not complete yet; `call_indirect` still remains on the incomplete side of that boundary. |
 | Non-QEMU hardware validation | Not started | All three architectures are validated under QEMU. Physical hardware bring-up has not been attempted. |
 | POSIX / Linux ABI compatibility | Explicit non-goal | Oreulia is not a drop-in Linux replacement. No libc, no POSIX process model, no `/proc`. |
-| Production workload benchmarking | Not started | Performance positioning is based on bounded control-path design; no workload-specific benchmarks have been published. |
+| Production workload benchmarking | In progress | The tree includes subsystem-level benchmark commands such as `cpu-bench`, `wasm-jit-bench`, `blk-bench`, and `sched-entropy-bench`, but no published end-to-end production workload benchmarks exist yet. |
 | Universal binary merge semantics | Explicit non-goal | The temporal merge path supports defined strategies (FastForwardOnly, Ours, Theirs, ThreeWay) for structured payloads; arbitrary binary object merge is not a goal. |
-| Multi-node CapNet (real network) | Not started | CapNet cross-peer delegation is implemented in-kernel; real multi-machine TCP transport has not been wired up. |
+| Multi-node CapNet (real network) | In progress | CapNet peer/session state and real network control-frame transport are present in-kernel (`hello`, heartbeat, token offer/accept/revoke, attest over the network stack), but there is no dedicated multi-machine regression lane or physical-host validation yet. |
 
 ## Cross-Architecture Implementation
 

@@ -1,227 +1,337 @@
 # Oreulia — IPC & Dataflow
 
-**Status:** Implemented (v0 core, March 11, 2026)
+**Status:** Implemented core IPC subsystem with bounded channels, capability-gated access, admission control, scheduler-backed blocking at the service layer, diagnostics, and temporal service framing.
 
-For the full implementation roadmap from the current `kernel/src/ipc/mod.rs` root module to the target IPC architecture, see [docs/ipc/oreulia-ipc-implementation-roadmap.md](./oreulia-ipc-implementation-roadmap.md).
+For the internal implementation reference, see [`kernel/src/ipc/README.md`](../../kernel/src/ipc/README.md). For the remaining work, see [oreulia-ipc-implementation-roadmap.md](./oreulia-ipc-implementation-roadmap.md).
 
-Current v0 limitations that matter for planning:
-
-- `Channel::recv()` inside the core channel type still aliases `try_recv()`, but `IpcService::recv()` now blocks through scheduler wait queues when a schedulable process context exists and falls back to `WouldBlock` otherwise.
-- capability attachments are signed and transferable, but not yet zero-sum linear by construction.
-- `close()` now enters a draining state when queued messages remain, but it is not yet a full replay-complete graceful-closure protocol.
-- temporal replay captures IPC state partially rather than reconstructing a full event-complete channel state.
-- runtime diagnostics/selftests exist (`ipc-list`, `ipc-inspect`, `ipc-stats`, `ipc-selftest`), including blocked sender/receiver visibility, queue high-water tracking, backpressure hit counters, and a deterministic runtime wakeup scenario, but deeper admission/session/replay coverage is still planned.
-- send/receive policy now goes through an explicit admission decision layer. The service-layer send/recv APIs are scheduler-backed when a schedulable current process exists, while the low-level channel helpers still expose raw nonblocking `WouldBlock` behavior. Backpressure policy is no longer only “full queue or not”: non-high-priority async channels now refuse once they cross the high-pressure threshold, while saturated reliable sends still defer on capacity.
-
-Oreulia is dataflow-first: components communicate through message passing rather than shared global state or shared memory. The Inter-Process Communication (IPC) system is the primary mechanism for interaction between the kernel and user-mode (Wasm) applications.
+Oreulia is dataflow-first: components communicate through explicit message passing rather than ambient shared state. The IPC system is the kernel's general-purpose transport for process communication, service discovery, capability propagation, and several binary service protocols.
 
 ---
 
-## 1. Core Concepts
+## 1. Core Model
 
 ### 1.1 Channels
-The fundamental primitive is the **Channel**.
-- **Bidirectional**: Channels support both sending and receiving messages.
-- **Bounded**: Each channel has a fixed capacity to ensure backpressure.
-- **Capability-Gated**: A `Channel` is an object in the kernel; processes hold a `ChannelCapability` (handle) to access it.
+
+The core primitive is the **channel**.
+
+- **Bounded:** every channel has a fixed queue capacity.
+- **Capability-gated:** callers need a `ChannelCapability` with the appropriate rights.
+- **Process-owned:** channel capabilities are tied to an owning `ProcessId`.
+- **Backpressure-aware:** send/receive paths do not treat "full" or "empty" as a single undifferentiated error.
+
+The current capacity model is:
+
+| Constant | Value |
+| --- | ---: |
+| `CHANNEL_CAPACITY` | `4` messages |
+| `MAX_CHANNELS` | `16` |
+| `MAX_MESSAGE_SIZE` | `512` bytes |
+| `MAX_CAPS_PER_MESSAGE` | `16` |
 
 ### 1.2 Messages
-Messages in Oreulia are strictly typed and delimited.
-- **Data Payload**: Byte array (e.g., serialized struct or raw data).
-- **Capability Payload**: Handles can be sent *inside* messages. This is how authority propagates (e.g., passing a `FileDescriptor` to a worker process).
+
+Messages carry:
+
+- a bounded byte payload
+- a causal `EventId`
+- an optional `cause` link to another event
+- zero or more attached capabilities
+- the sending `ProcessId`
+
+Oreulia uses message-carried capabilities to hand authority explicitly from one component to another rather than relying on global namespace lookups.
+
+### 1.3 Rights
+
+`ChannelCapability` currently exposes these rights:
+
+- `SEND`
+- `RECEIVE`
+- `CLOSE`
+
+The `ipc` module also includes an `AffineEndpoint<CAPACITY>` wrapper for linear endpoint delegation experiments, but the message-carried capability path is still the legacy signed-copy transfer path, not a complete zero-sum ownership-consuming transfer model.
 
 ---
 
-## 2. Implementation Details
+## 2. Current Implementation Structure
 
-### 2.1 Syscall Interface
-Wasm modules interact with IPC via dedicated imports:
+The old monolithic IPC implementation has already been split into dedicated modules under [`kernel/src/ipc`](../../kernel/src/ipc):
 
-```rust
-// Interface from `oreulia-wasm-abi`
-fn ipc_create() -> handle;
-fn ipc_send(handle: u32, msg_ptr: u32, len: u32) -> status;
-fn ipc_recv(handle: u32, buf_ptr: u32) -> len;
-```
+| File | Current role |
+| --- | --- |
+| `mod.rs` | façade, re-exports, singleton access, wait-address helpers |
+| `types.rs` | scalar IPC types and shared constants |
+| `message.rs` | `Message` construction and capability attachments |
+| `rights.rs` | channel rights, channel capability, affine endpoint wrapper |
+| `errors.rs` | public IPC error taxonomy |
+| `ring.rs` | bounded FIFO queue |
+| `channel.rs` | channel state machine and queue mutation |
+| `admission.rs` | send/receive decision logic |
+| `backpressure.rs` | pressure thresholds, actions, counters |
+| `table.rs` | live channel registry |
+| `service.rs` | `IpcService` and public kernel-facing API |
+| `diagnostics.rs` | read-only channel and IPC snapshots |
+| `selftest.rs` | deterministic runtime selftests |
 
-Kernel syscall boundary also exposes capability-attachment variants:
-- `channel_send_caps(channel, msg_ptr, msg_len, caps_ptr, caps_count)`
-- `channel_recv_caps(channel, buf_ptr, buf_len, caps_ptr, caps_count_out_ptr)`
-
-`caps_ptr` is an array of packed capability descriptors (`SysIpcCapability`), max
-`MAX_CAPS_PER_MESSAGE` entries.
-
-### 2.2 Blocking & Yielding
-- **Current v0 behavior**: `try_recv` is nonblocking. `IpcService::recv` parks the caller on a per-channel message wait queue until a message arrives or closure becomes visible, while `IpcService::send` parks reliable/capacity-controlled senders on a per-channel capacity wait queue when the channel is full. The core `Channel::{send,recv}` helpers remain the low-level nonblocking primitives used for compatibility and tests.
-- **Current v0 close behavior**: closing a channel rejects new sends immediately and drains already-queued messages before the channel becomes terminally closed.
-- **Current wake behavior**: send wakes one waiting receiver, receive wakes one capacity waiter, and terminal close wakes blocked waiters so they can observe closure instead of sleeping indefinitely.
-- **Current fallback behavior**: if there is no schedulable current process context, the service-layer blocking paths fall back to `WouldBlock` instead of sleeping while holding kernel state.
-- **Current observability**: `ipc-list`, `ipc-inspect`, and `ipc-stats` expose per-channel waiting receiver/sender counts, backpressure level, recommended pressure action, queue high-water mark, high/saturated send-pressure hit counters, and wake counters so blocked and saturated paths can be inspected at runtime.
+This split is no longer aspirational. It is the implementation in tree today.
 
 ---
 
-## 3. Capability Transfer
-This is the most powerful feature of Oreulia's IPC.
+## 3. Admission, Backpressure, and Blocking
 
-1. **Sender** includes a handle index in the message header.
-2. **Kernel** verifies the sender owns that handle.
-3. **Kernel** clones the underlying kernel object reference.
-4. **Kernel** creates a new handle in the **Receiver's** capability table.
-5. **Receiver** gets the new handle index in the message.
+### 3.1 Admission control
 
-This mechanism allows "zero-trust" service discovery: a process doesn't need to "find" the filesystem service; it is *hand-delivered* a connection to it by the supervisor at startup.
+Send and receive policy goes through explicit decision enums:
 
-- transferred rights are identical to sender’s capability rights
-- service-pointer transfer additionally requires sender right `SERVICE_DELEGATE`
-- imported capabilities are validated against capability type and kernel object liveness
+- `SendDecision::{Commit, Refuse, Defer}`
+- `RecvDecision::{Deliver, Refuse, Defer}`
 
-Optional improvement:
+Admission currently checks:
 
-- allow sender to attenuate at transfer time (preferred)
-  - attach `(cap_id, rights_mask)`
+- predictive restriction status from the security subsystem
+- capability ownership and rights
+- channel identity match
+- closure state
+- queue pressure / backpressure policy
 
-Target roadmap change:
+This means IPC policy is no longer hidden in ad hoc channel mutation branches.
 
-- replace copy-style transfer with a zero-sum capability-transfer path backed by `capability.rs`
+### 3.2 Backpressure
 
-### 3.1 Service Pointer Transfer Pattern
+Backpressure is first-class.
 
-For directly callable function/service capabilities:
-1. Provider registers a service pointer (`service_register`).
-2. Provider exports and attaches capability on IPC send.
-3. Consumer imports capability from received message.
-4. Consumer invokes with `service_invoke`.
+- high pressure starts at `3 / 4` occupancy
+- async channels can be refused under pressure depending on flags
+- reliable bounded sends can defer and block for capacity
+- counters and high-water data are tracked for diagnostics
+
+### 3.3 Blocking semantics
+
+There are two layers of receive/send behavior:
+
+- low-level channel helpers remain nonblocking and can still return `WouldBlock`
+- the service-layer APIs in `IpcService` block through scheduler wait queues when a schedulable current process exists
+
+In practice:
+
+- `IpcService::recv()` can block on a per-channel message wait key
+- `IpcService::send()` can block on a per-channel capacity wait key
+- if the runtime cannot stage a schedulable block, the service layer falls back to `WouldBlock`
+
+This is an important distinction: Oreulia now has real blocking IPC behavior at the service boundary, but not every helper in the lower layers is itself a blocking API.
 
 ---
 
-## 4. Temporal IPC Binary Protocol (v1)
+## 4. Channel Lifecycle
 
-Temporal service traffic is now a binary framed protocol (no text parsing).
+Oreulia no longer treats close as a single abrupt bit flip.
 
-### 4.1 Request frame
+The current close model distinguishes:
 
-Little-endian, fixed 16-byte header:
+- `Open`
+- `Draining`
+- terminal closed/sealed state
+
+Current behavior:
+
+- new sends are refused once drain begins
+- queued messages remain deliverable while the channel drains
+- receivers continue draining until the queue is empty
+- blocked waiters are woken when close transitions make progress
+
+Publicly visible errors include:
+
+- `WouldBlock`
+- `Closed`
+- `ChannelDraining`
+- `PermissionDenied`
+- `InvalidCap`
+- `MessageTooLarge`
+- `TooManyCaps`
+- `TooManyChannels`
+
+`ChannelDraining` is important because it lets callers distinguish "shutting down but still draining accepted work" from "fully closed."
+
+---
+
+## 5. Capability Transfer and Service Discovery
+
+### 5.1 Current capability transfer
+
+Message-carried capabilities are currently:
+
+- attached to a `Message`
+- signed before insertion
+- available to the receiver for explicit validation and import
+- installable into the receiver's capability state through the existing import path
+
+This is already capability-gated and auditable, but it is **not yet zero-sum by construction**. The roadmap still includes a stronger ownership-consuming transfer path.
+
+### 5.2 Service discovery
+
+Service discovery is no longer just an architectural idea. Oreulia now has a real service registry and introduction protocol under [`kernel/src/services/registry.rs`](../../kernel/src/services/registry.rs).
+
+Current shell-visible surfaces include:
+
+- `svc-request`
+- `intro-demo`
+
+The registry currently models service types such as:
+
+- filesystem
+- persistence
+- network
+- timer
+- console
+- temporal
+- compositor
+- browser backend
+
+The design goal remains the same: no ambient global lookup as the primary authority path. Services are introduced explicitly through capability-mediated channels.
+
+---
+
+## 6. Temporal IPC Binary Protocol
+
+Temporal service traffic is a binary-framed IPC protocol. It is no longer limited to snapshot/read/history basics.
+
+### 6.1 Frame layout
+
+Requests use a 16-byte little-endian header:
 
 | Offset | Size | Field |
-|---|---:|---|
-| 0 | 4 | `magic = 0x31504D54` (`"TMP1"`) |
+| --- | ---: | --- |
+| 0 | 4 | `magic = 0x31504D54` (`TMP1`) |
 | 4 | 1 | `version = 1` |
 | 5 | 1 | `opcode` |
-| 6 | 2 | `flags` (reserved, currently `0`) |
-| 8 | 4 | `request_id` (echoed by response) |
+| 6 | 2 | `flags` |
+| 8 | 4 | `request_id` |
 | 12 | 2 | `payload_len` |
 | 14 | 2 | `reserved` |
 
-Payload follows immediately and must match `payload_len` exactly.
-
-### 4.2 Response frame
-
-Little-endian, fixed 20-byte header:
+Responses use a 20-byte little-endian header:
 
 | Offset | Size | Field |
-|---|---:|---|
+| --- | ---: | --- |
 | 0 | 4 | `magic = 0x31504D54` |
 | 4 | 1 | `version = 1` |
-| 5 | 1 | `opcode` (echoed) |
-| 6 | 2 | `flags` (echoed) |
-| 8 | 4 | `request_id` (echoed) |
-| 12 | 4 | `status` (`0` success, negative error) |
+| 5 | 1 | `opcode` |
+| 6 | 2 | `flags` |
+| 8 | 4 | `request_id` |
+| 12 | 4 | `status` |
 | 16 | 2 | `payload_len` |
 | 18 | 2 | `reserved` |
 
-### 4.3 Opcodes and payload schemas
+### 6.2 Current opcodes
 
-- `1 SNAPSHOT`: request payload `u16 path_len + path_bytes`; response payload `TemporalMeta[32]`.
-- `2 LATEST`: request payload `u16 path_len + path_bytes`; response payload `TemporalMeta[32]`.
-- `3 READ`: request payload `u64 version_id + u16 preview_len + u16 path_len + path_bytes`; response payload `u32 total_len + u32 returned_len + returned_bytes`.
-- `4 ROLLBACK`: request payload `u64 version_id + u16 path_len + path_bytes`; response payload `RollbackMeta[16]`.
-- `5 HISTORY`: request payload `u32 start_from_newest + u16 max_entries + u16 path_len + path_bytes`; response payload `u16 count + u16 reserved + count * HistoryRecord[64]`.
-- `6 STATS`: request payload empty; response payload `TemporalStats[20]`.
+The current opcode set is:
 
-### 4.4 Capability policy
+| Opcode | Name |
+| ---: | --- |
+| `1` | `SNAPSHOT` |
+| `2` | `LATEST` |
+| `3` | `READ` |
+| `4` | `ROLLBACK` |
+| `5` | `HISTORY` |
+| `6` | `STATS` |
+| `7` | `BRANCH_CREATE` |
+| `8` | `BRANCH_CHECKOUT` |
+| `9` | `BRANCH_LIST` |
+| `10` | `MERGE` |
 
-- `SNAPSHOT`, `LATEST`, `READ`, `HISTORY` require attached filesystem capability with `READ`.
-- `ROLLBACK` requires attached filesystem capability with `WRITE`.
-- Path-scoped filesystem capabilities are enforced against requested temporal path.
-- `STATS` requires no filesystem capability.
+### 6.3 Current status codes
 
-### 4.5 Status codes
+| Status | Meaning |
+| ---: | --- |
+| `0` | success |
+| `-1` | invalid frame |
+| `-2` | unsupported version |
+| `-3` | unsupported opcode |
+| `-4` | invalid payload |
+| `-5` | missing or invalid capability |
+| `-6` | permission denied |
+| `-7` | not found |
+| `-8` | internal failure |
+| `-9` | conflict |
 
-- `0`: success
-- `-1`: invalid frame
-- `-2`: unsupported protocol version
-- `-3`: unsupported opcode
-- `-4`: invalid payload
-- `-5`: missing/invalid capability attachment
-- `-6`: permission denied (rights/scope)
-- `-7`: object/version not found
-- `-8`: internal/service failure
+### 6.4 Capability policy
 
----
+Temporal IPC enforces attached filesystem capability rights:
 
-## 5. IPC patterns (conventions)
+- `SNAPSHOT`, `LATEST`, `READ`, and `HISTORY` require `READ`
+- `ROLLBACK` requires `WRITE`
+- `BRANCH_CREATE`, `BRANCH_CHECKOUT`, and `MERGE` require `WRITE`
+- `BRANCH_LIST` requires `READ`
+- `STATS` requires no filesystem capability
 
-Kernel provides only channels; user space standardizes higher-level patterns.
-
-### 5.1 Request/response
-
-- client sends request message with a `reply_channel` capability
-- server replies on the reply channel
-
-### 5.2 Publish/subscribe
-
-- publisher has a list of subscriber channels
-- publisher sends events to each subscriber
-
-### 5.3 Pipelines
-
-- stage A → stage B → stage C
-- backpressure propagates upstream via bounded queues
-
-### 5.4 Supervision signals
-
-- supervisor provides a control channel
-- components report health, crashes, and state checkpoints
+Branch and merge operations are part of the current protocol surface and should be documented as such; older six-opcode descriptions are stale.
 
 ---
 
-## 6. Error handling
+## 7. Wasm IPC Surface
 
-Define a small set of IPC errors:
+Wasm currently imports IPC through the execution host surface in [`kernel/src/execution/wasm.rs`](../../kernel/src/execution/wasm.rs).
 
-- `InvalidCap`: cap_id not present
-- `PermissionDenied`: rights mismatch
-- `WouldBlock`: channel full/empty
-- `Closed`: endpoint closed (v1 if channel close semantics exist)
-- `MessageTooLarge`: exceeds bounds
-- `TooManyCaps`: exceeds bounds
+Current IPC-related host functions are:
 
----
+| Host id | Import name |
+| ---: | --- |
+| `3` | `channel_send` / `oreulia_channel_send` |
+| `4` | `channel_recv` / `oreulia_channel_recv` |
+| `10` | `channel_send_cap` / `oreulia_channel_send_cap` |
 
-## 7. Performance path (later)
-
-v0 uses copy-based messaging.
-
-Future optimizations:
-
-- shared memory regions with explicit capabilities
-- scatter-gather / iovecs
-- zero-copy receive for large payloads
-
-All must preserve:
-
-- bounded resource usage
-- explicit authority
-
-See also: `docs/project/oreulia-mvp.md` → “Risks & mitigations” for current MVP performance tradeoffs.
+The public Wasm SDK wrapper in [`wasm/sdk/src/ipc.rs`](../../wasm/sdk/src/ipc.rs) currently exposes the basic send/recv path. The lower-level raw ABI file may lag behind the real host-id mapping and should not be treated as the authoritative source over the kernel host dispatch table.
 
 ---
 
-## 8. Interaction with Wasm
+## 8. Diagnostics and Runtime Inspection
 
-Wasm modules can be restricted to:
+Oreulia now has real IPC diagnostics, not just theory notes.
 
-- `channel_send(cap, data, caps...)`
-- `channel_recv(cap) -> (data, caps...)`
+The shell currently exposes:
 
-This makes IPC the universal “syscall.”
+- `ipc-list`
+- `ipc-inspect <channel-id>`
+- `ipc-stats`
+- `ipc-selftest`
+
+These commands surface runtime information such as:
+
+- live channel count
+- queue occupancy
+- closure state
+- waiter counts
+- backpressure levels and recommended actions
+- queue high-water marks
+- send-pressure hit counters
+- deterministic selftest results
+
+This diagnostic surface is part of the actual implementation and should be used as the source of truth when inspecting IPC behavior.
+
+---
+
+## 9. What Is Still Incomplete
+
+Oreulia's IPC subsystem is much further along than earlier docs suggested, but it is not feature-complete in every dimension.
+
+The most important remaining gaps are:
+
+- **Zero-sum message-carried capability transfer:** attachments are validated and transferable, but not ownership-consuming by construction.
+- **Protocol/session-typed channels:** channels are still general pipes rather than protocol-constrained endpoints.
+- **Replay completeness:** temporal capture and restore do not yet reconstruct a fully event-complete IPC state machine.
+- **SDK/documentation alignment:** some secondary ABI/docs surfaces still lag the kernel implementation.
+
+Those gaps are real, but they sit on top of a production-usable IPC core rather than a hypothetical subsystem.
+
+---
+
+## 10. Design Direction
+
+The long-term Oreulia IPC direction remains:
+
+- explicit authority transfer instead of ambient lookup
+- bounded queues and inspectable backpressure
+- scheduler-integrated blocking at the service boundary
+- auditable capability propagation
+- richer temporal reconstruction over time
+
+What changed since the older docs is that much of that foundation is now implemented, not merely planned.

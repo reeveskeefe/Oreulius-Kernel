@@ -1,432 +1,235 @@
-# Oreulia Function/Service Pointer Capabilities
+# Oreulia Service Pointer Capabilities
 
-## Directly Callable Capability Model for WASM Services
+**Status:** Implemented in the current WASM runtime, capability manager, IPC transfer path, and shell demos.
 
-**Status:** Implemented (runtime + ABI + shell demos)  
-**Kernel Domain:** `kernel/src/wasm.rs`, `kernel/src/capability.rs`, `kernel/src/commands.rs`
+Primary implementation surfaces:
 
----
-
-## 1. Abstract
-
-Oreulia implements **Function/Service Pointer Capabilities** as first-class authority objects that bind to live WASM functions and can be invoked directly through capability mediation. This moves service invocation from an identifier/lookup model toward a capability-as-call-target model while preserving confinement, typed dispatch, and transfer attenuation.
-
-The implementation provides:
-
-- direct service-pointer registration from either `i32` function index or `funcref` (`ref.func`) selector
-- capability-mediated invocation in both legacy (`u32` vector) and typed (`i64/f32/f64/funcref/...`) forms
-- IPC transfer with delegate-right enforcement
-- runtime lock hardening for nested/recursive host-call patterns
-- hot-swap continuity through rebind-on-destroy semantics when compatible replacements exist
+- [`kernel/src/execution/wasm.rs`](../../kernel/src/execution/wasm.rs)
+- [`kernel/src/capability/mod.rs`](../../kernel/src/capability/mod.rs)
+- [`kernel/src/shell/commands.rs`](../../kernel/src/shell/commands.rs)
 
 ---
 
-## 2. Motivation and Innovation
+## 1. What a service pointer is
 
-Traditional kernels typically expose callable services through:
+A service pointer is a capability-scoped reference to a live WASM function owned by a running instance. Instead of calling a service by ambient name lookup, a caller must hold authority to a `ServicePointer` object and invoke that object explicitly.
 
-1. syscall numbers
-2. object IDs + RPC dispatch
-3. handles requiring out-of-band protocol interpretation
+Current rights relevant to service pointers are:
 
-Oreulia’s service-pointer capability model instead treats a callable authority as:
+- `SERVICE_INVOKE`
+- `SERVICE_DELEGATE`
+- `SERVICE_INTROSPECT`
 
-\[
-\mathcal{S} = \langle \text{object\_id}, \text{owner\_pid}, \text{instance\_id}, \text{func\_idx}, \sigma, \rho \rangle
-\]
-
-where:
-
-- \(\sigma\) is the full WASM signature (param/result types + arity)
-- \(\rho\) is the rate policy state
-
-This means invocation is no longer “lookup then call by convention”; it is “prove authority, prove type compatibility, then call target directly”.
+The object type used by the capability system is `CapabilityType::ServicePointer`.
 
 ---
 
-## 3. Formal Model
+## 2. Current implementation shape
 
-### 3.1 Domains
+The runtime keeps a dedicated service-pointer registry with capacity:
 
-- \(P\): process identifiers
-- \(I\): wasm instance identifiers
-- \(O\): service-pointer object identifiers
-- \(C\): capabilities held by processes
-- \(V\): WASM runtime values (`i32`, `i64`, `f32`, `f64`, `funcref`, `externref`)
-- \(\Sigma\): function signatures
+- `MAX_SERVICE_POINTERS = 64`
 
-### 3.2 Signature
+Each active entry records:
 
-For function \(f\), define:
+- `object_id`
+- `owner_pid`
+- `target_instance`
+- `function_index`
+- a parsed WASM signature snapshot
+- per-window rate policy fields
 
-\[
-\sigma(f) = \langle (\tau_0,\ldots,\tau_{n-1}), (\upsilon_0,\ldots,\upsilon_{m-1}) \rangle
-\]
+Registration is performed by [`register_service_pointer`](../../kernel/src/execution/wasm.rs), and invocation is performed by:
 
-with parameter types \(\tau_i \in T\), result types \(\upsilon_j \in T\), and \(T = \{i32, i64, f32, f64, funcref, externref\}\).
-
-### 3.3 Authorization Predicate
-
-Invocation of object \(o\) by process \(p\) is permitted iff:
-
-\[
-\operatorname{AuthInvoke}(p,o) \equiv \exists c \in C_p :
-\left(
-  c.\text{type} = \text{ServicePointer}
-  \land c.\text{object\_id}=o
-  \land \text{SERVICE\_INVOKE} \in c.\text{rights}
-\right)
-\]
-
-### 3.4 Typed Invocation Safety Predicate
-
-Given argument vector \(a=(a_0,\ldots,a_{n-1})\):
-
-\[
-\operatorname{TypeSafe}(a,\sigma) \equiv
-\left(|a|=n\right) \land \bigwedge_{i=0}^{n-1}\operatorname{match}(a_i,\tau_i)
-\]
-
-Only if `AuthInvoke` and `TypeSafe` are true does execution proceed.
-
-### 3.5 Transfer Predicate
-
-For IPC export of service-pointer capability \(c\):
-
-\[
-\operatorname{TransferAllowed}(c) \equiv \text{SERVICE\_DELEGATE} \in c.\text{rights}
-\]
+- [`invoke_service_pointer`](../../kernel/src/execution/wasm.rs) for the legacy `u32` path
+- [`invoke_service_pointer_typed`](../../kernel/src/execution/wasm.rs) for the typed path
 
 ---
 
-## 4. Implementation Mapping
+## 3. Registration path
 
-| Component | Role | Kernel Mapping |
-|---|---|---|
-| Service pointer registry | Global object-to-target mapping with rate policy | `ServicePointerRegistry` in `kernel/src/wasm.rs` |
-| Authority check | Runtime invocation rights check | `check_capability(... SERVICE_INVOKE ...)` |
-| Delegate gate | IPC export restriction | `export_capability_to_ipc` in `kernel/src/capability.rs` |
-| Typed invoke path | Full typed ABI for args/results | `host_service_invoke_typed` + `invoke_service_pointer_typed` |
-| Legacy invoke path | Compatibility bridge over typed core | `invoke_service_pointer` |
-| Lock hardening | Prevent global runtime mutex re-entry deadlock | `WasmRuntime::with_instance_exclusive` |
-| Hot-swap continuity | Rebind pointers to compatible replacement instances | `revoke_service_pointers_for_instance` + `find_service_pointer_rebind_target` |
-| Shell verification | End-to-end demos | `svcptr-demo`, `svcptr-demo-crosspid`, `svcptr-typed-demo` |
+### 3.1 Host ABI
 
-### 4.1 Architecture Diagrams
+The WASM host registration surface is:
 
-State machine (runtime slot + service-pointer lifecycle):
+- host id `9`: `service_register`
 
-```mermaid
-stateDiagram-v2
-    [*] --> Empty
-    Empty --> Ready: instantiate_module
-    Ready --> Busy: with_instance_exclusive borrow
-    Busy --> Ready: execution return
-    Ready --> Empty: destroy instance
+The host implementation accepts either:
 
-    state "Service Pointer Object" as SP {
-        [*] --> Active
-        Active --> Active: invoke allowed
-        Active --> Rebound: target destroyed + compatible replacement found
-        Active --> Revoked: target destroyed + no compatible replacement
-    }
-```
+- an `i32` function selector
+- a `funcref`
 
-Call flow (registration, transfer, and typed invoke):
+### 3.2 Registration rules
 
-```mermaid
-flowchart TD
-    A[Provider WASM instance] --> B[service_register i32 or funcref]
-    B --> C[register_service_pointer]
-    C --> D[ServicePointerRegistry insert signature and rate policy]
-    C --> E[CapabilityManager grant SERVICE_INVOKE and optional SERVICE_DELEGATE]
-    E --> F[export_capability_to_ipc]
-    F --> G[import_capability_from_ipc by consumer]
-    G --> H[inject service pointer capability into WASM cap table]
-    H --> I[service_invoke_typed]
-    I --> J[invoke_service_pointer_typed]
-    J --> K[auth check plus signature type check plus rate window check]
-    K --> L[with_instance_exclusive target instance]
-    L --> M[invoke_combined_function]
-    M --> N[typed result validation and slot encoding]
-    N --> O[return typed results to caller]
-```
+Current registration requires all of the following:
+
+- the target instance must exist
+- the registering `owner_pid` must match the instance owner
+- the target must resolve to a defined WASM function
+- host imports cannot be registered as service pointers
+- parameter and result arity must fit the runtime limits
+
+On success, the runtime:
+
+1. creates a fresh kernel object id
+2. inserts a registry entry
+3. grants the owner a `ServicePointer` capability
+4. returns both `object_id` and `cap_id`
+
+Default rights on registration are:
+
+- always: `SERVICE_INVOKE | SERVICE_INTROSPECT`
+- plus `SERVICE_DELEGATE` when the caller requested a delegatable pointer
+
+Default rate policy today is:
+
+- `max_calls_per_window = 128`
+- `window_ticks = PIT frequency`
+- `window_start_tick = current tick`
 
 ---
 
-## 5. Registration Semantics
+## 4. Invocation semantics
 
-Registration call:
+### 4.1 Typed invocation is the authoritative path
 
-\[
-\operatorname{Register}(p, i, s, d) \rightarrow \langle o, cap\_id \rangle
-\]
+The typed host ABI surface is:
 
-Inputs:
+- host id `12`: `service_invoke_typed`
 
-- \(p\): owner process
-- \(i\): target instance
-- \(s\): selector (`i32` index or `funcref`)
-- \(d\): delegate flag
+The legacy integer-only helper delegates into the typed implementation.
 
-Runtime steps:
+### 4.2 Enforcement performed today
 
-1. resolve selector to combined WASM function index
-2. require target to be defined function (not host import)
-3. capture immutable signature snapshot \(\sigma\)
-4. allocate object \(o\)
-5. install registry entry with default rate policy
-6. grant owner capability with rights:
-   - always: `SERVICE_INVOKE | SERVICE_INTROSPECT`
-   - optional: `SERVICE_DELEGATE` iff \(d \neq 0\)
+Before a call is executed, the runtime checks:
 
-Default policy values in current implementation:
+- the caller holds `SERVICE_INVOKE` for the object
+- the registry entry is still active
+- the current rate window allows another call
+- the live runtime function signature still matches the stored signature snapshot
+- provided argument values match the stored parameter types
 
-| Field | Value |
-|---|---|
-| `max_calls_per_window` | 128 |
-| `window_ticks` | PIT frequency (`hz`) |
-| `window_start_tick` | current tick |
-| `calls_in_window` | 0 |
+Execution itself is performed under `with_instance_exclusive`, which prevents re-entrant mutation of the target instance while the call is in progress.
 
----
+Observable failure classes include:
 
-## 6. Invocation Semantics
+- invoke denied by capability check
+- target instance busy
+- target instance unavailable
+- signature mismatch
+- invocation failure inside the target
 
-### 6.1 Legacy Path
+The legacy path remains intentionally narrower:
 
-Legacy call shape:
-
-\[
-\operatorname{InvokeLegacy}(p,o,[u32]^k) \rightarrow u32
-\]
-
-This path converts each `u32` to `Value::I32` and delegates to typed invocation. It is intentionally compatibility-only and enforces i32-compatible return semantics.
-
-### 6.2 Typed Path
-
-Typed call shape:
-
-\[
-\operatorname{InvokeTyped}(p,o,[V]^n) \rightarrow [V]^m
-\]
-
-Enforcement:
-
-1. `AuthInvoke(p,o)`
-2. registry object active
-3. `TypeSafe(args, sigma_entry)`
-4. rate window acceptance
-5. runtime signature consistency against live function
-6. typed result validation against declared result types
+- it only marshals `u32` arguments as `i32`
+- it expects zero or one `i32`-compatible result
 
 ---
 
-## 7. Typed ABI Encoding
+## 5. IPC transfer and import
 
-Typed host ABI (`service_invoke_typed`) uses fixed-size slots:
+Service pointers can be moved over IPC, but only through the existing capability export/import path.
 
-\[
-\text{slot\_size} = 9\ \text{bytes}
-\]
+### 5.1 Export
 
-Layout:
+To export a service pointer into an IPC message:
 
-| Offset | Size | Meaning |
-|---|---|---|
-| 0 | 1 byte | kind tag |
-| 1..8 | 8 bytes | little-endian payload |
+- the sender must hold the service-pointer capability
+- the capability must include `SERVICE_DELEGATE`
+- export goes through [`export_capability_to_ipc`](../../kernel/src/capability/mod.rs)
 
-Tag mapping:
+### 5.2 Import
 
-| Tag | Type | Payload |
-|---|---|---|
-| 0 | `i32` | zero-extended 32-bit integer |
-| 1 | `i64` | 64-bit integer bits |
-| 2 | `f32` | IEEE-754 bits in low 32 bits |
-| 3 | `f64` | IEEE-754 64-bit bits |
-| 4 | `funcref` | function index or `u64::MAX` for null |
-| 5 | `externref` | ref-id or `u64::MAX` for null |
+Import is explicit:
 
-Encode function:
+- shell demos call [`import_capability_from_ipc`](../../kernel/src/capability/mod.rs) after receiving the message
+- the WASM runtime automatically imports received service-pointer caps in the `channel_recv` host path and injects a WASM-side `ServicePointer` handle for them
 
-\[
-\operatorname{Enc}: V \rightarrow \{0,1\}^{72}
-\]
+The runtime also tracks the most recently auto-imported service handle for the current instance through the `last_service_handle` host surface.
 
-Decode function:
-
-\[
-\operatorname{Dec}: \{0,1\}^{72} \rightarrow V \cup \{\bot\}
-\]
-
-with \(\operatorname{Dec}(\operatorname{Enc}(v)) = v\) for all supported runtime values in the profile.
+This is important: service-pointer transfer is real and working, but it is not ambient. A receiver must still import or accept the transferred capability through the defined path.
 
 ---
 
-## 8. IPC Transfer Semantics
+## 6. Lifecycle and durability behavior
 
-Service-pointer capability transfer is mediated by authenticated IPC capability attachments.
+### 6.1 Instance teardown
 
-Export rule:
+When a WASM instance is destroyed:
 
-\[
-\neg\operatorname{TransferAllowed}(c) \Rightarrow \operatorname{Export}(c) = \text{deny}
-\]
+- its service pointers are revoked from the registry
+- active capabilities for the corresponding object are revoked
 
-Import rule:
+### 6.2 Rebind support
 
-\[
-\operatorname{Import}(cap) =
-\begin{cases}
-\text{grant}, & \text{token verifies} \land \text{object exists} \\
-\text{deny}, & \text{otherwise}
-\end{cases}
-\]
+The runtime also includes a compatibility rebind path:
 
-The object-existence check for service-pointer imports ensures dead object IDs are not materialized as live authority in receivers.
+- when an instance disappears, the registry can search for a compatible replacement target
+- compatibility is based on signature equality
+- compatible pointers may be rebound instead of only being destroyed
 
----
+This is a real implementation detail, not a theory-only idea.
 
-## 9. Concurrency and Runtime Safety
+### 6.3 Temporal persistence
 
-### 9.1 Runtime Slot State Machine
+The service-pointer registry has a temporal snapshot/restore path in the WASM runtime.
 
-WASM runtime slot states:
+That snapshot preserves:
 
-| State | Meaning |
-|---|---|
-| `Empty` | no instance |
-| `Ready(instance)` | instance available |
-| `Busy(pid)` | instance exclusively borrowed for execution |
+- active entries
+- object ids
+- owner pids
+- target instances
+- function indices
+- rate-window state
+- signature tags
 
-State transition for exclusive execution:
-
-\[
-\text{Ready}(x) \xrightarrow{\text{borrow}} \text{Busy}(pid_x) \xrightarrow{\text{return}} \text{Ready}(x)
-\]
-
-This allows host-call re-entry patterns without holding the global runtime mutex during actual execution.
-
-### 9.2 Deadlock-avoidance Rationale
-
-Previously, invocation under a global lock could create composability risk when a host path recursively touched runtime state. Exclusive extraction now detaches instance execution from global lock lifetime.
+So service pointers already participate in the broader temporal durability story, even though higher-level replay semantics remain incomplete elsewhere.
 
 ---
 
-## 10. Hot-Swap Continuity
+## 7. Shell and runtime verification surfaces
 
-On instance destroy, service pointers are processed by:
+Current shell commands include:
 
-\[
-\operatorname{RebindTarget}(e) =
-\arg\min_{i' \in I}
-\left[
-i' \neq i_{retire}
-\land \operatorname{owner}(i')=\operatorname{owner}(e)
-\land \operatorname{resolve}(i', f_e)=\text{defined}
-\land \sigma_{i'}(f_e)=\sigma_e
-\right]
-\]
+- `svcptr-register`
+- `svcptr-invoke`
+- `svcptr-send`
+- `svcptr-recv`
+- `svcptr-inject`
+- `svcptr-demo`
+- `svcptr-demo-crosspid`
+- `svcptr-typed-demo`
 
-If a compatible target exists, pointer entry is rebound. Otherwise, associated capabilities are revoked.
+These are useful because they prove different slices of the implementation:
 
-This preserves continuity for stable function identity/signature across replacement instances while remaining fail-closed when no safe target exists.
+- direct registration and invocation
+- IPC export/import
+- cross-PID transfer
+- typed mixed-value invocation
 
----
-
-## 11. Lemmas and Corollaries
-
-### Lemma 1 (Authority Soundness)
-If invocation returns success, then caller held a service-pointer capability granting `SERVICE_INVOKE` for the invoked object at time of check.
-
-**Sketch:** invocation path rejects before execution unless capability check passes over object/type/rights triple.
-
-### Corollary 1.1
-Object ID knowledge alone is insufficient for invocation.
+They are the fastest way to verify the service-pointer system end to end inside the kernel today.
 
 ---
 
-### Lemma 2 (Transfer Attenuation Gate)
-A service-pointer capability lacking `SERVICE_DELEGATE` cannot be exported via IPC attachment.
+## 8. What is true today, and what is not
 
-**Sketch:** export path performs an explicit type+right guard and returns error on missing delegate right.
+### Implemented
 
-### Corollary 2.1
-Invocation authority and delegation authority are orthogonal and independently enforceable.
+- direct WASM-function registration as a service pointer
+- typed and legacy invocation paths
+- capability-gated invocation
+- delegate-right enforcement for IPC export
+- shell demos for local and cross-PID transfer
+- automatic WASM-side import of received service-pointer caps
+- registry snapshot/restore support
+- instance-destroy revocation and compatible-target rebinding
 
----
+### Not true
 
-### Lemma 3 (Typed Dispatch Safety)
-For typed invocation, if `TypeSafe(args, sigma)` fails, function body execution is not entered.
+- service pointers are not a general ambient service namespace
+- exported pointers are not zero-sum by construction
+- the legacy ABI is not fully type-general
+- registration does not allow host-import targets
 
-**Sketch:** type mismatch is detected in registry/dispatch checks before `invoke_combined_function` is called.
-
-### Corollary 3.1
-ABI-level type confusion (e.g., `f64` where `i64` required) is fail-closed.
-
----
-
-### Lemma 4 (Global Lock Non-Reentry)
-Under `with_instance_exclusive`, instance execution does not occur while the runtime global instance table lock is held.
-
-**Sketch:** instance is moved out of table to `Busy` sentinel before callback execution and reinserted after callback completes.
-
-### Corollary 4.1
-Nested host paths can query runtime metadata without self-deadlocking on the same global mutex.
-
----
-
-### Lemma 5 (Rebind Safety)
-Destroy-time rebinding only targets instances with same owner, resolvable function index, and exact signature match.
-
-### Corollary 5.1
-Hot-swap continuity cannot silently alter callable type contract.
-
----
-
-## 12. Complexity Notes
-
-Let \(N = \text{MAX\_SERVICE\_POINTERS}\), \(S = \text{active runtime slots}\).
-
-| Operation | Complexity |
-|---|---|
-| register pointer | \(O(1)\) average registry insertion (bounded scan worst-case \(O(N)\)) |
-| invoke resolve | \(O(N)\) worst-case object lookup in fixed array |
-| destroy rebind pass | \(O(N \cdot S)\) bounded by small fixed constants in profile |
-| typed encode/decode | \(O(k)\) for \(k\) args/results |
-
-Given fixed kernel bounds (`N=64`, runtime slots `=8`), all paths are deterministic and bounded in practice.
-
----
-
-## 13. Verification and Demos
-
-Current verification surfaces:
-
-- `formal_service_pointer_self_check()` validates registration/delegation/revocation core invariants
-- `service_pointer_typed_hostpath_self_check()` validates mixed-type typed invoke host path (`i64`, `f32`, `f64`, `funcref`)
-- shell demos:
-  - `svcptr-demo`
-  - `svcptr-demo-crosspid`
-  - `svcptr-typed-demo`
-
----
-
-## 14. Security and Production Notes
-
-What this feature now guarantees:
-
-- authority-gated callable capabilities with explicit rights
-- typed invocation enforcement over WASM value domains
-- transfer attenuation for delegated authority
-- lock-safe runtime composition under nested call structures
-- continuity-aware pointer rebinding during instance lifecycle changes
-
-Remaining profile boundaries are inherited from the broader WASM/runtime profile (opcode coverage, feature proposals, and non-service-pointer subsystems), not from the service-pointer capability mechanism itself.
-
----
-
-## 15. Summary
-
-Oreulia’s Function/Service Pointer Capability system operationalizes “capabilities as callable authority” rather than “capabilities as passive handles.” The implementation is not a conceptual stub: it is integrated across ABI, capability transfer, typed dispatch, runtime safety, and lifecycle continuity, with explicit shell-level and programmatic verification paths.
+The important public claim is narrower and accurate: Oreulia already has a real callable-capability model for WASM services, and that model is enforced by capability rights and runtime signature checks.

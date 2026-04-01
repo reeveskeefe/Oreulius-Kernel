@@ -1,96 +1,227 @@
-# Oreulieus-Kernel Commercial Use Cases
+# Oreulia — Commercial Use Cases and Readiness Boundaries
 
-## Executive Summary
-Oreulieus-Kernel is a security-first, capability-based OS designed for devices that must run dynamic, untrusted logic at high speed with strict isolation. Its in-kernel WASM runtime, JIT compilation, and kernel-native networking stack enable a new class of programmable edge systems that are smaller, faster, and more auditable than Linux/Android-based alternatives.
+**Status:** Potential commercial fit areas are clear, but the current project should still be described as pre-production and research-oriented.
 
-## Top Commercial Targets (Near-Term)
-1. **Programmable security and networking appliances** (IDS/IPS, firewalls, VPNs, programmable switches).
-2. **Multi-tenant industrial IoT gateways** (partner apps, customer logic, regulatory auditability).
-3. **Embedded/edge application appliances** (field-updatable logic without full firmware replacement).
-
-## Core Use Cases
-
-### 1. Embedded/Edge Computing: Secure, Dynamic “Application Appliances”
-- **Scenario:** Gateways, routers, sensors, or kiosks must execute trusted and untrusted business logic that changes over time.
-- **Value:** Capability-based security, hardware-backed isolation, and live module updates without replacing the full OS.
-- **Unique Advantage:** Kernel-native WASM JIT with Ring 3 isolation enables secure, fast updates in the field.
-
-### 2. Multi-Tenant Industrial IoT Platforms
-- **Scenario:** Multiple customer or partner applications share a single device, each isolated as a WASM module.
-- **Value:** Preemptive scheduling, VFS isolation, and capability enforcement allow hard separation and auditability.
-- **Unique Advantage:** Lightweight, fast, and secure multi-tenancy without container overhead.
-
-### 3. Smart Network Appliances (Firewalls, VPNs, Programmable Switches)
-- **Scenario:** Packet inspection, transformation, and policy logic must evolve rapidly and safely.
-- **Value:** JIT-compiled WASM rules deliver near-native speed with sandboxed execution.
-- **Unique Advantage:** Programmable inspection in a kernel sandbox without escalation risk.
-
-### 4. Automated Trading/Finance “Sandbox Services”
-- **Scenario:** Exchanges or brokers run client-submitted algorithms close to network edge with strict constraints.
-- **Value:** Capability model + auditing prevents blended privileges and runaway code.
-- **Unique Advantage:** High performance with hard isolation and traceability.
-
-### 5. Regulated “Security Microkernel” Appliances
-- **Scenario:** Healthcare, automotive, industrial controls, or government require certifiable isolation.
-- **Value:** Capability-by-design minimizes ambient authority; audit logging and WASM parsing support verification.
-- **Unique Advantage:** Performance + strict control without a full microkernel rewrite.
-
-### 6. Serverless “Compute Edge” Platform
-- **Scenario:** Customers submit WASM functions that run securely and efficiently on edge nodes.
-- **Value:** Strict IO control, deterministic resource usage, and fast cold starts.
-- **Unique Advantage:** Serverless without containers or VM overhead.
-
-### 7. Customizable Cybersecurity Appliances
-- **Scenario:** IDS/IPS, honeypots, protocol analyzers require frequent updates to detection logic.
-- **Value:** Hot-swappable WASM modules + audit trails + capability enforcement.
-- **Unique Advantage:** “Programmable security hardware” that evolves with threats.
-
-## Key Commercial Differentiators
-1. **Speed:** Native x86 code paths via WASM JIT and optimized assembly.
-2. **Security:** Capability enforcement, usermode isolation, memory guarding, audit trails.
-3. **Flexibility:** Hot-pluggable, updatable modules and runtime policy control.
-4. **Auditability:** Kernel-level tracing and syscall accountability.
+Oreulia is source-available under the Oreulia Community License. Commercial deployment and production use require a separate written agreement. That licensing fact matters because the commercial conversation is not just “where could this fit?” but also “under what support and hardening model would it be offered?”
 
 ---
 
-# AI Thin Client / Edge Node Vision
-Oreulieus-Kernel is also a strong fit for secure AI edge devices that act as “thin clients” while most logic is streamed or updated remotely.
+## 1. What Oreulia is commercially good at in principle
 
-## Why This Fits AI Edge Devices
-### 1. No Traditional Apps or OS: Single-Service, Modular Style
-- **Premise:** Devices run a single interface payload, steered by remote AI/cloud logic.
-- **Kernel fit:** Capability OS with no POSIX baggage; no traditional “apps.”
-- **Advantage:** WASM modules can be signed, swapped, and updated safely at runtime.
+Oreulia’s strongest commercial properties are:
 
-### 2. Lightweight, Secure, Dynamically Updatable
-- **Requirement:** Strict isolation, frequent updates, and minimal local attack surface.
-- **Kernel fit:** Capability enforcement + JIT modules allow safe, fast updates without full system replacement.
-- **Advantage:** Fleet-wide updates with rollback and auditability.
+- **explicit authority control** through capabilities
+- **WASM-first extensibility** without a large native userspace stack
+- **temporal state and auditability**
+- **small, inspectable execution surface**
+- **built-in verification and regression culture**
 
-### 3. Screen + I/O + Network: Exactly What the Kernel Specializes In
-- **Reality:** AI thin clients are primarily display + input + networking devices.
-- **Kernel fit:** Kernel-native TCP/IP, VFS, and syscall-driven device access.
-- **Advantage:** Direct, minimal layers for latency-sensitive UI pipelines.
-
-### 4. Network/Satellite First
-- **Kernel fit:** Networking stack is kernel-native and extensible.
-- **Advantage:** Efficient “phone home” patterns and remote boot/update cycles.
-
-### 5. Example Device Scenarios
-- **AI Communicator:** Voice-first assistant with hot-updatable UI and inference fallback.
-- **Wearables/Accessories:** Low-power, secure, always-on devices with strict capability control.
-- **Remote Management Panels:** Thin displays controlled by streamed logic.
+Those properties make it more interesting for **security-sensitive programmable systems** than for general-purpose computing.
 
 ---
 
-## Path to Market Readiness
-To move from prototype to commercial deployments, the kernel needs:
-1. **Broader hardware driver support** (display, audio, sensors, storage).
-2. **Production hardening** (fuzzing, formal verification, module signing).
-3. **Verified boot + attestation** for fleet trust.
-4. **Operational tooling** (OTA update system, crash telemetry, fleet management).
+## 2. Best-fit commercial categories
+
+### 2.1 Programmable secure edge appliances
+
+Best fit examples:
+
+- security gateways
+- policy appliances
+- field-updatable control nodes
+- specialized edge service boxes
+
+Why Oreulia fits:
+
+- isolated WASM workloads are a natural unit for field-delivered logic
+- capability mediation reduces ambient privilege exposure
+- temporal state and rollback semantics fit operational recovery stories
+
+### 2.2 Multi-tenant embedded or industrial control nodes
+
+Best fit examples:
+
+- industrial gateways
+- partner-extensible appliances
+- environment-specific edge integrations
+
+Why Oreulia fits:
+
+- strict authority separation is central to the platform model
+- typed service and IPC surfaces help constrain subsystem boundaries
+- the project already has a coherent “small trusted substrate + explicit delegation” story
+
+### 2.3 Specialized network or control-plane systems
+
+Best fit examples:
+
+- programmable network-control appliances
+- secure service routers
+- capability-mediated management planes
+
+Why Oreulia fits:
+
+- in-kernel networking already exists
+- capability transfer and CapNet are differentiating ideas
+- the kernel is already organized around control, policy, and audit surfaces rather than a general desktop/server personality
+
+### 2.4 Attested or auditable appliance platforms
+
+Best fit examples:
+
+- regulated appliances
+- secure update/recovery platforms
+- auditable single-purpose service nodes
+
+Why Oreulia fits:
+
+- the project already values provenance, temporal history, and live diagnostics
+- rollback and versioned state align well with post-incident or regulated operations
 
 ---
 
-## Summary
-Oreulieus-Kernel is best positioned for **programmable edge systems**, **multi-tenant appliances**, and **secure AI edge clients**. Its capability-first design, in-kernel WASM JIT, and minimal surface area make it a strong commercial foundation for next-generation secure devices.
+## 3. Good fit does not mean ready now
+
+This is the most important correction to older commercial positioning docs.
+
+Oreulia is **not yet ready** to be described as a broadly deployable commercial OS product. The current honest stance is:
+
+- strong technical differentiation
+- plausible commercial categories
+- incomplete production readiness
+
+That is not a weakness in the positioning. It is the credible position.
+
+---
+
+## 4. What currently limits commercial deployment
+
+### 4.1 Hardware validation is still narrow
+
+Current validation is still heavily QEMU-centered.
+
+That means commercial claims should not imply:
+
+- broad hardware compatibility
+- production driver maturity
+- board/vendor qualification
+
+### 4.2 Architecture parity is incomplete
+
+Oreulia now has real `i686`, `x86_64`, and `AArch64` bring-up and regression surfaces, but parity is still uneven.
+
+Commercial consequence:
+
+- platform SKUs would need to be tightly scoped
+- “all supported architectures are equivalent” would be an inaccurate claim
+
+### 4.3 Operational tooling is still immature
+
+The kernel has significant internal machinery, but the surrounding product story still needs more work:
+
+- release process
+- fleet operations
+- incident handling
+- support boundaries
+- upgrade guarantees
+- hardware qualification
+
+### 4.4 Verification is meaningful but not a certification substitute
+
+Oreulia already has:
+
+- regression workflows
+- proof-check surfaces
+- fuzz-related tooling
+- shell selftests
+
+That is commercially valuable, but it is not the same as:
+
+- product certification
+- safety case closure
+- formal verification of the whole system
+
+---
+
+## 5. Realistic near-term commercial positioning
+
+If Oreulia were to be commercialized in the near term, the most defensible framing would be:
+
+### 5.1 Custom or partner-led engagements
+
+Best near-term model:
+
+- tightly scoped appliance deployments
+- co-developed edge platforms
+- research-to-product transitions with explicit hardware targets
+
+Not a good near-term model:
+
+- broad self-serve general-purpose OS offering
+- “Linux replacement” marketing
+- commodity multi-hardware promise
+
+### 5.2 Security-sensitive programmable platforms
+
+The strongest sales story is likely:
+
+- “programmable secure appliance substrate”
+
+not:
+
+- “general embedded OS”
+
+The reason is that Oreulia’s real differentiation is in authority, isolation, temporal semantics, and inspectability, not broad ecosystem compatibility.
+
+---
+
+## 6. Concrete commercialization requirements
+
+Before public commercial positioning should become aggressive, Oreulia would need more than passing CI.
+
+Minimum additional work:
+
+- hardware bring-up beyond QEMU
+- narrower and documented support matrix
+- stronger release and upgrade discipline
+- documented operational model
+- supportable security disclosure and patch process
+- clearer customer-facing subsystem guarantees
+
+For some markets it would also need:
+
+- attestation/boot-chain hardening
+- signed update story
+- deployment-specific verification evidence
+- long-lived maintenance commitments
+
+---
+
+## 7. Best current public wording
+
+The most accurate current public statement is something like:
+
+> Oreulia is a capability-native, WASM-first kernel with strong potential for secure programmable appliances, attested edge systems, and multi-tenant embedded runtimes. It already demonstrates the right architectural primitives, but it remains alpha-quality research software rather than a finished production OS.
+
+That is much stronger than underselling the project, and much more credible than implying commercial readiness that does not yet exist.
+
+---
+
+## 8. Bottom line
+
+Oreulia does have real commercial potential.
+
+The best-fit categories are:
+
+- programmable security/edge appliances
+- multi-tenant embedded nodes
+- specialized control-plane or network appliances
+- auditable secure service platforms
+
+But the project should currently be positioned as:
+
+- commercially promising
+- technically differentiated
+- not yet broadly productized
+
+That combination is the honest and strategically useful place to be.

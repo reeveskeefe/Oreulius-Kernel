@@ -1,6 +1,6 @@
 # Oreulia — Temporal Objects: Universal Adapter Coverage + Durable Persistence
 
-**Status:** Implemented / Universal Coverage for Current Kernel Object Classes (Feb 16, 2026)
+**Status:** Implemented / Universal Coverage for Current Kernel Object Classes (Mar 29, 2026)
 
 Oreulia’s **Temporal Objects** subsystem turns mutable kernel state into an explicit, versioned history:
 
@@ -117,6 +117,7 @@ meta(v) = (
   leaf_count: u32,
   content_hash: u32,
   merkle_root: u32,
+  integrity_tag: u64,
   operation: {Snapshot, Write, Rollback, Merge}
 )
 ```
@@ -508,8 +509,8 @@ The header is fixed-size (64 bytes). Offsets are little-endian:
 
 | Offset | Size | Field | Meaning |
 |---:|---:|---|---|
-| 0 | 4 | `magic` | `"ORSP"` |
-| 4 | 2 | `version` | `2` |
+| 0 | 4 | `magic` | `"TPST"` (`0x5450_5354`) |
+| 4 | 2 | `version` | `3` |
 | 6 | 2 | `slot_id` | snapshot slot selector |
 | 8 | 4 | `data_len` | plaintext length |
 | 12 | 8 | `last_offset` | last log offset included |
@@ -717,7 +718,7 @@ These steps are exactly the stated properties. QED.
 
 - number of objects ≤ `MAX_TEMPORAL_OBJECTS`
 - versions per object ≤ `MAX_VERSIONS_PER_OBJECT`
-- branches per object ≤ `MAX_BRANCHES_PER_OBJECT` (for v2 snapshots)
+- branches per object ≤ `MAX_BRANCHES_PER_OBJECT` (for v3 snapshots)
 - payload byte length per version ≤ `MAX_TEMPORAL_VERSION_BYTES`
 
 **Proof.**
@@ -725,7 +726,7 @@ These steps are exactly the stated properties. QED.
 During decoding the implementation checks:
 
 1. `object_count <= MAX_TEMPORAL_OBJECTS` and returns `None` otherwise.
-2. For each object, it checks `version_count <= MAX_VERSIONS_PER_OBJECT` (and for v2 snapshots also `branch_count <= MAX_BRANCHES_PER_OBJECT`) and returns `None` otherwise.
+2. For each object, it checks `version_count <= MAX_VERSIONS_PER_OBJECT` (and for v3 snapshots also `branch_count <= MAX_BRANCHES_PER_OBJECT`) and returns `None` otherwise.
 3. For each version entry, it checks `data_len <= MAX_TEMPORAL_VERSION_BYTES` and that `cursor + data_len` lies within the snapshot buffer; otherwise it returns `None`.
 
 Therefore any successfully decoded store respects the bounds. QED.
