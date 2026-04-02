@@ -677,6 +677,24 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
                 PF_LOOP_REPEAT_COUNT.store(0, Ordering::Relaxed);
                 return;
             }
+            if have_user_frame {
+                match crate::quantum_scheduler::handle_current_user_page_fault(fault_addr, error) {
+                    Ok(true) => {
+                        PF_LOOP_REPEAT_COUNT.store(0, Ordering::Relaxed);
+                        return;
+                    }
+                    Err(reason) => {
+                        crate::serial_println!(
+                            "[X64-PF] terminating pid on fault cr2={:#018x} err={:#x}: {}",
+                            fault_addr,
+                            error,
+                            reason,
+                        );
+                        crate::quantum_scheduler::terminate_current_from_fault();
+                    }
+                    Ok(false) => {}
+                }
+            }
             let rip = if !frame.is_null() {
                 unsafe { (*frame).rip }
             } else {
@@ -1342,7 +1360,7 @@ fn serial_write_prompt() {
     }
 }
 
-const X64_MINI_HELP: &str = "help help-all help-mini ticks irq0 int3 traps pfstats cowtest vmtest \
+const X64_MINI_HELP: &str = "help help-all help-mini ticks irq0 int3 traps pfstats cowtest vmtest sharedmmap \
      jitpre jitcall jitbench jitfuzz jitfuzz24dbg heartbeat console kbdtest \
      mmu regs halt";
 
@@ -1520,6 +1538,7 @@ fn x64_is_runtime_extension_command(cmd: &str) -> bool {
             | "regs"
             | "cowtest"
             | "vmtest"
+            | "sharedmmap"
             | "jitpre"
             | "jitcall"
             | "jitbench"
@@ -1686,6 +1705,15 @@ fn serial_exec_command(cmd: &str) -> bool {
         "vmtest" => match vm_map_self_test() {
             Ok(()) => shell_println!("[X64] vmtest ok"),
             Err(e) => shell_println!("[X64] vmtest failed: {}", e),
+        },
+        "sharedmmap" => match crate::quantum_scheduler::selftest_shared_file_mapping_live() {
+            Ok((phys_a, phys_b, observed)) => shell_println!(
+                "[X64] sharedmmap ok: phys_a={:#x} phys_b={:#x} observed={:#x}",
+                phys_a,
+                phys_b,
+                observed
+            ),
+            Err(e) => shell_println!("[X64] sharedmmap failed: {}", e),
         },
         "jitpre" => match crate::wasm::jit_x86_64_sandbox_preflight() {
             Ok(()) => shell_println!("[X64] jitpre ok"),
@@ -1954,6 +1982,8 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
             &mut state.trap_code as *mut i32,
             state.shadow_stack.as_mut_ptr(),
             &mut state.shadow_sp as *mut usize,
+            core::ptr::null(),
+            0,
         );
 
         if state.trap_code == 0 {

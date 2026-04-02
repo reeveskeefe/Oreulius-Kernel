@@ -43,6 +43,13 @@ const EIO: u32 = 5; // I/O error
 const EBADF: u32 = 9; // Bad file descriptor
 const ENOENT: u32 = 2; // No such file or directory
 const EAGAIN: u32 = 11; // Try again
+#[cfg(not(target_arch = "aarch64"))]
+const ENODEV: u32 = 19; // No such device
+
+#[cfg(not(target_arch = "aarch64"))]
+const MAP_ANONYMOUS: u32 = 1 << 0;
+#[cfg(not(target_arch = "aarch64"))]
+const MAP_SHARED: u32 = 1 << 1;
 
 /// Internal syscall number used to return from user-mode JIT execution.
 pub const SYSCALL_JIT_RETURN: u32 = 250;
@@ -1013,44 +1020,26 @@ fn sys_dir_list(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscall
 #[cfg(not(target_arch = "aarch64"))]
 fn sys_memory_alloc(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let size = args.arg1 as usize;
-    let flags = args.arg2;
+    let requested_addr = match args.arg2 as usize {
+        0 => None,
+        value => Some(value),
+    };
 
-    // Validate size
     if size == 0 || size > 1024 * 1024 * 64 {
-        // Max 64MB
         return SyscallResult::err(EINVAL);
     }
 
-    // Round up to page size
-    let page_size = 4096;
-    let aligned_size = (size + page_size - 1) & !(page_size - 1);
+    let flags = crate::quantum_scheduler::VmaFlags::READ
+        | crate::quantum_scheduler::VmaFlags::WRITE
+        | crate::quantum_scheduler::VmaFlags::USER;
 
-    // Allocate pages from memory manager
-    let num_pages = aligned_size / page_size;
-    let mut base_addr = 0;
-
-    for i in 0..num_pages {
-        match crate::memory::allocate_frame() {
-            Ok(addr) => {
-                if i == 0 {
-                    base_addr = addr;
-                }
-                // Map into process address space (user space starts at 0x10000000)
-                let virt_addr = 0x10000000 + (i * page_size);
-                // Would call paging::map_page() here
-                let _ = (addr, virt_addr); // Use variables to avoid warnings
-            }
-            Err(_) => {
-                // Out of memory - free any already allocated
-                return SyscallResult::err(ENOMEM);
-            }
-        }
+    let _ = caller_pid;
+    match crate::quantum_scheduler::memory_alloc_current(requested_addr, size, flags) {
+        Ok(addr) => SyscallResult::ok(addr as i32),
+        Err("virtual address space exhausted") => SyscallResult::err(ENOMEM),
+        Err("memory alloc unsupported on this architecture") => SyscallResult::err(ENOSYS),
+        Err(_) => SyscallResult::err(EINVAL),
     }
-
-    // Return virtual address to user space
-    let user_addr = 0x10000000;
-    let _ = (base_addr, flags, caller_pid); // Use variables
-    SyscallResult::ok(user_addr as i32)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1062,18 +1051,18 @@ fn sys_memory_alloc(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
 #[cfg(not(target_arch = "aarch64"))]
 fn sys_memory_free(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let addr = args.arg1 as usize;
-    let _size = args.arg2 as usize;
+    let size = args.arg2 as usize;
 
-    // Validate address is in user space
-    if addr < 0x10000000 || addr >= 0xC0000000 {
+    if addr < 0x10000000 || addr >= crate::fs::paging::USER_TOP || size == 0 {
         return SyscallResult::err(EINVAL);
     }
 
-    // Unmap pages and free physical memory
-    // Would call paging::unmap_page() and memory::free_frame()
-    let _ = (addr, caller_pid); // Use variables
-
-    SyscallResult::ok(0)
+    let _ = caller_pid;
+    match crate::quantum_scheduler::memory_free_current(addr, size) {
+        Ok(()) => SyscallResult::ok(0),
+        Err("memory free unsupported on this architecture") => SyscallResult::err(ENOSYS),
+        Err(_) => SyscallResult::err(EINVAL),
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1086,18 +1075,75 @@ fn sys_memory_free(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysc
 fn sys_memory_map(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let addr = args.arg1 as usize;
     let size = args.arg2 as usize;
-    let prot = args.arg3; // Protection flags: R/W/X
-    let flags = args.arg4; // MAP_SHARED, MAP_PRIVATE, etc.
+    let prot = args.arg3;
+    let map_flags = args.arg4;
+    let fd_and_offset = args.arg5;
 
-    // Validate parameters
     if size == 0 || size > 1024 * 1024 * 64 {
         return SyscallResult::err(EINVAL);
     }
 
-    // Would implement full mmap() semantics here
-    let _ = (addr, prot, flags, caller_pid);
+    let mut flags = crate::quantum_scheduler::VmaFlags::USER;
+    if (prot & 0x1) != 0 {
+        flags |= crate::quantum_scheduler::VmaFlags::READ;
+    }
+    if (prot & 0x2) != 0 {
+        flags |= crate::quantum_scheduler::VmaFlags::WRITE;
+    }
+    if (prot & 0x4) != 0 {
+        flags |= crate::quantum_scheduler::VmaFlags::EXEC;
+    }
+    if (map_flags & MAP_SHARED) != 0 {
+        flags |= crate::quantum_scheduler::VmaFlags::SHARED;
+    }
+    if !flags.intersects(
+        crate::quantum_scheduler::VmaFlags::READ
+            | crate::quantum_scheduler::VmaFlags::WRITE
+            | crate::quantum_scheduler::VmaFlags::EXEC,
+    ) {
+        flags |= crate::quantum_scheduler::VmaFlags::READ | crate::quantum_scheduler::VmaFlags::WRITE;
+    }
 
-    SyscallResult::err(ENOSYS)
+    let requested_addr = if addr == 0 { None } else { Some(addr) };
+
+    if (map_flags & MAP_ANONYMOUS) != 0 {
+        let _ = caller_pid;
+        return match crate::quantum_scheduler::memory_alloc_current(requested_addr, size, flags) {
+            Ok(mapped) => SyscallResult::ok(mapped as i32),
+            Err("memory alloc unsupported on this architecture")
+            | Err("memory map unsupported on this architecture") => SyscallResult::err(ENOSYS),
+            Err("virtual address space exhausted") => SyscallResult::err(ENOMEM),
+            Err(_) => SyscallResult::err(EINVAL),
+        };
+    }
+
+    let fd = (fd_and_offset & 0xFFFF) as usize;
+    let page_offset = (fd_and_offset >> 16) as usize;
+    let offset = page_offset.saturating_mul(crate::arch::mmu::page_size());
+    let source = match crate::fs::vfs::mmap_source_for_fd(caller_pid, fd) {
+        Ok(source) => source,
+        Err("mmap: raw block handles unsupported") => {
+            return SyscallResult::err(ENODEV)
+        }
+        Err("mmap: not a file") | Err("Invalid handle") | Err("FD not open") => {
+            return SyscallResult::err(EBADF)
+        }
+        Err(_) => return SyscallResult::err(EINVAL),
+    };
+
+    match crate::quantum_scheduler::memory_map_file_current(
+        requested_addr,
+        size,
+        flags,
+        source,
+        offset,
+    ) {
+        Ok(mapped) => SyscallResult::ok(mapped as i32),
+        Err("memory map unsupported on this architecture")
+        | Err("memory alloc unsupported on this architecture") => SyscallResult::err(ENOSYS),
+        Err("virtual address space exhausted") => SyscallResult::err(ENOMEM),
+        Err(_) => SyscallResult::err(EINVAL),
+    }
 }
 
 #[cfg(target_arch = "aarch64")]

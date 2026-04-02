@@ -15,7 +15,7 @@
  * ---------------------------------------------------------------------------
  */
 
-//! Oreulia Process Manager v0
+//! Oreulia Process Manager
 //!
 //! Provides multi-tasking with per-process capability tables.
 //!
@@ -24,12 +24,13 @@
 //! - Round-robin cooperative scheduling
 //! - Per-process capability isolation
 //! - Explicit yield() for context switching
-//! - No preemption in v0 (simplified)
+//! - Cooperative process management primitives
 
 #![allow(dead_code)]
 
 use crate::arch::mmu::PhysAddr;
 use crate::process_platform::{self, ChannelCapability};
+use crate::scheduler_platform::{self, ProcessContext};
 use core::fmt;
 use core::sync::atomic::{AtomicU8, Ordering};
 use spin::Mutex;
@@ -222,10 +223,8 @@ pub struct Process {
     pub parent: Option<Pid>,
     /// Capability table
     pub capabilities: CapabilityTable,
-    /// Stack pointer (simplified - not real yet)
-    pub stack_ptr: usize,
-    /// Program counter (simplified - not real yet)
-    pub program_counter: usize,
+    /// Architecture-owned saved execution context.
+    pub execution_context: ProcessContext,
     /// CPU time used (in ticks)
     pub cpu_time: u64,
     /// Creation timestamp
@@ -258,8 +257,7 @@ impl Process {
             priority: ProcessPriority::Normal,
             parent,
             capabilities: CapabilityTable::new(),
-            stack_ptr: 0,
-            program_counter: 0,
+            execution_context: scheduler_platform::context_new(),
             cpu_time: 0,
             created_at: 0,
             fd_table: [None; MAX_FD],
@@ -278,6 +276,69 @@ impl Process {
     /// Check if process is runnable
     pub fn is_runnable(&self) -> bool {
         matches!(self.state, ProcessState::Ready | ProcessState::Running)
+    }
+
+    pub fn user_stack_pointer(&self) -> usize {
+        #[cfg(target_arch = "x86")]
+        {
+            self.execution_context.edx as usize
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.execution_context.r12 as usize
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.execution_context.x20 as usize
+        }
+    }
+
+    pub fn program_counter(&self) -> usize {
+        #[cfg(target_arch = "x86")]
+        {
+            self.execution_context.ecx as usize
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.execution_context.r13 as usize
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.execution_context.x19 as usize
+        }
+    }
+
+    pub fn set_user_execution_image(&mut self, entry: usize, user_stack: usize) {
+        #[cfg(target_arch = "x86")]
+        {
+            self.execution_context.ecx = entry as u32;
+            self.execution_context.edx = user_stack as u32;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.execution_context.r13 = entry as u64;
+            self.execution_context.r12 = user_stack as u64;
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.execution_context.x19 = entry as u64;
+            self.execution_context.x20 = user_stack as u64;
+        }
+    }
+
+    pub fn set_program_counter_token(&mut self, token: usize) {
+        #[cfg(target_arch = "x86")]
+        {
+            self.execution_context.ecx = token as u32;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.execution_context.r13 = token as u64;
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.execution_context.x19 = token as u64;
+        }
     }
 
     /// Allocate a file descriptor (reserves 0,1,2 for stdio)
@@ -349,8 +410,6 @@ pub struct ProcessTable {
     processes: [Option<Process>; MAX_PROCESSES],
     /// Next PID to allocate
     next_pid: u32,
-    /// Number of active processes
-    count: usize,
 }
 
 const NONE_PROCESS: Option<Process> = None;
@@ -360,122 +419,26 @@ impl ProcessTable {
         self.processes.iter().filter(|slot| slot.is_some()).count()
     }
 
-    fn refresh_count(&mut self) -> usize {
-        let count = self.live_count();
-        self.count = count;
-        count
-    }
-
     pub const fn new() -> Self {
         ProcessTable {
             processes: [NONE_PROCESS; MAX_PROCESSES],
             next_pid: 1,
-            count: 0,
         }
     }
 
-    /// Spawn a new process
-    pub fn spawn(&mut self, name: &str, parent: Option<Pid>) -> Result<Pid, ProcessError> {
-        self.refresh_count();
-
+    fn allocate_child_pid(&mut self) -> Pid {
+        // TODO: recycle PIDs before `next_pid` saturates under long-lived churn.
         let pid = Pid::new(self.next_pid);
-        self.next_pid += 1;
-
-        let process = Process::new(pid, name, parent);
-
-        if let Some(idx) = self.processes.iter().position(|slot| slot.is_none()) {
-            self.processes[idx] = Some(process);
-            self.count += 1;
-            return Ok(pid);
-        }
-
-        self.count = MAX_PROCESSES;
-        Err(ProcessError::TooManyProcesses)
-    }
-
-    /// Spawn a process with a caller-specified PID (temporal restore path).
-    pub fn spawn_with_pid(
-        &mut self,
-        pid: Pid,
-        name: &str,
-        parent: Option<Pid>,
-    ) -> Result<(), ProcessError> {
-        if self.get(pid).is_some() {
-            return Ok(());
-        }
-        self.refresh_count();
-
-        let process = Process::new(pid, name, parent);
-        if let Some(idx) = self.processes.iter().position(|slot| slot.is_none()) {
-            self.processes[idx] = Some(process);
-            self.count += 1;
-            if self.next_pid <= pid.0 {
-                self.next_pid = pid.0.saturating_add(1);
-            }
-            return Ok(());
-        }
-
-        self.count = MAX_PROCESSES;
-        Err(ProcessError::TooManyProcesses)
-    }
-
-    /// Fork the parent process into a freshly allocated child PID.
-    ///
-    /// Clones all PCB fields that make sense to inherit (name, priority, state,
-    /// page_dir_phys, stack_ptr, program_counter).  Resets per-child fields:
-    /// cpu_time, created_at, has_used_fpu, fpu_state.
-    ///
-    /// `inherit_fds`: when `true` the child inherits the parent's FD table;
-    /// when `false` the child's FD table is left empty.
-    pub fn fork(
-        &mut self,
-        parent_pid: Pid,
-        inherit_fds: bool,
-    ) -> Result<(Process, Pid), ProcessError> {
-        self.refresh_count();
-
-        let parent = self
-            .get(parent_pid)
-            .ok_or(ProcessError::ProcessNotFound)?
-            .clone();
-
-        let child_pid = Pid::new(self.next_pid);
         self.next_pid = self.next_pid.saturating_add(1);
-
-        let mut child = parent;
-        child.pid = child_pid;
-        child.parent = Some(parent_pid);
-        child.state = ProcessState::Ready;
-        child.cpu_time = 0;
-        child.created_at = crate::pit::get_ticks();
-        child.has_used_fpu = false;
-        child.fpu_state = FpuState([0u8; 512]);
-
-        if !inherit_fds {
-            child.fd_table = [None; MAX_FD];
-        }
-
-        if let Some(slot) = self.processes.iter_mut().find(|s| s.is_none()) {
-            *slot = Some(child.clone());
-            self.count += 1;
-            return Ok((child, child_pid));
-        }
-
-        self.count = MAX_PROCESSES;
-        Err(ProcessError::TooManyProcesses)
+        pid
     }
 
-    /// Clone an existing process into a caller-specified PID.
-    pub fn fork_process_with_pid(
-        &mut self,
+    fn clone_process_image(
+        &self,
         parent_pid: Pid,
         child_pid: Pid,
+        inherit_fds: bool,
     ) -> Result<Process, ProcessError> {
-        self.refresh_count();
-        if self.get(child_pid).is_some() {
-            return Err(ProcessError::TooManyProcesses);
-        }
-
         let mut child = self
             .get(parent_pid)
             .ok_or(ProcessError::ProcessNotFound)?
@@ -488,17 +451,84 @@ impl ProcessTable {
         child.has_used_fpu = false;
         child.fpu_state = FpuState([0u8; 512]);
 
-        if let Some(idx) = self.processes.iter().position(|slot| slot.is_none()) {
-            self.processes[idx] = Some(child.clone());
-            self.count += 1;
-            if self.next_pid <= child_pid.0 {
-                self.next_pid = child_pid.0.saturating_add(1);
-            }
-            return Ok(child);
+        if !inherit_fds {
+            child.fd_table = [None; MAX_FD];
         }
 
-        self.count = MAX_PROCESSES;
+        Ok(child)
+    }
+
+    fn insert_process(&mut self, process: Process) -> Result<(), ProcessError> {
+        if let Some(slot) = self.processes.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(process);
+            return Ok(());
+        }
+
         Err(ProcessError::TooManyProcesses)
+    }
+
+    /// Spawn a new process
+    pub fn spawn(&mut self, name: &str, parent: Option<Pid>) -> Result<Pid, ProcessError> {
+        let pid = self.allocate_child_pid();
+        let process = Process::new(pid, name, parent);
+        self.insert_process(process)?;
+        Ok(pid)
+    }
+
+    /// Spawn a process with a caller-specified PID (temporal restore path).
+    pub fn spawn_with_pid(
+        &mut self,
+        pid: Pid,
+        name: &str,
+        parent: Option<Pid>,
+    ) -> Result<(), ProcessError> {
+        if self.get(pid).is_some() {
+            return Ok(());
+        }
+
+        let process = Process::new(pid, name, parent);
+        self.insert_process(process)?;
+        if self.next_pid <= pid.0 {
+            self.next_pid = pid.0.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// Fork the parent process into a freshly allocated child PID.
+    ///
+    /// Clones all PCB fields that make sense to inherit (name, priority, state,
+    /// page_dir_phys, saved execution context). Resets per-child fields:
+    /// cpu_time, created_at, has_used_fpu, fpu_state.
+    ///
+    /// `inherit_fds`: when `true` the child inherits the parent's FD table;
+    /// when `false` the child's FD table is left empty.
+    pub fn fork(
+        &mut self,
+        parent_pid: Pid,
+        inherit_fds: bool,
+    ) -> Result<(Process, Pid), ProcessError> {
+        let child_pid = self.allocate_child_pid();
+        let child = self.clone_process_image(parent_pid, child_pid, inherit_fds)?;
+        self.insert_process(child.clone())?;
+        Ok((child, child_pid))
+    }
+
+    /// Clone an existing process into a caller-specified PID.
+    pub fn fork_process_with_pid(
+        &mut self,
+        parent_pid: Pid,
+        child_pid: Pid,
+    ) -> Result<Process, ProcessError> {
+        if self.get(child_pid).is_some() {
+            return Err(ProcessError::TooManyProcesses);
+        }
+
+        let child = self.clone_process_image(parent_pid, child_pid, true)?;
+        self.insert_process(child.clone())?;
+        if self.next_pid <= child_pid.0 {
+            self.next_pid = child_pid.0.saturating_add(1);
+        }
+        Ok(child)
     }
 
     /// Get a process by PID
@@ -546,7 +576,6 @@ impl ProcessTable {
                 }
             }
         }
-        self.refresh_count();
     }
 
     /// List all processes (returns array with count)
@@ -982,6 +1011,27 @@ const KERNEL_BOOTSTRAP_SEEDED: u8 = 1;
 const KERNEL_BOOTSTRAP_SEALED: u8 = 2;
 static KERNEL_BOOTSTRAP_PHASE: AtomicU8 = AtomicU8::new(KERNEL_BOOTSTRAP_UNSEEDED);
 
+fn advance_kernel_bootstrap_phase(from: u8, to: u8) -> Result<(), &'static str> {
+    KERNEL_BOOTSTRAP_PHASE
+        .compare_exchange(from, to, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ())
+        .map_err(|current| match (from, current) {
+            (KERNEL_BOOTSTRAP_UNSEEDED, KERNEL_BOOTSTRAP_SEEDED) => {
+                "kernel bootstrap already seeded"
+            }
+            (KERNEL_BOOTSTRAP_UNSEEDED, KERNEL_BOOTSTRAP_SEALED) => {
+                "kernel bootstrap already sealed"
+            }
+            (KERNEL_BOOTSTRAP_SEEDED, KERNEL_BOOTSTRAP_UNSEEDED) => {
+                "kernel bootstrap regressed to unseeded"
+            }
+            (KERNEL_BOOTSTRAP_SEEDED, KERNEL_BOOTSTRAP_SEALED) => {
+                "kernel bootstrap already sealed"
+            }
+            _ => "invalid kernel bootstrap phase transition",
+        })
+}
+
 fn kernel_bootstrap_phase_name(phase: u8) -> &'static str {
     match phase {
         KERNEL_BOOTSTRAP_UNSEEDED => "unseeded",
@@ -1099,9 +1149,11 @@ pub fn init() {
     let mut scheduler = PROCESS_MANAGER.scheduler.lock();
     let mut table = PROCESS_MANAGER.table.lock();
     let _ = reconcile_kernel_bootstrap_locked(&mut table, &mut scheduler, "init:before");
-    let phase = KERNEL_BOOTSTRAP_PHASE.load(Ordering::Acquire);
-    if phase < KERNEL_BOOTSTRAP_SEEDED {
-        KERNEL_BOOTSTRAP_PHASE.store(KERNEL_BOOTSTRAP_SEEDED, Ordering::Release);
+    if KERNEL_BOOTSTRAP_PHASE.load(Ordering::Acquire) == KERNEL_BOOTSTRAP_UNSEEDED {
+        let _ = advance_kernel_bootstrap_phase(
+            KERNEL_BOOTSTRAP_UNSEEDED,
+            KERNEL_BOOTSTRAP_SEEDED,
+        );
     }
     trace_kernel_bootstrap_locked("init:after", &table, &scheduler);
 }
@@ -1134,7 +1186,7 @@ pub fn seal_kernel_bootstrap() -> Result<(), &'static str> {
     let mut scheduler = PROCESS_MANAGER.scheduler.lock();
     let mut table = PROCESS_MANAGER.table.lock();
     reconcile_kernel_bootstrap_locked(&mut table, &mut scheduler, "seal:before")?;
-    KERNEL_BOOTSTRAP_PHASE.store(KERNEL_BOOTSTRAP_SEALED, Ordering::Release);
+    advance_kernel_bootstrap_phase(KERNEL_BOOTSTRAP_SEEDED, KERNEL_BOOTSTRAP_SEALED)?;
     trace_kernel_bootstrap_locked("seal:after", &table, &scheduler);
     Ok(())
 }
@@ -1171,6 +1223,10 @@ pub fn bootstrap_kernel_runtime() -> Result<(), &'static str> {
     let mut scheduler = PROCESS_MANAGER.scheduler.lock();
     let mut table = PROCESS_MANAGER.table.lock();
 
+    if KERNEL_BOOTSTRAP_PHASE.load(Ordering::Acquire) != KERNEL_BOOTSTRAP_UNSEEDED {
+        return Err("kernel bootstrap already initialized");
+    }
+
     trace_kernel_bootstrap_locked("bootstrap-reset:before", &table, &scheduler);
     *scheduler = Scheduler::new();
     *table = ProcessTable::new();
@@ -1182,7 +1238,7 @@ pub fn bootstrap_kernel_runtime() -> Result<(), &'static str> {
         init.mark_running();
     }
     scheduler.set_current(Some(init_pid));
-    KERNEL_BOOTSTRAP_PHASE.store(KERNEL_BOOTSTRAP_SEEDED, Ordering::Release);
+    advance_kernel_bootstrap_phase(KERNEL_BOOTSTRAP_UNSEEDED, KERNEL_BOOTSTRAP_SEEDED)?;
     trace_kernel_bootstrap_locked("bootstrap-reset:after", &table, &scheduler);
     Ok(())
 }
@@ -1247,19 +1303,12 @@ pub extern "C" fn rust_create_process(parent_pid_raw: u32, flags: u32) -> u32 {
     //
     // Returns the new child PID on success, or u32::MAX (-1) on any error
     // (parent not found, process table full, etc.).
-    let parent_pid = Pid(parent_pid_raw);
-
     // Reject obviously invalid parent PIDs before touching the process table.
     if parent_pid_raw == 0 {
         return u32::MAX;
     }
 
-    // Ensure the requested parent exists.
-    if process_manager().get(parent_pid).is_none() {
-        return u32::MAX;
-    }
-
-    match process_manager().fork_process(parent_pid, flags) {
+    match process_manager().fork_process(Pid(parent_pid_raw), flags) {
         Ok(child_pid) => child_pid.0,
         Err(_) => u32::MAX,
     }

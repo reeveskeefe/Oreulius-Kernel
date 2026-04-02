@@ -67,6 +67,16 @@ expect {
     timeout { puts "timeout waiting for x86_64 prompt after mmu"; exit 1 }
 }
 
+send "sharedmmap\r"
+expect {
+    -re {\[X64\] sharedmmap ok: phys_a=0x[0-9a-f]+ phys_b=0x[0-9a-f]+ observed=0x5a} {}
+    timeout { puts "timeout waiting for x86_64 sharedmmap success"; exit 1 }
+}
+expect {
+    -re {x64> $} {}
+    timeout { puts "timeout waiting for x86_64 prompt after sharedmmap"; exit 1 }
+}
+
 send "sched-stats\r"
 expect {
     -re {Scheduler: QuantumScheduler \(x86_64 runtime path\)} {}

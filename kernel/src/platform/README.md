@@ -199,7 +199,7 @@ struct SyscallArgs {
 | FS | 25 | `DirList` | List a directory |
 | Memory | 30 | `MemoryAlloc` | Allocate heap pages |
 | Memory | 31 | `MemoryFree` | Free heap pages |
-| Memory | 32 | `MemoryMap` | Map a physical region |
+| Memory | 32 | `MemoryMap` | Map anonymous or file-backed memory |
 | Memory | 33 | `MemoryUnmap` | Unmap a region |
 | Capability | 40 | `CapabilityGrant` | Transfer a capability to another process |
 | Capability | 41 | `CapabilityRevoke` | Revoke a capability |
@@ -216,6 +216,34 @@ struct SyscallArgs {
 | — | 0xFFFFFFFF | `Invalid` | Unknown syscall number |
 
 `CapabilityRevokeForPid` is a privileged system call that can only be issued by the process with `PID == MATH_DAEMON_PID`. Any other caller receives `PermissionDenied`. This is the mechanism by which the out-of-band telemetry daemon sends adaptive revocations back into the kernel.
+
+### `MemoryMap` ABI
+
+`MemoryMap` (`32`) uses the shared five-argument syscall frame:
+
+| Arg | Meaning |
+|---|---|
+| `arg1` | Requested address, or `0` for kernel-chosen placement |
+| `arg2` | Mapping length in bytes |
+| `arg3` | Protection mask (`READ=1`, `WRITE=2`, `EXEC=4`) |
+| `arg4` | Mapping flags |
+| `arg5` | Anonymous: `0`. File-backed: packed `(offset_pages << 16) | fd` |
+
+Defined flag bits:
+
+| Flag | Bit | Meaning |
+|---|---|---|
+| `MAP_ANONYMOUS` | `1 << 0` | Create an anonymous mapping |
+| `MAP_SHARED` | `1 << 1` | Request shared/writeback file semantics |
+
+Current semantics:
+
+- `MAP_ANONYMOUS` routes to anonymous user mappings.
+- Without `MAP_ANONYMOUS`, the kernel resolves `fd` to a VFS file source and installs a lazy `VmaKind::File` mapping.
+- File-backed mappings are fault-filled a page at a time from either in-memory VFS files or mounted VFS files.
+- `MAP_SHARED|PROT_WRITE` mappings are flushed back to the underlying file on unmap and on process teardown.
+- Shared mappings currently provide writeback semantics, not coherent multi-process shared-page semantics.
+- Raw block / virtio raw handles are rejected for file-backed `MemoryMap`.
 
 ### `SavedRegisters`
 

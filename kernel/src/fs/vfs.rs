@@ -43,6 +43,7 @@ use crate::vfs_platform::{self, Pid};
 use crate::virtio_blk;
 
 pub type InodeId = u64;
+pub type MountFileNodeId = u64;
 
 pub const MAX_NAME_LEN: usize = 64;
 const VFS_PERSIST_MAGIC: u32 = 0x4F_56_46_53; // "OVFS"
@@ -4120,6 +4121,74 @@ pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static st
     })
 }
 
+pub fn read_inode_at(inode_id: InodeId, offset: usize, out: &mut [u8]) -> Result<usize, &'static str> {
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        let inode = vfs.get_inode(inode_id).ok_or("File not found")?;
+        if inode.kind != InodeKind::File {
+            return Err("Not a file");
+        }
+        let data = vfs.read_file_payload(inode_id)?;
+        if offset >= data.len() {
+            return Ok(0);
+        }
+        let len = min(out.len(), data.len() - offset);
+        out[..len].copy_from_slice(&data[offset..offset + len]);
+        Ok(len)
+    })
+}
+
+pub fn mmap_source_for_fd(pid: Pid, fd: usize) -> Result<MappedFileSource, &'static str> {
+    let handle_id = vfs_platform::get_fd_handle(pid, fd)?;
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        let handle = vfs.get_handle_mut(handle_id).ok_or("Invalid handle")?;
+        if handle.owner != pid {
+            return Err("Handle ownership mismatch");
+        }
+        match &handle.kind {
+            HandleKind::MemFile { inode, .. } => Ok(MappedFileSource::MemFile { inode_id: *inode }),
+            HandleKind::MountFile {
+                mount_idx,
+                node_id,
+                ..
+            } => Ok(MappedFileSource::MountFile {
+                mount_idx: *mount_idx,
+                node_id: *node_id,
+            }),
+            HandleKind::VirtioRaw { .. } | HandleKind::VirtioPartitions { .. } => {
+                Err("mmap: raw block handles unsupported")
+            }
+            HandleKind::MemDir { .. } | HandleKind::MountDir { .. } => Err("mmap: not a file"),
+        }
+    })
+}
+
+pub fn mmap_source_for_path(path: &str) -> Result<MappedFileSource, &'static str> {
+    let normalized_path = normalize_path(path)?;
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
+            return match mount_open_kind(vfs, mount_idx, &sub, OpenFlags::READ, &normalized_path)? {
+                HandleKind::MountFile { node_id, .. } => Ok(MappedFileSource::MountFile {
+                    mount_idx,
+                    node_id,
+                }),
+                _ => Err("mmap: not a file"),
+            };
+        }
+
+        let inode_id = vfs.resolve_path(&normalized_path)?;
+        match vfs.get_inode(inode_id) {
+            Some(inode) if inode.kind == InodeKind::File || inode.kind == InodeKind::Symlink => {
+                Ok(MappedFileSource::MemFile { inode_id })
+            }
+            Some(_) => Err("mmap: not a file"),
+            None => Err("mmap: path not found"),
+        }
+    })
+}
+
 pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str> {
     let handle_id = vfs_platform::get_fd_handle(pid, fd)?;
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
@@ -4244,6 +4313,68 @@ pub fn write_fd(pid: Pid, fd: usize, data: &[u8]) -> Result<usize, &'static str>
             ),
             _ => {}
         }
+        Ok(written)
+    })
+}
+
+pub fn read_mapped_file_at(
+    source: &MappedFileSource,
+    offset: usize,
+    out: &mut [u8],
+) -> Result<usize, &'static str> {
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        match source {
+            MappedFileSource::MemFile { inode_id } => {
+                let inode = vfs.get_inode(*inode_id).ok_or("File not found")?;
+                if inode.kind != InodeKind::File {
+                    return Err("Not a file");
+                }
+                let data = vfs.read_file_payload(*inode_id)?;
+                if offset >= data.len() {
+                    return Ok(0);
+                }
+                let len = min(out.len(), data.len() - offset);
+                out[..len].copy_from_slice(&data[offset..offset + len]);
+                Ok(len)
+            }
+            MappedFileSource::MountFile { mount_idx, node_id } => {
+                mount_file_read_at(vfs, *mount_idx, *node_id, offset, out)
+            }
+        }
+    })
+}
+
+pub fn write_mapped_file_at(
+    source: &MappedFileSource,
+    offset: usize,
+    data: &[u8],
+) -> Result<usize, &'static str> {
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        let written = match source {
+            MappedFileSource::MemFile { inode_id } => {
+                let inode = vfs.get_inode(*inode_id).ok_or("File not found")?;
+                if inode.kind != InodeKind::File {
+                    return Err("Not a file");
+                }
+                let mut payload = vfs.read_file_payload(*inode_id)?;
+                if offset > payload.len() {
+                    payload.resize(offset, 0);
+                }
+                if offset + data.len() > payload.len() {
+                    payload.resize(offset + data.len(), 0);
+                }
+                payload[offset..offset + data.len()].copy_from_slice(data);
+                vfs.write_file_payload(*inode_id, &payload)?;
+                data.len()
+            }
+            MappedFileSource::MountFile { mount_idx, node_id } => {
+                let written = mount_file_write_at_node(vfs, *mount_idx, *node_id, offset, data)?;
+                vfs.persist_local_state();
+                written
+            }
+        };
         Ok(written)
     })
 }
@@ -5544,4 +5675,9 @@ mod tests {
         assert_eq!(subscriber.backlog.front().unwrap().sequence, 1);
         assert_eq!(subscriber.backlog.back().unwrap().sequence, 2);
     }
+}
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MappedFileSource {
+    MemFile { inode_id: InodeId },
+    MountFile { mount_idx: usize, node_id: MountFileNodeId },
 }

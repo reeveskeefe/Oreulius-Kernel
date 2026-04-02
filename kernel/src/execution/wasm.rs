@@ -5387,6 +5387,41 @@ impl WasmInstance {
         let cfi_stack_ptr = globals_ptr as *mut u32;
         #[cfg(not(target_arch = "x86_64"))]
         let cfi_stack_ptr = shadow_stack_ptr;
+
+        // Build the JIT function-table for call_indirect support.
+        // fn_table[i] = JitFn entry address for the function at WASM table slot i (0 = not compiled).
+        let type_sigs = collect_jit_type_signatures(&self.module);
+        let type_sig_hash = hash_jit_type_signatures(&type_sigs);
+        let global_sigs = collect_jit_global_signatures(&self.module);
+        let global_sig_hash = hash_jit_global_signatures(&global_sigs);
+        let mut fn_table = [0usize; MAX_WASM_TABLE_ENTRIES];
+        let table_size = self.module.table_size;
+        for slot in 0..table_size.min(MAX_WASM_TABLE_ENTRIES) {
+            if let Some(callee_func_idx) = self.module.table_entries[slot] {
+                if callee_func_idx < self.jit_hash.len() {
+                    if let Some(callee_hash) = self.jit_hash[callee_func_idx] {
+                        if let Ok(callee_func) = self.module.get_function(callee_func_idx) {
+                            if let Ok((cs, ce)) = self.function_code_range(callee_func) {
+                                let callee_code = &self.module.bytecode[cs..ce];
+                                let callee_locals = callee_func.param_count + callee_func.local_count;
+                                if let Some(entry) = jit_cache_get(
+                                    callee_hash,
+                                    callee_code,
+                                    callee_locals,
+                                    type_sig_hash,
+                                    global_sig_hash,
+                                ) {
+                                    fn_table[slot] = entry.entry as usize;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let fn_table_base = fn_table.as_ptr();
+        let fn_table_len = table_size.min(MAX_WASM_TABLE_ENTRIES);
+
         let ret = call_jit_sandboxed(
             jit_entry,
             stack_ptr,
@@ -5405,6 +5440,8 @@ impl WasmInstance {
             self.process_id.0,
             self.instance_id as u32,
             func_idx as u32,
+            fn_table_base,
+            fn_table_len,
         );
         let (trap_code_val, instr_left, mem_left, sp_val, shadow_sp_val) = {
             let state = self.jit_state()?;
@@ -5693,6 +5730,40 @@ impl WasmInstance {
         let cfi_stack_ptr = globals_ptr as *mut u32;
         #[cfg(not(target_arch = "x86_64"))]
         let cfi_stack_ptr = shadow_stack_ptr;
+
+        // Build JIT function-table for call_indirect support.
+        let type_sigs_ci = collect_jit_type_signatures(&self.module);
+        let type_sig_hash_ci = hash_jit_type_signatures(&type_sigs_ci);
+        let global_sigs_ci = collect_jit_global_signatures(&self.module);
+        let global_sig_hash_ci = hash_jit_global_signatures(&global_sigs_ci);
+        let mut fn_table_ci = [0usize; MAX_WASM_TABLE_ENTRIES];
+        let table_size_ci = self.module.table_size;
+        for slot in 0..table_size_ci.min(MAX_WASM_TABLE_ENTRIES) {
+            if let Some(callee_func_idx) = self.module.table_entries[slot] {
+                if callee_func_idx < self.jit_hash.len() {
+                    if let Some(callee_hash) = self.jit_hash[callee_func_idx] {
+                        if let Ok(callee_func) = self.module.get_function(callee_func_idx) {
+                            if let Ok((cs, ce)) = self.function_code_range(callee_func) {
+                                let callee_code = &self.module.bytecode[cs..ce];
+                                let callee_locals = callee_func.param_count + callee_func.local_count;
+                                if let Some(entry) = jit_cache_get(
+                                    callee_hash,
+                                    callee_code,
+                                    callee_locals,
+                                    type_sig_hash_ci,
+                                    global_sig_hash_ci,
+                                ) {
+                                    fn_table_ci[slot] = entry.entry as usize;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let fn_table_base_ci = fn_table_ci.as_ptr();
+        let fn_table_len_ci = table_size_ci.min(MAX_WASM_TABLE_ENTRIES);
+
         let ret = call_jit_sandboxed(
             jit_entry,
             stack_ptr,
@@ -5711,6 +5782,8 @@ impl WasmInstance {
             self.process_id.0,
             self.instance_id as u32,
             func_idx as u32,
+            fn_table_base_ci,
+            fn_table_len_ci,
         );
         let (trap_code_val, instr_left, mem_left, sp_val, shadow_sp_val) = {
             let state = self.jit_state()?;
@@ -14449,6 +14522,8 @@ fn call_jit_sandboxed(
     process_id: u32,
     instance_id: u32,
     func_idx: u32,
+    fn_table_base: *const usize,
+    fn_table_len: usize,
 ) -> i32 {
     if jit_config().lock().user_mode {
         match call_jit_user(
@@ -14493,6 +14568,8 @@ fn call_jit_sandboxed(
         trap_code,
         shadow_stack_ptr,
         shadow_sp_ptr,
+        fn_table_base,
+        fn_table_len,
     )
 }
 
@@ -14508,6 +14585,8 @@ pub(crate) fn call_jit_kernel(
     trap_code: *mut i32,
     shadow_stack_ptr: *mut u32,
     shadow_sp_ptr: *mut usize,
+    fn_table_base: *const usize,
+    fn_table_len: usize,
 ) -> i32 {
     let _call_guard = JIT_KERNEL_CALL_LOCK.lock();
     #[cfg(not(target_arch = "x86_64"))]
@@ -14530,6 +14609,8 @@ pub(crate) fn call_jit_kernel(
             trap_code,
             shadow_stack_ptr,
             shadow_sp_ptr,
+            fn_table_base,
+            fn_table_len,
         )
     };
     #[cfg(target_arch = "x86_64")]
@@ -15626,6 +15707,8 @@ fn jit_bounds_self_test_x86_64_direct(_force_user_mode: bool) -> Result<(), &'st
         &mut state.trap_code as *mut i32,
         state.shadow_stack.as_mut_ptr(),
         &mut state.shadow_sp as *mut usize,
+        core::ptr::null(),
+        0,
     );
 
     if state.trap_code != TRAP_MEM {

@@ -171,6 +171,23 @@ Oreulia is now cross-compatible at the boot/runtime abstraction layer across `i6
 | Network + CapNet | Ethernet/WiFi stack and capability network control plane | `net-*`, `wifi-*`, `capnet-*`, `http-*`, `dns-resolve` |
 | Assembly paths | Low-level context, syscall, memory, and perf primitives | `asm-test`, `cpu-bench`, VM/syscall tests |
 
+### Memory Mapping ABI
+
+`MemoryMap` syscall `32` now supports both anonymous and file-backed mappings on `x86_64`.
+
+- Anonymous mapping:
+  `arg1=addr`, `arg2=size`, `arg3=prot`, `arg4=MAP_ANONYMOUS|flags`, `arg5=0`
+- File-backed mapping:
+  `arg1=addr`, `arg2=size`, `arg3=prot`, `arg4=flags`, `arg5=(offset_pages << 16) | fd`
+
+Current behavior:
+
+- file-backed mappings are lazy-filled on page fault from VFS-backed files
+- in-memory VFS files and mounted VFS files are supported
+- `MAP_SHARED|PROT_WRITE` writes are flushed back on unmap and process teardown
+- raw block / virtio raw handles are not accepted as file-backed mmap sources
+- shared file mappings do not provide coherent cross-process page sharing; the current contract is writeback-on-unmap/exit
+
 ## WASM Host ABI Reference
 
 The Oreulia WASM runtime exposes 132 host functions (IDs 0–131) through a single import module. Functions are resolved by name — both the short form (e.g. `log`) and the fully-qualified `oreulia_` prefix form (e.g. `oreulia_log`) are accepted. Every function call is dispatched through the `WasmInterpreter::call_host_fn` path in `kernel/src/execution/wasm.rs`.
@@ -665,7 +682,6 @@ Oreulia makes no false completeness claims. The following items are explicitly a
 
 | Area | Status | Notes |
 |---|---|---|
-| x86_64 JIT opcode parity | In progress | The x86_64 JIT path covers common opcodes and has a dedicated regression lane, but full opcode parity with the interpreter is not complete yet; `call_indirect` still remains on the incomplete side of that boundary. |
 | Non-QEMU hardware validation | Not started | All three architectures are validated under QEMU. Physical hardware bring-up has not been attempted. |
 | POSIX / Linux ABI compatibility | Explicit non-goal | Oreulia is not a drop-in Linux replacement. No libc, no POSIX process model, no `/proc`. |
 | Production workload benchmarking | In progress | The tree includes subsystem-level benchmark commands such as `cpu-bench`, `wasm-jit-bench`, `blk-bench`, and `sched-entropy-bench`, but no published end-to-end production workload benchmarks exist yet. |

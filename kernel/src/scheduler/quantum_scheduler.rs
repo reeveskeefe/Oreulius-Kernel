@@ -29,10 +29,26 @@ use crate::process::{Pid, Process, ProcessPriority, ProcessState, MAX_PROCESSES}
 use crate::scheduler_platform::{self, ProcessContext};
 use crate::scheduler_runtime_platform as scheduler_rt;
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct VmaFlags: u32 {
+        const READ = 1 << 0;
+        const WRITE = 1 << 1;
+        const EXEC = 1 << 2;
+        const USER = 1 << 3;
+        const COW = 1 << 4;
+        const STACK = 1 << 5;
+        const GROW_DOWN = 1 << 6;
+        const SHARED = 1 << 7;
+    }
+}
 
 // Keep the 32-bit scheduler stacks smaller so the Multiboot image fits within
 // GRUB's early allocation limits during CI boots.
@@ -70,6 +86,7 @@ const TEMPORAL_SCHEDULER_HEADER_BYTES: usize = 60;
 const TEMPORAL_SCHEDULER_PROCESS_ENTRY_BYTES: usize = 44;
 const TEMPORAL_SCHEDULER_WAIT_QUEUE_HEADER_BYTES: usize = 12;
 const READY_QUEUE_LEVELS: usize = 3;
+const USER_MMAP_MIN_ADDR: usize = 0x1000_0000;
 const ERR_PROCESS_DATA_MISSING: &str = "Process data missing";
 const ERR_NO_CURRENT_PROCESS: &str = "No current process";
 const ERR_SCHED_SWITCH_PREVIOUS_PROCESS_MISSING: &str = "Scheduler switch missing previous process";
@@ -141,6 +158,72 @@ pub struct EntropyBenchResult {
     pub adjusted_quantum: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VmaKind {
+    Anonymous,
+    Stack,
+    Heap,
+    File {
+        source: crate::fs::vfs::MappedFileSource,
+        offset: u64,
+    },
+    PhysicalMap { phys_start: usize },
+    KernelSynthetic,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Vma {
+    pub start: usize,
+    pub end: usize,
+    pub flags: VmaFlags,
+    pub kind: VmaKind,
+}
+
+impl Vma {
+    fn contains(&self, addr: usize) -> bool {
+        self.start <= addr && addr < self.end
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ProcessMemoryMap {
+    pub vmas: Vec<Vma>,
+    pub heap_base: usize,
+    pub heap_end: usize,
+    pub mmap_base: usize,
+    pub mmap_cursor: usize,
+    pub mmap_limit: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct UserRegionSpec {
+    pub start: usize,
+    pub end: usize,
+    pub flags: VmaFlags,
+    pub kind: VmaKind,
+}
+
+#[derive(Clone, Debug)]
+pub struct UserProcessLayout {
+    pub regions: Vec<UserRegionSpec>,
+    pub heap_base: usize,
+    pub heap_end: usize,
+    pub mmap_base: usize,
+    pub mmap_limit: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct SharedFilePageKey {
+    source: crate::fs::vfs::MappedFileSource,
+    file_page_offset: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SharedFilePageEntry {
+    phys_addr: usize,
+    refcount: usize,
+}
+
 // 7/8 previous value + 1/8 new sample, implemented as a cheap right shift.
 // This keeps the scheduler accounting stable without any floating-point.
 fn roll_entropy_signal(ewma: u32, sample: u32) -> u32 {
@@ -203,6 +286,163 @@ fn entropy_bench_result(
         rolled_fault_ewma: rolled.ewma_fault,
         adjusted_quantum: entropy_adjusted_quantum(priority, rolled),
     }
+}
+
+fn align_down_usize(value: usize, align: usize) -> usize {
+    value & !(align - 1)
+}
+
+fn align_up_usize(value: usize, align: usize) -> usize {
+    (value + align - 1) & !(align - 1)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn scheduler_user_top() -> usize {
+    0xC000_0000
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn scheduler_user_top() -> usize {
+    crate::paging::USER_TOP
+}
+
+impl ProcessMemoryMap {
+    pub fn new(heap_base: usize, heap_end: usize, mmap_base: usize, mmap_limit: usize) -> Self {
+        Self {
+            vmas: Vec::new(),
+            heap_base,
+            heap_end,
+            mmap_base,
+            mmap_cursor: mmap_base,
+            mmap_limit,
+        }
+    }
+
+    pub fn insert_vma(&mut self, vma: Vma) -> Result<(), &'static str> {
+        if vma.start >= vma.end {
+            return Err("invalid VMA range");
+        }
+        let mut insert_at = self.vmas.len();
+        let mut i = 0usize;
+        while i < self.vmas.len() {
+            let existing = &self.vmas[i];
+            if vma.end <= existing.start {
+                insert_at = i;
+                break;
+            }
+            if vma.start < existing.end && existing.start < vma.end {
+                return Err("overlapping VMA");
+            }
+            i += 1;
+        }
+        self.vmas.insert(insert_at, vma);
+        Ok(())
+    }
+
+    pub fn find_vma(&self, addr: usize) -> Option<&Vma> {
+        self.vmas.iter().find(|vma| vma.contains(addr))
+    }
+
+    pub fn remove_exact_vma(&mut self, start: usize, end: usize) -> Result<Vma, &'static str> {
+        let idx = self
+            .vmas
+            .iter()
+            .position(|vma| vma.start == start && vma.end == end)
+            .ok_or("VMA not found")?;
+        Ok(self.vmas.remove(idx))
+    }
+
+    pub fn allocate_range(&mut self, size: usize, align: usize) -> Result<usize, &'static str> {
+        let page = crate::arch::mmu::page_size();
+        let size = align_up_usize(size, page);
+        let align = align.max(page);
+        let mut cursor = align_up_usize(self.mmap_cursor.max(self.mmap_base), align);
+        loop {
+            let end = cursor.checked_add(size).ok_or("mapping overflow")?;
+            if end > self.mmap_limit {
+                return Err("virtual address space exhausted");
+            }
+            let overlaps = self
+                .vmas
+                .iter()
+                .find(|vma| cursor < vma.end && vma.start < end)
+                .map(|vma| vma.end);
+            if let Some(next) = overlaps {
+                cursor = align_up_usize(next, align);
+                continue;
+            }
+            self.mmap_cursor = end;
+            return Ok(cursor);
+        }
+    }
+
+    pub fn mark_cow_regions(&mut self) {
+        for vma in &mut self.vmas {
+            if vma.flags.contains(VmaFlags::WRITE)
+                && !vma.flags.contains(VmaFlags::SHARED)
+                && matches!(vma.kind, VmaKind::Anonymous | VmaKind::Heap | VmaKind::File { .. })
+            {
+                vma.flags.insert(VmaFlags::COW);
+            }
+        }
+    }
+}
+
+fn default_user_layout(entry: usize, user_stack: usize) -> UserProcessLayout {
+    let page = crate::arch::mmu::page_size();
+    let code_start = align_down_usize(entry, page);
+    let code_end = code_start.saturating_add(page);
+    let stack_top = align_up_usize(user_stack.saturating_add(1), page);
+    let stack_start = stack_top.saturating_sub(page * 4);
+    let heap_base = align_up_usize(code_end.saturating_add(page), page);
+    let mmap_base = align_up_usize(USER_MMAP_MIN_ADDR.max(heap_base.saturating_add(page)), page);
+    let mmap_limit = scheduler_user_top().saturating_sub(page * 8);
+    UserProcessLayout {
+        regions: vec![
+            UserRegionSpec {
+                start: code_start,
+                end: code_end,
+                flags: VmaFlags::READ | VmaFlags::EXEC | VmaFlags::USER,
+                kind: VmaKind::KernelSynthetic,
+            },
+            UserRegionSpec {
+                start: stack_start,
+                end: stack_top,
+                flags: VmaFlags::READ
+                    | VmaFlags::WRITE
+                    | VmaFlags::USER
+                    | VmaFlags::STACK
+                    | VmaFlags::GROW_DOWN,
+                kind: VmaKind::Stack,
+            },
+        ],
+        heap_base,
+        heap_end: heap_base,
+        mmap_base,
+        mmap_limit,
+    }
+}
+
+fn build_process_memory_map(layout: UserProcessLayout) -> Result<ProcessMemoryMap, &'static str> {
+    let mut map =
+        ProcessMemoryMap::new(layout.heap_base, layout.heap_end, layout.mmap_base, layout.mmap_limit);
+    for region in layout.regions {
+        map.insert_vma(Vma {
+            start: region.start,
+            end: region.end,
+            flags: region.flags,
+            kind: region.kind,
+        })?;
+    }
+    if layout.heap_end > layout.heap_base {
+        map.insert_vma(Vma {
+            start: layout.heap_base,
+            end: layout.heap_end,
+            flags: VmaFlags::READ | VmaFlags::WRITE | VmaFlags::USER,
+            kind: VmaKind::Heap,
+        })?;
+    }
+    Ok(map)
 }
 
 #[derive(Clone, Copy)]
@@ -385,6 +625,7 @@ pub struct QuantumScheduler {
     wait_queue_count: usize,
     /// Statistics
     stats: SchedulerStats,
+    shared_file_pages: BTreeMap<SharedFilePageKey, SharedFilePageEntry>,
 }
 
 /// Extended process information for scheduling
@@ -398,6 +639,8 @@ pub struct ProcessInfo {
     pub stack: Option<Box<[u8; crate::process::STACK_SIZE]>>,
     /// Owned user address space (Some for user processes, None for kernel threads).
     pub address_space: Option<Box<crate::arch::mmu::AddressSpace>>,
+    /// Canonical per-process user virtual memory map.
+    pub memory_map: Option<ProcessMemoryMap>,
     pub quantum_remaining: u32,
     pub total_cpu_time: u64,  // Total ticks this process ran
     pub total_wait_time: u64, // Total ticks waiting
@@ -494,6 +737,7 @@ impl QuantumScheduler {
                 voluntary_yields: 0,
                 idle_ticks: 0,
             },
+            shared_file_pages: BTreeMap::new(),
         }
     }
 
@@ -585,6 +829,7 @@ impl QuantumScheduler {
             kernel_stack_top: 0,
             stack: None,
             address_space: None,
+            memory_map: None,
             quantum_remaining: quantum,
             total_cpu_time: 0,
             total_wait_time: 0,
@@ -1374,6 +1619,7 @@ impl QuantumScheduler {
             kernel_stack_top: stack_top,
             stack: None, // Stack is static, not heap-allocated
             address_space: None,
+            memory_map: None,
             quantum_remaining: base_quantum_for_priority(priority),
             total_cpu_time: 0,
             total_wait_time: 0,
@@ -1539,12 +1785,35 @@ impl QuantumScheduler {
     /// per-process kernel stack for the initial supervisor-to-user transition.
     /// The physical address of the process page directory is stored in both
     /// `process.page_dir_phys` and `ctx.cr3` so the context switch can load CR3.
+    pub fn add_user_process_with_layout(
+        &mut self,
+        process: Process,
+        space: Box<crate::arch::mmu::AddressSpace>,
+        entry: u32,
+        user_stack: u32,
+        layout: UserProcessLayout,
+    ) -> Result<Pid, &'static str> {
+        self.add_user_process_internal(process, space, entry, user_stack, layout)
+    }
+
     pub fn add_user_process(
+        &mut self,
+        process: Process,
+        space: Box<crate::arch::mmu::AddressSpace>,
+        entry: u32,
+        user_stack: u32,
+    ) -> Result<Pid, &'static str> {
+        let layout = default_user_layout(entry as usize, user_stack as usize);
+        self.add_user_process_internal(process, space, entry, user_stack, layout)
+    }
+
+    fn add_user_process_internal(
         &mut self,
         mut process: Process,
         space: Box<crate::arch::mmu::AddressSpace>,
         entry: u32,
         user_stack: u32,
+        layout: UserProcessLayout,
     ) -> Result<Pid, &'static str> {
         #[cfg(target_arch = "x86")]
         {
@@ -1578,8 +1847,7 @@ impl QuantumScheduler {
 
             process.state = ProcessState::Ready;
             process.page_dir_phys = page_dir_phys;
-            process.stack_ptr = user_stack as usize;
-            process.program_counter = entry as usize;
+            process.set_user_execution_image(entry as usize, user_stack as usize);
 
             let priority = process.priority;
             let quantum = base_quantum_for_priority(priority);
@@ -1597,6 +1865,7 @@ impl QuantumScheduler {
             ctx.cr3 = page_dir_phys_u32;
             ctx.eflags = 0x0000_0202;
 
+            let memory_map = build_process_memory_map(layout)?;
             let now = scheduler_platform::ticks_now();
             let info = ProcessInfo {
                 process,
@@ -1605,6 +1874,7 @@ impl QuantumScheduler {
                 kernel_stack_top: stack_top,
                 stack: Some(kernel_stack),
                 address_space: Some(space),
+                memory_map: Some(memory_map),
                 quantum_remaining: quantum,
                 total_cpu_time: 0,
                 total_wait_time: 0,
@@ -1673,8 +1943,7 @@ impl QuantumScheduler {
 
             process.state = ProcessState::Ready;
             process.page_dir_phys = page_dir_phys;
-            process.stack_ptr = user_stack as usize;
-            process.program_counter = entry as usize;
+            process.set_user_execution_image(entry as usize, user_stack as usize);
 
             let priority = process.priority;
             let quantum = base_quantum_for_priority(priority);
@@ -1686,6 +1955,7 @@ impl QuantumScheduler {
             ctx.cr3 = page_dir_phys.as_u64();
             ctx.rflags = 0x0000_0002;
 
+            let memory_map = build_process_memory_map(layout)?;
             let now = scheduler_platform::ticks_now();
             let info = ProcessInfo {
                 process,
@@ -1694,6 +1964,7 @@ impl QuantumScheduler {
                 kernel_stack_top: stack_top,
                 stack: Some(kernel_stack),
                 address_space: Some(space),
+                memory_map: Some(memory_map),
                 quantum_remaining: quantum,
                 total_cpu_time: 0,
                 total_wait_time: 0,
@@ -1771,8 +2042,7 @@ impl QuantumScheduler {
 
             process.state = ProcessState::Ready;
             process.page_dir_phys = page_dir_phys;
-            process.stack_ptr = user_stack as usize;
-            process.program_counter = entry as usize;
+            process.set_user_execution_image(entry as usize, user_stack as usize);
 
             let priority = process.priority;
             let quantum = base_quantum_for_priority(priority);
@@ -1790,6 +2060,7 @@ impl QuantumScheduler {
             // Legacy 32-bit shadow for shared diagnostics code.
             ctx.esp = user_stack as u32;
 
+            let memory_map = build_process_memory_map(layout)?;
             let now = scheduler_platform::ticks_now();
             let info = ProcessInfo {
                 process,
@@ -1798,6 +2069,7 @@ impl QuantumScheduler {
                 kernel_stack_top: stack_top,
                 stack: Some(kernel_stack),
                 address_space: Some(space),
+                memory_map: Some(memory_map),
                 quantum_remaining: quantum,
                 total_cpu_time: 0,
                 total_wait_time: 0,
@@ -1827,6 +2099,416 @@ impl QuantumScheduler {
         }
     }
 
+    pub fn alloc_current_anonymous(
+        &mut self,
+        requested_addr: Option<usize>,
+        size: usize,
+        flags: VmaFlags,
+    ) -> Result<usize, &'static str> {
+        let pid = self.require_current_pid(ERR_NO_CURRENT_PROCESS)?;
+        self.alloc_anonymous_for_pid(pid, requested_addr, size, flags)
+    }
+
+    pub fn map_current_file(
+        &mut self,
+        requested_addr: Option<usize>,
+        size: usize,
+        flags: VmaFlags,
+        source: crate::fs::vfs::MappedFileSource,
+        offset: usize,
+    ) -> Result<usize, &'static str> {
+        let pid = self.require_current_pid(ERR_NO_CURRENT_PROCESS)?;
+        self.map_file_for_pid(pid, requested_addr, size, flags, source, offset)
+    }
+
+    pub fn alloc_anonymous_for_pid(
+        &mut self,
+        pid: Pid,
+        requested_addr: Option<usize>,
+        size: usize,
+        flags: VmaFlags,
+    ) -> Result<usize, &'static str> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let page = crate::arch::mmu::page_size();
+            let len = align_up_usize(size, page);
+            let info = self.process_info_mut(pid, "memory alloc: process missing")?;
+            let memory_map = info.memory_map.as_mut().ok_or("memory alloc: no memory map")?;
+            let start = match requested_addr {
+                Some(addr) if addr != 0 => {
+                    let aligned = align_down_usize(addr, page);
+                    if memory_map.find_vma(aligned).is_some() {
+                        return Err("memory alloc: address already mapped");
+                    }
+                    aligned
+                }
+                _ => memory_map.allocate_range(len, page)?,
+            };
+            let end = start.checked_add(len).ok_or("memory alloc: range overflow")?;
+            let writable = flags.contains(VmaFlags::WRITE);
+            let space = info
+                .address_space
+                .as_mut()
+                .ok_or("memory alloc: no address space")?;
+            crate::arch::mmu::alloc_user_pages(space, start, len / page, writable)?;
+            memory_map.insert_vma(Vma {
+                start,
+                end,
+                flags: flags | VmaFlags::USER,
+                kind: VmaKind::Anonymous,
+            })?;
+            return Ok(start);
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (pid, requested_addr, size, flags);
+            Err("memory alloc unsupported on this architecture")
+        }
+    }
+
+    pub fn map_file_for_pid(
+        &mut self,
+        pid: Pid,
+        requested_addr: Option<usize>,
+        size: usize,
+        flags: VmaFlags,
+        source: crate::fs::vfs::MappedFileSource,
+        offset: usize,
+    ) -> Result<usize, &'static str> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let page = crate::arch::mmu::page_size();
+            let len = align_up_usize(size, page);
+            let file_offset = align_down_usize(offset, page);
+            let info = self.process_info_mut(pid, "memory map: process missing")?;
+            let memory_map = info.memory_map.as_mut().ok_or("memory map: no memory map")?;
+            let start = match requested_addr {
+                Some(addr) if addr != 0 => {
+                    let aligned = align_down_usize(addr, page);
+                    let end = aligned
+                        .checked_add(len)
+                        .ok_or("memory map: range overflow")?;
+                    if memory_map.vmas.iter().any(|vma| aligned < vma.end && vma.start < end) {
+                        return Err("memory map: address already mapped");
+                    }
+                    aligned
+                }
+                _ => memory_map.allocate_range(len, page)?,
+            };
+            let end = start
+                .checked_add(len)
+                .ok_or("memory map: range overflow")?;
+            memory_map.insert_vma(Vma {
+                start,
+                end,
+                flags: flags | VmaFlags::USER,
+                kind: VmaKind::File {
+                    source,
+                    offset: file_offset as u64,
+                },
+            })?;
+            return Ok(start);
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (pid, requested_addr, size, flags, source, offset);
+            Err("memory map unsupported on this architecture")
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn flush_shared_file_vma(
+        space: &mut crate::arch::mmu::AddressSpace,
+        vma: &Vma,
+    ) -> Result<(), &'static str> {
+        let (source, file_base_offset) = match &vma.kind {
+            VmaKind::File { source, offset } => (source, *offset as usize),
+            _ => return Ok(()),
+        };
+        if !vma.flags.contains(VmaFlags::SHARED) || !vma.flags.contains(VmaFlags::WRITE) {
+            return Ok(());
+        }
+
+        let page = crate::arch::mmu::page_size();
+        let old = crate::arch::mmu::current_page_table_root_addr();
+        unsafe {
+            space.activate();
+        }
+        let mut page_addr = vma.start;
+        while page_addr < vma.end {
+            if space.is_mapped(page_addr) {
+                let mut page_buf = alloc::vec![0u8; page];
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        page_addr as *const u8,
+                        page_buf.as_mut_ptr(),
+                        page,
+                    );
+                }
+                let write_offset = file_base_offset.saturating_add(page_addr.saturating_sub(vma.start));
+                crate::fs::vfs::write_mapped_file_at(source, write_offset, &page_buf)?;
+            }
+            page_addr = page_addr.saturating_add(page);
+        }
+        crate::arch::mmu::set_page_table_root(old)?;
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn retain_shared_file_page(
+        &mut self,
+        source: &crate::fs::vfs::MappedFileSource,
+        file_page_offset: usize,
+    ) -> Option<usize> {
+        let key = SharedFilePageKey {
+            source: source.clone(),
+            file_page_offset,
+        };
+        let entry = self.shared_file_pages.get_mut(&key)?;
+        entry.refcount = entry.refcount.saturating_add(1);
+        Some(entry.phys_addr)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn install_shared_file_page(
+        &mut self,
+        source: crate::fs::vfs::MappedFileSource,
+        file_page_offset: usize,
+        phys_addr: usize,
+    ) {
+        self.shared_file_pages.insert(
+            SharedFilePageKey {
+                source,
+                file_page_offset,
+            },
+            SharedFilePageEntry {
+                phys_addr,
+                refcount: 1,
+            },
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn release_shared_file_page_ref(
+        &mut self,
+        source: &crate::fs::vfs::MappedFileSource,
+        file_page_offset: usize,
+    ) {
+        let key = SharedFilePageKey {
+            source: source.clone(),
+            file_page_offset,
+        };
+        let remove = if let Some(entry) = self.shared_file_pages.get_mut(&key) {
+            if entry.refcount > 1 {
+                entry.refcount -= 1;
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+        if remove {
+            let _ = self.shared_file_pages.remove(&key);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn collect_shared_file_vma_keys(
+        space: &crate::arch::mmu::AddressSpace,
+        vma: &Vma,
+    ) -> Vec<SharedFilePageKey> {
+        let (source, file_base_offset) = match &vma.kind {
+            VmaKind::File { source, offset } => (source, *offset as usize),
+            _ => return Vec::new(),
+        };
+        if !vma.flags.contains(VmaFlags::SHARED) {
+            return Vec::new();
+        }
+
+        let page = crate::arch::mmu::page_size();
+        let mut keys = Vec::new();
+        let mut page_addr = vma.start;
+        while page_addr < vma.end {
+            if space.is_mapped(page_addr) {
+                keys.push(SharedFilePageKey {
+                    source: source.clone(),
+                    file_page_offset: file_base_offset
+                        .saturating_add(page_addr.saturating_sub(vma.start)),
+                });
+            }
+            page_addr = page_addr.saturating_add(page);
+        }
+        keys
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn release_shared_file_vma_refs(
+        &mut self,
+        space: &crate::arch::mmu::AddressSpace,
+        vma: &Vma,
+    ) {
+        for key in Self::collect_shared_file_vma_keys(space, vma) {
+            self.release_shared_file_page_ref(&key.source, key.file_page_offset);
+        }
+    }
+
+    pub fn free_current_mapping(&mut self, addr: usize, size: usize) -> Result<(), &'static str> {
+        let pid = self.require_current_pid(ERR_NO_CURRENT_PROCESS)?;
+        self.free_mapping_for_pid(pid, addr, size)
+    }
+
+    pub fn free_mapping_for_pid(
+        &mut self,
+        pid: Pid,
+        addr: usize,
+        size: usize,
+    ) -> Result<(), &'static str> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let page = crate::arch::mmu::page_size();
+            let start = align_down_usize(addr, page);
+            let end = start
+                .checked_add(align_up_usize(size, page))
+                .ok_or("memory free: range overflow")?;
+            let shared_keys = {
+                let info = self.process_info_mut(pid, "memory free: process missing")?;
+                let memory_map = info.memory_map.as_mut().ok_or("memory free: no memory map")?;
+                let vma = memory_map.remove_exact_vma(start, end)?;
+                let space = info
+                    .address_space
+                    .as_mut()
+                    .ok_or("memory free: no address space")?;
+                Self::flush_shared_file_vma(space, &vma)?;
+                let shared_keys = Self::collect_shared_file_vma_keys(space, &vma);
+                let mut page_addr = vma.start;
+                while page_addr < vma.end {
+                    let _ = crate::arch::mmu::unmap_page(space, page_addr);
+                    page_addr = page_addr.saturating_add(page);
+                }
+                shared_keys
+            };
+            for key in shared_keys {
+                self.release_shared_file_page_ref(&key.source, key.file_page_offset);
+            }
+            return Ok(());
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (pid, addr, size);
+            Err("memory free unsupported on this architecture")
+        }
+    }
+
+    pub fn handle_current_user_page_fault(
+        &mut self,
+        fault_addr: usize,
+        error: u64,
+    ) -> Result<bool, &'static str> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let pid = self.require_current_pid(ERR_NO_CURRENT_PROCESS)?;
+            self.record_pagefault();
+            let page = crate::arch::mmu::page_size();
+            let page_addr = align_down_usize(fault_addr, page);
+            let is_write = (error & (1 << 1)) != 0;
+            let is_exec = (error & (1 << 4)) != 0;
+            let vma = {
+                let info = self.process_info(pid, "page fault: process missing")?;
+                info.memory_map
+                    .as_ref()
+                    .and_then(|map| map.find_vma(fault_addr))
+                    .cloned()
+            };
+            let Some(vma) = vma else {
+                return Ok(false);
+            };
+
+            if is_exec && !vma.flags.contains(VmaFlags::EXEC) {
+                return Err("page fault: execute permission denied");
+            }
+            if is_write && !vma.flags.contains(VmaFlags::WRITE) && !vma.flags.contains(VmaFlags::COW) {
+                return Err("page fault: write permission denied");
+            }
+            if !is_write && !vma.flags.contains(VmaFlags::READ) && !is_exec {
+                return Err("page fault: read permission denied");
+            }
+
+            if is_write && vma.flags.contains(VmaFlags::COW) {
+                return Ok(crate::arch::mmu::handle_page_fault(fault_addr, error));
+            }
+
+            match vma.kind {
+                VmaKind::Anonymous | VmaKind::Heap | VmaKind::Stack => {
+                    let info = self.process_info_mut(pid, "page fault: process missing")?;
+                    let space = info
+                        .address_space
+                        .as_mut()
+                        .ok_or("page fault: no address space")?;
+                    if !space.is_mapped(page_addr) {
+                        crate::arch::mmu::alloc_user_pages(
+                            space,
+                            page_addr,
+                            1,
+                            vma.flags.contains(VmaFlags::WRITE),
+                        )?;
+                    }
+                    Ok(true)
+                }
+                VmaKind::File { source, offset } => {
+                    let file_page_offset = offset
+                        .checked_add(page_addr.saturating_sub(vma.start) as u64)
+                        .ok_or("page fault: file offset overflow")? as usize;
+                    let writable = vma.flags.contains(VmaFlags::WRITE);
+                    let cached_phys = if vma.flags.contains(VmaFlags::SHARED) {
+                        self.retain_shared_file_page(&source, file_page_offset)
+                    } else {
+                        None
+                    };
+                    let info = self.process_info_mut(pid, "page fault: process missing")?;
+                    let space = info
+                        .address_space
+                        .as_mut()
+                        .ok_or("page fault: no address space")?;
+                    if let Some(phys_addr) = cached_phys {
+                        space.map_page(page_addr, phys_addr, writable, true)?;
+                        return Ok(true);
+                    }
+
+                    let phys_addr = crate::memory::allocate_frame()?;
+                    space.map_page(page_addr, phys_addr, writable, true)?;
+
+                    let mut page_buf = alloc::vec![0u8; page];
+                    let _ =
+                        crate::fs::vfs::read_mapped_file_at(&source, file_page_offset, &mut page_buf)?;
+
+                    let old = crate::arch::mmu::current_page_table_root_addr();
+                    unsafe {
+                        space.activate();
+                    }
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(page_buf.as_ptr(), page_addr as *mut u8, page);
+                    }
+                    crate::arch::mmu::set_page_table_root(old)?;
+                    if vma.flags.contains(VmaFlags::SHARED) {
+                        self.install_shared_file_page(source.clone(), file_page_offset, phys_addr);
+                    }
+                    Ok(true)
+                }
+                VmaKind::PhysicalMap { .. } | VmaKind::KernelSynthetic => Ok(false),
+            }
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = (fault_addr, error);
+            Ok(false)
+        }
+    }
+
     /// Remove a process from scheduler state and all run/wait queues.
     pub fn remove_process(&mut self, pid: Pid) -> Result<(), &'static str> {
         let idx = pid.0 as usize;
@@ -1843,6 +2525,29 @@ impl QuantumScheduler {
 
         self.remove_from_ready_queues(pid);
         self.remove_from_wait_queues(pid);
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            let shared_keys = if let Some(info) = self.processes[idx].as_mut() {
+                if let (Some(memory_map), Some(space)) =
+                    (info.memory_map.as_ref(), info.address_space.as_mut())
+                {
+                    let mut shared_keys = Vec::new();
+                    for vma in &memory_map.vmas {
+                        let _ = Self::flush_shared_file_vma(space, vma);
+                        shared_keys.extend(Self::collect_shared_file_vma_keys(space, vma));
+                    }
+                    shared_keys
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+            for key in shared_keys {
+                self.release_shared_file_page_ref(&key.source, key.file_page_offset);
+            }
+        }
 
         #[cfg(target_arch = "aarch64")]
         if let Some(info) = self.processes[idx].as_ref() {
@@ -1893,11 +2598,16 @@ impl QuantumScheduler {
                 .ok_or("fork_current_cow: process table full")?;
             let child_idx = child_pid.0 as usize;
 
-            let (parent_process_clone, parent_ctx, parent_priority) = {
+            let (parent_process_clone, parent_ctx, parent_priority, child_memory_map) = {
                 let info = self
                     .process_slot(parent_idx)
                     .map_err(|_| "fork_current_cow: parent info missing")?;
-                (info.process.clone(), info.context, info.process.priority)
+                (
+                    info.process.clone(),
+                    info.context,
+                    info.process.priority,
+                    info.memory_map.clone(),
+                )
             };
 
             let mut child_process = parent_process_clone;
@@ -1916,9 +2626,13 @@ impl QuantumScheduler {
             let child_cr3: PhysAddr;
             let child_cr3_u32: u32;
             {
-                let child_space = self
+                let parent_info = self
                     .process_slot_mut(parent_idx)
-                    .map_err(|_| "fork_current_cow: parent info missing")?
+                    .map_err(|_| "fork_current_cow: parent info missing")?;
+                if let Some(memory_map) = parent_info.memory_map.as_mut() {
+                    memory_map.mark_cow_regions();
+                }
+                let child_space = parent_info
                     .address_space
                     .as_mut()
                     .ok_or("fork_current_cow: parent has no owned address space")
@@ -1955,6 +2669,10 @@ impl QuantumScheduler {
                     & !15usize,
                 stack: Some(child_kernel_stack),
                 address_space: Some(child_address_space),
+                memory_map: child_memory_map.map(|mut map| {
+                    map.mark_cow_regions();
+                    map
+                }),
                 quantum_remaining: quantum,
                 total_cpu_time: 0,
                 total_wait_time: 0,
@@ -1997,23 +2715,30 @@ impl QuantumScheduler {
                 .ok_or("fork_current_cow: process table full")?;
             let child_idx = child_pid.0 as usize;
 
-            let parent_priority = self
-                .process_slot(parent_idx)
-                .map_err(|_| "fork_current_cow: parent info missing")?
-                .process
-                .priority;
+            let (parent_priority, child_memory_map) = {
+                let parent_info = self
+                    .process_slot(parent_idx)
+                    .map_err(|_| "fork_current_cow: parent info missing")?;
+                (parent_info.process.priority, parent_info.memory_map.clone())
+            };
 
-            let child_space = self
-                .process_slot_mut(parent_idx)
-                .map_err(|_| "fork_current_cow: parent info missing")?
-                .address_space
-                .as_mut()
-                .ok_or("fork_current_cow: parent has no owned address space")
-                .and_then(|space| {
-                    space
-                        .clone_cow()
-                        .map_err(|_| "fork_current_cow: clone_cow failed")
-                })?;
+            let child_space = {
+                let parent_info = self
+                    .process_slot_mut(parent_idx)
+                    .map_err(|_| "fork_current_cow: parent info missing")?;
+                if let Some(memory_map) = parent_info.memory_map.as_mut() {
+                    memory_map.mark_cow_regions();
+                }
+                parent_info
+                    .address_space
+                    .as_mut()
+                    .ok_or("fork_current_cow: parent has no owned address space")
+                    .and_then(|space| {
+                        space
+                            .clone_cow()
+                            .map_err(|_| "fork_current_cow: clone_cow failed")
+                    })?
+            };
 
             let child_cr3 = PhysAddr::new(child_space.phys_addr());
             // Non-IRQ process fork path: child kernel stack allocation is expected here.
@@ -2062,6 +2787,10 @@ impl QuantumScheduler {
                 kernel_stack_top: child_stack_top,
                 stack: Some(child_kernel_stack),
                 address_space: Some(Box::new(child_space)),
+                memory_map: child_memory_map.map(|mut map| {
+                    map.mark_cow_regions();
+                    map
+                }),
                 quantum_remaining: quantum,
                 total_cpu_time: 0,
                 total_wait_time: 0,
@@ -2105,25 +2834,35 @@ impl QuantumScheduler {
                 .ok_or("fork_current_cow: process table full")?;
             let child_idx = child_pid.0 as usize;
 
-            let (parent_process_clone, parent_priority) = {
+            let (parent_process_clone, parent_priority, child_memory_map) = {
                 let info = self
                     .process_slot(parent_idx)
                     .map_err(|_| "fork_current_cow: parent info missing")?;
-                (info.process.clone(), info.process.priority)
+                (
+                    info.process.clone(),
+                    info.process.priority,
+                    info.memory_map.clone(),
+                )
             };
 
             // Clone address space COW — must happen before we borrow child_process.
-            let child_space = self
-                .process_slot_mut(parent_idx)
-                .map_err(|_| "fork_current_cow: parent info missing")?
-                .address_space
-                .as_mut()
-                .ok_or("fork_current_cow: parent has no owned address space")
-                .and_then(|space| {
-                    space
-                        .clone_cow()
-                        .map_err(|_| "fork_current_cow: clone_cow failed")
-                })?;
+            let child_space = {
+                let parent_info = self
+                    .process_slot_mut(parent_idx)
+                    .map_err(|_| "fork_current_cow: parent info missing")?;
+                if let Some(memory_map) = parent_info.memory_map.as_mut() {
+                    memory_map.mark_cow_regions();
+                }
+                parent_info
+                    .address_space
+                    .as_mut()
+                    .ok_or("fork_current_cow: parent has no owned address space")
+                    .and_then(|space| {
+                        space
+                            .clone_cow()
+                            .map_err(|_| "fork_current_cow: clone_cow failed")
+                    })?
+            };
 
             let child_cr3 = PhysAddr::new(child_space.phys_addr());
 
@@ -2180,6 +2919,10 @@ impl QuantumScheduler {
                 kernel_stack_top: child_stack_top,
                 stack: Some(child_kernel_stack),
                 address_space: Some(Box::new(child_space)),
+                memory_map: child_memory_map.map(|mut map| {
+                    map.mark_cow_regions();
+                    map
+                }),
                 quantum_remaining: quantum,
                 total_cpu_time: 0,
                 total_wait_time: 0,
@@ -2251,7 +2994,7 @@ impl QuantumScheduler {
         // Until usermode WASM replaces the whole process image, treat exec as
         // rebinding the current task to a new module entry. The actual module
         // execution happens outside the scheduler lock in the syscall path.
-        info.process.program_counter = module_id as usize;
+        info.process.set_program_counter_token(module_id as usize);
         info.process.state = ProcessState::Running;
         info.quantum_remaining = base_quantum_for_priority(info.process.priority);
         self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
@@ -2417,6 +3160,154 @@ pub fn scheduler() -> &'static Mutex<QuantumScheduler> {
     &QUANTUM_SCHEDULER
 }
 
+pub fn handle_current_user_page_fault(fault_addr: usize, error: u64) -> Result<bool, &'static str> {
+    QUANTUM_SCHEDULER
+        .lock()
+        .handle_current_user_page_fault(fault_addr, error)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn selftest_shared_file_mapping_live() -> Result<(usize, usize, u8), &'static str> {
+    let path = "/shared-mmap-selftest";
+    let page = crate::arch::mmu::page_size();
+    let map_addr = 0x2000_0000usize;
+    let entry_a = 0x0040_0000u32;
+    let entry_b = 0x0040_1000u32;
+    let user_stack_a = (crate::paging::USER_TOP - page) as u32;
+    let user_stack_b = (crate::paging::USER_TOP - (page * 2)) as u32;
+    let pid_a = Pid(40);
+    let pid_b = Pid(41);
+
+    crate::vfs::write_path(path, &[0u8; 16])?;
+    let source = crate::fs::vfs::mmap_source_for_path(path)?;
+
+    let mut sched = QuantumScheduler::new();
+    let mut proc_a = Process::new(pid_a, "sharedmmap-a", None);
+    proc_a.priority = ProcessPriority::Normal;
+    let mut proc_b = Process::new(pid_b, "sharedmmap-b", None);
+    proc_b.priority = ProcessPriority::Normal;
+
+    sched.add_user_process(
+        proc_a,
+        Box::new(crate::arch::mmu::AddressSpace::new()?),
+        entry_a,
+        user_stack_a,
+    )?;
+    sched.add_user_process(
+        proc_b,
+        Box::new(crate::arch::mmu::AddressSpace::new()?),
+        entry_b,
+        user_stack_b,
+    )?;
+
+    let flags = VmaFlags::READ | VmaFlags::WRITE | VmaFlags::SHARED;
+    sched.map_file_for_pid(pid_a, Some(map_addr), page, flags, source.clone(), 0)?;
+    sched.map_file_for_pid(pid_b, Some(map_addr), page, flags, source.clone(), 0)?;
+
+    sched.current_pid = Some(pid_a);
+    if !sched.handle_current_user_page_fault(map_addr, 0)? {
+        return Err("sharedmmap: first file fault was not handled");
+    }
+    sched.current_pid = Some(pid_b);
+    if !sched.handle_current_user_page_fault(map_addr, 0)? {
+        return Err("sharedmmap: second file fault was not handled");
+    }
+
+    let phys_a = sched
+        .process_info(pid_a, "sharedmmap: process A missing")?
+        .address_space
+        .as_ref()
+        .and_then(|space| space.virt_to_phys(map_addr))
+        .ok_or("sharedmmap: process A phys lookup failed")?;
+    let phys_b = sched
+        .process_info(pid_b, "sharedmmap: process B missing")?
+        .address_space
+        .as_ref()
+        .and_then(|space| space.virt_to_phys(map_addr))
+        .ok_or("sharedmmap: process B phys lookup failed")?;
+    if phys_a != phys_b {
+        return Err("sharedmmap: processes did not share one physical page");
+    }
+
+    let old_root = crate::arch::mmu::current_page_table_root_addr();
+    let observed = (|| -> Result<u8, &'static str> {
+        {
+            let info = sched.process_info(pid_a, "sharedmmap: process A missing")?;
+            let space = info
+                .address_space
+                .as_ref()
+                .ok_or("sharedmmap: process A address space missing")?;
+            unsafe {
+                space.activate();
+            }
+            unsafe {
+                (map_addr as *mut u8).write(0x5A);
+            }
+        }
+
+        {
+            let info = sched.process_info(pid_b, "sharedmmap: process B missing")?;
+            let space = info
+                .address_space
+                .as_ref()
+                .ok_or("sharedmmap: process B address space missing")?;
+            unsafe {
+                space.activate();
+            }
+            Ok(unsafe { (map_addr as *const u8).read() })
+        }
+    })();
+    let restore_result = crate::arch::mmu::set_page_table_root(old_root);
+    let observed = observed?;
+    restore_result?;
+
+    if observed != 0x5A {
+        return Err("sharedmmap: write not visible in second process");
+    }
+
+    Ok((phys_a, phys_b, observed))
+}
+
+pub fn terminate_current_from_fault() -> ! {
+    let flags = unsafe { scheduler_platform::irq_save_disable() };
+    let (ctx_ptr, runtime_pid_raw, kernel_stack_top) = {
+        let mut sched = QUANTUM_SCHEDULER.lock();
+        let current = sched
+            .get_current_pid()
+            .expect("terminate_current_from_fault: no current pid");
+        let _ = sched.remove_process(current);
+        sched.prepare_start_locked()
+    };
+    let _ = flags;
+    QuantumScheduler::launch_prepared_context(ctx_ptr, runtime_pid_raw, kernel_stack_top)
+}
+
+pub fn memory_alloc_current(
+    requested_addr: Option<usize>,
+    size: usize,
+    flags: VmaFlags,
+) -> Result<usize, &'static str> {
+    QUANTUM_SCHEDULER
+        .lock()
+        .alloc_current_anonymous(requested_addr, size, flags)
+}
+
+pub fn memory_free_current(addr: usize, size: usize) -> Result<(), &'static str> {
+    QUANTUM_SCHEDULER.lock().free_current_mapping(addr, size)
+}
+
+pub fn memory_map_file_current(
+    requested_addr: Option<usize>,
+    size: usize,
+    flags: VmaFlags,
+    source: crate::fs::vfs::MappedFileSource,
+    offset: usize,
+) -> Result<usize, &'static str> {
+    QUANTUM_SCHEDULER
+        .lock()
+        .map_current_file(requested_addr, size, flags, source, offset)
+}
+
 pub fn entropy_bench_results() -> [EntropyBenchResult; 3] {
     [
         entropy_bench_result(
@@ -2450,6 +3341,93 @@ pub fn entropy_bench_results() -> [EntropyBenchResult; 3] {
             5,
         ),
     ]
+}
+
+#[cfg(test)]
+mod vma_tests {
+    use super::{ProcessMemoryMap, Vma, VmaFlags, VmaKind};
+
+    #[test]
+    fn vma_insert_preserves_order_and_rejects_overlap() {
+        let mut map = ProcessMemoryMap::new(0x4000, 0x4000, 0x8000, 0x20_0000);
+        map.insert_vma(Vma {
+            start: 0x5000,
+            end: 0x6000,
+            flags: VmaFlags::READ | VmaFlags::USER,
+            kind: VmaKind::Anonymous,
+        })
+        .unwrap();
+        map.insert_vma(Vma {
+            start: 0x3000,
+            end: 0x4000,
+            flags: VmaFlags::READ | VmaFlags::EXEC | VmaFlags::USER,
+            kind: VmaKind::KernelSynthetic,
+        })
+        .unwrap();
+
+        assert_eq!(map.vmas[0].start, 0x3000);
+        assert_eq!(map.vmas[1].start, 0x5000);
+        assert!(map
+            .insert_vma(Vma {
+                start: 0x3800,
+                end: 0x4800,
+                flags: VmaFlags::READ | VmaFlags::USER,
+                kind: VmaKind::Anonymous,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn vma_lookup_and_remove_exact_range_work() {
+        let mut map = ProcessMemoryMap::new(0x4000, 0x4000, 0x8000, 0x20_0000);
+        map.insert_vma(Vma {
+            start: 0x7000,
+            end: 0x9000,
+            flags: VmaFlags::READ | VmaFlags::WRITE | VmaFlags::USER,
+            kind: VmaKind::Heap,
+        })
+        .unwrap();
+
+        assert_eq!(map.find_vma(0x7000).unwrap().end, 0x9000);
+        assert_eq!(map.find_vma(0x8fff).unwrap().start, 0x7000);
+        assert!(map.find_vma(0x9000).is_none());
+
+        let removed = map.remove_exact_vma(0x7000, 0x9000).unwrap();
+        assert_eq!(removed.kind, VmaKind::Heap);
+        assert!(map.find_vma(0x7000).is_none());
+    }
+
+    #[test]
+    fn mark_cow_regions_only_marks_private_writable_memory() {
+        let mut map = ProcessMemoryMap::new(0x4000, 0x4000, 0x8000, 0x20_0000);
+        map.insert_vma(Vma {
+            start: 0x1000,
+            end: 0x2000,
+            flags: VmaFlags::READ | VmaFlags::WRITE | VmaFlags::USER,
+            kind: VmaKind::Anonymous,
+        })
+        .unwrap();
+        map.insert_vma(Vma {
+            start: 0x3000,
+            end: 0x4000,
+            flags: VmaFlags::READ | VmaFlags::WRITE | VmaFlags::USER | VmaFlags::SHARED,
+            kind: VmaKind::Anonymous,
+        })
+        .unwrap();
+        map.insert_vma(Vma {
+            start: 0x5000,
+            end: 0x6000,
+            flags: VmaFlags::READ | VmaFlags::EXEC | VmaFlags::USER,
+            kind: VmaKind::KernelSynthetic,
+        })
+        .unwrap();
+
+        map.mark_cow_regions();
+
+        assert!(map.vmas[0].flags.contains(VmaFlags::COW));
+        assert!(!map.vmas[1].flags.contains(VmaFlags::COW));
+        assert!(!map.vmas[2].flags.contains(VmaFlags::COW));
+    }
 }
 
 pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static str> {

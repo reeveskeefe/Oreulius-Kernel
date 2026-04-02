@@ -95,16 +95,18 @@ use paging::PAGE_SIZE;
 const PAGE_SIZE: usize = 4096;
 
 pub type JitFn = unsafe extern "C" fn(
-    *mut i32,
-    *mut usize,
-    *mut u8,
-    usize,
-    *mut i32,
-    *mut u32,
-    *mut u32,
-    *mut i32,
-    *mut u32,
-    *mut usize,
+    *mut i32,    // rdi: stack_ptr
+    *mut usize,  // rsi: sp_ptr
+    *mut u8,     // rdx: mem_ptr
+    usize,       // rcx: mem_len
+    *mut i32,    // r8:  locals_ptr
+    *mut u32,    // r9:  instr_fuel_ptr
+    *mut u32,    // [rbp+16]: mem_fuel_ptr
+    *mut i32,    // [rbp+24]: trap_ptr
+    *mut u32,    // [rbp+32]: globals_ptr  (shadow_stack_ptr on non-x86_64)
+    *mut usize,  // [rbp+40]: shadow_sp
+    *const usize, // [rbp+48]: fn_table_base (array of JitFn entry addresses, 0 = not compiled)
+    usize,        // [rbp+56]: fn_table_len
 ) -> i32;
 
 #[derive(Clone, Copy, Debug)]
@@ -191,12 +193,23 @@ const TRAP_CFI: i32 = -4;
 const X64_BRANCH_SCRATCH_SLOTS: usize = MAX_WASM_TYPE_ARITY;
 #[cfg(target_arch = "x86_64")]
 const X64_SAVED_REG_BYTES: i32 = 40;
+// Frame-local metadata: 6 slots × 8 bytes = 48 bytes.
+// Slots (relative to rbp, negative direction):
+//   [rbp-48] instr_fuel_ptr  [rbp-56] mem_fuel_ptr   [rbp-64] trap_ptr
+//   [rbp-72] globals_ptr     [rbp-80] fn_table_len    [rbp-88] fn_table_base
 #[cfg(target_arch = "x86_64")]
-const X64_FRAME_LOCAL_BYTES: i32 = 0x20;
+const X64_FRAME_LOCAL_BYTES: i32 = 0x38; // 6 × 8 = 48
+// Branch scratch slots (4 bytes each for i32 values) live below metadata.
 #[cfg(target_arch = "x86_64")]
 const X64_STACK_FRAME_BYTES: i32 = X64_FRAME_LOCAL_BYTES + ((X64_BRANCH_SCRATCH_SLOTS as i32) * 4);
 #[cfg(target_arch = "x86_64")]
 const X64_BRANCH_SCRATCH_BASE_DISP: i32 = -(X64_SAVED_REG_BYTES + X64_STACK_FRAME_BYTES);
+// Per-call scratch locals buffer for call_indirect param passing (below branch scratch).
+#[cfg(target_arch = "x86_64")]
+const X64_CALLEE_LOCALS_BYTES: i32 = MAX_LOCALS as i32 * 4; // = 1024
+#[cfg(target_arch = "x86_64")]
+const X64_CALLEE_LOCALS_DISP: i32 =
+    -(X64_SAVED_REG_BYTES + X64_STACK_FRAME_BYTES + X64_CALLEE_LOCALS_BYTES);
 
 impl JitExecBuffer {
     pub fn new(len: usize) -> Result<Self, &'static str> {
@@ -1177,6 +1190,157 @@ fn emit_code_into(
                 stack_push(&mut stack_depth, 2, &mut max_depth)?;
                 emitter.emit_i64_mul();
             }
+            Opcode::I64DivS => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?; // 2 i64 args = 4 slots
+                stack_push(&mut stack_depth, 2, &mut max_depth)?;
+                emitter.emit_i64_divs();
+            }
+            Opcode::I64Clz => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 2, &mut max_depth)?;
+                emitter.emit_i64_clz();
+            }
+            Opcode::I64Ctz => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 2, &mut max_depth)?;
+                emitter.emit_i64_ctz();
+            }
+            Opcode::I64Popcnt => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 2, &mut max_depth)?;
+                emitter.emit_i64_popcnt();
+            }
+            // ── New opcodes: i32 sign-extending loads ─────────────────────────
+            Opcode::I32Load8S => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
+                let (_align, n1) = read_uleb128(code, pc).ok_or("Bad load8s")?;
+                pc += n1;
+                let (off, n2) = read_uleb128(code, pc).ok_or("Bad load8s")?;
+                pc += n2;
+                stack_pop(&mut stack_depth, 1)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_load8_s(off);
+            }
+            Opcode::I32Load16S => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
+                let (_align, n1) = read_uleb128(code, pc).ok_or("Bad load16s")?;
+                pc += n1;
+                let (off, n2) = read_uleb128(code, pc).ok_or("Bad load16s")?;
+                pc += n2;
+                stack_pop(&mut stack_depth, 1)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_load16_s(off);
+            }
+            Opcode::I32Popcnt => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 1)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_popcnt();
+            }
+            Opcode::I32Rotl => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_rotl();
+            }
+            Opcode::I32Rotr => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i32_rotr();
+            }
+            // ── New opcodes: i64 loads ────────────────────────────────────────
+            Opcode::I64Load => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
+                let (_align, n1) = read_uleb128(code, pc).ok_or("Bad i64.load")?;
+                pc += n1;
+                let (off, n2) = read_uleb128(code, pc).ok_or("Bad i64.load")?;
+                pc += n2;
+                stack_pop(&mut stack_depth, 1)?;
+                stack_push(&mut stack_depth, 2, &mut max_depth)?;
+                emitter.emit_i64_load(off);
+            }
+            Opcode::I64Load8U => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
+                let (_align, n1) = read_uleb128(code, pc).ok_or("Bad i64.load8_u")?;
+                pc += n1;
+                let (off, n2) = read_uleb128(code, pc).ok_or("Bad i64.load8_u")?;
+                pc += n2;
+                stack_pop(&mut stack_depth, 1)?;
+                stack_push(&mut stack_depth, 2, &mut max_depth)?;
+                emitter.emit_i64_load8_u(off);
+            }
+            Opcode::I64Load16U => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
+                let (_align, n1) = read_uleb128(code, pc).ok_or("Bad i64.load16_u")?;
+                pc += n1;
+                let (off, n2) = read_uleb128(code, pc).ok_or("Bad i64.load16_u")?;
+                pc += n2;
+                stack_pop(&mut stack_depth, 1)?;
+                stack_push(&mut stack_depth, 2, &mut max_depth)?;
+                emitter.emit_i64_load16_u(off);
+            }
+            Opcode::I64Load32U => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
+                let (_align, n1) = read_uleb128(code, pc).ok_or("Bad i64.load32_u")?;
+                pc += n1;
+                let (off, n2) = read_uleb128(code, pc).ok_or("Bad i64.load32_u")?;
+                pc += n2;
+                stack_pop(&mut stack_depth, 1)?;
+                stack_push(&mut stack_depth, 2, &mut max_depth)?;
+                emitter.emit_i64_load32_u(off);
+            }
+            // ── New opcodes: i64 stores ───────────────────────────────────────
+            Opcode::I64Store => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
+                let (_align, n1) = read_uleb128(code, pc).ok_or("Bad i64.store")?;
+                pc += n1;
+                let (off, n2) = read_uleb128(code, pc).ok_or("Bad i64.store")?;
+                pc += n2;
+                stack_pop(&mut stack_depth, 3)?; // val_lo + val_hi + addr
+                emitter.emit_i64_store(off);
+            }
+            Opcode::I64Store8 => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
+                let (_align, n1) = read_uleb128(code, pc).ok_or("Bad i64.store8")?;
+                pc += n1;
+                let (off, n2) = read_uleb128(code, pc).ok_or("Bad i64.store8")?;
+                pc += n2;
+                stack_pop(&mut stack_depth, 3)?;
+                emitter.emit_i64_store8(off);
+            }
+            Opcode::I64Store16 => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
+                let (_align, n1) = read_uleb128(code, pc).ok_or("Bad i64.store16")?;
+                pc += n1;
+                let (off, n2) = read_uleb128(code, pc).ok_or("Bad i64.store16")?;
+                pc += n2;
+                stack_pop(&mut stack_depth, 3)?;
+                emitter.emit_i64_store16(off);
+            }
+            Opcode::I64Store32 => {
+                emitter.emit_instr_fuel_check();
+                emitter.emit_mem_fuel_check();
+                let (_align, n1) = read_uleb128(code, pc).ok_or("Bad i64.store32")?;
+                pc += n1;
+                let (off, n2) = read_uleb128(code, pc).ok_or("Bad i64.store32")?;
+                pc += n2;
+                stack_pop(&mut stack_depth, 3)?;
+                emitter.emit_i64_store32(off);
+            }
             // ── New opcodes: call_indirect ────────────────────────────────────
             Opcode::CallIndirect => {
                 #[cfg(not(target_arch = "x86_64"))]
@@ -1197,9 +1361,6 @@ fn emit_code_into(
                     let sig = type_sigs
                         .get(type_idx as usize)
                         .ok_or("call_indirect: type index out of bounds")?;
-                    if !sig.all_i32 {
-                        return Err("call_indirect: non-i32 signature not supported by JIT");
-                    }
                     // Pop function-table index from WASM stack
                     stack_pop(&mut stack_depth, 1)?;
                     // Pop function arguments; push return value (if any)
@@ -1292,6 +1453,23 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
             | Opcode::I64Add
             | Opcode::I64Sub
             | Opcode::I64Mul
+            | Opcode::I64DivS
+            | Opcode::I64Clz
+            | Opcode::I64Ctz
+            | Opcode::I64Popcnt
+            | Opcode::I64Load
+            | Opcode::I64Load8U
+            | Opcode::I64Load16U
+            | Opcode::I64Load32U
+            | Opcode::I64Store
+            | Opcode::I64Store8
+            | Opcode::I64Store16
+            | Opcode::I64Store32
+            | Opcode::I32Rotl
+            | Opcode::I32Rotr
+            | Opcode::I32Popcnt
+            | Opcode::I32Load8S
+            | Opcode::I32Load16S
             | Opcode::CallIndirect
             | Opcode::LocalGet
             | Opcode::LocalSet
@@ -2529,6 +2707,30 @@ impl Emitter {
         self.emit(&[0x89, 0x54, 0x24, 0x04]); // [esp+4] = edx (result_hi)
     }
 
+    // ── i64 divs / clz / ctz / popcnt (non-x86_64 stubs) ────────────────────
+    // These are x86_64-only ops. The dispatch in emit_code_into guards them with
+    // x86_64_backend_opcode_supported() so these stubs should never be reached on
+    // other architectures; they exist only to satisfy the trait requirement so
+    // the non-x86_64 build compiles without errors.
+
+    fn emit_i64_divs(&mut self) { panic!("i64.divs: not supported on this architecture"); }
+    fn emit_i64_clz(&mut self) { panic!("i64.clz: not supported on this architecture"); }
+    fn emit_i64_ctz(&mut self) { panic!("i64.ctz: not supported on this architecture"); }
+    fn emit_i64_popcnt(&mut self) { panic!("i64.popcnt: not supported on this architecture"); }
+    fn emit_i32_load8_s(&mut self, _off: u32) { panic!("i32.load8_s: not supported on this architecture"); }
+    fn emit_i32_load16_s(&mut self, _off: u32) { panic!("i32.load16_s: not supported on this architecture"); }
+    fn emit_i32_popcnt(&mut self) { panic!("i32.popcnt: not supported on this architecture"); }
+    fn emit_i32_rotl(&mut self) { panic!("i32.rotl: not supported on this architecture"); }
+    fn emit_i32_rotr(&mut self) { panic!("i32.rotr: not supported on this architecture"); }
+    fn emit_i64_load(&mut self, _off: u32) { panic!("i64.load: not supported on this architecture"); }
+    fn emit_i64_load8_u(&mut self, _off: u32) { panic!("i64.load8_u: not supported on this architecture"); }
+    fn emit_i64_load16_u(&mut self, _off: u32) { panic!("i64.load16_u: not supported on this architecture"); }
+    fn emit_i64_load32_u(&mut self, _off: u32) { panic!("i64.load32_u: not supported on this architecture"); }
+    fn emit_i64_store(&mut self, _off: u32) { panic!("i64.store: not supported on this architecture"); }
+    fn emit_i64_store8(&mut self, _off: u32) { panic!("i64.store8: not supported on this architecture"); }
+    fn emit_i64_store16(&mut self, _off: u32) { panic!("i64.store16: not supported on this architecture"); }
+    fn emit_i64_store32(&mut self, _off: u32) { panic!("i64.store32: not supported on this architecture"); }
+
     // ── call_indirect ─────────────────────────────────────────────────────────
     // Emits a trampoline that: (a) pops the table-index from the WASM value stack,
     // (b) bounds-checks it against a runtime function table pointer passed in via
@@ -2955,14 +3157,17 @@ impl Emitter {
     }
 
     fn emit_prologue(&mut self) {
-        // SysV x86_64 JitFn arg registers:
+        // SysV x86_64 JitFn calling convention — first 6 integer args in regs:
         // rdi stack_ptr, rsi sp_ptr, rdx mem_ptr, rcx mem_len, r8 locals_ptr,
         // r9 instr_fuel_ptr, [rbp+16] mem_fuel_ptr, [rbp+24] trap_ptr.
         // x86_64 reuses the shadow-stack-base slot at [rbp+32] as globals_ptr;
-        // the backend's CFI path is a no-op, so shadow_sp remains the only live CFI arg.
-        // Locals are stored in the reserved stack area below saved callee-saved regs:
-        // [rbp-48] instr_fuel_ptr, [rbp-56] mem_fuel_ptr, [rbp-64] trap_ptr, [rbp-72] globals_ptr.
-        // Multi-value branch scratch slots live below that fixed metadata area.
+        // [rbp+40] shadow_sp, [rbp+48] fn_table_base, [rbp+56] fn_table_len.
+        // Saved metadata in frame locals (all 8-byte slots):
+        //   [rbp-48] instr_fuel_ptr  [rbp-56] mem_fuel_ptr
+        //   [rbp-64] trap_ptr        [rbp-72] globals_ptr
+        //   [rbp-80] fn_table_len    [rbp-88] fn_table_base
+        // Branch scratch slots (4 bytes each) live at X64_BRANCH_SCRATCH_BASE_DISP.
+        // Callee-locals scratch (for call_indirect param staging) lives below that.
         self.emit(&[
             0x55, // push rbp
             0x48, 0x89, 0xE5, // mov rbp, rsp
@@ -2973,20 +3178,25 @@ impl Emitter {
             0x41, 0x57, // push r15
             0x48, 0x81, 0xEC, // sub rsp, imm32
         ]);
-        self.emit_i32(X64_STACK_FRAME_BYTES);
+        // Allocate both frame-local metadata + branch scratch + callee-locals scratch.
+        self.emit_i32(X64_STACK_FRAME_BYTES + X64_CALLEE_LOCALS_BYTES);
         self.emit(&[
-            0x49, 0x89, 0xFC, // mov r12, rdi
-            0x49, 0x89, 0xF5, // mov r13, rsi
-            0x49, 0x89, 0xD6, // mov r14, rdx
-            0x49, 0x89, 0xCF, // mov r15, rcx
-            0x4C, 0x89, 0xC3, // mov rbx, r8
-            0x4C, 0x89, 0x4D, 0xD0, // mov [rbp-48], r9
-            0x48, 0x8B, 0x45, 0x10, // mov rax, [rbp+16]
+            0x49, 0x89, 0xFC, // mov r12, rdi  (stack_ptr)
+            0x49, 0x89, 0xF5, // mov r13, rsi  (sp_ptr)
+            0x49, 0x89, 0xD6, // mov r14, rdx  (mem_ptr)
+            0x49, 0x89, 0xCF, // mov r15, rcx  (mem_len)
+            0x4C, 0x89, 0xC3, // mov rbx, r8   (locals_ptr)
+            0x4C, 0x89, 0x4D, 0xD0, // mov [rbp-48], r9  (instr_fuel_ptr)
+            0x48, 0x8B, 0x45, 0x10, // mov rax, [rbp+16] (mem_fuel_ptr)
             0x48, 0x89, 0x45, 0xC8, // mov [rbp-56], rax
-            0x48, 0x8B, 0x45, 0x18, // mov rax, [rbp+24]
+            0x48, 0x8B, 0x45, 0x18, // mov rax, [rbp+24] (trap_ptr)
             0x48, 0x89, 0x45, 0xC0, // mov [rbp-64], rax
-            0x48, 0x8B, 0x45, 0x20, // mov rax, [rbp+32]
+            0x48, 0x8B, 0x45, 0x20, // mov rax, [rbp+32] (globals_ptr)
             0x48, 0x89, 0x45, 0xB8, // mov [rbp-72], rax
+            0x48, 0x8B, 0x45, 0x38, // mov rax, [rbp+56] (fn_table_len)
+            0x48, 0x89, 0x45, 0xB0, // mov [rbp-80], rax
+            0x48, 0x8B, 0x45, 0x30, // mov rax, [rbp+48] (fn_table_base)
+            0x48, 0x89, 0x45, 0xA8, // mov [rbp-88], rax
         ]);
         self.emit_cfi_push_return();
     }
@@ -3484,91 +3694,466 @@ impl Emitter {
     }
 
     // ── i64.const (x86_64) ───────────────────────────────────────────────────
-    // Push two 32-bit slots: hi then lo (lo at stack top).
+    // Push two 32-bit virtual-stack slots: hi first (deeper), then lo (top).
+    // All i64 values use the virtual r12/r13 stack, not native rsp.
     fn emit_i64_const(&mut self, lo: i32, hi: i32) {
-        self.emit(&[0x68]);
-        self.emit_i32(hi); // push hi
-        self.emit(&[0x68]);
-        self.emit_i32(lo); // push lo
+        // push hi (deeper slot)
+        self.emit(&[0xB8]); // mov eax, imm32
+        self.emit_i32(hi);
+        self.emit_push_eax();
+        // push lo (stack top)
+        self.emit(&[0xB8]); // mov eax, imm32
+        self.emit_i32(lo);
+        self.emit_push_eax();
+    }
+
+    // Helper: pop r11d from the virtual stack, preserving rax and ecx.
+    // Sequence: mov r10,[r13]; test r10,r10; jz trap; dec r10;
+    //           mov r11d,[r12+r10*4]; mov [r13],r10
+    fn emit_pop_to_r11d(&mut self) {
+        self.emit(&[
+            0x4D, 0x8B, 0x55, 0x00, // mov r10, [r13+0]
+            0x4D, 0x85, 0xD2,       // test r10, r10
+        ]);
+        self.emit_trap_stack_jump(0x84); // jz trap_stack
+        self.emit(&[
+            0x49, 0xFF, 0xCA,       // dec r10
+            0x47, 0x8B, 0x1C, 0x94, // mov r11d, [r12 + r10*4]
+            0x4D, 0x89, 0x55, 0x00, // mov [r13+0], r10
+        ]);
+    }
+
+    // Helper: pop r8d from the virtual stack, preserving rax, ecx, r11.
+    // Uses r10 as scratch (same as all other pop helpers).
+    fn emit_pop_to_r8d(&mut self) {
+        self.emit(&[
+            0x4D, 0x8B, 0x55, 0x00, // mov r10, [r13+0]
+            0x4D, 0x85, 0xD2,       // test r10, r10
+        ]);
+        self.emit_trap_stack_jump(0x84); // jz trap_stack
+        self.emit(&[
+            0x49, 0xFF, 0xCA,       // dec r10
+            0x45, 0x8B, 0x04, 0x94, // mov r8d, [r12 + r10*4]
+            0x4D, 0x89, 0x55, 0x00, // mov [r13+0], r10
+        ]);
+    }
+
+    // Helper: push r8d onto the virtual stack.
+    fn emit_push_r8d(&mut self) {
+        self.emit(&[
+            0x4D, 0x8B, 0x55, 0x00, // mov r10, [r13+0]
+            0x49, 0x81, 0xFA,       // cmp r10, imm32
+        ]);
+        self.emit_u32(MAX_STACK_DEPTH as u32);
+        self.emit_trap_stack_jump(0x83); // jae trap_stack
+        self.emit(&[
+            0x45, 0x89, 0x04, 0x94, // mov [r12 + r10*4], r8d
+            0x49, 0xFF, 0xC2,       // inc r10
+            0x4D, 0x89, 0x55, 0x00, // mov [r13+0], r10
+        ]);
+    }
+
+    // ── i64 arithmetic helpers ────────────────────────────────────────────────
+    //
+    // i64 values are represented as two adjacent virtual-stack slots (32 bits each).
+    // Convention (top→bottom): lo_word, hi_word
+    //   (lo_word is the more recent push / closer to the top of the virtual stack)
+    //
+    // For binary ops consuming two i64 operands the stack order is:
+    //   top: a_lo, a_hi, b_lo, b_hi :bottom
+    //   (a was pushed most recently)
+    //
+    // Strategy: pop all 4 words into 64-bit scratch registers rax and r8, perform
+    // the 64-bit operation, then split the result into two 32-bit virtual pushes.
+    //
+    //   rax  = a  (full 64-bit: (a_hi << 32) | a_lo)
+    //   r8   = b  (full 64-bit: (b_hi << 32) | b_lo)
+    //
+    // Register usage summary:
+    //   r10  – virtual stack depth pointer (scratch used by all helpers)
+    //   r11  – scratch for lo half during build
+    //   r8   – scratch for b operand
+    //   rax  – accumulates a, then holds result
+    //   ecx  – scratch for hi half during build
+    //
+    // NOTE: r12, r13, r14, r15, rbx are callee-saved JIT context regs; never touched.
+
+    fn emit_i64_build_a_in_rax_b_in_r8(&mut self) {
+        // Pop a_lo → r11d
+        self.emit_pop_to_r11d();
+        // Pop a_hi → eax; zero-extend to rax automatically
+        self.emit_pop_to_eax();
+        // rax = (a_hi << 32) | a_lo
+        self.emit(&[0x48, 0xC1, 0xE0, 0x20]); // shl rax, 32
+        self.emit(&[0x4C, 0x09, 0xD8]);        // or rax, r11  (r11 zero-extended = a_lo)
+        // Pop b_lo → r11d
+        self.emit_pop_to_r11d();
+        // Pop b_hi → r8d; zero-extend to r8 automatically
+        self.emit_pop_to_r8d();
+        // r8 = (b_hi << 32) | b_lo
+        self.emit(&[0x49, 0xC1, 0xE0, 0x20]); // shl r8, 32
+        self.emit(&[0x4D, 0x09, 0xD8]);        // or r8, r11  (r11 = b_lo)
+    }
+
+    fn emit_i64_split_rax_push_hi_lo(&mut self) {
+        // Save lo (lower 32 bits of rax) in r11d before shifting
+        self.emit(&[0x41, 0x89, 0xC3]);        // mov r11d, eax
+        // Shift rax right to get hi in eax
+        self.emit(&[0x48, 0xC1, 0xE8, 0x20]); // shr rax, 32
+        // Push hi first (deeper on virtual stack)
+        self.emit_push_eax();
+        // Restore lo from r11d into eax
+        self.emit(&[0x44, 0x89, 0xD8]);        // mov eax, r11d
+        // Push lo (stack top)
+        self.emit_push_eax();
     }
 
     // ── i64.add (x86_64) ─────────────────────────────────────────────────────
-    // Stack layout (top → bottom): a_lo, a_hi, b_lo, b_hi
     fn emit_i64_add(&mut self) {
-        // pop a_lo -> eax; pop a_hi -> ecx
-        self.emit_pop_to_eax();
-        self.emit_pop_to_ecx();
-        // add eax, [rsp]     (b_lo)
-        self.emit(&[0x03, 0x04, 0x24]);
-        // adc ecx, [rsp+4]   (b_hi)
-        self.emit(&[0x13, 0x4C, 0x24, 0x04]);
-        // overwrite b_lo/b_hi with result
-        self.emit(&[0x89, 0x04, 0x24]); // mov [rsp], eax
-        self.emit(&[0x89, 0x4C, 0x24, 0x04]); // mov [rsp+4], ecx
+        self.emit_i64_build_a_in_rax_b_in_r8();
+        self.emit(&[0x4C, 0x01, 0xC0]); // add rax, r8
+        self.emit_i64_split_rax_push_hi_lo();
     }
 
     // ── i64.sub (x86_64) ─────────────────────────────────────────────────────
     fn emit_i64_sub(&mut self) {
-        self.emit_pop_to_eax();
-        self.emit_pop_to_ecx();
-        self.emit(&[0x2B, 0x04, 0x24]); // sub eax, [rsp]
-        self.emit(&[0x1B, 0x4C, 0x24, 0x04]); // sbb ecx, [rsp+4]
-        self.emit(&[0x89, 0x04, 0x24]);
-        self.emit(&[0x89, 0x4C, 0x24, 0x04]);
+        self.emit_i64_build_a_in_rax_b_in_r8();
+        self.emit(&[0x4C, 0x29, 0xC0]); // sub rax, r8
+        self.emit_i64_split_rax_push_hi_lo();
     }
 
     // ── i64.mul (x86_64) ─────────────────────────────────────────────────────
-    // Uses 64-bit registers available on x86_64 for correctness.
     fn emit_i64_mul(&mut self) {
-        // Pop a (lo in eax, hi in ecx) and b (lo at [rsp], hi at [rsp+4]).
-        // We construct full 64-bit values in rax and rcx, multiply, then
-        // split the result back into two 32-bit stack slots.
-        // pop a_lo -> eax
-        self.emit_pop_to_eax();
-        // pop a_hi -> ecx; combine into rax: shl rcx,32 | or rax,rcx
-        self.emit_pop_to_ecx();
-        self.emit(&[0x48, 0xC1, 0xE1, 0x20]); // shl rcx, 32
-        self.emit(&[0x48, 0x09, 0xC8]); // or rax, rcx
-                                        // pop b_lo -> ecx
-        self.emit_pop_to_ecx();
-        // pop b_hi -> rdx (we use edx as temp, then sign-extend manually)
-        // Since values are i32 pairs, load from stack via pop:
-        // Actually both b values already popped implicitly by the two emit_pop_to_ecx calls.
-        // Wait - we only popped a. b is still on stack as two slots. We need movzx/combine.
-        // Revised: use rsp offsets for b since we already consumed a.
-        // At this point rsp points to b_lo ([rsp+0]) and b_hi ([rsp+4]).
-        // mov ecx, [rsp]  -- b_lo
-        self.emit(&[0x8B, 0x0C, 0x24]);
-        // mov edx, [rsp+4] -- b_hi
-        self.emit(&[0x8B, 0x54, 0x24, 0x04]);
-        // shl rdx, 32 ; or rcx, rdx   -> rcx = full b
-        self.emit(&[0x48, 0xC1, 0xE2, 0x20]); // shl rdx, 32
-        self.emit(&[0x48, 0x09, 0xD1]); // or rcx, rdx
-                                        // imul rax, rcx -> rax = a * b (lower 64 bits)
-        self.emit(&[0x48, 0x0F, 0xAF, 0xC1]); // imul rax, rcx
-                                              // Extract lo into ecx; hi = upper 32 bits via shr rax,32
-        self.emit(&[0x89, 0xC1]); // mov ecx, eax (lo)
-        self.emit(&[0x48, 0xC1, 0xE8, 0x20]); // shr rax, 32  (hi in eax)
-                                              // Overwrite b stack slots: [rsp+4]=ecx(lo wait -- REVERSED), [rsp]=lo, [rsp+4]=hi
-                                              // Stack convention: lo at lower address ([rsp]), hi at [rsp+4]
-        self.emit(&[0x89, 0x0C, 0x24]); // mov [rsp], ecx  (lo)
-        self.emit(&[0x89, 0x44, 0x24, 0x04]); // mov [rsp+4], eax (hi)
+        self.emit_i64_build_a_in_rax_b_in_r8();
+        // imul rax, r8: IMUL r64,r/m64 (0F AF); dest rax=reg(0,no REX.R); src r8=r/m(REX.B=1)
+        // REX = W=1, R=0, X=0, B=1 = 0x49
+        self.emit(&[0x49, 0x0F, 0xAF, 0xC0]); // imul rax, r8
+        self.emit_i64_split_rax_push_hi_lo();
     }
 
     // ── call_indirect (x86_64) ────────────────────────────────────────────────
-    fn emit_call_indirect(&mut self, _type_idx: u32, _param_arity: u32, result_arity: u32) {
-        // pop table_index -> eax
+    //
+    // ABI recap:
+    //   [rbp-80]  fn_table_len   (number of entries in the function table)
+    //   [rbp-88]  fn_table_base  (pointer to array of usize JitFn addresses)
+    //
+    // Calling convention for the callee JitFn (SysV x86_64):
+    //   rdi  stack_ptr        rsi  sp_ptr         rdx  mem_ptr
+    //   rcx  mem_len          r8   locals_ptr      r9   instr_fuel_ptr
+    //   [rsp+8]  mem_fuel_ptr  [rsp+16] trap_ptr
+    //   [rsp+24] globals_ptr   [rsp+32] shadow_sp
+    //   [rsp+40] fn_table_base [rsp+48] fn_table_len
+    //
+    // Implementation:
+    //   1. Pop table_index → eax.
+    //   2. Bounds-check against [rbp-80]; trap_cfi if out-of-range.
+    //   3. Load entry address from table[index]; trap_cfi if null (not compiled).
+    //   4. Zero the callee-locals scratch area; fill param_arity slots from stack.
+    //   5. Push 6 stack arguments (reverse order: fn_table_len first pushed = deepest).
+    //   6. Load register args; call r11.
+    //   7. Clean up stack args.
+    //   8. If result_arity > 0 push eax onto WASM virtual stack.
+    fn emit_call_indirect(&mut self, _type_idx: u32, param_arity: u32, result_arity: u32) {
+        // Step 1: pop table_index → eax (r10 is scratch).
         self.emit_pop_to_eax();
-        // fn_table_len is at [rbp-80]; fn_table_base is at [rbp-88]
-        // (These frame slots must be provisioned by the x86_64 prologue; for now we
-        //  emit a CFI trap for any call_indirect until the ABI frame is extended.)
-        // cmp eax, 0  (guard: table always treated as empty → trap)
-        self.emit(&[0x83, 0xF8, 0x00]);
-        self.emit_trap_cfi_jump(0x75); // jne trap (unconditional for now)
-                                       // If result expected, push zero placeholder so stack depth is correct.
-        if result_arity > 0 {
-            self.emit(&[0x6A, 0x00]); // push 0
+
+        // Step 2: bounds check — load fn_table_len from [rbp-80].
+        // mov r11, [rbp-80]
+        self.emit(&[0x4C, 0x8B, 0x5D, 0xB0]);
+        // cmp rax, r11  (unsigned: eax zero-extended, r11=len)
+        self.emit(&[0x4C, 0x39, 0xD8]);
+        // jae → trap_cfi (index >= len)
+        self.emit_trap_cfi_jump(0x83);
+
+        // Step 3: load entry from fn_table_base[index].
+        // mov r11, [rbp-88]
+        self.emit(&[0x4C, 0x8B, 0x5D, 0xA8]);
+        // mov r11, [r11 + rax*8]  (each entry is a usize = 8 bytes on x86_64)
+        self.emit(&[0x4F, 0x8B, 0x1C, 0xC3]);
+        // test r11, r11  (null = not compiled → trap_cfi)
+        self.emit(&[0x4D, 0x85, 0xDB]);
+        self.emit_trap_cfi_jump(0x84);
+
+        // Step 4a: zero the callee-locals scratch area using rep stosd.
+        // xor eax, eax
+        self.emit(&[0x31, 0xC0]);
+        // lea rdi, [rbp + X64_CALLEE_LOCALS_DISP]
+        self.emit(&[0x48, 0x8D, 0xBD]);
+        self.emit_i32(X64_CALLEE_LOCALS_DISP);
+        // mov ecx, MAX_LOCALS
+        self.emit(&[0xB9]);
+        self.emit_i32(MAX_LOCALS as i32);
+        // rep stosd  (fills ecx × 4 bytes with eax=0)
+        self.emit(&[0xF3, 0xAB]);
+
+        // Step 4b: fill param slots from WASM virtual stack (top = last param = locals[n-1]).
+        // We pop param_arity values and write them to callee-locals[0..param_arity-1] in
+        // reverse: pop → locals[param_arity-1], then locals[param_arity-2], ..., locals[0].
+        for i in (0..param_arity).rev() {
+            self.emit_pop_to_eax();
+            let disp = X64_CALLEE_LOCALS_DISP + (i as i32) * 4;
+            // mov [rbp + disp32], eax
+            self.emit(&[0x89, 0x85]);
+            self.emit_i32(disp);
         }
+
+        // Step 5: push stack arguments for the callee (pushed right-to-left = rightmost first).
+        // The callee sees them as [rsp+8]...[rsp+48] after its own push rbp.
+        // We push: fn_table_len, fn_table_base, shadow_sp, globals_ptr, trap_ptr, mem_fuel_ptr.
+
+        // push [rbp-80]  (fn_table_len)
+        self.emit(&[0xFF, 0x75, 0xB0]);
+        // push [rbp-88]  (fn_table_base)
+        self.emit(&[0xFF, 0x75, 0xA8]);
+        // push [rbp+40]  (shadow_sp — pass through, 0x28 = 40)
+        self.emit(&[0xFF, 0x75, 0x28]);
+        // push [rbp-72]  (globals_ptr)
+        self.emit(&[0xFF, 0x75, 0xB8]);
+        // push [rbp-64]  (trap_ptr)
+        self.emit(&[0xFF, 0x75, 0xC0]);
+        // push [rbp-56]  (mem_fuel_ptr)
+        self.emit(&[0xFF, 0x75, 0xC8]);
+        // Note: [rbp-48] = instr_fuel_ptr goes in r9 (register arg).
+
+        // Step 6: set up register arguments and call.
+        // rdi = r12  (stack_ptr)
+        self.emit(&[0x4C, 0x89, 0xE7]);
+        // rsi = r13  (sp_ptr)
+        self.emit(&[0x4C, 0x89, 0xEE]);
+        // rdx = r14  (mem_ptr)
+        self.emit(&[0x4C, 0x89, 0xF2]);
+        // rcx = r15  (mem_len)
+        self.emit(&[0x4C, 0x89, 0xF9]);
+        // lea r8, [rbp + X64_CALLEE_LOCALS_DISP]  (callee locals_ptr)
+        self.emit(&[0x4C, 0x8D, 0x85]);
+        self.emit_i32(X64_CALLEE_LOCALS_DISP);
+        // mov r9, [rbp-48]  (instr_fuel_ptr — shared so callee consumes from same budget)
+        self.emit(&[0x4C, 0x8B, 0x4D, 0xD0]);
+        // call r11
+        self.emit(&[0x41, 0xFF, 0xD3]);
+
+        // Step 7: clean up 6 stack arguments (6 × 8 = 48 bytes).
+        self.emit(&[0x48, 0x83, 0xC4, 0x30]); // add rsp, 48
+
+        // Step 8: push result if expected.
+        if result_arity > 0 {
+            self.emit_push_eax();
+        }
+    }
+
+    // ── i32.rotl (x86_64) ────────────────────────────────────────────────────
+    fn emit_i32_rotl(&mut self) {
+        self.emit_pop_to_eax(); // count
+        self.emit(&[0x88, 0xC1]); // mov cl, al
+        self.emit_pop_to_eax(); // value (preserves ecx via edx round-trip in emit_pop_to_ecx;
+                                // here we call emit_pop_to_eax which clobbers r10/r11 but not cl)
+        self.emit(&[0xD3, 0xC0]); // rol eax, cl
+        self.emit_push_eax();
+    }
+
+    // ── i32.rotr (x86_64) ────────────────────────────────────────────────────
+    fn emit_i32_rotr(&mut self) {
+        self.emit_pop_to_eax(); // count
+        self.emit(&[0x88, 0xC1]); // mov cl, al
+        self.emit_pop_to_eax(); // value
+        self.emit(&[0xD3, 0xC8]); // ror eax, cl
+        self.emit_push_eax();
+    }
+
+    // ── i32.popcnt (x86_64) ──────────────────────────────────────────────────
+    // Requires POPCNT feature (present on all modern x86_64 CPUs ≥ Nehalem 2008).
+    fn emit_i32_popcnt(&mut self) {
+        self.emit_pop_to_eax();
+        self.emit(&[0xF3, 0x0F, 0xB8, 0xC0]); // popcnt eax, eax
+        self.emit_push_eax();
+    }
+
+    // ── i32.load8_s (x86_64) ─────────────────────────────────────────────────
+    fn emit_i32_load8_s(&mut self, off: u32) {
+        self.emit_pop_to_eax(); // addr
+        self.emit_bounds_check(off, 1);
+        // movsx eax, byte [r14 + rax]  — REX.B extends base to r14
+        self.emit(&[0x41, 0x0F, 0xBE, 0x04, 0x06]);
+        self.emit_push_eax();
+    }
+
+    // ── i32.load16_s (x86_64) ────────────────────────────────────────────────
+    fn emit_i32_load16_s(&mut self, off: u32) {
+        self.emit_pop_to_eax(); // addr
+        self.emit_bounds_check(off, 2);
+        // movsx eax, word [r14 + rax]  — same REX.B
+        self.emit(&[0x41, 0x0F, 0xBF, 0x04, 0x06]);
+        self.emit_push_eax();
+    }
+
+    // ── i64.divs (x86_64) ────────────────────────────────────────────────────
+    // Pops two i64s (4 slots): a (dividend) and b (divisor).
+    // Pushes a / b (signed) as an i64 (2 slots).
+    // Traps (TRAP_MEM) on divide-by-zero.
+    fn emit_i64_divs(&mut self) {
+        // Build a in rax, b in r8
+        self.emit_i64_build_a_in_rax_b_in_r8();
+        // Test b == 0 → trap
+        self.emit(&[0x4D, 0x85, 0xC0]);        // test r8, r8
+        self.emit_trap_mem_jump(0x84);          // jz trap_mem (div by zero → TRAP_MEM)
+        // cqo: sign-extend rax into rdx:rax
+        self.emit(&[0x48, 0x99]);               // cqo
+        // idiv r8: rax = quotient, rdx = remainder
+        self.emit(&[0x49, 0xF7, 0xF8]);         // idiv r8
+        self.emit_i64_split_rax_push_hi_lo();
+    }
+
+    // ── i64.clz (x86_64) ─────────────────────────────────────────────────────
+    // Requires LZCNT (BMI1; present on all modern x86_64 targets for this kernel).
+    fn emit_i64_clz(&mut self) {
+        // Pop lo, pop hi; build rax = (hi << 32) | lo
+        self.emit_pop_to_r11d();               // r11d = lo
+        self.emit_pop_to_eax();                // eax  = hi
+        self.emit(&[0x48, 0xC1, 0xE0, 0x20]); // shl rax, 32
+        self.emit(&[0x4C, 0x09, 0xD8]);        // or rax, r11
+        // lzcnt rax, rax → count in rax (0..=64, fits in 7 bits)
+        self.emit(&[0xF3, 0x48, 0x0F, 0xBD, 0xC0]);
+        // Save result before zeroing for hi push
+        self.emit(&[0x41, 0x89, 0xC3]);        // mov r11d, eax   (result = lo)
+        // Push hi = 0
+        self.emit(&[0x31, 0xC0]);              // xor eax, eax
+        self.emit_push_eax();
+        // Push lo = result
+        self.emit(&[0x44, 0x89, 0xD8]);        // mov eax, r11d
+        self.emit_push_eax();
+    }
+
+    // ── i64.ctz (x86_64) ─────────────────────────────────────────────────────
+    fn emit_i64_ctz(&mut self) {
+        self.emit_pop_to_r11d();               // r11d = lo
+        self.emit_pop_to_eax();                // eax  = hi
+        self.emit(&[0x48, 0xC1, 0xE0, 0x20]); // shl rax, 32
+        self.emit(&[0x4C, 0x09, 0xD8]);        // or rax, r11
+        // tzcnt rax, rax → count in rax (0..=64)
+        self.emit(&[0xF3, 0x48, 0x0F, 0xBC, 0xC0]);
+        self.emit(&[0x41, 0x89, 0xC3]);        // mov r11d, eax
+        self.emit(&[0x31, 0xC0]);              // xor eax, eax  (hi = 0)
+        self.emit_push_eax();
+        self.emit(&[0x44, 0x89, 0xD8]);        // mov eax, r11d
+        self.emit_push_eax();
+    }
+
+    // ── i64.popcnt (x86_64) ──────────────────────────────────────────────────
+    fn emit_i64_popcnt(&mut self) {
+        self.emit_pop_to_r11d();               // r11d = lo
+        self.emit_pop_to_eax();                // eax  = hi
+        self.emit(&[0x48, 0xC1, 0xE0, 0x20]); // shl rax, 32
+        self.emit(&[0x4C, 0x09, 0xD8]);        // or rax, r11
+        // popcnt rax, rax → count in rax (0..=64)
+        self.emit(&[0xF3, 0x48, 0x0F, 0xB8, 0xC0]);
+        self.emit(&[0x41, 0x89, 0xC3]);        // mov r11d, eax
+        self.emit(&[0x31, 0xC0]);              // xor eax, eax  (hi = 0)
+        self.emit_push_eax();
+        self.emit(&[0x44, 0x89, 0xD8]);        // mov eax, r11d
+        self.emit_push_eax();
+    }
+
+    // ── i64.load (x86_64) ────────────────────────────────────────────────────
+    // Pops i32 addr; loads 8 bytes from linear memory; pushes i64 (hi, lo).
+    fn emit_i64_load(&mut self, off: u32) {
+        self.emit_pop_to_eax();
+        self.emit_bounds_check(off, 8);
+        // mov r11, [r14 + rax]  — REX.W=1,REX.R=1(r11),REX.B=1(r14) = 0x4D
+        self.emit(&[0x4D, 0x8B, 0x1C, 0x06]);
+        // Save lo: r11d → r8d, then shift r11 right 32 → hi in r11d
+        self.emit(&[0x45, 0x89, 0xD8]);        // mov r8d, r11d  (save lo)
+        self.emit(&[0x49, 0xC1, 0xEB, 0x20]); // shr r11, 32    (hi in r11d)
+        self.emit(&[0x44, 0x89, 0xD8]);        // mov eax, r11d  (hi)
+        self.emit_push_eax();
+        self.emit(&[0x44, 0x89, 0xC0]);        // mov eax, r8d   (lo)
+        self.emit_push_eax();
+    }
+
+    // ── i64.load8_u (x86_64) ─────────────────────────────────────────────────
+    fn emit_i64_load8_u(&mut self, off: u32) {
+        self.emit_pop_to_eax();
+        self.emit_bounds_check(off, 1);
+        // movzx eax, byte [r14 + rax]  — REX.B=0x41
+        self.emit(&[0x41, 0x0F, 0xB6, 0x04, 0x06]);
+        // Push hi = 0, lo = eax
+        self.emit(&[0x41, 0x89, 0xC3]);        // mov r11d, eax
+        self.emit(&[0x31, 0xC0]);              // xor eax, eax
+        self.emit_push_eax();
+        self.emit(&[0x44, 0x89, 0xD8]);        // mov eax, r11d
+        self.emit_push_eax();
+    }
+
+    // ── i64.load16_u (x86_64) ────────────────────────────────────────────────
+    fn emit_i64_load16_u(&mut self, off: u32) {
+        self.emit_pop_to_eax();
+        self.emit_bounds_check(off, 2);
+        // movzx eax, word [r14 + rax]  — REX.B=0x41
+        self.emit(&[0x41, 0x0F, 0xB7, 0x04, 0x06]);
+        self.emit(&[0x41, 0x89, 0xC3]);        // mov r11d, eax
+        self.emit(&[0x31, 0xC0]);              // xor eax, eax
+        self.emit_push_eax();
+        self.emit(&[0x44, 0x89, 0xD8]);        // mov eax, r11d
+        self.emit_push_eax();
+    }
+
+    // ── i64.load32_u (x86_64) ────────────────────────────────────────────────
+    fn emit_i64_load32_u(&mut self, off: u32) {
+        self.emit_pop_to_eax();
+        self.emit_bounds_check(off, 4);
+        // mov eax, [r14 + rax]  — REX.B=0x41, 32-bit load zero-extends rax
+        self.emit(&[0x41, 0x8B, 0x04, 0x06]);
+        self.emit(&[0x41, 0x89, 0xC3]);        // mov r11d, eax
+        self.emit(&[0x31, 0xC0]);              // xor eax, eax
+        self.emit_push_eax();
+        self.emit(&[0x44, 0x89, 0xD8]);        // mov eax, r11d
+        self.emit_push_eax();
+    }
+
+    // ── i64.store (x86_64) ───────────────────────────────────────────────────
+    // Stack (top→bottom): val_lo, val_hi, addr
+    fn emit_i64_store(&mut self, off: u32) {
+        self.emit_pop_to_r11d();               // r11d = val_lo
+        self.emit_pop_to_eax();                // eax  = val_hi
+        // Build r11 = (val_hi << 32) | val_lo
+        self.emit(&[0x48, 0xC1, 0xE0, 0x20]); // shl rax, 32
+        self.emit(&[0x49, 0x09, 0xC3]);        // or r11, rax
+        // Now r11 = full 64-bit value. Pop addr → eax.
+        self.emit_pop_to_eax();
+        self.emit_bounds_check(off, 8);
+        // mov [r14 + rax], r11  — REX.W=1,REX.R=1(r11),REX.B=1(r14) = 0x4D
+        self.emit(&[0x4D, 0x89, 0x1C, 0x06]);
+    }
+
+    // ── i64.store8 (x86_64) ──────────────────────────────────────────────────
+    // Stack: val_lo, val_hi, addr  (store low byte of val_lo)
+    fn emit_i64_store8(&mut self, off: u32) {
+        self.emit_pop_to_r11d();               // val_lo (we want low byte)
+        self.emit_pop_to_eax();                // val_hi (discard)
+        // Pop addr → eax (emit_pop_to_eax clobbers eax, r11d preserved since helper only uses r10)
+        self.emit_pop_to_eax();
+        self.emit_bounds_check(off, 1);
+        // mov byte [r14 + rax], r11b  — REX no-W, REX.R=1(r11), REX.B=1(r14) = 0x45
+        self.emit(&[0x45, 0x88, 0x1C, 0x06]);
+    }
+
+    // ── i64.store16 (x86_64) ─────────────────────────────────────────────────
+    fn emit_i64_store16(&mut self, off: u32) {
+        self.emit_pop_to_r11d();               // val_lo
+        self.emit_pop_to_eax();                // val_hi (discard)
+        self.emit_pop_to_eax();                // addr
+        self.emit_bounds_check(off, 2);
+        // mov word [r14 + rax], r11w  — 0x66 operand-size prefix + REX 0x45
+        self.emit(&[0x66, 0x45, 0x89, 0x1C, 0x06]);
+    }
+
+    // ── i64.store32 (x86_64) ─────────────────────────────────────────────────
+    fn emit_i64_store32(&mut self, off: u32) {
+        self.emit_pop_to_r11d();               // val_lo (32 bits sufficient)
+        self.emit_pop_to_eax();                // val_hi (discard)
+        self.emit_pop_to_eax();                // addr
+        self.emit_bounds_check(off, 4);
+        // mov dword [r14 + rax], r11d  — REX.R=1(r11), REX.B=1(r14), no W = 0x45
+        self.emit(&[0x45, 0x89, 0x1C, 0x06]);
     }
 
     fn emit_local_get(&mut self, idx: u32) {
@@ -3689,7 +4274,7 @@ impl Emitter {
         self.emit(&[
             0x48, 0x81, 0xC4, // add rsp, imm32
         ]);
-        self.emit_i32(X64_STACK_FRAME_BYTES);
+        self.emit_i32(X64_STACK_FRAME_BYTES + X64_CALLEE_LOCALS_BYTES);
         self.emit(&[
             0x41, 0x5F, // pop r15
             0x41, 0x5E, // pop r14
@@ -3713,7 +4298,7 @@ impl Emitter {
             0x31, 0xC0, // xor eax, eax
             0x48, 0x81, 0xC4, // add rsp, imm32
         ]);
-        self.emit_i32(X64_STACK_FRAME_BYTES);
+        self.emit_i32(X64_STACK_FRAME_BYTES + X64_CALLEE_LOCALS_BYTES);
         self.emit(&[
             0x41, 0x5F, // pop r15
             0x41, 0x5E, // pop r14

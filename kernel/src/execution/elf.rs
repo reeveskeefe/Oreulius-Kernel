@@ -30,7 +30,7 @@ use core::ptr;
 use crate::arch::mmu::{self as arch_mmu, AddressSpace};
 use crate::paging::{PAGE_SIZE, USER_TOP};
 use crate::process::{self, ProcessPriority};
-use crate::quantum_scheduler;
+use crate::quantum_scheduler::{self, UserProcessLayout, UserRegionSpec, VmaFlags, VmaKind};
 
 const EI_NIDENT: usize = 16;
 const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
@@ -82,6 +82,7 @@ const R_AARCH64_JUMP_SLOT: u64 = 1026;
 const DEFAULT_BASE32: u32 = 0x0040_0000;
 const DEFAULT_BASE64: u64 = 0x0000_0000_0040_0000;
 const DEFAULT_STACK_PAGES: usize = 4;
+const USER_MMAP_MIN_ADDR: usize = 0x1000_0000;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -346,6 +347,67 @@ pub struct LoadedElf {
     pub space: AddressSpace,
     pub entry: u32,
     pub user_stack: u32,
+    pub layout: UserProcessLayout,
+}
+
+fn segment_flags(flags: u32) -> VmaFlags {
+    let mut vma_flags = VmaFlags::USER | VmaFlags::READ;
+    if (flags & PF_W) != 0 {
+        vma_flags |= VmaFlags::WRITE;
+    }
+    if (flags & PF_X) != 0 {
+        vma_flags |= VmaFlags::EXEC;
+    }
+    vma_flags
+}
+
+fn build_elf32_layout(phdrs: &[Elf32Phdr], base: u32) -> UserProcessLayout {
+    let page = PAGE_SIZE;
+    let mut regions = Vec::new();
+    let mut max_end = 0usize;
+
+    for ph in phdrs {
+        if ph.p_type != PT_LOAD || ph.p_memsz == 0 {
+            continue;
+        }
+        let start = align_down(base.wrapping_add(ph.p_vaddr), PAGE_SIZE as u32) as usize;
+        let end = align_up(
+            base.wrapping_add(ph.p_vaddr).wrapping_add(ph.p_memsz),
+            PAGE_SIZE as u32,
+        ) as usize;
+        max_end = max_end.max(end);
+        regions.push(UserRegionSpec {
+            start,
+            end,
+            flags: segment_flags(ph.p_flags),
+            kind: VmaKind::KernelSynthetic,
+        });
+    }
+
+    let stack_base = USER_TOP.saturating_sub(DEFAULT_STACK_PAGES * page);
+    regions.push(UserRegionSpec {
+        start: stack_base,
+        end: USER_TOP,
+        flags: VmaFlags::READ
+            | VmaFlags::WRITE
+            | VmaFlags::USER
+            | VmaFlags::STACK
+            | VmaFlags::GROW_DOWN,
+        kind: VmaKind::Stack,
+    });
+
+    let heap_base = ((max_end.saturating_add(page - 1)) / page).saturating_mul(page);
+    let mmap_base = ((USER_MMAP_MIN_ADDR.max(heap_base.saturating_add(page)) + page - 1) / page)
+        .saturating_mul(page);
+    let mmap_limit = USER_TOP.saturating_sub(page * 8);
+
+    UserProcessLayout {
+        regions,
+        heap_base,
+        heap_end: heap_base,
+        mmap_base,
+        mmap_limit,
+    }
 }
 
 pub fn load_elf32(bytes: &[u8]) -> Result<LoadedElf, &'static str> {
@@ -415,6 +477,7 @@ pub fn load_elf32(bytes: &[u8]) -> Result<LoadedElf, &'static str> {
         space,
         entry,
         user_stack,
+        layout: build_elf32_layout(&phdrs, base),
     })
 }
 
@@ -427,11 +490,12 @@ pub fn spawn_elf_process(name: &str, bytes: &[u8]) -> Result<(), &'static str> {
         .get(pid)
         .ok_or("Process not found")?;
     proc.priority = ProcessPriority::Normal;
-    quantum_scheduler::scheduler().lock().add_user_process(
+    quantum_scheduler::scheduler().lock().add_user_process_with_layout(
         proc,
         Box::new(loaded.space),
         loaded.entry,
         loaded.user_stack,
+        loaded.layout,
     )?;
     Ok(())
 }
@@ -682,6 +746,56 @@ pub struct LoadedElf64 {
     pub space: AddressSpace,
     pub entry: u64,
     pub user_stack: u64,
+    pub layout: UserProcessLayout,
+}
+
+fn build_elf64_layout(phdrs: &[Elf64Phdr], base: u64) -> UserProcessLayout {
+    let page = PAGE_SIZE;
+    let mut regions = Vec::new();
+    let mut max_end = 0usize;
+
+    for ph in phdrs {
+        if ph.p_type != PT_LOAD || ph.p_memsz == 0 {
+            continue;
+        }
+        let start = align_down64(base.wrapping_add(ph.p_vaddr), PAGE_SIZE as u64) as usize;
+        let end = align_up64(
+            base.wrapping_add(ph.p_vaddr).wrapping_add(ph.p_memsz),
+            PAGE_SIZE as u64,
+        ) as usize;
+        max_end = max_end.max(end);
+        regions.push(UserRegionSpec {
+            start,
+            end,
+            flags: segment_flags(ph.p_flags),
+            kind: VmaKind::KernelSynthetic,
+        });
+    }
+
+    let stack_base = USER_TOP.saturating_sub(DEFAULT_STACK_PAGES * page);
+    regions.push(UserRegionSpec {
+        start: stack_base,
+        end: USER_TOP,
+        flags: VmaFlags::READ
+            | VmaFlags::WRITE
+            | VmaFlags::USER
+            | VmaFlags::STACK
+            | VmaFlags::GROW_DOWN,
+        kind: VmaKind::Stack,
+    });
+
+    let heap_base = ((max_end.saturating_add(page - 1)) / page).saturating_mul(page);
+    let mmap_base = ((USER_MMAP_MIN_ADDR.max(heap_base.saturating_add(page)) + page - 1) / page)
+        .saturating_mul(page);
+    let mmap_limit = USER_TOP.saturating_sub(page * 8);
+
+    UserProcessLayout {
+        regions,
+        heap_base,
+        heap_end: heap_base,
+        mmap_base,
+        mmap_limit,
+    }
 }
 
 pub fn load_elf64(bytes: &[u8]) -> Result<LoadedElf64, &'static str> {
@@ -767,6 +881,7 @@ pub fn load_elf64(bytes: &[u8]) -> Result<LoadedElf64, &'static str> {
         space,
         entry,
         user_stack,
+        layout: build_elf64_layout(&phdrs, base),
     })
 }
 
@@ -779,11 +894,12 @@ pub fn spawn_elf64_process(name: &str, bytes: &[u8]) -> Result<(), &'static str>
         .get(pid)
         .ok_or("ELF64: process not found after spawn")?;
     proc.priority = ProcessPriority::Normal;
-    quantum_scheduler::scheduler().lock().add_user_process(
+    quantum_scheduler::scheduler().lock().add_user_process_with_layout(
         proc,
         Box::new(loaded.space),
         loaded.entry as u32, // scheduler stores u32 VA; fine for 4 GiB user space
         loaded.user_stack as u32,
+        loaded.layout,
     )?;
     Ok(())
 }
