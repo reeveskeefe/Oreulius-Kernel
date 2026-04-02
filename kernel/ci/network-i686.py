@@ -126,7 +126,7 @@ DNS_SUCCESS_RE = re.compile(r"Success! IP: (?:\d{1,3}\.){3}\d{1,3}")
 HTTP_STATUS_RE = re.compile(r"Status: [23]\d\d")
 HTTP_TOTAL_RE = re.compile(r"Total: [1-9]\d* bytes")
 HTTPS_FAIL_RE = re.compile(
-    r"Request failed: HTTPS blocked: strict certificate validation is not implemented"
+    r"Request failed: HTTPS blocked: stric[t]? certificate validation is not implemented"
 )
 REQUEST_FAILED_RE = re.compile(r"Request failed: (.+)")
 RESOLUTION_FAILED_RE = re.compile(r"Resolution failed: (.+)")
@@ -335,7 +335,9 @@ def run_https_phase(h):
         f"{label}: waiting for fail-closed result",
     )
     if name == "request_failed":
-        if "strict certificate validation is not implemented" in match.group(1):
+        if re.search(
+            r"stric[t]? certificate validation is not implemented", match.group(1)
+        ):
             name = "fail_closed"
         else:
             ensure_no_failure(label, name, match)
