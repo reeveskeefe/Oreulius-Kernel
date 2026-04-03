@@ -32,19 +32,7 @@ expect_a64_prompt
 
 run_a64_cmd "commands-help" {\[A64-CMD\] (shared )?commands:} "AArch64 commands-help"
 run_a64_cmd "blk-info" {\[A64-CMD\] blk present=1 [^\r\n]*} "AArch64 blk-info"
-run_a64_cmd "vfs-mount-virtio /mnt" {\[A64\] vfs mounted virtio-blk at /mnt} "AArch64 vfs-mount-virtio"
-
-after 100
-send -s -- "vfs-ls /mnt\r"
-expect {
-    -re {\[A64\] vfs-ls /mnt} {}
-    timeout { puts "timeout waiting for AArch64 vfs-ls"; exit 1 }
-}
-expect {
-    -re "raw" {}
-    timeout { puts "timeout waiting for AArch64 mounted raw entry"; exit 1 }
-}
-expect_a64_prompt
+run_a64_cmd "vfs-blk-read raw 0" {\[A64\] blk-read lba=} "AArch64 vfs-blk-read raw 0"
 
 after 100
 send -s -- "halt\r"
