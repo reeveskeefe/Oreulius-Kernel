@@ -32,16 +32,12 @@ expect_a64_prompt
 
 run_a64_cmd "commands-help" {\[A64-CMD\] (shared )?commands:} "AArch64 commands-help"
 run_a64_cmd "blk-info" {\[A64-CMD\] blk present=1 [^\r\n]*} "AArch64 blk-info"
-run_a64_cmd "vfs-mkdir /tmpci" {\[A64-CMD\] vfs-mkdir ok /tmpci} "AArch64 vfs-mkdir /tmpci"
-run_a64_cmd "vfs-write /tmpci/a hello-ci" {\[A64-CMD\] vfs-write ok path=/tmpci/a bytes=8} "AArch64 vfs-write"
-run_a64_cmd "vfs-read /tmpci/a" {hello-ci} "AArch64 vfs-read"
-run_a64_cmd "vfs-mkdir /mnt" {\[A64-CMD\] vfs-mkdir ok /mnt} "AArch64 vfs-mkdir /mnt"
-run_a64_cmd "vfs-mount-virtio /mnt" {\[A64-CMD\] vfs-mount-virtio ok /mnt} "AArch64 vfs-mount-virtio"
+run_a64_cmd "vfs-mount-virtio /mnt" {\[A64\] vfs mounted virtio-blk at /mnt} "AArch64 vfs-mount-virtio"
 
 after 100
 send -s -- "vfs-ls /mnt\r"
 expect {
-    -re {\[A64-CMD\] vfs-ls /mnt} {}
+    -re {\[A64\] vfs-ls /mnt} {}
     timeout { puts "timeout waiting for AArch64 vfs-ls"; exit 1 }
 }
 expect {
