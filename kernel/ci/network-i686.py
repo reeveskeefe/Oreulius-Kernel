@@ -278,7 +278,8 @@ def run_simple_phase(h, label, cmd, success_regex):
 def run_http_phase(h):
     label = "plain HTTP"
     cmd = "http-get http://example.com/"
-    for attempt in range(2):
+    max_attempts = 4
+    for attempt in range(max_attempts):
         seq = send_committed(h, label, cmd)
         name, match = h.wait_for_any(
             [
@@ -309,7 +310,7 @@ def run_http_phase(h):
             return
 
         transient = name == "request_failed" and match.group(1) in TRANSIENT_HTTP_FAILURES
-        if transient and attempt == 0:
+        if transient and attempt + 1 < max_attempts:
             h.wait_for_any(
                 [("done", done_re(seq, cmd))], 60, f"{label}: waiting for completion marker"
             )
