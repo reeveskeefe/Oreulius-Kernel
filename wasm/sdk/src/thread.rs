@@ -1,6 +1,6 @@
 //! Cooperative WASM thread helpers.
 
-use crate::raw::oreulia;
+use crate::raw::oreulius;
 
 /// Opaque cooperative WASM thread identifier.
 pub type ThreadId = i32;
@@ -20,7 +20,7 @@ pub enum JoinStatus {
 ///
 /// Returns the new thread ID on success.
 pub unsafe fn spawn(func_idx: u32, arg: i32) -> Option<ThreadId> {
-    let tid = oreulia::thread_spawn(func_idx as i32, arg);
+    let tid = oreulius::thread_spawn(func_idx as i32, arg);
     if tid < 0 {
         None
     } else {
@@ -30,7 +30,7 @@ pub unsafe fn spawn(func_idx: u32, arg: i32) -> Option<ThreadId> {
 
 /// Attempt to join a cooperative WASM thread without blocking the whole module.
 pub fn join(tid: ThreadId) -> JoinStatus {
-    let result = unsafe { oreulia::thread_join(tid) };
+    let result = unsafe { oreulius::thread_join(tid) };
     match result {
         -1 => JoinStatus::Pending,
         0 => JoinStatus::NotFound,
@@ -42,15 +42,15 @@ pub fn join(tid: ThreadId) -> JoinStatus {
 ///
 /// The main instance returns `0`.
 pub fn current_id() -> ThreadId {
-    unsafe { oreulia::thread_id() }
+    unsafe { oreulius::thread_id() }
 }
 
 /// Yield the current CPU quantum.
 pub fn yield_now() {
-    unsafe { oreulia::thread_yield() }
+    unsafe { oreulius::thread_yield() }
 }
 
 /// Exit the current cooperative WASM thread.
 pub fn exit(code: i32) {
-    unsafe { oreulia::thread_exit(code) }
+    unsafe { oreulius::thread_exit(code) }
 }

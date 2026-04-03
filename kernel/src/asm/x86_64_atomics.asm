@@ -1,4 +1,4 @@
-; x86_64_atomics.asm — Real x86_64 atomic primitives for Oreulia kernel
+; x86_64_atomics.asm — Real x86_64 atomic primitives for Oreulius kernel
 ;
 ; Replaces all STUB_ZERO shims in x86_64_shims.asm for:
 ;   asm_atomic_add, asm_atomic_and, asm_atomic_cmpxchg, asm_atomic_dec,

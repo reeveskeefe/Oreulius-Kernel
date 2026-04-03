@@ -42,7 +42,7 @@
     </style>
   </defs>
 
-  <text x="540" y="34" text-anchor="middle" class="title">Oreulia WASM Runtime Demo Flow</text>
+  <text x="540" y="34" text-anchor="middle" class="title">Oreulius WASM Runtime Demo Flow</text>
 
   <!-- Background panel for examples -->
   <rect x="40" y="245" width="1000" height="400" rx="16" class="panel"/>
@@ -50,7 +50,7 @@
 
   <!-- Top node: shell -->
   <rect x="390" y="70" width="300" height="72" rx="14" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.2"/>
-  <text x="540" y="99" text-anchor="middle" class="box-title">Oreulia Shell</text>
+  <text x="540" y="99" text-anchor="middle" class="box-title">Oreulius Shell</text>
   <text x="540" y="121" text-anchor="middle" class="box-sub">wasm &lt;file&gt;.wasm</text>
 
   <!-- Middle node: runtime -->

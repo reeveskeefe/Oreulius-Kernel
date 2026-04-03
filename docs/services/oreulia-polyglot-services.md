@@ -1,4 +1,4 @@
-# Oreulia Polyglot Services
+# Oreulius Polyglot Services
 
 **Status:** Implemented, but narrower than some earlier docs claimed.
 
@@ -17,7 +17,7 @@ Host ABI:
 
 ## 1. What polyglot services currently are
 
-The current polyglot subsystem gives Oreulia a **named registry of WASM modules by language-tagged service name**, plus a way to obtain a service-pointer handle to a registered module.
+The current polyglot subsystem gives Oreulius a **named registry of WASM modules by language-tagged service name**, plus a way to obtain a service-pointer handle to a registered module.
 
 It does **not** yet implement the stricter export-resolved ABI linker that some older documents described.
 
@@ -44,7 +44,7 @@ Each active entry stores:
 - `singleton` flag
 - `cap_object` placeholder field
 
-The language tag comes from the module's `oreulia_lang` custom section and defaults to `Unknown` if absent.
+The language tag comes from the module's `oreulius_lang` custom section and defaults to `Unknown` if absent.
 
 ### Singleton behavior
 
@@ -167,7 +167,7 @@ These limitations are real and should be documented explicitly.
 
 `polyglot_link` accepts an export name, but the current host path does not use it to disambiguate multiple service-pointer exports from the same instance. It simply finds the first active service pointer for that instance.
 
-### 6.2 Registry cleanup is incomplete
+### 6.2 Registry teardown remains manual
 
 There is no dedicated polyglot unregister path today.
 
@@ -207,4 +207,4 @@ Claims that should not be made yet:
 - full kernel capability-manager installation of polyglot link objects
 - complete stale-entry cleanup on instance teardown
 
-The correct public description is that Oreulia already has a real polyglot registry and link surface, but it is still a lightweight layer over service-pointer capabilities rather than a fully generalized cross-language ABI linker.
+The correct public description is that Oreulius already has a real polyglot registry and link surface, but it is still a lightweight layer over service-pointer capabilities rather than a fully generalized cross-language ABI linker.

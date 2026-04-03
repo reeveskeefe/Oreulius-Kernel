@@ -1,21 +1,21 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
 
-//! Oreulia Persistence v0
+//! Oreulius Persistence v0
 //!
 //! Provides append-only logs, snapshots, and replay-based recovery
 //! for durable state management.
@@ -259,8 +259,8 @@ const SNAPSHOT_DISK_SLOT_GENERIC: u16 = 1;
 const SNAPSHOT_DISK_SLOT_TEMPORAL: u16 = 2;
 const SNAPSHOT_DISK_SLOT_VFS: u16 = 3;
 const SNAPSHOT_DISK_SECTOR_BYTES: usize = 512;
-const SNAPSHOT_FILE_PATH_GENERIC: &str = "/.oreulia_snapshot_generic";
-const SNAPSHOT_FILE_PATH_TEMPORAL: &str = "/.oreulia_snapshot_temporal";
+const SNAPSHOT_FILE_PATH_GENERIC: &str = "/.oreulius_snapshot_generic";
+const SNAPSHOT_FILE_PATH_TEMPORAL: &str = "/.oreulius_snapshot_temporal";
 const SNAPSHOT_IO_SCRATCH_BYTES: usize =
     ((SNAPSHOT_DISK_HEADER_BYTES + MAX_SNAPSHOT_SIZE + SNAPSHOT_DISK_SECTOR_BYTES - 1)
         / SNAPSHOT_DISK_SECTOR_BYTES)
@@ -565,7 +565,7 @@ fn derive_snapshot_seal_keys(slot_id: u16) -> ([u8; 16], [u8; 32]) {
     let master = crate::security::persistence_seal_key();
 
     let mut enc = crate::crypto::Sha256::new();
-    enc.update(b"oreulia:persist:enc:");
+    enc.update(b"oreulius:persist:enc:");
     enc.update(&slot_id.to_le_bytes());
     enc.update(&master);
     let enc_digest = enc.finalize();
@@ -573,7 +573,7 @@ fn derive_snapshot_seal_keys(slot_id: u16) -> ([u8; 16], [u8; 32]) {
     enc_key.copy_from_slice(&enc_digest[..16]);
 
     let mut mac = crate::crypto::Sha256::new();
-    mac.update(b"oreulia:persist:mac:");
+    mac.update(b"oreulius:persist:mac:");
     mac.update(&slot_id.to_le_bytes());
     mac.update(&master);
     let mac_key = mac.finalize();

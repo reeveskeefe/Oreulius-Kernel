@@ -1,8 +1,8 @@
-//! Linker script for Oreulia WASM applications.
+//! Linker script for Oreulius WASM applications.
 //!
 //! The default `wasm-ld` layout already works for most apps.  This file
 //! documents the expected memory layout and can be passed to `wasm-ld` via
-//! `--script oreulia.ld` for custom builds.
+//! `--script oreulius.ld` for custom builds.
 //!
 //! Linear memory layout:
 //!
@@ -21,6 +21,6 @@
 //!
 //! # Custom entry points
 //!
-//! By default `wasm-ld` expects `_start` as the entry export.  The Oreulia
+//! By default `wasm-ld` expects `_start` as the entry export.  The Oreulius
 //! runtime calls `func[export "_start"]` after instantiation.  If you want a
 //! different name, export it and call it from `_start`.

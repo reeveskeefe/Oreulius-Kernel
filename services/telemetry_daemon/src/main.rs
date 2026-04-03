@@ -1,4 +1,4 @@
-//! Oreulia Userspace Telemetry Daemon
+//! Oreulius Userspace Telemetry Daemon
 //!
 //! Consumes `TelemetryEvent` frames from the kernel's wait-free `TELEMETRY_RING`
 //! (forwarded over QEMU COM2 → UNIX socket) and performs out-of-band CTMC
@@ -225,7 +225,7 @@ impl ProcessCtmcState {
 
 fn main() {
     println!(
-        "Oreulia Telemetry Daemon booting (PID={})...",
+        "Oreulius Telemetry Daemon booting (PID={})...",
         MATH_DAEMON_PID
     );
     println!(
@@ -288,7 +288,7 @@ fn main() {
         if !anomalous_pids.is_empty() {
             // Lazily open / reconnect the revocation back-channel.
             if revoke_stream.is_none() {
-                revoke_stream = UnixStream::connect("/tmp/oreulia_ebpf_telemetry").ok();
+                revoke_stream = UnixStream::connect("/tmp/oreulius_ebpf_telemetry").ok();
             }
 
             if let Some(ref mut sock) = revoke_stream {

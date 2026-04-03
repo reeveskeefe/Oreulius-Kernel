@@ -1,21 +1,21 @@
-# Oreulia Community License FAQ (Non-Binding)
+# Oreulius Community License FAQ (Non-Binding)
 
 Effective Date: 2026-03-14
 
-This document is for convenience only. It does not modify the Oreulia
+This document is for convenience only. It does not modify the Oreulius
 Community License. If there is any conflict, the License controls.
 
 ## Is this open source?
-No. Oreulia is source-available under the Oreulia Community License and is not
+No. Oreulius is source-available under the Oreulius Community License and is not
 an OSI-approved open-source project.
 
 ## What can I do under the public license?
-You can study, run, modify, benchmark, fork publicly, and distribute Oreulia
+You can study, run, modify, benchmark, fork publicly, and distribute Oreulius
 for research, evaluation, education, and other non-commercial uses.
 
-## Can a company evaluate Oreulia internally?
+## Can a company evaluate Oreulius internally?
 Yes. Internal evaluation, testing, benchmarking, security review, and prototype
-work are allowed so long as Oreulia is not used in production and is not part
+work are allowed so long as Oreulius is not used in production and is not part
 of a paid or revenue-generating product or service.
 
 ## What counts as non-commercial use?
@@ -26,7 +26,7 @@ collaboration.
 ## What counts as commercial use?
 Commercial use generally means production deployment, use in a product or
 service offered for sale, operation of hosted or managed services, or paid
-support/integration work built around Oreulia.
+support/integration work built around Oreulius.
 
 ## Do I need a separate agreement for commercial use?
 Yes. Commercial use requires a separate written agreement with the Licensor.
@@ -41,7 +41,7 @@ non-commercial uses.
 
 ## What happens to contributions?
 Contributors retain copyright, but accepted contributions may be incorporated,
-distributed, and relicensed as part of Oreulia.
+distributed, and relicensed as part of Oreulius.
 
 ## Is there a patent grant?
 Yes. The Community License includes a contributor patent grant and patent

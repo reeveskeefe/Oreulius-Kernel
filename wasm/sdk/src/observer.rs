@@ -1,7 +1,7 @@
 //! # Kernel Observer API
 //!
 //! WASM modules can register as **kernel observers** to receive real-time
-//! event notifications from the Oreulia kernel.  Events are delivered over
+//! event notifications from the Oreulius kernel.  Events are delivered over
 //! a per-observer IPC channel and can be drained at any time via
 //! [`query`].
 //!
@@ -22,7 +22,7 @@
 //! ```rust,no_run
 //! #![no_std]
 //! #![no_main]
-//! use oreulia_sdk::observer::{self, ObserverEvent, ALL};
+//! use oreulius_sdk::observer::{self, ObserverEvent, ALL};
 //!
 //! #[no_mangle]
 //! pub extern "C" fn _start() {
@@ -34,12 +34,12 @@
 //!         for i in 0..n {
 //!             // act on events[i]
 //!         }
-//!         oreulia_sdk::process::yield_now();
+//!         oreulius_sdk::process::yield_now();
 //!     }
 //! }
 //! ```
 
-use crate::raw::oreulia;
+use crate::raw::oreulius;
 
 // ── Event mask constants ─────────────────────────────────────────────────────
 
@@ -107,7 +107,7 @@ impl ObserverEvent {
 /// Returns the IPC channel ID used for event delivery on success, or `None`
 /// if the kernel observer table is full or an error occurred.
 pub fn subscribe(event_mask: u32) -> Option<u32> {
-    let result = unsafe { oreulia::observer_subscribe(event_mask as i32) };
+    let result = unsafe { oreulius::observer_subscribe(event_mask as i32) };
     if result >= 0 {
         Some(result as u32)
     } else {
@@ -118,7 +118,7 @@ pub fn subscribe(event_mask: u32) -> Option<u32> {
 /// Deregister this WASM module as a kernel observer and release its delivery
 /// channel.  Returns `true` on success.
 pub fn unsubscribe() -> bool {
-    let result = unsafe { oreulia::observer_unsubscribe() };
+    let result = unsafe { oreulius::observer_unsubscribe() };
     result == 0
 }
 
@@ -135,7 +135,7 @@ pub fn query(events: &mut [ObserverEvent]) -> usize {
     // The raw buffer must be `events.len() * 32` bytes.
     let buf_ptr  = events.as_mut_ptr() as i32;
     let buf_len  = (events.len() * 32) as i32;
-    let result   = unsafe { oreulia::observer_query(buf_ptr, buf_len) };
+    let result   = unsafe { oreulius::observer_query(buf_ptr, buf_len) };
     if result < 0 {
         0
     } else {

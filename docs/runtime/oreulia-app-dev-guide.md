@@ -1,7 +1,7 @@
-# Oreulia Application Developer Guide
+# Oreulius Application Developer Guide
 
 This guide covers everything you need to build, run, and debug userland
-applications on the Oreulia OS WASM runtime.
+applications on the Oreulius OS WASM runtime.
 
 ---
 
@@ -12,7 +12,7 @@ applications on the Oreulia OS WASM runtime.
 3. [Hello World (WAT)](#hello-world-wat)
 4. [Hello World (Rust SDK)](#hello-world-rust-sdk)
 5. [WASI API Reference](#wasi-api-reference)
-6. [Oreulia Native ABI](#oreulia-native-abi)
+6. [Oreulius Native ABI](#oreulius-native-abi)
 7. [Process Lifecycle](#process-lifecycle)
 8. [IPC Channels](#ipc-channels)
 9. [Capability Model](#capability-model)
@@ -27,7 +27,7 @@ applications on the Oreulia OS WASM runtime.
 
 ## Overview
 
-Oreulia executes applications as **WASM modules** inside a capability-secured
+Oreulius executes applications as **WASM modules** inside a capability-secured
 sandbox.  Every module runs in its own linear memory space, communicates with
 the kernel via typed host functions, and cannot access hardware directly.
 
@@ -36,7 +36,7 @@ Two layers of host functions are available:
 | Layer | Import module | IDs | Standard |
 |-------|---------------|-----|----------|
 | WASI Preview 1 | `wasi_snapshot_preview1` | 45–90 | Yes |
-| Oreulia native | `oreulia` or `env` | 0–44, 100–102 | Oreulia-specific |
+| Oreulius native | `oreulius` or `env` | 0–44, 91–131 | Oreulius-specific |
 
 Any valid WASM binary targeting `wasm32-wasi` runs unmodified.  WASI-SDK,
 `wasi-sdk`, Emscripten, and `cargo build --target wasm32-wasi` are all
@@ -54,15 +54,15 @@ supported.
 | `rustup target add wasm32-wasi` | Build Rust apps |
 | `wasm-objdump` (optional) | Inspect WASM binaries |
 
-### Running a WASM binary inside Oreulia
+### Running a WASM binary inside Oreulius
 
 ```text
-Oreulia OS (x86_64)
+Oreulius OS (x86_64)
 > wasm hello.wasm
 ```
 
 The `wasm` shell command:
-1. Reads the `.wasm` binary from the Oreulia VFS.
+1. Reads the `.wasm` binary from the Oreulius VFS.
 2. Calls `wasm_runtime().instantiate(bytes, pid)`.
 3. Calls the exported `_start` function.
 
@@ -78,7 +78,7 @@ The `wasm` shell command:
     (func $proc_exit (param i32)))
 
   (memory (export "memory") 1)
-  (data (i32.const 8) "Hello from Oreulia!\n")  ;; 20 bytes
+  (data (i32.const 8) "Hello from Oreulius!\n")  ;; 20 bytes
 
   (func (export "_start")
     ;; iovec: { buf_ptr=8, buf_len=20 } at address 0
@@ -96,7 +96,7 @@ Compile and run:
 
 ```bash
 wat2wasm hello.wat -o hello.wasm
-# Copy hello.wasm into the Oreulia VFS image, then:
+# Copy hello.wasm into the Oreulius VFS image, then:
 # wasm hello.wasm
 ```
 
@@ -108,11 +108,11 @@ wat2wasm hello.wat -o hello.wasm
 #![no_std]
 #![no_main]
 
-use oreulia_sdk::{io, process};
+use oreulius_sdk::{io, process};
 
 #[no_mangle]
 pub extern "C" fn _start() {
-    unsafe { io::println("Hello from Oreulia SDK!") };
+    unsafe { io::println("Hello from Oreulius SDK!") };
     process::exit(0);
 }
 ```
@@ -122,7 +122,7 @@ pub extern "C" fn _start() {
 ```bash
 cd wasm/sdk
 cargo build --target wasm32-wasi --release
-# Output: target/wasm32-wasi/release/oreulia_sdk.wasm
+# Output: target/wasm32-wasi/release/oreulius_sdk.wasm
 ```
 
 **`Cargo.toml` for your app:**
@@ -133,7 +133,7 @@ name = "my-app"
 edition = "2021"
 
 [dependencies]
-oreulia-sdk = { path = "/path/to/wasm/sdk" }
+oreulius-sdk = { path = "/path/to/wasm/sdk" }
 
 [profile.release]
 opt-level = "z"
@@ -182,7 +182,7 @@ Full spec: https://github.com/WebAssembly/WASI/blob/main/legacy/preview1/docs.md
 
 ### `poll_oneoff` — blocking I/O wait
 
-Oreulia's `poll_oneoff` honours **clock subscriptions** (relative and absolute
+Oreulius's `poll_oneoff` honours **clock subscriptions** (relative and absolute
 nanosecond timeouts) and **fd_read readiness** for stdin (fd 0) and the
 network receive ring.  It yields the current time slice during the wait rather
 than busy-spinning.
@@ -213,48 +213,59 @@ Offset  Size  Field
 
 ---
 
-## Oreulia Native ABI
+## Oreulius Native ABI
 
-Import module name: `"oreulia"` (also accepts `"env"`).
+Import module name: `"oreulius"` (also accepts `"env"`).
+
+The authoritative per-host ABI reference is:
+- [oreulius-wasm-abi.md](./oreulius-wasm-abi.md)
+
+Current native host ranges in the production runtime:
+
+| ID range | Category |
+|----------|----------|
+| `0–12` | debug log, filesystem, IPC/channel messaging, network, service-pointer invocation/registration |
+| `13–22` | temporal object operations and branch/merge APIs |
+| `23–27` | cooperative WASM threads |
+| `28–44` | compositor and input services |
+| `91–99` | TLS client services |
+| `100–102` | process lifecycle (`proc_spawn`, `proc_yield`, `proc_sleep`) |
+| `103–105` | polyglot kernel service registry/linking |
+| `106–108` | kernel observer services |
+| `109–115` | decentralized kernel mesh services |
+| `116–120` | temporal capability and checkpoint services |
+| `121–124` | policy/capability-contract services |
+| `125–128` | capability entanglement services |
+| `129–131` | capability graph query/verification services |
+
+The loader accepts both `oreulius_*` import names and the shorter plain names,
+for example `thread_spawn` as well as `oreulius_thread_spawn`.
 
 ### Process management
 
-| ID  | Signature | Description |
-|-----|-----------|-------------|
-|  23 | `oreulia_thread_spawn(func_idx: i32, arg: i32) -> i32` | Spawn cooperative WASM thread |
-|  24 | `oreulia_thread_join(tid: i32) -> i32` | Join cooperative WASM thread |
-|  25 | `oreulia_thread_id() -> i32` | Current cooperative thread ID |
-|  26 | `oreulia_thread_yield()` | Yield CPU quantum |
-|  27 | `oreulia_thread_exit(code: i32)` | Exit cooperative thread |
-| 100 | `proc_spawn(bytes_ptr: i32, bytes_len: i32) -> i32` | Spawn child WASM |
-| 101 | `proc_yield()` | Cooperative yield |
-| 102 | `proc_sleep(ticks: i32)` | Sleep ~N ms |
+The current process/thread host surface is:
+- `thread_spawn`, `thread_join`, `thread_id`, `thread_yield`, `thread_exit`
+- `proc_spawn`, `proc_yield`, `proc_sleep`
 
-**`proc_spawn`** copies `bytes_len` bytes from linear memory at `bytes_ptr`,
+`proc_spawn` copies `bytes_len` bytes from linear memory at `bytes_ptr`,
 registers a child kernel process, enqueues a new WASM instance, and returns
-the child PID. The spawn is deferred until the current host function returns
-to avoid deadlock on the runtime mutex. The return value is `0` on failure.
+the child PID. Spawn instantiation is deferred until the current host call
+returns so the runtime does not re-enter itself while holding internal locks.
 
-The loader accepts both `oreulia_*` import names and the shorter plain names,
-for example `thread_spawn` as well as `oreulia_thread_spawn`.
+### IPC and service pointers
 
-### Capability management
+The current IPC/service host surface is:
+- `channel_send`
+- `channel_recv`
+- `channel_send_cap`
+- `last_service_cap`
+- `service_register`
+- `service_invoke`
+- `service_invoke_typed`
 
-| ID | Signature | Description |
-|----|-----------|-------------|
-|  0 | `capability_create() -> u32` | Allocate object ID |
-|  1 | `capability_send(cap_id, data_ptr, data_len) -> u32` | Send message |
-|  2 | `capability_recv(cap_id, buf_ptr, buf_len) -> u32` | Receive message |
-|  3 | `capability_drop(cap_id)` | Release reference |
-
-### IPC channels
-
-| ID | Signature | Description |
-|----|-----------|-------------|
-|  4 | `channel_open(name_ptr, name_len) -> u32` | Open named channel |
-|  5 | `channel_send(handle, data_ptr, data_len) -> u32` | Send bytes |
-|  6 | `channel_recv(handle, buf_ptr, buf_len) -> u32` | Receive bytes |
-|  7 | `channel_close(handle)` | Close channel |
+Oreulius's current runtime does not expose the old `channel_open` import from
+this guide revision; channel creation and capability distribution are mediated
+through the kernel/runtime paths described in the ABI reference.
 
 ---
 
@@ -294,25 +305,20 @@ remaining threads are stalled or still live after that budget.
 
 ## IPC Channels
 
-Channels are named, first-class kernel objects backed by lock-free ring buffers.
+Channels are first-class kernel objects mediated by capabilities and runtime
+attachment/import paths.
 
 ```rust
-// Rust SDK example
-use oreulia_sdk::ipc::Channel;
-
-let ch = Channel::open("my.service").expect("channel open failed");
-ch.send(b"ping");
-let mut buf = [0u8; 64];
-let n = ch.recv(&mut buf);
+// Pseudocode: use the capability/handle injected by the runtime or parent
+// process, then route messages through the SDK wrapper that matches your app.
 ```
 
 From WAT:
 
 ```wat
-(import "oreulia" "channel_open"  (func $channel_open  (param i32 i32) (result i32)))
-(import "oreulia" "channel_send"  (func $channel_send  (param i32 i32 i32) (result i32)))
-(import "oreulia" "channel_recv"  (func $channel_recv  (param i32 i32 i32) (result i32)))
-(import "oreulia" "channel_close" (func $channel_close (param i32)))
+(import "oreulius" "channel_send"  (func $channel_send  (param i32 i32 i32) (result i32)))
+(import "oreulius" "channel_recv"  (func $channel_recv  (param i32 i32 i32) (result i32)))
+(import "oreulius" "channel_send_cap" (func $channel_send_cap (param i32 i32 i32 i32) (result i32)))
 ```
 
 ---
@@ -346,7 +352,7 @@ it retains the numeric ID.
 
 ## Sockets and Networking
 
-Oreulia's network stack is built on the RTL8139 Ethernet driver.  The WASI
+Oreulius's network stack is built on the RTL8139 Ethernet driver.  The WASI
 socket layer maps onto raw Ethernet frames at the driver level.
 
 **Accepting a connection:**
@@ -380,7 +386,7 @@ See `wasm/poll_demo.wat` for a complete working example.
 
 ## File System
 
-The Oreulia VFS is pre-opened at fd 3 (the first pre-opened directory).
+The Oreulius VFS is pre-opened at fd 3 (the first pre-opened directory).
 
 ```wat
 ;; Open "/hello.txt" for reading
@@ -403,7 +409,7 @@ The Oreulia VFS is pre-opened at fd 3 (the first pre-opened directory).
 
 | File | Description |
 |------|-------------|
-| `wasm/hello.wat` | Print "Hello from Oreulia!" and exit |
+| `wasm/hello.wat` | Print "Hello from Oreulius!" and exit |
 | `wasm/echo.wat` | Echo stdin to stdout line by line |
 | `wasm/spawn_children.wat` | Demonstrate `proc_spawn` with child processes |
 | `wasm/poll_demo.wat` | Use `poll_oneoff` for a 100 ms clock timeout |
@@ -420,7 +426,7 @@ for f in *.wat; do wat2wasm "$f" -o "${f%.wat}.wasm"; done
 
 ## Debugging
 
-- The Oreulia serial console outputs `[WASM]` tagged lines for instantiation
+- The Oreulius serial console outputs `[WASM]` tagged lines for instantiation
   and errors.
 - WASM traps (divide by zero, OOB memory, unreachable) are caught by the
   runtime and printed as `WasmError::Trap`.
@@ -431,12 +437,13 @@ for f in *.wat; do wat2wasm "$f" -o "${f%.wat}.wasm"; done
 
 ## ABI Stability
 
-The Oreulia WASM ABI is **stable** as of the 0.1 release:
+The current runtime keeps the following stability rules:
 
-- WASI Preview 1 function IDs 45–90 are frozen per the WASI spec.
-- Oreulia native IDs 0–44 are stable (no removals, only additions).
-- New native IDs 100–102 (`proc_spawn`, `proc_yield`, `proc_sleep`) are
-  stable as of this release.
+- WASI Preview 1 function IDs `45–90` follow the current implemented Preview 1 profile.
+- Oreulius native host IDs are append-only within the current runtime surface.
+- The implemented native ranges now extend through `131`.
+- New host IDs should be allocated above the current high-water mark rather than
+  reusing retired numbers.
 
-Future IDs will be allocated in the range 103+ and will never reuse old IDs.
-Applications compiled today will continue to run on future Oreulia releases.
+For exact signatures and wire layouts, treat [oreulius-wasm-abi.md](./oreulius-wasm-abi.md)
+as the primary ABI contract.

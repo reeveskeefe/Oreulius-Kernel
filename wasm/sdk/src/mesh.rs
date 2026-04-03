@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: LicenseRef-Oreulia-Commercial-1.0
+// SPDX-License-Identifier: LicenseRef-Oreulius-Commercial-1.0
 //! # Decentralized Kernel Mesh
 //!
-//! High-level wrappers for the Oreulia mesh host functions (IDs 109–115).
+//! High-level wrappers for the Oreulius mesh host functions (IDs 109–115).
 //!
 //! The mesh subsystem lets WASM modules:
 //! - Federate capability tokens across physical/virtual device boundaries.
@@ -10,7 +10,7 @@
 //!
 //! ## Quick start
 //! ```rust,no_run
-//! use oreulia_sdk::mesh;
+//! use oreulius_sdk::mesh;
 //!
 //! // Register a peer (e.g., device obtained via mDNS / CapNet beacon).
 //! let peer: u64 = 0xDEAD_BEEF_CAFE_0001;
@@ -25,7 +25,7 @@
 //! mesh::token_send(peer, &token_buf).unwrap();
 //! ```
 
-use super::raw::oreulia as sys;
+use super::raw::oreulius as sys;
 
 /// Byte length of an encoded `CapabilityTokenV1`.
 pub const TOKEN_LEN: usize = 116;

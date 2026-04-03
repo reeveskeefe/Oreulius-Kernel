@@ -1,4 +1,4 @@
-# Oreulia CI Evidence — CapNet Regression Corpus Sample
+# Oreulius CI Evidence — CapNet Regression Corpus Sample
 #
 # Output of: kernel/ci/extended-x86_64.sh (CapNet regression suite)
 # Test script: kernel/test-services.sh + kernel/test-services.expect

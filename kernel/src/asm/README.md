@@ -1,6 +1,6 @@
 # `kernel/src/asm` — Assembly Layer
 
-The `asm` directory is the lowest layer of the Oreulia kernel: hand-written assembly that provides the primitives the Rust kernel cannot express portably or efficiently. It covers three target architectures (i686, x86-64, AArch64) and is organised into two generations of files — a legacy 32-bit layer (bare filenames such as `context_switch.asm`, `process.asm`) plus architecture-prefixed 64-bit successors (`x86_64_shims.asm`, `x86_64_atomics.asm`, …; `aarch64_*.S`). The 32-bit files are still live for the `i686-oreulia` target; the 64-bit files are linked for all x86-64 builds.
+The `asm` directory is the lowest layer of the Oreulius kernel: hand-written assembly that provides the primitives the Rust kernel cannot express portably or efficiently. It covers three target architectures (i686, x86-64, AArch64) and is organised into two generations of files — a legacy 32-bit layer (bare filenames such as `context_switch.asm`, `process.asm`) plus architecture-prefixed 64-bit successors (`x86_64_shims.asm`, `x86_64_atomics.asm`, …; `aarch64_*.S`). The 32-bit files are still live for the `i686-oreulius` target; the 64-bit files are linked for all x86-64 builds.
 
 All `.asm` files target NASM syntax. The two `.S` files target GAS (GNU Assembler) and are used exclusively for the AArch64 target.
 
@@ -86,7 +86,7 @@ All `.asm` files target NASM syntax. The two `.S` files target GAS (GNU Assemble
 
 ### `boot.asm` — x86 Multiboot1
 
-Entry point `_start` for `i686-oreulia` GRUB boots. Executes entirely in 32-bit protected mode. On entry, EAX holds the Multiboot magic and EBX the Multiboot info pointer; these are immediately stashed in `esi`/`edx` to survive the BSS clear that follows.
+Entry point `_start` for `i686-oreulius` GRUB boots. Executes entirely in 32-bit protected mode. On entry, EAX holds the Multiboot magic and EBX the Multiboot info pointer; these are immediately stashed in `esi`/`edx` to survive the BSS clear that follows.
 
 **Boot sequence:**
 
@@ -116,7 +116,7 @@ stack_top:
 
 ### `boot_x86_64_mb2.asm` — x86-64 Multiboot2
 
-Entry point `_start` for `x86_64-oreulia` Multiboot2 GRUB builds. The `.multiboot2` section at the top of the binary contains the 8-byte-aligned tag list required by the Multiboot2 spec. The `.rodata` section holds a GDT + GDTR for the 16→32→64 bit mode transition. The `.bss` section holds the early 128 KiB boot stack.
+Entry point `_start` for `x86_64-oreulius` Multiboot2 GRUB builds. The `.multiboot2` section at the top of the binary contains the 8-byte-aligned tag list required by the Multiboot2 spec. The `.rodata` section holds a GDT + GDTR for the 16→32→64 bit mode transition. The `.bss` section holds the early 128 KiB boot stack.
 
 **Externals:** `rust_main`, `arch_x86_record_boot_handoff`, `sbss`, `ebss`
 
@@ -163,22 +163,22 @@ Provides the 2 KiB VBAR_EL1-aligned vector table. `install_stub_vectors()` (in `
 **Table layout:**
 
 ```
-__oreulia_aarch64_vectors_start:   ← aligned to 2048 bytes (0x800)
-  slot 0..3   (CurrentEL SP0):   B __oreulia_vec_slot0 .. slot3
-  slot 4..7   (CurrentEL SPx):   B __oreulia_vec_slot4 .. slot7
-  slot 8..11  (LowerEL AArch64): B __oreulia_vec_slot8 .. slot11
-  slot 12..15 (LowerEL AArch32): B __oreulia_vec_slot12 .. slot15
+__oreulius_aarch64_vectors_start:   ← aligned to 2048 bytes (0x800)
+  slot 0..3   (CurrentEL SP0):   B __oreulius_vec_slot0 .. slot3
+  slot 4..7   (CurrentEL SPx):   B __oreulius_vec_slot4 .. slot7
+  slot 8..11  (LowerEL AArch64): B __oreulius_vec_slot8 .. slot11
+  slot 12..15 (LowerEL AArch32): B __oreulius_vec_slot12 .. slot15
 [handler bodies follow]
-  __oreulia_vec_slot{N}: VECTOR_HANDLER with slot = N
+  __oreulius_vec_slot{N}: VECTOR_HANDLER with slot = N
 ```
 
 **Dispatch contract:**
 
 1. Each `VECTOR_HANDLER` saves all 31 GPRs (x0–x30) to stack.
-2. Calls `oreulia_aarch64_vector_dispatch(slot, esr_el1, elr_el1, spsr_el1, far_el1)`.
+2. Calls `oreulius_aarch64_vector_dispatch(slot, esr_el1, elr_el1, spsr_el1, far_el1)`.
 3. If the Rust handler returns a non-zero byte delta in `x0`, it is added to `ELR_EL1` before `ERET` (used for self-test BRK advancement).
 
-**Exported symbol:** `__oreulia_aarch64_vectors_start`
+**Exported symbol:** `__oreulius_aarch64_vectors_start`
 
 ---
 
@@ -421,7 +421,7 @@ setup_sysenter_msrs()
 syscall_entry_64:
     → SWAPGS; save RSP; load kernel RSP from per-CPU scratch
     → save full caller frame (RAX..R15, RFLAGS, RIP, RSP)
-    → call oreulia_syscall_dispatch(frame_ptr)
+    → call oreulius_syscall_dispatch(frame_ptr)
     → restore frame; SWAPGS; SYSRETQ
 
 sysenter_entry:
@@ -1064,7 +1064,7 @@ cap_graph_find_edge(
 
 ### `x86_64_shims.asm` — The Complete x86-64 Bring-Up Layer (814 lines)
 
-The largest file in the directory. Provides the definitive x86-64 implementation of every primitive that `x86_64_runtime.rs` calls from Rust. Supersedes the corresponding 32-bit implementations for `x86_64-oreulia` builds.
+The largest file in the directory. Provides the definitive x86-64 implementation of every primitive that `x86_64_runtime.rs` calls from Rust. Supersedes the corresponding 32-bit implementations for `x86_64-oreulius` builds.
 
 **Interrupt and I/O:**
 
@@ -1171,7 +1171,7 @@ enter_user_mode(rip, rsp, rflags, arg0, arg1)
 syscall_entry:
     → SWAPGS; save RSP into kernel scratch; load kernel RSP
     → push minimal frame (RCX=user RIP, R11=user RFLAGS, RAX=syscall nr)
-    → call oreulia_syscall_dispatch(nr, a0..a5)
+    → call oreulius_syscall_dispatch(nr, a0..a5)
     → pop; SWAPGS; SYSRETQ
 
 x86_64_syscall_return_resume(ret_val, user_rip, user_rflags, user_rsp)
@@ -1323,4 +1323,4 @@ Many functions exist in both a legacy x86 file and an `x86_64_*` counterpart. Th
 | `sgx_encls` | `sgx.asm` | `x86_64_sgx.asm` |
 | `asm_benchmark_nop` | `perf.asm` | `x86_64_perf.asm` |
 
-The `aarch64_*` files have no 32-bit counterpart; they are only ever linked for `aarch64-oreulia` targets.
+The `aarch64_*` files have no 32-bit counterpart; they are only ever linked for `aarch64-oreulius` targets.

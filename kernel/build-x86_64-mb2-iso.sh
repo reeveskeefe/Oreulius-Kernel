@@ -7,8 +7,8 @@ cd "$(dirname "$0")"
 
 OUT_DIR="target/x86_64-mb2"
 ISO_ROOT="${OUT_DIR}/iso"
-ISO_FILE="${OUT_DIR}/oreulia-x86_64-mb2.iso"
-KERNEL_ELF="${OUT_DIR}/oreulia-kernel-x86_64"
+ISO_FILE="${OUT_DIR}/oreulius-x86_64-mb2.iso"
+KERNEL_ELF="${OUT_DIR}/oreulius-kernel-x86_64"
 
 resolve_tool() {
   local resolved=""
@@ -34,15 +34,15 @@ if [[ -z "${GRUB_MKRESCUE_BIN}" ]]; then
 fi
 
 mkdir -p "${ISO_ROOT}/boot/grub"
-cp "${KERNEL_ELF}" "${ISO_ROOT}/boot/oreulia-kernel-x86_64"
+cp "${KERNEL_ELF}" "${ISO_ROOT}/boot/oreulius-kernel-x86_64"
 
 cat > "${ISO_ROOT}/boot/grub/grub.cfg" <<'EOF'
 set timeout=0
 set default=0
 terminal_output console
 
-menuentry "Oreulia x86_64 MB2" {
-    multiboot2 /boot/oreulia-kernel-x86_64
+menuentry "Oreulius x86_64 MB2" {
+    multiboot2 /boot/oreulius-kernel-x86_64
     boot
 }
 EOF

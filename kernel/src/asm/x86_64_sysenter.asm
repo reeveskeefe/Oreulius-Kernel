@@ -9,7 +9,7 @@
 ; MSR numbers
 MSR_STAR            equ 0xC0000081  ; SYSCALL/SYSRET segment selectors
 MSR_LSTAR           equ 0xC0000082  ; SYSCALL target RIP (64-bit)
-MSR_CSTAR           equ 0xC0000083  ; SYSCALL target RIP (compat, unused here)
+MSR_CSTAR           equ 0xC0000083  ; SYSCALL target RIP (compat mode)
 MSR_SFMASK          equ 0xC0000084  ; RFLAGS bits to clear on SYSCALL
 MSR_EFER            equ 0xC0000080  ; Extended Feature Enable Register
 EFER_SCE            equ (1 << 0)    ; SYSCALL Enable bit in EFER
@@ -20,7 +20,7 @@ MSR_SYSENTER_ESP    equ 0x175
 MSR_SYSENTER_EIP    equ 0x176
 ;
 ; GDT segment selectors (must match kernel/src/gdt.rs or gdt.asm)
-; These constants match the standard Oreulia GDT layout:
+; These constants match the standard Oreulius GDT layout:
 ;   0x00 — null descriptor
 ;   0x08 — kernel code  (ring 0, 64-bit)
 ;   0x10 — kernel data  (ring 0)
@@ -111,7 +111,16 @@ setup_syscall_msrs:
     shr     rdx, 32
     wrmsr
 
-    ; Step 4: Write SFMASK — RFLAGS bits to clear on SYSCALL.
+    ; Step 4: Write CSTAR for compat-mode SYSCALL.
+    ; Route compat-mode SYSCALL through the same hardened entry until a
+    ; dedicated compat-mode dispatcher is introduced.
+    mov     ecx, MSR_CSTAR
+    lea     rax, [rel syscall_entry_64]
+    mov     rdx, rax
+    shr     rdx, 32
+    wrmsr
+
+    ; Step 5: Write SFMASK — RFLAGS bits to clear on SYSCALL.
     mov     ecx, MSR_SFMASK
     mov     eax, SYSCALL_FMASK
     xor     edx, edx
@@ -172,7 +181,7 @@ setup_sysenter_msrs:
 ;   r8  = arg5, r9 = arg6
 ;
 ; Rust handler:
-;   extern "sysv64" fn oreulia_syscall_dispatch(
+;   extern "sysv64" fn oreulius_syscall_dispatch(
 ;       nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64
 ;   ) -> u64;
 ;
@@ -241,8 +250,8 @@ syscall_entry_64:
     mov     rdi, rax        ; nr → rdi
     ; Stack is 16-byte aligned — `call` will push return addr making rsp+8 aligned.
 
-    extern  oreulia_syscall_dispatch
-    call    oreulia_syscall_dispatch
+    extern  oreulius_syscall_dispatch
+    call    oreulius_syscall_dispatch
 
     add     rsp, 8          ; discard pushed a6; rsp = kstack-72 (back to frame base)
     ; rax = syscall return value — do not clobber.
@@ -288,7 +297,7 @@ syscall_entry_64:
 ;   SS:RSP  = (SYSENTER_CS+8) : SYSENTER_ESP  (kernel stack)
 ;   RFLAGS.IF = 0,  RFLAGS.VM = 0
 ;
-; Oreulia compat-SYSENTER software convention:
+; Oreulius compat-SYSENTER software convention:
 ;   ECX = user return EIP   (SYSEXIT delivers EIP ← ECX)
 ;   EDX = user return ESP   (SYSEXIT delivers ESP ← EDX)
 ;   EAX = syscall number
@@ -335,8 +344,8 @@ sysenter_entry:
     push    0               ; a6 = 0 → 7th arg (rsp = SYSENTER_ESP-64; 16-byte aligned)
     ; `call` will push return addr → rsp+8 = 16-byte aligned ✓ (SysV ABI)
 
-    extern  oreulia_syscall_dispatch
-    call    oreulia_syscall_dispatch
+    extern  oreulius_syscall_dispatch
+    call    oreulius_syscall_dispatch
 
     add     rsp, 8          ; discard pushed a6; rsp = SYSENTER_ESP-56 (frame base)
     ; rax = return value for userspace.

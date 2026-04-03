@@ -1,5 +1,5 @@
 /*!
- * Oreulia Kernel — System Health Telemetry
+ * Oreulius Kernel — System Health Telemetry
  *
  * Aggregates health data from the scheduler, filesystem, IPC, network, and
  * persistence subsystems into a single `HealthSnapshot` struct.

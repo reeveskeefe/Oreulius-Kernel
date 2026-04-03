@@ -3,8 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ISO_PATH="oreulia.iso"
-KERNEL_ELF="target/oreulia-kernel"
+ISO_PATH="oreulius.iso"
+KERNEL_ELF="target/oreulius-kernel"
 
 if [[ ! -f "${KERNEL_ELF}" ]]; then
     echo "Kernel ELF not found at ${KERNEL_ELF}"
@@ -18,7 +18,7 @@ if [[ ! -f "${ISO_PATH}" ]]; then
     exit 1
 fi
 
-echo "=== Oreulia Boot Test ==="
+echo "=== Oreulius Boot Test ==="
 echo "Kernel size: $(ls -lh "${KERNEL_ELF}" | awk '{print $5}')"
 echo "ISO size: $(ls -lh "${ISO_PATH}" | awk '{print $5}')"
 echo ""

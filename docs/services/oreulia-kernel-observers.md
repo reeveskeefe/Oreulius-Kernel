@@ -1,4 +1,4 @@
-# Oreulia Kernel Observers
+# Oreulius Kernel Observers
 
 **Status:** Implemented as a lightweight WASM-observer event bus over IPC.
 
@@ -235,4 +235,4 @@ Claims that should not be made:
 - that `IPC_ACTIVITY` means all channel sends/receives system-wide
 - that every event type already shares one fully normalized payload schema
 
-The correct public description is that Oreulia has a working observer bus for WASM modules, but it is intentionally small and still evolving toward a richer event taxonomy.
+The correct public description is that Oreulius has a working observer bus for WASM modules, but it is intentionally small and still evolving toward a richer event taxonomy.

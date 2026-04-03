@@ -47,3 +47,41 @@ jobs:
             verification/theories/*.vok
             verification/theories/*.vos
           retention-days: 90
+
+  manifest-check:
+    runs-on: ubuntu-latest
+    needs: coq-proofs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate manifest.json
+        run: |
+          python3 -c "
+          import json, sys
+          with open('verification/artifacts/manifest.json') as f:
+              m = json.load(f)
+          required = ['commit_sha','generated_at','assumptions_version','theorems','ci_runs','runtime_evidence']
+          missing = [k for k in required if k not in m]
+          if missing:
+              print('manifest.json missing keys:', missing, file=sys.stderr)
+              sys.exit(1)
+          placeholders = [k for k, v in m.items() if v in ('', 'UNSET') or v == []]
+          if placeholders:
+              print('manifest.json has unresolved placeholder fields:', placeholders, file=sys.stderr)
+              sys.exit(1)
+          print('manifest.json OK — theorems:', len(m.get('theorems', [])))
+          "
+      - name: Check THEOREM_INDEX has no Planned entries
+        run: |
+          if grep -q "Status: Planned" verification/proof/THEOREM_INDEX.md; then
+            echo "ERROR: THEOREM_INDEX.md has 'Planned' entries — promote to InProgress or higher." >&2
+            grep "Status: Planned" verification/proof/THEOREM_INDEX.md >&2
+            exit 1
+          fi
+          echo "THEOREM_INDEX OK"
+      - name: Check ASSUMPTIONS has no placeholder entries
+        run: |
+          if grep -Eq "^- ASM-.*: *(<[^>]+>|TBD|UNSET|pending)$" verification/spec/ASSUMPTIONS.md; then
+            echo "ERROR: ASSUMPTIONS.md has unresolved placeholder entries." >&2
+            exit 1
+          fi
+          echo "ASSUMPTIONS OK"

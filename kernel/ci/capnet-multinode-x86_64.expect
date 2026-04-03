@@ -1,0 +1,243 @@
+#!/usr/bin/expect -f
+# Two-node CapNet regression test.
+#
+# Topology (QEMU socket Ethernet):
+#   Node A  --[ e1000 socket listen  ]--> 10.0.3.1
+#   Node B  --[ e1000 socket connect ]--> 10.0.3.2
+#
+# Test sequence:
+#   1. Boot both nodes, collect device IDs
+#   2. Configure static IPs; add cross-peers; install symmetric session keys
+#   3. Hello handshake  (A→B, verify [CAPNET-MULTI] rx event=Hello on B)
+#   4. TokenOffer/lend  (A→B, verify [CAPNET-MULTI] rx event=TokenOffer on B)
+#   5. Verify active lease visible on B
+#   6. TokenRevoke      (A→B, verify [CAPNET-MULTI] rx event=TokenRevoke on B)
+#   7. Verify no active leases on B
+
+set timeout 300
+set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
+cd $kernel_dir
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+proc wait_banner {label} {
+    expect {
+        -re {\[X64\] (minimal serial shell ready|x86_64 shell ready)} {}
+        timeout { puts "FAIL: timeout waiting for $label boot banner"; exit 1 }
+    }
+}
+
+proc expect_prompt {label} {
+    expect {
+        -re {x64> $} {}
+        timeout { puts "FAIL: timeout waiting for $label prompt"; exit 1 }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Spawn Node A first (socket listen) then Node B (socket connect)
+# ---------------------------------------------------------------------------
+spawn ./run-capnet-node-a.sh
+set sid_a $spawn_id
+
+# Give QEMU-A ~1.5 s to bind its listen socket before B tries to connect.
+after 1500
+
+spawn ./run-capnet-node-b.sh
+set sid_b $spawn_id
+
+# ---------------------------------------------------------------------------
+# Wait for both nodes to reach the shell prompt
+# ---------------------------------------------------------------------------
+set spawn_id $sid_a
+wait_banner "Node-A"
+expect_prompt "Node-A boot"
+
+set spawn_id $sid_b
+wait_banner "Node-B"
+expect_prompt "Node-B boot"
+
+# ---------------------------------------------------------------------------
+# Collect device IDs
+# ---------------------------------------------------------------------------
+set spawn_id $sid_a
+send -- "capnet-local\r"
+expect {
+    -re {Device ID: 0x([0-9a-f]{16})} { set dev_a $expect_out(1,string) }
+    timeout { puts "FAIL: Node-A capnet-local timeout"; exit 1 }
+}
+expect_prompt "Node-A capnet-local"
+
+set spawn_id $sid_b
+send -- "capnet-local\r"
+expect {
+    -re {Device ID: 0x([0-9a-f]{16})} { set dev_b $expect_out(1,string) }
+    timeout { puts "FAIL: Node-B capnet-local timeout"; exit 1 }
+}
+expect_prompt "Node-B capnet-local"
+
+puts "node-A device ID: 0x${dev_a}"
+puts "node-B device ID: 0x${dev_b}"
+
+# ---------------------------------------------------------------------------
+# Configure static IPs  (gateway = self so interface_configured() passes)
+# ---------------------------------------------------------------------------
+set spawn_id $sid_a
+send -- "net-static 10.0.3.1 10.0.3.1\r"
+expect {
+    -re {net-static ip=10\.0\.3\.1 gw=10\.0\.3\.1 ok} {}
+    timeout { puts "FAIL: Node-A net-static timeout"; exit 1 }
+}
+expect_prompt "Node-A net-static"
+
+set spawn_id $sid_b
+send -- "net-static 10.0.3.2 10.0.3.2\r"
+expect {
+    -re {net-static ip=10\.0\.3\.2 gw=10\.0\.3\.2 ok} {}
+    timeout { puts "FAIL: Node-B net-static timeout"; exit 1 }
+}
+expect_prompt "Node-B net-static"
+
+# ---------------------------------------------------------------------------
+# Register cross-peers
+# ---------------------------------------------------------------------------
+set spawn_id $sid_a
+send -- "capnet-peer-add 0x${dev_b} enforce\r"
+expect {
+    -re {capnet peer registered} {}
+    timeout { puts "FAIL: Node-A capnet-peer-add timeout"; exit 1 }
+}
+expect_prompt "Node-A peer-add"
+
+set spawn_id $sid_b
+send -- "capnet-peer-add 0x${dev_a} enforce\r"
+expect {
+    -re {capnet peer registered} {}
+    timeout { puts "FAIL: Node-B capnet-peer-add timeout"; exit 1 }
+}
+expect_prompt "Node-B peer-add"
+
+# ---------------------------------------------------------------------------
+# Install symmetric session keys  (same shared secret on both nodes)
+# ---------------------------------------------------------------------------
+set k0    "0x0102030405060708"
+set k1    "0x0807060504030201"
+set epoch 1
+
+set spawn_id $sid_a
+send -- "capnet-session-key 0x${dev_b} $epoch $k0 $k1\r"
+expect {
+    -re {session-key installed peer=0x} {}
+    timeout { puts "FAIL: Node-A capnet-session-key timeout"; exit 1 }
+}
+expect_prompt "Node-A session-key"
+
+set spawn_id $sid_b
+send -- "capnet-session-key 0x${dev_a} $epoch $k0 $k1\r"
+expect {
+    -re {session-key installed peer=0x} {}
+    timeout { puts "FAIL: Node-B capnet-session-key timeout"; exit 1 }
+}
+expect_prompt "Node-B session-key"
+
+# ---------------------------------------------------------------------------
+# Step 1: Hello handshake
+# ---------------------------------------------------------------------------
+set spawn_id $sid_a
+send -- "capnet-hello 10.0.3.2 48123 0x${dev_b}\r"
+expect {
+    -re {capnet HELLO sent seq=} {}
+    timeout { puts "FAIL: Node-A capnet-hello send timeout"; exit 1 }
+}
+expect_prompt "Node-A hello"
+
+# Node B's serial must show receipt of the Hello frame.
+set spawn_id $sid_b
+expect {
+    -re {\[CAPNET-MULTI\] rx event=Hello .* status=ok} {}
+    timeout { puts "FAIL: Node-B Hello rx event not seen within timeout"; exit 1 }
+}
+puts "PASS: Hello frame received by Node-B"
+
+# ---------------------------------------------------------------------------
+# Step 2: TokenOffer (lend a capability from A to B)
+# ---------------------------------------------------------------------------
+set spawn_id $sid_a
+send -- "capnet-lend 10.0.3.2 48123 0x${dev_b} channel 0xffff 100 200\r"
+expect {
+    -re {capnet token offer sent: token_id=(0x[0-9a-f]+)} {
+        set token_id $expect_out(1,string)
+    }
+    timeout { puts "FAIL: Node-A capnet-lend timeout"; exit 1 }
+}
+expect_prompt "Node-A lend"
+
+# Node B's serial must show receipt of the TokenOffer frame.
+set spawn_id $sid_b
+expect {
+    -re {\[CAPNET-MULTI\] rx event=TokenOffer .* status=ok} {}
+    timeout { puts "FAIL: Node-B TokenOffer rx event not seen within timeout"; exit 1 }
+}
+puts "PASS: TokenOffer received by Node-B  token_id=${token_id}"
+
+# ---------------------------------------------------------------------------
+# Step 3: Verify active lease on B
+# ---------------------------------------------------------------------------
+set spawn_id $sid_b
+send -- "capnet-lease-list\r"
+expect {
+    -re {token=0x[0-9a-f]+} {}
+    timeout { puts "FAIL: Node-B capnet-lease-list: no active token seen"; exit 1 }
+}
+expect_prompt "Node-B lease-list (active)"
+puts "PASS: Active lease visible on Node-B"
+
+# ---------------------------------------------------------------------------
+# Step 4: Revoke the token
+# ---------------------------------------------------------------------------
+set spawn_id $sid_a
+send -- "capnet-revoke 10.0.3.2 48123 0x${dev_b} ${token_id}\r"
+expect {
+    -re {capnet token revoke sent:} {}
+    timeout { puts "FAIL: Node-A capnet-revoke timeout"; exit 1 }
+}
+expect_prompt "Node-A revoke"
+
+# Node B's serial must show receipt of the TokenRevoke frame.
+set spawn_id $sid_b
+expect {
+    -re {\[CAPNET-MULTI\] rx event=TokenRevoke .* status=ok} {}
+    timeout { puts "FAIL: Node-B TokenRevoke rx event not seen within timeout"; exit 1 }
+}
+puts "PASS: TokenRevoke received by Node-B"
+
+# ---------------------------------------------------------------------------
+# Step 5: Verify lease is gone on B
+# ---------------------------------------------------------------------------
+set spawn_id $sid_b
+send -- "capnet-lease-list\r"
+expect {
+    -re {\(no active leases\)} {}
+    timeout { puts "FAIL: Node-B lease-list: expected no active leases after revoke"; exit 1 }
+}
+expect_prompt "Node-B lease-list (post-revoke)"
+puts "PASS: No active leases on Node-B after revoke"
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+puts ""
+puts "================================"
+puts "capnet-multinode: ALL TESTS PASS"
+puts "================================"
+
+# ---------------------------------------------------------------------------
+# Teardown
+# ---------------------------------------------------------------------------
+set spawn_id $sid_a
+send -- "halt\r"
+set spawn_id $sid_b
+send -- "halt\r"
+after 2000
+exit 0

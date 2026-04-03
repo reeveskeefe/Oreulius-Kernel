@@ -41,7 +41,7 @@
     </style>
   </defs>
 
-  <text x="560" y="34" text-anchor="middle" class="title">Oreulia WASM SDK and Kernel ABI</text>
+  <text x="560" y="34" text-anchor="middle" class="title">Oreulius WASM SDK and Kernel ABI</text>
 
   <!-- App -->
   <rect x="365" y="70" width="390" height="84" rx="16" fill="#EEEDFE" stroke="#534AB7" stroke-width="1.2"/>
@@ -50,7 +50,7 @@
 
   <!-- SDK group -->
   <rect x="80" y="205" width="960" height="235" rx="18" class="panel"/>
-  <text x="106" y="230" class="group-title">wasm/sdk — oreulia-sdk crate</text>
+  <text x="106" y="230" class="group-title">wasm/sdk — oreulius-sdk crate</text>
 
   <rect x="125" y="265" width="560" height="125" rx="16" fill="#EEF4FF" stroke="#3B82F6" stroke-width="1.2"/>
   <text x="405" y="295" text-anchor="middle" class="box-title">High-level modules</text>
@@ -61,7 +61,7 @@
 
   <rect x="735" y="265" width="250" height="125" rx="16" fill="#F8F0FF" stroke="#8B5CF6" stroke-width="1.2"/>
   <text x="860" y="295" text-anchor="middle" class="box-title">raw/</text>
-  <text x="860" y="325" text-anchor="middle" class="box-sub">oreulia.rs — Oreulia native imports</text>
+  <text x="860" y="325" text-anchor="middle" class="box-sub">oreulius.rs — Oreulius native imports</text>
   <text x="860" y="352" text-anchor="middle" class="box-sub">wasi.rs — WASI Preview 1 imports</text>
 
   <!-- Kernel ABI group -->
@@ -74,9 +74,9 @@
   <text x="350" y="641" text-anchor="middle" class="box-sub">wasi_snapshot_preview1</text>
 
   <rect x="615" y="560" width="310" height="92" rx="16" fill="#FAECE7" stroke="#993C1D" stroke-width="1.2"/>
-  <text x="770" y="590" text-anchor="middle" class="box-title">Oreulia native</text>
+  <text x="770" y="590" text-anchor="middle" class="box-title">Oreulius native</text>
   <text x="770" y="618" text-anchor="middle" class="box-sub">IDs 0–44, 100–131</text>
-  <text x="770" y="641" text-anchor="middle" class="box-sub">import module: "oreulia"</text>
+  <text x="770" y="641" text-anchor="middle" class="box-sub">import module: "oreulius"</text>
 
   <!-- Connections -->
   <path d="M560 154 L560 205 L405 205 L405 265" class="edge"/>
@@ -88,5 +88,5 @@
   <text x="575" y="188" class="box-sub">uses SDK surface</text>
   <text x="610" y="413" class="box-sub">compiled down to raw imports</text>
   <text x="463" y="548" class="box-sub">WASI bindings</text>
-  <text x="866" y="505" class="box-sub">native Oreulia bindings</text>
+  <text x="866" y="505" class="box-sub">native Oreulius bindings</text>
 </svg>

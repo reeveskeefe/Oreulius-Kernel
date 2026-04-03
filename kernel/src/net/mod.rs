@@ -1,21 +1,21 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
 
-//! Oreulia Real Network Stack
+//! Oreulius Real Network Stack
 //!
 //! Production TCP/IP stack with WiFi support, real packet I/O, and HTTP client.
 //! Features:
@@ -756,7 +756,7 @@ impl NetworkService {
             let port_len = u16_to_ascii(port, &mut port_digits);
             push(&port_digits[..port_len]);
         }
-        push(b"\r\nConnection: close\r\nUser-Agent: Oreulia/1.0\r\nAccept: */*\r\n\r\n");
+        push(b"\r\nConnection: close\r\nUser-Agent: Oreulius/1.0\r\nAccept: */*\r\n\r\n");
 
         (buf, pos)
     }

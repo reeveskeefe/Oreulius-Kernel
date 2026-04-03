@@ -1,4 +1,4 @@
-# Oreulia Temporal Capabilities with Revocable History
+# Oreulius Temporal Capabilities with Revocable History
 
 > **Status:** Fully implemented. WASM host ABI IDs 116–120. Scheduler auto-sweep: `temporal_cap_tick()`. SDK: `wasm/sdk/src/temporal.rs`. Kernel subsystems: `kernel/src/execution/wasm.rs` (TEMPORAL_CAP_TABLE, TEMPORAL_CHECKPOINT_STORE), `kernel/src/temporal/mod.rs` (temporal event log).
 
@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-Temporal Capabilities redefine what an OS capability *is*. In classical capability-based systems a capability is a static, unforgeable token of authority: you have it or you don't. Temporal Capabilities in Oreulia extend this with two new primitives that make capabilities **temporal objects**:
+Temporal Capabilities redefine what an OS capability *is*. In classical capability-based systems a capability is a static, unforgeable token of authority: you have it or you don't. Temporal Capabilities in Oreulius extend this with two new primitives that make capabilities **temporal objects**:
 
 1. **Time-bound grants** — a capability is minted with a deadline, expressed in 100 Hz PIT ticks. When the deadline passes the kernel auto-revokes it with no module polling required.
 2. **Transactional checkpoints** — a process can snapshot its entire capability set at any moment, perform potentially-risky operations, then atomically roll back to the snapshot: all capabilities granted after the snapshot are revoked and the snapshotted set is re-instated.
@@ -66,7 +66,7 @@ Together these two primitives make capability grants behave like **smart contrac
 | `kernel/src/execution/wasm.rs` | Host functions (IDs 116–120), `TEMPORAL_CAP_TABLE`, `TEMPORAL_CHECKPOINT_STORE`, `temporal_cap_tick()` |
 | `kernel/src/temporal/mod.rs` | `record_capability_event()`, temporal log persistence, `is_replay_active()` |
 | `wasm/sdk/src/temporal.rs` | High-level SDK: `cap_grant`, `cap_revoke`, `cap_check`, `checkpoint_create`, `checkpoint_rollback`, `TemporalCap` RAII guard |
-| `wasm/sdk/src/raw/oreulia.rs` | Raw FFI bindings for IDs 116–120 |
+| `wasm/sdk/src/raw/oreulius.rs` | Raw FFI bindings for IDs 116–120 |
 
 ---
 
@@ -160,7 +160,7 @@ Returns `−1` if `cap_id` is not found in `TEMPORAL_CAP_TABLE` (it may have alr
 
 Snapshots the calling process's entire capability set:
 
-1. Calls `capability_manager().list_capabilities_for_pid(pid)` — returns all active `OreuliaCapability` entries.
+1. Calls `capability_manager().list_capabilities_for_pid(pid)` — returns all active `OreuliusCapability` entries.
 2. Finds a free slot in `TEMPORAL_CHECKPOINT_STORE` (8 slots max).
 3. Copies up to `MAX_CAPS_PER_CHECKPOINT = 16` capabilities as `TemporalCheckpointEntry` records: `{cap_id, object_id, cap_type, rights}`.
 4. Records `tick = now` for the snapshot timestamp.
@@ -239,7 +239,7 @@ The `0x02` tag in the observer payload identifies the event as a REVOKE (as oppo
 ## 6. SDK Usage
 
 ```rust
-use oreulia_sdk::temporal;
+use oreulius_sdk::temporal;
 
 // ── Time-bound grant ────────────────────────────────────────────────────────
 // Grant FS_READ access for ~10 seconds (100 Hz × 1000 ticks).
@@ -293,7 +293,7 @@ Every grant/revoke is journaled via `temporal::record_capability_event(pid, cap_
 
 ### 7.3 Observer bus
 
-Auto-revocations emit `observer_notify(CAPABILITY_OP, payload)` where `payload[0..3] = pid_le, payload[4] = 0x02 (REVOKE)`. WASM observer modules subscribed to `CAPABILITY_OP` events will receive this notification on their IPC channel (see `docs/services/oreulia-kernel-observers.md`).
+Auto-revocations emit `observer_notify(CAPABILITY_OP, payload)` where `payload[0..3] = pid_le, payload[4] = 0x02 (REVOKE)`. WASM observer modules subscribed to `CAPABILITY_OP` events will receive this notification on their IPC channel (see `docs/services/oreulius-kernel-observers.md`).
 
 ### 7.4 Intent graph
 

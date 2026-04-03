@@ -1,5 +1,5 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
  * SPDX-License-Identifier: MIT
  */
@@ -152,6 +152,44 @@ pub enum TemporalMergeStrategy {
     FastForwardOnly,
     Ours,
     Theirs,
+    ThreeWay,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TemporalMergeKind {
+    FastForward,
+    Exact,
+    Span3,
+    Line3,
+    Chunk3,
+    BytePolicy,
+    ConflictArtifact,
+}
+
+impl TemporalMergeKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TemporalMergeKind::FastForward => "fast-forward",
+            TemporalMergeKind::Exact => "exact",
+            TemporalMergeKind::Span3 => "span3",
+            TemporalMergeKind::Line3 => "line3",
+            TemporalMergeKind::Chunk3 => "chunk3",
+            TemporalMergeKind::BytePolicy => "byte-policy",
+            TemporalMergeKind::ConflictArtifact => "conflict-artifact",
+        }
+    }
+
+    pub fn as_u32(&self) -> u32 {
+        match self {
+            TemporalMergeKind::FastForward => 0,
+            TemporalMergeKind::Exact => 1,
+            TemporalMergeKind::Span3 => 2,
+            TemporalMergeKind::Line3 => 3,
+            TemporalMergeKind::Chunk3 => 4,
+            TemporalMergeKind::BytePolicy => 5,
+            TemporalMergeKind::ConflictArtifact => 6,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -162,6 +200,19 @@ pub struct TemporalMergeResult {
     pub source_branch_id: u32,
     pub target_head_before: Option<u64>,
     pub target_head_after: Option<u64>,
+    pub merge_kind: TemporalMergeKind,
+    pub conflict_count: u32,
+    pub used_fallback: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TemporalConflictArtifactInfo {
+    pub version: u16,
+    pub conflict_count: u32,
+    pub payload_len: usize,
+    pub base_len: usize,
+    pub ours_len: usize,
+    pub theirs_len: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -377,12 +428,49 @@ struct TemporalService {
 }
 
 impl TemporalService {
+    const MERGE_CONFLICT_ARTIFACT_MAGIC: [u8; 4] = *b"TMRG";
+    const MERGE_CONFLICT_ARTIFACT_VERSION: u16 = 1;
+    const MERGE_CHUNK_BYTES: usize = 32;
+    const MERGE_MAX_CHUNKS: usize = 256;
+    const MERGE_MAX_CONFLICT_SPANS: usize = 128;
+
     const fn new() -> Self {
         Self {
             objects: Vec::new(),
             next_version_id: 1,
             retention: TemporalRetentionPolicy::default(),
         }
+    }
+
+    fn append_u16_le(out: &mut Vec<u8>, value: u16) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn append_u32_le(out: &mut Vec<u8>, value: u32) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn append_u64_le(out: &mut Vec<u8>, value: u64) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn read_u16_le(data: &[u8], offset: usize) -> Option<u16> {
+        if offset.checked_add(2)? > data.len() {
+            return None;
+        }
+        Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
+    }
+
+    fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
+        if offset.checked_add(4)? > data.len() {
+            return None;
+        }
+        Some(u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]))
     }
 
     fn estimate_persist_size_locked(&self) -> usize {
@@ -801,6 +889,104 @@ impl TemporalService {
         } else {
             theirs.to_vec()
         }
+    }
+
+    fn collect_conflict_spans(base: &[u8], ours: &[u8], theirs: &[u8]) -> Vec<(u32, u32)> {
+        let max_len = core::cmp::max(base.len(), core::cmp::max(ours.len(), theirs.len()));
+        let mut spans = Vec::new();
+        let mut start: Option<usize> = None;
+        let mut i = 0usize;
+        while i < max_len {
+            let b = base.get(i).copied();
+            let o = ours.get(i).copied();
+            let t = theirs.get(i).copied();
+            let conflict = o != t && o != b && t != b;
+            if conflict {
+                if start.is_none() {
+                    start = Some(i);
+                }
+            } else if let Some(s) = start.take() {
+                spans.push((s as u32, i as u32));
+                if spans.len() >= Self::MERGE_MAX_CONFLICT_SPANS {
+                    return spans;
+                }
+            }
+            i = i.saturating_add(1);
+        }
+        if let Some(s) = start {
+            spans.push((s as u32, max_len as u32));
+        }
+        spans
+    }
+
+    fn build_conflict_artifact_payload(
+        base: &[u8],
+        ours: &[u8],
+        theirs: &[u8],
+        payload: &[u8],
+        base_version_id: Option<u64>,
+        ours_version_id: u64,
+        theirs_version_id: u64,
+        target_branch_id: u32,
+        source_branch_id: u32,
+        spans: &[(u32, u32)],
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&Self::MERGE_CONFLICT_ARTIFACT_MAGIC);
+        Self::append_u16_le(&mut out, Self::MERGE_CONFLICT_ARTIFACT_VERSION);
+        Self::append_u16_le(&mut out, 0);
+        Self::append_u32_le(&mut out, spans.len() as u32);
+        Self::append_u32_le(&mut out, payload.len() as u32);
+        Self::append_u32_le(&mut out, base.len() as u32);
+        Self::append_u32_le(&mut out, ours.len() as u32);
+        Self::append_u32_le(&mut out, theirs.len() as u32);
+        Self::append_u32_le(&mut out, target_branch_id);
+        Self::append_u32_le(&mut out, source_branch_id);
+        Self::append_u64_le(&mut out, base_version_id.unwrap_or(u64::MAX));
+        Self::append_u64_le(&mut out, ours_version_id);
+        Self::append_u64_le(&mut out, theirs_version_id);
+        for (start, end) in spans {
+            Self::append_u32_le(&mut out, *start);
+            Self::append_u32_le(&mut out, *end);
+        }
+        out.extend_from_slice(payload);
+        out.extend_from_slice(base);
+        out.extend_from_slice(ours);
+        out.extend_from_slice(theirs);
+        out
+    }
+
+    fn decode_conflict_artifact_info(payload: &[u8]) -> Option<TemporalConflictArtifactInfo> {
+        if payload.len() < 40 {
+            return None;
+        }
+        if payload.get(..4)? != Self::MERGE_CONFLICT_ARTIFACT_MAGIC {
+            return None;
+        }
+        let version = Self::read_u16_le(payload, 4)?;
+        let conflict_count = Self::read_u32_le(payload, 8)?;
+        let payload_len = Self::read_u32_le(payload, 12)? as usize;
+        let base_len = Self::read_u32_le(payload, 16)? as usize;
+        let ours_len = Self::read_u32_le(payload, 20)? as usize;
+        let theirs_len = Self::read_u32_le(payload, 24)? as usize;
+        let span_bytes = (conflict_count as usize).checked_mul(8)?;
+        let total = 40usize
+            .checked_add(span_bytes)?
+            .checked_add(payload_len)?
+            .checked_add(base_len)?
+            .checked_add(ours_len)?
+            .checked_add(theirs_len)?;
+        if total > payload.len() {
+            return None;
+        }
+        Some(TemporalConflictArtifactInfo {
+            version,
+            conflict_count,
+            payload_len,
+            base_len,
+            ours_len,
+            theirs_len,
+        })
     }
 
     fn create_branch_locked(
@@ -1370,6 +1556,36 @@ impl TemporalService {
         Some(out)
     }
 
+    fn try_three_way_chunk_merge(base: &[u8], ours: &[u8], theirs: &[u8]) -> Option<Vec<u8>> {
+        let max_len = core::cmp::max(base.len(), core::cmp::max(ours.len(), theirs.len()));
+        let chunk_count =
+            (max_len.saturating_add(Self::MERGE_CHUNK_BYTES - 1)) / Self::MERGE_CHUNK_BYTES;
+        if chunk_count > Self::MERGE_MAX_CHUNKS {
+            return None;
+        }
+
+        let mut out = Vec::with_capacity(max_len);
+        let mut chunk = 0usize;
+        while chunk < chunk_count {
+            let start = chunk.saturating_mul(Self::MERGE_CHUNK_BYTES);
+            let end = core::cmp::min(start.saturating_add(Self::MERGE_CHUNK_BYTES), max_len);
+            let b = &base[core::cmp::min(start, base.len())..core::cmp::min(end, base.len())];
+            let o = &ours[core::cmp::min(start, ours.len())..core::cmp::min(end, ours.len())];
+            let t = &theirs[core::cmp::min(start, theirs.len())..core::cmp::min(end, theirs.len())];
+            if o == t {
+                out.extend_from_slice(o);
+            } else if o == b {
+                out.extend_from_slice(t);
+            } else if t == b {
+                out.extend_from_slice(o);
+            } else {
+                return None;
+            }
+            chunk = chunk.saturating_add(1);
+        }
+        Some(out)
+    }
+
     fn try_three_way_byte_merge(
         base: &[u8],
         ours: &[u8],
@@ -1395,7 +1611,9 @@ impl TemporalService {
                 match strategy {
                     TemporalMergeStrategy::Ours => o,
                     TemporalMergeStrategy::Theirs => t,
-                    TemporalMergeStrategy::FastForwardOnly => None,
+                    TemporalMergeStrategy::FastForwardOnly | TemporalMergeStrategy::ThreeWay => {
+                        None
+                    }
                 }
             };
 
@@ -1463,6 +1681,9 @@ impl TemporalService {
                     source_branch_id: source_branch.branch_id,
                     target_head_before: target_head,
                     target_head_after: target_head,
+                    merge_kind: TemporalMergeKind::FastForward,
+                    conflict_count: 0,
+                    used_fallback: false,
                 },
                 None,
             ));
@@ -1489,6 +1710,9 @@ impl TemporalService {
                     source_branch_id: source_branch.branch_id,
                     target_head_before: target_head,
                     target_head_after: Some(source_head_id),
+                    merge_kind: TemporalMergeKind::FastForward,
+                    conflict_count: 0,
+                    used_fallback: false,
                 },
                 payload,
             ));
@@ -1503,6 +1727,9 @@ impl TemporalService {
                     source_branch_id: source_branch.branch_id,
                     target_head_before: target_head,
                     target_head_after: target_head,
+                    merge_kind: TemporalMergeKind::FastForward,
+                    conflict_count: 0,
+                    used_fallback: false,
                 },
                 None,
             ));
@@ -1533,32 +1760,70 @@ impl TemporalService {
         let base = base_id.and_then(|id| Self::version_payload_locked(object, id));
 
         let mut merged: Option<Vec<u8>> = None;
+        let mut merge_kind = TemporalMergeKind::ConflictArtifact;
+        let mut used_fallback = false;
         if ours == theirs {
             merged = Some(ours.to_vec());
+            merge_kind = TemporalMergeKind::Exact;
         } else if let Some(base) = base {
             if ours == base {
                 merged = Some(theirs.to_vec());
+                merge_kind = TemporalMergeKind::FastForward;
             } else if theirs == base {
                 merged = Some(ours.to_vec());
+                merge_kind = TemporalMergeKind::FastForward;
             } else {
                 merged = Self::try_three_way_span_merge(base, ours, theirs);
-                if merged.is_none() {
+                if merged.is_some() {
+                    merge_kind = TemporalMergeKind::Span3;
+                } else {
                     merged = Self::try_three_way_line_merge(base, ours, theirs);
+                }
+                if merged.is_some() {
+                    if !matches!(merge_kind, TemporalMergeKind::Span3) {
+                        merge_kind = TemporalMergeKind::Line3;
+                    }
+                } else {
+                    merged = Self::try_three_way_chunk_merge(base, ours, theirs);
+                    if merged.is_some() {
+                        merge_kind = TemporalMergeKind::Chunk3;
+                    }
                 }
                 if merged.is_none() {
                     merged = Self::try_three_way_byte_merge(base, ours, theirs, strategy);
+                    if merged.is_some() {
+                        merge_kind = TemporalMergeKind::BytePolicy;
+                    }
                 }
             }
         }
 
+        let conflict_spans = Self::collect_conflict_spans(base.unwrap_or(&[]), ours, theirs);
+        let conflict_count = conflict_spans.len() as u32;
         let payload = match merged {
             Some(v) => v,
-            None => Self::deterministic_conflict_resolution_payload(
-                ours,
-                theirs,
-                ours_tick,
-                theirs_tick,
-            ),
+            None => {
+                let resolved = Self::deterministic_conflict_resolution_payload(
+                    ours,
+                    theirs,
+                    ours_tick,
+                    theirs_tick,
+                );
+                used_fallback = true;
+                merge_kind = TemporalMergeKind::ConflictArtifact;
+                Self::build_conflict_artifact_payload(
+                    base.unwrap_or(&[]),
+                    ours,
+                    theirs,
+                    &resolved,
+                    base_id,
+                    ours_head_id,
+                    source_head_id,
+                    target_branch.branch_id,
+                    source_branch.branch_id,
+                    &conflict_spans,
+                )
+            }
         };
 
         let version_id = self.next_version_id;
@@ -1608,6 +1873,9 @@ impl TemporalService {
                 source_branch_id: source_branch.branch_id,
                 target_head_before: target_head,
                 target_head_after: Some(version_id),
+                merge_kind,
+                conflict_count,
+                used_fallback,
             },
             if target_is_active {
                 Some(payload)
@@ -4629,6 +4897,10 @@ pub fn persistence_recovery_self_check() -> Result<(), &'static str> {
     result
 }
 
+pub fn decode_conflict_artifact(payload: &[u8]) -> Option<TemporalConflictArtifactInfo> {
+    TemporalService::decode_conflict_artifact_info(payload)
+}
+
 pub fn branch_merge_self_check() -> Result<(), &'static str> {
     const PATH: &str = "/temporal-branch-selfcheck";
     const BASE: &[u8] = b"temporal-branch-base";
@@ -5054,4 +5326,68 @@ pub fn hardening_deterministic_merge_self_check() -> Result<(), &'static str> {
         return Err("temporal hardening merge self-check non-deterministic payload");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TemporalConflictArtifactInfo, TemporalMergeKind, TemporalMergeStrategy, TemporalService};
+
+    #[test]
+    fn span_merge_preserves_non_overlapping_binary_edits() {
+        let base = b"abcdefgh";
+        let ours = b"abZZefgh";
+        let theirs = b"abcdYYgh";
+        let merged = TemporalService::try_three_way_span_merge(base, ours, theirs).unwrap();
+        assert_eq!(merged, b"abZZYYgh");
+    }
+
+    #[test]
+    fn chunk_merge_handles_disjoint_binary_chunks() {
+        let base = [0u8; 96];
+        let mut ours = base;
+        let mut theirs = base;
+        ours[8] = 0xAA;
+        theirs[72] = 0xBB;
+        let merged = TemporalService::try_three_way_chunk_merge(&base, &ours, &theirs).unwrap();
+        assert_eq!(merged[8], 0xAA);
+        assert_eq!(merged[72], 0xBB);
+    }
+
+    #[test]
+    fn three_way_byte_merge_conflict_falls_back_to_artifact() {
+        let base = b"aaaa";
+        let ours = b"baaa";
+        let theirs = b"caaa";
+        let merged =
+            TemporalService::try_three_way_byte_merge(base, ours, theirs, TemporalMergeStrategy::ThreeWay);
+        assert!(merged.is_none());
+    }
+
+    #[test]
+    fn conflict_artifact_round_trip_decodes() {
+        let spans = [(1u32, 3u32)];
+        let payload = TemporalService::build_conflict_artifact_payload(
+            b"base",
+            b"ours",
+            b"theirs",
+            b"resolved",
+            Some(7),
+            8,
+            9,
+            1,
+            2,
+            &spans,
+        );
+        let info: TemporalConflictArtifactInfo =
+            TemporalService::decode_conflict_artifact_info(&payload).unwrap();
+        assert_eq!(info.version, 1);
+        assert_eq!(info.conflict_count, 1);
+        assert_eq!(info.payload_len, 8);
+    }
+
+    #[test]
+    fn merge_kind_numeric_mapping_is_stable() {
+        assert_eq!(TemporalMergeKind::FastForward.as_u32(), 0);
+        assert_eq!(TemporalMergeKind::ConflictArtifact.as_u32(), 6);
+    }
 }

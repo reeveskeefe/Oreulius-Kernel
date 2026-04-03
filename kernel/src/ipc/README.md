@@ -1,6 +1,6 @@
 # `kernel/src/ipc` — Inter-Process Communication
 
-The IPC module is the **communication backbone** of Oreulia. It provides capability-gated, message-passing channels between processes with a formal causal event identity model, a multi-tier backpressure algebra, an affine linear capability constraint for endpoint delegation, a declarative admission control pipeline, and a well-typed closure state machine. Unlike monolithic shared-memory IPC designs, every primitive here is derived from a mathematical formalism: channels are bounded queues with proven capacity invariants, capabilities are affine tokens with zero-sum split semantics, and backpressure levels are threshold functions over queue occupancy ratios.
+The IPC module is the **communication backbone** of Oreulius. It provides capability-gated, message-passing channels between processes with a formal causal event identity model, a multi-tier backpressure algebra, an affine linear capability constraint for endpoint delegation, a declarative admission control pipeline, and a well-typed closure state machine. Unlike monolithic shared-memory IPC designs, every primitive here is derived from a mathematical formalism: channels are bounded queues with proven capacity invariants, capabilities are affine tokens with zero-sum split semantics, and backpressure levels are threshold functions over queue occupancy ratios.
 
 ---
 

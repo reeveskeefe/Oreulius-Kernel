@@ -1,24 +1,24 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
 
-//! Oreulia Capability Security - Enhanced Authority Model
+//! Oreulius Capability Security - Enhanced Authority Model
 //!
-//! This module implements Oreulia's capability-based security model as specified
-//! in docs/capability/oreulia-capabilities.md and docs/project/oreulia-vision.md
+//! This module implements Oreulius's capability-based security model as specified
+//! in docs/capability/oreulius-capabilities.md and docs/project/oreulius-vision.md
 //!
 //! Key principles:
 //! - NO AMBIENT AUTHORITY: All access requires explicit capabilities
@@ -27,7 +27,7 @@
 //! - ATTENUATABLE: Capabilities can be reduced to fewer rights
 //! - AUDITABLE: All capability operations are tracked
 //!
-//! This differentiates Oreulia from POSIX/Unix/Linux/NT kernels which rely on:
+//! This differentiates Oreulius from POSIX/Unix/Linux/NT kernels which rely on:
 //! - Global namespaces (filesystem paths, network ports)
 //! - Ambient authority (current user, process groups)
 //! - Discretionary access control (file permissions)
@@ -46,7 +46,7 @@ use spin::Mutex;
 // Capability Types and Rights
 // ============================================================================
 
-/// Capability type taxonomy (aligned with oreulia-capabilities.md)
+/// Capability type taxonomy (aligned with oreulius-capabilities.md)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CapabilityType {
@@ -163,7 +163,7 @@ impl Rights {
 
 /// A capability grants authority to perform operations on an object
 #[derive(Debug, Clone, Copy)]
-pub struct OreuliaCapability {
+pub struct OreuliusCapability {
     /// Capability ID (local to task)
     pub cap_id: u32,
     /// Kernel object ID (unforgeable)
@@ -187,7 +187,7 @@ pub struct OreuliaCapability {
     pub parent_cap_id: Option<u32>,
 }
 
-impl OreuliaCapability {
+impl OreuliusCapability {
     pub fn new(
         cap_id: u32,
         object_id: u64,
@@ -195,7 +195,7 @@ impl OreuliaCapability {
         rights: Rights,
         origin: ProcessId,
     ) -> Self {
-        OreuliaCapability {
+        OreuliusCapability {
             cap_id,
             object_id,
             cap_type,
@@ -258,7 +258,7 @@ impl OreuliaCapability {
         object_id: u64,
         lang_tag: crate::wasm::LanguageTag,
     ) -> Self {
-        let mut cap = OreuliaCapability::new(
+        let mut cap = OreuliusCapability::new(
             0,
             object_id,
             CapabilityType::CrossLanguage,
@@ -311,7 +311,7 @@ enum RemoteLeaseDecision {
 
 fn verify_capability_access(
     owner: ProcessId,
-    cap: &OreuliaCapability,
+    cap: &OreuliusCapability,
     req: CapabilityAccessRequest,
 ) -> Result<(), CapabilityError> {
     if !cap.verify_token(owner) {
@@ -506,13 +506,13 @@ impl RemoteCapabilityLease {
 #[derive(Debug, Clone, Copy)]
 struct QuarantinedCapability {
     owner_pid: ProcessId,
-    cap: OreuliaCapability,
+    cap: OreuliusCapability,
     restore_at_tick: u64,
 }
 
 /// Per-task capability table (unforgeable capability storage)
 pub struct CapabilityTable {
-    entries: [Option<OreuliaCapability>; MAX_CAPABILITIES],
+    entries: [Option<OreuliusCapability>; MAX_CAPABILITIES],
     next_cap_id: u32,
     owner: ProcessId,
 }
@@ -526,29 +526,74 @@ impl CapabilityTable {
         }
     }
 
-    /// Install a capability (creation or transfer)
-    pub fn install(&mut self, cap: OreuliaCapability) -> Result<u32, CapabilityError> {
-        // Find empty slot
-        for (idx, entry) in self.entries.iter_mut().enumerate() {
-            if entry.is_none() {
-                let cap_id = idx as u32; // Simplified ID allocation
-                let mut installed = cap;
-                installed.cap_id = cap_id;
-                installed.granted_at = crate::pit::get_ticks() as u64;
-                installed.sign(self.owner);
-                *entry = Some(installed);
+    #[inline]
+    const fn cap_id_to_index(cap_id: u32) -> Result<usize, CapabilityError> {
+        if cap_id == 0 {
+            return Err(CapabilityError::InvalidCapability);
+        }
+        let idx = cap_id as usize;
+        if idx >= MAX_CAPABILITIES {
+            return Err(CapabilityError::InvalidCapability);
+        }
+        Ok(idx)
+    }
 
-                // Audit capability installation
-                security::security().log_event(
-                    AuditEntry::new(SecurityEvent::CapabilityCreated, self.owner, cap_id)
-                        .with_context(cap.object_id),
-                );
+    #[inline]
+    const fn next_search_start_from(cap_id: u32) -> u32 {
+        if cap_id == 0 || cap_id as usize >= MAX_CAPABILITIES - 1 {
+            1
+        } else {
+            cap_id + 1
+        }
+    }
 
+    fn alloc_slot(&mut self) -> Result<u32, CapabilityError> {
+        let start = if self.next_cap_id == 0 || self.next_cap_id as usize >= MAX_CAPABILITIES {
+            1
+        } else {
+            self.next_cap_id
+        };
+
+        let mut cap_id = start;
+        let mut scanned = 0usize;
+        while scanned < (MAX_CAPABILITIES - 1) {
+            let idx = cap_id as usize;
+            if self.entries[idx].is_none() {
+                self.next_cap_id = Self::next_search_start_from(cap_id);
                 return Ok(cap_id);
             }
+
+            cap_id = Self::next_search_start_from(cap_id);
+            scanned += 1;
         }
 
         Err(CapabilityError::TableFull)
+    }
+
+    fn store_installed_at(
+        &mut self,
+        cap_id: u32,
+        cap: OreuliusCapability,
+    ) -> Result<u32, CapabilityError> {
+        let idx = Self::cap_id_to_index(cap_id)?;
+        let mut installed = cap;
+        installed.cap_id = cap_id;
+        installed.granted_at = crate::pit::get_ticks() as u64;
+        installed.sign(self.owner);
+        self.entries[idx] = Some(installed);
+
+        security::security().log_event(
+            AuditEntry::new(SecurityEvent::CapabilityCreated, self.owner, cap_id)
+                .with_context(installed.object_id),
+        );
+
+        Ok(cap_id)
+    }
+
+    /// Install a capability (creation or transfer)
+    pub fn install(&mut self, cap: OreuliusCapability) -> Result<u32, CapabilityError> {
+        let cap_id = self.alloc_slot()?;
+        self.store_installed_at(cap_id, cap)
     }
 
     /// Install a capability at a fixed cap_id, replacing any existing entry.
@@ -556,75 +601,57 @@ impl CapabilityTable {
     pub fn install_or_replace(
         &mut self,
         preferred_cap_id: Option<u32>,
-        cap: OreuliaCapability,
+        cap: OreuliusCapability,
     ) -> Result<u32, CapabilityError> {
         if let Some(cap_id) = preferred_cap_id {
-            let idx = cap_id as usize;
-            if idx < MAX_CAPABILITIES {
-                let mut installed = cap;
-                installed.cap_id = cap_id;
-                installed.granted_at = crate::pit::get_ticks() as u64;
-                installed.sign(self.owner);
-                self.entries[idx] = Some(installed);
-
-                security::security().log_event(
-                    AuditEntry::new(SecurityEvent::CapabilityCreated, self.owner, cap_id)
-                        .with_context(installed.object_id),
-                );
-                return Ok(cap_id);
+            if Self::cap_id_to_index(cap_id).is_ok() {
+                self.next_cap_id = Self::next_search_start_from(cap_id);
+                return self.store_installed_at(cap_id, cap);
             }
         }
         self.install(cap)
     }
 
     /// Lookup capability by cap_id
-    pub fn lookup(&self, cap_id: u32) -> Result<&OreuliaCapability, CapabilityError> {
-        if let Some(entry) = self
-            .entries
-            .iter()
-            .find(|e| e.as_ref().map_or(false, |c| c.cap_id == cap_id))
-        {
-            if let Some(cap) = entry.as_ref() {
-                if !cap.verify_token(self.owner) {
-                    security::security().log_event(AuditEntry::new(
-                        SecurityEvent::InvalidCapability,
-                        self.owner,
-                        cap_id,
-                    ));
-                    return Err(CapabilityError::InvalidCapability);
-                }
-                return Ok(cap);
+    pub fn lookup(&self, cap_id: u32) -> Result<&OreuliusCapability, CapabilityError> {
+        let idx = Self::cap_id_to_index(cap_id)?;
+        if let Some(cap) = self.entries[idx].as_ref() {
+            if cap.cap_id != cap_id || !cap.verify_token(self.owner) {
+                security::security().log_event(AuditEntry::new(
+                    SecurityEvent::InvalidCapability,
+                    self.owner,
+                    cap_id,
+                ));
+                return Err(CapabilityError::InvalidCapability);
             }
+            return Ok(cap);
         }
         Err(CapabilityError::InvalidCapability)
     }
 
     /// Remove capability (for transfer or revocation)
-    pub fn remove(&mut self, cap_id: u32) -> Result<OreuliaCapability, CapabilityError> {
-        for entry in self.entries.iter_mut() {
-            if let Some(cap) = entry {
-                if cap.cap_id == cap_id {
-                    if !cap.verify_token(self.owner) {
-                        security::security().log_event(AuditEntry::new(
-                            SecurityEvent::InvalidCapability,
-                            self.owner,
-                            cap_id,
-                        ));
-                        return Err(CapabilityError::InvalidCapability);
-                    }
-                    let removed = *cap;
-                    *entry = None;
-
-                    // Audit capability removal
-                    security::security().log_event(AuditEntry::new(
-                        SecurityEvent::CapabilityRevoked,
-                        self.owner,
-                        cap_id,
-                    ));
-
-                    return Ok(removed);
-                }
+    pub fn remove(&mut self, cap_id: u32) -> Result<OreuliusCapability, CapabilityError> {
+        let idx = Self::cap_id_to_index(cap_id)?;
+        if let Some(cap) = self.entries[idx] {
+            if cap.cap_id != cap_id || !cap.verify_token(self.owner) {
+                security::security().log_event(AuditEntry::new(
+                    SecurityEvent::InvalidCapability,
+                    self.owner,
+                    cap_id,
+                ));
+                return Err(CapabilityError::InvalidCapability);
             }
+
+            self.entries[idx] = None;
+            self.next_cap_id = cap_id;
+
+            security::security().log_event(AuditEntry::new(
+                SecurityEvent::CapabilityRevoked,
+                self.owner,
+                cap_id,
+            ));
+
+            return Ok(cap);
         }
 
         Err(CapabilityError::InvalidCapability)
@@ -647,7 +674,7 @@ impl CapabilityTable {
     }
 
     /// Get all capabilities (for auditing)
-    pub fn list_all(&self) -> impl Iterator<Item = &OreuliaCapability> {
+    pub fn list_all(&self) -> impl Iterator<Item = &OreuliusCapability> {
         self.entries.iter().filter_map(|e| e.as_ref())
     }
 
@@ -658,7 +685,7 @@ impl CapabilityTable {
         rights: Rights,
         origin: ProcessId,
     ) -> Result<u32, CapabilityError> {
-        let cap = OreuliaCapability::new(
+        let cap = OreuliusCapability::new(
             0,
             channel.0 as u64, // Use channel ID as object ID
             CapabilityType::Channel,
@@ -726,6 +753,57 @@ impl CapabilityTable {
             i += 1;
         }
         revoked
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_cap(object_id: u64) -> OreuliusCapability {
+        OreuliusCapability::new(
+            0,
+            object_id,
+            CapabilityType::Channel,
+            Rights::new(Rights::CHANNEL_SEND),
+            ProcessId::new(1),
+        )
+    }
+
+    #[test]
+    fn capability_table_never_allocates_cap_id_zero() {
+        let mut table = CapabilityTable::new(ProcessId::new(1));
+        let cap_id = table.install(test_cap(0x10)).unwrap();
+        assert_eq!(cap_id, 1);
+    }
+
+    #[test]
+    fn capability_table_lookup_and_remove_are_slot_indexed() {
+        let mut table = CapabilityTable::new(ProcessId::new(2));
+        let cap_id = table.install(test_cap(0x20)).unwrap();
+        let looked_up = table.lookup(cap_id).unwrap();
+        assert_eq!(looked_up.cap_id, cap_id);
+        assert_eq!(looked_up.object_id, 0x20);
+
+        let removed = table.remove(cap_id).unwrap();
+        assert_eq!(removed.cap_id, cap_id);
+        assert!(matches!(
+            table.lookup(cap_id),
+            Err(CapabilityError::InvalidCapability)
+        ));
+    }
+
+    #[test]
+    fn capability_table_reuses_freed_slot_after_removal() {
+        let mut table = CapabilityTable::new(ProcessId::new(3));
+        let first = table.install(test_cap(0x30)).unwrap();
+        let second = table.install(test_cap(0x31)).unwrap();
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+
+        let _ = table.remove(first).unwrap();
+        let reused = table.install(test_cap(0x32)).unwrap();
+        assert_eq!(reused, first);
     }
 }
 
@@ -870,7 +948,7 @@ impl CapabilityManager {
         let mut tables = self.tables.lock();
 
         if let Some(table) = tables[pid.0 as usize].as_mut() {
-            let cap = OreuliaCapability::new(0, object_id, cap_type, rights, origin);
+            let cap = OreuliusCapability::new(0, object_id, cap_type, rights, origin);
             let cap_id = table.install(cap)?;
             if !crate::temporal::is_replay_active() {
                 let _ = crate::temporal::record_capability_event(
@@ -1036,7 +1114,7 @@ impl CapabilityManager {
     fn quarantine_insert(
         quarantined: &mut [Option<QuarantinedCapability>; MAX_QUARANTINED_CAPS],
         owner_pid: ProcessId,
-        cap: OreuliaCapability,
+        cap: OreuliusCapability,
         restore_at_tick: u64,
     ) -> bool {
         let mut slot_idx = None;
@@ -1257,7 +1335,7 @@ impl CapabilityManager {
             return Err(CapabilityError::TaskNotFound);
         }
         let table = tables[idx].as_mut().ok_or(CapabilityError::TaskNotFound)?;
-        let cap = OreuliaCapability::new(0, object_id, cap_type, rights, owner_pid);
+        let cap = OreuliusCapability::new(0, object_id, cap_type, rights, owner_pid);
         table.install_or_replace(preferred_cap_id, cap)
     }
 
@@ -1856,7 +1934,7 @@ pub fn clear_remote_leases_for_testing() {
 
 pub fn formal_capability_self_check() -> Result<(), &'static str> {
     let owner = ProcessId::new(42);
-    let mut cap = OreuliaCapability::new(
+    let mut cap = OreuliusCapability::new(
         7,
         0xABCD,
         CapabilityType::Channel,
@@ -2009,12 +2087,12 @@ impl CapabilityManager {
 
     /// Snapshot the capability set for `pid` as a fixed-size array.
     ///
-    /// Returns up to `MAX_CAPABILITIES` entries as `Option<OreuliaCapability>`.
+    /// Returns up to `MAX_CAPABILITIES` entries as `Option<OreuliusCapability>`.
     /// The array length matches `MAX_CAPABILITIES`; unused slots are `None`.
     pub fn list_capabilities_for_pid(
         &self,
         pid: ProcessId,
-    ) -> [Option<OreuliaCapability>; MAX_CAPABILITIES] {
+    ) -> [Option<OreuliusCapability>; MAX_CAPABILITIES] {
         let idx = pid.0 as usize;
         if idx >= MAX_TASKS {
             return [None; MAX_CAPABILITIES];
@@ -2143,7 +2221,7 @@ impl CapabilityManager {
         &self,
         pid: ProcessId,
         cap_id: u32,
-    ) -> Result<OreuliaCapability, &'static str> {
+    ) -> Result<OreuliusCapability, &'static str> {
         let idx = pid.0 as usize;
         if idx >= MAX_TASKS {
             return Err("Task not found");
@@ -2179,10 +2257,6 @@ fn cap_type_from_ipc(
     }
 }
 
-fn object_id_from_ipc_cap(cap: &crate::ipc::Capability) -> u64 {
-    ((cap.extra[0] as u64) << 32) | cap.object_id as u64
-}
-
 /// Export a local capability as an authenticated IPC capability attachment.
 pub fn export_capability_to_ipc(
     owner: ProcessId,
@@ -2196,14 +2270,13 @@ pub fn export_capability_to_ipc(
 
     let mut out = crate::ipc::Capability::with_type(
         cap.cap_id,
-        cap.object_id as u32,
-        cap.rights.bits(),
+        cap.object_id,
+        cap.rights,
         ipc_cap_type_for(cap.cap_type),
-    );
-    // Preserve full object identity and capability taxonomy for generic transports.
-    out.extra[0] = (cap.object_id >> 32) as u32;
-    out.extra[1] = cap.origin.0;
-    out.extra[2] = cap.granted_at as u32;
+    )
+    .with_owner(cap.origin)
+    .with_validity(cap.granted_at, 0)
+    .with_flags(cap.cap_type as u32);
     out.extra[3] = cap.cap_type as u32;
     out.sign();
     Ok(out)
@@ -2221,7 +2294,7 @@ pub fn import_capability_from_ipc(
 
     let cap_type =
         cap_type_from_ipc(cap.cap_type, cap.extra).ok_or("Unsupported IPC capability type")?;
-    let object_id = object_id_from_ipc_cap(cap);
+    let object_id = cap.object_id;
 
     #[cfg(not(target_arch = "aarch64"))]
     if cap_type == CapabilityType::ServicePointer && !crate::wasm::service_pointer_exists(object_id)
@@ -2230,6 +2303,6 @@ pub fn import_capability_from_ipc(
     }
 
     capability_manager()
-        .grant_capability(owner, object_id, cap_type, Rights::new(cap.rights), source)
+        .grant_capability(owner, object_id, cap_type, cap.rights, source)
         .map_err(|e| e.as_str())
 }

@@ -1,5 +1,5 @@
 [package]
-name = "oreulia-kernel"
+name = "oreulius-kernel"
 version = "0.1.0"
 edition = "2021"
 autobins = false

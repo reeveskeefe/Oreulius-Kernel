@@ -1,11 +1,11 @@
-# Oreulia Intent Graph with Predictive Revocation
+# Oreulius Intent Graph with Predictive Revocation
 
 **Status:** Implemented (kernel-integrated)  
 **Primary implementation:** `kernel/src/security/intent_graph.rs`, `kernel/src/execution/intent_wasm.rs`, `kernel/src/security/mod.rs`, `kernel/src/capability/mod.rs`, `kernel/src/ipc/mod.rs`, `kernel/src/platform/syscall.rs`, `kernel/src/shell/commands.rs`
 
 ## 1. Abstract
 
-Oreulia augments capability authorization with an online behavioral model called the **Intent Graph**. Instead of evaluating authority as a purely static predicate, the kernel computes per-process risk from event transitions and applies staged control:
+Oreulius augments capability authorization with an online behavioral model called the **Intent Graph**. Instead of evaluating authority as a purely static predicate, the kernel computes per-process risk from event transitions and applies staged control:
 
 1. predictive deny,
 2. temporary capability quarantine with timed restore,
@@ -569,4 +569,4 @@ Quarantine is operationally temporary under active process behavior and non-conf
 
 ## 21. Conclusion
 
-Oreulia's Intent Graph with Predictive Revocation realizes a kernel-native, behavior-aware capability control loop that is explicit, bounded, and mathematically inspectable. The current implementation already supports phased containment, reversible local authority quarantine, strong escalation semantics, and operator-grade observability. The architecture is suitable both for practical edge hardening and for further formalization work at research depth.
+Oreulius's Intent Graph with Predictive Revocation realizes a kernel-native, behavior-aware capability control loop that is explicit, bounded, and mathematically inspectable. The current implementation already supports phased containment, reversible local authority quarantine, strong escalation semantics, and operator-grade observability. The architecture is suitable both for practical edge hardening and for further formalization work at research depth.

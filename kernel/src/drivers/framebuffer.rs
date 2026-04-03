@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -1184,7 +1184,7 @@ pub fn print_banner() {
     if let (Some(fb), Some(con)) = (fb_ptr, con_ptr) {
         unsafe {
             (*con).palette = ConsolePalette::SUCCESS;
-            (*con).write_str(&*fb, "Oreulia Kernel\n");
+            (*con).write_str(&*fb, "Oreulius Kernel\n");
             (*con).palette = ConsolePalette::DEFAULT;
             (*con).write_str(&*fb, "Framebuffer display initialised\n");
         }

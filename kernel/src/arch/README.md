@@ -1,6 +1,6 @@
 # `kernel/src/arch` — Architecture Abstraction Layer
 
-The `arch` module is the hardware portability boundary for the Oreulia kernel. It exposes a single stable `ArchPlatform` trait that `rust_main` calls for every platform-specific boot step, decoupling the rest of the kernel from CPU architecture, interrupt controller hardware, timer registers, and page-table format. Implementations exist for x86 (i686, Multiboot1/2), x86-64 (64-bit long mode, identity-mapped JIT sandbox), and AArch64 (QEMU `virt` machine, GICv2, PL011, VirtIO-MMIO). A compile-time stub satisfies the trait contract on any unsupported target without halting the build.
+The `arch` module is the hardware portability boundary for the Oreulius kernel. It exposes a single stable `ArchPlatform` trait that `rust_main` calls for every platform-specific boot step, decoupling the rest of the kernel from CPU architecture, interrupt controller hardware, timer registers, and page-table format. Implementations exist for x86 (i686, Multiboot1/2), x86-64 (64-bit long mode, identity-mapped JIT sandbox), and AArch64 (QEMU `virt` machine, GICv2, PL011, VirtIO-MMIO). A compile-time stub satisfies the trait contract on any unsupported target without halting the build.
 
 ---
 
@@ -845,7 +845,7 @@ pub(crate) fn vector_base() -> usize
 pub(crate) fn install_stub_vectors()           // write 2 KiB stub table, set VBAR_EL1
 pub(crate) fn vectors_installed() -> bool
 
-pub extern "C" fn oreulia_aarch64_vector_dispatch(slot: u8, esr: u64, elr: u64, spsr: u64, far: u64)
+pub extern "C" fn oreulius_aarch64_vector_dispatch(slot: u8, esr: u64, elr: u64, spsr: u64, far: u64)
 
 pub(crate) fn trigger_breakpoint()             // BRK #0
 pub(crate) fn sync_exception_count() -> u64

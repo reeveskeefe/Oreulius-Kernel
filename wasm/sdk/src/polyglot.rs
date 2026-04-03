@@ -1,13 +1,13 @@
 //! Cross-language polyglot kernel service bindings.
 //!
-//! Oreulia allows WASM modules written in **any** language to register
+//! Oreulius allows WASM modules written in **any** language to register
 //! themselves as named kernel services and to call each other securely via
 //! capability handoffs — even across language boundaries.
 //!
 //! ## How it works
 //!
-//! 1. A WASM module embeds the `oreulia_lang` custom section (see
-//!    [`docs/runtime/oreulia-wasm-abi.md`]) to declare its language and version.
+//! 1. A WASM module embeds the `oreulius_lang` custom section (see
+//!    [`docs/runtime/oreulius-wasm-abi.md`]) to declare its language and version.
 //! 2. At startup it calls [`register`] to publish its name in the kernel's
 //!    polyglot registry (max 16 entries, IDs 103–105).
 //! 3. A *caller* module calls [`resolve`] to look up the target by name and
@@ -20,7 +20,7 @@
 //! #![no_std]
 //! #![no_main]
 //!
-//! use oreulia_sdk::polyglot;
+//! use oreulius_sdk::polyglot;
 //!
 //! #[no_mangle]
 //! pub extern "C" fn _start() {
@@ -35,7 +35,7 @@
 //! #![no_std]
 //! #![no_main]
 //!
-//! use oreulia_sdk::polyglot;
+//! use oreulius_sdk::polyglot;
 //!
 //! #[no_mangle]
 //! pub extern "C" fn _start() {
@@ -56,7 +56,7 @@
 //! |  -3   | Name already taken by a different, non-singleton module (register) **or** service has no registered export (link) |
 //! |  -4   | Capability table full (link) |
 
-use crate::raw::oreulia;
+use crate::raw::oreulius;
 
 // ---------------------------------------------------------------------------
 // High-level typed wrappers
@@ -65,7 +65,7 @@ use crate::raw::oreulia;
 /// Register this WASM module as a named polyglot kernel service.
 ///
 /// The `name` must be ≤ 32 bytes of UTF-8.  The kernel records the module's
-/// language tag (from the `oreulia_lang` custom section) alongside the name.
+/// language tag (from the `oreulius_lang` custom section) alongside the name.
 ///
 /// **Singletons**: Python (`0x04`) and JavaScript (`0x05`) modules are
 /// treated as *singleton* language runtimes — subsequent calls with the same
@@ -75,7 +75,7 @@ use crate::raw::oreulia;
 /// Returns `true` on success, `false` on any error.
 #[inline]
 pub fn register(name: &str) -> bool {
-    unsafe { oreulia::polyglot_register(name.as_ptr() as i32, name.len() as i32) == 0 }
+    unsafe { oreulius::polyglot_register(name.as_ptr() as i32, name.len() as i32) == 0 }
 }
 
 /// Resolve a registered polyglot service by name.
@@ -86,7 +86,7 @@ pub fn register(name: &str) -> bool {
 #[inline]
 pub fn resolve(name: &str) -> Option<i32> {
     let result = unsafe {
-        oreulia::polyglot_resolve(name.as_ptr() as i32, name.len() as i32)
+        oreulius::polyglot_resolve(name.as_ptr() as i32, name.len() as i32)
     };
     if result >= 0 { Some(result) } else { None }
 }
@@ -103,7 +103,7 @@ pub fn resolve(name: &str) -> Option<i32> {
 #[inline]
 pub fn link(module_name: &str, export_name: &str) -> Option<u32> {
     let result = unsafe {
-        oreulia::polyglot_link(
+        oreulius::polyglot_link(
             module_name.as_ptr()  as i32, module_name.len()  as i32,
             export_name.as_ptr()  as i32, export_name.len()  as i32,
         )

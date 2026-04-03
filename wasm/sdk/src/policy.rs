@@ -26,7 +26,7 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use oreulia_sdk::policy::{self, PolicyResult};
+//! use oreulius_sdk::policy::{self, PolicyResult};
 //!
 //! let stub = policy::opol_stub(true, 1, true, 0xAA);
 //! policy::bind(my_cap, &stub).expect("bind failed");
@@ -35,7 +35,7 @@
 //! assert_eq!(policy::eval(my_cap, &ctx), PolicyResult::Permit);
 //! ```
 
-use super::raw::oreulia as raw;
+use super::raw::oreulius as raw;
 
 // ---------------------------------------------------------------------------
 // Public result type

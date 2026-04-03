@@ -2,7 +2,7 @@
 
 Effective Date: 2026-02-08
 
-This privacy notice explains how the Oreulia Project (the "Licensor") handles Personal Data it controls in connection with the Oreulia Project and the repository. It does not cover third-party platforms (such as GitHub, GitLab, or other hosting providers) or data you process using the Licensed Work. If you use the Licensed Work to process Personal Data, you are responsible for your own privacy compliance.
+This privacy notice explains how the Oreulius Project (the "Licensor") handles Personal Data it controls in connection with the Oreulius Project and the repository. It does not cover third-party platforms (such as GitHub, GitLab, or other hosting providers) or data you process using the Licensed Work. If you use the Licensed Work to process Personal Data, you are responsible for your own privacy compliance.
 
 ## Scope
 This notice applies to Personal Data the Licensor collects when you:

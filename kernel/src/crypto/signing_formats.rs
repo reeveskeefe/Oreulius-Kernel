@@ -101,7 +101,7 @@ pub fn verify_detached_ed25519(
 
 pub fn build_ota_manifest_signed_message(hash: &[u8; 32], version: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(32 + 64 + version.len());
-    out.extend_from_slice(b"oreulia-ota-manifest:v1\nhash=");
+    out.extend_from_slice(b"oreulius-ota-manifest:v1\nhash=");
     append_hex(&mut out, hash);
     out.extend_from_slice(b"\nversion=");
     out.extend_from_slice(version.as_bytes());
@@ -118,7 +118,7 @@ pub fn build_fleet_attestation_signed_message(
     sched_switches: u64,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(256);
-    out.extend_from_slice(b"oreulia-fleet-attestation:v1\nboot_session=");
+    out.extend_from_slice(b"oreulius-fleet-attestation:v1\nboot_session=");
     append_decimal_u32(&mut out, boot_session);
     out.extend_from_slice(b"\ncrash_count=");
     append_decimal_u32(&mut out, crash_count);
@@ -181,7 +181,7 @@ mod tests {
         let msg = build_fleet_attestation_signed_message(7, 3, 42, &measurement, &slot_hash, 99);
         assert_eq!(
             core::str::from_utf8(&msg).unwrap(),
-            "oreulia-fleet-attestation:v1\nboot_session=7\ncrash_count=3\nboot_tick=42\nmeasurement=1111111111111111111111111111111111111111111111111111111111111111\nactive_slot_hash=2222222222222222222222222222222222222222222222222222222222222222\nsched_switches=99\n"
+            "oreulius-fleet-attestation:v1\nboot_session=7\ncrash_count=3\nboot_tick=42\nmeasurement=1111111111111111111111111111111111111111111111111111111111111111\nactive_slot_hash=2222222222222222222222222222222222222222222222222222222222222222\nsched_switches=99\n"
         );
     }
 
@@ -191,7 +191,7 @@ mod tests {
         let msg = build_ota_manifest_signed_message(&hash, "v1.2.3");
         assert_eq!(
             core::str::from_utf8(&msg).unwrap(),
-            "oreulia-ota-manifest:v1\nhash=abababababababababababababababababababababababababababababababab\nversion=v1.2.3\n"
+            "oreulius-ota-manifest:v1\nhash=abababababababababababababababababababababababababababababababab\nversion=v1.2.3\n"
         );
     }
 }

@@ -1,7 +1,7 @@
 {
-  "$schema": "https://oreulia.kernel/schemas/parity-matrix-1.0.json",
+  "$schema": "https://oreulius.kernel/schemas/parity-matrix-1.0.json",
   "version": "1.0",
-  "description": "Multi-architecture subsystem parity matrix for the Oreulia kernel.  Each entry declares which targets a subsystem is fully operational on.  'partial' means the subsystem is present but capability-limited (e.g. interpreter-only JIT path).",
+  "description": "Multi-architecture subsystem parity matrix for the Oreulius kernel.  Each entry declares which targets a subsystem is fully operational on.  'partial' means the subsystem is present but capability-limited (e.g. interpreter-only JIT path).",
   "generated": "2026-01-01",
   "targets": ["i686", "x86_64", "aarch64"],
   "status_legend": {
@@ -142,7 +142,7 @@
   "ci_gates": {
     "description": "CI jobs that must pass before any subsystem may be marked 'true'",
     "gates": [
-      { "job": "cargo check --target i686-oreulia",       "required_for": ["i686"] },
+      { "job": "cargo check --target i686-oreulius",       "required_for": ["i686"] },
       { "job": "cargo check --target x86_64-unknown-none", "required_for": ["x86_64"] },
       { "job": "cargo check --target aarch64-unknown-none","required_for": ["aarch64"] },
       { "job": "smoke-x86_64.sh",   "required_for": ["x86_64"] },

@@ -1,4 +1,4 @@
-; x86_64 shim/runtime bridge for incremental Oreulia bring-up
+; x86_64 shim/runtime bridge for incremental Oreulius bring-up
 ; - Provides real low-level primitives needed by the x86_64 bring-up path.
 ; - Provides real x86_64 ISR/IRQ stubs for a minimal IDT/trap pipeline.
 ; - Keeps generic zero-return stubs for the rest of the unported asm backend.

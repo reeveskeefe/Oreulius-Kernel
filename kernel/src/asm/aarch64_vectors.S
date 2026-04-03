@@ -9,8 +9,8 @@
     .section .text.aarch64_vectors, "ax"
     .align 11
 
-    .global __oreulia_aarch64_vectors_start
-    .extern oreulia_aarch64_vector_dispatch
+    .global __oreulius_aarch64_vectors_start
+    .extern oreulius_aarch64_vector_dispatch
 
     .set VEC_FRAME_SIZE, 256
 
@@ -68,7 +68,7 @@
     mrs x4, FAR_EL1
     mov x5, sp
     mov x0, #\slot
-    bl oreulia_aarch64_vector_dispatch
+    bl oreulius_aarch64_vector_dispatch
     cbz x0, 9f
     mrs x1, ELR_EL1
     add x1, x1, x0
@@ -79,44 +79,44 @@
     eret
     .endm
 
-__oreulia_aarch64_vectors_start:
+__oreulius_aarch64_vectors_start:
     /* Current EL with SP0 */
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot0
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot1
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot2
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot3
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot0
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot1
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot2
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot3
 
     /* Current EL with SPx */
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot4
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot5
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot6
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot7
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot4
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot5
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot6
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot7
 
     /* Lower EL using AArch64 */
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot8
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot9
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot10
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot11
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot8
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot9
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot10
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot11
 
     /* Lower EL using AArch32 */
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot12
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot13
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot14
-    VECTOR_TABLE_ENTRY __oreulia_vec_slot15
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot12
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot13
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot14
+    VECTOR_TABLE_ENTRY __oreulius_vec_slot15
 
-    VECTOR_HANDLER __oreulia_vec_slot0, 0
-    VECTOR_HANDLER __oreulia_vec_slot1, 1
-    VECTOR_HANDLER __oreulia_vec_slot2, 2
-    VECTOR_HANDLER __oreulia_vec_slot3, 3
-    VECTOR_HANDLER __oreulia_vec_slot4, 4
-    VECTOR_HANDLER __oreulia_vec_slot5, 5
-    VECTOR_HANDLER __oreulia_vec_slot6, 6
-    VECTOR_HANDLER __oreulia_vec_slot7, 7
-    VECTOR_HANDLER __oreulia_vec_slot8, 8
-    VECTOR_HANDLER __oreulia_vec_slot9, 9
-    VECTOR_HANDLER __oreulia_vec_slot10, 10
-    VECTOR_HANDLER __oreulia_vec_slot11, 11
-    VECTOR_HANDLER __oreulia_vec_slot12, 12
-    VECTOR_HANDLER __oreulia_vec_slot13, 13
-    VECTOR_HANDLER __oreulia_vec_slot14, 14
-    VECTOR_HANDLER __oreulia_vec_slot15, 15
+    VECTOR_HANDLER __oreulius_vec_slot0, 0
+    VECTOR_HANDLER __oreulius_vec_slot1, 1
+    VECTOR_HANDLER __oreulius_vec_slot2, 2
+    VECTOR_HANDLER __oreulius_vec_slot3, 3
+    VECTOR_HANDLER __oreulius_vec_slot4, 4
+    VECTOR_HANDLER __oreulius_vec_slot5, 5
+    VECTOR_HANDLER __oreulius_vec_slot6, 6
+    VECTOR_HANDLER __oreulius_vec_slot7, 7
+    VECTOR_HANDLER __oreulius_vec_slot8, 8
+    VECTOR_HANDLER __oreulius_vec_slot9, 9
+    VECTOR_HANDLER __oreulius_vec_slot10, 10
+    VECTOR_HANDLER __oreulius_vec_slot11, 11
+    VECTOR_HANDLER __oreulius_vec_slot12, 12
+    VECTOR_HANDLER __oreulius_vec_slot13, 13
+    VECTOR_HANDLER __oreulius_vec_slot14, 14
+    VECTOR_HANDLER __oreulius_vec_slot15, 15

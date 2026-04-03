@@ -2,7 +2,7 @@
 
 Effective Date: 2026-03-14
 
-Oreulia is a WASM-first, capability-native unikernel for running isolated
+Oreulius is a WASM-first, capability-native unikernel for running isolated
 WASI workloads on edge and cloud hosts with deterministic temporal snapshots,
 capability-based authority transfer, and in-kernel verification.  It targets
 security- and audit-sensitive deployments and systems research — not a
@@ -15,7 +15,7 @@ still reserving commercial deployment for separate agreements.
 This license is designed to:
 - Allow public research, evaluation, benchmarking, and experimentation.
 - Make public forks and contributions straightforward.
-- Let companies evaluate Oreulia internally without immediate legal overhead.
+- Let companies evaluate Oreulius internally without immediate legal overhead.
 - Keep commercial deployment, production use, and paid offerings under
   separate negotiated terms.
 

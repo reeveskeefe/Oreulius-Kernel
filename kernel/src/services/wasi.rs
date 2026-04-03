@@ -1,7 +1,7 @@
-//! # CapabilityWASI — WASI Preview 1 ABI over Oreulia Capabilities
+//! # CapabilityWASI — WASI Preview 1 ABI over Oreulius Capabilities
 //!
 //! Maps the full [WASI Preview 1](https://github.com/WebAssembly/WASI/blob/main/legacy/preview1/docs.md)
-//! syscall ABI onto Oreulia's capability-based kernel services, enabling
+//! syscall ABI onto Oreulius's capability-based kernel services, enabling
 //! musl-libc, WASI-SDK, and Emscripten binaries to run unmodified.
 //!
 //! ## Design
@@ -828,7 +828,7 @@ pub fn fd_write(
                 crate::serial_print!("{}", s);
             }
         } else if kind == FdKind::File {
-            // Append-write to the Oreulia FS.
+            // Append-write to the Oreulius FS.
             let path_len = ctx.fds[fd as usize].path_len as usize;
             let path_bytes = ctx.fds[fd as usize].path[..path_len].to_owned_bytes();
             let key_opt = core::str::from_utf8(&path_bytes[..path_len])
@@ -936,7 +936,7 @@ pub fn path_unlink_file(_ctx: &mut WasiCtx, path: &[u8]) -> Errno {
     }
 }
 
-/// path_create_directory — no-op stub (Oreulia FS is flat key-value).
+/// path_create_directory — no-op stub (Oreulius FS is flat key-value).
 pub fn path_create_directory(_ctx: &mut WasiCtx, _path: &[u8]) -> Errno {
     Errno::Success
 }
@@ -1321,7 +1321,7 @@ pub fn sock_send(
 
 /// sock_accept — accept a pending inbound connection on a listening socket fd.
 ///
-/// Oreulia's network stack (RTL8139) is connectionless at the driver level;
+/// Oreulius's network stack (RTL8139) is connectionless at the driver level;
 /// we model "connection acceptance" as consuming the next available received
 /// packet and returning a new `TcpSocket` fd that maps to the RTL8139 receive
 /// path.  If no packet is pending we return `Errno::Again` so that callers

@@ -1,8 +1,8 @@
-# Oreulia — Temporal Objects: Universal Adapter Coverage + Durable Persistence
+# Oreulius — Temporal Objects: Universal Adapter Coverage + Durable Persistence
 
 **Status:** Implemented / Universal Coverage for Current Kernel Object Classes (Mar 29, 2026)
 
-Oreulia’s **Temporal Objects** subsystem turns mutable kernel state into an explicit, versioned history:
+Oreulius’s **Temporal Objects** subsystem turns mutable kernel state into an explicit, versioned history:
 
 - Every temporal object is keyed by a canonical path (e.g. `/data/file`, `/socket/tcp/conn/7`, `/enclave/state`).
 - Writes and snapshots append **immutable versions** with metadata and integrity hashes. Merges either fast-forward branch heads or materialize a merge version, while rollbacks and branch checkouts apply selected historical payloads via adapters.
@@ -165,7 +165,7 @@ This matches the kernel implementation which checks whether `ancestor` is reacha
 
 ### 3.1 Content Hash
 
-Oreulia uses a 32-bit FNV-1a-style hash (not cryptographic) implemented in `temporal_asm`.
+Oreulius uses a 32-bit FNV-1a-style hash (not cryptographic) implemented in `temporal_asm`.
 
 Define:
 
@@ -260,7 +260,7 @@ In the current implementation, most adapters treat these modes identically (deco
 
 ### 5.1 Definition (Kernel Object Class Coverage)
 
-Define the **kernel object class set** `C` for Oreulia as the set of temporal object encodings and/or keys the kernel treats as first-class temporal objects (either typed or file-backed).
+Define the **kernel object class set** `C` for Oreulius as the set of temporal object encodings and/or keys the kernel treats as first-class temporal objects (either typed or file-backed).
 
 In the current kernel, `C` is enumerated by the object type ids in `kernel/src/temporal.rs` and the explicit singleton keys used for subsystem state.
 
@@ -501,8 +501,8 @@ where:
 Keys are derived from the kernel’s stable persistence seal key using SHA-256 domain separation:
 
 ```text
-enc_key = SHA256("oreulia:persist:enc:" || slot_id || master)[0..16]
-mac_key = SHA256("oreulia:persist:mac:" || slot_id || master)
+enc_key = SHA256("oreulius:persist:enc:" || slot_id || master)[0..16]
+mac_key = SHA256("oreulius:persist:mac:" || slot_id || master)
 ```
 
 The header is fixed-size (64 bytes). Offsets are little-endian:
@@ -528,7 +528,7 @@ Recovery verifies `mac16` before decrypting. A monotonic nonce counter is advanc
 
 ### 8.1 WASM Host ABI
 
-Oreulia’s WASM ABI exposes temporal primitives (names may be prefixed with `oreulia_`):
+Oreulius’s WASM ABI exposes temporal primitives (names may be prefixed with `oreulius_`):
 
 | Function | Purpose |
 |---|---|
@@ -547,7 +547,7 @@ These allow user-mode services to perform time-travel without any string-parsing
 
 ### 8.2 IPC Binary Protocol
 
-Temporal traffic over IPC uses a binary framed protocol (see `docs/ipc/oreulia-ipc.md`, “Temporal IPC Binary Protocol (v1)”).
+Temporal traffic over IPC uses a binary framed protocol (see `docs/ipc/oreulius-ipc.md`, “Temporal IPC Binary Protocol (v1)”).
 
 ---
 
@@ -915,7 +915,7 @@ This makes temporal time-travel auditable and eligible for policy-based rate lim
 
 ## 13. Validation and Self-Checks
 
-Oreulia includes kernel self-checks that exercise both persistence and universal adapter coverage.
+Oreulius includes kernel self-checks that exercise both persistence and universal adapter coverage.
 
 ### 13.1 Shell Entry Point
 
@@ -958,7 +958,7 @@ This is the practical regression harness that guards “universal coverage” ag
 
 ### 13.3 Completion Status for Declared Scope
 
-For the declared Oreulia temporal scope in this document, the implementation is complete:
+For the declared Oreulius temporal scope in this document, the implementation is complete:
 
 - universal adapter-backed temporal coverage for registered kernel object classes,
 - durable persistence with confidentiality and integrity,

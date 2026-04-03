@@ -1,6 +1,6 @@
 # `crypto` — Cryptographic Primitives
 
-This module provides every cryptographic primitive used by the Oreulia kernel:
+This module provides every cryptographic primitive used by the Oreulius kernel:
 symmetric encryption and authentication (AES-128-GCM), hash functions (SHA-256,
 SHA-512), a MAC (HMAC-SHA256), key derivation (HKDF), an asymmetric key-exchange
 primitive (X25519), a digital signature verifier (Ed25519), domain-separated
@@ -789,7 +789,7 @@ downgrade from "verified" to "unsigned" by removing only one file.
 **OTA manifest:**
 
 ```
-oreulia-ota-manifest:v1\n
+oreulius-ota-manifest:v1\n
 hash=<hex32>\n
 version=<str>\n
 ```
@@ -797,7 +797,7 @@ version=<str>\n
 **Fleet attestation:**
 
 ```
-oreulia-fleet-attestation:v1\n
+oreulius-fleet-attestation:v1\n
 boot_session=<u32>\n
 crash_count=<u32>\n
 boot_tick=<u64>\n

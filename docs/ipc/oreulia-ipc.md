@@ -1,10 +1,10 @@
-# Oreulia — IPC & Dataflow
+# Oreulius — IPC & Dataflow
 
 **Status:** Implemented core IPC subsystem with bounded channels, capability-gated access, admission control, scheduler-backed blocking at the service layer, diagnostics, and temporal service framing.
 
-For the internal implementation reference, see [`kernel/src/ipc/README.md`](../../kernel/src/ipc/README.md). For the remaining work, see [oreulia-ipc-implementation-roadmap.md](./oreulia-ipc-implementation-roadmap.md).
+For the internal implementation reference, see [`kernel/src/ipc/README.md`](../../kernel/src/ipc/README.md). For the remaining work, see [oreulius-ipc-implementation-roadmap.md](./oreulius-ipc-implementation-roadmap.md).
 
-Oreulia is dataflow-first: components communicate through explicit message passing rather than ambient shared state. The IPC system is the kernel's general-purpose transport for process communication, service discovery, capability propagation, and several binary service protocols.
+Oreulius is dataflow-first: components communicate through explicit message passing rather than ambient shared state. The IPC system is the kernel's general-purpose transport for process communication, service discovery, capability propagation, and several binary service protocols.
 
 ---
 
@@ -38,7 +38,7 @@ Messages carry:
 - zero or more attached capabilities
 - the sending `ProcessId`
 
-Oreulia uses message-carried capabilities to hand authority explicitly from one component to another rather than relying on global namespace lookups.
+Oreulius uses message-carried capabilities to hand authority explicitly from one component to another rather than relying on global namespace lookups.
 
 ### 1.3 Rights
 
@@ -117,13 +117,13 @@ In practice:
 - `IpcService::send()` can block on a per-channel capacity wait key
 - if the runtime cannot stage a schedulable block, the service layer falls back to `WouldBlock`
 
-This is an important distinction: Oreulia now has real blocking IPC behavior at the service boundary, but not every helper in the lower layers is itself a blocking API.
+This is an important distinction: Oreulius now has real blocking IPC behavior at the service boundary, but not every helper in the lower layers is itself a blocking API.
 
 ---
 
 ## 4. Channel Lifecycle
 
-Oreulia no longer treats close as a single abrupt bit flip.
+Oreulius no longer treats close as a single abrupt bit flip.
 
 The current close model distinguishes:
 
@@ -168,7 +168,7 @@ This is already capability-gated and auditable, but it is **not yet zero-sum by 
 
 ### 5.2 Service discovery
 
-Service discovery is no longer just an architectural idea. Oreulia now has a real service registry and introduction protocol under [`kernel/src/services/registry.rs`](../../kernel/src/services/registry.rs).
+Service discovery is no longer just an architectural idea. Oreulius now has a real service registry and introduction protocol under [`kernel/src/services/registry.rs`](../../kernel/src/services/registry.rs).
 
 Current shell-visible surfaces include:
 
@@ -275,9 +275,9 @@ Current IPC-related host functions are:
 
 | Host id | Import name |
 | ---: | --- |
-| `3` | `channel_send` / `oreulia_channel_send` |
-| `4` | `channel_recv` / `oreulia_channel_recv` |
-| `10` | `channel_send_cap` / `oreulia_channel_send_cap` |
+| `3` | `channel_send` / `oreulius_channel_send` |
+| `4` | `channel_recv` / `oreulius_channel_recv` |
+| `10` | `channel_send_cap` / `oreulius_channel_send_cap` |
 
 The public Wasm SDK wrapper in [`wasm/sdk/src/ipc.rs`](../../wasm/sdk/src/ipc.rs) currently exposes the basic send/recv path. The lower-level raw ABI file may lag behind the real host-id mapping and should not be treated as the authoritative source over the kernel host dispatch table.
 
@@ -285,7 +285,7 @@ The public Wasm SDK wrapper in [`wasm/sdk/src/ipc.rs`](../../wasm/sdk/src/ipc.rs
 
 ## 8. Diagnostics and Runtime Inspection
 
-Oreulia now has real IPC diagnostics, not just theory notes.
+Oreulius now has real IPC diagnostics, not just theory notes.
 
 The shell currently exposes:
 
@@ -311,7 +311,7 @@ This diagnostic surface is part of the actual implementation and should be used 
 
 ## 9. What Is Still Incomplete
 
-Oreulia's IPC subsystem is much further along than earlier docs suggested, but it is not feature-complete in every dimension.
+Oreulius's IPC subsystem is much further along than earlier docs suggested, but it is not feature-complete in every dimension.
 
 The most important remaining gaps are:
 
@@ -326,7 +326,7 @@ Those gaps are real, but they sit on top of a production-usable IPC core rather 
 
 ## 10. Design Direction
 
-The long-term Oreulia IPC direction remains:
+The long-term Oreulius IPC direction remains:
 
 - explicit authority transfer instead of ambient lookup
 - bounded queues and inspectable backpressure

@@ -190,7 +190,7 @@ Qed.
  * reduce rights, never increase them.  Together these properties ensure
  * capability confinement.
  *
- * The proof is parameterised; concrete instantiation to the Oreulia
+ * The proof is parameterised; concrete instantiation to the Oreulius
  * capability table is in kernel/src/capability/mod.rs (cap_grant /
  * cap_derive paths).
  *)

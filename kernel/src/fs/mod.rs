@@ -1,21 +1,21 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
 
-//! Oreulia Filesystem
+//! Oreulius Filesystem
 //!
 //! A persistence-first, capability-gated filesystem service providing durable
 //! storage without ambient paths or global namespaces.
@@ -416,13 +416,13 @@ impl FilesystemCapability {
         let mut cap = Capability::with_type(
             self.cap_id,
             0, // object_id - filesystem is global service
-            self.rights.bits,
+            crate::capability::Rights::new(self.rights.bits),
             CapabilityType::Filesystem,
         );
 
         if let Some(prefix) = &self.key_prefix {
             cap.extra = prefix.pack_prefix();
-            cap.object_id = prefix.len() as u32;
+            cap.object_id = prefix.len() as u64;
         }
 
         // IPC v0 transports rights and prefix only; quota stays local to the sender.
@@ -441,7 +441,7 @@ impl FilesystemCapability {
             return Err(FilesystemError::InvalidOperation);
         }
 
-        let rights = FilesystemRights::new(cap.rights);
+        let rights = FilesystemRights::new(cap.rights.bits());
         let key_prefix = if cap.object_id > 0 {
             Some(FileKey::unpack_prefix(cap.extra, cap.object_id as usize)?)
         } else {

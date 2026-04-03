@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "oreulia-kernel"
+name = "oreulius-kernel"
 version = "0.1.0"
 dependencies = [
  "bitflags",

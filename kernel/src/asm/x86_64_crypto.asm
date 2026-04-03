@@ -1,4 +1,4 @@
-; x86_64_crypto.asm — Hardware-accelerated SHA-256 and AES-NI for Oreulia kernel
+; x86_64_crypto.asm — Hardware-accelerated SHA-256 and AES-NI for Oreulius kernel
 ;
 ; Provides hardware acceleration for crypto.rs (currently pure-Rust SHA-256 loop)
 ; and fills the unimplemented asm_aesni_* / asm_sha256_* symbol gaps in memopt_asm.rs.

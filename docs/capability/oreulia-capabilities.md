@@ -1,27 +1,27 @@
-# Oreulia - Capabilities (Authority Model)
+# Oreulius - Capabilities (Authority Model)
 
 **Status:** Implemented / Core (updated for current main)
 
-This document describes Oreulia's current capability model: how authority is
+This document describes Oreulius's current capability model: how authority is
 represented, how it moves between tasks and peers, how it is revoked, and how
 the kernel enforces it.
 
-Oreulia's core rule remains simple:
+Oreulius's core rule remains simple:
 
 **No ambient authority.** If code can perform an operation, that authority must
 arrive through a capability or a validated remote lease.
 
 Related documents:
 
-- `docs/capability/oreulia-policy-contracts.md` - conditional capability use
-- `docs/capability/oreulia-kernel-mesh.md` - CapNet token transport and mesh ABI
-- `docs/capability/oreulia-intent-graph-predictive-revocation.md` - predictive restrictions
+- `docs/capability/oreulius-policy-contracts.md` - conditional capability use
+- `docs/capability/oreulius-kernel-mesh.md` - CapNet token transport and mesh ABI
+- `docs/capability/oreulius-intent-graph-predictive-revocation.md` - predictive restrictions
 
 ---
 
 ## 1. Current model at a glance
 
-Oreulia now has two authority carriers:
+Oreulius now has two authority carriers:
 
 1. **Local capabilities** stored in a per-task capability table.
 2. **Remote capability leases** installed from validated CapNet tokens.
@@ -36,14 +36,14 @@ kernel can prove all of the following:
 - the security manager has not rate-limited or predictively restricted the caller
 
 This is stricter than a classic "handle table only" design because authority in
-Oreulia is not just looked up, it is also signed, audited, replay-aware, and
+Oreulius is not just looked up, it is also signed, audited, replay-aware, and
 optionally revocable through temporal and predictive mechanisms.
 
 ---
 
 ## 2. Local capability representation
 
-The kernel's local authority primitive is `OreuliaCapability` in
+The kernel's local authority primitive is `OreuliusCapability` in
 `kernel/src/capability/mod.rs`.
 
 Each local capability carries:
@@ -165,7 +165,7 @@ The older "MVP: no revocation" description is obsolete.
 
 ## 5. Provenance and delegation graph
 
-Oreulia tracks capability ancestry through `parent_cap_id` and the capability
+Oreulius tracks capability ancestry through `parent_cap_id` and the capability
 graph helper in `cap_graph`.
 
 This graph is used to:
@@ -181,7 +181,7 @@ observable event rather than a silent table copy.
 
 ## 6. Remote capability leases (CapNet integration)
 
-Oreulia does not limit authority transfer to local IPC. Validated CapNet tokens
+Oreulius does not limit authority transfer to local IPC. Validated CapNet tokens
 can install **remote capability leases** into the kernel.
 
 `RemoteCapabilityLease` currently carries:
@@ -281,7 +281,7 @@ Useful shell surfaces for inspection include:
 - `capnet-demo`
 - `formal-verify`
 
-Oreulia also records provenance metadata such as origin PID, grant tick, and
+Oreulius also records provenance metadata such as origin PID, grant tick, and
 delegation ancestry, making capability debugging materially easier than in
 ambient-authority systems.
 
@@ -313,7 +313,7 @@ This document only covers the core capability manager integration.
 
 ## 10. Policy and predictive extensions
 
-Oreulia's capability model is no longer "rights only."
+Oreulius's capability model is no longer "rights only."
 
 Two important extensions sit on top of the base model:
 
@@ -325,8 +325,8 @@ Two important extensions sit on top of the base model:
 Those mechanisms are real parts of the current enforcement design, but they are
 documented in their dedicated papers:
 
-- `docs/capability/oreulia-policy-contracts.md`
-- `docs/capability/oreulia-intent-graph-predictive-revocation.md`
+- `docs/capability/oreulius-policy-contracts.md`
+- `docs/capability/oreulius-intent-graph-predictive-revocation.md`
 
 ---
 
@@ -341,4 +341,4 @@ This document deliberately does not claim:
 - a complete substitute for the more detailed CapNet mesh specification
 
 For wire formats, peer sessions, token identity, replay windows, and CapNet
-transport semantics, see `docs/capability/oreulia-kernel-mesh.md`.
+transport semantics, see `docs/capability/oreulius-kernel-mesh.md`.

@@ -1,6 +1,6 @@
 //! # TLS 1.3 Record Layer
 //!
-//! A complete TLS 1.3 implementation for Oreulia, built on top of the
+//! A complete TLS 1.3 implementation for Oreulius, built on top of the
 //! RTL8139 Ethernet driver and the kernel's existing crypto primitives.
 //!
 //! ## Handshake flow

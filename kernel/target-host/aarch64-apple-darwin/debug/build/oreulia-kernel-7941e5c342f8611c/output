@@ -1,6 +1,6 @@
 cargo:rerun-if-changed=src/security/intent_graph.rs
 cargo:rerun-if-changed=src/capability/mod.rs
-cargo:warning=--- Oreulia Static Spectral Analysis (PMA §11.2) ---
+cargo:warning=--- Oreulius Static Spectral Analysis (PMA §11.2) ---
 cargo:warning=Graph derived from: src/security/intent_graph.rs CTMC_Q (9×9 real topology)
 cargo:warning=Lanczos k=6 | λ₂(T)=0.483634 | Fiedler γ=0.516366 | Φ(G)≥0.258183 | residual=5.40e-1
 cargo:warning=SUCCESS: Cheeger conductance bound verified (real CTMC topology).

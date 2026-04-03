@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The `temporal` module is Oreulia's **kernel-level version control system for live OS state**. Every kernel object that matters — IPC channels, TCP sockets, processes, capability tokens, the scheduler, the service registry, security policies, CapNet, WASM service pointers, and more — can be tracked as a *temporal object*, receiving a discrete, immutable, content-addressed version every time its state changes.
+The `temporal` module is Oreulius's **kernel-level version control system for live OS state**. Every kernel object that matters — IPC channels, TCP sockets, processes, capability tokens, the scheduler, the service registry, security policies, CapNet, WASM service pointers, and more — can be tracked as a *temporal object*, receiving a discrete, immutable, content-addressed version every time its state changes.
 
 This is not journalling. It is not crash recovery alone. The temporal system provides a **branching, mergeable, rollback-capable audit trail** over all kernel-managed state, enforced at the object level, so that any moment in the history of the operating system can be reconstructed with mathematical integrity guarantees, without ever touching external storage APIs.
 
@@ -96,8 +96,14 @@ pub enum TemporalOperation { Snapshot, Write, Rollback, Merge }
 
 ### `TemporalMergeStrategy`
 ```rust
-pub enum TemporalMergeStrategy { FastForwardOnly, Ours, Theirs }
+pub enum TemporalMergeStrategy { FastForwardOnly, Ours, Theirs, ThreeWay }
 ```
+
+Binary merges are bounded and deterministic:
+- clean merges may resolve via span, UTF-8 line, fixed-size chunk, or byte-level rules
+- unresolved conflicts are committed as binary conflict artifacts
+- `FastForwardOnly` still rejects non-fast-forward merges
+- `ThreeWay` is the generic non-fast-forward merge strategy
 
 ---
 
@@ -178,7 +184,7 @@ Hashing performance is critical because every version commit recomputes the Merk
 | `temporal_merkle_root_u32(words, count)` | Full Merkle root computation over a word array |
 | `temporal_copy_bytes` / `temporal_zero_bytes` | SIMD-friendly bulk memory operations |
 
-On `aarch64`, pure-Rust fallbacks replace the assembly bindings since the Oreulia `aarch64-virt` target does not ship the `temporal.S` assembly file.
+On `aarch64`, pure-Rust fallbacks replace the assembly bindings since the Oreulius `aarch64-virt` target does not ship the `temporal.S` assembly file.
 
 ---
 

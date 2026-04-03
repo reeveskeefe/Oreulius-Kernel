@@ -1,5 +1,5 @@
 /*!
- * Oreulia Kernel — Fleet Operations & Attestation
+ * Oreulius Kernel — Fleet Operations & Attestation
  *
  * Provides two capabilities:
  *

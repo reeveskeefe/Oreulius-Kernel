@@ -19,7 +19,7 @@ a corresponding theory file before coverage can be extended.
 The hardware is assumed to execute load/store instructions atomically at the
 granularity modeled in the Coq theories (word-sized aligned accesses). Cache
 coherence is assumed to hold across cores for the architectures targeted by
-Oreulia (x86_64, AArch64). Microarchitectural side-channel effects (e.g.
+Oreulius (x86_64, AArch64). Microarchitectural side-channel effects (e.g.
 speculative execution, cache-timing), physical probing, and Row Hammer
 variants are **explicitly out of scope** for these proofs and are addressed
 separately in the hardware security threat model.

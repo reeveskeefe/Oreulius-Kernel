@@ -1,4 +1,4 @@
-# Oreulia Docs Index
+# Oreulius Docs Index
 
 The `docs/` tree is organized by topic so the technical papers are grouped by subsystem instead of living in one flat directory.
 
@@ -12,8 +12,8 @@ The `docs/` tree is organized by topic so the technical papers are grouped by su
 
 - `project/`
   - high-level positioning, MVP scope, and commercial framing
-  - `oreulia-vision.md`
-  - `oreulia-mvp.md`
+  - `oreulius-vision.md`
+  - `oreulius-mvp.md`
   - `CommercialUseCases.md`
 
 - `architecture/`
@@ -24,35 +24,35 @@ The `docs/` tree is organized by topic so the technical papers are grouped by su
 
 - `capability/`
   - authority model, CapNet, policy contracts, predictive revocation, and runtime graph verification
-  - `oreulia-capabilities.md`
+  - `oreulius-capabilities.md`
   - `capnet.md`
-  - `oreulia-intent-graph-predictive-revocation.md`
-  - `oreulia-policy-contracts.md`
-  - `oreulia-capability-entanglement.md`
-  - `oreulia-cap-graph-verification.md`
-  - `oreulia-kernel-mesh.md`
+  - `oreulius-intent-graph-predictive-revocation.md`
+  - `oreulius-policy-contracts.md`
+  - `oreulius-capability-entanglement.md`
+  - `oreulius-cap-graph-verification.md`
+  - `oreulius-kernel-mesh.md`
 
 - `ipc/`
   - IPC design and implementation roadmap
-  - `oreulia-ipc.md`
-  - `oreulia-ipc-implementation-roadmap.md`
+  - `oreulius-ipc.md`
+  - `oreulius-ipc-implementation-roadmap.md`
 
 - `runtime/`
   - WASM execution, JIT hardening, ABI, and app-facing runtime guidance
-  - `oreulia-app-dev-guide.md`
-  - `oreulia-wasm-abi.md`
-  - `oreulia-jit-security-resolution.md`
-  - `oreulia-wasm-jit-pairwise-transition-coverage.md`
+  - `oreulius-app-dev-guide.md`
+  - `oreulius-wasm-abi.md`
+  - `oreulius-jit-security-resolution.md`
+  - `oreulius-wasm-jit-pairwise-transition-coverage.md`
 
 - `services/`
   - service-pointer capabilities, observer/event delivery, and polyglot service model
-  - `oreulia-service-pointer-capabilities.md`
-  - `oreulia-kernel-observers.md`
-  - `oreulia-polyglot-services.md`
+  - `oreulius-service-pointer-capabilities.md`
+  - `oreulius-kernel-observers.md`
+  - `oreulius-polyglot-services.md`
 
 - `storage/`
   - filesystem, persistence, temporal objects, and temporal capability state
-  - `oreulia-filesystem.md`
-  - `oreulia-persistence.md`
-  - `oreulia-temporal-adapters-durable-persistence.md`
-  - `oreulia-temporal-capabilities.md`
+  - `oreulius-filesystem.md`
+  - `oreulius-persistence.md`
+  - `oreulius-temporal-adapters-durable-persistence.md`
+  - `oreulius-temporal-capabilities.md`

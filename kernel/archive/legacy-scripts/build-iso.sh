@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-KERNEL_BIN="target/x86_64-unknown-none/debug/oreulia-kernel"
+KERNEL_BIN="target/x86_64-unknown-none/debug/oreulius-kernel"
 ISO_DIR="iso"
 GRUB_CFG="$ISO_DIR/boot/grub/grub.cfg"
-ISO_FILE="oreulia.iso"
+ISO_FILE="oreulius.iso"
 
 # Build kernel
 echo "Building kernel..."
@@ -21,8 +21,8 @@ cat > "$GRUB_CFG" << 'EOF'
 set timeout=0
 set default=0
 
-menuentry "Oreulia OS" {
-    multiboot2 /boot/oreulia-kernel
+menuentry "Oreulius OS" {
+    multiboot2 /boot/oreulius-kernel
     boot
 }
 EOF

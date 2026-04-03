@@ -4,12 +4,12 @@ set timeout 90
 set kernel_dir [file normalize [file join [file dirname [info script]] ".."]]
 cd $kernel_dir
 
-if {![file exists "oreulia.iso"]} {
-    puts "oreulia.iso not found; run build first"
+if {![file exists "oreulius.iso"]} {
+    puts "oreulius.iso not found; run build first"
     exit 1
 }
 
-spawn qemu-system-i386 -cdrom oreulia.iso -serial stdio -monitor none -display none -no-reboot -no-shutdown
+spawn qemu-system-i386 -cdrom oreulius.iso -serial stdio -monitor none -display none -no-reboot -no-shutdown
 
 expect {
     -re {Type 'help' for commands\.} { exp_continue }

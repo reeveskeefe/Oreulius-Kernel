@@ -1,9 +1,9 @@
 ;; thread_demo.wat — cooperative WASM thread demo
 ;;
-;; Demonstrates Oreulia's cooperative thread host ABI by spawning one worker
+;; Demonstrates Oreulius's cooperative thread host ABI by spawning one worker
 ;; thread, yielding until it completes, then checking the joined exit code.
 ;;
-;; Host-function ABI (Oreulia-specific, non-WASI):
+;; Host-function ABI (Oreulius-specific, non-WASI):
 ;;   thread_spawn(func_idx: i32, arg: i32) -> i32
 ;;   thread_join(tid: i32) -> i32
 ;;   thread_id() -> i32
@@ -27,22 +27,22 @@
   (import "wasi_snapshot_preview1" "proc_exit"
     (func $proc_exit (param i32)))
 
-  (import "oreulia" "thread_spawn"
+  (import "oreulius" "thread_spawn"
     (func $thread_spawn (param i32 i32) (result i32)))
 
-  (import "oreulia" "thread_join"
+  (import "oreulius" "thread_join"
     (func $thread_join (param i32) (result i32)))
 
-  (import "oreulia" "thread_id"
+  (import "oreulius" "thread_id"
     (func $thread_id (result i32)))
 
-  (import "oreulia" "thread_yield"
+  (import "oreulius" "thread_yield"
     (func $thread_yield))
 
-  (import "oreulia" "thread_exit"
+  (import "oreulius" "thread_exit"
     (func $thread_exit (param i32)))
 
-  (import "oreulia" "proc_yield"
+  (import "oreulius" "proc_yield"
     (func $proc_yield))
 
   ;; -------------------------------------------------------------------------

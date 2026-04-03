@@ -1,8 +1,8 @@
-# Oreulia — Filesystem Architecture
+# Oreulius — Filesystem Architecture
 
 **Status:** Implemented (March 2026)
 
-Oreulia's filesystem stack is a two-layer design: a lower **persistence service** (`fs.rs`) that provides a capability-gated key-value store over RAM-backed storage, and an upper **Virtual File System** (`vfs.rs`) that projects a Unix-like inode tree — with paths, directories, symlinks, hard links, mount points, file descriptors, and per-process capability inheritance — on top of it. The two layers are coupled but separated by a clean IPC-style message protocol, allowing the VFS to delegate file payload storage to `fs.rs` via `Request`/`Response` messages while keeping namespace structure in its own inode table.
+Oreulius's filesystem stack is a two-layer design: a lower **persistence service** (`fs.rs`) that provides a capability-gated key-value store over RAM-backed storage, and an upper **Virtual File System** (`vfs.rs`) that projects a Unix-like inode tree — with paths, directories, symlinks, hard links, mount points, file descriptors, and per-process capability inheritance — on top of it. The two layers are coupled but separated by a clean IPC-style message protocol, allowing the VFS to delegate file payload storage to `fs.rs` via `Request`/`Response` messages while keeping namespace structure in its own inode table.
 
 A third thin shim, `vfs_platform.rs`, abstracts process management and tick queries so that the VFS core compiles identically on both `x86_64` (where it calls into `crate::process`) and `aarch64` (where process management differs).
 
@@ -127,7 +127,7 @@ pub fn handle_request(&self, request: Request) -> Response
 
 ### 2.1 Overview
 
-`vfs.rs` (5,535 lines) implements a complete Unix-like namespace. Its global state is protected by a `DagSpinlock` at interrupt-DAG level `DAG_LEVEL_VFS = 5`. All public entry points acquire this lock through an `InterruptContext<DAG_LEVEL_THREAD>` (level 8), ensuring the acquire is always valid under Oreulia's acyclic lock ordering.
+`vfs.rs` (5,535 lines) implements a complete Unix-like namespace. Its global state is protected by a `DagSpinlock` at interrupt-DAG level `DAG_LEVEL_VFS = 5`. All public entry points acquire this lock through an `InterruptContext<DAG_LEVEL_THREAD>` (level 8), ensuring the acquire is always valid under Oreulius's acyclic lock ordering.
 
 ```rust
 static VFS: DagSpinlock<DAG_LEVEL_VFS, Vfs> = DagSpinlock::new(Vfs::new());
@@ -556,4 +556,4 @@ fs::write(fd, data)
 | `capability` | Channel capability resolution for watch notification channels |
 | `process` | `current_pid()`, `alloc_fd`, `get_fd_handle`, `close_fd` for fd lifecycle |
 
-See also: `docs/capability/capnet.md` for capability theory, `docs/storage/oreulia-persistence.md` for the temporal adapter layer, `docs/ipc/oreulia-ipc.md` for the IPC channel model.
+See also: `docs/capability/capnet.md` for capability theory, `docs/storage/oreulius-persistence.md` for the temporal adapter layer, `docs/ipc/oreulius-ipc.md` for the IPC channel model.

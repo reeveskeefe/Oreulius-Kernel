@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -438,9 +438,9 @@ impl NetworkStack {
             return false;
         };
         cmdline.split_whitespace().any(|token| {
-            token == "oreulia.net_config_debug"
+            token == "oreulius.net_config_debug"
                 || matches!(
-                    token.strip_prefix("oreulia.net_config_debug="),
+                    token.strip_prefix("oreulius.net_config_debug="),
                     Some("1" | "true" | "on" | "yes")
                 )
         })
@@ -506,6 +506,22 @@ impl NetworkStack {
         self.dhcp_enabled = false;
         self.log_config_state("seeded aarch64 qemu defaults");
         true
+    }
+
+    /// Configure a static IP and gateway, flushing the ARP cache.
+    /// Sets dns_server to the gateway so interface_configured() passes.
+    pub fn configure_static(&mut self, ip: Ipv4Addr, gw: Ipv4Addr) {
+        self.my_ip = ip;
+        self.gateway_ip = gw;
+        self.dns_server = gw;
+        self.dhcp_enabled = false;
+        self.has_interface = true;
+        self.arp_cache = ArpCache::new();
+        crate::serial_println!(
+            "[NET] static ip={}.{}.{}.{} gw={}.{}.{}.{}",
+            ip.0[0], ip.0[1], ip.0[2], ip.0[3],
+            gw.0[0], gw.0[1], gw.0[2], gw.0[3],
+        );
     }
 
     /// Mark interface as available
@@ -3355,6 +3371,11 @@ impl NetworkStack {
         let rx = match super::capnet::process_incoming_control_payload(payload, now) {
             Ok(v) => v,
             Err(e) => {
+                crate::serial_println!(
+                    "[CAPNET-MULTI] rx src={}.{}.{}.{}:{} status=fail reason={}",
+                    src_ip.0[0], src_ip.0[1], src_ip.0[2], src_ip.0[3],
+                    src_port, e.as_str()
+                );
                 crate::security::security().log_event(
                     crate::security::AuditEntry::new(
                         crate::security::SecurityEvent::IntegrityCheckFailed,
@@ -3366,6 +3387,19 @@ impl NetworkStack {
                 return Err(e.as_str());
             }
         };
+
+        let event_name = match rx.msg_type {
+            super::capnet::CapNetControlType::Hello => "Hello",
+            super::capnet::CapNetControlType::Attest => "Attest",
+            super::capnet::CapNetControlType::TokenOffer => "TokenOffer",
+            super::capnet::CapNetControlType::TokenAccept => "TokenAccept",
+            super::capnet::CapNetControlType::TokenRevoke => "TokenRevoke",
+            super::capnet::CapNetControlType::Heartbeat => "Heartbeat",
+        };
+        crate::serial_println!(
+            "[CAPNET-MULTI] rx event={} peer=0x{:016x} seq={} status=ok",
+            event_name, rx.peer_device_id, rx.seq
+        );
 
         self.capnet_ack_seq(rx.peer_device_id, rx.ack);
 
@@ -3730,7 +3764,7 @@ impl NetworkStack {
             (tcp_endpoint(conn), conn.snd_nxt, conn.rcv_nxt)
         };
 
-        let body = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOreulia HTTP server online.\n";
+        let body = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOreulius HTTP server online.\n";
         let _ = send_tcp_segment(
             self,
             ep,

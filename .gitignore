@@ -30,7 +30,7 @@ kernel/test-minimal.o
 # Local archive buckets for preserved generated artifacts and ad hoc logs
 kernel/archive/generated-local/
 kernel/archive/local-logs/
-oreulia/.github/agents
+oreulius/.github/agents
 
 # Python bytecode cache
 __pycache__/

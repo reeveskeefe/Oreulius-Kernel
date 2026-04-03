@@ -1,6 +1,6 @@
 # `kernel/src/math` — Mathematical Abstractions
 
-The `math` module provides the **formal mathematical underpinning** that the Oreulia capability system, scheduler, and SIMD-accelerated kernel subsystems build on. It is intentionally small — three files, ~380 lines total — because it supplies pure mathematical *types* and *traits*, not algorithms. The algorithms (entropy estimation, SIMD dispatch, capability flow) live in the subsystems that use these types.
+The `math` module provides the **formal mathematical underpinning** that the Oreulius capability system, scheduler, and SIMD-accelerated kernel subsystems build on. It is intentionally small — three files, ~380 lines total — because it supplies pure mathematical *types* and *traits*, not algorithms. The algorithms (entropy estimation, SIMD dispatch, capability flow) live in the subsystems that use these types.
 
 ---
 

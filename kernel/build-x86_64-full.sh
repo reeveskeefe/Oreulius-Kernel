@@ -3,11 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-echo "=== Building Oreulia kernel (x86_64 Multiboot2 path) ==="
+echo "=== Building Oreulius kernel (x86_64 Multiboot2 path) ==="
 
 TOOLCHAIN="${TOOLCHAIN:-+nightly-2024-01-01}"
 RUST_TARGET="x86_64-unknown-none"
-RUST_LIB="target/${RUST_TARGET}/release/liboreulia_kernel.a"
+RUST_LIB="target/${RUST_TARGET}/release/liboreulius_kernel.a"
 OUT_DIR="target/x86_64-mb2"
 BOOT_OBJ="${OUT_DIR}/boot_x86_64_mb2.o"
 SHIM_OBJ="${OUT_DIR}/x86_64_shims.o"
@@ -24,7 +24,7 @@ ASM_TEMPORAL="${OUT_DIR}/x86_64_temporal.o"
 ASM_PIC="${OUT_DIR}/x86_64_pic.o"
 ASM_SYSENTER="${OUT_DIR}/x86_64_sysenter.o"
 ASM_SGX="${OUT_DIR}/x86_64_sgx.o"
-OUT_ELF="${OUT_DIR}/oreulia-kernel-x86_64"
+OUT_ELF="${OUT_DIR}/oreulius-kernel-x86_64"
 
 resolve_tool() {
   local resolved=""

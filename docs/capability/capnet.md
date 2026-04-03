@@ -2,7 +2,7 @@
 
 ## Abstract
 
-CapNet is Oreulia's kernel-level capability-token network protocol for decentralized authority transfer across devices. It generalizes local capability semantics into authenticated, replay-safe, attenuation-preserving, revocable network tokens, while preserving in-kernel enforcement and auditability. This document is the post-implementation scientific record for CapNet. It replaces planning artifacts with a formalized model of the protocol, the security invariants it enforces, the implementation mechanics in the kernel, and the verification pipeline used to gate regressions.
+CapNet is Oreulius's kernel-level capability-token network protocol for decentralized authority transfer across devices. It generalizes local capability semantics into authenticated, replay-safe, attenuation-preserving, revocable network tokens, while preserving in-kernel enforcement and auditability. This document is the post-implementation scientific record for CapNet. It replaces planning artifacts with a formalized model of the protocol, the security invariants it enforces, the implementation mechanics in the kernel, and the verification pipeline used to gate regressions.
 
 The completed system combines: fixed-format token serialization, keyed MAC integrity, attestation-derived per-peer session keys, control-channel replay windows, rights-monotone delegation chains, persistent revocation tombstones with epoch ordering, local capability-table bridging, and deterministic corpus replay under CI. The result is a bounded, fail-closed, auditable control plane that behaves as an "OAuth-like authority fabric for devices," but with kernel-enforced object/type/rights semantics and without ambient authority.
 
@@ -28,7 +28,7 @@ CapNet addresses this by introducing a kernel-native portable capability token w
 
 The implementation was constrained by the following objectives:
 
-1. Preserve Oreulia's local capability attenuation law under network delegation.
+1. Preserve Oreulius's local capability attenuation law under network delegation.
 2. Prevent forged or replayed token acceptance in the control channel.
 3. Ensure revocation survives reboot and dominates all acceptance/use paths.
 4. Keep parser and verifier fail-closed under malformed inputs.
@@ -728,5 +728,5 @@ This command is the local equivalent of CI gate behavior.
 
 CapNet is now a completed kernel feature, not a roadmap item. The protocol and enforcement stack convert distributed capability transfer from an ad hoc control path into a formalized security substrate with explicit mathematical invariants, bounded-state implementation, deterministic fuzz/corpus replay, and CI-enforced proof obligations.
 
-In practical terms, Oreulia can now delegate, consume, and revoke cross-device authority under a single kernel authority model, with measurable replay resistance, non-escalation guarantees, persistent revocation semantics, and release-time regression gates.
+In practical terms, Oreulius can now delegate, consume, and revoke cross-device authority under a single kernel authority model, with measurable replay resistance, non-escalation guarantees, persistent revocation semantics, and release-time regression gates.
 

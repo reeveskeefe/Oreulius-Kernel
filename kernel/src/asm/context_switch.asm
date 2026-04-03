@@ -1,5 +1,5 @@
 ; kernel/asm/context_switch.asm
-; Ultra-fast process context switching for Oreulia OS
+; Ultra-fast process context switching for Oreulius OS
 ; Optimized for i686 architecture
 
 global asm_switch_context

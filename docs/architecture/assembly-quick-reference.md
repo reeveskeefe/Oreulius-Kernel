@@ -1,4 +1,4 @@
-# Oreulia — Assembly Quick Reference
+# Oreulius — Assembly Quick Reference
 
 **Status:** Reference (Mar 29, 2026)
 
@@ -547,10 +547,10 @@ kernel/src/asm/
 cd kernel && ./build.sh
 ./run.sh
 # or directly:
-qemu-system-i386 -cdrom oreulia.iso
+qemu-system-i386 -cdrom oreulius.iso
 
 # Quick Rust-only rebuild (i686)
-cargo +nightly-2024-01-01 build --release --target ./i686-oreulia.json
+cargo +nightly-2024-01-01 build --release --target ./i686-oreulius.json
 
 # ── x86_64 (Multiboot2 + GRUB) ─────────────────────────────
 cd kernel && ./build-x86_64-full.sh

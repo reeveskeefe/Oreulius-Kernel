@@ -1,7 +1,7 @@
 //! Raw WASI Preview 1 host-function bindings.
 //!
 //! Every function here corresponds 1-to-1 with a WASI spec entry point.
-//! The Oreulia WASM runtime dispatches these by host function ID (45–90);
+//! The Oreulius WASM runtime dispatches these by host function ID (45–90);
 //! the import module string `"wasi_snapshot_preview1"` is accepted verbatim.
 //!
 //! # Safety

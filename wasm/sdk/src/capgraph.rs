@@ -18,7 +18,7 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use oreulia_sdk::capgraph::{self, VerifyResult};
+//! use oreulius_sdk::capgraph::{self, VerifyResult};
 //!
 //! // Prospectively check: would delegating cap_id to process 5 create a cycle?
 //! match capgraph::verify(my_cap, 5) {
@@ -32,7 +32,7 @@
 //! let depth = capgraph::depth(my_cap);
 //! ```
 
-use super::raw::oreulia as raw;
+use super::raw::oreulius as raw;
 
 // ---------------------------------------------------------------------------
 // Types

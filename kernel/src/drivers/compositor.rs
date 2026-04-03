@@ -1,6 +1,6 @@
-//! Oreulia Compositor / Window Manager
+//! Oreulius Compositor / Window Manager
 //!
-//! A lightweight compositing window manager for the Oreulia kernel.
+//! A lightweight compositing window manager for the Oreulius kernel.
 //!
 //! ## Architecture
 //!
@@ -287,7 +287,7 @@ fn alpha_blend(dst: u32, src: u32) -> u32 {
 // Compositor
 // ---------------------------------------------------------------------------
 
-/// The Oreulia compositor / window manager.
+/// The Oreulius compositor / window manager.
 pub struct Compositor {
     /// The layer table (up to `MAX_LAYERS` entries).
     layers: [Option<Layer>; MAX_LAYERS],

@@ -1,10 +1,10 @@
-;; hello.wat — "Hello from Oreulia!" demo
+;; hello.wat — "Hello from Oreulius!" demo
 ;;
 ;; Writes a greeting to stdout (fd 1) using the WASI fd_write syscall.
 ;; Compile:
 ;;   wat2wasm hello.wat -o hello.wasm
 ;;
-;; Run inside Oreulia shell:
+;; Run inside Oreulius shell:
 ;;   wasm hello.wasm
 ;;
 ;; WASI syscalls used:
@@ -28,10 +28,10 @@
   ;; -------------------------------------------------------------------------
   (memory (export "memory") 1)
 
-  (data (i32.const 8)  "Hello from Oreulia!\n")  ;; 20 bytes
+  (data (i32.const 8)  "Hello from Oreulius!\n")  ;; 20 bytes
 
   ;; -------------------------------------------------------------------------
-  ;; _start — entry point called by the Oreulia WASM runtime
+  ;; _start — entry point called by the Oreulius WASM runtime
   ;; -------------------------------------------------------------------------
   (func (export "_start")
     ;; Build iovec at address 0:

@@ -1,4 +1,12 @@
+use crate::capability::Rights;
 use crate::security::security;
+
+/// Errors returned by typed IPC argument codecs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedArgCodecError {
+    BufferTooSmall,
+    InvalidLength,
+}
 
 /// Marker trait for values that may be passed as typed service arguments over
 /// IPC channels.
@@ -8,12 +16,45 @@ pub trait TypedServiceArg: Send {
     fn type_tag() -> u32
     where
         Self: Sized;
+
+    /// Number of bytes required to encode this value on the IPC wire.
+    fn encoded_len(&self) -> usize;
+
+    /// Encode this value into the provided output buffer.
+    fn encode_into(&self, out: &mut [u8]) -> Result<usize, TypedArgCodecError>;
+
+    /// Decode a value of this type from the provided input buffer.
+    fn decode_from(input: &[u8]) -> Result<Self, TypedArgCodecError>
+    where
+        Self: Sized;
 }
 
 impl TypedServiceArg for u8 {
     #[inline(always)]
     fn type_tag() -> u32 {
         0x0001
+    }
+
+    #[inline(always)]
+    fn encoded_len(&self) -> usize {
+        1
+    }
+
+    #[inline(always)]
+    fn encode_into(&self, out: &mut [u8]) -> Result<usize, TypedArgCodecError> {
+        if out.is_empty() {
+            return Err(TypedArgCodecError::BufferTooSmall);
+        }
+        out[0] = *self;
+        Ok(1)
+    }
+
+    #[inline(always)]
+    fn decode_from(input: &[u8]) -> Result<Self, TypedArgCodecError> {
+        if input.len() != 1 {
+            return Err(TypedArgCodecError::InvalidLength);
+        }
+        Ok(input[0])
     }
 }
 
@@ -22,6 +63,30 @@ impl TypedServiceArg for u32 {
     fn type_tag() -> u32 {
         0x0004
     }
+
+    #[inline(always)]
+    fn encoded_len(&self) -> usize {
+        4
+    }
+
+    #[inline(always)]
+    fn encode_into(&self, out: &mut [u8]) -> Result<usize, TypedArgCodecError> {
+        if out.len() < 4 {
+            return Err(TypedArgCodecError::BufferTooSmall);
+        }
+        out[..4].copy_from_slice(&self.to_le_bytes());
+        Ok(4)
+    }
+
+    #[inline(always)]
+    fn decode_from(input: &[u8]) -> Result<Self, TypedArgCodecError> {
+        if input.len() != 4 {
+            return Err(TypedArgCodecError::InvalidLength);
+        }
+        let mut bytes = [0u8; 4];
+        bytes.copy_from_slice(input);
+        Ok(u32::from_le_bytes(bytes))
+    }
 }
 
 impl TypedServiceArg for u64 {
@@ -29,12 +94,60 @@ impl TypedServiceArg for u64 {
     fn type_tag() -> u32 {
         0x0008
     }
+
+    #[inline(always)]
+    fn encoded_len(&self) -> usize {
+        8
+    }
+
+    #[inline(always)]
+    fn encode_into(&self, out: &mut [u8]) -> Result<usize, TypedArgCodecError> {
+        if out.len() < 8 {
+            return Err(TypedArgCodecError::BufferTooSmall);
+        }
+        out[..8].copy_from_slice(&self.to_le_bytes());
+        Ok(8)
+    }
+
+    #[inline(always)]
+    fn decode_from(input: &[u8]) -> Result<Self, TypedArgCodecError> {
+        if input.len() != 8 {
+            return Err(TypedArgCodecError::InvalidLength);
+        }
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(input);
+        Ok(u64::from_le_bytes(bytes))
+    }
 }
 
 impl<const N: usize> TypedServiceArg for [u8; N] {
     #[inline(always)]
     fn type_tag() -> u32 {
         0x0100 | (N as u32 & 0xFFFF)
+    }
+
+    #[inline(always)]
+    fn encoded_len(&self) -> usize {
+        N
+    }
+
+    #[inline(always)]
+    fn encode_into(&self, out: &mut [u8]) -> Result<usize, TypedArgCodecError> {
+        if out.len() < N {
+            return Err(TypedArgCodecError::BufferTooSmall);
+        }
+        out[..N].copy_from_slice(self);
+        Ok(N)
+    }
+
+    #[inline(always)]
+    fn decode_from(input: &[u8]) -> Result<Self, TypedArgCodecError> {
+        if input.len() != N {
+            return Err(TypedArgCodecError::InvalidLength);
+        }
+        let mut bytes = [0u8; N];
+        bytes.copy_from_slice(input);
+        Ok(bytes)
     }
 }
 
@@ -66,7 +179,7 @@ pub const MAX_CHANNELS: usize = 16;
 /// Constructed via [`EventId::new`]; never created by user code.
 /// The `cause` field on [`Message`] carries the `EventId` of the message
 /// that causally preceded this one (if any), enabling causal chain reconstruction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventId(pub u64);
 
 impl EventId {
@@ -85,6 +198,24 @@ impl EventId {
         let chan_seq = ((self.0 >> 16) & 0xFFFF) as u16;
         let msg_seq = (self.0 & 0xFFFF) as u16;
         (pid, chan_seq, msg_seq)
+    }
+
+    /// Source process that emitted this event.
+    #[inline]
+    pub const fn source_pid(self) -> u32 {
+        self.parts().0
+    }
+
+    /// Channel-local sequence encoded into this event id.
+    #[inline]
+    pub const fn channel_seq(self) -> u16 {
+        self.parts().1
+    }
+
+    /// Per-process message sequence encoded into this event id.
+    #[inline]
+    pub const fn msg_seq(self) -> u16 {
+        self.parts().2
     }
 
     /// The raw u64 value (for embedding into `AuditEntry::context`).
@@ -127,13 +258,22 @@ pub enum CapabilityType {
     ServicePointer = 4,
 }
 
-/// Generic capability (simplified for v0).
+/// IPC capability transfer envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capability {
     pub cap_id: u32,
-    pub object_id: u32,
-    pub rights: u32,
+    /// Full 64-bit kernel object identity.
+    pub object_id: u64,
+    pub rights: Rights,
     pub cap_type: CapabilityType,
+    /// Issuer/owner binding for authenticated transfers.
+    pub owner_pid: ProcessId,
+    /// Logical issue timestamp for replay detection and auditing.
+    pub issued_at: u64,
+    /// Optional expiry timestamp (0 = no explicit expiry).
+    pub expires_at: u64,
+    /// Wire-level capability flags.
+    pub flags: u32,
     /// Extra data (e.g. filesystem metadata).
     pub extra: [u32; 4],
     /// Cryptographic token (SipHash-2-4 MAC).
@@ -141,26 +281,55 @@ pub struct Capability {
 }
 
 impl Capability {
-    pub fn new(cap_id: u32, object_id: u32, rights: u32) -> Self {
+    pub const fn new(cap_id: u32, object_id: u64, rights: Rights) -> Self {
         Capability {
             cap_id,
             object_id,
             rights,
             cap_type: CapabilityType::Generic,
+            owner_pid: ProcessId::KERNEL,
+            issued_at: 0,
+            expires_at: 0,
+            flags: 0,
             extra: [0; 4],
             token: 0,
         }
     }
 
-    pub fn with_type(cap_id: u32, object_id: u32, rights: u32, cap_type: CapabilityType) -> Self {
+    pub const fn with_type(
+        cap_id: u32,
+        object_id: u64,
+        rights: Rights,
+        cap_type: CapabilityType,
+    ) -> Self {
         Capability {
             cap_id,
             object_id,
             rights,
             cap_type,
+            owner_pid: ProcessId::KERNEL,
+            issued_at: 0,
+            expires_at: 0,
+            flags: 0,
             extra: [0; 4],
             token: 0,
         }
+    }
+
+    pub const fn with_owner(mut self, owner_pid: ProcessId) -> Self {
+        self.owner_pid = owner_pid;
+        self
+    }
+
+    pub const fn with_validity(mut self, issued_at: u64, expires_at: u64) -> Self {
+        self.issued_at = issued_at;
+        self.expires_at = expires_at;
+        self
+    }
+
+    pub const fn with_flags(mut self, flags: u32) -> Self {
+        self.flags = flags;
+        self
     }
 
     pub fn sign(&mut self) {
@@ -173,15 +342,29 @@ impl Capability {
         security().cap_token_verify(&payload, self.token)
     }
 
-    fn token_payload(&self) -> [u8; 40] {
+    pub const fn rights_bits(&self) -> u32 {
+        self.rights.bits()
+    }
+
+    pub const fn has_rights(&self, required: Rights) -> bool {
+        required.is_subset_of(&self.rights)
+    }
+
+    fn token_payload(&self) -> [u8; 80] {
         const TOKEN_CONTEXT: u32 = 0x4F43_4150; // "OCAP"
-        let mut buf = [0u8; 40];
+        const TOKEN_WIRE_VERSION: u32 = 1;
+        let mut buf = [0u8; 80];
         let mut offset = 0usize;
         write_u32(&mut buf, &mut offset, TOKEN_CONTEXT);
+        write_u32(&mut buf, &mut offset, TOKEN_WIRE_VERSION);
         write_u32(&mut buf, &mut offset, self.cap_id);
-        write_u32(&mut buf, &mut offset, self.object_id);
-        write_u32(&mut buf, &mut offset, self.rights);
+        write_u64(&mut buf, &mut offset, self.object_id);
+        write_u32(&mut buf, &mut offset, self.rights.bits());
         write_u32(&mut buf, &mut offset, self.cap_type as u32);
+        write_u32(&mut buf, &mut offset, self.owner_pid.0);
+        write_u64(&mut buf, &mut offset, self.issued_at);
+        write_u64(&mut buf, &mut offset, self.expires_at);
+        write_u32(&mut buf, &mut offset, self.flags);
         for word in &self.extra {
             write_u32(&mut buf, &mut offset, *word);
         }
@@ -193,4 +376,60 @@ fn write_u32(buf: &mut [u8], offset: &mut usize, value: u32) {
     let bytes = value.to_le_bytes();
     buf[*offset..*offset + 4].copy_from_slice(&bytes);
     *offset += 4;
+}
+
+fn write_u64(buf: &mut [u8], offset: &mut usize, value: u64) {
+    let bytes = value.to_le_bytes();
+    buf[*offset..*offset + 8].copy_from_slice(&bytes);
+    *offset += 8;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_id_round_trips_parts() {
+        let id = EventId::new(0xCAFE_BABE, 0x1234, 0xABCD);
+        assert_eq!(id.parts(), (0xCAFE_BABE, 0x1234, 0xABCD));
+        assert_eq!(id.source_pid(), 0xCAFE_BABE);
+        assert_eq!(id.channel_seq(), 0x1234);
+        assert_eq!(id.msg_seq(), 0xABCD);
+    }
+
+    #[test]
+    fn typed_arg_round_trip_u32() {
+        let value = 0xDEAD_BEEF_u32;
+        let mut buf = [0u8; 4];
+        assert_eq!(value.encode_into(&mut buf), Ok(4));
+        assert_eq!(u32::decode_from(&buf), Ok(value));
+    }
+
+    #[test]
+    fn typed_arg_round_trip_bytes() {
+        let value = *b"oreu";
+        let mut buf = [0u8; 4];
+        assert_eq!(value.encode_into(&mut buf), Ok(4));
+        assert_eq!(<[u8; 4]>::decode_from(&buf), Ok(value));
+    }
+
+    #[test]
+    fn capability_token_changes_when_context_changes() {
+        let mut base = Capability::with_type(
+            7,
+            11,
+            Rights::new(0xAA55),
+            CapabilityType::Filesystem,
+        );
+        base.extra = [0x10, 0x20, 0x30, 0x40];
+        let original = base.token_payload();
+
+        let mut changed = base;
+        changed.extra[1] ^= 1;
+        assert_ne!(original, changed.token_payload());
+
+        changed = base;
+        changed.rights = Rights::new(0xAA54);
+        assert_ne!(original, changed.token_payload());
+    }
 }

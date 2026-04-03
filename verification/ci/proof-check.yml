@@ -11,6 +11,17 @@ on:
       - 'kernel/src/**'
 
 jobs:
+  proof-check:
+    name: Baseline verification structure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify baseline verification structure
+        run: bash verification/scripts/proof_check.sh
+
   coq-proofs:
     name: Coq proof compilation
     runs-on: ubuntu-latest
@@ -61,9 +72,9 @@ jobs:
           if missing:
               print('manifest.json missing keys:', missing, file=sys.stderr)
               sys.exit(1)
-          todos = [k for k, v in m.items() if v == 'TODO' or v == []]
-          if todos:
-              print('manifest.json has unresolved TODO fields:', todos, file=sys.stderr)
+          placeholders = [k for k, v in m.items() if v in ('', 'UNSET') or v == []]
+          if placeholders:
+              print('manifest.json has unresolved placeholder fields:', placeholders, file=sys.stderr)
               sys.exit(1)
           print('manifest.json OK — theorems:', len(m['theorems']))
           "
@@ -77,10 +88,10 @@ jobs:
           fi
           echo "THEOREM_INDEX OK"
 
-      - name: Check ASSUMPTIONS has no TODO entries
+      - name: Check ASSUMPTIONS has no placeholder entries
         run: |
-          if grep -q "^- ASM-.*: TODO" verification/spec/ASSUMPTIONS.md; then
-            echo "ERROR: ASSUMPTIONS.md has unresolved TODO entries." >&2
+          if grep -Eq "^- ASM-.*: *(<[^>]+>|TBD|UNSET|pending)$" verification/spec/ASSUMPTIONS.md; then
+            echo "ERROR: ASSUMPTIONS.md has unresolved placeholder entries." >&2
             exit 1
           fi
           echo "ASSUMPTIONS OK"

@@ -1,14 +1,15 @@
-# Oreulia WASM JIT Fuzz Pairwise Transition Coverage (Implemented)
+# Oreulius WASM JIT Fuzz Pairwise Transition Coverage (Implemented)
 
 ## Purpose
 
-This document specifies the **implemented** pairwise transition coverage system used by Oreulia's `jit_fuzz` harness in `kernel/src/wasm.rs`.
+This document specifies the **implemented** pairwise transition coverage system used by Oreulius's `jit_fuzz` harness in [kernel/src/execution/wasm.rs](/Users/keefereeves/Desktop/OreuliusKernel/TheActualKernelProject/oreulius/kernel/src/execution/wasm.rs).
 
-It records the mathematics, the actual harness algorithm, and the achieved milestone for the current guided generator model:
+It records the mathematics, the actual harness algorithm, and the current
+coverage model used by the shipped runtime:
 
-- `20 / 20` guided bins hit
-- `400 / 400` full directed bin-pair transitions hit
-- `400 / 400` admissible directed bin-pair transitions hit
+- default build: `20` guided bins
+- `jit-fuzz-24bin` build: `24` guided bins
+- full directed-pair universe size: `N^2`, where `N = JIT_FUZZ_OPCODE_BINS`
 
 This is a **generator-structure coverage** metric for differential JIT fuzzing (interpreter vs JIT), not a claim of full WASM opcode or CFG coverage.
 
@@ -32,8 +33,8 @@ This metric therefore operates on the guided generator alphabet, not the final b
 
 Let:
 
-- `B = {0, 1, ..., 19}` be the guided-bin alphabet.
-- `|B| = 20`.
+- `B = {0, 1, ..., N-1}` be the guided-bin alphabet.
+- `|B| = N`, where `N = JIT_FUZZ_OPCODE_BINS`.
 - `T = (t_1, ..., t_n)` be the `choice_trace` for one generated program.
 
 Define the full directed pair universe:
@@ -42,7 +43,7 @@ Define the full directed pair universe:
 
 and therefore:
 
-`|E_full| = |B|^2 = 20^2 = 400`.
+`|E_full| = |B|^2 = N^2`.
 
 The harness records a pair `(i, j)` as observed iff:
 
@@ -58,13 +59,17 @@ Then the reported full-universe pairwise ratio is:
 
 This is the source of the runtime line:
 
-- `Opcode edges hit (full): X / 400`
+- `Opcode edges hit (full): X / N^2`
 
-## Guided Bin Model (Current Implemented 20-Bin Alphabet)
+## Guided Bin Model
 
-The current `jit_fuzz` guided generator uses **20 macro bins**.
+The current `jit_fuzz` guided generator uses either:
+- **20 macro bins** in the default build
+- **24 macro bins** when the `jit-fuzz-24bin` feature is enabled
 
-### Table 1. Guided bins (`B`, size 20)
+The default 20-bin mapping is:
+
+### Table 1. Guided bins (`B`, default size 20)
 
 | Bin | Meaning (generator choice) | Notes |
 |---:|---|---|
@@ -157,11 +162,11 @@ with:
 - `C_full` answers: "How much of the unconstrained `20 x 20` universe has been hit?"
 - `C_adm` answers: "How much of the actually reachable pair universe has been hit?"
 
-For the current implementation and observed milestone run, both are equal because:
+For the default 20-bin implementation and observed milestone run, both are equal because:
 
 `E_adm = E_full`
 
-for the current 20-bin generator model under the implemented abstract state semantics.
+for the default 20-bin generator model under the implemented abstract state semantics.
 
 ## Deterministic Pair-Cover Prepass (Implemented)
 
@@ -218,19 +223,19 @@ This is exactly the criterion used by the implemented `E_adm` computation.
 
 If all pairs are admissible and each emission contributed one symbol in an unconstrained model, then order-2 de Bruijn reasoning gives the cyclic lower-bound intuition of `|B|^2` pair occurrences.
 
-For `|B| = 20`, the unconstrained directed-pair universe size is:
+For a guided alphabet of size `N`, the unconstrained directed-pair universe size is:
 
-`20^2 = 400`.
+`N^2`.
 
 Linearized de Bruijn order-2 length intuition:
 
-`20^2 + 1 = 401` symbols.
+`N^2 + 1` symbols.
 
-Oreulia's actual harness is harder than this idealized case because it is constrained, macro-expanded, and semantically validated.
+Oreulius's actual harness is harder than this idealized case because it is constrained, macro-expanded, and semantically validated.
 
-## Achieved Milestone (Current Implemented Result)
+## Achieved Milestone (Default Build)
 
-The current implemented system has achieved complete pairwise coverage for the present 20-bin generator model in a differential fuzz run:
+The default build has achieved complete pairwise coverage for the present 20-bin generator model in a differential fuzz run:
 
 ### Table 2. Achieved pairwise milestone
 
@@ -245,7 +250,7 @@ This demonstrates:
 1. the deterministic pair-cover prepass is effective,
 2. the admissibility matrix computation is integrated and consistent,
 3. the stochastic phase still contributes diversity (novel programs continue to rise),
-4. the pairwise metric is no longer "hypothesis-only" for the current model.
+4. the pairwise metric is no longer "hypothesis-only" for the default model.
 
 ## What This Does *Not* Prove
 
@@ -283,6 +288,7 @@ This document describes a **completed and active** feature in the current codeba
 - `Opcode edges hit (admissible)` reporting: implemented
 - deterministic pair-cover prepass: implemented
 - 20-bin guided generator support: implemented
-- observed `400/400` pairwise completion for current model: achieved
+- 24-bin feature-expanded generator support: implemented
+- observed `400/400` pairwise completion for default model: achieved
 
 Future work is no longer "make pairwise possible"; it is "expand the modeled opcode/bin space while preserving differential correctness and pairwise completeness".

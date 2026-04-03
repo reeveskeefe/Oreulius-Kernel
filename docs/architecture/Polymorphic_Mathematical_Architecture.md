@@ -1,14 +1,14 @@
-# Mathematical Polymorphism and Tensor Geometry in the Oreulia Kernel
+# Mathematical Polymorphism and Tensor Geometry in the Oreulius Kernel
 
 ## Abstract
 
-The Oreulia kernel is a formally bounded, mathematically proactive operating system kernel targeting `x86_64` and `aarch64` bare-metal environments. Its architecture eliminates heuristic queues, unbounded dynamic dispatch, lock-ordering ambiguity, and runtime type confusion by replacing these failure modes with algebraically constrained trait geometry, compile-time DAG topology enforcement, hardware-accelerated fixed-point tensor arithmetic, a category-theoretically sound temporal state system, and a continuous-time Markov chain telemetry pipeline that operates entirely over statically allocated, lock-free data structures.
+The Oreulius kernel is a formally bounded, mathematically proactive operating system kernel targeting `x86_64` and `aarch64` bare-metal environments. Its architecture eliminates heuristic queues, unbounded dynamic dispatch, lock-ordering ambiguity, and runtime type confusion by replacing these failure modes with algebraically constrained trait geometry, compile-time DAG topology enforcement, hardware-accelerated fixed-point tensor arithmetic, a category-theoretically sound temporal state system, and a continuous-time Markov chain telemetry pipeline that operates entirely over statically allocated, lock-free data structures.
 
 The phrase *polymorphic mathematical architecture* refers to a specific design discipline: every major kernel subsystem is parameterized over a small algebraic signature (a Rust trait), and the signature's associated types, method contracts, and lifetime bounds collectively constitute a *formal specification* in the sense of algebraic specification theory. Each concrete `impl` block is a *model* (algebra) of that specification, and the Rust compiler acts as a proof checker ensuring the model satisfies all axioms before a binary is produced. This is not a metaphor: the compiler's type-checking algorithm for trait bounds is a decision procedure for a fragment of first-order Horn logic, and the LLVM monomorphization phase erases the abstraction to zero-overhead direct calls.
 
 The result is a kernel whose safety properties are not assertions that can be disabled or skipped, but *structural invariants encoded in the program's type structure*, enforced at compile time, and visible to any static analysis tool that understands Rust's type system. This document derives those invariants from their mathematical foundations, connects them to the exact lines of source code that implement them, and provides complete formal proofs for every non-trivial claim.
 
-This document is the definitive technical reference for the Polymorphic Mathematical Architecture (PMA) of the Oreulia kernel. Every claim is grounded in the actual source code. Definitions, theorems, lemmas, corollaries, and full proofs are given for each formal system. The document covers:
+This document is the definitive technical reference for the Polymorphic Mathematical Architecture (PMA) of the Oreulius kernel. Every claim is grounded in the actual source code. Definitions, theorems, lemmas, corollaries, and full proofs are given for each formal system. The document covers:
 
 1. **Formal trait geometry** — associated-type bounds as algebraic signatures, Horn-clause semantics, and the monomorphization theorem (`mmu.rs`, `netstack.rs`, `wasm.rs`, `ipc.rs`)
 2. **Interrupt DAG topology** — deadlock freedom via `const`-generic monotone priority, with a full well-foundedness argument (`interrupt_dag.rs`)
@@ -215,7 +215,7 @@ Since the restriction of $\mathtt{type\_tag}$ to each partition is injective and
 
 A classical spinlock deadlock in a uniprocessor kernel occurs when thread $A$ holds lock $L_1$ and is preempted by an interrupt handler $H$ that then attempts to acquire $L_1$. The standard POSIX response is to disable interrupts while the lock is held — a blanket solution that increases worst-case interrupt latency without providing any structural guarantee that the programmer has applied the mitigation everywhere it is needed.
 
-The Oreulia approach is different: it encodes the *partial order* of lock acquisitions directly into the types, making a priority inversion a *compile-time type error* that cannot appear in a compiled binary, regardless of how the code is called. The mechanism is `const`-generic priority levels.
+The Oreulius approach is different: it encodes the *partial order* of lock acquisitions directly into the types, making a priority inversion a *compile-time type error* that cannot appear in a compiled binary, regardless of how the code is called. The mechanism is `const`-generic priority levels.
 
 ### 2.2 The DAG Priority Lattice
 
@@ -536,7 +536,7 @@ The coefficients are derived from the Padé table: $N_3(x) = \sum_{k=0}^{3} \fra
 5. Solve $\mathbf{D} \cdot \mathbf{P}_0 = \mathbf{N}$ via LU decomposition (this gives $\mathbf{P}_0 \approx e^{\mathbf{A}}$).
 6. Square $s$ times: $\mathbf{P} \leftarrow \mathbf{P}_0^{2^s}$ (since $(e^\mathbf{A})^{2^s} = e^{\mathbf{A} \cdot 2^s} = e^{\mathbf{Q}t}$).
 
-The error after step 5 is $\|P_0 - e^\mathbf{A}\| = O(\|\mathbf{A}\|^7)$. After squaring, error compounds but remains bounded for the 3×3 matrices used in Oreulia's telemetry daemon (`STATE_DIM = 3`).
+The error after step 5 is $\|P_0 - e^\mathbf{A}\| = O(\|\mathbf{A}\|^7)$. After squaring, error compounds but remains bounded for the 3×3 matrices used in Oreulius's telemetry daemon (`STATE_DIM = 3`).
 
 ### 4.6 Stationary Distribution and Anomaly Detection
 
@@ -855,7 +855,7 @@ The formal computation applies Cauchy-Schwarz to $v^T \mathcal{L} v = \gamma \|v
 
 ### 7.5 Build-Time Conductance Check
 
-During the kernel build (`build.rs`), an offline Lanczos iteration ($k \leq 50$ steps, $O(km)$ total cost where $m = |E|$) computes $\lambda_1(\mathcal{L})$. The Lanczos algorithm produces a $k \times k$ tridiagonal matrix $T_k$ whose eigenvalues converge to the extreme eigenvalues of $\mathcal{L}$. For the small capability graphs in Oreulia (typically $n \leq 256$ process domains), $k = 50$ is more than sufficient for convergence to 6 significant digits.
+During the kernel build (`build.rs`), an offline Lanczos iteration ($k \leq 50$ steps, $O(km)$ total cost where $m = |E|$) computes $\lambda_1(\mathcal{L})$. The Lanczos algorithm produces a $k \times k$ tridiagonal matrix $T_k$ whose eigenvalues converge to the extreme eigenvalues of $\mathcal{L}$. For the small capability graphs in Oreulius (typically $n \leq 256$ process domains), $k = 50$ is more than sufficient for convergence to 6 significant digits.
 
 If the computed $\lambda_1(\mathcal{L}) < 0.0025$ (implying $\Phi(G) \leq \sqrt{2 \times 0.0025} \approx 0.071$), `build.rs` emits:
 
@@ -1017,7 +1017,7 @@ The EWMA bias is at most 0.126% of the initial deviation from the true mean — 
 
 ## 11. End-to-End Security Argument
 
-**Claim.** No user-space process running under Oreulia can acquire a capability it was not explicitly granted at initialization, regardless of scheduling manipulation, IPC messaging, JIT optimization behavior, or CTMC telemetry interference.
+**Claim.** No user-space process running under Oreulius can acquire a capability it was not explicitly granted at initialization, regardless of scheduling manipulation, IPC messaging, JIT optimization behavior, or CTMC telemetry interference.
 
 This is a *structural* claim, not a probabilistic one. It is proved by tracing through the type system, the DAG discipline, and the flow conservation properties established above. The proof proceeds in six steps, each backed by a theorem or lemma.
 

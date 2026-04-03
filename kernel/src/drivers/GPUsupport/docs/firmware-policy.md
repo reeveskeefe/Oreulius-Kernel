@@ -1,6 +1,6 @@
 # Firmware Policy
 
-Oreulia does not commit GPU firmware blobs into the repository.
+Oreulius does not commit GPU firmware blobs into the repository.
 
 Firmware-backed devices may expose:
 

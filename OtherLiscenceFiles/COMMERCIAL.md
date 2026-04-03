@@ -2,19 +2,19 @@
 
 Effective Date: 2026-03-14
 
-Oreulia is available for commercial use under a separate written agreement
-with the Licensor.  The public Oreulia Community License does not permit
+Oreulius is available for commercial use under a separate written agreement
+with the Licensor.  The public Oreulius Community License does not permit
 production deployment, paid services, or commercial distribution.  A
 commercial license is required for those uses.
 
 ## What Requires a Commercial License
 
-- Deploying Oreulia in a production environment.
-- Using Oreulia as part of a product or service offered for sale or subscription.
-- Operating a hosted or managed service built on Oreulia.
-- Distributing Oreulia as part of a commercial software product.
+- Deploying Oreulius in a production environment.
+- Using Oreulius as part of a product or service offered for sale or subscription.
+- Operating a hosted or managed service built on Oreulius.
+- Distributing Oreulius as part of a commercial software product.
 - Providing paid integration, support, or consulting services centred on
-  Oreulia.
+  Oreulius.
 
 ## What Is Permitted Under the Public License (No Commercial License Needed)
 

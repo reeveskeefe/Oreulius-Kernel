@@ -1,6 +1,6 @@
 # `kernel/src/platform` — Architecture Abstraction & CPU Primitives
 
-The `platform` module is the **hardware interface layer** of the Oreulia kernel. It owns every concern that must be written differently for different CPU architectures: the Global Descriptor Table, the Interrupt Descriptor Table, syscall dispatch, privilege-level transitions, and the lock-ordering DAG that prevents deadlocks across interrupt and scheduler contexts. Code in every other module that needs to route an interrupt, invoke a syscall, or enter userspace passes through this module.
+The `platform` module is the **hardware interface layer** of the Oreulius kernel. It owns every concern that must be written differently for different CPU architectures: the Global Descriptor Table, the Interrupt Descriptor Table, syscall dispatch, privilege-level transitions, and the lock-ordering DAG that prevents deadlocks across interrupt and scheduler contexts. Code in every other module that needs to route an interrupt, invoke a syscall, or enter userspace passes through this module.
 
 ---
 
@@ -102,7 +102,7 @@ The IDT table is a static 256-entry `[IdtEntry; 256]` owned by `idt_asm.rs`. `id
 
 ## `interrupt_dag.rs` — Compile-Time Deadlock-Free Spinlock DAG
 
-This is one of Oreulia's most unusual kernel-level innovations. Every spinlock in the kernel carries a **compile-time priority level constant**. The `DagSpinlock<LEVEL, T>` type, combined with `InterruptContext<LEVEL>`, enforces at monomorphization time that a lock at level N can only be acquired from an execution context at level > N.
+This is one of Oreulius's most unusual kernel-level innovations. Every spinlock in the kernel carries a **compile-time priority level constant**. The `DagSpinlock<LEVEL, T>` type, combined with `InterruptContext<LEVEL>`, enforces at monomorphization time that a lock at level N can only be acquired from an execution context at level > N.
 
 ### Priority Levels
 
@@ -155,7 +155,7 @@ The unified syscall layer that handles all privilege-level transitions on all su
 |---|---|---|
 | `sysenter_handler_rust` | x86 | `SYSENTER` instruction (fast system call, Intel) |
 | `syscall_handler_rust` | x86-64 | `SYSCALL` instruction (AMD64 ABI) |
-| `oreulia_syscall_dispatch` | x86 | `INT 0x80` (legacy interrupt-based) |
+| `oreulius_syscall_dispatch` | x86 | `INT 0x80` (legacy interrupt-based) |
 | `aarch64_syscall_from_exception` | AArch64 | `SVC #0` exception vector |
 
 All four paths converge at `handle_syscall(args, caller_pid)` after normalising arguments into `SyscallArgs`.

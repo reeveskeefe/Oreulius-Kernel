@@ -1,7 +1,7 @@
-# `kernel/src/compositor` — Oreulia Compositor Subsystem
+# `kernel/src/compositor` — Oreulius Compositor Subsystem
 
 A first-class, capability-native windowing compositor living entirely inside the
-Oreulia kernel.  Its mandate is narrow and precise: accept pixel-draw commands
+Oreulius kernel.  Its mandate is narrow and precise: accept pixel-draw commands
 from capability-holding GUI processes, composite their surfaces in z-order, and
 push the result to the display framebuffer — all without trusting client IDs,
 without heap allocation, and without a single WASM process ever touching another

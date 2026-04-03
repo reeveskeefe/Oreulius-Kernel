@@ -1,4 +1,4 @@
-(* Temporal Functor Composition Proofs for Oreulia Mathematical Architecture *)
+(* Temporal Functor Composition Proofs for Oreulius Mathematical Architecture *)
 (* This formalizes the temporal.rs capability mapping using Functors *)
 
 From Coq Require Import Init.Logic.

@@ -1,4 +1,4 @@
-; x86_64_memory.asm — Fast 64-bit memory operations for Oreulia kernel
+; x86_64_memory.asm — Fast 64-bit memory operations for Oreulius kernel
 ;
 ; Replaces STUB_ZERO shims for:
 ;   asm_fast_memcpy, asm_fast_memset, asm_fast_memcmp, asm_checksum_ip

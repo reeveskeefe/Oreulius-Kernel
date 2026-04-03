@@ -1,6 +1,6 @@
 # `kernel/src/memory` — Memory Management Subsystem
 
-The `memory` module is the **foundation layer** of the Oreulia kernel. Every other subsystem depends on it for allocation, physical frame tracking, JIT arena management, hardware-accelerated memory operations, and the wait-free telemetry ring. It also provides the only path through which the kernel crosses the boundary from safe Rust into raw assembly operations — CR register access, CPUID, RDTSC, I/O port instructions, and context switch primitives all live here.
+The `memory` module is the **foundation layer** of the Oreulius kernel. Every other subsystem depends on it for allocation, physical frame tracking, JIT arena management, hardware-accelerated memory operations, and the wait-free telemetry ring. It also provides the only path through which the kernel crosses the boundary from safe Rust into raw assembly operations — CR register access, CPUID, RDTSC, I/O port instructions, and context switch primitives all live here.
 
 ---
 

@@ -1,6 +1,6 @@
 # `browser_backend` — In-Kernel Browser Network Stack
 
-The `browser_backend` module is the **in-kernel half** of the Oreulia browser
+The `browser_backend` module is the **in-kernel half** of the Oreulius browser
 stack.  It owns every piece of network state that requires kernel privilege
 (sockets, TLS, cookie storage, HTTP cache, capability tokens, audit) while
 deliberately containing **none** of the components that can live safely in

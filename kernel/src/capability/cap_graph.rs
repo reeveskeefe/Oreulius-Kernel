@@ -249,7 +249,7 @@ impl ProvenanceLink {
 /// `links[depth - 1]` is the *root* (directly created by the kernel).
 ///
 /// Built by [`build_chain`], which walks the `parent_cap_id` fields embedded
-/// in `OreuliaCapability` structs back toward the root.
+/// in `OreuliusCapability` structs back toward the root.
 #[derive(Clone, Copy, Debug)]
 pub struct ProvenanceChain {
     pub links: [ProvenanceLink; PROVENANCE_MAX_DEPTH],

@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -333,7 +333,7 @@ pub fn execute(input: &str) {
                 "  temporal-branch-list - List named branches (temporal-branch-list <path>)\n",
             );
             vga::print_str("  temporal-branch-checkout - Checkout branch head (temporal-branch-checkout <path> <branch>)\n");
-            vga::print_str("  temporal-merge - Merge branch into target (temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs])\n");
+            vga::print_str("  temporal-merge - Merge branch into target (temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs|three-way])\n");
             vga::print_str("  temporal-stats - Show temporal object stats\n");
             vga::print_str("  temporal-retention - Show/set retention policy (temporal-retention [show|set|reset|gc])\n");
             vga::print_str("  temporal-ipc-demo - Run temporal IPC service demo\n");
@@ -475,6 +475,7 @@ pub fn execute(input: &str) {
             vga::print_str("\nAdvanced System Commands:\n");
             vga::print_str("  quantum-stats  - Show quantum scheduler statistics\n");
             vga::print_str("  sched-entropy-bench - Show entropy scheduler bench scenarios\n");
+            vga::print_str("  prod-bench          - End-to-end production workload benchmark (cpu+jit+blk+sched)\n");
             vga::print_str("  sched-net-soak - Scheduler/network soak test (sched-net-soak <seconds> [probe_ms])\n");
             vga::print_str("  alloc-stats    - Show hardened allocator statistics\n");
             vga::print_str("  leak-check     - Check for memory leaks (debug only)\n");
@@ -976,6 +977,9 @@ pub fn execute(input: &str) {
         }
         "cpu-bench" => {
             cmd_cpu_benchmark();
+        }
+        "prod-bench" => {
+            cmd_prod_bench();
         }
         "atomic-test" => {
             cmd_atomic_test();
@@ -1969,6 +1973,7 @@ fn temporal_merge_strategy_from_str(value: &str) -> Option<crate::temporal::Temp
         }
         "ours" => Some(crate::temporal::TemporalMergeStrategy::Ours),
         "theirs" => Some(crate::temporal::TemporalMergeStrategy::Theirs),
+        "three-way" | "threeway" | "diff3" => Some(crate::temporal::TemporalMergeStrategy::ThreeWay),
         _ => None,
     }
 }
@@ -2110,7 +2115,7 @@ fn cmd_temporal_merge(mut parts: core::str::SplitWhitespace) {
         Some(p) => p,
         None => {
             vga::print_str(
-                "Usage: temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs]\n",
+                "Usage: temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs|three-way]\n",
             );
             return;
         }
@@ -2119,7 +2124,7 @@ fn cmd_temporal_merge(mut parts: core::str::SplitWhitespace) {
         Some(v) => v,
         None => {
             vga::print_str(
-                "Usage: temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs]\n",
+                "Usage: temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs|three-way]\n",
             );
             return;
         }
@@ -2128,13 +2133,13 @@ fn cmd_temporal_merge(mut parts: core::str::SplitWhitespace) {
     let fourth = parts.next();
     if parts.next().is_some() {
         vga::print_str(
-            "Usage: temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs]\n",
+            "Usage: temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs|three-way]\n",
         );
         return;
     }
 
     let mut target_branch: Option<&str> = None;
-    let mut strategy = crate::temporal::TemporalMergeStrategy::FastForwardOnly;
+    let mut strategy = crate::temporal::TemporalMergeStrategy::ThreeWay;
     if let Some(arg) = third {
         if let Some(parsed) = temporal_merge_strategy_from_str(arg) {
             strategy = parsed;
@@ -2146,7 +2151,7 @@ fn cmd_temporal_merge(mut parts: core::str::SplitWhitespace) {
         strategy = match temporal_merge_strategy_from_str(arg) {
             Some(v) => v,
             None => {
-                vga::print_str("Merge strategy must be one of: ff-only, ours, theirs\n");
+                vga::print_str("Merge strategy must be one of: ff-only, ours, theirs, three-way\n");
                 return;
             }
         };
@@ -2164,7 +2169,15 @@ fn cmd_temporal_merge(mut parts: core::str::SplitWhitespace) {
             if result.fast_forward {
                 vga::print_str("fast-forward");
             } else {
-                vga::print_str("merge-commit");
+                vga::print_str(result.merge_kind.as_str());
+            }
+            vga::print_str(" conflicts=");
+            print_u32(result.conflict_count);
+            vga::print_str(" fallback=");
+            if result.used_fallback {
+                vga::print_str("yes");
+            } else {
+                vga::print_str("no");
             }
             vga::print_str(" head_before=");
             if let Some(v) = result.target_head_before {
@@ -2331,7 +2344,7 @@ const TEMPORAL_IPC_HISTORY_RECORD_BYTES: usize = 64;
 const TEMPORAL_IPC_MAX_HISTORY_ENTRIES: usize = 128;
 const TEMPORAL_IPC_BRANCH_ID_BYTES: usize = 4;
 const TEMPORAL_IPC_BRANCH_CHECKOUT_BYTES: usize = 16;
-const TEMPORAL_IPC_MERGE_RESULT_BYTES: usize = 40;
+const TEMPORAL_IPC_MERGE_RESULT_BYTES: usize = 48;
 const TEMPORAL_IPC_MAX_BRANCH_ENTRIES: usize = 64;
 const TEMPORAL_IPC_BRANCH_NAME_BYTES: usize = 48;
 const TEMPORAL_IPC_BRANCH_RECORD_BYTES: usize = 20 + TEMPORAL_IPC_BRANCH_NAME_BYTES;
@@ -2624,6 +2637,7 @@ fn temporal_ipc_build_merge_payload(
         crate::temporal::TemporalMergeStrategy::FastForwardOnly => 0u8,
         crate::temporal::TemporalMergeStrategy::Ours => 1u8,
         crate::temporal::TemporalMergeStrategy::Theirs => 2u8,
+        crate::temporal::TemporalMergeStrategy::ThreeWay => 3u8,
     };
     let mut flags = 0u8;
     if target_branch.is_some() {
@@ -4057,7 +4071,7 @@ fn cmd_cap_demo(mut parts: core::str::SplitWhitespace) {
     vga::print_str("  ✓ Converted (type=");
     print_number(ipc_cap.cap_type as usize);
     vga::print_str(", rights=");
-    print_number(ipc_cap.rights as usize);
+    print_number(ipc_cap.rights.bits() as usize);
     vga::print_str(")\n\n");
 
     // Step 4: Create a channel
@@ -4856,6 +4870,7 @@ fn temporal_ipc_decode_merge_payload(
         0 => crate::temporal::TemporalMergeStrategy::FastForwardOnly,
         1 => crate::temporal::TemporalMergeStrategy::Ours,
         2 => crate::temporal::TemporalMergeStrategy::Theirs,
+        3 => crate::temporal::TemporalMergeStrategy::ThreeWay,
         _ => return Err(TEMPORAL_IPC_STATUS_INVALID_PAYLOAD),
     };
     let flags = payload[1];
@@ -5043,6 +5058,12 @@ fn temporal_ipc_encode_merge_result(
     if result.target_head_after.is_some() {
         flags |= 1 << 3;
     }
+    if result.used_fallback {
+        flags |= 1 << 4;
+    }
+    if result.conflict_count > 0 {
+        flags |= 1 << 5;
+    }
     let new_version = result.new_version_id.unwrap_or(u64::MAX);
     let before = result.target_head_before.unwrap_or(u64::MAX);
     let after = result.target_head_after.unwrap_or(u64::MAX);
@@ -5053,6 +5074,8 @@ fn temporal_ipc_encode_merge_result(
         flags,
         result.target_branch_id,
         result.source_branch_id,
+        result.merge_kind.as_u32(),
+        result.conflict_count,
         0,
         new_lo,
         new_hi,
@@ -6846,20 +6869,20 @@ fn cmd_wasm_fs_demo() {
         }
     };
 
-    // Hand-crafted WASM that calls oreulia_fs_write syscall
-    // Function signature: oreulia_fs_write(cap: i32, key_ptr: i32, key_len: i32, data_ptr: i32, data_len: i32) -> i32
+    // Hand-crafted WASM that calls oreulius_fs_write syscall
+    // Function signature: oreulius_fs_write(cap: i32, key_ptr: i32, key_len: i32, data_ptr: i32, data_len: i32) -> i32
     // This writes "Hello from WASM!" to key "wasm-test"
     let bytecode: [u8; 179] = [
         // Setup: Write key "wasm-test" at memory offset 0
         // Write data "Hello from WASM!" at memory offset 20
 
-        // Call oreulia_fs_write (host function 1002 = 1000 + 2)
+        // Call oreulius_fs_write (host function 1002 = 1000 + 2)
         0x41, 0x00, // i32.const 0 (cap handle - will inject later)
         0x41, 0x14, // i32.const 20 (key_ptr - offset in memory)
         0x41, 0x09, // i32.const 9 (key_len - "wasm-test")
         0x41, 0x32, // i32.const 50 (data_ptr)
         0x41, 0x11, // i32.const 17 (data_len - "Hello from WASM!")
-        0x10, 0xEA, 0x07, // call 1002 (oreulia_fs_write)
+        0x10, 0xEA, 0x07, // call 1002 (oreulius_fs_write)
         0x21, 0x00, // local.set 0 (store result)
         0x20, 0x00, // local.get 0 (load result)
         0x0F, // return
@@ -7004,7 +7027,7 @@ fn cmd_wasm_fs_demo() {
                     vga::print_str(s);
                 }
                 vga::print_str("\"\n");
-                vga::print_str("\n🎉 WASM successfully called Oreulia filesystem!\n");
+                vga::print_str("\n🎉 WASM successfully called Oreulius filesystem!\n");
             }
             fs::ResponseStatus::Error(_) => {
                 vga::print_str("✗ File not found - write may have failed\n");
@@ -7025,13 +7048,13 @@ fn cmd_wasm_log_demo() {
         }
     };
 
-    // Hand-crafted WASM that calls oreulia_log syscall
-    // Function signature: oreulia_log(msg_ptr: i32, msg_len: i32)
+    // Hand-crafted WASM that calls oreulius_log syscall
+    // Function signature: oreulius_log(msg_ptr: i32, msg_len: i32)
     let bytecode: [u8; 94] = [
-        // Call oreulia_log (host function 1000)
+        // Call oreulius_log (host function 1000)
         0x41, 0x00, // i32.const 0 (msg_ptr)
         0x41, 0x1B, // i32.const 27 (msg_len)
-        0x10, 0xE8, 0x07, // call 1000 (oreulia_log)
+        0x10, 0xE8, 0x07, // call 1000 (oreulius_log)
         0x0F, // return
         0x0B, // end
         // Padding
@@ -7893,6 +7916,140 @@ fn cmd_wasm_jit_bench() {
         }
     }
     vga::print_str("\n");
+}
+
+fn cmd_prod_bench() {
+    use crate::asm_bindings::*;
+
+    vga::print_str("\n");
+    vga::print_str("========================================\n");
+    vga::print_str("  PRODUCTION WORKLOAD BENCHMARK SUITE\n");
+    vga::print_str("========================================\n\n");
+    crate::serial_println!("[PROD-BENCH] start");
+
+    let mut passed: u32 = 0;
+    let mut total: u32 = 0;
+
+    // ── 1. CPU instruction throughput ────────────────────────────────────────
+    vga::print_str("[ 1/4 ] CPU instruction throughput\n");
+    total += 1;
+    const CPU_ITERS: u32 = 100_000;
+    let nop_cycles = benchmark_nop(CPU_ITERS);
+    let add_cycles = benchmark_add(CPU_ITERS);
+    let nop_cpo = nop_cycles / CPU_ITERS as u64;
+    let add_cpo = add_cycles / CPU_ITERS as u64;
+    vga::print_str("        nop cycles/op: ");
+    print_u32(nop_cpo as u32);
+    vga::print_str("\n");
+    vga::print_str("        add cycles/op: ");
+    print_u32(add_cpo as u32);
+    vga::print_str("\n");
+    crate::serial_println!("[PROD-BENCH] cpu nop_cpo={} add_cpo={} status=ok", nop_cpo, add_cpo);
+    passed += 1;
+
+    // ── 2. WASM JIT vs interpreter ───────────────────────────────────────────
+    vga::print_str("\n[ 2/4 ] WASM JIT vs interpreter\n");
+    total += 1;
+    match crate::wasm::jit_benchmark() {
+        Ok((interp, jit)) => {
+            let speedup: u64 = if jit > 0 { interp / jit } else { 0 };
+            vga::print_str("        interp ticks: ");
+            print_u64(interp);
+            vga::print_str("\n");
+            vga::print_str("        jit ticks:    ");
+            print_u64(jit);
+            vga::print_str("\n");
+            vga::print_str("        speedup:      ");
+            print_u32(speedup as u32);
+            vga::print_str("x\n");
+            crate::serial_println!(
+                "[PROD-BENCH] wasm-jit interp={} jit={} speedup={}x status=ok",
+                interp, jit, speedup
+            );
+            passed += 1;
+        }
+        Err(e) => {
+            vga::print_str("        FAILED: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            crate::serial_println!("[PROD-BENCH] wasm-jit status=fail reason={}", e);
+        }
+    }
+
+    // ── 3. Block I/O throughput ──────────────────────────────────────────────
+    vga::print_str("\n[ 3/4 ] Block I/O throughput\n");
+    total += 1;
+    if !crate::virtio_blk::is_present() {
+        vga::print_str("        (no block device -- skipped)\n");
+        crate::serial_println!("[PROD-BENCH] blk status=skip reason=no-device");
+        passed += 1; // skip is not a failure
+    } else {
+        const BLK_SECTORS: u64 = 64;
+        let t0 = crate::vfs_platform::ticks_now();
+        let mut errors: u64 = 0;
+        let mut buf = [0u8; 512];
+        for i in 0..BLK_SECTORS {
+            if crate::virtio_blk::read_sector(i, &mut buf).is_err() {
+                errors += 1;
+            }
+        }
+        let elapsed = crate::vfs_platform::ticks_now().saturating_sub(t0);
+        let bytes: u64 = BLK_SECTORS * 512;
+        let bpt: u64 = if elapsed > 0 { bytes / elapsed } else { 0 };
+        vga::print_str("        sectors:      ");
+        print_u64(BLK_SECTORS);
+        vga::print_str("\n");
+        vga::print_str("        ticks:        ");
+        print_u64(elapsed);
+        vga::print_str("\n");
+        vga::print_str("        bytes/tick:   ");
+        print_u64(bpt);
+        vga::print_str("\n");
+        vga::print_str("        errors:       ");
+        print_u64(errors);
+        vga::print_str("\n");
+        crate::serial_println!(
+            "[PROD-BENCH] blk sectors={} elapsed={} bpt={} errors={} status=ok",
+            BLK_SECTORS, elapsed, bpt, errors
+        );
+        if errors == 0 {
+            passed += 1;
+        }
+    }
+
+    // ── 4. Scheduler entropy adaptation ─────────────────────────────────────
+    vga::print_str("\n[ 4/4 ] Scheduler entropy adaptation\n");
+    total += 1;
+    for s in &crate::quantum_scheduler::entropy_bench_results() {
+        vga::print_str("        ");
+        vga::print_str(s.name);
+        vga::print_str(": base=");
+        print_u32(s.base_quantum);
+        vga::print_str(" adj=");
+        print_u32(s.adjusted_quantum);
+        vga::print_str("\n");
+        crate::serial_println!(
+            "[PROD-BENCH] sched scenario={} base_q={} adj_q={} yield_ewma={} fault_ewma={}",
+            s.name, s.base_quantum, s.adjusted_quantum,
+            s.rolled_yield_ewma, s.rolled_fault_ewma
+        );
+    }
+    passed += 1;
+
+    // ── Summary ───────────────────────────────────────────────────────────────
+    vga::print_str("\n----------------------------------------\n");
+    vga::print_str("RESULT: ");
+    print_u32(passed);
+    vga::print_str("/");
+    print_u32(total);
+    if passed == total {
+        vga::print_str("  PASS\n");
+        crate::serial_println!("[PROD-BENCH] result=PASS passed={} total={}", passed, total);
+    } else {
+        vga::print_str("  FAIL\n");
+        crate::serial_println!("[PROD-BENCH] result=FAIL passed={} total={}", passed, total);
+    }
+    vga::print_str("========================================\n\n");
 }
 
 fn cmd_wasm_jit_selftest() {
@@ -9785,7 +9942,7 @@ fn parse_i32(s: &str) -> Option<i32> {
 
 fn cmd_network_help() {
     vga::print_str("\n");
-    vga::print_str("===== Oreulia Real Network Stack =====\n");
+    vga::print_str("===== Oreulius Real Network Stack =====\n");
     vga::print_str("\n");
     vga::print_str("OVERVIEW:\n");
     vga::print_str("  Production network stack with WiFi, TCP/IP, and HTTP.\n");
@@ -11501,7 +11658,7 @@ fn cmd_asm_test() {
 
     // Test 4: Hash Functions
     vga::print_str("[4] Testing hash functions...\n");
-    let test_str = b"Oreulia OS";
+    let test_str = b"Oreulius OS";
 
     let hash1 = asm_bindings::hash_data(test_str);
     vga::print_str("    FNV-1a hash: 0x");
@@ -12541,7 +12698,7 @@ fn cmd_security_test() {
     // Test 4: Data integrity
     vga::print_str("\nTest 4: Data integrity verification\n");
 
-    let data = b"Hello, Oreulia!";
+    let data = b"Hello, Oreulius!";
     let hash = security::hash_data(data);
 
     vga::print_str("  Hash: 0x");
@@ -12810,7 +12967,7 @@ fn cmd_cap_test_console() {
 
 /// Display capability system architecture
 fn cmd_cap_arch() {
-    vga::print_str("Oreulia Capability Architecture\n");
+    vga::print_str("Oreulius Capability Architecture\n");
     vga::print_str("================================\n\n");
 
     vga::print_str("Design Principles:\n");
@@ -12821,7 +12978,7 @@ fn cmd_cap_arch() {
     vga::print_str("  • AUDITABLE - All capability operations are tracked\n\n");
 
     vga::print_str("Contrast with Traditional Kernels:\n");
-    vga::print_str("  POSIX/Unix/Linux/Mac/NT:     Oreulia:\n");
+    vga::print_str("  POSIX/Unix/Linux/Mac/NT:     Oreulius:\n");
     vga::print_str("  • Global filesystem (/)      • Filesystem capability required\n");
     vga::print_str("  • Global network sockets     • Network capability required\n");
     vga::print_str("  • Ambient time access        • Clock capability required\n");

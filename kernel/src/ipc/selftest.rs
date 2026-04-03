@@ -250,7 +250,12 @@ fn case_recv_aliases_try_recv_on_empty() -> Result<(), &'static str> {
 fn case_cap_attachment_surface() -> Result<(), &'static str> {
     let owner = ProcessId::new(11);
     let mut msg = Message::with_data(owner, b"caps").map_err(|_| "failed to build cap message")?;
-    let cap = Capability::with_type(88, 99, 0xA5, CapabilityType::ServicePointer);
+    let cap = Capability::with_type(
+        88,
+        99,
+        crate::capability::Rights::new(0xA5),
+        CapabilityType::ServicePointer,
+    );
     msg.add_capability(cap)
         .map_err(|_| "failed to attach capability")?;
 
@@ -264,7 +269,7 @@ fn case_cap_attachment_surface() -> Result<(), &'static str> {
         .ok_or("missing attached capability")?;
     if attached.cap_id != 88
         || attached.object_id != 99
-        || attached.rights != 0xA5
+        || attached.rights.bits() != 0xA5
         || attached.cap_type != CapabilityType::ServicePointer
     {
         return Err("attached capability fields mismatch");

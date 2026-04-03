@@ -1,5 +1,5 @@
 ; kernel/asm/memory.asm
-; Optimized memory operations for Oreulia OS
+; Optimized memory operations for Oreulius OS
 ; Uses rep string instructions for maximum performance
 
 global asm_fast_memcpy

@@ -1,9 +1,9 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- *License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ *License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  */
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -89,12 +89,12 @@ static VECTOR_COUNTS: [AtomicU64; VECTOR_SLOT_COUNT] = [
 ];
 
 extern "C" {
-    static __oreulia_aarch64_vectors_start: u8;
+    static __oreulius_aarch64_vectors_start: u8;
 }
 
 #[inline]
 pub(crate) fn vector_base() -> usize {
-    unsafe { (&__oreulia_aarch64_vectors_start as *const u8) as usize }
+    unsafe { (&__oreulius_aarch64_vectors_start as *const u8) as usize }
 }
 
 #[inline]
@@ -216,7 +216,7 @@ pub(crate) fn vectors_installed() -> bool {
 }
 
 #[no_mangle]
-pub extern "C" fn oreulia_aarch64_vector_dispatch(
+pub extern "C" fn oreulius_aarch64_vector_dispatch(
     slot: u64,
     esr_el1: u64,
     elr_el1: u64,

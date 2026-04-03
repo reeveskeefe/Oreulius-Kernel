@@ -1,4 +1,4 @@
-//! Oreulia Compositor Subsystem
+//! Oreulius Compositor Subsystem
 //!
 //! A first-class kernel display service providing:
 //!

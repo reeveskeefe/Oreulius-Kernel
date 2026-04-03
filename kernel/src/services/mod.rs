@@ -1,5 +1,5 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
  * SPDX-License-Identifier: MIT
  */

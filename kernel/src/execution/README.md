@@ -1,6 +1,6 @@
 # `kernel/src/execution` — Execution Engine
 
-The `execution` module is the runtime heart of Oreulia. It provides everything required to load and run code: an ELF binary loader for both 32-bit and 64-bit programs, a full WebAssembly interpreter with the complete MVP instruction set plus atomics, exception handling, and multi-value blocks, an x86-64 JIT compiler with hardware-verified integrity and Bayesian confidence gating, a cooperative multi-threaded WASM execution pool, a deterministic replay engine with algebraic formalism, and a lightweight WASM-bytecode anomaly inference model for the security intent graph.
+The `execution` module is the runtime heart of Oreulius. It provides everything required to load and run code: an ELF binary loader for both 32-bit and 64-bit programs, a full WebAssembly interpreter with the complete MVP instruction set plus atomics, exception handling, and multi-value blocks, an x86-64 JIT compiler with hardware-verified integrity and Bayesian confidence gating, a cooperative multi-threaded WASM execution pool, a deterministic replay engine with algebraic formalism, and a lightweight WASM-bytecode anomaly inference model for the security intent graph.
 
 ---
 
@@ -254,7 +254,7 @@ pub struct WasmModule {
 | `AssemblyScript` | AssemblyScript (TypeScript → WASM) |
 | `WaT` | WebAssembly Text format compiled module |
 | `Grain` | Grain language |
-| `Oreulia` | Oreulia-native module |
+| `Oreulius` | Oreulius-native module |
 
 `WasmModule::load(bytecode)` and `load_binary(bytecode)` parse the WASM binary format. Both respect `MAX_MODULE_SIZE`. `load_binary` performs stricter validation suitable for untrusted input.
 
@@ -1151,7 +1151,7 @@ For the static-base case $\delta = 0$: $V_{\text{resolved}} = V_{\text{intended}
 
 > *Rejecting any ELF with a `PT_INTERP` segment prevents the execution of unverified dynamic linker code.*
 
-**Proof.** `PT_INTERP` specifies an interpreter path — the dynamic linker (`ld.so`). Oreulia has no dynamic linker. Executing a binary that requires runtime symbol resolution would leave undefined imports. The loader returns `Err("PT_INTERP not supported (no dynamic linker)")` before any PT_LOAD segment is mapped, ensuring no partial state is committed to `AddressSpace`. $\square$
+**Proof.** `PT_INTERP` specifies an interpreter path — the dynamic linker (`ld.so`). Oreulius has no dynamic linker. Executing a binary that requires runtime symbol resolution would leave undefined imports. The loader returns `Err("PT_INTERP not supported (no dynamic linker)")` before any PT_LOAD segment is mapped, ensuring no partial state is committed to `AddressSpace`. $\square$
 
 #### Corollary 3.4 — BSS Zero Guarantee
 

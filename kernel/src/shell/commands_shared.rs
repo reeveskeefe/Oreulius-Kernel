@@ -376,6 +376,9 @@ pub fn try_execute<W: Write>(out: &mut W, input: &str, prefix: &str) -> bool {
         "http-get" => {
             crate::shell::network_commands_shared::cmd_http_get(out, parts.next());
         }
+        "net-static" => {
+            cmd_net_static(out, prefix, parts);
+        }
         #[cfg(target_arch = "aarch64")]
         "pid" => {
             let (proc_count, fd_count, current_pid) = aarch64_process_fd_stats();
@@ -1407,6 +1410,9 @@ pub fn try_execute<W: Write>(out: &mut W, input: &str, prefix: &str) -> bool {
         "capnet-demo" => {
             cmd_capnet_demo(out, prefix);
         }
+        "capnet-session-key" => {
+            cmd_capnet_session_key(out, prefix, parts);
+        }
         _ => return false,
     }
 
@@ -1416,6 +1422,104 @@ pub fn try_execute<W: Write>(out: &mut W, input: &str, prefix: &str) -> bool {
 // =============================================================================
 // CapNet shared command implementations
 // =============================================================================
+
+fn cmd_net_static<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let ip = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(v) => v,
+        None => {
+            let _ = writeln!(out, "{} usage: net-static <ip> <gateway>", prefix);
+            return;
+        }
+    };
+    let gw = match parts.next().and_then(parse_ipv4_netstack) {
+        Some(v) => v,
+        None => {
+            let _ = writeln!(out, "{} usage: net-static <ip> <gateway>", prefix);
+            return;
+        }
+    };
+    match crate::net_reactor::configure_static(ip, gw) {
+        Ok(()) => {
+            let o = ip.octets();
+            let g = gw.octets();
+            let _ = writeln!(
+                out,
+                "{} net-static ip={}.{}.{}.{} gw={}.{}.{}.{} ok",
+                prefix, o[0], o[1], o[2], o[3], g[0], g[1], g[2], g[3]
+            );
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} net-static failed: {}", prefix, e);
+        }
+    }
+}
+
+fn cmd_capnet_session_key<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    mut parts: core::str::SplitWhitespace,
+) {
+    let peer_id = match parts.next().and_then(parse_u64_auto) {
+        Some(v) if v != 0 => v,
+        _ => {
+            let _ = writeln!(
+                out,
+                "{} usage: capnet-session-key <peer_id> <epoch> <k0_hex> <k1_hex>",
+                prefix
+            );
+            return;
+        }
+    };
+    let epoch = match parts.next().and_then(parse_u32_auto) {
+        Some(v) if v != 0 => v,
+        _ => {
+            let _ = writeln!(
+                out,
+                "{} usage: capnet-session-key <peer_id> <epoch> <k0_hex> <k1_hex>",
+                prefix
+            );
+            return;
+        }
+    };
+    let k0 = match parts.next().and_then(parse_u64_auto) {
+        Some(v) => v,
+        None => {
+            let _ = writeln!(
+                out,
+                "{} usage: capnet-session-key <peer_id> <epoch> <k0_hex> <k1_hex>",
+                prefix
+            );
+            return;
+        }
+    };
+    let k1 = match parts.next().and_then(parse_u64_auto) {
+        Some(v) => v,
+        None => {
+            let _ = writeln!(
+                out,
+                "{} usage: capnet-session-key <peer_id> <epoch> <k0_hex> <k1_hex>",
+                prefix
+            );
+            return;
+        }
+    };
+    match crate::capnet::install_peer_session_key(peer_id, epoch, k0, k1, 0) {
+        Ok(()) => {
+            let _ = writeln!(
+                out,
+                "{} capnet session-key installed peer=0x{:016x} epoch={}",
+                prefix, peer_id, epoch
+            );
+        }
+        Err(e) => {
+            let _ = writeln!(out, "{} capnet session-key failed: {}", prefix, e.as_str());
+        }
+    }
+}
 
 fn parse_capnet_policy(s: &str) -> Option<crate::capnet::PeerTrustPolicy> {
     if s.eq_ignore_ascii_case("disabled") {

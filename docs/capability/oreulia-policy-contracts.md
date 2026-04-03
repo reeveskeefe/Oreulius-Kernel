@@ -1,4 +1,4 @@
-# Oreulia Intensional Kernel: Policy-as-Contracts
+# Oreulius Intensional Kernel: Policy-as-Contracts
 
 > **Status:** Fully implemented. WASM host ABI IDs 121–124. Core: `kernel/src/execution/wasm.rs` (`POLICY_STORE`, `run_policy_contract`). OPOL stub format fully deterministic. Full WASM engine integration: fail-open pending. SDK: `wasm/sdk/src/policy.rs`.
 
@@ -8,7 +8,7 @@
 
 A standard capability system is *extensional*: a capability either exists (you have it) or does not (you don't). There is no mechanism to express *conditions under which* a capability may be exercised. If a file-read capability exists in a process's capability table, the process can use it unconditionally.
 
-Oreulia's Intensional Kernel extends capability semantics with **policy contracts** — small bytecode programs bound to specific capabilities that the kernel evaluates on every capability access. A capability can now be *conditionally valid*:
+Oreulius's Intensional Kernel extends capability semantics with **policy contracts** — small bytecode programs bound to specific capabilities that the kernel evaluates on every capability access. A capability can now be *conditionally valid*:
 
 - A capability may be exercisable only when a specific context byte matches a required value.
 - A capability may be restricted to certain time windows (via context bytes encoding the current clock region).
@@ -260,7 +260,7 @@ This means the common case policy — "permit by default, but deny unless contex
 ## 7. SDK Usage
 
 ```rust
-use oreulia_sdk::policy::{self, PolicyResult, PolicyGuard};
+use oreulius_sdk::policy::{self, PolicyResult, PolicyGuard};
 
 // ── Simple unconditional policy (default permit) ────────────────────────────
 const ALWAYS_PERMIT: [u8; 8] = policy::opol_stub(true, 0, false, 0);

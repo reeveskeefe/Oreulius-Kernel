@@ -225,7 +225,7 @@ proc run_i686_https_fail_closed {label cmd} {
     wait_i686_prompt
 }
 
-spawn qemu-system-i386 -cdrom oreulia.iso -serial stdio -monitor none -display none -no-reboot -no-shutdown -m 512M -netdev user,id=n0 -device e1000,netdev=n0
+spawn qemu-system-i386 -cdrom oreulius.iso -serial stdio -monitor none -display none -no-reboot -no-shutdown -m 512M -netdev user,id=n0 -device e1000,netdev=n0
 
 settle_i686_shell
 expect_i686_ready

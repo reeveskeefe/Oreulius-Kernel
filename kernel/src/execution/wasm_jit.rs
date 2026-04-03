@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -3215,9 +3215,9 @@ impl Emitter {
     }
 
     fn emit_pop_to_ebx(&mut self) {
-        // x86_64 backend keeps locals base in RBX, so this helper is intentionally
-        // unused here. Arithmetic/comparison/store ops use ECX scratch instead.
-        panic!("x86_64 JIT emitter internal misuse: pop_to_ebx");
+        // On x86_64, RBX is reserved for the locals base. Treat the historical
+        // "ebx" secondary scratch role as an alias for r11d instead.
+        self.emit_pop_to_r11d();
     }
 
     fn emit_pop_to_ecx(&mut self) {
@@ -3780,14 +3780,14 @@ impl Emitter {
 
     fn emit_i64_build_a_in_rax_b_in_r8(&mut self) {
         // Pop a_lo → r11d
-        self.emit_pop_to_r11d();
+        self.emit_pop_to_ebx();
         // Pop a_hi → eax; zero-extend to rax automatically
         self.emit_pop_to_eax();
         // rax = (a_hi << 32) | a_lo
         self.emit(&[0x48, 0xC1, 0xE0, 0x20]); // shl rax, 32
         self.emit(&[0x4C, 0x09, 0xD8]);        // or rax, r11  (r11 zero-extended = a_lo)
         // Pop b_lo → r11d
-        self.emit_pop_to_r11d();
+        self.emit_pop_to_ebx();
         // Pop b_hi → r8d; zero-extend to r8 automatically
         self.emit_pop_to_r8d();
         // r8 = (b_hi << 32) | b_lo
@@ -4007,7 +4007,7 @@ impl Emitter {
     // Requires LZCNT (BMI1; present on all modern x86_64 targets for this kernel).
     fn emit_i64_clz(&mut self) {
         // Pop lo, pop hi; build rax = (hi << 32) | lo
-        self.emit_pop_to_r11d();               // r11d = lo
+        self.emit_pop_to_ebx();                // r11d = lo (secondary scratch role)
         self.emit_pop_to_eax();                // eax  = hi
         self.emit(&[0x48, 0xC1, 0xE0, 0x20]); // shl rax, 32
         self.emit(&[0x4C, 0x09, 0xD8]);        // or rax, r11
@@ -4025,7 +4025,7 @@ impl Emitter {
 
     // ── i64.ctz (x86_64) ─────────────────────────────────────────────────────
     fn emit_i64_ctz(&mut self) {
-        self.emit_pop_to_r11d();               // r11d = lo
+        self.emit_pop_to_ebx();                // r11d = lo (secondary scratch role)
         self.emit_pop_to_eax();                // eax  = hi
         self.emit(&[0x48, 0xC1, 0xE0, 0x20]); // shl rax, 32
         self.emit(&[0x4C, 0x09, 0xD8]);        // or rax, r11
@@ -4040,7 +4040,7 @@ impl Emitter {
 
     // ── i64.popcnt (x86_64) ──────────────────────────────────────────────────
     fn emit_i64_popcnt(&mut self) {
-        self.emit_pop_to_r11d();               // r11d = lo
+        self.emit_pop_to_ebx();                // r11d = lo (secondary scratch role)
         self.emit_pop_to_eax();                // eax  = hi
         self.emit(&[0x48, 0xC1, 0xE0, 0x20]); // shl rax, 32
         self.emit(&[0x4C, 0x09, 0xD8]);        // or rax, r11
@@ -4112,7 +4112,7 @@ impl Emitter {
     // ── i64.store (x86_64) ───────────────────────────────────────────────────
     // Stack (top→bottom): val_lo, val_hi, addr
     fn emit_i64_store(&mut self, off: u32) {
-        self.emit_pop_to_r11d();               // r11d = val_lo
+        self.emit_pop_to_ebx();                // r11d = val_lo (secondary scratch role)
         self.emit_pop_to_eax();                // eax  = val_hi
         // Build r11 = (val_hi << 32) | val_lo
         self.emit(&[0x48, 0xC1, 0xE0, 0x20]); // shl rax, 32
@@ -4127,7 +4127,7 @@ impl Emitter {
     // ── i64.store8 (x86_64) ──────────────────────────────────────────────────
     // Stack: val_lo, val_hi, addr  (store low byte of val_lo)
     fn emit_i64_store8(&mut self, off: u32) {
-        self.emit_pop_to_r11d();               // val_lo (we want low byte)
+        self.emit_pop_to_ebx();                // val_lo (we want low byte)
         self.emit_pop_to_eax();                // val_hi (discard)
         // Pop addr → eax (emit_pop_to_eax clobbers eax, r11d preserved since helper only uses r10)
         self.emit_pop_to_eax();
@@ -4138,7 +4138,7 @@ impl Emitter {
 
     // ── i64.store16 (x86_64) ─────────────────────────────────────────────────
     fn emit_i64_store16(&mut self, off: u32) {
-        self.emit_pop_to_r11d();               // val_lo
+        self.emit_pop_to_ebx();                // val_lo
         self.emit_pop_to_eax();                // val_hi (discard)
         self.emit_pop_to_eax();                // addr
         self.emit_bounds_check(off, 2);
@@ -4148,7 +4148,7 @@ impl Emitter {
 
     // ── i64.store32 (x86_64) ─────────────────────────────────────────────────
     fn emit_i64_store32(&mut self, off: u32) {
-        self.emit_pop_to_r11d();               // val_lo (32 bits sufficient)
+        self.emit_pop_to_ebx();                // val_lo (32 bits sufficient)
         self.emit_pop_to_eax();                // val_hi (discard)
         self.emit_pop_to_eax();                // addr
         self.emit_bounds_check(off, 4);

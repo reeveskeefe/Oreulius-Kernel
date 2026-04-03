@@ -1,4 +1,4 @@
-# Oreulia Runtime Capability Graph Verification
+# Oreulius Runtime Capability Graph Verification
 
 > **Status:** Fully implemented. WASM host ABI IDs 129–131. Core: `kernel/src/capability/cap_graph.rs` (462 lines). SDK: `wasm/sdk/src/capgraph.rs`. Integrated into `CapabilityManager::transfer_capability` and process teardown.
 
@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-Every capability delegation in Oreulia is a verifiable event. The Capability Graph (CapGraph) subsystem builds a live, in-kernel directed graph of every delegation edge — every time one process transfers a capability to another, an edge is recorded. This graph is continuously verified against three invariants:
+Every capability delegation in Oreulius is a verifiable event. The Capability Graph (CapGraph) subsystem builds a live, in-kernel directed graph of every delegation edge — every time one process transfers a capability to another, an edge is recorded. This graph is continuously verified against three invariants:
 
 1. **No rights escalation** — a delegatee can never receive more rights than the delegator holds.
 2. **No delegation cycles** — a capability chain from process A to B to C must not loop back to A.
@@ -298,7 +298,7 @@ Returns the longest delegation chain length for `cap_id`, computed by `delegatio
 ## 8. SDK Usage
 
 ```rust
-use oreulia_sdk::capgraph;
+use oreulius_sdk::capgraph;
 
 // ── Verify a proposed delegation ───────────────────────────────────────────
 match capgraph::verify(my_cap_id, target_pid) {

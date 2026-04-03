@@ -169,7 +169,7 @@ fn main() {
     // -------------------------------------------------------------------------
     let epsilon_safe = 0.05_f64;
 
-    println!("cargo:warning=--- Oreulia Static Spectral Analysis (PMA §11.2) ---");
+    println!("cargo:warning=--- Oreulius Static Spectral Analysis (PMA §11.2) ---");
     println!(
         "cargo:warning=Graph derived from: src/security/intent_graph.rs CTMC_Q ({}×{} real topology)",
         num_nodes, num_nodes

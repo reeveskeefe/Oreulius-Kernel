@@ -45,7 +45,7 @@
     </style>
   </defs>
 
-  <text x="660" y="38" text-anchor="middle" class="title">Oreulia WASM Integration Map</text>
+  <text x="660" y="38" text-anchor="middle" class="title">Oreulius WASM Integration Map</text>
 
   <!-- Panels -->
   <rect x="60" y="100" width="300" height="560" rx="20" class="panel"/>
@@ -65,7 +65,7 @@
 
   <rect x="95" y="420" width="220" height="122" rx="16" fill="#EEF4FF" stroke="#3B82F6" stroke-width="1.2"/>
   <text x="205" y="456" text-anchor="middle" class="box-title">sdk/</text>
-  <text x="205" y="486" text-anchor="middle" class="box-sub">oreulia-sdk</text>
+  <text x="205" y="486" text-anchor="middle" class="box-sub">oreulius-sdk</text>
   <text x="205" y="512" text-anchor="middle" class="box-sub">Rust bindings</text>
 
   <!-- Center node -->

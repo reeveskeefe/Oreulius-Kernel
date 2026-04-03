@@ -1,4 +1,4 @@
-# Oreulia IPC — Current State and Remaining Roadmap
+# Oreulius IPC — Current State and Remaining Roadmap
 
 **Status:** Core IPC architecture is implemented. The remaining roadmap is about tightening semantics, finishing stronger transfer guarantees, and deepening replay/protocol fidelity, not about creating the basic subsystem from scratch.
 
@@ -8,7 +8,7 @@ This document replaces the older milestone plan that still described the `kernel
 
 ## 1. Current State
 
-Oreulia IPC already provides:
+Oreulius IPC already provides:
 
 - modularized implementation under [`kernel/src/ipc`](../../kernel/src/ipc)
 - bounded channels with fixed queue capacity
@@ -111,7 +111,7 @@ What remains:
 - receiver installation should be represented as a first-class transfer outcome rather than a copy-style attachment story
 - selftests should prove that no duplicated live authority remains after a zero-sum transfer
 
-This is the biggest semantic gap between the current implementation and the stronger capability model Oreulia aims for.
+This is the biggest semantic gap between the current implementation and the stronger capability model Oreulius aims for.
 
 ### 3.2 Protocol/session typing
 
@@ -165,7 +165,7 @@ Why first:
 
 - it strengthens the authority model directly
 - it is a cleaner foundation for future replay and protocol typing
-- it removes the largest mismatch between Oreulia's current theory and message-carried capability behavior
+- it removes the largest mismatch between Oreulius's current theory and message-carried capability behavior
 
 Concrete work:
 
@@ -257,4 +257,4 @@ The IPC subsystem should be considered materially complete for this roadmap when
 4. temporal replay can reconstruct materially meaningful IPC state
 5. docs and ABI wrappers no longer materially lag the kernel implementation
 
-Oreulia does **not** need to wait for that full end state to claim it already has a real IPC subsystem. It does need that end state to claim the IPC model fully matches the stronger long-range capability and replay design.
+Oreulius does **not** need to wait for that full end state to claim it already has a real IPC subsystem. It does need that end state to claim the IPC model fully matches the stronger long-range capability and replay design.

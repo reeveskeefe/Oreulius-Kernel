@@ -1,12 +1,12 @@
-Oreulia Contributor License Terms
+Oreulius Contributor License Terms
 
 Effective Date: 2026-03-14
 
-Oreulia is a WASM-first, capability-native unikernel.  These Contributor
-License Terms govern the rights granted by contributors to the Oreulia
+Oreulius is a WASM-first, capability-native unikernel.  These Contributor
+License Terms govern the rights granted by contributors to the Oreulius
 project maintainers when submitting contributions.
 
-These terms apply only to contributions submitted to the Oreulia project. They do not replace the project’s public license contained in the LICENSE file or any commercial licensing guidance in COMMERCIAL.md.
+These terms apply only to contributions submitted to the Oreulius project. They do not replace the project’s public license contained in the LICENSE file or any commercial licensing guidance in COMMERCIAL.md.
 
 Those documents govern use of the project by the public.
 This document governs what rights contributors grant to the project when they submit contributions.
@@ -15,7 +15,7 @@ This document governs what rights contributors grant to the project when they su
 
 1. Scope
 
-For purposes of these terms, a “Contribution” means any code, documentation, test, build script, configuration file, patch, design note, or other material intentionally submitted to Oreulia for inclusion in the project, including through:
+For purposes of these terms, a “Contribution” means any code, documentation, test, build script, configuration file, patch, design note, or other material intentionally submitted to Oreulius for inclusion in the project, including through:
 	•	pull requests
 	•	commits pushed to maintainer-requested branches
 	•	emailed patches
@@ -30,15 +30,15 @@ Materials submitted privately that are not intended for inclusion in the project
 
 You retain copyright ownership of your Contribution.
 
-Oreulia does not require copyright assignment under these terms.
+Oreulius does not require copyright assignment under these terms.
 
 Your contribution remains your intellectual property.
 
 ⸻
 
-3. License You Grant to Oreulia
+3. License You Grant to Oreulius
 
-If you submit a Contribution for inclusion in Oreulia and the Contribution is accepted, you grant Keefe Reeves and the Oreulia project maintainers a:
+If you submit a Contribution for inclusion in Oreulius and the Contribution is accepted, you grant Keefe Reeves and the Oreulius project maintainers a:
 	•	perpetual
 	•	irrevocable
 	•	worldwide
@@ -55,25 +55,25 @@ license to:
 	•	publish and distribute the Contribution
 	•	publicly perform and display the Contribution
 	•	combine the Contribution with other code or materials
-	•	relicense the Contribution as part of Oreulia or derivative works of Oreulia
+	•	relicense the Contribution as part of Oreulius or derivative works of Oreulius
 
-This license grant enables the Oreulia project to evolve, restructure, or change licensing models over time without renegotiating rights contributor-by-contributor.
+This license grant enables the Oreulius project to evolve, restructure, or change licensing models over time without renegotiating rights contributor-by-contributor.
 
 ⸻
 
 4. Patent Grant
 
-If your Contribution is accepted, you grant users of Oreulia and the project maintainers a non-exclusive, worldwide, royalty-free patent license under any patent claims you control that are necessarily infringed by:
+If your Contribution is accepted, you grant users of Oreulius and the project maintainers a non-exclusive, worldwide, royalty-free patent license under any patent claims you control that are necessarily infringed by:
 	•	your Contribution alone, or
-	•	your Contribution in combination with the Oreulia project.
+	•	your Contribution in combination with the Oreulius project.
 
-If you initiate patent litigation alleging that Oreulia or a Contribution infringes a patent, any patent licenses granted by you under these terms terminate as of the filing date of that litigation.
+If you initiate patent litigation alleging that Oreulius or a Contribution infringes a patent, any patent licenses granted by you under these terms terminate as of the filing date of that litigation.
 
 ⸻
 
 5. Moral Rights
 
-To the extent permitted by applicable law, you waive any moral rights, attribution rights, or similar rights that could prevent the Oreulia project from modifying, adapting, or redistributing your Contribution.
+To the extent permitted by applicable law, you waive any moral rights, attribution rights, or similar rights that could prevent the Oreulius project from modifying, adapting, or redistributing your Contribution.
 
 If such rights cannot legally be waived, you agree not to assert them in a way that would interfere with the normal operation or licensing of the project.
 
@@ -96,13 +96,13 @@ If your employer claims rights to intellectual property you create, you represen
 
 If a Contribution is submitted on behalf of a company or organization, the submitting individual represents that they are authorized to grant these rights on behalf of that organization.
 
-Organizations contributing code to Oreulia remain the copyright holders of their contributions while granting the license described in Section 3.
+Organizations contributing code to Oreulius remain the copyright holders of their contributions while granting the license described in Section 3.
 
 ⸻
 
 8. No Obligation to Accept Contributions
 
-Oreulia maintainers are not required to:
+Oreulius maintainers are not required to:
 	•	accept any Contribution
 	•	include a Contribution in any release
 	•	maintain, support, or update a Contribution once accepted
@@ -113,18 +113,18 @@ Rejected Contributions remain the property of the contributor.
 
 9. Public Distribution
 
-Accepted Contributions may be distributed by the Oreulia project under:
+Accepted Contributions may be distributed by the Oreulius project under:
 	•	the project license in effect for a given release
-	•	later versions of the Oreulia license
+	•	later versions of the Oreulius license
 	•	separate community, commercial, partner, or custom licensing arrangements chosen by the project maintainers
 
-This flexibility ensures the long-term viability of the project and allows Oreulia to evolve its licensing strategy as needed.
+This flexibility ensures the long-term viability of the project and allows Oreulius to evolve its licensing strategy as needed.
 
 ⸻
 
 10. Trademarks
 
-Submitting a Contribution does not grant the contributor any rights to use Oreulia trademarks, logos, or branding.
+Submitting a Contribution does not grant the contributor any rights to use Oreulius trademarks, logos, or branding.
 
 Trademark usage remains controlled by the project maintainers.
 
@@ -132,7 +132,7 @@ Trademark usage remains controlled by the project maintainers.
 
 11. Acceptance of Terms
 
-You accept these terms by submitting a Contribution to the Oreulia project.
+You accept these terms by submitting a Contribution to the Oreulius project.
 
 If you do not agree to these terms, do not submit the Contribution.
 

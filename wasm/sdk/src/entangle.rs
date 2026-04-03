@@ -22,7 +22,7 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use oreulia_sdk::entangle;
+//! use oreulius_sdk::entangle;
 //!
 //! // Pairwise: revoking cap_a will also revoke cap_b.
 //! entangle::entangle(cap_a, cap_b).expect("entangle failed");
@@ -35,7 +35,7 @@
 //! let peers = entangle::entangle_query(cap_a).unwrap_or_default();
 //! ```
 
-use super::raw::oreulia as raw;
+use super::raw::oreulius as raw;
 
 // ---------------------------------------------------------------------------
 // Core entanglement API

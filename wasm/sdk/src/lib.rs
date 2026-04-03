@@ -1,18 +1,18 @@
-//! # oreulia-sdk
+//! # oreulius-sdk
 //!
-//! Typed, zero-overhead Rust bindings for the **Oreulia OS** WASM host ABI.
+//! Typed, zero-overhead Rust bindings for the **Oreulius OS** WASM host ABI.
 //!
 //! ## Overview
 //!
-//! Oreulia exposes two sets of host functions to WASM modules:
+//! Oreulius exposes two sets of host functions to WASM modules:
 //!
 //! 1. **WASI Preview 1** (IDs 45–90) — standard `wasi_snapshot_preview1`
 //!    functions: file I/O, clocks, sockets, environment, etc.
-//! 2. **Oreulia native ABI** (IDs 0–44, 100–108) — capability messaging,
+//! 2. **Oreulius native ABI** (IDs 0–44, 100–108) — capability messaging,
 //!    process management, IPC channels, JIT-compiled capabilities,
 //!    cross-language polyglot kernel services, and kernel observer events.
 //!
-//! This crate wraps both in safe-ish Rust types so you can write Oreulia
+//! This crate wraps both in safe-ish Rust types so you can write Oreulius
 //! applications in Rust without calling raw WASM imports yourself.
 //!
 //! ## Quick-start
@@ -21,11 +21,11 @@
 //! #![no_std]
 //! #![no_main]
 //!
-//! use oreulia_sdk::{io, process};
+//! use oreulius_sdk::{io, process};
 //!
 //! #[no_mangle]
 //! pub extern "C" fn _start() {
-//!     io::print("Hello from Oreulia SDK!\n");
+//!     io::print("Hello from Oreulius SDK!\n");
 //!     process::exit(0);
 //! }
 //! ```
@@ -36,7 +36,7 @@
 //! cargo build --target wasm32-wasi --release
 //! ```
 //!
-//! Then load the resulting `.wasm` inside the Oreulia shell:
+//! Then load the resulting `.wasm` inside the Oreulius shell:
 //! ```text
 //! wasm myapp.wasm
 //! ```
@@ -82,7 +82,7 @@ pub mod time;
 // ---------------------------------------------------------------------------
 
 pub mod raw {
-    pub mod oreulia;
+    pub mod oreulius;
     pub mod wasi;
 }
 

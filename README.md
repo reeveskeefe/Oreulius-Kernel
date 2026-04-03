@@ -1,4 +1,4 @@
-# Oreulia Kernel
+# Oreulius Kernel
 
 <div align="center">
 
@@ -6,7 +6,7 @@
 
 [![Written in Rust](https://img.shields.io/badge/written%20in-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Written in assembly](https://img.shields.io/badge/written%20in-Assembly-brown.svg)](https://en.wikipedia.org/wiki/Assembly_language)
-[![License: Oreulia](docs/assets/oreulius-license-badge.svg)](LICENSE)
+[![License: Oreulius](docs/assets/oreulius-license-badge.svg)](LICENSE)
 [![i686](https://img.shields.io/badge/i686-legacy%20runtime-success)](https://en.wikipedia.org/wiki/I686)
 [![x86_64](https://img.shields.io/badge/x86__64-Multiboot2%20QEMU%20bringup-blue)](https://en.wikipedia.org/wiki/X86-64)
 [![AArch64](https://img.shields.io/badge/AArch64-QEMU%20virt%20bringup-blue)](https://en.wikipedia.org/wiki/AArch64)
@@ -26,12 +26,12 @@
 </div>
 
 <div align="center">
-<img src="docs/assets/oreuliuswhitebackground.png" width="640" alt="Oreulia kernel logo">
+<img src="docs/assets/oreuliuswhitebackground.png" width="640" alt="Oreulius kernel logo">
 </div>
 
 ## Overview
 
-Oreulia is a **WASM-first, capability-native unikernel** designed to run
+Oreulius is a **WASM-first, capability-native unikernel** designed to run
 small, isolated WASI workloads on edge and cloud hosts.  It provides
 deterministic temporal snapshots, capability-based authority transfer, and
 in-kernel verification to enable secure, auditable migration and replay.
@@ -39,7 +39,7 @@ The design targets **security- and audit-sensitive deployments** and
 **systems research** — trusted unikernels, attested services, and
 deterministic debugging — not a drop-in POSIX/Linux replacement.
 
-Oreulia is source-available under the Oreulia Community License. The public
+Oreulius is source-available under the Oreulius Community License. The public
 license allows research, evaluation, modification, public forks, benchmarking,
 and non-commercial distribution. Commercial deployment and production use
 require a separate written agreement. See `LICENSE` and `COMMERCIAL.md`.
@@ -68,12 +68,12 @@ It is designed for technical audiences who care about:
 - Built-in verification and fuzz workflows runnable from the shell.
 
 <div align="center">
-<img src="docs/assets/opencommandlineinterface.png" width="640" alt="Oreulia shell interface">
+<img src="docs/assets/opencommandlineinterface.png" width="640" alt="Oreulius shell interface">
 </div>
 
 ## Why It Is Different
 
-| Area | What Oreulia Does | Why It Matters |
+| Area | What Oreulius Does | Why It Matters |
 |---|---|---|
 | Capability model | Access is explicitly delegated via capabilities, not global privilege assumptions. | Reduces blast radius and makes authority flow auditable. |
 | Temporal objects | Kernel objects are versioned with rollback, branching, and merge semantics. | Enables recovery, provenance, and deterministic investigation. |
@@ -112,7 +112,7 @@ It is designed for technical audiences who care about:
 
 ## Platform And Portability Status
 
-Oreulia is now cross-compatible at the boot/runtime abstraction layer across `i686`, `x86_64`, and `AArch64`, but feature parity is intentionally uneven:
+Oreulius is now cross-compatible at the boot/runtime abstraction layer across `i686`, `x86_64`, and `AArch64`, but feature parity is intentionally uneven:
 
 - `i686` remains the most complete/runtime-rich path.
 - `x86_64` is a real QEMU bring-up path with working boot, traps, timer IRQs, MMU backend, and serial shell, but many legacy asm/runtime subsystems are still being ported.
@@ -190,13 +190,13 @@ Current behavior:
 
 ## WASM Host ABI Reference
 
-The Oreulia WASM runtime exposes 132 host functions (IDs 0–131) through a single import module. Functions are resolved by name — both the short form (e.g. `log`) and the fully-qualified `oreulia_` prefix form (e.g. `oreulia_log`) are accepted. Every function call is dispatched through the `WasmInterpreter::call_host_fn` path in `kernel/src/execution/wasm.rs`.
+The Oreulius WASM runtime exposes 132 host functions (IDs 0–131) through a single import module. Functions are resolved by name — both the short form (e.g. `log`) and the fully-qualified `oreulius_` prefix form (e.g. `oreulius_log`) are accepted. Every function call is dispatched through the `WasmInterpreter::call_host_fn` path in `kernel/src/execution/wasm.rs`.
 
 ### Group 0 — Core I/O and IPC (IDs 0–12)
 
 | ID | Export Name | Args | Rets | Description |
 |---|---|---|---|---|
-| 0 | `debug_log` / `oreulia_log` | 2 | 0 | Write a UTF-8 string slice (ptr, len) to the kernel serial log. |
+| 0 | `debug_log` / `oreulius_log` | 2 | 0 | Write a UTF-8 string slice (ptr, len) to the kernel serial log. |
 | 1 | `fs_read` | 5 | 1 | Read bytes from a VFS path into a WASM memory buffer. |
 | 2 | `fs_write` | 5 | 1 | Write bytes from a WASM memory buffer to a VFS path. |
 | 3 | `channel_send` | 3 | 1 | Send a message on a named IPC channel by capability handle. |
@@ -264,7 +264,7 @@ The Oreulia WASM runtime exposes 132 host functions (IDs 0–131) through a sing
 
 ### Group 5 — WASI Compatibility Layer (IDs 45–90)
 
-Oreulia implements a WASI preview-1 compatibility surface over the kernel's own VFS and process model. WASM modules compiled for `wasm32-wasi` can import from the `wasi_snapshot_preview1` module and be hosted without modification.
+Oreulius implements a WASI preview-1 compatibility surface over the kernel's own VFS and process model. WASM modules compiled for `wasm32-wasi` can import from the `wasi_snapshot_preview1` module and be hosted without modification.
 
 | ID | WASI Function | ID | WASI Function |
 |---|---|---|---|
@@ -394,7 +394,7 @@ The runtime capability graph is a live delegation DAG maintained in `kernel/src/
 
 ## WASM SDK Module Reference
 
-The `wasm/sdk` crate provides a Rust `no_std` SDK for WASM modules running on the Oreulia host. All 14 public modules correspond to groups of host functions described above. Modules are declared in `wasm/sdk/src/lib.rs` and each wraps the raw `extern "C"` FFI stubs in `wasm/sdk/src/raw/oreulia.rs` and `wasm/sdk/src/raw/wasi.rs` with safe, ergonomic abstractions.
+The `wasm/sdk` crate provides a Rust `no_std` SDK for WASM modules running on the Oreulius host. All 14 public modules correspond to groups of host functions described above. Modules are declared in `wasm/sdk/src/lib.rs` and each wraps the raw `extern "C"` FFI stubs in `wasm/sdk/src/raw/oreulius.rs` and `wasm/sdk/src/raw/wasi.rs` with safe, ergonomic abstractions.
 
 | Module | Host IDs | Key Types / Functions | Purpose |
 |---|---|---|---|
@@ -412,12 +412,12 @@ The `wasm/sdk` crate provides a Rust `no_std` SDK for WASM modules running on th
 | `temporal` | 13–22 | `snapshot()`, `latest()`, `read()`, `rollback()`, `stats()`, `history()`, `branch_create()`, `branch_checkout()`, `branch_list()`, `merge()` | Full temporal object lifecycle. |
 | `thread` | 23–27 | `spawn()`, `join()`, `id()`, `yield_()`, `exit()` | WASM thread primitives. |
 | `time` | 49–50 | `clock_res_get()`, `clock_time_get()` | WASI-compatible clock access. |
-| `raw::oreulia` | 0–131 | All `extern "C"` FFI stubs | Direct FFI declarations for all Oreulia-native host functions. |
+| `raw::oreulius` | 0–131 | All `extern "C"` FFI stubs | Direct FFI declarations for all Oreulius-native host functions. |
 | `raw::wasi` | 45–90 | All WASI `extern "C"` FFI stubs | Direct FFI declarations for the WASI preview-1 compatibility surface. |
 
 ## Kernel Module Map
 
-The kernel is a single Rust `no_std` `staticlib` crate (`oreulia-kernel v0.1.0`). Top-level subsystems are declared in `kernel/src/lib.rs`, with most implementation files grouped under subsystem directories. Architecture-conditioned modules use `#[cfg(not(target_arch = "aarch64"))]` (present on x86/i686) or `#[cfg(target_arch = "aarch64")]` (AArch64 only). Unconditional modules compile on all targets.
+The kernel is a single Rust `no_std` `staticlib` crate (`oreulius-kernel v0.1.0`). Top-level subsystems are declared in `kernel/src/lib.rs`, with most implementation files grouped under subsystem directories. Architecture-conditioned modules use `#[cfg(not(target_arch = "aarch64"))]` (present on x86/i686) or `#[cfg(target_arch = "aarch64")]` (AArch64 only). Unconditional modules compile on all targets.
 
 ### Unconditional Modules (all architectures)
 
@@ -651,12 +651,12 @@ Fuzz corpus runs serve as admission gates for capability-adjacent and JIT-adjace
 ## Cargo Crate Details
 
 ```text
-Name:       oreulia-kernel
+Name:       oreulius-kernel
 Version:    0.1.0
 Edition:    2021
 Crate type: staticlib
 Target:     x86_64-unknown-none (default build)
-            i686-oreulia (custom JSON target)
+            i686-oreulius (custom JSON target)
             aarch64-unknown-none (AArch64 bring-up)
 ```
 
@@ -678,19 +678,17 @@ Target:     x86_64-unknown-none (default build)
 
 ## Honest Gaps (What Isn't Done Yet)
 
-Oreulia makes no false completeness claims. The following items are explicitly acknowledged as incomplete or not yet started:
+Oreulius makes no false completeness claims. The following items are explicitly acknowledged as current gaps or explicitly deferred work:
 
 | Area | Status | Notes |
 |---|---|---|
 | Non-QEMU hardware validation | Not started | All three architectures are validated under QEMU. Physical hardware bring-up has not been attempted. |
-| POSIX / Linux ABI compatibility | Explicit non-goal | Oreulia is not a drop-in Linux replacement. No libc, no POSIX process model, no `/proc`. |
-| Production workload benchmarking | In progress | The tree includes subsystem-level benchmark commands such as `cpu-bench`, `wasm-jit-bench`, `blk-bench`, and `sched-entropy-bench`, but no published end-to-end production workload benchmarks exist yet. |
-| Universal binary merge semantics | Explicit non-goal | The temporal merge path supports defined strategies (FastForwardOnly, Ours, Theirs, ThreeWay) for structured payloads; arbitrary binary object merge is not a goal. |
-| Multi-node CapNet (real network) | In progress | CapNet peer/session state and real network control-frame transport are present in-kernel (`hello`, heartbeat, token offer/accept/revoke, attest over the network stack), but there is no dedicated multi-machine regression lane or physical-host validation yet. |
+| POSIX / Linux ABI compatibility | Explicit non-goal | Oreulius is not a drop-in Linux replacement. No libc, no POSIX process model, no `/proc`. |
+
 
 ## Cross-Architecture Implementation
 
-Oreulia's multi-arch work is not a separate fork or "second kernel." The same kernel crate is compiled for different targets, with architecture-specific boot/runtime/MMU backends selected behind stable interfaces in `kernel/src/arch/`.
+Oreulius's multi-arch work is not a separate fork or "second kernel." The same kernel crate is compiled for different targets, with architecture-specific boot/runtime/MMU backends selected behind stable interfaces in `kernel/src/arch/`.
 
 ### 1) Unified Boot Handoff (`BootInfo`)
 
@@ -789,7 +787,7 @@ That split is deliberate: it keeps boot/link/firmware details per-target while p
 
 ## Temporal Universality
 
-Oreulia's temporal subsystem is adapter-based. Each object class is represented by a stable key prefix and an apply adapter. This is why the model is universal across currently integrated kernel object domains.
+Oreulius's temporal subsystem is adapter-based. Each object class is represented by a stable key prefix and an apply adapter. This is why the model is universal across currently integrated kernel object domains.
 
 ### Object-Class Coverage Matrix
 
@@ -885,7 +883,7 @@ cd oreulieus-kernel/kernel
 Known-good QEMU serial launch (interactive from your terminal):
 
 ```bash
-qemu-system-i386 -cdrom oreulia.iso -serial stdio
+qemu-system-i386 -cdrom oreulius.iso -serial stdio
 ```
 
 Notes:
@@ -915,7 +913,7 @@ Notes:
 
 ```bash
 qemu-system-x86_64 \
-  -cdrom target/x86_64-mb2/oreulia-x86_64-mb2.iso \
+  -cdrom target/x86_64-mb2/oreulius-x86_64-mb2.iso \
   -serial mon:stdio \
   -monitor none \
   -m 512M
@@ -969,7 +967,7 @@ Optional launcher parameters:
 # i686 (legacy runtime)
 cd kernel
 ./build.sh
-qemu-system-i386 -cdrom oreulia.iso -serial stdio
+qemu-system-i386 -cdrom oreulius.iso -serial stdio
 
 # x86_64 (MB2 + GRUB ISO; serial shell)
 cd kernel
@@ -1096,7 +1094,7 @@ temporal-history /tmp/demo
 
 ## Performance Positioning
 
-Oreulia is engineered around bounded and inspectable control paths:
+Oreulius is engineered around bounded and inspectable control paths:
 
 - Fixed-level scheduler behavior with preemptive operation.
 - Explicit syscall entry paths (`INT 0x80`, `SYSENTER`).
@@ -1115,10 +1113,10 @@ Suggested measurement commands for reproducible local baselines:
 ## Documentation Map
 
 - [Docs Index](docs/README.md)
-- Project: [Vision](docs/project/oreulia-vision.md), [MVP Specification](docs/project/oreulia-mvp.md), [Commercial Use Cases](docs/project/CommercialUseCases.md)
-- Capability: [Capabilities](docs/capability/oreulia-capabilities.md), [CapNet Scientific Resolution](docs/capability/capnet.md), [Intent Graph Predictive Revocation](docs/capability/oreulia-intent-graph-predictive-revocation.md)
-- IPC and storage: [IPC](docs/ipc/oreulia-ipc.md), [Persistence](docs/storage/oreulia-persistence.md), [Filesystem](docs/storage/oreulia-filesystem.md), [Temporal Adapters + Durable Persistence](docs/storage/oreulia-temporal-adapters-durable-persistence.md)
-- Runtime and services: [WASM ABI](docs/runtime/oreulia-wasm-abi.md), [JIT Security Resolution](docs/runtime/oreulia-jit-security-resolution.md), [Function/Service Pointer Capabilities](docs/services/oreulia-service-pointer-capabilities.md), [WASM JIT Pairwise Transition Coverage](docs/runtime/oreulia-wasm-jit-pairwise-transition-coverage.md)
+- Project: [Vision](docs/project/oreulius-vision.md), [MVP Specification](docs/project/oreulius-mvp.md), [Commercial Use Cases](docs/project/CommercialUseCases.md)
+- Capability: [Capabilities](docs/capability/oreulius-capabilities.md), [CapNet Scientific Resolution](docs/capability/capnet.md), [Intent Graph Predictive Revocation](docs/capability/oreulius-intent-graph-predictive-revocation.md)
+- IPC and storage: [IPC](docs/ipc/oreulius-ipc.md), [Persistence](docs/storage/oreulius-persistence.md), [Filesystem](docs/storage/oreulius-filesystem.md), [Temporal Adapters + Durable Persistence](docs/storage/oreulius-temporal-adapters-durable-persistence.md)
+- Runtime and services: [WASM ABI](docs/runtime/oreulius-wasm-abi.md), [JIT Security Resolution](docs/runtime/oreulius-jit-security-resolution.md), [Function/Service Pointer Capabilities](docs/services/oreulius-service-pointer-capabilities.md), [WASM JIT Pairwise Transition Coverage](docs/runtime/oreulius-wasm-jit-pairwise-transition-coverage.md)
 - Reference: [Assembly Quick Reference](docs/architecture/assembly-quick-reference.md), [Code Page Header](docs/codepageheader.md)
 - Contributor process: [Contributing Guide](docs/CONTRIBUTING.md)
 - [Contributor License Terms](CONTRIBUTOR-LICENSE.md)
@@ -1126,7 +1124,7 @@ Suggested measurement commands for reproducible local baselines:
 ## Project Layout
 
 ```text
-oreulia/
+oreulius/
 ├── kernel/              # Kernel source, asm, linker, build/run scripts
 │   ├── src/             # Grouped Rust subsystems (`capability/`, `drivers/`, `execution/`, `fs/`, `memory/`, `platform/`, `scheduler/`, `security/`, `services/`, `shell/`, `temporal/`, …)
 │   ├── ci/              # Shell CI runners and interactive harnesses (`.sh`, `.expect`, `.py`)
@@ -1142,7 +1140,7 @@ oreulia/
 │       └── src/
 │           ├── lib.rs   # Module declarations
 │           ├── capgraph.rs, entangle.rs, policy.rs, mesh.rs, …
-│           └── raw/     # oreulia.rs + wasi.rs FFI stubs
+│           └── raw/     # oreulius.rs + wasi.rs FFI stubs
 ├── verification/        # Formal verification specs, proofs, and artifacts
 │   ├── spec/
 │   ├── proof/
@@ -1187,6 +1185,6 @@ described in [COMMERCIAL.md](COMMERCIAL.md). Inbound contribution rights are in
 
 <div align="center">
 
-**Made by Keefe Reeves and contributors in the Oreulia community**
+**Made by Keefe Reeves and contributors in the Oreulius community**
 
 </div>

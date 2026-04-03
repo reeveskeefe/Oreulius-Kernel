@@ -35,7 +35,7 @@ if {[info exists env(QEMU_EXTRA_ARGS)]} {
     set qemu_extra $env(QEMU_EXTRA_ARGS)
 }
 
-set qemu_args [list qemu-system-i386 -cdrom oreulia.iso -serial stdio]
+set qemu_args [list qemu-system-i386 -cdrom oreulius.iso -serial stdio]
 if {![regexp {(^|[[:space:]])-monitor([[:space:]]|$)} $qemu_extra]} {
     lappend qemu_args -monitor none
 }

@@ -6,7 +6,7 @@
 ;; Compile:
 ;;   wat2wasm echo.wat -o echo.wasm
 ;;
-;; Run inside Oreulia shell:
+;; Run inside Oreulius shell:
 ;;   wasm echo.wasm
 ;;
 ;; WASI syscalls used:

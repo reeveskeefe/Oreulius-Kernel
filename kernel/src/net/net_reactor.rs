@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -131,6 +131,10 @@ enum NetRequest {
         dest_ip: Ipv4Addr,
         dest_port: u16,
         ack: u32,
+    },
+    ConfigureStatic {
+        ip: Ipv4Addr,
+        gw: Ipv4Addr,
     },
 }
 
@@ -518,6 +522,10 @@ fn dispatch_request(
             Ok(seq) => NetResponse::U64(seq as u64),
             Err(e) => NetResponse::Err(e),
         },
+        NetRequest::ConfigureStatic { ip, gw } => {
+            stack.configure_static(*ip, *gw);
+            NetResponse::Ok
+        }
     }
 }
 
@@ -816,6 +824,14 @@ pub fn temporal_apply_network_config_payload(payload: &[u8]) -> Result<(), &'sta
 pub fn seed_legacy_x86_qemu_defaults() {
     let stack = unsafe { &mut NET_STACK };
     let _ = stack.seed_legacy_x86_qemu_defaults();
+}
+
+pub fn configure_static(ip: Ipv4Addr, gw: Ipv4Addr) -> Result<(), &'static str> {
+    match request(NetRequest::ConfigureStatic { ip, gw })? {
+        NetResponse::Ok => Ok(()),
+        NetResponse::Err(e) => Err(e),
+        _ => Err("Unexpected response"),
+    }
 }
 
 pub fn http_server_start(port: u16) -> Result<(), &'static str> {

@@ -13,7 +13,7 @@
 
 <!-- Participant: Kernel -->
 <rect x="22" y="24" width="136" height="48" rx="8" fill="#EEE0F8" stroke="#9B59C5" stroke-width="0.5"/>
-<text class="th" x="90" y="44" text-anchor="middle" dominant-baseline="central" fill="#5B1E8A">Oreulia Kernel</text>
+<text class="th" x="90" y="44" text-anchor="middle" dominant-baseline="central" fill="#5B1E8A">Oreulius Kernel</text>
 <text class="ts" x="90" y="62" text-anchor="middle" dominant-baseline="central" fill="#8540B2">Ring-0</text>
 
 <!-- Participant: TELEMETRY_RING -->

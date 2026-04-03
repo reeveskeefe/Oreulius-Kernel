@@ -3,14 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ISO_PATH="oreulia.iso"
+ISO_PATH="oreulius.iso"
 if [[ ! -f "${ISO_PATH}" ]]; then
     echo "ISO not found at ${ISO_PATH}"
     echo "Run ./build.sh first."
     exit 1
 fi
 
-echo "Testing Oreulia Service Functionality"
+echo "Testing Oreulius Service Functionality"
 echo "===================================="
 
 # Create input file

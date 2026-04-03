@@ -6,7 +6,7 @@
 ;   temporal_hash_pair     — combine two u32 hashes (mixing via Knuth/Murmur finalize)
 ;   temporal_merkle_root_u32 — compute Merkle root over an array of u32 leaf hashes
 ;
-; These functions are called from temporal.rs / oreulia-temporal-adapters.
+; These functions are called from temporal.rs / oreulius-temporal-adapters.
 ;
 ; ABI: System V AMD64
 

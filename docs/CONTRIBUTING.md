@@ -1,4 +1,4 @@
-# Contributing to Oreulia
+# Contributing to Oreulius
 
 Thank you for considering a contribution. We welcome all kinds of help: code, documentation, tests, design notes, and bug reports. This guide is intentionally short and clear so you can get started quickly.
 
@@ -55,7 +55,7 @@ Thank you for considering a contribution. We welcome all kinds of help: code, do
 
 ## License and Contribution Header for New Scripts
 
-All new scripts and modules must begin with the full license and contribution header block. This ensures that every file in the Oreulia codebase is clearly licensed, attributed, and provides guidance for future contributors.
+All new scripts and modules must begin with the full license and contribution header block. This ensures that every file in the Oreulius codebase is clearly licensed, attributed, and provides guidance for future contributors.
 
 **Why is this required?**
 - It guarantees that all code is covered by the project license and contribution terms.
@@ -71,9 +71,9 @@ See [`codepageheader.md`](codepageheader.md) for the latest template and detaile
 
 **License**
 By contributing, you agree that your contributions may be distributed under the
-project license and future Oreulia license versions, and that project
+project license and future Oreulius license versions, and that project
 maintainers may incorporate, modify, and relicense accepted contributions as
-part of Oreulia. If you are not comfortable with those terms, do not submit
+part of Oreulius. If you are not comfortable with those terms, do not submit
 the contribution.
 
 The canonical inbound contribution terms are in

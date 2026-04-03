@@ -1,6 +1,6 @@
 # `kernel/src/net` — Kernel Networking Stack
 
-The `net` module is the **complete in-kernel networking subsystem** for Oreulia. It contains everything from raw Ethernet frame handling and TCP/IP from scratch, through TLS 1.3, Wi-Fi 802.11, HTTP serving, async event loop, and the CapNet capability token distribution protocol. All network I/O is capability-gated — a process cannot open a TCP connection without holding a `Network` capability.
+The `net` module is the **complete in-kernel networking subsystem** for Oreulius. It contains everything from raw Ethernet frame handling and TCP/IP from scratch, through TLS 1.3, Wi-Fi 802.11, HTTP serving, async event loop, and the CapNet capability token distribution protocol. All network I/O is capability-gated — a process cannot open a TCP connection without holding a `Network` capability.
 
 ---
 
@@ -167,7 +167,7 @@ A fixed-size array of `(Ipv4Addr, MacAddr, age_ticks)` entries. On ARP miss, the
 
 ## `capnet.rs` — CapNet v1 Capability Token Protocol
 
-CapNet is Oreulia's **secure inter-kernel capability transport protocol**. It solves the problem of transferring the kernel's capability model across a network link to remote Oreulia nodes without ambient trust.
+CapNet is Oreulius's **secure inter-kernel capability transport protocol**. It solves the problem of transferring the kernel's capability model across a network link to remote Oreulius nodes without ambient trust.
 
 ### Token Format (`CapabilityTokenV1`)
 
@@ -491,7 +491,7 @@ At kernel boot, `net::init()` performs:
 | `wifi-disconnect` | Deassociate from current network |
 | `wifi-status` | Print `WifiConnection` snapshot |
 | `capnet-peers` | List CapNet peer sessions |
-| `capnet-hello <ip>` | Send Hello to a remote Oreulia node |
+| `capnet-hello <ip>` | Send Hello to a remote Oreulius node |
 | `capnet-attest <peer-id>` | Send attestation frame to a peer |
 | `capnet-offer <peer-id> <token>` | Transfer a capability token to a peer |
 | `capnet-revoke <token-id>` | Revoke a CapNet token |

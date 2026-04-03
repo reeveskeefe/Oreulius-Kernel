@@ -1,5 +1,5 @@
 /*!
- * Oreulia Kernel — Crash Logging
+ * Oreulius Kernel — Crash Logging
  *
  * A lock-free in-kernel crash record ring buffer that is safe to write from
  * the panic handler (where spinlocks may already be held).

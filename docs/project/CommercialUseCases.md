@@ -1,14 +1,14 @@
-# Oreulia — Commercial Use Cases and Readiness Boundaries
+# Oreulius — Commercial Use Cases and Readiness Boundaries
 
 **Status:** Potential commercial fit areas are clear, but the current project should still be described as pre-production and research-oriented.
 
-Oreulia is source-available under the Oreulia Community License. Commercial deployment and production use require a separate written agreement. That licensing fact matters because the commercial conversation is not just “where could this fit?” but also “under what support and hardening model would it be offered?”
+Oreulius is source-available under the Oreulius Community License. Commercial deployment and production use require a separate written agreement. That licensing fact matters because the commercial conversation is not just “where could this fit?” but also “under what support and hardening model would it be offered?”
 
 ---
 
-## 1. What Oreulia is commercially good at in principle
+## 1. What Oreulius is commercially good at in principle
 
-Oreulia’s strongest commercial properties are:
+Oreulius’s strongest commercial properties are:
 
 - **explicit authority control** through capabilities
 - **WASM-first extensibility** without a large native userspace stack
@@ -31,7 +31,7 @@ Best fit examples:
 - field-updatable control nodes
 - specialized edge service boxes
 
-Why Oreulia fits:
+Why Oreulius fits:
 
 - isolated WASM workloads are a natural unit for field-delivered logic
 - capability mediation reduces ambient privilege exposure
@@ -45,7 +45,7 @@ Best fit examples:
 - partner-extensible appliances
 - environment-specific edge integrations
 
-Why Oreulia fits:
+Why Oreulius fits:
 
 - strict authority separation is central to the platform model
 - typed service and IPC surfaces help constrain subsystem boundaries
@@ -59,7 +59,7 @@ Best fit examples:
 - secure service routers
 - capability-mediated management planes
 
-Why Oreulia fits:
+Why Oreulius fits:
 
 - in-kernel networking already exists
 - capability transfer and CapNet are differentiating ideas
@@ -73,7 +73,7 @@ Best fit examples:
 - secure update/recovery platforms
 - auditable single-purpose service nodes
 
-Why Oreulia fits:
+Why Oreulius fits:
 
 - the project already values provenance, temporal history, and live diagnostics
 - rollback and versioned state align well with post-incident or regulated operations
@@ -84,11 +84,11 @@ Why Oreulia fits:
 
 This is the most important correction to older commercial positioning docs.
 
-Oreulia is **not yet ready** to be described as a broadly deployable commercial OS product. The current honest stance is:
+Oreulius is **not yet ready** to be described as a broadly deployable commercial OS product. The current honest stance is:
 
 - strong technical differentiation
 - plausible commercial categories
-- incomplete production readiness
+- production readiness that is still partial
 
 That is not a weakness in the positioning. It is the credible position.
 
@@ -106,9 +106,9 @@ That means commercial claims should not imply:
 - production driver maturity
 - board/vendor qualification
 
-### 4.2 Architecture parity is incomplete
+### 4.2 Architecture parity is still uneven
 
-Oreulia now has real `i686`, `x86_64`, and `AArch64` bring-up and regression surfaces, but parity is still uneven.
+Oreulius now has real `i686`, `x86_64`, and `AArch64` bring-up and regression surfaces, but parity is still uneven.
 
 Commercial consequence:
 
@@ -128,7 +128,7 @@ The kernel has significant internal machinery, but the surrounding product story
 
 ### 4.4 Verification is meaningful but not a certification substitute
 
-Oreulia already has:
+Oreulius already has:
 
 - regression workflows
 - proof-check surfaces
@@ -145,7 +145,7 @@ That is commercially valuable, but it is not the same as:
 
 ## 5. Realistic near-term commercial positioning
 
-If Oreulia were to be commercialized in the near term, the most defensible framing would be:
+If Oreulius were to be commercialized in the near term, the most defensible framing would be:
 
 ### 5.1 Custom or partner-led engagements
 
@@ -171,13 +171,13 @@ not:
 
 - “general embedded OS”
 
-The reason is that Oreulia’s real differentiation is in authority, isolation, temporal semantics, and inspectability, not broad ecosystem compatibility.
+The reason is that Oreulius’s real differentiation is in authority, isolation, temporal semantics, and inspectability, not broad ecosystem compatibility.
 
 ---
 
 ## 6. Concrete commercialization requirements
 
-Before public commercial positioning should become aggressive, Oreulia would need more than passing CI.
+Before public commercial positioning should become aggressive, Oreulius would need more than passing CI.
 
 Minimum additional work:
 
@@ -201,7 +201,7 @@ For some markets it would also need:
 
 The most accurate current public statement is something like:
 
-> Oreulia is a capability-native, WASM-first kernel with strong potential for secure programmable appliances, attested edge systems, and multi-tenant embedded runtimes. It already demonstrates the right architectural primitives, but it remains alpha-quality research software rather than a finished production OS.
+> Oreulius is a capability-native, WASM-first kernel with strong potential for secure programmable appliances, attested edge systems, and multi-tenant embedded runtimes. It already demonstrates the right architectural primitives, but it remains alpha-quality research software rather than a finished production OS.
 
 That is much stronger than underselling the project, and much more credible than implying commercial readiness that does not yet exist.
 
@@ -209,7 +209,7 @@ That is much stronger than underselling the project, and much more credible than
 
 ## 8. Bottom line
 
-Oreulia does have real commercial potential.
+Oreulius does have real commercial potential.
 
 The best-fit categories are:
 

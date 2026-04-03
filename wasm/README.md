@@ -1,13 +1,13 @@
 # `wasm/` — WASM Workload Layer
 
-Oreulia is a **WASM-first unikernel**.  This folder is the external surface of
+Oreulius is a **WASM-first unikernel**.  This folder is the external surface of
 that claim: it contains the hand-written WebAssembly Text (WAT) test modules
 that prove and exercise the host ABI, and the `sdk/` Rust crate that gives
-application authors a typed, safe way to write Oreulia workloads in Rust
+application authors a typed, safe way to write Oreulius workloads in Rust
 without touching raw imports.
 
 Neither the WAT files nor the SDK are compiled into the kernel itself.
-They are guest-side artifacts — code that **runs inside** the Oreulia WASM
+They are guest-side artifacts — code that **runs inside** the Oreulius WASM
 runtime, not code that implements it.  The relationship is the same as the
 difference between a Linux kernel and a userspace program: same repository,
 completely separate compilation paths, separate binaries, separate address
@@ -21,14 +21,14 @@ spaces.
 wasm/
 ├── build.sh            build script: wat2wasm each .wat → .wasm
 ├── echo.wat            WASI fd_read→fd_write loop
-├── hello.wat           "Hello from Oreulia!" via WASI fd_write
+├── hello.wat           "Hello from Oreulius!" via WASI fd_write
 ├── poll_demo.wat       WASI poll_oneoff clock-timeout demo
-├── spawn_children.wat  Oreulia proc_spawn demo (two child processes)
-├── thread_demo.wat     Oreulia cooperative thread ABI demo
-└── sdk/                typed Rust bindings for the Oreulia host ABI
+├── spawn_children.wat  Oreulius proc_spawn demo (two child processes)
+├── thread_demo.wat     Oreulius cooperative thread ABI demo
+└── sdk/                typed Rust bindings for the Oreulius host ABI
     ├── Cargo.toml
     ├── rust-toolchain
-    ├── oreulia.ld
+    ├── oreulius.ld
     └── src/
         ├── lib.rs
         ├── io.rs        fd_read / fd_write helpers
@@ -47,7 +47,7 @@ wasm/
         ├── mesh.rs      kernel-mesh capability routing (IDs 109–115)
         └── raw/
             ├── mod.rs
-            ├── oreulia.rs   raw `extern "C"` Oreulia-native imports
+            ├── oreulius.rs   raw `extern "C"` Oreulius-native imports
             └── wasi.rs      raw `extern "C"` WASI Preview 1 imports
 ```
 
@@ -60,7 +60,7 @@ wasm/
 The kernel is compiled for **bare-metal x86/x86_64 or AArch64**:
 
 ```
-rustc --target i686-oreulia (custom JSON)
+rustc --target i686-oreulius (custom JSON)
 rustc --target x86_64-unknown-none
 rustc --target aarch64-unknown-none
 ```
@@ -71,7 +71,7 @@ The SDK is compiled for **WebAssembly**:
 rustc --target wasm32-wasi
 ```
 
-These are fundamentally incompatible instruction sets.  `i686-oreulia` and
+These are fundamentally incompatible instruction sets.  `i686-oreulius` and
 `wasm32-wasi` produce entirely different object file formats — ELF vs. WASM
 binary — with different calling conventions, different memory models (linear
 32-bit WASM addressing vs. segmented/paged physical memory), and no shared
@@ -102,7 +102,7 @@ by the kernel.  These can and do diverge independently.
 
 The only coupling between the two sides is the **host ABI dispatch table**
 in `kernel/src/wasm.rs` — 132 `call_host_fn` match arms.  The WAT files and
-the SDK's `raw/oreulia.rs` / `raw/wasi.rs` are the guest-side mirror of that
+the SDK's `raw/oreulius.rs` / `raw/wasi.rs` are the guest-side mirror of that
 table.  As long as the IDs, signatures, and memory-layout conventions on both
 sides match, the two halves can be compiled, modified, and versioned
 completely independently.
@@ -116,12 +116,12 @@ completely independently.
 │  Developer machine (host)                              │
 │                                                        │
 │  cargo build --manifest-path kernel/Cargo.toml         │
-│    target: i686-oreulia / x86_64 / aarch64             │
+│    target: i686-oreulius / x86_64 / aarch64             │
 │    output: kernel.elf / kernel.bin                     │
 │                                                        │
 │  cargo build --manifest-path wasm/sdk/Cargo.toml       │
 │    target: wasm32-wasi                                 │
-│    output: oreulia_sdk.wasm  (library, not loaded)     │
+│    output: oreulius_sdk.wasm  (library, not loaded)     │
 │                                                        │
 │  wat2wasm wasm/hello.wat -o wasm/hello.wasm            │
 │    output: hello.wasm  (72 bytes)                      │
@@ -129,7 +129,7 @@ completely independently.
                 │                    │
                 ▼                    ▼
 ┌───────────────────┐   ┌────────────────────────────────┐
-│  Oreulia kernel   │   │  WASM binary (guest program)   │
+│  Oreulius kernel   │   │  WASM binary (guest program)   │
 │  (ELF / raw bin)  │   │  e.g. hello.wasm               │
 │  boots under QEMU │   │  submitted via shell command:  │
 │                   │   │    wasm hello.wasm              │
@@ -151,7 +151,7 @@ completely independently.
    to a few hundred bytes of WASM bytecode.
 
 3. **SDK compilation** — `cd wasm/sdk && cargo build --target wasm32-wasi
-   --release` produces `oreulia_sdk.wasm` for use as a dependency when
+   --release` produces `oreulius_sdk.wasm` for use as a dependency when
    building Rust application WASM modules.
 
 4. **Execution** — when the kernel shell receives `wasm hello.wasm`, it:
@@ -195,7 +195,7 @@ The SDK is structured as a thin layered library:
 
 ### `raw/` — The FFI Floor
 
-`raw/wasi.rs` and `raw/oreulia.rs` contain only `#[link(wasm_import_module =
+`raw/wasi.rs` and `raw/oreulius.rs` contain only `#[link(wasm_import_module =
 "...")]` `extern "C"` blocks.  Every function is `unsafe`, every integer type
 is exactly what the kernel dispatch table expects (`i32`, `u32`, `i64`, `u64`).
 No allocation, no abstraction.
@@ -212,7 +212,7 @@ Each module in `src/` wraps the raw layer with:
 ### `temporal.rs` — Why It Matters
 
 The `temporal` module deserves special note because it exposes what is unique
-about Oreulia: capabilities are not static grants.  They are **time-bound
+about Oreulius: capabilities are not static grants.  They are **time-bound
 objects** that auto-revoke, and they are **checkpoint-able** — the entire
 capability set of a process can be snapshotted before a risky operation and
 rolled back atomically if something goes wrong:
@@ -261,7 +261,7 @@ rustup target add wasm32-wasi
 
 cd wasm/sdk
 cargo build --target wasm32-wasi --release
-# → target/wasm32-wasi/release/oreulia_sdk.wasm
+# → target/wasm32-wasi/release/oreulius_sdk.wasm
 ```
 
 ### Running Inside the Kernel
@@ -271,7 +271,7 @@ cargo build --target wasm32-wasi --release
 ./kernel/run.sh                   # i686
 ./kernel/run-x86_64-mb2-grub.sh   # x86_64
 
-# Inside the Oreulia shell:
+# Inside the Oreulius shell:
 wasm hello.wasm
 wasm echo.wasm
 wasm poll_demo.wasm
@@ -289,6 +289,6 @@ Every module in `kernel/src/` that registers host functions (capability,
 IPC, temporal, drivers, net, scheduler) is reachable from a `.wasm` guest
 via the `call_host_fn` dispatch table.  This folder is the **test harness and
 developer toolkit** for all of that.  When a new host function ID is added to
-the kernel, a new entry in `raw/oreulia.rs` and a new wrapper in the
+the kernel, a new entry in `raw/oreulius.rs` and a new wrapper in the
 appropriate high-level module document it and make it testable from Rust WASM
 code without hand-writing WAT.

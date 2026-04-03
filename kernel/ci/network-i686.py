@@ -351,7 +351,7 @@ def run_https_phase(h):
 
 def main():
     kernel_dir = Path(__file__).resolve().parent.parent
-    iso_path = kernel_dir / "oreulia.iso"
+    iso_path = kernel_dir / "oreulius.iso"
     argv = [
         "qemu-system-i386",
         "-cdrom",

@@ -1,7 +1,7 @@
-//! WASM Thread Infrastructure for Oreulia
+//! WASM Thread Infrastructure for Oreulius
 //!
 //! This module implements the WebAssembly Threads proposal thread model for
-//! the Oreulia kernel. It provides:
+//! the Oreulius kernel. It provides:
 //!
 //! - `SharedLinearMemory` — an Arc-like wrapper around a raw WASM linear
 //!   memory region that can be shared between multiple `WasmInstance`s.
@@ -30,11 +30,11 @@
 //!
 //! | ID | Name                        | Signature (WASM)                      |
 //! |----|-----------------------------|---------------------------------------|
-//! | 23 | `oreulia_thread_spawn`      | `(func_idx: i32, arg: i32) -> i32`    |
-//! | 24 | `oreulia_thread_join`       | `(tid: i32) -> i32`                   |
-//! | 25 | `oreulia_thread_id`         | `() -> i32`                           |
-//! | 26 | `oreulia_thread_yield`      | `() -> ()`                            |
-//! | 27 | `oreulia_thread_exit`       | `(code: i32) -> ()`                   |
+//! | 23 | `oreulius_thread_spawn`      | `(func_idx: i32, arg: i32) -> i32`    |
+//! | 24 | `oreulius_thread_join`       | `(tid: i32) -> i32`                   |
+//! | 25 | `oreulius_thread_id`         | `() -> i32`                           |
+//! | 26 | `oreulius_thread_yield`      | `() -> ()`                            |
+//! | 27 | `oreulius_thread_exit`       | `(code: i32) -> ()`                   |
 //!
 //! These IDs follow directly after the 22 existing host functions in wasm.rs.
 

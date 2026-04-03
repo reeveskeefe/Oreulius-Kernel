@@ -5,16 +5,16 @@ and note material additions in the implementation docs or commit message.
 
 ```bash
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  * 
- * License: Oreulia Community License v1.0 (see LICENSE)
+ * License: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  * 
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  * 
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  * - The canonical inbound contribution terms are in CONTRIBUTOR-LICENSE.md.
@@ -35,7 +35,7 @@ and note material additions in the implementation docs or commit message.
   - Do not remove or alter the license notice or copyright.
 
 - **Contribution Guidelines:**
-  - By contributing, you agree that accepted contributions may be distributed and relicensed as part of Oreulia.
+  - By contributing, you agree that accepted contributions may be distributed and relicensed as part of Oreulius.
   - Follow the [CONTRIBUTING.md](CONTRIBUTING.md) file for code style, review, and submission rules.
   - If you add a new feature, update the feature list and notes in the script header when practical.
 

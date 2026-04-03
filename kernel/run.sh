@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run Oreulia kernel in QEMU
+# Run Oreulius kernel in QEMU
 
 set -euo pipefail
 
@@ -11,7 +11,7 @@ if ! command -v qemu-system-i386 >/dev/null 2>&1; then
     exit 1
 fi
 
-ISO_PATH="oreulia.iso"
+ISO_PATH="oreulius.iso"
 
 # Check if ISO exists
 if [ ! -f "$ISO_PATH" ]; then
@@ -20,7 +20,7 @@ if [ ! -f "$ISO_PATH" ]; then
     exit 1
 fi
 
-echo "Starting Oreulia OS in QEMU..."
+echo "Starting Oreulius OS in QEMU..."
 echo "Press Ctrl+C to exit"
 echo ""
 
@@ -41,14 +41,14 @@ if [ -n "$QEMU_EXTRA_ARGS" ]; then
             -cdrom "$ISO_PATH" \
             -serial stdio \
             $(if [ "$USE_MONITOR_NONE" -eq 1 ]; then printf '%s' "-monitor none"; fi) \
-            -chardev socket,path=/tmp/oreulia_ebpf_telemetry,server=on,wait=off,id=telemetry_socket \
+            -chardev socket,path=/tmp/oreulius_ebpf_telemetry,server=on,wait=off,id=telemetry_socket \
             -serial chardev:telemetry_socket \
             $QEMU_EXTRA_ARGS
     else
         # shellcheck disable=SC2086
         qemu-system-i386 \
             -cdrom "$ISO_PATH" \
-            -chardev socket,path=/tmp/oreulia_ebpf_telemetry,server=on,wait=off,id=telemetry_socket \
+            -chardev socket,path=/tmp/oreulius_ebpf_telemetry,server=on,wait=off,id=telemetry_socket \
             -serial chardev:telemetry_socket \
             $QEMU_EXTRA_ARGS
     fi
@@ -56,6 +56,6 @@ else
     qemu-system-i386 \
         -cdrom "$ISO_PATH" \
         -serial stdio \
-        -chardev socket,path=/tmp/oreulia_ebpf_telemetry,server=on,wait=off,id=telemetry_socket \
+        -chardev socket,path=/tmp/oreulius_ebpf_telemetry,server=on,wait=off,id=telemetry_socket \
         -serial chardev:telemetry_socket
 fi

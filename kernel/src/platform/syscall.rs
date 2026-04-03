@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -189,14 +189,22 @@ impl SyscallResult {
 #[derive(Clone, Copy)]
 struct SysIpcCapability {
     cap_id: u32,
-    object_hi: u32,
     object_lo: u32,
+    object_hi: u32,
     rights: u32,
     cap_type: u32,
+    owner_pid: u32,
+    issued_at_lo: u32,
+    issued_at_hi: u32,
+    expires_at_lo: u32,
+    expires_at_hi: u32,
+    flags: u32,
     extra0: u32,
     extra1: u32,
     extra2: u32,
     extra3: u32,
+    token_lo: u32,
+    token_hi: u32,
 }
 
 fn ipc_cap_type_from_raw(raw: u32) -> Option<crate::ipc::CapabilityType> {
@@ -213,22 +221,41 @@ fn ipc_cap_type_from_raw(raw: u32) -> Option<crate::ipc::CapabilityType> {
 fn ipc_cap_to_sys(cap: &crate::ipc::Capability) -> SysIpcCapability {
     SysIpcCapability {
         cap_id: cap.cap_id,
-        object_hi: cap.extra[0],
-        object_lo: cap.object_id,
-        rights: cap.rights,
+        object_lo: cap.object_id as u32,
+        object_hi: (cap.object_id >> 32) as u32,
+        rights: cap.rights.bits(),
         cap_type: cap.cap_type as u32,
+        owner_pid: cap.owner_pid.0,
+        issued_at_lo: cap.issued_at as u32,
+        issued_at_hi: (cap.issued_at >> 32) as u32,
+        expires_at_lo: cap.expires_at as u32,
+        expires_at_hi: (cap.expires_at >> 32) as u32,
+        flags: cap.flags,
         extra0: cap.extra[0],
         extra1: cap.extra[1],
         extra2: cap.extra[2],
         extra3: cap.extra[3],
+        token_lo: cap.token as u32,
+        token_hi: (cap.token >> 32) as u32,
     }
 }
 
 fn sys_cap_to_ipc(raw: &SysIpcCapability) -> Result<crate::ipc::Capability, ()> {
     let cap_type = ipc_cap_type_from_raw(raw.cap_type).ok_or(())?;
-    let mut cap =
-        crate::ipc::Capability::with_type(raw.cap_id, raw.object_lo, raw.rights, cap_type);
-    cap.extra = [raw.object_hi, raw.extra1, raw.extra2, raw.extra3];
+    let mut cap = crate::ipc::Capability::with_type(
+        raw.cap_id,
+        ((raw.object_hi as u64) << 32) | raw.object_lo as u64,
+        Rights::new(raw.rights),
+        cap_type,
+    )
+    .with_owner(crate::ipc::ProcessId(raw.owner_pid))
+    .with_validity(
+        ((raw.issued_at_hi as u64) << 32) | raw.issued_at_lo as u64,
+        ((raw.expires_at_hi as u64) << 32) | raw.expires_at_lo as u64,
+    )
+    .with_flags(raw.flags);
+    cap.extra = [raw.extra0, raw.extra1, raw.extra2, raw.extra3];
+    cap.token = ((raw.token_hi as u64) << 32) | raw.token_lo as u64;
     Ok(cap)
 }
 
@@ -647,7 +674,7 @@ fn sys_channel_send_caps(args: SyscallArgs, caller_pid: capability::ProcessId) -
     let user_slice = unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len) };
     message_vec.copy_from_slice(user_slice);
     let message = &message_vec;
-    let mut caps = [crate::ipc::Capability::new(0, 0, 0); crate::ipc::MAX_CAPS_PER_MESSAGE];
+    let mut caps = [crate::ipc::Capability::new(0, 0, Rights::new(0)); crate::ipc::MAX_CAPS_PER_MESSAGE];
     if caps_count > 0 {
         let raw_caps =
             unsafe { core::slice::from_raw_parts(caps_ptr as *const SysIpcCapability, caps_count) };
@@ -702,7 +729,7 @@ fn sys_channel_recv_caps(args: SyscallArgs, caller_pid: capability::ProcessId) -
     }
 
     let mut buffer_vec = alloc::vec![0u8; buf_len];
-    let mut caps = [crate::ipc::Capability::new(0, 0, 0); crate::ipc::MAX_CAPS_PER_MESSAGE];
+    let mut caps = [crate::ipc::Capability::new(0, 0, Rights::new(0)); crate::ipc::MAX_CAPS_PER_MESSAGE];
 
     match crate::ipc::receive_message_with_caps_for_process(
         crate::ipc::ProcessId(caller_pid.0),
@@ -1890,7 +1917,7 @@ pub extern "C" fn syscall_handler_rust(regs: *const SavedRegisters) -> u64 {
 /// layout in assembly.
 #[no_mangle]
 #[cfg(target_arch = "x86_64")]
-pub extern "C" fn oreulia_syscall_dispatch(
+pub extern "C" fn oreulius_syscall_dispatch(
     nr: u64,
     a1: u64,
     a2: u64,

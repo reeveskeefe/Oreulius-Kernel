@@ -1,4 +1,4 @@
-# Oreulia Kernel Mesh — Decentralized Capability Federation
+# Oreulius Kernel Mesh — Decentralized Capability Federation
 
 > **Status:** Fully implemented. WASM host ABI IDs 109–115. SDK: `wasm/sdk/src/mesh.rs`. Kernel subsystems: `kernel/src/net/capnet.rs`, `kernel/src/execution/wasm.rs` (mesh host functions), `kernel/src/capability/mod.rs` (remote lease table).
 
@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-The Kernel Mesh turns a fleet of independent Oreulia instances into a single logical capability namespace. Rather than treating device boundaries as security barriers that must be manually bridged by application-layer protocols, the mesh embeds capability federation directly into the kernel: tokens are minted, routed, and verified at the kernel level, and WASM modules can migrate their own bytecode — along with their live authority — to a remote device in a single atomic operation.
+The Kernel Mesh turns a fleet of independent Oreulius instances into a single logical capability namespace. Rather than treating device boundaries as security barriers that must be manually bridged by application-layer protocols, the mesh embeds capability federation directly into the kernel: tokens are minted, routed, and verified at the kernel level, and WASM modules can migrate their own bytecode — along with their live authority — to a remote device in a single atomic operation.
 
 This is not a distributed operating system in the classical sense. There is no shared kernel state, no global scheduler, and no distributed consensus. Each node remains sovereign. What the mesh provides is a **cryptographically-attested, capability-mediated channel** between sovereign kernels, so that authority from one kernel instance can be delegated to, attenuated for, and used by another, while the entire chain remains auditable, revocable, and bounded by the same rights algebra that governs intra-node IPC.
 
@@ -62,7 +62,7 @@ This is not a distributed operating system in the classical sense. There is no s
 | `kernel/src/execution/wasm.rs` | 7 mesh host functions, `MeshMigrateQueue`, `mesh_migrate_flush()` |
 | `kernel/src/capability/mod.rs` | Remote lease table — stores inbound tokens as `RemoteLease` entries visible to WASM via `token_recv` |
 | `wasm/sdk/src/mesh.rs` | High-level Rust SDK wrappers (`local_id`, `peer_register`, `peer_session`, `token_mint`, `token_send`, `token_recv`, `migrate`) |
-| `wasm/sdk/src/raw/oreulia.rs` | Raw `extern "C"` declarations for the 7 host ABI functions |
+| `wasm/sdk/src/raw/oreulius.rs` | Raw `extern "C"` declarations for the 7 host ABI functions |
 
 ---
 
@@ -70,9 +70,9 @@ This is not a distributed operating system in the classical sense. There is no s
 
 ### 3.1 Device identity and the authority universe
 
-Let $\mathcal{D}$ be the (potentially infinite) set of all Oreulia device identities. Each device $d \in \mathcal{D}$ holds a private kernel boot key $K_d$ and a per-peer session key $K_{d,d'}$ for each registered peer $d'$.
+Let $\mathcal{D}$ be the (potentially infinite) set of all Oreulius device identities. Each device $d \in \mathcal{D}$ holds a private kernel boot key $K_d$ and a per-peer session key $K_{d,d'}$ for each registered peer $d'$.
 
-**Definition M.1 (Device Identity).** Each Oreulia node generates its device ID at boot as:
+**Definition M.1 (Device Identity).** Each Oreulius node generates its device ID at boot as:
 
 $$\text{id}_d = \text{PRNG}_{\text{kernel}}(256\text{ bits}) \oplus (\text{PIT\_ticks} \times 2)$$
 
@@ -174,7 +174,7 @@ $$n > \text{replay\_high\_nonce}(p) \quad \vee \quad \left(n \geq \text{replay\_
 
 ## 4. WASM Host ABI (IDs 109–115)
 
-All functions are called from WASM via the Oreulia host-import mechanism. Function indices are resolved once at module load time by `resolve_host_import` in `wasm.rs`.
+All functions are called from WASM via the Oreulius host-import mechanism. Function indices are resolved once at module load time by `resolve_host_import` in `wasm.rs`.
 
 ### ID 109 — `mesh_local_id() → i32`
 
@@ -441,7 +441,7 @@ Requester                    Kernel (local)              Peer kernel
 ## 10. SDK Usage
 
 ```rust
-use oreulia_sdk::mesh;
+use oreulius_sdk::mesh;
 
 // 1. Discover local identity
 let my_id: u32 = mesh::local_id();

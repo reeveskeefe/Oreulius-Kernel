@@ -1,4 +1,4 @@
-(** * W^X and CFI Invariants for the Oreulia WASM JIT
+(** * W^X and CFI Invariants for the Oreulius WASM JIT
  *
  * Traceability:
  *   THM-WX-001  (INV-WX-001)  — No page is simultaneously W and X.

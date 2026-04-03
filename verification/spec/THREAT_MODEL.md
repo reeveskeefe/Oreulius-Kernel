@@ -7,7 +7,7 @@ boundary of this model:
 
 1. **Unprivileged user-space code execution** — the adversary controls one or
    more user processes running at ring-3 and may craft arbitrary WASM modules
-   or ELF binaries for execution under the Oreulia WASM/ELF loader.
+   or ELF binaries for execution under the Oreulius WASM/ELF loader.
 2. **IPC injection** — the adversary may send arbitrary payloads over any IPC
    channel to which it holds a valid capability token, including forged or
    replayed messages.

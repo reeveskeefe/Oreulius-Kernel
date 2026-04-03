@@ -14,7 +14,7 @@ This validates the separate x86_64 boot stub syntax/path only.
 
 Next integration step (not completed here):
 - make the Rust kernel compile for x86_64
-- link liboreulia_kernel.a with:
+- link liboreulius_kernel.a with:
     linker-x86_64-mb2.ld
     src/asm/boot_x86_64_mb2.asm
 EOF

@@ -1,6 +1,6 @@
 # `drivers` — Hardware Driver Subsystem
 
-This module contains every hardware driver in the Oreulia kernel: from raw
+This module contains every hardware driver in the Oreulius kernel: from raw
 I/O-port access and interrupt-driven input all the way up to a compositing
 window manager and a universal GPU substrate with a five-tier capability
 model.  Every driver is `no_std` and targets x86/x86_64; all submodules are

@@ -1,5 +1,5 @@
 /*!
- * Oreulia Kernel — OTA Update Manager
+ * Oreulius Kernel — OTA Update Manager
  *
  * Implements A/B image slot management for over-the-air firmware updates:
  *

@@ -17,6 +17,6 @@ repeats="${CI_NETWORK_REPEATS:-1}"
 
 for ((run = 1; run <= repeats; run++)); do
   echo "=== i686 network run ${run}/${repeats} ===" | tee -a "${log_dir}/network-i686.log"
-  OREULIA_BOOT_ARGS="oreulia.shell_ci=1" ./build.sh
+  OREULIA_BOOT_ARGS="oreulius.shell_ci=1" ./build.sh
   python3 ci/network-i686.py 2>&1 | tee -a "${log_dir}/network-i686.log"
 done

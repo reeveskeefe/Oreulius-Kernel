@@ -1,36 +1,31 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
 
-//! Oreulia WASM Interpreter v0
+//! Oreulius WASM runtime.
 //!
-//! A minimal WebAssembly interpreter for running untrusted code safely.
-//! Supports basic WASM opcodes and Oreulia syscalls for IPC, filesystem, etc.
+//! Provides Oreulius's in-kernel WebAssembly loader, validator, interpreter,
+//! JIT integration, service-pointer runtime, and host ABI dispatch.
 //!
-//! Features:
-//! - Stack-based bytecode interpreter
-//! - Linear memory isolation (per-module)
-//! - Capability injection via syscalls
-//! - No JIT compilation (interpreter only)
-//!
-//! Limitations (v0):
-//! - Single module (no imports/exports between modules)
-//! - i32/i64 only (no floats)
-//! - Basic validation only
-//! - Cooperative WASM threads (runtime-backed)
+//! Current runtime profile:
+//! - Stack-based interpreter with hot-path JIT compilation/validation
+//! - Linear memory isolation and bounds-checked host mediation
+//! - Typed function signatures, tables, globals, data segments, and EH support
+//! - Capability-gated host services for IPC, filesystem, temporal objects, and polyglot links
+//! - Cooperative WASM threads and runtime-backed process integration
 
 #![allow(dead_code)]
 
@@ -99,7 +94,7 @@ const TEMPORAL_BRANCH_ID_BYTES: usize = 4;
 const TEMPORAL_BRANCH_CHECKOUT_BYTES: usize = 16;
 const TEMPORAL_BRANCH_NAME_BYTES: usize = 48;
 const TEMPORAL_BRANCH_RECORD_BYTES: usize = 20 + TEMPORAL_BRANCH_NAME_BYTES;
-const TEMPORAL_MERGE_RESULT_BYTES: usize = 40;
+const TEMPORAL_MERGE_RESULT_BYTES: usize = 48;
 const MAX_TEMPORAL_HISTORY_ENTRIES: usize = 128;
 const MAX_TEMPORAL_BRANCH_ENTRIES: usize = 64;
 
@@ -292,8 +287,8 @@ impl JitFuzzScratch {
 pub enum ValueType {
     I32,
     I64,
-    F32, // Not implemented in v0
-    F64, // Not implemented in v0
+    F32,
+    F64,
     FuncRef,
     ExternRef,
 }
@@ -389,7 +384,7 @@ impl Value {
 }
 
 // ============================================================================
-// WASM Opcodes (subset for v0)
+// WASM opcodes implemented by the current runtime profile.
 // ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -846,12 +841,12 @@ fn resolve_host_import(
     signature: ParsedFunctionType,
 ) -> Result<usize, WasmError> {
     let module = core::str::from_utf8(module_name).map_err(|_| WasmError::InvalidModule)?;
-    if module != "oreulia" {
+    if module != "oreulius" {
         return Err(WasmError::InvalidModule);
     }
     let field = core::str::from_utf8(field_name).map_err(|_| WasmError::InvalidModule)?;
 
-    if field == "service_register_ref" || field == "oreulia_service_register_ref" {
+    if field == "service_register_ref" || field == "oreulius_service_register_ref" {
         if signature.param_count == 2
             && signature.result_count == 1
             && signature.param_types[0] == ValueType::FuncRef
@@ -863,7 +858,7 @@ fn resolve_host_import(
         return Err(WasmError::InvalidModule);
     }
 
-    if field == "service_register" || field == "oreulia_service_register" {
+    if field == "service_register" || field == "oreulius_service_register" {
         let valid = signature.param_count == 2
             && signature.result_count == 1
             && signature.param_types[1] == ValueType::I32
@@ -877,76 +872,76 @@ fn resolve_host_import(
     }
 
     let (host_id, params, results) = match field {
-        "debug_log" | "oreulia_log" => (0usize, 2usize, 0usize),
-        "fs_read" | "oreulia_fs_read" => (1, 5, 1),
-        "fs_write" | "oreulia_fs_write" => (2, 5, 1),
-        "channel_send" | "oreulia_channel_send" => (3, 3, 1),
-        "channel_recv" | "oreulia_channel_recv" => (4, 3, 1),
-        "net_http_get" | "oreulia_net_http_get" => (5, 4, 1),
-        "net_connect" | "oreulia_net_connect" => (6, 3, 1),
-        "dns_resolve" | "oreulia_dns_resolve" => (7, 2, 1),
-        "service_invoke" | "oreulia_service_invoke" => (8, 3, 1),
-        "channel_send_cap" | "oreulia_channel_send_cap" => (10, 4, 1),
-        "last_service_cap" | "oreulia_last_service_cap" => (11, 0, 1),
-        "service_invoke_typed" | "oreulia_service_invoke_typed" => (12, 5, 1),
-        "temporal_snapshot" | "oreulia_temporal_snapshot" => (13, 4, 1),
-        "temporal_latest" | "oreulia_temporal_latest" => (14, 4, 1),
-        "temporal_read" | "oreulia_temporal_read" => (15, 7, 1),
-        "temporal_rollback" | "oreulia_temporal_rollback" => (16, 6, 1),
-        "temporal_stats" | "oreulia_temporal_stats" => (17, 1, 1),
-        "temporal_history" | "oreulia_temporal_history" => (18, 7, 1),
-        "temporal_branch_create" | "oreulia_temporal_branch_create" => (19, 8, 1),
-        "temporal_branch_checkout" | "oreulia_temporal_branch_checkout" => (20, 6, 1),
-        "temporal_branch_list" | "oreulia_temporal_branch_list" => (21, 5, 1),
-        "temporal_merge" | "oreulia_temporal_merge" => (22, 9, 1),
-        "thread_spawn" | "oreulia_thread_spawn" => (23, 2, 1),
-        "thread_join" | "oreulia_thread_join" => (24, 1, 1),
-        "thread_id" | "oreulia_thread_id" => (25, 0, 1),
-        "thread_yield" | "oreulia_thread_yield" => (26, 0, 0),
-        "thread_exit" | "oreulia_thread_exit" => (27, 1, 0),
-        "proc_spawn" | "oreulia_proc_spawn" => (100, 2, 1),
-        "proc_yield" | "oreulia_proc_yield" => (101, 0, 0),
-        "proc_sleep" | "oreulia_proc_sleep" => (102, 1, 0),
+        "debug_log" | "oreulius_log" => (0usize, 2usize, 0usize),
+        "fs_read" | "oreulius_fs_read" => (1, 5, 1),
+        "fs_write" | "oreulius_fs_write" => (2, 5, 1),
+        "channel_send" | "oreulius_channel_send" => (3, 3, 1),
+        "channel_recv" | "oreulius_channel_recv" => (4, 3, 1),
+        "net_http_get" | "oreulius_net_http_get" => (5, 4, 1),
+        "net_connect" | "oreulius_net_connect" => (6, 3, 1),
+        "dns_resolve" | "oreulius_dns_resolve" => (7, 2, 1),
+        "service_invoke" | "oreulius_service_invoke" => (8, 3, 1),
+        "channel_send_cap" | "oreulius_channel_send_cap" => (10, 4, 1),
+        "last_service_cap" | "oreulius_last_service_cap" => (11, 0, 1),
+        "service_invoke_typed" | "oreulius_service_invoke_typed" => (12, 5, 1),
+        "temporal_snapshot" | "oreulius_temporal_snapshot" => (13, 4, 1),
+        "temporal_latest" | "oreulius_temporal_latest" => (14, 4, 1),
+        "temporal_read" | "oreulius_temporal_read" => (15, 7, 1),
+        "temporal_rollback" | "oreulius_temporal_rollback" => (16, 6, 1),
+        "temporal_stats" | "oreulius_temporal_stats" => (17, 1, 1),
+        "temporal_history" | "oreulius_temporal_history" => (18, 7, 1),
+        "temporal_branch_create" | "oreulius_temporal_branch_create" => (19, 8, 1),
+        "temporal_branch_checkout" | "oreulius_temporal_branch_checkout" => (20, 6, 1),
+        "temporal_branch_list" | "oreulius_temporal_branch_list" => (21, 5, 1),
+        "temporal_merge" | "oreulius_temporal_merge" => (22, 9, 1),
+        "thread_spawn" | "oreulius_thread_spawn" => (23, 2, 1),
+        "thread_join" | "oreulius_thread_join" => (24, 1, 1),
+        "thread_id" | "oreulius_thread_id" => (25, 0, 1),
+        "thread_yield" | "oreulius_thread_yield" => (26, 0, 0),
+        "thread_exit" | "oreulius_thread_exit" => (27, 1, 0),
+        "proc_spawn" | "oreulius_proc_spawn" => (100, 2, 1),
+        "proc_yield" | "oreulius_proc_yield" => (101, 0, 0),
+        "proc_sleep" | "oreulius_proc_sleep" => (102, 1, 0),
         // ── Polyglot kernel services (IDs 103-105) ───────────────────────────
-        "polyglot_register" | "oreulia_polyglot_register" => (103, 2, 1),
-        "polyglot_resolve" | "oreulia_polyglot_resolve" => (104, 2, 1),
-        "polyglot_link" | "oreulia_polyglot_link" => (105, 4, 1),
+        "polyglot_register" | "oreulius_polyglot_register" => (103, 2, 1),
+        "polyglot_resolve" | "oreulius_polyglot_resolve" => (104, 2, 1),
+        "polyglot_link" | "oreulius_polyglot_link" => (105, 4, 1),
         // ── Kernel Observer services (IDs 106-108) ───────────────────────────
-        "observer_subscribe" | "oreulia_observer_subscribe" => (106, 1, 1),
-        "observer_unsubscribe" | "oreulia_observer_unsubscribe" => (107, 0, 1),
-        "observer_query" | "oreulia_observer_query" => (108, 2, 1),
+        "observer_subscribe" | "oreulius_observer_subscribe" => (106, 1, 1),
+        "observer_unsubscribe" | "oreulius_observer_unsubscribe" => (107, 0, 1),
+        "observer_query" | "oreulius_observer_query" => (108, 2, 1),
         // ── Decentralized Kernel Mesh (IDs 109-115) ─────────────────────────
-        "mesh_local_id" | "oreulia_mesh_local_id" => (109, 0, 1),
-        "mesh_peer_register" | "oreulia_mesh_peer_register" => (110, 3, 1),
-        "mesh_peer_session" | "oreulia_mesh_peer_session" => (111, 2, 1),
-        "mesh_token_mint" | "oreulia_mesh_token_mint" => (112, 6, 1),
-        "mesh_token_send" | "oreulia_mesh_token_send" => (113, 4, 1),
-        "mesh_token_recv" | "oreulia_mesh_token_recv" => (114, 2, 1),
-        "mesh_migrate" | "oreulia_mesh_migrate" => (115, 4, 1),
+        "mesh_local_id" | "oreulius_mesh_local_id" => (109, 0, 1),
+        "mesh_peer_register" | "oreulius_mesh_peer_register" => (110, 3, 1),
+        "mesh_peer_session" | "oreulius_mesh_peer_session" => (111, 2, 1),
+        "mesh_token_mint" | "oreulius_mesh_token_mint" => (112, 6, 1),
+        "mesh_token_send" | "oreulius_mesh_token_send" => (113, 4, 1),
+        "mesh_token_recv" | "oreulius_mesh_token_recv" => (114, 2, 1),
+        "mesh_migrate" | "oreulius_mesh_migrate" => (115, 4, 1),
 
         // ── Temporal Capabilities with Revocable History (IDs 116-120) ────
-        "temporal_cap_grant" | "oreulia_temporal_cap_grant" => (116, 3, 1),
-        "temporal_cap_revoke" | "oreulia_temporal_cap_revoke" => (117, 1, 1),
-        "temporal_cap_check" | "oreulia_temporal_cap_check" => (118, 1, 1),
-        "temporal_checkpoint_create" | "oreulia_temporal_checkpoint_create" => (119, 0, 1),
-        "temporal_checkpoint_rollback" | "oreulia_temporal_checkpoint_rollback" => (120, 1, 1),
+        "temporal_cap_grant" | "oreulius_temporal_cap_grant" => (116, 3, 1),
+        "temporal_cap_revoke" | "oreulius_temporal_cap_revoke" => (117, 1, 1),
+        "temporal_cap_check" | "oreulius_temporal_cap_check" => (118, 1, 1),
+        "temporal_checkpoint_create" | "oreulius_temporal_checkpoint_create" => (119, 0, 1),
+        "temporal_checkpoint_rollback" | "oreulius_temporal_checkpoint_rollback" => (120, 1, 1),
 
         // ── Intensional Kernel: Policy-as-Capability-Contracts (IDs 121-124) ─
-        "policy_bind" | "oreulia_policy_bind" => (121, 3, 1),
-        "policy_unbind" | "oreulia_policy_unbind" => (122, 1, 1),
-        "policy_eval" | "oreulia_policy_eval" => (123, 3, 1),
-        "policy_query" | "oreulia_policy_query" => (124, 3, 1),
+        "policy_bind" | "oreulius_policy_bind" => (121, 3, 1),
+        "policy_unbind" | "oreulius_policy_unbind" => (122, 1, 1),
+        "policy_eval" | "oreulius_policy_eval" => (123, 3, 1),
+        "policy_query" | "oreulius_policy_query" => (124, 3, 1),
 
         // ── Quantum-Inspired Capability Entanglement (IDs 125–128) ──────────
-        "cap_entangle" | "oreulia_cap_entangle" => (125, 2, 1),
-        "cap_entangle_group" | "oreulia_cap_entangle_group" => (126, 2, 1),
-        "cap_disentangle" | "oreulia_cap_disentangle" => (127, 1, 1),
-        "cap_entangle_query" | "oreulia_cap_entangle_query" => (128, 3, 1),
+        "cap_entangle" | "oreulius_cap_entangle" => (125, 2, 1),
+        "cap_entangle_group" | "oreulius_cap_entangle_group" => (126, 2, 1),
+        "cap_disentangle" | "oreulius_cap_disentangle" => (127, 1, 1),
+        "cap_entangle_query" | "oreulius_cap_entangle_query" => (128, 3, 1),
 
         // ── Runtime Capability Graph Verification (IDs 129–131) ─────────────
-        "cap_graph_query" | "oreulia_cap_graph_query" => (129, 3, 1),
-        "cap_graph_verify" | "oreulia_cap_graph_verify" => (130, 2, 1),
-        "cap_graph_depth" | "oreulia_cap_graph_depth" => (131, 1, 1),
+        "cap_graph_query" | "oreulius_cap_graph_query" => (129, 3, 1),
+        "cap_graph_verify" | "oreulius_cap_graph_verify" => (130, 2, 1),
+        "cap_graph_depth" | "oreulius_cap_graph_depth" => (131, 1, 1),
 
         _ => return Err(WasmError::InvalidModule),
     };
@@ -1951,7 +1946,7 @@ static SERVICE_POINTERS: Mutex<ServicePointerRegistry> = Mutex::new(ServicePoint
 //
 // Maps a module name (up to 32 bytes, null-padded) to:
 //  - the runtime instance_id that owns the service
-//  - the LanguageTag of that module (from its `oreulia_lang` custom section)
+//  - the LanguageTag of that module (from its `oreulius_lang` custom section)
 //  - the capability handle the module registered via `service_register`
 //  - the owner ProcessId (for revocation)
 //  - a "singleton" flag: Python/JS runtime modules share one slot per language
@@ -2494,7 +2489,7 @@ pub fn policy_check_for_cap(pid: u32, cap_id: u32, ctx: &[u8]) -> bool {
 ///    `policy_check(ctx_ptr: i32, ctx_len: i32) -> i32`.
 ///    *Currently evaluated as permit (future: loaded via the WASM runtime).*
 ///
-/// 2. **Oreulia Policy Stub** (`OPOL` magic): A compact 8-byte rule blob:
+/// 2. **Oreulius Policy Stub** (`OPOL` magic): A compact 8-byte rule blob:
 ///    `[magic: 4][default_permit: u8][min_ctx_len: u8][ctx_byte0_eq: u8][ctx_byte0_val: u8]`
 ///    - Denies if `ctx.len() < min_ctx_len`.
 ///    - If `ctx_byte0_eq != 0`, denies if `ctx[0] != ctx_byte0_val`.
@@ -2506,7 +2501,7 @@ fn run_policy_contract(bytecode: &[u8], ctx: &[u8]) -> bool {
         return true;
     }
 
-    // Mode 2: Oreulia Policy Stub (OPOL)
+    // Mode 2: Oreulius Policy Stub (OPOL)
     if bytecode[0] == b'O' && bytecode[1] == b'P' && bytecode[2] == b'O' && bytecode[3] == b'L' {
         if bytecode.len() < 8 {
             return true;
@@ -3256,19 +3251,73 @@ pub fn inject_service_pointer_capability(
 // WASM Function
 // ============================================================================
 
-/// A WASM function (simplified)
+/// A validated WASM function descriptor.
 #[derive(Clone, Copy)]
 pub struct Function {
     /// Start offset in bytecode
     pub code_offset: usize,
     /// Code length
     pub code_len: usize,
+    /// Canonical module type index for this function.
+    pub type_index: usize,
     /// Number of parameters
     pub param_count: usize,
     /// Number of results
     pub result_count: usize,
+    /// Canonical parameter value types.
+    pub param_types: [ValueType; MAX_WASM_TYPE_ARITY],
+    /// Canonical result value types.
+    pub result_types: [ValueType; MAX_WASM_TYPE_ARITY],
+    /// Whether this signature is fully i32-only and therefore JIT fast-path compatible.
+    pub all_i32: bool,
     /// Number of local variables
     pub local_count: usize,
+}
+
+impl Function {
+    pub const fn from_signature(
+        code_offset: usize,
+        code_len: usize,
+        local_count: usize,
+        type_index: usize,
+        signature: ParsedFunctionType,
+    ) -> Self {
+        Function {
+            code_offset,
+            code_len,
+            type_index,
+            param_count: signature.param_count,
+            result_count: signature.result_count,
+            param_types: signature.param_types,
+            result_types: signature.result_types,
+            all_i32: signature.all_i32,
+            local_count,
+        }
+    }
+
+    pub const fn synthetic_i32(
+        code_offset: usize,
+        code_len: usize,
+        param_count: usize,
+        result_count: usize,
+        local_count: usize,
+    ) -> Self {
+        Function {
+            code_offset,
+            code_len,
+            type_index: 0,
+            param_count,
+            result_count,
+            param_types: [ValueType::I32; MAX_WASM_TYPE_ARITY],
+            result_types: [ValueType::I32; MAX_WASM_TYPE_ARITY],
+            all_i32: true,
+            local_count,
+        }
+    }
+
+    pub const fn locals_total(&self) -> usize {
+        self.param_count + self.local_count
+    }
 }
 
 // ============================================================================
@@ -3302,11 +3351,11 @@ enum CallTarget {
 }
 
 // ============================================================================
-// Polyglot language tag — set from the `oreulia_lang` custom WASM section
+// Polyglot language tag — set from the `oreulius_lang` custom WASM section
 // ============================================================================
 
 /// Source language that compiled this WASM module.
-/// Encoded in the `oreulia_lang` custom section as a 1-byte tag
+/// Encoded in the `oreulius_lang` custom section as a 1-byte tag
 /// followed by 4 version bytes (major, minor, patch, reserved).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -3387,7 +3436,7 @@ pub struct WasmModule {
     data_segments: Vec<DataSegment>,
     /// Backward-compat path for hand-crafted bytecode using call >=1000 as host.
     legacy_host_call_encoding: bool,
-    /// Source language detected from the `oreulia_lang` custom WASM section.
+    /// Source language detected from the `oreulius_lang` custom WASM section.
     pub language_tag: LanguageTag,
     /// Language version from the custom section: [major, minor, patch, reserved].
     pub lang_version: [u8; 4],
@@ -3528,7 +3577,7 @@ impl WasmModule {
             let mut cursor = offset;
             match section_id {
                 0 => {
-                    // Custom section: parse `oreulia_lang` if present.
+                    // Custom section: parse `oreulius_lang` if present.
                     // Format: LEB128 name_len, name bytes, then 1-byte tag + 4-byte version.
                     if cursor < section_end {
                         if let Ok(name_len) =
@@ -3537,7 +3586,7 @@ impl WasmModule {
                             let name_end = cursor.saturating_add(name_len);
                             if name_end <= section_end && name_len == 12 {
                                 let name_bytes = &bytes[cursor..name_end];
-                                if name_bytes == b"oreulia_lang" {
+                                if name_bytes == b"oreulius_lang" {
                                     let data_start = name_end;
                                     if data_start < section_end {
                                         self.language_tag =
@@ -4024,13 +4073,8 @@ impl WasmModule {
             if total_locals > MAX_LOCALS {
                 return Err(WasmError::InvalidLocalIndex);
             }
-            let defined_idx = self.add_function(Function {
-                code_offset,
-                code_len,
-                param_count: sig.param_count,
-                result_count: sig.result_count,
-                local_count,
-            })?;
+            let defined_idx =
+                self.add_function(Function::from_signature(code_offset, code_len, local_count, type_idx, sig))?;
             let combined_idx = self
                 .import_function_count
                 .checked_add(defined_idx)
@@ -4129,9 +4173,9 @@ impl WasmModule {
         let signature = ParsedFunctionType {
             param_count: func.param_count,
             result_count: func.result_count,
-            param_types: [ValueType::I32; MAX_WASM_TYPE_ARITY],
-            result_types: [ValueType::I32; MAX_WASM_TYPE_ARITY],
-            all_i32: true,
+            param_types: func.param_types,
+            result_types: func.result_types,
+            all_i32: func.all_i32,
         };
         let mut ty_idx = None;
         let mut i = 0usize;
@@ -5258,13 +5302,9 @@ impl WasmInstance {
         }
         self.module.load(code)?;
         self.module.reset_functions();
-        let _ = self.module.add_function(Function {
-            code_offset: 0,
-            code_len: code.len(),
-            param_count: 0,
-            result_count: 1,
-            local_count: locals_total,
-        })?;
+        let _ = self
+            .module
+            .add_function(Function::synthetic_i32(0, code.len(), 0, 1, locals_total))?;
         self.stack.clear();
         self.locals = [Value::I32(0); MAX_LOCALS];
         self.globals = [None; MAX_WASM_GLOBALS];
@@ -7003,7 +7043,7 @@ impl WasmInstance {
         ]))
     }
 
-    /// Call a host function (Oreulia syscall)
+    /// Call a host function (Oreulius syscall)
     fn call_host_function(&mut self, func_idx: usize) -> Result<(), WasmError> {
         // Check syscall limit
         self.check_syscall_limit()?;
@@ -7281,10 +7321,10 @@ impl WasmInstance {
     }
 
     // ========================================================================
-    // Oreulia Syscalls
+    // Oreulius Syscalls
     // ========================================================================
 
-    /// oreulia_log(msg_ptr: i32, msg_len: i32)
+    /// oreulius_log(msg_ptr: i32, msg_len: i32)
     fn host_log(&mut self) -> Result<(), WasmError> {
         let msg_len = self.stack.pop()?.as_i32()? as usize;
         let msg_ptr = self.stack.pop()?.as_i32()? as usize;
@@ -7328,7 +7368,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_fs_read(cap: i32, key_ptr: i32, key_len: i32, buf_ptr: i32, buf_len: i32) -> i32
+    /// oreulius_fs_read(cap: i32, key_ptr: i32, key_len: i32, buf_ptr: i32, buf_len: i32) -> i32
     fn host_fs_read(&mut self) -> Result<(), WasmError> {
         let buf_len = self.stack.pop()?.as_i32()? as usize;
         let buf_ptr = self.stack.pop()?.as_i32()? as usize;
@@ -7414,7 +7454,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_fs_write(cap: i32, key_ptr: i32, key_len: i32, data_ptr: i32, data_len: i32) -> i32
+    /// oreulius_fs_write(cap: i32, key_ptr: i32, key_len: i32, data_ptr: i32, data_len: i32) -> i32
     fn host_fs_write(&mut self) -> Result<(), WasmError> {
         let data_len = self.stack.pop()?.as_i32()? as usize;
         let data_ptr = self.stack.pop()?.as_i32()? as usize;
@@ -7494,7 +7534,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_channel_send(cap: i32, msg_ptr: i32, msg_len: i32) -> i32
+    /// oreulius_channel_send(cap: i32, msg_ptr: i32, msg_len: i32) -> i32
     fn host_channel_send(&mut self) -> Result<(), WasmError> {
         let msg_len = self.stack.pop()?.as_i32()? as usize;
         let msg_ptr = self.stack.pop()?.as_i32()? as usize;
@@ -7569,7 +7609,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_channel_recv(cap: i32, buf_ptr: i32, buf_len: i32) -> i32
+    /// oreulius_channel_recv(cap: i32, buf_ptr: i32, buf_len: i32) -> i32
     fn host_channel_recv(&mut self) -> Result<(), WasmError> {
         let buf_len = self.stack.pop()?.as_i32()? as usize;
         let buf_ptr = self.stack.pop()?.as_i32()? as usize;
@@ -7654,7 +7694,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_net_http_get(url_ptr: i32, url_len: i32, buf_ptr: i32, buf_len: i32) -> i32
+    /// oreulius_net_http_get(url_ptr: i32, url_len: i32, buf_ptr: i32, buf_len: i32) -> i32
     fn host_net_http_get(&mut self) -> Result<(), WasmError> {
         let buf_len = self.stack.pop()?.as_i32()? as usize;
         let buf_ptr = self.stack.pop()?.as_i32()? as usize;
@@ -7731,7 +7771,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_net_connect(host_ptr: i32, host_len: i32, port: i32) -> i32
+    /// oreulius_net_connect(host_ptr: i32, host_len: i32, port: i32) -> i32
     fn host_net_connect(&mut self) -> Result<(), WasmError> {
         let _port = self.stack.pop()?.as_i32()? as u16;
         let host_len = self.stack.pop()?.as_i32()? as usize;
@@ -7775,7 +7815,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_dns_resolve(domain_ptr: i32, domain_len: i32) -> i32 (returns IP as u32)
+    /// oreulius_dns_resolve(domain_ptr: i32, domain_len: i32) -> i32 (returns IP as u32)
     fn host_dns_resolve(&mut self) -> Result<(), WasmError> {
         let domain_len = self.stack.pop()?.as_i32()? as usize;
         let domain_ptr = self.stack.pop()?.as_i32()? as usize;
@@ -8076,6 +8116,12 @@ impl WasmInstance {
         if result.target_head_after.is_some() {
             flags |= 1 << 3;
         }
+        if result.used_fallback {
+            flags |= 1 << 4;
+        }
+        if result.conflict_count > 0 {
+            flags |= 1 << 5;
+        }
         let new_version = result.new_version_id.unwrap_or(u64::MAX);
         let before = result.target_head_before.unwrap_or(u64::MAX);
         let after = result.target_head_after.unwrap_or(u64::MAX);
@@ -8086,6 +8132,8 @@ impl WasmInstance {
             flags,
             result.target_branch_id,
             result.source_branch_id,
+            result.merge_kind.as_u32(),
+            result.conflict_count,
             0,
             new_lo,
             new_hi,
@@ -8103,7 +8151,7 @@ impl WasmInstance {
         out
     }
 
-    /// oreulia_service_invoke(cap: i32, args_ptr: i32, args_count: i32) -> i32
+    /// oreulius_service_invoke(cap: i32, args_ptr: i32, args_count: i32) -> i32
     fn host_service_invoke(&mut self) -> Result<(), WasmError> {
         let args_count = self.stack.pop()?.as_i32()? as usize;
         let args_ptr = self.stack.pop()?.as_i32()? as usize;
@@ -8175,7 +8223,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_service_invoke_typed(cap: i32, args_ptr: i32, args_count: i32, results_ptr: i32, results_capacity: i32) -> i32
+    /// oreulius_service_invoke_typed(cap: i32, args_ptr: i32, args_count: i32, results_ptr: i32, results_capacity: i32) -> i32
     fn host_service_invoke_typed(&mut self) -> Result<(), WasmError> {
         let results_capacity = self.stack.pop()?.as_i32()? as usize;
         let results_ptr = self.stack.pop()?.as_i32()? as usize;
@@ -8292,7 +8340,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_service_register(func: i32|funcref, delegate: i32) -> i32
+    /// oreulius_service_register(func: i32|funcref, delegate: i32) -> i32
     fn host_service_register(&mut self) -> Result<(), WasmError> {
         let delegate = self.stack.pop()?.as_i32()? != 0;
         let selector = self.stack.pop()?;
@@ -8346,7 +8394,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_channel_send_cap(chan_cap: i32, msg_ptr: i32, msg_len: i32, cap: i32) -> i32
+    /// oreulius_channel_send_cap(chan_cap: i32, msg_ptr: i32, msg_len: i32, cap: i32) -> i32
     fn host_channel_send_with_cap(&mut self) -> Result<(), WasmError> {
         let cap_to_send = CapHandle(self.stack.pop()?.as_u32()?);
         let msg_len = self.stack.pop()?.as_i32()? as usize;
@@ -8429,7 +8477,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_last_service_cap() -> i32
+    /// oreulius_last_service_cap() -> i32
     fn host_last_service_handle(&mut self) -> Result<(), WasmError> {
         let func_id: u16 = 11;
         crate::security::security().intent_wasm_call(self.process_id, func_id as u64);
@@ -8467,7 +8515,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_temporal_snapshot(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32
+    /// oreulius_temporal_snapshot(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32
     fn host_temporal_snapshot(&mut self) -> Result<(), WasmError> {
         let out_meta_ptr = self.pop_nonneg_i32_as_usize()?;
         let path_len = self.pop_nonneg_i32_as_usize()?;
@@ -8542,7 +8590,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_temporal_latest(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32
+    /// oreulius_temporal_latest(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32
     fn host_temporal_latest(&mut self) -> Result<(), WasmError> {
         let out_meta_ptr = self.pop_nonneg_i32_as_usize()?;
         let path_len = self.pop_nonneg_i32_as_usize()?;
@@ -8615,7 +8663,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_temporal_read(cap: i32, path_ptr: i32, path_len: i32, version_lo: i32, version_hi: i32, buf_ptr: i32, buf_len: i32) -> i32
+    /// oreulius_temporal_read(cap: i32, path_ptr: i32, path_len: i32, version_lo: i32, version_hi: i32, buf_ptr: i32, buf_len: i32) -> i32
     fn host_temporal_read(&mut self) -> Result<(), WasmError> {
         let buf_len = self.pop_nonneg_i32_as_usize()?;
         let buf_ptr = self.pop_nonneg_i32_as_usize()?;
@@ -8699,7 +8747,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_temporal_rollback(cap: i32, path_ptr: i32, path_len: i32, version_lo: i32, version_hi: i32, out_ptr: i32) -> i32
+    /// oreulius_temporal_rollback(cap: i32, path_ptr: i32, path_len: i32, version_lo: i32, version_hi: i32, out_ptr: i32) -> i32
     fn host_temporal_rollback(&mut self) -> Result<(), WasmError> {
         let out_ptr = self.pop_nonneg_i32_as_usize()?;
         let version_hi = self.stack.pop()?.as_u32()?;
@@ -8802,7 +8850,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_temporal_stats(out_ptr: i32) -> i32
+    /// oreulius_temporal_stats(out_ptr: i32) -> i32
     fn host_temporal_stats(&mut self) -> Result<(), WasmError> {
         let out_ptr = self.pop_nonneg_i32_as_usize()?;
 
@@ -8850,7 +8898,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_temporal_history(cap: i32, path_ptr: i32, path_len: i32, start_from_newest: i32, max_entries: i32, out_ptr: i32, out_capacity: i32) -> i32
+    /// oreulius_temporal_history(cap: i32, path_ptr: i32, path_len: i32, start_from_newest: i32, max_entries: i32, out_ptr: i32, out_capacity: i32) -> i32
     fn host_temporal_history(&mut self) -> Result<(), WasmError> {
         let out_capacity = self.pop_nonneg_i32_as_usize()?;
         let out_ptr = self.pop_nonneg_i32_as_usize()?;
@@ -8963,7 +9011,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_temporal_branch_create(cap, path_ptr, path_len, branch_ptr, branch_len, from_lo, from_hi, out_ptr) -> i32
+    /// oreulius_temporal_branch_create(cap, path_ptr, path_len, branch_ptr, branch_len, from_lo, from_hi, out_ptr) -> i32
     fn host_temporal_branch_create(&mut self) -> Result<(), WasmError> {
         let out_ptr = self.pop_nonneg_i32_as_usize()?;
         let from_hi = self.stack.pop()?.as_u32()?;
@@ -9057,7 +9105,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_temporal_branch_checkout(cap, path_ptr, path_len, branch_ptr, branch_len, out_ptr) -> i32
+    /// oreulius_temporal_branch_checkout(cap, path_ptr, path_len, branch_ptr, branch_len, out_ptr) -> i32
     fn host_temporal_branch_checkout(&mut self) -> Result<(), WasmError> {
         let out_ptr = self.pop_nonneg_i32_as_usize()?;
         let branch_len = self.pop_nonneg_i32_as_usize()?;
@@ -9143,7 +9191,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_temporal_branch_list(cap, path_ptr, path_len, out_ptr, out_capacity) -> i32
+    /// oreulius_temporal_branch_list(cap, path_ptr, path_len, out_ptr, out_capacity) -> i32
     fn host_temporal_branch_list(&mut self) -> Result<(), WasmError> {
         let out_capacity = self.pop_nonneg_i32_as_usize()?;
         let out_ptr = self.pop_nonneg_i32_as_usize()?;
@@ -9247,7 +9295,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_temporal_merge(cap, path_ptr, path_len, source_ptr, source_len, target_ptr, target_len, strategy, out_ptr) -> i32
+    /// oreulius_temporal_merge(cap, path_ptr, path_len, source_ptr, source_len, target_ptr, target_len, strategy, out_ptr) -> i32
     fn host_temporal_merge(&mut self) -> Result<(), WasmError> {
         let out_ptr = self.pop_nonneg_i32_as_usize()?;
         let strategy_raw = self.stack.pop()?.as_i32()?;
@@ -9267,6 +9315,7 @@ impl WasmInstance {
             0 => Some(crate::temporal::TemporalMergeStrategy::FastForwardOnly),
             1 => Some(crate::temporal::TemporalMergeStrategy::Ours),
             2 => Some(crate::temporal::TemporalMergeStrategy::Theirs),
+            3 => Some(crate::temporal::TemporalMergeStrategy::ThreeWay),
             _ => None,
         };
 
@@ -10064,7 +10113,7 @@ impl WasmInstance {
     ///
     /// Register this module as a named polyglot service.  The name is read
     /// from the caller’s linear memory.  The language is taken from the
-    /// module’s `oreulia_lang` custom section (defaults to `Unknown`).
+    /// module’s `oreulius_lang` custom section (defaults to `Unknown`).
     ///
     /// If the language is `Python` or `JS` and a singleton entry already
     /// exists for that language, the existing entry’s `instance_id` and
@@ -10246,7 +10295,7 @@ impl WasmInstance {
         };
 
         // Inject a ServicePointer WasmCapability into this instance’s table.
-        let cap = crate::capability::OreuliaCapability::new_polyglot_link(
+        let cap = crate::capability::OreuliusCapability::new_polyglot_link(
             self.process_id,
             object_id,
             target_lang,
@@ -11603,7 +11652,7 @@ impl WasmInstance {
         self.stack.push(Value::I32(depth as i32))
     }
 
-    /// oreulia_thread_spawn(func_idx: i32, arg: i32) -> i32
+    /// oreulius_thread_spawn(func_idx: i32, arg: i32) -> i32
     ///
     /// Spawns a new cooperative WASM thread starting at the given function
     /// index with a single i32 argument.  Returns the thread ID (>= 1) on
@@ -11649,7 +11698,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_thread_join(tid: i32) -> i32
+    /// oreulius_thread_join(tid: i32) -> i32
     ///
     /// Waits for the thread with the given tid to finish.
     /// Returns the thread exit code if it finished, `0` if the thread no
@@ -11671,7 +11720,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_thread_id() -> i32
+    /// oreulius_thread_id() -> i32
     ///
     /// Returns the current thread's ID.  The main instance (not spawned as a
     /// thread) always returns 0.
@@ -11680,7 +11729,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_thread_yield() -> ()
+    /// oreulius_thread_yield() -> ()
     ///
     /// Yields the current quantum.
     fn host_thread_yield(&mut self) -> Result<(), WasmError> {
@@ -11691,7 +11740,7 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// oreulia_thread_exit(code: i32) -> ()
+    /// oreulius_thread_exit(code: i32) -> ()
     ///
     /// Terminates the calling thread with the given exit code.
     fn host_thread_exit(&mut self) -> Result<(), WasmError> {
@@ -15482,13 +15531,7 @@ pub fn jit_benchmark() -> Result<(u64, u64), &'static str> {
 
     module.load(&code).map_err(|_| "Module load failed")?;
     module
-        .add_function(Function {
-            code_offset: 0,
-            code_len: code.len(),
-            param_count: 0,
-            result_count: 1,
-            local_count: 0,
-        })
+        .add_function(Function::synthetic_i32(0, code.len(), 0, 1, 0))
         .map_err(|_| "Function add failed")?;
 
     let instance_id = wasm_runtime()
@@ -15590,13 +15633,7 @@ fn jit_bounds_self_test_impl(force_user_mode: bool) -> Result<(), &'static str> 
 
             module.load(&code).map_err(|_| "Module load failed")?;
             module
-                .add_function(Function {
-                    code_offset: 0,
-                    code_len: code.len(),
-                    param_count: 0,
-                    result_count: 1,
-                    local_count: 0,
-                })
+                .add_function(Function::synthetic_i32(0, code.len(), 0, 1, 0))
                 .map_err(|_| "Function add failed")?;
             let instance_id = wasm_runtime()
                 .instantiate_module(module, ProcessId(1))
@@ -16534,13 +16571,7 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         .load(&[Opcode::End as u8])
         .map_err(|_| "jit compare/shift self-test: base load failed")?;
     base_module
-        .add_function(Function {
-            code_offset: 0,
-            code_len: 1,
-            param_count: 0,
-            result_count: 1,
-            local_count: 0,
-        })
+        .add_function(Function::synthetic_i32(0, 1, 0, 1, 0))
         .map_err(|_| "jit compare/shift self-test: base function add failed")?;
 
     let interp_id = wasm_runtime()
@@ -17102,13 +17133,7 @@ fn ensure_fuzz_instances() -> Result<(usize, usize), &'static str> {
         crate::serial_println!("[X64-JF] ensure=add-function");
     }
     base_module
-        .add_function(Function {
-            code_offset: 0,
-            code_len: 1,
-            param_count: 0,
-            result_count: 1,
-            local_count: 0,
-        })
+        .add_function(Function::synthetic_i32(0, 1, 0, 1, 0))
         .map_err(|_| "Function add failed")?;
 
     #[cfg(target_arch = "x86_64")]
@@ -18962,13 +18987,7 @@ pub fn formal_service_pointer_self_check() -> Result<(), &'static str> {
             .map_err(|_| "Service pointer self-check: instance creation failed")?;
         instance_id = Some(id);
 
-        let func = Function {
-            code_offset: 0,
-            code_len: code.len(),
-            param_count: 0,
-            result_count: 1,
-            local_count: 0,
-        };
+        let func = Function::synthetic_i32(0, code.len(), 0, 1, 0);
         let set_func =
             wasm_runtime().get_instance_mut(id, |inst| inst.module.add_function(func).map(|_| ()));
         if !matches!(set_func, Ok(Ok(()))) {
@@ -19409,13 +19428,7 @@ pub fn wasm_control_flow_self_check() -> Result<(), &'static str> {
         .load(&code)
         .map_err(|_| "control-flow self-check: code load failed")?;
     let _ = module
-        .add_function(Function {
-            code_offset: 0,
-            code_len: code.len(),
-            param_count: 0,
-            result_count: 1,
-            local_count: 0,
-        })
+        .add_function(Function::synthetic_i32(0, code.len(), 0, 1, 0))
         .map_err(|_| "control-flow self-check: add function failed")?;
 
     let instance_id = wasm_runtime()

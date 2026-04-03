@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -2357,7 +2357,7 @@ pub fn init() {
     // key hash via IA32_SGXLEPUBKEYHASHn MSRs (0x8C–0x8F), removing the
     // dependency on Intel's proprietary Launch Enclave.
     //
-    // We write the Oreulia kernel's own launch-key hash (a well-known constant
+    // We write the Oreulius kernel's own launch-key hash (a well-known constant
     // for debug/simulation; replace with a real key for production).
     // The write is a no-op if IA32_FEATURE_CONTROL[17] = 0 or already locked.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -2365,7 +2365,7 @@ pub fn init() {
         // Derive the FLC launch-key hash from the kernel's compile-time
         // build identity.  This 256-bit value is programmed into
         // IA32_SGXLEPUBKEYHASHn so the platform trusts enclaves signed by
-        // the Oreulia kernel build key — eliminating the Intel LE dependency.
+        // the Oreulius kernel build key — eliminating the Intel LE dependency.
         //
         // For production: replace OREULIA_BUILD_KEY_BYTES (in this file) with
         // the SHA-256 of the production RSA-3072 public modulus, re-derive.
@@ -2932,7 +2932,7 @@ const _EINITTOKEN_SIZE_CHECK: () = {
 // ---------------------------------------------------------------------------
 // EPC virtual-address helpers
 //
-// On a straight 1:1 physical-to-virtual kernel map (the current Oreulia boot
+// On a straight 1:1 physical-to-virtual kernel map (the current Oreulius boot
 // model) EPC physical addresses are directly accessible as virtual addresses.
 // When the kernel eventually introduces a separate EPC virtual window (e.g.
 // KASLR or multi-range paging) update EPC_VIRT_OFFSET accordingly or replace
@@ -2954,7 +2954,7 @@ fn epc_phys_to_virt(pa: usize) -> usize {
 //
 // Derive a deterministic 256-bit hash from the kernel's compile-time identity
 // constants.  This hash is programmed into IA32_SGXLEPUBKEYHASHn so that the
-// platform trusts enclaves signed by the Oreulia kernel build key — no
+// platform trusts enclaves signed by the Oreulius kernel build key — no
 // dependency on Intel's proprietary Launch Enclave.
 //
 // The derivation uses a simple FNV-1a-64 cascade over well-known build

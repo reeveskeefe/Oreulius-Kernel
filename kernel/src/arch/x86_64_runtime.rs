@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -2404,7 +2404,7 @@ pub fn wait_for_ticks(min_delta: u64, max_spin_hlt: usize) -> bool {
 
 pub fn run_serial_shell() -> ! {
     crate::terminal::clear_screen();
-    crate::terminal::write_str_no_serial("Oreulia OS (x86_64)\n");
+    crate::terminal::write_str_no_serial("Oreulius OS (x86_64)\n");
     crate::terminal::write_str_no_serial(
         "Type 'help' for the full shared command list.\nType 'help-mini' for x86_64 runtime extension commands.\n\n"
     );

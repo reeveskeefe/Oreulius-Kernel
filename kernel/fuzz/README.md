@@ -1,6 +1,6 @@
 # Kernel Regression Corpus
 
-This directory contains external regression corpora for Oreulia kernel fuzzing.
+This directory contains external regression corpora for Oreulius kernel fuzzing.
 
 ## Files
 
@@ -33,7 +33,7 @@ From `kernel/`:
 ./fuzz/ci_capnet_check.sh 1000 2
 ```
 
-Inside the Oreulia shell, you can also run:
+Inside the Oreulius shell, you can also run:
 
 ```text
 wasm-jit-fuzz 1000 3418704842

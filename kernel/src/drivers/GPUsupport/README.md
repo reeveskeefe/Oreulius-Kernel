@@ -1,9 +1,9 @@
-# Oreulia GPU Support
+# Oreulius GPU Support
 
-This folder is Oreulia's **universal GPU substrate**.
+This folder is Oreulius's **universal GPU substrate**.
 
 Its job is not to guess how every GPU works. Its job is to give every GPU the
-highest **safe** level of support Oreulia can prove:
+highest **safe** level of support Oreulius can prove:
 
 - safe probe and classification
 - scanout for the compositor
@@ -29,7 +29,7 @@ It is responsible for:
 - defining normalized buffer, engine, queue, and fence models
 - enforcing a hard rule: **no unsafe "brandless MMIO command guessing"**
 
-This means Oreulia can support unknown hardware conservatively, while still
+This means Oreulius can support unknown hardware conservatively, while still
 allowing deep optimized support for devices that have standards-based or
 vendor-specific implementations.
 
@@ -39,14 +39,14 @@ Every backend must honestly declare the highest tier it can support.
 
 ### `ProbeOnly`
 
-The device can be discovered and described safely, but Oreulia does not claim
+The device can be discovered and described safely, but Oreulius does not claim
 it can render or submit work to it.
 
 ### `Scanout`
 
 The device can present pixels to the screen and act as a compositor backend.
 
-This is the minimum tier for "real GPU/display support" in Oreulia.
+This is the minimum tier for "real GPU/display support" in Oreulius.
 
 ### `Transfer2D`
 
@@ -86,7 +86,7 @@ GPUsupport/
 
 ## Backend Selection Policy
 
-Oreulia currently prefers scanout backends in this order:
+Oreulius currently prefers scanout backends in this order:
 
 1. `virtio_gpu`
 2. `qxl`
@@ -164,7 +164,7 @@ A vendor-family plugin should first prove:
 - safe scanout or queue bring-up
 
 Do not claim native compute just because the device is powerful. Claim it only
-when Oreulia can actually submit and synchronize work correctly.
+when Oreulius can actually submit and synchronize work correctly.
 
 ## What "Finished" Means For A Backend
 
@@ -224,7 +224,7 @@ explicitly in the backend doc and code comments.
 
 ## Security And Safety Requirements
 
-All GPU support in Oreulia must follow these rules:
+All GPU support in Oreulius must follow these rules:
 
 - never guess native command submission on unknown hardware
 - never claim a higher tier than the code really supports
@@ -240,7 +240,7 @@ If a device needs firmware:
 
 ## What Companies Should Do
 
-If you are bringing a new GPU family to Oreulia inside a company:
+If you are bringing a new GPU family to Oreulius inside a company:
 
 1. Decide whether you want:
    - safe scanout only
@@ -278,5 +278,5 @@ If you are new to this subsystem, read in this order:
 6. `docs/universal-gpu-model.md`
 7. `docs/tiering.md`
 
-That is the shortest path to understanding how Oreulia expects GPU support to
+That is the shortest path to understanding how Oreulius expects GPU support to
 be added.

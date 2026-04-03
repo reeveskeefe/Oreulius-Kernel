@@ -104,8 +104,8 @@ if [[ "$build_first" -eq 1 ]]; then
     ./build.sh
 fi
 
-if [[ ! -f oreulia.iso ]]; then
-    echo "ERROR: oreulia.iso not found; run ./build.sh or pass --build"
+if [[ ! -f oreulius.iso ]]; then
+    echo "ERROR: oreulius.iso not found; run ./build.sh or pass --build"
     exit 1
 fi
 
@@ -114,7 +114,7 @@ if [[ -z "$qemu_extra" ]]; then
 fi
 
 if [[ -z "$log_file" ]]; then
-    log_file="$(mktemp -t oreulia-formal-verify.XXXXXX.log)"
+    log_file="$(mktemp -t oreulius-formal-verify.XXXXXX.log)"
 fi
 
 echo "Running formal verification..."

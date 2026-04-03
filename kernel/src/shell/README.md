@@ -2,9 +2,9 @@
 
 ## Purpose
 
-The `shell` module is the **interactive operator interface built directly into the Oreulia kernel**. It is not a userspace shell process. It runs inside Ring-0 during the active execution loop and provides a command-line interface over the VGA text buffer (and optionally the serial port) that exposes the entire kernel subsystem surface to direct inspection and manipulation.
+The `shell` module is the **interactive operator interface built directly into the Oreulius kernel**. It is not a userspace shell process. It runs inside Ring-0 during the active execution loop and provides a command-line interface over the VGA text buffer (and optionally the serial port) that exposes the entire kernel subsystem surface to direct inspection and manipulation.
 
-The shell exists because Oreulia is a research and systems kernel. During development and verification, every subsystem — the scheduler, IPC, temporal versioning, capability graphs, CapNet, WASM execution, filesystem, network stack, and security layer — needs to be exercisable interactively without booting a full userspace. The shell is that interface. When the kernel boots, you get a prompt. Every command dispatched through that prompt is a direct native kernel call.
+The shell exists because Oreulius is a research and systems kernel. During development and verification, every subsystem — the scheduler, IPC, temporal versioning, capability graphs, CapNet, WASM execution, filesystem, network stack, and security layer — needs to be exercisable interactively without booting a full userspace. The shell is that interface. When the kernel boots, you get a prompt. Every command dispatched through that prompt is a direct native kernel call.
 
 The shell is *not* a POSIX shell. There is no `fork`/`exec` process spawning for commands. There are no environment variables, no piping, no shell scripting. Commands are matched by string prefix inside a monolithic `execute(input: &str)` dispatcher and call internal kernel functions directly.
 
@@ -61,7 +61,7 @@ A reduced command surface targeting the AArch64 QEMU virtual machine, where seve
 A software virtual terminal multiplexer. Controls `TERM_COUNT = 6` independent terminal views backed by VGA memory. Manages switching between terminal contexts using raw `pushfq`/`cli`/`popfq` sequences for interrupt safety, without depending on the `x86_64` crate.
 
 ### `console_service.rs`
-Implements **capability-gated console objects**. Unlike POSIX where `stdout` is an ambient resource available to any process, Oreulia requires an explicit `Console` capability token to write output. This module stores up to `MAX_CONSOLES = 16` active console objects. Each `Console` is owned by a `ProcessId` and has per-object `write_count` / `read_count` statistics. Access is checked against the capability manager before any I/O operation proceeds.
+Implements **capability-gated console objects**. Unlike POSIX where `stdout` is an ambient resource available to any process, Oreulius requires an explicit `Console` capability token to write output. This module stores up to `MAX_CONSOLES = 16` active console objects. Each `Console` is owned by a `ProcessId` and has per-object `write_count` / `read_count` statistics. Access is checked against the capability manager before any I/O operation proceeds.
 
 ---
 
@@ -242,11 +242,11 @@ The virtual terminal system maintains `TERM_COUNT = 6` independent terminal buff
 
 ## Console Capability Model (`console_service.rs`)
 
-Console I/O in Oreulia is **not ambient**. A process must hold a `Console` capability with `Rights::Write` to write to any output stream. This module:
+Console I/O in Oreulius is **not ambient**. A process must hold a `Console` capability with `Rights::Write` to write to any output stream. This module:
 
 1. Allocates `Console` objects (up to `MAX_CONSOLES = 16`) with `object_id` and `owner` fields.
-2. Issues `OreuliaCapability` tokens of type `CapabilityType::Console` via the central capability manager.
+2. Issues `OreuliusCapability` tokens of type `CapabilityType::Console` via the central capability manager.
 3. Before every write, the capability manager verifies token validity and rights membership.
 4. All console creation and state changes are recorded through the temporal system (`record_console_event`).
 
-This design ensures that even the most basic I/O in Oreulia is observable, auditable, and revocable — stdout can be taken away from a process the same way any other capability can.
+This design ensures that even the most basic I/O in Oreulius is observable, auditable, and revocable — stdout can be taken away from a process the same way any other capability can.

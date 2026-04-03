@@ -1,6 +1,6 @@
 //! Browser backend kernel module.
 //!
-//! This module implements the in-kernel layer of the Oreulia browser stack:
+//! This module implements the in-kernel layer of the Oreulius browser stack:
 //!
 //! - **Network I/O**: DNS, TCP, TLS (transport.rs)
 //! - **HTTP/1.1**: request builder + streaming response parser (fetch.rs)

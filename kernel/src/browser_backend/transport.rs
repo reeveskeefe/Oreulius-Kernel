@@ -64,6 +64,25 @@ pub struct TransportHandle {
 }
 
 impl TransportHandle {
+    #[inline]
+    fn has_tls_session(&self) -> bool {
+        self.tls_handle != NO_TLS_HANDLE
+    }
+
+    #[inline]
+    fn has_tcp_connection(&self) -> bool {
+        self.tcp_conn != NO_TCP_CONN
+    }
+
+    #[inline]
+    fn validate_active_state(&self) -> Result<(), TransportError> {
+        match self.scheme {
+            Scheme::Https if self.has_tls_session() && !self.has_tcp_connection() => Ok(()),
+            Scheme::Http if self.has_tcp_connection() && !self.has_tls_session() => Ok(()),
+            _ => Err(TransportError::InvalidState),
+        }
+    }
+
     /// Connect to `host:port`, resolving the hostname via the net reactor.
     ///
     /// For HTTPS the TLS handshake is driven to completion (blocking via
@@ -195,6 +214,7 @@ impl TransportHandle {
     /// Read raw bytes into `out`, returning how many bytes arrived.
     /// Returns `Ok(0)` on graceful EOF.
     pub fn read_raw(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
+        self.validate_active_state()?;
         match self.scheme {
             Scheme::Https => {
                 let s = tls::session_mut(self.tls_handle).ok_or(TransportError::InvalidState)?;
@@ -240,14 +260,14 @@ impl TransportHandle {
     /// Release all kernel resources.  Must be called before discarding the
     /// handle.
     pub fn close(&mut self) {
-        if self.scheme == Scheme::Https && self.tls_handle != NO_TLS_HANDLE {
+        if self.has_tls_session() {
             if let Some(s) = tls::session_mut(self.tls_handle) {
                 s.close();
             }
             tls::free_session(self.tls_handle);
             self.tls_handle = NO_TLS_HANDLE;
         }
-        if self.scheme == Scheme::Http && self.tcp_conn != NO_TCP_CONN {
+        if self.has_tcp_connection() {
             let _ = net_reactor::tcp_close(self.tcp_conn);
             self.tcp_conn = NO_TCP_CONN;
         }
@@ -270,6 +290,7 @@ impl TransportHandle {
     }
 
     fn send_chunk(&mut self, data: &[u8]) -> Result<usize, TransportError> {
+        self.validate_active_state()?;
         match self.scheme {
             Scheme::Https => {
                 let s = tls::session_mut(self.tls_handle).ok_or(TransportError::InvalidState)?;

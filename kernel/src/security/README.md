@@ -1,12 +1,12 @@
 # `kernel/src/security` — Kernel Security Infrastructure
 
-The `security` module is the **unified security layer of the Oreulia kernel**. It owns every concern that spans hardware enforcement, runtime behaviour analysis, capability lifecycle governance, process isolation, hardware enclave management, and on-device proof verification. No other module may make trust decisions unilaterally — all access denials, violation reports, anomaly scores, and isolation judgements are routed through this module.
+The `security` module is the **unified security layer of the Oreulius kernel**. It owns every concern that spans hardware enforcement, runtime behaviour analysis, capability lifecycle governance, process isolation, hardware enclave management, and on-device proof verification. No other module may make trust decisions unilaterally — all access denials, violation reports, anomaly scores, and isolation judgements are routed through this module.
 
 ---
 
 ## Design Philosophy
 
-Oreulia's security model is built on four non-negotiable principles:
+Oreulius's security model is built on four non-negotiable principles:
 
 1. **No ambient authority.** Every security decision is grounded in a capability token. There are no global names, no implicit filesystem access, no privilege escalation by default.
 2. **Observable and auditable.** Every security-relevant event — capability use, denial, rate limit hit, integrity failure, anomaly crossing a threshold — is written to the `AuditLog` ring buffer and exposed to the persistence system. Nothing happens silently.
@@ -153,7 +153,7 @@ Tracks per-process resource consumption by `ResourceType`:
 
 The internal SipHash-2-4 implementation (`siphash24`, `sip_round`, `rotl64`) is fully `#[no_std]`, has no allocation, and operates on a `&[u8]` slice with a 128-bit (two u64) key.
 
-The default sealing key (`oreulia-persist-seal-key-v1 #Eg`) is a development sentinel. Production deployments must override it with a key derived from hardware attestation or a TPM-sealed provisioning flow.
+The default sealing key (`oreulius-persist-seal-key-v1 #Eg`) is a development sentinel. Production deployments must override it with a key derived from hardware attestation or a TPM-sealed provisioning flow.
 
 ### `SecurityError`
 

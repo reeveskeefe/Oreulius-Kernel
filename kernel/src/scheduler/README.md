@@ -1,6 +1,6 @@
 # `kernel/src/scheduler` — Preemptive Process Scheduler
 
-The `scheduler` module is the **execution engine of the Oreulia kernel**. It owns every concern related to process lifecycle, multi-level priority scheduling, timer-driven preemption, blocking and wakeup primitives, context switching, FPU state management, and the persistent temporal snapshot of all in-flight process state. All other kernel subsystems that need to yield, sleep, block, or spawn must go through this module.
+The `scheduler` module is the **execution engine of the Oreulius kernel**. It owns every concern related to process lifecycle, multi-level priority scheduling, timer-driven preemption, blocking and wakeup primitives, context switching, FPU state management, and the persistent temporal snapshot of all in-flight process state. All other kernel subsystems that need to yield, sleep, block, or spawn must go through this module.
 
 ---
 

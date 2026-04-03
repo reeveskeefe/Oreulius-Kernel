@@ -10,7 +10,7 @@ Usage:
   ./formal-verification-runbook.sh all [--force] [--strict]
 
 Purpose:
-  Implements the Oreulia formal verification runbook.
+  Implements the Oreulius formal verification runbook.
   Toolchain: Coq / The Rocq Prover 9.1.1 + OCaml 5.4.0 (Homebrew / Ubuntu PPA).
 
 Commands:
@@ -199,9 +199,9 @@ bootstrap() {
     log "Writing baseline runbook templates..."
 
     write_template_file "verification/README.md" <<'EOF'
-# Oreulia Verification Workspace
+# Oreulius Verification Workspace
 
-Houses the formal verification artifacts for the Oreulia kernel.
+Houses the formal verification artifacts for the Oreulius kernel.
 
 - `spec/`       — invariants, assumptions, threat model
 - `proof/`      — theorem index and proof records
@@ -238,7 +238,7 @@ Status: **Active**
 ## Rationale
 - **Why Coq / Rocq**: Mature ITP; `Stdlib.ZArith`, `Stdlib.micromega.Lia`, and
   `Stdlib.Lists.List` are sufficient for the fixed-point arithmetic and list-based
-  invariants in the Oreulia kernel model. The `lia` tactic discharges all linear
+  invariants in the Oreulius kernel model. The `lia` tactic discharges all linear
   arithmetic goals automatically, keeping proof scripts short and auditable.
 - **Why not Lean 4 / Isabelle**: Lean 4's stdlib coverage for fixed-point integer
   arithmetic was immature as of 2026-Q1; Isabelle is heavier to install in CI.
@@ -319,10 +319,10 @@ EOF
 
 ## Required Reading (completed)
 - README.md verification + temporal sections
-- docs/runtime/oreulia-jit-security-resolution.md
+- docs/runtime/oreulius-jit-security-resolution.md
 - docs/capability/capnet.md
-- docs/storage/oreulia-temporal-adapters-durable-persistence.md
-- docs/services/oreulia-service-pointer-capabilities.md
+- docs/storage/oreulius-temporal-adapters-durable-persistence.md
+- docs/services/oreulius-service-pointer-capabilities.md
 - kernel/src/commands.rs
 - kernel/src/temporal.rs
 - kernel/src/capnet.rs
@@ -498,7 +498,7 @@ EOF
     write_template_file "verification/artifacts/manifest.schema.json" <<'EOF'
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Oreulia Verification Manifest",
+  "title": "Oreulius Verification Manifest",
   "type": "object",
   "required": [
     "commit_sha",
@@ -768,6 +768,10 @@ jobs:
           if missing:
               print('manifest.json missing keys:', missing, file=sys.stderr)
               sys.exit(1)
+          placeholders = [k for k, v in m.items() if v in ('', 'UNSET') or v == []]
+          if placeholders:
+              print('manifest.json has unresolved placeholder fields:', placeholders, file=sys.stderr)
+              sys.exit(1)
           print('manifest.json OK — theorems:', len(m.get('theorems', [])))
           "
       - name: Check THEOREM_INDEX has no Planned entries
@@ -778,6 +782,13 @@ jobs:
             exit 1
           fi
           echo "THEOREM_INDEX OK"
+      - name: Check ASSUMPTIONS has no placeholder entries
+        run: |
+          if grep -Eq "^- ASM-.*: *(<[^>]+>|TBD|UNSET|pending)$" verification/spec/ASSUMPTIONS.md; then
+            echo "ERROR: ASSUMPTIONS.md has unresolved placeholder entries." >&2
+            exit 1
+          fi
+          echo "ASSUMPTIONS OK"
 EOF
 
     write_template_file "verification/artifacts/runtime_evidence.md" <<'EOF'
@@ -963,9 +974,10 @@ check_strict() {
     _rg -q "wasm-jit-fuzz-corpus" verification/artifacts/runtime_evidence.md || \
         die "strict mode: runtime_evidence.md missing wasm-jit-fuzz-corpus record"
 
-    # 6. Verify manifest.json is not a stub (no TODO values).
-    if _rg -q '"TODO"' verification/artifacts/manifest.json 2>/dev/null; then
-        die "strict mode: verification/artifacts/manifest.json still contains TODO values"
+    # 6. Verify manifest.json does not carry unresolved placeholder values.
+    if _rg -q '"(UNSET|)"' verification/artifacts/manifest.json 2>/dev/null || \
+       _rg -q '\[\s*\]' verification/artifacts/manifest.json 2>/dev/null; then
+        die "strict mode: verification/artifacts/manifest.json still contains unresolved placeholder values"
     fi
 }
 

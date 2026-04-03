@@ -1,10 +1,10 @@
 ;; spawn_children.wat — proc_spawn demo
 ;;
-;; Demonstrates Oreulia's proc_spawn host function (ID 100) by spawning two
+;; Demonstrates Oreulius's proc_spawn host function (ID 100) by spawning two
 ;; child WASM processes — each is a minimal WASM module that writes a single
 ;; line to stdout and exits.
 ;;
-;; Host-function ABI (Oreulia-specific, non-WASI):
+;; Host-function ABI (Oreulius-specific, non-WASI):
 ;;   proc_spawn(bytes_ptr: i32, bytes_len: i32) -> i32   (returns child PID)
 ;;   proc_yield()                                          (cooperative yield)
 ;;   proc_sleep(ticks: i32)                               (sleep N PIT ticks)
@@ -27,14 +27,14 @@
   (import "wasi_snapshot_preview1" "proc_exit"
     (func $proc_exit (param i32)))
 
-  ;; Oreulia-specific process management host functions
-  (import "oreulia" "proc_spawn"
+  ;; Oreulius-specific process management host functions
+  (import "oreulius" "proc_spawn"
     (func $proc_spawn (param i32 i32) (result i32)))
 
-  (import "oreulia" "proc_yield"
+  (import "oreulius" "proc_yield"
     (func $proc_yield))
 
-  (import "oreulia" "proc_sleep"
+  (import "oreulius" "proc_sleep"
     (func $proc_sleep (param i32)))
 
   ;; -------------------------------------------------------------------------

@@ -1,11 +1,11 @@
-# Oreulia - Persistence (Logs, Snapshots, Recovery)
+# Oreulius - Persistence (Logs, Snapshots, Recovery)
 
 **Status:** Implemented / Core (updated for current main)
 
 This document describes the persistence subsystem that exists today in
 `kernel/src/temporal/persistence.rs`.
 
-The old description of Oreulia as a generic "append-only durable log with
+The old description of Oreulius as a generic "append-only durable log with
 replay-based recovery for everything" is no longer accurate. The current design
 is more specific:
 
@@ -17,15 +17,15 @@ is more specific:
 
 Related documents:
 
-- `docs/storage/oreulia-filesystem.md`
-- `docs/storage/oreulia-temporal-adapters-durable-persistence.md`
+- `docs/storage/oreulius-filesystem.md`
+- `docs/storage/oreulius-temporal-adapters-durable-persistence.md`
 - `kernel/src/temporal/README.md`
 
 ---
 
 ## 1. What exists today
 
-Oreulia currently exposes one global `PersistenceService` with four pieces of
+Oreulius currently exposes one global `PersistenceService` with four pieces of
 state:
 
 - an in-memory append log
@@ -344,13 +344,13 @@ Relevant current verification surfaces include:
 
 For the broader universal-object and adapter model, see:
 
-- `docs/storage/oreulia-temporal-adapters-durable-persistence.md`
+- `docs/storage/oreulius-temporal-adapters-durable-persistence.md`
 
 ---
 
 ## 10. What this document does not claim
 
-This document deliberately does **not** claim that Oreulia currently has:
+This document deliberately does **not** claim that Oreulius currently has:
 
 - a universal durable write-ahead log for every kernel subsystem
 - exactly-once replay of all persisted records

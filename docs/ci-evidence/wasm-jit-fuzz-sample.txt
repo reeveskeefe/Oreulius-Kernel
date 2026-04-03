@@ -1,4 +1,4 @@
-# Oreulia CI Evidence — WASM JIT Fuzz Corpus Replay Sample
+# Oreulius CI Evidence — WASM JIT Fuzz Corpus Replay Sample
 #
 # Output of: cargo fuzz run wasm_jit_harness -- corpus/
 # Fuzzer: libFuzzer (cargo-fuzz)  Target: kernel/fuzz/fuzz_targets/wasm_jit_harness.rs

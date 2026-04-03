@@ -35,7 +35,7 @@ pub fn realtime_ns() -> Option<u64> {
 
 /// Block until at least `ns` nanoseconds have elapsed (relative).
 ///
-/// Uses `poll_oneoff` with a CLOCK_MONOTONIC subscription.  The Oreulia
+/// Uses `poll_oneoff` with a CLOCK_MONOTONIC subscription.  The Oreulius
 /// kernel honours this with cooperative yielding (no busy-spin in kernel).
 ///
 /// # Safety

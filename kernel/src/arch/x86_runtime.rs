@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -398,9 +398,9 @@ pub fn enter_runtime() -> ! {
     }
     crate::vga::print_str("\n");
 
-    SHELL_CI_MODE.store(boot_flag_enabled("oreulia.shell_ci"), Ordering::Release);
+    SHELL_CI_MODE.store(boot_flag_enabled("oreulius.shell_ci"), Ordering::Release);
     SHELL_CI_DEBUG.store(
-        boot_flag_enabled("oreulia.shell_ci_debug"),
+        boot_flag_enabled("oreulius.shell_ci_debug"),
         Ordering::Release,
     );
     crate::vga::print_str("[BOOT] Loader ptr: 0x");
@@ -679,9 +679,9 @@ pub fn shell_loop() -> ! {
     crate::terminal::clear_screen();
     crate::vga::print_str("[SHELL] Screen cleared\n");
     if shell_ci_mode() {
-        crate::terminal::write_str_no_serial("Oreulia OS\n");
+        crate::terminal::write_str_no_serial("Oreulius OS\n");
     } else {
-        crate::terminal::write_str("Oreulia OS\n");
+        crate::terminal::write_str("Oreulius OS\n");
     }
     crate::vga::print_str("[SHELL] Banner printed\n");
     if shell_ci_mode() {

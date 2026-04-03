@@ -1,16 +1,16 @@
-# Oreulia Userspace & Out-of-Band Services
+# Oreulius Userspace & Out-of-Band Services
 
-This directory (`/services`) contains the suite of daemon processes, userspace bridges, and out-of-band mathematical agents designed to interact with the Oreulia kernel. Unlike the core OS binary residing in `/kernel` — which is rigidly constrained to a `#[no_std]` environment and the strict rules of the `LockedBumpAllocator` — the utilities housed here function autonomously on top of standard library (`std`) APIs and leverage OS-level threads, sockets, and complex math routines.
+This directory (`/services`) contains the suite of daemon processes, userspace bridges, and out-of-band mathematical agents designed to interact with the Oreulius kernel. Unlike the core OS binary residing in `/kernel` — which is rigidly constrained to a `#[no_std]` environment and the strict rules of the `LockedBumpAllocator` — the utilities housed here function autonomously on top of standard library (`std`) APIs and leverage OS-level threads, sockets, and complex math routines.
 
 ---
 
 ## Why This Directory Exists
 
-The Oreulia architecture enforces extreme constraints on in-kernel workloads. The kernel relies on strict thermodynamic behavioral models (PMA §3 and §6) and continuous capability verification to assert secure bounds. However, these complex mathematical pipelines — such as Continuous-Time Markov Chain (CTMC) computations and Padé Approximants — are:
+The Oreulius architecture enforces extreme constraints on in-kernel workloads. The kernel relies on strict thermodynamic behavioral models (PMA §3 and §6) and continuous capability verification to assert secure bounds. However, these complex mathematical pipelines — such as Continuous-Time Markov Chain (CTMC) computations and Padé Approximants — are:
 
 1. **Computationally Expensive**: Performing real-time matrix exponentiation natively in Ring-0 could introduce unmanageable micro-stutters, delaying context switches and interrupting real-time scheduling.
 2. **Floating-Point Reliant**: Running `nalgebra`-based matrix mutations inside the kernel risks hardware / SIMD register corruption and bloats the kernel binary beyond acceptable limits.
-3. **Architecturally Isolated by Design**: Under Oreulia's distributed trust model, the kernel focuses entirely on enforcing capability revocation *policy*. It delegates the *inference* of intent anomalies to separated **Observational Daemons** that are free to use `std` and consume CPU time without impacting Ring-0 latency.
+3. **Architecturally Isolated by Design**: Under Oreulius's distributed trust model, the kernel focuses entirely on enforcing capability revocation *policy*. It delegates the *inference* of intent anomalies to separated **Observational Daemons** that are free to use `std` and consume CPU time without impacting Ring-0 latency.
 
 Telemetry data generated inside the kernel via the lock-free `TELEMETRY_RING` is forwarded outward over the QEMU serial back-channel (COM2 → UNIX socket) to these host-side services.
 
@@ -21,8 +21,8 @@ Telemetry data generated inside the kernel via the lock-free `TELEMETRY_RING` is
 | Service Name | Language | Mode | Core Purpose | Interaction Medium |
 |---|---|---|---|---|
 | `telemetry_daemon` | Rust 2021 | Host / Out-of-Band | Runs CTMC analysis against live telemetry event streams; revokes kernel capabilities when anomaly probability exceeds threshold. | UNIX socket over QEMU `COM2` |
-| *(planned)* `compositor` | Rust 2021 | Userspace ELF | Routes VGA / LFB draw calls through Oreulia IPC channels, removing framebuffer I/O from Ring-0. | Oreulia IPC channels |
-| *(planned)* `vfs_manager` | Rust / WASM | Userspace ELF | Isolates filesystem index management outside of kernel memory. | Oreulia IPC / `Filesystem` Cap |
+| *(planned)* `compositor` | Rust 2021 | Userspace ELF | Routes VGA / LFB draw calls through Oreulius IPC channels, removing framebuffer I/O from Ring-0. | Oreulius IPC channels |
+| *(planned)* `vfs_manager` | Rust / WASM | Userspace ELF | Isolates filesystem index management outside of kernel memory. | Oreulius IPC / `Filesystem` Cap |
 
 ---
 
@@ -38,7 +38,7 @@ How kernel runtime observations travel out-of-band to the Math Daemon and how re
 
 ### What It Is
 
-A standalone Rust binary (`std`, no kernel constraints) that acts as a mathematical security co-processor alongside the running Oreulia OS. It monitors the runtime behavior of every kernel process using CTMC thermodynamics and autonomously strips capabilities from processes whose behavior diverges from safe statistical envelopes.
+A standalone Rust binary (`std`, no kernel constraints) that acts as a mathematical security co-processor alongside the running Oreulius OS. It monitors the runtime behavior of every kernel process using CTMC thermodynamics and autonomously strips capabilities from processes whose behavior diverges from safe statistical envelopes.
 
 ### Source Layout
 
@@ -73,7 +73,7 @@ A standalone Rust binary (`std`, no kernel constraints) that acts as a mathemati
 
 ## Compilation — How It Fits Into the Finished OS
 
-**These services do not compile into the kernel binary.** They are intentionally separate executables that run alongside the QEMU VM session on the host machine, or will eventually be packed into an `initrd` ramdisk for native execution in Oreulia userspace.
+**These services do not compile into the kernel binary.** They are intentionally separate executables that run alongside the QEMU VM session on the host machine, or will eventually be packed into an `initrd` ramdisk for native execution in Oreulius userspace.
 
 ### Build the Daemon (Host)
 
@@ -88,9 +88,9 @@ cargo build --release
 Open two terminals:
 
 ```sh
-# Terminal 1 — boot Oreulia with COM2 wired to a UNIX socket
+# Terminal 1 — boot Oreulius with COM2 wired to a UNIX socket
 cd kernel
-QEMU_EXTRA_ARGS="-serial unix:/tmp/oreulia-telemetry.sock,server,nowait" \
+QEMU_EXTRA_ARGS="-serial unix:/tmp/oreulius-telemetry.sock,server,nowait" \
   ./run-x86_64-mb2-grub.sh
 ```
 
@@ -98,7 +98,7 @@ QEMU_EXTRA_ARGS="-serial unix:/tmp/oreulia-telemetry.sock,server,nowait" \
 # Terminal 2 — start the math daemon
 cd services/telemetry_daemon
 cargo run --release
-# Connects to /tmp/oreulia-telemetry.sock and begins consuming events
+# Connects to /tmp/oreulius-telemetry.sock and begins consuming events
 ```
 
 The kernel streams telemetry over COM2. QEMU maps that port to the UNIX socket. The daemon consumes it, runs CTMC analysis, and if needed writes revocations back through the same socket in the opposite direction. The two processes share no memory and require no kernel modification — the entire interface is the serial stream.

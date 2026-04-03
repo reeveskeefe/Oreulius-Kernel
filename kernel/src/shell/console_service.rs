@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -18,12 +18,12 @@
 //! Console Service with Capability-Based Access Control
 //!
 //! Unlike POSIX/Unix/Linux/NT where stdout/stderr are ambient resources
-//! available to all processes, Oreulia requires explicit Console capabilities.
+//! available to all processes, Oreulius requires explicit Console capabilities.
 //!
 //! This eliminates ambient authority and makes I/O explicit in the capability graph.
 
 use crate::capability::{
-    capability_manager, CapabilityError, CapabilityType, OreuliaCapability, Rights,
+    capability_manager, CapabilityError, CapabilityType, OreuliusCapability, Rights,
 };
 use crate::ipc::ProcessId;
 use crate::vga;
@@ -258,7 +258,7 @@ pub fn temporal_apply_console_event(
 }
 
 /// Validate a capability structure (used for IPC capability transfer)
-pub fn validate_console_capability(cap: &OreuliaCapability) -> Result<(), ConsoleError> {
+pub fn validate_console_capability(cap: &OreuliusCapability) -> Result<(), ConsoleError> {
     // Check type matches
     if cap.cap_type != CapabilityType::Console {
         return Err(ConsoleError::InvalidConsole);

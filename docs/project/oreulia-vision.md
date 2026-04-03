@@ -1,14 +1,14 @@
-# Oreulia — Vision and Current Direction
+# Oreulius — Vision and Current Direction
 
 **Status:** Active research kernel / alpha system.
 
-Oreulia is a **capability-native, WASM-first kernel** built around explicit authority, temporal state, auditable delegation, and a small but real multi-architecture runtime surface. It is not trying to be a Linux-compatible general-purpose OS. It is trying to be a defensible execution substrate for isolated WebAssembly workloads, capability-mediated services, and deterministic or replay-oriented systems work.
+Oreulius is a **capability-native, WASM-first kernel** built around explicit authority, temporal state, auditable delegation, and a small but real multi-architecture runtime surface. It is not trying to be a Linux-compatible general-purpose OS. It is trying to be a defensible execution substrate for isolated WebAssembly workloads, capability-mediated services, and deterministic or replay-oriented systems work.
 
 ---
 
-## 1. What Oreulia is trying to be
+## 1. What Oreulius is trying to be
 
-Oreulia is shaped around five durable ideas:
+Oreulius is shaped around five durable ideas:
 
 - **No ambient authority:** access to files, channels, services, and higher-level control surfaces is granted explicitly through capabilities.
 - **WASM-first execution:** WebAssembly is the intended application ABI, with both interpreted and JIT-backed execution paths.
@@ -16,13 +16,13 @@ Oreulia is shaped around five durable ideas:
 - **Capability-mediated composition:** IPC, service discovery, service pointers, CapNet delegation, observers, and policy controls all build on the same authority model.
 - **Inspectable and verifiable behavior:** shell-driven regression commands, fuzzing hooks, formal checks, and live diagnostics are treated as first-class engineering surfaces.
 
-The project is intentionally opinionated: Oreulia favors explicit authority, bounded queues, replayability, and auditability over POSIX compatibility or broad legacy application support.
+The project is intentionally opinionated: Oreulius favors explicit authority, bounded queues, replayability, and auditability over POSIX compatibility or broad legacy application support.
 
 ---
 
-## 2. What Oreulia currently is
+## 2. What Oreulius currently is
 
-Oreulia is no longer just a paper design or a boot-to-prompt experiment.
+Oreulius is no longer just a paper design or a boot-to-prompt experiment.
 
 Current project reality:
 
@@ -44,7 +44,7 @@ That matters because the project vision should now be read as a direction built 
 
 ## 3. Architectural stance
 
-Oreulia is best described as a **capability-native hybrid kernel** with a strong dataflow and service orientation.
+Oreulius is best described as a **capability-native hybrid kernel** with a strong dataflow and service orientation.
 
 ### 3.1 Kernel-resident responsibilities
 
@@ -62,7 +62,7 @@ This is not a “minimal microkernel with everything in userspace” design anym
 
 ### 3.2 Capability-mediated service model
 
-Oreulia does not treat service access as ambient namespace access. Instead, it is moving toward a model where:
+Oreulius does not treat service access as ambient namespace access. Instead, it is moving toward a model where:
 
 - services are registered explicitly
 - introductions are capability-mediated
@@ -73,7 +73,7 @@ This is one of the project’s clearest through-lines: the same authority model 
 
 ### 3.3 Temporal model
 
-Oreulia treats state history as operational infrastructure, not just backup machinery.
+Oreulius treats state history as operational infrastructure, not just backup machinery.
 
 Current temporal direction includes:
 
@@ -87,9 +87,9 @@ The implementation is real, but replay completeness is still partial in some sub
 
 ---
 
-## 4. What Oreulia is not
+## 4. What Oreulius is not
 
-Oreulia is not:
+Oreulius is not:
 
 - a POSIX- or Linux-compatible operating system
 - a native application compatibility layer
@@ -103,7 +103,7 @@ The project intentionally does **not** optimize around libc compatibility, `/pro
 
 ## 5. Security and trust model
 
-Oreulia assumes:
+Oreulius assumes:
 
 - workloads may be buggy or hostile
 - kernel logic is part of the trusted computing base
@@ -124,7 +124,7 @@ What it does **not** mean is that the kernel is already fully verified or fully 
 
 ## 6. Portability and execution model
 
-Oreulia is now a multi-architecture kernel project, but not a parity-complete one.
+Oreulius is now a multi-architecture kernel project, but not a parity-complete one.
 
 ### Current runtime posture
 
@@ -134,7 +134,7 @@ Oreulia is now a multi-architecture kernel project, but not a parity-complete on
 
 ### Current execution posture
 
-Oreulia is WASM-first, not WASM-only in an ideological sense, but the project is built around WebAssembly as the primary workload ABI:
+Oreulius is WASM-first, not WASM-only in an ideological sense, but the project is built around WebAssembly as the primary workload ABI:
 
 - host imports are explicit
 - service pointers and IPC integrate with the runtime
@@ -145,7 +145,7 @@ Oreulia is WASM-first, not WASM-only in an ideological sense, but the project is
 
 ## 7. Current strategic value of the project
 
-Oreulia is most compelling today as:
+Oreulius is most compelling today as:
 
 - a research vehicle for capability systems and explicit authority flow
 - a platform for temporal/persistent state experiments
@@ -169,7 +169,7 @@ That combination is still unusual, and it is the real reason the project is wort
 
 The vision is larger than the current implementation in a few important places.
 
-Still incomplete or uneven:
+Still uneven or not yet finished:
 
 - architecture parity, especially outside `i686`
 - replay completeness across all subsystems
@@ -178,13 +178,13 @@ Still incomplete or uneven:
 - fully normalized higher-level service docs and SDK surfaces
 - broader operational tooling beyond the current QEMU-first workflow set
 
-These are not side issues. They are the main work required to move Oreulia from “strong research kernel with real subsystems” toward a more deployable platform.
+These are not side issues. They are the main work required to move Oreulius from “strong research kernel with real subsystems” toward a more deployable platform.
 
 ---
 
 ## 9. Project direction
 
-The right near-term direction for Oreulia is not “become Linux.” It is:
+The right near-term direction for Oreulius is not “become Linux.” It is:
 
 - deepen the capability and temporal semantics already present
 - tighten docs so they match the implementation exactly
@@ -192,4 +192,4 @@ The right near-term direction for Oreulia is not “become Linux.” It is:
 - continue bringing non-`i686` runtimes closer to parity
 - keep the public claims narrower and more defensible than the internal ambition
 
-That discipline matters. Oreulia becomes more credible when its docs describe the real kernel that exists today while still pointing clearly at the longer-range model it is trying to reach.
+That discipline matters. Oreulius becomes more credible when its docs describe the real kernel that exists today while still pointing clearly at the longer-range model it is trying to reach.

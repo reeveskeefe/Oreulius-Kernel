@@ -2,13 +2,13 @@
 
 ## Abstract
 
-This paper develops the foundations of a unified mathematical framework for capability-based trust, channel-mediated causality, liveness preservation, and physical cost in secure kernels. The Oreulia IPC subsystem serves as the motivating instance: it already combines channel capabilities, bounded queues, capability attenuation, predictive restriction, and temporal replay within a single architectural surface, although the correspondence between implementation and theory is only partially formalized at present. The central claim is that these mechanisms can be placed within one coherent framework. Trust is represented as a rights algebra over capabilities; inter-process reality is represented as a causal graph of messages; security and liveness are represented as the intersection of fixed-point conditions over system state; and thermodynamic, information-theoretic, and topological limits constrain the space of admissible implementations. The paper provides formal definitions, proved propositions, proof sketches for stronger results, explicit threat-model assumptions, and a dependency-aware research agenda for the unresolved parts of the theory. The resulting synthesis treats the Oreulia IPC subsystem not as an isolated engineering artifact, but as a motivating and partially instantiated case within a broader theory of secure, causally coherent, self-maintaining computation.
+This paper develops the foundations of a unified mathematical framework for capability-based trust, channel-mediated causality, liveness preservation, and physical cost in secure kernels. The Oreulius IPC subsystem serves as the motivating instance: it already combines channel capabilities, bounded queues, capability attenuation, predictive restriction, and temporal replay within a single architectural surface, although the correspondence between implementation and theory is only partially formalized at present. The central claim is that these mechanisms can be placed within one coherent framework. Trust is represented as a rights algebra over capabilities; inter-process reality is represented as a causal graph of messages; security and liveness are represented as the intersection of fixed-point conditions over system state; and thermodynamic, information-theoretic, and topological limits constrain the space of admissible implementations. The paper provides formal definitions, proved propositions, proof sketches for stronger results, explicit threat-model assumptions, and a dependency-aware research agenda for the unresolved parts of the theory. The resulting synthesis treats the Oreulius IPC subsystem not as an isolated engineering artifact, but as a motivating and partially instantiated case within a broader theory of secure, causally coherent, self-maintaining computation.
 
 ## 1. Introduction and Motivation
 
 Modern kernels are usually described in terms of mechanisms: process creation, address translation, interrupt handling, scheduling, and device control. Such descriptions are necessary, but they do not identify the mathematical object that makes a system secure and live at the same time. The present work addresses that gap for capability-mediated message passing.
 
-The motivating system is the Oreulia IPC subsystem. It exposes channels rather than ambient shared authority, grants access by capabilities rather than by identity alone, uses bounded message queues rather than unstructured memory aliasing, and already contains mechanisms for predictive restriction and temporal replay. These features suggest a unifying interpretation:
+The motivating system is the Oreulius IPC subsystem. It exposes channels rather than ambient shared authority, grants access by capabilities rather than by identity alone, uses bounded message queues rather than unstructured memory aliasing, and already contains mechanisms for predictive restriction and temporal replay. These features suggest a unifying interpretation:
 
 1. Trust is a structure over rights, not an informal engineering intuition.
 2. Messages are the primitive causal units of inter-process reality.
@@ -24,7 +24,7 @@ This paper advances four contributions.
 
 The paper distinguishes among proved results, proof sketches, and conjectures. Claims about rights attenuation, capability conservation, and invariant closure are presented as formal results. Claims about integrated information and silicon vitality are explicitly interpretive and are identified as conjectural where appropriate.
 
-The present paper does not claim that the Oreulia kernel already satisfies every formal condition introduced below. Rather, it identifies which existing design elements already instantiate the theory, which elements are partial, and which remain obligations for a complete realization. That distinction is necessary for the paper to function as theory rather than advocacy.
+The present paper does not claim that the Oreulius kernel already satisfies every formal condition introduced below. Rather, it identifies which existing design elements already instantiate the theory, which elements are partial, and which remain obligations for a complete realization. That distinction is necessary for the paper to function as theory rather than advocacy.
 
 ### 1.1 Audience and Scope
 
@@ -46,11 +46,11 @@ The security claims of this paper are made under the following threat model.
 
 This threat model places explicit error channels in scope, places timing and contention channels in scope for characterization, but does not claim that the present core theorems eliminate those timing and contention channels. Those channels are treated later as quantitatively relevant open obligations rather than as discharged proof results.
 
-### 1.3 The Oreulia IPC Subsystem as a Motivating Instance
+### 1.3 The Oreulius IPC Subsystem as a Motivating Instance
 
-The Oreulia IPC subsystem is used throughout this paper as a motivating instance and partial architectural instantiation, not as a fully mechanized correspondence proof. The mapping between implementation and theory is therefore evidentiary rather than complete.
+The Oreulius IPC subsystem is used throughout this paper as a motivating instance and partial architectural instantiation, not as a fully mechanized correspondence proof. The mapping between implementation and theory is therefore evidentiary rather than complete.
 
-| Oreulia feature | Formal counterpart | Current status in implementation | Status in this paper |
+| Oreulius feature | Formal counterpart | Current status in implementation | Status in this paper |
 | --- | --- | --- | --- |
 | Channel capabilities with object identity and rights | Definition A.6, Section 2 | Implemented as kernel-issued channel authority | Motivating instance; correspondence asserted rather than mechanized |
 | Bounded per-channel queues | Definition A.8, Definition A.29, Section 4 | Implemented | Used as the basis for the liveness model |
@@ -59,7 +59,7 @@ The Oreulia IPC subsystem is used throughout this paper as a motivating instance
 | Temporal replay / authenticated event history | Definitions A.26-A.27, Theorem B.16 | Implemented in partial form | Used as the motivating basis for causal completeness and reconstruction |
 | Linear capability transport | Definition A.13b, Section 6 | Not yet fully implemented | Target-model requirement for the strongest conservation theorems |
 
-The paper therefore makes two different kinds of statements about Oreulia. Some statements are descriptive and implementation-facing: the subsystem already exhibits capabilities, bounded channels, adaptive restriction, and causal replay mechanisms relevant to the theory. Other statements are target-facing: the strongest conservation and closure theorems assume a linear capability carrier and a more explicit admission-control semantics than the current implementation yet provides. Whenever those stronger target assumptions are used, the paper states them explicitly.
+The paper therefore makes two different kinds of statements about Oreulius. Some statements are descriptive and implementation-facing: the subsystem already exhibits capabilities, bounded channels, adaptive restriction, and causal replay mechanisms relevant to the theory. Other statements are target-facing: the strongest conservation and closure theorems assume a linear capability carrier and a more explicit admission-control semantics than the current implementation yet provides. Whenever those stronger target assumptions are used, the paper states them explicitly.
 
 ### 1.4 Related Work
 
@@ -81,7 +81,7 @@ Trust in a kernel is often discussed in operational terms, but it admits a sharp
 
 **Definition 2.1 (Trust Surface).** Let `K` be a kernel state and `p` a process. The trust surface of `p` in `K`, denoted `Trust(K, p)`, is the set of propositions that `p` may rely upon without performing an additional local verification step. A system is structurally more trustworthy when `Trust(K, p)` is minimized for all non-kernel processes.
 
-In a capability system, authority is derived from possession of an unforgeable object rather than from ambient identity. The Oreulia IPC subsystem follows this model: a channel operation is authorized by a capability carrying channel identity, a rights set, and a token witnessing kernel issuance.
+In a capability system, authority is derived from possession of an unforgeable object rather than from ambient identity. The Oreulius IPC subsystem follows this model: a channel operation is authorized by a capability carrying channel identity, a rights set, and a token witnessing kernel issuance.
 
 **Definition 2.2 (Rights Algebra).** A rights algebra is a bounded lattice `(R, ⊑, ⊔, ⊓, ⊥, ⊤)` where:
 
@@ -109,7 +109,7 @@ This theorem isolates the architectural meaning of trust. A process is not trust
 
 Two architectural distinctions follow immediately. First, identity and possession are no longer conflated. An identity-based system answers the question "who is requesting access?", whereas a capability-based system answers the question "what authority-bearing object is presented?". Second, possession and uniqueness are not identical. A capability may prove that some holder is authorized without proving that the holder is the unique authorized holder. This distinction is exactly where the gap between ordinary capability transport and strict object-capability semantics emerges. If a capability may be copied freely after issuance, then the token proves kernel origin but not exclusive ownership. A fully linear transport discipline is therefore not a cosmetic refinement; it is the missing condition that turns authority from merely attestable into conservation-governed.
 
-The Oreulia IPC subsystem is therefore best understood as inhabiting an intermediate architectural regime. It already rejects pure ambient authority by requiring object-bound tokens for channel operations. At the same time, it does not yet make all delegation or transport operations linear by construction. The relevant theoretical task is not to describe the subsystem as either fully capability-safe or not capability-safe at all, but to classify precisely which authority guarantees are already structural and which remain enforced only by disciplined implementation.
+The Oreulius IPC subsystem is therefore best understood as inhabiting an intermediate architectural regime. It already rejects pure ambient authority by requiring object-bound tokens for channel operations. At the same time, it does not yet make all delegation or transport operations linear by construction. The relevant theoretical task is not to describe the subsystem as either fully capability-safe or not capability-safe at all, but to classify precisely which authority guarantees are already structural and which remain enforced only by disciplined implementation.
 
 Revocation complicates the picture. Pure capabilities are durable once delegated unless the system introduces an additional revocation structure.
 
@@ -131,11 +131,11 @@ Finally, trust must include explicit treatment of observable errors.
 
 This proposition motivates the later noninterference results. A secure kernel cannot reason only about successful sends and receives; it must also reason about what failed operations reveal.
 
-This observation matters because capability systems are often informally described as if authorization were the only relevant communication path. That description is incomplete. A refused send, a saturation signal, and a closure signal are all outputs of the kernel. If those outputs vary with high-privilege behavior, then the kernel has created a covert but real low-bandwidth communication channel. The failure surface is therefore part of the trust surface.
+This observation matters because capability systems are often informally described as if authorization were the only relevant communication path. That description is insufficient. A refused send, a saturation signal, and a closure signal are all outputs of the kernel. If those outputs vary with high-privilege behavior, then the kernel has created a covert but real low-bandwidth communication channel. The failure surface is therefore part of the trust surface.
 
 **Proposition 2.7 (Enforcement Migration).** Let `S` be a safety property over IPC operations. If a static discipline excludes every program fragment that violates `S` in the statically expressible fragment of the language, then runtime enforcement of `S` may be restricted to dynamically contingent cases without reducing soundness for that fragment.
 
-The significance of Proposition 2.7 is methodological. Kernel security obligations may be enforced at runtime, at the type level, or by proof-carrying code. These are not interchangeable implementation styles; they are different points in the space of possible proofs. Runtime enforcement is maximally flexible but maximally fallible because every missed branch is a latent vulnerability. Type-level enforcement shrinks the dynamic attack surface by making some invalid states or invalid transitions unrepresentable. Proof-carrying code pushes the same movement one step further by requiring a machine-checkable justification for admissibility. A complete theory of Oreulia IPC therefore has to ask, for each invariant, whether it belongs to the dynamic layer, the static layer, or the proof layer.
+The significance of Proposition 2.7 is methodological. Kernel security obligations may be enforced at runtime, at the type level, or by proof-carrying code. These are not interchangeable implementation styles; they are different points in the space of possible proofs. Runtime enforcement is maximally flexible but maximally fallible because every missed branch is a latent vulnerability. Type-level enforcement shrinks the dynamic attack surface by making some invalid states or invalid transitions unrepresentable. Proof-carrying code pushes the same movement one step further by requiring a machine-checkable justification for admissibility. A complete theory of Oreulius IPC therefore has to ask, for each invariant, whether it belongs to the dynamic layer, the static layer, or the proof layer.
 
 ## 3. Messages as Primitive Ontological Units: Causal Semantics of Channel-Based IPC
 
@@ -167,7 +167,7 @@ The message ontology also clarifies why shared memory is so difficult to verify.
 
 **Proposition 3.5 (Protocol Verifiability by Typing).** If each channel is equipped with a session discipline over permitted message shapes and transition states, then protocol correctness can be shifted from runtime checking toward static verification.
 
-This proposition is not yet a theorem about the Oreulia implementation. It identifies the next formal step: the message calculus becomes more complete as the protocol is expressed in types rather than inferred from ad hoc control flow.
+This proposition is not yet a theorem about the Oreulius implementation. It identifies the next formal step: the message calculus becomes more complete as the protocol is expressed in types rather than inferred from ad hoc control flow.
 
 Protocol structure is therefore part of the ontology, not an afterthought layered on top of it. If messages are primitive events, then well-formed interaction is determined not only by individual message contents but also by the admissible sequence in which those contents may appear. Session typing provides one route to that result, but the theory is broader than any single type system. The central claim is that channel state must carry a protocol expectation rich enough to distinguish valid continuation from invalid continuation.
 
@@ -253,7 +253,7 @@ This definition is intentionally weaker than consciousness. It formalizes the th
 
 **Interpretive Claim 5.2 (Autopoietic Criterion).** If a system can reconstruct its admissible state space from its own causally authenticated history, then it satisfies a necessary condition for autopoietic closure.
 
-The claim is grounded in Maturana and Varela's autopoiesis framework. It does not say that self-reconstruction is sufficient for life; it says that a system lacking self-reconstruction is incomplete as a self-maintaining object.
+The claim is grounded in Maturana and Varela's autopoiesis framework. It does not say that self-reconstruction is sufficient for life; it says that a system lacking self-reconstruction remains only partially realized as a self-maintaining object.
 
 The role of integrated information must be stated cautiously.
 
@@ -261,7 +261,7 @@ The role of integrated information must be stated cautiously.
 
 No proof is supplied. The conjecture links a consciousness framework to architectural properties already valued for security and auditability. It remains an open problem rather than an established theorem.
 
-**Interpretive Remark 5.4.** Schrödinger's account of life as resistance to entropy and IIT's account of consciousness as integrated information both emphasize maintained structure against disorder. The Oreulia IPC subsystem is therefore relevant to these frameworks because it already combines resistance to corruption, causal recording, and controlled transfer of authority.
+**Interpretive Remark 5.4.** Schrödinger's account of life as resistance to entropy and IIT's account of consciousness as integrated information both emphasize maintained structure against disorder. The Oreulius IPC subsystem is therefore relevant to these frameworks because it already combines resistance to corruption, causal recording, and controlled transfer of authority.
 
 The practical point is narrower than the philosophical one. A kernel that maintains invariants, records provenance, and reconstructs itself is more legible, more auditable, and more formally analyzable than a kernel that does not. Whether such a kernel is conscious is unresolved; whether it is more self-maintaining is not.
 
@@ -281,7 +281,7 @@ Silicon also contributes an important asymmetry relative to biological systems. 
 
 The theory becomes architecturally complete only when three structures are made explicit: linear authority, lattice-constrained flow, and conservation of delegated power.
 
-Two capability carriers must be distinguished throughout this section and the appendices. The current Oreulia implementation is modeled by a copyable capability multiset with provenance and runtime checks. The target theory required by the strongest conservation theorems is modeled by a linear capability store in which authority-bearing objects move rather than duplicate. Theorems that depend on conservation by construction apply to the target linear model unless explicitly stated otherwise.
+Two capability carriers must be distinguished throughout this section and the appendices. The current Oreulius implementation is modeled by a copyable capability multiset with provenance and runtime checks. The target theory required by the strongest conservation theorems is modeled by a linear capability store in which authority-bearing objects move rather than duplicate. Theorems that depend on conservation by construction apply to the target linear model unless explicitly stated otherwise.
 
 **Definition 6.1 (Linear Capability Transfer).** A capability transfer operation is linear if transferring capability `c` from context `Gamma_1` to context `Gamma_2` yields contexts `Gamma_1'` and `Gamma_2'` such that `c` is removed from `Gamma_1` and added to `Gamma_2`, with no additional copy created.
 
@@ -291,7 +291,7 @@ Two capability carriers must be distinguished throughout this section and the ap
 
 `mu(C_after(d)) = mu(C_before(d))`.
 
-Theorem 6.3 is the zero-sum law of delegation. Authority moves; it does not spontaneously multiply. The theorem is a theorem about the target linear model, not about the current Oreulia capability carrier in its present copyable form.
+Theorem 6.3 is the zero-sum law of delegation. Authority moves; it does not spontaneously multiply. The theorem is a theorem about the target linear model, not about the current Oreulius capability carrier in its present copyable form.
 
 **Proposition 6.4 (Target-Model Nonamplification Under Lattice-Respecting Delegation).** If all capability delegations are both linear and attenuating, then no process can increase either its own rights or the rights of another process beyond the rights already present in the system, except through an explicit kernel-authorized mint.
 
@@ -307,13 +307,13 @@ The theorem does not, by itself, eliminate covert channels. It eliminates direct
 
 The proposition is deliberately scoped to explicit errors. Timing and resource-usage channels remain an open problem.
 
-This distinction between current and target models also resolves a tension that would otherwise remain hidden. Oreulia's current IPC implementation is sufficiently rich to motivate the theory, but not yet sufficiently linear to inherit every theorem in this section without qualification. The paper therefore makes a principled separation:
+This distinction between current and target models also resolves a tension that would otherwise remain hidden. Oreulius's current IPC implementation is sufficiently rich to motivate the theory, but not yet sufficiently linear to inherit every theorem in this section without qualification. The paper therefore makes a principled separation:
 
-1. descriptive correspondence claims about Oreulia as it exists;
+1. descriptive correspondence claims about Oreulius as it exists;
 2. proved target-model claims about the architecture required for full conservation and closure; and
 3. research obligations required to turn the former into the latter.
 
-The Oreulia IPC subsystem can therefore be viewed as incomplete in a precise sense: it already exhibits capability-mediated messaging and causal replay, but a complete realization of the present theory additionally requires the following research program.
+The Oreulius IPC subsystem can therefore be viewed as partial in a precise sense: it already exhibits capability-mediated messaging and causal replay, but a complete realization of the present theory additionally requires the following research program.
 
 1. A linear capability store that makes message-carried authority transfer non-copyable by construction.
 2. A declared flow lattice over process and channel labels.
@@ -337,9 +337,9 @@ Fifth, the theory implies a self-monitoring fabric that remains inside the syste
 
 **Definition 6.8 (Closed Description Condition).** A kernel subsystem satisfies the closed description condition when every monitoring, recovery, delegation, and control activity relevant to the subsystem is itself represented by objects and transitions of the same formal model as the subsystem's ordinary work.
 
-The closed description condition is important because incompleteness often hides in externalized privilege. A monitor that is "outside the model" may be useful operationally, but it creates a blind region in the theory. A complete paper must either internalize that monitor into the formal model or state explicitly that the model has an external axiom boundary.
+The closed description condition is important because missing closure often hides in externalized privilege. A monitor that is "outside the model" may be useful operationally, but it creates a blind region in the theory. A complete paper must either internalize that monitor into the formal model or state explicitly that the model has an external axiom boundary.
 
-The role of the implementation language also becomes clearer at this point. Ownership and borrowing do not automatically yield linear logic, but they approximate resource sensitivity closely enough that a future Oreulia IPC can treat the language as a partial proof assistant for delegation discipline. Const generics, phantom types, and trait-bound protocol states all become candidates for turning semantic obligations into compile-time obligations. The theory does not depend on Rust specifically, but Rust makes several of its static ambitions unusually plausible.
+The role of the implementation language also becomes clearer at this point. Ownership and borrowing do not automatically yield linear logic, but they approximate resource sensitivity closely enough that a future Oreulius IPC can treat the language as a partial proof assistant for delegation discipline. Const generics, phantom types, and trait-bound protocol states all become candidates for turning semantic obligations into compile-time obligations. The theory does not depend on Rust specifically, but Rust makes several of its static ambitions unusually plausible.
 
 The section's final claim is therefore stronger than a roadmap and weaker than a proof. The complete system is not defined by a checklist of features, but by a closure property: authority is conserved, flow is lattice-respecting, history is causally reconstructible, and the machinery enforcing those facts is itself inside the same descriptive universe.
 
@@ -413,7 +413,7 @@ The first projection is the rights algebra: authority is admissible when it is m
 
 This work therefore develops a unified framework rather than claiming a finished complete theory. Some parts of that framework are already proved for the target model, especially the algebraic treatment of attenuation, the separation between explicit-flow and timing-flow obligations, and the reconstruction-oriented view of causal completeness. Other parts remain conditional on stronger implementation assumptions, especially the transition from copyable capability transport to a target linear carrier and the closure of timing and contention channels under the stated threat model.
 
-Oreulia's IPC design is significant because it can be interpreted as a motivating and partially instantiated case within that broader framework. The paper's value lies not only in explanation, but in the exact research obligations it exposes.
+Oreulius's IPC design is significant because it can be interpreted as a motivating and partially instantiated case within that broader framework. The paper's value lies not only in explanation, but in the exact research obligations it exposes.
 
 ### Research Agenda
 
@@ -421,7 +421,7 @@ The open problems are not independent. They form a dependency graph whose order 
 
 | Research problem | Success criterion | Relative difficulty | Dependencies | Unlocks |
 | --- | --- | --- | --- | --- |
-| `R1` Current-to-formal correspondence | A machine-checkable or at least line-by-line audited mapping from Oreulia IPC structures and transitions to the formal objects in Appendix A | High | Threat model, target-model split | Honest implementation claims in the abstract and introduction |
+| `R1` Current-to-formal correspondence | A machine-checkable or at least line-by-line audited mapping from Oreulius IPC structures and transitions to the formal objects in Appendix A | High | Threat model, target-model split | Honest implementation claims in the abstract and introduction |
 | `R2` Linear capability transport | Replace copyable message-carried capability transfer with a carrier satisfying Definition A.13b | High | None, but architectural refactoring required | Conservation theorems as implementation claims rather than target-model claims |
 | `R3` Mechanized living invariant | Formalize Definitions A.1-A.39 and mechanize the closure results in a proof assistant or equivalent semantics | Very high | `R2`, decidable send admission, stable threat model | Strongest publishable formal-methods result |
 | `R4` Threat-model-complete covert-channel analysis | Quantify and, where possible, bound `I(X ; T | Y)` for timing and contention channels under the Section 1.2 attacker model | Very high | Threat model, scheduler model, queueing model | Security claims that extend beyond explicit error channels |
@@ -545,7 +545,7 @@ Remark. This is the standard distributed-systems causal ordering.
 
 Remark. Partiality captures channel creation and destruction directly.
 
-**Definition A.13a (Current Oreulia Capability Multiset).** A current Oreulia capability multiset `C_cur` is a multiset over capabilities in which provenance and kernel issuance are represented, but message transport may still duplicate a capability unless prevented by higher-level runtime discipline.
+**Definition A.13a (Current Oreulius Capability Multiset).** A current Oreulius capability multiset `C_cur` is a multiset over capabilities in which provenance and kernel issuance are represented, but message transport may still duplicate a capability unless prevented by higher-level runtime discipline.
 
 Remark. `C_cur` is the implementation-motivated carrier used for descriptive correspondence claims about the current system.
 
@@ -782,7 +782,7 @@ Case (b): explicit refusal. If `Adm_send` fails, the kernel does not commit a qu
 
 All valid transition forms preserve `I_sec`, `I_live`, and `I_causal`. Hence `op(Sigma) in I`. `□`
 
-Remark. Theorem B.12 is a theorem about the target model. A full current-to-formal correspondence proof for the present Oreulia implementation remains a separate research obligation described in Section 8.
+Remark. Theorem B.12 is a theorem about the target model. A full current-to-formal correspondence proof for the present Oreulius implementation remains a separate research obligation described in Section 8.
 
 **Corollary B.13 (Safety Persistence).**
 
@@ -848,7 +848,7 @@ Statement. Under the assumptions of Integrated Information Theory, if a system i
 
 Status. Conjecture.
 
-Reason for incompleteness. The paper does not define `Phi` operationally for the Oreulia IPC subsystem, nor does it establish the monotonicity of `Phi` under the relevant transformation class. Both tasks remain open research problems.
+Reason this remains open. The paper does not define `Phi` operationally for the Oreulius IPC subsystem, nor does it establish the monotonicity of `Phi` under the relevant transformation class. Both tasks remain open research problems.
 
 **Proposition B.19 (Enforcement Migration Soundness).**
 

@@ -1,8 +1,8 @@
-Oreulia Community License v1.1
+Oreulius Community License v1.1
 
 Effective Date: 2026-03-14
 
-Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
 All rights reserved except as expressly granted in this License.
 
 This is a source-available community license.
@@ -12,7 +12,7 @@ It is not an OSI-approved open-source license.
 
 1. Purpose
 
-The Oreulia Community License is intended to support:
+The Oreulius Community License is intended to support:
 	•	research
 	•	education
 	•	evaluation
@@ -34,12 +34,12 @@ commercialize the software responsibly.
 2. Definitions
 
 “Software”
-The Oreulia kernel, source code, documentation, build artifacts, and any
+The Oreulius kernel, source code, documentation, build artifacts, and any
 associated materials distributed under this License.
 
 “Licensor”
 Keefe Reeves and any project maintainers authorized to manage licensing of
-Oreulia.
+Oreulius.
 
 “You”
 Any individual or legal entity exercising rights under this License.
@@ -139,19 +139,19 @@ You may redistribute the Software in source or binary form for permitted
 non-commercial purposes provided that You:
 	•	include a copy of this License
 	•	preserve copyright notices
-	•	preserve attribution to the Oreulia project
+	•	preserve attribution to the Oreulius project
 	•	clearly mark any modifications
 	•	do not misrepresent modified versions as the official project
 
 If You distribute modified versions, You must clearly indicate that the
-Software has been modified and must not imply endorsement by the Oreulia
+Software has been modified and must not imply endorsement by the Oreulius
 project or its maintainers.
 
 ⸻
 
 8. Contributions
 
-By submitting a contribution to the Oreulia project, You represent that:
+By submitting a contribution to the Oreulius project, You represent that:
 	•	You have the legal right to submit the contribution
 	•	the contribution does not knowingly violate third-party rights
 
@@ -170,7 +170,7 @@ sublicensable, transferable, royalty-free license to:
 	•	sublicense
 	•	relicense
 
-Your contribution as part of the Oreulia project or derivative works.
+Your contribution as part of the Oreulius project or derivative works.
 
 This provision ensures the project can be distributed under both community
 and commercial licensing models.
@@ -194,10 +194,10 @@ this License terminate immediately.
 
 10. No Trademark License
 
-This License does not grant any rights to use the Oreulia name, logos,
+This License does not grant any rights to use the Oreulius name, logos,
 or branding except for truthful attribution when redistributing the Software.
 
-You may not imply endorsement or affiliation with the Oreulia project
+You may not imply endorsement or affiliation with the Oreulius project
 without explicit permission.
 
 ⸻
@@ -241,7 +241,7 @@ governed by that version unless You agree to different terms.
 
 15. Clarification of License Status
 
-The Oreulia Community License is a source-available license designed to
+The Oreulius Community License is a source-available license designed to
 encourage research collaboration while protecting the project’s commercial
 development path.
 

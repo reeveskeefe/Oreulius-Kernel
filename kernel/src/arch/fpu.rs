@@ -1,9 +1,9 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * ---------------------------------------------------------------------------
  */
@@ -28,6 +28,25 @@
 //! `ExtFpuState` carries `#[repr(align(64))]` which satisfies the XSAVE
 //! alignment requirement (64 bytes) without any manual alignment juggling.
 
+const EXT_FPU_STATE_BYTES: usize = 2816;
+
+#[cfg(target_arch = "aarch64")]
+const AARCH64_Q_BYTES: usize = 32 * 16;
+#[cfg(target_arch = "aarch64")]
+const AARCH64_FPSR_OFFSET: usize = AARCH64_Q_BYTES;
+#[cfg(target_arch = "aarch64")]
+const AARCH64_FPCR_OFFSET: usize = AARCH64_FPSR_OFFSET + core::mem::size_of::<u64>();
+#[cfg(target_arch = "aarch64")]
+const AARCH64_META_MAGIC_OFFSET: usize = AARCH64_FPCR_OFFSET + core::mem::size_of::<u64>();
+#[cfg(target_arch = "aarch64")]
+const AARCH64_META_VERSION_OFFSET: usize = AARCH64_META_MAGIC_OFFSET + core::mem::size_of::<u32>();
+#[cfg(target_arch = "aarch64")]
+const AARCH64_RESERVED_OFFSET: usize = AARCH64_META_VERSION_OFFSET + core::mem::size_of::<u32>();
+#[cfg(target_arch = "aarch64")]
+const AARCH64_STATE_MAGIC: u32 = u32::from_le_bytes(*b"AFPU");
+#[cfg(target_arch = "aarch64")]
+const AARCH64_STATE_VERSION: u32 = 1;
+
 /// Full XSAVE extended state buffer — 2816 bytes, 64-byte aligned.
 ///
 /// 2816 bytes covers:
@@ -35,15 +54,16 @@
 ///   - SSE/AVX  (256–832 bytes, XSAVE standard area)
 ///   - AVX-512  (2048-byte XSAVE extended area for ZMM_Hi256 + Hi16_ZMM)
 ///
-/// On AArch64 only Q0-Q31 (512 bytes) + FPSR/FPCR (16 bytes) are stored;
-/// the rest of the buffer is unused but allocated for type uniformity.
+/// On AArch64 Q0-Q31 (512 bytes) + FPSR/FPCR (16 bytes) are stored directly.
+/// The remaining bytes hold versioned metadata and reserved extension space so
+/// save images stay deterministic and forward-compatible.
 #[repr(C, align(64))]
-pub struct ExtFpuState(pub [u8; 2816]);
+pub struct ExtFpuState(pub [u8; EXT_FPU_STATE_BYTES]);
 
 impl ExtFpuState {
     /// All-zero initialiser, usable in `const` context.
     pub const fn new() -> Self {
-        ExtFpuState([0u8; 2816])
+        ExtFpuState([0u8; EXT_FPU_STATE_BYTES])
     }
 }
 
@@ -118,7 +138,9 @@ pub unsafe fn init_fpu_state() {
 ///   [   0 ..  512): Q0-Q31 (128-bit registers, 32 × 16 bytes)
 ///   [ 512 ..  520): FPSR (u64)
 ///   [ 520 ..  528): FPCR (u64)
-///   [ 528 .. 2816): unused / future SVE
+///   [ 528 ..  532): state magic (`AFPU`)
+///   [ 532 ..  536): layout version (u32)
+///   [ 536 .. 2816): reserved / future architectural extension area
 ///
 /// # Safety
 /// See [`save_fpu_state_ext`].
@@ -151,8 +173,18 @@ pub unsafe fn save_fpu_state_ext(buf: *mut u8) {
     let fpcr: u64;
     core::arch::asm!("mrs {r}, fpsr", r = out(reg) fpsr, options(nostack));
     core::arch::asm!("mrs {r}, fpcr", r = out(reg) fpcr, options(nostack));
-    core::ptr::write_unaligned(buf.add(512) as *mut u64, fpsr);
-    core::ptr::write_unaligned(buf.add(520) as *mut u64, fpcr);
+    core::ptr::write_unaligned(buf.add(AARCH64_FPSR_OFFSET) as *mut u64, fpsr);
+    core::ptr::write_unaligned(buf.add(AARCH64_FPCR_OFFSET) as *mut u64, fpcr);
+    core::ptr::write_unaligned(buf.add(AARCH64_META_MAGIC_OFFSET) as *mut u32, AARCH64_STATE_MAGIC);
+    core::ptr::write_unaligned(
+        buf.add(AARCH64_META_VERSION_OFFSET) as *mut u32,
+        AARCH64_STATE_VERSION,
+    );
+    core::ptr::write_bytes(
+        buf.add(AARCH64_RESERVED_OFFSET),
+        0,
+        EXT_FPU_STATE_BYTES - AARCH64_RESERVED_OFFSET,
+    );
 }
 
 /// Restore NEON/SIMD registers Q0-Q31 plus FPSR/FPCR from `buf`.
@@ -162,8 +194,14 @@ pub unsafe fn save_fpu_state_ext(buf: *mut u8) {
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub unsafe fn restore_fpu_state_ext(buf: *const u8) {
-    let fpsr = core::ptr::read_unaligned(buf.add(512) as *const u64);
-    let fpcr = core::ptr::read_unaligned(buf.add(520) as *const u64);
+    let magic = core::ptr::read_unaligned(buf.add(AARCH64_META_MAGIC_OFFSET) as *const u32);
+    let version = core::ptr::read_unaligned(buf.add(AARCH64_META_VERSION_OFFSET) as *const u32);
+    if magic != AARCH64_STATE_MAGIC || version != AARCH64_STATE_VERSION {
+        init_fpu_state();
+        return;
+    }
+    let fpsr = core::ptr::read_unaligned(buf.add(AARCH64_FPSR_OFFSET) as *const u64);
+    let fpcr = core::ptr::read_unaligned(buf.add(AARCH64_FPCR_OFFSET) as *const u64);
     core::arch::asm!("msr fpsr, {r}", r = in(reg) fpsr, options(nostack));
     core::arch::asm!("msr fpcr, {r}", r = in(reg) fpcr, options(nostack));
     core::arch::asm!(

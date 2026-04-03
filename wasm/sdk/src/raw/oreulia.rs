@@ -1,10 +1,10 @@
-//! Raw Oreulia-native host-function bindings.
+//! Raw Oreulius-native host-function bindings.
 //!
-//! These functions are **Oreulia-specific extensions** beyond WASI Preview 1.
+//! These functions are **Oreulius-specific extensions** beyond WASI Preview 1.
 //! They expose the capability system, IPC channels, and process lifecycle
-//! management that make Oreulia unique.
+//! management that make Oreulius unique.
 //!
-//! Import module: `"oreulia"` (the runtime also accepts `"env"`).
+//! Import module: `"oreulius"` (the runtime also accepts `"env"`).
 //!
 //! | ID  | Name                  | Description |
 //! |-----|-----------------------|-------------|
@@ -18,18 +18,18 @@
 //! |   7 | `channel_close`       | Close a channel |
 //! |  10 | `mem_map`             | Map a shared memory region |
 //! |  11 | `mem_unmap`           | Unmap a shared memory region |
-//! |  23 | `oreulia_thread_spawn`| Spawn a cooperative WASM thread |
-//! |  24 | `oreulia_thread_join` | Join a cooperative WASM thread |
-//! |  25 | `oreulia_thread_id`   | Return the current WASM thread ID |
-//! |  26 | `oreulia_thread_yield`| Yield the current CPU quantum |
-//! |  27 | `oreulia_thread_exit` | Exit the current WASM thread |
+//! |  23 | `oreulius_thread_spawn`| Spawn a cooperative WASM thread |
+//! |  24 | `oreulius_thread_join` | Join a cooperative WASM thread |
+//! |  25 | `oreulius_thread_id`   | Return the current WASM thread ID |
+//! |  26 | `oreulius_thread_yield`| Yield the current CPU quantum |
+//! |  27 | `oreulius_thread_exit` | Exit the current WASM thread |
 //! | 100 | `proc_spawn`          | Spawn a child WASM process |
 //! | 101 | `proc_yield`          | Cooperatively yield the CPU |
 //! | 102 | `proc_sleep`          | Sleep for N PIT ticks (~ms) |
 //!
-//! See `docs/runtime/oreulia-wasm-abi.md` for the complete stable ABI reference.
+//! See `docs/runtime/oreulius-wasm-abi.md` for the complete stable ABI reference.
 
-#[link(wasm_import_module = "oreulia")]
+#[link(wasm_import_module = "oreulius")]
 extern "C" {
     // -----------------------------------------------------------------------
     // Capability management (IDs 0–3)
@@ -91,28 +91,28 @@ extern "C" {
     /// Spawn a cooperative WASM thread at `func_idx` with one i32 argument.
     ///
     /// Returns a positive thread ID on success, or `-1` on failure.
-    #[link_name = "oreulia_thread_spawn"]
+    #[link_name = "oreulius_thread_spawn"]
     pub fn thread_spawn(func_idx: i32, arg: i32) -> i32;
 
     /// Join a cooperative WASM thread.
     ///
     /// Returns the thread exit code if it has finished, `0` if the thread no
     /// longer exists, or `-1` if the caller should try again later.
-    #[link_name = "oreulia_thread_join"]
+    #[link_name = "oreulius_thread_join"]
     pub fn thread_join(tid: i32) -> i32;
 
     /// Return the current WASM thread ID.
     ///
     /// The main instance returns `0`.
-    #[link_name = "oreulia_thread_id"]
+    #[link_name = "oreulius_thread_id"]
     pub fn thread_id() -> i32;
 
     /// Yield the current CPU quantum.
-    #[link_name = "oreulia_thread_yield"]
+    #[link_name = "oreulius_thread_yield"]
     pub fn thread_yield();
 
     /// Exit the current WASM thread with `code`.
-    #[link_name = "oreulia_thread_exit"]
+    #[link_name = "oreulius_thread_exit"]
     pub fn thread_exit(code: i32);
 
     // -----------------------------------------------------------------------

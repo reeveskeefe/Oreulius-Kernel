@@ -1,6 +1,6 @@
 # `kernel/src/fs` — Filesystem and Storage Stack
 
-The `fs` module is the full vertical storage stack for Oreulia. It contains everything from raw block I/O against physical and virtual hardware up through a capability-gated virtual filesystem with POSIX-like directory semantics, inode persistence, filesystem watching with IPC notification channels, and a high-level RAM-backed key-value store with thermal profiling. Sitting alongside the storage path is the x86 32-bit virtual memory management system, which is housed here because address-space management and block I/O are tightly coupled at the paging and mmap layers.
+The `fs` module is the full vertical storage stack for Oreulius. It contains everything from raw block I/O against physical and virtual hardware up through a capability-gated virtual filesystem with POSIX-like directory semantics, inode persistence, filesystem watching with IPC notification channels, and a high-level RAM-backed key-value store with thermal profiling. Sitting alongside the storage path is the x86 32-bit virtual memory management system, which is housed here because address-space management and block I/O are tightly coupled at the paging and mmap layers.
 
 ---
 
@@ -676,7 +676,7 @@ The paging module implements x86 32-bit (i686 compat) two-level page table manag
 | 4 | `CACHE_DISABLE` | Caching disabled |
 | 5 | `ACCESSED` | CPU sets on access |
 | 6 | `DIRTY` | CPU sets on write |
-| 9 | `COPY_ON_WRITE` | Oreulia-defined software CoW bit (bit 9 = OS-available) |
+| 9 | `COPY_ON_WRITE` | Oreulius-defined software CoW bit (bit 9 = OS-available) |
 
 ### `PageDirEntry` and `PageTableEntry`
 

@@ -5,8 +5,8 @@ set timeout 30
 
 cd [file dirname [info script]]
 
-if {![file exists "oreulia.iso"]} {
-    puts "oreulia.iso not found; run ./build.sh first"
+if {![file exists "oreulius.iso"]} {
+    puts "oreulius.iso not found; run ./build.sh first"
     exit 1
 }
 

@@ -19,7 +19,7 @@ export A64_EXPECT_CMD_TIMEOUT="$expect_cmd_timeout"
     echo "A64_INCLUDE_STRICT_UART_IRQ=${A64_INCLUDE_STRICT_UART_IRQ:-0}"
     echo "A64_EXPECT_CMD_TIMEOUT=$A64_EXPECT_CMD_TIMEOUT"
     echo "A64_EXPECT_HARNESS_TIMEOUT=$harness_timeout"
-    echo "=== Building Oreulia kernel (AArch64 QEMU virt bring-up) ==="
+    echo "=== Building Oreulius kernel (AArch64 QEMU virt bring-up) ==="
 } | tee "$log_file"
 
 ./build-aarch64-virt.sh 2>&1 | tee -a "$log_file"

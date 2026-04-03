@@ -35,7 +35,7 @@ impl UdsTelemetryQueue {
         println!("Binding to microkernel wait-free telemetry via QEMU serial socket...");
         Self {
             stream: None,
-            socket_path: "/tmp/oreulia_ebpf_telemetry",
+            socket_path: "/tmp/oreulius_ebpf_telemetry",
         }
     }
 

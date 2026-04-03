@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: LicenseRef-Oreulia-Commercial-1.0
+// SPDX-License-Identifier: LicenseRef-Oreulius-Commercial-1.0
 //! # Temporal Capabilities with Revocable History
 //!
-//! High-level wrappers for the Oreulia temporal capability host functions
+//! High-level wrappers for the Oreulius temporal capability host functions
 //! (IDs 116–120).
 //!
 //! ## Concept
-//! Capabilities in Oreulia are not just static access grants — they are
+//! Capabilities in Oreulius are not just static access grants — they are
 //! *temporal objects* bound to time or *transactional checkpoints*.
 //!
 //! - **Time-bound grants**: a capability expires automatically after a
@@ -17,7 +17,7 @@
 //!
 //! ## Quick start
 //! ```rust,no_run
-//! use oreulia_sdk::temporal;
+//! use oreulius_sdk::temporal;
 //!
 //! // Grant FS-read access for ~10 seconds (100 Hz × 1000 ticks).
 //! let cap_id = temporal::cap_grant(14 /*FS_READ cap_type*/, 0x4000 /*FS_READ rights*/, 1000)
@@ -35,7 +35,7 @@
 //! temporal::checkpoint_rollback(cp).expect("rollback failed");
 //! ```
 
-use super::raw::oreulia as sys;
+use super::raw::oreulius as sys;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Time-bound capability grants
@@ -43,7 +43,7 @@ use super::raw::oreulia as sys;
 
 /// Grant the calling process a time-bound capability.
 ///
-/// - `cap_type`      — numeric capability type (see `oreulia_sdk::capability`
+/// - `cap_type`      — numeric capability type (see `oreulius_sdk::capability`
 ///   or the kernel `CapabilityType` enum).
 /// - `rights`        — rights bitmask.
 /// - `expires_ticks` — lifetime in 100 Hz PIT ticks.  At tick 0 the kernel
@@ -116,7 +116,7 @@ pub fn checkpoint_rollback(checkpoint_id: u32) -> Result<(), i32> {
 /// RAII guard that automatically revokes a time-bound capability when dropped.
 ///
 /// ```rust,no_run
-/// use oreulia_sdk::temporal::{TemporalCap, cap_grant};
+/// use oreulius_sdk::temporal::{TemporalCap, cap_grant};
 ///
 /// let _guard = TemporalCap::new(cap_grant(14, 0x4000, 500).unwrap());
 /// // … do work that requires FS_READ …
@@ -150,7 +150,7 @@ impl Drop for TemporalCap {
 /// dropped, unless `commit()` is called first.
 ///
 /// ```rust,no_run
-/// use oreulia_sdk::temporal::{CapTransaction, checkpoint_create};
+/// use oreulius_sdk::temporal::{CapTransaction, checkpoint_create};
 ///
 /// let tx = CapTransaction::begin().unwrap();
 /// // … grant extra caps, do work …

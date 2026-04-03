@@ -1,6 +1,6 @@
-# `kernel/src/capability` — Oreulia Capability Security Subsystem
+# `kernel/src/capability` — Oreulius Capability Security Subsystem
 
-The central authority model of the Oreulia kernel.  Every operation that crosses
+The central authority model of the Oreulius kernel.  Every operation that crosses
 a process boundary — IPC send, filesystem access, task spawn, console write,
 service invocation — is gated by an unforgeable, attenuatable, auditable
 capability token.  POSIX-style ambient authority (UID, process groups, setuid,
@@ -20,7 +20,7 @@ verification.
 3. [Architectural Diagrams](#3-architectural-diagrams)
 4. [Capability Type Taxonomy](#4-capability-type-taxonomy)
 5. [Rights Bitflags](#5-rights-bitflags)
-6. [`OreuliaCapability` Structure](#6-oreulia-capability-structure)
+6. [`OreuliusCapability` Structure](#6-oreulius-capability-structure)
 7. [Cryptographic Token MAC](#7-cryptographic-token-mac)
 8. [Per-Task Capability Table](#8-per-task-capability-table)
 9. [Global `CapabilityManager`](#9-global-capabilitymanager)
@@ -63,7 +63,7 @@ every call site:
 | Principle | Implementation |
 |---|---|
 | **No ambient authority** | PID 0 (kernel) is the only entity that bypasses capability checks; all other PIDs must present a valid capability |
-| **Unforgeable references** | Every `OreuliaCapability` carries a SipHash-2-4 MAC over its identity fields; `verify_token()` is called on every `lookup()` and every access check |
+| **Unforgeable references** | Every `OreuliusCapability` carries a SipHash-2-4 MAC over its identity fields; `verify_token()` is called on every `lookup()` and every access check |
 | **Transferable** | `CapabilityManager::transfer_capability()` moves a cap from one task's table to another; the source entry is removed atomically |
 | **Attenuatable** | `attenuate(new_rights)` returns an error if `new_rights` is not a strict subset of the current rights; escalation is impossible |
 | **Auditable** | Every grant, use, transfer, revocation, and policy denial emits a `SecurityEvent` to the kernel `SecurityManager` audit log |
@@ -205,10 +205,10 @@ rights.attenuate(mask)        // self.bits & mask — always reduces or preserve
 
 ---
 
-## 6. `OreuliaCapability` Structure
+## 6. `OreuliusCapability` Structure
 
 ```
-OreuliaCapability {
+OreuliusCapability {
     cap_id:        u32             // local index in the owning CapabilityTable
     object_id:     u64             // kernel object this cap authorises access to
     cap_type:      CapabilityType  // what kind of object
@@ -279,7 +279,7 @@ single task.  It is heap-allocated per-task (`Box<CapabilityTable>`) so that the
 
 ```
 CapabilityTable {
-    entries:      [Option<OreuliaCapability>; 256]
+    entries:      [Option<OreuliusCapability>; 256]
     next_cap_id:  u32                               // monotonic counter (unused in slot-based alloc)
     owner:        ProcessId
 }
@@ -390,7 +390,7 @@ Attenuation is the mechanism by which a capability holder can produce a
 **weaker** copy of a capability to pass to a less-trusted party.
 
 ```
-cap.attenuate(new_rights) -> Result<OreuliaCapability, CapabilityError>
+cap.attenuate(new_rights) -> Result<OreuliusCapability, CapabilityError>
 ```
 
 The subset law is enforced unconditionally:
@@ -606,7 +606,7 @@ breaches.  Readable via WASM host function 131 (`cap_graph_violations()`).
 
 `ProvenanceChain` implements the lineage model from the formal specification
 §Def A.28.  It traces a capability back to its kernel-issued root through the
-`parent_cap_id` links embedded in each `OreuliaCapability`.
+`parent_cap_id` links embedded in each `OreuliusCapability`.
 
 ```
 ProvenanceChain {
@@ -703,7 +703,7 @@ attachments.  Two functions handle the codec:
 
 ### `export_capability_to_ipc(owner, cap_id)`
 
-Reads the local `OreuliaCapability` from `owner`'s table.  Enforces: if
+Reads the local `OreuliusCapability` from `owner`'s table.  Enforces: if
 `cap_type == ServicePointer`, the cap must have `SERVICE_DELEGATE` right.
 Packs into `ipc::Capability`:
 
@@ -775,7 +775,7 @@ TEMPORAL_CAPABILITY_EVENT_REVOKE → revoke_capability(cap_id_hint)
 
 This allows a crashed kernel instance to reconstruct the exact capability state
 of all live processes from the temporal log — a prerequisite for the
-fault-tolerant edge deployment model described in `docs/project/oreulia-vision.md`.
+fault-tolerant edge deployment model described in `docs/project/oreulius-vision.md`.
 
 ---
 
@@ -818,12 +818,12 @@ user code runs.
 | `CapGraph.edges` | `256 × CapDelegationEdge (~24 B)` | ~6 KB |
 | `remote_leases` | `128 × RemoteCapabilityLease (~72 B)` | ~9 KB |
 | `quarantined_caps` | `256 × QuarantinedCapability (~84 B)` | ~21 KB |
-| Heap (per task) | `64 × Box<CapabilityTable>` max = `64 × 256 × sizeof(Option<OreuliaCapability>)` | ~768 KB max |
+| Heap (per task) | `64 × Box<CapabilityTable>` max = `64 × 256 × sizeof(Option<OreuliusCapability>)` | ~768 KB max |
 | **Total static** | | **~36 KB** |
 | **Total heap (all 64 tasks)** | | **~768 KB max** |
 
 The heap allocation arises from `Box<CapabilityTable>` per task.  With a
-`sizeof(OreuliaCapability) ≈ 48 B` and 256 slots per table, one fully-loaded
+`sizeof(OreuliusCapability) ≈ 48 B` and 256 slots per table, one fully-loaded
 task table consumes ~12 KB of heap.  At 64 tasks maximum that is 768 KB —
 acceptable for a kernel targeting embedded/edge nodes with 64–256 MB of RAM.
 
@@ -861,7 +861,7 @@ function gates all IPC operations.
   - 129: `cap_graph_edge_count(pid, cap_id)` → delegation depth
   - 130: `cap_graph_query_edges(pid, cap_id, out_ptr, max_edges)` → raw edges
   - 131: `cap_graph_violations()` → lifetime violation counter
-- Host syscall 105 `polyglot_link` calls `OreuliaCapability::new_polyglot_link()`
+- Host syscall 105 `polyglot_link` calls `OreuliusCapability::new_polyglot_link()`
   to issue a `CrossLanguage` capability.
 - `observer_notify(CAPABILITY_OP, &payload)` is called on every grant and revoke,
   allowing WASM observer modules to react to authority changes in real time.
@@ -895,11 +895,11 @@ manages its lifecycle.
 
 ### Capability Documentation (`docs/capability/`)
 The formal specification this module implements is at:
-- [oreulia-capabilities.md](../../../../docs/capability/oreulia-capabilities.md) — capability model overview
+- [oreulius-capabilities.md](../../../../docs/capability/oreulius-capabilities.md) — capability model overview
 - [capnet.md](../../../../docs/capability/capnet.md) — CapNet distributed capability network
-- [oreulia-cap-graph-verification.md](../../../../docs/capability/oreulia-cap-graph-verification.md) — formal graph invariants
-- [oreulia-capability-entanglement.md](../../../../docs/capability/oreulia-capability-entanglement.md) — capability entanglement model
-- [oreulia-intent-graph-predictive-revocation.md](../../../../docs/capability/oreulia-intent-graph-predictive-revocation.md) — predictive revocation algorithm
+- [oreulius-cap-graph-verification.md](../../../../docs/capability/oreulius-cap-graph-verification.md) — formal graph invariants
+- [oreulius-capability-entanglement.md](../../../../docs/capability/oreulius-capability-entanglement.md) — capability entanglement model
+- [oreulius-intent-graph-predictive-revocation.md](../../../../docs/capability/oreulius-intent-graph-predictive-revocation.md) — predictive revocation algorithm
 
 ---
 

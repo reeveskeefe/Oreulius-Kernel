@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "=== Building Oreulia OS ==="
+echo "=== Building Oreulius OS ==="
 
 TOOLCHAIN="+nightly-2024-01-01"
-RUST_TARGET="./i686-oreulia.json"
-RUST_LIB="target/i686-oreulia/release/liboreulia_kernel.a"
+RUST_TARGET="./i686-oreulius.json"
+RUST_LIB="target/i686-oreulius/release/liboreulius_kernel.a"
 
 resolve_tool() {
   local resolved=""
@@ -92,12 +92,12 @@ echo "[3/6] Assembling boot stub (boot.asm)..."
 # Now located in src/asm/boot.asm
 nasm -f elf32 src/asm/boot.asm -o target/boot.o
 
-echo "[4/6] Linking kernel (boot.o + asm/*.o + liboreulia_kernel.a)..."
+echo "[4/6] Linking kernel (boot.o + asm/*.o + liboreulius_kernel.a)..."
 "${LD_BIN}" \
   -m elf_i386 \
   -T kernel.ld \
   -nostdlib \
-  -o target/oreulia-kernel \
+  -o target/oreulius-kernel \
   target/boot.o \
   target/context_switch.o \
   target/memory.o \
@@ -125,25 +125,25 @@ ISO_ROOT="target/iso"
 BOOT_ARGS="${OREULIA_BOOT_ARGS:-}"
 rm -rf "${ISO_ROOT}"
 mkdir -p "${ISO_ROOT}/boot/grub"
-cp target/oreulia-kernel "${ISO_ROOT}/boot/"
+cp target/oreulius-kernel "${ISO_ROOT}/boot/"
 cat > "${ISO_ROOT}/boot/grub/grub.cfg" <<EOF
 set timeout=3
 set default=0
 terminal_output console
 
-menuentry "Oreulia OS" {
-    echo "Loading Oreulia kernel..."
-    multiboot /boot/oreulia-kernel${BOOT_ARGS:+ ${BOOT_ARGS}}
+menuentry "Oreulius OS" {
+    echo "Loading Oreulius kernel..."
+    multiboot /boot/oreulius-kernel${BOOT_ARGS:+ ${BOOT_ARGS}}
     echo "Kernel loaded, booting..."
     boot
 }
 EOF
-"${GRUB_MKRESCUE_BIN}" -o oreulia.iso "${ISO_ROOT}/" 2>&1 | grep -i "success" || true
+"${GRUB_MKRESCUE_BIN}" -o oreulius.iso "${ISO_ROOT}/" 2>&1 | grep -i "success" || true
 
 echo ""
 echo "=== Verification ==="
-if "${GRUB_FILE_BIN}" --is-x86-multiboot target/oreulia-kernel; then
-    echo "Boot: qemu-system-i386 -cdrom oreulia.iso"
+if "${GRUB_FILE_BIN}" --is-x86-multiboot target/oreulius-kernel; then
+    echo "Boot: qemu-system-i386 -cdrom oreulius.iso"
 else
     echo "✗ Kernel NOT multiboot compliant"
     exit 1

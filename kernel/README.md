@@ -1,4 +1,4 @@
-# Oreulia Kernel
+# Oreulius Kernel
 
 A security-hardened, bare-metal operating system kernel implementing advanced systems research concepts in Rust and x86 Assembly.
 
@@ -10,12 +10,12 @@ A security-hardened, bare-metal operating system kernel implementing advanced sy
 
 ## Formal Security Papers
 
-Oreulia's formal security records are documented in four companion papers:
+Oreulius's formal security records are documented in four companion papers:
 
-- [`../docs/runtime/oreulia-jit-security-resolution.md`](../docs/runtime/oreulia-jit-security-resolution.md)
+- [`../docs/runtime/oreulius-jit-security-resolution.md`](../docs/runtime/oreulius-jit-security-resolution.md)
 - [`../docs/capability/capnet.md`](../docs/capability/capnet.md)
-- [`../docs/capability/oreulia-intent-graph-predictive-revocation.md`](../docs/capability/oreulia-intent-graph-predictive-revocation.md)
-- [`../docs/services/oreulia-service-pointer-capabilities.md`](../docs/services/oreulia-service-pointer-capabilities.md)
+- [`../docs/capability/oreulius-intent-graph-predictive-revocation.md`](../docs/capability/oreulius-intent-graph-predictive-revocation.md)
+- [`../docs/services/oreulius-service-pointer-capabilities.md`](../docs/services/oreulius-service-pointer-capabilities.md)
 
 These papers include:
 - formal model, assumptions, definitions, lemmas/theorems/corollaries
@@ -53,7 +53,7 @@ The kernel has moved beyond baseline JIT and capability hardening into a fully l
 
 ### Core Design Principles
 
-Oreulia implements a **capability-oriented kernel architecture** with explicit isolation boundaries around high-risk execution paths (JIT, user transitions, enclave/session lifecycle, and capability transfer). The kernel emphasizes deterministic scheduling behavior, strict privilege transitions, and measurable hardening invariants over broad userspace abstraction.
+Oreulius implements a **capability-oriented kernel architecture** with explicit isolation boundaries around high-risk execution paths (JIT, user transitions, enclave/session lifecycle, and capability transfer). The kernel emphasizes deterministic scheduling behavior, strict privilege transitions, and measurable hardening invariants over broad userspace abstraction.
 
 ### Features
 
@@ -254,10 +254,10 @@ Generated outputs should come from `target/` or be regenerated locally, not
 stored long-term in the kernel root.
 
 **Build Process**:
-1. Rust compiler (`rustc`) builds kernel as static library with custom target (`i686-oreulia.json`)
+1. Rust compiler (`rustc`) builds kernel as static library with custom target (`i686-oreulius.json`)
 2. NASM assembles all `.asm` files to `.o` object files
 3. GNU `ld` links Rust library + Assembly objects using `kernel.ld` linker script
-4. Resulting `oreulia-kernel` ELF binary embedded in ISO with GRUB bootloader
+4. Resulting `oreulius-kernel` ELF binary embedded in ISO with GRUB bootloader
 
 ---
 
@@ -271,16 +271,16 @@ stored long-term in the kernel root.
 **Advanced QEMU Options**:
 ```bash
 # Enable KVM acceleration (Linux host)
-qemu-system-i386 -cdrom oreulia.iso -enable-kvm -cpu host
+qemu-system-i386 -cdrom oreulius.iso -enable-kvm -cpu host
 
 # Network tap device (bridge to host network)
-qemu-system-i386 -cdrom oreulia.iso -netdev tap,id=net0 -device e1000,netdev=net0
+qemu-system-i386 -cdrom oreulius.iso -netdev tap,id=net0 -device e1000,netdev=net0
 
 # Increase RAM
-qemu-system-i386 -cdrom oreulia.iso -m 512M
+qemu-system-i386 -cdrom oreulius.iso -m 512M
 
 # Multiple CPU cores
-qemu-system-i386 -cdrom oreulia.iso -smp 4
+qemu-system-i386 -cdrom oreulius.iso -smp 4
 ```
 
 **Debug Output**:
@@ -299,7 +299,7 @@ qemu-system-i386 -cdrom oreulia.iso -smp 4
 
 ### Security Validation Commands (In-Kernel Shell)
 
-Use these commands from the Oreulia shell to validate current security posture:
+Use these commands from the Oreulius shell to validate current security posture:
 
 - `formal-verify`
   - Executes JIT translation proof checks, capability proof checks, CapNet formal self-checks, intent graph policy checks, and mechanized model checks.
@@ -354,7 +354,7 @@ Kernel security regression checks are now integrated into repository CI:
 - CI parser/gate: `fuzz/ci_capnet_check.sh`
 
 CI fails on:
-- incomplete corpus pass rate (seed replay not fully green)
+- any corpus seed replay failure
 - non-zero corpus mismatches
 - non-zero corpus compile errors
 - failed soak rounds
@@ -408,7 +408,7 @@ This converts fuzz/corpus confidence into a merge-time admission policy.
 
 ### Security Posture Summary
 
-Oreulia now treats security as a composition of enforceable invariants and deterministic acceptance gates rather than one-time hardening claims. The canonical formal statement and theorem-level structure are maintained in the linked security paper.
+Oreulius now treats security as a composition of enforceable invariants and deterministic acceptance gates rather than one-time hardening claims. The canonical formal statement and theorem-level structure are maintained in the linked security paper.
 
 ---
 

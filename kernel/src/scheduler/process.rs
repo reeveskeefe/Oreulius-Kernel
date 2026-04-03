@@ -1,21 +1,21 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
 
-//! Oreulia Process Manager
+//! Oreulius Process Manager
 //!
 //! Provides multi-tasking with per-process capability tables.
 //!
@@ -419,6 +419,13 @@ impl ProcessTable {
         self.processes.iter().filter(|slot| slot.is_some()).count()
     }
 
+    fn pid_in_use(&self, pid: Pid) -> bool {
+        self.processes
+            .iter()
+            .flatten()
+            .any(|proc| proc.pid == pid)
+    }
+
     pub const fn new() -> Self {
         ProcessTable {
             processes: [NONE_PROCESS; MAX_PROCESSES],
@@ -427,10 +434,27 @@ impl ProcessTable {
     }
 
     fn allocate_child_pid(&mut self) -> Pid {
-        // TODO: recycle PIDs before `next_pid` saturates under long-lived churn.
-        let pid = Pid::new(self.next_pid);
-        self.next_pid = self.next_pid.saturating_add(1);
-        pid
+        let hinted = if self.next_pid == 0 { 1 } else { self.next_pid };
+        let hinted_pid = Pid::new(hinted);
+        if !self.pid_in_use(hinted_pid) {
+            self.next_pid = hinted.saturating_add(1);
+            return hinted_pid;
+        }
+
+        // With at most MAX_PROCESSES live entries, the smallest free positive PID
+        // is guaranteed to exist in 1..=MAX_PROCESSES+1.
+        let mut candidate = 1u32;
+        while candidate <= (MAX_PROCESSES as u32).saturating_add(1) {
+            let pid = Pid::new(candidate);
+            if !self.pid_in_use(pid) {
+                self.next_pid = candidate.saturating_add(1);
+                return pid;
+            }
+            candidate = candidate.saturating_add(1);
+        }
+
+        // Table fullness should prevent reaching this path, but keep a stable fallback.
+        Pid::new(hinted)
     }
 
     fn clone_process_image(
@@ -1047,9 +1071,9 @@ fn proc_boot_trace_enabled() -> bool {
         return false;
     };
     cmdline.split_whitespace().any(|token| {
-        token == "oreulia.proc_boot_debug"
+        token == "oreulius.proc_boot_debug"
             || matches!(
-                token.strip_prefix("oreulia.proc_boot_debug="),
+                token.strip_prefix("oreulius.proc_boot_debug="),
                 Some("1" | "true" | "on" | "yes")
             )
     })

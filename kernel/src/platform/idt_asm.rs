@@ -1,14 +1,14 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
@@ -584,7 +584,7 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
     let frame = unsafe { &mut *(frame as *const _ as *mut InterruptFrame) };
 
     if frame.int_no == Exception::DeviceNotAvailable as u32 {
-        // Quantum scheduler is the primary advanced scheduler in Oreulia
+        // Quantum scheduler is the primary advanced scheduler in Oreulius
         crate::quantum_scheduler::handle_fpu_trap();
         return;
     }

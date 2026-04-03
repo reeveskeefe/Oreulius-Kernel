@@ -1,4 +1,4 @@
-# Oreulia — MVP Status and Current Boundary
+# Oreulius — MVP Status and Current Boundary
 
 **Status:** The original MVP has been passed. This document now describes what that means and where the current project boundary actually is.
 
@@ -30,7 +30,7 @@ That means the project should stop speaking about “the MVP” as if it were st
 
 ## 2. What the project has already demonstrated
 
-Oreulia has already demonstrated a coherent kernel-shaped system with these properties:
+Oreulius has already demonstrated a coherent kernel-shaped system with these properties:
 
 ### 2.1 Boot and runtime bring-up
 
@@ -54,13 +54,13 @@ Oreulia has already demonstrated a coherent kernel-shaped system with these prop
 - shell-driven selftests and verification commands
 - fuzz and proof surfaces present in tree
 
-This is a real project boundary. Oreulia is not merely a kernel sketch anymore.
+This is a real project boundary. Oreulius is not merely a kernel sketch anymore.
 
 ---
 
 ## 3. What the current minimum credible platform is
 
-If the original MVP is retired, the current minimum credible Oreulia platform looks like this:
+If the original MVP is retired, the current minimum credible Oreulius platform looks like this:
 
 ### Required properties
 
@@ -78,7 +78,7 @@ This is the right floor to defend publicly today, not the much smaller 2026-02 �
 
 ## 4. Current non-goals and limits
 
-Oreulia still does **not** claim:
+Oreulius still does **not** claim:
 
 - POSIX or Linux ABI compatibility
 - broad native software support
@@ -93,7 +93,7 @@ That matters because the project is stronger than its old MVP docs suggested, bu
 
 ## 5. What still blocks “production-ready”
 
-The gap between current Oreulia and a production-ready platform is not bootability. It is operational and semantic depth.
+The gap between current Oreulius and a production-ready platform is not bootability. It is operational and semantic depth.
 
 ### 5.1 Hardware and platform validation
 
@@ -161,7 +161,7 @@ The project has crossed the threshold where accuracy and cohesion matter more th
 
 ## 8. Bottom line
 
-Oreulia has already surpassed its original MVP. The old MVP language is still useful as history, but it is no longer a good description of the project’s current state.
+Oreulius has already surpassed its original MVP. The old MVP language is still useful as history, but it is no longer a good description of the project’s current state.
 
 The accurate public position is:
 

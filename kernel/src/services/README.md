@@ -9,7 +9,7 @@
 
 ## Purpose
 
-`kernel/src/services` implements the **kernel-resident layer of Oreulia's service architecture**. It defines what a "service" means inside the OS, how services register themselves, how consumers discover them, how the kernel tracks their health, how firmware is updated atomically across A/B slots, how the kernel attests its own runtime state to remote peers, and how WASM programs are mapped onto the full WASI Preview 1 ABI using Oreulia's capability model.
+`kernel/src/services` implements the **kernel-resident layer of Oreulius's service architecture**. It defines what a "service" means inside the OS, how services register themselves, how consumers discover them, how the kernel tracks their health, how firmware is updated atomically across A/B slots, how the kernel attests its own runtime state to remote peers, and how WASM programs are mapped onto the full WASI Preview 1 ABI using Oreulius's capability model.
 
 The philosophy throughout is **no ambient authority**: services are not global names in a flat namespace. They are capability-mediated resources discovered through explicit *introduction* protocols. A process cannot access the filesystem service by importing a module — it must hold a valid `ServiceIntroductionCapability` and request an introduction from a registered introducer.
 
@@ -36,7 +36,7 @@ These services must live inside the kernel because:
 | `fleet.rs` | x86-64 | Attestation bundles, remote diagnostics, fleet trust key management |
 | `ota.rs` | x86-64 | A/B slot OTA update manager with SHA-256 manifest verification |
 | `telemetry.rs` | All | Lock-free `TelemetryQueue` — bridges Ring-0 observations to the out-of-band math daemon |
-| `wasi.rs` | x86-64 | Full WASI Preview 1 ABI implementation over Oreulia capabilities |
+| `wasi.rs` | x86-64 | Full WASI Preview 1 ABI implementation over Oreulius capabilities |
 
 Note: `fleet.rs`, `health.rs`, `ota.rs`, and `wasi.rs` are conditionally compiled only on `not(target_arch = "aarch64")`. `registry.rs` and `telemetry.rs` compile on all targets.
 
@@ -118,7 +118,7 @@ Snapshots are persisted via `persistence::emit_snapshot()` so health history is 
 
 ## `fleet.rs` — Attestation & Remote Diagnostics
 
-Implements **hardware-rooted attestation** and a remote diagnostics surface for fleet management of Oreulia nodes.
+Implements **hardware-rooted attestation** and a remote diagnostics surface for fleet management of Oreulius nodes.
 
 ### Attestation
 
@@ -210,9 +210,9 @@ This module deliberately contains no floating-point, no `std`, and no dynamic al
 
 ---
 
-## `wasi.rs` — WASI Preview 1 ABI over Oreulia Capabilities
+## `wasi.rs` — WASI Preview 1 ABI over Oreulius Capabilities
 
-Enables WASM binaries compiled for **WASI Preview 1** (musl-libc, WASI-SDK, Emscripten) to run inside the Oreulia WASM sandbox **unmodified**, by mapping all 55+ WASI syscall functions onto the kernel's capability model.
+Enables WASM binaries compiled for **WASI Preview 1** (musl-libc, WASI-SDK, Emscripten) to run inside the Oreulius WASM sandbox **unmodified**, by mapping all 55+ WASI syscall functions onto the kernel's capability model.
 
 ### Design
 
@@ -233,6 +233,6 @@ Enables WASM binaries compiled for **WASI Preview 1** (musl-libc, WASI-SDK, Emsc
 | `72–80` | All `path_*` operations: `path_open`, `path_create_directory`, `path_filestat_get`, `path_rename`, `path_unlink_file`, `path_remove_directory` |
 | `81–85` | `poll_oneoff`, `proc_exit`, `proc_raise`, `sched_yield`, `random_get` |
 | `86–89` | `sock_accept`, `sock_recv`, `sock_send`, `sock_shutdown` |
-| `90–99` | Oreulia extensions and reserved |
+| `90–99` | Oreulius extensions and reserved |
 
 No-op stubs are provided for WASI functions that map to features outside the current kernel scope (`fd_advise`, `fd_allocate`, `fd_datasync`, `path_link`, `path_readlink`) to ensure ABI compatibility without breaking the import table.

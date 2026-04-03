@@ -1,4 +1,4 @@
-# Oreulia Service Pointer Capabilities
+# Oreulius Service Pointer Capabilities
 
 **Status:** Implemented in the current WASM runtime, capability manager, IPC transfer path, and shell demos.
 
@@ -184,7 +184,7 @@ That snapshot preserves:
 - rate-window state
 - signature tags
 
-So service pointers already participate in the broader temporal durability story, even though higher-level replay semantics remain incomplete elsewhere.
+So service pointers already participate in the broader temporal durability story, even though higher-level replay semantics still remain uneven elsewhere.
 
 ---
 
@@ -232,4 +232,4 @@ They are the fastest way to verify the service-pointer system end to end inside 
 - the legacy ABI is not fully type-general
 - registration does not allow host-import targets
 
-The important public claim is narrower and accurate: Oreulia already has a real callable-capability model for WASM services, and that model is enforced by capability rights and runtime signature checks.
+The important public claim is narrower and accurate: Oreulius already has a real callable-capability model for WASM services, and that model is enforced by capability rights and runtime signature checks.

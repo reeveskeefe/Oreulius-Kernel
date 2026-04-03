@@ -1,6 +1,6 @@
 //! Process lifecycle management.
 
-use crate::raw::{oreulia, wasi};
+use crate::raw::{oreulius, wasi};
 
 /// Terminate the current WASM process with the given exit code.
 ///
@@ -21,7 +21,7 @@ pub fn exit(code: u32) -> ! {
 /// # Safety
 /// The bytes slice must live in the module's linear memory.
 pub unsafe fn spawn(wasm_bytes: &[u8]) -> Option<u32> {
-    let pid = oreulia::proc_spawn(wasm_bytes.as_ptr() as u32, wasm_bytes.len() as u32);
+    let pid = oreulius::proc_spawn(wasm_bytes.as_ptr() as u32, wasm_bytes.len() as u32);
     if pid == 0 || pid == u32::MAX {
         None
     } else {
@@ -33,10 +33,10 @@ pub unsafe fn spawn(wasm_bytes: &[u8]) -> Option<u32> {
 ///
 /// Equivalent to `sched_yield` in POSIX.
 pub fn yield_now() {
-    unsafe { oreulia::proc_yield() }
+    unsafe { oreulius::proc_yield() }
 }
 
 /// Sleep for approximately `ms` milliseconds (1 PIT tick ≈ 1 ms).
 pub fn sleep_ms(ms: u32) {
-    unsafe { oreulia::proc_sleep(ms) }
+    unsafe { oreulius::proc_sleep(ms) }
 }

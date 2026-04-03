@@ -16,7 +16,7 @@ Status: **Active**
 ## Rationale
 - **Why Coq / Rocq**: Mature ITP; `Stdlib.ZArith`, `Stdlib.micromega.Lia`, and
   `Stdlib.Lists.List` are sufficient for the fixed-point arithmetic and list-based
-  invariants in the Oreulia kernel model. The `lia` tactic discharges all linear
+  invariants in the Oreulius kernel model. The `lia` tactic discharges all linear
   arithmetic goals automatically, keeping proof scripts short and auditable.
 - **Why not Lean 4 / Isabelle**: Lean 4's stdlib coverage for fixed-point integer
   arithmetic was immature as of 2026-Q1; Isabelle is heavier to install in CI.

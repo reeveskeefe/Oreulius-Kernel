@@ -1,6 +1,6 @@
-# Oreulia Universal GPU Model
+# Oreulius Universal GPU Model
 
-Oreulia treats every GPU as a graph of:
+Oreulius treats every GPU as a graph of:
 
 - apertures
 - engines

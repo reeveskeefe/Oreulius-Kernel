@@ -1,21 +1,21 @@
 /*!
- * Oreulia Kernel Project
+ * Oreulius Kernel Project
  *
- * License-Identifier: Oreulia Community License v1.0 (see LICENSE)
+ * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
  * Commercial use requires a separate written agreement (see COMMERCIAL.md)
  *
- * Copyright (c) 2026 Keefe Reeves and Oreulia Contributors
+ * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
  *
  * Contributing:
  * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulia.
+ *   be distributed and relicensed as part of Oreulius.
  * - Please see docs/CONTRIBUTING.md for contribution terms and review
  *   guidelines.
  *
  * ---------------------------------------------------------------------------
  */
 
-//! Oreulia universal GPU substrate.
+//! Oreulius universal GPU substrate.
 //!
 //! This subsystem provides a tiered GPU model that is safe on unknown hardware
 //! and progressively richer on standardized or plugin-backed devices:
@@ -27,7 +27,7 @@
 //! - Tier 4: optimized vendor-family acceleration
 //!
 //! The kernel does not attempt unsafe brandless MMIO command inference.
-//! Unknown devices receive the highest safe tier Oreulia can actually prove.
+//! Unknown devices receive the highest safe tier Oreulius can actually prove.
 
 #![allow(dead_code)]
 

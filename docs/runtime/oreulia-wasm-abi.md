@@ -1,8 +1,8 @@
-# Oreulia — Wasm ABI v0 (Host Interface)
+# Oreulius — Wasm ABI (Host Interface)
 
 **Status:** Implemented / JIT-Native (Feb 8, 2026)
 
-Oreulia is Wasm-native: applications run as WebAssembly modules. Unlike typical "Wasm on generic OS" approaches, Oreulia compiles Wasm modules directly to x86 kernel-mode code (Ring 0) or user-mode code (Ring 3) via an **In-Kernel JIT**.
+Oreulius is Wasm-native: applications run as WebAssembly modules. Unlike typical "Wasm on generic OS" approaches, Oreulius compiles Wasm modules directly to x86 kernel-mode code (Ring 0) or user-mode code (Ring 3) via an **In-Kernel JIT**.
 
 This document defines the ABI that allows Wasm modules to interact with the kernel.
 
@@ -25,15 +25,15 @@ This document defines the ABI that allows Wasm modules to interact with the kern
 ## 2. Module Contract
 
 ### 2.1 Imports
-Modules import kernel functionality from the `oreulia` namespace.
+Modules import kernel functionality from the `oreulius` namespace.
 
 ```wat
-(import "oreulia" "channel_send" (func $send (param i32 i32 i32) (result i32)))
+(import "oreulius" "channel_send" (func $send (param i32 i32 i32) (result i32)))
 ```
 
 ### 2.2 Exports
 A module **must** export an entry point:
-- `_start` or `oreulia_main`: The function called by the supervisor after instantiation.
+- `_start` or `oreulius_main`: The function called by the supervisor after instantiation.
 
 ### 2.3 Syscall Loader Profile (Current)
 For `WasmLoad`/`WasmCall` syscall execution, the kernel now enforces strict binary-module validation:
@@ -42,7 +42,7 @@ For `WasmLoad`/`WasmCall` syscall execution, the kernel now enforces strict bina
 - Parses and binds function signatures from `type` + `import` + `function` + `code` sections.
 - Enforces immutable function signatures at call time (no dynamic arity mutation).
 - Rejects malformed section bounds, invalid LEB encodings, and local overflows.
-- Supports host import dispatch by namespace/name (`oreulia` imports map to kernel host functions).
+- Supports host import dispatch by namespace/name (`oreulius` imports map to kernel host functions).
 - Supports one-time safe `start` execution at instantiation.
 - Supports `table` + `element`, `global`, and `data` section initialization semantics in the current runtime profile.
 - Supports structured control-flow execution (`block`, `loop`, `if`, `else`, `br`, `br_if`, `select`) with runtime label resolution.
@@ -72,18 +72,18 @@ Security is handled via integer handles (indices into the process's capability t
 The following host functions are available to Wasm modules:
 
 ### 4.1 Process & Threading
-- `oreulia_thread_spawn(func_idx: i32, arg: i32) -> tid`: Spawn a cooperative WASM thread.
-- `oreulia_thread_join(tid: i32) -> i32`: Join a cooperative WASM thread.
-- `oreulia_thread_id() -> i32`: Return the current cooperative WASM thread ID.
-- `oreulia_thread_yield()`: Yield the current CPU quantum.
-- `oreulia_thread_exit(code: i32)`: Exit the current cooperative WASM thread.
+- `oreulius_thread_spawn(func_idx: i32, arg: i32) -> tid`: Spawn a cooperative WASM thread.
+- `oreulius_thread_join(tid: i32) -> i32`: Join a cooperative WASM thread.
+- `oreulius_thread_id() -> i32`: Return the current cooperative WASM thread ID.
+- `oreulius_thread_yield()`: Yield the current CPU quantum.
+- `oreulius_thread_exit(code: i32)`: Exit the current cooperative WASM thread.
 - `proc_yield()`: Voluntarily yield the CPU.
 - `proc_sleep(ticks: i32)`: Sleep for N PIT ticks (roughly milliseconds).
 - `proc_spawn(bytes_ptr: i32, bytes_len: i32) -> pid`: Spawn a child WASM process from bytecode already in linear memory.
 
 Notes:
-- The import resolver accepts both the plain names above and `oreulia_*` aliases, for example
-  `thread_spawn` and `oreulia_thread_spawn`.
+- The import resolver accepts both the plain names above and `oreulius_*` aliases, for example
+  `thread_spawn` and `oreulius_thread_spawn`.
 - Cooperative WASM threads run inside one WasmInstance and share its linear memory; they make
   progress through the runtime's background thread runner plus explicit yield points.
 - When a foreground `wasm <path>` command returns normally from `_start`, the shell gives that
@@ -129,18 +129,18 @@ Notes:
 - Runtime enforces full registered function signatures (arity + value types) on every service-pointer call.
 - Transfer authorization is enforced by `SERVICE_DELEGATE`.
 - On instance teardown, service pointers attempt hot-swap rebinding to compatible live replacement instances; unmatched pointers are revoked.
-- Formal technical deep dive: `docs/services/oreulia-service-pointer-capabilities.md`.
+- Formal technical deep dive: `docs/services/oreulius-service-pointer-capabilities.md`.
 
 ### 4.6 Polyglot Kernel Services (IDs 103–105)
 
-Oreulia allows WASM modules written in **any** language to be registered as
+Oreulius allows WASM modules written in **any** language to be registered as
 named kernel services and to call each other securely via capability handoffs,
 even across language boundaries.
 
-#### `oreulia_lang` Custom Section
+#### `oreulius_lang` Custom Section
 
 To declare its source language, a WASM module embeds a custom section named
-`oreulia_lang`.  The binary layout (after the standard LEB128 name length +
+`oreulius_lang`.  The binary layout (after the standard LEB128 name length +
 name bytes) is:
 
 ```
@@ -171,7 +171,7 @@ Offset  Size  Field
 - `polyglot_register(name_ptr: i32, name_len: i32) -> i32`  
   Register this module as a named polyglot kernel service.  
   `name` must be ≤ 32 bytes of UTF-8.  
-  The kernel records the `oreulia_lang` language tag alongside the name.  
+  The kernel records the `oreulius_lang` language tag alongside the name.  
   **Singleton languages** (Python `0x04`, JavaScript `0x05`): if a service
   with the same name and language already exists, the instance/owner reference
   is refreshed instead of returning an error.  
@@ -206,13 +206,13 @@ language-aware policy enforcement.
 **Registry limits**: Up to 16 polyglot service entries.  Slot 0 is reserved
 for the Python singleton, slot 1 for the JavaScript singleton (by convention).
 
-**SDK**: Use `oreulia_sdk::polyglot` for idiomatic Rust wrappers:
+**SDK**: Use `oreulius_sdk::polyglot` for idiomatic Rust wrappers:
 ```rust
 // Service side
-oreulia_sdk::polyglot::register("py_math");
+oreulius_sdk::polyglot::register("py_math");
 
 // Client side
-let cap = oreulia_sdk::polyglot::link("py_math", "add").unwrap();
+let cap = oreulius_sdk::polyglot::link("py_math", "add").unwrap();
 ```
 
 ### 4.7 Temporal Objects ABI
@@ -288,7 +288,7 @@ Capture policy (current kernel profile):
 
 ### 4.7 TLS 1.3 (Host IDs 91–99)
 
-Oreulia provides a minimal in-kernel TLS 1.3 client stack accessible from WASM modules. All
+Oreulius provides a bounded in-kernel TLS 1.3 client stack accessible from WASM modules. All
 functions return `i32`; negative values indicate failure. Sessions are identified by an opaque
 `i32` handle allocated by the kernel.
 
@@ -324,15 +324,34 @@ functions return `i32`; negative values indicate failure. Sessions are identifie
 
 #### Notes
 
-- The in-kernel TLS stack performs a simplified TLS 1.3 record-layer handshake. It does not
-  perform full certificate chain validation in the current kernel profile; host identity is
-  supplied by the `host_ptr` SNI string for informational purposes.
+- The in-kernel TLS stack currently implements a bounded TLS 1.3 client handshake/profile.
+  It does not perform full certificate-chain validation in the current kernel profile; host
+  identity is supplied by the `host_ptr` SNI string for session binding and diagnostics.
 - `tls_tick` must be called from the module's event loop; the kernel does not drive sessions
   autonomously between WASM host calls.
 - Session handles are scoped to the WASM instance. They are freed automatically when the
   instance is destroyed (equivalent to calling `tls_free` on each live handle).
 - `tls_connect` calls `tls_tick` once internally after session allocation to begin the
   handshake; subsequent ticks are the caller's responsibility.
+
+---
+
+### 4.8 Extended Runtime Services (Host IDs 106–131)
+
+The production runtime also exposes additional host ranges beyond the core
+process/TLS/polyglot surface documented above.
+
+| Host IDs | Category | Current surface |
+|----------|----------|-----------------|
+| 106–108 | Kernel observer | `observer_subscribe`, `observer_unsubscribe`, `observer_query` |
+| 109–115 | Decentralized kernel mesh | `mesh_local_id`, `mesh_peer_register`, `mesh_peer_session`, `mesh_token_mint`, `mesh_token_send`, `mesh_token_recv`, `mesh_migrate` |
+| 116–120 | Temporal capabilities / checkpoints | `temporal_cap_grant`, `temporal_cap_revoke`, `temporal_cap_check`, `temporal_checkpoint_create`, `temporal_checkpoint_rollback` |
+| 121–124 | Policy contracts | `policy_bind`, `policy_unbind`, `policy_eval`, `policy_query` |
+| 125–128 | Capability entanglement | `cap_entangle`, `cap_entangle_group`, `cap_disentangle`, `cap_entangle_query` |
+| 129–131 | Capability graph verification | `cap_graph_query`, `cap_graph_verify`, `cap_graph_depth` |
+
+These ranges are implemented in the current WASM host dispatcher in
+[kernel/src/execution/wasm.rs](/Users/keefereeves/Desktop/OreuliusKernel/TheActualKernelProject/oreulius/kernel/src/execution/wasm.rs). This document keeps the detailed wire layouts for the more commonly consumed host families above; for the extended ranges, the code is the current authority until dedicated per-service ABI docs are split out.
 
 ---
 
@@ -351,7 +370,7 @@ functions return `i32`; negative values indicate failure. Sessions are identifie
 
 ---
 
-## 6. Error codes (v0)
+## 6. Error codes
 
 Use stable negative error codes:
 
@@ -366,7 +385,7 @@ Use stable negative error codes:
 
 ## 7. Console, clock, store access
 
-Oreulia avoids dedicated syscalls like `write(fd, ...)`.
+Oreulius avoids dedicated syscalls like `write(fd, ...)`.
 
 Instead:
 
@@ -384,14 +403,14 @@ This keeps the ABI small and pushes policy/protocol to user space.
 
 At instantiation, the loader provides the module with a set of initial capabilities.
 
-Mechanisms (choose one for v0):
+Current capability bootstrap mechanisms:
 
 1. **Pre-filled table**: loader places caps into indices 0..N.
 2. **Init message**: module starts with one channel cap; loader sends an init message containing other caps.
 
-v0 recommendation:
+Preferred production path:
 
-- **Init message** (more explicit and scalable).
+- **Init message** (explicit, replayable, and scalable).
 
 For service-pointer capabilities, runtime injection is also available:
 - shell: `svcptr-inject <instance_id> <cap_id>`

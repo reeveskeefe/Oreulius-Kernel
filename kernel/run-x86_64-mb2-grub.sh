@@ -3,8 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ISO="target/x86_64-mb2/oreulia-x86_64-mb2.iso"
-ELF="target/x86_64-mb2/oreulia-kernel-x86_64"
+ISO="target/x86_64-mb2/oreulius-x86_64-mb2.iso"
+ELF="target/x86_64-mb2/oreulius-kernel-x86_64"
 if [[ ! -f "${ISO}" ]]; then
   echo "ISO not found: ${ISO}"
   echo "Build it first with ./build-x86_64-mb2-iso.sh"

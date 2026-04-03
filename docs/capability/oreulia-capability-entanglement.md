@@ -1,4 +1,4 @@
-# Oreulia Quantum-Inspired Capability Entanglement
+# Oreulius Quantum-Inspired Capability Entanglement
 
 > **Status:** Fully implemented. WASM host ABI IDs 125–128. Core: `kernel/src/execution/wasm.rs` (`ENTANGLE_TABLE`, `entangle_cascade_revoke`). SDK: `wasm/sdk/src/entangle.rs`. Cascade revocation integrated with `CapabilityManager::revoke_capability`.
 
@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-In quantum mechanics, entangled particles share state: measuring one instantly determines the state of the other, regardless of distance. Capability Entanglement in Oreulia applies this intuition to kernel security: two or more capabilities can be *linked* such that **revoking any one of them automatically revokes all the others**.
+In quantum mechanics, entangled particles share state: measuring one instantly determines the state of the other, regardless of distance. Capability Entanglement in Oreulius applies this intuition to kernel security: two or more capabilities can be *linked* such that **revoking any one of them automatically revokes all the others**.
 
 This is not metaphor. The entanglement is implemented as a set of links in a kernel table (`ENTANGLE_TABLE`). When the capability manager revokes a capability, it checks whether that capability has any entanglement links and immediately cascades revocation to all linked peers — without any further action from the owning process.
 
@@ -215,7 +215,7 @@ Returns the set of capabilities entangled with `cap_id`:
 ## 6. SDK Usage
 
 ```rust
-use oreulia_sdk::entangle::{self, EntangleGuard, EntangleList};
+use oreulius_sdk::entangle::{self, EntangleGuard, EntangleList};
 
 // ── Pairwise entanglement ───────────────────────────────────────────────────
 entangle::entangle(session_cap, fs_cap).expect("entangle failed");
