@@ -121,6 +121,7 @@ STATUS_READY_RE = re.compile(r"Status: READY")
 STATUS_NOT_READY_RE = re.compile(r"Status: NOT READY")
 NONZERO_IP_RE = re.compile(r"My IP: (?!0\.0\.0\.0)(?:\d{1,3}\.){3}\d{1,3}")
 ZERO_IP_RE = re.compile(r"My IP: 0\.0\.0\.0")
+NONZERO_DNS_RE = re.compile(r"DNS server: (?!0\.0\.0\.0)(?:\d{1,3}\.){3}\d{1,3}")
 LINK_UP_RE = re.compile(r"Link Status: UP")
 DNS_SUCCESS_RE = re.compile(r"Success! IP: (?:\d{1,3}\.){3}\d{1,3}")
 HTTP_STATUS_RE = re.compile(r"Status: [23]\d\d")
@@ -223,33 +224,33 @@ def expect_ready_phase(h):
             "netstack-info: waiting for readiness status",
         )
         ensure_no_failure("netstack-info", name, match)
-        if name == "ready":
-            ip_name, ip_match = h.wait_for_any(
-                [
-                    ("nonzero_ip", NONZERO_IP_RE),
-                    ("zero_ip", ZERO_IP_RE),
-                    ("error", ERROR_RE),
-                ],
-                30,
-                "netstack-info: waiting for configured IP",
-            )
-            ensure_no_failure("netstack-info", ip_name, ip_match)
-            h.wait_for_any(
-                [("done", done_re(seq, "netstack-info"))],
-                30,
-                "netstack-info: waiting for completion marker",
-            )
-            wait_for_prompt(h)
-            if ip_name == "nonzero_ip":
-                return
-            time.sleep(1.2)
-            continue
+        ip_name, ip_match = h.wait_for_any(
+            [
+                ("nonzero_ip", NONZERO_IP_RE),
+                ("zero_ip", ZERO_IP_RE),
+                ("error", ERROR_RE),
+            ],
+            30,
+            "netstack-info: waiting for configured IP",
+        )
+        ensure_no_failure("netstack-info", ip_name, ip_match)
+        dns_name, dns_match = h.wait_for_any(
+            [
+                ("nonzero_dns", NONZERO_DNS_RE),
+                ("error", ERROR_RE),
+            ],
+            30,
+            "netstack-info: waiting for configured DNS server",
+        )
+        ensure_no_failure("netstack-info", dns_name, dns_match)
         h.wait_for_any(
             [("done", done_re(seq, "netstack-info"))],
             30,
             "netstack-info: waiting for completion marker",
         )
         wait_for_prompt(h)
+        if ip_name == "nonzero_ip":
+            return
         time.sleep(1.2)
     raise HarnessError("network never became ready on i686")
 
@@ -376,7 +377,6 @@ def main():
     try:
         settle_shell(harness)
         expect_ready_phase(harness)
-        run_simple_phase(harness, "eth-status", "eth-status", LINK_UP_RE)
         time.sleep(1.5)
         run_simple_phase(
             harness, "first dns-resolve", "dns-resolve example.com", DNS_SUCCESS_RE
