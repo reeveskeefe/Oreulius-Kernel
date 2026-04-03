@@ -441,7 +441,7 @@ fn dispatch_request(
             let _ = super::e1000::ensure_runtime_link();
             let link_up = stack.link_up();
             NetResponse::Info(NetInfo {
-                ready: REACTOR_STARTED.load(Ordering::Acquire) != 0 && stack.is_ready() && link_up,
+                ready: REACTOR_STARTED.load(Ordering::Acquire) != 0 && stack.is_ready(),
                 ip: stack.get_ip(),
                 mac: stack.get_mac(),
                 dns_server: stack.get_dns_server(),
