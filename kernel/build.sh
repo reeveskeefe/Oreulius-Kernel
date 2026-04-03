@@ -5,7 +5,17 @@ echo "=== Building Oreulius OS ==="
 
 TOOLCHAIN="+nightly-2024-01-01"
 RUST_TARGET="./i686-oreulius.json"
-RUST_LIB="target/i686-oreulius/release/liboreulius_kernel.a"
+RUST_TARGET_LEGACY="./i686-oreulia.json"
+RUST_TARGET_DIR="i686-oreulius"
+RUST_TARGET_DIR_LEGACY="i686-oreulia"
+RUST_LIB="target/${RUST_TARGET_DIR}/release/liboreulius_kernel.a"
+RUST_LIB_LEGACY="target/${RUST_TARGET_DIR_LEGACY}/release/liboreulius_kernel.a"
+
+if [[ ! -f "${RUST_TARGET}" && -f "${RUST_TARGET_LEGACY}" ]]; then
+  RUST_TARGET="${RUST_TARGET_LEGACY}"
+  RUST_TARGET_DIR="${RUST_TARGET_DIR_LEGACY}"
+  RUST_LIB="${RUST_LIB_LEGACY}"
+fi
 
 resolve_tool() {
   local resolved=""
@@ -139,6 +149,8 @@ menuentry "Oreulius OS" {
 }
 EOF
 "${GRUB_MKRESCUE_BIN}" -o oreulius.iso "${ISO_ROOT}/" 2>&1 | grep -i "success" || true
+cp oreulius.iso oreulia.iso
+cp target/oreulius-kernel target/oreulia-kernel
 
 echo ""
 echo "=== Verification ==="

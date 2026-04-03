@@ -6778,13 +6778,7 @@ fn cmd_wasm_demo() {
 
     // Add the function manually (v0 doesn't parse full WASM binary format)
     let result = wasm::wasm_runtime().get_instance_mut(instance_id, |instance| {
-        let func = wasm::Function {
-            code_offset: 0,
-            code_len: 15,
-            param_count: 0,
-            result_count: 1,
-            local_count: 1,
-        };
+        let func = wasm::Function::synthetic_i32(0, 15, 0, 1, 1);
 
         match instance.module.add_function(func) {
             Ok(_) => {
@@ -6958,13 +6952,7 @@ fn cmd_wasm_fs_demo() {
 
     // Add function and execute
     let result = wasm::wasm_runtime().get_instance_mut(instance_id, |instance| {
-        let func = wasm::Function {
-            code_offset: 0,
-            code_len: 25,
-            param_count: 0,
-            result_count: 1,
-            local_count: 1,
-        };
+        let func = wasm::Function::synthetic_i32(0, 25, 0, 1, 1);
 
         if let Err(e) = instance.module.add_function(func) {
             vga::print_str("✗ Failed to add function: ");
@@ -7084,13 +7072,7 @@ fn cmd_wasm_log_demo() {
     // Execute
     vga::print_str("\nExecuting WASM (should print message below):\n");
     let _ = wasm::wasm_runtime().get_instance_mut(instance_id, |instance| {
-        let func = wasm::Function {
-            code_offset: 0,
-            code_len: 10,
-            param_count: 0,
-            result_count: 0,
-            local_count: 0,
-        };
+        let func = wasm::Function::synthetic_i32(0, 10, 0, 0, 0);
 
         let _ = instance.module.add_function(func);
         instance.call(0)
@@ -7479,13 +7461,7 @@ fn cmd_svcptr_demo() {
         }
     };
 
-    let provider_func = wasm::Function {
-        code_offset: 0,
-        code_len: provider_code.len(),
-        param_count: 0,
-        result_count: 1,
-        local_count: 0,
-    };
+    let provider_func = wasm::Function::synthetic_i32(0, provider_code.len(), 0, 1, 0);
     let set_provider_func = wasm::wasm_runtime().get_instance_mut(provider_instance, |inst| {
         inst.module.add_function(provider_func).map(|_| ())
     });
@@ -7710,13 +7686,7 @@ fn cmd_svcptr_demo_crosspid() {
         };
         provider_instance = Some(instance_id);
 
-        let provider_func = wasm::Function {
-            code_offset: 0,
-            code_len: provider_code.len(),
-            param_count: 0,
-            result_count: 1,
-            local_count: 0,
-        };
+        let provider_func = wasm::Function::synthetic_i32(0, provider_code.len(), 0, 1, 0);
         let set_provider_func = wasm::wasm_runtime().get_instance_mut(instance_id, |inst| {
             inst.module.add_function(provider_func).map(|_| ())
         });
@@ -9848,13 +9818,7 @@ fn execute_wasm_minmax(a: i32, b: i32, op: &str) {
     };
 
     let _ = wasm::wasm_runtime().get_instance_mut(instance_id, |instance| {
-        let func = wasm::Function {
-            code_offset: 0,
-            code_len: 10,
-            param_count: 2,
-            result_count: 1,
-            local_count: 2,
-        };
+        let func = wasm::Function::synthetic_i32(0, 10, 2, 1, 2);
 
         if let Ok(_) = instance.module.add_function(func) {
             let _ = instance.stack.push(wasm::Value::I32(a));
