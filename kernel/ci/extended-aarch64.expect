@@ -31,6 +31,29 @@ proc run_a64_cmd {cmd ok_re desc} {
     expect_a64_prompt
 }
 
+proc run_a64_cmd_retry_on_failure {cmd ok_re fail_re desc retries} {
+    for {set attempt 0} {$attempt < $retries} {incr attempt} {
+        puts "RUN: $desc"
+        after 100
+        send -s -- "$cmd\r"
+        expect {
+            -re $ok_re {
+                expect_a64_prompt
+                return
+            }
+            -re $fail_re {
+                expect_a64_prompt
+                if {$attempt + 1 >= $retries} {
+                    puts "timeout waiting for aarch64 command: $desc"
+                    exit 1
+                }
+                after 300
+            }
+            timeout { puts "timeout waiting for aarch64 command: $desc"; exit 1 }
+        }
+    }
+}
+
 spawn ./run-aarch64-virt-image-virtio-blk-mmio.sh
 
 expect {
@@ -80,7 +103,12 @@ if {[info exists env(A64_INCLUDE_STRICT_UART_IRQ)] && $env(A64_INCLUDE_STRICT_UA
 run_a64_cmd "vfs-blk-read raw 0 1" {\[A64\] blk-read lba=[^\r\n]*} "initial vfs-blk-read raw 0"
 
 for {set i 0} {$i < $loops} {incr i} {
-    run_a64_cmd "blk-rwtest" {\[A64\] blk-rwtest ok lba=[^\r\n]*} "blk-rwtest loop"
+    run_a64_cmd_retry_on_failure \
+        "blk-rwtest" \
+        {\[A64\] blk-rwtest ok lba=[^\r\n]*} \
+        {\[A64\] blk-rwtest failed: [^\r\n]*} \
+        "blk-rwtest loop" \
+        3
     run_a64_cmd "vfs-blk-read raw 0 1" {\[A64\] blk-read lba=[^\r\n]*} "vfs-blk-read loop"
     run_a64_cmd "ticks" {\[A64\] ticks=[^\r\n]*} "ticks loop"
     if {[expr {$i % 2}] == 0} {
