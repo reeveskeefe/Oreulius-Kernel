@@ -201,14 +201,15 @@ def send_committed(h, label, cmd):
 
 
 def ensure_no_failure(label, name, match):
+    detail = match.group(1).strip()
     if name == "resolution_failed":
-        raise HarnessError(f"{label}: {match.group(1)}")
+        raise HarnessError(f"{label}: {detail}")
     if name == "request_failed":
-        raise HarnessError(f"{label}: {match.group(1)}")
+        raise HarnessError(f"{label}: {detail}")
     if name == "error":
-        raise HarnessError(f"{label}: {match.group(1)}")
+        raise HarnessError(f"{label}: {detail}")
     if name == "unknown":
-        raise HarnessError(f"{label}: unknown command {match.group(1)}")
+        raise HarnessError(f"{label}: unknown command {detail}")
 
 
 def expect_ready_phase(h):
@@ -309,7 +310,7 @@ def run_http_phase(h):
             wait_for_prompt(h)
             return
 
-        transient = name == "request_failed" and match.group(1) in TRANSIENT_HTTP_FAILURES
+        transient = name == "request_failed" and match.group(1).strip() in TRANSIENT_HTTP_FAILURES
         if transient and attempt + 1 < max_attempts:
             h.wait_for_any(
                 [("done", done_re(seq, cmd))], 60, f"{label}: waiting for completion marker"
