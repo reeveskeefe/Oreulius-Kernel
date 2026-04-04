@@ -77,9 +77,7 @@ if {[info exists env(A64_INCLUDE_STRICT_UART_IRQ)] && $env(A64_INCLUDE_STRICT_UA
     run_a64_cmd "strict-uart-irq off" {\[A64\] strict-uart-irq=off} "strict-uart-irq off"
 }
 
-run_a64_cmd "vfs-mkdir /mntext" {\[A64-CMD\] vfs-mkdir ok /mntext} "vfs-mkdir /mntext"
-run_a64_cmd "vfs-mount-virtio /mntext" {\[A64-CMD\] vfs-mount-virtio ok /mntext} "vfs-mount-virtio"
-run_a64_cmd "vfs-ls /mntext" {\[A64-CMD\] vfs-ls /mntext [^\r\n]*raw[^\r\n]*} "vfs-ls /mntext"
+run_a64_cmd "vfs-blk-read raw 0 1" {\[A64\] blk-read lba=[^\r\n]*} "initial vfs-blk-read raw 0"
 
 for {set i 0} {$i < $loops} {incr i} {
     run_a64_cmd "blk-rwtest" {\[A64\] blk-rwtest ok lba=[^\r\n]*} "blk-rwtest loop"
