@@ -436,6 +436,9 @@ pub struct VirtioNet {
     pub mac: [u8; 6],
     negotiated_features: u64,
     initialized: bool,
+    /// Internal buffer for frames drained from the RX virtqueue.
+    /// Used by `has_recv()` / `recv()` so callers don't need a callback.
+    pending_rx: Vec<Vec<u8>>,
 }
 
 impl VirtioNet {
@@ -448,11 +451,43 @@ impl VirtioNet {
             mac: [0u8; 6],
             negotiated_features: 0,
             initialized: false,
+            pending_rx: Vec::new(),
         }
     }
 
     fn reset(&mut self) {
         *self = VirtioNet::uninit();
+    }
+
+    /// Drain any completed RX descriptors from the virtqueue into `pending_rx`.
+    fn drain_rx(&mut self) {
+        if !self.initialized {
+            return;
+        }
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        if let Some(rx) = self.rx.as_mut() {
+            let mut completed: Vec<(u16, u32)> = Vec::new();
+            rx.poll_used(&mut completed);
+            for (desc_idx, len) in &completed {
+                let idx = *desc_idx as usize;
+                let total = *len as usize;
+                if total > VIRTIO_NET_HDR_SIZE && idx < QUEUE_SIZE {
+                    let frame_len = total - VIRTIO_NET_HDR_SIZE;
+                    if frame_len <= RX_BUF_SIZE - VIRTIO_NET_HDR_SIZE {
+                        frames.push(
+                            rx.buffers[idx]
+                                [VIRTIO_NET_HDR_SIZE..VIRTIO_NET_HDR_SIZE + frame_len]
+                                .to_vec(),
+                        );
+                    }
+                }
+                rx.free_desc(*desc_idx);
+            }
+            if !completed.is_empty() {
+                rx.replenish_rx();
+            }
+        }
+        self.pending_rx.extend(frames);
     }
 }
 
@@ -623,6 +658,36 @@ pub fn is_available() -> bool {
 /// Returns the negotiated MAC address, or all-zeros if not initialised.
 pub fn mac_address() -> [u8; 6] {
     VIRTIO_NET.lock().mac
+}
+
+/// Returns `true` if at least one received Ethernet frame is available.
+///
+/// Drains the RX virtqueue into an internal buffer on each call so that
+/// frames are not lost between a `has_recv` check and the subsequent `recv`.
+pub fn has_recv() -> bool {
+    let mut dev = VIRTIO_NET.lock();
+    dev.drain_rx();
+    !dev.pending_rx.is_empty()
+}
+
+/// Copy the oldest received Ethernet frame into `buf`.
+///
+/// Returns the number of bytes written (0 if no frame is available or `buf`
+/// is too small).  The raw Ethernet payload is written **without** the
+/// VirtIO-net header.
+pub fn recv(buf: &mut [u8]) -> usize {
+    let mut dev = VIRTIO_NET.lock();
+    if dev.pending_rx.is_empty() {
+        dev.drain_rx();
+    }
+    if let Some(frame) = dev.pending_rx.first() {
+        let n = frame.len().min(buf.len());
+        buf[..n].copy_from_slice(&frame[..n]);
+        let _ = dev.pending_rx.remove(0);
+        n
+    } else {
+        0
+    }
 }
 
 pub fn is_link_up() -> bool {

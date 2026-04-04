@@ -87,18 +87,16 @@ fn net_send(frame: &[u8]) -> bool {
     crate::rtl8139::send(frame)
 }
 
-/// AArch64: RX buffering via virtio-net is not yet implemented; reports no
-/// pending frames.  sock_recv returns 0 bytes and sock_accept returns EAGAIN.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn net_has_recv() -> bool {
-    false
+    crate::virtio_net::has_recv()
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-fn net_recv(_buf: &mut [u8]) -> usize {
-    0
+fn net_recv(buf: &mut [u8]) -> usize {
+    crate::virtio_net::recv(buf)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -113,11 +111,10 @@ fn kbd_has_input() -> bool {
     crate::keyboard::has_input()
 }
 
-/// AArch64: no PS/2 keyboard; stdin never has input via this path.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn kbd_has_input() -> bool {
-    false
+    crate::arch::aarch64_pl011::has_input()
 }
 
 // WASI errno codes (WASI Preview 1 §1.3)
@@ -720,6 +717,7 @@ pub fn fd_read(
 
                 let mut written = 0usize;
                 #[cfg(not(target_arch = "aarch64"))]
+                #[cfg(not(target_arch = "aarch64"))]
                 while written < buf_len {
                     crate::input::pump();
                     match crate::input::read() {
@@ -733,7 +731,17 @@ pub fn fd_read(
                         _ => break,
                     }
                 }
-                // AArch64: keyboard input not yet implemented; stdin reads return empty.
+                // AArch64: read from the PL011 UART RX ring buffer.
+                #[cfg(target_arch = "aarch64")]
+                while written < buf_len {
+                    match crate::arch::aarch64_pl011::read_byte() {
+                        Some(b) => {
+                            mem[buf_ptr + written] = b;
+                            written += 1;
+                        }
+                        None => break,
+                    }
+                }
                 total += written as u32;
             }
         }

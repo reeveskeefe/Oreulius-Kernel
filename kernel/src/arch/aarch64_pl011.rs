@@ -242,3 +242,15 @@ static RX_RING: RxRingBuffer = RxRingBuffer::new();
 pub(crate) fn early_uart() -> &'static Pl011 {
     &EARLY_UART
 }
+
+/// Returns `true` if at least one byte is waiting in the PL011 RX ring buffer.
+#[inline]
+pub(crate) fn has_input() -> bool {
+    EARLY_UART.rx_buffer_len() > 0
+}
+
+/// Pop one byte from the PL011 RX ring buffer, or `None` if the buffer is empty.
+#[inline]
+pub(crate) fn read_byte() -> Option<u8> {
+    EARLY_UART.try_read_buffered_byte()
+}
