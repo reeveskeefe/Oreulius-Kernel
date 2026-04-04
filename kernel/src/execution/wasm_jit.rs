@@ -64,7 +64,10 @@ enum Opcode {
     I32Const = 0x41, I64Const = 0x42, F32Const = 0x43, F64Const = 0x44,
     I32Eqz = 0x45, I32Eq = 0x46, I32Ne = 0x47, I32LtS = 0x48, I32LtU = 0x49,
     I32GtS = 0x4A, I32GtU = 0x4B, I32LeS = 0x4C, I32LeU = 0x4D,
-    I32GeS = 0x4E, I32GeU = 0x4F, I32Clz = 0x67, I32Ctz = 0x68,
+    I32GeS = 0x4E, I32GeU = 0x4F,
+    I64Eqz = 0x50, I64Eq = 0x51, I64Ne = 0x52, I64LtS = 0x53, I64LtU = 0x54,
+    I64GtS = 0x55, I64GtU = 0x56, I64LeS = 0x57, I64LeU = 0x58,
+    I64GeS = 0x59, I64GeU = 0x5A, I32Clz = 0x67, I32Ctz = 0x68,
     I32Popcnt = 0x69, I32Add = 0x6A, I32Sub = 0x6B, I32Mul = 0x6C,
     I32DivS = 0x6D, I32DivU = 0x6E, I32RemS = 0x6F, I32RemU = 0x70,
     I32And = 0x71, I32Or = 0x72, I32Xor = 0x73, I32Shl = 0x74,
@@ -73,6 +76,7 @@ enum Opcode {
     I64Sub = 0x7D, I64Mul = 0x7E, I64DivS = 0x7F,
     F32Add = 0x92, F32Sub = 0x93, F32Mul = 0x94, F32Div = 0x95,
     F64Add = 0xA0, F64Sub = 0xA1, F64Mul = 0xA2, F64Div = 0xA3,
+    I32WrapI64 = 0xA7, I64ExtendI32S = 0xAC, I64ExtendI32U = 0xAD,
     RefNull = 0xD0, RefIsNull = 0xD1, RefFunc = 0xD2,
 }
 
@@ -1214,6 +1218,92 @@ fn emit_code_into(
                 stack_push(&mut stack_depth, 2, &mut max_depth)?;
                 emitter.emit_i64_popcnt();
             }
+            // ── i64 comparison operations ─────────────────────────────────────
+            Opcode::I64Eqz => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;    // one i64 = 2 slots
+                stack_push(&mut stack_depth, 1, &mut max_depth)?; // i32 result
+                emitter.emit_i64_eqz();
+            }
+            Opcode::I64Eq => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?;    // two i64s = 4 slots
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i64_eq();
+            }
+            Opcode::I64Ne => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i64_ne();
+            }
+            Opcode::I64LtS => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i64_lts();
+            }
+            Opcode::I64GtS => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i64_gts();
+            }
+            Opcode::I64LeS => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i64_les();
+            }
+            Opcode::I64GeS => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i64_ges();
+            }
+            Opcode::I64LtU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i64_ltu();
+            }
+            Opcode::I64GtU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i64_gtu();
+            }
+            Opcode::I64LeU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i64_leu();
+            }
+            Opcode::I64GeU => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 4)?;
+                stack_push(&mut stack_depth, 1, &mut max_depth)?;
+                emitter.emit_i64_geu();
+            }
+            // ── i64/i32 type conversions ──────────────────────────────────────
+            Opcode::I32WrapI64 => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 2)?;     // i64 = 2 slots
+                stack_push(&mut stack_depth, 1, &mut max_depth)?; // i32 result
+                emitter.emit_i32_wrap_i64();
+            }
+            Opcode::I64ExtendI32S => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 1)?;     // i32 = 1 slot
+                stack_push(&mut stack_depth, 2, &mut max_depth)?; // i64 = 2 slots
+                emitter.emit_i64_extend_i32s();
+            }
+            Opcode::I64ExtendI32U => {
+                emitter.emit_instr_fuel_check();
+                stack_pop(&mut stack_depth, 1)?;
+                stack_push(&mut stack_depth, 2, &mut max_depth)?;
+                emitter.emit_i64_extend_i32u();
+            }
             // ── New opcodes: i32 sign-extending loads ─────────────────────────
             Opcode::I32Load8S => {
                 emitter.emit_instr_fuel_check();
@@ -1487,6 +1577,20 @@ fn x86_64_backend_opcode_supported(opcode: Opcode) -> bool {
             | Opcode::Else
             | Opcode::Br
             | Opcode::BrIf
+            | Opcode::I64Eqz
+            | Opcode::I64Eq
+            | Opcode::I64Ne
+            | Opcode::I64LtS
+            | Opcode::I64GtS
+            | Opcode::I64LeS
+            | Opcode::I64GeS
+            | Opcode::I64LtU
+            | Opcode::I64GtU
+            | Opcode::I64LeU
+            | Opcode::I64GeU
+            | Opcode::I32WrapI64
+            | Opcode::I64ExtendI32S
+            | Opcode::I64ExtendI32U
     )
 }
 
@@ -2730,6 +2834,21 @@ impl Emitter {
     fn emit_i64_store8(&mut self, _off: u32) { panic!("i64.store8: not supported on this architecture"); }
     fn emit_i64_store16(&mut self, _off: u32) { panic!("i64.store16: not supported on this architecture"); }
     fn emit_i64_store32(&mut self, _off: u32) { panic!("i64.store32: not supported on this architecture"); }
+    fn emit_i64_eqz(&mut self) { panic!("i64.eqz: not supported on this architecture"); }
+    fn emit_i64_cmp_core(&mut self, _setcc: [u8; 3]) { panic!("i64.cmp: not supported on this architecture"); }
+    fn emit_i64_eq(&mut self)  { panic!("i64.eq: not supported on this architecture"); }
+    fn emit_i64_ne(&mut self)  { panic!("i64.ne: not supported on this architecture"); }
+    fn emit_i64_lts(&mut self) { panic!("i64.lt_s: not supported on this architecture"); }
+    fn emit_i64_gts(&mut self) { panic!("i64.gt_s: not supported on this architecture"); }
+    fn emit_i64_les(&mut self) { panic!("i64.le_s: not supported on this architecture"); }
+    fn emit_i64_ges(&mut self) { panic!("i64.ge_s: not supported on this architecture"); }
+    fn emit_i64_ltu(&mut self) { panic!("i64.lt_u: not supported on this architecture"); }
+    fn emit_i64_gtu(&mut self) { panic!("i64.gt_u: not supported on this architecture"); }
+    fn emit_i64_leu(&mut self) { panic!("i64.le_u: not supported on this architecture"); }
+    fn emit_i64_geu(&mut self) { panic!("i64.ge_u: not supported on this architecture"); }
+    fn emit_i32_wrap_i64(&mut self) { panic!("i32.wrap_i64: not supported on this architecture"); }
+    fn emit_i64_extend_i32s(&mut self) { panic!("i64.extend_i32_s: not supported on this architecture"); }
+    fn emit_i64_extend_i32u(&mut self) { panic!("i64.extend_i32_u: not supported on this architecture"); }
 
     // ── call_indirect ─────────────────────────────────────────────────────────
     // Emits a trampoline that: (a) pops the table-index from the WASM value stack,
@@ -4051,6 +4170,102 @@ impl Emitter {
         self.emit_push_eax();
         self.emit(&[0x44, 0x89, 0xD8]);        // mov eax, r11d
         self.emit_push_eax();
+    }
+
+    // ── i64.eqz (x86_64) ─────────────────────────────────────────────────────
+    // Pops one i64 (2 slots: hi, lo). Pushes i32: 1 if value == 0, else 0.
+    fn emit_i64_eqz(&mut self) {
+        // Pop lo → r11d, pop hi → eax
+        self.emit_pop_to_ebx();               // r11d = lo (TOS)
+        self.emit_pop_to_eax();               // eax  = hi
+        // OR them: if either word is nonzero, eax becomes nonzero
+        self.emit(&[0x44, 0x09, 0xD8]);       // or eax, r11d  (REX.R=1: reg=r11d, r/m=eax)
+        // test eax, eax; sete al; movzx eax, al
+        self.emit(&[0x85, 0xC0]);             // test eax, eax
+        self.emit(&[0x0F, 0x94, 0xC0]);       // sete al
+        self.emit(&[0x0F, 0xB6, 0xC0]);       // movzx eax, al
+        self.emit_push_eax();
+    }
+
+    // ── i64 comparison helpers ────────────────────────────────────────────────
+    //
+    // All i64 comparisons follow the same pattern:
+    //   1. emit_i64_build_a_in_rax_b_in_r8   → rax = TOS i64 (a), r8 = below-TOS i64 (b)
+    //   2. cmp rax, r8
+    //   3. setXX al      (choose based on b OP a semantics; see notes below)
+    //   4. movzx eax, al
+    //   5. emit_push_eax
+    //
+    // WASM ordering convention: in the virtual stack, "a" is the MORE RECENTLY
+    // pushed i64 (TOS region → rax). In WASM binary ops the MORE RECENT push is
+    // the RIGHT operand (v2). The LESS RECENT push is the LEFT operand (v1 → r8).
+    //
+    // Thus for each WASM comparison "v1 OP v2":
+    //   v1 = r8 (b), v2 = rax (a)
+    //   "v1 OP v2" ⟺ "r8 OP rax" ⟺ use SWAPPED setcc after "cmp rax, r8":
+    //       i64.eq  → sete    (equal is symmetric)
+    //       i64.ne  → setne
+    //       i64.lt_s (v1 < v2, r8 < rax) → setg  (rax > r8 signed ↔ r8 < rax)
+    //       i64.gt_s (v1 > v2, r8 > rax) → setl
+    //       i64.le_s (v1 ≤ v2, r8 ≤ rax) → setge
+    //       i64.ge_s (v1 ≥ v2, r8 ≥ rax) → setle
+    //       i64.lt_u (r8 < rax unsigned)  → seta
+    //       i64.gt_u (r8 > rax unsigned)  → setb
+    //       i64.le_u (r8 ≤ rax unsigned)  → setae
+    //       i64.ge_u (r8 ≥ rax unsigned)  → setbe
+    //
+    // cmp rax, r8 encoding: 0x49 0x3B 0xC0
+    //   REX: W=1,R=0,X=0,B=1 = 0x49
+    //   CMP r64, r/m64 (0x3B): reg=rax(0), r/m=r8(with REX.B=1→8)
+    //   ModRM: mod=11 reg=000 r/m=000 = 0xC0
+    //
+    // setcc al encodings (all: 0F 9X C0):
+    //   sete  0F 94 C0   setne 0F 95 C0
+    //   setl  0F 9C C0   setg  0F 9F C0   setle 0F 9E C0   setge 0F 9D C0
+    //   setb  0F 92 C0   seta  0F 97 C0   setbe 0F 96 C0   setae 0F 93 C0
+    //
+    // movzx eax, al: 0F B6 C0
+
+    fn emit_i64_cmp_core(&mut self, setcc: [u8; 3]) {
+        self.emit_i64_build_a_in_rax_b_in_r8();
+        self.emit(&[0x49, 0x3B, 0xC0]);       // cmp rax, r8
+        self.emit(&setcc);                     // setXX al
+        self.emit(&[0x0F, 0xB6, 0xC0]);       // movzx eax, al
+        self.emit_push_eax();
+    }
+
+    fn emit_i64_eq(&mut self)  { self.emit_i64_cmp_core([0x0F, 0x94, 0xC0]); } // sete
+    fn emit_i64_ne(&mut self)  { self.emit_i64_cmp_core([0x0F, 0x95, 0xC0]); } // setne
+    fn emit_i64_lts(&mut self) { self.emit_i64_cmp_core([0x0F, 0x9F, 0xC0]); } // setg (r8<rax signed)
+    fn emit_i64_gts(&mut self) { self.emit_i64_cmp_core([0x0F, 0x9C, 0xC0]); } // setl (r8>rax signed)
+    fn emit_i64_les(&mut self) { self.emit_i64_cmp_core([0x0F, 0x9D, 0xC0]); } // setge
+    fn emit_i64_ges(&mut self) { self.emit_i64_cmp_core([0x0F, 0x9E, 0xC0]); } // setle
+    fn emit_i64_ltu(&mut self) { self.emit_i64_cmp_core([0x0F, 0x97, 0xC0]); } // seta (r8<rax unsigned)
+    fn emit_i64_gtu(&mut self) { self.emit_i64_cmp_core([0x0F, 0x92, 0xC0]); } // setb
+    fn emit_i64_leu(&mut self) { self.emit_i64_cmp_core([0x0F, 0x93, 0xC0]); } // setae
+    fn emit_i64_geu(&mut self) { self.emit_i64_cmp_core([0x0F, 0x96, 0xC0]); } // setbe
+
+    // ── i32.wrap_i64 (x86_64) ────────────────────────────────────────────────
+    // Pops i64 (2 slots: hi, lo). Pushes the lo word as an i32.
+    fn emit_i32_wrap_i64(&mut self) {
+        self.emit_pop_to_eax();               // eax = lo (TOS)
+        self.emit_pop_to_ebx();               // r11d = hi (discarded via ebx alias)
+        self.emit_push_eax();                 // push lo as i32
+    }
+
+    // ── i64.extend_i32_s (x86_64) ────────────────────────────────────────────
+    // Pops i32. Pushes i64 sign-extended to 64 bits.
+    fn emit_i64_extend_i32s(&mut self) {
+        self.emit_pop_to_eax();               // eax = i32 value
+        self.emit(&[0x48, 0x63, 0xC0]);       // movsxd rax, eax  (sign-extend to rax)
+        self.emit_i64_split_rax_push_hi_lo(); // push hi (sign bits), then lo
+    }
+
+    // ── i64.extend_i32_u (x86_64) ────────────────────────────────────────────
+    // Pops i32. Pushes i64 zero-extended to 64 bits.
+    fn emit_i64_extend_i32u(&mut self) {
+        self.emit_pop_to_eax();               // eax = i32; upper 32 bits of rax = 0 automatically
+        self.emit_i64_split_rax_push_hi_lo(); // push hi=0, then lo
     }
 
     // ── i64.load (x86_64) ────────────────────────────────────────────────────

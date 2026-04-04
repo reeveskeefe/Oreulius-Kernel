@@ -460,6 +460,19 @@ pub enum Opcode {
     I32GeS = 0x4E,
     I32GeU = 0x4F,
 
+    // i64 comparison operations
+    I64Eqz = 0x50,
+    I64Eq = 0x51,
+    I64Ne = 0x52,
+    I64LtS = 0x53,
+    I64LtU = 0x54,
+    I64GtS = 0x55,
+    I64GtU = 0x56,
+    I64LeS = 0x57,
+    I64LeU = 0x58,
+    I64GeS = 0x59,
+    I64GeU = 0x5A,
+
     I32Add = 0x6A,
     I32Sub = 0x6B,
     I32Mul = 0x6C,
@@ -499,6 +512,11 @@ pub enum Opcode {
     F64Sub = 0xA1,
     F64Mul = 0xA2,
     F64Div = 0xA3,
+
+    // Type conversions
+    I32WrapI64 = 0xA7,
+    I64ExtendI32S = 0xAC,
+    I64ExtendI32U = 0xAD,
 
     // Reference types
     RefNull = 0xD0,
@@ -567,6 +585,17 @@ impl Opcode {
             0x4D => Some(Opcode::I32LeU),
             0x4E => Some(Opcode::I32GeS),
             0x4F => Some(Opcode::I32GeU),
+            0x50 => Some(Opcode::I64Eqz),
+            0x51 => Some(Opcode::I64Eq),
+            0x52 => Some(Opcode::I64Ne),
+            0x53 => Some(Opcode::I64LtS),
+            0x54 => Some(Opcode::I64LtU),
+            0x55 => Some(Opcode::I64GtS),
+            0x56 => Some(Opcode::I64GtU),
+            0x57 => Some(Opcode::I64LeS),
+            0x58 => Some(Opcode::I64LeU),
+            0x59 => Some(Opcode::I64GeS),
+            0x5A => Some(Opcode::I64GeU),
             0x67 => Some(Opcode::I32Clz),
             0x68 => Some(Opcode::I32Ctz),
             0x69 => Some(Opcode::I32Popcnt),
@@ -600,6 +629,9 @@ impl Opcode {
             0xA1 => Some(Opcode::F64Sub),
             0xA2 => Some(Opcode::F64Mul),
             0xA3 => Some(Opcode::F64Div),
+            0xA7 => Some(Opcode::I32WrapI64),
+            0xAC => Some(Opcode::I64ExtendI32S),
+            0xAD => Some(Opcode::I64ExtendI32U),
             0xD0 => Some(Opcode::RefNull),
             0xD1 => Some(Opcode::RefIsNull),
             0xD2 => Some(Opcode::RefFunc),
@@ -5438,22 +5470,23 @@ impl WasmInstance {
         let table_size = self.module.table_size;
         for slot in 0..table_size.min(MAX_WASM_TABLE_ENTRIES) {
             if let Some(callee_func_idx) = self.module.table_entries[slot] {
-                if callee_func_idx < self.jit_hash.len() {
-                    if let Some(callee_hash) = self.jit_hash[callee_func_idx] {
-                        if let Ok(callee_func) = self.module.get_function(callee_func_idx) {
-                            if let Ok((cs, ce)) = self.function_code_range(callee_func) {
-                                let callee_code = &self.module.bytecode[cs..ce];
-                                let callee_locals = callee_func.param_count + callee_func.local_count;
-                                if let Some(entry) = jit_cache_get(
-                                    callee_hash,
-                                    callee_code,
-                                    callee_locals,
-                                    type_sig_hash,
-                                    global_sig_hash,
-                                ) {
-                                    fn_table[slot] = entry.entry as usize;
-                                }
-                            }
+                if let Ok(callee_func) = self.module.get_function(callee_func_idx) {
+                    if let Ok((cs, ce)) = self.function_code_range(callee_func) {
+                        let callee_code = &self.module.bytecode[cs..ce];
+                        let callee_locals = callee_func.param_count + callee_func.local_count;
+                        let callee_hash = hash_code(callee_code, callee_locals)
+                            ^ type_sig_hash
+                            ^ global_sig_hash;
+                        if let Some(entry) = jit_cache_get_or_compile(
+                            callee_hash,
+                            callee_code,
+                            callee_locals,
+                            &type_sigs,
+                            type_sig_hash,
+                            &global_sigs,
+                            global_sig_hash,
+                        ) {
+                            fn_table[slot] = entry.entry as usize;
                         }
                     }
                 }
@@ -5780,22 +5813,23 @@ impl WasmInstance {
         let table_size_ci = self.module.table_size;
         for slot in 0..table_size_ci.min(MAX_WASM_TABLE_ENTRIES) {
             if let Some(callee_func_idx) = self.module.table_entries[slot] {
-                if callee_func_idx < self.jit_hash.len() {
-                    if let Some(callee_hash) = self.jit_hash[callee_func_idx] {
-                        if let Ok(callee_func) = self.module.get_function(callee_func_idx) {
-                            if let Ok((cs, ce)) = self.function_code_range(callee_func) {
-                                let callee_code = &self.module.bytecode[cs..ce];
-                                let callee_locals = callee_func.param_count + callee_func.local_count;
-                                if let Some(entry) = jit_cache_get(
-                                    callee_hash,
-                                    callee_code,
-                                    callee_locals,
-                                    type_sig_hash_ci,
-                                    global_sig_hash_ci,
-                                ) {
-                                    fn_table_ci[slot] = entry.entry as usize;
-                                }
-                            }
+                if let Ok(callee_func) = self.module.get_function(callee_func_idx) {
+                    if let Ok((cs, ce)) = self.function_code_range(callee_func) {
+                        let callee_code = &self.module.bytecode[cs..ce];
+                        let callee_locals = callee_func.param_count + callee_func.local_count;
+                        let callee_hash = hash_code(callee_code, callee_locals)
+                            ^ type_sig_hash_ci
+                            ^ global_sig_hash_ci;
+                        if let Some(entry) = jit_cache_get_or_compile(
+                            callee_hash,
+                            callee_code,
+                            callee_locals,
+                            &type_sigs_ci,
+                            type_sig_hash_ci,
+                            &global_sigs_ci,
+                            global_sig_hash_ci,
+                        ) {
+                            fn_table_ci[slot] = entry.entry as usize;
                         }
                     }
                 }
@@ -6678,6 +6712,86 @@ impl WasmInstance {
                     return Err(WasmError::DivisionByZero);
                 }
                 self.stack.push(Value::I64(a.wrapping_div(b)))?;
+            }
+
+            Opcode::I64Eqz => {
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I32(if a == 0 { 1 } else { 0 }))?;
+            }
+
+            Opcode::I64Eq => {
+                let b = self.stack.pop()?.as_i64()?;
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I32(if a == b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I64Ne => {
+                let b = self.stack.pop()?.as_i64()?;
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I32(if a != b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I64LtS => {
+                let b = self.stack.pop()?.as_i64()?;
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I32(if a < b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I64LtU => {
+                let b = self.stack.pop()?.as_i64()? as u64;
+                let a = self.stack.pop()?.as_i64()? as u64;
+                self.stack.push(Value::I32(if a < b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I64GtS => {
+                let b = self.stack.pop()?.as_i64()?;
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I32(if a > b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I64GtU => {
+                let b = self.stack.pop()?.as_i64()? as u64;
+                let a = self.stack.pop()?.as_i64()? as u64;
+                self.stack.push(Value::I32(if a > b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I64LeS => {
+                let b = self.stack.pop()?.as_i64()?;
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I32(if a <= b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I64LeU => {
+                let b = self.stack.pop()?.as_i64()? as u64;
+                let a = self.stack.pop()?.as_i64()? as u64;
+                self.stack.push(Value::I32(if a <= b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I64GeS => {
+                let b = self.stack.pop()?.as_i64()?;
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I32(if a >= b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I64GeU => {
+                let b = self.stack.pop()?.as_i64()? as u64;
+                let a = self.stack.pop()?.as_i64()? as u64;
+                self.stack.push(Value::I32(if a >= b { 1 } else { 0 }))?;
+            }
+
+            Opcode::I32WrapI64 => {
+                let a = self.stack.pop()?.as_i64()?;
+                self.stack.push(Value::I32(a as i32))?;
+            }
+
+            Opcode::I64ExtendI32S => {
+                let a = self.stack.pop()?.as_i32()?;
+                self.stack.push(Value::I64(a as i64))?;
+            }
+
+            Opcode::I64ExtendI32U => {
+                let a = self.stack.pop()?.as_i32()?;
+                self.stack.push(Value::I64((a as u32) as i64))?;
             }
 
             Opcode::F32Add => {
@@ -14696,19 +14810,6 @@ unsafe fn x86_64_sti_restore(flags: u64) {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-fn call_jit_user_x86_64_preflight_stage(
-    jit_user_pages: &mut Option<JitUserPages>,
-) -> Result<(), &'static str> {
-    jit_user_debug_set_stage(2);
-    jit_x86_64_sandbox_preflight_with_pages(jit_user_pages, "call")
-}
-
-#[cfg(target_arch = "x86_64")]
-fn call_jit_user_x86_64_entry_stage() -> Result<i32, &'static str> {
-    Err("x86_64 JIT user entry/trampoline path not yet ported (preflight stage completed)")
-}
-
 fn call_jit_user(
     jit_entry: JitExecInfo,
     _stack_ptr: *mut i32,
@@ -14780,10 +14881,9 @@ fn call_jit_user(
     crate::gdt::update_kernel_stack(esp0);
 
     if kpti::enabled() {
-        #[cfg(target_arch = "x86_64")]
-        {
-            return Err("x86_64 JIT user path with KPTI enabled not yet supported");
-        }
+        // kpti::init() is currently only called from the i686 boot path; on x86_64
+        // this branch is unreachable. When x86_64 KPTI is wired, provide an
+        // x86_64-aware map_user_support variant here.
         #[cfg(not(target_arch = "x86_64"))]
         kpti::map_user_support(sandbox, kernel_space)?;
     }
