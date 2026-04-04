@@ -201,14 +201,17 @@ def send_committed(h, label, cmd):
 
 
 def ensure_no_failure(label, name, match):
-    detail = match.group(1).strip()
     if name == "resolution_failed":
+        detail = match.group(1).strip()
         raise HarnessError(f"{label}: {detail}")
     if name == "request_failed":
+        detail = match.group(1).strip()
         raise HarnessError(f"{label}: {detail}")
     if name == "error":
+        detail = match.group(1).strip()
         raise HarnessError(f"{label}: {detail}")
     if name == "unknown":
+        detail = match.group(1).strip()
         raise HarnessError(f"{label}: unknown command {detail}")
 
 
