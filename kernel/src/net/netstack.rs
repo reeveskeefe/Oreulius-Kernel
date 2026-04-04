@@ -413,6 +413,19 @@ impl NetworkStack {
     }
 
     #[inline]
+    fn legacy_x86_probe_ready(&self) -> bool {
+        #[cfg(target_arch = "x86")]
+        {
+            self.has_interface && self.interface_configured()
+        }
+
+        #[cfg(not(target_arch = "x86"))]
+        {
+            false
+        }
+    }
+
+    #[inline]
     pub fn readiness_prereqs_met(&self) -> bool {
         return self.interface_configured() && self.operational_link_ready();
     }
@@ -660,6 +673,9 @@ impl NetworkStack {
         let link_deadline =
             crate::pit::get_ticks() + Self::wait_timeout_ticks(NET_READY_DEFAULT_WAIT_TICKS);
         while !self.operational_link_ready() {
+            if self.legacy_x86_probe_ready() {
+                break;
+            }
             if crate::pit::get_ticks() >= link_deadline {
                 return Err("Link down");
             }
