@@ -100,6 +100,25 @@ impl BrowserSession {
         id
     }
 
+    /// Navigation ring head (next write index).
+    pub fn nav_head(&self) -> usize {
+        self.nav_head
+    }
+
+    /// Number of valid navigation entries (≤ `NAV_HISTORY_DEPTH`).
+    pub fn nav_count(&self) -> usize {
+        self.nav_count
+    }
+
+    /// Access a navigation entry by ring slot index.
+    pub fn nav_entry(&self, i: usize) -> Option<&NavigationEntry> {
+        if i < NAV_HISTORY_DEPTH {
+            Some(&self.nav_history[i])
+        } else {
+            None
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Navigation history
     // -----------------------------------------------------------------------
