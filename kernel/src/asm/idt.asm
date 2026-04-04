@@ -598,3 +598,5 @@ get_exception_name:
 .invalid:
     xor eax, eax
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

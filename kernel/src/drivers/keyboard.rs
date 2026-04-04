@@ -573,16 +573,11 @@ pub fn poll_event() -> Option<KeyEvent> {
         return ev;
     }
 
-    // Fallback: poll the controller directly if IRQs are not firing
-    // REMOVED: Polling causes race conditions with IRQ handler (double typing)
-    // if !is_data_available() {
-    //     return None;
-    // }
-    // let status = unsafe { inb(STATUS_PORT) };
-    // let scancode = unsafe { inb(DATA_PORT) };
-
-    // Return None if buffer is empty
-    None
+    // Fallback: if IRQ1 delivery is unavailable in a local/QEMU session but
+    // the controller still has pending keyboard data, decode one byte directly.
+    // When IRQ delivery is healthy the handler drains DATA_PORT first, so this
+    // path stays dormant and does not compete with the interrupt-driven ring.
+    unsafe { poll_controller_event() }
 }
 
 /// Get event buffer length
@@ -661,6 +656,39 @@ pub unsafe fn handle_irq() {
         }
     }
     // If no data available (bit 0 clear), just return - controller is fine
+}
+
+unsafe fn poll_controller_event() -> Option<KeyEvent> {
+    let status = inb(STATUS_PORT);
+    if (status & 0x01) == 0 || (status & 0x20) != 0 {
+        return None;
+    }
+
+    let scancode = inb(DATA_PORT);
+    if scancode == 0xFA || scancode == 0xFE || scancode == 0 || scancode == 0xFF {
+        return None;
+    }
+
+    LAST_SCANCODE.store(scancode, Ordering::Relaxed);
+    if status & 0xC0 != 0 {
+        ERROR_STATUS.fetch_add(1, Ordering::Relaxed);
+        let old_count = DROPPED_PACKETS.fetch_add(1, Ordering::Relaxed);
+        if old_count == 0 || old_count % 100 == 0 {
+            show_drop_warning();
+        }
+    }
+
+    let ev = Keyboard::handle_scancode(scancode);
+    if let Some(event) = ev {
+        EVENTS_PUSHED.fetch_add(1, Ordering::Relaxed);
+        if let Some(c) = event_to_char(event) {
+            let _ = KEY_BUFFER.push(c as u8);
+        }
+        Some(event)
+    } else {
+        EVENTS_NONE.fetch_add(1, Ordering::Relaxed);
+        None
+    }
 }
 
 /// Handle PS/2 mouse/AUX IRQ (IRQ12).

@@ -1221,7 +1221,7 @@ impl NetworkStack {
             self.clear_stale_dns_responses();
 
             // Build DNS query
-            let query = unsafe { &mut DNS_QUERY_STAGE };
+            let query = unsafe { &mut *core::ptr::addr_of_mut!(DNS_QUERY_STAGE) };
             query.fill(0);
             let mut offset = 0;
 
@@ -1286,7 +1286,7 @@ impl NetworkStack {
             }
 
             // Receive DNS response
-            let response = unsafe { &mut DNS_RESPONSE_STAGE };
+            let response = unsafe { &mut *core::ptr::addr_of_mut!(DNS_RESPONSE_STAGE) };
             response.fill(0);
 
             let dns_timeout_ticks = (crate::pit::get_frequency() as u64)

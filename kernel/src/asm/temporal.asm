@@ -151,3 +151,5 @@ temporal_zero_bytes:
     pop ecx
     pop edi
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

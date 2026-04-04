@@ -129,3 +129,5 @@ asm_inb:
     xor eax, eax       ; clear eax
     in al, dx
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

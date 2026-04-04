@@ -139,7 +139,7 @@ pub fn fg_last_job() -> bool {
                 let cmd = core::str::from_utf8(&j.cmd[..j.cmd_len]).unwrap_or("?");
                 crate::terminal::write_str(cmd);
                 crate::terminal::write_char('\n');
-                JOB_TABLE[i] = None;
+                job_remove(j.pid);
                 return true;
             }
         }
@@ -922,7 +922,6 @@ pub fn shell_loop() -> ! {
             }
         }
 
-        #[cfg(not(target_arch = "x86"))]
         if let Some(ev) = crate::keyboard::poll_event() {
             match ev {
                 crate::keyboard::KeyEvent::AltFn(n) => {

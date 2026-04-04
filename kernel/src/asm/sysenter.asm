@@ -42,3 +42,5 @@ sysenter_entry:
 .kpti_exit_done:
     
     sysexit
+
+section .note.GNU-stack noalloc noexec nowrite progbits

@@ -29,6 +29,7 @@ use crate::process::{Pid, Process, ProcessPriority, ProcessState, MAX_PROCESSES}
 use crate::scheduler_platform::{self, ProcessContext};
 use crate::scheduler_runtime_platform as scheduler_rt;
 use alloc::boxed::Box;
+#[cfg(target_arch = "x86_64")]
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::vec;
@@ -212,12 +213,14 @@ pub struct UserProcessLayout {
     pub mmap_limit: usize,
 }
 
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct SharedFilePageKey {
     source: crate::fs::vfs::MappedFileSource,
     file_page_offset: usize,
 }
 
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SharedFilePageEntry {
     phys_addr: usize,
@@ -625,6 +628,7 @@ pub struct QuantumScheduler {
     wait_queue_count: usize,
     /// Statistics
     stats: SchedulerStats,
+    #[cfg(target_arch = "x86_64")]
     shared_file_pages: BTreeMap<SharedFilePageKey, SharedFilePageEntry>,
 }
 
@@ -737,6 +741,7 @@ impl QuantumScheduler {
                 voluntary_yields: 0,
                 idle_ticks: 0,
             },
+            #[cfg(target_arch = "x86_64")]
             shared_file_pages: BTreeMap::new(),
         }
     }
@@ -2049,7 +2054,7 @@ impl QuantumScheduler {
 
             // Build the initial register context.
             let mut ctx = scheduler_platform::context_new();
-            ctx.pc = aarch64_kernel_user_entry_trampoline as usize as u64;
+            ctx.pc = aarch64_kernel_user_entry_trampoline as *const () as usize as u64;
             ctx.sp = stack_top as u64;
             ctx.x19 = entry as u64;
             ctx.x20 = user_stack as u64;
@@ -3695,14 +3700,14 @@ pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static s
 /// Kernel stack bounds for diagnostics (start, end) for each kernel thread stack.
 pub fn kernel_stack_bounds() -> [(usize, usize); 4] {
     unsafe {
-        let s0 = KERNEL_STACK_0.data.as_ptr() as usize;
-        let e0 = s0 + KERNEL_STACK_0.data.len();
-        let s1 = KERNEL_STACK_1.data.as_ptr() as usize;
-        let e1 = s1 + KERNEL_STACK_1.data.len();
-        let s2 = KERNEL_STACK_2.data.as_ptr() as usize;
-        let e2 = s2 + KERNEL_STACK_2.data.len();
-        let s3 = KERNEL_STACK_3.data.as_ptr() as usize;
-        let e3 = s3 + KERNEL_STACK_3.data.len();
+        let s0 = core::ptr::addr_of!(KERNEL_STACK_0.data) as *const u8 as usize;
+        let e0 = s0 + KERNEL_THREAD_STACK_BYTES;
+        let s1 = core::ptr::addr_of!(KERNEL_STACK_1.data) as *const u8 as usize;
+        let e1 = s1 + KERNEL_THREAD_STACK_BYTES;
+        let s2 = core::ptr::addr_of!(KERNEL_STACK_2.data) as *const u8 as usize;
+        let e2 = s2 + KERNEL_THREAD_STACK_BYTES;
+        let s3 = core::ptr::addr_of!(KERNEL_STACK_3.data) as *const u8 as usize;
+        let e3 = s3 + KERNEL_THREAD_STACK_BYTES;
         [(s0, e0), (s1, e1), (s2, e2), (s3, e3)]
     }
 }

@@ -213,3 +213,5 @@ asm_lfence:
 asm_sfence:
     sfence
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

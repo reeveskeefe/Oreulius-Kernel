@@ -45,6 +45,7 @@ use crate::paging;
 use crate::process_asm;
 use crate::replay::{self, ReplayEventStatus, ReplayMode};
 use crate::syscall::SYSCALL_JIT_RETURN;
+use alloc::alloc::{alloc, handle_alloc_error, Layout};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
@@ -198,6 +199,15 @@ pub const fn jit_fuzz_opcode_edges_total() -> u32 {
 
 pub const fn jit_fuzz_24bin_feature_enabled() -> bool {
     cfg!(feature = "jit-fuzz-24bin")
+}
+
+const fn jit_fuzz_choice_bin(choice: u8) -> Option<usize> {
+    let idx = choice as usize;
+    if idx < JIT_FUZZ_OPCODE_BINS {
+        Some(idx)
+    } else {
+        None
+    }
 }
 
 /// Stable regression corpus seeds for JIT fuzz replay.
@@ -3307,7 +3317,7 @@ pub struct Function {
 }
 
 impl Function {
-    pub const fn from_signature(
+    const fn from_signature(
         code_offset: usize,
         code_len: usize,
         local_count: usize,
@@ -3327,7 +3337,7 @@ impl Function {
         }
     }
 
-    pub const fn synthetic_i32(
+    pub(crate) const fn synthetic_i32(
         code_offset: usize,
         code_len: usize,
         param_count: usize,
@@ -4497,6 +4507,61 @@ pub struct WasmInstance {
 unsafe impl Send for WasmInstance {}
 
 impl WasmInstance {
+    unsafe fn boxed_new_in_place(
+        module: WasmModule,
+        process_id: ProcessId,
+        instance_id: usize,
+    ) -> Box<Self> {
+        let layout = Layout::new::<WasmInstance>();
+        let raw = alloc(layout) as *mut WasmInstance;
+        if raw.is_null() {
+            handle_alloc_error(layout);
+        }
+        Self::init_in_place(raw, module, process_id, instance_id);
+        Box::from_raw(raw)
+    }
+
+    unsafe fn init_in_place(
+        raw: *mut WasmInstance,
+        module: WasmModule,
+        process_id: ProcessId,
+        instance_id: usize,
+    ) {
+        let (jit_state, jit_state_pages) = Self::alloc_jit_state();
+        let memory = LinearMemory::new(1);
+        let stack = Stack::new();
+        let capabilities = CapabilityTable::new();
+
+        core::ptr::addr_of_mut!((*raw).module).write(module);
+        core::ptr::addr_of_mut!((*raw).memory).write(memory);
+        core::ptr::addr_of_mut!((*raw).stack).write(stack);
+        core::ptr::addr_of_mut!((*raw).locals).write([Value::I32(0); MAX_LOCALS]);
+        core::ptr::addr_of_mut!((*raw).globals).write([None; MAX_WASM_GLOBALS]);
+        core::ptr::addr_of_mut!((*raw).control_stack).write([None; MAX_CONTROL_STACK]);
+        core::ptr::addr_of_mut!((*raw).control_depth).write(0);
+        core::ptr::addr_of_mut!((*raw).current_func_end).write(0);
+        core::ptr::addr_of_mut!((*raw).pc).write(0);
+        core::ptr::addr_of_mut!((*raw).capabilities).write(capabilities);
+        core::ptr::addr_of_mut!((*raw).process_id).write(process_id);
+        core::ptr::addr_of_mut!((*raw).instance_id).write(instance_id);
+        core::ptr::addr_of_mut!((*raw).is_shadow).write(false);
+        core::ptr::addr_of_mut!((*raw).instruction_count).write(0);
+        core::ptr::addr_of_mut!((*raw).memory_op_count).write(0);
+        core::ptr::addr_of_mut!((*raw).syscall_count).write(0);
+        core::ptr::addr_of_mut!((*raw).call_depth).write(0);
+        core::ptr::addr_of_mut!((*raw).jit_hash).write([None; 64]);
+        core::ptr::addr_of_mut!((*raw).jit_state).write(jit_state);
+        core::ptr::addr_of_mut!((*raw).jit_state_pages).write(jit_state_pages);
+        core::ptr::addr_of_mut!((*raw).jit_user_pages).write(None);
+        core::ptr::addr_of_mut!((*raw).jit_enabled).write(false);
+        core::ptr::addr_of_mut!((*raw).jit_hot).write([0; 64]);
+        core::ptr::addr_of_mut!((*raw).jit_validate_remaining).write([JIT_VALIDATE_CALLS; 64]);
+        core::ptr::addr_of_mut!((*raw).last_received_service_handle).write(None);
+        core::ptr::addr_of_mut!((*raw).thread_pool).write(crate::wasm_thread::WasmThreadPool::new());
+        core::ptr::addr_of_mut!((*raw).active_thread_tid).write(0);
+        core::ptr::addr_of_mut!((*raw).wasi_ctx).write(crate::wasi::WasiCtx::new(instance_id));
+    }
+
     fn alloc_jit_state() -> (*mut JitUserState, usize) {
         let size = core::mem::size_of::<JitUserState>();
         let pages = (size + paging::PAGE_SIZE - 1) / paging::PAGE_SIZE;
@@ -5453,6 +5518,8 @@ impl WasmInstance {
                 &mut state.shadow_sp as *mut usize,
             )
         };
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = globals_ptr;
         #[cfg(target_arch = "x86_64")]
         let _ = shadow_stack_ptr;
         #[cfg(target_arch = "x86_64")]
@@ -5797,6 +5864,8 @@ impl WasmInstance {
                 &mut state.shadow_sp as *mut usize,
             )
         };
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = globals_ptr;
         #[cfg(target_arch = "x86_64")]
         let _ = shadow_stack_ptr;
         #[cfg(target_arch = "x86_64")]
@@ -12574,15 +12643,8 @@ impl WasmRuntime {
         }
         // Allocate on the heap first to avoid constructing the large WasmInstance
         // (~54 KiB) on the kernel stack, which would cause a stack overflow.
-        let mut instance: Box<WasmInstance> = {
-            let mut uninit = Box::<WasmInstance>::new_uninit();
-            unsafe {
-                uninit
-                    .as_mut_ptr()
-                    .write(WasmInstance::new(module, process_id, slot_idx));
-                uninit.assume_init()
-            }
-        };
+        let mut instance: Box<WasmInstance> =
+            unsafe { WasmInstance::boxed_new_in_place(module, process_id, slot_idx) };
         #[cfg(target_arch = "x86_64")]
         if x64_diag {
             crate::serial_println!("[X64-JF] instantiate=init-from-module");
@@ -14926,7 +14988,10 @@ fn call_jit_user(
         .checked_add(exec_offset)
         .ok_or("JIT exec size overflow")?;
 
+    #[cfg(target_arch = "x86_64")]
     let mut mem_ptr_usize = mem_ptr as usize;
+    #[cfg(not(target_arch = "x86_64"))]
+    let mem_ptr_usize = mem_ptr as usize;
     #[cfg(target_arch = "x86_64")]
     let mem_phys = {
         let mut mem_phys = arch_mmu::x86_64_debug_virt_to_phys(mem_ptr_usize);
@@ -14962,7 +15027,10 @@ fn call_jit_user(
         .checked_add(mem_offset)
         .ok_or("WASM memory size overflow")?;
 
+    #[cfg(target_arch = "x86_64")]
     let mut state_ptr = jit_state_base as usize;
+    #[cfg(not(target_arch = "x86_64"))]
+    let state_ptr = jit_state_base as usize;
     #[cfg(target_arch = "x86_64")]
     let state_phys = {
         let mut state_phys = arch_mmu::x86_64_debug_virt_to_phys(state_ptr);
@@ -15115,6 +15183,8 @@ fn call_jit_user(
     let sp_off = unsafe { core::ptr::addr_of!((*state_ptr).sp) as usize } - base;
     let locals_off = unsafe { core::ptr::addr_of!((*state_ptr).locals) as usize } - base;
     let globals_off = unsafe { core::ptr::addr_of!((*state_ptr).globals) as usize } - base;
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = globals_off;
     let instr_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).instr_fuel) as usize } - base;
     let mem_fuel_off = unsafe { core::ptr::addr_of!((*state_ptr).mem_fuel) as usize } - base;
     let trap_off = unsafe { core::ptr::addr_of!((*state_ptr).trap_code) as usize } - base;
@@ -17437,6 +17507,21 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         choose_guided_choice(rng, opcode_hits)
     }
 
+    fn record_choice_trace_hits(
+        opcode_hits: &mut [u32; JIT_FUZZ_OPCODE_BINS],
+        choice_trace: &[u8],
+    ) -> bool {
+        let mut cidx = 0usize;
+        while cidx < choice_trace.len() {
+            let Some(bin) = jit_fuzz_choice_bin(choice_trace[cidx]) else {
+                return false;
+            };
+            opcode_hits[bin] = opcode_hits[bin].saturating_add(1);
+            cidx += 1;
+        }
+        true
+    }
+
     fn guided_choice_step_abstract(
         stack_depth: i32,
         locals_total: usize,
@@ -17521,6 +17606,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                     None
                 }
             }
+            #[cfg(feature = "jit-fuzz-24bin")]
             20 | 21 | 22 | 23 => {
                 if stack_depth >= 1 {
                     Some(stack_depth) // const-divisor div/rem macro net stack delta = 0
@@ -17792,6 +17878,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                     false
                 }
             }
+            #[cfg(feature = "jit-fuzz-24bin")]
             20 => {
                 if *stack_depth >= 1 {
                     code.push(Opcode::I32Const as u8);
@@ -17804,6 +17891,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                     false
                 }
             }
+            #[cfg(feature = "jit-fuzz-24bin")]
             21 => {
                 if *stack_depth >= 1 {
                     code.push(Opcode::I32Const as u8);
@@ -17816,6 +17904,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                     false
                 }
             }
+            #[cfg(feature = "jit-fuzz-24bin")]
             22 => {
                 if *stack_depth >= 1 {
                     code.push(Opcode::I32Const as u8);
@@ -17828,6 +17917,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                     false
                 }
             }
+            #[cfg(feature = "jit-fuzz-24bin")]
             23 => {
                 if *stack_depth >= 1 {
                     code.push(Opcode::I32Const as u8);
@@ -18157,11 +18247,11 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                     build_pair_cover_program_for_edge(code, choice_trace, edge_idx, witness)
                 {
                     locals_total = prepass_locals_total;
-                    let mut cidx = 0usize;
-                    while cidx < choice_trace.len() {
-                        let bin = choice_trace[cidx] as usize;
-                        opcode_hits[bin] = opcode_hits[bin].saturating_add(1);
-                        cidx += 1;
+                    if !record_choice_trace_hits(&mut opcode_hits, choice_trace) {
+                        code.clear();
+                        choice_trace.clear();
+                        stack_depth = 0;
+                        continue;
                     }
                     built_from_pair_prepass = true;
                     break 'build_program;
@@ -18389,6 +18479,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                             emitted_choice = Some(19);
                         }
                     }
+                    #[cfg(feature = "jit-fuzz-24bin")]
                     20 => {
                         if stack_depth >= 1 {
                             code.push(Opcode::I32Const as u8);
@@ -18399,6 +18490,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                             emitted_choice = Some(20);
                         }
                     }
+                    #[cfg(feature = "jit-fuzz-24bin")]
                     21 => {
                         if stack_depth >= 1 {
                             code.push(Opcode::I32Const as u8);
@@ -18409,6 +18501,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                             emitted_choice = Some(21);
                         }
                     }
+                    #[cfg(feature = "jit-fuzz-24bin")]
                     22 => {
                         if stack_depth >= 1 {
                             code.push(Opcode::I32Const as u8);
@@ -18419,6 +18512,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                             emitted_choice = Some(22);
                         }
                     }
+                    #[cfg(feature = "jit-fuzz-24bin")]
                     23 => {
                         if stack_depth >= 1 {
                             code.push(Opcode::I32Const as u8);
@@ -18432,9 +18526,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                     _ => {}
                 }
                 if let Some(choice_idx) = emitted_choice {
-                    let idx = choice_idx as usize;
-                    opcode_hits[idx] = opcode_hits[idx].saturating_add(1);
-                    choice_trace.push(choice_idx);
+                    if let Some(idx) = jit_fuzz_choice_bin(choice_idx) {
+                        opcode_hits[idx] = opcode_hits[idx].saturating_add(1);
+                        choice_trace.push(choice_idx);
+                    }
                 }
             }
 
@@ -18479,16 +18574,22 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         let mut prev: Option<u8> = None;
         let mut i = 0usize;
         while i < choice_trace.len() {
-            let op = choice_trace[i] as usize;
+            let Some(op) = jit_fuzz_choice_bin(choice_trace[i]) else {
+                prev = None;
+                i += 1;
+                continue;
+            };
             if !opcode_seen[op] {
                 opcode_seen[op] = true;
                 novel = true;
             }
             if let Some(p) = prev {
-                let edge_idx = (p as usize) * JIT_FUZZ_OPCODE_BINS + op;
-                if !edge_seen[edge_idx] {
-                    edge_seen[edge_idx] = true;
-                    novel = true;
+                if let Some(prev_idx) = jit_fuzz_choice_bin(p) {
+                    let edge_idx = prev_idx * JIT_FUZZ_OPCODE_BINS + op;
+                    if !edge_seen[edge_idx] {
+                        edge_seen[edge_idx] = true;
+                        novel = true;
+                    }
                 }
             }
             prev = Some(choice_trace[i]);

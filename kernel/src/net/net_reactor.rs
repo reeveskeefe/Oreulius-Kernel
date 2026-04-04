@@ -582,7 +582,8 @@ fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
 /// Run the network reactor loop (call from network task).
 pub fn run() -> ! {
     // SAFETY: The network reactor task is the sole owner of the stack.
-    let stack = unsafe { &mut NET_STACK };
+    let stack_ptr = unsafe { core::ptr::addr_of_mut!(NET_STACK) };
+    let stack = unsafe { &mut *stack_ptr };
     #[cfg(target_arch = "aarch64")]
     {
         if let Some(base) = crate::arch::aarch64_virt::discovered_virtio_net_base() {

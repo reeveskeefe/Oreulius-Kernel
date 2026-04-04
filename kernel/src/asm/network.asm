@@ -97,3 +97,5 @@ asm_parse_ipv4_header:
     pop edi
     pop esi
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

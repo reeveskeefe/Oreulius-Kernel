@@ -253,8 +253,8 @@ pub fn init_kernel_thread_context(
     entry: extern "C" fn() -> !,
     stack_top: usize,
 ) -> Result<(ProcessContext, usize, usize), &'static str> {
-    let entry_addr = entry as usize as u64;
-    let trampoline_addr = aarch64_thread_start_trampoline as usize as u64;
+    let entry_addr = entry as *const () as usize as u64;
+    let trampoline_addr = aarch64_thread_start_trampoline as *const () as usize as u64;
     let sp = (stack_top as u64) & !0xFu64;
     let current_root =
         crate::arch::mmu::PhysAddr::new(crate::arch::mmu::current_page_table_root_addr());
@@ -531,9 +531,9 @@ pub unsafe fn debug_dump_launch_context(ctx_ptr: *const ProcessContext) {
         val
     }
 
-    let load_addr = aarch64_sched_load_context as usize;
-    let switch_addr = aarch64_sched_switch_context as usize;
-    let tramp_addr = aarch64_thread_start_trampoline as usize;
+    let load_addr = aarch64_sched_load_context as *const () as usize;
+    let switch_addr = aarch64_sched_switch_context as *const () as usize;
+    let tramp_addr = aarch64_thread_start_trampoline as *const () as usize;
     let code_page = load_addr & !0xFFFusize;
 
     uart.write_str("[A64-SCHED] launch-context ctx=");

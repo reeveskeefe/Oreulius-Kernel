@@ -23,3 +23,5 @@ gdt_load:
 
 flush_cs:
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

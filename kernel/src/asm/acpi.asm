@@ -671,3 +671,5 @@ get_acpi_stats:
     pop eax
     pop ebp
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

@@ -152,7 +152,8 @@ fn build_frame(
 
     out[0..6].copy_from_slice(dst_mac);
     unsafe {
-        out[6..12].copy_from_slice(&LOCAL_MAC);
+        let local_mac = LOCAL_MAC;
+        out[6..12].copy_from_slice(&local_mac);
     }
     out[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
 
@@ -1136,7 +1137,9 @@ static mut SESSIONS: [TlsSession; MAX_SESSIONS] = [EMPTY_SESSION; MAX_SESSIONS];
 
 pub fn alloc_session(host: &[u8], port: u16, server_ip: Ip4) -> i32 {
     unsafe {
-        for (i, s) in SESSIONS.iter_mut().enumerate() {
+        let sessions = core::ptr::addr_of_mut!(SESSIONS) as *mut TlsSession;
+        for i in 0..MAX_SESSIONS {
+            let s = &mut *sessions.add(i);
             if !s.active {
                 *s = TlsSession::empty();
                 s.active = true;
@@ -1178,7 +1181,9 @@ pub fn free_session(handle: i32) {
 
 pub fn tick_all() {
     unsafe {
-        for s in SESSIONS.iter_mut() {
+        let sessions = core::ptr::addr_of_mut!(SESSIONS) as *mut TlsSession;
+        for i in 0..MAX_SESSIONS {
+            let s = &mut *sessions.add(i);
             if s.active && !matches!(s.state, HandshakeState::Closed | HandshakeState::Error) {
                 s.tick();
             }

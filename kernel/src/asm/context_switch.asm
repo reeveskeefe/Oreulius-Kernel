@@ -246,3 +246,5 @@ asm_sw_saved_old_eip: resd 1
 asm_sw_new_eip: resd 1
 asm_sw_new_esp: resd 1
 asm_sw_stage: resd 1
+
+section .note.GNU-stack noalloc noexec nowrite progbits

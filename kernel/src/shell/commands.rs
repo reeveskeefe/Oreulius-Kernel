@@ -663,19 +663,27 @@ pub fn execute(input: &str) {
             cmd_ps();
         }
         "jobs" => {
+            #[cfg(target_arch = "x86")]
+            crate::arch::x86_runtime::print_jobs();
             #[cfg(target_arch = "x86_64")]
             crate::arch::x86_64_runtime::print_jobs();
-            #[cfg(not(target_arch = "x86_64"))]
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
             vga::print_str("jobs: not available on this architecture\n");
         }
         "fg" => {
+            #[cfg(target_arch = "x86")]
+            {
+                if !crate::arch::x86_runtime::fg_last_job() {
+                    vga::print_str("fg: no stopped jobs\n");
+                }
+            }
             #[cfg(target_arch = "x86_64")]
             {
                 if !crate::arch::x86_64_runtime::fg_last_job() {
                     vga::print_str("fg: no stopped jobs\n");
                 }
             }
-            #[cfg(not(target_arch = "x86_64"))]
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
             vga::print_str("fg: not available on this architecture\n");
         }
         "kill" => {

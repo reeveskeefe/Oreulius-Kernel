@@ -250,3 +250,5 @@ asm_fxrstor:
     mov eax, [esp + 4]  ; save_area pointer
     fxrstor [eax]
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

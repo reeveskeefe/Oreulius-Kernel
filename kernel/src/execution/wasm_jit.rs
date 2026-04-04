@@ -28,8 +28,9 @@ use alloc::vec::Vec;
 #[cfg(not(target_arch = "aarch64"))]
 use crate::wasm::{
     Opcode, MAX_CONTROL_STACK, MAX_INSTRUCTIONS_PER_CALL, MAX_LOCALS, MAX_STACK_DEPTH,
-    MAX_WASM_TYPE_ARITY,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::wasm::MAX_WASM_TYPE_ARITY;
 
 /// Compile-time stubs for AArch64: the JIT compiler is x86-only; these types
 /// satisfy the type-checker for dead-code paths that reference wasm internals.
@@ -517,6 +518,8 @@ fn emit_code_into(
     if locals_total > MAX_LOCALS {
         return Err("Too many locals");
     }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = (type_sigs, global_sigs);
     emitter.reset();
     emitter.emit_prologue();
 
@@ -1977,14 +1980,19 @@ fn slice_is_kernel_mapped<T>(slice: &[T]) -> bool {
     if elem == 0 || slice.is_empty() {
         return true;
     }
-    let bytes = match elem.checked_mul(slice.len()) {
-        Some(v) => v,
-        None => return false,
-    };
     #[cfg(not(target_arch = "aarch64"))]
-    { crate::paging::is_kernel_range_mapped(slice.as_ptr() as usize, bytes) }
+    {
+        let bytes = match elem.checked_mul(slice.len()) {
+            Some(v) => v,
+            None => return false,
+        };
+        crate::paging::is_kernel_range_mapped(slice.as_ptr() as usize, bytes)
+    }
     #[cfg(target_arch = "aarch64")]
-    { true }
+    {
+        let _ = slice;
+        true
+    }
 }
 
 pub fn compile_with_types(

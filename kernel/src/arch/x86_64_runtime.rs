@@ -66,7 +66,6 @@ unsafe fn job_add(pid: crate::process::Pid, cmd: &[u8]) -> usize {
 }
 
 /// Remove a job from the table by PID.
-#[allow(dead_code)]
 unsafe fn job_remove(pid: crate::process::Pid) {
     for slot in JOB_TABLE.iter_mut() {
         if let Some(j) = slot {
@@ -137,7 +136,7 @@ pub fn fg_last_job() -> bool {
                 let cmd = core::str::from_utf8(&j.cmd[..j.cmd_len]).unwrap_or("?");
                 crate::terminal::write_str(cmd);
                 crate::terminal::write_char('\n');
-                JOB_TABLE[i] = None;
+                job_remove(j.pid);
                 return true;
             }
         }

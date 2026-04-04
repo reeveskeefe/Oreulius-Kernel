@@ -323,6 +323,8 @@ dma_start_transfer:
     pop eax
     ret
 
+section .note.GNU-stack noalloc noexec nowrite progbits
+
 ; Stop DMA transfer
 ; void dma_stop_transfer(u8 channel)
 dma_stop_transfer:

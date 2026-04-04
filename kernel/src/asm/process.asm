@@ -799,3 +799,5 @@ increment_context_switch_count:
     ret
 
 ; interrupt_count functions are defined in idt.asm
+
+section .note.GNU-stack noalloc noexec nowrite progbits

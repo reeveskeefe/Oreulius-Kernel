@@ -1140,16 +1140,16 @@ pub fn process_manager() -> &'static ProcessManager {
     &PROCESS_MANAGER
 }
 
-pub fn debug_kernel_bootstrap(label: &str) {
+pub fn debug_kernel_bootstrap(_label: &str) {
     #[cfg(target_arch = "x86")]
     {
         let scheduler = PROCESS_MANAGER.scheduler.lock();
         let table = PROCESS_MANAGER.table.lock();
-        trace_kernel_bootstrap_locked(label, &table, &scheduler);
+        trace_kernel_bootstrap_locked(_label, &table, &scheduler);
     }
 }
 
-pub fn debug_kernel_bootstrap_layout(label: &str) {
+pub fn debug_kernel_bootstrap_layout(_label: &str) {
     #[cfg(target_arch = "x86")]
     {
         if !proc_boot_trace_enabled() {
@@ -1159,7 +1159,7 @@ pub fn debug_kernel_bootstrap_layout(label: &str) {
         let table = PROCESS_MANAGER.table.lock();
         crate::serial_println!(
             "[PROC-BOOT] {} layout pm={:#x} table={:#x} procs={:#x} sched={:#x}",
-            label,
+            _label,
             &PROCESS_MANAGER as *const _ as usize,
             &*table as *const _ as usize,
             table.processes.as_ptr() as usize,

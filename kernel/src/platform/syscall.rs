@@ -1747,7 +1747,7 @@ pub fn aarch64_syscall_from_exception(regs: *mut SavedRegisters) {
 
     unsafe {
         SYSCALL_STATS.total_calls += 1;
-        if (args.number as usize) < SYSCALL_STATS.by_number.len() {
+        if (args.number as usize) < SYSCALL_STATS_SLOTS {
             SYSCALL_STATS.by_number[args.number as usize] += 1;
         }
     }
@@ -1773,7 +1773,7 @@ pub fn aarch64_fork_child_resume_rip() -> usize {
     extern "C" {
         fn aarch64_fork_child_trampoline();
     }
-    aarch64_fork_child_trampoline as usize
+    aarch64_fork_child_trampoline as *const () as usize
 }
 
 /// Copy the current AArch64 SVC exception frame (x0-x30, 256 bytes) onto
@@ -1892,7 +1892,7 @@ pub extern "C" fn syscall_handler_rust(regs: *const SavedRegisters) -> u64 {
     // Update stats
     unsafe {
         SYSCALL_STATS.total_calls += 1;
-        if (args.number as usize) < SYSCALL_STATS.by_number.len() {
+        if (args.number as usize) < SYSCALL_STATS_SLOTS {
             SYSCALL_STATS.by_number[args.number as usize] += 1;
         }
     }
@@ -2029,9 +2029,10 @@ static mut SYSCALL_STATS: SyscallStats = SyscallStats {
     denied: 0,
     errors: 0,
 };
+const SYSCALL_STATS_SLOTS: usize = 256;
 
 pub fn get_stats() -> &'static SyscallStats {
-    unsafe { &SYSCALL_STATS }
+    unsafe { &*core::ptr::addr_of!(SYSCALL_STATS) }
 }
 
 #[cfg(target_arch = "aarch64")]

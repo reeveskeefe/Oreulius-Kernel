@@ -2,6 +2,12 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
+fn emit_build_diagnostic(message: &str) {
+    if env::var_os("OREULIUS_BUILD_DIAGNOSTICS").is_some() {
+        eprintln!("{message}");
+    }
+}
+
 /// Build-time Spectral Gap / Cheeger conductance checker (PMA §11.2).
 ///
 /// Rather than using a synthetic hardcoded graph, this build script **parses
@@ -169,15 +175,15 @@ fn main() {
     // -------------------------------------------------------------------------
     let epsilon_safe = 0.05_f64;
 
-    println!("cargo:warning=--- Oreulius Static Spectral Analysis (PMA §11.2) ---");
-    println!(
-        "cargo:warning=Graph derived from: src/security/intent_graph.rs CTMC_Q ({}×{} real topology)",
+    emit_build_diagnostic("--- Oreulius Static Spectral Analysis (PMA §11.2) ---");
+    emit_build_diagnostic(&format!(
+        "Graph derived from: src/security/intent_graph.rs CTMC_Q ({}×{} real topology)",
         num_nodes, num_nodes
-    );
-    println!(
-        "cargo:warning=Lanczos k={} | λ₂(T)={:.6} | Fiedler γ={:.6} | Φ(G)≥{:.6} | residual={:.2e}",
+    ));
+    emit_build_diagnostic(&format!(
+        "Lanczos k={} | λ₂(T)={:.6} | Fiedler γ={:.6} | Φ(G)≥{:.6} | residual={:.2e}",
         k, lambda2_t, fiedler, static_conductance, residual
-    );
+    ));
 
     if fiedler < epsilon_safe {
         panic!(
@@ -189,8 +195,8 @@ fn main() {
         );
     }
 
-    println!("cargo:warning=SUCCESS: Cheeger conductance bound verified (real CTMC topology).");
-    println!("cargo:warning=Preemptive compiler pipeline complete — PMA §11.2 satisfied.");
+    emit_build_diagnostic("SUCCESS: Cheeger conductance bound verified (real CTMC topology).");
+    emit_build_diagnostic("Preemptive compiler pipeline complete — PMA §11.2 satisfied.");
 
     // -------------------------------------------------------------------------
     // Step 5 — Emit the spectral certificate consumed by capnet.rs

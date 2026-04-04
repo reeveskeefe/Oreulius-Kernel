@@ -326,7 +326,6 @@ fn stream_body<const N: usize>(
 ) -> Result<(), FetchErrorKind> {
     let mut recv_buf = [0u8; RECV_BUF];
     let mut chunk_buf = [0u8; BODY_CHUNK_MAX];
-    let mut total_received: u64 = 0;
     let expected = content_length.unwrap_or(u64::MAX);
 
     if is_chunked {
@@ -353,7 +352,6 @@ fn stream_body<const N: usize>(
             if decoded > 0 {
                 let is_last = done;
                 push_body_chunk(events, event_count, request, &chunk_buf[..decoded], is_last);
-                total_received += decoded as u64;
             }
 
             // Compact leftover.
@@ -366,6 +364,7 @@ fn stream_body<const N: usize>(
         }
     } else {
         // Identity (or unknown) body.
+        let mut total_received: u64 = 0;
         loop {
             if total_received >= expected {
                 break;

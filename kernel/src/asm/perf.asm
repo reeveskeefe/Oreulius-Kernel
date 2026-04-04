@@ -357,3 +357,5 @@ asm_prefetch_nta:
     mov eax, [esp + 4]
     prefetchnta [eax]
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

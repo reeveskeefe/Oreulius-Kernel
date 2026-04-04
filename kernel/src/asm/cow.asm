@@ -706,3 +706,5 @@ asm_fork_process:
 section .bss
 align 4096
 cow_scratch_pt: resb 4096
+
+section .note.GNU-stack noalloc noexec nowrite progbits

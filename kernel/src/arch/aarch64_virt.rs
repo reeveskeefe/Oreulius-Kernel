@@ -2231,7 +2231,7 @@ fn vm_map_self_test() -> Result<(), &'static str> {
     let code_va = 0x0040_0000usize;
     let stack_va = 0x0080_0000usize;
     let phys_map_va = 0x00C0_0000usize;
-    let kernel_probe_va = (vm_map_self_test as usize) & !0xFFFusize;
+    let kernel_probe_va = (vm_map_self_test as *const () as usize) & !0xFFFusize;
     let current_sp: usize;
     unsafe {
         core::arch::asm!("mov {out}, sp", out = out(reg) current_sp, options(nomem, nostack));
