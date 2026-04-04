@@ -675,26 +675,7 @@ This does not eliminate the need for whole-system verification later. It makes e
 
 ---
 
-## 9. Honest Claim Language
-
-The project should avoid saying "the entire kernel is fully verified" until all layers are covered for a specific configuration.
-
-Preferred claim forms:
-
-- "Oreulius has fully verified verification artifacts."
-- "Oreulius has a fully verified capability and privilege core."
-- "Oreulius has a verified trusted core on `x86_64` under the declared QEMU and toolchain assumptions."
-- "Oreulius has a whole-system verification profile for configuration X."
-
-Avoid:
-
-- "the whole kernel is verified" without architecture and configuration scope
-- "fully verified" when low-level assembly is merely audited
-- "entire system" when drivers or subsystems are excluded implicitly
-
----
-
-## 10. Deliverables For The Alpha Verification Program
+## 9. Deliverables For The Alpha Verification Program
 
 Before alpha release, Oreulius should target:
 
@@ -714,7 +695,7 @@ Recommended first defensible whole-profile candidate:
 
 ---
 
-## 11. Shortest Honest Summary
+## 10. Shortest Honest Summary
 
 To say Oreulius fully verified everything, the project must prove:
 
@@ -728,5 +709,5 @@ To say Oreulius fully verified everything, the project must prove:
 
 If any one of those is missing, the project has not yet fully verified the entire system.
 
-That is not a weakness in the plan. It is the definition of an honest verification claim.
+
 
