@@ -465,7 +465,7 @@ pub fn execute(input: &str) {
             );
             vga::print_str("  security-test  - Run security test suite\n");
             vga::print_str("  cap-list       - List capability table\n");
-            vga::print_str("  cap-test-atten - Test capability attenuation\n");
+            vga::print_str("  cap-test-atten / cap-net-atten - Test capability attenuation\n");
             vga::print_str("  cap-test-cons  - Test console capabilities\n");
             vga::print_str("  cap-arch       - Show capability architecture\n");
             vga::print_str("  cpu-info       - Show CPU features and capabilities\n");
@@ -971,7 +971,7 @@ pub fn execute(input: &str) {
         "cap-list" => {
             cmd_cap_list();
         }
-        "cap-test-atten" => {
+        "cap-test-atten" | "cap-test-attenuation" | "capnet-atten" | "cap-net-atten" => {
             cmd_cap_test_attenuation();
         }
         "cap-test-cons" => {

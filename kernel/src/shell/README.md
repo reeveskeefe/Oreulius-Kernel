@@ -141,7 +141,7 @@ The full command surface is grouped by subsystem:
 | Command | Description |
 |---|---|
 | `cap-list` | List all active capability tokens |
-| `cap-test-attenuation` | Demonstrate capability attenuation |
+| `cap-test-atten`, `cap-net-atten` | Demonstrate capability attenuation |
 | `cap-test-console` | Exercise console capability creation/use |
 | `cap-arch` | Print the capability architecture summary |
 

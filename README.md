@@ -104,7 +104,7 @@ formal-verify
 
 What this demonstrates:
 
-- `cap-test-atten` shows the capability model enforcing rights attenuation instead of ambient privilege
+- `cap-test-atten` or `cap-net-atten` shows the capability model enforcing rights attenuation instead of ambient privilege
 - the `temporal-*` sequence shows state turning into history, not just mutation
 - `formal-verify` shows that verification is a live kernel surface, not only an external whitepaper claim
 
@@ -574,7 +574,7 @@ Use `help` in-kernel for the exhaustive, source-of-truth command list. The taxon
 - `security-audit`, `security-stats`, `security-anomaly`
 - `security-intent`, `security-intent-clear`, `security-intent-policy`
 - `enclave-secret-policy`
-- `cap-list`, `cap-arch`, `cap-test-atten`, `cap-test-cons`, `cap-demo`
+- `cap-list`, `cap-arch`, `cap-test-atten`, `cap-net-atten`, `cap-test-cons`, `cap-demo`
 
 ### Low-Level Validation
 
