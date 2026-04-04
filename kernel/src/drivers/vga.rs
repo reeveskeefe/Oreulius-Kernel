@@ -25,7 +25,7 @@ use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-#[allow(dead_code)]
+/// 16-color CGA/VGA palette — all variants are valid colour codes for the text-mode framebuffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Color {

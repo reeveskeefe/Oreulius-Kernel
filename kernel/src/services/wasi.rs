@@ -200,6 +200,7 @@ pub enum Errno {
     Txtbsy = 74,
     Xdev = 75,
     Notcapable = 76,
+    Shutdown = 77,
 }
 
 impl Errno {
@@ -316,6 +317,10 @@ pub struct OpenFd {
     pub size: u64,
     /// For directories: index of last readdir entry returned.
     pub readdir_cookie: u64,
+    /// Receive half has been shut down.
+    pub shut_rd: bool,
+    /// Send half has been shut down.
+    pub shut_wr: bool,
 }
 
 impl OpenFd {
@@ -327,6 +332,8 @@ impl OpenFd {
             path_len: 0,
             size: 0,
             readdir_cookie: 0,
+            shut_rd: false,
+            shut_wr: false,
         }
     }
 }
@@ -944,14 +951,76 @@ pub fn path_unlink_file(_ctx: &mut WasiCtx, path: &[u8]) -> Errno {
     }
 }
 
-/// path_create_directory — no-op stub (Oreulius FS is flat key-value).
-pub fn path_create_directory(_ctx: &mut WasiCtx, _path: &[u8]) -> Errno {
-    Errno::Success
+/// path_create_directory — create a directory in the VFS.
+pub fn path_create_directory(_ctx: &mut WasiCtx, path: &[u8]) -> Errno {
+    let Ok(s) = core::str::from_utf8(path) else {
+        return Errno::Inval;
+    };
+    match crate::fs::vfs::mkdir(s) {
+        Ok(()) => Errno::Success,
+        Err(_) => Errno::Io,
+    }
 }
 
-/// path_remove_directory — no-op stub.
-pub fn path_remove_directory(_ctx: &mut WasiCtx, _path: &[u8]) -> Errno {
-    Errno::Success
+/// path_remove_directory — remove an empty directory from the VFS.
+pub fn path_remove_directory(_ctx: &mut WasiCtx, path: &[u8]) -> Errno {
+    let Ok(s) = core::str::from_utf8(path) else {
+        return Errno::Inval;
+    };
+    match crate::fs::vfs::rmdir(s) {
+        Ok(()) => Errno::Success,
+        Err(_) => Errno::Io,
+    }
+}
+
+/// path_symlink — create a symbolic link.
+pub fn path_symlink(_ctx: &mut WasiCtx, old_path: &[u8], new_path: &[u8]) -> Errno {
+    let (Ok(target), Ok(link)) = (core::str::from_utf8(old_path), core::str::from_utf8(new_path))
+    else {
+        return Errno::Inval;
+    };
+    match crate::fs::vfs::symlink(target, link) {
+        Ok(()) => Errno::Success,
+        Err(_) => Errno::Io,
+    }
+}
+
+/// path_readlink — read the target of a symbolic link.
+pub fn path_readlink(
+    _ctx: &mut WasiCtx,
+    mem: &mut [u8],
+    path: &[u8],
+    buf_ptr: u32,
+    buf_len: u32,
+    buf_used_ptr: u32,
+) -> Errno {
+    let Ok(s) = core::str::from_utf8(path) else {
+        return Errno::Inval;
+    };
+    let bp = buf_ptr as usize;
+    let bl = buf_len as usize;
+    let up = buf_used_ptr as usize;
+    if up + 4 > mem.len() {
+        return Errno::Fault;
+    }
+    match crate::fs::vfs::readlink(s) {
+        Err(_) => Errno::Noent,
+        Ok(target) => {
+            let bytes = target.as_bytes();
+            let copy = bytes.len().min(bl);
+            if bp + copy > mem.len() {
+                return Errno::Fault;
+            }
+            mem[bp..bp + copy].copy_from_slice(&bytes[..copy]);
+            mem[up..up + 4].copy_from_slice(&(copy as u32).to_le_bytes());
+            Errno::Success
+        }
+    }
+}
+
+/// path_link — create a hard link.  Hard links are not supported on this FS.
+pub fn path_link(_ctx: &mut WasiCtx, _old_path: &[u8], _new_path: &[u8]) -> Errno {
+    Errno::Notsup
 }
 
 /// fd_readdir — list files in a directory (fills the WASM buffer with dirent structs).
@@ -1259,11 +1328,17 @@ pub fn sock_recv(
     ro_datalen_ptr: u32,
     ro_flags_ptr: u32,
 ) -> Errno {
-    let _ = (ctx, fd);
     let rdp = ro_datalen_ptr as usize;
     let rfp = ro_flags_ptr as usize;
     if rdp + 4 > mem.len() || rfp + 2 > mem.len() {
         return Errno::Fault;
+    }
+    // Refuse read if the receive half was shut down.
+    let idx = fd as usize;
+    if idx < MAX_FDS && ctx.fds[idx].shut_rd {
+        mem[rdp..rdp + 4].copy_from_slice(&0u32.to_le_bytes());
+        mem[rfp..rfp + 2].copy_from_slice(&0u16.to_le_bytes());
+        return Errno::Shutdown;
     }
 
     let mut total = 0u32;
@@ -1294,9 +1369,9 @@ pub fn sock_recv(
 
 /// sock_send — send via RTL8139.
 pub fn sock_send(
-    _ctx: &mut WasiCtx,
+    ctx: &mut WasiCtx,
     mem: &mut [u8],
-    _fd: Fd,
+    fd: Fd,
     si_data_ptr: u32,
     si_data_len: u32,
     _si_flags: u16,
@@ -1305,6 +1380,12 @@ pub fn sock_send(
     let sdp = so_datalen_ptr as usize;
     if sdp + 4 > mem.len() {
         return Errno::Fault;
+    }
+    // Refuse send if the write half was shut down.
+    let idx = fd as usize;
+    if idx < MAX_FDS && ctx.fds[idx].shut_wr {
+        mem[sdp..sdp + 4].copy_from_slice(&0u32.to_le_bytes());
+        return Errno::Shutdown;
     }
     let mut total = 0u32;
     for i in 0..si_data_len as usize {
@@ -1352,8 +1433,29 @@ pub fn sock_accept(ctx: &mut WasiCtx, _fd: Fd, _flags: u16, new_fd_ptr: &mut Fd)
     }
 }
 
-/// sock_shutdown — stub.
-pub fn sock_shutdown(_ctx: &mut WasiCtx, _fd: Fd, _how: u8) -> Errno {
+/// sock_shutdown — shut down send or receive half of a socket fd.
+///
+/// `how` values follow POSIX SHUT_RD/SHUT_WR/SHUT_RDWR:
+///   0 = SHUT_RD  — disallow further receives
+///   1 = SHUT_WR  — disallow further sends
+///   2 = SHUT_RDWR — disallow both
+pub fn sock_shutdown(ctx: &mut WasiCtx, fd: Fd, how: u8) -> Errno {
+    let idx = fd as usize;
+    if idx >= MAX_FDS {
+        return Errno::Badf;
+    }
+    if ctx.fds[idx].kind != FdKind::TcpSocket {
+        return Errno::Notsock;
+    }
+    match how {
+        0 => ctx.fds[idx].shut_rd = true,
+        1 => ctx.fds[idx].shut_wr = true,
+        2 => {
+            ctx.fds[idx].shut_rd = true;
+            ctx.fds[idx].shut_wr = true;
+        }
+        _ => return Errno::Inval,
+    }
     Errno::Success
 }
 

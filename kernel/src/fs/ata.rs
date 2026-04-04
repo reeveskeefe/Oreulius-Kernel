@@ -39,8 +39,8 @@
 //! `primary()` / `secondary()` to obtain a lock guard and issue commands.
 //!
 //! # Limitations
-//! - PIO-only in this revision; DMA support (Bus Master IDE) is scaffolded
-//!   but not yet wired.
+//! - DMA support (Bus Master IDE) is wired for controllers with BAR4.  Set the
+//!   bus master base via `AtaController::set_bus_master_base()` after PCI init.
 //! - ATAPI (CD-ROM) identification is detected but read commands are not
 //!   implemented.
 //! - No interrupt-driven completion; all waits are busy-poll on the status
@@ -102,6 +102,52 @@ const CMD_WRITE_PIO48: u8 = 0x34;
 const CMD_CACHE_FLUSH: u8 = 0xE7;
 const CMD_IDENTIFY: u8 = 0xEC;
 const CMD_IDENTIFY_PACKET: u8 = 0xA1; // ATAPI
+
+// Bus Master DMA commands (LBA28 and LBA48 variants)
+const CMD_READ_DMA: u8 = 0xC8;
+const CMD_READ_DMA_EXT: u8 = 0x25;
+const CMD_WRITE_DMA: u8 = 0xCA;
+const CMD_WRITE_DMA_EXT: u8 = 0x35;
+
+// ============================================================================
+// Bus Master IDE (BMDMA) register offsets (from channel bus_master_base)
+// ============================================================================
+
+/// BMDMA command register offset.
+const BMDMA_CMD: u16 = 0;
+/// BMDMA status register offset.
+const BMDMA_STATUS: u16 = 2;
+/// BMDMA physical region descriptor table address register offset (32-bit).
+const BMDMA_PRDT: u16 = 4;
+
+const BMDMA_CMD_START: u8 = 1 << 0; // Start/Stop bus master
+const BMDMA_CMD_WRITE: u8 = 1 << 3; // Direction: 1=write, 0=read
+const BMDMA_STS_ERR:   u8 = 1 << 1; // DMA error (set by hardware)
+const BMDMA_STS_INTR:  u8 = 1 << 2; // Interrupt received (set by hardware)
+
+/// Maximum sectors per single DMA command: one PRD entry can hold at most
+/// 65535 bytes (fields of 0 mean 64 KiB), so 127 × 512 = 65024 bytes is safe.
+const DMA_MAX_SECTORS: usize = 127;
+
+// ============================================================================
+// Physical Region Descriptor (PRD) table
+// ============================================================================
+
+/// A single Physical Region Descriptor entry (ATA BMDMA spec §4.1).
+#[derive(Clone, Copy)]
+#[repr(C, packed)]
+struct PrdEntry {
+    /// Physical byte address of the DMA buffer region.
+    base: u32,
+    /// Byte count for this region (0 = 64 KiB).
+    count: u16,
+    /// Bit 15 must be set on the last (or only) entry.
+    flags: u16,
+}
+
+// SAFETY: Only accessed under the per-channel `Mutex<AtaController>` lock;
+// single-entry table re-initialised at the start of every DMA command.
+static mut ATA_PRDT: PrdEntry = PrdEntry { base: 0, count: 0, flags: 0 };
 
 // ============================================================================
 // Drive select masks
@@ -232,6 +278,8 @@ pub struct AtaDrive {
     io_base: u16,
     /// Control base port of the owning channel.
     ctrl_base: u16,
+    /// Bus Master IDE base port (0 = DMA unavailable on this channel).
+    bus_master_base: u16,
 }
 
 impl AtaDrive {
@@ -242,6 +290,7 @@ impl AtaDrive {
             identity: AtaIdentity::zeroed(),
             io_base,
             ctrl_base,
+            bus_master_base: 0,
         }
     }
 
@@ -408,8 +457,15 @@ impl AtaDrive {
             return Err(AtaError::OutOfRange);
         }
 
+        let use_dma = self.bus_master_base != 0 && self.identity.dma_supported;
         if self.identity.lba48_sectors > 0 && lba >= (1 << 28) {
-            unsafe { self.read_lba48(lba, count, buf) }
+            if use_dma {
+                unsafe { self.read_lba48_dma(lba, count, buf) }
+            } else {
+                unsafe { self.read_lba48(lba, count, buf) }
+            }
+        } else if use_dma {
+            unsafe { self.read_lba28_dma(lba as u32, count, buf) }
         } else {
             unsafe { self.read_lba28(lba as u32, count, buf) }
         }
@@ -430,8 +486,15 @@ impl AtaDrive {
             return Err(AtaError::OutOfRange);
         }
 
+        let use_dma = self.bus_master_base != 0 && self.identity.dma_supported;
         if self.identity.lba48_sectors > 0 && lba >= (1 << 28) {
-            unsafe { self.write_lba48(lba, count, buf) }
+            if use_dma {
+                unsafe { self.write_lba48_dma(lba, count, buf) }
+            } else {
+                unsafe { self.write_lba48(lba, count, buf) }
+            }
+        } else if use_dma {
+            unsafe { self.write_lba28_dma(lba as u32, count, buf) }
         } else {
             unsafe { self.write_lba28(lba as u32, count, buf) }
         }
@@ -630,6 +693,218 @@ impl AtaDrive {
         }
         Ok(())
     }
+
+    // ----------------------------------------------------------------
+    // BMDMA helpers (used by DMA read/write methods below)
+    // ----------------------------------------------------------------
+
+    /// Initialise the single-entry PRDT and program the BMDMA registers.
+    ///
+    /// `write_dir`: `true` = write to disk, `false` = read from disk.
+    ///
+    /// # Safety
+    /// Caller must hold the channel lock and must not call concurrently.
+    unsafe fn bmdma_setup(&self, buf_virt: *const u8, byte_count: usize, write_dir: bool) {
+        ATA_PRDT = PrdEntry {
+            base: buf_virt as u32,
+            count: byte_count as u16, // 0 is magic for 64 KiB; callers ensure ≤ 65024
+            flags: 0x8000,            // End-of-Table bit
+        };
+        let prdt_phys = &ATA_PRDT as *const PrdEntry as u32;
+
+        // Stop DMA and clear sticky error/interrupt status bits.
+        outb(self.bus_master_base + BMDMA_CMD, 0);
+        outb(
+            self.bus_master_base + BMDMA_STATUS,
+            BMDMA_STS_ERR | BMDMA_STS_INTR,
+        );
+
+        // Program PRDT base address (32-bit, little-endian).
+        let p = self.bus_master_base + BMDMA_PRDT;
+        outb(p,     (prdt_phys & 0xFF) as u8);
+        outb(p + 1, ((prdt_phys >>  8) & 0xFF) as u8);
+        outb(p + 2, ((prdt_phys >> 16) & 0xFF) as u8);
+        outb(p + 3, ((prdt_phys >> 24) & 0xFF) as u8);
+
+        // Latch direction bit (write=1, read=0) without starting the engine.
+        let dir_bit = if write_dir { BMDMA_CMD_WRITE } else { 0 };
+        outb(self.bus_master_base + BMDMA_CMD, dir_bit);
+    }
+
+    /// Start the bus master DMA engine (call after issuing the ATA command).
+    unsafe fn bmdma_start(&self) {
+        let cmd = inb(self.bus_master_base + BMDMA_CMD);
+        outb(self.bus_master_base + BMDMA_CMD, cmd | BMDMA_CMD_START);
+    }
+
+    /// Poll until the DMA transfer completes, stop the engine, and return
+    /// an error if the hardware reported a fault.
+    unsafe fn bmdma_wait(&self) -> Result<(), AtaError> {
+        loop {
+            let st = inb(self.bus_master_base + BMDMA_STATUS);
+            if st & BMDMA_STS_ERR != 0 {
+                outb(self.bus_master_base + BMDMA_CMD, 0);
+                return Err(AtaError::DeviceError(inb(self.io_base + REG_ERROR)));
+            }
+            if st & BMDMA_STS_INTR != 0 {
+                break;
+            }
+        }
+        outb(self.bus_master_base + BMDMA_CMD, 0);
+        let drv = inb(self.io_base + REG_STATUS);
+        if drv & (STATUS_ERR | STATUS_DF) != 0 {
+            return Err(AtaError::DeviceError(inb(self.io_base + REG_ERROR)));
+        }
+        Ok(())
+    }
+
+    // ----------------------------------------------------------------
+    // DMA read/write — LBA28
+    // ----------------------------------------------------------------
+
+    unsafe fn read_lba28_dma(
+        &self,
+        lba: u32,
+        count: usize,
+        buf: &mut [u8],
+    ) -> Result<(), AtaError> {
+        let mut done = 0;
+        let mut remaining = count;
+        while remaining > 0 {
+            let n = remaining.min(DMA_MAX_SECTORS);
+            let off = done * SECTOR_SIZE;
+            let this_lba = lba + done as u32;
+
+            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER })
+                | DRIVE_LBA
+                | ((this_lba >> 24) & 0x0F) as u8;
+            outb(self.io_base + REG_DRIVE_HEAD, sel);
+            for _ in 0..4 {
+                let _ = self.alt_status();
+            }
+            self.wait_not_busy();
+
+            outb(self.io_base + REG_SECTOR_COUNT, (n & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_LO,  (this_lba & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_MID, ((this_lba >>  8) & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_HI,  ((this_lba >> 16) & 0xFF) as u8);
+
+            self.bmdma_setup(buf[off..].as_ptr(), n * SECTOR_SIZE, false);
+            outb(self.io_base + REG_COMMAND, CMD_READ_DMA);
+            self.bmdma_start();
+            self.bmdma_wait()?;
+
+            done += n;
+            remaining -= n;
+        }
+        Ok(())
+    }
+
+    unsafe fn write_lba28_dma(
+        &self,
+        lba: u32,
+        count: usize,
+        buf: &[u8],
+    ) -> Result<(), AtaError> {
+        let mut done = 0;
+        let mut remaining = count;
+        while remaining > 0 {
+            let n = remaining.min(DMA_MAX_SECTORS);
+            let off = done * SECTOR_SIZE;
+            let this_lba = lba + done as u32;
+
+            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER })
+                | DRIVE_LBA
+                | ((this_lba >> 24) & 0x0F) as u8;
+            outb(self.io_base + REG_DRIVE_HEAD, sel);
+            for _ in 0..4 {
+                let _ = self.alt_status();
+            }
+            self.wait_not_busy();
+
+            outb(self.io_base + REG_SECTOR_COUNT, (n & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_LO,  (this_lba & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_MID, ((this_lba >>  8) & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_HI,  ((this_lba >> 16) & 0xFF) as u8);
+
+            self.bmdma_setup(buf[off..].as_ptr(), n * SECTOR_SIZE, true);
+            outb(self.io_base + REG_COMMAND, CMD_WRITE_DMA);
+            self.bmdma_start();
+            self.bmdma_wait()?;
+
+            done += n;
+            remaining -= n;
+        }
+        Ok(())
+    }
+
+    // ----------------------------------------------------------------
+    // DMA read/write — LBA48
+    // ----------------------------------------------------------------
+
+    unsafe fn read_lba48_dma(
+        &self,
+        lba: u64,
+        count: usize,
+        buf: &mut [u8],
+    ) -> Result<(), AtaError> {
+        let mut done = 0;
+        let mut remaining = count;
+        while remaining > 0 {
+            let n = remaining.min(DMA_MAX_SECTORS);
+            let off = done * SECTOR_SIZE;
+            let this_lba = lba + done as u64;
+
+            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER }) | DRIVE_LBA;
+            outb(self.io_base + REG_DRIVE_HEAD, sel);
+            for _ in 0..4 {
+                let _ = self.alt_status();
+            }
+            self.wait_not_busy();
+
+            self.setup_lba48(this_lba, n as u16);
+            self.bmdma_setup(buf[off..].as_ptr(), n * SECTOR_SIZE, false);
+            outb(self.io_base + REG_COMMAND, CMD_READ_DMA_EXT);
+            self.bmdma_start();
+            self.bmdma_wait()?;
+
+            done += n;
+            remaining -= n;
+        }
+        Ok(())
+    }
+
+    unsafe fn write_lba48_dma(
+        &self,
+        lba: u64,
+        count: usize,
+        buf: &[u8],
+    ) -> Result<(), AtaError> {
+        let mut done = 0;
+        let mut remaining = count;
+        while remaining > 0 {
+            let n = remaining.min(DMA_MAX_SECTORS);
+            let off = done * SECTOR_SIZE;
+            let this_lba = lba + done as u64;
+
+            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER }) | DRIVE_LBA;
+            outb(self.io_base + REG_DRIVE_HEAD, sel);
+            for _ in 0..4 {
+                let _ = self.alt_status();
+            }
+            self.wait_not_busy();
+
+            self.setup_lba48(this_lba, n as u16);
+            self.bmdma_setup(buf[off..].as_ptr(), n * SECTOR_SIZE, true);
+            outb(self.io_base + REG_COMMAND, CMD_WRITE_DMA_EXT);
+            self.bmdma_start();
+            self.bmdma_wait()?;
+
+            done += n;
+            remaining -= n;
+        }
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -726,6 +1001,16 @@ impl AtaController {
             self.slave.identify();
         }
         self.initialised = true;
+    }
+
+    /// Configure the Bus Master IDE base port for both drives on this channel.
+    ///
+    /// Call this immediately after `init()` once PCI BAR4 has been read.
+    /// For the primary channel pass `bar4 & !3`; for the secondary channel
+    /// pass `(bar4 & !3) + 8`.
+    pub fn set_bus_master_base(&mut self, bm_base: u16) {
+        self.master.bus_master_base = bm_base;
+        self.slave.bus_master_base = bm_base;
     }
 
     /// Return the first present drive (master first, then slave).

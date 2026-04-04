@@ -306,7 +306,6 @@ impl NvmeController {
         core::ptr::write_volatile((self.mmio_base + off) as *mut u64, v);
     }
 
-    #[allow(dead_code)]
     fn delay(&self) {
         for _ in 0..50_000u32 {
             unsafe {
@@ -428,6 +427,7 @@ impl NvmeController {
                     if self.read32(NVME_CSTS) & NVME_CSTS_RDY == 0 {
                         break;
                     }
+                    self.delay();
                 }
             }
 
@@ -462,6 +462,7 @@ impl NvmeController {
                     crate::serial_println!("[NVMe] Controller Fatal Status");
                     return false;
                 }
+                self.delay();
             }
             if self.read32(NVME_CSTS) & NVME_CSTS_RDY == 0 {
                 crate::serial_println!("[NVMe] Controller RDY timeout");

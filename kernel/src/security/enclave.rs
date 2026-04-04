@@ -2262,11 +2262,8 @@ fn detect_backend() -> EnclaveBackend {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn sgx_cpu_ready() -> bool {
-    const IA32_FEATURE_CONTROL: u32 = 0x3A;
-    const FEAT_LOCK_BIT: u64 = 1 << 0;
-    const FEAT_SGX_ENABLE: u64 = 1 << 18;
-    let msr = unsafe { crate::process_asm::read_msr(IA32_FEATURE_CONTROL) };
-    (msr & FEAT_LOCK_BIT) != 0 && (msr & FEAT_SGX_ENABLE) != 0
+    let msr = unsafe { crate::process_asm::read_msr(MSR_IA32_FEATURE_CONTROL) };
+    (msr & FEAT_CTRL_LOCK_BIT) != 0 && (msr & FEAT_CTRL_SGX_ENABLE) != 0
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
@@ -2755,7 +2752,6 @@ const SGX_ENCLU_EGETKEY: u32 = 0x1; // Retrieve a sealing or attestation key
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 const SGX_ENCLU_EENTER: u32 = 0x2; // Enter enclave from OS
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[allow(dead_code)]
 const SGX_ENCLU_ERESUME: u32 = 0x3; // Re-enter enclave after AEX
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(dead_code)]
@@ -2768,16 +2764,12 @@ const SGX_ENCLU_EACCEPT: u32 = 0x5; // SGX2: accept EPC page changes
 const SGX_ENCLU_EMODPE: u32 = 0x6; // SGX2: extend page permissions
                                    // ---- FLC: Flexible Launch Control MSR numbers ----
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[allow(dead_code)]
 const MSR_IA32_FEATURE_CONTROL: u32 = 0x3A;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[allow(dead_code)]
 const FEAT_CTRL_LOCK_BIT: u64 = 1 << 0;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[allow(dead_code)]
 const FEAT_CTRL_SGX_ENABLE: u64 = 1 << 18;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[allow(dead_code)]
 const FEAT_CTRL_SGX_LC_ENABLE: u64 = 1 << 17; // Flexible Launch Control enable
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -3407,6 +3399,24 @@ fn sgx_enter_session(session: &mut EnclaveSession) -> Result<(), &'static str> {
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn sgx_enter_session(_session: &mut EnclaveSession) -> Result<(), &'static str> {
+    Err("SGX backend unsupported on this build target")
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn sgx_resume_session(session: &mut EnclaveSession) -> Result<(), &'static str> {
+    if session.backend_cookie == 0 {
+        return Err("SGX TCS not initialized");
+    }
+    let st = call_enclu(SGX_ENCLU_ERESUME, session.backend_cookie as usize, 0, 0);
+    record_backend_op();
+    if st != 0 {
+        return Err("SGX ERESUME failed");
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn sgx_resume_session(_session: &mut EnclaveSession) -> Result<(), &'static str> {
     Err("SGX backend unsupported on this build target")
 }
 

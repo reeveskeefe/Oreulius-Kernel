@@ -2926,7 +2926,6 @@ unsafe fn pci_write32_by_offset(dev: PciDevice, offset: u8, value: u32) {
 // ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum UsbControllerKind {
     Uhci,
     Ohci,
@@ -4102,7 +4101,6 @@ const HID_PROTO_KBD: u8 = 1;
 const HID_PROTO_MOUSE: u8 = 2;
 
 /// Modifier byte bit masks (USB HID keyboard boot report byte 0).
-#[allow(dead_code)]
 pub mod kbd_mod {
     pub const L_CTRL: u8 = 1 << 0;
     pub const L_SHIFT: u8 = 1 << 1;
@@ -4142,6 +4140,9 @@ impl HidKeyboardReport {
     }
     pub fn alt(&self) -> bool {
         self.modifiers & (kbd_mod::L_ALT | kbd_mod::R_ALT) != 0
+    }
+    pub fn is_gui(&self) -> bool {
+        self.modifiers & (kbd_mod::L_GUI | kbd_mod::R_GUI) != 0
     }
 }
 

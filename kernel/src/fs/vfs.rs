@@ -773,7 +773,13 @@ impl MountedBackendContract for VirtioMountState {
                 path: full_path.to_string(),
             }),
             MountNodeKind::Directory => Ok(HandleKind::MountDir { mount_idx, node_id }),
-            MountNodeKind::Symlink => Err("Symlink open not supported"),
+            MountNodeKind::Symlink => {
+                let target_data = node.data.clone();
+                let target = core::str::from_utf8(&target_data)
+                    .map_err(|_| "Invalid symlink target encoding")?
+                    .to_string();
+                self.open_kind(mount_idx, &target, flags, &target)
+            }
             MountNodeKind::VirtioRaw => Ok(HandleKind::VirtioRaw {
                 path: full_path.to_string(),
             }),
