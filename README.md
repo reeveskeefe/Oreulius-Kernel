@@ -48,6 +48,10 @@ That path gives the fastest "aha" moment in this repo:
 <img src="docs/assets/oreuliuswhitebackground.png" width="640" alt="Oreulius kernel logo">
 </div>
 
+## Important
+
+this is going through some final bug fixes and finalizations before being snapshot into the alpha release. I would not consider this project complete, but it is near completion trajectory
+
 ## Overview
 
 Oreulius boots on `i686`, `x86_64`, and `AArch64`, exposes a shell surface for kernel services, runs WASM workloads, enforces capability-mediated access, and tracks temporal object history inside the kernel.

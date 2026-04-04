@@ -6224,7 +6224,9 @@ impl WasmInstance {
             let (code_start, end_pc) = self.function_code_range(func)?;
             self.pc = code_start;
             self.current_func_end = end_pc;
-            let mut fuzz_trace_budget = if JIT_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+            let mut fuzz_trace_budget = if JIT_FUZZ_ACTIVE.load(Ordering::Relaxed)
+                && jit_fuzz_verbose_trace_enabled()
+            {
                 16usize
             } else {
                 0usize
@@ -13570,6 +13572,18 @@ pub fn jit_fuzz_set_x64_diag(enabled: bool) -> bool {
 #[cfg(not(target_arch = "x86_64"))]
 pub fn jit_fuzz_set_x64_diag(_enabled: bool) -> bool {
     false
+}
+
+#[inline]
+pub(crate) fn jit_fuzz_verbose_trace_enabled() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        JIT_FUZZ_X64_DIAG.load(Ordering::SeqCst)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
 }
 
 fn jit_runtime_recover_impl(drop_fuzz_state: bool) {

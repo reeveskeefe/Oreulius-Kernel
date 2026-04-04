@@ -2119,11 +2119,14 @@ impl FuzzCompiler {
         type_sigs: &[JitTypeSignature],
         global_sigs: &[JitGlobalSignature],
     ) -> Result<JitFn, &'static str> {
-        crate::serial_println!(
-            "[WASM-JIT-C] stage=reset code_len={} locals={}",
-            code.len(),
-            locals_total
-        );
+        let fuzz_verbose = crate::wasm::jit_fuzz_verbose_trace_enabled();
+        if fuzz_verbose {
+            crate::serial_println!(
+                "[WASM-JIT-C] stage=reset code_len={} locals={}",
+                code.len(),
+                locals_total
+            );
+        }
         // Reuse allocations across fuzz iterations, but always compile from a
         // clean emitter/trace state so stale machine code cannot be executed.
         self.emitter.reset();
@@ -2131,7 +2134,9 @@ impl FuzzCompiler {
         self.blocks.clear();
         self.block_hashes.clear();
 
-        crate::serial_println!("[WASM-JIT-C] stage=emit");
+        if fuzz_verbose {
+            crate::serial_println!("[WASM-JIT-C] stage=emit");
+        }
         emit_code_into(
             code,
             locals_total,
@@ -2140,9 +2145,13 @@ impl FuzzCompiler {
             &mut self.emitter,
             &mut self.traces,
         )?;
-        crate::serial_println!("[WASM-JIT-C] stage=analyze");
+        if fuzz_verbose {
+            crate::serial_println!("[WASM-JIT-C] stage=analyze");
+        }
         analyze_basic_blocks_into(code, &mut self.blocks);
-        crate::serial_println!("[WASM-JIT-C] stage=validate");
+        if fuzz_verbose {
+            crate::serial_println!("[WASM-JIT-C] stage=validate");
+        }
         validate_translation_per_block_into(
             code,
             &self.blocks,
@@ -2150,18 +2159,24 @@ impl FuzzCompiler {
             &self.emitter.code,
             &mut self.block_hashes,
         )?;
-        crate::serial_println!("[WASM-JIT-C] stage=proof");
+        if fuzz_verbose {
+            crate::serial_println!("[WASM-JIT-C] stage=proof");
+        }
         let _ = build_translation_proof(code, &self.traces, &self.emitter.code)?;
         if self.emitter.code.len() > self.exec.len {
             return Err("JIT code too large for fuzz buffer");
         }
-        crate::serial_println!(
-            "[WASM-JIT-C] stage=seal emitted_len={}",
-            self.emitter.code.len()
-        );
+        if fuzz_verbose {
+            crate::serial_println!(
+                "[WASM-JIT-C] stage=seal emitted_len={}",
+                self.emitter.code.len()
+            );
+        }
         self.exec.write_and_seal(&self.emitter.code)?;
         self.exec_code_len = self.emitter.code.len();
-        crate::serial_println!("[WASM-JIT-C] stage=done");
+        if fuzz_verbose {
+            crate::serial_println!("[WASM-JIT-C] stage=done");
+        }
         let entry = unsafe { core::mem::transmute::<*const u8, JitFn>(self.exec.as_ptr()) };
         Ok(entry)
     }
