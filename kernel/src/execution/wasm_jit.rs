@@ -45,6 +45,18 @@ const MAX_STACK_DEPTH: usize = 256;
 #[cfg(target_arch = "aarch64")]
 const MAX_WASM_TYPE_ARITY: usize = 32;
 
+#[inline]
+fn jit_fuzz_verbose_trace_enabled() -> bool {
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        crate::wasm::jit_fuzz_verbose_trace_enabled()
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        false
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -2119,7 +2131,7 @@ impl FuzzCompiler {
         type_sigs: &[JitTypeSignature],
         global_sigs: &[JitGlobalSignature],
     ) -> Result<JitFn, &'static str> {
-        let fuzz_verbose = crate::wasm::jit_fuzz_verbose_trace_enabled();
+        let fuzz_verbose = jit_fuzz_verbose_trace_enabled();
         if fuzz_verbose {
             crate::serial_println!(
                 "[WASM-JIT-C] stage=reset code_len={} locals={}",
