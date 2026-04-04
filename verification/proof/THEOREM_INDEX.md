@@ -1,16 +1,22 @@
 # Theorem Index
 
+> Claim tiers (T0–T5) and full target program matrix: see
+> [`proof/VERIFICATION_TARGET_MATRIX.md`](./VERIFICATION_TARGET_MATRIX.md).
+> All theorems below are currently **T2 (Model Proven)** — mechanized over an
+> abstract model; code-to-model refinement obligations are tracked in
+> `mapping/CODE_MODEL_TRACE.md`.
+
 Mandatory baseline backlog:
-- THM-CAP-001 (INV-CAP-001) Status: **Proven** ✅
-- THM-MEM-001 (INV-MEM-001) Status: **Proven** ✅ (MemRegion interval model; PMA-MEM-001–005; memory_region_isolation Theorem via lia)
-- THM-WX-001  (INV-WX-001)  Status: **Proven** ✅
-- THM-CFI-001 (INV-CFI-001) Status: **Proven** ✅ (FunctionTable list model; cfi_jit_targets_valid Theorem via nth_error_In; cfi_no_mid_stream_jump Qed)
-- THM-TMP-001 (INV-TMP-001) Status: **Proven** ✅
-- THM-PER-001 (INV-PER-001) Status: **Proven** ✅ (SnapshotStore write→read identity, codec roundtrip axiom, PersistenceRoundtrip Theorem Qed)
-- THM-NET-001 (INV-NET-001) Status: **Proven** ✅ (ForwardCap model; capnet_message_integrity Theorem — Part A integrity + Part B freshness; revoked_cap_invalid via lia; .vo present)
-- THM-PRIV-001 (INV-PRIV-001) Status: **Proven** ✅ (CpuState ring model; only_gate_enters_kernel Theorem — WellFormed invariant induction; SyscallTransition closed-world; .vo present)
-- THM-LOCK-001 (INV-PRIV-001) Status: **Proven** ✅
-- THM-SCH-001  (INV-PRIV-001) Status: **Proven** ✅
+- THM-CAP-001 (INV-CAP-001) Status: **Proven** ✅  Tier: **T2**
+- THM-MEM-001 (INV-MEM-001) Status: **Proven** ✅  Tier: **T2** (MemRegion interval model; PMA-MEM-001–005; memory_region_isolation Theorem via lia)
+- THM-WX-001  (INV-WX-001)  Status: **Proven** ✅  Tier: **T2**
+- THM-CFI-001 (INV-CFI-001) Status: **Proven** ✅  Tier: **T2** (FunctionTable list model; cfi_jit_targets_valid Theorem via nth_error_In; cfi_no_mid_stream_jump Qed)
+- THM-TMP-001 (INV-TMP-001) Status: **Proven** ✅  Tier: **T2**
+- THM-PER-001 (INV-PER-001) Status: **Proven** ✅  Tier: **T2** (SnapshotStore write→read identity, codec roundtrip axiom, PersistenceRoundtrip Theorem Qed)
+- THM-NET-001 (INV-NET-001) Status: **Proven** ✅  Tier: **T2** (ForwardCap model; capnet_message_integrity Theorem — Part A integrity + Part B freshness; revoked_cap_invalid via lia; .vo present)
+- THM-PRIV-001 (INV-PRIV-001) Status: **Proven** ✅  Tier: **T2** (CpuState ring model; only_gate_enters_kernel Theorem — WellFormed invariant induction; SyscallTransition closed-world; .vo present)
+- THM-LOCK-001 (INV-LOCK-001) Status: **Proven** ✅  Tier: **T2**
+- THM-SCH-001  (INV-SCH-001)  Status: **Proven** ✅  Tier: **T2**
 
 ---
 

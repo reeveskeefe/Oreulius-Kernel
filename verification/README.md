@@ -175,8 +175,10 @@ The verification story is only as honest as its trusted base.
 Current named assumptions are:
 
 - `ASM-MODEL-001`: only modeled transition subsets are covered
-- `ASM-HW-001`: hardware atomicity / coherence semantics at the modeled granularity
+- `ASM-MODEL-002`: architecture/assembly stubs (boot, trap, MMU, context-switch) are in the TCB until Program J obligations are discharged
+- `ASM-HW-001`: hardware atomicity / coherence semantics at the modeled granularity; QEMU is the execution model for all runtime evidence
 - `ASM-TOOL-001`: proof checker trustworthiness and artifact validity
+- `ASM-TOOL-002`: Rust compiler, assembler, and linker are trusted base; proofs hold at source level only
 
 Formally, proved statements in this workspace should be read as:
 
@@ -216,6 +218,8 @@ Inv_{cap}
 \]
 
 The theorem index under [proof/THEOREM_INDEX.md](./proof/THEOREM_INDEX.md) binds each invariant to a theorem record and a proof artifact.
+
+The full verification target matrix — claim tiers T0–T5, Programs A–L, staged milestones, and the defensible whole-system definition — lives in [proof/VERIFICATION_TARGET_MATRIX.md](./proof/VERIFICATION_TARGET_MATRIX.md).
 
 ---
 
@@ -603,7 +607,7 @@ In practical review terms:
 
 ### Claimed
 
-Oreulius claims that the theorem set in [proof/THEOREM_INDEX.md](./proof/THEOREM_INDEX.md) is mechanized for the corresponding theory files and that the assumptions and boundaries are documented.
+Oreulius claims that the theorem set in [proof/THEOREM_INDEX.md](./proof/THEOREM_INDEX.md) is mechanized for the corresponding theory files and that the assumptions and boundaries are documented. All current theorems are **T2 (Model Proven)** — proven over abstract models; code-to-model refinement is an open obligation. See [proof/VERIFICATION_TARGET_MATRIX.md](./proof/VERIFICATION_TARGET_MATRIX.md) for the full tier definitions and what each stage of verification requires.
 
 ### Not claimed
 
