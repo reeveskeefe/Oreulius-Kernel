@@ -644,8 +644,9 @@ pub fn run() -> ! {
 
 pub fn dns_resolve(domain: &str) -> Result<Ipv4Addr, &'static str> {
     let info = get_info()?;
-    if !info.ready {
-        return Err("Network not ready");
+    let dns_ready = info.ip.0 != [0, 0, 0, 0] && info.dns_server.0 != [0, 0, 0, 0];
+    if !dns_ready {
+        return Err("DNS not configured");
     }
     let mut data = [0u8; MAX_STR];
     let bytes = domain.as_bytes();

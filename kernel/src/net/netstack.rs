@@ -408,6 +408,11 @@ impl NetworkStack {
     }
 
     #[inline]
+    fn dns_preflight_ready(&self) -> bool {
+        self.has_interface && self.my_ip.0 != [0, 0, 0, 0] && self.dns_server.0 != [0, 0, 0, 0]
+    }
+
+    #[inline]
     pub fn readiness_prereqs_met(&self) -> bool {
         return self.interface_configured() && self.operational_link_ready();
     }
@@ -1150,10 +1155,11 @@ impl NetworkStack {
     where
         F: FnMut(&mut Self),
     {
-        if !self.is_ready() {
+        if !self.dns_preflight_ready() {
             if DNS_DEBUG_ENABLED {
                 crate::serial_println!(
-                    "[DNS-DEBUG] preflight ready={} has_if={} link={} ip={}.{}.{}.{} gw={}.{}.{}.{} dns={}.{}.{}.{}",
+                    "[DNS-DEBUG] preflight dns_ready={} stack_ready={} has_if={} link={} ip={}.{}.{}.{} gw={}.{}.{}.{} dns={}.{}.{}.{}",
+                    if self.dns_preflight_ready() { 1 } else { 0 },
                     if self.is_ready() { 1 } else { 0 },
                     if self.has_interface { 1 } else { 0 },
                     if self.link_ready() { 1 } else { 0 },
@@ -1171,7 +1177,7 @@ impl NetworkStack {
                     self.dns_server.0[3],
                 );
             }
-            return Err("Network not ready");
+            return Err("DNS not configured");
         }
 
         if domain.len() > 253 {

@@ -9,6 +9,10 @@ use crate::net;
 use crate::net_reactor;
 use crate::netstack::Ipv4Addr;
 
+fn dns_usable(info: &net_reactor::NetInfo) -> bool {
+    info.ip.0 != [0, 0, 0, 0] && info.dns_server.0 != [0, 0, 0, 0]
+}
+
 fn write_help_line<W: Write>(out: &mut W, prefix: &str, body: &str) {
     if prefix.is_empty() {
         let _ = writeln!(out, "{}", body);
@@ -121,8 +125,8 @@ pub fn cmd_dns_resolve<W: Write>(out: &mut W, domain: Option<&str>) {
         }
     };
 
-    if !info.ready {
-        let _ = writeln!(out, "Error: Network not ready");
+    if !dns_usable(&info) {
+        let _ = writeln!(out, "Error: DNS not configured");
         let _ = writeln!(out, "Check: eth-status or netstack-info");
         let _ = writeln!(out);
         return;
