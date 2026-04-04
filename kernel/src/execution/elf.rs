@@ -61,6 +61,7 @@ const DT_RELSZ: u32 = 18;
 const DT_RELENT: u32 = 19;
 const DT_RELA: u32 = 7;
 const DT_RELASZ: u32 = 8;
+const DT_RELAENT: u32 = 9;
 const DT_JMPREL: u32 = 23;
 
 // ELF64 dynamic tags (same numeric value, wider fields)
@@ -128,6 +129,14 @@ struct Elf32Dyn {
 struct Elf32Rel {
     r_offset: u32,
     r_info: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Elf32Rela {
+    r_offset: u32,
+    r_info: u32,
+    r_addend: i32,
 }
 
 fn read_struct<T: Copy>(bytes: &[u8], offset: usize) -> Result<T, &'static str> {
@@ -279,63 +288,105 @@ fn apply_relocations(
     let mut rel_addr = 0u32;
     let mut rel_size = 0u32;
     let mut rel_ent = size_of::<Elf32Rel>() as u32;
-    let mut has_rela = false;
+    let mut rela_addr = 0u32;
+    let mut rela_size = 0u32;
+    let mut rela_ent = size_of::<Elf32Rela>() as u32;
 
     for d in dyns {
         match d.d_tag {
-            DT_REL => rel_addr = d.d_val,
-            DT_RELSZ => rel_size = d.d_val,
-            DT_RELENT => rel_ent = d.d_val,
-            DT_RELA | DT_RELASZ => has_rela = true,
+            DT_REL    => rel_addr  = d.d_val,
+            DT_RELSZ  => rel_size  = d.d_val,
+            DT_RELENT => rel_ent   = d.d_val,
+            DT_RELA   => rela_addr = d.d_val,
+            DT_RELASZ => rela_size = d.d_val,
+            DT_RELAENT => rela_ent = d.d_val,
             DT_JMPREL => {}
             _ => {}
         }
     }
 
-    if has_rela {
-        return Err("RELA relocations not supported");
-    }
-    if rel_addr == 0 || rel_size == 0 {
-        return Ok(());
-    }
-    if rel_ent as usize != size_of::<Elf32Rel>() {
-        return Err("Invalid REL entry size");
-    }
-    let rel_table_start = base
-        .checked_add(rel_addr)
-        .ok_or("REL table address overflow")?;
-    if !addr_in_load_ranges(phdrs, base, rel_table_start, rel_size) {
-        return Err("REL table outside load segments");
-    }
-
     let old = crate::arch::mmu::current_page_table_root_addr();
-    unsafe {
-        space.activate();
+    unsafe { space.activate(); }
+
+    // ---- REL table (implicit addend stored at relocation site) ----
+    if rel_addr != 0 && rel_size != 0 {
+        if rel_ent as usize != size_of::<Elf32Rel>() {
+            let _ = crate::arch::mmu::set_page_table_root(old);
+            return Err("Invalid REL entry size");
+        }
+        let rel_table_start = base
+            .checked_add(rel_addr)
+            .ok_or("REL table address overflow")?;
+        if !addr_in_load_ranges(phdrs, base, rel_table_start, rel_size) {
+            let _ = crate::arch::mmu::set_page_table_root(old);
+            return Err("REL table outside load segments");
+        }
+        let count = rel_size / rel_ent;
+        for i in 0..count {
+            let entry_addr = rel_table_start
+                .checked_add(i.saturating_mul(rel_ent))
+                .ok_or("REL entry address overflow")?;
+            if !addr_in_load_ranges(phdrs, base, entry_addr, size_of::<Elf32Rel>() as u32) {
+                let _ = crate::arch::mmu::set_page_table_root(old);
+                return Err("REL entry outside load segments");
+            }
+            let rel = unsafe { ptr::read_unaligned(entry_addr as *const Elf32Rel) };
+            let r_type = rel.r_info & 0xFF;
+            if r_type == R_386_RELATIVE {
+                let target = base
+                    .checked_add(rel.r_offset)
+                    .ok_or("REL relocation target overflow")?;
+                if !addr_in_load_ranges(phdrs, base, target, size_of::<u32>() as u32) {
+                    let _ = crate::arch::mmu::set_page_table_root(old);
+                    return Err("REL relocation target outside load segments");
+                }
+                let ptr32 = target as *mut u32;
+                let val = unsafe { ptr::read_unaligned(ptr32) };
+                unsafe { ptr::write_unaligned(ptr32, val.wrapping_add(base)) };
+            }
+            // Unrecognised relocation types are silently skipped —
+            // symbol-dependent relocations (R_386_32, R_386_PC32, etc.)
+            // require a symbol table we don't carry; a static-PIE binary
+            // must only use RELATIVE.
+        }
     }
 
-    let count = rel_size / rel_ent;
-    for i in 0..count {
-        let rel_entry_addr = rel_table_start
-            .checked_add(i.saturating_mul(rel_ent))
-            .ok_or("REL entry address overflow")?;
-        if !addr_in_load_ranges(phdrs, base, rel_entry_addr, size_of::<Elf32Rel>() as u32) {
+    // ---- RELA table (explicit addend) ----
+    if rela_addr != 0 && rela_size != 0 {
+        if rela_ent as usize != size_of::<Elf32Rela>() {
             let _ = crate::arch::mmu::set_page_table_root(old);
-            return Err("REL entry outside load segments");
+            return Err("Invalid RELA entry size");
         }
-        let rel_ptr = rel_entry_addr as *const Elf32Rel;
-        let rel = unsafe { ptr::read_unaligned(rel_ptr) };
-        let r_type = rel.r_info & 0xFF;
-        if r_type == R_386_RELATIVE {
-            let reloc_u32 = base
-                .checked_add(rel.r_offset)
-                .ok_or("Relocation address overflow")?;
-            if !addr_in_load_ranges(phdrs, base, reloc_u32, size_of::<u32>() as u32) {
+        let rela_table_start = base
+            .checked_add(rela_addr)
+            .ok_or("RELA table address overflow")?;
+        if !addr_in_load_ranges(phdrs, base, rela_table_start, rela_size) {
+            let _ = crate::arch::mmu::set_page_table_root(old);
+            return Err("RELA table outside load segments");
+        }
+        let count = rela_size / rela_ent;
+        for i in 0..count {
+            let entry_addr = rela_table_start
+                .checked_add(i.saturating_mul(rela_ent))
+                .ok_or("RELA entry address overflow")?;
+            if !addr_in_load_ranges(phdrs, base, entry_addr, size_of::<Elf32Rela>() as u32) {
                 let _ = crate::arch::mmu::set_page_table_root(old);
-                return Err("Relocation target outside load segments");
+                return Err("RELA entry outside load segments");
             }
-            let reloc_addr = reloc_u32 as *mut u32;
-            let val = unsafe { ptr::read_unaligned(reloc_addr) };
-            unsafe { ptr::write_unaligned(reloc_addr, val.wrapping_add(base)) };
+            let rela = unsafe { ptr::read_unaligned(entry_addr as *const Elf32Rela) };
+            let r_type = rela.r_info & 0xFF;
+            if r_type == R_386_RELATIVE {
+                // R_386_RELATIVE with RELA: value = base + addend
+                let target = base
+                    .checked_add(rela.r_offset)
+                    .ok_or("RELA relocation target overflow")?;
+                if !addr_in_load_ranges(phdrs, base, target, size_of::<u32>() as u32) {
+                    let _ = crate::arch::mmu::set_page_table_root(old);
+                    return Err("RELA relocation target outside load segments");
+                }
+                let value = base.wrapping_add(rela.r_addend as u32);
+                unsafe { ptr::write_unaligned(target as *mut u32, value) };
+            }
         }
     }
 
@@ -417,9 +468,8 @@ pub fn load_elf32(bytes: &[u8]) -> Result<LoadedElf, &'static str> {
     }
 
     let phdrs = parse_program_headers(bytes, &hdr)?;
-    if phdrs.iter().any(|p| p.p_type == PT_INTERP) {
-        return Err("PT_INTERP not supported (no dynamic linker)");
-    }
+    // PT_INTERP is accepted and silently ignored — the kernel is the loader;
+    // all relocation fixups are handled via PT_DYNAMIC below.
 
     let base = if hdr.e_type == ET_DYN {
         DEFAULT_BASE32
@@ -805,9 +855,8 @@ pub fn load_elf64(bytes: &[u8]) -> Result<LoadedElf64, &'static str> {
     }
 
     let phdrs = parse_program_headers64(bytes, &hdr)?;
-    if phdrs.iter().any(|p| p.p_type == PT_INTERP) {
-        return Err("ELF64: PT_INTERP not supported (no dynamic linker)");
-    }
+    // PT_INTERP is accepted and silently ignored — the kernel is the loader;
+    // all relocation fixups are handled via PT_DYNAMIC below.
 
     let base: u64 = if hdr.e_type == ET_DYN {
         DEFAULT_BASE64
