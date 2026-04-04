@@ -21,7 +21,7 @@
 [![WASM JIT Regression](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/wasm-jit-regression.yml/badge.svg)](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/wasm-jit-regression.yml)
 [![Proof Check](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/proof-check.yml/badge.svg)](https://github.com/reeveskeefe/Oreulieus-Kernel/actions/workflows/proof-check.yml)
 
-[Why It Is Different](#why-it-is-different) • [Portability](#platform-and-portability-status) • [Architecture](#architecture) • [Host ABI](#wasm-host-abi-reference) • [SDK](#wasm-sdk-module-reference) • [Kernel Modules](#kernel-module-map) • [Capability Internals](#capability-system-internals) • [CI](#continuous-integration) • [Cross-Arch Internals](#cross-architecture-implementation) • [Verification](#verification-and-hardening) • [Build](#build-and-run) • [Commands](#command-taxonomy) • [Docs](#documentation-map)
+[Start Here](#start-here) • [Why It Is Different](#why-it-is-different) • [Portability](#platform-and-portability-status) • [Architecture](#architecture) • [Host ABI](#wasm-host-abi-reference) • [Build](#build-and-run) • [Commands](#command-taxonomy) • [Verification](#verification-and-hardening) • [Docs](#documentation-map)
 
 </div>
 
@@ -31,18 +31,77 @@
 
 ## Overview
 
-Oreulius is a **WASM-first, capability-native unikernel** designed to run
-small, isolated WASI workloads on edge and cloud hosts.  It provides
-deterministic temporal snapshots, capability-based authority transfer, and
-in-kernel verification to enable secure, auditable migration and replay.
-The design targets **security- and audit-sensitive deployments** and
-**systems research** — trusted unikernels, attested services, and
-deterministic debugging — not a drop-in POSIX/Linux replacement.
+Oreulius is a **WASM-first, capability-native kernel** for isolated workloads,
+auditable authority flow, and replayable system state.
+
+In practical terms, it combines:
+
+- capability-based access control instead of ambient authority
+- a kernel-managed temporal history model with snapshot, rollback, and merge
+- a real WASM runtime and JIT path
+- built-in verification, fuzzing, and regression tooling
+
+It is aimed at **systems research**, **security-sensitive deployments**, and
+**deterministic debugging**. It is not a drop-in POSIX/Linux replacement.
 
 Oreulius is source-available under the Oreulius Community License. The public
 license allows research, evaluation, modification, public forks, benchmarking,
 and non-commercial distribution. Commercial deployment and production use
 require a separate written agreement. See `LICENSE` and `COMMERCIAL.md`.
+
+Note on naming:
+
+- the project and codebase use the name `Oreulius`
+- the current GitHub repository path is still `Oreulieus-Kernel`
+
+That repository-path mismatch is historical, not a separate product line.
+
+## Start Here
+
+If this is your first time in the repo, use this path:
+
+1. Boot the kernel in QEMU.
+2. Run a small shell workload.
+3. Watch one capability or network boundary behave as designed.
+4. Run one temporal command or verification command.
+5. Then dive into the deeper architecture and subsystem docs.
+
+### What It Does
+
+Oreulius boots on `i686`, `x86_64`, and `AArch64`, exposes a shell surface for
+kernel services, runs WASM workloads, enforces capability-mediated access, and
+tracks temporal object history inside the kernel.
+
+### Why It Matters
+
+Most systems treat authority, replay, and verification as separate layers.
+Oreulius treats them as part of the core runtime model. That makes the system
+useful for experiments in auditable execution, deterministic investigation, and
+high-assurance service design.
+
+### Fast Demo Path
+
+For the quickest "aha" path, use the `i686` shell flow:
+
+1. Build and boot:
+   `cd kernel && ./run.sh`
+2. In the shell, inspect the network stack:
+   `netstack-info`
+3. Resolve a real hostname:
+   `dns-resolve example.com`
+4. Fetch a real page:
+   `http-get http://example.com/`
+5. Inspect the temporal surface:
+   `help temporal`
+6. Inspect the verification surface:
+   `help formal-verify`
+
+If you want the scripted path instead of an interactive boot:
+
+- `./kernel/ci/smoke-i686.sh`
+- `./kernel/ci/network-i686.sh`
+
+Those are the shortest paths from clone to visible system behavior.
 
 ### What this is (and what it is not)
 
@@ -186,7 +245,7 @@ Current behavior:
 - in-memory VFS files and mounted VFS files are supported
 - `MAP_SHARED|PROT_WRITE` writes are flushed back on unmap and process teardown
 - raw block / virtio raw handles are not accepted as file-backed mmap sources
-- shared file mappings do not provide coherent cross-process page sharing; the current contract is writeback-on-unmap/exit
+- shared file mappings on `x86_64` use coherent shared physical pages once faulted in; writable mappings still flush back on unmap and process teardown
 
 ## WASM Host ABI Reference
 

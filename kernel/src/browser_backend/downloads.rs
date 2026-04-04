@@ -215,6 +215,28 @@ impl DownloadManager {
         }
     }
 
+    /// Directly insert a `DownloadJob` from a snapshot without going through
+    /// the normal `offer/accept` flow.  Used only by `temporal::restore`.
+    /// Returns `false` if the table is full.
+    pub fn restore_job(&mut self, job: DownloadJob) -> bool {
+        for slot in &mut self.jobs {
+            if !slot.active {
+                *slot = job;
+                // Keep next_id ahead of any restored id to prevent collisions.
+                if job.id.0 >= self.next_id {
+                    self.next_id = job.id.0.wrapping_add(1).max(1);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Iterate over all active download jobs.  Used by `temporal::snapshot`.
+    pub fn jobs_iter(&self) -> impl Iterator<Item = &DownloadJob> {
+        self.jobs.iter().filter(|j| j.active)
+    }
+
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------

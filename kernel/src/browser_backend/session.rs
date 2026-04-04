@@ -282,6 +282,33 @@ impl SessionTable {
         true
     }
 
+    /// Restore navigation history and `next_request_id` for an already-live
+    /// session at `idx`.  No-op if `idx` is out of range or slot is not alive.
+    pub fn restore_nav(
+        &mut self,
+        idx: usize,
+        next_request_id: u32,
+        nav_head: usize,
+        nav_count: usize,
+        entries: &[(usize, [u8; URL_MAX])],
+    ) {
+        if idx >= MAX_BROWSER_SESSIONS || !self.slots[idx].alive {
+            return;
+        }
+        let s = &mut self.slots[idx];
+        s.next_request_id = next_request_id.max(1);
+        s.nav_head = nav_head % NAV_HISTORY_DEPTH;
+        s.nav_count = nav_count.min(NAV_HISTORY_DEPTH);
+        for (i, (url_len, url)) in entries.iter().enumerate() {
+            if i >= NAV_HISTORY_DEPTH {
+                break;
+            }
+            s.nav_history[i].url = *url;
+            s.nav_history[i].url_len = (*url_len).min(URL_MAX);
+            s.nav_history[i].active = *url_len > 0;
+        }
+    }
+
     pub fn find_by_pid(&self, pid: ProcessId) -> Option<usize> {
         self.slots.iter().position(|s| s.alive && s.pid == pid)
     }

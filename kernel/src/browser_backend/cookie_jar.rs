@@ -423,6 +423,28 @@ impl CookieJar {
             }
         }
     }
+
+    /// Directly insert a `CookieEntry` from a snapshot without applying any
+    /// policy checks.  Used only by `temporal::restore`.  Returns `false` if
+    /// the jar is full.
+    pub fn restore_entry(&mut self, entry: CookieEntry) -> bool {
+        if self.count >= MAX_COOKIES {
+            return false;
+        }
+        for slot in &mut self.entries {
+            if !slot.active {
+                *slot = entry;
+                self.count += 1;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Iterate over all active cookie entries.  Used by `temporal::snapshot`.
+    pub fn entries_iter(&self) -> impl Iterator<Item = &CookieEntry> {
+        self.entries.iter().filter(|e| e.active)
+    }
 }
 
 // ---------------------------------------------------------------------------
