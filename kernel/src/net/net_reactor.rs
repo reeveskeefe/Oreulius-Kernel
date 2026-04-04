@@ -667,7 +667,8 @@ pub fn dns_resolve(domain: &str) -> Result<Ipv4Addr, &'static str> {
 
 pub fn tcp_connect(remote_ip: Ipv4Addr, remote_port: u16) -> Result<u16, &'static str> {
     let info = get_info()?;
-    if !info.ready {
+    let tcp_usable = info.ready || info.ip.0 != [0, 0, 0, 0];
+    if !tcp_usable {
         return Err("Network not ready");
     }
     match request(NetRequest::TcpConnect {
