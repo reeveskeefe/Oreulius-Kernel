@@ -70,36 +70,10 @@ If a single behavior-changing layer is omitted, the whole-system claim is overst
 
 ---
 
-## 3. Like You Are 5
 
-The kernel is a giant robot castle.
+## 3. The Seven Major Verification Targets
 
-To prove the whole castle is safe, it is not enough to prove that one door locks. You must prove:
-
-- the doors lock
-- the windows lock
-- the guards follow the rules
-- the elevators do not drop people
-- the kitchen does not catch fire
-- the map matches the actual building
-
-If one of those is missing, the whole castle is not proven safe.
-
-Oreulius is the same way. To prove the whole system, the project must prove:
-
-- the spec
-- the proofs
-- the models
-- the implementation
-- the architecture boundary
-- the toolchain assumptions
-- and the way all subsystems compose together
-
----
-
-## 4. The Seven Major Verification Targets
-
-### 4.1 Verify the specification itself
+### 3.1 Verify the specification itself
 
 Before code can be proved, the specification must be complete, meaningful, and non-contradictory.
 
@@ -133,7 +107,7 @@ For Oreulius, specification completeness includes:
 
 If the spec is incomplete, the proofs can be mechanically correct and still fail to prove the intended system claim.
 
-### 4.2 Verify the proof artifacts
+### 3.2 Verify the proof artifacts
 
 This is the repository governance layer.
 
@@ -156,7 +130,7 @@ This is the minimum standard for the claim:
 \text{ArtifactClaim} \equiv \text{CompleteInventory} \land \text{ReproducibleArtifacts} \land \text{TraceableClaims}
 \]
 
-### 4.3 Verify the formal models for each subsystem
+### 3.3 Verify the formal models for each subsystem
 
 This is the subsystem-theory layer.
 
@@ -174,7 +148,7 @@ For Oreulius, the target set includes at least:
 - filesystem and VFS core
 - device and architecture core, where included in claim scope
 
-### 4.4 Verify correspondence from model to real code
+### 3.4 Verify correspondence from model to real code
 
 This is the refinement layer.
 
@@ -189,7 +163,7 @@ For each verified subsystem:
 
 Without this layer, the project has model proofs, not implementation proofs.
 
-### 4.5 Verify architecture-specific low-level code
+### 3.5 Verify architecture-specific low-level code
 
 Any honest "entire system" claim includes:
 
@@ -208,7 +182,7 @@ At minimum, the project must explicitly classify this layer as either:
 - trusted but audited
 - trusted and unverified
 
-### 4.6 Verify the toolchain and trusted computing base
+### 3.6 Verify the toolchain and trusted computing base
 
 Even verified source code does not automatically imply a verified binary.
 
@@ -229,7 +203,7 @@ An honest top-level statement therefore has the form:
 \text{VerifiedSystem} \text{ relative to } TCB \land HW\_Assumptions \land Model\_Assumptions
 \]
 
-### 4.7 Verify composition across subsystems
+### 3.7 Verify composition across subsystems
 
 Subsystem proofs do not automatically compose.
 
@@ -252,7 +226,7 @@ This is the difference between:
 
 ---
 
-## 5. Claim Tiers
+## 4. Claim Tiers
 
 Oreulius should use staged verification claims, not one oversized slogan.
 
@@ -332,7 +306,7 @@ This is the level at which "entire system" becomes defensible.
 
 ---
 
-## 6. Oreulius Target Programs
+## 7. Oreulius Target Programs
 
 This section converts the high-level ladder into named Oreulius verification programs.
 
@@ -490,9 +464,9 @@ Targets:
 
 ---
 
-## 7. Subsystem Proof Target Matrix
+## 8. Subsystem Proof Target Matrix
 
-### 7.1 Security and authority core
+### 8.1 Security and authority core
 
 Required proof targets:
 
@@ -511,7 +485,7 @@ Required proof targets:
 - entanglement semantics
 - observer and event semantics for authority changes
 
-### 7.2 Memory and isolation core
+### 8.2 Memory and isolation core
 
 Required proof targets:
 
@@ -526,7 +500,7 @@ Required proof targets:
 - `W^X` invariants
 - executable page sealing correctness
 
-### 7.3 Privilege, entry, and trap core
+### 8.3 Privilege, entry, and trap core
 
 Required proof targets:
 
@@ -537,7 +511,7 @@ Required proof targets:
 - interrupt and exception frame integrity
 - architecture-specific privilege invariants
 
-### 7.4 Execution core
+### 8.4 Execution core
 
 Required proof targets:
 
@@ -549,7 +523,7 @@ Required proof targets:
 - service pointer typing correctness
 - typed invocation correctness
 
-### 7.5 Temporal core
+### 8.5 Temporal core
 
 Required proof targets:
 
@@ -563,7 +537,7 @@ Required proof targets:
 - checkpoint semantics
 - temporal capability rollback semantics
 
-### 7.6 IPC, registry, and services
+### 8.6 IPC, registry, and services
 
 Required proof targets:
 
@@ -575,7 +549,7 @@ Required proof targets:
 - cross-PID pointer validity
 - registry consistency
 
-### 7.7 Persistence
+### 8.7 Persistence
 
 Required proof targets:
 
@@ -600,7 +574,7 @@ Required proof targets:
 - migration transfer correctness
 - session authenticity assumptions
 
-### 7.9 Scheduling and concurrency
+### 8.9 Scheduling and concurrency
 
 Required proof targets:
 
@@ -612,7 +586,7 @@ Required proof targets:
 - concurrency interference assumptions
 - fairness, starvation, and boundedness, if claimed
 
-### 7.10 Filesystem and VFS
+### 8.10 Filesystem and VFS
 
 Required proof targets:
 
@@ -624,7 +598,7 @@ Required proof targets:
 - lazy page-fill correctness for file-backed mappings, if claimed
 - writeback semantics
 
-### 7.11 Device and architecture
+### 8.11 Device and architecture
 
 Required proof targets:
 
@@ -637,7 +611,7 @@ Required proof targets:
 
 ---
 
-## 8. The Semantic Control Point Strategy
+## 9. The Semantic Control Point Strategy
 
 The central Oreulius verification decision is:
 
@@ -675,7 +649,7 @@ This does not eliminate the need for whole-system verification later. It makes e
 
 ---
 
-## 9. Deliverables For The Alpha Verification Program
+## 10. Deliverables For The Alpha Verification Program
 
 Before alpha release, Oreulius should target:
 
@@ -695,7 +669,7 @@ Recommended first defensible whole-profile candidate:
 
 ---
 
-## 10. Shortest Honest Summary
+## 11. Summary
 
 To say Oreulius fully verified everything, the project must prove:
 
