@@ -64,8 +64,14 @@ fn ensure_heap_initialized() {
 
     #[cfg(not(any(test, feature = "host-tests")))]
     let (start, end) = (
-        core::ptr::addr_of!(_heap_start) as usize,
-        core::ptr::addr_of!(_heap_end) as usize,
+        #[allow(unused_unsafe)]
+        unsafe {
+            core::ptr::addr_of!(_heap_start) as usize
+        },
+        #[allow(unused_unsafe)]
+        unsafe {
+            core::ptr::addr_of!(_heap_end) as usize
+        },
     );
 
     if end <= start {

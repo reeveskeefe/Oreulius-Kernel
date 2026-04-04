@@ -40,8 +40,6 @@ asm_hash_fnv1a:
     pop esi
     ret
 
-section .note.GNU-stack noalloc noexec nowrite progbits
-
 ; DJB2 hash (Dan Bernstein's algorithm)
 ; Args: (data: *const u8, len: usize) -> u32
 ; Simple and fast hash function
@@ -109,6 +107,8 @@ asm_hash_sdbm:
 .done:
     pop esi
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits
 
 ; Simple XOR cipher (for demonstration and obfuscation)
 ; Args: (data: *mut u8, len: usize, key: u8)
