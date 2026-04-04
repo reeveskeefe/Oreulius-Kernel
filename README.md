@@ -50,7 +50,7 @@ That path gives the fastest "aha" moment in this repo:
 
 ## Important
 
-this is going through some final bug fixes and finalizations before being snapshot into the alpha release. I would not consider this project complete, but it is near completion trajectory
+This Kernel is going through some final bug fixes and finalizations before being snapshot into the alpha release. I would not consider this project complete, but it is near completion trajectory. Once Alpha is released, this section will be replaced with Release versioning plans. 
 
 ## Overview
 
