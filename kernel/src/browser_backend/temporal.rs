@@ -215,12 +215,13 @@ pub fn snapshot(
         write_u64(out, &mut pos, s.cap.0);
         write_u8(out, &mut pos, 1u8); // alive
         write_u32(out, &mut pos, s.next_request_id);
-        write_u8(out, &mut pos, (s.nav_head % NAV_HISTORY_DEPTH) as u8);
-        write_u8(out, &mut pos, s.nav_count.min(NAV_HISTORY_DEPTH) as u8);
+        write_u8(out, &mut pos, (s.nav_head() % NAV_HISTORY_DEPTH) as u8);
+        write_u8(out, &mut pos, s.nav_count().min(NAV_HISTORY_DEPTH) as u8);
 
         // Nav entries: always write NAV_HISTORY_DEPTH slots so restore can
         // index them directly by ring position.
-        for e in &s.nav_history {
+        for i in 0..NAV_HISTORY_DEPTH {
+            let e = s.nav_entry(i).unwrap(); // always Some — i < NAV_HISTORY_DEPTH
             let url_len = if e.active { e.url_len.min(URL_MAX) } else { 0 };
             if pos + 2 + url_len > out.len() {
                 return 0;
