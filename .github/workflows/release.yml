@@ -153,6 +153,10 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:${{ steps.meta.outputs.tag }}
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.NAMESPACE }}/Oreulius-Kernel
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -216,6 +220,10 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-runner-${{ matrix.arch }}:${{ steps.meta.outputs.tag }}
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-runner-${{ matrix.arch }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.NAMESPACE }}/Oreulius-Kernel
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -273,6 +281,10 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:${{ steps.meta.outputs.tag }}
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.NAMESPACE }}/Oreulius-Kernel
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
   # ────────────────────────────────────────────────────────────────────────────
   # Job 5: Create a GitHub Release with all kernel binaries attached.
