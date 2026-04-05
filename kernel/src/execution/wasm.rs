@@ -16016,6 +16016,21 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         code
     }
 
+    fn build_add_eq(lhs: i32, rhs: i32, add_rhs: i32) -> Vec<u8> {
+        // i32.const lhs; i32.const rhs; i32.const add_rhs; i32.add; i32.eq; end
+        let mut code = Vec::with_capacity(20);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, lhs);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, rhs);
+        code.push(Opcode::I32Const as u8);
+        push_sleb128_i32(&mut code, add_rhs);
+        code.push(Opcode::I32Add as u8);
+        code.push(Opcode::I32Eq as u8);
+        code.push(Opcode::End as u8);
+        code
+    }
+
     fn build_unop(op: Opcode, value: i32) -> Vec<u8> {
         let mut code = Vec::with_capacity(12);
         code.push(Opcode::I32Const as u8);
@@ -16506,7 +16521,7 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         expected: Expected,
     }
 
-    let cases: [Case; 40] = [
+    let cases: [Case; 41] = [
         Case {
             name: "eq_0_0",
             code: build_binop(Opcode::I32Eq, 0, 0),
@@ -16608,6 +16623,12 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
             code: build_select(11, 22, 0),
             locals_total: 0,
             expected: Expected::Value(22),
+        },
+        Case {
+            name: "add_eq_chain_0_0_0",
+            code: build_add_eq(0, 0, 0),
+            locals_total: 0,
+            expected: Expected::Value(1),
         },
         Case {
             name: "if_else_true",

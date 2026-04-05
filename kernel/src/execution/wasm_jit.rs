@@ -2550,8 +2550,8 @@ impl Emitter {
     }
 
     fn emit_i32_eq(&mut self) {
-        self.emit_pop_to_eax();
-        self.emit_pop_to_ebx();
+        self.emit_pop_to_ebx(); // rhs
+        self.emit_pop_to_eax(); // lhs
         self.emit(&[0x39, 0xD8]);
         // sete al
         self.emit(&[0x0F, 0x94, 0xC0]);
@@ -2561,8 +2561,8 @@ impl Emitter {
     }
 
     fn emit_i32_ne(&mut self) {
-        self.emit_pop_to_eax();
-        self.emit_pop_to_ebx();
+        self.emit_pop_to_ebx(); // rhs
+        self.emit_pop_to_eax(); // lhs
         self.emit(&[0x39, 0xD8]);
         // setne al
         self.emit(&[0x0F, 0x95, 0xC0]);
