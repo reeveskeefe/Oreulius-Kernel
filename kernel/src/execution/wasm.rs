@@ -17855,7 +17855,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             }
             16 => {
                 if *stack_depth >= 2 {
-                    code.push(Opcode::I32Ne as u8);
+                    code.push(Opcode::I32LtS as u8);
                     *stack_depth -= 1;
                     true
                 } else {
@@ -17864,7 +17864,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             }
             17 => {
                 if *stack_depth >= 2 {
-                    code.push(Opcode::I32LtS as u8);
+                    code.push(Opcode::I32LtU as u8);
                     *stack_depth -= 1;
                     true
                 } else {
@@ -17873,7 +17873,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             }
             18 => {
                 if *stack_depth >= 2 {
-                    code.push(Opcode::I32LtU as u8);
+                    code.push(Opcode::I32Shl as u8);
                     *stack_depth -= 1;
                     true
                 } else {
@@ -18001,30 +18001,37 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             return None;
         }
         code.push(Opcode::End as u8);
-        if validate_bytecode(&code).is_err() {
+        if validate_bytecode(&code).is_err()
+            || validate_jit_fuzz_generated_subset(&code, locals_total).is_err()
+        {
             return None;
         }
         Some(locals_total)
     }
 
-    fn validate_jit_fuzz_generated_subset(code: &[u8]) -> Result<(), WasmError> {
+    fn validate_jit_fuzz_generated_subset(code: &[u8], locals_total: usize) -> Result<(), WasmError> {
         let mut pc = 0usize;
         let mut saw_terminal_end = false;
+        let mut stack_depth = 0i32;
         while pc < code.len() {
             let opcode_byte = code[pc];
             pc += 1;
             let opcode =
                 Opcode::from_byte(opcode_byte).ok_or(WasmError::UnknownOpcode(opcode_byte))?;
             match opcode {
-                Opcode::Nop
-                | Opcode::Drop
-                | Opcode::I32Add
+                Opcode::Nop => {}
+                Opcode::Drop => {
+                    if stack_depth < 1 {
+                        return Err(WasmError::StackUnderflow);
+                    }
+                    stack_depth -= 1;
+                }
+                Opcode::I32Add
                 | Opcode::I32Sub
                 | Opcode::I32Mul
                 | Opcode::I32And
                 | Opcode::I32Or
                 | Opcode::I32Xor
-                | Opcode::I32Eqz
                 | Opcode::I32Eq
                 | Opcode::I32Ne
                 | Opcode::I32LtS
@@ -18041,7 +18048,17 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 | Opcode::I32DivS
                 | Opcode::I32DivU
                 | Opcode::I32RemS
-                | Opcode::I32RemU => {}
+                | Opcode::I32RemU => {
+                    if stack_depth < 2 {
+                        return Err(WasmError::StackUnderflow);
+                    }
+                    stack_depth -= 1;
+                }
+                Opcode::I32Eqz => {
+                    if stack_depth < 1 {
+                        return Err(WasmError::StackUnderflow);
+                    }
+                }
                 Opcode::End => {
                     if pc != code.len() {
                         // Generated fuzz programs must terminate exactly once.
@@ -18053,22 +18070,64 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                 Opcode::I32Const => {
                     let (_v, n) = read_sleb128_i32_validate(code, pc)?;
                     pc += n;
+                    stack_depth += 1;
                 }
-                Opcode::LocalGet | Opcode::LocalSet | Opcode::LocalTee => {
-                    let (_v, n) = read_uleb128_validate(code, pc)?;
+                Opcode::LocalGet => {
+                    let (local_idx, n) = read_uleb128_validate(code, pc)?;
                     pc += n;
+                    if local_idx as usize >= locals_total {
+                        return Err(WasmError::InvalidLocalIndex);
+                    }
+                    stack_depth += 1;
                 }
-                Opcode::I32Load | Opcode::I32Store => {
+                Opcode::LocalSet => {
+                    let (local_idx, n) = read_uleb128_validate(code, pc)?;
+                    pc += n;
+                    if local_idx as usize >= locals_total {
+                        return Err(WasmError::InvalidLocalIndex);
+                    }
+                    if stack_depth < 1 {
+                        return Err(WasmError::StackUnderflow);
+                    }
+                    stack_depth -= 1;
+                }
+                Opcode::LocalTee => {
+                    let (local_idx, n) = read_uleb128_validate(code, pc)?;
+                    pc += n;
+                    if local_idx as usize >= locals_total {
+                        return Err(WasmError::InvalidLocalIndex);
+                    }
+                    if stack_depth < 1 {
+                        return Err(WasmError::StackUnderflow);
+                    }
+                }
+                Opcode::I32Load => {
                     let (_align, n1) = read_uleb128_validate(code, pc)?;
                     pc += n1;
                     let (_off, n2) = read_uleb128_validate(code, pc)?;
                     pc += n2;
+                    if stack_depth < 1 {
+                        return Err(WasmError::StackUnderflow);
+                    }
+                }
+                Opcode::I32Store => {
+                    let (_align, n1) = read_uleb128_validate(code, pc)?;
+                    pc += n1;
+                    let (_off, n2) = read_uleb128_validate(code, pc)?;
+                    pc += n2;
+                    if stack_depth < 2 {
+                        return Err(WasmError::StackUnderflow);
+                    }
+                    stack_depth -= 2;
                 }
                 _ => return Err(WasmError::UnknownOpcode(opcode_byte)),
             }
         }
         if !saw_terminal_end {
             return Err(WasmError::UnexpectedEndOfCode);
+        }
+        if stack_depth != 1 {
+            return Err(WasmError::InvalidModule);
         }
         Ok(())
     }
@@ -18564,7 +18623,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             // execution side effects, repair to a canonical valid program so fuzzing
             // can continue and still compare interpreter/JIT semantics.
             if validate_bytecode(&code).is_err()
-                || validate_jit_fuzz_generated_subset(&code).is_err()
+                || validate_jit_fuzz_generated_subset(&code, locals_total).is_err()
             {
                 code.clear();
                 choice_trace.clear();

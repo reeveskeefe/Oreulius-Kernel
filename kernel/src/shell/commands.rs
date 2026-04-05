@@ -384,6 +384,7 @@ pub fn execute(input: &str) {
             vga::print_str("  wasm-jit-fuzz-corpus - Run external regression seed corpus (wasm-jit-fuzz-corpus <iters>)\n");
             vga::print_str("  wasm-jit-fuzz-soak - Repeat corpus replay (wasm-jit-fuzz-soak <iters> <rounds>)\n");
             vga::print_str("  jitfuzzreg - JIT fuzz regression runner (jitfuzzreg full [iters] | jitfuzzreg [iters [seeds]])\n");
+            vga::print_str("  wjf         - Alias for wasm-jit-fuzz (wjf <iters> [seed])\n");
             vga::print_str(
                 "  capnet-fuzz - Fuzz CapNet parser/enforcer (capnet-fuzz <iters> [seed])\n",
             );
@@ -744,6 +745,9 @@ pub fn execute(input: &str) {
             cmd_wasm_jit_selftest();
         }
         "wasm-jit-fuzz" => {
+            cmd_wasm_jit_fuzz(parts);
+        }
+        "wjf" => {
             cmd_wasm_jit_fuzz(parts);
         }
         "wasm-jit-fuzz-corpus" => {
@@ -8274,6 +8278,27 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
         vga::print_str(" (selected for repeat-run stability)");
     }
     vga::print_str("\n\n");
+    crate::serial_println!("===== WASM JIT Fuzz =====");
+    crate::serial_println!("Iterations: {}", iters);
+    crate::serial_println!("Seed: {}", seed);
+    crate::serial_println!(
+        "Mode: {}{}{}",
+        mode_label,
+        if mode_token.is_none() || mode_token == Some("auto") {
+            if cfg!(target_arch = "x86_64") {
+                " (default on x86_64)"
+            } else {
+                " (default on x86/i686)"
+            }
+        } else {
+            ""
+        },
+        if !user_mode {
+            " (selected for repeat-run stability)"
+        } else {
+            ""
+        }
+    );
 
     #[cfg(target_arch = "x86_64")]
     const X64_FUZZ_CHUNK_ITERS: u32 = 2048;
@@ -8357,6 +8382,26 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\nNovel programs: ");
             print_u32(stats.novel_programs);
             vga::print_str("\n");
+            crate::serial_println!("OK: {}", stats.ok);
+            crate::serial_println!("Traps: {}", stats.traps);
+            crate::serial_println!("Mismatches: {}", stats.mismatches);
+            crate::serial_println!("Compile errors: {}", stats.compile_errors);
+            crate::serial_println!(
+                "Opcode bins hit: {} / {}",
+                stats.opcode_bins_hit,
+                crate::wasm::jit_fuzz_opcode_bins_total()
+            );
+            crate::serial_println!(
+                "Opcode edges hit (full): {} / {}",
+                stats.opcode_edges_hit,
+                crate::wasm::jit_fuzz_opcode_edges_total()
+            );
+            crate::serial_println!(
+                "Opcode edges hit (admissible): {} / {}",
+                stats.opcode_edges_hit_admissible,
+                stats.opcode_edges_admissible_total
+            );
+            crate::serial_println!("Novel programs: {}", stats.novel_programs);
             if stats.compile_errors > 0 {
                 if let Some(err) = stats.first_compile_error {
                     vga::print_str("\nFirst compile error:\n");
@@ -8471,6 +8516,7 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
             vga::print_str("Fuzz failed: ");
             vga::print_str(e);
             vga::print_str("\n");
+            crate::serial_println!("Fuzz failed: {}", e);
         }
     }
     vga::print_str("\n");
