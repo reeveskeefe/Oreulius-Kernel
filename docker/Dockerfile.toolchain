@@ -1,0 +1,61 @@
+# Oreulius Kernel — Build Toolchain Image
+# Provides a reproducible build environment identical to the CI matrix.
+# Arch: builds for i686, x86_64, and aarch64 targets from one image.
+#
+# Usage:
+#   docker build -f docker/Dockerfile.toolchain -t oreulius-toolchain:local .
+#   docker run --rm -v "$PWD/kernel:/kernel" oreulius-toolchain:local bash -c "cd /kernel && ./build.sh"
+
+FROM ubuntu:22.04
+
+LABEL org.opencontainers.image.source=https://github.com/reeveskeefe/Oreulius-Kernel
+LABEL org.opencontainers.image.description="Oreulius Kernel — reproducible build toolchain (nightly-2024-01-01, NASM, cross-compilers, QEMU)"
+LABEL org.opencontainers.image.licenses=LicenseRef-OreuliusCommunityLicense
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH="/usr/local/cargo/bin:$PATH"
+
+# ── System dependencies (mirrors CI exactly) ────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Assembly / linking
+    nasm \
+    lld \
+    # ISO / GRUB
+    xorriso \
+    grub-pc-bin \
+    grub-common \
+    mtools \
+    # QEMU (x86 + ARM/AArch64)
+    qemu-system-x86 \
+    qemu-system-arm \
+    # AArch64 cross-toolchain
+    binutils-aarch64-linux-gnu \
+    # General utilities
+    curl \
+    ca-certificates \
+    git \
+    make \
+    file \
+  && rm -rf /var/lib/apt/lists/*
+
+# ── Rust nightly-2024-01-01 (pinned toolchain) ───────────────────────────────
+# Install rustup with a minimal profile first, then add required components.
+# rust-src is needed for -Z build-std.
+# llvm-tools-preview is the correct component name for nightly-2024-01-01
+# (renamed to llvm-tools in later nightlies).
+# Targets (x86_64-unknown-none, aarch64-unknown-none, i686 custom JSON) are
+# resolved on-demand by -Z build-std during the kernel build; no pre-download needed.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --no-modify-path \
+      --default-toolchain nightly-2024-01-01 \
+      --profile minimal \
+  && /usr/local/cargo/bin/rustup component add \
+      rust-src \
+      llvm-tools-preview \
+      --toolchain nightly-2024-01-01
+
+WORKDIR /kernel
+
+CMD ["bash"]
