@@ -24,6 +24,51 @@ env:
   NAMESPACE: reeveskeefe
 
 jobs:
+  release-preflight:
+    name: Release preflight
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: meta
+        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify packaging Dockerfiles exist
+        run: |
+          missing=0
+          for file in \
+            docker/Dockerfile.toolchain \
+            docker/Dockerfile.runner \
+            docker/Dockerfile.artifacts
+          do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Missing required release packaging file: $file"
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            echo "::error::This commit does not contain the full release packaging set."
+            exit 1
+          fi
+
+      - name: Validate manual release tag matches current commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          remote_sha="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}' | tail -n 1)"
+          if [[ -n "$remote_sha" && "$remote_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::Requested tag ${RELEASE_TAG} already points to ${remote_sha:0:7}, but this run is building ${GITHUB_SHA:0:7}."
+            echo "::error::Use a new tag (for example ${RELEASE_TAG}.1) or move the protected tag in GitHub before re-running the release workflow."
+            exit 1
+          fi
+
   # ────────────────────────────────────────────────────────────────────────────
   # Job 1: Build all three kernel architectures and upload as GHA artifacts.
   # Mirrors the multiarch-qemu-smoke.yml dependency/tool chain exactly.
@@ -32,6 +77,7 @@ jobs:
     name: Build kernel (${{ matrix.arch }})
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    needs: [release-preflight]
 
     strategy:
       fail-fast: false
@@ -125,6 +171,7 @@ jobs:
     name: Package toolchain image
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    needs: [release-preflight]
 
     steps:
       - name: Checkout
@@ -169,7 +216,7 @@ jobs:
     name: Package runner image (${{ matrix.arch }})
     runs-on: ubuntu-22.04
     timeout-minutes: 90
-    needs: [build-kernel, package-toolchain]
+    needs: [release-preflight, build-kernel, package-toolchain]
 
     strategy:
       fail-fast: false
@@ -234,7 +281,7 @@ jobs:
     name: Package OCI artifact image
     runs-on: ubuntu-22.04
     timeout-minutes: 30
-    needs: [build-kernel]
+    needs: [release-preflight, build-kernel]
 
     steps:
       - name: Checkout
@@ -293,7 +340,7 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [build-kernel]
+    needs: [release-preflight, build-kernel]
 
     steps:
       - name: Checkout
