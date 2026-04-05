@@ -1,0 +1,43 @@
+# Oreulius Kernel — OCI Artifact Image
+#
+# A FROM-scratch image that carries compiled kernel binaries for all three
+# supported architectures. No operating system, no runtime — pure artifact
+# distribution via the OCI registry.
+#
+# Layout inside the image:
+#   /artifacts/
+#     i686/
+#       oreulius-kernel          (ELF, Multiboot1)
+#       oreulius.iso             (GRUB bootable ISO)
+#     x86_64/
+#       oreulius-kernel-x86_64  (ELF, Multiboot2)
+#       oreulius-x86_64-mb2.iso (GRUB bootable ISO)
+#     aarch64/
+#       oreulius-kernel-aarch64-virt (ELF)
+#       Image                        (raw binary)
+#
+# Usage (extract artifacts from a running container):
+#   id=$(docker create ghcr.io/reeveskeefe/oreulius-kernel-artifacts:v0.1.0-alpha)
+#   docker cp "$id":/artifacts ./artifacts
+#   docker rm "$id"
+#
+# This image is built in the release workflow AFTER all three kernel builds have
+# been completed and their artifacts downloaded into the expected paths under
+# context/artifacts/.
+
+FROM scratch
+
+LABEL org.opencontainers.image.source=https://github.com/reeveskeefe/Oreulius-Kernel
+LABEL org.opencontainers.image.description="Oreulius Kernel v0.1.0-alpha — compiled binaries for i686, x86_64, and aarch64"
+LABEL org.opencontainers.image.licenses=LicenseRef-OreuliusCommunityLicense
+
+# The build context must have been prepared with artifacts in these paths
+# (the release workflow downloads them from GitHub Actions artifact uploads):
+#   context/artifacts/i686/oreulius-kernel
+#   context/artifacts/i686/oreulius.iso
+#   context/artifacts/x86_64/oreulius-kernel-x86_64
+#   context/artifacts/x86_64/oreulius-x86_64-mb2.iso
+#   context/artifacts/aarch64/oreulius-kernel-aarch64-virt
+#   context/artifacts/aarch64/Image
+
+COPY artifacts/ /artifacts/
