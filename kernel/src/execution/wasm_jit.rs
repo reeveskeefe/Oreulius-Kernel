@@ -1484,6 +1484,13 @@ fn emit_code_into(
         }
         let x86_end = emitter.code.len();
         if x86_end <= x86_start {
+            crate::serial_println!(
+                "[JIT-ST] empty-trace wasm_start={} opcode=0x{:02x} x86_start={} x86_end={}",
+                wasm_start,
+                opcode as u8,
+                x86_start,
+                x86_end
+            );
             return Err("Empty translation record");
         }
         traces.push(TranslationRecord {
@@ -1818,9 +1825,31 @@ fn validate_translation_per_block_into(
                 break;
             }
             if trace.wasm_start != prev_wasm_end {
+                crate::serial_println!(
+                    "[JIT-ST] trace-gap block_idx={} block=[{}..{}] trace_idx={} prev_wasm_end={} trace=[{}..{}] op=0x{:02x}",
+                    block_idx,
+                    block.start,
+                    block.end,
+                    trace_idx,
+                    prev_wasm_end,
+                    trace.wasm_start,
+                    trace.wasm_end,
+                    trace.opcode as u8
+                );
                 return Err("Non-contiguous WASM translation trace");
             }
             if trace.x86_start != expected_x86 {
+                crate::serial_println!(
+                    "[JIT-ST] native-gap block_idx={} block=[{}..{}] trace_idx={} expected_x86={} trace=[{}..{}] op=0x{:02x}",
+                    block_idx,
+                    block.start,
+                    block.end,
+                    trace_idx,
+                    expected_x86,
+                    trace.x86_start,
+                    trace.x86_end,
+                    trace.opcode as u8
+                );
                 return Err("Non-contiguous native translation trace");
             }
             if trace.x86_end <= trace.x86_start || trace.x86_end > native_code.len() {
@@ -4840,13 +4869,42 @@ fn verify_x86_subset(
         let base = (i + 6) as isize;
         let target = base.wrapping_add(rel as isize);
         if target < 0 {
+            crate::serial_println!(
+                "[JIT-ST] rel32-invalid i={} op=0x{:02x} ext=0x{:02x} base={} rel={} target={}",
+                i,
+                code.get(i).copied().unwrap_or(0),
+                code.get(i + 1).copied().unwrap_or(0),
+                base,
+                rel,
+                target
+            );
             return Err("Invalid branch target");
         }
         let target = target as usize;
         if target >= code.len() {
+            crate::serial_println!(
+                "[JIT-ST] rel32-oob i={} op=0x{:02x} ext=0x{:02x} base={} rel={} target={} code_len={}",
+                i,
+                code.get(i).copied().unwrap_or(0),
+                code.get(i + 1).copied().unwrap_or(0),
+                base,
+                rel,
+                target,
+                code.len()
+            );
             return Err("Branch target out of range");
         }
         if !allowed.iter().any(|&t| t == target) {
+            crate::serial_println!(
+                "[JIT-ST] rel32-unexpected i={} op=0x{:02x} ext=0x{:02x} base={} rel={} target={} allowed={:x?}",
+                i,
+                code.get(i).copied().unwrap_or(0),
+                code.get(i + 1).copied().unwrap_or(0),
+                base,
+                rel,
+                target,
+                allowed
+            );
             return Err("Unexpected branch target");
         }
         Ok(())
@@ -5082,16 +5140,31 @@ fn verify_x86_subset(
                 }
                 i += 1;
             }
-            // Short jumps (only used in epilogue)
+            // Short jumps used by the epilogue, control flow helpers, and
+            // signed div/rem overflow guards.
             0x74 => {
                 need(code, i, 2)?;
-                expect_disp8(code, i + 1, &[0x08])?;
-                stack_tok = Some(StackTok::JeShort);
+                match code[i + 1] {
+                    0x08 => stack_tok = Some(StackTok::JeShort),
+                    0x05 | 0x0A | 0x0C => {}
+                    _ => return Err("Unexpected 0x74 displacement"),
+                }
+                i += 2;
+            }
+            0x75 => {
+                need(code, i, 2)?;
+                match code[i + 1] {
+                    0x07 | 0x08 | 0x0B => {}
+                    _ => return Err("Unexpected 0x75 displacement"),
+                }
                 i += 2;
             }
             0xEB => {
                 need(code, i, 2)?;
-                expect_imm8(code, i + 1, 0x02)?;
+                match code[i + 1] {
+                    0x02 | 0x05 => {}
+                    _ => return Err("Unexpected 0xEB displacement"),
+                }
                 i += 2;
             }
             // mov eax, imm32 | add eax, imm32
@@ -5101,6 +5174,33 @@ fn verify_x86_subset(
                 }
                 need(code, i, 5)?;
                 i += 5;
+            }
+            // jmp rel32 (used by unconditional trap tails such as `unreachable`)
+            0xE9 => {
+                need(code, i, 5)?;
+                let rel = read_u32(code, i + 1)? as i32;
+                let base = (i + 5) as isize;
+                let target = base.wrapping_add(rel as isize);
+                if target < 0 {
+                    return Err("Invalid branch target");
+                }
+                let target = target as usize;
+                if target >= code.len() {
+                    return Err("Branch target out of range");
+                }
+                if !trap_targets.iter().any(|&t| t == target) {
+                    return Err("Unexpected branch target");
+                }
+                i += 5;
+            }
+            // cmp eax, imm32
+            0x3D => {
+                need(code, i, 5)?;
+                i += 5;
+            }
+            // cdq
+            0x99 => {
+                i += 1;
             }
             // imm32 group: cmp/sub
             0x81 => {
@@ -5138,8 +5238,12 @@ fn verify_x86_subset(
                 let b1 = code[i + 1];
                 match b1 {
                     0xFB => {
-                        expect_imm8(code, i + 2, 0x00)?;
-                        stack_tok = Some(StackTok::CmpEbxZero);
+                        let imm = *code.get(i + 2).ok_or("Truncated 0x83 imm8")?;
+                        if imm == 0x00 {
+                            stack_tok = Some(StackTok::CmpEbxZero);
+                        } else if imm != 0xFF {
+                            return Err("Unexpected imm8");
+                        }
                         i += 3;
                     }
                     0xF8 => {
@@ -5388,8 +5492,24 @@ fn verify_x86_subset(
             0x31 => {
                 need(code, i, 2)?;
                 match code[i + 1] {
-                    0xD8 | 0xC0 => i += 2,
+                    0xD8 | 0xD2 | 0xC0 => i += 2,
                     _ => return Err("Unexpected XOR encoding"),
+                }
+            }
+            // test r/m32, r32
+            0x85 => {
+                need(code, i, 2)?;
+                match code[i + 1] {
+                    0xC0 | 0xD2 | 0xDB => i += 2,
+                    _ => return Err("Unexpected 0x85 encoding"),
+                }
+            }
+            // mul/div/idiv r/m32
+            0xF7 => {
+                need(code, i, 2)?;
+                match code[i + 1] {
+                    0xE1 | 0xF3 | 0xFB => i += 2,
+                    _ => return Err("Unexpected 0xF7 encoding"),
                 }
             }
             // mov r/m8, r8 (used for mov cl, bl before shifts)
@@ -5419,6 +5539,13 @@ fn verify_x86_subset(
                         }
                         i += 3;
                     }
+                    0x44 => {
+                        need(code, i, 3)?;
+                        match code[i + 2] {
+                            0xC1 | 0xC3 => i += 3,
+                            _ => return Err("Unexpected cmovz encoding"),
+                        }
+                    }
                     0x92 | 0x93 | 0x94 | 0x95 | 0x96 | 0x97 | 0x9C | 0x9D | 0x9E | 0x9F | 0xB6 => {
                         need(code, i, 3)?;
                         if code[i + 2] != 0xC0 {
@@ -5442,6 +5569,13 @@ fn verify_x86_subset(
                     }
                     _ => return Err("Unexpected 0x0F opcode"),
                 }
+            }
+            0xC1 => {
+                need(code, i, 3)?;
+                if code[i + 1] != 0xE8 || code[i + 2] != 0x10 {
+                    return Err("Unexpected 0xC1 encoding");
+                }
+                i += 3;
             }
             // dec dword [eax]
             0xFF => {

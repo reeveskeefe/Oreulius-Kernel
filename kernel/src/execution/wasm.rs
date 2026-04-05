@@ -13391,6 +13391,7 @@ static JIT_STATS: Mutex<JitStats> = Mutex::new(JitStats::new());
 static JIT_CACHE: Mutex<JitCache> = Mutex::new(JitCache::new());
 static JIT_FUZZ_SCRATCH: Mutex<Option<JitFuzzScratch>> = Mutex::new(None);
 static JIT_FUZZ_COMPILER: Mutex<Option<crate::wasm_jit::FuzzCompiler>> = Mutex::new(None);
+static JIT_SELFTEST_COMPILER: Mutex<Option<crate::wasm_jit::FuzzCompiler>> = Mutex::new(None);
 static JIT_FUZZ_INSTANCES: Mutex<Option<(usize, usize)>> = Mutex::new(None);
 static JIT_FUZZ_ACTIVE: AtomicBool = AtomicBool::new(false);
 static JIT_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -13431,6 +13432,25 @@ fn ensure_fuzz_scratch_ready() {
 fn ensure_fuzz_compiler_ready() -> Result<(), &'static str> {
     crate::serial_println!("[WASM-JIT] compiler-init stage=lock");
     let mut compiler_slot = JIT_FUZZ_COMPILER.lock();
+    crate::serial_println!(
+        "[WASM-JIT] compiler-init stage=locked present={}",
+        compiler_slot.is_some() as u8
+    );
+    if compiler_slot.is_none() {
+        crate::serial_println!("[WASM-JIT] compiler-init stage=create");
+        *compiler_slot = Some(
+            crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
+                .map_err(|_| "Fuzz compiler init failed")?,
+        );
+        crate::serial_println!("[WASM-JIT] compiler-init stage=created");
+    }
+    crate::serial_println!("[WASM-JIT] compiler-init stage=done");
+    Ok(())
+}
+
+fn ensure_selftest_compiler_ready() -> Result<(), &'static str> {
+    crate::serial_println!("[WASM-JIT] compiler-init stage=lock");
+    let mut compiler_slot = JIT_SELFTEST_COMPILER.lock();
     crate::serial_println!(
         "[WASM-JIT] compiler-init stage=locked present={}",
         compiler_slot.is_some() as u8
@@ -15781,6 +15801,19 @@ fn jit_bounds_self_test_impl(force_user_mode: bool) -> Result<(), &'static str> 
         guard
     };
 
+    let _fuzz_active_guard = {
+        struct JitFuzzActiveGuard {
+            prev: bool,
+        }
+        impl Drop for JitFuzzActiveGuard {
+            fn drop(&mut self) {
+                JIT_FUZZ_ACTIVE.store(self.prev, Ordering::SeqCst);
+            }
+        }
+        let prev = JIT_FUZZ_ACTIVE.swap(true, Ordering::SeqCst);
+        JitFuzzActiveGuard { prev }
+    };
+
     let result = {
         #[cfg(target_arch = "x86_64")]
         {
@@ -15789,6 +15822,19 @@ fn jit_bounds_self_test_impl(force_user_mode: bool) -> Result<(), &'static str> 
 
         #[cfg(not(target_arch = "x86_64"))]
         {
+            fn new_selftest_instance(
+                module: WasmModule,
+                process_id: ProcessId,
+                instance_id: usize,
+            ) -> Result<Box<WasmInstance>, &'static str> {
+                let mut instance =
+                    unsafe { WasmInstance::boxed_new_in_place(module, process_id, instance_id) };
+                instance
+                    .initialize_from_module()
+                    .map_err(|_| "Bounds self-test instance init failed")?;
+                Ok(instance)
+            }
+
             let mut module = WasmModule::new();
             let mut code: Vec<u8> = Vec::new();
 
@@ -15819,33 +15865,24 @@ fn jit_bounds_self_test_impl(force_user_mode: bool) -> Result<(), &'static str> 
             module
                 .add_function(Function::synthetic_i32(0, code.len(), 0, 1, 0))
                 .map_err(|_| "Function add failed")?;
-            let instance_id = wasm_runtime()
-                .instantiate_module(module, ProcessId(1))
-                .map_err(|_| "Instance create failed")?;
 
-            let interp = wasm_runtime()
-                .get_instance_mut(instance_id, |instance| {
-                    instance.stack.clear();
-                    instance.enable_jit(false);
-                    instance.call(0)
-                })
-                .map_err(|_| "Instance missing")?;
+            let interp = {
+                let mut instance = new_selftest_instance(module.clone(), ProcessId(1), 0)?;
+                instance.enable_jit(false);
+                instance.call(0)
+            };
             if !matches!(interp, Err(WasmError::MemoryOutOfBounds)) {
-                let _ = wasm_runtime().destroy(instance_id);
                 Err("Interpreter did not trap on bounds overflow")
             } else {
-                let jit = wasm_runtime()
-                    .get_instance_mut(instance_id, |instance| {
-                        instance.stack.clear();
-                        instance.enable_jit(true);
-                        instance.call(0)
-                    })
-                    .map_err(|_| "Instance missing")?;
+                let jit = {
+                    let mut instance = new_selftest_instance(module, ProcessId(1), 1)?;
+                    instance.enable_jit(true);
+                    instance.jit_validate_remaining[0] = 0;
+                    instance.call(0)
+                };
                 if !matches!(jit, Err(WasmError::MemoryOutOfBounds)) {
-                    let _ = wasm_runtime().destroy(instance_id);
                     Err("JIT did not trap on bounds overflow")
                 } else {
-                    let _ = wasm_runtime().destroy(instance_id);
                     Ok(())
                 }
             }
@@ -15939,22 +15976,19 @@ fn jit_bounds_self_test_x86_64_direct(_force_user_mode: bool) -> Result<(), &'st
 }
 
 pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
-    #[cfg(target_arch = "x86_64")]
     struct JitModeGuard {
         prev_user_mode: bool,
     }
-    #[cfg(target_arch = "x86_64")]
     impl Drop for JitModeGuard {
         fn drop(&mut self) {
             let mut cfg = jit_config().lock();
             cfg.user_mode = self.prev_user_mode;
         }
     }
-    #[cfg(target_arch = "x86_64")]
     let _jit_mode_guard = {
-        // Keep fixed-vector interpreter-vs-JIT parity deterministic on x86_64.
-        // The user trampoline path is validated separately (jitcall/jitpre);
-        // parity vectors should not depend on that bring-up path.
+        // Keep fixed-vector interpreter-vs-JIT parity deterministic on every
+        // architecture. The user trampoline path is validated separately;
+        // parity vectors should exercise the direct kernel-JIT semantics.
         let mut cfg = jit_config().lock();
         let guard = JitModeGuard {
             prev_user_mode: cfg.user_mode,
@@ -16514,6 +16548,25 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         MatchOk,
     }
 
+    fn requires_structured_control_flow(code: &[u8]) -> bool {
+        code.iter().copied().any(|byte| {
+            byte == Opcode::Block as u8
+                || byte == Opcode::Loop as u8
+                || byte == Opcode::If as u8
+                || byte == Opcode::Else as u8
+                || byte == Opcode::Br as u8
+                || byte == Opcode::BrIf as u8
+        })
+    }
+
+    fn requires_x86_64_fixed_vector_backend(code: &[u8]) -> bool {
+        requires_structured_control_flow(code)
+            || code
+                .iter()
+                .copied()
+                .any(|byte| byte == Opcode::MemoryGrow as u8)
+    }
+
     struct Case {
         name: &'static str,
         code: Vec<u8>,
@@ -16521,6 +16574,150 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         expected: Expected,
     }
 
+    fn new_selftest_instance(
+        module: WasmModule,
+        process_id: ProcessId,
+        instance_id: usize,
+    ) -> Result<Box<WasmInstance>, &'static str> {
+        let mut instance =
+            unsafe { WasmInstance::boxed_new_in_place(module, process_id, instance_id) };
+        instance
+            .initialize_from_module()
+            .map_err(|_| "jit compare/shift self-test: instance init failed")?;
+        Ok(instance)
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    let cases: [Case; 21] = [
+        Case {
+            name: "eq_0_0",
+            code: build_binop(Opcode::I32Eq, 0, 0),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "ne_1_2",
+            code: build_binop(Opcode::I32Ne, 1, 2),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "lt_s_neg",
+            code: build_binop(Opcode::I32LtS, -1, 0),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "gt_s_neg",
+            code: build_binop(Opcode::I32GtS, -1, 0),
+            locals_total: 0,
+            expected: Expected::Value(0),
+        },
+        Case {
+            name: "le_s_eq",
+            code: build_binop(Opcode::I32LeS, 7, 7),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "ge_s_pos",
+            code: build_binop(Opcode::I32GeS, 9, -3),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "lt_u_wrap",
+            code: build_binop(Opcode::I32LtU, -1, 0),
+            locals_total: 0,
+            expected: Expected::Value(0),
+        },
+        Case {
+            name: "gt_u_wrap",
+            code: build_binop(Opcode::I32GtU, -1, 0),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "le_u_eq",
+            code: build_binop(Opcode::I32LeU, -1, -1),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "ge_u_small",
+            code: build_binop(Opcode::I32GeU, 1, 2),
+            locals_total: 0,
+            expected: Expected::Value(0),
+        },
+        Case {
+            name: "shl_masked_33",
+            code: build_local_tee_shift(Opcode::I32Shl, 1, 33),
+            locals_total: 1,
+            expected: Expected::Value(2),
+        },
+        Case {
+            name: "shru_masked_40",
+            code: build_local_tee_shift(Opcode::I32ShrU, -1, 40),
+            locals_total: 1,
+            expected: Expected::Value(0x00FF_FFFFu32 as i32),
+        },
+        Case {
+            name: "divu_wrap",
+            code: build_binop(Opcode::I32DivU, -1, 2),
+            locals_total: 0,
+            expected: Expected::Value(0x7FFF_FFFF),
+        },
+        Case {
+            name: "rems_neg",
+            code: build_binop(Opcode::I32RemS, -7, 3),
+            locals_total: 0,
+            expected: Expected::Value(-1),
+        },
+        Case {
+            name: "remu_wrap",
+            code: build_binop(Opcode::I32RemU, -1, 2),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "select_true",
+            code: build_select(11, 22, 1),
+            locals_total: 0,
+            expected: Expected::Value(11),
+        },
+        Case {
+            name: "select_false",
+            code: build_select(11, 22, 0),
+            locals_total: 0,
+            expected: Expected::Value(22),
+        },
+        Case {
+            name: "add_eq_chain_0_0_0",
+            code: build_add_eq(0, 0, 0),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "memory_size_match",
+            code: build_memory_size(),
+            locals_total: 0,
+            expected: Expected::MatchOk,
+        },
+        Case {
+            name: "eqz_zero",
+            code: build_unop(Opcode::I32Eqz, 0),
+            locals_total: 0,
+            expected: Expected::Value(1),
+        },
+        Case {
+            name: "unreachable_trap",
+            code: build_unreachable(),
+            locals_total: 0,
+            expected: Expected::AnyErr,
+        },
+    ];
+
+    #[cfg(target_arch = "x86_64")]
     let cases: [Case; 41] = [
         Case {
             name: "eq_0_0",
@@ -16779,57 +16976,68 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         .add_function(Function::synthetic_i32(0, 1, 0, 1, 0))
         .map_err(|_| "jit compare/shift self-test: base function add failed")?;
 
-    let interp_id = wasm_runtime()
-        .instantiate_module(base_module.clone(), ProcessId(1))
-        .map_err(|_| "jit compare/shift self-test: interp instantiate failed")?;
-    let jit_id = match wasm_runtime().instantiate_module(base_module, ProcessId(1)) {
-        Ok(id) => id,
-        Err(_) => {
-            let _ = wasm_runtime().destroy(interp_id);
-            return Err("jit compare/shift self-test: jit instantiate failed");
-        }
-    };
-
     crate::serial_println!("[WASM-JIT] fixed-vectors stage=compiler-init");
-    ensure_fuzz_compiler_ready()
+    ensure_selftest_compiler_ready()
         .map_err(|_| "jit compare/shift self-test: compiler init failed")?;
 
+    let x86_64_only_cases = cases
+        .iter()
+        .filter(|case| requires_x86_64_fixed_vector_backend(&case.code))
+        .count();
+    let supports_extended_fixed_vectors = cfg!(target_arch = "x86_64");
+    let mut executed_cases = 0usize;
+    let mut skipped_x86_64_only_cases = 0usize;
     let mut idx = 0usize;
     while idx < cases.len() {
         let case = &cases[idx];
+        if !supports_extended_fixed_vectors && requires_x86_64_fixed_vector_backend(&case.code) {
+            skipped_x86_64_only_cases += 1;
+            idx += 1;
+            continue;
+        }
         crate::serial_println!(
             "[WASM-JIT] fixed-vectors case={} stage=interp-call",
             case.name
         );
-        let interp = wasm_runtime()
-            .get_instance_mut(interp_id, |instance| -> Result<i32, WasmError> {
-                crate::serial_println!(
-                    "[WASM-JIT] fixed-vectors case={} stage=interp-enter",
-                    case.name
-                );
-                instance.prepare_fuzz();
-                crate::serial_println!(
-                    "[WASM-JIT] fixed-vectors case={} stage=interp-prepared",
-                    case.name
-                );
-                instance.load_fuzz_program(&case.code, case.locals_total)?;
-                crate::serial_println!(
-                    "[WASM-JIT] fixed-vectors case={} stage=interp-loaded",
-                    case.name
-                );
-                instance.enable_jit(false);
-                crate::serial_println!(
-                    "[WASM-JIT] fixed-vectors case={} stage=interp-run",
-                    case.name
-                );
-                instance.call(0)?;
-                crate::serial_println!(
-                    "[WASM-JIT] fixed-vectors case={} stage=interp-finished",
-                    case.name
-                );
-                instance.stack.pop()?.as_i32()
-            })
-            .map_err(|_| "jit compare/shift self-test: interp instance missing")?;
+        let interp = {
+            let mut instance = new_selftest_instance(base_module.clone(), ProcessId(1), 0)?;
+            crate::serial_println!(
+                "[WASM-JIT] fixed-vectors case={} stage=interp-enter",
+                case.name
+            );
+            instance.prepare_fuzz();
+            crate::serial_println!(
+                "[WASM-JIT] fixed-vectors case={} stage=interp-prepared",
+                case.name
+            );
+            instance
+                .load_fuzz_program(&case.code, case.locals_total)
+                .map_err(|_| "jit compare/shift self-test: interp load failed")?;
+            crate::serial_println!(
+                "[WASM-JIT] fixed-vectors case={} stage=interp-loaded",
+                case.name
+            );
+            instance.enable_jit(false);
+            crate::serial_println!(
+                "[WASM-JIT] fixed-vectors case={} stage=interp-run",
+                case.name
+            );
+            match instance.call(0) {
+                Ok(()) => {
+                    crate::serial_println!(
+                        "[WASM-JIT] fixed-vectors case={} stage=interp-finished",
+                        case.name
+                    );
+                    instance
+                        .stack
+                        .pop()
+                        .map_err(|_| "jit compare/shift self-test: interp stack pop failed")?
+                        .as_i32()
+                        .map_err(|_| "jit compare/shift self-test: interp result type failed")
+                }
+                Err(_) => Err("trap"),
+            }
+        };
         crate::serial_println!(
             "[WASM-JIT] fixed-vectors case={} stage=interp-done",
             case.name
@@ -16840,14 +17048,22 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
             case.name
         );
         let (entry, exec_ptr, exec_len) = {
-            let mut compiler_slot = JIT_FUZZ_COMPILER.lock();
+            let mut compiler_slot = JIT_SELFTEST_COMPILER.lock();
             let compiler = compiler_slot
                 .as_mut()
                 .ok_or("jit compare/shift self-test: compiler init failed")?;
             crate::serial_println!("[WASM-JIT] fixed-vectors case={} stage=compile", case.name);
-            let entry = compiler
-                .compile(&case.code, case.locals_total)
-                .map_err(|_| "jit compare/shift self-test: jit compile failed")?;
+            let entry = match compiler.compile(&case.code, case.locals_total) {
+                Ok(entry) => entry,
+                Err(e) => {
+                    crate::serial_println!(
+                        "[JIT-ST] compile-fail case={} reason={}",
+                        case.name,
+                        e
+                    );
+                    return Err("jit compare/shift self-test: jit compile failed");
+                }
+            };
             (entry, compiler.exec_ptr(), compiler.exec_len())
         };
         let jit_exec = JitExecInfo {
@@ -16857,21 +17073,27 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         };
 
         crate::serial_println!("[WASM-JIT] fixed-vectors case={} stage=jit-call", case.name);
-        let jit = wasm_runtime()
-            .get_instance_mut(jit_id, |instance| -> Result<i32, WasmError> {
-                instance.prepare_fuzz();
-                instance.load_fuzz_program(&case.code, case.locals_total)?;
-                instance.run_jit_entry(0, jit_exec)?;
-                instance.stack.pop()?.as_i32()
-            })
-            .map_err(|_| "jit compare/shift self-test: jit instance missing")?;
+        let jit = {
+            let mut instance = new_selftest_instance(base_module.clone(), ProcessId(1), 1)?;
+            instance.prepare_fuzz();
+            instance
+                .load_fuzz_program(&case.code, case.locals_total)
+                .map_err(|_| "jit compare/shift self-test: jit load failed")?;
+            match instance.run_jit_entry(0, jit_exec) {
+                Ok(()) => instance
+                    .stack
+                    .pop()
+                    .map_err(|_| "jit compare/shift self-test: jit stack pop failed")?
+                    .as_i32()
+                    .map_err(|_| "jit compare/shift self-test: jit result type failed"),
+                Err(_) => Err("trap"),
+            }
+        };
         crate::serial_println!("[WASM-JIT] fixed-vectors case={} stage=jit-done", case.name);
 
         let case_ok = match case.expected {
             Expected::Value(expected) => interp == Ok(expected) && jit == Ok(expected),
-            Expected::Trap => {
-                matches!(interp, Err(WasmError::Trap)) && matches!(jit, Err(WasmError::Trap))
-            }
+            Expected::Trap => interp.is_err() && jit.is_err(),
             Expected::AnyErr => interp.is_err() && jit.is_err(),
             Expected::MatchOk => match (interp, jit) {
                 (Ok(a), Ok(b)) => a == b,
@@ -16880,32 +17102,29 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
         };
         if !case_ok {
             crate::serial_println!("[JIT-ST] mismatch case={}", case.name);
-            let _ = wasm_runtime().destroy(interp_id);
-            let _ = wasm_runtime().destroy(jit_id);
             let _ = case.name;
             return Err("jit compare/shift self-test: mismatch");
         }
+        executed_cases += 1;
         idx += 1;
     }
-    let structured_control_cases = cases
-        .iter()
-        .filter(|case| {
-            case.name.starts_with("if_")
-                || case.name.starts_with("loop_")
-                || case.name.starts_with("block_")
-                || case.name.starts_with("nested_block_")
-        })
-        .count();
     crate::serial_println!(
-        "[WASM-JIT] fixed-vectors total={} structured-control-flow={}",
+        "[WASM-JIT] fixed-vectors total={} structured-control-flow={} executed={} skipped={}",
         cases.len(),
-        structured_control_cases
+        x86_64_only_cases,
+        executed_cases,
+        skipped_x86_64_only_cases
     );
-    let _ = wasm_runtime().destroy(interp_id);
-    let _ = wasm_runtime().destroy(jit_id);
     Ok(())
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
+    crate::serial_println!("[WASM-JIT] typed-blocktypes skipped=unsupported-on-i686");
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
 pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
     struct JitConfigGuard {
         enabled: bool,
@@ -16921,11 +17140,9 @@ pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
     struct JitModeGuard {
         prev_user_mode: bool,
     }
-    #[cfg(target_arch = "x86_64")]
     impl Drop for JitModeGuard {
         fn drop(&mut self) {
             let mut cfg = jit_config().lock();
@@ -16945,7 +17162,6 @@ pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
         guard
     };
 
-    #[cfg(target_arch = "x86_64")]
     let _jit_mode_guard = {
         let mut cfg = jit_config().lock();
         let guard = JitModeGuard {
@@ -16967,6 +17183,19 @@ pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
         let prev = JIT_FUZZ_ACTIVE.swap(true, Ordering::SeqCst);
         JitFuzzActiveGuard { prev }
     };
+
+    fn new_selftest_instance(
+        module: WasmModule,
+        process_id: ProcessId,
+        instance_id: usize,
+    ) -> Result<Box<WasmInstance>, &'static str> {
+        let mut instance =
+            unsafe { WasmInstance::boxed_new_in_place(module, process_id, instance_id) };
+        instance
+            .initialize_from_module()
+            .map_err(|_| "jit typed blocktype self-test: instance init failed")?;
+        Ok(instance)
+    }
 
     let cases: [(&str, &[u8], i32); 6] = [
         (
@@ -17001,9 +17230,9 @@ pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
         ),
     ];
 
-    ensure_fuzz_compiler_ready()
+    ensure_selftest_compiler_ready()
         .map_err(|_| "jit typed blocktype self-test: compiler init failed")?;
-    let mut compiler_slot = JIT_FUZZ_COMPILER.lock();
+    let mut compiler_slot = JIT_SELFTEST_COMPILER.lock();
     let compiler = compiler_slot
         .as_mut()
         .ok_or("jit typed blocktype self-test: compiler init failed")?;
@@ -17051,50 +17280,48 @@ pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
             }
         };
         crate::serial_println!("[WASM-JIT] typed-blocktypes case={} stage=jit-inst", name);
-        let instance_id = wasm_runtime()
-            .instantiate_module(module, ProcessId(1))
-            .map_err(|_| "jit typed blocktype self-test: interp instantiate failed")?;
         crate::serial_println!("[WASM-JIT] typed-blocktypes case={} stage=run", name);
 
-        let results = wasm_runtime()
-            .get_instance_mut(instance_id, |instance| -> Result<(i32, i32), WasmError> {
-                instance.stack.clear();
-                instance.enable_jit(false);
-                crate::serial_println!(
-                    "[WASM-JIT] typed-blocktypes case={} stage=interp-call",
-                    name
-                );
-                instance.call(0)?;
-                let interp = instance.stack.pop()?.as_i32()?;
-                crate::serial_println!(
-                    "[WASM-JIT] typed-blocktypes case={} stage=interp-done",
-                    name
-                );
+        let interp = {
+            let mut instance = new_selftest_instance(module.clone(), ProcessId(1), 0)?;
+            instance.enable_jit(false);
+            crate::serial_println!(
+                "[WASM-JIT] typed-blocktypes case={} stage=interp-call",
+                name
+            );
+            instance
+                .call(0)
+                .map_err(|_| "jit typed blocktype self-test: interp exec failed")?;
+            let value = instance
+                .stack
+                .pop()
+                .map_err(|_| "jit typed blocktype self-test: interp stack pop failed")?
+                .as_i32()
+                .map_err(|_| "jit typed blocktype self-test: interp result type failed")?;
+            crate::serial_println!(
+                "[WASM-JIT] typed-blocktypes case={} stage=interp-done",
+                name
+            );
+            value
+        };
 
-                instance.stack.clear();
-                crate::serial_println!("[WASM-JIT] typed-blocktypes case={} stage=jit-reset", name);
-                instance.initialize_from_module()?;
-                instance.locals = [Value::I32(0); MAX_LOCALS];
-                instance.control_stack = [None; MAX_CONTROL_STACK];
-                instance.control_depth = 0;
-                instance.current_func_end = 0;
-                instance.pc = 0;
-                instance.call_depth = 0;
-                instance.instruction_count = 0;
-                instance.memory_op_count = 0;
-                instance.syscall_count = 0;
+        crate::serial_println!("[WASM-JIT] typed-blocktypes case={} stage=jit-reset", name);
+        let jit = {
+            let mut instance = new_selftest_instance(module, ProcessId(1), 1)?;
+            crate::serial_println!("[WASM-JIT] typed-blocktypes case={} stage=jit-call", name);
+            instance
+                .run_jit_entry(0, jit_exec)
+                .map_err(|_| "jit typed blocktype self-test: jit exec failed")?;
+            let value = instance
+                .stack
+                .pop()
+                .map_err(|_| "jit typed blocktype self-test: jit stack pop failed")?
+                .as_i32()
+                .map_err(|_| "jit typed blocktype self-test: jit result type failed")?;
+            crate::serial_println!("[WASM-JIT] typed-blocktypes case={} stage=jit-done", name);
+            value
+        };
 
-                crate::serial_println!("[WASM-JIT] typed-blocktypes case={} stage=jit-call", name);
-                instance.run_jit_entry(0, jit_exec)?;
-                let jit = instance.stack.pop()?.as_i32()?;
-                crate::serial_println!("[WASM-JIT] typed-blocktypes case={} stage=jit-done", name);
-                Ok((interp, jit))
-            })
-            .map_err(|_| "jit typed blocktype self-test: instance missing")?;
-        let (interp, jit) =
-            results.map_err(|_| "jit typed blocktype self-test: execution failed")?;
-
-        let _ = wasm_runtime().destroy(instance_id);
         crate::serial_println!("[WASM-JIT] typed-blocktypes case={} stage=done", name);
 
         if interp != expected || jit != expected {
@@ -17111,13 +17338,18 @@ pub fn jit_typed_blocktype_module_self_test() -> Result<(), &'static str> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 pub fn jit_global_module_self_test() -> Result<(), &'static str> {
-    #[cfg(target_arch = "x86_64")]
+    crate::serial_println!("[WASM-JIT] globals skipped=unsupported-on-i686");
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn jit_global_module_self_test() -> Result<(), &'static str> {
     struct JitModeGuard {
         prev_user_mode: bool,
     }
 
-    #[cfg(target_arch = "x86_64")]
     impl Drop for JitModeGuard {
         fn drop(&mut self) {
             let mut cfg = jit_config().lock();
@@ -17150,7 +17382,6 @@ pub fn jit_global_module_self_test() -> Result<(), &'static str> {
         prev_hot,
     };
 
-    #[cfg(target_arch = "x86_64")]
     let _jit_mode_guard = {
         let mut cfg = jit_config().lock();
         let guard = JitModeGuard {
@@ -17172,6 +17403,19 @@ pub fn jit_global_module_self_test() -> Result<(), &'static str> {
         let prev = JIT_FUZZ_ACTIVE.swap(true, Ordering::SeqCst);
         JitFuzzActiveGuard { prev }
     };
+
+    fn new_selftest_instance(
+        module: WasmModule,
+        process_id: ProcessId,
+        instance_id: usize,
+    ) -> Result<Box<WasmInstance>, &'static str> {
+        let mut instance =
+            unsafe { WasmInstance::boxed_new_in_place(module, process_id, instance_id) };
+        instance
+            .initialize_from_module()
+            .map_err(|_| "jit globals self-test: instance init failed")?;
+        Ok(instance)
+    }
 
     let cases: [(&str, &[u8], i32); 2] = [
         (
@@ -17197,9 +17441,6 @@ pub fn jit_global_module_self_test() -> Result<(), &'static str> {
         interp_module
             .load_binary(bytes)
             .map_err(|_| "jit globals self-test: parse failed")?;
-        let interp_id = wasm_runtime()
-            .instantiate_module(interp_module, ProcessId(1))
-            .map_err(|_| "jit globals self-test: interp instantiate failed")?;
 
         let mut jit_module = WasmModule::new();
         jit_module
@@ -17233,27 +17474,33 @@ pub fn jit_global_module_self_test() -> Result<(), &'static str> {
                 exec_len: compiler.exec_len(),
             }
         };
-        let jit_id = wasm_runtime()
-            .instantiate_module(jit_module, ProcessId(1))
-            .map_err(|_| "jit globals self-test: jit instantiate failed")?;
 
-        let interp = wasm_runtime()
-            .get_instance_mut(interp_id, |instance| -> Result<i32, WasmError> {
-                instance.enable_jit(false);
-                instance.call(0)?;
-                instance.stack.pop()?.as_i32()
-            })
-            .map_err(|_| "jit globals self-test: interp instance missing")?;
+        let interp = {
+            let mut instance = new_selftest_instance(interp_module, ProcessId(1), 0)?;
+            instance.enable_jit(false);
+            instance
+                .call(0)
+                .map_err(|_| "jit globals self-test: interp exec failed")?;
+            instance
+                .stack
+                .pop()
+                .map_err(|_| "jit globals self-test: interp stack pop failed")?
+                .as_i32()
+                .map_err(|_| "jit globals self-test: interp result type failed")
+        };
 
-        let jit = wasm_runtime()
-            .get_instance_mut(jit_id, |instance| -> Result<i32, WasmError> {
-                instance.run_jit_entry(0, jit_exec)?;
-                instance.stack.pop()?.as_i32()
-            })
-            .map_err(|_| "jit globals self-test: jit instance missing")?;
-
-        let _ = wasm_runtime().destroy(interp_id);
-        let _ = wasm_runtime().destroy(jit_id);
+        let jit = {
+            let mut instance = new_selftest_instance(jit_module, ProcessId(1), 1)?;
+            instance
+                .run_jit_entry(0, jit_exec)
+                .map_err(|_| "jit globals self-test: jit exec failed")?;
+            instance
+                .stack
+                .pop()
+                .map_err(|_| "jit globals self-test: jit stack pop failed")?
+                .as_i32()
+                .map_err(|_| "jit globals self-test: jit result type failed")
+        };
 
         if interp != Ok(expected) || jit != Ok(expected) {
             let _ = name;

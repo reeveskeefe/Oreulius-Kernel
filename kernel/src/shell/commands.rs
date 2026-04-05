@@ -378,6 +378,7 @@ pub fn execute(input: &str) {
             vga::print_str("  svcptr-typed-demo - Mixed-type typed invoke host-path demo\n");
             vga::print_str("  wasm-jit-bench - Benchmark WASM JIT vs interpreter\n");
             vga::print_str("  wasm-jit-selftest - Run WASM JIT self-test suite\n");
+            vga::print_str("  wjs         - Alias for wasm-jit-selftest\n");
             vga::print_str(
                 "  wasm-jit-fuzz  - Coverage-guided JIT fuzz (wasm-jit-fuzz <iters> [seed])\n",
             );
@@ -742,6 +743,9 @@ pub fn execute(input: &str) {
             cmd_wasm_jit_bench();
         }
         "wasm-jit-selftest" => {
+            cmd_wasm_jit_selftest();
+        }
+        "wjs" => {
             cmd_wasm_jit_selftest();
         }
         "wasm-jit-fuzz" => {
@@ -8047,8 +8051,13 @@ fn cmd_wasm_jit_selftest() {
     let globals = crate::wasm::jit_global_module_self_test();
     match (bounds, parity, typed_blocktypes, globals) {
         (Ok(()), Ok(()), Ok(()), Ok(())) => {
+            #[cfg(target_arch = "x86_64")]
             vga::print_str(
                 "Self-test passed (bounds traps + fixed-vector interpreter/JIT parity + module globals)\n",
+            );
+            #[cfg(not(target_arch = "x86_64"))]
+            vga::print_str(
+                "Self-test passed (bounds traps + fixed-vector interpreter/JIT parity; structured control-flow, memory.grow parity, and globals are x86_64-only)\n",
             );
         }
         (Err(e), _, _, _) => {
@@ -12812,13 +12821,24 @@ fn cmd_cap_test_attenuation() {
     use crate::capability::{capability_manager, CapabilityType, Rights};
     use crate::ipc::ProcessId;
 
+    struct DemoTaskGuard(ProcessId);
+
+    impl Drop for DemoTaskGuard {
+        fn drop(&mut self) {
+            capability_manager().deinit_task(self.0);
+        }
+    }
+
     vga::print_str("Capability Attenuation Test\n");
     vga::print_str("============================\n\n");
 
-    let pid = ProcessId::new(0);
+    // Use a dedicated scratch PID instead of mutating a live task capability table.
+    let pid = ProcessId::new(63);
 
-    // Initialize capability table
+    // Start from a clean scratch table and tear it down when the demo exits.
+    capability_manager().deinit_task(pid);
     capability_manager().init_task(pid);
+    let _demo_task_guard = DemoTaskGuard(pid);
 
     // Create a capability with multiple rights
     let object_id = capability_manager().create_object();
