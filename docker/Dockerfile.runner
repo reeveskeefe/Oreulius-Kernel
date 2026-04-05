@@ -1,8 +1,8 @@
 # Oreulius Kernel — QEMU Runner Image
 #
-# Two-stage build:
-#   Stage 1 (builder): compiles the kernel using the toolchain image.
-#   Stage 2 (runner):  minimal Debian image with QEMU; boots the compiled ISO.
+# Single-stage runtime image:
+#   Packages a prebuilt ISO produced by the package workflow and boots it under
+#   QEMU. The kernel is built by CI before this image is assembled.
 #
 # Build args:
 #   ARCH   — i686 (default) or x86_64
@@ -22,35 +22,14 @@
 #   # Boot (interactive serial console)
 #   docker run --rm -it oreulius-runner-i686:local
 
-ARG TAG=latest
-
-# ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM ghcr.io/reeveskeefe/oreulius-kernel-toolchain:${TAG} AS builder
-
 ARG ARCH=i686
-
-WORKDIR /kernel
-
-# Copy only the kernel sources (not the whole repo) to keep the layer small.
-COPY kernel/ /kernel/
-
-# Build the kernel for the requested architecture, then stage the ISO to a
-# single canonical path (/out.iso) so the runner stage can COPY it without
-# needing to know which arch was built.
-RUN chmod +x ./build*.sh && \
-    if [ "${ARCH}" = "x86_64" ]; then \
-      ./build-x86_64-full.sh && \
-      ./build-x86_64-mb2-iso.sh && \
-      cp target/x86_64-mb2/oreulius-x86_64-mb2.iso /out.iso; \
-    else \
-      ./build.sh && \
-      cp oreulius.iso /out.iso; \
-    fi
+ARG ISO_SRC=kernel-artifacts/i686/oreulius.iso
 
 # ── Stage 2: Runner ───────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runner
 
 ARG ARCH=i686
+ARG ISO_SRC=kernel-artifacts/i686/oreulius.iso
 
 LABEL org.opencontainers.image.source=https://github.com/reeveskeefe/Oreulius-Kernel
 LABEL org.opencontainers.image.description="Oreulius Kernel — QEMU runner (boots the kernel in serial mode)"
@@ -62,8 +41,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /boot
 
-# The builder stage always stages the compiled ISO at /out.iso.
-COPY --from=builder /out.iso /boot/kernel.iso
+# The package workflow downloads only the selected arch artifact into the docker
+# build context. Copy that one ISO into a canonical in-image path.
+COPY ${ISO_SRC} /boot/kernel.iso
 
 # Select the correct ISO at runtime via the ARCH build-arg.
 ENV ARCH=${ARCH}

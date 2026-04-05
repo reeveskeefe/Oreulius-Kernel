@@ -192,7 +192,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [i686, x86_64]
+        include:
+          - arch: i686
+            iso_src: kernel-artifacts/i686/oreulius.iso
+          - arch: x86_64
+            iso_src: kernel-artifacts/x86_64/oreulius-x86_64-mb2.iso
 
     steps:
       - name: Checkout
@@ -233,6 +237,7 @@ jobs:
           build-args: |
             ARCH=${{ matrix.arch }}
             TAG=${{ steps.meta.outputs.tag }}
+            ISO_SRC=${{ matrix.iso_src }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-runner-${{ matrix.arch }}:${{ steps.meta.outputs.tag }}
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-runner-${{ matrix.arch }}:latest
