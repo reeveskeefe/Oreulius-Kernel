@@ -610,9 +610,12 @@ pub unsafe fn handle_irq() {
         let scancode = inb(DATA_PORT);
         SCANCODE_COUNT.fetch_add(1, Ordering::Relaxed);
 
-        // Ignore AUX (mouse) bytes for now
+        // Shared i8042 controller: if IRQ1 observes an AUX byte, consume it and
+        // hand it to the mouse decoder instead of leaving controller output
+        // buffered behind a misrouted interrupt.
         if (status & 0x20) != 0 {
             ERROR_STATUS.fetch_add(1, Ordering::Relaxed);
+            crate::mouse::handle_polled_aux_byte(scancode);
             return;
         }
 
@@ -660,7 +663,17 @@ pub unsafe fn handle_irq() {
 
 unsafe fn poll_controller_event() -> Option<KeyEvent> {
     let status = inb(STATUS_PORT);
-    if (status & 0x01) == 0 || (status & 0x20) != 0 {
+    if (status & 0x01) == 0 {
+        return None;
+    }
+
+    if (status & 0x20) != 0 {
+        // QEMU focus changes can leave one or more AUX bytes pending in the
+        // shared i8042 output buffer. If we do not drain them here, the
+        // keyboard fallback path can appear to "lock" after a single key.
+        let aux_byte = inb(DATA_PORT);
+        crate::mouse::handle_polled_aux_byte(aux_byte);
+        EVENTS_NONE.fetch_add(1, Ordering::Relaxed);
         return None;
     }
 

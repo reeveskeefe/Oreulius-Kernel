@@ -1252,7 +1252,15 @@ impl Vfs {
         // Inode 0 is unused; root is inode 1.
         self.inodes.push(None);
         let root_id = self.alloc_inode(InodeKind::Directory, 0o755);
-        let _ = root_id;
+        self.bootstrap_runtime_layout(root_id);
+    }
+
+    fn bootstrap_runtime_layout(&mut self, root_id: InodeId) {
+        // Provide a minimal predictable workspace for shell demos and
+        // first-run temporal/VFS flows without requiring manual mkdir.
+        let tmp_id = self.alloc_inode(InodeKind::Directory, 0o755);
+        self.add_dir_entry(root_id, "tmp", tmp_id)
+            .expect("fresh VFS bootstrap must create /tmp");
     }
 
     fn alloc_inode(&mut self, kind: InodeKind, mode: u16) -> InodeId {
@@ -5255,6 +5263,16 @@ mod tests {
 
     fn test_pid(id: u32) -> Pid {
         Pid::new(id)
+    }
+
+    #[test]
+    fn vfs_init_bootstraps_tmp_directory() {
+        let mut vfs = Vfs::new();
+        vfs.init();
+
+        let tmp = vfs.resolve_path("/tmp").expect("fresh VFS should provide /tmp");
+        let inode = vfs.get_inode(tmp).expect("/tmp inode must exist");
+        assert_eq!(inode.kind, InodeKind::Directory);
     }
 
     #[test]

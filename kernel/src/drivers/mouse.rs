@@ -461,6 +461,16 @@ pub unsafe fn handle_irq() {
     PS2_MOUSE_INNER.handle_byte(byte);
 }
 
+/// Feed a raw AUX byte that was observed outside IRQ12 into the PS/2 mouse
+/// decoder. This is used by the keyboard/controller fallback path so stray
+/// mouse bytes do not wedge the shared i8042 output buffer.
+pub unsafe fn handle_polled_aux_byte(byte: u8) {
+    if !MOUSE_INIT.load(Ordering::Acquire) {
+        return;
+    }
+    PS2_MOUSE_INNER.handle_byte(byte);
+}
+
 /// Pop the oldest unprocessed [`MouseEvent`] from the ring buffer.
 /// Returns `None` if the queue is empty.
 #[inline]

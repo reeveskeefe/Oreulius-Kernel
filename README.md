@@ -28,6 +28,8 @@ temporal-snapshot /tmp/demo
 temporal-history /tmp/demo
 ```
 
+`/tmp` is available in the fresh boot VFS, so that sequence should work without a manual `vfs-mkdir`.
+
 That path gives the fastest "aha" moment in this repo:
 
 - authority is capability-mediated rather than ambient

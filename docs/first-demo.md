@@ -31,6 +31,8 @@ temporal-history /tmp/demo
 formal-verify
 ```
 
+The runtime bootstraps `/tmp` in the in-memory VFS, so you do not need to create it before running this sequence.
+
 ## What You Should See
 
 - `cap-test-atten`
