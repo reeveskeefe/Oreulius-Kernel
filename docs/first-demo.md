@@ -32,6 +32,7 @@ formal-verify
 ```
 
 The runtime bootstraps `/tmp` in the in-memory VFS, so you do not need to create it before running this sequence.
+Keep the temporal path exact across the sequence: write, snapshot, and history should all use `/tmp/demo`.
 
 ## What You Should See
 

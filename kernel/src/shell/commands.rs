@@ -1811,6 +1811,16 @@ fn cmd_temporal_write(mut parts: core::str::SplitWhitespace) {
     }
 }
 
+fn print_temporal_path_hint(path: &str) {
+    if let Some(suggested) = crate::temporal::suggest_similar_path(path) {
+        if suggested != path {
+            vga::print_str("Hint: did you mean ");
+            vga::print_str(&suggested);
+            vga::print_str("?\n");
+        }
+    }
+}
+
 fn cmd_temporal_snapshot(mut parts: core::str::SplitWhitespace) {
     let path = match parts.next() {
         Some(p) => p,
@@ -1829,9 +1839,19 @@ fn cmd_temporal_snapshot(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\n");
         }
         Err(e) => {
-            vga::print_str("Temporal snapshot error: ");
-            vga::print_str(e.as_str());
-            vga::print_str("\n");
+            match e {
+                crate::temporal::TemporalError::VfsReadFailed => {
+                    vga::print_str("Temporal snapshot error: ");
+                    vga::print_str(path);
+                    vga::print_str(" was not readable from VFS. Use the exact same path you wrote first.\n");
+                    print_temporal_path_hint(path);
+                }
+                _ => {
+                    vga::print_str("Temporal snapshot error: ");
+                    vga::print_str(e.as_str());
+                    vga::print_str("\n");
+                }
+            }
         }
     }
 }
@@ -1889,9 +1909,19 @@ fn cmd_temporal_history(mut parts: core::str::SplitWhitespace) {
             }
         }
         Err(e) => {
-            vga::print_str("Temporal history error: ");
-            vga::print_str(e.as_str());
-            vga::print_str("\n");
+            match e {
+                crate::temporal::TemporalError::ObjectNotFound => {
+                    vga::print_str("Temporal history error: no temporal history for ");
+                    vga::print_str(path);
+                    vga::print_str(". Write or snapshot that exact path first.\n");
+                    print_temporal_path_hint(path);
+                }
+                _ => {
+                    vga::print_str("Temporal history error: ");
+                    vga::print_str(e.as_str());
+                    vga::print_str("\n");
+                }
+            }
         }
     }
 }

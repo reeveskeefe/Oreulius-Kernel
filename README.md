@@ -29,6 +29,7 @@ temporal-history /tmp/demo
 ```
 
 `/tmp` is available in the fresh boot VFS, so that sequence should work without a manual `vfs-mkdir`.
+Use the exact same path for write, snapshot, and history; the demo path is `/tmp/demo` all three times.
 
 That path gives the fastest "aha" moment in this repo:
 
@@ -103,6 +104,8 @@ temporal-snapshot /tmp/demo
 temporal-history /tmp/demo
 formal-verify
 ```
+
+Use `/tmp/demo` exactly as written in that block for the temporal commands.
 
 What this demonstrates:
 

@@ -3399,6 +3399,16 @@ fn normalize_path(path: &str) -> Result<String, TemporalError> {
     }
 }
 
+fn slashless_path_signature(path: &str) -> String {
+    let mut signature = String::new();
+    for ch in path.chars() {
+        if ch != '/' {
+            signature.push(ch);
+        }
+    }
+    signature
+}
+
 fn append_u16(buf: &mut Vec<u8>, value: u16) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
@@ -4091,6 +4101,36 @@ pub fn list_versions(path: &str) -> Result<Vec<TemporalVersionMeta>, TemporalErr
             Err(e)
         }
     }
+}
+
+pub fn suggest_similar_path(path: &str) -> Option<String> {
+    let normalized = normalize_path(path).ok()?;
+    let normalized_signature = slashless_path_signature(&normalized);
+
+    let service = TEMPORAL.lock();
+    let mut slashless_match: Option<String> = None;
+    let mut prefix_match: Option<String> = None;
+
+    for object in service.objects.iter() {
+        if object.path == normalized {
+            return Some(object.path.clone());
+        }
+
+        if slashless_match.is_none()
+            && slashless_path_signature(&object.path) == normalized_signature
+        {
+            slashless_match = Some(object.path.clone());
+            continue;
+        }
+
+        if prefix_match.is_none()
+            && (object.path.starts_with(&normalized) || normalized.starts_with(&object.path))
+        {
+            prefix_match = Some(object.path.clone());
+        }
+    }
+
+    slashless_match.or(prefix_match)
 }
 
 pub fn latest_version(path: &str) -> Result<TemporalVersionMeta, TemporalError> {

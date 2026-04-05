@@ -58,6 +58,7 @@ temporal-history /tmp/demo
 ```
 
 `/tmp` exists by default in a fresh boot, so the temporal demo path is ready immediately.
+Use `/tmp/demo` exactly for each temporal command in that sequence.
 
 ## Where To Go Next
 
