@@ -1,0 +1,364 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version tag (e.g. v0.1.0-alpha)'
+        required: true
+        default: 'v0.1.0-alpha'
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: write      # create GitHub Release + upload assets
+  packages: write      # push to ghcr.io
+
+env:
+  REGISTRY: ghcr.io
+  NAMESPACE: reeveskeefe
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 1: Build all three kernel architectures and upload as GHA artifacts.
+  # Mirrors the multiarch-qemu-smoke.yml dependency/tool chain exactly.
+  # ────────────────────────────────────────────────────────────────────────────
+  build-kernel:
+    name: Build kernel (${{ matrix.arch }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: i686
+            build_cmd: ./build.sh
+            artifacts: |
+              target/oreulius-kernel
+              oreulius.iso
+            artifact_name: kernel-i686
+
+          - arch: x86_64
+            build_cmd: ./build-x86_64-full.sh && ./build-x86_64-mb2-iso.sh
+            artifacts: |
+              target/x86_64-mb2/oreulius-kernel-x86_64
+              target/x86_64-mb2/oreulius-x86_64-mb2.iso
+            artifact_name: kernel-x86_64
+
+          - arch: aarch64
+            build_cmd: ./build-aarch64-virt.sh
+            artifacts: |
+              target/aarch64-virt/oreulius-kernel-aarch64-virt
+              target/aarch64-virt/Image
+            artifact_name: kernel-aarch64
+
+    defaults:
+      run:
+        working-directory: kernel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            nasm \
+            lld \
+            xorriso \
+            grub-pc-bin \
+            grub-common \
+            mtools \
+            qemu-system-x86 \
+            qemu-system-arm \
+            binutils-aarch64-linux-gnu
+
+      - name: Install Rust nightly toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2024-01-01
+          components: rust-src,llvm-tools
+
+      - name: Add rust-src component
+        run: |
+          rustup component add rust-src \
+            --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
+
+      - name: Make scripts executable
+        run: chmod +x ./build*.sh
+
+      - name: Build kernel (${{ matrix.arch }})
+        env:
+          AS_BIN: ${{ matrix.arch == 'aarch64' && 'aarch64-linux-gnu-as' || '' }}
+          LD_BIN: ${{ matrix.arch == 'aarch64' && 'aarch64-linux-gnu-ld' || '' }}
+          OBJCOPY_BIN: ${{ matrix.arch == 'aarch64' && 'aarch64-linux-gnu-objcopy' || '' }}
+        run: ${{ matrix.build_cmd }}
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p /tmp/staged/${{ matrix.arch }}
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            cp "$f" /tmp/staged/${{ matrix.arch }}/
+          done <<'EOF'
+          ${{ matrix.artifacts }}
+          EOF
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: /tmp/staged/${{ matrix.arch }}/
+          if-no-files-found: error
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 2: Build and push the toolchain image (runs in parallel with build-kernel).
+  # ────────────────────────────────────────────────────────────────────────────
+  package-toolchain:
+    name: Package toolchain image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract tag name
+        id: meta
+        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.toolchain
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 3: Build and push runner images (i686 and x86_64).
+  # Waits for build-kernel (needs the compiled ISOs) and package-toolchain
+  # (runner FROM-references the toolchain image).
+  # ────────────────────────────────────────────────────────────────────────────
+  package-runners:
+    name: Package runner image (${{ matrix.arch }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    needs: [build-kernel, package-toolchain]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [i686, x86_64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download ${{ matrix.arch }} kernel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-${{ matrix.arch }}
+          path: kernel-artifacts/${{ matrix.arch }}/
+
+      - name: Stage artifacts for runner build context
+        run: |
+          # The runner Dockerfile builds the kernel itself inside Docker, but
+          # we pre-stage artifacts so a future "copy-only" variant can use them.
+          mkdir -p kernel/target/${{ matrix.arch == 'x86_64' && 'x86_64-mb2' || '' }}
+          cp -r kernel-artifacts/${{ matrix.arch }}/. \
+            kernel/target/${{ matrix.arch == 'x86_64' && 'x86_64-mb2' || '.' }}/
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract tag name
+        id: meta
+        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push runner image (${{ matrix.arch }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.runner
+          push: true
+          build-args: |
+            ARCH=${{ matrix.arch }}
+            TAG=${{ steps.meta.outputs.tag }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-runner-${{ matrix.arch }}:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-runner-${{ matrix.arch }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 4: Assemble OCI artifact image from all three arch builds and push.
+  # ────────────────────────────────────────────────────────────────────────────
+  package-artifacts:
+    name: Package OCI artifact image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    needs: [build-kernel]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download i686 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-i686
+          path: context/artifacts/i686/
+
+      - name: Download x86_64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-x86_64
+          path: context/artifacts/x86_64/
+
+      - name: Download aarch64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-aarch64
+          path: context/artifacts/aarch64/
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract tag name
+        id: meta
+        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push artifact image
+        uses: docker/build-push-action@v6
+        with:
+          context: context/
+          file: docker/Dockerfile.artifacts
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:latest
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 5: Create a GitHub Release with all kernel binaries attached.
+  # ────────────────────────────────────────────────────────────────────────────
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    needs: [build-kernel]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download i686 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-i686
+          path: release-assets/
+
+      - name: Download x86_64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-x86_64
+          path: release-assets/
+
+      - name: Download aarch64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-aarch64
+          path: release-assets/
+
+      - name: Rename assets to include arch suffix
+        run: |
+          cd release-assets
+          # Rename flat-downloaded files; download-artifact merges into one dir
+          [[ -f oreulius-kernel ]]                  && mv oreulius-kernel                  oreulius-kernel-i686
+          [[ -f oreulius.iso ]]                     && mv oreulius.iso                     oreulius-i686.iso
+          [[ -f oreulius-kernel-x86_64 ]]           && : # already named
+          [[ -f oreulius-x86_64-mb2.iso ]]          && : # already named
+          [[ -f oreulius-kernel-aarch64-virt ]]     && : # already named
+          [[ -f Image ]]                            && mv Image                            oreulius-aarch64-Image
+          ls -lh
+
+      - name: Extract tag name
+        id: meta
+        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "Oreulius Kernel ${{ steps.meta.outputs.tag }}"
+          prerelease: true
+          body: |
+            ## Oreulius Kernel ${{ steps.meta.outputs.tag }}
+
+            Capability-native, WASM-first kernel for isolated workloads with temporal state
+            and verification-oriented control surfaces.
+
+            ### Architectures
+            | Arch | Format | Package |
+            |------|--------|---------|
+            | i686 | Multiboot1 ISO + ELF | attached below |
+            | x86_64 | Multiboot2 ISO + ELF | attached below |
+            | aarch64 | ELF + raw Image | attached below |
+
+            ### Container Images
+            ```
+            # Reproducible build toolchain
+            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:${{ steps.meta.outputs.tag }}
+
+            # Boot in QEMU (i686)
+            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-i686:${{ steps.meta.outputs.tag }}
+            docker run --rm -it ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-i686:${{ steps.meta.outputs.tag }}
+
+            # Boot in QEMU (x86_64)
+            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-x86_64:${{ steps.meta.outputs.tag }}
+            docker run --rm -it ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-x86_64:${{ steps.meta.outputs.tag }}
+
+            # All binaries as OCI artifact
+            id=$(docker create ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:${{ steps.meta.outputs.tag }})
+            docker cp "$id":/artifacts ./artifacts && docker rm "$id"
+            ```
+
+            ### License
+            Oreulius Community License — research/non-commercial use. See [LICENSE](LICENSE).
+          files: release-assets/*
+          fail_on_unmatched_files: false
