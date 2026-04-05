@@ -1,0 +1,300 @@
+name: package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version tag (for example v0.1.0-alpha)"
+        required: true
+        default: "v0.1.0-alpha"
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  NAMESPACE: reeveskeefe
+
+jobs:
+  package-preflight:
+    name: Package preflight
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve package tag
+        id: meta
+        run: echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify packaging Dockerfiles exist
+        run: |
+          missing=0
+          for file in \
+            docker/Dockerfile.toolchain \
+            docker/Dockerfile.runner \
+            docker/Dockerfile.artifacts
+          do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Missing required packaging file: $file"
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            echo "::error::Package workflow cannot continue until the Docker packaging set is present."
+            exit 1
+          fi
+
+  build-kernel:
+    name: Build kernel (${{ matrix.arch }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    needs: [package-preflight]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: i686
+            build_cmd: ./build.sh
+            artifacts: |
+              target/oreulius-kernel
+              oreulius.iso
+            artifact_name: kernel-i686
+
+          - arch: x86_64
+            build_cmd: ./build-x86_64-full.sh && ./build-x86_64-mb2-iso.sh
+            artifacts: |
+              target/x86_64-mb2/oreulius-kernel-x86_64
+              target/x86_64-mb2/oreulius-x86_64-mb2.iso
+            artifact_name: kernel-x86_64
+
+          - arch: aarch64
+            build_cmd: ./build-aarch64-virt.sh
+            artifacts: |
+              target/aarch64-virt/oreulius-kernel-aarch64-virt
+              target/aarch64-virt/Image
+            artifact_name: kernel-aarch64
+
+    defaults:
+      run:
+        working-directory: kernel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            nasm \
+            lld \
+            xorriso \
+            grub-pc-bin \
+            grub-common \
+            mtools \
+            qemu-system-x86 \
+            qemu-system-arm \
+            binutils-aarch64-linux-gnu
+
+      - name: Install Rust nightly toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2024-01-01
+          components: rust-src,llvm-tools
+
+      - name: Add rust-src component
+        run: |
+          rustup component add rust-src \
+            --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
+
+      - name: Make scripts executable
+        run: chmod +x ./build*.sh
+
+      - name: Build kernel (${{ matrix.arch }})
+        env:
+          AS_BIN: ${{ matrix.arch == 'aarch64' && 'aarch64-linux-gnu-as' || '' }}
+          LD_BIN: ${{ matrix.arch == 'aarch64' && 'aarch64-linux-gnu-ld' || '' }}
+          OBJCOPY_BIN: ${{ matrix.arch == 'aarch64' && 'aarch64-linux-gnu-objcopy' || '' }}
+        run: ${{ matrix.build_cmd }}
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p /tmp/staged/${{ matrix.arch }}
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            cp "$f" /tmp/staged/${{ matrix.arch }}/
+          done <<'EOF'
+          ${{ matrix.artifacts }}
+          EOF
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: /tmp/staged/${{ matrix.arch }}/
+          if-no-files-found: error
+
+  package-toolchain:
+    name: Package toolchain image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    needs: [package-preflight]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve package tag
+        id: meta
+        run: echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.toolchain
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.NAMESPACE }}/Oreulius-Kernel
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  package-runners:
+    name: Package runner image (${{ matrix.arch }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    needs: [package-preflight, build-kernel, package-toolchain]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [i686, x86_64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download kernel artifacts (${{ matrix.arch }})
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-${{ matrix.arch }}
+          path: kernel-artifacts/${{ matrix.arch }}/
+
+      - name: Stage artifacts for runner build context
+        run: |
+          mkdir -p kernel/target/${{ matrix.arch == 'x86_64' && 'x86_64-mb2' || '' }}
+          cp -r kernel-artifacts/${{ matrix.arch }}/. \
+            kernel/target/${{ matrix.arch == 'x86_64' && 'x86_64-mb2' || '.' }}/
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve package tag
+        id: meta
+        run: echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push runner image (${{ matrix.arch }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.runner
+          push: true
+          build-args: |
+            ARCH=${{ matrix.arch }}
+            TAG=${{ steps.meta.outputs.tag }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-runner-${{ matrix.arch }}:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-runner-${{ matrix.arch }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.NAMESPACE }}/Oreulius-Kernel
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  package-artifacts:
+    name: Package OCI artifact image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    needs: [package-preflight, build-kernel]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download i686 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-i686
+          path: context/artifacts/i686/
+
+      - name: Download x86_64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-x86_64
+          path: context/artifacts/x86_64/
+
+      - name: Download aarch64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-aarch64
+          path: context/artifacts/aarch64/
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve package tag
+        id: meta
+        run: echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push artifact image
+        uses: docker/build-push-action@v6
+        with:
+          context: context/
+          file: docker/Dockerfile.artifacts
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.NAMESPACE }}/Oreulius-Kernel
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
