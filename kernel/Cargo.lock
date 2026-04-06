@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "oreulius-kernel"
-version = "0.1.0"
+version = "0.1.0-alpha"
 dependencies = [
  "bitflags",
  "lazy_static",
