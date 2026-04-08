@@ -9,6 +9,7 @@ defaults:
 
 permissions:
   contents: write      # create GitHub Release + upload assets (tag push)
+  actions: write       # dispatch package.yml after the release is published
   packages: read       # packaging/push reserved for package.yml
 
 env:
