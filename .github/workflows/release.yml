@@ -33,6 +33,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Configure git identity for release tags
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Read release name & version from Cargo.toml
         id: meta
         run: |
