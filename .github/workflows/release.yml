@@ -4,250 +4,31 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag (for example v0.1.1-alpha)"
+        description: "Release tag (for example v0.1.1-alpha.1)"
         required: true
-        default: "v0.1.1-alpha"
 
 defaults:
   run:
     shell: bash
 
 permissions:
-  contents: write      # create GitHub Release + upload assets
+  contents: write
 
 jobs:
-  release-preflight:
-    name: Release preflight
-    runs-on: ubuntu-22.04
-    timeout-minutes: 10
-
-    outputs:
-      tag: ${{ steps.meta.outputs.tag }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Resolve release tag
-        id: meta
-        run: |
-          set -euo pipefail
-          tag="${{ inputs.version }}"
-          if [[ -z "$tag" ]]; then
-            echo "::error::Missing release tag input"
-            exit 1
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Validate release tag points to this commit
-        env:
-          TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          set -euo pipefail
-          echo "Checking remote for release tag $TAG"
-          remote_ref_sha=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}' | tail -n 1 || true)
-          if [[ -z "$remote_ref_sha" ]]; then
-            echo "::error::Release tag ${TAG} does not exist on origin."
-            echo "::error::This workflow no longer creates tags; run it against an existing tag."
-            exit 1
-          fi
-          remote_commit_sha=$(git ls-remote --tags origin "refs/tags/${TAG}^{}" | awk '{print $1}' | tail -n 1 || true)
-          if [[ -z "$remote_commit_sha" ]]; then
-            remote_commit_sha="$remote_ref_sha"
-          fi
-          if [[ "$remote_commit_sha" != "$GITHUB_SHA" ]]; then
-            echo "::error::Requested tag ${TAG} points to ${remote_commit_sha:0:7}, but this run is building ${GITHUB_SHA:0:7}."
-            exit 1
-          fi
-          echo "Tag ${TAG} matches the current commit."
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Job 1: Build all three kernel architectures and upload as GHA artifacts.
-  # Mirrors the multiarch-qemu-smoke.yml dependency/tool chain exactly.
-  # ────────────────────────────────────────────────────────────────────────────
-  build-kernel:
-    name: Build kernel (${{ matrix.arch }})
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
-    needs: [release-preflight]
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: i686
-            build_cmd: ./build.sh
-            artifacts: |
-              target/oreulius-kernel
-              oreulius.iso
-            artifact_name: kernel-i686
-
-          - arch: x86_64
-            build_cmd: ./build-x86_64-full.sh && ./build-x86_64-mb2-iso.sh
-            artifacts: |
-              target/x86_64-mb2/oreulius-kernel-x86_64
-              target/x86_64-mb2/oreulius-x86_64-mb2.iso
-            artifact_name: kernel-x86_64
-
-          - arch: aarch64
-            build_cmd: ./build-aarch64-virt.sh
-            artifacts: |
-              target/aarch64-virt/oreulius-kernel-aarch64-virt
-              target/aarch64-virt/Image
-            artifact_name: kernel-aarch64
-
-    defaults:
-      run:
-        working-directory: kernel
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            nasm \
-            lld \
-            xorriso \
-            grub-pc-bin \
-            grub-common \
-            mtools \
-            qemu-system-x86 \
-            qemu-system-arm \
-            binutils-aarch64-linux-gnu
-
-      - name: Install Rust nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2024-01-01
-          components: rust-src,llvm-tools
-
-      - name: Add rust-src component
-        run: |
-          rustup component add rust-src \
-            --toolchain nightly-2024-01-01-x86_64-unknown-linux-gnu
-
-      - name: Make scripts executable
-        run: chmod +x ./build*.sh
-
-      - name: Build kernel (${{ matrix.arch }})
-        env:
-          AS_BIN: ${{ matrix.arch == 'aarch64' && 'aarch64-linux-gnu-as' || '' }}
-          LD_BIN: ${{ matrix.arch == 'aarch64' && 'aarch64-linux-gnu-ld' || '' }}
-          OBJCOPY_BIN: ${{ matrix.arch == 'aarch64' && 'aarch64-linux-gnu-objcopy' || '' }}
-        run: ${{ matrix.build_cmd }}
-
-      - name: Stage artifacts
-        run: |
-          mkdir -p /tmp/staged/${{ matrix.arch }}
-          while IFS= read -r f; do
-            [[ -z "$f" ]] && continue
-            cp "$f" /tmp/staged/${{ matrix.arch }}/
-          done <<'EOF'
-          ${{ matrix.artifacts }}
-          EOF
-
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: /tmp/staged/${{ matrix.arch }}/
-          if-no-files-found: error
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Job 5: Create a GitHub Release with all kernel binaries attached.
-  # ────────────────────────────────────────────────────────────────────────────
-  github-release:
-    name: Create GitHub Release
+  source-release:
+    name: Publish source release
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    needs: [release-preflight, build-kernel]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download i686 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-i686
-          path: release-assets/
-
-      - name: Download x86_64 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-x86_64
-          path: release-assets/
-
-      - name: Download aarch64 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-aarch64
-          path: release-assets/
-
-      - name: Rename assets to include arch suffix
-        run: |
-          cd release-assets
-          # Rename flat-downloaded files; download-artifact merges into one dir
-          [[ -f oreulius-kernel ]]                  && mv oreulius-kernel                  oreulius-kernel-i686
-          [[ -f oreulius.iso ]]                     && mv oreulius.iso                     oreulius-i686.iso
-          [[ -f oreulius-kernel-x86_64 ]]           && : # already named
-          [[ -f oreulius-x86_64-mb2.iso ]]          && : # already named
-          [[ -f oreulius-kernel-aarch64-virt ]]     && : # already named
-          [[ -f Image ]]                            && mv Image                            oreulius-aarch64-Image
-          ls -lh
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.release-preflight.outputs.tag }}
-          name: "Attach artifacts for ${{ needs.release-preflight.outputs.tag }}"
-          draft: true
+          tag_name: ${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: "Source release ${{ inputs.version }}"
+          draft: false
           prerelease: true
           body: |
-            ## ${{ needs.release-preflight.outputs.tag }}
-
-            Capability-native, WASM-first kernel for isolated workloads with temporal state
-            and verification-oriented control surfaces.
-
-            ### Architectures
-            | Arch | Format | Package |
-            |------|--------|---------|
-            | i686 | Multiboot1 ISO + ELF | attached below |
-            | x86_64 | Multiboot2 ISO + ELF | attached below |
-            | aarch64 | ELF + raw Image | attached below |
-
-            ### Notes
-            Container images and OCI artifacts are produced separately by `package.yml`.
-          files: release-assets/*
-          fail_on_unmatched_files: false
-
-      - name: Publish GitHub Release
-        uses: actions/github-script@v6
-        env:
-          RELEASE_TAG: ${{ needs.release-preflight.outputs.tag }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { owner, repo } = context.repo;
-            const tag = process.env.RELEASE_TAG || '';
-            const releases = await github.rest.repos.listReleases({ owner, repo, per_page: 100 });
-            const release = releases.data.find(r => r.tag_name === tag);
-            if (!release) {
-              throw new Error(`Unable to find draft release for tag ${tag}.`);
-            }
-            if (!release.draft) {
-              core.info(`Release ${tag} is already published.`);
-              return;
-            }
-            await github.rest.repos.updateRelease({
-              owner,
-              repo,
-              release_id: release.id,
-              draft: false,
-            });
-            core.info(`Published GitHub Release for ${tag}.`);
+            Source-only release for ${{ inputs.version }}.
+            Binary artifacts and OCI packages are published separately by `package.yml`.

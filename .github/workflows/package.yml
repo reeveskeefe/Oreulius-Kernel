@@ -13,7 +13,6 @@ defaults:
     shell: bash
 
 permissions:
-  contents: write
   packages: write
 
 env:
@@ -303,37 +302,3 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ env.NAMESPACE }}/Oreulius-Kernel
             org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
             org.opencontainers.image.revision=${{ github.sha }}
-
-  attach-release-artifacts:
-    name: Attach built artifacts to Release
-    runs-on: ubuntu-22.04
-    needs: [package-artifacts, package-runners]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download i686 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-i686
-          path: release-assets/
-
-      - name: Download x86_64 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-x86_64
-          path: release-assets/
-
-      - name: Download aarch64 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-aarch64
-          path: release-assets/
-
-      - name: Upload artifacts to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.version }}
-          name: "Attach artifacts for ${{ inputs.version }}"
-          files: release-assets/*
-          fail_on_unmatched_files: false
