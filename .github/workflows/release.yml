@@ -65,10 +65,14 @@ jobs:
         run: |
           set -euo pipefail
           echo "Checking remote for tag $TAG"
-          remote_sha=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}' | tail -n 1 || true)
-          if [[ -n "$remote_sha" ]]; then
-            if [[ "$remote_sha" != "$GITHUB_SHA" ]]; then
-              echo "::error::Requested tag ${TAG} already points to ${remote_sha:0:7}, but this run is building ${GITHUB_SHA:0:7}."
+          remote_ref_sha=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}' | tail -n 1 || true)
+          remote_commit_sha=$(git ls-remote --tags origin "refs/tags/${TAG}^{}" | awk '{print $1}' | tail -n 1 || true)
+          if [[ -n "$remote_ref_sha" ]]; then
+            if [[ -z "$remote_commit_sha" ]]; then
+              remote_commit_sha="$remote_ref_sha"
+            fi
+            if [[ "$remote_commit_sha" != "$GITHUB_SHA" ]]; then
+              echo "::error::Requested tag ${TAG} already points to ${remote_commit_sha:0:7}, but this run is building ${GITHUB_SHA:0:7}."
               exit 1
             else
               echo "Tag ${TAG} already exists and matches current commit."
@@ -102,9 +106,13 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          remote_sha="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}' | tail -n 1)"
-          if [[ -n "$remote_sha" && "$remote_sha" != "$GITHUB_SHA" ]]; then
-            echo "::error::Requested tag ${RELEASE_TAG} already points to ${remote_sha:0:7}, but this run is building ${GITHUB_SHA:0:7}."
+          remote_ref_sha="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}' | tail -n 1 || true)"
+          remote_commit_sha="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}' | tail -n 1 || true)"
+          if [[ -z "$remote_commit_sha" ]]; then
+            remote_commit_sha="$remote_ref_sha"
+          fi
+          if [[ -n "$remote_commit_sha" && "$remote_commit_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::Requested tag ${RELEASE_TAG} already points to ${remote_commit_sha:0:7}, but this run is building ${GITHUB_SHA:0:7}."
             echo "::error::Use a new tag (for example ${RELEASE_TAG}.1) or move the protected tag in GitHub before re-running the release workflow."
             exit 1
           fi
