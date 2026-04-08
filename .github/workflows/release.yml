@@ -277,6 +277,7 @@ jobs:
         with:
           tag_name: ${{ needs.release-preflight.outputs.tag }}
           name: "${{ needs.release-preflight.outputs.pkg_name }} ${{ needs.release-preflight.outputs.pkg_version }}"
+          draft: true
           prerelease: true
           body: |
             ## ${{ needs.release-preflight.outputs.pkg_name }} ${{ needs.release-preflight.outputs.tag }}
@@ -313,6 +314,28 @@ jobs:
             Oreulius Community License — research/non-commercial use. See [LICENSE](LICENSE).
           files: release-assets/*
           fail_on_unmatched_files: false
+
+      - name: Publish GitHub Release
+        uses: actions/github-script@v6
+        env:
+          RELEASE_TAG: ${{ needs.release-preflight.outputs.tag }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = process.env.RELEASE_TAG || '';
+            const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            if (!release.data.draft) {
+              core.info(`Release ${tag} is already published.`);
+              return;
+            }
+            await github.rest.repos.updateRelease({
+              owner,
+              repo,
+              release_id: release.data.id,
+              draft: false,
+            });
+            core.info(`Published GitHub Release for ${tag}.`);
 
   trigger-package:
     name: Trigger packaging workflow and wait
