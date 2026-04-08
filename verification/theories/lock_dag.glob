@@ -1,147 +1,32 @@
-DIGEST e6e4606c5e982d62516cd330f174b1e4
+DIGEST 11908fb906b9bc367ee1861e5e9875e5
 Flock_dag
-R900:907 Corelib.Init.Nat <> <> lib
-R934:947 Stdlib.Arith.PeanoNat <> <> lib
-R974:984 Stdlib.Arith.Arith <> <> lib
-R1011:1023 Stdlib.micromega.Lia <> <> lib
-def 1261:1273 <> DAG_LEVEL_VFS
-R1283:1285 Corelib.Init.Datatypes <> nat ind
-def 1304:1322 <> DAG_LEVEL_SCHEDULER
-R1326:1328 Corelib.Init.Datatypes <> nat ind
-def 1348:1360 <> DAG_LEVEL_IRQ
-R1370:1372 Corelib.Init.Datatypes <> nat ind
-def 1881:1891 <> may_acquire
-R1923:1925 Corelib.Init.Datatypes <> nat ind
-binder 1894:1906 <> context_level:1
-binder 1908:1919 <> target_level:2
-R1952:1954 Corelib.Init.Peano <> ::nat_scope:x_'<'_x not
-R1940:1951 lock_dag <> target_level:2 var
-R1955:1967 lock_dag <> context_level:1 var
-prf 2264:2288 <> irq_may_acquire_scheduler
-R2294:2304 lock_dag <> may_acquire def
-R2306:2318 lock_dag <> DAG_LEVEL_IRQ def
-R2320:2338 lock_dag <> DAG_LEVEL_SCHEDULER def
-R2357:2367 lock_dag <> may_acquire def
-R2370:2382 lock_dag <> DAG_LEVEL_IRQ def
-R2385:2403 lock_dag <> DAG_LEVEL_SCHEDULER def
-prf 2481:2499 <> irq_may_acquire_vfs
-R2505:2515 lock_dag <> may_acquire def
-R2517:2529 lock_dag <> DAG_LEVEL_IRQ def
-R2531:2543 lock_dag <> DAG_LEVEL_VFS def
-R2562:2572 lock_dag <> may_acquire def
-R2575:2587 lock_dag <> DAG_LEVEL_IRQ def
-R2590:2602 lock_dag <> DAG_LEVEL_VFS def
-prf 2686:2710 <> scheduler_may_acquire_vfs
-R2716:2726 lock_dag <> may_acquire def
-R2728:2746 lock_dag <> DAG_LEVEL_SCHEDULER def
-R2748:2760 lock_dag <> DAG_LEVEL_VFS def
-R2779:2789 lock_dag <> may_acquire def
-R2792:2810 lock_dag <> DAG_LEVEL_SCHEDULER def
-R2813:2825 lock_dag <> DAG_LEVEL_VFS def
-prf 3187:3214 <> vfs_cannot_acquire_scheduler
-R3220:3221 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R3222:3232 lock_dag <> may_acquire def
-R3234:3246 lock_dag <> DAG_LEVEL_VFS def
-R3248:3266 lock_dag <> DAG_LEVEL_SCHEDULER def
-R3285:3295 lock_dag <> may_acquire def
-R3298:3310 lock_dag <> DAG_LEVEL_VFS def
-R3313:3331 lock_dag <> DAG_LEVEL_SCHEDULER def
-prf 3413:3434 <> vfs_cannot_acquire_irq
-R3440:3441 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R3442:3452 lock_dag <> may_acquire def
-R3454:3466 lock_dag <> DAG_LEVEL_VFS def
-R3468:3480 lock_dag <> DAG_LEVEL_IRQ def
-R3499:3509 lock_dag <> may_acquire def
-R3512:3524 lock_dag <> DAG_LEVEL_VFS def
-R3527:3539 lock_dag <> DAG_LEVEL_IRQ def
-prf 3627:3654 <> scheduler_cannot_acquire_irq
-R3660:3661 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R3662:3672 lock_dag <> may_acquire def
-R3674:3692 lock_dag <> DAG_LEVEL_SCHEDULER def
-R3694:3706 lock_dag <> DAG_LEVEL_IRQ def
-R3725:3735 lock_dag <> may_acquire def
-R3738:3756 lock_dag <> DAG_LEVEL_SCHEDULER def
-R3759:3771 lock_dag <> DAG_LEVEL_IRQ def
-prf 4215:4228 <> dag_is_acyclic
-R4248:4250 Corelib.Init.Datatypes <> nat ind
-binder 4242:4242 <> a:3
-binder 4244:4244 <> b:4
-R4273:4276 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4258:4268 lock_dag <> may_acquire def
-R4270:4270 lock_dag <> a:3 var
-R4272:4272 lock_dag <> b:4 var
-R4277:4278 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R4279:4289 lock_dag <> may_acquire def
-R4291:4291 lock_dag <> b:4 var
-R4293:4293 lock_dag <> a:3 var
-R4312:4322 lock_dag <> may_acquire def
-prf 4627:4646 <> lock_dag_no_deadlock
-R4671:4673 Corelib.Init.Datatypes <> nat ind
-binder 4660:4661 <> l1:5
-binder 4663:4664 <> l2:6
-binder 4666:4667 <> l3:7
-R4698:4705 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4681:4691 lock_dag <> may_acquire def
-R4693:4694 lock_dag <> l1:5 var
-R4696:4697 lock_dag <> l2:6 var
-R4723:4730 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4706:4716 lock_dag <> may_acquire def
-R4718:4719 lock_dag <> l2:6 var
-R4721:4722 lock_dag <> l3:7 var
-R4731:4732 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R4733:4743 lock_dag <> may_acquire def
-R4745:4746 lock_dag <> l3:7 var
-R4748:4749 lock_dag <> l1:5 var
-R4768:4778 lock_dag <> may_acquire def
-prf 5003:5020 <> dag_chain_no_cycle
-R5042:5044 Corelib.Init.Datatypes <> nat ind
-binder 5034:5034 <> a:8
-binder 5036:5036 <> b:9
-binder 5038:5038 <> c:10
-R5057:5060 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R5053:5055 Corelib.Init.Peano <> ::nat_scope:x_'>'_x not
-R5052:5052 lock_dag <> a:8 var
-R5056:5056 lock_dag <> b:9 var
-R5066:5069 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R5062:5064 Corelib.Init.Peano <> ::nat_scope:x_'>'_x not
-R5061:5061 lock_dag <> b:9 var
-R5065:5065 lock_dag <> c:10 var
-R5070:5072 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R5078:5078 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R5074:5076 Corelib.Init.Peano <> ::nat_scope:x_'>'_x not
-R5073:5073 lock_dag <> c:10 var
-R5077:5077 lock_dag <> a:8 var
-prf 5518:5533 <> dag_well_founded
-R5539:5550 Corelib.Init.Wf <> well_founded def
-binder 5557:5557 <> b:11
-binder 5559:5559 <> a:12
-R5564:5574 lock_dag <> may_acquire def
-R5576:5576 lock_dag <> a:12 var
-R5578:5578 lock_dag <> b:11 var
-R5598:5608 lock_dag <> may_acquire def
-R5676:5686 Stdlib.Arith.PeanoNat Nat lt_wf_0 thm
-R5676:5686 Stdlib.Arith.PeanoNat Nat lt_wf_0 thm
-prf 5998:6012 <> may_acquire_dec
-R6032:6034 Corelib.Init.Datatypes <> nat ind
-binder 6026:6026 <> a:13
-binder 6028:6028 <> b:14
-R6042:6043 Corelib.Init.Specif <> ::type_scope:'{'_x_'}'_'+'_'{'_x_'}' not
-R6059:6065 Corelib.Init.Specif <> ::type_scope:'{'_x_'}'_'+'_'{'_x_'}' not
-R6083:6084 Corelib.Init.Specif <> ::type_scope:'{'_x_'}'_'+'_'{'_x_'}' not
-R6044:6054 lock_dag <> may_acquire def
-R6056:6056 lock_dag <> a:13 var
-R6058:6058 lock_dag <> b:14 var
-R6066:6067 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R6068:6078 lock_dag <> may_acquire def
-R6080:6080 lock_dag <> a:13 var
-R6082:6082 lock_dag <> b:14 var
-R6117:6127 lock_dag <> may_acquire def
-R6142:6147 Stdlib.Arith.Compare_dec <> lt_dec thm
-R6142:6147 Stdlib.Arith.Compare_dec <> lt_dec thm
-def 6303:6317 <> irq_sched_check
-R6321:6331 lock_dag <> may_acquire def
-R6333:6345 lock_dag <> DAG_LEVEL_IRQ def
-R6347:6365 lock_dag <> DAG_LEVEL_SCHEDULER def
-R6384:6394 lock_dag <> may_acquire def
-R6397:6409 lock_dag <> DAG_LEVEL_IRQ def
-R6412:6430 lock_dag <> DAG_LEVEL_SCHEDULER def
+ind 107:110 <> node
+constr 119:122 <> Boot
+constr 128:135 <> Dispatch
+constr 141:147 <> Runtime
+scheme 107:110 <> node_rect
+scheme 107:110 <> node_ind
+scheme 107:110 <> node_rec
+scheme 107:110 <> node_sind
+def 162:165 <> edge
+R178:181 lock_dag <> node ind
+binder 168:170 <> src:3
+binder 172:174 <> dst:4
+R207:209 lock_dag <> dst:4 var
+R202:204 lock_dag <> src:3 var
+R220:223 lock_dag <> Boot constr
+R226:233 lock_dag <> Dispatch constr
+R238:241 Corelib.Init.Logic <> True ind
+R247:254 lock_dag <> Dispatch constr
+R257:263 lock_dag <> Runtime constr
+R268:271 Corelib.Init.Logic <> True ind
+R277:280 lock_dag <> Boot constr
+R283:289 lock_dag <> Runtime constr
+R294:297 Corelib.Init.Logic <> True ind
+R311:315 Corelib.Init.Logic <> False ind
+prf 333:344 <> no_self_edge
+binder 355:355 <> n:7
+R358:359 Corelib.Init.Logic <> ::type_scope:'~'_x not
+R360:363 lock_dag <> edge def
+R365:365 lock_dag <> n:7 var
+R367:367 lock_dag <> n:7 var

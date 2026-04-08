@@ -1,57 +1,64 @@
 {
-  "commit_sha": "a2acf53",
-  "generated_at": "2026-03-14T00:00:00Z",
-  "assumptions_version": "v1.0",
+  "commit_sha": "c199e4fe83ad29549b887125a5a282866ae6000a",
+  "generated_at": "2026-04-08T16:32:21Z",
+  "assumptions_version": "v1",
   "theorems": [
-    { "id": "THM-CAP-001",  "status": "Proven",     "artifact": "verification/theories/ipc_flow.v",           "invariant": "INV-CAP-001"  },
-    { "id": "THM-MEM-001",  "status": "Proven",     "artifact": "verification/theories/memory_isolation.v",   "invariant": "INV-MEM-001"  },
-    { "id": "THM-WX-001",   "status": "Proven",     "artifact": "verification/theories/wx_cfi.v",             "invariant": "INV-WX-001"   },
-    { "id": "THM-CFI-001",  "status": "Proven",     "artifact": "verification/theories/wx_cfi.v",             "invariant": "INV-CFI-001"  },
-    { "id": "THM-TMP-001",  "status": "Proven",     "artifact": "verification/theories/temporal_logic.v",     "invariant": "INV-TMP-001"  },
-    { "id": "THM-PER-001",  "status": "Proven",     "artifact": "verification/theories/persistence.v",      "invariant": "INV-PER-001"  },
-    { "id": "THM-NET-001",  "status": "Proven",     "artifact": "verification/theories/capnet_integrity.v",  "invariant": "INV-NET-001"  },
-    { "id": "THM-PRIV-001", "status": "Proven",     "artifact": "verification/theories/privilege_safety.v",  "invariant": "INV-PRIV-001" }
+    {
+      "id": "TEMP-001",
+      "file": "theories/temporal_logic.v",
+      "status": "scaffolded"
+    },
+    {
+      "id": "IPC-001",
+      "file": "theories/ipc_flow.v",
+      "status": "scaffolded"
+    },
+    {
+      "id": "WXCFI-001",
+      "file": "theories/wx_cfi.v",
+      "status": "scaffolded"
+    },
+    {
+      "id": "LOCK-001",
+      "file": "theories/lock_dag.v",
+      "status": "scaffolded"
+    },
+    {
+      "id": "SCHED-001",
+      "file": "theories/scheduler_entropy.v",
+      "status": "scaffolded"
+    }
   ],
   "ci_runs": [
     {
-      "job": "proof-check / coq-proofs",
-      "result": "pass",
-      "commit": "a2acf53",
-      "artifacts": [
-        "verification/theories/temporal_logic.vo",
-        "verification/theories/temporal_logic.vos",
-        "verification/theories/temporal_logic.vok",
-        "verification/theories/ipc_flow.vo",
-        "verification/theories/ipc_flow.vos",
-        "verification/theories/ipc_flow.vok",
-        "verification/theories/wx_cfi.vo",
-        "verification/theories/wx_cfi.vos",
-        "verification/theories/wx_cfi.vok",
-        "verification/theories/lock_dag.vo",
-        "verification/theories/lock_dag.vos",
-        "verification/theories/lock_dag.vok",
-        "verification/theories/scheduler_entropy.vo",
-        "verification/theories/scheduler_entropy.vos",
-        "verification/theories/scheduler_entropy.vok",
-        "verification/theories/memory_isolation.vo",
-        "verification/theories/memory_isolation.vos",
-        "verification/theories/memory_isolation.vok",
-        "verification/theories/persistence.vo",
-        "verification/theories/persistence.vos",
-        "verification/theories/persistence.vok",
-        "verification/theories/capnet_integrity.vo",
-        "verification/theories/capnet_integrity.vos",
-        "verification/theories/capnet_integrity.vok",
-        "verification/theories/privilege_safety.vo",
-        "verification/theories/privilege_safety.vos",
-        "verification/theories/privilege_safety.vok"
-      ]
+      "name": "proof-check",
+      "workflow": ".github/workflows/proof-check.yml",
+      "status": "active"
+    },
+    {
+      "name": "capnet-regression",
+      "workflow": ".github/workflows/capnet-regression.yml",
+      "status": "runtime-evidence"
     }
   ],
   "runtime_evidence": [
-    { "id": "formal-verify",               "status": "pass", "commit": "a2acf53" },
-    { "id": "temporal-hardening-selftest", "status": "pass", "commit": "a2acf53" },
-    { "id": "capnet-fuzz-corpus",          "status": "pass", "commit": "a2acf53" },
-    { "id": "wasm-jit-fuzz-corpus",        "status": "pass", "commit": "a2acf53" }
+    {
+      "name": "formal-verify",
+      "surface": "kernel shell command",
+      "path": "kernel/src/shell/commands.rs",
+      "status": "runtime-self-check"
+    },
+    {
+      "name": "capability self-check",
+      "surface": "kernel runtime",
+      "path": "kernel/src/capability/mod.rs",
+      "status": "runtime-self-check"
+    },
+    {
+      "name": "mechanized backend check",
+      "surface": "kernel runtime",
+      "path": "kernel/src/security/formal.rs",
+      "status": "runtime-self-check"
+    }
   ]
 }

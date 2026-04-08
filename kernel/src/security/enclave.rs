@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Hardware enclave backend manager.
@@ -31,8 +20,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 
-use crate::memory_isolation::{self, AccessPolicy, IsolationDomain};
-use crate::{capnet, memory, security};
+use crate::net::capnet;
+use crate::security::memory_isolation::{self, AccessPolicy, IsolationDomain};
+use crate::{memory, security};
 
 const MAX_ENCLAVE_SESSIONS: usize = 16;
 const MAX_ATTESTATION_CERTS: usize = 8;
@@ -2262,7 +2252,7 @@ fn detect_backend() -> EnclaveBackend {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn sgx_cpu_ready() -> bool {
-    let msr = unsafe { crate::process_asm::read_msr(MSR_IA32_FEATURE_CONTROL) };
+    let msr = unsafe { crate::scheduler::process_asm::read_msr(MSR_IA32_FEATURE_CONTROL) };
     (msr & FEAT_CTRL_LOCK_BIT) != 0 && (msr & FEAT_CTRL_SGX_ENABLE) != 0
 }
 
@@ -2344,9 +2334,9 @@ pub fn init() {
     REMOTE_ATTESTATION_AUDIT_ONLY_TOTAL.store(0, Ordering::SeqCst);
 
     let backend_for_print = mgr.backend;
-    crate::vga::print_str("[ENCLAVE] Backend: ");
-    crate::vga::print_str(backend_name(backend_for_print));
-    crate::vga::print_str("\n");
+    crate::drivers::x86::vga::print_str("[ENCLAVE] Backend: ");
+    crate::drivers::x86::vga::print_str(backend_name(backend_for_print));
+    crate::drivers::x86::vga::print_str("\n");
     drop(mgr);
 
     // Attempt Flexible Launch Control (FLC) setup for SGX.
@@ -2374,9 +2364,9 @@ pub fn init() {
             unsafe {
                 sgx_write_sgxlepubkeyhash(flc_hash[0], flc_hash[1], flc_hash[2], flc_hash[3]);
             }
-            crate::vga::print_str("[ENCLAVE] FLC: launch key hash written\n");
+            crate::drivers::x86::vga::print_str("[ENCLAVE] FLC: launch key hash written\n");
         } else {
-            crate::vga::print_str("[ENCLAVE] FLC: skipped (lock bit set or LC not enabled)\n");
+            crate::drivers::x86::vga::print_str("[ENCLAVE] FLC: skipped (lock bit set or LC not enabled)\n");
         }
     }
 
@@ -2869,9 +2859,7 @@ struct SgxSigstruct {
 }
 
 const _SIGSTRUCT_SIZE_CHECK: () = {
-    if core::mem::size_of::<SgxSigstruct>() != 1808 {
-        panic!("SgxSigstruct must be exactly 1808 bytes (SDM Vol 3D §38.13)");
-    }
+    let _: [(); 1808] = [(); core::mem::size_of::<SgxSigstruct>()];
 };
 
 // Canonical SIGSTRUCT header magic bytes (SDM Vol 3D Table 38-14).
@@ -2916,9 +2904,7 @@ struct SgxEinitToken {
 }
 
 const _EINITTOKEN_SIZE_CHECK: () = {
-    if core::mem::size_of::<SgxEinitToken>() != 304 {
-        panic!("SgxEinitToken must be exactly 304 bytes (SDM Vol 3D §38.14)");
-    }
+    let _: [(); 304] = [(); core::mem::size_of::<SgxEinitToken>()];
 };
 
 // ---------------------------------------------------------------------------

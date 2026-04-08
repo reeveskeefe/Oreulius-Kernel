@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Oreulius Capability Security - Enhanced Authority Model
@@ -201,7 +190,7 @@ impl OreuliusCapability {
             cap_type,
             rights,
             origin,
-            granted_at: crate::pit::get_ticks() as u64,
+            granted_at: crate::scheduler::pit::get_ticks() as u64,
             label_hash: 0,
             token: 0,
             parent_cap_id: None,
@@ -256,7 +245,7 @@ impl OreuliusCapability {
     pub fn new_polyglot_link(
         origin: ProcessId,
         object_id: u64,
-        lang_tag: crate::wasm::LanguageTag,
+        lang_tag: crate::execution::wasm::LanguageTag,
     ) -> Self {
         let mut cap = OreuliusCapability::new(
             0,
@@ -335,7 +324,7 @@ fn check_remote_capability_access(
     required_type: CapabilityType,
     required_rights: Rights,
 ) -> bool {
-    let now = crate::pit::get_ticks() as u64;
+    let now = crate::scheduler::pit::get_ticks() as u64;
     let mut leases = CAPABILITY_MANAGER.remote_leases.lock();
 
     for entry in leases.iter_mut() {
@@ -390,7 +379,7 @@ fn evaluate_mapped_remote_capability(
     required_type: CapabilityType,
     required_rights: Rights,
 ) -> RemoteLeaseDecision {
-    let now = crate::pit::get_ticks() as u64;
+    let now = crate::scheduler::pit::get_ticks() as u64;
     let mut leases = CAPABILITY_MANAGER.remote_leases.lock();
 
     for entry in leases.iter_mut() {
@@ -578,7 +567,7 @@ impl CapabilityTable {
         let idx = Self::cap_id_to_index(cap_id)?;
         let mut installed = cap;
         installed.cap_id = cap_id;
-        installed.granted_at = crate::pit::get_ticks() as u64;
+        installed.granted_at = crate::scheduler::pit::get_ticks() as u64;
         installed.sign(self.owner);
         self.entries[idx] = Some(installed);
 
@@ -974,7 +963,7 @@ impl CapabilityManager {
                 0,
             ];
             #[cfg(not(target_arch = "aarch64"))]
-            crate::wasm::observer_notify(crate::wasm::observer_events::CAPABILITY_OP, &payload);
+            crate::execution::wasm::observer_notify(crate::execution::wasm::observer_events::CAPABILITY_OP, &payload);
             Ok(cap_id)
         } else {
             Err(CapabilityError::TaskNotFound)
@@ -1210,7 +1199,7 @@ impl CapabilityManager {
 
     /// Restore quarantined capabilities for a process whose quarantine timer expired.
     pub fn restore_quarantined_capabilities(&self, pid: ProcessId) -> usize {
-        let now = crate::pit::get_ticks() as u64;
+        let now = crate::scheduler::pit::get_ticks() as u64;
         let mut tables = self.tables.lock();
         let mut quarantined = self.quarantined_caps.lock();
         Self::restore_quarantined_inner(&mut tables, &mut quarantined, pid, now, false)
@@ -1218,7 +1207,7 @@ impl CapabilityManager {
 
     /// Force-restore all quarantined capabilities for a process, regardless of timer.
     pub fn force_restore_quarantined_capabilities(&self, pid: ProcessId) -> usize {
-        let now = crate::pit::get_ticks() as u64;
+        let now = crate::scheduler::pit::get_ticks() as u64;
         let mut tables = self.tables.lock();
         let mut quarantined = self.quarantined_caps.lock();
         Self::restore_quarantined_inner(&mut tables, &mut quarantined, pid, now, true)
@@ -1237,8 +1226,8 @@ impl CapabilityManager {
             return 0;
         }
 
-        let now = crate::pit::get_ticks() as u64;
-        let hz = (crate::pit::get_frequency() as u64).max(1);
+        let now = crate::scheduler::pit::get_ticks() as u64;
+        let hz = (crate::scheduler::pit::get_frequency() as u64).max(1);
         let min_restore_at = now.saturating_add(hz);
         let restore_at_tick = if restore_at_tick > min_restore_at {
             restore_at_tick
@@ -1376,7 +1365,7 @@ impl CapabilityManager {
     ) -> Result<u32, CapabilityError> {
         let mut tables = self.tables.lock();
         let mut leases = self.remote_leases.lock();
-        let now = crate::pit::get_ticks() as u64;
+        let now = crate::scheduler::pit::get_ticks() as u64;
 
         for entry in leases.iter_mut() {
             let should_reclaim = match entry.as_ref() {
@@ -1888,7 +1877,7 @@ fn capability_type_from_capnet(cap_type: u8) -> Option<CapabilityType> {
 ///
 /// `context == 0` in the token means "any local process"; non-zero binds to a PID.
 pub fn install_remote_lease_from_capnet_token(
-    token: &crate::capnet::CapabilityTokenV1,
+    token: &crate::net::capnet::CapabilityTokenV1,
 ) -> Result<u32, &'static str> {
     let cap_type = capability_type_from_capnet(token.cap_type).ok_or("Unsupported cap type")?;
     let owner_any = token.context == 0;
@@ -1898,7 +1887,7 @@ pub fn install_remote_lease_from_capnet_token(
         ProcessId(token.context)
     };
     let enforce_use_budget =
-        (token.constraints_flags & crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE) != 0;
+        (token.constraints_flags & crate::net::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE) != 0;
     let uses_remaining = if enforce_use_budget {
         token.max_uses
     } else {
@@ -2063,7 +2052,7 @@ impl CapabilityManager {
             0, // 1 = revoke
         ];
         #[cfg(not(target_arch = "aarch64"))]
-        crate::wasm::observer_notify(crate::wasm::observer_events::CAPABILITY_OP, &payload);
+        crate::execution::wasm::observer_notify(crate::execution::wasm::observer_events::CAPABILITY_OP, &payload);
         Ok(())
     }
 
@@ -2297,7 +2286,7 @@ pub fn import_capability_from_ipc(
     let object_id = cap.object_id;
 
     #[cfg(not(target_arch = "aarch64"))]
-    if cap_type == CapabilityType::ServicePointer && !crate::wasm::service_pointer_exists(object_id)
+    if cap_type == CapabilityType::ServicePointer && !crate::execution::wasm::service_pointer_exists(object_id)
     {
         return Err("Unknown service pointer object");
     }

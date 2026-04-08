@@ -55,7 +55,7 @@ syscall_entry:
     ; Hardened fallback: if syscall originated from the JIT return trampoline
     ; site, accept it as a JIT return even when EAX was clobbered.
     mov edx, [JIT_USER_DBG_SYSCALL_FROM_EIP]
-    cmp edx, 0x20000036
+    cmp edx, 0x2000003c
     je .jit_return_force
     cmp edx, 0x20000107
     je .jit_return_force

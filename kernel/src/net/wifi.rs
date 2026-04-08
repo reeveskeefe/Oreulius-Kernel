@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! WiFi Driver (802.11 Wireless LAN)
@@ -24,7 +13,7 @@
 
 extern crate alloc;
 
-use crate::pci::PciDevice;
+use crate::drivers::x86::pci::PciDevice;
 use alloc::vec;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -46,13 +35,13 @@ fn print_hex_u32(n: u32) {
     let chars = b"0123456789ABCDEF";
     for i in (0..8).rev() {
         let digit = ((n >> (i * 4)) & 0xF) as usize;
-        crate::vga::print_char(chars[digit] as char);
+        crate::drivers::x86::vga::print_char(chars[digit] as char);
     }
 }
 
 fn print_number(n: usize) {
     if n == 0 {
-        crate::vga::print_char('0');
+        crate::drivers::x86::vga::print_char('0');
         return;
     }
     let mut buf = [0u8; 20];
@@ -65,12 +54,12 @@ fn print_number(n: usize) {
     }
     while i > 0 {
         i -= 1;
-        crate::vga::print_char(buf[i] as char);
+        crate::drivers::x86::vga::print_char(buf[i] as char);
     }
 }
 
 fn ticks_from_ms(ms: u32) -> u64 {
-    let hz = crate::pit::get_frequency() as u64;
+    let hz = crate::scheduler::pit::get_frequency() as u64;
     // Round up so small non-zero timeouts don't become 0 ticks.
     (ms as u64).saturating_mul(hz).saturating_add(999) / 1000
 }
@@ -278,9 +267,9 @@ impl WifiDriver {
 
     /// Initialize WiFi driver with detected PCI device
     pub fn init(&mut self, device: PciDevice) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Initializing ");
-        crate::vga::print_str(device.name());
-        crate::vga::print_str("\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Initializing ");
+        crate::drivers::x86::vga::print_str(device.name());
+        crate::drivers::x86::vga::print_str("\n");
 
         self.pci_device = Some(device);
 
@@ -299,9 +288,9 @@ impl WifiDriver {
         self.enabled = true;
         self.connection.state = WifiState::Idle;
 
-        crate::vga::print_str("[WiFi] MAC: ");
+        crate::drivers::x86::vga::print_str("[WiFi] MAC: ");
         self.print_mac();
-        crate::vga::print_str("\n");
+        crate::drivers::x86::vga::print_str("\n");
 
         self.record_temporal_state_snapshot();
         Ok(())
@@ -333,7 +322,7 @@ impl WifiDriver {
 
     /// Initialize VirtIO WiFi device (for QEMU)
     fn init_virtio(&mut self) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Initializing VirtIO WiFi\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Initializing VirtIO WiFi\n");
 
         if let Some(device) = self.pci_device {
             // Enable bus mastering for DMA
@@ -359,7 +348,7 @@ impl WifiDriver {
                 }
             }
 
-            crate::vga::print_str("[WiFi] VirtIO device ready\n");
+            crate::drivers::x86::vga::print_str("[WiFi] VirtIO device ready\n");
         }
 
         Ok(())
@@ -367,13 +356,13 @@ impl WifiDriver {
 
     /// Initialize Intel WiFi device (generic)
     fn init_intel(&mut self) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Intel chipset detected\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Intel chipset detected\n");
         Ok(())
     }
 
     /// Initialize Intel iwlwifi devices (7260, 7265, 9260, etc)
     fn init_intel_iwlwifi(&mut self) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Intel iwlwifi chipset detected\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Intel iwlwifi chipset detected\n");
 
         if let Some(device) = self.pci_device {
             // Enable bus mastering
@@ -390,15 +379,15 @@ impl WifiDriver {
                 unsafe {
                     // Read hardware revision
                     let hw_rev = core::ptr::read_volatile(csr_base.add(0x28 / 4));
-                    crate::vga::print_str("[WiFi] Hardware revision: 0x");
+                    crate::drivers::x86::vga::print_str("[WiFi] Hardware revision: 0x");
                     print_hex_u32(hw_rev);
-                    crate::vga::print_str("\n");
+                    crate::drivers::x86::vga::print_str("\n");
 
                     // Request ownership (disable hardware RF-kill)
                     core::ptr::write_volatile(csr_base.add(0x20 / 4), 0x01);
                 }
 
-                crate::vga::print_str("[WiFi] Intel device initialized\n");
+                crate::drivers::x86::vga::print_str("[WiFi] Intel device initialized\n");
             }
         }
 
@@ -407,13 +396,13 @@ impl WifiDriver {
 
     /// Initialize Realtek WiFi device (generic)
     fn init_realtek(&mut self) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Realtek chipset detected\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Realtek chipset detected\n");
         Ok(())
     }
 
     /// Initialize Realtek RTL8188 series
     fn init_realtek_rtl8188(&mut self) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Realtek RTL8188 detected\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Realtek RTL8188 detected\n");
 
         if let Some(device) = self.pci_device {
             unsafe {
@@ -427,7 +416,7 @@ impl WifiDriver {
 
     /// Initialize Realtek RTL8192 series
     fn init_realtek_rtl8192(&mut self) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Realtek RTL8192 detected\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Realtek RTL8192 detected\n");
 
         if let Some(device) = self.pci_device {
             unsafe {
@@ -441,13 +430,13 @@ impl WifiDriver {
 
     /// Initialize Broadcom WiFi device (generic)
     fn init_broadcom(&mut self) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Broadcom chipset detected\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Broadcom chipset detected\n");
         Ok(())
     }
 
     /// Initialize Broadcom BCM series
     fn init_broadcom_bcm(&mut self) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Broadcom BCM WiFi detected\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Broadcom BCM WiFi detected\n");
 
         if let Some(device) = self.pci_device {
             unsafe {
@@ -461,13 +450,13 @@ impl WifiDriver {
 
     /// Initialize Atheros WiFi device (generic)
     fn init_atheros(&mut self) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Atheros chipset detected\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Atheros chipset detected\n");
         Ok(())
     }
 
     /// Initialize Atheros AR9285
     fn init_atheros_ar9285(&mut self) -> Result<(), WifiError> {
-        crate::vga::print_str("[WiFi] Atheros AR9285 detected\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Atheros AR9285 detected\n");
 
         if let Some(device) = self.pci_device {
             unsafe {
@@ -485,7 +474,7 @@ impl WifiDriver {
             return Err(WifiError::NotEnabled);
         }
 
-        crate::vga::print_str("[WiFi] Scanning for networks...\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Scanning for networks...\n");
 
         self.connection.state = WifiState::Scanning;
         self.scan_count = 0;
@@ -495,9 +484,9 @@ impl WifiDriver {
 
         self.connection.state = WifiState::Idle;
 
-        crate::vga::print_str("[WiFi] Found ");
+        crate::drivers::x86::vga::print_str("[WiFi] Found ");
         print_number(self.scan_count);
-        crate::vga::print_str(" networks\n");
+        crate::drivers::x86::vga::print_str(" networks\n");
 
         self.record_temporal_state_snapshot();
         Ok(self.scan_count)
@@ -538,7 +527,7 @@ impl WifiDriver {
 
         // If no real hardware, show that no networks were found
         if self.scan_count == 0 {
-            crate::vga::print_str("[WiFi] No networks detected (hardware may not be present)\n");
+            crate::drivers::x86::vga::print_str("[WiFi] No networks detected (hardware may not be present)\n");
         }
 
         Ok(())
@@ -841,9 +830,9 @@ impl WifiDriver {
 
         let network = target_network.ok_or(WifiError::NetworkNotFound)?;
 
-        crate::vga::print_str("[WiFi] Connecting to: ");
-        crate::vga::print_str(ssid);
-        crate::vga::print_str("\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Connecting to: ");
+        crate::drivers::x86::vga::print_str(ssid);
+        crate::drivers::x86::vga::print_str("\n");
 
         // Check security requirements
         if network.security != WifiSecurity::Open && password.is_none() {
@@ -859,7 +848,7 @@ impl WifiDriver {
         self.connection.state = WifiState::Connected;
         self.connection.ip_assigned = true; // Simulated DHCP
 
-        crate::vga::print_str("[WiFi] Connected! IP: 192.168.1.100\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Connected! IP: 192.168.1.100\n");
 
         self.record_temporal_state_snapshot();
         Ok(())
@@ -908,7 +897,7 @@ impl WifiDriver {
         // 3. Association (includes RSN IE for WPA2).
         // 4. WPA2 4-way handshake (if secured).
 
-        crate::vga::print_str("[WiFi] Authenticating...\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Authenticating...\n");
         self.connection.state = WifiState::Authenticating;
 
         // Ensure we are tuned to the target channel before auth/assoc/EAPOL.
@@ -931,7 +920,7 @@ impl WifiDriver {
             return Err(WifiError::AuthenticationFailed);
         }
 
-        crate::vga::print_str("[WiFi] Associating...\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Associating...\n");
         // Step 2: Association
         let mut associated = false;
         for attempt in 0..WIFI_ASSOC_RETRIES {
@@ -961,7 +950,7 @@ impl WifiDriver {
                 return Err(WifiError::NoPassword);
             };
 
-            crate::vga::print_str("[WiFi] Starting WPA2 4-way handshake...\n");
+            crate::drivers::x86::vga::print_str("[WiFi] Starting WPA2 4-way handshake...\n");
             self.wpa2_four_way_handshake_with_pmk(&pmk)?;
             self.temporal_cache_pmk_for_current_network(&pmk);
         }
@@ -1032,11 +1021,11 @@ impl WifiDriver {
 
     /// Wait for authentication response
     fn wait_for_auth_response(&mut self) -> Result<(), WifiError> {
-        let start = crate::pit::get_ticks();
+        let start = crate::scheduler::pit::get_ticks();
         let deadline = start.saturating_add(ticks_from_ms(WIFI_AUTH_TIMEOUT_MS));
 
         let mut buf = [0u8; 512];
-        while crate::pit::get_ticks() < deadline {
+        while crate::scheduler::pit::get_ticks() < deadline {
             if let Some(len) = self.try_receive_frame(&mut buf)? {
                 if self.is_auth_response_frame(&buf[..len])? {
                     return Ok(());
@@ -1097,7 +1086,7 @@ impl WifiDriver {
 
     fn wpa2_four_way_handshake_with_pmk(&mut self, pmk: &[u8; 32]) -> Result<(), WifiError> {
         // Step 2: Wait for Message 1 from AP (contains ANonce + replay counter)
-        crate::vga::print_str("[WiFi] Waiting for Message 1 (ANonce)...\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Waiting for Message 1 (ANonce)...\n");
         let (anonce, replay_counter) = self.receive_eapol_msg1()?;
 
         // Step 3: Generate our nonce (SNonce)
@@ -1109,21 +1098,21 @@ impl WifiDriver {
         let ptk = self.derive_ptk(pmk, &anonce, &snonce)?;
 
         // Step 5: Send Message 2 to AP (contains SNonce + MIC + replay counter)
-        crate::vga::print_str("[WiFi] Sending Message 2 (SNonce + MIC)...\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Sending Message 2 (SNonce + MIC)...\n");
         self.send_eapol_msg2(&snonce, &ptk, replay_counter)?;
 
         // Step 6: Wait for Message 3 from AP (contains encrypted key data incl. GTK KDE + MIC)
-        crate::vga::print_str("[WiFi] Waiting for Message 3 (GTK + MIC)...\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Waiting for Message 3 (GTK + MIC)...\n");
         let (gtk, replay_counter_3) = self.receive_eapol_msg3(&ptk, replay_counter, &anonce)?;
 
         // Step 7: Send Message 4 to AP (ACK with MIC + replay counter)
-        crate::vga::print_str("[WiFi] Sending Message 4 (ACK)...\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Sending Message 4 (ACK)...\n");
         self.send_eapol_msg4(&ptk, replay_counter_3)?;
 
         // Step 8: Install PTK and GTK for encryption
         self.install_keys(&ptk, &gtk)?;
 
-        crate::vga::print_str("[WiFi] WPA2 4-way handshake completed successfully\n");
+        crate::drivers::x86::vga::print_str("[WiFi] WPA2 4-way handshake completed successfully\n");
         Ok(())
     }
 
@@ -1454,7 +1443,7 @@ impl WifiDriver {
         }
 
         if diff != 0 {
-            crate::vga::print_str("[WiFi] MIC verification failed!\n");
+            crate::drivers::x86::vga::print_str("[WiFi] MIC verification failed!\n");
             return Err(WifiError::AuthenticationFailed);
         }
 
@@ -1537,11 +1526,11 @@ impl WifiDriver {
 
     /// Receive EAPOL Message 1 (ANonce from AP)
     fn receive_eapol_msg1(&mut self) -> Result<([u8; 32], u64), WifiError> {
-        let start = crate::pit::get_ticks();
+        let start = crate::scheduler::pit::get_ticks();
         let deadline = start.saturating_add(ticks_from_ms(WIFI_EAPOL_TIMEOUT_MS));
 
         let mut buf = [0u8; 1536];
-        while crate::pit::get_ticks() < deadline {
+        while crate::scheduler::pit::get_ticks() < deadline {
             if let Some(len) = self.try_receive_frame(&mut buf)? {
                 let frame = &buf[..len];
                 if !self.is_frame_from_ap_to_station(frame) {
@@ -1772,7 +1761,7 @@ impl WifiDriver {
         expected_replay_counter: u64,
         expected_anonce: &[u8; 32],
     ) -> Result<([u8; 32], u64), WifiError> {
-        let start = crate::pit::get_ticks();
+        let start = crate::scheduler::pit::get_ticks();
         let deadline = start.saturating_add(ticks_from_ms(WIFI_EAPOL_TIMEOUT_MS));
 
         let kck = &ptk[0..16];
@@ -1780,7 +1769,7 @@ impl WifiDriver {
         kek.copy_from_slice(&ptk[16..32]);
 
         let mut buf = [0u8; 1536];
-        while crate::pit::get_ticks() < deadline {
+        while crate::scheduler::pit::get_ticks() < deadline {
             if let Some(len) = self.try_receive_frame(&mut buf)? {
                 let frame = &buf[..len];
                 if !self.is_frame_from_ap_to_station(frame) {
@@ -1954,7 +1943,7 @@ impl WifiDriver {
         // RX PN replay window floor — any frame arriving with PN <= this is a replay and dropped.
         self.rx_pn_threshold = 0;
 
-        crate::vga::print_str("[WiFi] Installing PTK/GTK: key_idx=1, TX PN reset to 1\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Installing PTK/GTK: key_idx=1, TX PN reset to 1\n");
 
         let device = match self.pci_device {
             Some(d) => d,
@@ -2131,11 +2120,11 @@ impl WifiDriver {
 
     /// Wait for association response
     fn wait_for_association_response(&mut self) -> Result<(), WifiError> {
-        let start = crate::pit::get_ticks();
+        let start = crate::scheduler::pit::get_ticks();
         let deadline = start.saturating_add(ticks_from_ms(WIFI_ASSOC_TIMEOUT_MS));
 
         let mut buf = [0u8; 512];
-        while crate::pit::get_ticks() < deadline {
+        while crate::scheduler::pit::get_ticks() < deadline {
             if let Some(len) = self.try_receive_frame(&mut buf)? {
                 if self.is_association_response_frame(&buf[..len])? {
                     return Ok(());
@@ -2307,7 +2296,7 @@ impl WifiDriver {
                     core::ptr::write_volatile(base_addr.add(0x204 / 4), frame.len() as u32);
                     core::ptr::write_volatile(base_addr.add(0x200 / 4), 0x80000001); // TX enable + data frame
 
-                    crate::vga::print_str("[WiFi] Data frame transmitted\n");
+                    crate::drivers::x86::vga::print_str("[WiFi] Data frame transmitted\n");
                 }
             }
         }
@@ -2369,7 +2358,7 @@ impl WifiDriver {
             return Err(WifiError::NotConnected);
         }
 
-        crate::vga::print_str("[WiFi] Disconnecting...\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Disconnecting...\n");
 
         self.connection.state = WifiState::Disconnecting;
 
@@ -2379,7 +2368,7 @@ impl WifiDriver {
         self.connection.state = WifiState::Idle;
         self.connection.ip_assigned = false;
 
-        crate::vga::print_str("[WiFi] Disconnected\n");
+        crate::drivers::x86::vga::print_str("[WiFi] Disconnected\n");
 
         self.record_temporal_state_snapshot();
         Ok(())
@@ -2440,7 +2429,7 @@ impl WifiDriver {
     fn print_mac(&self) {
         for (i, byte) in self.mac_address.iter().enumerate() {
             if i > 0 {
-                crate::vga::print_char(':');
+                crate::drivers::x86::vga::print_char(':');
             }
             print_hex_byte(*byte);
         }
@@ -2728,7 +2717,7 @@ pub fn temporal_apply_wifi_driver_payload(payload: &[u8]) -> Result<(), &'static
     // Hardware restore: if state said we previously had a device, attempt re-detect and reconnect.
     if enabled && pci_present {
         drop(wifi);
-        let mut scanner = crate::pci::PciScanner::new();
+        let mut scanner = crate::drivers::x86::pci::PciScanner::new();
         scanner.scan();
         let device = scanner
             .find_wifi_device()
@@ -3034,8 +3023,8 @@ fn print_hex_byte(byte: u8) {
     let high = (byte >> 4) & 0xF;
     let low = byte & 0xF;
 
-    crate::vga::print_char(hex_digit(high));
-    crate::vga::print_char(hex_digit(low));
+    crate::drivers::x86::vga::print_char(hex_digit(high));
+    crate::drivers::x86::vga::print_char(hex_digit(low));
 }
 
 fn hex_digit(n: u8) -> char {

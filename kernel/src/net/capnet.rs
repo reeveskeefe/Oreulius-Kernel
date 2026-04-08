@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! CapNet v1: Portable network capability token format.
@@ -29,7 +18,7 @@
 extern crate alloc;
 
 use crate::ipc::ProcessId;
-use crate::persistence;
+use crate::temporal::persistence;
 use crate::security::{self, AuditEntry, SecurityEvent};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -867,6 +856,23 @@ impl CapNetError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapNetInitError {
+    SpectralGapTooLow,
+    CheegerConductanceTooLow,
+}
+
+impl CapNetInitError {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CapNetInitError::SpectralGapTooLow => "CapNet spectral gap certificate invalid",
+            CapNetInitError::CheegerConductanceTooLow => {
+                "CapNet Cheeger conductance certificate invalid"
+            }
+        }
+    }
+}
+
 /// Portable network capability token.
 ///
 /// Semantics:
@@ -906,8 +912,8 @@ impl CapabilityTokenV1 {
     /// ensuring it adheres to strict Max-Flow tracking via the `LinearCapability` struct.
     pub fn into_linear<const C: usize>(
         self,
-    ) -> crate::linear_capability::LinearCapability<Self, C> {
-        crate::linear_capability::LinearCapability::new(self)
+    ) -> crate::math::linear_capability::LinearCapability<Self, C> {
+        crate::math::linear_capability::LinearCapability::new(self)
     }
 }
 
@@ -923,9 +929,9 @@ impl CapabilityTokenV1 {
 /// via `AffineSplit`.
 pub struct SplitCap<T: Send, const A: usize, const B: usize> {
     /// Portion retained by the delegating party.
-    pub local: crate::linear_capability::LinearCapability<T, A>,
+    pub local: crate::math::linear_capability::LinearCapability<T, A>,
     /// Portion handed off to the delegate.
-    pub delegated: crate::linear_capability::LinearCapability<T, B>,
+    pub delegated: crate::math::linear_capability::LinearCapability<T, B>,
 }
 
 /// Trait for capability tokens that can be linearly delegated.
@@ -1348,7 +1354,7 @@ fn build_control_frame_for_peer(
         frame.payload[..payload.len()].copy_from_slice(payload);
     }
     frame.frame_mac = compute_control_mac(peer.key_k0, peer.key_k1, &frame)?;
-    peer.last_seen_epoch = crate::pit::get_ticks() as u64;
+    peer.last_seen_epoch = crate::scheduler::pit::get_ticks() as u64;
     let (bytes, len) = encode_control_frame(&frame)?;
     let out = EncodedControlFrame {
         len,
@@ -1975,16 +1981,18 @@ pub fn process_incoming_control_payload(
     Ok(out)
 }
 
-pub fn init() {
+pub fn init() -> Result<(), CapNetInitError> {
+    offline_certificate::validate_certificate()?;
+
     let mut local = CAPNET_LOCAL_DEVICE_ID.lock();
     if *local != 0 {
-        return;
+        return Ok(());
     }
 
     let hi = security::security().random_u32() as u64;
     let lo = security::security().random_u32() as u64;
     let mut device_id = (hi << 32) | lo;
-    device_id ^= (crate::pit::get_ticks() as u64) << 1;
+    device_id ^= (crate::scheduler::pit::get_ticks() as u64) << 1;
     if device_id == 0 {
         device_id = 1;
     }
@@ -1995,6 +2003,7 @@ pub fn init() {
     // after reboot/restart.
     rebuild_revocation_journal();
     record_temporal_state_snapshot();
+    Ok(())
 }
 
 pub fn local_device_id() -> Option<u64> {
@@ -2098,7 +2107,7 @@ pub fn establish_peer_session(
     peer.ctrl_rx_high_seq = 0;
     peer.ctrl_rx_bitmap = 0;
     peer.ctrl_tx_next_seq = 0;
-    peer.last_seen_epoch = crate::pit::get_ticks() as u64;
+    peer.last_seen_epoch = crate::scheduler::pit::get_ticks() as u64;
     drop(peers);
     record_temporal_state_snapshot();
     Ok(next_epoch)
@@ -2129,7 +2138,7 @@ pub fn install_peer_session_key(
     peer.ctrl_rx_high_seq = 0;
     peer.ctrl_rx_bitmap = 0;
     peer.ctrl_tx_next_seq = 0;
-    peer.last_seen_epoch = crate::pit::get_ticks() as u64;
+    peer.last_seen_epoch = crate::scheduler::pit::get_ticks() as u64;
     drop(peers);
     record_temporal_state_snapshot();
     Ok(())
@@ -2151,7 +2160,7 @@ fn reset_peer_session_state(peer_device_id: u64) -> Result<(), CapNetError> {
     peer.ctrl_rx_high_seq = 0;
     peer.ctrl_rx_bitmap = 0;
     peer.ctrl_tx_next_seq = 0;
-    peer.last_seen_epoch = crate::pit::get_ticks() as u64;
+    peer.last_seen_epoch = crate::scheduler::pit::get_ticks() as u64;
     Ok(())
 }
 
@@ -2165,7 +2174,7 @@ fn reset_fuzz_harness_state(
         return Err(CapNetError::UnknownPeer);
     }
 
-    let now = crate::pit::get_ticks() as u64;
+    let now = crate::scheduler::pit::get_ticks() as u64;
 
     {
         let mut peers = CAPNET_PEERS.lock();
@@ -2479,7 +2488,7 @@ pub fn capnet_fuzz(iterations: u32, seed: u64) -> Result<CapNetFuzzStats, &'stat
         CapNetFuzzActiveGuard { prev }
     };
 
-    init();
+    init().map_err(|e| e.as_str())?;
 
     // Override the random device ID with a deterministic value derived from
     // the seed so that MAC verification is fully reproducible across boots.
@@ -2883,11 +2892,11 @@ pub fn capnet_fuzz_regression_soak_default(
 /// - Replay window rejects duplicate control sequence.
 /// - Revocation precedence blocks descendants after parent revocation.
 pub fn formal_capnet_self_check() -> Result<(), &'static str> {
-    init();
+    init().map_err(|e| e.as_str())?;
     let local = local_device_id().ok_or("CapNet local identity unavailable")?;
     register_peer(local, PeerTrustPolicy::Audit, 0).map_err(|e| e.as_str())?;
 
-    let nonce_base = ((crate::pit::get_ticks() as u64) << 16)
+    let nonce_base = ((crate::scheduler::pit::get_ticks() as u64) << 16)
         ^ (security::security().random_u32() as u64)
         ^ 0xCA70_0000_0000_0000u64;
     let k0 = 0x1111_2222_3333_4444u64 ^ nonce_base;
@@ -3221,29 +3230,16 @@ pub mod offline_certificate {
     pub const EPSILON_SAFE: f64 = 0.05_f64;
 
     /// Verify that the compiled certificate values are internally consistent.
-    /// Called once from `capnet_init()` so any linkage/codegen anomaly that
-    /// somehow produces a zero certificate is caught at startup, not silently.
-    ///
-    /// # Panics
-    /// Panics (kernel panic) if either constant is below `EPSILON_SAFE`.
-    pub fn assert_certificate_valid() {
+    /// Called once during boot so any linkage/codegen anomaly is caught as a
+    /// typed startup error instead of surfacing as a panic in the helper.
+    pub fn validate_certificate() -> Result<(), super::CapNetInitError> {
         // SAFETY: these are compile-time f64 constants — no UB.
         if SPECTRAL_GAP < EPSILON_SAFE {
-            panic!(
-                "CapNet: spectral gap certificate invalid at runtime \
-                 (SPECTRAL_GAP={} < EPSILON_SAFE={})! \
-                 Rebuild the kernel — capability isolation cannot be guaranteed.",
-                SPECTRAL_GAP, EPSILON_SAFE
-            );
+            return Err(super::CapNetInitError::SpectralGapTooLow);
         }
         if CHEEGER_CONDUCTANCE < EPSILON_SAFE / 2.0 {
-            panic!(
-                "CapNet: Cheeger conductance certificate invalid at runtime \
-                 (CHEEGER_CONDUCTANCE={} < {})! \
-                 Rebuild the kernel — IPC flow isolation cannot be guaranteed.",
-                CHEEGER_CONDUCTANCE,
-                EPSILON_SAFE / 2.0
-            );
+            return Err(super::CapNetInitError::CheegerConductanceTooLow);
         }
+        Ok(())
     }
 }

@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! USB Host Controller Driver
@@ -63,7 +52,7 @@ extern crate alloc;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
-use crate::pci::PciDevice;
+use crate::drivers::x86::pci::PciDevice;
 
 // ============================================================================
 // PCI class codes for USB host controllers
@@ -4307,7 +4296,7 @@ impl UsbHidDevice {
             UhciXferResult::Ok => {
                 let report = HidMouseReport::from_bytes(&buf);
                 // Forward mouse deltas into the shared mouse event pipeline.
-                crate::mouse::submit_usb_report(crate::mouse::UsbMouseReport {
+                crate::drivers::x86::mouse::submit_usb_report(crate::drivers::x86::mouse::UsbMouseReport {
                     buttons: report.buttons,
                     dx: report.dx,
                     dy: report.dy,
@@ -4354,7 +4343,7 @@ impl UsbHidDevice {
             &mut self.toggle,
         ) {
             let report = HidMouseReport::from_bytes(&buf);
-            crate::mouse::submit_usb_report(crate::mouse::UsbMouseReport {
+            crate::drivers::x86::mouse::submit_usb_report(crate::drivers::x86::mouse::UsbMouseReport {
                 buttons: report.buttons,
                 dx: report.dx,
                 dy: report.dy,

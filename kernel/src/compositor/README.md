@@ -229,7 +229,7 @@ On AArch64, `init()` is compiled as a no-op stub.  The platform-dispatch is
 Called every kernel timer interrupt (or from the scheduler idle loop).  If the
 compositor is not yet initialised the function returns immediately.  Each tick:
 
-1. **Input pump** — drains `crate::drivers::input::read()` until the ring is
+1. **Input pump** — drains `crate::drivers::x86::input::read()` until the ring is
    empty.  Every raw `InputEvent` is passed to `route_input()` which classifies
    it as Key or Mouse and returns an optional `RoutedEvent` (session index +
    `CompositorInputEvent`).  Routing is recorded in the audit log.
@@ -495,7 +495,7 @@ which bounds-check before dereferencing.
 4. `write_bytes(ptr, 0, pages × PAGE_SIZE)` — buffer starts transparent/black.
 5. Return `Some(Surface { ... })`.
 
-**Page size** is `crate::paging::PAGE_SIZE` on x86 (4,096 bytes), and 4,096
+**Page size** is `crate::fs::paging::PAGE_SIZE` on x86 (4,096 bytes), and 4,096
 hardcoded on AArch64 (where the compositor is stubbed anyway).
 
 ### 9.3 `SurfacePool`
@@ -895,12 +895,12 @@ builds without pulling in the x86-specific framebuffer and input drivers.
 ## 18. Legacy Compatibility Shim
 
 `mod.rs` re-exports a `compositor()` function that returns
-`spin::MutexGuard<'static, crate::drivers::compositor::Compositor>`:
+`spin::MutexGuard<'static, crate::drivers::x86::compositor::Compositor>`:
 
 ```rust
 #[cfg(not(target_arch = "aarch64"))]
-pub fn compositor() -> spin::MutexGuard<'static, crate::drivers::compositor::Compositor> {
-    crate::drivers::compositor::compositor()
+pub fn compositor() -> spin::MutexGuard<'static, crate::drivers::x86::compositor::Compositor> {
+    crate::drivers::x86::compositor::compositor()
 }
 ```
 
@@ -985,7 +985,7 @@ The active scanout is configured by the driver setup in `gpu_support::init()`.
 The compositor does not touch framebuffer memory directly.
 
 ### Kernel Input Driver (`drivers/input.rs`)
-`tick()` calls `crate::drivers::input::read()` to drain the kernel input ring.
+`tick()` calls `crate::drivers::x86::input::read()` to drain the kernel input ring.
 The compositor does not register interrupt handlers — input is polled, not pushed.
 
 ### Memory Subsystem (`memory.rs`, `paging.rs`)

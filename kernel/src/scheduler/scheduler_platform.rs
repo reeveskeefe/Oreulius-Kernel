@@ -1,13 +1,13 @@
 /*!
  * Oreulius Kernel Project
  *
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 #![allow(dead_code)]
 
 #[cfg(target_arch = "x86")]
-pub use crate::asm_bindings::ProcessContext;
+pub use crate::memory::asm_bindings::ProcessContext;
 
 #[cfg(target_arch = "x86_64")]
 #[repr(C)]
@@ -163,18 +163,18 @@ pub fn context_new() -> ProcessContext {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
 pub fn ticks_now() -> u64 {
-    crate::pit::get_ticks()
+    crate::scheduler::pit::get_ticks()
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn ticks_now() -> u64 {
-    crate::arch::aarch64_virt::timer_ticks()
+    crate::arch::aarch64::aarch64_virt::timer_ticks()
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn validate_kernel_stack_mapping(stack_bottom: usize, stack_top: usize) -> bool {
-    let guard = crate::paging::kernel_space().lock();
+    let guard = crate::fs::paging::kernel_space().lock();
     if let Some(space) = guard.as_ref() {
         let bottom = stack_bottom;
         let top_byte = stack_top.saturating_sub(1);
@@ -196,7 +196,7 @@ pub fn init_kernel_thread_context(
     stack_top: usize,
 ) -> Result<(ProcessContext, usize, usize), &'static str> {
     let entry_addr = entry as *const () as usize;
-    let trampoline_addr = crate::asm_bindings::thread_start_trampoline as usize;
+    let trampoline_addr = crate::memory::asm_bindings::thread_start_trampoline as usize;
     let current_root =
         crate::arch::mmu::PhysAddr::new(crate::arch::mmu::current_page_table_root_addr())
             .try_as_u32()
@@ -298,7 +298,7 @@ pub fn context_stack_pointer(ctx: &ProcessContext) -> usize {
 
 #[cfg(target_arch = "x86")]
 pub unsafe fn load_context(ctx: *const ProcessContext) -> ! {
-    crate::asm_bindings::asm_load_context(ctx)
+    crate::memory::asm_bindings::asm_load_context(ctx)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -313,7 +313,7 @@ pub unsafe fn load_context(ctx: *const ProcessContext) -> ! {
 
 #[cfg(target_arch = "x86")]
 pub unsafe fn switch_context(from: *mut ProcessContext, to: *const ProcessContext) {
-    crate::asm_bindings::asm_switch_context(from, to)
+    crate::memory::asm_bindings::asm_switch_context(from, to)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -329,31 +329,31 @@ pub unsafe fn switch_context(from: *mut ProcessContext, to: *const ProcessContex
 #[cfg(target_arch = "x86")]
 #[inline]
 pub fn runtime_pid_sync(pid_raw: u32) {
-    let _ = crate::process::set_current_runtime_pid(crate::process::Pid::new(pid_raw));
+    let _ = crate::scheduler::process::set_current_runtime_pid(crate::scheduler::process::Pid::new(pid_raw));
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn runtime_pid_sync(pid_raw: u32) {
-    let _ = crate::process::set_current_runtime_pid(crate::process::Pid::new(pid_raw));
+    let _ = crate::scheduler::process::set_current_runtime_pid(crate::scheduler::process::Pid::new(pid_raw));
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn runtime_pid_sync(pid_raw: u32) {
-    let _ = crate::arch::aarch64_virt::scheduler_note_context_switch(pid_raw);
+    let _ = crate::arch::aarch64::aarch64_virt::scheduler_note_context_switch(pid_raw);
 }
 
 #[cfg(target_arch = "x86")]
 #[inline]
 pub fn runtime_kernel_stack_sync(stack_top: usize) {
-    crate::gdt::update_kernel_stack(stack_top as u32);
+    crate::platform::gdt::update_kernel_stack(stack_top as u32);
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn runtime_kernel_stack_sync(stack_top: usize) {
-    crate::arch::x86_64_runtime::update_kernel_stack_top(stack_top);
+    crate::arch::x86::x86_64_runtime::update_kernel_stack_top(stack_top);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -394,7 +394,7 @@ pub fn irqs_disabled() -> bool {
 
 #[cfg(target_arch = "x86")]
 pub unsafe fn irq_save_disable() -> IrqFlags {
-    crate::idt_asm::fast_cli_save()
+    crate::platform::idt_asm::fast_cli_save()
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -416,7 +416,7 @@ pub unsafe fn irq_save_disable() -> IrqFlags {
 
 #[cfg(target_arch = "x86")]
 pub unsafe fn irq_restore(flags: IrqFlags) {
-    crate::idt_asm::fast_sti_restore(flags);
+    crate::platform::idt_asm::fast_sti_restore(flags);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -493,11 +493,11 @@ pub unsafe fn debug_dump_launch_context(ctx_ptr: *const ProcessContext) {
 
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn debug_dump_launch_context(ctx_ptr: *const ProcessContext) {
-    let uart = crate::arch::aarch64_pl011::early_uart();
+    let uart = crate::arch::aarch64::aarch64_pl011::early_uart();
     uart.init_early();
     let ctx = &*ctx_ptr;
 
-    fn w_hex(uart: &crate::arch::aarch64_pl011::Pl011, v: u64) {
+    fn w_hex(uart: &crate::arch::aarch64::aarch64_pl011::Pl011, v: u64) {
         const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut buf = [0u8; 18];
         buf[0] = b'0';

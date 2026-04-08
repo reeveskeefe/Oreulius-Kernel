@@ -1,7 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 #![allow(dead_code)]
@@ -33,12 +33,12 @@ pub const TEMPORAL_SCHEDULER_EVENT_STATE: u8 = 1;
 pub fn vga_print_str(msg: &str) {
     #[cfg(not(target_arch = "aarch64"))]
     {
-        crate::vga::print_str(msg);
+        crate::drivers::x86::vga::print_str(msg);
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        let uart = crate::arch::aarch64_pl011::early_uart();
+        let uart = crate::arch::aarch64::aarch64_pl011::early_uart();
         uart.init_early();
         uart.write_str(msg);
     }
@@ -59,7 +59,7 @@ pub fn logf(args: fmt::Arguments<'_>) {
         struct UartWriter;
         impl fmt::Write for UartWriter {
             fn write_str(&mut self, s: &str) -> fmt::Result {
-                let uart = crate::arch::aarch64_pl011::early_uart();
+                let uart = crate::arch::aarch64::aarch64_pl011::early_uart();
                 uart.init_early();
                 uart.write_str(s);
                 Ok(())

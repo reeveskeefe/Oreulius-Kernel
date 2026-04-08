@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Advanced System Commands - Addendum
@@ -20,7 +9,7 @@
 //! Additional commands for testing advanced scheduler, memory allocator,
 //! and other hardened kernel features
 
-use crate::vga;
+use crate::drivers::x86::vga;
 
 // Helper functions for printing numbers (imported from commands.rs functionality)
 fn print_u32(n: u32) {
@@ -51,7 +40,7 @@ fn print_usize(n: usize) {
 
 /// Show quantum scheduler statistics and process accounting
 pub fn cmd_quantum_stats() {
-    use crate::quantum_scheduler;
+    use crate::scheduler::quantum_scheduler;
 
     vga::print_str("Quantum Scheduler Statistics\n");
     vga::print_str("============================\n\n");
@@ -97,7 +86,7 @@ pub fn cmd_quantum_stats() {
 }
 
 pub fn cmd_sched_entropy_bench() {
-    use crate::quantum_scheduler;
+    use crate::scheduler::quantum_scheduler;
 
     vga::print_str("Scheduler Entropy Bench\n");
     vga::print_str("=======================\n\n");
@@ -122,7 +111,7 @@ pub fn cmd_sched_entropy_bench() {
 
 /// Show hardened allocator statistics
 pub fn cmd_alloc_stats() {
-    use crate::hardened_allocator;
+    use crate::memory::hardened_allocator;
 
     vga::print_str("Hardened Allocator Statistics\n");
     vga::print_str("=============================\n\n");
@@ -171,7 +160,7 @@ pub fn cmd_alloc_stats() {
 /// Check for memory leaks (debug builds only)
 #[cfg(debug_assertions)]
 pub fn cmd_leak_check() {
-    use crate::hardened_allocator;
+    use crate::memory::hardened_allocator;
 
     vga::print_str("Memory Leak Detection\n");
     vga::print_str("=====================\n\n");
@@ -206,7 +195,7 @@ pub fn cmd_leak_check() {
 
 /// Test futex-like blocking primitives
 pub fn cmd_futex_test() {
-    use crate::quantum_scheduler;
+    use crate::scheduler::quantum_scheduler;
 
     vga::print_str("Futex-like Blocking Primitive Test\n");
     vga::print_str("===================================\n\n");
@@ -254,7 +243,7 @@ pub fn cmd_futex_test() {
 
 /// Update fragmentation metrics
 pub fn cmd_update_frag() {
-    use crate::hardened_allocator;
+    use crate::memory::hardened_allocator;
 
     vga::print_str("Updating fragmentation metrics...\n");
     let score = hardened_allocator::update_fragmentation();

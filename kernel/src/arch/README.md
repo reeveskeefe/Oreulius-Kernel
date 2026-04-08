@@ -1,6 +1,6 @@
 # `kernel/src/arch` — Architecture Abstraction Layer
 
-The `arch` module is the hardware portability boundary for the Oreulius kernel. It exposes a single stable `ArchPlatform` trait that `rust_main` calls for every platform-specific boot step, decoupling the rest of the kernel from CPU architecture, interrupt controller hardware, timer registers, and page-table format. Implementations exist for x86 (i686, Multiboot1/2), x86-64 (64-bit long mode, identity-mapped JIT sandbox), and AArch64 (QEMU `virt` machine, GICv2, PL011, VirtIO-MMIO). A compile-time stub satisfies the trait contract on any unsupported target without halting the build.
+The `arch` module is the hardware portability boundary for the Oreulius kernel. It exposes a single stable `ArchPlatform` trait that `rust_main` calls for every platform-specific boot step, decoupling the rest of the kernel from CPU architecture, interrupt controller hardware, timer registers, and page-table format. The public facade now routes through target-owned backend roots: `arch::x86` for the x86-family bring-up path and `arch::aarch64` for the AArch64 bring-up path. The older leaf files remain in place behind `#[path]` shims during the transition.
 
 ---
 
@@ -33,7 +33,9 @@ The `arch` module is the hardware portability boundary for the Oreulius kernel. 
 
 | File | Lines | Role |
 |---|---|---|
-| `mod.rs` | 226 | Module façade; `ArchPlatform` trait; `BootInfo`/`BootProtocol`; arch dispatch shims |
+| `mod.rs` | 192 | Public facade; `ArchPlatform` trait; `BootInfo`/`BootProtocol`; backend selection |
+| `x86/mod.rs` | 98 | x86-family backend root; platform/runtime wrappers; legacy and x86_64 shims |
+| `aarch64/mod.rs` | 84 | AArch64 backend root; boot/runtime wrappers; DTB/UART/vectors/virt shims |
 | `aarch64_virt.rs` | 3,226 | QEMU `virt` board: GICv2, timer, VirtIO-MMIO, DTB walk, shell, boot handoff |
 | `x86_64_runtime.rs` | 2,501 | x86-64 long-mode: GDT, IDT, PIC 8259A, COM1, PS/2, keyboard, trap dispatch |
 | `mmu_x86_64.rs` | 1,209 | x86-64 4-level paging, CoW, JIT sandbox, MMIO identity map |
@@ -46,7 +48,7 @@ The `arch` module is the hardware portability boundary for the Oreulius kernel. 
 | `x86_legacy.rs` | 234 | Multiboot1/2 info parsing; `X86LegacyPlatform` implementing `ArchPlatform` |
 | `fpu.rs` | 217 | FPU/SIMD state: FXSAVE/FXRSTOR (x86), NEON (AArch64), `ExtFpuState` |
 | `aarch64_runtime.rs` | 165 | AArch64 high-level `enter_runtime()` |
-| `mmu_x86_legacy.rs` | 88 | x86 32-bit MMU shim delegating to `crate::paging::AddressSpace` |
+| `mmu_x86_legacy.rs` | 88 | x86 32-bit MMU shim delegating to `crate::fs::paging::AddressSpace` |
 | `mmu_unsupported.rs` | 74 | Stub `ArchMmu` impl returning `Err("unsupported")` |
 | `unsupported.rs` | 48 | Stub `ArchPlatform` halting the CPU |
 
@@ -65,17 +67,18 @@ The `arch` module is the hardware portability boundary for the Oreulius kernel. 
                         │  static dispatch via PLATFORM: &dyn ArchPlatform
           ┌─────────────┼─────────────┐
           ▼             ▼             ▼
-  X86LegacyPlatform  AArch64Qemu   UnsupportedPlatform
-  (x86 / x86_64)    VirtPlatform  (stub: loop hlt)
-          │             │
-          │             ├─ aarch64_dtb   (FDT parser)
-          │             ├─ aarch64_pl011 (PL011 UART)
-          │             ├─ aarch64_vectors (vbar_el1 table)
-          │             └─ GICv2 / VirtIO-MMIO / generic timer
+  arch::x86 backend root   arch::aarch64 backend root   UnsupportedPlatform
+     (x86 / x86_64)              (AArch64)               (stub: loop hlt)
+          │                            │
+          │                            ├─ aarch64_dtb
+          │                            ├─ aarch64_pl011
+          │                            ├─ aarch64_vectors
+          │                            ├─ aarch64_virt
+          │                            └─ aarch64_runtime
           │
-          ├─ x86_legacy  (Multiboot1/2 boot_info parse)
-          ├─ x86_runtime (32-bit COM1, job table, shell)
-          └─ x86_64_runtime (GDT, IDT, PIC, trap dispatch)
+          ├─ x86_legacy
+          ├─ x86_runtime
+          └─ x86_64_runtime
 ```
 
 ```
@@ -151,6 +154,8 @@ pub trait ArchPlatform {
 ```
 
 The module provides top-level free functions that forward to a `static PLATFORM: &dyn ArchPlatform` selected at compile time:
+
+In the current layout, those calls are owned by `arch::x86` on x86-family targets and by `arch::aarch64` on AArch64. `mod.rs` stays as the stable facade that selects the backend and keeps the old leaf-file names available during the transition.
 
 | Free Function | Forwards To |
 |---|---|
@@ -415,7 +420,7 @@ pub(crate) fn debug_walk_current(virt_addr) -> DebugWalk
 
 ### x86 Legacy MMU Shim — `mmu_x86_legacy.rs`
 
-On `target_arch = "x86"`, `AddressSpace` is simply type-aliased to `crate::paging::AddressSpace`, which is the existing 32-bit two-level page directory implementation from the original kernel. This shim is intentionally minimal — the 32-bit paging abstraction lives in `kernel/src/paging/`, and `mmu_x86_legacy.rs` just ensures the `AddressSpace` type is available through the `arch::mmu` path.
+On `target_arch = "x86"`, `AddressSpace` is simply type-aliased to `crate::fs::paging::AddressSpace`, which is the existing 32-bit two-level page directory implementation from the original kernel. This shim is intentionally minimal — the 32-bit paging abstraction lives in `kernel/src/paging/`, and `mmu_x86_legacy.rs` just ensures the `AddressSpace` type is available through the `arch::mmu` path.
 
 ---
 

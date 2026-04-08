@@ -2,6 +2,9 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
+#[path = "src/security/intent_graph_data.rs"]
+mod intent_graph_data;
+
 fn emit_build_diagnostic(message: &str) {
     if env::var_os("OREULIUS_BUILD_DIAGNOSTICS").is_some() {
         eprintln!("{message}");
@@ -10,9 +13,10 @@ fn emit_build_diagnostic(message: &str) {
 
 /// Build-time Spectral Gap / Cheeger conductance checker (PMA §11.2).
 ///
-/// Rather than using a synthetic hardcoded graph, this build script **parses
-/// the actual `CTMC_Q` matrix from `src/security/intent_graph.rs`** and constructs the
-/// weighted adjacency matrix from the off-diagonal transition rates.  The
+/// Rather than using a synthetic hardcoded graph, this build script consumes
+/// the shared `CTMC_Q` matrix from `src/security/intent_graph_data.rs` and
+/// constructs the weighted adjacency matrix from the off-diagonal transition
+/// rates.  The
 /// Fiedler value (λ₂ of the normalised Laplacian) is estimated via a proper
 /// **Lanczos iteration with full re-orthogonalisation**, which gives a
 /// certified residual bound rather than a fixed iteration count.
@@ -20,17 +24,18 @@ fn emit_build_diagnostic(message: &str) {
 /// If the conductance Φ(G) < ε_safe, compilation is aborted.
 fn main() {
     println!("cargo:rerun-if-changed=src/security/intent_graph.rs");
+    println!("cargo:rerun-if-changed=src/security/intent_graph_data.rs");
     println!("cargo:rerun-if-changed=src/capability/mod.rs");
 
     // -------------------------------------------------------------------------
-    // Step 1 — Parse CTMC_Q from intent_graph.rs
+    // Step 1 — Load CTMC_Q from the shared data module
     // -------------------------------------------------------------------------
-    let intent_graph_src = fs::read_to_string("src/security/intent_graph.rs")
-        .expect("build.rs: cannot read src/security/intent_graph.rs");
-
-    let adj = parse_ctmc_adjacency(&intent_graph_src);
-    let num_nodes = adj.len();
-    assert_eq!(num_nodes, 9, "Expected 9 IntentNode states");
+    let adj = ctmc_adjacency();
+    let num_nodes = intent_graph_data::INTENT_NODE_COUNT;
+    assert_eq!(adj.len(), num_nodes, "Expected 9 IntentNode states");
+    for row in &adj {
+        assert_eq!(row.len(), num_nodes, "Expected 9 IntentNode states per row");
+    }
 
     // -------------------------------------------------------------------------
     // Step 2 — Compute the normalised Laplacian L_norm = I - D^(-1/2) A D^(-1/2)
@@ -177,7 +182,7 @@ fn main() {
 
     emit_build_diagnostic("--- Oreulius Static Spectral Analysis (PMA §11.2) ---");
     emit_build_diagnostic(&format!(
-        "Graph derived from: src/security/intent_graph.rs CTMC_Q ({}×{} real topology)",
+        "Graph derived from: src/security/intent_graph_data.rs CTMC_Q ({}×{} real topology)",
         num_nodes, num_nodes
     ));
     emit_build_diagnostic(&format!(
@@ -190,7 +195,7 @@ fn main() {
             "FATAL [PMA §11.2]: IPC capability graph fails static conductance check!\n\
              Spectral gap γ = {:.6} < ε_safe = {:.6}.\n\
              Risk: isolated subgraph allows hoarded capability escalation.\n\
-             Fix: add edges to CTMC_Q in src/security/intent_graph.rs to reconnect the graph.",
+             Fix: add edges to CTMC_Q in src/security/intent_graph_data.rs to reconnect the graph.",
             fiedler, epsilon_safe
         );
     }
@@ -220,121 +225,21 @@ fn main() {
 }
 
 // =============================================================================
-// Helper: parse CTMC_Q from intent_graph.rs source text
+// Helper: derive the adjacency matrix from the shared CTMC data
 // =============================================================================
 
-/// Extracts the 9×9 adjacency weight matrix from the `CTMC_Q` constant.
-///
-/// We use the absolute value of off-diagonal entries as undirected edge weights.
-/// Diagonal entries (negative holding-time rates) are ignored.
-fn parse_ctmc_adjacency(src: &str) -> Vec<Vec<f64>> {
-    const N: usize = 9;
-
-    // Locate the `const CTMC_Q` block
-    let start = src
-        .find("const CTMC_Q")
-        .expect("build.rs: CTMC_Q not found in intent_graph.rs");
-    let block = &src[start..];
-
-    // Extract all integer literals (decimal, possibly negative) from the block.
-    // We stop collecting once we have N*N values.
-    let mut values: Vec<i64> = Vec::with_capacity(N * N);
-    let mut chars = block.chars().peekable();
-    // Skip until the opening `[` of the 2-D array
-    while let Some(c) = chars.next() {
-        if c == '[' {
-            break;
-        }
-    }
-
-    let mut pending_neg = false;
-    for c in chars.by_ref() {
-        match c {
-            '-' => pending_neg = true,
-            '0'..='9' => {
-                // Collect all consecutive digit chars
-                let mut num_str = String::new();
-                if pending_neg {
-                    num_str.push('-');
-                }
-                num_str.push(c);
-                pending_neg = false;
-                // peek ahead for more digits
-                // We can't easily peek a chars iterator consumed by for-loop;
-                // break here and rely on the regex-free approach below.
-                if let Ok(v) = num_str.parse::<i64>() {
-                    values.push(v);
-                }
-            }
-            _ => {
-                pending_neg = false;
-            }
-        }
-        if values.len() >= N * N {
-            break;
-        }
-    }
-
-    // The simple char-by-char approach above mis-parses multi-digit numbers.
-    // Use a proper numeric token parser instead.
-    let values = parse_integers(&block[..], N * N);
-
+fn ctmc_adjacency() -> Vec<Vec<f64>> {
+    const N: usize = intent_graph_data::INTENT_NODE_COUNT;
     let mut adj = vec![vec![0.0f64; N]; N];
     for i in 0..N {
         for j in 0..N {
             if i != j {
-                // Off-diagonal: use absolute value as undirected weight
-                adj[i][j] = (values[i * N + j].abs() as f64) / 1024.0;
+                adj[i][j] = (intent_graph_data::CTMC_Q[i][j].abs() as f64)
+                    / (intent_graph_data::CTMC_SCALE as f64);
             }
-            // Diagonal is not used (it's the negative row-sum rate)
         }
     }
     adj
-}
-
-/// Extract the first `count` signed integer tokens from `src`.
-fn parse_integers(src: &str, count: usize) -> Vec<i64> {
-    let mut result = Vec::with_capacity(count);
-    let mut chars = src.chars().peekable();
-
-    while result.len() < count {
-        // Skip until digit or '-'
-        loop {
-            match chars.peek() {
-                Some(&c) if c.is_ascii_digit() || c == '-' => break,
-                Some(_) => {
-                    chars.next();
-                }
-                None => return result,
-            }
-        }
-
-        let mut s = String::new();
-        if chars.peek() == Some(&'-') {
-            s.push('-');
-            chars.next();
-            // Ensure the '-' is followed by a digit (not just a subtraction op
-            // between expressions like `- 256 + 256`).
-            match chars.peek() {
-                Some(&c) if c.is_ascii_digit() => {}
-                _ => continue,
-            }
-        }
-
-        while let Some(&c) = chars.peek() {
-            if c.is_ascii_digit() {
-                s.push(c);
-                chars.next();
-            } else {
-                break;
-            }
-        }
-
-        if let Ok(v) = s.parse::<i64>() {
-            result.push(v);
-        }
-    }
-    result
 }
 
 // =============================================================================

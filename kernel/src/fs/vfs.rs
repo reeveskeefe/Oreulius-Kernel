@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Oreulius VFS (Hierarchical Filesystem)
@@ -37,10 +26,10 @@ use crate::fs::{
     FileKey, FilesystemCapability, FilesystemError, FilesystemQuota, FilesystemRights, Request,
     ResponseStatus,
 };
-use crate::interrupt_dag::{DagSpinlock, InterruptContext, DAG_LEVEL_THREAD, DAG_LEVEL_VFS};
+use crate::platform::interrupt_dag::{DagSpinlock, InterruptContext, DAG_LEVEL_THREAD, DAG_LEVEL_VFS};
 
-use crate::vfs_platform::{self, Pid};
-use crate::virtio_blk;
+use crate::fs::vfs_platform::{self, Pid};
+use crate::fs::virtio_blk;
 
 pub type InodeId = u64;
 pub type MountFileNodeId = u64;
@@ -1641,14 +1630,14 @@ impl Vfs {
             .map(|detail| detail.len())
             .unwrap_or(event.path.len())
             .min(u8::MAX as usize) as u8;
-        let summary = crate::wait_free_ring::TelemetryEvent::new(
+        let summary = crate::memory::wait_free_ring::TelemetryEvent::new(
             pid,
             watch_kind_code(event.kind),
-            crate::wait_free_ring::TELEMETRY_CAP_TYPE_VFS_WATCH,
+            crate::memory::wait_free_ring::TELEMETRY_CAP_TYPE_VFS_WATCH,
             score,
             vfs_platform::ticks_now(),
         );
-        let _ = crate::wait_free_ring::TELEMETRY_RING.push(summary);
+        let _ = crate::memory::wait_free_ring::TELEMETRY_RING.push(summary);
     }
 
     fn capability_mapper(&self) -> &CapabilityMapper {
@@ -4410,10 +4399,10 @@ pub fn close_fd(pid: Pid, fd: usize) -> Result<(), &'static str> {
 /// FD slots that were `None` in the parent remain `None` in the child.
 pub fn dup_fds_for_fork(
     child_pid: Pid,
-    parent_fd_table: &[Option<u64>; crate::process::MAX_FD],
-) -> [Option<u64>; crate::process::MAX_FD] {
+    parent_fd_table: &[Option<u64>; crate::scheduler::process::MAX_FD],
+) -> [Option<u64>; crate::scheduler::process::MAX_FD] {
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
-        let mut child_table = [None; crate::process::MAX_FD];
+        let mut child_table = [None; crate::scheduler::process::MAX_FD];
         for (slot, &entry) in parent_fd_table.iter().enumerate() {
             if let Some(parent_handle_id) = entry {
                 let idx = (parent_handle_id as usize).saturating_sub(1);
@@ -4452,7 +4441,7 @@ pub fn recover_from_persistence() -> Result<(), &'static str> {
     }
     let mut recovered =
         Vfs::decode_persistent_state(&snapshot).ok_or("vfs snapshot decode failed")?;
-    if !crate::virtio_blk::is_present() {
+    if !crate::fs::virtio_blk::is_present() {
         recovered.mounts.clear();
     }
     thread_context().acquire_lock(&VFS, |vfs, _sub| {

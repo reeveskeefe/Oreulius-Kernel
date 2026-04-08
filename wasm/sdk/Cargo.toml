@@ -3,8 +3,9 @@ name = "oreulius-sdk"
 version = "0.1.0"
 edition = "2021"
 description = "Typed Rust bindings for the Oreulius OS WASM/WASI host ABI"
-repository = "https://github.com/oreulius/oreulius"
-license = "MIT OR Apache-2.0"
+repository = "https://github.com/reeveskeefe/Oreulius-Kernel"
+license = "LicenseRef-Oreulius-Community"
+license-files = ["LICENSE"]
 
 # This crate compiles to WASM (wasm32-wasi) or wasm32-unknown-unknown.
 # It is intentionally no_std — kernel-side allocators are not available.

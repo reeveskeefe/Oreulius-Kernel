@@ -58,7 +58,7 @@ impl Surface {
         let pixels = (width as usize).saturating_mul(height as usize);
         let bytes = pixels.saturating_mul(BPP);
         #[cfg(not(target_arch = "aarch64"))]
-        let page_size = crate::paging::PAGE_SIZE;
+        let page_size = crate::fs::paging::PAGE_SIZE;
         #[cfg(target_arch = "aarch64")]
         let page_size = 4096usize;
         let pages = (bytes + page_size - 1) / page_size;
@@ -86,7 +86,7 @@ impl Surface {
             // Zero the buffer (defensive scrub) before returning it to the
             // allocator once page reclamation exists.
             #[cfg(not(target_arch = "aarch64"))]
-            let page_size = crate::paging::PAGE_SIZE;
+            let page_size = crate::fs::paging::PAGE_SIZE;
             #[cfg(target_arch = "aarch64")]
             let page_size = 4096usize;
             unsafe {

@@ -2,7 +2,7 @@
  * Safe PCI/framebuffer GPU probing.
  */
 
-use crate::pci::{PciDevice, PciScanner};
+use crate::drivers::x86::pci::{PciDevice, PciScanner};
 
 use super::caps::GpuCapabilities;
 use super::core::{GpuBarInfo, GpuClass, GpuProbeReport, GpuTier};

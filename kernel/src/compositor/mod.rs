@@ -86,10 +86,10 @@ pub use service::COMPOSITOR_SERVICE;
 
 /// Return a lock-guard for the legacy compositor, preserving the old API.
 ///
-/// Delegates to `crate::drivers::compositor::compositor()`.
+/// Delegates to `crate::drivers::x86::compositor::compositor()`.
 #[cfg(not(target_arch = "aarch64"))]
-pub fn compositor() -> spin::MutexGuard<'static, crate::drivers::compositor::Compositor> {
-    crate::drivers::compositor::compositor()
+pub fn compositor() -> spin::MutexGuard<'static, crate::drivers::x86::compositor::Compositor> {
+    crate::drivers::x86::compositor::compositor()
 }
 
 // ---------------------------------------------------------------------------

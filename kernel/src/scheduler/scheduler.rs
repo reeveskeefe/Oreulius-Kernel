@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Preemptive Scheduler with Round-Robin
@@ -24,10 +13,10 @@
 //! - Yield support
 //! - Uses assembly context switching for speed
 
-use crate::asm_bindings::{asm_switch_context, ProcessContext};
-use crate::interrupt_dag::{DagSpinlock, InterruptContext, DAG_LEVEL_SCHEDULER, DAG_LEVEL_SYSCALL};
-use crate::pit;
-use crate::process::{Pid, Process, ProcessPriority, ProcessState, MAX_PROCESSES};
+use crate::memory::asm_bindings::{asm_switch_context, ProcessContext};
+use crate::platform::interrupt_dag::{DagSpinlock, InterruptContext, DAG_LEVEL_SCHEDULER, DAG_LEVEL_SYSCALL};
+use crate::scheduler::pit;
+use crate::scheduler::process::{Pid, Process, ProcessPriority, ProcessState, MAX_PROCESSES};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Time slice in milliseconds (10ms = 100 Hz)
@@ -313,7 +302,7 @@ impl Scheduler {
         } else {
             // No processes to run, idle
             self.current_pid = None;
-            let interrupts_enabled = unsafe { crate::process_asm::get_interrupt_state() } != 0;
+            let interrupts_enabled = unsafe { crate::scheduler::process_asm::get_interrupt_state() } != 0;
             if interrupts_enabled {
                 // Enhanced power management during idle
                 // Verify interrupt delivery will wake from HLT
@@ -336,7 +325,7 @@ impl Scheduler {
                 crate::serial_println!("[SCHED] Entering idle state (HLT)");
 
                 // HLT to save power - CPU will wake on next interrupt
-                crate::asm_bindings::hlt();
+                crate::memory::asm_bindings::hlt();
 
                 // Track wakeup reason
                 crate::serial_println!("[SCHED] Woke from idle");
@@ -499,14 +488,14 @@ impl Scheduler {
 
             // Save state for the old owner
             if let Some(ref mut proc) = self.processes[owner.0 as usize] {
-                crate::process_asm::save_fpu_state(proc.fpu_state.0.as_mut_ptr());
+                crate::scheduler::process_asm::save_fpu_state(proc.fpu_state.0.as_mut_ptr());
             }
         }
 
         // Restore or initialize state for the new owner
         if let Some(ref mut proc) = self.processes[current.0 as usize] {
             if proc.has_used_fpu {
-                crate::process_asm::restore_fpu_state(proc.fpu_state.0.as_ptr());
+                crate::scheduler::process_asm::restore_fpu_state(proc.fpu_state.0.as_ptr());
             } else {
                 #[cfg(target_arch = "x86")]
                 {
@@ -570,7 +559,7 @@ pub fn sleep(ms: u32) {
 
 /// Timer interrupt handler (called by IRQ0)
 pub fn on_timer_tick() {
-    let in_interrupt = unsafe { crate::process_asm::get_interrupt_state() } == 0;
+    let in_interrupt = unsafe { crate::scheduler::process_asm::get_interrupt_state() } == 0;
     if in_interrupt {
         syscall_context().acquire_lock(&SCHEDULER, |sched, _sub| {
             sched.preemptions += 1;

@@ -272,7 +272,7 @@ impl TcpConn {
         self.dst_ip = dst_ip;
         self.dst_port = dst_port;
         self.dst_mac = dst_mac;
-        let ticks = crate::pit::get_ticks();
+        let ticks = crate::scheduler::pit::get_ticks();
         self.src_port = 49152 | ((ticks as u16) & 0x3FFF);
         self.snd_nxt = ticks as u32;
         self.snd_una = self.snd_nxt;
@@ -589,7 +589,7 @@ impl TlsSession {
     }
 
     fn gen_keys(&mut self) {
-        let t = crate::pit::get_ticks();
+        let t = crate::scheduler::pit::get_ticks();
         let mut seed = [0u8; 16];
         seed[..8].copy_from_slice(&t.to_le_bytes());
         seed[8..].copy_from_slice(&(t ^ 0xA5A5_A5A5_A5A5_A5A5u64).to_le_bytes());

@@ -13,7 +13,7 @@
 use super::protocol::{CompositorInputEvent, WindowId};
 use super::session::SessionTable;
 use super::window::WindowTable;
-use crate::drivers::input::{InputEvent, InputEventKind, KeyState};
+use crate::drivers::x86::input::{InputEvent, InputEventKind, KeyState};
 
 // ---------------------------------------------------------------------------
 // Pointer cursor state (accumulated absolute position from relative deltas)
@@ -272,7 +272,7 @@ mod tests {
     use crate::compositor::protocol::CompositorInputEvent;
     use crate::compositor::session::SessionTable;
     use crate::compositor::window::WindowTable;
-    use crate::drivers::input::InputEvent;
+    use crate::drivers::x86::input::InputEvent;
     use crate::ipc::ProcessId;
 
     fn setup_session_and_window() -> (SessionTable, WindowTable) {

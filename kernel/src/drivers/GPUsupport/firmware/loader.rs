@@ -16,7 +16,7 @@
 
 use super::manifest::FirmwareManifest;
 use super::verify;
-use crate::drivers::gpu_support::errors::GpuError;
+use crate::drivers::x86::gpu_support::errors::GpuError;
 use crate::fs::vfs;
 
 // ---------------------------------------------------------------------------

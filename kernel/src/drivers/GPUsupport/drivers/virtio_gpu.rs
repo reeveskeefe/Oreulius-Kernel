@@ -2,8 +2,8 @@
  * Virtio-gpu scanout backend scaffold.
  */
 
-use crate::drivers::gpu_support::core::{GpuClass, GpuProbeReport};
-use crate::drivers::gpu_support::errors::GpuError;
+use crate::drivers::x86::gpu_support::core::{GpuClass, GpuProbeReport};
+use crate::drivers::x86::gpu_support::errors::GpuError;
 
 use super::simplefb;
 

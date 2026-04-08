@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Oreulius Filesystem
@@ -1081,7 +1070,7 @@ impl FilesystemService {
     }
 
     fn current_tick() -> u64 {
-        crate::pit::try_get_ticks().unwrap_or(0)
+        crate::scheduler::pit::try_get_ticks().unwrap_or(0)
     }
 
     /// Check if a capability grants the required rights for an operation.
@@ -1483,39 +1472,39 @@ pub fn init() {
 /// Open a file (syscall wrapper).
 pub fn open(path: &str) -> Result<usize, &'static str> {
     let _ = FileKey::new(path).map_err(|_| "Invalid path")?;
-    crate::vfs::open_for_current(
+    crate::fs::vfs::open_for_current(
         path,
-        crate::vfs::OpenFlags::READ | crate::vfs::OpenFlags::WRITE | crate::vfs::OpenFlags::CREATE,
+        crate::fs::vfs::OpenFlags::READ | crate::fs::vfs::OpenFlags::WRITE | crate::fs::vfs::OpenFlags::CREATE,
     )
 }
 
 /// Read from file (syscall wrapper).
 pub fn read(fd: usize, buffer: &mut [u8]) -> Result<usize, &'static str> {
-    let pid = crate::process::current_pid().ok_or("No current process")?;
-    crate::vfs::read_fd(crate::vfs_platform::pid_from_raw(pid.0), fd, buffer)
+    let pid = crate::scheduler::process::current_pid().ok_or("No current process")?;
+    crate::fs::vfs::read_fd(crate::fs::vfs_platform::pid_from_raw(pid.0), fd, buffer)
 }
 
 /// Write to file (syscall wrapper).
 pub fn write(fd: usize, data: &[u8]) -> Result<usize, &'static str> {
-    let pid = crate::process::current_pid().ok_or("No current process")?;
-    crate::vfs::write_fd(crate::vfs_platform::pid_from_raw(pid.0), fd, data)
+    let pid = crate::scheduler::process::current_pid().ok_or("No current process")?;
+    crate::fs::vfs::write_fd(crate::fs::vfs_platform::pid_from_raw(pid.0), fd, data)
 }
 
 /// Close file (syscall wrapper).
 pub fn close(fd: usize) -> Result<(), &'static str> {
-    let pid = crate::process::current_pid().ok_or("No current process")?;
-    crate::vfs::close_fd(crate::vfs_platform::pid_from_raw(pid.0), fd)
+    let pid = crate::scheduler::process::current_pid().ok_or("No current process")?;
+    crate::fs::vfs::close_fd(crate::fs::vfs_platform::pid_from_raw(pid.0), fd)
 }
 
 /// Delete file (syscall wrapper).
 pub fn delete(path: &str) -> Result<(), &'static str> {
     let _ = FileKey::new(path).map_err(|_| "Invalid path")?;
-    crate::vfs::unlink(path)
+    crate::fs::vfs::unlink(path)
 }
 
 /// List directory contents (syscall wrapper).
 pub fn list_dir(path: &str, buffer: &mut [u8]) -> Result<usize, &'static str> {
-    crate::vfs::list_dir(path, buffer)
+    crate::fs::vfs::list_dir(path, buffer)
 }
 
 // ============================================================================

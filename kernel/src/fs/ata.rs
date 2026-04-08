@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! ATA/IDE Storage Driver (PIO and DMA modes)
@@ -1084,7 +1073,7 @@ pub mod pci_class {
 /// A detected PCI storage device.
 #[derive(Debug, Clone, Copy)]
 pub struct StorageDevice {
-    pub pci: crate::pci::PciDevice,
+    pub pci: crate::drivers::x86::pci::PciDevice,
     pub kind: StorageKind,
 }
 
@@ -1113,7 +1102,7 @@ impl StorageDevice {
 
 /// Scan `pci_devices` and return all storage controllers.
 pub fn detect_storage_devices(
-    pci_devices: &[Option<crate::pci::PciDevice>],
+    pci_devices: &[Option<crate::drivers::x86::pci::PciDevice>],
 ) -> alloc::vec::Vec<StorageDevice> {
     extern crate alloc;
     use alloc::vec::Vec;

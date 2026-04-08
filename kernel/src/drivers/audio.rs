@@ -1,11 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Audio subsystem: Intel HDA + AC'97 fallback
@@ -38,7 +34,7 @@
 
 #![allow(dead_code)] // hardware register table — constants reserved for full HDA/AC97 implementation
 
-use crate::pci::PciDevice;
+use crate::drivers::x86::pci::PciDevice;
 use spin::Mutex;
 
 // ============================================================================

@@ -1,272 +1,47 @@
-DIGEST ddff28f61ebbd142993d88103c51d94f
+DIGEST 63c11a1d5444150d05a845200fb5392f
 Fipc_flow
-R1009:1016 Corelib.Init.Nat <> <> lib
-R1043:1056 Corelib.Init.Datatypes <> <> lib
-R1083:1095 Stdlib.ZArith.ZArith <> <> lib
-R1122:1134 Stdlib.micromega.Lia <> <> lib
-R1161:1170 Stdlib.Lists.List <> <> lib
-R1180:1192 Stdlib.Lists.List ListNotations <> mod
-def 1528:1535 <> N_STATES
-R1539:1541 Corelib.Init.Datatypes <> nat ind
-def 1643:1647 <> SCALE
-R1651:1651 Corelib.Numbers.BinNums <> Z ind
-def 2025:2036 <> row_sum_zero
-R2045:2048 Corelib.Init.Datatypes <> list ind
-R2050:2050 Corelib.Numbers.BinNums <> Z ind
-binder 2039:2041 <> row:1
-R2086:2088 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R2065:2073 Stdlib.Lists.List <> fold_left def
-R2081:2083 ipc_flow <> row:1 var
-R2075:2079 Stdlib.ZArith.BinInt Z add def
-prf 2167:2182 <> row_sum_zero_nil
-R2186:2197 ipc_flow <> row_sum_zero def
-R2199:2200 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R2219:2230 ipc_flow <> row_sum_zero def
-prf 2321:2337 <> fold_left_add_acc
-R2355:2358 Corelib.Init.Datatypes <> list ind
-R2360:2360 Corelib.Numbers.BinNums <> Z ind
-binder 2351:2351 <> l:2
-R2370:2370 Corelib.Numbers.BinNums <> Z ind
-binder 2364:2366 <> acc:3
-R2399:2401 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R2378:2386 Stdlib.Lists.List <> fold_left def
-R2396:2398 ipc_flow <> acc:3 var
-R2394:2394 ipc_flow <> l:2 var
-R2388:2392 Stdlib.ZArith.BinInt Z add def
-R2405:2407 Stdlib.ZArith.BinInt <> ::Z_scope:x_'+'_x not
-R2402:2404 ipc_flow <> acc:3 var
-R2408:2416 Stdlib.Lists.List <> fold_left def
-R2424:2424 ipc_flow <> l:2 var
-R2418:2422 Stdlib.ZArith.BinInt Z add def
-prf 2713:2738 <> row_sum_zero_with_diagonal
-R2763:2766 Corelib.Init.Datatypes <> list ind
-R2768:2768 Corelib.Numbers.BinNums <> Z ind
-binder 2752:2759 <> off_diag:4
-R2785:2793 Stdlib.Lists.List <> fold_left def
-R2801:2808 ipc_flow <> off_diag:4 var
-R2795:2799 Stdlib.ZArith.BinInt Z add def
-binder 2780:2780 <> s:5
-R2819:2830 ipc_flow <> row_sum_zero def
-R2841:2844 Corelib.Init.Datatypes <> ::list_scope:x_'++'_x not
-R2833:2840 ipc_flow <> off_diag:4 var
-R2845:2845 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R2849:2849 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R2846:2847 Stdlib.ZArith.BinInt <> ::Z_scope:'-'_x not
-R2848:2848 ipc_flow <> s:5 var
-R2890:2901 ipc_flow <> row_sum_zero def
-R2917:2929 Stdlib.Lists.List <> fold_left_app thm
-R2917:2929 Stdlib.Lists.List <> fold_left_app thm
-R2917:2929 Stdlib.Lists.List <> fold_left_app thm
-R2949:2965 ipc_flow <> fold_left_add_acc thm
-R2949:2965 ipc_flow <> fold_left_add_acc thm
-R2949:2965 ipc_flow <> fold_left_add_acc thm
-def 3647:3654 <> list_sum
-R3661:3664 Corelib.Init.Datatypes <> list ind
-R3666:3666 Corelib.Numbers.BinNums <> Z ind
-binder 3657:3657 <> l:6
-R3671:3671 Corelib.Numbers.BinNums <> Z ind
-R3676:3684 Stdlib.Lists.List <> fold_left def
-R3692:3692 ipc_flow <> l:6 var
-R3686:3690 Stdlib.ZArith.BinInt Z add def
-def 3756:3764 <> row_scale
-R3771:3771 Corelib.Numbers.BinNums <> Z ind
-binder 3767:3767 <> c:7
-R3781:3784 Corelib.Init.Datatypes <> list ind
-R3786:3786 Corelib.Numbers.BinNums <> Z ind
-binder 3775:3777 <> row:8
-R3791:3794 Corelib.Init.Datatypes <> list ind
-R3796:3796 Corelib.Numbers.BinNums <> Z ind
-R3803:3810 Stdlib.Lists.List <> map abbrev
-R3829:3831 ipc_flow <> row:8 var
-binder 3817:3817 <> x:9
-R3823:3825 Stdlib.ZArith.BinInt <> ::Z_scope:x_'*'_x not
-R3822:3822 ipc_flow <> c:7 var
-R3826:3826 ipc_flow <> x:9 var
-prf 3908:3921 <> list_sum_scale
-R3939:3939 Corelib.Numbers.BinNums <> Z ind
-binder 3935:3935 <> c:10
-R3949:3952 Corelib.Init.Datatypes <> list ind
-R3954:3954 Corelib.Numbers.BinNums <> Z ind
-binder 3943:3945 <> row:11
-R3988:3990 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R3962:3969 ipc_flow <> list_sum def
-R3972:3980 ipc_flow <> row_scale def
-R3982:3982 ipc_flow <> c:10 var
-R3984:3986 ipc_flow <> row:11 var
-R3992:3994 Stdlib.ZArith.BinInt <> ::Z_scope:x_'*'_x not
-R3991:3991 ipc_flow <> c:10 var
-R3995:4002 ipc_flow <> list_sum def
-R4004:4006 ipc_flow <> row:11 var
-R4041:4048 ipc_flow <> list_sum def
-R4051:4059 ipc_flow <> row_scale def
-R4121:4137 ipc_flow <> fold_left_add_acc thm
-R4121:4137 ipc_flow <> fold_left_add_acc thm
-R4121:4137 ipc_flow <> fold_left_add_acc thm
-R4169:4185 ipc_flow <> fold_left_add_acc thm
-R4169:4185 ipc_flow <> fold_left_add_acc thm
-R4169:4185 ipc_flow <> fold_left_add_acc thm
-prf 4498:4521 <> ctmc_step_conserves_mass
-R4539:4542 Corelib.Init.Datatypes <> list ind
-R4544:4544 Corelib.Numbers.BinNums <> Z ind
-binder 4535:4535 <> P:12
-R4557:4560 Corelib.Init.Datatypes <> list ind
-R4563:4566 Corelib.Init.Datatypes <> list ind
-R4568:4568 Corelib.Numbers.BinNums <> Z ind
-binder 4548:4553 <> Q_rows:13
-R4601:4608 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4585:4587 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R4577:4582 Corelib.Init.Datatypes <> length def
-R4584:4584 ipc_flow <> P:12 var
-R4588:4593 Corelib.Init.Datatypes <> length def
-R4595:4600 ipc_flow <> Q_rows:13 var
-R4635:4642 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4609:4614 Corelib.Lists.ListDef <> Forall ind
-R4629:4634 ipc_flow <> Q_rows:13 var
-R4616:4627 ipc_flow <> row_sum_zero def
-R4748:4750 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R4643:4650 ipc_flow <> list_sum def
-R4653:4660 Stdlib.Lists.List <> map abbrev
-R4725:4736 Stdlib.Lists.List <> combine def
-R4740:4745 ipc_flow <> Q_rows:13 var
-R4738:4738 ipc_flow <> P:12 var
-binder 4667:4668 <> pq:14
-R4679:4681 Stdlib.ZArith.BinInt <> ::Z_scope:x_'*'_x not
-R4673:4675 Corelib.Init.Datatypes <> fst def
-R4677:4678 ipc_flow <> pq:14 var
-R4682:4689 ipc_flow <> list_sum def
-R4692:4694 Corelib.Init.Datatypes <> snd def
-R4696:4697 ipc_flow <> pq:14 var
-R5191:5198 ipc_flow <> list_sum def
-R5218:5234 ipc_flow <> fold_left_add_acc thm
-R5218:5234 ipc_flow <> fold_left_add_acc thm
-R5218:5234 ipc_flow <> fold_left_add_acc thm
-R5276:5287 ipc_flow <> row_sum_zero def
-R5331:5333 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R5318:5325 ipc_flow <> list_sum def
-R5348:5355 ipc_flow <> list_sum def
-R5331:5333 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R5318:5325 ipc_flow <> list_sum def
-R5398:5406 Stdlib.ZArith.BinInt Z mul_0_r thm
-R5398:5406 Stdlib.ZArith.BinInt Z mul_0_r thm
-R5398:5406 Stdlib.ZArith.BinInt Z mul_0_r thm
-def 5864:5882 <> off_diagonal_nonneg
-R5891:5894 Corelib.Init.Datatypes <> list ind
-R5896:5896 Corelib.Numbers.BinNums <> Z ind
-binder 5885:5887 <> row:15
-R5994:5999 Corelib.Lists.ListDef <> Forall ind
-R6019:6021 ipc_flow <> row:15 var
-binder 6006:6006 <> x:16
-R6012:6015 Stdlib.ZArith.BinInt <> ::Z_scope:x_'>='_x not
-R6011:6011 ipc_flow <> x:16 var
-prf 6161:6195 <> nonneg_off_diagonal_gives_valid_row
-R6220:6223 Corelib.Init.Datatypes <> list ind
-R6225:6225 Corelib.Numbers.BinNums <> Z ind
-binder 6209:6216 <> off_diag:17
-R6261:6268 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R6233:6251 ipc_flow <> off_diagonal_nonneg def
-R6253:6260 ipc_flow <> off_diag:17 var
-R6269:6280 ipc_flow <> row_sum_zero def
-R6291:6294 Corelib.Init.Datatypes <> ::list_scope:x_'++'_x not
-R6283:6290 ipc_flow <> off_diag:17 var
-R6295:6295 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R6315:6315 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R6296:6297 Stdlib.ZArith.BinInt <> ::Z_scope:'-'_x not
-R6298:6305 ipc_flow <> list_sum def
-R6307:6314 ipc_flow <> off_diag:17 var
-R6355:6380 ipc_flow <> row_sum_zero_with_diagonal thm
-R6355:6380 ipc_flow <> row_sum_zero_with_diagonal thm
-ax 7581:7583 <> Cap
-ax 7607:7613 <> Process
-ax 7709:7718 <> cap_rights
-R7725:7728 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R7722:7724 ipc_flow <> Cap defax
-R7729:7731 Corelib.Init.Datatypes <> nat ind
-ax 7808:7812 <> Holds
-R7823:7826 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R7816:7822 ipc_flow <> Process defax
-R7830:7833 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R7827:7829 ipc_flow <> Cap defax
-ax 7931:7940 <> KernelRoot
-R7947:7950 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R7944:7946 ipc_flow <> Cap defax
-ax 8052:8062 <> DerivedFrom
-R8069:8072 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8066:8068 ipc_flow <> Cap defax
-R8076:8079 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8073:8075 ipc_flow <> Cap defax
-ind 8174:8182 <> Reachable
-constr 8205:8214 <> reach_root
-constr 8262:8273 <> reach_derive
-R8189:8192 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8186:8188 ipc_flow <> Cap defax
-binder 8227:8227 <> c:32
-R8242:8245 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8230:8239 ipc_flow <> KernelRoot defax
-R8241:8241 ipc_flow <> c:32 var
-R8246:8254 ipc_flow <> Reachable:30 ind
-R8256:8256 ipc_flow <> c:32 var
-binder 8284:8288 <> child:33
-binder 8290:8295 <> parent:34
-R8328:8331 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8304:8314 ipc_flow <> DerivedFrom defax
-R8316:8320 ipc_flow <> child:33 var
-R8322:8327 ipc_flow <> parent:34 var
-R8348:8351 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8332:8340 ipc_flow <> Reachable:30 ind
-R8342:8347 ipc_flow <> parent:34 var
-R8352:8360 ipc_flow <> Reachable:30 ind
-R8362:8366 ipc_flow <> child:33 var
-scheme 8174:8182 <> Reachable_ind
-scheme 8174:8182 <> Reachable_sind
-ax 8707:8730 <> cap_provenance_invariant
-R8748:8754 ipc_flow <> Process defax
-binder 8744:8744 <> p:35
-R8762:8764 ipc_flow <> Cap defax
-binder 8758:8758 <> c:36
-R8781:8784 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8772:8776 ipc_flow <> Holds defax
-R8778:8778 ipc_flow <> p:35 var
-R8780:8780 ipc_flow <> c:36 var
-R8785:8793 ipc_flow <> Reachable ind
-R8795:8795 ipc_flow <> c:36 var
-ax 9015:9035 <> cap_derive_attenuates
-R9064:9066 ipc_flow <> Cap defax
-binder 9049:9053 <> child:39
-binder 9055:9060 <> parent:40
-R9098:9101 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R9074:9084 ipc_flow <> DerivedFrom defax
-R9086:9090 ipc_flow <> child:39 var
-R9092:9097 ipc_flow <> parent:40 var
-R9119:9122 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
-R9103:9112 ipc_flow <> cap_rights defax
-R9114:9118 ipc_flow <> child:39 var
-R9123:9132 ipc_flow <> cap_rights defax
-R9134:9139 ipc_flow <> parent:40 var
-prf 9295:9327 <> cap_rights_transitive_attenuation
-R9345:9347 ipc_flow <> Cap defax
-binder 9341:9341 <> c:43
-R9366:9373 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R9355:9363 ipc_flow <> Reachable ind
-R9365:9365 ipc_flow <> c:43 var
-R9389:9391 ipc_flow <> Cap defax
-binder 9382:9385 <> root:44
-R9416:9625 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R9401:9410 ipc_flow <> KernelRoot defax
-R9412:9415 ipc_flow <> root:44 var
-R9626:9634 ipc_flow <> Reachable ind
-R9636:9636 ipc_flow <> c:43 var
-prf 9820:9843 <> no_spurious_capabilities
-R9861:9867 ipc_flow <> Process defax
-binder 9857:9857 <> p:45
-R9875:9877 ipc_flow <> Cap defax
-binder 9871:9871 <> c:46
-R9898:9901 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R9885:9886 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R9887:9895 ipc_flow <> Reachable ind
-R9897:9897 ipc_flow <> c:46 var
-R9902:9903 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R9904:9908 ipc_flow <> Holds defax
-R9910:9910 ipc_flow <> p:45 var
-R9912:9912 ipc_flow <> c:46 var
-R9977:10000 ipc_flow <> cap_provenance_invariant prfax
-R9977:10000 ipc_flow <> cap_provenance_invariant prfax
+R124:137 Stdlib.Arith.PeanoNat <> <> lib
+def 152:160 <> attenuate
+R177:179 Corelib.Init.Datatypes <> nat ind
+binder 163:168 <> rights:1
+binder 170:173 <> mask:2
+R184:186 Corelib.Init.Datatypes <> nat ind
+R196:202 Stdlib.Arith.PeanoNat Nat leb def
+R204:209 ipc_flow <> rights:1 var
+R211:214 ipc_flow <> mask:2 var
+R233:236 ipc_flow <> mask:2 var
+R221:226 ipc_flow <> rights:1 var
+prf 248:279 <> attenuate_never_increases_rights
+binder 292:297 <> rights:3
+binder 299:302 <> mask:4
+R326:329 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R305:313 ipc_flow <> attenuate def
+R315:320 ipc_flow <> rights:3 var
+R322:325 ipc_flow <> mask:4 var
+R330:335 ipc_flow <> rights:3 var
+R376:384 ipc_flow <> attenuate def
+R399:405 Stdlib.Arith.PeanoNat Nat leb def
+R399:405 Stdlib.Arith.PeanoNat Nat leb def
+R441:450 Stdlib.Arith.PeanoNat Nat leb_le thm
+R441:450 Stdlib.Arith.PeanoNat Nat leb_le thm
+R472:475 Corelib.Init.Peano <> le_n constr
+R472:475 Corelib.Init.Peano <> le_n constr
+R488:497 Stdlib.Arith.PeanoNat Nat leb_gt thm
+R488:497 Stdlib.Arith.PeanoNat Nat leb_gt thm
+R519:532 Stdlib.Arith.PeanoNat Nat lt_le_incl thm
+R519:532 Stdlib.Arith.PeanoNat Nat lt_le_incl thm
+prf 566:593 <> attenuate_never_exceeds_mask
+binder 606:611 <> rights:5
+binder 613:616 <> mask:6
+R640:643 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R619:627 ipc_flow <> attenuate def
+R629:634 ipc_flow <> rights:5 var
+R636:639 ipc_flow <> mask:6 var
+R644:647 ipc_flow <> mask:6 var
+R688:696 ipc_flow <> attenuate def
+R711:717 Stdlib.Arith.PeanoNat Nat leb def
+R711:717 Stdlib.Arith.PeanoNat Nat leb def
+R753:762 Stdlib.Arith.PeanoNat Nat leb_le thm
+R753:762 Stdlib.Arith.PeanoNat Nat leb_le thm
+R801:804 Corelib.Init.Peano <> le_n constr
+R801:804 Corelib.Init.Peano <> le_n constr

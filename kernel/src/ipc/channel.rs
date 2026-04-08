@@ -191,7 +191,7 @@ impl Channel {
 
     fn wake_one_receiver(&mut self) {
         while let Some(pid) = self.waiting_receivers.pop_front() {
-            if let Ok(true) = crate::quantum_scheduler::wake_process(crate::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::quantum_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
                 self.note_receiver_wakeups(1);
                 break;
             }
@@ -201,7 +201,7 @@ impl Channel {
     fn wake_all_receivers(&mut self) {
         let mut count = 0;
         while let Some(pid) = self.waiting_receivers.pop_front() {
-            if let Ok(true) = crate::quantum_scheduler::wake_process(crate::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::quantum_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
                 count += 1;
             }
         }
@@ -212,7 +212,7 @@ impl Channel {
 
     fn wake_one_sender(&mut self) {
         while let Some(pid) = self.waiting_senders.pop_front() {
-            if let Ok(true) = crate::quantum_scheduler::wake_process(crate::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::quantum_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
                 self.note_sender_wakeups(1);
                 break;
             }
@@ -222,7 +222,7 @@ impl Channel {
     fn wake_all_senders(&mut self) {
         let mut count = 0;
         while let Some(pid) = self.waiting_senders.pop_front() {
-            if let Ok(true) = crate::quantum_scheduler::wake_process(crate::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::quantum_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
                 count += 1;
             }
         }
@@ -574,7 +574,7 @@ impl Channel {
             return Ok(());
         }
 
-        let now_ticks = crate::pit::get_ticks() as u64;
+        let now_ticks = crate::scheduler::pit::get_ticks() as u64;
         if self.buffer.is_empty() {
             self.closure = ClosureState::Sealed;
             sec.log_event(

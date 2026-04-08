@@ -1,7 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Polymorphic Mathematical Architecture - Phase 1 Scaffolding

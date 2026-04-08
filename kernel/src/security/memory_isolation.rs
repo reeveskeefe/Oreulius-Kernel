@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Software memory tagging and hardware isolation capability reporting.
@@ -26,7 +15,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 
-use crate::asm_bindings;
+use crate::memory::asm_bindings;
 
 const PAGE_SIZE: usize = 4096;
 const MAX_TAGGED_RANGES: usize = 256;
@@ -368,20 +357,20 @@ pub fn init() {
     }
     TAGGING_ENABLED.store(true, Ordering::SeqCst);
 
-    crate::vga::print_str("[ISOLATION] Memory tagging enabled\n");
-    crate::vga::print_str("[ISOLATION] SGX: ");
-    crate::vga::print_str(if caps.sgx_supported {
+    crate::drivers::x86::vga::print_str("[ISOLATION] Memory tagging enabled\n");
+    crate::drivers::x86::vga::print_str("[ISOLATION] SGX: ");
+    crate::drivers::x86::vga::print_str(if caps.sgx_supported {
         "supported"
     } else {
         "unsupported"
     });
-    crate::vga::print_str(", TrustZone: ");
-    crate::vga::print_str(if caps.trustzone_supported {
+    crate::drivers::x86::vga::print_str(", TrustZone: ");
+    crate::drivers::x86::vga::print_str(if caps.trustzone_supported {
         "supported"
     } else {
         "unsupported"
     });
-    crate::vga::print_str("\n");
+    crate::drivers::x86::vga::print_str("\n");
 }
 
 pub fn status() -> IsolationStatus {
@@ -408,7 +397,7 @@ pub fn tag_range(
     struct IrqGuard(u32);
     impl Drop for IrqGuard {
         fn drop(&mut self) {
-            unsafe { crate::idt_asm::fast_sti_restore(self.0) };
+            unsafe { crate::platform::idt_asm::fast_sti_restore(self.0) };
         }
     }
 
@@ -422,7 +411,7 @@ pub fn tag_range(
     let mut table = TAG_TABLE.lock();
     // Prevent interrupt-path register/context perturbation while mutating the
     // compact tag table metadata.
-    let irq_flags = unsafe { crate::idt_asm::fast_cli_save() };
+    let irq_flags = unsafe { crate::platform::idt_asm::fast_cli_save() };
     let _irq_guard = IrqGuard(irq_flags);
     table.insert(start, end, domain, policy, false)
 }

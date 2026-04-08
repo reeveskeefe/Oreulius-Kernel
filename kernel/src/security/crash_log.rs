@@ -194,7 +194,7 @@ pub fn record_panic(info: &core::panic::PanicInfo) {
     // Write tick (best-effort — if the timer lock is held, we get 0).
     #[cfg(not(target_arch = "aarch64"))]
     {
-        let t = crate::asm_bindings::rdtsc_begin();
+        let t = crate::memory::asm_bindings::rdtsc_begin();
         crash_tick_store(&slot.tick, t);
     }
     #[cfg(target_arch = "aarch64")]
@@ -242,14 +242,14 @@ pub fn record_panic(info: &core::panic::PanicInfo) {
     // the crash event.  push() is lock-free and safe to call from a panic
     // handler.  We silently drop the event if the ring is full.
     let tick_raw = CRASH_COUNT.load(Ordering::SeqCst) as u64; // use count as a proxy tick
-    let ev = crate::wait_free_ring::TelemetryEvent::new(
+    let ev = crate::memory::wait_free_ring::TelemetryEvent::new(
         0xFFFF_FFFF, // sentinel PID: kernel / panic
         0,           // node 0 = Error / initial state in the CTMC
         0xFC,        // cap_type 0xFC = reserved for crash events
         255,         // score = max (anomaly signal)
         tick_raw,
     );
-    let _ = crate::wait_free_ring::TELEMETRY_RING.push(ev);
+    let _ = crate::memory::wait_free_ring::TELEMETRY_RING.push(ev);
 }
 
 /// Return the number of panics recorded since boot.
@@ -292,7 +292,7 @@ pub fn flush_to_persistence() {
     }
 
     let cap =
-        crate::persistence::StoreCapability::new(0xCCCC, crate::persistence::StoreRights::all());
+        crate::temporal::persistence::StoreCapability::new(0xCCCC, crate::temporal::persistence::StoreRights::all());
 
     for_each_crash(|seq, tick, session, loc, msg| {
         // Build a 8 + MSG_CAP + MSG_CAP = 264-byte payload.
@@ -305,11 +305,11 @@ pub fn flush_to_persistence() {
         payload[16..16 + MSG_CAP].copy_from_slice(&loc);
         payload[16 + MSG_CAP..16 + MSG_CAP * 2].copy_from_slice(&msg);
 
-        if let Ok(record) = crate::persistence::LogRecord::new(
-            crate::persistence::RecordType::CrashReport,
+        if let Ok(record) = crate::temporal::persistence::LogRecord::new(
+            crate::temporal::persistence::RecordType::CrashReport,
             &payload,
         ) {
-            let mut svc = crate::persistence::persistence().lock();
+            let mut svc = crate::temporal::persistence::persistence().lock();
             let _ = svc.append_log(&cap, record);
         }
     });
@@ -318,16 +318,16 @@ pub fn flush_to_persistence() {
 /// Emit a BootEvent record into persistence.
 fn emit_boot_event(session: u32) {
     let cap =
-        crate::persistence::StoreCapability::new(0xBBBB, crate::persistence::StoreRights::all());
+        crate::temporal::persistence::StoreCapability::new(0xBBBB, crate::temporal::persistence::StoreRights::all());
     // Payload: [session:u32LE, crash_count:u32LE]
     let mut payload = [0u8; 8];
     payload[0..4].copy_from_slice(&session.to_le_bytes());
     payload[4..8].copy_from_slice(&CRASH_COUNT.load(Ordering::SeqCst).to_le_bytes());
 
     if let Ok(record) =
-        crate::persistence::LogRecord::new(crate::persistence::RecordType::BootEvent, &payload)
+        crate::temporal::persistence::LogRecord::new(crate::temporal::persistence::RecordType::BootEvent, &payload)
     {
-        let mut svc = crate::persistence::persistence().lock();
+        let mut svc = crate::temporal::persistence::persistence().lock();
         let _ = svc.append_log(&cap, record);
     }
 }

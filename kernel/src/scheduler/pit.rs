@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Programmable Interval Timer (PIT) Driver
@@ -90,7 +79,7 @@ pub fn get_ticks() -> u64 {
 
 #[cfg(target_arch = "aarch64")]
 pub fn get_ticks() -> u64 {
-    crate::arch::aarch64_virt::timer_ticks()
+    crate::arch::aarch64::aarch64_virt::timer_ticks()
 }
 
 /// Try to get ticks (non-blocking) - returns None if lock held
@@ -106,7 +95,7 @@ pub fn get_frequency() -> u32 {
 
 #[cfg(target_arch = "aarch64")]
 pub fn get_frequency() -> u32 {
-    let hz = crate::arch::aarch64_virt::timer_frequency_hz();
+    let hz = crate::arch::aarch64::aarch64_virt::timer_frequency_hz();
     hz.try_into().unwrap_or(u32::MAX).max(1)
 }
 

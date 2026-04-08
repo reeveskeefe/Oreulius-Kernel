@@ -2,7 +2,7 @@
  * Firmware validation hooks.
  */
 
-use crate::drivers::gpu_support::errors::GpuError;
+use crate::drivers::x86::gpu_support::errors::GpuError;
 
 /// Validate a raw firmware blob.
 ///

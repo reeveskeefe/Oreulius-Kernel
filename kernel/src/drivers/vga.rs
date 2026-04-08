@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Name here
@@ -20,7 +9,7 @@
 //! fill out line by line features of the file here, and any important notes about the implementation
 //!...
 
-use crate::asm_bindings::{inb, outb};
+use crate::memory::asm_bindings::{inb, outb};
 use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -209,7 +198,7 @@ const CRTC_DATA_PORT: u16 = 0x3D5;
 
 #[macro_export]
 macro_rules! vga_print {
-    ($($arg:tt)*) => ($crate::vga::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::drivers::x86::vga::_print(format_args!($($arg)*)));
 }
 
 #[macro_export]
@@ -229,7 +218,7 @@ pub fn _print(args: fmt::Arguments) {
     struct TerminalAdapter;
     impl fmt::Write for TerminalAdapter {
         fn write_str(&mut self, s: &str) -> fmt::Result {
-            crate::terminal::write_str(s);
+            crate::shell::terminal::write_str(s);
             Ok(())
         }
     }
@@ -238,19 +227,19 @@ pub fn _print(args: fmt::Arguments) {
 }
 
 pub fn print_str(s: &str) {
-    crate::terminal::write_str(s);
+    crate::shell::terminal::write_str(s);
 }
 
 pub fn print_char(c: char) {
-    crate::terminal::write_char(c);
+    crate::shell::terminal::write_char(c);
 }
 
 pub fn clear_screen() {
-    crate::terminal::clear_screen();
+    crate::shell::terminal::clear_screen();
 }
 
 pub fn backspace() {
-    crate::terminal::backspace();
+    crate::shell::terminal::backspace();
 }
 
 pub fn write_cell(row: usize, col: usize, byte: u8, fg: Color, bg: Color) {
@@ -311,7 +300,7 @@ pub fn init() {
     // Enable cursor (scanlines 14-15)
     enable_cursor(14, 15);
     // Reset cursor position to 0,0 locally and on hardware
-    crate::terminal::clear_screen();
+    crate::shell::terminal::clear_screen();
     update_cursor(0, 0);
 }
 

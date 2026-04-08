@@ -1,7 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 #![allow(dead_code)]
@@ -16,11 +16,11 @@
 // the impedance mismatch and allows all subsystems to share code paths.
 // ---------------------------------------------------------------------------
 
-pub type Pid = crate::process::Pid;
+pub type Pid = crate::scheduler::process::Pid;
 
 #[inline]
 pub fn current_pid() -> Option<Pid> {
-    crate::process::current_pid()
+    crate::scheduler::process::current_pid()
 }
 
 #[inline]
@@ -39,21 +39,21 @@ pub const fn pid_to_raw(pid: Pid) -> u32 {
 
 #[inline]
 pub fn alloc_fd(pid: Pid, handle_id: u64) -> Result<usize, &'static str> {
-    crate::process::process_manager()
+    crate::scheduler::process::process_manager()
         .alloc_fd(pid, handle_id)
         .map_err(|e| e.as_str())
 }
 
 #[inline]
 pub fn get_fd_handle(pid: Pid, fd: usize) -> Result<u64, &'static str> {
-    crate::process::process_manager()
+    crate::scheduler::process::process_manager()
         .get_fd_handle(pid, fd)
         .map_err(|e| e.as_str())
 }
 
 #[inline]
 pub fn close_fd(pid: Pid, fd: usize) -> Result<(), &'static str> {
-    crate::process::process_manager()
+    crate::scheduler::process::process_manager()
         .close_fd(pid, fd)
         .map_err(|e| e.as_str())
 }
@@ -64,27 +64,27 @@ pub fn close_fd(pid: Pid, fd: usize) -> Result<(), &'static str> {
 
 #[inline]
 pub fn spawn_process(parent_pid: Option<Pid>) -> Result<Pid, &'static str> {
-    let spawned = crate::process::process_manager()
+    let spawned = crate::scheduler::process::process_manager()
         .spawn("task", parent_pid)
         .map_err(|e| e.as_str())?;
     if let Some(parent) = parent_pid {
-        let _ = crate::vfs::inherit_process_capability(parent, spawned, None);
+        let _ = crate::fs::vfs::inherit_process_capability(parent, spawned, None);
     }
     Ok(spawned)
 }
 
 #[inline]
 pub fn destroy_process(pid: Pid) -> Result<(), &'static str> {
-    crate::process::process_manager()
+    crate::scheduler::process::process_manager()
         .terminate(pid)
         .map_err(|e| e.as_str())?;
-    crate::vfs::clear_process_capability(pid);
+    crate::fs::vfs::clear_process_capability(pid);
     Ok(())
 }
 
 #[inline]
 pub fn process_fd_stats() -> (usize, usize, Pid) {
-    let (proc_count, fd_count, current) = crate::process::runtime_fd_stats();
+    let (proc_count, fd_count, current) = crate::scheduler::process::runtime_fd_stats();
     (proc_count, fd_count, current.unwrap_or(Pid::new(1)))
 }
 
@@ -95,13 +95,13 @@ pub fn process_fd_stats() -> (usize, usize, Pid) {
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 pub fn ticks_now() -> u64 {
-    crate::pit::get_ticks()
+    crate::scheduler::pit::get_ticks()
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn ticks_now() -> u64 {
-    crate::arch::aarch64_virt::timer_ticks()
+    crate::arch::aarch64::aarch64_virt::timer_ticks()
 }
 
 // ---------------------------------------------------------------------------

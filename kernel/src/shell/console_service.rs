@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Console Service with Capability-Based Access Control
@@ -26,7 +15,7 @@ use crate::capability::{
     capability_manager, CapabilityError, CapabilityType, OreuliusCapability, Rights,
 };
 use crate::ipc::ProcessId;
-use crate::vga;
+use crate::drivers::x86::vga;
 use spin::Mutex;
 
 // ============================================================================
@@ -201,7 +190,7 @@ pub fn console_read(pid: ProcessId, cap_id: u32, buffer: &mut [u8]) -> Result<us
     // Drain keyboard byte buffer into the caller's buffer.
     let mut count = 0usize;
     while count < buffer.len() {
-        match crate::keyboard::poll() {
+        match crate::drivers::x86::keyboard::poll() {
             Some(c) => {
                 buffer[count] = c as u8;
                 count += 1;

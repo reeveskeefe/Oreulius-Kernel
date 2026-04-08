@@ -3,11 +3,11 @@ This will be added to quantum_scheduler.rs:
 // Add these imports at top
 use core::sync::atomic::{AtomicBool, Ordering};
 use alloc::boxed::Box;
-use crate::asm_bindings::asm_load_context;
-use crate::paging;
+use crate::memory::asm_bindings::asm_load_context;
+use crate::fs::paging;
 
 // Add to ProcessInfo struct
-pub stack: Option<Box<[u8; crate::process::STACK_SIZE]>>,
+pub stack: Option<Box<[u8; crate::scheduler::process::STACK_SIZE]>>,
 
 // Add these functions to QuantumScheduler impl
 
@@ -16,8 +16,8 @@ pub fn add_kernel_thread(&mut self, entry: extern "C" fn() -> !, priority: Proce
     process.priority = priority;
     let pid = process.pid;
     
-    let mut stack = Box::new([0u8; crate::process::STACK_SIZE]);
-    let stack_top = unsafe { stack.as_mut_ptr().add(crate::process::STACK_SIZE) as u32 } & !15;
+    let mut stack = Box::new([0u8; crate::scheduler::process::STACK_SIZE]);
+    let stack_top = unsafe { stack.as_mut_ptr().add(crate::scheduler::process::STACK_SIZE) as u32 } & !15;
     
     let entry_addr: u32 = (entry as *const () as usize) as u32;
     let entry_ptr = (stack_top - 4) as *mut u32;
@@ -52,7 +52,7 @@ pub fn add_kernel_thread(&mut self, entry: extern "C" fn() -> !, priority: Proce
 pub fn start(&mut self) -> ! {
     let next_pid = self.dequeue_ready().expect("No processes to run");
     
-    crate::vga::print_str("[SCHED] Starting scheduler\n");
+    crate::drivers::x86::vga::print_str("[SCHED] Starting scheduler\n");
     crate::serial_print!("[SCHED] Starting with PID {}\n", next_pid.0);
     
     if let Some(ref mut info) = self.processes[next_pid.0 as usize] {

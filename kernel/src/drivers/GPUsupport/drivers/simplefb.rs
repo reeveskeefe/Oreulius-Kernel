@@ -4,8 +4,8 @@
 
 use spin::Mutex;
 
-use crate::drivers::framebuffer;
-use crate::drivers::gpu_support::errors::GpuError;
+use crate::drivers::x86::framebuffer;
+use crate::drivers::x86::gpu_support::errors::GpuError;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VesaMode {
@@ -211,7 +211,7 @@ fn fallback_mode() -> VesaMode {
 }
 
 fn try_pci_framebuffer() -> Option<VesaMode> {
-    let mut scanner = crate::pci::PciScanner::new();
+    let mut scanner = crate::drivers::x86::pci::PciScanner::new();
     scanner.scan();
     framebuffer::register_pci_devices(scanner.devices());
 
@@ -280,7 +280,7 @@ pub fn activate(mb2_ptr: u32) -> Result<VesaMode, GpuError> {
         }
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
-            let mut guard = crate::paging::KERNEL_ADDRESS_SPACE.lock();
+            let mut guard = crate::fs::paging::KERNEL_ADDRESS_SPACE.lock();
             if let Some(space) = guard.as_mut() {
                 let _ = space.map_mmio_range(fb_phys, fb_size);
             }

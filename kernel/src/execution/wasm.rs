@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Oreulius WASM runtime.
@@ -35,16 +24,16 @@ use crate::arch::mmu as arch_mmu;
 use crate::capability::{self, CapabilityType, Rights};
 use crate::fs;
 #[cfg(not(target_arch = "x86_64"))]
-use crate::gdt;
-use crate::idt_asm;
+use crate::platform::gdt;
+use crate::platform::idt_asm;
 use crate::ipc::{ChannelId, ProcessId};
-use crate::kpti;
+use crate::security::kpti;
 use crate::memory;
-use crate::memory_isolation;
-use crate::paging;
-use crate::process_asm;
-use crate::replay::{self, ReplayEventStatus, ReplayMode};
-use crate::syscall::SYSCALL_JIT_RETURN;
+use crate::security::memory_isolation;
+use crate::fs::paging;
+use crate::scheduler::process_asm;
+use crate::execution::replay::{self, ReplayEventStatus, ReplayMode};
+use crate::platform::syscall::SYSCALL_JIT_RETURN;
 use alloc::alloc::{alloc, handle_alloc_error, Layout};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -2566,7 +2555,7 @@ fn run_policy_contract(bytecode: &[u8], ctx: &[u8]) -> bool {
 }
 
 pub fn temporal_cap_tick() {
-    let now = crate::pit::get_ticks() as u64;
+    let now = crate::scheduler::pit::get_ticks() as u64;
     let expired: [(u32, u32); MAX_TEMPORAL_CAP_SLOTS] = {
         let tbl = TEMPORAL_CAP_TABLE.lock();
         let mut out = [(0u32, 0u32); MAX_TEMPORAL_CAP_SLOTS];
@@ -2972,7 +2961,7 @@ fn revoke_service_pointers_for_instance(instance_id: usize) -> usize {
                     if rebind_target[i] != usize::MAX {
                         let mut updated = live;
                         updated.target_instance = rebind_target[i];
-                        updated.window_start_tick = crate::pit::get_ticks();
+                        updated.window_start_tick = crate::scheduler::pit::get_ticks();
                         updated.calls_in_window = 0;
                         registry.entries[idx] = updated;
                         rebound = rebound.saturating_add(1);
@@ -3053,7 +3042,7 @@ pub fn register_service_pointer(
     }
 
     let object_id = capability::capability_manager().create_object();
-    let hz = (crate::pit::get_frequency() as u64).max(1);
+    let hz = (crate::scheduler::pit::get_frequency() as u64).max(1);
     let entry = ServicePointerEntry {
         active: true,
         object_id,
@@ -3063,7 +3052,7 @@ pub fn register_service_pointer(
         signature,
         max_calls_per_window: 128,
         window_ticks: hz,
-        window_start_tick: crate::pit::get_ticks(),
+        window_start_tick: crate::scheduler::pit::get_ticks(),
         calls_in_window: 0,
     };
     SERVICE_POINTERS.lock().insert(entry)?;
@@ -3165,7 +3154,7 @@ pub fn invoke_service_pointer_typed(
         return Err("Service pointer invoke denied");
     }
 
-    let now = crate::pit::get_ticks();
+    let now = crate::scheduler::pit::get_ticks();
     let entry = SERVICE_POINTERS
         .lock()
         .resolve_for_invoke(object_id, args, now)?;
@@ -4495,11 +4484,11 @@ pub struct WasmInstance {
     jit_validate_remaining: [u8; 64],
     last_received_service_handle: Option<CapHandle>,
     /// WASM thread pool for this instance (supports WebAssembly Threads proposal).
-    thread_pool: crate::wasm_thread::WasmThreadPool,
+    thread_pool: crate::execution::wasm_thread::WasmThreadPool,
     /// Cooperative WASM thread currently executing inside this instance.
     active_thread_tid: i32,
     /// WASI context for this instance (CapabilityWASI / Preview 1 ABI).
-    wasi_ctx: crate::wasi::WasiCtx,
+    wasi_ctx: crate::services::wasi::WasiCtx,
 }
 
 // SAFETY: WasmInstance contains raw pointers to kernel-managed memory and is
@@ -4557,9 +4546,9 @@ impl WasmInstance {
         core::ptr::addr_of_mut!((*raw).jit_hot).write([0; 64]);
         core::ptr::addr_of_mut!((*raw).jit_validate_remaining).write([JIT_VALIDATE_CALLS; 64]);
         core::ptr::addr_of_mut!((*raw).last_received_service_handle).write(None);
-        core::ptr::addr_of_mut!((*raw).thread_pool).write(crate::wasm_thread::WasmThreadPool::new());
+        core::ptr::addr_of_mut!((*raw).thread_pool).write(crate::execution::wasm_thread::WasmThreadPool::new());
         core::ptr::addr_of_mut!((*raw).active_thread_tid).write(0);
-        core::ptr::addr_of_mut!((*raw).wasi_ctx).write(crate::wasi::WasiCtx::new(instance_id));
+        core::ptr::addr_of_mut!((*raw).wasi_ctx).write(crate::services::wasi::WasiCtx::new(instance_id));
     }
 
     fn alloc_jit_state() -> (*mut JitUserState, usize) {
@@ -4576,7 +4565,7 @@ impl WasmInstance {
             if crate::arch::mmu::set_page_writable_range(base as usize, span, true).is_err() {
                 return (core::ptr::null_mut(), 0);
             }
-            let _ = crate::memory_isolation::tag_jit_user_state(base as usize, span, false);
+            let _ = crate::security::memory_isolation::tag_jit_user_state(base as usize, span, false);
             unsafe {
                 core::ptr::write_bytes(base as *mut u8, 0, span);
             }
@@ -4679,7 +4668,7 @@ impl WasmInstance {
 
     fn initialize_thread_execution(
         &mut self,
-        thread: &mut crate::wasm_thread::WasmThread,
+        thread: &mut crate::execution::wasm_thread::WasmThread,
     ) -> Result<(), WasmError> {
         let func_idx = thread.func_idx as usize;
         let func = self.module.get_function(func_idx)?;
@@ -4713,11 +4702,11 @@ impl WasmInstance {
         thread.pc = code_start;
         thread.call_depth = 1;
         thread.started = true;
-        thread.fuel = crate::wasm_thread::DEFAULT_THREAD_FUEL;
+        thread.fuel = crate::execution::wasm_thread::DEFAULT_THREAD_FUEL;
         Ok(())
     }
 
-    fn load_thread_execution(&mut self, thread: &crate::wasm_thread::WasmThread) {
+    fn load_thread_execution(&mut self, thread: &crate::execution::wasm_thread::WasmThread) {
         self.stack = thread.exec_stack.clone();
         self.locals = thread.exec_locals;
         self.control_stack = thread.exec_control_stack;
@@ -4728,7 +4717,7 @@ impl WasmInstance {
         self.active_thread_tid = thread.tid;
     }
 
-    fn save_thread_execution(&mut self, thread: &mut crate::wasm_thread::WasmThread) {
+    fn save_thread_execution(&mut self, thread: &mut crate::execution::wasm_thread::WasmThread) {
         thread.exec_stack = self.stack.clone();
         thread.exec_locals = self.locals;
         thread.exec_control_stack = self.control_stack;
@@ -4752,7 +4741,7 @@ impl WasmInstance {
             self.load_thread_execution(&thread);
             self.reset_limits();
             let mut remaining = if thread.fuel == 0 {
-                crate::wasm_thread::DEFAULT_THREAD_FUEL
+                crate::execution::wasm_thread::DEFAULT_THREAD_FUEL
             } else {
                 thread.fuel
             };
@@ -4760,8 +4749,8 @@ impl WasmInstance {
             while self.pc < self.current_func_end {
                 if remaining == 0 {
                     self.save_thread_execution(&mut thread);
-                    thread.state = crate::wasm_thread::ThreadState::Yielded;
-                    thread.fuel = crate::wasm_thread::DEFAULT_THREAD_FUEL;
+                    thread.state = crate::execution::wasm_thread::ThreadState::Yielded;
+                    thread.fuel = crate::execution::wasm_thread::DEFAULT_THREAD_FUEL;
                     self.active_thread_tid = 0;
                     return Ok(());
                 }
@@ -4777,15 +4766,15 @@ impl WasmInstance {
                     }
                     Err(WasmError::ThreadYielded) => {
                         self.save_thread_execution(&mut thread);
-                        thread.state = crate::wasm_thread::ThreadState::Yielded;
-                        thread.fuel = crate::wasm_thread::DEFAULT_THREAD_FUEL;
+                        thread.state = crate::execution::wasm_thread::ThreadState::Yielded;
+                        thread.fuel = crate::execution::wasm_thread::DEFAULT_THREAD_FUEL;
                         self.active_thread_tid = 0;
                         return Ok(());
                     }
                     Err(WasmError::ThreadBlockedOnJoin(target_tid)) => {
                         self.save_thread_execution(&mut thread);
-                        thread.state = crate::wasm_thread::ThreadState::Joining(target_tid);
-                        thread.fuel = crate::wasm_thread::DEFAULT_THREAD_FUEL;
+                        thread.state = crate::execution::wasm_thread::ThreadState::Joining(target_tid);
+                        thread.fuel = crate::execution::wasm_thread::DEFAULT_THREAD_FUEL;
                         self.active_thread_tid = 0;
                         return Ok(());
                     }
@@ -5380,7 +5369,7 @@ impl WasmInstance {
                     return Err(WasmError::Trap);
                 }
             }
-            let _ = crate::memory_isolation::tag_jit_user_state(
+            let _ = crate::security::memory_isolation::tag_jit_user_state(
                 self.jit_state as usize,
                 rebuilt_span,
                 false,
@@ -5395,7 +5384,7 @@ impl WasmInstance {
                 }
             }
             let _ =
-                crate::memory_isolation::tag_jit_user_state(self.jit_state as usize, span, false);
+                crate::security::memory_isolation::tag_jit_user_state(self.jit_state as usize, span, false);
         }
         self.module.load(code)?;
         self.module.reset_functions();
@@ -5662,9 +5651,9 @@ impl WasmInstance {
             jit_hot: [0; 64],
             jit_validate_remaining: [JIT_VALIDATE_CALLS; 64],
             last_received_service_handle: None,
-            thread_pool: crate::wasm_thread::WasmThreadPool::new(),
+            thread_pool: crate::execution::wasm_thread::WasmThreadPool::new(),
             active_thread_tid: 0,
-            wasi_ctx: crate::wasi::WasiCtx::new(instance_id),
+            wasi_ctx: crate::services::wasi::WasiCtx::new(instance_id),
         }
     }
 
@@ -6046,9 +6035,9 @@ impl WasmInstance {
             jit_hot: [0; 64],
             jit_validate_remaining: [0; 64],
             last_received_service_handle: self.last_received_service_handle,
-            thread_pool: crate::wasm_thread::WasmThreadPool::new(),
+            thread_pool: crate::execution::wasm_thread::WasmThreadPool::new(),
             active_thread_tid: self.active_thread_tid,
-            wasi_ctx: crate::wasi::WasiCtx::new(self.instance_id),
+            wasi_ctx: crate::services::wasi::WasiCtx::new(self.instance_id),
         }
     }
 
@@ -7533,9 +7522,9 @@ impl WasmInstance {
         }
 
         if let Ok(msg_str) = core::str::from_utf8(msg_bytes) {
-            crate::vga::print_str("[WASM] ");
-            crate::vga::print_str(msg_str);
-            crate::vga::print_char('\n');
+            crate::drivers::x86::vga::print_str("[WASM] ");
+            crate::drivers::x86::vga::print_str(msg_str);
+            crate::drivers::x86::vga::print_char('\n');
         }
 
         if mode == ReplayMode::Record {
@@ -9604,51 +9593,51 @@ impl WasmInstance {
     // ========================================================================
 
     fn host_input_poll(&mut self) -> Result<(), WasmError> {
-        crate::input::pump();
-        let v = if crate::input::poll() { 1 } else { 0 };
+        crate::drivers::x86::input::pump();
+        let v = if crate::drivers::x86::input::poll() { 1 } else { 0 };
         self.stack.push(Value::I32(v))
     }
 
     fn host_input_read(&mut self) -> Result<(), WasmError> {
         let buf_len = self.stack.pop()?.as_i32()? as usize;
         let buf_ptr = self.stack.pop()?.as_i32()? as usize;
-        crate::input::pump();
-        match crate::input::read() {
+        crate::drivers::x86::input::pump();
+        match crate::drivers::x86::input::read() {
             None => self.stack.push(Value::I32(0)),
             Some(ev) => {
                 let mem = self.memory.as_mut_slice();
-                if buf_ptr + crate::input::INPUT_EVENT_BYTES > mem.len()
-                    || buf_len < crate::input::INPUT_EVENT_BYTES
+                if buf_ptr + crate::drivers::x86::input::INPUT_EVENT_BYTES > mem.len()
+                    || buf_len < crate::drivers::x86::input::INPUT_EVENT_BYTES
                 {
                     return self.stack.push(Value::I32(0));
                 }
                 let written =
-                    ev.serialise(&mut mem[buf_ptr..buf_ptr + crate::input::INPUT_EVENT_BYTES]);
+                    ev.serialise(&mut mem[buf_ptr..buf_ptr + crate::drivers::x86::input::INPUT_EVENT_BYTES]);
                 self.stack.push(Value::I32(written as i32))
             }
         }
     }
 
     fn host_input_event_type(&mut self) -> Result<(), WasmError> {
-        crate::input::pump();
-        let kind = crate::input::peek_kind() as i32;
+        crate::drivers::x86::input::pump();
+        let kind = crate::drivers::x86::input::peek_kind() as i32;
         self.stack.push(Value::I32(kind))
     }
 
     fn host_input_flush(&mut self) -> Result<(), WasmError> {
-        let count = crate::input::flush() as i32;
+        let count = crate::drivers::x86::input::flush() as i32;
         self.stack.push(Value::I32(count))
     }
 
     fn host_input_key_poll(&mut self) -> Result<(), WasmError> {
-        crate::input::pump();
-        let v = if crate::input::poll_key() { 1 } else { 0 };
+        crate::drivers::x86::input::pump();
+        let v = if crate::drivers::x86::input::poll_key() { 1 } else { 0 };
         self.stack.push(Value::I32(v))
     }
 
     fn host_input_mouse_poll(&mut self) -> Result<(), WasmError> {
-        crate::input::pump();
-        let v = if crate::input::poll_mouse() { 1 } else { 0 };
+        crate::drivers::x86::input::pump();
+        let v = if crate::drivers::x86::input::poll_mouse() { 1 } else { 0 };
         self.stack.push(Value::I32(v))
     }
 
@@ -9664,7 +9653,7 @@ impl WasmInstance {
         let argv_buf_ptr = self.stack.pop()?.as_i32()? as u32;
         let argv_ptr = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::args_get(&self.wasi_ctx, mem, argv_ptr, argv_buf_ptr);
+        let e = crate::services::wasi::args_get(&self.wasi_ctx, mem, argv_ptr, argv_buf_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9672,7 +9661,7 @@ impl WasmInstance {
         let buf_size_ptr = self.stack.pop()?.as_i32()? as u32;
         let argc_ptr = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::args_sizes_get(&self.wasi_ctx, mem, argc_ptr, buf_size_ptr);
+        let e = crate::services::wasi::args_sizes_get(&self.wasi_ctx, mem, argc_ptr, buf_size_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9680,7 +9669,7 @@ impl WasmInstance {
         let env_buf_ptr = self.stack.pop()?.as_i32()? as u32;
         let env_ptr = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::environ_get(&self.wasi_ctx, mem, env_ptr, env_buf_ptr);
+        let e = crate::services::wasi::environ_get(&self.wasi_ctx, mem, env_ptr, env_buf_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9688,7 +9677,7 @@ impl WasmInstance {
         let buf_size_ptr = self.stack.pop()?.as_i32()? as u32;
         let cnt_ptr = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::environ_sizes_get(&self.wasi_ctx, mem, cnt_ptr, buf_size_ptr);
+        let e = crate::services::wasi::environ_sizes_get(&self.wasi_ctx, mem, cnt_ptr, buf_size_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9696,7 +9685,7 @@ impl WasmInstance {
         let ts_ptr = self.stack.pop()?.as_i32()? as u32;
         let clock_id = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::clock_res_get(&self.wasi_ctx, mem, clock_id, ts_ptr);
+        let e = crate::services::wasi::clock_res_get(&self.wasi_ctx, mem, clock_id, ts_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9705,13 +9694,13 @@ impl WasmInstance {
         let precision = self.stack.pop()?.as_i64()? as u64;
         let clock_id = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::clock_time_get(&self.wasi_ctx, mem, clock_id, precision, ts_ptr);
+        let e = crate::services::wasi::clock_time_get(&self.wasi_ctx, mem, clock_id, precision, ts_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
     fn host_wasi_fd_close(&mut self) -> Result<(), WasmError> {
         let fd = self.stack.pop()?.as_i32()? as u32;
-        let e = crate::wasi::fd_close(&mut self.wasi_ctx, fd);
+        let e = crate::services::wasi::fd_close(&mut self.wasi_ctx, fd);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9719,7 +9708,7 @@ impl WasmInstance {
         let stat_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_fdstat_get(&self.wasi_ctx, mem, fd, stat_ptr);
+        let e = crate::services::wasi::fd_fdstat_get(&self.wasi_ctx, mem, fd, stat_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9727,7 +9716,7 @@ impl WasmInstance {
         let stat_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_filestat_get(&self.wasi_ctx, mem, fd, stat_ptr);
+        let e = crate::services::wasi::fd_filestat_get(&self.wasi_ctx, mem, fd, stat_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9748,7 +9737,7 @@ impl WasmInstance {
             o.offset = offset;
         }
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_read(&mut self.wasi_ctx, mem, fd, iovs_ptr, iovs_len, nread_ptr);
+        let e = crate::services::wasi::fd_read(&mut self.wasi_ctx, mem, fd, iovs_ptr, iovs_len, nread_ptr);
         if let Some(o) = self.wasi_ctx.fds.get_mut(fd as usize) {
             o.offset = saved;
         }
@@ -9759,7 +9748,7 @@ impl WasmInstance {
         let prestat_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_prestat_get(&self.wasi_ctx, mem, fd, prestat_ptr);
+        let e = crate::services::wasi::fd_prestat_get(&self.wasi_ctx, mem, fd, prestat_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9768,7 +9757,7 @@ impl WasmInstance {
         let path_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_prestat_dir_name(&self.wasi_ctx, mem, fd, path_ptr, path_len);
+        let e = crate::services::wasi::fd_prestat_dir_name(&self.wasi_ctx, mem, fd, path_ptr, path_len);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9788,7 +9777,7 @@ impl WasmInstance {
             o.offset = offset;
         }
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_write(
+        let e = crate::services::wasi::fd_write(
             &mut self.wasi_ctx,
             mem,
             fd,
@@ -9808,7 +9797,7 @@ impl WasmInstance {
         let iovs_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_read(&mut self.wasi_ctx, mem, fd, iovs_ptr, iovs_len, nread_ptr);
+        let e = crate::services::wasi::fd_read(&mut self.wasi_ctx, mem, fd, iovs_ptr, iovs_len, nread_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9819,7 +9808,7 @@ impl WasmInstance {
         let buf_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_readdir(
+        let e = crate::services::wasi::fd_readdir(
             &mut self.wasi_ctx,
             mem,
             fd,
@@ -9837,7 +9826,7 @@ impl WasmInstance {
         let offset = self.stack.pop()?.as_i64()?;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_seek(&mut self.wasi_ctx, mem, fd, offset, whence, newoff_ptr);
+        let e = crate::services::wasi::fd_seek(&mut self.wasi_ctx, mem, fd, offset, whence, newoff_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9845,7 +9834,7 @@ impl WasmInstance {
         let offset_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_tell(&self.wasi_ctx, mem, fd, offset_ptr);
+        let e = crate::services::wasi::fd_tell(&self.wasi_ctx, mem, fd, offset_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9855,7 +9844,7 @@ impl WasmInstance {
         let iovs_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::fd_write(
+        let e = crate::services::wasi::fd_write(
             &mut self.wasi_ctx,
             mem,
             fd,
@@ -9874,13 +9863,13 @@ impl WasmInstance {
         if path_ptr + path_len > mem.len() {
             return self
                 .stack
-                .push(Value::I32(crate::wasi::Errno::Fault.as_i32()));
+                .push(Value::I32(crate::services::wasi::Errno::Fault.as_i32()));
         }
         let path = &mem[path_ptr..path_ptr + path_len];
         let mut pathbuf = [0u8; 128];
         let l = path_len.min(127);
         pathbuf[..l].copy_from_slice(&path[..l]);
-        let e = crate::wasi::path_create_directory(&mut self.wasi_ctx, &pathbuf[..l]);
+        let e = crate::services::wasi::path_create_directory(&mut self.wasi_ctx, &pathbuf[..l]);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9894,13 +9883,13 @@ impl WasmInstance {
         if path_ptr + path_len > mem.len() {
             return self
                 .stack
-                .push(Value::I32(crate::wasi::Errno::Fault.as_i32()));
+                .push(Value::I32(crate::services::wasi::Errno::Fault.as_i32()));
         }
         let mut pathbuf = [0u8; 128];
         let l = path_len.min(127);
         pathbuf[..l].copy_from_slice(&mem[path_ptr..path_ptr + l]);
         let e =
-            crate::wasi::path_filestat_get(&self.wasi_ctx, mem, fd, flags, &pathbuf[..l], stat_ptr);
+            crate::services::wasi::path_filestat_get(&self.wasi_ctx, mem, fd, flags, &pathbuf[..l], stat_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9918,13 +9907,13 @@ impl WasmInstance {
         if path_ptr + path_len > mem.len() || opened_fd_ptr + 4 > mem.len() {
             return self
                 .stack
-                .push(Value::I32(crate::wasi::Errno::Fault.as_i32()));
+                .push(Value::I32(crate::services::wasi::Errno::Fault.as_i32()));
         }
         let mut pathbuf = [0u8; 128];
         let l = path_len.min(127);
         pathbuf[..l].copy_from_slice(&mem[path_ptr..path_ptr + l]);
         let mut new_fd = 0u32;
-        let e = crate::wasi::path_open(
+        let e = crate::services::wasi::path_open(
             &mut self.wasi_ctx,
             mem,
             dirfd,
@@ -9936,7 +9925,7 @@ impl WasmInstance {
             fdflags,
             &mut new_fd,
         );
-        if e == crate::wasi::Errno::Success {
+        if e == crate::services::wasi::Errno::Success {
             mem[opened_fd_ptr..opened_fd_ptr + 4].copy_from_slice(&new_fd.to_le_bytes());
         }
         self.stack.push(Value::I32(e.as_i32()))
@@ -9950,12 +9939,12 @@ impl WasmInstance {
         if path_ptr + path_len > mem.len() {
             return self
                 .stack
-                .push(Value::I32(crate::wasi::Errno::Fault.as_i32()));
+                .push(Value::I32(crate::services::wasi::Errno::Fault.as_i32()));
         }
         let mut pathbuf = [0u8; 128];
         let l = path_len.min(127);
         pathbuf[..l].copy_from_slice(&mem[path_ptr..path_ptr + l]);
-        let e = crate::wasi::path_remove_directory(&mut self.wasi_ctx, &pathbuf[..l]);
+        let e = crate::services::wasi::path_remove_directory(&mut self.wasi_ctx, &pathbuf[..l]);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9967,12 +9956,12 @@ impl WasmInstance {
         if path_ptr + path_len > mem.len() {
             return self
                 .stack
-                .push(Value::I32(crate::wasi::Errno::Fault.as_i32()));
+                .push(Value::I32(crate::services::wasi::Errno::Fault.as_i32()));
         }
         let mut pathbuf = [0u8; 128];
         let l = path_len.min(127);
         pathbuf[..l].copy_from_slice(&mem[path_ptr..path_ptr + l]);
-        let e = crate::wasi::path_unlink_file(&mut self.wasi_ctx, &pathbuf[..l]);
+        let e = crate::services::wasi::path_unlink_file(&mut self.wasi_ctx, &pathbuf[..l]);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -9982,7 +9971,7 @@ impl WasmInstance {
         let out_ptr = self.stack.pop()?.as_i32()? as u32;
         let in_ptr = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::poll_oneoff(
+        let e = crate::services::wasi::poll_oneoff(
             &self.wasi_ctx,
             mem,
             in_ptr,
@@ -9995,7 +9984,7 @@ impl WasmInstance {
 
     fn host_wasi_proc_exit(&mut self) -> Result<(), WasmError> {
         let code = self.stack.pop()?.as_i32()?;
-        crate::wasi::proc_exit(&mut self.wasi_ctx, code);
+        crate::services::wasi::proc_exit(&mut self.wasi_ctx, code);
         // Signal the WASM interpreter to stop execution.
         Err(WasmError::Trap)
     }
@@ -10004,7 +9993,7 @@ impl WasmInstance {
         let buf_len = self.stack.pop()?.as_i32()? as u32;
         let buf_ptr = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::random_get(&mut self.wasi_ctx, mem, buf_ptr, buf_len);
+        let e = crate::services::wasi::random_get(&mut self.wasi_ctx, mem, buf_ptr, buf_len);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -10014,8 +10003,8 @@ impl WasmInstance {
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
         let mut new_fd = 0u32;
-        let e = crate::wasi::sock_accept(&mut self.wasi_ctx, fd, flags, &mut new_fd);
-        if e == crate::wasi::Errno::Success && new_fd_ptr + 4 <= mem.len() {
+        let e = crate::services::wasi::sock_accept(&mut self.wasi_ctx, fd, flags, &mut new_fd);
+        if e == crate::services::wasi::Errno::Success && new_fd_ptr + 4 <= mem.len() {
             mem[new_fd_ptr..new_fd_ptr + 4].copy_from_slice(&new_fd.to_le_bytes());
         }
         self.stack.push(Value::I32(e.as_i32()))
@@ -10029,7 +10018,7 @@ impl WasmInstance {
         let ri_data_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::sock_recv(
+        let e = crate::services::wasi::sock_recv(
             &mut self.wasi_ctx,
             mem,
             fd,
@@ -10049,7 +10038,7 @@ impl WasmInstance {
         let si_data_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::wasi::sock_send(
+        let e = crate::services::wasi::sock_send(
             &mut self.wasi_ctx,
             mem,
             fd,
@@ -10076,14 +10065,14 @@ impl WasmInstance {
             return self.stack.push(Value::I32(-1));
         }
         let host = &mem[host_ptr..host_ptr + host_len];
-        let server_ip: crate::tls::Ip4 = [
+        let server_ip: crate::net::tls::Ip4 = [
             (server_ip_u32 >> 24) as u8,
             (server_ip_u32 >> 16) as u8,
             (server_ip_u32 >> 8) as u8,
             server_ip_u32 as u8,
         ];
-        let handle = crate::tls::alloc_session(host, port, server_ip);
-        if let Some(s) = crate::tls::session_mut(handle) {
+        let handle = crate::net::tls::alloc_session(host, port, server_ip);
+        if let Some(s) = crate::net::tls::session_mut(handle) {
             s.tick();
         }
         self.stack.push(Value::I32(handle))
@@ -10098,7 +10087,7 @@ impl WasmInstance {
             return self.stack.push(Value::I32(-1));
         }
         let data = &mem[buf_ptr..buf_ptr + buf_len];
-        let result = match crate::tls::session_mut(handle) {
+        let result = match crate::net::tls::session_mut(handle) {
             None => -1i32,
             Some(s) => s.write(data) as i32,
         };
@@ -10113,7 +10102,7 @@ impl WasmInstance {
         if buf_ptr + buf_len > mem.len() {
             return self.stack.push(Value::I32(0));
         }
-        let result = match crate::tls::session_mut(handle) {
+        let result = match crate::net::tls::session_mut(handle) {
             None => 0usize,
             Some(s) => {
                 s.tick();
@@ -10125,7 +10114,7 @@ impl WasmInstance {
 
     fn host_tls_close(&mut self) -> Result<(), WasmError> {
         let handle = self.stack.pop()?.as_i32()?;
-        if let Some(s) = crate::tls::session_mut(handle) {
+        if let Some(s) = crate::net::tls::session_mut(handle) {
             s.close();
         }
         self.stack.push(Value::I32(0))
@@ -10133,8 +10122,8 @@ impl WasmInstance {
 
     fn host_tls_state(&mut self) -> Result<(), WasmError> {
         let handle = self.stack.pop()?.as_i32()?;
-        let state = match crate::tls::session_mut(handle) {
-            None => crate::tls::HandshakeState::Error as i32,
+        let state = match crate::net::tls::session_mut(handle) {
+            None => crate::net::tls::HandshakeState::Error as i32,
             Some(s) => s.state as i32,
         };
         self.stack.push(Value::I32(state))
@@ -10145,7 +10134,7 @@ impl WasmInstance {
         let buf_ptr = self.stack.pop()?.as_i32()? as usize;
         let handle = self.stack.pop()?.as_i32()?;
         let mem = self.memory.as_mut_slice();
-        let result = match crate::tls::session_mut(handle) {
+        let result = match crate::net::tls::session_mut(handle) {
             None => 0usize,
             Some(s) => {
                 let err = s.error_str();
@@ -10161,10 +10150,10 @@ impl WasmInstance {
 
     fn host_tls_handshake_done(&mut self) -> Result<(), WasmError> {
         let handle = self.stack.pop()?.as_i32()?;
-        let done = match crate::tls::session_mut(handle) {
+        let done = match crate::net::tls::session_mut(handle) {
             None => 0,
             Some(s) => {
-                if s.state == crate::tls::HandshakeState::Connected {
+                if s.state == crate::net::tls::HandshakeState::Connected {
                     1
                 } else {
                     0
@@ -10176,7 +10165,7 @@ impl WasmInstance {
 
     fn host_tls_tick(&mut self) -> Result<(), WasmError> {
         let handle = self.stack.pop()?.as_i32()?;
-        if let Some(s) = crate::tls::session_mut(handle) {
+        if let Some(s) = crate::net::tls::session_mut(handle) {
             s.tick();
         }
         self.stack.push(Value::I32(0))
@@ -10184,7 +10173,7 @@ impl WasmInstance {
 
     fn host_tls_free(&mut self) -> Result<(), WasmError> {
         let handle = self.stack.pop()?.as_i32()?;
-        crate::tls::free_session(handle);
+        crate::net::tls::free_session(handle);
         self.stack.push(Value::I32(0))
     }
 
@@ -10222,15 +10211,15 @@ impl WasmInstance {
         } else {
             Some(self.process_id)
         };
-        let child_pid = match crate::process::process_manager().spawn("wasm-child", parent) {
+        let child_pid = match crate::scheduler::process::process_manager().spawn("wasm-child", parent) {
             Ok(pid) => pid,
             Err(_) => return self.stack.push(Value::I32(0)),
         };
 
         // Queue the spawn for deferred execution outside this lock to avoid
         // re-entrancy into the WASM runtime mutex.
-        if crate::wasm::queue_pending_spawn(child_pid, bytecode).is_err() {
-            let _ = crate::process::process_manager().terminate(child_pid);
+        if crate::execution::wasm::queue_pending_spawn(child_pid, bytecode).is_err() {
+            let _ = crate::scheduler::process::process_manager().terminate(child_pid);
             return self.stack.push(Value::I32(0));
         }
         crate::serial_println!("[WASM] proc_spawn queued: child pid={}", child_pid.0);
@@ -10255,7 +10244,7 @@ impl WasmInstance {
     ///
     /// Voluntarily yield the scheduler quantum so other processes can run.
     fn host_proc_yield(&mut self) -> Result<(), WasmError> {
-        crate::quantum_scheduler::yield_now();
+        crate::scheduler::quantum_scheduler::yield_now();
         let _ = self.run_background_thread_quantum();
         Ok(())
     }
@@ -10271,20 +10260,20 @@ impl WasmInstance {
             return Ok(());
         }
 
-        let start = crate::pit::get_ticks();
+        let start = crate::scheduler::pit::get_ticks();
         let wake_time = start.saturating_add(ticks);
         let current_pid = {
-            let scheduler = crate::quantum_scheduler::scheduler().lock();
+            let scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
             scheduler.get_current_pid()
         };
         if current_pid == Some(self.process_id)
-            && crate::quantum_scheduler::sleep_until(self.process_id, wake_time).is_ok()
+            && crate::scheduler::quantum_scheduler::sleep_until(self.process_id, wake_time).is_ok()
         {
             return Ok(());
         }
 
-        while crate::pit::get_ticks().wrapping_sub(start) < ticks {
-            crate::quantum_scheduler::yield_now();
+        while crate::scheduler::pit::get_ticks().wrapping_sub(start) < ticks {
+            crate::scheduler::quantum_scheduler::yield_now();
             let _ = self.run_background_thread_quantum();
         }
         Ok(())
@@ -10668,7 +10657,7 @@ impl WasmInstance {
     /// Return the low 32 bits of this node's capnet device ID.  Returns 0 if
     /// the mesh subsystem has not been initialised yet.
     fn host_mesh_local_id(&mut self) -> Result<(), WasmError> {
-        let id = crate::capnet::local_device_id().unwrap_or(0);
+        let id = crate::net::capnet::local_device_id().unwrap_or(0);
         // Expose the full 64-bit ID as two stacked i32 values is not ergonomic
         // in i32-only WASM; we fold the high word in via XOR so the returned
         // handle is unique but fits an i32.  WASM callers use mesh_peer_session
@@ -10689,11 +10678,11 @@ impl WasmInstance {
         let peer_lo = self.stack.pop()?.as_i32()? as u64;
         let peer_id = (peer_hi << 32) | (peer_lo & 0xFFFF_FFFF);
         let trust = if trust_val == 0 {
-            crate::capnet::PeerTrustPolicy::Audit
+            crate::net::capnet::PeerTrustPolicy::Audit
         } else {
-            crate::capnet::PeerTrustPolicy::Enforce
+            crate::net::capnet::PeerTrustPolicy::Enforce
         };
-        match crate::capnet::register_peer(peer_id, trust, 0) {
+        match crate::net::capnet::register_peer(peer_id, trust, 0) {
             Ok(()) => self.stack.push(Value::I32(0)),
             Err(_) => self.stack.push(Value::I32(-1)),
         }
@@ -10708,7 +10697,7 @@ impl WasmInstance {
         let peer_hi = self.stack.pop()?.as_i32()? as u64;
         let peer_lo = self.stack.pop()?.as_i32()? as u64;
         let peer_id = (peer_hi << 32) | (peer_lo & 0xFFFF_FFFF);
-        match crate::capnet::peer_snapshot(peer_id) {
+        match crate::net::capnet::peer_snapshot(peer_id) {
             None => self.stack.push(Value::I32(-1)),
             Some(s) => self.stack.push(Value::I32(s.key_epoch as i32)),
         }
@@ -10730,13 +10719,13 @@ impl WasmInstance {
         let obj_lo = self.stack.pop()?.as_i32()? as u64;
         let object_id = (obj_hi << 32) | (obj_lo & 0xFFFF_FFFF);
 
-        let now = crate::pit::get_ticks() as u64;
-        let local_id = match crate::capnet::local_device_id() {
+        let now = crate::scheduler::pit::get_ticks() as u64;
+        let local_id = match crate::net::capnet::local_device_id() {
             Some(id) => id,
             None => return self.stack.push(Value::I32(-1)),
         };
 
-        let mut token = crate::capnet::CapabilityTokenV1 {
+        let mut token = crate::net::capnet::CapabilityTokenV1 {
             version: 1,
             alg_id: 1,
             cap_type: cap_type_val,
@@ -10787,17 +10776,17 @@ impl WasmInstance {
         let peer_lo = self.stack.pop()?.as_i32()? as u64;
         let peer_id = (peer_hi << 32) | (peer_lo & 0xFFFF_FFFF);
 
-        if buf_len != crate::capnet::CAPNET_TOKEN_V1_LEN {
+        if buf_len != crate::net::capnet::CAPNET_TOKEN_V1_LEN {
             return self.stack.push(Value::I32(-1));
         }
 
         let raw = self.memory.read(buf_ptr, buf_len)?;
-        let mut token = match crate::capnet::CapabilityTokenV1::decode_checked(raw) {
+        let mut token = match crate::net::capnet::CapabilityTokenV1::decode_checked(raw) {
             Ok(t) => t,
             Err(_) => return self.stack.push(Value::I32(-2)),
         };
 
-        let frame = match crate::capnet::build_token_offer_frame(peer_id, 0, &mut token) {
+        let frame = match crate::net::capnet::build_token_offer_frame(peer_id, 0, &mut token) {
             Ok(f) => f,
             Err(_) => return self.stack.push(Value::I32(-3)),
         };
@@ -10824,7 +10813,7 @@ impl WasmInstance {
         let buf_len = self.stack.pop()?.as_i32()? as usize;
         let buf_ptr = self.stack.pop()?.as_i32()? as usize;
 
-        if buf_len < crate::capnet::CAPNET_TOKEN_V1_LEN {
+        if buf_len < crate::net::capnet::CAPNET_TOKEN_V1_LEN {
             return self.stack.push(Value::I32(-1));
         }
 
@@ -10847,10 +10836,10 @@ impl WasmInstance {
         match selected {
             None => self.stack.push(Value::I32(-1)),
             Some(lease) => {
-                let mut token = crate::capnet::CapabilityTokenV1::empty();
+                let mut token = crate::net::capnet::CapabilityTokenV1::empty();
                 token.cap_type = lease.cap_type as u8;
                 token.issuer_device_id = lease.issuer_device_id;
-                token.subject_device_id = crate::capnet::local_device_id().unwrap_or(0);
+                token.subject_device_id = crate::net::capnet::local_device_id().unwrap_or(0);
                 token.object_id = lease.object_id;
                 token.rights = lease.rights.bits();
                 token.issued_at = lease.not_before;
@@ -10866,7 +10855,7 @@ impl WasmInstance {
                     lease.owner_pid.0
                 };
                 if lease.enforce_use_budget {
-                    token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
+                    token.constraints_flags |= crate::net::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
                     token.max_uses = lease.uses_remaining;
                 }
                 let encoded = token.encode();
@@ -10947,7 +10936,7 @@ impl WasmInstance {
             None => return self.stack.push(Value::I32(-1)),
         };
         let rights = crate::capability::Rights::new(rights_raw);
-        let now = crate::pit::get_ticks() as u64;
+        let now = crate::scheduler::pit::get_ticks() as u64;
         let object_id = now ^ (self.process_id.0 as u64).wrapping_mul(0x9E3779B97F4A7C15);
 
         let cap_id = match crate::capability::capability_manager().grant_capability(
@@ -11007,7 +10996,7 @@ impl WasmInstance {
             self.process_id.0,
             cap_id,
             cap_type_raw,
-            crate::pit::get_ticks() as u64 + expires_ticks
+            crate::scheduler::pit::get_ticks() as u64 + expires_ticks
         );
         self.stack.push(Value::I32(cap_id as i32))
     }
@@ -11065,7 +11054,7 @@ impl WasmInstance {
     /// not time-bound.
     fn host_temporal_cap_check(&mut self) -> Result<(), WasmError> {
         let cap_id = self.stack.pop()?.as_i32()? as u32;
-        let now = crate::pit::get_ticks() as u64;
+        let now = crate::scheduler::pit::get_ticks() as u64;
         let tbl = TEMPORAL_CAP_TABLE.lock();
         let mut remaining: i32 = -1;
         let mut i = 0usize;
@@ -11090,7 +11079,7 @@ impl WasmInstance {
     /// Snapshot the calling process's current capability set.  Returns a
     /// `checkpoint_id` (≥ 1) on success or -1 if the store is full.
     fn host_temporal_checkpoint_create(&mut self) -> Result<(), WasmError> {
-        let now = crate::pit::get_ticks() as u64;
+        let now = crate::scheduler::pit::get_ticks() as u64;
         let snap =
             crate::capability::capability_manager().list_capabilities_for_pid(self.process_id);
 
@@ -11730,7 +11719,7 @@ impl WasmInstance {
         // MAX 16 edges per query.
         const MAX_Q: usize = 16;
         let limit = buf_len.min(MAX_Q);
-        let mut edges = [crate::cap_graph::CapDelegationEdge {
+        let mut edges = [crate::capability::cap_graph::CapDelegationEdge {
             active: false,
             from_pid: 0,
             from_cap: 0,
@@ -11738,7 +11727,7 @@ impl WasmInstance {
             to_cap: 0,
             rights_bits: 0,
         }; MAX_Q];
-        let n = crate::cap_graph::query_edges_for(pid, cap_id, &mut edges[..limit]);
+        let n = crate::capability::cap_graph::query_edges_for(pid, cap_id, &mut edges[..limit]);
 
         if n == 0 {
             return self.stack.push(Value::I32(-1));
@@ -11806,7 +11795,7 @@ impl WasmInstance {
                 // query_capability returns (cap_type_raw, object_id).
                 // The definitive rights check happens at actual transfer time;
                 // here we do a prospective cycle check only.
-                let result = crate::cap_graph::check_invariants(
+                let result = crate::capability::cap_graph::check_invariants(
                     pid,
                     cap_id,
                     delegatee_pid,
@@ -11833,7 +11822,7 @@ impl WasmInstance {
     fn host_cap_graph_depth(&mut self) -> Result<(), WasmError> {
         let cap_id = self.stack.pop()?.as_i32()? as u32;
         let pid = self.process_id.0;
-        let depth = crate::cap_graph::delegation_depth(pid, cap_id);
+        let depth = crate::capability::cap_graph::delegation_depth(pid, cap_id);
         self.stack.push(Value::I32(depth as i32))
     }
 
@@ -11892,7 +11881,7 @@ impl WasmInstance {
         let target_tid = self.stack.pop()?.as_i32()?;
         let caller_tid = self.active_thread_tid;
         let result = self.thread_pool.join(caller_tid, target_tid);
-        use crate::wasm_thread::JoinResult;
+        use crate::execution::wasm_thread::JoinResult;
         let code = match result {
             JoinResult::Done(exit_code) => exit_code,
             JoinResult::NotFound => 0,
@@ -11918,7 +11907,7 @@ impl WasmInstance {
     ///
     /// Yields the current quantum.
     fn host_thread_yield(&mut self) -> Result<(), WasmError> {
-        crate::quantum_scheduler::yield_now();
+        crate::scheduler::quantum_scheduler::yield_now();
         if self.active_thread_tid != 0 {
             return Err(WasmError::ThreadYielded);
         }
@@ -11992,7 +11981,7 @@ impl WasmInstance {
     /// Flush changes for a single window to the physical framebuffer.
     fn host_compositor_flush(&mut self) -> Result<(), WasmError> {
         let wid = self.stack.pop()?.as_i32()? as u32;
-        let fb_guard = crate::gpu_support::GPU_FB.lock();
+        let fb_guard = crate::drivers::x86::gpu_support::GPU_FB.lock();
         if let Some(ref fb) = *fb_guard {
             crate::compositor::compositor().flush_window(wid, fb);
         }
@@ -12503,11 +12492,11 @@ pub enum BackgroundThreadDrainOutcome {
     },
     Stalled {
         quanta: usize,
-        status: crate::wasm_thread::ThreadPoolStatus,
+        status: crate::execution::wasm_thread::ThreadPoolStatus,
     },
     TimedOut {
         quanta: usize,
-        status: crate::wasm_thread::ThreadPoolStatus,
+        status: crate::execution::wasm_thread::ThreadPoolStatus,
     },
 }
 
@@ -12829,7 +12818,7 @@ impl WasmRuntime {
         instances[instance_id] = RuntimeInstanceSlot::Empty;
         drop(instances);
         let _ = revoke_service_pointers_for_instance(instance_id);
-        crate::replay::clear(instance_id);
+        crate::execution::replay::clear(instance_id);
         Ok(())
     }
 
@@ -12852,7 +12841,7 @@ impl WasmRuntime {
     pub fn thread_pool_status(
         &self,
         instance_id: usize,
-    ) -> Result<crate::wasm_thread::ThreadPoolStatus, WasmError> {
+    ) -> Result<crate::execution::wasm_thread::ThreadPoolStatus, WasmError> {
         let instances = self.instances.lock();
         if instance_id >= MAX_WASM_RUNTIME_INSTANCES {
             return Err(WasmError::InvalidModule);
@@ -13029,7 +13018,7 @@ pub fn drain_pending_spawns() {
                         }
                         Ok(Err(e)) => {
                             let _ = wasm_runtime().destroy(instance_id);
-                            let _ = crate::process::process_manager().terminate(spawn.pid);
+                            let _ = crate::scheduler::process::process_manager().terminate(spawn.pid);
                             crate::serial_println!(
                                 "[WASM] drain_pending_spawns: start pid={} failed: {:?}",
                                 spawn.pid.0,
@@ -13038,7 +13027,7 @@ pub fn drain_pending_spawns() {
                         }
                         Err(e) => {
                             let _ = wasm_runtime().destroy(instance_id);
-                            let _ = crate::process::process_manager().terminate(spawn.pid);
+                            let _ = crate::scheduler::process::process_manager().terminate(spawn.pid);
                             crate::serial_println!(
                                 "[WASM] drain_pending_spawns: access pid={} failed: {:?}",
                                 spawn.pid.0,
@@ -13048,7 +13037,7 @@ pub fn drain_pending_spawns() {
                     }
                 }
                 Err(e) => {
-                    let _ = crate::process::process_manager().terminate(spawn.pid);
+                    let _ = crate::scheduler::process::process_manager().terminate(spawn.pid);
                     crate::serial_println!(
                         "[WASM] drain_pending_spawns: spawn pid={} failed: {:?}",
                         spawn.pid.0,
@@ -13065,7 +13054,7 @@ pub fn init() {
     // Runtime is statically initialized; keep the init hook for shared boot flow parity.
     ensure_fuzz_scratch_ready();
     let _ = ensure_fuzz_compiler_ready();
-    crate::vga::print_str("[WASM] Runtime initialized\n");
+    crate::drivers::x86::vga::print_str("[WASM] Runtime initialized\n");
 }
 
 #[derive(Clone)]
@@ -13258,7 +13247,7 @@ pub fn temporal_apply_syscall_module_table_payload(payload: &[u8]) -> Result<(),
 }
 
 fn syscall_caller_pid() -> ProcessId {
-    let scheduler = crate::quantum_scheduler::scheduler().lock();
+    let scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
     scheduler.get_current_pid().unwrap_or(ProcessId(0))
 }
 
@@ -13362,12 +13351,12 @@ struct JitCacheEntry {
     type_sig_hash: u64,
     global_sig_hash: u64,
     code_len: usize,
-    func: crate::wasm_jit::JitFunction,
+    func: crate::execution::wasm_jit::JitFunction,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct JitExecInfo {
-    pub(crate) entry: crate::wasm_jit::JitFn,
+    pub(crate) entry: crate::execution::wasm_jit::JitFn,
     pub(crate) exec_ptr: *mut u8,
     pub(crate) exec_len: usize,
 }
@@ -13390,8 +13379,8 @@ static JIT_CONFIG: Mutex<JitConfig> = Mutex::new(JitConfig::new());
 static JIT_STATS: Mutex<JitStats> = Mutex::new(JitStats::new());
 static JIT_CACHE: Mutex<JitCache> = Mutex::new(JitCache::new());
 static JIT_FUZZ_SCRATCH: Mutex<Option<JitFuzzScratch>> = Mutex::new(None);
-static JIT_FUZZ_COMPILER: Mutex<Option<crate::wasm_jit::FuzzCompiler>> = Mutex::new(None);
-static JIT_SELFTEST_COMPILER: Mutex<Option<crate::wasm_jit::FuzzCompiler>> = Mutex::new(None);
+static JIT_FUZZ_COMPILER: Mutex<Option<crate::execution::wasm_jit::FuzzCompiler>> = Mutex::new(None);
+static JIT_SELFTEST_COMPILER: Mutex<Option<crate::execution::wasm_jit::FuzzCompiler>> = Mutex::new(None);
 static JIT_FUZZ_INSTANCES: Mutex<Option<(usize, usize)>> = Mutex::new(None);
 static JIT_FUZZ_ACTIVE: AtomicBool = AtomicBool::new(false);
 static JIT_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -13439,7 +13428,7 @@ fn ensure_fuzz_compiler_ready() -> Result<(), &'static str> {
     if compiler_slot.is_none() {
         crate::serial_println!("[WASM-JIT] compiler-init stage=create");
         *compiler_slot = Some(
-            crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
+            crate::execution::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
                 .map_err(|_| "Fuzz compiler init failed")?,
         );
         crate::serial_println!("[WASM-JIT] compiler-init stage=created");
@@ -13458,7 +13447,7 @@ fn ensure_selftest_compiler_ready() -> Result<(), &'static str> {
     if compiler_slot.is_none() {
         crate::serial_println!("[WASM-JIT] compiler-init stage=create");
         *compiler_slot = Some(
-            crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
+            crate::execution::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
                 .map_err(|_| "Fuzz compiler init failed")?,
         );
         crate::serial_println!("[WASM-JIT] compiler-init stage=created");
@@ -13701,7 +13690,7 @@ fn jit_runtime_recover_impl(drop_fuzz_state: bool) {
         {
             // x86_64 bring-up uses a dedicated 64-bit IDT path; reloading the
             // legacy idt_asm table here can stall/fault before fuzz chunks start.
-            crate::arch::x86_64_runtime::init_trap_table();
+            crate::arch::x86::x86_64_runtime::init_trap_table();
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
@@ -13778,7 +13767,7 @@ fn jit_fault_exit() {
 }
 
 fn jit_select_kernel_esp0(current_esp: usize) -> u32 {
-    for (start, end) in crate::quantum_scheduler::kernel_stack_bounds() {
+    for (start, end) in crate::scheduler::quantum_scheduler::kernel_stack_bounds() {
         if current_esp >= start && current_esp < end {
             return (end as u32).saturating_sub(16);
         }
@@ -14503,7 +14492,7 @@ fn jit_handle_kernel_fault_x86_64(rip: &mut u64) -> bool {
             *JIT_FAULT_TRAP_PTR = TRAP_MEM;
         }
     }
-    *rip = crate::asm_bindings::asm_jit_fault_resume as usize as u64;
+    *rip = crate::memory::asm_bindings::asm_jit_fault_resume as usize as u64;
     true
 }
 
@@ -14589,7 +14578,7 @@ pub fn jit_handle_timer_interrupt_x86_64(rip: &mut u64, cs: u64, rsp: &mut u64) 
         if start_tick == 0 {
             return false;
         }
-        let now = crate::pit::get_ticks() as u32;
+        let now = crate::scheduler::pit::get_ticks() as u32;
         if now.wrapping_sub(start_tick) < JIT_USER_TIMEOUT_TICKS {
             return false;
         }
@@ -14619,7 +14608,7 @@ pub fn jit_handle_timer_interrupt_x86_64(rip: &mut u64, cs: u64, rsp: &mut u64) 
         if start_tick == 0 || !JIT_FAULT_ACTIVE.load(Ordering::SeqCst) {
             return false;
         }
-        let now = crate::pit::get_ticks() as u32;
+        let now = crate::scheduler::pit::get_ticks() as u32;
         if now.wrapping_sub(start_tick) < JIT_KERNEL_TIMEOUT_TICKS_X64 {
             return false;
         }
@@ -14636,7 +14625,7 @@ pub fn jit_handle_timer_interrupt_x86_64(rip: &mut u64, cs: u64, rsp: &mut u64) 
 }
 
 pub fn jit_handle_page_fault(
-    frame: &mut crate::idt_asm::InterruptFrame,
+    frame: &mut crate::platform::idt_asm::InterruptFrame,
     fault_addr: usize,
     error_code: u32,
 ) -> bool {
@@ -14678,12 +14667,12 @@ pub fn jit_handle_page_fault(
         return false;
     }
     frame.eax = 0;
-    frame.eip = crate::asm_bindings::asm_jit_fault_resume as u32;
+    frame.eip = crate::memory::asm_bindings::asm_jit_fault_resume as u32;
     true
 }
 
-pub fn jit_handle_exception(frame: &mut crate::idt_asm::InterruptFrame) -> bool {
-    if frame.int_no == crate::idt_asm::Exception::PageFault as u32 {
+pub fn jit_handle_exception(frame: &mut crate::platform::idt_asm::InterruptFrame) -> bool {
+    if frame.int_no == crate::platform::idt_asm::Exception::PageFault as u32 {
         return false;
     }
     if !JIT_FAULT_ACTIVE.load(Ordering::SeqCst) {
@@ -14695,16 +14684,16 @@ pub fn jit_handle_exception(frame: &mut crate::idt_asm::InterruptFrame) -> bool 
 
     // Only absorb CPU faults expected from user JIT execution.
     match frame.int_no {
-        x if x == crate::idt_asm::Exception::InvalidOpcode as u32 => {}
-        x if x == crate::idt_asm::Exception::DeviceNotAvailable as u32 => {}
-        x if x == crate::idt_asm::Exception::InvalidTSS as u32 => {}
-        x if x == crate::idt_asm::Exception::SegmentNotPresent as u32 => {}
-        x if x == crate::idt_asm::Exception::StackSegmentFault as u32 => {}
-        x if x == crate::idt_asm::Exception::GeneralProtectionFault as u32 => {}
-        x if x == crate::idt_asm::Exception::X87FloatingPoint as u32 => {}
-        x if x == crate::idt_asm::Exception::AlignmentCheck as u32 => {}
-        x if x == crate::idt_asm::Exception::SimdFloatingPoint as u32 => {}
-        x if x == crate::idt_asm::Exception::ControlProtection as u32 => {}
+        x if x == crate::platform::idt_asm::Exception::InvalidOpcode as u32 => {}
+        x if x == crate::platform::idt_asm::Exception::DeviceNotAvailable as u32 => {}
+        x if x == crate::platform::idt_asm::Exception::InvalidTSS as u32 => {}
+        x if x == crate::platform::idt_asm::Exception::SegmentNotPresent as u32 => {}
+        x if x == crate::platform::idt_asm::Exception::StackSegmentFault as u32 => {}
+        x if x == crate::platform::idt_asm::Exception::GeneralProtectionFault as u32 => {}
+        x if x == crate::platform::idt_asm::Exception::X87FloatingPoint as u32 => {}
+        x if x == crate::platform::idt_asm::Exception::AlignmentCheck as u32 => {}
+        x if x == crate::platform::idt_asm::Exception::SimdFloatingPoint as u32 => {}
+        x if x == crate::platform::idt_asm::Exception::ControlProtection as u32 => {}
         _ => return false,
     }
 
@@ -14730,7 +14719,7 @@ pub fn jit_handle_exception(frame: &mut crate::idt_asm::InterruptFrame) -> bool 
     true
 }
 
-pub fn jit_handle_timer_interrupt(frame: &mut crate::idt_asm::InterruptFrame) -> bool {
+pub fn jit_handle_timer_interrupt(frame: &mut crate::platform::idt_asm::InterruptFrame) -> bool {
     if (frame.cs & 0x3) != 3 || JIT_USER_ACTIVE.load(Ordering::SeqCst) == 0 {
         return false;
     }
@@ -14738,7 +14727,7 @@ pub fn jit_handle_timer_interrupt(frame: &mut crate::idt_asm::InterruptFrame) ->
     if start_tick == 0 {
         return false;
     }
-    let now = crate::pit::get_ticks() as u32;
+    let now = crate::scheduler::pit::get_ticks() as u32;
     if now.wrapping_sub(start_tick) < JIT_USER_TIMEOUT_TICKS {
         return false;
     }
@@ -14853,7 +14842,7 @@ pub(crate) fn call_jit_kernel(
     #[cfg(target_arch = "x86_64")]
     let flags = unsafe { x86_64_cli_save() };
     #[cfg(target_arch = "x86_64")]
-    JIT_KERNEL_ENTER_TICK.store(crate::pit::get_ticks() as u32, Ordering::SeqCst);
+    JIT_KERNEL_ENTER_TICK.store(crate::scheduler::pit::get_ticks() as u32, Ordering::SeqCst);
     let _fault_guard =
         JitFaultScope::enter(trap_code, jit_entry.exec_ptr as usize, jit_entry.exec_len);
     let ret = unsafe {
@@ -14972,9 +14961,9 @@ fn call_jit_user(
     let current_esp = (&stack_probe as *const u32) as usize;
     let esp0 = jit_select_kernel_esp0(current_esp);
     #[cfg(target_arch = "x86_64")]
-    crate::arch::x86_64_runtime::update_jit_kernel_stack_top(esp0 as usize);
+    crate::arch::x86::x86_64_runtime::update_jit_kernel_stack_top(esp0 as usize);
     #[cfg(not(target_arch = "x86_64"))]
-    crate::gdt::update_kernel_stack(esp0);
+    crate::platform::gdt::update_kernel_stack(esp0);
 
     if kpti::enabled() {
         // kpti::init() is currently only called from the i686 boot path; on x86_64
@@ -15185,7 +15174,7 @@ fn call_jit_user(
     sandbox.map_user_range_phys(data_base, state_phys, state_map_len, true)?;
     sandbox.map_user_range_phys(mem_base, mem_phys, mem_map_len, true)?;
 
-    let enclave_session = crate::enclave::open_jit_session(
+    let enclave_session = crate::security::enclave::open_jit_session(
         exec_phys,
         exec_map_len,
         state_phys,
@@ -15341,8 +15330,8 @@ fn call_jit_user(
     let _fault_guard = JitFaultScope::enter(trap_code, 0, 0);
 
     if let Some(session_id) = enclave_session {
-        if let Err(e) = crate::enclave::enter(session_id) {
-            let _ = crate::enclave::close(session_id);
+        if let Err(e) = crate::security::enclave::enter(session_id) {
+            let _ = crate::security::enclave::close(session_id);
             return Err(e);
         }
     }
@@ -15357,7 +15346,7 @@ fn call_jit_user(
 
     let user_stack_top =
         USER_JIT_STACK_BASE + guard_bytes + (USER_JIT_STACK_PAGES * paging::PAGE_SIZE) - 16;
-    JIT_USER_ENTER_TICK.store(crate::pit::get_ticks() as u32, Ordering::SeqCst);
+    JIT_USER_ENTER_TICK.store(crate::scheduler::pit::get_ticks() as u32, Ordering::SeqCst);
     unsafe {
         process_asm::jit_user_enter(
             user_stack_top as u32,
@@ -15365,7 +15354,7 @@ fn call_jit_user(
             {
                 #[cfg(target_arch = "x86_64")]
                 {
-                    crate::arch::x86_64_runtime::USER_CS
+                    crate::arch::x86::x86_64_runtime::USER_CS
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 {
@@ -15375,7 +15364,7 @@ fn call_jit_user(
             {
                 #[cfg(target_arch = "x86_64")]
                 {
-                    crate::arch::x86_64_runtime::USER_DS
+                    crate::arch::x86::x86_64_runtime::USER_DS
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 {
@@ -15464,7 +15453,6 @@ fn call_jit_user(
             ));
         }
     }
-
     // Always consume one-shot return handoff state before re-enabling interrupts.
     // Otherwise, an unrelated later syscall can observe stale `RETURN_PENDING`
     // and jump into an old kernel frame.
@@ -15491,8 +15479,8 @@ fn call_jit_user(
         kpti::leave_user();
     }
     if let Some(session_id) = enclave_session {
-        let _ = crate::enclave::exit(session_id);
-        let _ = crate::enclave::close(session_id);
+        let _ = crate::security::enclave::exit(session_id);
+        let _ = crate::security::enclave::close(session_id);
     }
     let _ = memory_isolation::tag_jit_user_trampoline(trampoline_phys, paging::PAGE_SIZE, false);
     let _ = memory_isolation::tag_jit_user_state(call_phys, paging::PAGE_SIZE, false);
@@ -15543,7 +15531,7 @@ fn hash_code(code: &[u8], locals_total: usize) -> u64 {
     hash
 }
 
-fn hash_jit_type_signatures(type_sigs: &[crate::wasm_jit::JitTypeSignature]) -> u64 {
+fn hash_jit_type_signatures(type_sigs: &[crate::execution::wasm_jit::JitTypeSignature]) -> u64 {
     let mut hash: u64 = 14695981039346656037;
     for sig in type_sigs {
         hash ^= sig.param_count as u64;
@@ -15558,7 +15546,7 @@ fn hash_jit_type_signatures(type_sigs: &[crate::wasm_jit::JitTypeSignature]) -> 
     hash
 }
 
-fn hash_jit_global_signatures(global_sigs: &[crate::wasm_jit::JitGlobalSignature]) -> u64 {
+fn hash_jit_global_signatures(global_sigs: &[crate::execution::wasm_jit::JitGlobalSignature]) -> u64 {
     let mut hash: u64 = 14695981039346656037;
     for sig in global_sigs {
         hash ^= if sig.mutable { 1 } else { 0 };
@@ -15571,19 +15559,19 @@ fn hash_jit_global_signatures(global_sigs: &[crate::wasm_jit::JitGlobalSignature
     hash
 }
 
-fn collect_jit_type_signatures(module: &WasmModule) -> Vec<crate::wasm_jit::JitTypeSignature> {
+fn collect_jit_type_signatures(module: &WasmModule) -> Vec<crate::execution::wasm_jit::JitTypeSignature> {
     let mut out = Vec::with_capacity(module.type_count);
     let mut idx = 0usize;
     while idx < module.type_count {
         let sig = module.type_signatures.get(idx).and_then(|entry| *entry);
         if let Some(sig) = sig {
-            out.push(crate::wasm_jit::JitTypeSignature {
+            out.push(crate::execution::wasm_jit::JitTypeSignature {
                 param_count: sig.param_count,
                 result_count: sig.result_count,
                 all_i32: sig.all_i32,
             });
         } else {
-            out.push(crate::wasm_jit::JitTypeSignature {
+            out.push(crate::execution::wasm_jit::JitTypeSignature {
                 param_count: 0,
                 result_count: 0,
                 all_i32: false,
@@ -15594,17 +15582,17 @@ fn collect_jit_type_signatures(module: &WasmModule) -> Vec<crate::wasm_jit::JitT
     out
 }
 
-fn collect_jit_global_signatures(module: &WasmModule) -> Vec<crate::wasm_jit::JitGlobalSignature> {
+fn collect_jit_global_signatures(module: &WasmModule) -> Vec<crate::execution::wasm_jit::JitGlobalSignature> {
     let mut out = Vec::with_capacity(module.global_count);
     let mut idx = 0usize;
     while idx < module.global_count {
         if let Some(global) = module.global_templates[idx] {
-            out.push(crate::wasm_jit::JitGlobalSignature {
+            out.push(crate::execution::wasm_jit::JitGlobalSignature {
                 mutable: global.mutable,
                 all_i32: matches!(global.value_type, ValueType::I32),
             });
         } else {
-            out.push(crate::wasm_jit::JitGlobalSignature {
+            out.push(crate::execution::wasm_jit::JitGlobalSignature {
                 mutable: false,
                 all_i32: false,
             });
@@ -15667,15 +15655,15 @@ fn jit_cache_get_or_compile(
     hash: u64,
     code: &[u8],
     locals_total: usize,
-    type_sigs: &[crate::wasm_jit::JitTypeSignature],
+    type_sigs: &[crate::execution::wasm_jit::JitTypeSignature],
     type_sig_hash: u64,
-    global_sigs: &[crate::wasm_jit::JitGlobalSignature],
+    global_sigs: &[crate::execution::wasm_jit::JitGlobalSignature],
     global_sig_hash: u64,
 ) -> Option<JitExecInfo> {
     if let Some(entry) = jit_cache_get(hash, code, locals_total, type_sig_hash, global_sig_hash) {
         return Some(entry);
     }
-    let jit = match crate::wasm_jit::compile_with_env(code, locals_total, type_sigs, global_sigs) {
+    let jit = match crate::execution::wasm_jit::compile_with_env(code, locals_total, type_sigs, global_sigs) {
         Ok(j) => j,
         Err(_) => {
             jit_stats().lock().failed += 1;
@@ -15743,7 +15731,7 @@ pub fn jit_benchmark() -> Result<(u64, u64), &'static str> {
         .map_err(|_| "Instance create failed")?;
     let iterations = 200;
 
-    let start = crate::pit::get_ticks();
+    let start = crate::scheduler::pit::get_ticks();
     for _ in 0..iterations {
         wasm_runtime()
             .get_instance_mut(instance_id, |instance| {
@@ -15754,9 +15742,9 @@ pub fn jit_benchmark() -> Result<(u64, u64), &'static str> {
             .map_err(|_| "Instance missing")?
             .map_err(|_| "Interpreter failed")?;
     }
-    let interp_ticks = crate::pit::get_ticks().saturating_sub(start);
+    let interp_ticks = crate::scheduler::pit::get_ticks().saturating_sub(start);
 
-    let start = crate::pit::get_ticks();
+    let start = crate::scheduler::pit::get_ticks();
     for _ in 0..iterations {
         wasm_runtime()
             .get_instance_mut(instance_id, |instance| {
@@ -15767,7 +15755,7 @@ pub fn jit_benchmark() -> Result<(u64, u64), &'static str> {
             .map_err(|_| "Instance missing")?
             .map_err(|_| "JIT failed")?;
     }
-    let jit_ticks = crate::pit::get_ticks().saturating_sub(start);
+    let jit_ticks = crate::scheduler::pit::get_ticks().saturating_sub(start);
 
     let _ = wasm_runtime().destroy(instance_id);
     Ok((interp_ticks, jit_ticks))
@@ -15916,7 +15904,7 @@ fn jit_bounds_self_test_x86_64_direct(_force_user_mode: bool) -> Result<(), &'st
     push_uleb128(&mut code, 0xFFFF_FFFC);
     code.push(Opcode::End as u8);
 
-    let jit = crate::wasm_jit::compile(&code, 0)?;
+    let jit = crate::execution::wasm_jit::compile(&code, 0)?;
     let jit_entry = JitExecInfo {
         entry: jit.entry,
         exec_ptr: jit.exec.ptr,
@@ -17430,7 +17418,7 @@ pub fn jit_global_module_self_test() -> Result<(), &'static str> {
         ),
     ];
     let mut compiler =
-        crate::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
+        crate::execution::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
             .map_err(|_| "jit globals self-test: compiler init failed")?;
 
     let mut idx = 0usize;
@@ -19044,18 +19032,18 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         #[cfg(not(target_arch = "x86_64"))]
         impl Drop for IrqGuard {
             fn drop(&mut self) {
-                unsafe { crate::idt_asm::fast_sti_restore(self.0) };
+                unsafe { crate::platform::idt_asm::fast_sti_restore(self.0) };
             }
         }
         #[cfg(target_arch = "x86_64")]
-        let compile_with_irqs_masked = |compiler_ref: &mut crate::wasm_jit::FuzzCompiler| {
+        let compile_with_irqs_masked = |compiler_ref: &mut crate::execution::wasm_jit::FuzzCompiler| {
             // x86_64 bring-up uses trap/MMU recovery paths during fuzz JIT compile;
             // masking IRQs here can stall those paths and hang long runs.
             compiler_ref.compile(&code, locals_total)
         };
         #[cfg(not(target_arch = "x86_64"))]
-        let compile_with_irqs_masked = |compiler_ref: &mut crate::wasm_jit::FuzzCompiler| {
-            let flags = unsafe { crate::idt_asm::fast_cli_save() };
+        let compile_with_irqs_masked = |compiler_ref: &mut crate::execution::wasm_jit::FuzzCompiler| {
+            let flags = unsafe { crate::platform::idt_asm::fast_cli_save() };
             let _guard = IrqGuard(flags);
             compiler_ref.compile(&code, locals_total)
         };
@@ -19077,7 +19065,7 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
                         {
                             continue;
                         }
-                        match crate::wasm_jit::FuzzCompiler::new(
+                        match crate::execution::wasm_jit::FuzzCompiler::new(
                             MAX_FUZZ_JIT_CODE_SIZE,
                             MAX_FUZZ_CODE_SIZE,
                         ) {
@@ -19755,7 +19743,7 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
     const INITIAL: &[u8] = b"alpha-temporal";
     const UPDATED: &[u8] = b"beta-temporal";
 
-    crate::vfs::write_path(PATH, INITIAL)
+    crate::fs::vfs::write_path(PATH, INITIAL)
         .map_err(|_| "Temporal self-check: initial write failed")?;
 
     let mut instance_id: Option<usize> = None;
@@ -19800,7 +19788,7 @@ pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
                 let v0_hi = u32::from_le_bytes([meta0[4], meta0[5], meta0[6], meta0[7]]);
                 let version0 = ((v0_hi as u64) << 32) | (v0_lo as u64);
 
-                crate::vfs::write_path(PATH, UPDATED).map_err(|_| {
+                crate::fs::vfs::write_path(PATH, UPDATED).map_err(|_| {
                     crate::serial_println!("[TEMPORAL_TEST] write_path failed");
                     WasmError::SyscallFailed
                 })?;

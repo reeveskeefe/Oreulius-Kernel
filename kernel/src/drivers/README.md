@@ -1,10 +1,11 @@
 # `drivers` — Hardware Driver Subsystem
 
-This module contains every hardware driver in the Oreulius kernel: from raw
-I/O-port access and interrupt-driven input all the way up to a compositing
-window manager and a universal GPU substrate with a five-tier capability
-model.  Every driver is `no_std` and targets x86/x86_64; all submodules are
-conditionally compiled out on `aarch64`.
+This module contains the hardware-driver boundary for the Oreulius kernel:
+raw I/O-port access, interrupt-driven input, display plumbing, and the GPU
+subsystem. The top-level facade now routes to `drivers::x86` for the current
+x86-family hardware tree and to `drivers::aarch64` for the explicit minimal
+AArch64 root. The old flat module list remains available through that facade
+so existing call sites keep compiling during the transition.
 
 ---
 
@@ -12,7 +13,9 @@ conditionally compiled out on `aarch64`.
 
 | Path | Lines | Purpose |
 |---|---|---|
-| `mod.rs` | 35 | Conditional module tree (`#[cfg(not(target_arch="aarch64"))]`) |
+| `mod.rs` | 21 | Public facade; target selection boundary; compatibility re-exports |
+| `x86/mod.rs` | 39 | x86-family hardware-driver root; current concrete modules |
+| `aarch64/mod.rs` | 12 | Minimal AArch64 driver root |
 | `pci.rs` | 663 | PCI bus enumeration, configuration-space I/O, device-name table |
 | `vga.rs` | 323 | VGA text-mode driver (80×25, MMIO 0xB8000) |
 | `framebuffer.rs` | 1 208 | Linear framebuffer + 8×16 bitmap-font console |
@@ -26,7 +29,7 @@ conditionally compiled out on `aarch64`.
 | `acpi_asm.rs` | 339 | RSDP/FADT parsing; S0–S5 sleep states; C/P-states; thermal |
 | `dma_asm.rs` | 265 | ISA DMA channels 0–7; scatter-gather descriptors |
 | `memopt_asm.rs` | 307 | Cache flush/prefetch; non-temporal copies; SSE; CRC32/AES-NI |
-| `GPUsupport/` | ~5 000 | Universal GPU substrate (see GPU section below) |
+| `GPUsupport/` | ~5 000 | Universal GPU substrate (owned by the x86-family driver root) |
 
 ---
 

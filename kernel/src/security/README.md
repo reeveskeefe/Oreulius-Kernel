@@ -20,7 +20,8 @@ Oreulius's security model is built on four non-negotiable principles:
 | File | Architecture | Lines | Role |
 |---|---|---|---|
 | `mod.rs` | All | 1604 | Audit log, anomaly detection, capability validator, rate limiter, resource quotas, crypto primitives, `SecurityManager` umbrella |
-| `intent_graph.rs` | All | 1365 | CTMC-based per-process intent analysis, adaptive restrictions, predictive isolations |
+| `intent_graph/` | All | facade + submodules | CTMC-based per-process intent analysis, policy tuning, runtime graph state, adaptive restrictions |
+| `intent_graph_data.rs` | All | shared consts | CTMC matrix and node-count source of truth for runtime + build-time spectral checks |
 | `enclave.rs` | x86-64 | 3575 | Intel SGX and ARM TrustZone enclave lifecycle, EPC pool, temporal secret redaction, remote attestation |
 | `memory_isolation.rs` | x86-64 | 534 | Memory domain tagging, `IsolationDomain` classification, JIT/WASM/enclave region policies |
 | `kpti.rs` | x86-64 | 377 | Kernel Page Table Isolation — dual CR3 management, ISR trampoline stubs, IDT remapping |
@@ -28,7 +29,7 @@ Oreulius's security model is built on four non-negotiable principles:
 | `formal.rs` | x86-64 | 121 | Mechanized in-kernel proof obligations for capability and JIT predicates |
 | `cpu_security.rs` | x86-64 | 97 | SMEP/SMAP CPU hardening, `with_user_access` STAC/CLAC guard |
 
-`intent_graph.rs` compiles on all architectures. All other non-`mod.rs` files are `#[cfg(not(target_arch = "aarch64"))]`.
+`intent_graph/` compiles on all architectures. It is split into `model`, `policy`, and `runtime` submodules behind a facade so the public path stays stable while ownership is narrower. All other non-`mod.rs` files are `#[cfg(not(target_arch = "aarch64"))]`.
 
 ---
 

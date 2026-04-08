@@ -32,13 +32,13 @@
 
 extern crate alloc;
 
-use crate::capnet;
+use crate::net::capnet;
 use crate::crypto::{
     build_fleet_attestation_signed_message, import_hex_file, read_small_vfs_file,
     verify_detached_ed25519, DetachedSignatureStatus,
 };
-use crate::net_reactor;
-use crate::persistence;
+use crate::net::net_reactor;
+use crate::temporal::persistence;
 // Cross-arch console output: VGA on x86/x86_64, PL011 on AArch64.
 mod vga {
     pub fn print_str(s: &str) { crate::serial::kprint_str(s); }
@@ -66,7 +66,7 @@ struct FleetAttestationBundle {
 }
 
 pub fn init_store() {
-    let _ = crate::vfs::mkdir(PATH_FLEET_DIR);
+    let _ = crate::fs::vfs::mkdir(PATH_FLEET_DIR);
 }
 
 fn read_active_slot_hash() -> [u8; 32] {
@@ -74,7 +74,7 @@ fn read_active_slot_hash() -> [u8; 32] {
     // The manifest lives at /ota/manifest as 64 hex bytes.  If it cannot be
     // read we return all-zeros, which is an honest "unknown" measurement.
     let mut hex = [0u8; 64];
-    match crate::vfs::read_path("/ota/manifest", &mut hex) {
+    match crate::fs::vfs::read_path("/ota/manifest", &mut hex) {
         Ok(n) if n >= 64 => {}
         _ => return [0u8; 32],
     }
@@ -132,21 +132,21 @@ fn build_measurement_hash(
 
 fn build_current_bundle() -> FleetAttestationBundle {
     #[cfg(not(target_arch = "aarch64"))]
-    let boot_tick = crate::asm_bindings::rdtsc_begin();
+    let boot_tick = crate::memory::asm_bindings::rdtsc_begin();
     #[cfg(target_arch = "aarch64")]
-    let boot_tick = crate::vfs_platform::ticks_now();
+    let boot_tick = crate::fs::vfs_platform::ticks_now();
     #[cfg(not(target_arch = "aarch64"))]
-    let crash_count = crate::crash_log::crash_count();
+    let crash_count = crate::security::crash_log::crash_count();
     #[cfg(target_arch = "aarch64")]
     let crash_count = 0u32;
     #[cfg(not(target_arch = "aarch64"))]
-    let boot_session = crate::crash_log::boot_session();
+    let boot_session = crate::security::crash_log::boot_session();
     #[cfg(target_arch = "aarch64")]
     let boot_session = 0u32;
     let slot_hash = read_active_slot_hash();
 
     let sched_switches: u64 = {
-        let overview = crate::quantum_scheduler::scheduler()
+        let overview = crate::scheduler::quantum_scheduler::scheduler()
             .lock()
             .snapshot_overview();
         overview.total_switches
@@ -209,8 +209,8 @@ fn write_bundle_exports(bundle: &FleetAttestationBundle) -> Result<(), &'static 
     init_store();
     let canonical = canonical_message_for_bundle(bundle);
     let summary = bundle_text_summary(bundle);
-    crate::vfs::write_path(PATH_ATTEST_MSG, &canonical).map(|_| ())?;
-    crate::vfs::write_path(PATH_ATTEST_TXT, &summary).map(|_| ())
+    crate::fs::vfs::write_path(PATH_ATTEST_MSG, &canonical).map(|_| ())?;
+    crate::fs::vfs::write_path(PATH_ATTEST_TXT, &summary).map(|_| ())
 }
 
 fn verify_exported_bundle_signature() -> Result<DetachedSignatureStatus, &'static str> {
@@ -346,7 +346,7 @@ fn print_u64(n: u64) {
 
 /// Parse a dotted-decimal IPv4 address string into a `[u8; 4]` array,
 /// then convert to `smoltcp::wire::Ipv4Address` (which is just a newtype).
-fn parse_ipv4(s: &str) -> Option<crate::netstack::Ipv4Addr> {
+fn parse_ipv4(s: &str) -> Option<crate::net::netstack::Ipv4Addr> {
     let mut octets = [0u8; 4];
     let mut idx = 0usize;
     let mut acc: u32 = 0;
@@ -371,7 +371,7 @@ fn parse_ipv4(s: &str) -> Option<crate::netstack::Ipv4Addr> {
         return None;
     }
     octets[3] = acc as u8;
-    Some(crate::netstack::Ipv4Addr::new(
+    Some(crate::net::netstack::Ipv4Addr::new(
         octets[0], octets[1], octets[2], octets[3],
     ))
 }
@@ -589,15 +589,15 @@ pub fn cmd_fleet_diag() {
     #[cfg(not(target_arch = "aarch64"))]
     {
         vga::print_str("[Crash log]\n");
-        let cnt = crate::crash_log::crash_count();
+        let cnt = crate::security::crash_log::crash_count();
         vga::print_str("  Total crashes recorded  : ");
         print_u32(cnt);
         vga::print_str("\n");
         vga::print_str("  Boot session            : ");
-        print_u32(crate::crash_log::boot_session());
+        print_u32(crate::security::crash_log::boot_session());
         vga::print_str("\n");
         let mut printed = 0u32;
-        crate::crash_log::for_each_crash(|_idx, _tick, _session, _loc, _msg| {
+        crate::security::crash_log::for_each_crash(|_idx, _tick, _session, _loc, _msg| {
             printed += 1;
         });
         vga::print_str("  Live ring entries       : ");
@@ -610,7 +610,7 @@ pub fn cmd_fleet_diag() {
     // --- OTA status ---
     vga::print_str("[OTA]\n");
     let mut active_buf = [0u8; 4];
-    let active = match crate::vfs::read_path("/ota/active", &mut active_buf) {
+    let active = match crate::fs::vfs::read_path("/ota/active", &mut active_buf) {
         Ok(n) if n > 0 && active_buf[0] == b'b' => "b",
         Ok(_) => "a",
         Err(_) => "unknown",
@@ -619,8 +619,8 @@ pub fn cmd_fleet_diag() {
     vga::print_str(active);
     vga::print_str("\n");
 
-    let slot_a_sz = crate::vfs::path_size("/ota/slot_a").unwrap_or(0);
-    let slot_b_sz = crate::vfs::path_size("/ota/slot_b").unwrap_or(0);
+    let slot_a_sz = crate::fs::vfs::path_size("/ota/slot_a").unwrap_or(0);
+    let slot_b_sz = crate::fs::vfs::path_size("/ota/slot_b").unwrap_or(0);
     vga::print_str("  Slot A size             : ");
     print_u64(slot_a_sz as u64);
     vga::print_str(" B\n");
@@ -645,7 +645,7 @@ pub fn cmd_fleet_diag() {
 
     // --- Scheduler overview ---
     vga::print_str("[Scheduler]\n");
-    let overview = crate::quantum_scheduler::scheduler()
+    let overview = crate::scheduler::quantum_scheduler::scheduler()
         .lock()
         .snapshot_overview();
     vga::print_str("  Total processes         : ");

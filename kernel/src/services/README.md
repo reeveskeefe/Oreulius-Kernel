@@ -220,7 +220,7 @@ Enables WASM binaries compiled for **WASI Preview 1** (musl-libc, WASI-SDK, Emsc
 - `WasiCtx` holds per-instance state: an fd table, a list of preopened directory capabilities, and a clock epoch offset.
 - All file I/O routes through `crate::capability` and `crate::fs` (no direct memory access).
 - All clock functions route through the kernel timer service.
-- Network I/O routes through `crate::rtl8139` for raw socket access.
+- Network I/O routes through `crate::net::rtl8139` for raw socket access.
 - **No heap allocations in the hot path** — the fd table and preopened dir table are fixed-size arrays.
 
 ### WASM Host Function IDs (45–99)

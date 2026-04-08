@@ -1,24 +1,13 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Architecture MMU shim.
 //!
 //! This starts as a thin wrapper over the existing i686 paging subsystem so
-//! callers can migrate away from directly depending on `crate::paging`.
+//! callers can migrate away from directly depending on `crate::fs::paging`.
 
 /// Physical address newtype used for page-table roots and MMU handoff.
 ///
@@ -115,7 +104,7 @@ use mmu_x86_64::MMU;
 use mmu_x86_legacy::MMU;
 
 #[cfg(target_arch = "x86")]
-pub type AddressSpace = crate::paging::AddressSpace;
+pub type AddressSpace = crate::fs::paging::AddressSpace;
 #[cfg(target_arch = "aarch64")]
 pub use mmu_aarch64::AddressSpace;
 #[cfg(target_arch = "x86_64")]
@@ -206,7 +195,7 @@ pub fn set_page_writable_range(
 
 #[cfg(target_arch = "x86")]
 pub fn new_jit_sandbox() -> Result<AddressSpace, &'static str> {
-    crate::paging::AddressSpace::new_jit_sandbox()
+    crate::fs::paging::AddressSpace::new_jit_sandbox()
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -231,7 +220,7 @@ pub fn alloc_user_pages(
     count: usize,
     writable: bool,
 ) -> Result<(), &'static str> {
-    crate::paging::alloc_user_pages(space, virt_addr, count, writable)
+    crate::fs::paging::alloc_user_pages(space, virt_addr, count, writable)
 }
 
 #[cfg(target_arch = "x86_64")]

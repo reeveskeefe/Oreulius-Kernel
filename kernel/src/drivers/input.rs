@@ -267,8 +267,8 @@ pub mod modifier {
 }
 
 /// Update modifier state from a key press/release.
-fn update_modifiers(ev: &crate::keyboard::KeyEvent, pressed: bool) {
-    use crate::keyboard::KeyEvent;
+fn update_modifiers(ev: &crate::drivers::x86::keyboard::KeyEvent, pressed: bool) {
+    use crate::drivers::x86::keyboard::KeyEvent;
     let bit = match ev {
         KeyEvent::Char('L') | KeyEvent::Char('R') => 0, // not real modifier
         _ => return,
@@ -297,7 +297,7 @@ pub fn pump() {
     let mods = current_modifiers();
 
     // Drain keyboard events.
-    while let Some(kev) = crate::keyboard::poll_event() {
+    while let Some(kev) = crate::drivers::x86::keyboard::poll_event() {
         let (cp, scancode, pressed) = decode_key_event(&kev);
         if pressed {
             let ev = InputEvent::key_event(cp, scancode, KeyState::Pressed, mods);
@@ -309,15 +309,15 @@ pub fn pump() {
     }
 
     // Drain mouse events.
-    while let Some(mev) = crate::mouse::pop_event() {
+    while let Some(mev) = crate::drivers::x86::mouse::pop_event() {
         let ev = InputEvent::mouse_event(mev.dx as i16, mev.dy as i16, mev.dwheel, mev.buttons.0);
         INPUT_RING.push(ev);
     }
 }
 
 /// Translate a [`KeyEvent`] to (codepoint, scancode, is_pressed).
-fn decode_key_event(kev: &crate::keyboard::KeyEvent) -> (u32, u8, bool) {
-    use crate::keyboard::KeyEvent;
+fn decode_key_event(kev: &crate::drivers::x86::keyboard::KeyEvent) -> (u32, u8, bool) {
+    use crate::drivers::x86::keyboard::KeyEvent;
     match kev {
         KeyEvent::Char(c) => (*c as u32, 0, true),
         KeyEvent::Enter => ('\n' as u32, 0x1C, true),

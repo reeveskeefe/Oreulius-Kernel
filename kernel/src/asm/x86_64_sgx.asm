@@ -1,5 +1,5 @@
-; SPDX-License-Identifier: Oreulius Community License v1.0 (see LICENSE)
-; Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
+; Oreulius Kernel Project
+; SPDX-License-Identifier: LicenseRef-Oreulius-Community
 ;
 ; x86_64_sgx.asm — Intel SGX ENCLS/ENCLU wrappers and EPC discovery (64-bit)
 ;

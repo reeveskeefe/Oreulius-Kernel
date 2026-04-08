@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! CPU hardening features: SMEP, SMAP, and KPTI coordination.
@@ -20,7 +9,7 @@
 //! This module enables CPU-enforced protections where supported and
 //! provides guarded helpers for SMAP user-access toggling.
 
-use crate::asm_bindings;
+use crate::memory::asm_bindings;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const CR4_SMEP: u32 = 1 << 20;
@@ -45,11 +34,11 @@ pub fn init() {
     SMEP_ENABLED.store(smep, Ordering::SeqCst);
     SMAP_ENABLED.store(smap, Ordering::SeqCst);
 
-    crate::vga::print_str("[CPU] SMEP: ");
-    crate::vga::print_str(if smep { "enabled" } else { "unsupported" });
-    crate::vga::print_str(", SMAP: ");
-    crate::vga::print_str(if smap { "enabled" } else { "unsupported" });
-    crate::vga::print_str("\n");
+    crate::drivers::x86::vga::print_str("[CPU] SMEP: ");
+    crate::drivers::x86::vga::print_str(if smep { "enabled" } else { "unsupported" });
+    crate::drivers::x86::vga::print_str(", SMAP: ");
+    crate::drivers::x86::vga::print_str(if smap { "enabled" } else { "unsupported" });
+    crate::drivers::x86::vga::print_str("\n");
 }
 
 pub fn has_smep() -> bool {

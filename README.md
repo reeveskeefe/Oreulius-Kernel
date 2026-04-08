@@ -51,9 +51,34 @@ That path gives the fastest "aha" moment in this repo:
 <img src="docs/assets/oreuliuswhitebackground.png" width="640" alt="Oreulius kernel logo">
 </div>
 
-## Important
+## Versioning
 
-This Kernel is going through some final bug fixes and finalizations before being snapshot into the alpha release. I would not consider this project complete, but it is near completion trajectory. Once Alpha is released, this section will be replaced with Release versioning plans. 
+What does "alpha" mean for this project?
+This is an experiment phase. Alpha is the pre-release version I'm comfortable putting in people's hands to explore, test, and poke at. It represents a real, functional architectural milestone not a toy. But it is not production-ready, the ABI isn't finalized, and there will absolutely be bugs. That's the point. Throughout the alpha versioning cycle I'll be working through those bugs, pushing fixes, and tightening things up as they surface.
+
+Once the kernel clears its Verification Target Matrix, and other various bug fixes, panics, allocation errors, and the formal set of checks and proofs that define what this kernel actually guarantees it moves into beta. Beta will open it up for early, non-critical production experiments by people who want to run it in real (but low-stakes) environments.
+After beta, the goal is to fuzz it down further, close the remaining security gaps, and reach a point where I can stand behind genuine security guarantees. That's the destination.
+
+### Version number meaning
+
+This project uses a three-part version format:
+
+`MAJOR.MINOR.PATCH`
+
+Example:
+`0.4.7`
+
+- `MAJOR` tracks major architectural maturity.
+- `MINOR` tracks substantial feature, subsystem, or infrastructure progress.
+- `PATCH` tracks smaller fixes, cleanup, formatting, documentation, and minor bug corrections.
+
+
+Examples:
+- `0.1.0` = first meaningful alpha milestone
+- `0.2.0` = larger subsystem or infrastructure improvement
+- `0.2.3` = same alpha milestone, with three smaller fixes after it
+- `0.5.0` = substantial architectural progress 
+- `1.0.0` = Major release boundary, marking a significant architectural and verification milestone.
 
 ## Overview
 

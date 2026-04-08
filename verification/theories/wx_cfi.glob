@@ -1,221 +1,45 @@
-DIGEST 3dd3ff6255b212d9c536f21fcb813556
+DIGEST ffe56e92930ac599bfd886820c56ee23
 Fwx_cfi
-R1009:1018 Corelib.Init.Logic <> <> lib
-R1045:1057 Stdlib.micromega.Lia <> <> lib
-R1084:1093 Stdlib.Lists.List <> <> lib
-R1103:1115 Stdlib.Lists.List ListNotations <> mod
-ax 1385:1388 <> Page
-ax 1483:1490 <> Writable
-R1500:1503 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R1496:1499 wx_cfi <> Page defax
-ax 1520:1529 <> Executable
-R1537:1540 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R1533:1536 wx_cfi <> Page defax
-ax 1557:1564 <> Readable
-R1574:1577 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R1570:1573 wx_cfi <> Page defax
-def 1670:1681 <> WX_invariant
-R1707:1710 wx_cfi <> Page defax
-binder 1703:1703 <> p:9
-R1714:1716 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R1743:1743 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R1727:1730 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R1717:1724 wx_cfi <> Writable defax
-R1726:1726 wx_cfi <> p:9 var
-R1731:1740 wx_cfi <> Executable defax
-R1742:1742 wx_cfi <> p:9 var
-ax 2419:2437 <> alloc_gives_W_not_X
-R2455:2458 wx_cfi <> Page defax
-binder 2451:2451 <> p:10
-R2476:2479 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R2466:2473 wx_cfi <> Writable defax
-R2475:2475 wx_cfi <> p:10 var
-R2480:2481 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R2482:2491 wx_cfi <> Executable defax
-R2493:2493 wx_cfi <> p:10 var
-ax 2564:2572 <> seal_page
-R2580:2583 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R2576:2579 wx_cfi <> Page defax
-R2584:2587 wx_cfi <> Page defax
-ax 2641:2653 <> seal_clears_W
-R2671:2674 wx_cfi <> Page defax
-binder 2667:2667 <> p:15
-R2678:2679 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R2680:2687 wx_cfi <> Writable defax
-R2690:2698 wx_cfi <> seal_page defax
-R2700:2700 wx_cfi <> p:15 var
-ax 2711:2723 <> seal_grants_X
-R2741:2744 wx_cfi <> Page defax
-binder 2737:2737 <> p:18
-R2748:2757 wx_cfi <> Executable defax
-R2760:2768 wx_cfi <> seal_page defax
-R2770:2770 wx_cfi <> p:18 var
-ax 2827:2846 <> emit_preserves_perms
-R2864:2867 wx_cfi <> Page defax
-binder 2860:2860 <> p:21
-R2885:2888 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R2875:2882 wx_cfi <> Writable defax
-R2884:2884 wx_cfi <> p:21 var
-R2903:2910 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R2889:2890 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R2891:2900 wx_cfi <> Executable defax
-R2902:2902 wx_cfi <> p:21 var
-R2921:2924 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R2911:2918 wx_cfi <> Writable defax
-R2920:2920 wx_cfi <> p:21 var
-R2925:2926 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R2927:2936 wx_cfi <> Executable defax
-R2938:2938 wx_cfi <> p:21 var
-prf 3243:3265 <> alloc_page_satisfies_wx
-R3283:3286 wx_cfi <> Page defax
-binder 3279:3279 <> p:24
-R3304:3311 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3294:3301 wx_cfi <> Writable defax
-R3303:3303 wx_cfi <> p:24 var
-R3312:3314 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R3341:3341 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R3325:3328 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R3315:3322 wx_cfi <> Writable defax
-R3324:3324 wx_cfi <> p:24 var
-R3329:3338 wx_cfi <> Executable defax
-R3340:3340 wx_cfi <> p:24 var
-R3382:3400 wx_cfi <> alloc_gives_W_not_X prfax
-R3382:3400 wx_cfi <> alloc_gives_W_not_X prfax
-prf 3516:3539 <> sealed_page_satisfies_wx
-R3557:3560 wx_cfi <> Page defax
-binder 3553:3553 <> p:25
-R3568:3570 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R3621:3621 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R3593:3596 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R3571:3578 wx_cfi <> Writable defax
-R3581:3589 wx_cfi <> seal_page defax
-R3591:3591 wx_cfi <> p:25 var
-R3597:3606 wx_cfi <> Executable defax
-R3609:3617 wx_cfi <> seal_page defax
-R3619:3619 wx_cfi <> p:25 var
-R3659:3671 wx_cfi <> seal_clears_W prfax
-R3659:3671 wx_cfi <> seal_clears_W prfax
-prf 3914:3937 <> seal_preserves_global_wx
-R3955:3960 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3943:3954 wx_cfi <> WX_invariant def
-R3973:3976 wx_cfi <> Page defax
-binder 3969:3969 <> p:26
-R3984:3995 wx_cfi <> WX_invariant def
-R4369:4372 Corelib.Init.Logic <> conj constr
-R4369:4372 Corelib.Init.Logic <> conj constr
-prf 4593:4617 <> jit_pipeline_preserves_wx
-R4635:4638 wx_cfi <> Page defax
-binder 4631:4631 <> p:27
-R4656:4731 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4646:4653 wx_cfi <> Writable defax
-R4655:4655 wx_cfi <> p:27 var
-R4756:4763 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R4732:4733 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R4734:4741 wx_cfi <> Writable defax
-R4744:4752 wx_cfi <> seal_page defax
-R4754:4754 wx_cfi <> p:27 var
-R4788:4795 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R4764:4773 wx_cfi <> Executable defax
-R4776:4784 wx_cfi <> seal_page defax
-R4786:4786 wx_cfi <> p:27 var
-R4796:4798 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R4849:4849 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R4821:4824 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R4799:4806 wx_cfi <> Writable defax
-R4809:4817 wx_cfi <> seal_page defax
-R4819:4819 wx_cfi <> p:27 var
-R4825:4834 wx_cfi <> Executable defax
-R4837:4845 wx_cfi <> seal_page defax
-R4847:4847 wx_cfi <> p:27 var
-R4885:4888 Corelib.Init.Logic <> conj constr
-R4909:4912 Corelib.Init.Logic <> conj constr
-R4915:4927 wx_cfi <> seal_grants_X prfax
-R4891:4903 wx_cfi <> seal_clears_W prfax
-R4885:4888 Corelib.Init.Logic <> conj constr
-R4909:4912 Corelib.Init.Logic <> conj constr
-R4915:4927 wx_cfi <> seal_grants_X prfax
-R4891:4903 wx_cfi <> seal_clears_W prfax
-R4945:4968 wx_cfi <> sealed_page_satisfies_wx thm
-R4945:4968 wx_cfi <> sealed_page_satisfies_wx thm
-ax 5275:5278 <> Addr
-def 5538:5550 <> FunctionTable
-R5555:5558 Corelib.Init.Datatypes <> list ind
-R5560:5563 wx_cfi <> Addr defax
-def 5746:5755 <> ValidEntry
-R5763:5775 wx_cfi <> FunctionTable def
-binder 5758:5759 <> ft:30
-R5783:5786 wx_cfi <> Addr defax
-binder 5779:5779 <> a:31
-R5801:5802 Stdlib.Lists.List <> In def
-R5806:5807 wx_cfi <> ft:30 var
-R5804:5804 wx_cfi <> a:31 var
-def 6059:6076 <> BoundsCheckedIndex
-R6084:6096 wx_cfi <> FunctionTable def
-binder 6079:6080 <> ft:32
-R6104:6106 Corelib.Init.Datatypes <> nat ind
-binder 6100:6100 <> i:33
-R6122:6124 Corelib.Init.Peano <> ::nat_scope:x_'<'_x not
-R6121:6121 wx_cfi <> i:33 var
-R6125:6130 Corelib.Init.Datatypes <> length def
-R6132:6133 wx_cfi <> ft:32 var
-def 6518:6528 <> TableLookup
-R6536:6548 wx_cfi <> FunctionTable def
-binder 6531:6532 <> ft:34
-R6556:6558 Corelib.Init.Datatypes <> nat ind
-binder 6552:6552 <> i:35
-R6566:6569 wx_cfi <> Addr defax
-binder 6562:6562 <> a:36
-R6598:6600 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R6584:6592 Stdlib.Lists.List <> nth_error def
-R6597:6597 wx_cfi <> i:35 var
-R6594:6595 wx_cfi <> ft:34 var
-R6601:6604 Corelib.Init.Datatypes <> Some constr
-R6606:6606 wx_cfi <> a:36 var
-def 6880:6889 <> JumpTarget
-R6897:6909 wx_cfi <> FunctionTable def
-binder 6892:6893 <> ft:37
-R6917:6920 wx_cfi <> Addr defax
-binder 6913:6913 <> a:38
-R6935:6942 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
-R6950:6952 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
-R6947:6949 Corelib.Init.Datatypes <> nat ind
-binder 6943:6943 <> i:39
-R6976:6979 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R6953:6970 wx_cfi <> BoundsCheckedIndex def
-R6972:6973 wx_cfi <> ft:37 var
-R6975:6975 wx_cfi <> i:39 var
-R6980:6990 wx_cfi <> TableLookup def
-R6992:6993 wx_cfi <> ft:37 var
-R6995:6995 wx_cfi <> i:39 var
-R6997:6997 wx_cfi <> a:38 var
-prf 7544:7564 <> cfi_jit_targets_valid
-R7583:7595 wx_cfi <> FunctionTable def
-binder 7578:7579 <> ft:40
-R7603:7606 wx_cfi <> Addr defax
-binder 7599:7599 <> a:41
-R7629:7632 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R7614:7623 wx_cfi <> JumpTarget def
-R7625:7626 wx_cfi <> ft:40 var
-R7628:7628 wx_cfi <> a:41 var
-R7633:7642 wx_cfi <> ValidEntry def
-R7644:7645 wx_cfi <> ft:40 var
-R7647:7647 wx_cfi <> a:41 var
-R7704:7713 wx_cfi <> ValidEntry def
-R7725:7736 Stdlib.Lists.List <> nth_error_In thm
-R7725:7736 Stdlib.Lists.List <> nth_error_In thm
-prf 7834:7855 <> cfi_no_mid_stream_jump
-R7874:7886 wx_cfi <> FunctionTable def
-binder 7869:7870 <> ft:42
-R7894:7897 wx_cfi <> Addr defax
-binder 7890:7890 <> a:43
-R7922:7925 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R7905:7906 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R7907:7916 wx_cfi <> ValidEntry def
-R7918:7919 wx_cfi <> ft:42 var
-R7921:7921 wx_cfi <> a:43 var
-R7926:7927 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R7928:7937 wx_cfi <> JumpTarget def
-R7939:7940 wx_cfi <> ft:42 var
-R7942:7942 wx_cfi <> a:43 var
-R8007:8027 wx_cfi <> cfi_jit_targets_valid thm
-R8007:8027 wx_cfi <> cfi_jit_targets_valid thm
+ind 107:115 <> page_perm
+constr 124:127 <> Data
+constr 133:136 <> Code
+constr 142:149 <> ReadOnly
+scheme 107:115 <> page_perm_rect
+scheme 107:115 <> page_perm_ind
+scheme 107:115 <> page_perm_rec
+scheme 107:115 <> page_perm_sind
+def 164:171 <> writable
+R181:189 wx_cfi <> page_perm ind
+binder 174:177 <> perm:3
+R194:197 Corelib.Init.Datatypes <> bool ind
+R210:213 wx_cfi <> perm:3 var
+R224:227 wx_cfi <> Data constr
+R232:235 Corelib.Init.Datatypes <> true constr
+R241:244 wx_cfi <> Code constr
+R249:253 Corelib.Init.Datatypes <> false constr
+R259:266 wx_cfi <> ReadOnly constr
+R271:275 Corelib.Init.Datatypes <> false constr
+def 296:305 <> executable
+R315:323 wx_cfi <> page_perm ind
+binder 308:311 <> perm:5
+R328:331 Corelib.Init.Datatypes <> bool ind
+R344:347 wx_cfi <> perm:5 var
+R358:361 wx_cfi <> Data constr
+R366:370 Corelib.Init.Datatypes <> false constr
+R376:379 wx_cfi <> Code constr
+R384:387 Corelib.Init.Datatypes <> true constr
+R393:400 wx_cfi <> ReadOnly constr
+R405:409 Corelib.Init.Datatypes <> false constr
+prf 427:437 <> wx_disjoint
+binder 450:453 <> perm:7
+R476:479 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R469:471 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R456:463 wx_cfi <> writable def
+R465:468 wx_cfi <> perm:7 var
+R472:475 Corelib.Init.Datatypes <> true constr
+R502:505 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R495:497 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R480:489 wx_cfi <> executable def
+R491:494 wx_cfi <> perm:7 var
+R498:501 Corelib.Init.Datatypes <> true constr
+R506:510 Corelib.Init.Logic <> False ind

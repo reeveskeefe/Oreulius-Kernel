@@ -1,42 +1,31 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Architecture abstraction shim for incremental multi-arch bring-up.
 //!
-//! This module intentionally starts small: it wraps the current x86/i686
-//! platform initialization sequence behind a stable interface so future
-//! x86_64/AArch64 implementations can slot in without touching `rust_main`
-//! call ordering again.
+//! This module stays narrow: it selects the target-owned backend roots and
+//! exposes a stable interface to the rest of the kernel while the x86-family
+//! and AArch64 implementation files remain behind `#[path]` shims.
 
-#[cfg(target_arch = "aarch64")]
-pub(crate) mod aarch64_dtb;
-#[cfg(target_arch = "aarch64")]
-pub(crate) mod aarch64_pl011;
-#[cfg(target_arch = "aarch64")]
-pub(crate) mod aarch64_runtime;
-#[cfg(target_arch = "aarch64")]
-pub(crate) mod aarch64_vectors;
 /// Architecture-specific FPU/SIMD context save/restore (PMA §5.1).
 pub mod fpu;
 pub mod mmu;
-#[cfg(target_arch = "x86_64")]
-pub(crate) mod x86_64_runtime;
-#[cfg(target_arch = "x86")]
-pub(crate) mod x86_runtime;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub mod x86;
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64;
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+mod unsupported;
+
+#[cfg(target_arch = "aarch64")]
+use self::aarch64 as backend;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use self::x86 as backend;
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+use self::unsupported as backend;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BootProtocol {
@@ -125,102 +114,58 @@ pub trait ArchPlatform {
     fn halt_loop(&self) -> !;
 }
 
-#[cfg(target_arch = "aarch64")]
-pub(crate) mod aarch64_virt;
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-mod unsupported;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-mod x86_legacy;
-
-#[cfg(target_arch = "aarch64")]
-use aarch64_virt::PLATFORM;
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-use unsupported::PLATFORM;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use x86_legacy::PLATFORM;
-
-#[inline]
-fn active() -> &'static dyn ArchPlatform {
-    &PLATFORM
-}
-
 #[inline]
 pub fn platform_name() -> &'static str {
-    active().name()
+    backend::platform_name()
 }
 
 #[inline]
 pub fn boot_info() -> BootInfo {
-    active().boot_info()
+    backend::boot_info()
 }
 
 #[inline]
 pub fn init_cpu_tables() {
-    active().init_cpu_tables()
+    backend::init_cpu_tables()
 }
 
 #[inline]
 pub fn init_interrupts() {
-    active().init_interrupts()
+    backend::init_trap_table();
+    backend::init_interrupt_controller();
 }
 
 #[inline]
 pub fn init_trap_table() {
-    active().init_trap_table()
+    backend::init_trap_table()
 }
 
 #[inline]
 pub fn init_interrupt_controller() {
-    active().init_interrupt_controller()
+    backend::init_interrupt_controller()
 }
 
 #[inline]
 pub fn init_timer() {
-    active().init_timer()
+    backend::init_timer()
 }
 
 #[inline]
 pub fn enable_interrupts() {
-    active().enable_interrupts()
+    backend::enable_interrupts()
 }
 
 #[inline]
 pub fn halt_loop() -> ! {
-    active().halt_loop()
+    backend::halt_loop()
 }
 
-#[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn enter_runtime() -> ! {
-    aarch64_runtime::enter_runtime()
+    backend::enter_runtime()
 }
 
-#[cfg(target_arch = "x86_64")]
-#[inline]
-pub fn enter_runtime() -> ! {
-    x86_64_runtime::enter_runtime()
-}
-
-#[cfg(target_arch = "x86")]
-#[inline]
-pub fn enter_runtime() -> ! {
-    x86_runtime::enter_runtime()
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-#[inline]
-pub fn enter_runtime() -> ! {
-    halt_loop()
-}
-
-#[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn shell_loop() -> ! {
-    x86_64_runtime::run_serial_shell()
-}
-
-#[cfg(target_arch = "x86")]
-#[inline]
-pub fn shell_loop() -> ! {
-    x86_runtime::shell_loop()
+    backend::shell_loop()
 }
