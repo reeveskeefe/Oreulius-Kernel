@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 use core::{
@@ -20,7 +9,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
 };
 
-use crate::asm_bindings;
+use crate::memory::asm_bindings;
 
 // ---------------------------------------------------------------------------
 // Job control — minimal POSIX-style ^Z / jobs / fg support (x86_64 path).
@@ -34,7 +23,7 @@ const JOB_TABLE_MAX: usize = 8;
 
 #[derive(Copy, Clone)]
 struct Job {
-    pid: crate::process::Pid,
+    pid: crate::scheduler::process::Pid,
     cmd: [u8; 64],
     cmd_len: usize,
 }
@@ -42,10 +31,10 @@ struct Job {
 static mut JOB_TABLE: [Option<Job>; JOB_TABLE_MAX] = [None; JOB_TABLE_MAX];
 static mut JOB_TABLE_LEN: usize = 0;
 /// PID of the process currently running in the foreground (None = shell owns tty).
-pub(crate) static mut FOREGROUND_PID: Option<crate::process::Pid> = None;
+pub(crate) static mut FOREGROUND_PID: Option<crate::scheduler::process::Pid> = None;
 
 /// Add a stopped job to the job table. Returns the 1-based job number.
-unsafe fn job_add(pid: crate::process::Pid, cmd: &[u8]) -> usize {
+unsafe fn job_add(pid: crate::scheduler::process::Pid, cmd: &[u8]) -> usize {
     let slot = if JOB_TABLE_LEN < JOB_TABLE_MAX {
         let s = JOB_TABLE_LEN;
         JOB_TABLE_LEN += 1;
@@ -66,7 +55,7 @@ unsafe fn job_add(pid: crate::process::Pid, cmd: &[u8]) -> usize {
 }
 
 /// Remove a job from the table by PID.
-unsafe fn job_remove(pid: crate::process::Pid) {
+unsafe fn job_remove(pid: crate::scheduler::process::Pid) {
     for slot in JOB_TABLE.iter_mut() {
         if let Some(j) = slot {
             if j.pid == pid {
@@ -84,19 +73,19 @@ pub fn print_jobs() {
         for (i, slot) in JOB_TABLE.iter().enumerate() {
             if let Some(j) = slot {
                 any = true;
-                crate::terminal::write_str("[");
+                crate::shell::terminal::write_str("[");
                 let n = i + 1;
                 let d = (b'0' + n as u8) as char;
-                crate::terminal::write_char(d);
-                crate::terminal::write_str("] Stopped  ");
+                crate::shell::terminal::write_char(d);
+                crate::shell::terminal::write_str("] Stopped  ");
                 let cmd = core::str::from_utf8(&j.cmd[..j.cmd_len]).unwrap_or("?");
-                crate::terminal::write_str(cmd);
-                crate::terminal::write_char('\n');
+                crate::shell::terminal::write_str(cmd);
+                crate::shell::terminal::write_char('\n');
             }
         }
     }
     if !any {
-        crate::terminal::write_str("No jobs\n");
+        crate::shell::terminal::write_str("No jobs\n");
     }
 }
 
@@ -108,34 +97,34 @@ pub fn fg_last_job() -> bool {
                 // Use the public scheduler() accessor to avoid accessing the
                 // private QUANTUM_SCHEDULER static directly.
                 {
-                    let _ = crate::quantum_scheduler::scheduler()
+                    let _ = crate::scheduler::quantum_scheduler::scheduler()
                         .lock()
                         .wake_one(j.pid.0 as usize);
                     // If the process is still Blocked (not on a wait queue),
                     // use the public enqueue_ready_pid free function.
                     let still_blocked = {
-                        let sched = crate::quantum_scheduler::scheduler().lock();
+                        let sched = crate::scheduler::quantum_scheduler::scheduler().lock();
                         sched
                             .get_process_info(j.pid)
-                            .map(|info| info.process.state == crate::process::ProcessState::Blocked)
+                            .map(|info| info.process.state == crate::scheduler::process::ProcessState::Blocked)
                             .unwrap_or(false)
                     };
                     if still_blocked {
                         {
-                            let mut sched = crate::quantum_scheduler::scheduler().lock();
+                            let mut sched = crate::scheduler::quantum_scheduler::scheduler().lock();
                             if let Some(info_mut) = sched.get_process_info_mut(j.pid) {
-                                info_mut.process.state = crate::process::ProcessState::Ready;
+                                info_mut.process.state = crate::scheduler::process::ProcessState::Ready;
                                 let priority = info_mut.process.priority;
                                 drop(sched);
-                                crate::quantum_scheduler::enqueue_ready_pid(j.pid, priority);
+                                crate::scheduler::quantum_scheduler::enqueue_ready_pid(j.pid, priority);
                             }
                         }
                     }
                 }
                 FOREGROUND_PID = Some(j.pid);
                 let cmd = core::str::from_utf8(&j.cmd[..j.cmd_len]).unwrap_or("?");
-                crate::terminal::write_str(cmd);
-                crate::terminal::write_char('\n');
+                crate::shell::terminal::write_str(cmd);
+                crate::shell::terminal::write_char('\n');
                 job_remove(j.pid);
                 return true;
             }
@@ -300,7 +289,7 @@ fn shell_print_fmt(args: fmt::Arguments<'_>) {
             fn write_str(&mut self, s: &str) -> fmt::Result {
                 // Avoid double-echoing to serial: the x86_64 shell wrapper already
                 // writes to COM1 when serial output is enabled.
-                crate::terminal::write_str_no_serial(s);
+                crate::shell::terminal::write_str_no_serial(s);
                 Ok(())
             }
         }
@@ -593,7 +582,7 @@ pub fn init_interrupt_controller() {
 }
 
 pub fn init_timer() {
-    crate::pit::init();
+    crate::scheduler::pit::init();
 }
 
 pub fn enable_interrupts() {
@@ -649,7 +638,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
             if !frame.is_null() {
                 if have_user_frame {
                     let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
-                    if crate::wasm::jit_handle_page_fault_x86_64(
+                    if crate::execution::wasm::jit_handle_page_fault_x86_64(
                         fault_addr,
                         error,
                         &mut uf.rip,
@@ -661,7 +650,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
                 } else {
                     let f = unsafe { &mut *frame };
                     let mut dummy_rsp = 0u64;
-                    if crate::wasm::jit_handle_page_fault_x86_64(
+                    if crate::execution::wasm::jit_handle_page_fault_x86_64(
                         fault_addr,
                         error,
                         &mut f.rip,
@@ -677,7 +666,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
                 return;
             }
             if have_user_frame {
-                match crate::quantum_scheduler::handle_current_user_page_fault(fault_addr, error) {
+                match crate::scheduler::quantum_scheduler::handle_current_user_page_fault(fault_addr, error) {
                     Ok(true) => {
                         PF_LOOP_REPEAT_COUNT.store(0, Ordering::Relaxed);
                         return;
@@ -689,7 +678,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
                             error,
                             reason,
                         );
-                        crate::quantum_scheduler::terminate_current_from_fault();
+                        crate::scheduler::quantum_scheduler::terminate_current_from_fault();
                     }
                     Ok(false) => {}
                 }
@@ -729,7 +718,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
         if vector != 14 && !frame.is_null() {
             if have_user_frame {
                 let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
-                if crate::wasm::jit_handle_exception_x86_64(
+                if crate::execution::wasm::jit_handle_exception_x86_64(
                     vector as u64,
                     error,
                     &mut uf.rip,
@@ -741,7 +730,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
             } else {
                 let f = unsafe { &mut *frame };
                 let mut dummy_rsp = 0u64;
-                if crate::wasm::jit_handle_exception_x86_64(
+                if crate::execution::wasm::jit_handle_exception_x86_64(
                     vector as u64,
                     error,
                     &mut f.rip,
@@ -776,21 +765,21 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
         let irq = vector - 32;
         IRQ_COUNTS[irq as usize].fetch_add(1, Ordering::Relaxed);
         if irq == 0 {
-            crate::pit::tick();
-            crate::wasm::on_timer_tick();
-            crate::quantum_scheduler::on_timer_tick();
+            crate::scheduler::pit::tick();
+            crate::execution::wasm::on_timer_tick();
+            crate::scheduler::quantum_scheduler::on_timer_tick();
             if !frame.is_null() {
                 let f = unsafe { &mut *frame };
                 if (f.cs & 0x3) == 0x3 {
                     let uf = unsafe { &mut *(frame as *mut TrapFrameUser64) };
-                    let _ = crate::wasm::jit_handle_timer_interrupt_x86_64(
+                    let _ = crate::execution::wasm::jit_handle_timer_interrupt_x86_64(
                         &mut uf.rip,
                         uf.cs,
                         &mut uf.rsp,
                     );
                 } else {
                     let mut dummy_rsp = 0u64;
-                    let _ = crate::wasm::jit_handle_timer_interrupt_x86_64(
+                    let _ = crate::execution::wasm::jit_handle_timer_interrupt_x86_64(
                         &mut f.rip,
                         f.cs,
                         &mut dummy_rsp,
@@ -799,11 +788,11 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
             }
         } else if irq == 1 {
             unsafe {
-                crate::keyboard::handle_irq();
+                crate::drivers::x86::keyboard::handle_irq();
             }
         } else if irq == 12 {
             unsafe {
-                crate::keyboard::handle_aux_irq();
+                crate::drivers::x86::keyboard::handle_aux_irq();
             }
         }
         pic_eoi(irq);
@@ -1348,13 +1337,13 @@ fn serial_write_prompt() {
     match shell_console_mode() {
         ShellConsoleMode::Both => {
             crate::serial_print!("\r\nx64> ");
-            crate::terminal::write_str_no_serial("\nx64> ");
+            crate::shell::terminal::write_str_no_serial("\nx64> ");
         }
         ShellConsoleMode::SerialOnly => {
             crate::serial_print!("\r\nx64> ");
         }
         ShellConsoleMode::VgaOnly => {
-            crate::terminal::write_str_no_serial("\nx64> ");
+            crate::shell::terminal::write_str_no_serial("\nx64> ");
         }
     }
 }
@@ -1370,7 +1359,7 @@ fn x64_print_mini_help() {
 }
 
 fn x64_print_combined_help() {
-    crate::commands::execute("help");
+    crate::shell::commands::execute("help");
     shell_println!("");
     shell_println!("[X64] x86_64 runtime shell extensions:");
     shell_println!("  {}", X64_MINI_HELP);
@@ -1399,7 +1388,7 @@ struct X64ScopedJitUserMode {
 
 impl X64ScopedJitUserMode {
     fn enter(user_mode: bool) -> Self {
-        let mut cfg = crate::wasm::jit_config().lock();
+        let mut cfg = crate::execution::wasm::jit_config().lock();
         let prev = cfg.user_mode;
         cfg.user_mode = user_mode;
         Self { prev }
@@ -1408,7 +1397,7 @@ impl X64ScopedJitUserMode {
 
 impl Drop for X64ScopedJitUserMode {
     fn drop(&mut self) {
-        let mut cfg = crate::wasm::jit_config().lock();
+        let mut cfg = crate::execution::wasm::jit_config().lock();
         cfg.user_mode = self.prev;
     }
 }
@@ -1417,7 +1406,7 @@ struct X64ScopedJitRecover;
 
 impl Drop for X64ScopedJitRecover {
     fn drop(&mut self) {
-        crate::wasm::jit_runtime_recover_transient();
+        crate::execution::wasm::jit_runtime_recover_transient();
     }
 }
 
@@ -1427,14 +1416,14 @@ struct X64ScopedJitFuzzDiag {
 
 impl X64ScopedJitFuzzDiag {
     fn enter(enabled: bool) -> Self {
-        let prev = crate::wasm::jit_fuzz_set_x64_diag(enabled);
+        let prev = crate::execution::wasm::jit_fuzz_set_x64_diag(enabled);
         Self { prev }
     }
 }
 
 impl Drop for X64ScopedJitFuzzDiag {
     fn drop(&mut self) {
-        let _ = crate::wasm::jit_fuzz_set_x64_diag(self.prev);
+        let _ = crate::execution::wasm::jit_fuzz_set_x64_diag(self.prev);
     }
 }
 
@@ -1462,7 +1451,7 @@ fn x64_alias_jitfuzz24dbg(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
         return true;
     }
 
-    if !crate::wasm::jit_fuzz_24bin_feature_enabled() {
+    if !crate::execution::wasm::jit_fuzz_24bin_feature_enabled() {
         shell_println!("[X64] jitfuzz24dbg requires build feature `jit-fuzz-24bin`.");
         shell_println!("[X64] rebuild x86_64 with KERNEL_CARGO_FEATURES=jit-fuzz-24bin");
         return true;
@@ -1480,18 +1469,18 @@ fn x64_alias_jitfuzz24dbg(parts: &mut core::str::SplitWhitespace<'_>) -> bool {
     shell_println!(
         "[X64] jitfuzz24dbg begin: iters/seed={} seeds={} diag={}",
         iterations_per_seed,
-        crate::wasm::jit_fuzz_x64_debug_seed_count(),
+        crate::execution::wasm::jit_fuzz_x64_debug_seed_count(),
         if diag { "on" } else { "off" }
     );
     shell_println!("[X64] path: direct deterministic corpus (no alias chunking)");
 
-    crate::wasm::jit_runtime_recover_transient();
+    crate::execution::wasm::jit_runtime_recover_transient();
     let _recover_guard = X64ScopedJitRecover;
     let _jit_mode_guard = X64ScopedJitUserMode::enter(false);
     let _diag_guard = X64ScopedJitFuzzDiag::enter(diag);
-    let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
+    let edges_total = crate::execution::wasm::jit_fuzz_opcode_edges_total();
 
-    match crate::wasm::jit_fuzz_x64_debug_corpus(iterations_per_seed) {
+    match crate::execution::wasm::jit_fuzz_x64_debug_corpus(iterations_per_seed) {
         Ok(stats) => {
             shell_println!(
                 "[X64] jitfuzz24dbg ok: seeds_passed={} seeds_failed={} mismatches={} compile_errors={} edges_full={}/{} edges_adm={}/{}",
@@ -1556,7 +1545,7 @@ fn serial_exec_command(cmd: &str) -> bool {
         first,
         "wasm-jit-fuzz" | "wasm-jit-fuzz-corpus" | "wasm-jit-fuzz-soak" | "jitfuzzreg"
     ) {
-        crate::commands::execute(cmd);
+        crate::shell::commands::execute(cmd);
         return true;
     }
 
@@ -1570,7 +1559,7 @@ fn serial_exec_command(cmd: &str) -> bool {
     // default to shared commands unless this is an explicit x86_64 runtime
     // extension handled below.
     if !x64_is_runtime_extension_command(cmd) {
-        crate::commands::execute(cmd);
+        crate::shell::commands::execute(cmd);
         return true;
     }
 
@@ -1638,7 +1627,7 @@ fn serial_exec_command(cmd: &str) -> bool {
             kbdtest_print_status();
         }
         "ticks" => {
-            shell_println!("[X64] ticks={}", crate::pit::get_ticks());
+            shell_println!("[X64] ticks={}", crate::scheduler::pit::get_ticks());
         }
         "irq0" => {
             shell_println!("[X64] irq0-count={}", irq_count(0));
@@ -1705,7 +1694,7 @@ fn serial_exec_command(cmd: &str) -> bool {
             Ok(()) => shell_println!("[X64] vmtest ok"),
             Err(e) => shell_println!("[X64] vmtest failed: {}", e),
         },
-        "sharedmmap" => match crate::quantum_scheduler::selftest_shared_file_mapping_live() {
+        "sharedmmap" => match crate::scheduler::quantum_scheduler::selftest_shared_file_mapping_live() {
             Ok((phys_a, phys_b, observed)) => shell_println!(
                 "[X64] sharedmmap ok: phys_a={:#x} phys_b={:#x} observed={:#x}",
                 phys_a,
@@ -1714,15 +1703,15 @@ fn serial_exec_command(cmd: &str) -> bool {
             ),
             Err(e) => shell_println!("[X64] sharedmmap failed: {}", e),
         },
-        "jitpre" => match crate::wasm::jit_x86_64_sandbox_preflight() {
+        "jitpre" => match crate::execution::wasm::jit_x86_64_sandbox_preflight() {
             Ok(()) => shell_println!("[X64] jitpre ok"),
             Err(e) => shell_println!("[X64] jitpre failed: {}", e),
         },
-        "jitcall" => match crate::wasm::jit_x86_64_call_user_path_probe() {
+        "jitcall" => match crate::execution::wasm::jit_x86_64_call_user_path_probe() {
             Ok(msg) => shell_println!("[X64] jitcall ok: {}", msg),
             Err(e) => shell_println!("[X64] jitcall failed: {}", e),
         },
-        "jitbench" => match crate::wasm::jit_bounds_self_test() {
+        "jitbench" => match crate::execution::wasm::jit_bounds_self_test() {
             Ok(()) => shell_println!("[X64] jitbench ok: wasm-jit-bounds-selftest"),
             Err(e) => shell_println!("[X64] jitbench failed: {}", e),
         },
@@ -1743,7 +1732,7 @@ fn serial_exec_command(cmd: &str) -> bool {
             // Fall back to the shared command stack (same command surface used by the
             // legacy shell) so x86_64 users can exercise more of the kernel without
             // waiting for the full x86_64 shell port.
-            crate::commands::execute(cmd);
+            crate::shell::commands::execute(cmd);
         }
     }
     true
@@ -1804,13 +1793,13 @@ fn native_jit_exec_self_test() -> Result<(), &'static str> {
     // x86_64: mov eax, 0x12345678 ; ret
     const CODE: [u8; 6] = [0xB8, 0x78, 0x56, 0x34, 0x12, 0xC3];
     let exec = crate::memory::jit_allocate_pages(1)?;
-    let _ = crate::memory_isolation::tag_jit_code_kernel(exec, crate::paging::PAGE_SIZE, false);
-    crate::arch::mmu::set_page_writable_range(exec, crate::paging::PAGE_SIZE, true)?;
+    let _ = crate::security::memory_isolation::tag_jit_code_kernel(exec, crate::fs::paging::PAGE_SIZE, false);
+    crate::arch::mmu::set_page_writable_range(exec, crate::fs::paging::PAGE_SIZE, true)?;
     unsafe {
         core::ptr::copy_nonoverlapping(CODE.as_ptr(), exec as *mut u8, CODE.len());
     }
-    crate::arch::mmu::set_page_writable_range(exec, crate::paging::PAGE_SIZE, false)?;
-    let _ = crate::memory_isolation::tag_jit_code_kernel(exec, crate::paging::PAGE_SIZE, true);
+    crate::arch::mmu::set_page_writable_range(exec, crate::fs::paging::PAGE_SIZE, false)?;
+    let _ = crate::security::memory_isolation::tag_jit_code_kernel(exec, crate::fs::paging::PAGE_SIZE, true);
 
     let f: extern "C" fn() -> u32 = unsafe { core::mem::transmute(exec) };
     let ret = f();
@@ -1821,7 +1810,7 @@ fn native_jit_exec_self_test() -> Result<(), &'static str> {
 }
 
 fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
-    use crate::wasm::{Opcode, MAX_INSTRUCTIONS_PER_CALL};
+    use crate::execution::wasm::{Opcode, MAX_INSTRUCTIONS_PER_CALL};
     use alloc::vec::Vec;
 
     const ITERS: usize = 32;
@@ -1879,13 +1868,13 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
     let mut rng = Rng::new(0x5846_554A_4954_0002);
     let mut code: Vec<u8> = Vec::with_capacity(128);
 
-    let state_bytes = core::mem::size_of::<crate::wasm::JitUserState>();
+    let state_bytes = core::mem::size_of::<crate::execution::wasm::JitUserState>();
     let state_pages = state_bytes
-        .checked_add(crate::paging::PAGE_SIZE - 1)
+        .checked_add(crate::fs::paging::PAGE_SIZE - 1)
         .ok_or("jitfuzz state size overflow")?
-        / crate::paging::PAGE_SIZE;
+        / crate::fs::paging::PAGE_SIZE;
     let state_base =
-        crate::memory::jit_allocate_pages(state_pages)? as *mut crate::wasm::JitUserState;
+        crate::memory::jit_allocate_pages(state_pages)? as *mut crate::execution::wasm::JitUserState;
     if state_base.is_null() {
         return Err("jitfuzz state alloc failed");
     }
@@ -1893,18 +1882,18 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
         core::ptr::write_bytes(
             state_base as *mut u8,
             0,
-            state_pages * crate::paging::PAGE_SIZE,
+            state_pages * crate::fs::paging::PAGE_SIZE,
         );
     }
 
     let mem_pages = 1usize;
-    let mem_len = crate::paging::PAGE_SIZE;
+    let mem_len = crate::fs::paging::PAGE_SIZE;
     let mem_base = crate::memory::jit_allocate_pages(mem_pages)? as *mut u8;
     if mem_base.is_null() {
         return Err("jitfuzz mem alloc failed");
     }
     unsafe {
-        core::ptr::write_bytes(mem_base, 0, mem_pages * crate::paging::PAGE_SIZE);
+        core::ptr::write_bytes(mem_base, 0, mem_pages * crate::fs::paging::PAGE_SIZE);
     }
 
     let state = unsafe { &mut *state_base };
@@ -1934,7 +1923,7 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
             return Err("jitfuzz internal program shape failure");
         }
 
-        let jit = match crate::wasm_jit::compile(&code, locals_total) {
+        let jit = match crate::execution::wasm_jit::compile(&code, locals_total) {
             Ok(j) => j,
             Err(e) => {
                 if compile_errors == 0 {
@@ -1951,7 +1940,7 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
                 continue;
             }
         };
-        let jit_entry = crate::wasm::JitExecInfo {
+        let jit_entry = crate::execution::wasm::JitExecInfo {
             entry: jit.entry,
             exec_ptr: jit.exec.ptr,
             exec_len: jit.exec.len,
@@ -1969,7 +1958,7 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
             *local = 0;
         }
 
-        let _ret = crate::wasm::call_jit_kernel(
+        let _ret = crate::execution::wasm::call_jit_kernel(
             jit_entry,
             state.stack.as_mut_ptr(),
             &mut state.sp as *mut usize,
@@ -2005,7 +1994,7 @@ fn vm_map_self_test() -> Result<(), &'static str> {
     let mut space = crate::arch::mmu::AddressSpace::new()?;
 
     let code_va = 0x0040_0000usize;
-    let stack_va = crate::paging::USER_TOP - crate::paging::PAGE_SIZE;
+    let stack_va = crate::fs::paging::USER_TOP - crate::fs::paging::PAGE_SIZE;
     let phys_map_va = 0x0080_0000usize;
 
     crate::arch::mmu::alloc_user_pages(&mut space, code_va, 1, true)?;
@@ -2016,7 +2005,7 @@ fn vm_map_self_test() -> Result<(), &'static str> {
         &mut space,
         phys_map_va,
         phys_page,
-        crate::paging::PAGE_SIZE,
+        crate::fs::paging::PAGE_SIZE,
         true,
     )?;
 
@@ -2102,13 +2091,13 @@ extern "C" fn shell_scheduler_task() -> ! {
 extern "C" fn network_scheduler_task() -> ! {
     crate::arch::enable_interrupts();
     crate::serial_println!("[NET] x86_64 network task started");
-    crate::net_reactor::run()
+    crate::net::net_reactor::run()
 }
 
 extern "C" fn idle_scheduler_task() -> ! {
     crate::arch::enable_interrupts();
     loop {
-        crate::quantum_scheduler::yield_now();
+        crate::scheduler::quantum_scheduler::yield_now();
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
         }
@@ -2129,11 +2118,11 @@ extern "C" fn init_wasm_task() -> ! {
     crate::serial_println!("[INIT] launching init WASM supervisor (pid=1)");
 
     let pid = crate::ipc::ProcessId(1);
-    let instance_id = crate::wasm::wasm_runtime().instantiate(INIT_WASM_BIN, pid);
+    let instance_id = crate::execution::wasm::wasm_runtime().instantiate(INIT_WASM_BIN, pid);
     match instance_id {
         Ok(id) => {
             crate::serial_println!("[INIT] init WASM instance id={}", id);
-            let result = crate::wasm::wasm_runtime().get_instance_mut(id, |inst| inst.call(0));
+            let result = crate::execution::wasm::wasm_runtime().get_instance_mut(id, |inst| inst.call(0));
             match result {
                 Ok(Ok(_)) => crate::serial_println!("[INIT] init WASM _start returned OK"),
                 Ok(Err(e)) => crate::serial_println!("[INIT] init WASM _start error: {:?}", e),
@@ -2145,13 +2134,13 @@ extern "C" fn init_wasm_task() -> ! {
         Err(e) => crate::serial_println!("[INIT] init WASM instantiate failed: {}", e),
     }
 
-    crate::wasm::drain_pending_spawns();
+    crate::execution::wasm::drain_pending_spawns();
 
     crate::serial_println!("[INIT] init supervisor complete; entering idle");
     loop {
-        crate::wasm::drain_pending_spawns();
-        crate::wasm::tick_background_threads();
-        crate::quantum_scheduler::yield_now();
+        crate::execution::wasm::drain_pending_spawns();
+        crate::execution::wasm::tick_background_threads();
+        crate::scheduler::quantum_scheduler::yield_now();
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
         }
@@ -2160,23 +2149,23 @@ extern "C" fn init_wasm_task() -> ! {
 
 fn init_shared_runtime() {
     crate::serial_println!("[X64] init keyboard...");
-    crate::keyboard::init();
+    crate::drivers::x86::keyboard::init();
 
     crate::serial_println!("[X64] init fs...");
     crate::fs::init();
     crate::serial_println!("[X64] init vfs...");
-    crate::vfs::init();
+    crate::fs::vfs::init();
     crate::serial_println!("[X64] init persistence...");
-    crate::persistence::init();
+    crate::temporal::persistence::init();
     crate::serial_println!("[X64] init crash log...");
-    crate::crash_log::on_boot();
+    crate::security::crash_log::on_boot();
     crate::serial_println!("[X64] init ota slots...");
-    crate::ota::init_slots();
+    crate::services::ota::init_slots();
     crate::serial_println!("[X64] init fleet store...");
-    crate::fleet::init_store();
+    crate::services::fleet::init_store();
     crate::serial_println!("[X64] verified boot check...");
-    crate::ota::verify_boot_image();
-    match crate::vfs::recover_from_persistence() {
+    crate::services::ota::verify_boot_image();
+    match crate::fs::vfs::recover_from_persistence() {
         Ok(()) => crate::serial_println!("[X64] vfs recovery complete"),
         Err(e) => crate::serial_println!("[X64] vfs recovery skipped: {}", e),
     }
@@ -2186,27 +2175,36 @@ fn init_shared_runtime() {
     crate::serial_println!("[X64] init ipc...");
     crate::ipc::init();
     crate::serial_println!("[X64] init syscall...");
-    crate::syscall::init();
+    crate::platform::syscall::init();
     crate::serial_println!("[X64] init registry...");
-    crate::registry::init();
+    crate::services::registry::init();
     crate::serial_println!("[X64] init process...");
-    crate::process::init();
+    crate::scheduler::process::init();
     crate::serial_println!("[X64] init wasm...");
-    crate::wasm::init();
+    crate::execution::wasm::init();
     crate::serial_println!("[X64] init security...");
     crate::security::init();
     crate::serial_println!("[X64] init capnet...");
-    crate::capnet::init();
-    crate::capnet::offline_certificate::assert_certificate_valid();
+    match crate::net::capnet::init() {
+        Ok(()) => crate::serial_println!(
+            "[X64] CapNet peer token subsystem initialized (spectral certificate OK)"
+        ),
+        Err(e) => {
+            crate::serial_println!("[X64] CapNet init failed: {}", e.as_str());
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    }
     crate::serial_println!("[X64] init capability...");
     crate::capability::init();
     crate::serial_println!("[X64] init console service...");
-    crate::console_service::init();
+    crate::shell::console_service::init();
     crate::serial_println!("[X64] init quantum scheduler...");
-    crate::quantum_scheduler::init();
+    crate::scheduler::quantum_scheduler::init();
     crate::serial_println!("[X64] init pci/network...");
     {
-        let mut pci_scanner = crate::pci::PciScanner::new();
+        let mut pci_scanner = crate::drivers::x86::pci::PciScanner::new();
         pci_scanner.scan();
         if let Some(_wifi_device) = pci_scanner.find_wifi_device() {
             crate::serial_println!("[NET] WiFi device detected (init disabled)");
@@ -2221,13 +2219,13 @@ fn init_shared_runtime() {
                 crate::serial_println!("[NET] MMIO identity map installed");
             }
 
-            match crate::e1000::init(eth_device) {
+            match crate::net::e1000::init(eth_device) {
                 Ok(()) => crate::serial_println!("[NET] E1000 initialized - Ready for DNS/ARP/UDP"),
                 Err(e) => crate::serial_println!("[NET] E1000 init failed: {}", e),
             }
         } else if let Some(rtl_device) = pci_scanner.find_rtl8139() {
             crate::serial_println!("[NET] RTL8139 detected, initializing...");
-            crate::rtl8139::init(&[rtl_device]);
+            crate::net::rtl8139::init(&[rtl_device]);
             crate::serial_println!("[NET] RTL8139 ready");
         } else {
             crate::serial_println!("[NET] No network device found");
@@ -2237,14 +2235,14 @@ fn init_shared_runtime() {
     {
         let boot_info = crate::arch::boot_info();
         let mb2_ptr = boot_info.raw_info_ptr.unwrap_or(0) as u32;
-        // crate::gpu_support::init(mb2_ptr);
+        // crate::drivers::x86::gpu_support::init(mb2_ptr);
     }
 
     // Initialise the new compositor subsystem.  We probe the framebuffer size
     // from the GPU driver; if no framebuffer is available we initialise at 0×0
     // (the FbBackend gracefully becomes a no-op in that case).
     {
-        let (w, h) = crate::gpu_support::active_dimensions();
+        let (w, h) = crate::drivers::x86::gpu_support::active_dimensions();
         crate::serial_println!("[X64] init compositor ({}x{})...", w, h);
         // crate::compositor::init(w, h);
         crate::serial_println!("[X64] compositor ready");
@@ -2344,7 +2342,7 @@ pub fn enter_runtime() -> ! {
     crate::serial_println!("[X64] interrupts enabled");
 
     self_test_traps_and_timer();
-    crate::asm_bindings::disable_interrupts();
+    crate::memory::asm_bindings::disable_interrupts();
 
     unsafe {
         crate::early_console_write_cell(11, 0x0E48);
@@ -2355,16 +2353,16 @@ pub fn enter_runtime() -> ! {
     crate::serial_println!("[X64] Runtime diagnostics complete; starting shared scheduler");
 
     {
-        let mut sched = crate::quantum_scheduler::scheduler().lock();
+        let mut sched = crate::scheduler::quantum_scheduler::scheduler().lock();
         if let Err(e) = sched.add_kernel_thread(
             shell_scheduler_task,
-            crate::process::ProcessPriority::Normal,
+            crate::scheduler::process::ProcessPriority::Normal,
         ) {
             crate::serial_println!("[X64] scheduler add shell task failed: {}", e);
             crate::arch::halt_loop();
         }
         if let Err(e) =
-            sched.add_kernel_thread(init_wasm_task, crate::process::ProcessPriority::Low)
+            sched.add_kernel_thread(init_wasm_task, crate::scheduler::process::ProcessPriority::Low)
         {
             crate::serial_println!(
                 "[X64] scheduler add init-wasm task failed (non-fatal): {}",
@@ -2373,25 +2371,25 @@ pub fn enter_runtime() -> ! {
         }
         if let Err(e) = sched.add_kernel_thread(
             network_scheduler_task,
-            crate::process::ProcessPriority::Normal,
+            crate::scheduler::process::ProcessPriority::Normal,
         ) {
             crate::serial_println!("[X64] scheduler add network task failed: {}", e);
             crate::arch::halt_loop();
         }
         if let Err(e) =
-            sched.add_kernel_thread(idle_scheduler_task, crate::process::ProcessPriority::Normal)
+            sched.add_kernel_thread(idle_scheduler_task, crate::scheduler::process::ProcessPriority::Normal)
         {
             crate::serial_println!("[X64] scheduler add idle task failed: {}", e);
             crate::arch::halt_loop();
         }
     }
-    crate::quantum_scheduler::QuantumScheduler::start_scheduling()
+    crate::scheduler::quantum_scheduler::QuantumScheduler::start_scheduling()
 }
 
 pub fn wait_for_ticks(min_delta: u64, max_spin_hlt: usize) -> bool {
-    let start = crate::pit::get_ticks();
+    let start = crate::scheduler::pit::get_ticks();
     for _ in 0..max_spin_hlt {
-        if crate::pit::get_ticks().wrapping_sub(start) >= min_delta {
+        if crate::scheduler::pit::get_ticks().wrapping_sub(start) >= min_delta {
             return true;
         }
         unsafe {
@@ -2402,9 +2400,9 @@ pub fn wait_for_ticks(min_delta: u64, max_spin_hlt: usize) -> bool {
 }
 
 pub fn run_serial_shell() -> ! {
-    crate::terminal::clear_screen();
-    crate::terminal::write_str_no_serial("Oreulius OS (x86_64)\n");
-    crate::terminal::write_str_no_serial(
+    crate::shell::terminal::clear_screen();
+    crate::shell::terminal::write_str_no_serial("Oreulius OS (x86_64)\n");
+    crate::shell::terminal::write_str_no_serial(
         "Type 'help' for the full shared command list.\nType 'help-mini' for x86_64 runtime extension commands.\n\n"
     );
     shell_println!("[X64] x86_64 shell ready (serial + VGA keyboard)");
@@ -2412,12 +2410,12 @@ pub fn run_serial_shell() -> ! {
 
     let mut buf = [0u8; 128];
     let mut len = 0usize;
-    let mut last_heartbeat = crate::pit::get_ticks();
+    let mut last_heartbeat = crate::scheduler::pit::get_ticks();
 
     loop {
-        crate::quantum_scheduler::maybe_reschedule();
-        crate::wasm::drain_pending_spawns();
-        crate::wasm::tick_background_threads();
+        crate::scheduler::quantum_scheduler::maybe_reschedule();
+        crate::execution::wasm::drain_pending_spawns();
+        crate::execution::wasm::tick_background_threads();
 
         if let Some(byte) = shell_try_read_byte() {
             match byte {
@@ -2427,7 +2425,7 @@ pub fn run_serial_shell() -> ! {
                     let keep_running = serial_exec_command(cmd.trim());
                     // Drain any WASM child processes queued during command execution
                     // (avoids re-entrant lock deadlock inside call_host_function).
-                    crate::wasm::drain_pending_spawns();
+                    crate::execution::wasm::drain_pending_spawns();
                     len = 0;
                     if !keep_running {
                         crate::arch::halt_loop();
@@ -2438,7 +2436,7 @@ pub fn run_serial_shell() -> ! {
                     if len > 0 {
                         len -= 1;
                         crate::serial_print!("\x08 \x08");
-                        crate::vga::backspace();
+                        crate::drivers::x86::vga::backspace();
                     }
                 }
                 b if (0x20..=0x7E).contains(&b) => {
@@ -2453,9 +2451,9 @@ pub fn run_serial_shell() -> ! {
                     shell_println!("^Z");
                     let suspended = unsafe {
                         if let Some(fg_pid) = FOREGROUND_PID.take() {
-                            let mut sched = crate::quantum_scheduler::scheduler().lock();
+                            let mut sched = crate::scheduler::quantum_scheduler::scheduler().lock();
                             if let Some(info) = sched.get_process_info_mut(fg_pid) {
-                                info.process.state = crate::process::ProcessState::Blocked;
+                                info.process.state = crate::scheduler::process::ProcessState::Blocked;
                             }
                             drop(sched);
                             let job_num = job_add(fg_pid, &buf[..len]);
@@ -2476,7 +2474,7 @@ pub fn run_serial_shell() -> ! {
             }
         }
 
-        let ticks = crate::pit::get_ticks();
+        let ticks = crate::scheduler::pit::get_ticks();
         if HEARTBEAT_LOG_ENABLED.load(Ordering::Relaxed)
             && ticks.wrapping_sub(last_heartbeat) >= 100
         {
@@ -2519,7 +2517,7 @@ pub fn self_test_traps_and_timer() {
     crate::serial_println!(
         "[X64] timer self-test irq0={} ticks={} ok={}",
         irq_count(0),
-        crate::pit::get_ticks(),
+        crate::scheduler::pit::get_ticks(),
         if got_ticks { 1 } else { 0 }
     );
 }

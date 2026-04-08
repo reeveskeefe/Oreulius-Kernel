@@ -1,25 +1,14 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use lazy_static::lazy_static;
 use x86_64::instructions::port::Port;
 use crate::serial_println;
-use crate::interrupt_dag::{InterruptContext, DAG_LEVEL_IRQ};
+use crate::platform::interrupt_dag::{InterruptContext, DAG_LEVEL_IRQ};
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
@@ -98,7 +87,7 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
         // Sets CR0.TS so that if the preempted process re-enters FP code after
         // iretq it will fault cleanly into handle_fpu_trap() rather than silently
         // corrupting state.
-        crate::quantum_scheduler::scheduler()
+        crate::scheduler::quantum_scheduler::scheduler()
             .lock()
             .guard_irq_fpu_state();
 
@@ -107,7 +96,7 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
         // Using `try_lock` inside drain_telemetry_to_serial means this is a no-op
         // if the serial port is busy — it never spins (PMA §3.2, §6.1).
         if TICKS % 8 == 0 {
-            crate::wait_free_ring::drain_telemetry_to_serial(16);
+            crate::memory::wait_free_ring::drain_telemetry_to_serial(16);
         }
     }
 
@@ -142,7 +131,7 @@ extern "x86-interrupt" fn device_not_available_handler(_stack_frame: InterruptSt
     // so no partial FP write has occurred and no FP context is live in the
     // CPU's register file for the faulting instruction.
     unsafe {
-        crate::quantum_scheduler::scheduler()
+        crate::scheduler::quantum_scheduler::scheduler()
             .lock()
             .handle_fpu_trap();
     }

@@ -3,9 +3,9 @@
  */
 
 use super::packets::ComputePacket;
-use crate::drivers::gpu_support::errors::GpuError;
-use crate::drivers::gpu_support::telemetry::counters;
-use crate::drivers::gpu_support::transport::fence::GpuFence;
+use crate::drivers::x86::gpu_support::errors::GpuError;
+use crate::drivers::x86::gpu_support::telemetry::counters;
+use crate::drivers::x86::gpu_support::transport::fence::GpuFence;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComputeQueue {

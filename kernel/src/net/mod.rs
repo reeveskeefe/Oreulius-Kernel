@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Oreulius Real Network Stack
@@ -27,6 +16,7 @@
 
 #![allow(dead_code)]
 
+#[path = "capnet/mod.rs"]
 pub mod capnet;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod e1000;
@@ -45,7 +35,7 @@ extern crate alloc;
 use self::wifi::{WifiNetwork, WifiState};
 use crate::ipc::ProcessId;
 #[cfg(not(target_arch = "aarch64"))]
-use crate::pci::PciDevice;
+use crate::drivers::x86::pci::PciDevice;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -478,20 +468,20 @@ impl NetworkService {
 
     /// Send TCP data through the reactor-owned TCP stack.
     fn reactor_tcp_send(&self, conn_id: u16, data: &[u8]) -> Result<(), NetworkError> {
-        let timeout_ticks = (crate::pit::get_frequency() as u64)
+        let timeout_ticks = (crate::scheduler::pit::get_frequency() as u64)
             .saturating_mul(10)
             .max(1);
-        let start_ticks = crate::pit::get_ticks();
+        let start_ticks = crate::scheduler::pit::get_ticks();
         let mut sent_total = 0usize;
 
         while sent_total < data.len() {
             match net_reactor::tcp_send(conn_id, &data[sent_total..]) {
                 Ok(sent_now) => {
                     if sent_now == 0 {
-                        if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                        if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
                             return Err(NetworkError::TcpTimeout);
                         }
-                        crate::quantum_scheduler::yield_now();
+                        crate::scheduler::quantum_scheduler::yield_now();
                         continue;
                     }
                     sent_total = sent_total.saturating_add(sent_now);
@@ -499,17 +489,17 @@ impl NetworkService {
                 Err(e) => {
                     // SYN/SYN-ACK progression can race with immediate send attempts.
                     if e == "Connection not established" || e == "TX busy" {
-                        if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                        if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
                             return Err(NetworkError::TcpTimeout);
                         }
-                        crate::quantum_scheduler::yield_now();
+                        crate::scheduler::quantum_scheduler::yield_now();
                         continue;
                     }
                     return Err(NetworkError::TcpSendFailed);
                 }
             }
 
-            if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+            if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
                 return Err(NetworkError::TcpTimeout);
             }
         }
@@ -554,7 +544,7 @@ impl NetworkService {
         packet[offset + 1] = 0;
         let total_len = (ip_header_len + tcp_header_len + data.len()) as u16;
         packet[offset + 2..offset + 4].copy_from_slice(&total_len.to_be_bytes());
-        let ip_id = (crate::pit::get_ticks() as u16).to_be_bytes();
+        let ip_id = (crate::scheduler::pit::get_ticks() as u16).to_be_bytes();
         packet[offset + 4..offset + 6].copy_from_slice(&ip_id);
         packet[offset + 6..offset + 8].copy_from_slice(&0x4000u16.to_be_bytes()); // DF
         packet[offset + 8] = 64;
@@ -624,10 +614,10 @@ impl NetworkService {
     /// Receive and parse HTTP response through the reactor-owned TCP stack.
     fn reactor_receive_http_response(&self, conn_id: u16) -> Result<HttpResponse, NetworkError> {
         let mut response = HttpResponse::new();
-        let timeout_ticks = (crate::pit::get_frequency() as u64)
+        let timeout_ticks = (crate::scheduler::pit::get_frequency() as u64)
             .saturating_mul(12)
             .max(1);
-        let start_ticks = crate::pit::get_ticks();
+        let start_ticks = crate::scheduler::pit::get_ticks();
         let mut chunk = [0u8; HTTP_IO_CHUNK];
         let mut headers = [0u8; HTTP_HEADER_MAX];
         let mut headers_len = 0usize;
@@ -636,7 +626,7 @@ impl NetworkService {
         let mut content_length: Option<usize> = None;
         let mut chunked = false;
 
-        while crate::pit::get_ticks().saturating_sub(start_ticks) <= timeout_ticks {
+        while crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) <= timeout_ticks {
             let read = match net_reactor::tcp_recv(conn_id, &mut chunk) {
                 Ok(read) => read,
                 Err(_) if headers_done => break,
@@ -646,7 +636,7 @@ impl NetworkService {
                 if headers_done {
                     break;
                 }
-                crate::quantum_scheduler::yield_now();
+                crate::scheduler::quantum_scheduler::yield_now();
                 continue;
             }
 
@@ -697,11 +687,11 @@ impl NetworkService {
                     break;
                 }
             }
-            crate::quantum_scheduler::yield_now();
+            crate::scheduler::quantum_scheduler::yield_now();
         }
 
         if !headers_done {
-            if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+            if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
                 return Err(NetworkError::HttpTimeout);
             }
             return Err(NetworkError::HttpParseFailed);
@@ -1108,16 +1098,16 @@ pub fn init(wifi_device: Option<PciDevice>) {
     if let Some(device) = wifi_device {
         match net.init_wifi(device) {
             Ok(()) => {
-                crate::vga::print_str("[NET] WiFi initialized\n");
+                crate::drivers::x86::vga::print_str("[NET] WiFi initialized\n");
             }
             Err(e) => {
-                crate::vga::print_str("[NET] WiFi init failed: ");
-                crate::vga::print_str(e.as_str());
-                crate::vga::print_str("\n");
+                crate::drivers::x86::vga::print_str("[NET] WiFi init failed: ");
+                crate::drivers::x86::vga::print_str(e.as_str());
+                crate::drivers::x86::vga::print_str("\n");
             }
         }
     } else {
-        crate::vga::print_str("[NET] No WiFi device found\n");
+        crate::drivers::x86::vga::print_str("[NET] No WiFi device found\n");
     }
 }
 

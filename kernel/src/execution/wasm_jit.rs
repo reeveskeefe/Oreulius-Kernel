@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Minimal WASM JIT compiler (ELF-less, in-kernel).
@@ -26,11 +15,11 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 #[cfg(not(target_arch = "aarch64"))]
-use crate::wasm::{
+use crate::execution::wasm::{
     Opcode, MAX_CONTROL_STACK, MAX_INSTRUCTIONS_PER_CALL, MAX_LOCALS, MAX_STACK_DEPTH,
 };
 #[cfg(target_arch = "x86_64")]
-use crate::wasm::MAX_WASM_TYPE_ARITY;
+use crate::execution::wasm::MAX_WASM_TYPE_ARITY;
 
 /// Compile-time stubs for AArch64: the JIT compiler is x86-only; these types
 /// satisfy the type-checker for dead-code paths that reference wasm internals.
@@ -49,7 +38,7 @@ const MAX_WASM_TYPE_ARITY: usize = 32;
 fn jit_fuzz_verbose_trace_enabled() -> bool {
     #[cfg(not(target_arch = "aarch64"))]
     {
-        crate::wasm::jit_fuzz_verbose_trace_enabled()
+        crate::execution::wasm::jit_fuzz_verbose_trace_enabled()
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -103,11 +92,11 @@ impl Opcode {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-use crate::{memory_isolation, paging};
+use crate::security::memory_isolation;
 
 use crate::memory;
 #[cfg(not(target_arch = "aarch64"))]
-use paging::PAGE_SIZE;
+use crate::fs::paging::PAGE_SIZE;
 #[cfg(target_arch = "aarch64")]
 const PAGE_SIZE: usize = 4096;
 
@@ -2027,7 +2016,7 @@ fn slice_is_kernel_mapped<T>(slice: &[T]) -> bool {
             Some(v) => v,
             None => return false,
         };
-        crate::paging::is_kernel_range_mapped(slice.as_ptr() as usize, bytes)
+        crate::fs::paging::is_kernel_range_mapped(slice.as_ptr() as usize, bytes)
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -5645,8 +5634,8 @@ impl JitFunction {
     ///
     /// Returns a `Rational64` approximation of P(A|B).
     /// Returns `Rational64::new(0, 1)` (zero confidence) if trace_count == 0.
-    pub fn bayesian_confidence(&self) -> crate::exact_rational::Rational64 {
-        use crate::exact_rational::Rational64;
+    pub fn bayesian_confidence(&self) -> crate::math::exact_rational::Rational64 {
+        use crate::math::exact_rational::Rational64;
 
         let tc = self.translation.proof.trace_count as u64;
         if tc == 0 {

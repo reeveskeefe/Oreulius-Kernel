@@ -19,8 +19,8 @@
  */
 
 use super::packets::CommandPacket;
-use crate::drivers::gpu_support::errors::GpuError;
-use crate::drivers::gpu_support::transport::fence::{FenceState, GpuFence};
+use crate::drivers::x86::gpu_support::errors::GpuError;
+use crate::drivers::x86::gpu_support::transport::fence::{FenceState, GpuFence};
 
 // ---------------------------------------------------------------------------
 // Constants

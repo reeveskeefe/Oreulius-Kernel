@@ -1,11 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Bluetooth subsystem — USB HCI transport (Bluetooth USB class 0xE0/0x01/0x01)
@@ -154,7 +150,7 @@ pub struct UsbHandle {
     pub ctrl_kind: BtCtrlKind,
     pub bar_value: u32, // BAR0 (MMIO) for EHCI, or BAR4 (I/O) for UHCI
     /// PCI device record for the host controller (needed to construct UHCI/EHCI).
-    pub pci: crate::pci::PciDevice,
+    pub pci: crate::drivers::x86::pci::PciDevice,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -207,7 +203,7 @@ impl BluetoothController {
         HCI_CMD_BUF[2] = params.len() as u8;
         HCI_CMD_BUF[3..3 + params.len()].copy_from_slice(params);
 
-        let setup = crate::usb::UsbSetupPacket {
+        let setup = crate::drivers::x86::usb::UsbSetupPacket {
             bm_request_type: 0x20, // class | host→device | interface
             b_request: 0x00,
             w_value: 0,
@@ -223,15 +219,15 @@ impl BluetoothController {
         match self.usb.ctrl_kind {
             BtCtrlKind::Uhci => {
                 let io_base = (self.usb.bar_value & !0x1F) as u16;
-                let mut ctrl = crate::usb::UhciController::new(io_base, pci);
+                let mut ctrl = crate::drivers::x86::usb::UhciController::new(io_base, pci);
                 ctrl.init();
                 let res =
                     ctrl.control_transfer(dev, ls, &setup, Some(&mut HCI_CMD_BUF[..total]), false);
-                res == crate::usb::UhciXferResult::Ok
+                res == crate::drivers::x86::usb::UhciXferResult::Ok
             }
             BtCtrlKind::Ehci => {
                 let mmio = (self.usb.bar_value & !0x0F) as usize;
-                let mut ctrl = crate::usb::EhciController::new(mmio, pci);
+                let mut ctrl = crate::drivers::x86::usb::EhciController::new(mmio, pci);
                 ctrl.init();
                 ctrl.control_transfer(dev, hs, ls, &setup, Some(&mut HCI_CMD_BUF[..total]), false)
             }
@@ -252,11 +248,11 @@ impl BluetoothController {
         match self.usb.ctrl_kind {
             BtCtrlKind::Uhci => {
                 let io_base = (self.usb.bar_value & !0x1F) as u16;
-                let mut ctrl = crate::usb::UhciController::new(io_base, pci);
+                let mut ctrl = crate::drivers::x86::usb::UhciController::new(io_base, pci);
                 ctrl.init();
                 let res =
                     ctrl.bulk_transfer(dev, ep, ls, true, 64, &mut HCI_EVENT_BUF, &mut toggle);
-                if res == crate::usb::UhciXferResult::Ok {
+                if res == crate::drivers::x86::usb::UhciXferResult::Ok {
                     HCI_EVENT_BUF[1] as usize + 2
                 } else {
                     0
@@ -264,7 +260,7 @@ impl BluetoothController {
             }
             BtCtrlKind::Ehci => {
                 let mmio = (self.usb.bar_value & !0x0F) as usize;
-                let mut ctrl = crate::usb::EhciController::new(mmio, pci);
+                let mut ctrl = crate::drivers::x86::usb::EhciController::new(mmio, pci);
                 ctrl.init();
                 if ctrl.bulk_transfer(dev, ep, hs, true, 64, &mut HCI_EVENT_BUF, &mut toggle) {
                     HCI_EVENT_BUF[1] as usize + 2
@@ -476,7 +472,7 @@ pub static BLUETOOTH: Mutex<Option<BluetoothController>> = Mutex::new(None);
 ///
 /// Call once during kernel startup after `usb::init()`.
 pub fn init() {
-    use crate::usb::{UsbControllerKind, USB_BUS};
+    use crate::drivers::x86::usb::{UsbControllerKind, USB_BUS};
 
     // Collect matching device info without holding the lock.
     let found = {
@@ -519,10 +515,10 @@ pub fn init() {
             };
 
             let speed = match d.speed {
-                crate::usb::UsbSpeed::Low => 0u8,
-                crate::usb::UsbSpeed::Full => 1u8,
-                crate::usb::UsbSpeed::High => 2u8,
-                crate::usb::UsbSpeed::Super | crate::usb::UsbSpeed::Super20 => 2u8,
+                crate::drivers::x86::usb::UsbSpeed::Low => 0u8,
+                crate::drivers::x86::usb::UsbSpeed::Full => 1u8,
+                crate::drivers::x86::usb::UsbSpeed::High => 2u8,
+                crate::drivers::x86::usb::UsbSpeed::Super | crate::drivers::x86::usb::UsbSpeed::Super20 => 2u8,
             };
             result = Some(UsbHandle {
                 dev_addr: d.address,

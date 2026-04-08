@@ -1,9 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Wait-Free Ring Buffer (PMA §3 — Lock-Free Telemetry Transport)

@@ -30,13 +30,13 @@ fn append_hex(out: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 pub fn read_small_vfs_file(path: &str, max_len: usize) -> Result<Vec<u8>, &'static str> {
-    let size = crate::vfs::path_size(path).map_err(|_| "stat failed")?;
+    let size = crate::fs::vfs::path_size(path).map_err(|_| "stat failed")?;
     if size == 0 {
         return Err("file is empty");
     }
     let mut buf = Vec::new();
     buf.resize(size.min(max_len), 0u8);
-    let n = crate::vfs::read_path(path, &mut buf).map_err(|_| "read failed")?;
+    let n = crate::fs::vfs::read_path(path, &mut buf).map_err(|_| "read failed")?;
     buf.truncate(n);
     Ok(buf)
 }
@@ -68,7 +68,7 @@ pub fn import_hex_file<const N: usize>(src: &str, dst: &str) -> Result<(), &'sta
         hex.push(DIGITS[(parsed[i] >> 4) as usize]);
         hex.push(DIGITS[(parsed[i] & 0x0f) as usize]);
     }
-    crate::vfs::write_path(dst, &hex).map(|_| ())
+    crate::fs::vfs::write_path(dst, &hex).map(|_| ())
 }
 
 pub fn verify_detached_ed25519(

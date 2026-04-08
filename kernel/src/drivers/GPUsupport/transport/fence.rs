@@ -20,7 +20,7 @@
  * always lives in the table.
  */
 
-use crate::drivers::gpu_support::telemetry::counters;
+use crate::drivers::x86::gpu_support::telemetry::counters;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 

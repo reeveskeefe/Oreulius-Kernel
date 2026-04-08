@@ -1,25 +1,15 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
-//! Mechanized formal backend checks.
+//! Runtime mechanized self-checks.
 //!
-//! This module provides deterministic, machine-checked proof obligations over
-//! critical kernel security predicates. It is intentionally bounded so it can
-//! run in-kernel and in CI without external tooling.
+//! This module provides deterministic, bounded verification helpers that can
+//! run in-kernel and in CI without external tooling. The proof artifacts
+//! themselves live under `verification/`; this module is only the runtime
+//! evidence surface.
 
 #![allow(dead_code)]
 

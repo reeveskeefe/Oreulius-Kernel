@@ -1,7 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Temporal Objects (versioned kernel state for files, sockets, and channels).
@@ -729,7 +729,7 @@ impl TemporalService {
         let mut data = Vec::new();
         data.resize(payload.len(), 0);
         temporal_asm::copy_bytes(&mut data, payload);
-        let tick = crate::pit::get_ticks();
+        let tick = crate::scheduler::pit::get_ticks();
         let integrity_tag = compute_temporal_integrity_tag(
             version_id,
             parent_version_id,
@@ -1829,7 +1829,7 @@ impl TemporalService {
         let version_id = self.next_version_id;
         self.next_version_id = self.next_version_id.saturating_add(1);
         let (content_hash, merkle_root, leaf_count) = compute_version_hashes(&payload);
-        let tick = crate::pit::get_ticks();
+        let tick = crate::scheduler::pit::get_ticks();
         let integrity_tag = compute_temporal_integrity_tag(
             version_id,
             target_head,
@@ -2607,7 +2607,7 @@ fn temporal_apply_vfs_file_payload(
         path,
         payload.len()
     );
-    match crate::vfs::temporal_try_apply_backend_payload(path, payload) {
+    match crate::fs::vfs::temporal_try_apply_backend_payload(path, payload) {
         Ok(true) => {
             crate::serial_println!(
                 "[TEMPORAL_VFS_APPLY] temporal_try_apply_backend_payload returned Ok(true)"
@@ -2616,7 +2616,7 @@ fn temporal_apply_vfs_file_payload(
         }
         Ok(false) => {
             crate::serial_println!("[TEMPORAL_VFS_APPLY] temporal_try_apply_backend_payload returned Ok(false), calling write_path_untracked");
-            crate::vfs::write_path_untracked(path, payload)
+            crate::fs::vfs::write_path_untracked(path, payload)
                 .map(|_| ())
                 .map_err(|e| {
                     crate::serial_println!(
@@ -2663,7 +2663,7 @@ fn temporal_apply_tcp_listener_payload(
         Err("temporal tcp listener replay unsupported on AArch64")
     }
     #[cfg(not(target_arch = "aarch64"))]
-    crate::net_reactor::temporal_apply_tcp_listener_event(listener_id, port, event)
+    crate::net::net_reactor::temporal_apply_tcp_listener_event(listener_id, port, event)
 }
 
 fn temporal_apply_tcp_conn_payload(
@@ -2727,7 +2727,7 @@ fn temporal_apply_tcp_conn_payload(
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        crate::net_reactor::temporal_apply_tcp_connection_event(
+        crate::net::net_reactor::temporal_apply_tcp_connection_event(
             conn_id,
             state,
             local_ip,
@@ -2787,7 +2787,7 @@ fn temporal_apply_process_payload(
     if name_end > payload.len() {
         return Err("temporal process payload truncated");
     }
-    crate::process::temporal_apply_process_event(
+    crate::scheduler::process::temporal_apply_process_event(
         pid,
         parent_pid,
         event,
@@ -2856,7 +2856,7 @@ fn temporal_apply_registry_payload(
         read_u32(payload, 24).ok_or("temporal registry payload missing max connections")?;
     let active_connections =
         read_u32(payload, 28).ok_or("temporal registry payload missing active connections")?;
-    crate::registry::temporal_apply_service_event(
+    crate::services::registry::temporal_apply_service_event(
         service_type,
         namespace,
         channel_id,
@@ -2897,7 +2897,7 @@ fn temporal_apply_console_payload(
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        crate::console_service::temporal_apply_console_event(
+        crate::shell::console_service::temporal_apply_console_event(
             object_id,
             owner_pid,
             write_count,
@@ -2924,7 +2924,7 @@ fn temporal_apply_security_payload(
     if payload[2] != TEMPORAL_SECURITY_EVENT_INTENT_POLICY {
         return Err("temporal security event unsupported");
     }
-    let policy = crate::intent_graph::IntentPolicy {
+    let policy = crate::security::intent_graph::IntentPolicy {
         window_seconds: read_u64(payload, 4).ok_or("temporal security payload missing window")?,
         alert_score: read_u32(payload, 12)
             .ok_or("temporal security payload missing alert score")?,
@@ -2973,7 +2973,7 @@ fn temporal_apply_capnet_payload(
         Err("temporal capnet replay unsupported on AArch64")
     }
     #[cfg(not(target_arch = "aarch64"))]
-    crate::capnet::temporal_apply_state_payload(payload)
+    crate::net::capnet::temporal_apply_state_payload(payload)
 }
 
 fn temporal_apply_wasm_service_pointer_payload(
@@ -3001,7 +3001,7 @@ fn temporal_apply_wasm_service_pointer_payload(
         Err("temporal wasm service pointer replay unsupported on AArch64")
     }
     #[cfg(not(target_arch = "aarch64"))]
-    crate::wasm::temporal_apply_service_pointer_registry_payload(payload)
+    crate::execution::wasm::temporal_apply_service_pointer_registry_payload(payload)
 }
 
 fn temporal_apply_network_config_payload(
@@ -3012,7 +3012,7 @@ fn temporal_apply_network_config_payload(
     if path != "/network/config" {
         return Err("temporal network key mismatch");
     }
-    if payload.len() < crate::net_reactor::TEMPORAL_NETWORK_CONFIG_BYTES {
+    if payload.len() < crate::net::net_reactor::TEMPORAL_NETWORK_CONFIG_BYTES {
         return Err("temporal network payload too short");
     }
     if payload[0] != TEMPORAL_OBJECT_ENCODING_V1 || payload[1] != TEMPORAL_NETWORK_CONFIG_OBJECT {
@@ -3027,7 +3027,7 @@ fn temporal_apply_network_config_payload(
         Err("temporal network config replay unsupported on AArch64")
     }
     #[cfg(not(target_arch = "aarch64"))]
-    crate::net_reactor::temporal_apply_network_config_payload(payload)
+    crate::net::net_reactor::temporal_apply_network_config_payload(payload)
 }
 
 fn temporal_apply_wasm_syscall_module_table_payload(
@@ -3055,7 +3055,7 @@ fn temporal_apply_wasm_syscall_module_table_payload(
         Err("temporal wasm syscall replay unsupported on AArch64")
     }
     #[cfg(not(target_arch = "aarch64"))]
-    crate::wasm::temporal_apply_syscall_module_table_payload(payload)
+    crate::execution::wasm::temporal_apply_syscall_module_table_payload(payload)
 }
 
 fn temporal_apply_scheduler_payload(
@@ -3075,7 +3075,7 @@ fn temporal_apply_scheduler_payload(
     if payload[2] != TEMPORAL_SCHEDULER_EVENT_STATE {
         return Err("temporal scheduler event unsupported");
     }
-    crate::quantum_scheduler::temporal_apply_scheduler_payload(payload)
+    crate::scheduler::quantum_scheduler::temporal_apply_scheduler_payload(payload)
 }
 
 fn temporal_apply_replay_manager_payload(
@@ -3095,7 +3095,7 @@ fn temporal_apply_replay_manager_payload(
     if payload[2] != TEMPORAL_REPLAY_MANAGER_EVENT_STATE {
         return Err("temporal replay event unsupported");
     }
-    crate::replay::temporal_apply_replay_manager_payload(payload)
+    crate::execution::replay::temporal_apply_replay_manager_payload(payload)
 }
 
 fn temporal_apply_network_legacy_payload(
@@ -3147,7 +3147,7 @@ fn temporal_apply_wifi_payload(
         Err("temporal wifi replay unsupported on AArch64")
     }
     #[cfg(not(target_arch = "aarch64"))]
-    crate::wifi::temporal_apply_wifi_driver_payload(payload)
+    crate::net::wifi::temporal_apply_wifi_driver_payload(payload)
 }
 
 fn temporal_apply_enclave_payload(
@@ -3173,7 +3173,7 @@ fn temporal_apply_enclave_payload(
         Err("temporal enclave replay unsupported on AArch64")
     }
     #[cfg(not(target_arch = "aarch64"))]
-    crate::enclave::temporal_apply_enclave_state_payload(payload)
+    crate::security::enclave::temporal_apply_enclave_state_payload(payload)
 }
 
 fn register_object_adapter_internal(
@@ -3294,7 +3294,7 @@ fn ensure_temporal_vfs_access(path: &str, right: u32) -> Result<(), TemporalErro
     }
 
     let capability =
-        crate::vfs::effective_capability_for_pid(crate::vfs_platform::current_pid(), path)
+        crate::fs::vfs::effective_capability_for_pid(crate::fs::vfs_platform::current_pid(), path)
             .map_err(|_| TemporalError::PermissionDenied)?;
     let key = FileKey::new(path).map_err(|_| TemporalError::InvalidPath)?;
     if !capability.can_access(&key) || !capability.rights.has(right) {
@@ -3335,7 +3335,7 @@ fn apply_temporal_payload_to_object(
 }
 
 fn temporal_current_pid() -> crate::ipc::ProcessId {
-    crate::process::current_pid().unwrap_or(crate::ipc::ProcessId(0))
+    crate::scheduler::process::current_pid().unwrap_or(crate::ipc::ProcessId(0))
 }
 
 fn temporal_object_hint(path: &str) -> u64 {
@@ -3723,7 +3723,7 @@ pub fn record_tcp_socket_listener_event(
     append_u32(&mut payload, listener_id);
     append_u16(&mut payload, port);
     append_u16(&mut payload, 0);
-    append_u64(&mut payload, crate::pit::get_ticks());
+    append_u64(&mut payload, crate::scheduler::pit::get_ticks());
     record_object_write(&key, &payload)
 }
 
@@ -3750,7 +3750,7 @@ pub fn record_tcp_socket_state_event(
     payload.extend_from_slice(&remote_ip);
     append_u16(&mut payload, remote_port);
     append_u32(&mut payload, aux);
-    append_u64(&mut payload, crate::pit::get_ticks());
+    append_u64(&mut payload, crate::scheduler::pit::get_ticks());
     record_object_write(&key, &payload)
 }
 
@@ -3780,7 +3780,7 @@ pub fn record_tcp_socket_data_event(
     append_u32(&mut payload, data.len() as u32);
     append_u16(&mut payload, preview_len as u16);
     append_u16(&mut payload, 0);
-    append_u64(&mut payload, crate::pit::get_ticks());
+    append_u64(&mut payload, crate::scheduler::pit::get_ticks());
     payload.extend_from_slice(&data[..preview_len]);
     record_object_write(&key, &payload)
 }
@@ -3805,7 +3805,7 @@ pub fn record_ipc_channel_event(
     append_u32(&mut payload, payload_len as u32);
     append_u16(&mut payload, caps_len as u16);
     append_u16(&mut payload, queue_depth as u16);
-    append_u64(&mut payload, crate::pit::get_ticks());
+    append_u64(&mut payload, crate::scheduler::pit::get_ticks());
     record_object_write(&key, &payload)
 }
 
@@ -3911,7 +3911,7 @@ pub fn record_console_event(
 }
 
 pub fn record_intent_policy_event(
-    policy: &crate::intent_graph::IntentPolicy,
+    policy: &crate::security::intent_graph::IntentPolicy,
 ) -> Result<u64, TemporalError> {
     let mut payload = Vec::new();
     payload.reserve(36);
@@ -3985,7 +3985,7 @@ pub fn snapshot_path(path: &str) -> Result<u64, TemporalError> {
     let mut read_buf = Vec::new();
     read_buf.resize(MAX_TEMPORAL_CAPTURE_BYTES, 0);
 
-    let read = match crate::vfs::read_path(&normalized, &mut read_buf) {
+    let read = match crate::fs::vfs::read_path(&normalized, &mut read_buf) {
         Ok(read) => read,
         Err(_) => {
             emit_temporal_audit(TemporalAuditAction::Snapshot, &normalized, 0, false, true);
@@ -4546,24 +4546,24 @@ pub fn gc_for_persistence_budget() -> (usize, usize) {
 }
 
 pub fn vfs_fd_capture_self_check() -> Result<(), &'static str> {
-    let pid = crate::process::process_manager()
+    let pid = crate::scheduler::process::process_manager()
         .spawn("temporal-fd-selfcheck", None)
         .map_err(|_| "spawn failed")?;
 
     const PATH: &str = "/temporal-fd-selfcheck";
     let result = (|| -> Result<(), &'static str> {
-        crate::vfs::write_path(PATH, b"seed").map_err(|_| "seed write failed")?;
+        crate::fs::vfs::write_path(PATH, b"seed").map_err(|_| "seed write failed")?;
 
         let before = list_versions(PATH)
             .map_err(|_| "history unavailable before fd write")?
             .len();
 
-        let flags = crate::vfs::OpenFlags::READ | crate::vfs::OpenFlags::WRITE;
-        let vfs_pid = crate::vfs_platform::pid_from_raw(pid.0);
+        let flags = crate::fs::vfs::OpenFlags::READ | crate::fs::vfs::OpenFlags::WRITE;
+        let vfs_pid = crate::fs::vfs_platform::pid_from_raw(pid.0);
         let fd =
-            crate::vfs::open_for_pid(vfs_pid, PATH, flags).map_err(|_| "open_for_pid failed")?;
-        let write_res = crate::vfs::write_fd(vfs_pid, fd, b"x").map_err(|_| "write_fd failed");
-        let _ = crate::vfs::close_fd(vfs_pid, fd);
+            crate::fs::vfs::open_for_pid(vfs_pid, PATH, flags).map_err(|_| "open_for_pid failed")?;
+        let write_res = crate::fs::vfs::write_fd(vfs_pid, fd, b"x").map_err(|_| "write_fd failed");
+        let _ = crate::fs::vfs::close_fd(vfs_pid, fd);
         write_res?;
 
         let history = list_versions(PATH).map_err(|_| "history unavailable after fd write")?;
@@ -4587,12 +4587,12 @@ pub fn vfs_fd_capture_self_check() -> Result<(), &'static str> {
         Ok(())
     })();
 
-    let _ = crate::process::process_manager().terminate(pid);
+    let _ = crate::scheduler::process::process_manager().terminate(pid);
     result
 }
 
 pub fn object_scope_self_check() -> Result<(), &'static str> {
-    let seed = (crate::pit::get_ticks() & 0xFFFF) as u32;
+    let seed = (crate::scheduler::pit::get_ticks() & 0xFFFF) as u32;
     let socket_id = 0x5100_0000u32 | seed;
     let listener_id = 0x2900_0000u32 | seed;
     let channel_id = 0x3300_0000u32 | seed;
@@ -4698,8 +4698,8 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
     }
 
     record_registry_service_event(
-        crate::registry::ServiceType::Temporal.as_u32(),
-        crate::registry::ServiceNamespace::Production.as_u32(),
+        crate::services::registry::ServiceType::Temporal.as_u32(),
+        crate::services::registry::ServiceNamespace::Production.as_u32(),
         10,
         1,
         1,
@@ -4709,8 +4709,8 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
     )
     .map_err(|_| "temporal object self-check: registry record failed")?;
     let reg_key = registry_service_object_key(
-        crate::registry::ServiceType::Temporal.as_u32(),
-        crate::registry::ServiceNamespace::Production.as_u32(),
+        crate::services::registry::ServiceType::Temporal.as_u32(),
+        crate::services::registry::ServiceNamespace::Production.as_u32(),
     );
     let reg_latest = latest_version(&reg_key)
         .map_err(|_| "temporal object self-check: registry history missing")?;
@@ -4732,7 +4732,7 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         return Err("temporal object self-check: console payload too short");
     }
 
-    record_intent_policy_event(&crate::intent_graph::IntentPolicy::baseline())
+    record_intent_policy_event(&crate::security::intent_graph::IntentPolicy::baseline())
         .map_err(|_| "temporal object self-check: security policy record failed")?;
     let sec_latest = latest_version(security_intent_policy_object_key())
         .map_err(|_| "temporal object self-check: security policy history missing")?;
@@ -4809,7 +4809,7 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         return Err("temporal object self-check: scheduler payload too short");
     }
 
-    crate::replay::start_record(0, 0x5450_4C59, 0)
+    crate::execution::replay::start_record(0, 0x5450_4C59, 0)
         .map_err(|_| "temporal object self-check: replay start_record failed")?;
     let replay_latest = latest_version(replay_state_object_key())
         .map_err(|_| "temporal object self-check: replay history missing")?;
@@ -4820,7 +4820,7 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
     }
     rollback_path(replay_state_object_key(), replay_latest.version_id)
         .map_err(|_| "temporal object self-check: replay rollback failed")?;
-    crate::replay::clear(0);
+    crate::execution::replay::clear(0);
 
     let mut legacy_network_payload = [0u8; 32];
     legacy_network_payload[0] = TEMPORAL_OBJECT_ENCODING_V1;
@@ -4855,8 +4855,8 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-        crate::enclave::set_remote_attestation_policy(
-            crate::enclave::RemoteAttestationPolicy::Audit,
+        crate::security::enclave::set_remote_attestation_policy(
+            crate::security::enclave::RemoteAttestationPolicy::Audit,
         );
         let enclave_latest = latest_version(enclave_state_object_key())
             .map_err(|_| "temporal object self-check: enclave history missing")?;
@@ -4867,8 +4867,8 @@ pub fn object_scope_self_check() -> Result<(), &'static str> {
         }
         rollback_path(enclave_state_object_key(), enclave_latest.version_id)
             .map_err(|_| "temporal object self-check: enclave rollback failed")?;
-        crate::enclave::set_remote_attestation_policy(
-            crate::enclave::RemoteAttestationPolicy::Enforce,
+        crate::security::enclave::set_remote_attestation_policy(
+            crate::security::enclave::RemoteAttestationPolicy::Enforce,
         );
     }
 
@@ -4947,13 +4947,13 @@ pub fn branch_merge_self_check() -> Result<(), &'static str> {
     const MAIN_UPDATE: &[u8] = b"temporal-branch-main-update";
     const BRANCH_NAME: &str = "feature";
 
-    crate::vfs::write_path(PATH, BASE).map_err(|_| "branch self-check seed write failed")?;
+    crate::fs::vfs::write_path(PATH, BASE).map_err(|_| "branch self-check seed write failed")?;
     let seed_version = snapshot_path(PATH).map_err(|_| "branch self-check seed snapshot failed")?;
     let _ = seed_version;
 
     let branch_id =
         create_branch(PATH, BRANCH_NAME, None).map_err(|_| "branch self-check create failed")?;
-    crate::vfs::write_path(PATH, MAIN_UPDATE).map_err(|_| "branch self-check main write failed")?;
+    crate::fs::vfs::write_path(PATH, MAIN_UPDATE).map_err(|_| "branch self-check main write failed")?;
     let main_head = latest_version(PATH)
         .map_err(|_| "branch self-check latest lookup failed")?
         .version_id;
@@ -4981,7 +4981,7 @@ pub fn branch_merge_self_check() -> Result<(), &'static str> {
     let mut read_buf = Vec::new();
     read_buf.resize(MAIN_UPDATE.len().saturating_add(32), 0);
     let read =
-        crate::vfs::read_path(PATH, &mut read_buf).map_err(|_| "branch self-check read failed")?;
+        crate::fs::vfs::read_path(PATH, &mut read_buf).map_err(|_| "branch self-check read failed")?;
     read_buf.truncate(read);
     if read_buf.as_slice() != MAIN_UPDATE {
         return Err("branch self-check payload mismatch");
@@ -5019,7 +5019,7 @@ pub fn audit_emission_self_check() -> Result<(), &'static str> {
 
     let before_total = crate::security::security().get_audit_stats().0;
 
-    crate::vfs::write_path(PATH, PAYLOAD)
+    crate::fs::vfs::write_path(PATH, PAYLOAD)
         .map_err(|_| "temporal audit self-check seed write failed")?;
     snapshot_path(PATH).map_err(|_| "temporal audit self-check snapshot failed")?;
     let _ = latest_version(PATH).map_err(|_| "temporal audit self-check latest query failed")?;

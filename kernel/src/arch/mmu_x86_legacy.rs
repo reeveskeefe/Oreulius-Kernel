@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 use super::{ArchMmu, PageAttribute};
@@ -22,27 +11,27 @@ pub(super) struct X86LegacyMmu;
 pub(super) static MMU: X86LegacyMmu = X86LegacyMmu;
 
 impl ArchMmu for X86LegacyMmu {
-    type AddressSpace = crate::paging::AddressSpace;
-    type PageTable = crate::paging::AddressSpace;
+    type AddressSpace = crate::fs::paging::AddressSpace;
+    type PageTable = crate::fs::paging::AddressSpace;
 
     fn name(&self) -> &'static str {
         "i686-paging"
     }
 
     fn init(&self) -> Result<(), &'static str> {
-        crate::paging::init()
+        crate::fs::paging::init()
     }
 
     fn page_size(&self) -> usize {
-        crate::paging::PAGE_SIZE
+        crate::fs::paging::PAGE_SIZE
     }
 
     fn kernel_page_table_root_addr(&self) -> Option<usize> {
-        crate::paging::kernel_page_directory_addr().map(|v| v as usize)
+        crate::fs::paging::kernel_page_directory_addr().map(|v| v as usize)
     }
 
     fn current_page_table_root_addr(&self) -> usize {
-        crate::paging::current_page_directory_addr() as usize
+        crate::fs::paging::current_page_directory_addr() as usize
     }
 
     fn set_page_table_root(&self, phys_addr: usize) -> Result<(), &'static str> {
@@ -50,17 +39,17 @@ impl ArchMmu for X86LegacyMmu {
             return Err("CR3 root address out of 32-bit range");
         }
         unsafe {
-            crate::paging::set_page_directory(phys_addr as u32);
+            crate::fs::paging::set_page_directory(phys_addr as u32);
         }
         Ok(())
     }
 
     fn flush_tlb_page(&self, virt_addr: usize) {
-        crate::paging::flush_tlb_page(virt_addr as u32)
+        crate::fs::paging::flush_tlb_page(virt_addr as u32)
     }
 
     fn flush_tlb_all(&self) {
-        crate::paging::flush_all_tlb()
+        crate::fs::paging::flush_all_tlb()
     }
 
     fn set_page_attribute_range(
@@ -72,7 +61,7 @@ impl ArchMmu for X86LegacyMmu {
     ) -> Result<(), &'static str> {
         match attr {
             PageAttribute::Writable => {
-                crate::paging::set_page_writable_range(virt_addr, size, enabled)
+                crate::fs::paging::set_page_writable_range(virt_addr, size, enabled)
             }
         }
     }

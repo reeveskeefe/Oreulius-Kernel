@@ -118,7 +118,7 @@ pub fn tick() {
     }
 
     // --- Input pump ---
-    while let Some(ev) = crate::drivers::input::read() {
+    while let Some(ev) = crate::drivers::x86::input::read() {
         let sw = svc.screen_width;
         let sh = svc.screen_height;
         // The borrow checker cannot see that windows/sessions and focus/cursor

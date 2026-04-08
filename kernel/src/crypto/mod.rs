@@ -1,9 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- *License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Cryptographic primitives used by the kernel.
@@ -534,7 +532,7 @@ fn kernel_buffer_is_mapped(virt_addr: usize, len: usize) -> bool {
 #[cfg(target_arch = "x86")]
 #[inline]
 fn kernel_buffer_is_mapped(virt_addr: usize, len: usize) -> bool {
-    crate::paging::is_kernel_range_mapped(virt_addr, len)
+    crate::fs::paging::is_kernel_range_mapped(virt_addr, len)
 }
 
 pub fn aes128_ctr_xor(key: &[u8; 16], nonce: u64, data: &mut [u8]) {
@@ -543,7 +541,7 @@ pub fn aes128_ctr_xor(key: &[u8; 16], nonce: u64, data: &mut [u8]) {
     #[cfg(not(target_arch = "aarch64"))]
     impl Drop for IrqGuard {
         fn drop(&mut self) {
-            unsafe { crate::idt_asm::fast_sti_restore(self.0) };
+            unsafe { crate::platform::idt_asm::fast_sti_restore(self.0) };
         }
     }
 
@@ -572,7 +570,7 @@ pub fn aes128_ctr_xor(key: &[u8; 16], nonce: u64, data: &mut [u8]) {
     }
 
     #[cfg(not(target_arch = "aarch64"))]
-    let irq_flags = unsafe { crate::idt_asm::fast_cli_save() };
+    let irq_flags = unsafe { crate::platform::idt_asm::fast_cli_save() };
     #[cfg(not(target_arch = "aarch64"))]
     let _irq_guard = IrqGuard(irq_flags);
 

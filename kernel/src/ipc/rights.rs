@@ -1,4 +1,4 @@
-use crate::linear_capability::LinearCapability;
+use crate::math::linear_capability::LinearCapability;
 
 use super::types::{ChannelId, ProcessId};
 

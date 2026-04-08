@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! System Call Interface
@@ -22,13 +11,13 @@
 
 use crate::capability::{self, CapabilityType, Rights};
 #[cfg(target_arch = "x86")]
-use crate::gdt;
+use crate::platform::gdt;
 #[cfg(target_arch = "x86")]
-use crate::process_asm::{
+use crate::scheduler::process_asm::{
     write_msr, MSR_IA32_SYSENTER_CS, MSR_IA32_SYSENTER_EIP, MSR_IA32_SYSENTER_ESP,
 };
 #[cfg(not(target_arch = "aarch64"))]
-use crate::vga;
+use crate::drivers::x86::vga;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -317,8 +306,8 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
 
     // Escalation stage: repeated predictive restrictions can request termination.
     if syscall != SyscallNumber::Exit && sec.take_intent_termination_recommendation(caller_pid) {
-        let _ = crate::process::process_manager().terminate(crate::process::Pid(caller_pid.0));
-        let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+        let _ = crate::scheduler::process::process_manager().terminate(crate::scheduler::process::Pid(caller_pid.0));
+        let mut scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
         let _ = scheduler.remove_process(caller_pid);
         return SyscallResult::err(EACCES);
     }
@@ -337,29 +326,29 @@ fn sys_exit(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
     #[cfg(not(target_arch = "aarch64"))]
     {
         vga::print_str("[SYSCALL] Process ");
-        crate::commands::print_u32(caller_pid.0);
+        crate::shell::commands::print_u32(caller_pid.0);
         vga::print_str(" exiting with code ");
-        crate::commands::print_u32(exit_code as u32);
+        crate::shell::commands::print_u32(exit_code as u32);
         vga::print_str("\n");
     }
 
     // Remove process from process/security/capability subsystems.
-    let _ = crate::process::process_manager().terminate(crate::process::Pid(caller_pid.0));
+    let _ = crate::scheduler::process::process_manager().terminate(crate::scheduler::process::Pid(caller_pid.0));
 
     // Remove from runtime scheduler.
-    let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+    let mut scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
     let _ = scheduler.remove_process(caller_pid);
 
     // Yield to next process
     drop(scheduler);
-    crate::quantum_scheduler::yield_now();
+    crate::scheduler::quantum_scheduler::yield_now();
 
     SyscallResult::ok(exit_code)
 }
 
 fn sys_fork(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let _flags = args.arg1;
-    crate::scheduler_runtime_platform::logf(format_args!(
+    crate::scheduler::scheduler_runtime_platform::logf(format_args!(
         "[SYSCALL] fork caller_pid={} flags={}",
         caller_pid.0, args.arg1
     ));
@@ -367,17 +356,17 @@ fn sys_fork(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
     #[cfg(not(target_arch = "aarch64"))]
     {
         vga::print_str("[SYSCALL] Fork requested by PID ");
-        crate::commands::print_u32(caller_pid.0);
+        crate::shell::commands::print_u32(caller_pid.0);
         vga::print_str("\n");
     }
 
-    let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+    let mut scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
     match scheduler.fork_current_cow() {
         Ok(child_pid) => {
             #[cfg(not(target_arch = "aarch64"))]
             {
                 vga::print_str("[SYSCALL] Fork successful, child PID=");
-                crate::commands::print_u32(child_pid.0);
+                crate::shell::commands::print_u32(child_pid.0);
                 vga::print_str("\n");
             }
             SyscallResult::ok(child_pid.0 as i32)
@@ -393,14 +382,14 @@ fn sys_fork(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
 fn sys_yield(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
     let _yield_hint = args.arg1; // Optional: 0=normal, 1=I/O wait, 2=explicit
     if args.arg1 > 0 {
-        crate::scheduler_runtime_platform::logf(format_args!(
+        crate::scheduler::scheduler_runtime_platform::logf(format_args!(
             "[SYSCALL] yield caller_pid={} hint={}",
             caller_pid.0, args.arg1
         ));
     }
 
     // Mark process as yielding voluntarily (good for statistics)
-    let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+    let mut scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
     scheduler.record_voluntary_yield();
     drop(scheduler);
 
@@ -408,13 +397,13 @@ fn sys_yield(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallRes
     #[cfg(not(target_arch = "aarch64"))]
     if args.arg1 > 0 {
         vga::print_str("[SYSCALL] PID ");
-        crate::commands::print_u32(caller_pid.0);
+        crate::shell::commands::print_u32(caller_pid.0);
         vga::print_str(" yielding (hint=");
-        crate::commands::print_u32(args.arg1);
+        crate::shell::commands::print_u32(args.arg1);
         vga::print_str(")\n");
     }
 
-    crate::quantum_scheduler::yield_now();
+    crate::scheduler::quantum_scheduler::yield_now();
     SyscallResult::ok(0)
 }
 
@@ -427,16 +416,16 @@ fn sys_sleep(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallRes
 
     if ms == 0 {
         // Sleep(0) is just a yield
-        crate::quantum_scheduler::yield_now();
+        crate::scheduler::quantum_scheduler::yield_now();
         return SyscallResult::ok(0);
     }
 
     // Calculate wake time (current ticks + ms converted to ticks)
-    let current_ticks = crate::pit::get_ticks();
+    let current_ticks = crate::scheduler::pit::get_ticks();
     let sleep_ticks = (ms as u64 * 100) / 1000; // Convert ms to ticks (100 Hz timer)
     let wake_time = current_ticks + sleep_ticks;
 
-    if crate::quantum_scheduler::sleep_until(caller_pid, wake_time).is_err() {
+    if crate::scheduler::quantum_scheduler::sleep_until(caller_pid, wake_time).is_err() {
         return SyscallResult::err(EINVAL);
     }
 
@@ -452,24 +441,24 @@ fn sys_exec(args: SyscallArgs, _caller_pid: capability::ProcessId) -> SyscallRes
         return SyscallResult::err(EINVAL);
     }
 
-    if buf_ptr >= crate::paging::KERNEL_BASE || buf_ptr + len >= crate::paging::KERNEL_BASE {
+    if buf_ptr >= crate::fs::paging::KERNEL_BASE || buf_ptr + len >= crate::fs::paging::KERNEL_BASE {
         return SyscallResult::err(EFAULT);
     }
 
     let bytes = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
-    let module_id = match crate::wasm::load_module(bytes) {
+    let module_id = match crate::execution::wasm::load_module(bytes) {
         Ok(id) => id,
         Err(_) => return SyscallResult::err(EIO),
     };
 
     {
-        let mut scheduler = crate::quantum_scheduler::scheduler().lock();
+        let mut scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
         if scheduler.exec_current_wasm(module_id as u32).is_err() {
             return SyscallResult::err(EINVAL);
         }
     }
 
-    if crate::wasm::call_function(module_id, 0, &[]).is_err() {
+    if crate::execution::wasm::call_function(module_id, 0, &[]).is_err() {
         return SyscallResult::err(EINVAL);
     }
 
@@ -515,11 +504,11 @@ fn sys_channel_create(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
     #[cfg(not(target_arch = "aarch64"))]
     {
         vga::print_str("[SYSCALL] Channel create by PID ");
-        crate::commands::print_u32(caller_pid.0);
+        crate::shell::commands::print_u32(caller_pid.0);
         vga::print_str(" with flags=0x");
-        crate::commands::print_hex_u32(flags_bits);
+        crate::shell::commands::print_hex_u32(flags_bits);
         vga::print_str(" priority=");
-        crate::commands::print_u32(priority as u32);
+        crate::shell::commands::print_u32(priority as u32);
         vga::print_str("\n");
     }
 
@@ -533,7 +522,7 @@ fn sys_channel_create(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
             #[cfg(not(target_arch = "aarch64"))]
             {
                 vga::print_str("[SYSCALL] Created channel ID=");
-                crate::commands::print_u32(channel_id as u32);
+                crate::shell::commands::print_u32(channel_id as u32);
                 vga::print_str("\n");
             }
             SyscallResult::ok(channel_id as i32)
@@ -1056,12 +1045,12 @@ fn sys_memory_alloc(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
         return SyscallResult::err(EINVAL);
     }
 
-    let flags = crate::quantum_scheduler::VmaFlags::READ
-        | crate::quantum_scheduler::VmaFlags::WRITE
-        | crate::quantum_scheduler::VmaFlags::USER;
+    let flags = crate::scheduler::quantum_scheduler::VmaFlags::READ
+        | crate::scheduler::quantum_scheduler::VmaFlags::WRITE
+        | crate::scheduler::quantum_scheduler::VmaFlags::USER;
 
     let _ = caller_pid;
-    match crate::quantum_scheduler::memory_alloc_current(requested_addr, size, flags) {
+    match crate::scheduler::quantum_scheduler::memory_alloc_current(requested_addr, size, flags) {
         Ok(addr) => SyscallResult::ok(addr as i32),
         Err("virtual address space exhausted") => SyscallResult::err(ENOMEM),
         Err("memory alloc unsupported on this architecture") => SyscallResult::err(ENOSYS),
@@ -1085,7 +1074,7 @@ fn sys_memory_free(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysc
     }
 
     let _ = caller_pid;
-    match crate::quantum_scheduler::memory_free_current(addr, size) {
+    match crate::scheduler::quantum_scheduler::memory_free_current(addr, size) {
         Ok(()) => SyscallResult::ok(0),
         Err("memory free unsupported on this architecture") => SyscallResult::err(ENOSYS),
         Err(_) => SyscallResult::err(EINVAL),
@@ -1110,32 +1099,32 @@ fn sys_memory_map(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysca
         return SyscallResult::err(EINVAL);
     }
 
-    let mut flags = crate::quantum_scheduler::VmaFlags::USER;
+    let mut flags = crate::scheduler::quantum_scheduler::VmaFlags::USER;
     if (prot & 0x1) != 0 {
-        flags |= crate::quantum_scheduler::VmaFlags::READ;
+        flags |= crate::scheduler::quantum_scheduler::VmaFlags::READ;
     }
     if (prot & 0x2) != 0 {
-        flags |= crate::quantum_scheduler::VmaFlags::WRITE;
+        flags |= crate::scheduler::quantum_scheduler::VmaFlags::WRITE;
     }
     if (prot & 0x4) != 0 {
-        flags |= crate::quantum_scheduler::VmaFlags::EXEC;
+        flags |= crate::scheduler::quantum_scheduler::VmaFlags::EXEC;
     }
     if (map_flags & MAP_SHARED) != 0 {
-        flags |= crate::quantum_scheduler::VmaFlags::SHARED;
+        flags |= crate::scheduler::quantum_scheduler::VmaFlags::SHARED;
     }
     if !flags.intersects(
-        crate::quantum_scheduler::VmaFlags::READ
-            | crate::quantum_scheduler::VmaFlags::WRITE
-            | crate::quantum_scheduler::VmaFlags::EXEC,
+        crate::scheduler::quantum_scheduler::VmaFlags::READ
+            | crate::scheduler::quantum_scheduler::VmaFlags::WRITE
+            | crate::scheduler::quantum_scheduler::VmaFlags::EXEC,
     ) {
-        flags |= crate::quantum_scheduler::VmaFlags::READ | crate::quantum_scheduler::VmaFlags::WRITE;
+        flags |= crate::scheduler::quantum_scheduler::VmaFlags::READ | crate::scheduler::quantum_scheduler::VmaFlags::WRITE;
     }
 
     let requested_addr = if addr == 0 { None } else { Some(addr) };
 
     if (map_flags & MAP_ANONYMOUS) != 0 {
         let _ = caller_pid;
-        return match crate::quantum_scheduler::memory_alloc_current(requested_addr, size, flags) {
+        return match crate::scheduler::quantum_scheduler::memory_alloc_current(requested_addr, size, flags) {
             Ok(mapped) => SyscallResult::ok(mapped as i32),
             Err("memory alloc unsupported on this architecture")
             | Err("memory map unsupported on this architecture") => SyscallResult::err(ENOSYS),
@@ -1158,7 +1147,7 @@ fn sys_memory_map(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysca
         Err(_) => return SyscallResult::err(EINVAL),
     };
 
-    match crate::quantum_scheduler::memory_map_file_current(
+    match crate::scheduler::quantum_scheduler::memory_map_file_current(
         requested_addr,
         size,
         flags,
@@ -1351,7 +1340,7 @@ fn sys_console_write(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sy
 
     #[cfg(target_arch = "aarch64")]
     {
-        let uart = crate::arch::aarch64_pl011::early_uart();
+        let uart = crate::arch::aarch64::aarch64_pl011::early_uart();
         for &byte in buffer {
             uart.write_byte(byte);
         }
@@ -1389,7 +1378,7 @@ fn sys_console_read(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
 
     let mut bytes_read = 0;
     for i in 0..len {
-        if let Some(ch) = crate::keyboard::poll() {
+        if let Some(ch) = crate::drivers::x86::keyboard::poll() {
             buffer_vec[i] = ch as u8;
             bytes_read += 1;
         } else {
@@ -1433,7 +1422,7 @@ fn sys_wasm_load(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
     let wasm_bytes = unsafe { core::slice::from_raw_parts(wasm_ptr as *const u8, wasm_len) };
 
     // Load and validate WASM module
-    match crate::wasm::load_module(wasm_bytes) {
+    match crate::execution::wasm::load_module(wasm_bytes) {
         Ok(module_id) => {
             let _ = caller_pid; // Use variable
             SyscallResult::ok(module_id as i32)
@@ -1472,7 +1461,7 @@ fn sys_wasm_call(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
     };
 
     // Call WASM function
-    match crate::wasm::call_function(module_id, func_idx, wasm_args) {
+    match crate::execution::wasm::call_function(module_id, func_idx, wasm_args) {
         Ok(result) => {
             let _ = caller_pid; // Use variable
             SyscallResult::ok(result as i32)
@@ -1489,7 +1478,7 @@ fn sys_wasm_call(args: SyscallArgs, caller_pid: capability::ProcessId) -> Syscal
 
 #[cfg(not(target_arch = "aarch64"))]
 fn sys_jit_return(_args: SyscallArgs, _caller_pid: capability::ProcessId) -> SyscallResult {
-    if crate::wasm::jit_user_mark_returned() {
+    if crate::execution::wasm::jit_user_mark_returned() {
         SyscallResult::ok(0)
     } else {
         SyscallResult::err(EACCES)
@@ -1510,7 +1499,7 @@ fn sys_service_pointer_register(
     let function_index = args.arg2 as usize;
     let allow_delegate = (args.arg3 & 0x1) != 0;
 
-    match crate::wasm::register_service_pointer(
+    match crate::execution::wasm::register_service_pointer(
         caller_pid,
         instance_id,
         function_index,
@@ -1539,7 +1528,7 @@ fn sys_service_pointer_invoke(
     let args_ptr = args.arg3 as usize;
     let args_count = args.arg4 as usize;
 
-    if args_count > crate::wasm::MAX_SERVICE_CALL_ARGS {
+    if args_count > crate::execution::wasm::MAX_SERVICE_CALL_ARGS {
         return SyscallResult::err(EINVAL);
     }
     if args_count > 0 {
@@ -1555,7 +1544,7 @@ fn sys_service_pointer_invoke(
         unsafe { core::slice::from_raw_parts(args_ptr as *const u32, args_count) }
     };
 
-    match crate::wasm::invoke_service_pointer(caller_pid, object_id, call_args) {
+    match crate::execution::wasm::invoke_service_pointer(caller_pid, object_id, call_args) {
         Ok(result) => SyscallResult::ok(result as i32),
         Err(_) => SyscallResult::err(EACCES),
     }
@@ -1576,7 +1565,7 @@ fn sys_service_pointer_revoke(
     caller_pid: capability::ProcessId,
 ) -> SyscallResult {
     let object_id = ((args.arg2 as u64) << 32) | args.arg1 as u64;
-    match crate::wasm::revoke_service_pointer(caller_pid, object_id) {
+    match crate::execution::wasm::revoke_service_pointer(caller_pid, object_id) {
         Ok(()) => SyscallResult::ok(0),
         Err(_) => SyscallResult::err(EACCES),
     }
@@ -1607,7 +1596,7 @@ fn check_capability(
 
 /// Get current process PID from scheduler
 fn get_current_pid() -> capability::ProcessId {
-    let scheduler = crate::quantum_scheduler::scheduler().lock();
+    let scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
     if let Some(pid) = scheduler.get_current_pid() {
         capability::ProcessId(pid.0)
     } else {
@@ -2009,7 +1998,7 @@ pub fn init() {
 
     #[cfg(target_arch = "aarch64")]
     {
-        let uart = crate::arch::aarch64_pl011::early_uart();
+        let uart = crate::arch::aarch64::aarch64_pl011::early_uart();
         uart.init_early();
         uart.write_str("[SYSCALL] AArch64 syscall core initialized (kernel-side only)\n");
     }

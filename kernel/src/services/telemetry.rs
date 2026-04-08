@@ -1,7 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Userspace Telemetry Daemon - Math Queue
@@ -11,7 +11,7 @@
 //! This ensures the Ring-0 kernel remains completely bounded with zero locks,
 //! no unbounded latency, and leaves floating/SIMD processing to the telemetry daemon.
 
-use crate::linear_capability::ScalarTensor;
+use crate::math::linear_capability::ScalarTensor;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 

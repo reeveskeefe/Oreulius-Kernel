@@ -18,7 +18,7 @@
 use spin::Mutex;
 
 use super::fence;
-use crate::drivers::gpu_support::telemetry::counters;
+use crate::drivers::x86::gpu_support::telemetry::counters;
 
 // ---------------------------------------------------------------------------
 // Constants

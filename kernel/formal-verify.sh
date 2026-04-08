@@ -129,6 +129,7 @@ export OREULIA_EXPECT_TIMEOUT="$expect_timeout"
 
 expect <<'EOF' | tee "$log_file"
 set timeout 900
+set send_slow {1 0.05}
 set prompt_re {\r?\n> }
 
 if {[info exists env(OREULIA_EXPECT_TIMEOUT)]} {
@@ -159,7 +160,8 @@ expect {
 }
 
 sleep 2
-send "formal-verify\r"
+after 600
+send -s -- "formal-verify\r"
 expect {
     -re $prompt_re {}
     timeout {
@@ -173,7 +175,8 @@ expect {
 }
 
 if {$run_hardening == 1} {
-    send "temporal-hardening-selftest\r"
+    after 600
+    send -s -- "temporal-hardening-selftest\r"
     expect {
         -re $prompt_re {}
         timeout {

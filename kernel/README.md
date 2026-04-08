@@ -1,10 +1,10 @@
 # Oreulius Kernel
 
-A security-hardened, bare-metal operating system kernel implementing advanced systems research concepts in Rust and x86 Assembly.
+A security-hardened, bare-metal kernel source tree with target-specific bring-up paths in Rust and assembly.
 
-**Architecture**: i686 (32-bit Protected Mode, two-level 4KB paging)  
-**Boot Protocol**: Multiboot 1 (GRUB-compatible)  
-**Design Philosophy**: Zero-compromise performance with cryptographic-grade security
+**Architecture**: multi-target kernel tree (default `i686` boot path; `x86_64` and `AArch64` code paths present)  
+**Boot Protocol**: default `i686` bring-up uses Multiboot 1 (GRUB-compatible)  
+**Documentation Style**: capability- and target-oriented, with explicit implemented / partial / planned status
 
 ---
 
@@ -25,27 +25,31 @@ These papers include:
 
 ---
 
-## Latest Kernel State (2026 Hardening Additions)
+## Capability and Target Matrix
 
-The kernel has moved beyond baseline JIT and capability hardening into a fully layered security posture. Recent additions include:
+This section is the source of truth for architecture and documentation status. It separates what is implemented today from what is partial or still planned.
 
-- Full JIT W^X publish lifecycle (RW -> RX -> reclaim) and kernel `.text`/`.rodata` write protection
-- Ring 3 JIT execution path with sandbox page-directory switching and explicit fault-to-trap conversion
-- Complete x86 whitelist + decoder validation, expanded SFI on all memory paths, and full CFI (shadow stack + target-set checks)
-- Per-block JIT translation certificates with integrity-time recomputation checks
-- Cryptographic capability token verification across IPC and core capability tables (SipHash-based MACs)
-- CapNet decentralized capability-network control plane with attestation-bound peer sessions and replay-safe token transfer
-- SMEP/SMAP/KPTI integration (where hardware support exists), plus memory-tag policy enforcement
-- SGX/TrustZone-capable enclave lifecycle framework with attestation/key-policy fail-closed gating
-- Coverage-guided JIT fuzzing, external seed corpus replay, and multi-round soak verification paths
-- Mechanized bounded formal backend checks for capability attenuation and memory-guard equivalence
-- Intent graph telemetry over IPC/capability activity with per-process behavioral scoring
-- Predictive restriction and capability quarantine with escalation to isolate/terminate recommendations
-- Function/service-pointer capability objects with direct callable dispatch, `ref.func` selector support, typed invoke ABI (`service_invoke_typed`), and delegate-gated IPC transfer
-- Runtime lock hardening via exclusive instance execution (`Ready/Busy/Empty` state model) to avoid re-entry deadlock patterns
-- Hot-swap continuity semantics: destroy-time service-pointer rebinding to compatible live instances, fail-closed revoke otherwise
-- Scheduler/network soak verification command path for long-run stability and security-signal integrity
-- CI admission gating for regression corpus replay and soak checks
+Status legend:
+- Implemented: present and wired into the current tree.
+- Partial: present, but target-gated, backend-limited, or missing one or more production edges.
+- Planned: documented intent only.
+
+| Capability / subsystem | i686 | x86_64 | AArch64 | Status | Notes |
+|---|---|---|---|---|---|
+| Core bring-up, shell, scheduler, IPC, capability model, temporal objects | Yes | Yes | Yes | Implemented | Shared kernel services are target-aware. |
+| Security policy and telemetry (intent graph, predictive revocation) | Yes | Yes | Yes | Implemented | Shared policy model with target-specific plumbing where needed. |
+| CapNet control plane | Yes | Yes | Yes | Implemented | Token, replay, and delegation semantics are shared; transports are target-gated. |
+| Filesystem and storage | Yes | Yes | Yes | Implemented | VFS and RAM-backed paths are shared; device backends vary by target. |
+| WebAssembly runtime / JIT | Yes | Yes | Partial | Partial | The x86-family backend is the most mature. |
+| VirtIO block and network paths | Yes | Yes | Yes | Implemented | Preferred cross-target I/O path. |
+| Legacy x86 device drivers | Yes | Yes | No | Partial | E1000, RTL8139, Wi-Fi, VGA, PS/2, and some PCI helpers remain x86-centric. |
+| Enclave / SGX / TrustZone controls | Partial | Partial | Partial | Partial | Fail-closed gating exists where hardware support is available. |
+| Verification, fuzzing, soak, and proof surfaces | Yes | Yes | Yes | Implemented | Coverage is expanding, but this is not a blanket whole-system claim. |
+
+Planned work remains in:
+- broader legacy-driver parity on AArch64 beyond VirtIO
+- tighter proof coverage across target-specific assembly boundaries
+- conversion of the remaining aspirational checks into explicit verification gates
 
 ---
 
@@ -55,9 +59,12 @@ The kernel has moved beyond baseline JIT and capability hardening into a fully l
 
 Oreulius implements a **capability-oriented kernel architecture** with explicit isolation boundaries around high-risk execution paths (JIT, user transitions, enclave/session lifecycle, and capability transfer). The kernel emphasizes deterministic scheduling behavior, strict privilege transitions, and measurable hardening invariants over broad userspace abstraction.
 
+Read the matrix above first if you need to know whether a subsystem is implemented, partial, or still planned on a given target.
+
 ### Features
 
 #### **Quantum Scheduler with MLFQ**
+- Status: implemented across the current target matrix.
 - **O(1) constant-time** task scheduling using multi-level feedback queues
 - Three-tier priority system (High/Normal/Low) with queue-level dispatch ordering
 - Preemptive multitasking with configurable quantum slices (default: 10ms)
@@ -66,7 +73,8 @@ Oreulius implements a **capability-oriented kernel architecture** with explicit 
 - Real-time interrupt state verification with EFLAGS monitoring
 
 #### **WebAssembly JIT Compiler**
-- **Runtime code generation**: Translates WebAssembly bytecode to native x86 machine code on-the-fly
+- Status: partial across the target matrix; the x86-family backend is the most mature.
+- **Runtime code generation**: Translates WebAssembly bytecode to native machine code on the active backend
 - **Register allocation**: Sophisticated register allocator mapping Wasm locals to x86 registers (EAX, EBX, ECX, EDX, ESI, EDI)
 - **Instruction selection**: Direct translation of Wasm opcodes to optimal x86 instruction sequences
 - **Memory safety**: Bounds checking on every memory access, prevents buffer overflows
@@ -75,6 +83,7 @@ Oreulius implements a **capability-oriented kernel architecture** with explicit 
 - **Translation assurance**: Per-block translation certificates and decoder/whitelist validation before execution
 
 #### **IEEE 802.11i WPA2 Security Stack**
+- Status: implemented where the target's network and crypto drivers are available.
 - **4-way handshake path**: EAPOL key exchange implementation (Messages 1-4)
 - **Cryptographic primitives** (all implemented from specification, no external dependencies):
   - **PBKDF2-HMAC-SHA1**: 4096 iterations for Pairwise Master Key (PMK) derivation
@@ -105,6 +114,7 @@ Oreulius implements a **capability-oriented kernel architecture** with explicit 
 > `virtio_blk` and the `blk-bench` shell command work on all architectures.
 
 #### **Full TCP/IP Network Stack**
+- Status: implemented, with target-specific hardware backends.
 - **Layer 2**: Ethernet II framing, ARP resolution with caching
 - **Layer 3**: IPv4 packet handling, ICMP echo (ping)
 - **Layer 4**: UDP and TCP (three-way handshake, window/state tracking, retransmit timers)
@@ -117,6 +127,7 @@ Oreulius implements a **capability-oriented kernel architecture** with explicit 
 - **Asynchronous I/O reactor**: Event-driven packet processing with IRQ/timer signaling
 
 #### **Virtual File System (VFS)**
+- Status: implemented.
 - **Unix-like hierarchy**: Root directory (`/`) with full path resolution (`../`, `./` support)
 - **Inode architecture**: Unique file identifiers, metadata (size, type, permissions)
 - **Directory operations**: `mkdir`, `ls`, `cd`, `pwd` with recursive directory listing
@@ -126,6 +137,7 @@ Oreulius implements a **capability-oriented kernel architecture** with explicit 
 - **Block device abstraction**: Uniform interface for real/virtual storage devices
 
 #### **Capability-Based Security Model**
+- Status: implemented.
 - **No ambient authority**: Processes cannot access resources without explicit capabilities
 - **Unforgeable tokens**: Capabilities are cryptographically-sealed kernel objects
 - **Fine-grained permissions**: Separate caps for read/write/execute/network/filesystem
@@ -137,6 +149,7 @@ Oreulius implements a **capability-oriented kernel architecture** with explicit 
 - **Typed service ABI**: Mixed-type invocation (`i32/i64/f32/f64/funcref/externref`) encoded and validated through `service_invoke_typed`
 
 #### **CapNet: Decentralized Capability Networking**
+- Status: implemented.
 - **Portable authority objects**: `CapabilityTokenV1` encodes capability semantics into a fixed-width network token
 - **Per-peer cryptographic context**: Tokens and control frames are authenticated using session keys installed from attestation exchange
 - **Replay-safe control channel**: Frame sequence windows and token nonce windows enforce deterministic stale/duplicate rejection
@@ -146,7 +159,9 @@ Oreulius implements a **capability-oriented kernel architecture** with explicit 
 - **Verification surface**: In-kernel fuzz, corpus replay, soak loops, and formal checks gate parser and enforcer regressions
 
 #### **Hardware-Optimized Assembly Modules**
-All performance-critical kernel operations hand-coded in NASM Assembly:
+- Status: partial across the target matrix; these modules are x86-family specific.
+
+All performance-critical kernel operations are hand-coded in NASM Assembly:
 
 - **`atomic.asm`**: Lock-free atomic operations (CAS, fetch-add, memory barriers)
 - **`context_switch.asm`**: Register/EFLAGS context save-restore and thread trampoline transitions
@@ -160,6 +175,7 @@ All performance-critical kernel operations hand-coded in NASM Assembly:
 - **`sgx.asm`**: SGX primitive wrappers (`ECREATE/EADD/EEXTEND/EINIT/EENTER`) on supported targets
 
 #### **Memory Management**
+- Status: implemented.
 - **Paging**: 4KB pages with Page Directory and Page Tables
 - **Copy-on-Write (CoW)**: Deferred page copying on fork() for efficiency
 - **Fault-driven CoW resolution**: write-fault handler allocates/remaps private pages on first write
@@ -230,6 +246,8 @@ Acceptance installs a lease only when all predicates hold, and every lease-use p
 
 ## Building
 
+The commands below exercise the default `i686` bring-up path. The tree also contains `x86_64` and `AArch64` code paths, but their boot flows are documented in [../README.md](../README.md).
+
 **Prerequisites**:
 - `rustup` with nightly toolchain (for `asm!()` macro, unstable features)
 - `nasm` (Netwide Assembler for x86 Assembly)
@@ -254,7 +272,7 @@ Generated outputs should come from `target/` or be regenerated locally, not
 stored long-term in the kernel root.
 
 **Build Process**:
-1. Rust compiler (`rustc`) builds kernel as static library with custom target (`i686-oreulius.json`)
+1. Rust compiler (`rustc`) builds the kernel as a static library for the default `i686` target (`i686-oreulius.json`, with `i686-oreulia.json` fallback)
 2. NASM assembles all `.asm` files to `.o` object files
 3. GNU `ld` links Rust library + Assembly objects using `kernel.ld` linker script
 4. Resulting `oreulius-kernel` ELF binary embedded in ISO with GRUB bootloader
@@ -267,6 +285,8 @@ stored long-term in the kernel root.
 ```bash
 ./run.sh  # Serial console on stdio, default virtual NIC profile
 ```
+
+These commands exercise the default `i686` boot path.
 
 **Advanced QEMU Options**:
 ```bash
@@ -416,7 +436,7 @@ Oreulius now treats security as a composition of enforceable invariants and dete
 
 This kernel demonstrates several novel implementations:
 
-1. **WebAssembly in bare-metal context**: i686 kernel with in-kernel Wasm JIT, translation certificates, and formalized proof obligations
+1. **WebAssembly in bare-metal context**: bare-metal kernel source tree with in-kernel Wasm JIT, translation certificates, and formalized proof obligations
 2. **WPA2 handshake stack from scratch**: In-tree 802.11i-oriented cryptographic and EAPOL flow implementation
 3. **Quantum scheduling**: Deterministic priority-aware scheduling with MLFQ + quantum accounting on embedded systems
 4. **Assembly-accelerated cryptography**: AES-NI integration with CPUID detection and fallback paths

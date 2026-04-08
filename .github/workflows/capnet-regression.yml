@@ -53,7 +53,7 @@ jobs:
       - name: Build kernel ISO
         run: ./build.sh
 
-      - name: Replay CapNet corpus + soak + formal checks
+      - name: Replay CapNet corpus + soak + runtime self-checks
         env:
           QEMU_EXTRA_ARGS: -display none -nographic -no-reboot -no-shutdown
           CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs

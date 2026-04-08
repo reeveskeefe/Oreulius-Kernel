@@ -1,7 +1,7 @@
-use crate::drivers::gpu_support::backend::ScanoutOps;
-use crate::drivers::gpu_support::engines::packets::{ComputePacket, TransferPacket};
-use crate::drivers::gpu_support::errors::GpuError;
-use crate::drivers::gpu_support::transport::fence::GpuFence;
+use crate::drivers::x86::gpu_support::backend::ScanoutOps;
+use crate::drivers::x86::gpu_support::engines::packets::{ComputePacket, TransferPacket};
+use crate::drivers::x86::gpu_support::errors::GpuError;
+use crate::drivers::x86::gpu_support::transport::fence::GpuFence;
 
 pub struct FakeGpu;
 

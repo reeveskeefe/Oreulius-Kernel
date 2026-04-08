@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Oreulius Security Module
@@ -36,14 +25,16 @@ pub mod crash_log;
 pub mod enclave;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod formal;
+#[path = "intent_graph/mod.rs"]
 pub mod intent_graph;
+pub mod intent_graph_data;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod kpti;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod memory_isolation;
 
 use crate::capability::CapabilityType;
-use crate::intent_graph::{
+use self::intent_graph::{
     IntentDecision, IntentGraph, IntentGraphStats, IntentPolicy, IntentPolicyError,
     IntentProcessSnapshot, IntentSignal,
 };
@@ -98,7 +89,7 @@ pub const ANOMALY_CRITICAL_SCORE: u32 = 160;
 /// Number of per-second buckets used for anomaly accounting.
 const ANOMALY_BUCKETS: usize = 32;
 
-pub use crate::intent_graph::{
+pub use self::intent_graph::{
     INTENT_ALERT_SCORE, INTENT_ISOLATE_RESTRICTIONS, INTENT_RESTRICT_SCORE,
     INTENT_TERMINATE_RESTRICTIONS, INTENT_WINDOW_SECONDS,
 };
@@ -197,7 +188,7 @@ impl AuditEntry {
             event,
             process_id,
             cap_id,
-            timestamp: 0, // crate::pit::get_ticks() as u64, // DISABLED FOR DEBUGGING HANG
+            timestamp: 0, // crate::scheduler::pit::get_ticks() as u64, // DISABLED FOR DEBUGGING HANG
             context: 0,
         }
     }
@@ -342,7 +333,7 @@ impl AnomalyDetector {
     }
 
     fn epoch_sec(now_ticks: u64) -> u64 {
-        let hz = crate::pit::get_frequency() as u64;
+        let hz = crate::scheduler::pit::get_frequency() as u64;
         if hz == 0 {
             now_ticks
         } else {
@@ -418,7 +409,7 @@ impl AnomalyDetector {
         if score < ANOMALY_ALERT_SCORE {
             return None;
         }
-        let min_gap = (crate::pit::get_frequency() as u64).max(1);
+        let min_gap = (crate::scheduler::pit::get_frequency() as u64).max(1);
         if self.last_alert_tick != 0 && now_ticks.saturating_sub(self.last_alert_tick) < min_gap {
             return None;
         }
@@ -559,7 +550,7 @@ impl RateLimiter {
 
     /// Check if operation is allowed (token bucket)
     pub fn allow(&mut self, process: ProcessId) -> bool {
-        let now = crate::pit::get_ticks() as u64;
+        let now = crate::scheduler::pit::get_ticks() as u64;
 
         // Find process bucket
         for i in 0..self.count {
@@ -797,7 +788,7 @@ pub fn hash_data(data: &[u8]) -> u64 {
     #[cfg(not(target_arch = "aarch64"))]
     {
         // Use assembly-optimized FNV-1a hash (returns u32, cast to u64).
-        crate::asm_bindings::hash_data(data) as u64
+        crate::memory::asm_bindings::hash_data(data) as u64
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -860,7 +851,7 @@ impl SecurityManager {
 
     /// Log security event
     pub fn log_event(&self, entry: AuditEntry) {
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         let anomaly_score = self.anomaly_detector.lock().record(entry.event, now);
         if let Some(mut log) = self.audit_log.try_lock() {
             let mut stamped = entry;
@@ -893,8 +884,8 @@ impl SecurityManager {
                     score_bytes[3],
                 ];
                 #[cfg(not(target_arch = "aarch64"))]
-                crate::wasm::observer_notify(
-                    crate::wasm::observer_events::ANOMALY_DETECTED,
+                crate::execution::wasm::observer_notify(
+                    crate::execution::wasm::observer_events::ANOMALY_DETECTED,
                     &payload,
                 );
             }
@@ -902,7 +893,7 @@ impl SecurityManager {
     }
 
     fn record_intent_signal(&self, process: ProcessId, signal: IntentSignal) {
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         let decision = {
             let mut graph = self.intent_graph.lock();
             graph.record(process, signal, now)
@@ -1006,14 +997,14 @@ impl SecurityManager {
         cap_type: CapabilityType,
         rights_mask: u32,
     ) -> bool {
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         self.intent_graph
             .lock()
             .is_restricted(process, cap_type, rights_mask, now)
     }
 
     pub fn get_intent_graph_stats(&self) -> IntentGraphStats {
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         self.intent_graph.lock().stats(now)
     }
 
@@ -1034,18 +1025,18 @@ impl SecurityManager {
     }
 
     pub fn get_intent_process_snapshot(&self, process: ProcessId) -> Option<IntentProcessSnapshot> {
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         self.intent_graph.lock().process_snapshot(process, now)
     }
 
     pub fn clear_intent_restriction(&self, process: ProcessId) -> bool {
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         self.intent_graph.lock().clear_restriction(process, now)
     }
 
     /// Get current predictive restriction expiry tick for a process (0 if none).
     pub fn restriction_until_tick(&self, process: ProcessId) -> u64 {
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         self.intent_graph
             .lock()
             .process_snapshot(process, now)
@@ -1419,7 +1410,7 @@ impl SecurityManager {
     pub fn get_anomaly_stats(&self) -> AnomalyStats {
         self.anomaly_detector
             .lock()
-            .snapshot(crate::pit::get_ticks())
+            .snapshot(crate::scheduler::pit::get_ticks())
     }
 
     /// Check if process should be terminated
@@ -1481,7 +1472,7 @@ pub fn init() {
     // Seed random number generator
     let mut seed = 0xDEADBEEF_u64;
     #[cfg(not(target_arch = "aarch64"))]
-    if let Some(r) = crate::asm_bindings::try_rdrand() {
+    if let Some(r) = crate::memory::asm_bindings::try_rdrand() {
         seed ^= ((r as u64) << 32) | r as u64;
     }
     seed ^= read_rdtsc();

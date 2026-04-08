@@ -1,22 +1,11 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 fn uart_write_hex(value: usize) {
-    let uart = crate::arch::aarch64_pl011::early_uart();
+    let uart = super::aarch64_pl011::early_uart();
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut buf = [0u8; 2 + (core::mem::size_of::<usize>() * 2)];
     buf[0] = b'0';
@@ -32,14 +21,14 @@ fn uart_write_hex(value: usize) {
 }
 
 fn uart_log_line(msg: &str) {
-    let uart = crate::arch::aarch64_pl011::early_uart();
+    let uart = super::aarch64_pl011::early_uart();
     uart.init_early();
     uart.write_str(msg);
     uart.write_str("\n");
 }
 
 fn uart_log_hex_line(prefix: &str, value: usize) {
-    let uart = crate::arch::aarch64_pl011::early_uart();
+    let uart = super::aarch64_pl011::early_uart();
     uart.init_early();
     uart.write_str(prefix);
     uart_write_hex(value);
@@ -47,7 +36,7 @@ fn uart_log_hex_line(prefix: &str, value: usize) {
 }
 
 fn init_shared_runtime_step(name: &str, init: impl FnOnce()) {
-    let uart = crate::arch::aarch64_pl011::early_uart();
+    let uart = super::aarch64_pl011::early_uart();
     uart.init_early();
     uart.write_str("[A64] init ");
     uart.write_str(name);
@@ -58,26 +47,26 @@ fn init_shared_runtime_step(name: &str, init: impl FnOnce()) {
 fn init_shared_runtime() {
     init_shared_runtime_step("memory", crate::memory::init);
     init_shared_runtime_step("fs", crate::fs::init);
-    init_shared_runtime_step("vfs", crate::vfs::init);
-    init_shared_runtime_step("persistence", crate::persistence::init);
+    init_shared_runtime_step("vfs", crate::fs::vfs::init);
+    init_shared_runtime_step("persistence", crate::temporal::persistence::init);
     init_shared_runtime_step("temporal", crate::temporal::init);
     init_shared_runtime_step("ipc", crate::ipc::init);
-    init_shared_runtime_step("registry", crate::registry::init);
+    init_shared_runtime_step("registry", crate::services::registry::init);
     init_shared_runtime_step("capability", crate::capability::init);
     init_shared_runtime_step("security", crate::security::init);
-    init_shared_runtime_step("process backend", crate::process::init);
-    init_shared_runtime_step("syscall core", crate::syscall::init);
+    init_shared_runtime_step("process backend", crate::scheduler::process::init);
+    init_shared_runtime_step("syscall core", crate::platform::syscall::init);
 }
 
 extern "C" fn shell_scheduler_task() -> ! {
     crate::arch::enable_interrupts();
-    crate::arch::aarch64_virt::run_serial_shell()
+    super::aarch64_virt::run_serial_shell()
 }
 
 extern "C" fn network_scheduler_task() -> ! {
     crate::arch::enable_interrupts();
     crate::serial_println!("[NET] AArch64 network task started");
-    crate::net_reactor::run()
+    crate::net::net_reactor::run()
 }
 
 pub fn enter_runtime() -> ! {
@@ -87,7 +76,7 @@ pub fn enter_runtime() -> ! {
 
     let boot_info = crate::arch::boot_info();
     {
-        let uart = crate::arch::aarch64_pl011::early_uart();
+        let uart = super::aarch64_pl011::early_uart();
         uart.write_str("[A64] platform=");
         uart.write_str(crate::arch::platform_name());
         uart.write_str("\n");
@@ -101,13 +90,13 @@ pub fn enter_runtime() -> ! {
     uart_log_line("[A64] mmu init...");
     match crate::arch::mmu::init() {
         Ok(()) => {
-            let uart = crate::arch::aarch64_pl011::early_uart();
+            let uart = super::aarch64_pl011::early_uart();
             uart.write_str("[A64] mmu backend=");
             uart.write_str(crate::arch::mmu::backend_name());
             uart.write_str("\n");
         }
         Err(e) => {
-            let uart = crate::arch::aarch64_pl011::early_uart();
+            let uart = super::aarch64_pl011::early_uart();
             uart.write_str("[A64] mmu init failed: ");
             uart.write_str(e);
             uart.write_str("\n");
@@ -118,7 +107,7 @@ pub fn enter_runtime() -> ! {
     init_shared_runtime();
 
     match boot_info.raw_info_ptr {
-        Some(ptr) => match crate::arch::aarch64_dtb::parse_dtb_header(ptr) {
+        Some(ptr) => match super::aarch64_dtb::parse_dtb_header(ptr) {
             Some(hdr) => {
                 uart_log_line("[A64] DTB header parse: ok");
                 uart_log_hex_line("[A64] dtb total_size=", hdr.total_size);
@@ -146,19 +135,19 @@ pub fn enter_runtime() -> ! {
     crate::arch::init_timer();
     uart_log_line("[A64] enable interrupts...");
     crate::arch::enable_interrupts();
-    crate::arch::aarch64_virt::self_test_sync_exception();
-    let _scheduler_irq_flags = unsafe { crate::scheduler_platform::irq_save_disable() };
+    super::aarch64_virt::self_test_sync_exception();
+    let _scheduler_irq_flags = unsafe { crate::scheduler::scheduler_platform::irq_save_disable() };
     uart_log_line("[A64] bring-up complete; starting shared scheduler");
 
-    crate::quantum_scheduler::init();
+    crate::scheduler::quantum_scheduler::init();
     let launch = {
-        let mut sched = crate::quantum_scheduler::scheduler().lock();
-        if crate::arch::aarch64_virt::discovered_virtio_net_base().is_some() {
+        let mut sched = crate::scheduler::quantum_scheduler::scheduler().lock();
+        if super::aarch64_virt::discovered_virtio_net_base().is_some() {
             if let Err(e) = sched.add_kernel_thread(
                 network_scheduler_task,
-                crate::process::ProcessPriority::Normal,
+                crate::scheduler::process::ProcessPriority::Normal,
             ) {
-                let uart = crate::arch::aarch64_pl011::early_uart();
+                let uart = super::aarch64_pl011::early_uart();
                 uart.write_str("[A64] scheduler add network task failed: ");
                 uart.write_str(e);
                 uart.write_str("\n");
@@ -167,9 +156,9 @@ pub fn enter_runtime() -> ! {
         }
         if let Err(e) = sched.add_kernel_thread(
             shell_scheduler_task,
-            crate::process::ProcessPriority::Normal,
+            crate::scheduler::process::ProcessPriority::Normal,
         ) {
-            let uart = crate::arch::aarch64_pl011::early_uart();
+            let uart = super::aarch64_pl011::early_uart();
             uart.write_str("[A64] scheduler add shell task failed: ");
             uart.write_str(e);
             uart.write_str("\n");
@@ -177,7 +166,7 @@ pub fn enter_runtime() -> ! {
         }
         sched.prepare_start_locked()
     };
-    crate::quantum_scheduler::QuantumScheduler::launch_prepared_context(
+    crate::scheduler::quantum_scheduler::QuantumScheduler::launch_prepared_context(
         launch.0, launch.1, launch.2,
     )
 }

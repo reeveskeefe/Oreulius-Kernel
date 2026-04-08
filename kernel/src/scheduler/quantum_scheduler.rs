@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Advanced Quantum-Based Preemptive Scheduler
@@ -25,9 +14,9 @@
 //! - Accounting: CPU time, context switches, wait time
 
 use crate::arch::mmu::PhysAddr;
-use crate::process::{Pid, Process, ProcessPriority, ProcessState, MAX_PROCESSES};
-use crate::scheduler_platform::{self, ProcessContext};
-use crate::scheduler_runtime_platform as scheduler_rt;
+use crate::scheduler::process::{Pid, Process, ProcessPriority, ProcessState, MAX_PROCESSES};
+use crate::scheduler::scheduler_platform::{self, ProcessContext};
+use crate::scheduler::scheduler_runtime_platform as scheduler_rt;
 use alloc::boxed::Box;
 #[cfg(target_arch = "x86_64")]
 use alloc::collections::BTreeMap;
@@ -306,7 +295,7 @@ fn scheduler_user_top() -> usize {
 
 #[cfg(not(target_arch = "aarch64"))]
 fn scheduler_user_top() -> usize {
-    crate::paging::USER_TOP
+    crate::fs::paging::USER_TOP
 }
 
 impl ProcessMemoryMap {
@@ -640,7 +629,7 @@ pub struct ProcessInfo {
     /// Top of the per-process kernel entry stack used for ring-3 -> ring-0 transitions.
     pub kernel_stack_top: usize,
     /// Kernel stack allocation (heap-backed for user/forked processes).
-    pub stack: Option<Box<[u8; crate::process::STACK_SIZE]>>,
+    pub stack: Option<Box<[u8; crate::scheduler::process::STACK_SIZE]>>,
     /// Owned user address space (Some for user processes, None for kernel threads).
     pub address_space: Option<Box<crate::arch::mmu::AddressSpace>>,
     /// Canonical per-process user virtual memory map.
@@ -1743,7 +1732,12 @@ impl QuantumScheduler {
                 info.kernel_stack_top,
             )
         } else {
-            panic!("{ERR_PROCESS_DATA_MISSING}");
+            scheduler_rt::logf(format_args!(
+                "[SCHED] FATAL: process table entry missing for PID {}",
+                next_pid.0
+            ));
+            scheduler_rt::vga_print_str("[SCHED] FATAL: process table entry missing\n");
+            scheduler_rt::halt_cpu();
         }
     }
 
@@ -1841,10 +1835,10 @@ impl QuantumScheduler {
             }
 
             // Non-IRQ process creation path: a dedicated kernel stack is expected here.
-            let kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
-                Box::new([0u8; crate::process::STACK_SIZE]);
+            let kernel_stack: Box<[u8; crate::scheduler::process::STACK_SIZE]> =
+                Box::new([0u8; crate::scheduler::process::STACK_SIZE]);
             let stack_top =
-                (kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
+                (kernel_stack.as_ptr() as usize + crate::scheduler::process::STACK_SIZE) & !15usize;
             let page_dir_phys = PhysAddr::new(space.phys_addr());
             let page_dir_phys_u32 = page_dir_phys
                 .try_as_u32()
@@ -1864,7 +1858,7 @@ impl QuantumScheduler {
             }
 
             let mut ctx = scheduler_platform::context_new();
-            ctx.eip = crate::asm_bindings::kernel_user_entry_trampoline as u32;
+            ctx.eip = crate::memory::asm_bindings::kernel_user_entry_trampoline as u32;
             ctx.esp = frame_top as u32;
             ctx.ebp = frame_top as u32;
             ctx.cr3 = page_dir_phys_u32;
@@ -1929,10 +1923,10 @@ impl QuantumScheduler {
             }
 
             // Non-IRQ process creation path: a dedicated kernel stack is expected here.
-            let kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
-                Box::new([0u8; crate::process::STACK_SIZE]);
+            let kernel_stack: Box<[u8; crate::scheduler::process::STACK_SIZE]> =
+                Box::new([0u8; crate::scheduler::process::STACK_SIZE]);
             let stack_top =
-                (kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
+                (kernel_stack.as_ptr() as usize + crate::scheduler::process::STACK_SIZE) & !15usize;
             let page_dir_phys = PhysAddr::new(space.phys_addr());
             let frame_top = stack_top
                 .checked_sub(32)
@@ -1954,7 +1948,7 @@ impl QuantumScheduler {
             let quantum = base_quantum_for_priority(priority);
 
             let mut ctx = scheduler_platform::context_new();
-            ctx.rip = crate::asm_bindings::kernel_user_entry_trampoline as usize as u64;
+            ctx.rip = crate::memory::asm_bindings::kernel_user_entry_trampoline as usize as u64;
             ctx.rsp = frame_top as u64;
             ctx.rbp = frame_top as u64;
             ctx.cr3 = page_dir_phys.as_u64();
@@ -2038,10 +2032,10 @@ impl QuantumScheduler {
 
             // Allocate a kernel-mode exception-handler stack (16-byte aligned).
             // Non-IRQ process creation path: a dedicated kernel stack is expected here.
-            let kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
-                Box::new([0u8; crate::process::STACK_SIZE]);
+            let kernel_stack: Box<[u8; crate::scheduler::process::STACK_SIZE]> =
+                Box::new([0u8; crate::scheduler::process::STACK_SIZE]);
             let stack_top =
-                (kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
+                (kernel_stack.as_ptr() as usize + crate::scheduler::process::STACK_SIZE) & !15usize;
 
             let page_dir_phys = PhysAddr::new(space.phys_addr());
 
@@ -2557,10 +2551,10 @@ impl QuantumScheduler {
         #[cfg(target_arch = "aarch64")]
         if let Some(info) = self.processes[idx].as_ref() {
             if let Some(shared_pid) = info.shared_runtime_pid {
-                let _ = crate::process::process_manager().terminate(shared_pid);
-                crate::vfs::clear_process_capability(shared_pid);
-                if crate::process::current_pid() == Some(shared_pid) {
-                    let _ = crate::process::set_current_runtime_pid(Pid::new(0));
+                let _ = crate::scheduler::process::process_manager().terminate(shared_pid);
+                crate::fs::vfs::clear_process_capability(shared_pid);
+                if crate::scheduler::process::current_pid() == Some(shared_pid) {
+                    let _ = crate::scheduler::process::set_current_runtime_pid(Pid::new(0));
                 }
             }
         }
@@ -2621,7 +2615,7 @@ impl QuantumScheduler {
             child_process.state = ProcessState::Ready;
             child_process.cpu_time = 0;
             child_process.has_used_fpu = false;
-            child_process.fpu_state = crate::process::FpuState([0u8; 512]);
+            child_process.fpu_state = crate::scheduler::process::FpuState([0u8; 512]);
             // Duplicate VFS handles so parent and child each hold independent
             // handle entries that share the same initial file offset.
             child_process.fd_table =
@@ -2659,8 +2653,8 @@ impl QuantumScheduler {
             child_ctx.cr3 = child_cr3_u32;
 
             // Non-IRQ process fork path: child kernel stack allocation is expected here.
-            let child_kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
-                Box::new([0u8; crate::process::STACK_SIZE]);
+            let child_kernel_stack: Box<[u8; crate::scheduler::process::STACK_SIZE]> =
+                Box::new([0u8; crate::scheduler::process::STACK_SIZE]);
 
             let quantum = base_quantum_for_priority(parent_priority);
 
@@ -2670,7 +2664,7 @@ impl QuantumScheduler {
                 context: child_ctx,
                 shared_runtime_pid: None,
                 kernel_stack_top: (child_kernel_stack.as_ptr() as usize
-                    + crate::process::STACK_SIZE)
+                    + crate::scheduler::process::STACK_SIZE)
                     & !15usize,
                 stack: Some(child_kernel_stack),
                 address_space: Some(child_address_space),
@@ -2692,7 +2686,7 @@ impl QuantumScheduler {
                 fpu_state: crate::arch::fpu::ExtFpuState::new(),
             };
 
-            crate::process_platform::on_process_spawn(child_pid, Some(parent_pid), "forked");
+            crate::scheduler::process_platform::on_process_spawn(child_pid, Some(parent_pid), "forked");
             self.processes[child_idx] = Some(child_info);
             self.enqueue_ready(child_pid, parent_priority);
             self.record_temporal_state_snapshot_locked(
@@ -2747,13 +2741,13 @@ impl QuantumScheduler {
 
             let child_cr3 = PhysAddr::new(child_space.phys_addr());
             // Non-IRQ process fork path: child kernel stack allocation is expected here.
-            let child_kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
-                Box::new([0u8; crate::process::STACK_SIZE]);
+            let child_kernel_stack: Box<[u8; crate::scheduler::process::STACK_SIZE]> =
+                Box::new([0u8; crate::scheduler::process::STACK_SIZE]);
             let child_stack_top =
-                (child_kernel_stack.as_ptr() as usize + crate::process::STACK_SIZE) & !15usize;
-            let child_rsp = crate::syscall::clone_current_syscall_return_frame(child_stack_top, 0)?;
+                (child_kernel_stack.as_ptr() as usize + crate::scheduler::process::STACK_SIZE) & !15usize;
+            let child_rsp = crate::platform::syscall::clone_current_syscall_return_frame(child_stack_top, 0)?;
 
-            let mut child_process = match crate::process::process_manager()
+            let mut child_process = match crate::scheduler::process::process_manager()
                 .fork_process_with_pid(parent_pid, child_pid)
             {
                 Ok(process) => process,
@@ -2762,21 +2756,21 @@ impl QuantumScheduler {
 
             child_process.page_dir_phys = child_cr3;
             child_process.has_used_fpu = false;
-            child_process.fpu_state = crate::process::FpuState([0u8; 512]);
+            child_process.fpu_state = crate::scheduler::process::FpuState([0u8; 512]);
             // Duplicate VFS handles for the child.
             child_process.fd_table =
                 crate::fs::vfs::dup_fds_for_fork(child_pid, &child_process.fd_table);
 
-            if crate::process::process_manager()
+            if crate::scheduler::process::process_manager()
                 .set_process_page_dir(child_pid, child_cr3)
                 .is_err()
             {
-                let _ = crate::process::process_manager().terminate(child_pid);
+                let _ = crate::scheduler::process::process_manager().terminate(child_pid);
                 return Err("fork_current_cow: child page-dir sync failed");
             }
 
             let mut child_ctx = scheduler_platform::context_new();
-            child_ctx.rip = crate::syscall::x86_64_syscall_resume_rip() as u64;
+            child_ctx.rip = crate::platform::syscall::x86_64_syscall_resume_rip() as u64;
             child_ctx.rsp = child_rsp as u64;
             child_ctx.rbp = 0;
             child_ctx.cr3 = child_cr3.as_u64();
@@ -2872,16 +2866,16 @@ impl QuantumScheduler {
             let child_cr3 = PhysAddr::new(child_space.phys_addr());
 
             // Allocate child kernel stack.
-            let child_kernel_stack: Box<[u8; crate::process::STACK_SIZE]> =
-                Box::new([0u8; crate::process::STACK_SIZE]);
+            let child_kernel_stack: Box<[u8; crate::scheduler::process::STACK_SIZE]> =
+                Box::new([0u8; crate::scheduler::process::STACK_SIZE]);
             let child_stack_top = (child_kernel_stack.as_ptr() as usize
-                + crate::process::STACK_SIZE)
+                + crate::scheduler::process::STACK_SIZE)
                 & !15usize;
 
             // Copy the parent's SVC exception frame onto the child's kernel stack
             // with x0 = 0 (fork returns 0 in child).
             let child_sp =
-                crate::syscall::clone_current_aarch64_syscall_return_frame(child_stack_top)?;
+                crate::platform::syscall::clone_current_aarch64_syscall_return_frame(child_stack_top)?;
 
             // Build child PCB.
             let mut child_process = parent_process_clone;
@@ -2890,7 +2884,7 @@ impl QuantumScheduler {
             child_process.state = ProcessState::Ready;
             child_process.cpu_time = 0;
             child_process.has_used_fpu = false;
-            child_process.fpu_state = crate::process::FpuState([0u8; 512]);
+            child_process.fpu_state = crate::scheduler::process::FpuState([0u8; 512]);
             child_process.page_dir_phys = child_cr3;
             // Duplicate VFS handles for the child.
             child_process.fd_table =
@@ -2902,12 +2896,12 @@ impl QuantumScheduler {
             //   x19 = ELR_EL1 + 4   (user PC past the SVC instruction)
             //   x20 = SPSR_EL1      (user processor state)
             //   x21 = SP_EL0        (user stack pointer)
-            let elr = crate::arch::aarch64_vectors::last_elr_el1().wrapping_add(4);
-            let spsr = crate::arch::aarch64_vectors::last_spsr_el1();
-            let sp_el0 = crate::arch::aarch64_vectors::last_sp_el0();
+            let elr = crate::arch::aarch64::aarch64_vectors::last_elr_el1().wrapping_add(4);
+            let spsr = crate::arch::aarch64::aarch64_vectors::last_spsr_el1();
+            let sp_el0 = crate::arch::aarch64::aarch64_vectors::last_sp_el0();
 
             let mut child_ctx = scheduler_platform::context_new();
-            child_ctx.pc = crate::syscall::aarch64_fork_child_resume_rip() as u64;
+            child_ctx.pc = crate::platform::syscall::aarch64_fork_child_resume_rip() as u64;
             child_ctx.sp = child_sp as u64;
             child_ctx.x19 = elr;
             child_ctx.x20 = spsr;
@@ -2942,7 +2936,7 @@ impl QuantumScheduler {
                 fpu_state: crate::arch::fpu::ExtFpuState::new(),
             };
 
-            crate::process_platform::on_process_spawn(child_pid, Some(parent_pid), "forked");
+            crate::scheduler::process_platform::on_process_spawn(child_pid, Some(parent_pid), "forked");
             self.processes[child_idx] = Some(child_info);
             self.enqueue_ready(child_pid, parent_priority);
             self.record_temporal_state_snapshot_locked(
@@ -3178,12 +3172,12 @@ pub(crate) fn selftest_shared_file_mapping_live() -> Result<(usize, usize, u8), 
     let map_addr = 0x2000_0000usize;
     let entry_a = 0x0040_0000u32;
     let entry_b = 0x0040_1000u32;
-    let user_stack_a = (crate::paging::USER_TOP - page) as u32;
-    let user_stack_b = (crate::paging::USER_TOP - (page * 2)) as u32;
+    let user_stack_a = (crate::fs::paging::USER_TOP - page) as u32;
+    let user_stack_b = (crate::fs::paging::USER_TOP - (page * 2)) as u32;
     let pid_a = Pid(40);
     let pid_b = Pid(41);
 
-    crate::vfs::write_path(path, &[0u8; 16])?;
+    crate::fs::vfs::write_path(path, &[0u8; 16])?;
     let source = crate::fs::vfs::mmap_source_for_path(path)?;
 
     let mut sched = QuantumScheduler::new();

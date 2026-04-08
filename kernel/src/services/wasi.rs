@@ -8,7 +8,7 @@
 //!
 //! - Every WASI function is a plain `fn(&mut WasiCtx, ...) -> Errno`.
 //! - `WasiCtx` holds per-instance state: fd table, preopened dirs, clock offset.
-//! - All I/O is routed through `crate::capability`, `crate::fs`, and `crate::rtl8139`.
+//! - All I/O is routed through `crate::capability`, `crate::fs`, and `crate::net::rtl8139`.
 //! - No heap allocations in the hot path — all tables are fixed-size arrays.
 //!
 //! ## WASM Host Function IDs (45–99)
@@ -72,49 +72,49 @@
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 fn net_has_recv() -> bool {
-    crate::rtl8139::has_recv()
+    crate::net::rtl8139::has_recv()
 }
 
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 fn net_recv(buf: &mut [u8]) -> usize {
-    crate::rtl8139::recv(buf)
+    crate::net::rtl8139::recv(buf)
 }
 
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 fn net_send(frame: &[u8]) -> bool {
-    crate::rtl8139::send(frame)
+    crate::net::rtl8139::send(frame)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn net_has_recv() -> bool {
-    crate::virtio_net::has_recv()
+    crate::net::virtio_net::has_recv()
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn net_recv(buf: &mut [u8]) -> usize {
-    crate::virtio_net::recv(buf)
+    crate::net::virtio_net::recv(buf)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn net_send(frame: &[u8]) -> bool {
-    crate::virtio_net::send(frame).is_ok()
+    crate::net::virtio_net::send(frame).is_ok()
 }
 
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 fn kbd_has_input() -> bool {
-    crate::keyboard::has_input()
+    crate::drivers::x86::keyboard::has_input()
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn kbd_has_input() -> bool {
-    crate::arch::aarch64_pl011::has_input()
+    crate::arch::aarch64::aarch64_pl011::has_input()
 }
 
 // WASI errno codes (WASI Preview 1 §1.3)
@@ -534,7 +534,7 @@ pub fn clock_time_get(
         return Errno::Fault;
     }
     // Read PIT ticks and convert to nanoseconds (PIT fires at ~1000 Hz → 1 ms = 1_000_000 ns).
-    let ticks = crate::pit::get_ticks();
+    let ticks = crate::scheduler::pit::get_ticks();
     let ns = ticks as u64 * 1_000_000u64;
     mem[p..p + 8].copy_from_slice(&ns.to_le_bytes());
     Errno::Success
@@ -726,9 +726,9 @@ pub fn fd_read(
                 #[cfg(not(target_arch = "aarch64"))]
                 #[cfg(not(target_arch = "aarch64"))]
                 while written < buf_len {
-                    crate::input::pump();
-                    match crate::input::read() {
-                        Some(ev) if ev.kind == crate::input::InputEventKind::Key => {
+                    crate::drivers::x86::input::pump();
+                    match crate::drivers::x86::input::read() {
+                        Some(ev) if ev.kind == crate::drivers::x86::input::InputEventKind::Key => {
                             let cp = unsafe { ev.data.key.codepoint };
                             if cp > 0 && cp < 0x80 {
                                 mem[buf_ptr + written] = cp as u8;
@@ -741,7 +741,7 @@ pub fn fd_read(
                 // AArch64: read from the PL011 UART RX ring buffer.
                 #[cfg(target_arch = "aarch64")]
                 while written < buf_len {
-                    match crate::arch::aarch64_pl011::read_byte() {
+                    match crate::arch::aarch64::aarch64_pl011::read_byte() {
                         Some(b) => {
                             mem[buf_ptr + written] = b;
                             written += 1;
@@ -1203,7 +1203,7 @@ pub fn poll_oneoff(
                 u64::from_le_bytes(mem[sub_off + 24..sub_off + 32].try_into().unwrap_or([0; 8]));
             let flags =
                 u16::from_le_bytes(mem[sub_off + 40..sub_off + 42].try_into().unwrap_or([0; 2]));
-            let now = crate::pit::get_ticks();
+            let now = crate::scheduler::pit::get_ticks();
             let deadline = if flags & 1 != 0 {
                 // absolute timestamp in ns → convert to ticks
                 timeout_ns / 1_000_000
@@ -1252,7 +1252,7 @@ pub fn poll_oneoff(
         // Check clock deadline
         let clock_expired = match earliest_deadline {
             None => false,
-            Some(d) => crate::pit::get_ticks() >= d,
+            Some(d) => crate::scheduler::pit::get_ticks() >= d,
         };
 
         if any_fd_ready || clock_expired || earliest_deadline.is_none() {
@@ -1260,11 +1260,11 @@ pub fn poll_oneoff(
         }
 
         // Not ready yet — yield and retry
-        crate::quantum_scheduler::yield_now();
+        crate::scheduler::quantum_scheduler::yield_now();
     }
 
     // --- Phase 3: write event structs for every triggered subscription ------
-    let now = crate::pit::get_ticks();
+    let now = crate::scheduler::pit::get_ticks();
     let mut nevents: u32 = 0;
     let _ = ctx;
 

@@ -1,24 +1,13 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
-use crate::process;
-use crate::process::ProcessPriority;
-use crate::quantum_scheduler;
-use crate::vga;
+use crate::scheduler::process;
+use crate::scheduler::process::ProcessPriority;
+use crate::scheduler::quantum_scheduler;
+use crate::drivers::x86::vga;
 
 #[no_mangle]
 extern "C" fn shell_task() -> ! {
@@ -26,10 +15,10 @@ extern "C" fn shell_task() -> ! {
 
     vga::print_str("[TASK] Enabling COM1 RX...\n");
     crate::serial::enable_rx_interrupts();
-    crate::idt_asm::unmask_irq(crate::idt_asm::Irq::COM1);
+    crate::platform::idt_asm::unmask_irq(crate::platform::idt_asm::Irq::COM1);
 
     vga::print_str("[TASK] Enabling interrupts for scheduler...\n");
-    crate::asm_bindings::enable_interrupts();
+    crate::memory::asm_bindings::enable_interrupts();
 
     #[cfg(target_arch = "x86")]
     {
@@ -44,7 +33,7 @@ extern "C" fn shell_task() -> ! {
         }
     }
 
-    let int_state = unsafe { crate::process_asm::get_interrupt_state() };
+    let int_state = unsafe { crate::scheduler::process_asm::get_interrupt_state() };
     if int_state != 0 {
         vga::print_str("[TASK] Scheduler interrupts verified active\n");
     } else {
@@ -66,7 +55,7 @@ extern "C" fn worker_task() -> ! {
     }
 
     // Enable interrupts for this task too
-    crate::asm_bindings::enable_interrupts();
+    crate::memory::asm_bindings::enable_interrupts();
 
     // Log interrupt state for worker task
     crate::serial_println!("[WORKER] Interrupts enabled for background task");
@@ -85,10 +74,10 @@ extern "C" fn network_task() -> ! {
     crate::serial_println!("[NET] Network task started");
 
     // Enable interrupts for network processing
-    crate::asm_bindings::enable_interrupts();
+    crate::memory::asm_bindings::enable_interrupts();
 
     // Verify interrupt delivery for network events
-    let int_state = unsafe { crate::process_asm::get_interrupt_state() };
+    let int_state = unsafe { crate::scheduler::process_asm::get_interrupt_state() };
     crate::serial_println!(
         "[NET] Interrupt state: {}",
         if int_state != 0 {
@@ -98,14 +87,14 @@ extern "C" fn network_task() -> ! {
         }
     );
 
-    crate::net_reactor::run();
+    crate::net::net_reactor::run();
 }
 
 pub fn start() -> ! {
     vga::print_str("[TASK] Starting scheduler setup...\n");
-    crate::asm_bindings::disable_interrupts();
+    crate::memory::asm_bindings::disable_interrupts();
     // Unmask essential IRQs now that we're about to start scheduling
-    crate::idt_asm::set_irq_masks(0xF8, 0x37);
+    crate::platform::idt_asm::set_irq_masks(0xF8, 0x37);
 
     vga::print_str("[TASK] Getting init PID...\n");
     let init_pid = process::Pid(1);
@@ -153,7 +142,7 @@ pub fn start() -> ! {
     match network_pid {
         Ok(pid) => {
             vga::print_str("[TASK] Network task registered (PID=");
-            crate::commands::print_u32(pid.0);
+            crate::shell::commands::print_u32(pid.0);
             vga::print_str(")\n");
         }
         Err(e) => {
@@ -185,7 +174,7 @@ pub fn start() -> ! {
         }
     };
     vga::print_str("[TASK] Shell task added successfully (PID=");
-    crate::commands::print_u32(shell_pid.0);
+    crate::shell::commands::print_u32(shell_pid.0);
     vga::print_str(")\n");
     vga::print_str("[TASK] Shell task registered\n");
 
@@ -200,5 +189,5 @@ pub fn start() -> ! {
     vga::print_str("[TASK] Ready to start scheduler (interrupts will be enabled in tasks)...\n");
 
     vga::print_str("[TASK] Entering scheduler...\n");
-    crate::quantum_scheduler::QuantumScheduler::start_scheduling();
+    crate::scheduler::quantum_scheduler::QuantumScheduler::start_scheduling();
 }

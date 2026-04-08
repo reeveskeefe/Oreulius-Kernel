@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 // Interrupt Descriptor Table (IDT) assembly bindings
@@ -585,7 +574,7 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
 
     if frame.int_no == Exception::DeviceNotAvailable as u32 {
         // Quantum scheduler is the primary advanced scheduler in Oreulius
-        crate::quantum_scheduler::handle_fpu_trap();
+        crate::scheduler::quantum_scheduler::handle_fpu_trap();
         return;
     }
 
@@ -597,7 +586,7 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
             #[cfg(target_arch = "x86_64")]
             core::arch::asm!("mov {}, cr2", out(reg) fault_addr);
         }
-        if crate::wasm::jit_handle_page_fault(frame, fault_addr, frame.err_code) {
+        if crate::execution::wasm::jit_handle_page_fault(frame, fault_addr, frame.err_code) {
             return;
         }
         let dbg_ctx_ptr = unsafe { asm_dbg_ctx_ptr };
@@ -630,7 +619,7 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
             frame.ebp,
             frame.esp
         ));
-        crate::paging::rust_page_fault_handler_ex(
+        crate::fs::paging::rust_page_fault_handler_ex(
             frame.err_code,
             fault_addr,
             frame.eip as usize,
@@ -639,7 +628,7 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
         return;
     }
 
-    if crate::wasm::jit_handle_exception(frame) {
+    if crate::execution::wasm::jit_handle_exception(frame) {
         return;
     }
 
@@ -691,7 +680,7 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
 #[no_mangle]
 pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
     // Debug entry
-    // unsafe { crate::advanced_commands::print_hex(frame as usize); crate::vga::print_char('I'); }
+    // unsafe { crate::shell::advanced_commands::print_hex(frame as usize); crate::drivers::x86::vga::print_char('I'); }
 
     let frame = unsafe { &mut *(frame as *const _ as *mut InterruptFrame) };
 
@@ -713,7 +702,7 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
     unsafe { increment_interrupt_count(frame.int_no as u8) }
 
     if let Some(irq) = Irq::from_vector(frame.int_no as u8) {
-        let jit_user_active = crate::wasm::jit_user_active();
+        let jit_user_active = crate::execution::wasm::jit_user_active();
 
         // While user-JIT is running under sandbox CR3, avoid servicing device IRQ
         // paths that may require MMIO regions absent from the sandbox mapping.
@@ -725,39 +714,39 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
         // Handle specific IRQs
         match irq {
             Irq::Timer => {
-                let jit_timed_out = crate::wasm::jit_handle_timer_interrupt(frame);
+                let jit_timed_out = crate::execution::wasm::jit_handle_timer_interrupt(frame);
                 // Acknowledge before preemptive scheduling
                 Pic::send_eoi(irq);
-                crate::pit::tick();
-                crate::wasm::on_timer_tick();
+                crate::scheduler::pit::tick();
+                crate::execution::wasm::on_timer_tick();
 
                 // Network stack tick
-                // if let Some(mut stack) = crate::netstack::NETWORK_STACK.try_lock() {
+                // if let Some(mut stack) = crate::net::netstack::NETWORK_STACK.try_lock() {
                 //     stack.tick();
                 // }
 
                 if !jit_user_active && !jit_timed_out {
-                    crate::quantum_scheduler::on_timer_tick();
+                    crate::scheduler::quantum_scheduler::on_timer_tick();
                 }
                 return;
             }
             Irq::Keyboard => unsafe {
-                crate::keyboard::handle_irq();
+                crate::drivers::x86::keyboard::handle_irq();
             },
             Irq::COM1 => {
                 crate::serial::handle_com1_irq();
             }
             Irq::Mouse => unsafe {
-                crate::keyboard::handle_aux_irq();
+                crate::drivers::x86::keyboard::handle_aux_irq();
             },
             Irq::PrimaryATA => {
-                crate::disk::handle_primary_irq();
+                crate::fs::disk::handle_primary_irq();
             }
             Irq::SecondaryATA => {
-                crate::disk::handle_secondary_irq();
+                crate::fs::disk::handle_secondary_irq();
             }
             Irq::Free2 | Irq::Free3 => {
-                crate::net_reactor::on_irq();
+                crate::net::net_reactor::on_irq();
             }
             _ => {}
         }

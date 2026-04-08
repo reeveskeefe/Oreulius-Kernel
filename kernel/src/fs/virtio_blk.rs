@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! VirtIO Block Driver (legacy PCI)
@@ -30,7 +19,7 @@ use core::sync::atomic::{compiler_fence, Ordering};
 use spin::Mutex;
 
 #[cfg(not(target_arch = "aarch64"))]
-use crate::pci::PciDevice;
+use crate::drivers::x86::pci::PciDevice;
 
 #[cfg(not(target_arch = "aarch64"))]
 // VirtIO PCI legacy IDs
@@ -543,7 +532,7 @@ static VIRTIO_BLK_CACHE_AARCH64: Mutex<BlockCache> = Mutex::new(BlockCache::new(
 
 #[cfg(target_arch = "aarch64")]
 pub fn init_mmio_active() -> Result<(), &'static str> {
-    if crate::arch::aarch64_virt::virtio_blk_shared_present() {
+    if crate::arch::aarch64::aarch64_virt::virtio_blk_shared_present() {
         *VIRTIO_BLK_CACHE_AARCH64.lock() = BlockCache::new();
         Ok(())
     } else {
@@ -553,12 +542,12 @@ pub fn init_mmio_active() -> Result<(), &'static str> {
 
 #[cfg(target_arch = "aarch64")]
 pub fn is_present() -> bool {
-    crate::arch::aarch64_virt::virtio_blk_shared_present()
+    crate::arch::aarch64::aarch64_virt::virtio_blk_shared_present()
 }
 
 #[cfg(target_arch = "aarch64")]
 pub fn capacity_sectors() -> Option<u64> {
-    crate::arch::aarch64_virt::virtio_blk_shared_capacity_sectors()
+    crate::arch::aarch64::aarch64_virt::virtio_blk_shared_capacity_sectors()
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -573,7 +562,7 @@ pub fn read_sector(lba: u64, buf: &mut [u8]) -> Result<(), &'static str> {
     let sector_buf: &mut [u8; SECTOR_SIZE] = (&mut buf[..SECTOR_SIZE])
         .try_into()
         .map_err(|_| "buffer too small")?;
-    crate::arch::aarch64_virt::virtio_blk_shared_read_sector(lba, sector_buf)?;
+    crate::arch::aarch64::aarch64_virt::virtio_blk_shared_read_sector(lba, sector_buf)?;
     cache.put(lba, sector_buf);
     Ok(())
 }
@@ -586,7 +575,7 @@ pub fn write_sector(lba: u64, buf: &[u8]) -> Result<(), &'static str> {
     let sector_buf: &[u8; SECTOR_SIZE] = buf[..SECTOR_SIZE]
         .try_into()
         .map_err(|_| "buffer too small")?;
-    crate::arch::aarch64_virt::virtio_blk_shared_write_sector(lba, sector_buf)?;
+    crate::arch::aarch64::aarch64_virt::virtio_blk_shared_write_sector(lba, sector_buf)?;
     VIRTIO_BLK_CACHE_AARCH64.lock().put(lba, sector_buf);
     Ok(())
 }

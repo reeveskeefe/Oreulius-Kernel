@@ -2,12 +2,12 @@
 
 **Status:** Reference (Mar 29, 2026)
 
-This guide provides a quick reference for developers working with the kernel's low-level assembly bindings. These functions are exposed via `crate::asm_bindings`, which is re-exported from the `memory` subsystem:
+This guide provides a quick reference for developers working with the kernel's low-level assembly bindings. These functions are exposed via `crate::memory::asm_bindings`, the owning module for the assembly bindings:
 
 ```rust
 // Declaration: kernel/src/memory/asm_bindings.rs
-// Re-export:   pub use memory::{asm_bindings, hardened_allocator};  (lib.rs)
-use crate::asm_bindings::*;
+// Path:       crate::memory::asm_bindings
+use crate::memory::asm_bindings::*;
 ```
 
 ---
@@ -71,7 +71,7 @@ pub struct CacheInfo { pub eax: u32, pub ebx: u32, pub ecx: u32, pub edx: u32 }
 ## 3. CPU Feature Detection
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 // SSE/AVX detection
 if has_sse()    { /* Use SSE    */ }
@@ -113,7 +113,7 @@ if has_rdrand() {
 ## 4. Atomic Operations
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 let mut value: u32 = 100;
 
@@ -145,7 +145,7 @@ atomic_xor(&mut value, bits);
 ## 5. Spinlock
 
 ```rust
-use crate::asm_bindings::Spinlock;
+use crate::memory::asm_bindings::Spinlock;
 
 let mut lock = Spinlock::new();
 lock.init();
@@ -169,7 +169,7 @@ if lock.try_lock() {
 ## 6. Context Switching
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 // Save current context, load new context
 asm_switch_context(old_ctx_ptr, new_ctx_ptr);
@@ -196,7 +196,7 @@ asm_jit_fault_resume();
 ## 7. CR Register & SMAP Control
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 let cr0 = read_cr0();
 write_cr0(cr0 | 0x1);
@@ -217,7 +217,7 @@ clac();  // Clear AC flag — deny  supervisor access to user pages
 ## 8. Port I/O
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 unsafe { outb(0x3F8, byte_value); }  // Write byte to COM1
 let b = unsafe { inb(0x3F8) };       // Read byte from COM1
@@ -228,7 +228,7 @@ let b = unsafe { inb(0x3F8) };       // Read byte from COM1
 ## 9. Performance Measurement
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 // Manual timing
 let start = rdtsc_begin();
@@ -261,7 +261,7 @@ let ts  = unsafe { asm_lfence_rdtsc() };  // LFENCE + RDTSC
 ## 10. Memory Fences
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 load_fence();    // LFENCE — acquire (before reading shared data)
 store_fence();   // SFENCE — release (after writing shared data)
@@ -277,7 +277,7 @@ while !condition {
 ## 11. Memory Operations
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 // REP MOVSD — ~5× faster than byte loop
 fast_memcpy(&mut dst, &src);
@@ -297,7 +297,7 @@ xor_cipher(&mut data, key_byte);
 ## 12. Cache Control
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 clflush(&data[0]);       // Flush cache line to RAM
 prefetch_t0(&data[0]);   // Pull into L1 cache
@@ -311,7 +311,7 @@ prefetch_nta(&data[0]);  // Non-temporal (minimal cache pollution)
 ## 13. Network Utilities
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 // Byte-order conversion (symmetric — htons == ntohs on all platforms)
 let net16  = htons(host16_value);
@@ -342,7 +342,7 @@ unsafe { asm_parse_ipv4_header(ip_ptr, &mut ver_ihl, &mut total_len, &mut protoc
 ## 14. Cryptographic Hashes
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 let fnv  = hash_data(data);   // FNV-1a
 let djb2 = hash_djb2(data);   // DJB2
@@ -354,7 +354,7 @@ let sdbm = hash_sdbm(data);   // SDBM
 ## 15. Interrupt Control
 
 ```rust
-use crate::asm_bindings::*;
+use crate::memory::asm_bindings::*;
 
 enable_interrupts();           // STI
 disable_interrupts();          // CLI

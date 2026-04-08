@@ -19,7 +19,7 @@ The `net` module is the **complete in-kernel networking subsystem** for Oreulius
 |---|---|---|---|
 | `mod.rs` | All | 1452 | `NetworkService` umbrella, `TcpConnection`, `HttpRequest/Response`, global init |
 | `netstack.rs` | All | 3425 | Raw TCP/IP stack: ARP, IPv4, TCP state machine, DNS, HTTP server |
-| `capnet.rs` | All | 3033 | CapNet v1 token format, peer session table, delegation/revocation journal |
+| `capnet/` | All | facade + submodules | CapNet v1 token format, peer session lifecycle, persistence journal, audit, and fuzz metrics |
 | `net_reactor.rs` | All | 859 | Async event loop, IRQ-driven RX dispatch, high-level DNS/TCP/HTTP API |
 | `tls.rs` | x86-64 | 1187 | TLS 1.3 session management over raw TCP sockets |
 | `wifi.rs` | All | 2997 | 802.11 Wi-Fi driver (scan, associate, auth, EAPOL, data frames) |
@@ -165,7 +165,17 @@ A fixed-size array of `(Ipv4Addr, MacAddr, age_ticks)` entries. On ARP miss, the
 
 ---
 
-## `capnet.rs` — CapNet v1 Capability Token Protocol
+## `capnet/` — CapNet v1 Capability Token Protocol
+
+The CapNet implementation is now organized as a facade plus focused ownership submodules:
+
+- `encoding` for fixed-width token and frame layouts plus byte helpers
+- `session` for peer/session state, replay windows, and live protocol handling
+- `persistence` for revocation logs and temporal restore/rebuild paths
+- `audit` for certificate validation and security self-checks
+- `metrics` for fuzz stats, regression seeds, and soak summaries
+
+The historical `capnet.rs` path remains available through the facade so existing call sites keep compiling during the transition.
 
 CapNet is Oreulius's **secure inter-kernel capability transport protocol**. It solves the problem of transferring the kernel's capability model across a network link to remote Oreulius nodes without ambient trust.
 

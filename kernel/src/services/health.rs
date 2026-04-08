@@ -11,7 +11,7 @@
 
 extern crate alloc;
 
-use crate::persistence;
+use crate::temporal::persistence;
 // Cross-arch console output: VGA on x86/x86_64, PL011 on AArch64.
 mod vga {
     pub fn print_str(s: &str) { crate::serial::kprint_str(s); }
@@ -64,17 +64,17 @@ pub struct HealthSnapshot {
 impl HealthSnapshot {
     pub fn take() -> Self {
         // Scheduler
-        let sched = crate::quantum_scheduler::scheduler()
+        let sched = crate::scheduler::quantum_scheduler::scheduler()
             .lock()
             .snapshot_overview();
 
         // Crash log
         #[cfg(not(target_arch = "aarch64"))]
-        let crash_count = crate::crash_log::crash_count();
+        let crash_count = crate::security::crash_log::crash_count();
         #[cfg(target_arch = "aarch64")]
         let crash_count = 0u32;
         #[cfg(not(target_arch = "aarch64"))]
-        let boot_session = crate::crash_log::boot_session();
+        let boot_session = crate::security::crash_log::boot_session();
         #[cfg(target_arch = "aarch64")]
         let boot_session = 0u32;
 
@@ -100,7 +100,7 @@ impl HealthSnapshot {
 
         // Tick
         #[cfg(not(target_arch = "aarch64"))]
-        let tick = crate::asm_bindings::rdtsc_begin();
+        let tick = crate::memory::asm_bindings::rdtsc_begin();
         #[cfg(target_arch = "aarch64")]
         let tick = 0u64;
 
@@ -281,15 +281,15 @@ pub fn cmd_health() {
     vga::print_str("[health] snapshot written to persistence log\n");
 
     // Emit a TelemetryEvent so the userspace CTMC daemon sees the health probe.
-    let tick = crate::vfs_platform::ticks_now();
-    let ev = crate::wait_free_ring::TelemetryEvent::new(
+    let tick = crate::fs::vfs_platform::ticks_now();
+    let ev = crate::memory::wait_free_ring::TelemetryEvent::new(
         0,    // kernel pid
         8,    // node 8 = Observe (highest-index IntentNode)
         0xFD, // cap_type 0xFD = reserved for health-probe events
         0,    // score = 0 (informational, not an anomaly signal)
         tick,
     );
-    let _ = crate::wait_free_ring::TELEMETRY_RING.push(ev);
+    let _ = crate::memory::wait_free_ring::TELEMETRY_RING.push(ev);
 }
 
 pub fn cmd_crash_log_show() {
@@ -297,10 +297,10 @@ pub fn cmd_crash_log_show() {
     #[cfg(not(target_arch = "aarch64"))]
     {
         vga::print_str("Total panics this session: ");
-        print_u32(crate::crash_log::crash_count());
+        print_u32(crate::security::crash_log::crash_count());
         vga::print_str("\n\n");
         let mut found = 0usize;
-        crate::crash_log::for_each_crash(|seq, tick, session, loc, msg| {
+        crate::security::crash_log::for_each_crash(|seq, tick, session, loc, msg| {
             found += 1;
             vga::print_str("--- Crash #");
             print_u64(seq as u64);
@@ -335,7 +335,7 @@ pub fn cmd_crash_log_clear() {
     vga::print_str("  Slots will be overwritten as new panics occur.\n");
     vga::print_str("  Crash count: ");
     #[cfg(not(target_arch = "aarch64"))]
-    print_u32(crate::crash_log::crash_count());
+    print_u32(crate::security::crash_log::crash_count());
     #[cfg(target_arch = "aarch64")]
     vga::print_str("(n/a on AArch64)");
     vga::print_str("\n");

@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 // Process management assembly bindings
@@ -385,6 +374,6 @@ impl ProcessStats {
 
     pub fn total_interrupts() -> u32 {
         // Use IDT's interrupt count - pass 0xFF for total count
-        unsafe { crate::idt_asm::get_interrupt_count(0xFF) }
+        unsafe { crate::platform::idt_asm::get_interrupt_count(0xFF) }
     }
 }

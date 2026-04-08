@@ -46,7 +46,7 @@ use alloc::boxed::Box;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
-use crate::wasm::{ControlFrame, Stack, Value, MAX_CONTROL_STACK, MAX_LOCALS};
+use crate::execution::wasm::{ControlFrame, Stack, Value, MAX_CONTROL_STACK, MAX_LOCALS};
 
 // ---------------------------------------------------------------------------
 // Constants

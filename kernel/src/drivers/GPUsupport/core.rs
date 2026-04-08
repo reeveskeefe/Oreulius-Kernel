@@ -2,7 +2,7 @@
  * Shared GPU identity and probe types.
  */
 
-use crate::pci::PciDevice;
+use crate::drivers::x86::pci::PciDevice;
 
 use super::caps::GpuCapabilities;
 use super::display::scanout::ScanoutBackendId;

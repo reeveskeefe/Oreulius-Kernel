@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -187,7 +176,7 @@ impl ArchPlatform for X86LegacyPlatform {
             super::x86_64_runtime::init_cpu_tables();
         }
         #[cfg(not(target_arch = "x86_64"))]
-        crate::gdt::init();
+        crate::platform::gdt::init();
     }
 
     fn init_trap_table(&self) {
@@ -196,7 +185,7 @@ impl ArchPlatform for X86LegacyPlatform {
             super::x86_64_runtime::init_trap_table();
         }
         #[cfg(not(target_arch = "x86_64"))]
-        crate::idt_asm::init_trap_table();
+        crate::platform::idt_asm::init_trap_table();
     }
 
     fn init_interrupt_controller(&self) {
@@ -205,7 +194,7 @@ impl ArchPlatform for X86LegacyPlatform {
             super::x86_64_runtime::init_interrupt_controller();
         }
         #[cfg(not(target_arch = "x86_64"))]
-        crate::idt_asm::init_interrupt_controller();
+        crate::platform::idt_asm::init_interrupt_controller();
     }
 
     fn init_timer(&self) {
@@ -214,7 +203,7 @@ impl ArchPlatform for X86LegacyPlatform {
             super::x86_64_runtime::init_timer();
         }
         #[cfg(not(target_arch = "x86_64"))]
-        crate::pit::init();
+        crate::scheduler::pit::init();
     }
 
     fn enable_interrupts(&self) {
@@ -223,7 +212,7 @@ impl ArchPlatform for X86LegacyPlatform {
             super::x86_64_runtime::enable_interrupts();
         }
         #[cfg(not(target_arch = "x86_64"))]
-        crate::asm_bindings::enable_interrupts();
+        crate::memory::asm_bindings::enable_interrupts();
     }
 
     fn halt_loop(&self) -> ! {

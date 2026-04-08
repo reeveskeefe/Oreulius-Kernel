@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 #[cfg(not(target_arch = "aarch64"))]
-use crate::gpu_support;
+use crate::drivers::x86::gpu_support;
 
 static SHADOW_PUT_PIXEL_CALLS: AtomicUsize = AtomicUsize::new(0);
 static SHADOW_FILL_RECT_CALLS: AtomicUsize = AtomicUsize::new(0);

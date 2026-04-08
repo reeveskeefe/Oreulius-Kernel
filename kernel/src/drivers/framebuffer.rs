@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Linear Framebuffer Display Driver
@@ -50,7 +39,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::pci::PciDevice;
+use crate::drivers::x86::pci::PciDevice;
 
 // ============================================================================
 // Constants
@@ -1042,27 +1031,27 @@ pub static DISPLAY: Mutex<DisplayState> = Mutex::new(DisplayState::new());
 // ============================================================================
 
 fn map_framebuffer_mmio(base: usize, size: usize) {
-    if size == 0 || !crate::paging::paging_enabled() {
+    if size == 0 || !crate::fs::paging::paging_enabled() {
         return;
     }
-    if crate::paging::is_kernel_range_mapped(base, size) {
+    if crate::fs::paging::is_kernel_range_mapped(base, size) {
         return;
     }
 
-    if let Some(ref mut space) = *crate::paging::kernel_space().lock() {
-        let start = base & !(crate::paging::PAGE_SIZE - 1);
+    if let Some(ref mut space) = *crate::fs::paging::kernel_space().lock() {
+        let start = base & !(crate::fs::paging::PAGE_SIZE - 1);
         let end = match base
             .checked_add(size)
-            .and_then(|v| v.checked_add(crate::paging::PAGE_SIZE - 1))
+            .and_then(|v| v.checked_add(crate::fs::paging::PAGE_SIZE - 1))
         {
-            Some(v) => v & !(crate::paging::PAGE_SIZE - 1),
+            Some(v) => v & !(crate::fs::paging::PAGE_SIZE - 1),
             None => return,
         };
 
         let mut addr = start;
         while addr < end {
             let _ = space.map_page(addr, addr, true, false);
-            addr += crate::paging::PAGE_SIZE;
+            addr += crate::fs::paging::PAGE_SIZE;
         }
     }
 }

@@ -3,7 +3,7 @@ use super::{
     ChannelFlags, ChannelId, ChannelRights, ClosureState, DrainResult, EventId, IpcError, Message,
     ProcessId, CHANNEL_CAPACITY,
 };
-use crate::process::{Pid, ProcessState};
+use crate::scheduler::process::{Pid, ProcessState};
 
 pub const IPC_SELFTEST_CASES: usize = 12;
 
@@ -106,7 +106,7 @@ struct SyntheticWaiterGuard {
 
 impl SyntheticWaiterGuard {
     fn stage(name: &str, addr: usize) -> Result<Self, &'static str> {
-        let pid = crate::quantum_scheduler::selftest_stage_waiter_process(
+        let pid = crate::scheduler::quantum_scheduler::selftest_stage_waiter_process(
             name,
             addr,
             ProcessState::WaitingOnChannel,
@@ -122,7 +122,7 @@ impl SyntheticWaiterGuard {
 impl Drop for SyntheticWaiterGuard {
     fn drop(&mut self) {
         if let Some(pid) = self.pid.take() {
-            let _ = crate::quantum_scheduler::selftest_remove_process(pid);
+            let _ = crate::scheduler::quantum_scheduler::selftest_remove_process(pid);
         }
     }
 }
@@ -397,7 +397,7 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
     for cycle in 0..2 {
         let waiter =
             SyntheticWaiterGuard::stage("ipc-selftest-rx", super::channel_message_wait_addr(id))?;
-        if crate::quantum_scheduler::waiter_count(super::channel_message_wait_addr(id)) != 1 {
+        if crate::scheduler::quantum_scheduler::waiter_count(super::channel_message_wait_addr(id)) != 1 {
             return Err("receiver waiter was not staged");
         }
 
@@ -408,10 +408,10 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
             .send(msg, &send_cap)
             .map_err(|_| "receiver wake send failed")?;
 
-        if crate::quantum_scheduler::waiter_count(super::channel_message_wait_addr(id)) != 0 {
+        if crate::scheduler::quantum_scheduler::waiter_count(super::channel_message_wait_addr(id)) != 0 {
             return Err("receiver waiter did not clear");
         }
-        if crate::quantum_scheduler::selftest_process_state(waiter.pid())
+        if crate::scheduler::quantum_scheduler::selftest_process_state(waiter.pid())
             != Some(ProcessState::Ready)
         {
             return Err("receiver waiter did not become ready");
@@ -436,7 +436,7 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
 
         let waiter =
             SyntheticWaiterGuard::stage("ipc-selftest-tx", super::channel_capacity_wait_addr(id))?;
-        if crate::quantum_scheduler::waiter_count(super::channel_capacity_wait_addr(id)) != 1 {
+        if crate::scheduler::quantum_scheduler::waiter_count(super::channel_capacity_wait_addr(id)) != 1 {
             return Err("sender waiter was not staged");
         }
 
@@ -444,10 +444,10 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
             .try_recv(&recv_cap)
             .map_err(|_| "sender wake recv failed")?;
 
-        if crate::quantum_scheduler::waiter_count(super::channel_capacity_wait_addr(id)) != 0 {
+        if crate::scheduler::quantum_scheduler::waiter_count(super::channel_capacity_wait_addr(id)) != 0 {
             return Err("sender waiter did not clear");
         }
-        if crate::quantum_scheduler::selftest_process_state(waiter.pid())
+        if crate::scheduler::quantum_scheduler::selftest_process_state(waiter.pid())
             != Some(ProcessState::Ready)
         {
             return Err("sender waiter did not become ready");

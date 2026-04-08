@@ -1,7 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 #![allow(dead_code)]
@@ -30,9 +30,9 @@ pub fn on_process_terminate(pid: Pid) {
     // WASM cleanup: wasm module is only available on x86; AArch64 uses
     // interpreter-only path which is handled separately in arch runtime.
     #[cfg(not(target_arch = "aarch64"))]
-    let _ = crate::wasm::revoke_service_pointers_for_owner(pid);
+    let _ = crate::execution::wasm::revoke_service_pointers_for_owner(pid);
     #[cfg(not(target_arch = "aarch64"))]
-    let _ = crate::wasm::unload_modules_for_owner(pid);
+    let _ = crate::execution::wasm::unload_modules_for_owner(pid);
     crate::capability::capability_manager().deinit_task(pid);
     crate::security::security().terminate_process(pid);
 

@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Oreulius Persistence v0
@@ -335,21 +324,21 @@ fn seed_snapshot_nonce() {
     let mut seed = 0xA5A5_5A5A_F00D_CAFE_u64;
     #[cfg(target_arch = "x86_64")]
     {
-        seed ^= crate::asm_bindings::read_timestamp();
+        seed ^= crate::memory::asm_bindings::read_timestamp();
         seed ^= 0x9E37_79B9_7F4A_7C15u64.rotate_left(7);
     }
     #[cfg(all(not(target_arch = "aarch64"), not(target_arch = "x86_64")))]
     {
-        seed ^= crate::asm_bindings::rdtsc_begin();
-        if let Some(r) = crate::asm_bindings::try_rdrand() {
+        seed ^= crate::memory::asm_bindings::rdtsc_begin();
+        if let Some(r) = crate::memory::asm_bindings::try_rdrand() {
             seed ^= ((r as u64) << 32) | (r as u64);
         }
-        seed ^= crate::asm_bindings::rdtsc_end();
+        seed ^= crate::memory::asm_bindings::rdtsc_end();
     }
     #[cfg(target_arch = "aarch64")]
     {
-        seed ^= crate::pit::get_ticks();
-        seed ^= crate::arch::aarch64_virt::timer_frequency_hz();
+        seed ^= crate::scheduler::pit::get_ticks();
+        seed ^= crate::arch::aarch64::aarch64_virt::timer_frequency_hz();
     }
 
     let mut slot = NEXT_SNAPSHOT_NONCE.lock();
@@ -404,7 +393,7 @@ impl Snapshot {
         self.data[..data.len()].copy_from_slice(data);
         self.data_len = data.len();
         self.last_offset = last_offset;
-        self.timestamp = crate::pit::get_ticks();
+        self.timestamp = crate::scheduler::pit::get_ticks();
 
         Ok(())
     }
@@ -451,7 +440,7 @@ fn snapshot_slot_sectors() -> u64 {
 }
 
 fn snapshot_slot_base_lba(slot_id: u16) -> Option<u64> {
-    let capacity = crate::virtio_blk::capacity_sectors()?;
+    let capacity = crate::fs::virtio_blk::capacity_sectors()?;
     let slot_sectors = snapshot_slot_sectors();
     let total_reserved = slot_sectors.saturating_mul(3).saturating_add(1);
     if capacity <= total_reserved {
@@ -863,7 +852,7 @@ impl PersistenceService {
     }
 
     fn write_snapshot_to_disk(slot_id: u16, snapshot: &Snapshot) -> Result<(), PersistenceError> {
-        if !crate::virtio_blk::is_present() {
+        if !crate::fs::virtio_blk::is_present() {
             return Err(PersistenceError::BackendUnavailable);
         }
 
@@ -929,7 +918,7 @@ impl PersistenceService {
         while i < sectors {
             let start = i * SNAPSHOT_DISK_SECTOR_BYTES;
             let end = start + SNAPSHOT_DISK_SECTOR_BYTES;
-            crate::virtio_blk::write_sector(base_lba + i as u64, &image[start..end])
+            crate::fs::virtio_blk::write_sector(base_lba + i as u64, &image[start..end])
                 .map_err(|_| PersistenceError::InvalidRecord)?;
             i += 1;
         }
@@ -937,7 +926,7 @@ impl PersistenceService {
     }
 
     fn read_snapshot_from_disk(slot_id: u16, out: &mut Snapshot) -> Result<bool, PersistenceError> {
-        if !crate::virtio_blk::is_present() {
+        if !crate::fs::virtio_blk::is_present() {
             return Err(PersistenceError::BackendUnavailable);
         }
 
@@ -947,7 +936,7 @@ impl PersistenceService {
         };
 
         let mut first_sector = [0u8; SNAPSHOT_DISK_SECTOR_BYTES];
-        crate::virtio_blk::read_sector(base_lba, &mut first_sector)
+        crate::fs::virtio_blk::read_sector(base_lba, &mut first_sector)
             .map_err(|_| PersistenceError::InvalidRecord)?;
         let magic = match read_u32(&first_sector, 0) {
             Some(v) => v,
@@ -991,7 +980,7 @@ impl PersistenceService {
             while i < sectors {
                 let start = i * SNAPSHOT_DISK_SECTOR_BYTES;
                 let end = start + SNAPSHOT_DISK_SECTOR_BYTES;
-                crate::virtio_blk::read_sector(base_lba + i as u64, &mut image[start..end])
+                crate::fs::virtio_blk::read_sector(base_lba + i as u64, &mut image[start..end])
                     .map_err(|_| PersistenceError::InvalidRecord)?;
                 i += 1;
             }
@@ -1047,7 +1036,7 @@ impl PersistenceService {
         while i < sectors {
             let start = i * SNAPSHOT_DISK_SECTOR_BYTES;
             let end = start + SNAPSHOT_DISK_SECTOR_BYTES;
-            crate::virtio_blk::read_sector(base_lba + i as u64, &mut image[start..end])
+            crate::fs::virtio_blk::read_sector(base_lba + i as u64, &mut image[start..end])
                 .map_err(|_| PersistenceError::InvalidRecord)?;
             i += 1;
         }
@@ -1150,7 +1139,7 @@ impl PersistenceService {
             header_bytes[40..56].copy_from_slice(&mac);
         }
 
-        crate::vfs::write_path_untracked(path, &image)
+        crate::fs::vfs::write_path_untracked(path, &image)
             .map(|_| ())
             .map_err(|_| PersistenceError::InvalidRecord)
     }
@@ -1182,7 +1171,7 @@ impl PersistenceService {
         let mut scratch = SNAPSHOT_IO_SCRATCH.lock();
         let image_mut = &mut scratch.image[..read_cap];
         image_mut.fill(0);
-        let read = match crate::vfs::read_path(path, image_mut) {
+        let read = match crate::fs::vfs::read_path(path, image_mut) {
             Ok(n) => n,
             Err(_) => return Ok(false),
         };
@@ -1311,7 +1300,7 @@ impl PersistenceService {
 
     fn recover_snapshots_from_durable(&mut self) {
         let durable_backend_available =
-            crate::virtio_blk::is_present() || EXTERNAL_SNAPSHOT_BACKEND.lock().is_some();
+            crate::fs::virtio_blk::is_present() || EXTERNAL_SNAPSHOT_BACKEND.lock().is_some();
         if self.durable_recovery_attempted || !durable_backend_available {
             return;
         }

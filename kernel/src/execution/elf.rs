@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! ELF loader for native binaries (ELF32 and ELF64, basic ET_DYN support).
@@ -28,9 +17,9 @@ use core::mem::{size_of, MaybeUninit};
 use core::ptr;
 
 use crate::arch::mmu::{self as arch_mmu, AddressSpace};
-use crate::paging::{PAGE_SIZE, USER_TOP};
-use crate::process::{self, ProcessPriority};
-use crate::quantum_scheduler::{self, UserProcessLayout, UserRegionSpec, VmaFlags, VmaKind};
+use crate::fs::paging::{PAGE_SIZE, USER_TOP};
+use crate::scheduler::process::{self, ProcessPriority};
+use crate::scheduler::quantum_scheduler::{self, UserProcessLayout, UserRegionSpec, VmaFlags, VmaKind};
 
 const EI_NIDENT: usize = 16;
 const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];

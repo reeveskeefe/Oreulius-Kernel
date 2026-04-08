@@ -6,8 +6,8 @@
 use core::fmt::Write;
 
 use crate::net;
-use crate::net_reactor;
-use crate::netstack::Ipv4Addr;
+use crate::net::net_reactor;
+use crate::net::netstack::Ipv4Addr;
 
 fn dns_usable(info: &net_reactor::NetInfo) -> bool {
     info.ip.0 != [0, 0, 0, 0] && info.dns_server.0 != [0, 0, 0, 0]

@@ -1,9 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- *License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 use core::cell::UnsafeCell;
@@ -384,8 +382,8 @@ struct A64VfsMountState {
     mounted: bool,
     path_len: usize,
     path: [u8; A64_VFS_MOUNT_PATH_MAX],
-    mbr: [Option<crate::virtio_blk::MbrPartition>; 4],
-    gpt: [Option<crate::virtio_blk::GptPartition>; 4],
+    mbr: [Option<crate::fs::virtio_blk::MbrPartition>; 4],
+    gpt: [Option<crate::fs::virtio_blk::GptPartition>; 4],
 }
 
 impl A64VfsMountState {
@@ -752,7 +750,7 @@ pub(crate) fn scheduler_timer_tick_hook() {
 /// Today this is exercised by debug shell commands (`pid-set`) because the full
 /// AArch64 quantum scheduler/context-switch path is not enabled yet.
 pub(crate) fn scheduler_note_context_switch(pid: u32) -> Result<(), &'static str> {
-    crate::process::set_current_runtime_pid(crate::process::Pid::new(pid))?;
+    crate::scheduler::process::set_current_runtime_pid(crate::scheduler::process::Pid::new(pid))?;
     AARCH64_SCHED_CONTEXT_SWITCHES.fetch_add(1, Ordering::Relaxed);
     AARCH64_SCHED_RESCHED_PENDING.store(false, Ordering::Release);
     Ok(())
@@ -1695,7 +1693,7 @@ impl ArchPlatform for AArch64QemuVirtPlatform {
         gicv2_init();
         virtio_mmio_probe_all();
         virtio_mmio_bringup_one();
-        let _ = crate::virtio_blk::init_mmio_active();
+        let _ = crate::fs::virtio_blk::init_mmio_active();
         let u = uart();
         u.write_str("[A64] GICv2 init dist=");
         uart_write_hex_usize(gicd_base());
@@ -2071,7 +2069,7 @@ fn shell_print_ticks() {
 
 fn shell_print_scheduler_backend() {
     let (ticks, pending, requests, switches, quantum, pos) = scheduler_tick_backend_snapshot();
-    let (_proc_count, _fd_count, current_pid) = crate::process::runtime_fd_stats();
+    let (_proc_count, _fd_count, current_pid) = crate::scheduler::process::runtime_fd_stats();
     let u = uart();
     u.write_str("[A64] sched-backend ticks=");
     uart_write_hex_u64(ticks);
@@ -2288,7 +2286,7 @@ fn vm_map_self_test() -> Result<(), &'static str> {
     crate::arch::mmu::map_user_range_phys(&mut space, phys_map_va, phys_page, 4096, true)?;
 
     let old_root = crate::arch::mmu::current_page_table_root_addr();
-    let irq_flags = unsafe { crate::scheduler_platform::irq_save_disable() };
+    let irq_flags = unsafe { crate::scheduler::scheduler_platform::irq_save_disable() };
     let vmtest_result = (|| -> Result<(u8, u8, u8), &'static str> {
         unsafe {
             space.activate();
@@ -2314,7 +2312,7 @@ fn vm_map_self_test() -> Result<(), &'static str> {
     })();
 
     let restore_root_res = crate::arch::mmu::set_page_table_root(old_root);
-    unsafe { crate::scheduler_platform::irq_restore(irq_flags) };
+    unsafe { crate::scheduler::scheduler_platform::irq_restore(irq_flags) };
     restore_root_res?;
     let (code_byte, stack_byte, phys_byte) = vmtest_result?;
 
@@ -2442,10 +2440,10 @@ fn shell_dump_sector_preview(lba: u64, sector: &[u8; VIRTIO_BLK_SECTOR_SIZE]) {
 fn shell_cmd_blk_info() {
     let u = uart();
     u.write_str("[A64] blk present=");
-    let ready = crate::virtio_blk::is_present();
+    let ready = crate::fs::virtio_blk::is_present();
     u.write_str(if ready { "1" } else { "0" });
     u.write_str(" cap-sectors=");
-    let sectors = crate::virtio_blk::capacity_sectors().unwrap_or(0);
+    let sectors = crate::fs::virtio_blk::capacity_sectors().unwrap_or(0);
     uart_write_hex_u64(sectors);
     let bytes = sectors.saturating_mul(VIRTIO_BLK_SECTOR_SIZE as u64);
     u.write_str(" cap-bytes=");
@@ -2471,7 +2469,7 @@ fn shell_cmd_blk_read(cmd: &str) {
         return;
     };
     let mut sector = [0u8; VIRTIO_BLK_SECTOR_SIZE];
-    match crate::virtio_blk::read_sector(lba, &mut sector) {
+    match crate::fs::virtio_blk::read_sector(lba, &mut sector) {
         Ok(()) => shell_dump_sector_preview(lba, &sector),
         Err(e) => {
             let u = uart();
@@ -2502,7 +2500,7 @@ fn shell_cmd_blk_write(cmd: &str) {
         return;
     };
     let sector = [value; VIRTIO_BLK_SECTOR_SIZE];
-    match crate::virtio_blk::write_sector(lba, &sector) {
+    match crate::fs::virtio_blk::write_sector(lba, &sector) {
         Ok(()) => {
             let u = uart();
             u.write_str("[A64] blk-write ok lba=");
@@ -2523,7 +2521,7 @@ fn shell_cmd_blk_write(cmd: &str) {
 fn shell_cmd_blk_rwtest(cmd: &str) {
     let mut parts = cmd.split_whitespace();
     let _ = parts.next();
-    let capacity = crate::virtio_blk::capacity_sectors().unwrap_or(0);
+    let capacity = crate::fs::virtio_blk::capacity_sectors().unwrap_or(0);
     if capacity == 0 {
         early_log("[A64] blk-rwtest: no blk capacity\n");
         return;
@@ -2545,13 +2543,13 @@ fn shell_cmd_blk_rwtest(cmd: &str) {
     test_sector[7] = pattern;
 
     let result = (|| {
-        crate::virtio_blk::read_sector(lba, &mut original)?;
-        crate::virtio_blk::write_sector(lba, &test_sector)?;
-        crate::virtio_blk::read_sector(lba, &mut verify)?;
+        crate::fs::virtio_blk::read_sector(lba, &mut original)?;
+        crate::fs::virtio_blk::write_sector(lba, &test_sector)?;
+        crate::fs::virtio_blk::read_sector(lba, &mut verify)?;
         if verify != test_sector {
             return Err("verify mismatch");
         }
-        crate::virtio_blk::write_sector(lba, &original)?;
+        crate::fs::virtio_blk::write_sector(lba, &original)?;
         Ok::<(), &'static str>(())
     })();
 
@@ -2583,7 +2581,7 @@ fn parse_usize_auto(s: &str) -> Option<usize> {
 fn shell_cmd_blk_partitions() {
     let mut mbr = [None; 4];
     let mut gpt = [None; 4];
-    match crate::virtio_blk::read_partitions(&mut mbr, &mut gpt) {
+    match crate::fs::virtio_blk::read_partitions(&mut mbr, &mut gpt) {
         Ok(()) => {
             let u = uart();
             u.write_str("[A64] blk-partitions\n");
@@ -2655,7 +2653,7 @@ fn shell_cmd_blk_readn(cmd: &str) {
         return;
     }
     let mut buf = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
-    match crate::virtio_blk::read_sectors(lba, count, &mut buf[..count * VIRTIO_BLK_SECTOR_SIZE]) {
+    match crate::fs::virtio_blk::read_sectors(lba, count, &mut buf[..count * VIRTIO_BLK_SECTOR_SIZE]) {
         Ok(()) => {
             let u = uart();
             u.write_str("[A64] blk-readn ok lba=");
@@ -2707,7 +2705,7 @@ fn shell_cmd_blk_writen(cmd: &str) {
     }
     let mut data = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
     data[..count * VIRTIO_BLK_SECTOR_SIZE].fill(value);
-    match crate::virtio_blk::write_sectors(lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE]) {
+    match crate::fs::virtio_blk::write_sectors(lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE]) {
         Ok(()) => {
             let u = uart();
             u.write_str("[A64] blk-writen ok lba=");
@@ -2738,13 +2736,13 @@ fn shell_cmd_vfs_mount_virtio(cmd: &str) {
         early_log("[A64] vfs-mount-virtio: path must start with '/'\n");
         return;
     }
-    if !crate::virtio_blk::is_present() {
+    if !crate::fs::virtio_blk::is_present() {
         early_log("[A64] vfs-mount-virtio: no virtio-blk device\n");
         return;
     }
     let mut mbr = [None; 4];
     let mut gpt = [None; 4];
-    let _ = crate::virtio_blk::read_partitions(&mut mbr, &mut gpt);
+    let _ = crate::fs::virtio_blk::read_partitions(&mut mbr, &mut gpt);
     let mut state = A64_VFS_MOUNT.lock();
     if let Err(e) = state.set_path(path) {
         let u = uart();
@@ -2816,7 +2814,7 @@ fn shell_cmd_vfs_read(cmd: &str) {
                 u.write_str("[A64] vfs info path=");
                 u.write_str(mount_path);
                 u.write_str(" cap-sectors=");
-                uart_write_hex_u64(crate::virtio_blk::capacity_sectors().unwrap_or(0));
+                uart_write_hex_u64(crate::fs::virtio_blk::capacity_sectors().unwrap_or(0));
                 uart_newline();
             }
             "/partitions" => {
@@ -2890,7 +2888,7 @@ fn shell_cmd_vfs_blk_read(cmd: &str) {
     }
     let abs_lba = base.saturating_add(rel_lba);
     let mut buf = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
-    match crate::virtio_blk::read_sectors(
+    match crate::fs::virtio_blk::read_sectors(
         abs_lba,
         count,
         &mut buf[..count * VIRTIO_BLK_SECTOR_SIZE],
@@ -2957,7 +2955,7 @@ fn shell_cmd_vfs_blk_write(cmd: &str) {
     let abs_lba = base.saturating_add(rel_lba);
     let mut data = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
     data[..count * VIRTIO_BLK_SECTOR_SIZE].fill(value);
-    match crate::virtio_blk::write_sectors(abs_lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE])
+    match crate::fs::virtio_blk::write_sectors(abs_lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE])
     {
         Ok(()) => {
             let u = uart();
@@ -2983,7 +2981,7 @@ fn shell_cmd_vfs_blk_write(cmd: &str) {
 fn shell_exec_command(cmd: &str) -> bool {
     // Give the AArch64 commands module precedence for overlapping names so the
     // selectively un-gated VFS/block command path is the default on this shell.
-    if crate::commands::try_execute(cmd) {
+    if crate::shell::commands::try_execute(cmd) {
         return true;
     }
 
@@ -3045,7 +3043,7 @@ fn shell_exec_command(cmd: &str) -> bool {
     if cmd == "virtio init" || cmd == "virtio reinit" {
         virtio_mmio_probe_all();
         virtio_mmio_bringup_one();
-        let _ = crate::virtio_blk::init_mmio_active();
+        let _ = crate::fs::virtio_blk::init_mmio_active();
         shell_print_virtio_runtime();
         return true;
     }

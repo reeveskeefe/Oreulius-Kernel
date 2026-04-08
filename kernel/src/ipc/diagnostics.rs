@@ -56,10 +56,10 @@ impl Channel {
             saturated_hits: self.saturated_hits,
             sender_wakeups: self.sender_wakeups,
             receiver_wakeups: self.receiver_wakeups,
-            waiting_receivers: crate::quantum_scheduler::waiter_count(channel_message_wait_addr(
+            waiting_receivers: crate::scheduler::quantum_scheduler::waiter_count(channel_message_wait_addr(
                 self.id,
             )),
-            waiting_senders: crate::quantum_scheduler::waiter_count(channel_capacity_wait_addr(
+            waiting_senders: crate::scheduler::quantum_scheduler::waiter_count(channel_capacity_wait_addr(
                 self.id,
             )),
         }

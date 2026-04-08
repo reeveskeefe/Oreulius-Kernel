@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Virtual Memory Management with Paging
@@ -541,12 +530,12 @@ impl AddressSpace {
 
     /// Create a new address space
     pub fn new() -> Result<Self, &'static str> {
-        crate::vga::print_str("[PAGING] Building kernel address space...\n");
+        crate::drivers::x86::vga::print_str("[PAGING] Building kernel address space...\n");
         let mut page_dir = Box::new(PageDirectory::new());
 
         // Map kernel space (identity + higher-half)
         Self::setup_kernel_mapping(&mut page_dir)?;
-        crate::vga::print_str("[PAGING] Kernel mappings complete\n");
+        crate::drivers::x86::vga::print_str("[PAGING] Kernel mappings complete\n");
 
         let phys_addr = &*page_dir as *const _ as usize;
 
@@ -589,14 +578,14 @@ impl AddressSpace {
         let map_bytes = align_up(map_bytes, CHUNK_BYTES);
         let tables = core::cmp::max(1, map_bytes / CHUNK_BYTES);
 
-        crate::vga::print_str("[PAGING] Mapping kernel memory (0 to ");
-        crate::advanced_commands::print_hex(map_bytes);
-        crate::vga::print_str(")...\n");
+        crate::drivers::x86::vga::print_str("[PAGING] Mapping kernel memory (0 to ");
+        crate::shell::advanced_commands::print_hex(map_bytes);
+        crate::drivers::x86::vga::print_str(")...\n");
 
         for i in 0..tables {
             let phys_base = i * CHUNK_MB * 1024 * 1024;
 
-            crate::vga::print_str("[PAGING] Mapping chunk...\n");
+            crate::drivers::x86::vga::print_str("[PAGING] Mapping chunk...\n");
 
             // Identity map low memory for early boot and kernel access
             let identity_table = page_dir.alloc_table(phys_base, false)?;
@@ -653,7 +642,7 @@ impl AddressSpace {
             return Err("User mapping into kernel space");
         }
         if user_accessible {
-            crate::memory_isolation::validate_mapping_request(
+            crate::security::memory_isolation::validate_mapping_request(
                 phys_aligned,
                 PAGE_SIZE,
                 writable,
@@ -832,7 +821,7 @@ impl AddressSpace {
             return Err("User mapping into kernel space");
         }
         if user_accessible {
-            crate::memory_isolation::validate_mapping_request(
+            crate::security::memory_isolation::validate_mapping_request(
                 phys_aligned,
                 PAGE_SIZE,
                 writable,
@@ -1077,7 +1066,7 @@ pub extern "C" fn rust_page_fault_handler_ex(
     eip: usize,
     esp: usize,
 ) {
-    use crate::vga;
+    use crate::drivers::x86::vga;
 
     // Update statistics
     unsafe {
@@ -1136,7 +1125,7 @@ pub extern "C" fn rust_page_fault_handler_ex(
 
     if eip != 0 {
         vga::print_str("EIP: 0x");
-        crate::advanced_commands::print_hex(eip);
+        crate::shell::advanced_commands::print_hex(eip);
         vga::print_str("\n");
     } else {
         vga::print_str("EIP: (unknown)\n");
@@ -1144,24 +1133,24 @@ pub extern "C" fn rust_page_fault_handler_ex(
 
     if esp != 0 {
         vga::print_str("ESP: 0x");
-        crate::advanced_commands::print_hex(esp);
+        crate::shell::advanced_commands::print_hex(esp);
         vga::print_str("\n");
     } else {
         vga::print_str("ESP: (unknown)\n");
     }
 
-    let stacks = crate::quantum_scheduler::kernel_stack_bounds();
+    let stacks = crate::scheduler::quantum_scheduler::kernel_stack_bounds();
     let mut esp_in_known_stack = false;
     for (idx, (start, end)) in stacks.iter().enumerate() {
         vga::print_str("KSTACK");
-        crate::commands::print_u32(idx as u32);
+        crate::shell::commands::print_u32(idx as u32);
         vga::print_str(": 0x");
-        crate::advanced_commands::print_hex(*start);
+        crate::shell::advanced_commands::print_hex(*start);
         vga::print_str(" - 0x");
-        crate::advanced_commands::print_hex(*end);
+        crate::shell::advanced_commands::print_hex(*end);
         vga::print_str("\n");
         vga::print_str("ESP in KSTACK");
-        crate::commands::print_u32(idx as u32);
+        crate::shell::commands::print_u32(idx as u32);
         vga::print_str(": ");
         let in_stack = esp >= *start && esp < *end;
         if in_stack {
@@ -1177,22 +1166,22 @@ pub extern "C" fn rust_page_fault_handler_ex(
             let addr = esp + (word_idx * core::mem::size_of::<u32>());
             let value = unsafe { core::ptr::read_volatile(addr as *const u32) };
             vga::print_str("  [ESP+0x");
-            crate::advanced_commands::print_hex(word_idx * core::mem::size_of::<u32>());
+            crate::shell::advanced_commands::print_hex(word_idx * core::mem::size_of::<u32>());
             vga::print_str("] @ 0x");
-            crate::advanced_commands::print_hex(addr);
+            crate::shell::advanced_commands::print_hex(addr);
             vga::print_str(" = 0x");
-            crate::advanced_commands::print_hex(value as usize);
+            crate::shell::advanced_commands::print_hex(value as usize);
             vga::print_str("\n");
         }
     }
 
-    let mmio_base = crate::e1000::mmio_base() as usize;
+    let mmio_base = crate::net::e1000::mmio_base() as usize;
     if mmio_base != 0 {
         let mmio_end = mmio_base + 128 * 1024;
         vga::print_str("E1000 MMIO: 0x");
-        crate::advanced_commands::print_hex(mmio_base);
+        crate::shell::advanced_commands::print_hex(mmio_base);
         vga::print_str(" - 0x");
-        crate::advanced_commands::print_hex(mmio_end);
+        crate::shell::advanced_commands::print_hex(mmio_end);
         vga::print_str("\n");
         vga::print_str("Fault in MMIO range: ");
         let in_range = fault_addr >= mmio_base && fault_addr < mmio_end;
@@ -1211,7 +1200,7 @@ pub static KERNEL_ADDRESS_SPACE: Mutex<Option<AddressSpace>> = Mutex::new(None);
 
 /// Initialize paging subsystem
 pub fn init() -> Result<(), &'static str> {
-    use crate::vga;
+    use crate::drivers::x86::vga;
 
     vga::print_str("[PAGING] Initializing virtual memory...\n");
 
@@ -1230,9 +1219,9 @@ pub fn init() -> Result<(), &'static str> {
     vga::print_str("[PAGING] Paging enabled\n");
 
     // Enforce write-protect in Ring 0 (CR0.WP) to honor read-only pages.
-    let mut cr0 = crate::asm_bindings::read_cr0();
+    let mut cr0 = crate::memory::asm_bindings::read_cr0();
     cr0 |= 1 << 16;
-    crate::asm_bindings::write_cr0(cr0);
+    crate::memory::asm_bindings::write_cr0(cr0);
     vga::print_str("[PAGING] CR0.WP enabled (kernel W^X enforced)\n");
 
     *KERNEL_ADDRESS_SPACE.lock() = Some(kernel_space);
@@ -1444,7 +1433,7 @@ pub unsafe fn set_page_directory(phys_addr: u32) {
 }
 
 use crate::memory;
-use crate::process::{process_manager, Pid};
+use crate::scheduler::process::{process_manager, Pid};
 
 #[no_mangle]
 pub extern "C" fn rust_copy_page_table(parent_pid_raw: u32, child_pid_raw: u32) -> i32 {

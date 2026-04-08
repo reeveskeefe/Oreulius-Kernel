@@ -98,7 +98,7 @@ Four concrete models exist, selected at compile time by `#[cfg(target_arch = …
 |---|---|---|---|
 | `X86_64Mmu` | `mmu_x86_64::AddressSpace` | same | `mmu_x86_64.rs` |
 | `AArch64Mmu` | `mmu_aarch64::AddressSpace` | same | `mmu_aarch64.rs` |
-| `X86LegacyMmu` | `crate::paging::AddressSpace` | same | `mmu_x86_legacy.rs` |
+| `X86LegacyMmu` | `crate::fs::paging::AddressSpace` | same | `mmu_x86_legacy.rs` |
 | `UnsupportedMmu` | `()` | `()` | `mmu_unsupported.rs` |
 
 The `UnsupportedMmu` model uses unit type `()` for both associated types, satisfying `Send + Sync + 'static` trivially (since `()` implements all three unconditionally), and panics in every method body. This satisfies the type system while making any actual MMU operation fail loudly at runtime, which is the desired behavior on an unrecognized architecture.

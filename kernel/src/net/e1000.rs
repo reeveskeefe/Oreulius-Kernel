@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Intel E1000 Ethernet Driver (Real Hardware)
@@ -21,7 +10,7 @@
 //! Supports real packet transmission and reception with descriptor rings.
 
 use super::netstack::NetworkInterface;
-use crate::pci::PciDevice;
+use crate::drivers::x86::pci::PciDevice;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
@@ -679,7 +668,7 @@ impl E1000Driver {
                 return Err("Buffer too small");
             }
 
-            crate::asm_bindings::fast_memcpy(&mut buffer[..len], &RX_BUFFERS.data[desc_idx][..len]);
+            crate::memory::asm_bindings::fast_memcpy(&mut buffer[..len], &RX_BUFFERS.data[desc_idx][..len]);
 
             RX_DESCS[desc_idx].status = 0;
             self.rx_tail = desc_idx;
@@ -717,7 +706,7 @@ impl E1000Driver {
                     break; // ring empty
                 }
                 let len = (desc.length as usize).min(2048);
-                crate::asm_bindings::fast_memcpy(
+                crate::memory::asm_bindings::fast_memcpy(
                     &mut out_bufs[received][..len],
                     &RX_BUFFERS.data[desc_idx][..len],
                 );
@@ -751,11 +740,11 @@ impl E1000Driver {
             return Err("Frame too large");
         }
         unsafe {
-            let start_ticks = crate::pit::get_ticks();
+            let start_ticks = crate::scheduler::pit::get_ticks();
             let mut spins = 0usize;
             while TX_DESCS[self.tx_tail].status & E1000_TXD_STAT_DD == 0 {
                 if spins >= TX_DESC_READY_SPINS
-                    || crate::pit::get_ticks().saturating_sub(start_ticks)
+                    || crate::scheduler::pit::get_ticks().saturating_sub(start_ticks)
                         >= TX_DESC_READY_TIMEOUT_TICKS
                 {
                     return Err("TX busy");
@@ -764,7 +753,7 @@ impl E1000Driver {
                 core::hint::spin_loop();
             }
             TX_BUFFERS.data[self.tx_tail][..frame_len].fill(0);
-            crate::asm_bindings::fast_memcpy(
+            crate::memory::asm_bindings::fast_memcpy(
                 &mut TX_BUFFERS.data[self.tx_tail][..data.len()],
                 data,
             );

@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 use core::ptr;
@@ -539,7 +528,7 @@ impl AddressSpace {
 
             let parent_pml4 = X86_64Mmu::pml4_ptr_from_root(parent_root);
             let child_pml4 = X86_64Mmu::pml4_ptr_from_root(child_root);
-            let user_top = crate::paging::USER_TOP;
+            let user_top = crate::fs::paging::USER_TOP;
             if user_top == 0 {
                 return Ok(Self {
                     cr3_phys: child_root,
@@ -723,14 +712,14 @@ impl AddressSpace {
         if count == 0 {
             return Ok(());
         }
-        if virt_addr >= crate::paging::USER_TOP {
+        if virt_addr >= crate::fs::paging::USER_TOP {
             return Err("User mapping into kernel space");
         }
         for i in 0..count {
             let vaddr = virt_addr
                 .checked_add(i.checked_mul(PAGE_SIZE).ok_or("virt overflow")?)
                 .ok_or("virt overflow")?;
-            if vaddr >= crate::paging::USER_TOP {
+            if vaddr >= crate::fs::paging::USER_TOP {
                 return Err("User mapping into kernel space");
             }
             let phys = crate::memory::allocate_frame()?;
@@ -749,11 +738,11 @@ impl AddressSpace {
         let virt_aligned = align_down(virt_addr, PAGE_SIZE);
         let phys_aligned = align_down(phys_addr, PAGE_SIZE);
 
-        if user_accessible && virt_aligned >= crate::paging::USER_TOP {
+        if user_accessible && virt_aligned >= crate::fs::paging::USER_TOP {
             return Err("User mapping into kernel space");
         }
         if user_accessible {
-            crate::memory_isolation::validate_mapping_request(
+            crate::security::memory_isolation::validate_mapping_request(
                 phys_aligned,
                 PAGE_SIZE,
                 writable,

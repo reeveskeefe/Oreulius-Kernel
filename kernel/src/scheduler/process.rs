@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Oreulius Process Manager
@@ -29,8 +18,8 @@
 #![allow(dead_code)]
 
 use crate::arch::mmu::PhysAddr;
-use crate::process_platform::{self, ChannelCapability};
-use crate::scheduler_platform::{self, ProcessContext};
+use crate::scheduler::process_platform::{self, ChannelCapability};
+use crate::scheduler::scheduler_platform::{self, ProcessContext};
 use core::fmt;
 use core::sync::atomic::{AtomicU8, Ordering};
 use spin::Mutex;
@@ -65,7 +54,7 @@ pub const CLONE_CAPS: u32 = 0x0002;
 // ============================================================================
 
 /// Process ID newtype (re-exported through process_platform for cross-arch ports)
-pub use crate::process_platform::Pid;
+pub use crate::scheduler::process_platform::Pid;
 
 // ============================================================================
 // Process State
@@ -471,7 +460,7 @@ impl ProcessTable {
         child.parent = Some(parent_pid);
         child.state = ProcessState::Ready;
         child.cpu_time = 0;
-        child.created_at = crate::pit::get_ticks();
+        child.created_at = crate::scheduler::pit::get_ticks();
         child.has_used_fpu = false;
         child.fpu_state = FpuState([0u8; 512]);
 

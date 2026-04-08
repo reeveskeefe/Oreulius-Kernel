@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Network Reactor: single-owner, event-driven network processing.
@@ -264,7 +253,7 @@ fn drive_runtime_progress(stack: &mut NetworkStack, last_tick: &mut u64) -> bool
         did_work = true;
     }
 
-    let now = crate::pit::get_ticks();
+    let now = crate::scheduler::pit::get_ticks();
     if *last_tick < now {
         while *last_tick < now {
             stack.tick();
@@ -277,7 +266,7 @@ fn drive_runtime_progress(stack: &mut NetworkStack, last_tick: &mut u64) -> bool
 }
 
 fn wait_for_runtime_progress() {
-    crate::quantum_scheduler::yield_now();
+    crate::scheduler::quantum_scheduler::yield_now();
 }
 
 fn dispatch_request(
@@ -304,10 +293,10 @@ fn dispatch_request(
             remote_port,
         } => match stack.tcp_connect(*remote_ip, *remote_port) {
             Ok(conn_id) => {
-                let timeout_ticks = (crate::pit::get_frequency() as u64)
+                let timeout_ticks = (crate::scheduler::pit::get_frequency() as u64)
                     .saturating_mul(5)
                     .max(1);
-                let start_ticks = crate::pit::get_ticks();
+                let start_ticks = crate::scheduler::pit::get_ticks();
                 loop {
                     match stack.tcp_connection_state(conn_id) {
                         Some(4) | Some(7) => {
@@ -317,7 +306,7 @@ fn dispatch_request(
                         None => break NetResponse::Err("TCP connect failed"),
                     }
 
-                    if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                    if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
                         break NetResponse::Err("TCP connect timeout");
                     }
 
@@ -338,10 +327,10 @@ fn dispatch_request(
         }
         NetRequest::TcpRecv { conn_id, max_len } => {
             let limit = core::cmp::min(*max_len as usize, MAX_TCP_IO);
-            let timeout_ticks = (crate::pit::get_frequency() as u64)
+            let timeout_ticks = (crate::scheduler::pit::get_frequency() as u64)
                 .saturating_mul(2)
                 .max(1);
-            let start_ticks = crate::pit::get_ticks();
+            let start_ticks = crate::scheduler::pit::get_ticks();
             loop {
                 let out = unsafe { &mut TCP_RECV_STAGE[..limit] };
                 match stack.tcp_recv(*conn_id, out) {
@@ -352,7 +341,7 @@ fn dispatch_request(
                         if stack.tcp_connection_eof(*conn_id) {
                             break NetResponse::U64(0);
                         }
-                        if crate::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                        if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
                             break NetResponse::U64(0);
                         }
                         if !drive_runtime_progress(stack, last_tick) {
@@ -559,15 +548,15 @@ fn request(req: NetRequest) -> Result<NetResponse, &'static str> {
     core::sync::atomic::fence(Ordering::Release);
     REQ_STATE.store(2, Ordering::Release);
 
-    let timeout_ticks = (crate::pit::get_frequency() as u64)
+    let timeout_ticks = (crate::scheduler::pit::get_frequency() as u64)
         .saturating_mul(5)
         .max(500);
-    let start = crate::pit::get_ticks();
+    let start = crate::scheduler::pit::get_ticks();
     loop {
         if REQ_STATE.load(Ordering::Acquire) == 3 {
             break;
         }
-        if crate::pit::get_ticks().saturating_sub(start) > timeout_ticks {
+        if crate::scheduler::pit::get_ticks().saturating_sub(start) > timeout_ticks {
             REQ_STATE.store(0, Ordering::Release);
             return Err("Network reactor request timeout");
         }
@@ -587,7 +576,7 @@ pub fn run() -> ! {
     let stack = unsafe { &mut *stack_ptr };
     #[cfg(target_arch = "aarch64")]
     {
-        if let Some(base) = crate::arch::aarch64_virt::discovered_virtio_net_base() {
+        if let Some(base) = crate::arch::aarch64::aarch64_virt::discovered_virtio_net_base() {
             match super::virtio_net::init(base) {
                 Ok(mac) => {
                     if stack.seed_aarch64_qemu_defaults(mac) {
@@ -612,7 +601,7 @@ pub fn run() -> ! {
     }
     REACTOR_STARTED.store(1, Ordering::Release);
     let mut marked_ready = false;
-    let mut last_tick = crate::pit::get_ticks();
+    let mut last_tick = crate::scheduler::pit::get_ticks();
 
     loop {
         if !marked_ready && stack.readiness_prereqs_met() {
@@ -639,7 +628,7 @@ pub fn run() -> ! {
             && NET_IRQ_PENDING.load(Ordering::Relaxed) == 0
             && REQ_STATE.load(Ordering::Relaxed) != 2
         {
-            crate::quantum_scheduler::yield_now();
+            crate::scheduler::quantum_scheduler::yield_now();
         }
     }
 }

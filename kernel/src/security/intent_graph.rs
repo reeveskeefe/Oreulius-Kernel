@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Capability intent graph with predictive revocation.
@@ -23,12 +12,12 @@
 #![allow(dead_code)]
 
 use crate::capability::{CapabilityType, Rights};
-use crate::intent_wasm::{self, INTENT_MODEL_FEATURES};
+use crate::execution::intent_wasm::{self, INTENT_MODEL_FEATURES};
 use crate::ipc::ProcessId;
-use crate::linear_capability::{ScalarTensor, SimdTensor};
+use crate::math::linear_capability::{ScalarTensor, SimdTensor};
+use crate::security::intent_graph_data::{CTMC_Q, CTMC_SCALE, INTENT_NODE_COUNT};
 
 const MAX_INTENT_PROCESSES: usize = 64;
-const INTENT_NODE_COUNT: usize = 9;
 const INTENT_TRANSITION_COUNT: usize = INTENT_NODE_COUNT * INTENT_NODE_COUNT;
 const INTENT_OBJECT_BLOOM_WORDS: usize = 4;
 
@@ -55,44 +44,6 @@ pub const INTENT_ALERT_COOLDOWN_MS: u16 = 1000;
 /// Minimum restrict emission gap (milliseconds).
 pub const INTENT_RESTRICT_COOLDOWN_MS: u16 = 500;
 
-/// CTMC integer-scaled (×1024) generator matrix Q for the 9 IntentNode states.
-///
-/// Rows represent "from" states (indexed by IntentNode discriminant).
-/// Columns represent "to" states.
-/// Row sums must equal zero (holding time on diagonal = -sum of off-diagonal row).
-///
-/// Rates are empirical starting points; calibrate from production telemetry.
-/// Fixed-point ×1024 allows first-order Euler steps in pure integer arithmetic:
-///   P(t+dt) ≈ P(t) + P(t)·Q·dt   where dt is expressed in 1/1024-tick units.
-///
-/// Node index mapping (IntentNode discriminant):
-///   0=CapabilityProbe  1=CapabilityDenied  2=InvalidCapability
-///   3=IpcSend          4=IpcRecv           5=WasmCall
-///   6=FsRead           7=FsWrite           8=Syscall
-#[rustfmt::skip]
-const CTMC_Q: [[i32; INTENT_NODE_COUNT]; INTENT_NODE_COUNT] = [
-    // From CapabilityProbe: likely to Syscall or Denied
-    [ -3072,  1024,   512,   256,   256,   256,   256,   256,   256 ],
-    // From CapabilityDenied: high rate to InvalidCapability or stays (self-loop absorbed)
-    [  256, -3072,  1536,   256,   256,   256,   256,   256,   256 - 256 + 256 ],
-    // From InvalidCapability: high risk — tends toward Syscall anomaly
-    [  256,   512, -3072,   256,   256,   256,   256,   256,  1024 ],
-    // From IpcSend: mostly paired with IpcRecv
-    [  256,   256,   256, -3072,  1536,   256,   256,   256,   256 - 256 + 256 - 256 + 256 - 256 + 256 ],
-    // From IpcRecv
-    [  256,   256,   256,  1536, -3072,   256,   256,   256,   256 - 256 + 256 - 256 + 256 - 256 + 256 ],
-    // From WasmCall: can probe capabilities or hit syscall
-    [  512,   256,   256,   256,   256, -3072,   256,   256,  1024 - 256 + 256 - 256 + 256 - 256 + 256 ],
-    // From FsRead
-    [  256,   256,   256,   256,   256,   256, -3072,   512,  1024 - 256 + 256 - 256 + 256 - 256 + 256 ],
-    // From FsWrite: high correlation with capability checks
-    [  512,   512,   256,   256,   256,   256,   512, -3072,   256 - 256 + 256 - 256 + 256 - 256 + 256 ],
-    // From Syscall: returns to various states
-    [  512,   256,   256,   384,   384,   256,   384,   384, -3072 - 256 + 256 - 256 + 256 - 256 + 256 ],
-];
-
-/// CTMC fixed-point scale factor.
-const CTMC_SCALE: i32 = 1024;
 /// Initial state vector: P(Syscall) = 1.0 (×CTMC_SCALE), all others 0.
 /// Syscall is the entry node for all processes.
 const CTMC_INIT: [i32; INTENT_NODE_COUNT] = [0, 0, 0, 0, 0, 0, 0, 0, CTMC_SCALE];
@@ -656,7 +607,7 @@ impl IntentGraph {
     }
 
     fn epoch_sec(now_ticks: u64) -> u64 {
-        let hz = crate::pit::get_frequency() as u64;
+        let hz = crate::scheduler::pit::get_frequency() as u64;
         if hz == 0 {
             now_ticks
         } else {
@@ -957,16 +908,16 @@ impl IntentGraph {
         }
 
         // Push telemetry event to the lock-free ring (best-effort; dropped if full).
-        let event = crate::wait_free_ring::TelemetryEvent::new(
+        let event = crate::memory::wait_free_ring::TelemetryEvent::new(
             pid.0,
             signal.node as u8,
             signal.cap_type as u8,
             score as u8,
             now_ticks,
         );
-        let _ = crate::wait_free_ring::TELEMETRY_RING.push(event);
+        let _ = crate::memory::wait_free_ring::TELEMETRY_RING.push(event);
 
-        let hz = (crate::pit::get_frequency() as u64).max(1);
+        let hz = (crate::scheduler::pit::get_frequency() as u64).max(1);
         let alert_gap = Self::millis_to_ticks(policy.alert_cooldown_ms, hz);
         let restrict_gap = Self::millis_to_ticks(policy.restrict_cooldown_ms, hz);
 

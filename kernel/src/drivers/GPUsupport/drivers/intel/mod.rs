@@ -17,12 +17,12 @@
  * Manual.
  */
 
-use crate::drivers::gpu_support::caps::GpuCapabilities;
-use crate::drivers::gpu_support::core::{GpuBarInfo, GpuClass, GpuProbeReport, GpuTier};
-use crate::drivers::gpu_support::display::scanout::ScanoutBackendId;
-use crate::drivers::gpu_support::drivers::simplefb;
-use crate::drivers::gpu_support::errors::GpuError;
-use crate::drivers::gpu_support::transport::mmio::MmioRegion;
+use crate::drivers::x86::gpu_support::caps::GpuCapabilities;
+use crate::drivers::x86::gpu_support::core::{GpuBarInfo, GpuClass, GpuProbeReport, GpuTier};
+use crate::drivers::x86::gpu_support::display::scanout::ScanoutBackendId;
+use crate::drivers::x86::gpu_support::drivers::simplefb;
+use crate::drivers::x86::gpu_support::errors::GpuError;
+use crate::drivers::x86::gpu_support::transport::mmio::MmioRegion;
 
 // ---------------------------------------------------------------------------
 // Public well-documented Intel display register offsets

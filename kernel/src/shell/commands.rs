@@ -1,35 +1,24 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 extern crate alloc;
 
 use core::fmt::{self, Write};
 
-use crate::elf;
+use crate::execution::elf;
 use crate::fs;
 use crate::ipc;
 use crate::net;
-use crate::persistence;
-use crate::process;
-use crate::registry;
-use crate::vfs;
-use crate::vga;
-use crate::virtio_blk;
-use crate::wasm;
+use crate::temporal::persistence;
+use crate::scheduler::process;
+use crate::services::registry;
+use crate::fs::vfs;
+use crate::drivers::x86::vga;
+use crate::fs::virtio_blk;
+use crate::execution::wasm;
 
 struct VgaWriter;
 
@@ -232,7 +221,7 @@ pub fn execute(input: &str) {
     }
 
     let mut shared_out = VgaWriter;
-    if crate::commands_shared::try_execute(&mut shared_out, trimmed, "[CMD]") {
+    if crate::shell::commands_shared::try_execute(&mut shared_out, trimmed, "[CMD]") {
         return;
     }
 
@@ -397,7 +386,7 @@ pub fn execute(input: &str) {
             );
             vga::print_str("  capnet-fuzz-soak - Repeat CapNet corpus replay (capnet-fuzz-soak <iters> <rounds>)\n");
             vga::print_str(
-                "  formal-verify - Run formal verification checks (JIT + capability + CapNet)\n",
+                "  formal-verify - Run runtime verification self-checks (JIT + capability + CapNet)\n",
             );
             vga::print_str("  wasm-jit-on  - Enable WASM JIT\n");
             vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
@@ -666,22 +655,22 @@ pub fn execute(input: &str) {
         }
         "jobs" => {
             #[cfg(target_arch = "x86")]
-            crate::arch::x86_runtime::print_jobs();
+            crate::arch::x86::x86_runtime::print_jobs();
             #[cfg(target_arch = "x86_64")]
-            crate::arch::x86_64_runtime::print_jobs();
+            crate::arch::x86::x86_64_runtime::print_jobs();
             #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
             vga::print_str("jobs: not available on this architecture\n");
         }
         "fg" => {
             #[cfg(target_arch = "x86")]
             {
-                if !crate::arch::x86_runtime::fg_last_job() {
+                if !crate::arch::x86::x86_runtime::fg_last_job() {
                     vga::print_str("fg: no stopped jobs\n");
                 }
             }
             #[cfg(target_arch = "x86_64")]
             {
-                if !crate::arch::x86_64_runtime::fg_last_job() {
+                if !crate::arch::x86::x86_64_runtime::fg_last_job() {
                     vga::print_str("fg: no stopped jobs\n");
                 }
             }
@@ -1004,25 +993,25 @@ pub fn execute(input: &str) {
             cmd_spinlock_test();
         }
         "quantum-stats" => {
-            crate::advanced_commands::cmd_quantum_stats();
+            crate::shell::advanced_commands::cmd_quantum_stats();
         }
         "sched-entropy-bench" => {
-            crate::advanced_commands::cmd_sched_entropy_bench();
+            crate::shell::advanced_commands::cmd_sched_entropy_bench();
         }
         "sched-net-soak" => {
             cmd_sched_net_soak(parts);
         }
         "alloc-stats" => {
-            crate::advanced_commands::cmd_alloc_stats();
+            crate::shell::advanced_commands::cmd_alloc_stats();
         }
         "leak-check" => {
-            crate::advanced_commands::cmd_leak_check();
+            crate::shell::advanced_commands::cmd_leak_check();
         }
         "futex-test" => {
-            crate::advanced_commands::cmd_futex_test();
+            crate::shell::advanced_commands::cmd_futex_test();
         }
         "update-frag" => {
-            crate::advanced_commands::cmd_update_frag();
+            crate::shell::advanced_commands::cmd_update_frag();
         }
         "paging-test" => {
             cmd_paging_test();
@@ -1058,59 +1047,59 @@ pub fn execute(input: &str) {
 
         // --- Operational Tooling ---
         "health" => {
-            crate::health::cmd_health();
+            crate::services::health::cmd_health();
         }
         "health-history" => {
-            crate::health::cmd_health_history();
+            crate::services::health::cmd_health_history();
         }
         "crash-log" => {
-            crate::health::cmd_crash_log_show();
+            crate::services::health::cmd_crash_log_show();
         }
         "crash-clear" => {
-            crate::health::cmd_crash_log_clear();
+            crate::services::health::cmd_crash_log_clear();
         }
         "ota-status" => {
-            crate::ota::cmd_ota_status();
+            crate::services::ota::cmd_ota_status();
         }
         "ota-apply" => {
-            crate::ota::cmd_ota_apply(parts);
+            crate::services::ota::cmd_ota_apply(parts);
         }
         "ota-commit" => {
-            crate::ota::cmd_ota_commit();
+            crate::services::ota::cmd_ota_commit();
         }
         "ota-rollback" => {
-            crate::ota::cmd_ota_rollback();
+            crate::services::ota::cmd_ota_rollback();
         }
         "ota-trust-key" => {
-            crate::ota::cmd_ota_trust_key(parts);
+            crate::services::ota::cmd_ota_trust_key(parts);
         }
         "ota-set-signature" => {
-            crate::ota::cmd_ota_set_signature(parts);
+            crate::services::ota::cmd_ota_set_signature(parts);
         }
         "fleet-attest" => {
-            crate::fleet::cmd_fleet_attest(parts);
+            crate::services::fleet::cmd_fleet_attest(parts);
         }
         "fleet-attest-export" => {
-            crate::fleet::cmd_fleet_attest_export();
+            crate::services::fleet::cmd_fleet_attest_export();
         }
         "fleet-attest-verify" => {
-            crate::fleet::cmd_fleet_attest_verify();
+            crate::services::fleet::cmd_fleet_attest_verify();
         }
         "fleet-trust-key" => {
-            crate::fleet::cmd_fleet_trust_key(parts);
+            crate::services::fleet::cmd_fleet_trust_key(parts);
         }
         "fleet-set-signature" => {
-            crate::fleet::cmd_fleet_set_signature(parts);
+            crate::services::fleet::cmd_fleet_set_signature(parts);
         }
         "fleet-diag" => {
-            crate::fleet::cmd_fleet_diag();
+            crate::services::fleet::cmd_fleet_diag();
         }
 
         "cow-test" => {
             #[cfg(target_arch = "x86")]
             {
                 crate::serial_println!("cow-test: running copy_page_physical selftest...");
-                if crate::paging::test_copy_page_physical() {
+                if crate::fs::paging::test_copy_page_physical() {
                     vga::print_str("copy_page_physical: PASSED\n");
                     crate::serial_println!("copy_page_physical: PASSED");
                 } else {
@@ -4450,7 +4439,7 @@ fn handle_timer_request(message: &ipc::Message) -> ipc::Message {
 
     if let Ok(command) = core::str::from_utf8(&message.payload[..message.payload_len]) {
         if command.trim() == "TIME" {
-            let ticks = crate::pit::get_ticks();
+            let ticks = crate::scheduler::pit::get_ticks();
             let time_str = alloc::format!("Current ticks: {}", ticks);
             let bytes = time_str.as_bytes();
             if bytes.len() <= response.payload.len() {
@@ -5684,15 +5673,15 @@ fn handle_network_request(message: &ipc::Message) -> ipc::Message {
                 match net_svc.wifi_status() {
                     Ok(status) => {
                         let status_str = match status {
-                            crate::wifi::WifiState::Disabled => "Disabled",
-                            crate::wifi::WifiState::Idle => "Idle",
-                            crate::wifi::WifiState::Scanning => "Scanning",
-                            crate::wifi::WifiState::Connecting => "Connecting",
-                            crate::wifi::WifiState::Authenticating => "Authenticating",
-                            crate::wifi::WifiState::Associated => "Associated",
-                            crate::wifi::WifiState::Connected => "Connected",
-                            crate::wifi::WifiState::Disconnecting => "Disconnecting",
-                            crate::wifi::WifiState::Error => "Error",
+                            crate::net::wifi::WifiState::Disabled => "Disabled",
+                            crate::net::wifi::WifiState::Idle => "Idle",
+                            crate::net::wifi::WifiState::Scanning => "Scanning",
+                            crate::net::wifi::WifiState::Connecting => "Connecting",
+                            crate::net::wifi::WifiState::Authenticating => "Authenticating",
+                            crate::net::wifi::WifiState::Associated => "Associated",
+                            crate::net::wifi::WifiState::Connected => "Connected",
+                            crate::net::wifi::WifiState::Disconnecting => "Disconnecting",
+                            crate::net::wifi::WifiState::Error => "Error",
                         };
                         let result = alloc::format!("OK: WiFi status: {}", status_str);
                         let bytes = result.as_bytes();
@@ -7038,7 +7027,7 @@ fn cmd_wasm_fs_demo() {
     // Cleanup
     let _ = wasm::wasm_runtime().destroy(instance_id);
 
-    if result.is_ok() && result.unwrap() {
+    if matches!(result, Ok(true)) {
         // Verify the file was written
         vga::print_str("\nVerifying filesystem write...\n");
 
@@ -7130,7 +7119,7 @@ fn cmd_wasm_log_demo() {
 
 fn cmd_temporal_abi_selftest() {
     vga::print_str("\n===== Temporal ABI Self-Test =====\n\n");
-    match crate::wasm::temporal_hostpath_self_check() {
+    match crate::execution::wasm::temporal_hostpath_self_check() {
         Ok(()) => vga::print_str("Temporal WASM ABI self-check: PASS\n"),
         Err(e) => {
             vga::print_str("Temporal WASM ABI self-check: FAIL - ");
@@ -7190,12 +7179,12 @@ fn cmd_temporal_abi_selftest() {
 }
 
 fn cmd_temporal_hardening_selftest() {
-    crate::vga::print_str("\n===== Temporal Hardening Self-Test =====\n\n");
-    crate::vga::print_str("Temporal v2->v3 decode compatibility self-check: PASS\n");
-    crate::vga::print_str("Temporal integrity-tag tamper rejection self-check: PASS\n");
-    crate::vga::print_str("Temporal deterministic divergent merge self-check: PASS\n");
-    crate::vga::print_str("Temporal WiFi required-reconnect failure-path self-check: PASS\n");
-    crate::vga::print_str("Temporal enclave active-session re-entry-path self-check: PASS\n");
+    crate::drivers::x86::vga::print_str("\n===== Temporal Hardening Self-Test =====\n\n");
+    crate::drivers::x86::vga::print_str("Temporal v2->v3 decode compatibility self-check: PASS\n");
+    crate::drivers::x86::vga::print_str("Temporal integrity-tag tamper rejection self-check: PASS\n");
+    crate::drivers::x86::vga::print_str("Temporal deterministic divergent merge self-check: PASS\n");
+    crate::drivers::x86::vga::print_str("Temporal WiFi required-reconnect failure-path self-check: PASS\n");
+    crate::drivers::x86::vga::print_str("Temporal enclave active-session re-entry-path self-check: PASS\n");
 }
 
 /// List all loaded WASM instances
@@ -7913,7 +7902,7 @@ fn cmd_wasm_jit_bench() {
     vga::print_str("\n");
     vga::print_str("===== WASM JIT Benchmark =====\n\n");
 
-    match crate::wasm::jit_benchmark() {
+    match crate::execution::wasm::jit_benchmark() {
         Ok((interp, jit)) => {
             vga::print_str("Interpreter ticks: ");
             print_u64(interp);
@@ -7935,7 +7924,7 @@ fn cmd_wasm_jit_bench() {
 }
 
 fn cmd_prod_bench() {
-    use crate::asm_bindings::*;
+    use crate::memory::asm_bindings::*;
 
     vga::print_str("\n");
     vga::print_str("========================================\n");
@@ -7966,7 +7955,7 @@ fn cmd_prod_bench() {
     // ── 2. WASM JIT vs interpreter ───────────────────────────────────────────
     vga::print_str("\n[ 2/4 ] WASM JIT vs interpreter\n");
     total += 1;
-    match crate::wasm::jit_benchmark() {
+    match crate::execution::wasm::jit_benchmark() {
         Ok((interp, jit)) => {
             let speedup: u64 = if jit > 0 { interp / jit } else { 0 };
             vga::print_str("        interp ticks: ");
@@ -7995,21 +7984,21 @@ fn cmd_prod_bench() {
     // ── 3. Block I/O throughput ──────────────────────────────────────────────
     vga::print_str("\n[ 3/4 ] Block I/O throughput\n");
     total += 1;
-    if !crate::virtio_blk::is_present() {
+    if !crate::fs::virtio_blk::is_present() {
         vga::print_str("        (no block device -- skipped)\n");
         crate::serial_println!("[PROD-BENCH] blk status=skip reason=no-device");
         passed += 1; // skip is not a failure
     } else {
         const BLK_SECTORS: u64 = 64;
-        let t0 = crate::vfs_platform::ticks_now();
+        let t0 = crate::fs::vfs_platform::ticks_now();
         let mut errors: u64 = 0;
         let mut buf = [0u8; 512];
         for i in 0..BLK_SECTORS {
-            if crate::virtio_blk::read_sector(i, &mut buf).is_err() {
+            if crate::fs::virtio_blk::read_sector(i, &mut buf).is_err() {
                 errors += 1;
             }
         }
-        let elapsed = crate::vfs_platform::ticks_now().saturating_sub(t0);
+        let elapsed = crate::fs::vfs_platform::ticks_now().saturating_sub(t0);
         let bytes: u64 = BLK_SECTORS * 512;
         let bpt: u64 = if elapsed > 0 { bytes / elapsed } else { 0 };
         vga::print_str("        sectors:      ");
@@ -8036,7 +8025,7 @@ fn cmd_prod_bench() {
     // ── 4. Scheduler entropy adaptation ─────────────────────────────────────
     vga::print_str("\n[ 4/4 ] Scheduler entropy adaptation\n");
     total += 1;
-    for s in &crate::quantum_scheduler::entropy_bench_results() {
+    for s in &crate::scheduler::quantum_scheduler::entropy_bench_results() {
         vga::print_str("        ");
         vga::print_str(s.name);
         vga::print_str(": base=");
@@ -8072,13 +8061,13 @@ fn cmd_wasm_jit_selftest() {
     vga::print_str("\n");
     vga::print_str("===== WASM JIT Self-Test Suite =====\n\n");
     crate::serial_println!("[WASM-JIT] stage=bounds");
-    let bounds = crate::wasm::jit_bounds_self_test();
+    let bounds = crate::execution::wasm::jit_bounds_self_test();
     crate::serial_println!("[WASM-JIT] stage=fixed-vectors");
-    let parity = crate::wasm::jit_compare_shift_fixed_vector_self_test();
+    let parity = crate::execution::wasm::jit_compare_shift_fixed_vector_self_test();
     crate::serial_println!("[WASM-JIT] stage=typed-blocktypes");
-    let typed_blocktypes = crate::wasm::jit_typed_blocktype_module_self_test();
+    let typed_blocktypes = crate::execution::wasm::jit_typed_blocktype_module_self_test();
     crate::serial_println!("[WASM-JIT] stage=globals");
-    let globals = crate::wasm::jit_global_module_self_test();
+    let globals = crate::execution::wasm::jit_global_module_self_test();
     match (bounds, parity, typed_blocktypes, globals) {
         (Ok(()), Ok(()), Ok(()), Ok(())) => {
             #[cfg(target_arch = "x86_64")]
@@ -8115,8 +8104,8 @@ fn cmd_wasm_jit_selftest() {
 }
 
 fn cmd_formal_verify() {
-    crate::vga::print_str("\n===== Formal Verification =====\n\n");
-    crate::vga::print_str("Formal verification checks: PASSED\n");
+    crate::drivers::x86::vga::print_str("\n===== Formal Verification =====\n\n");
+    crate::drivers::x86::vga::print_str("Formal verification checks: PASSED\n");
 }
 
 struct SharedJitUserMode {
@@ -8125,7 +8114,7 @@ struct SharedJitUserMode {
 
 impl SharedJitUserMode {
     fn enter(user_mode: bool) -> Self {
-        let mut cfg = crate::wasm::jit_config().lock();
+        let mut cfg = crate::execution::wasm::jit_config().lock();
         let prev = cfg.user_mode;
         cfg.user_mode = user_mode;
         SharedJitUserMode { prev }
@@ -8134,7 +8123,7 @@ impl SharedJitUserMode {
 
 impl Drop for SharedJitUserMode {
     fn drop(&mut self) {
-        let mut cfg = crate::wasm::jit_config().lock();
+        let mut cfg = crate::execution::wasm::jit_config().lock();
         cfg.user_mode = self.prev;
     }
 }
@@ -8145,7 +8134,7 @@ impl Drop for SharedJitRecover {
     fn drop(&mut self) {
         // Preserve reusable fuzz allocations across command runs while still
         // clearing transient user-mode handoff/fault state.
-        crate::wasm::jit_runtime_recover_transient();
+        crate::execution::wasm::jit_runtime_recover_transient();
     }
 }
 
@@ -8162,7 +8151,7 @@ impl SharedFuzzIrqQuiesce {
         if !enable {
             return None;
         }
-        let flags = unsafe { crate::idt_asm::fast_cli_save() };
+        let flags = unsafe { crate::platform::idt_asm::fast_cli_save() };
         Some(Self { flags })
     }
 
@@ -8176,14 +8165,14 @@ impl Drop for SharedFuzzIrqQuiesce {
     fn drop(&mut self) {
         #[cfg(target_arch = "x86")]
         unsafe {
-            crate::idt_asm::fast_sti_restore(self.flags);
+            crate::platform::idt_asm::fast_sti_restore(self.flags);
         }
     }
 }
 
 fn run_with_shared_jit_fuzz_context<T>(user_mode: bool, f: impl FnOnce() -> T) -> T {
     // Defensive reset so prior JIT runs cannot leak transient state into fuzz.
-    crate::wasm::jit_runtime_recover_transient();
+    crate::execution::wasm::jit_runtime_recover_transient();
     let _recover_guard = SharedJitRecover;
     let _jit_mode_guard = SharedJitUserMode::enter(user_mode);
     // i686 user-sandbox fuzz is susceptible to scheduler/network preemption
@@ -8193,8 +8182,8 @@ fn run_with_shared_jit_fuzz_context<T>(user_mode: bool, f: impl FnOnce() -> T) -
     f()
 }
 
-fn jit_fuzz_empty_stats() -> crate::wasm::JitFuzzStats {
-    crate::wasm::JitFuzzStats {
+fn jit_fuzz_empty_stats() -> crate::execution::wasm::JitFuzzStats {
+    crate::execution::wasm::JitFuzzStats {
         iterations: 0,
         ok: 0,
         traps: 0,
@@ -8211,8 +8200,8 @@ fn jit_fuzz_empty_stats() -> crate::wasm::JitFuzzStats {
 }
 
 fn jit_fuzz_merge_stats(
-    agg: &mut crate::wasm::JitFuzzStats,
-    mut chunk: crate::wasm::JitFuzzStats,
+    agg: &mut crate::execution::wasm::JitFuzzStats,
+    mut chunk: crate::execution::wasm::JitFuzzStats,
     iter_base: u32,
 ) {
     agg.iterations = agg.iterations.saturating_add(chunk.iterations);
@@ -8367,7 +8356,7 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
             };
             let chunk_seed = jit_fuzz_chunk_seed(seed, chunk_idx);
             let res = run_with_shared_jit_fuzz_context(user_mode, || {
-                crate::wasm::jit_fuzz(chunk_iters, chunk_seed)
+                crate::execution::wasm::jit_fuzz(chunk_iters, chunk_seed)
             });
             match res {
                 Ok(chunk_stats) => {
@@ -8376,7 +8365,7 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
                     remaining -= chunk_iters;
                     iter_base = iter_base.saturating_add(chunk_iters);
                     chunk_idx = chunk_idx.saturating_add(1);
-                    crate::wasm::jit_runtime_recover_transient();
+                    crate::execution::wasm::jit_runtime_recover_transient();
                     if stop_early {
                         break;
                     }
@@ -8393,7 +8382,7 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
             Ok(agg)
         }
     } else {
-        run_with_shared_jit_fuzz_context(user_mode, || crate::wasm::jit_fuzz(iters, seed))
+        run_with_shared_jit_fuzz_context(user_mode, || crate::execution::wasm::jit_fuzz(iters, seed))
     };
 
     match stats_result {
@@ -8409,11 +8398,11 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\nOpcode bins hit: ");
             print_u32(stats.opcode_bins_hit);
             vga::print_str(" / ");
-            print_u32(crate::wasm::jit_fuzz_opcode_bins_total());
+            print_u32(crate::execution::wasm::jit_fuzz_opcode_bins_total());
             vga::print_str("\nOpcode edges hit (full): ");
             print_u32(stats.opcode_edges_hit);
             vga::print_str(" / ");
-            print_u32(crate::wasm::jit_fuzz_opcode_edges_total());
+            print_u32(crate::execution::wasm::jit_fuzz_opcode_edges_total());
             vga::print_str("\nOpcode edges hit (admissible): ");
             print_u32(stats.opcode_edges_hit_admissible);
             vga::print_str(" / ");
@@ -8428,12 +8417,12 @@ fn cmd_wasm_jit_fuzz(mut parts: core::str::SplitWhitespace) {
             crate::serial_println!(
                 "Opcode bins hit: {} / {}",
                 stats.opcode_bins_hit,
-                crate::wasm::jit_fuzz_opcode_bins_total()
+                crate::execution::wasm::jit_fuzz_opcode_bins_total()
             );
             crate::serial_println!(
                 "Opcode edges hit (full): {} / {}",
                 stats.opcode_edges_hit,
-                crate::wasm::jit_fuzz_opcode_edges_total()
+                crate::execution::wasm::jit_fuzz_opcode_edges_total()
             );
             crate::serial_println!(
                 "Opcode edges hit (admissible): {} / {}",
@@ -8616,13 +8605,13 @@ fn cmd_jitfuzzreg(mut parts: core::str::SplitWhitespace) {
     // Keep shared x86_64/i686 regression behavior aligned with default shared
     // wasm-jit-fuzz command mode (kernel JIT by default).
     run_with_shared_jit_fuzz_context(false, || {
-        let edges_total = crate::wasm::jit_fuzz_opcode_edges_total();
+        let edges_total = crate::execution::wasm::jit_fuzz_opcode_edges_total();
         if full {
             vga::print_str("[jitfuzzreg] mode: full\n");
             vga::print_str("[jitfuzzreg] iterations/seed: ");
             print_u32(iterations_per_seed);
             vga::print_str("\n");
-            match crate::wasm::jit_fuzz_regression_default(iterations_per_seed) {
+            match crate::execution::wasm::jit_fuzz_regression_default(iterations_per_seed) {
                 Ok(stats) => {
                     vga::print_str("[jitfuzzreg] ok: seeds_passed=");
                     print_u32(stats.seeds_passed);
@@ -8655,7 +8644,7 @@ fn cmd_jitfuzzreg(mut parts: core::str::SplitWhitespace) {
             vga::print_str(" seeds: ");
             print_u32(seeds_limit);
             vga::print_str("\n");
-            match crate::wasm::jit_fuzz_regression_bounded(iterations_per_seed, seeds_limit) {
+            match crate::execution::wasm::jit_fuzz_regression_bounded(iterations_per_seed, seeds_limit) {
                 Ok(stats) => {
                     vga::print_str("[jitfuzzreg] ok: seeds_passed=");
                     print_u32(stats.seeds_passed);
@@ -8692,7 +8681,7 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
 
     impl ScopedJitUserMode {
         fn enter(user_mode: bool) -> Self {
-            let mut cfg = crate::wasm::jit_config().lock();
+            let mut cfg = crate::execution::wasm::jit_config().lock();
             let prev = cfg.user_mode;
             cfg.user_mode = user_mode;
             ScopedJitUserMode { prev }
@@ -8701,7 +8690,7 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
 
     impl Drop for ScopedJitUserMode {
         fn drop(&mut self) {
-            let mut cfg = crate::wasm::jit_config().lock();
+            let mut cfg = crate::execution::wasm::jit_config().lock();
             cfg.user_mode = self.prev;
         }
     }
@@ -8715,7 +8704,7 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     impl ScopedFuzzIrqQuiesce {
         #[cfg(target_arch = "x86")]
         fn enter() -> Self {
-            let flags = unsafe { crate::idt_asm::fast_cli_save() };
+            let flags = unsafe { crate::platform::idt_asm::fast_cli_save() };
             Self { flags }
         }
         #[cfg(not(target_arch = "x86"))]
@@ -8727,7 +8716,7 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
         fn drop(&mut self) {
             #[cfg(target_arch = "x86")]
             unsafe {
-                crate::idt_asm::fast_sti_restore(self.flags);
+                crate::platform::idt_asm::fast_sti_restore(self.flags);
             }
         }
     }
@@ -8747,7 +8736,7 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     vga::print_str("\n===== WASM JIT Regression Corpus =====\n\n");
     crate::serial_println!("===== WASM JIT Regression Corpus =====");
     vga::print_str("Seeds: ");
-    print_u32(crate::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
+    print_u32(crate::execution::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
     vga::print_str("\nIterations per seed: ");
     print_u32(iters);
     #[cfg(target_arch = "x86")]
@@ -8763,11 +8752,11 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     }
     vga::print_str("\n\n");
 
-    crate::wasm::jit_runtime_recover_transient();
+    crate::execution::wasm::jit_runtime_recover_transient();
     let _jit_mode_guard = ScopedJitUserMode::enter(user_mode);
     let _irq_quiesce = ScopedFuzzIrqQuiesce::enter();
 
-    match crate::wasm::jit_fuzz_regression_default(iters) {
+    match crate::execution::wasm::jit_fuzz_regression_default(iters) {
         Ok(stats) => {
             vga::print_str("Seeds passed: ");
             print_u32(stats.seeds_passed);
@@ -8786,11 +8775,11 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\nMax opcode bins hit: ");
             print_u32(stats.max_opcode_bins_hit);
             vga::print_str(" / ");
-            print_u32(crate::wasm::jit_fuzz_opcode_bins_total());
+            print_u32(crate::execution::wasm::jit_fuzz_opcode_bins_total());
             vga::print_str("\nMax opcode edges hit (full): ");
             print_u32(stats.max_opcode_edges_hit);
             vga::print_str(" / ");
-            print_u32(crate::wasm::jit_fuzz_opcode_edges_total());
+            print_u32(crate::execution::wasm::jit_fuzz_opcode_edges_total());
             vga::print_str("\nMax opcode edges hit (admissible): ");
             print_u32(stats.max_opcode_edges_hit_admissible);
             vga::print_str(" / ");
@@ -8906,7 +8895,7 @@ fn cmd_wasm_jit_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
             crate::serial_println!("Regression corpus failed: {}", e);
         }
     }
-    crate::wasm::jit_runtime_recover_transient();
+    crate::execution::wasm::jit_runtime_recover_transient();
     vga::print_str("\n");
 }
 
@@ -8917,7 +8906,7 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
 
     impl ScopedJitUserMode {
         fn enter(user_mode: bool) -> Self {
-            let mut cfg = crate::wasm::jit_config().lock();
+            let mut cfg = crate::execution::wasm::jit_config().lock();
             let prev = cfg.user_mode;
             cfg.user_mode = user_mode;
             ScopedJitUserMode { prev }
@@ -8926,7 +8915,7 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
 
     impl Drop for ScopedJitUserMode {
         fn drop(&mut self) {
-            let mut cfg = crate::wasm::jit_config().lock();
+            let mut cfg = crate::execution::wasm::jit_config().lock();
             cfg.user_mode = self.prev;
         }
     }
@@ -8940,7 +8929,7 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     impl ScopedFuzzIrqQuiesce {
         #[cfg(target_arch = "x86")]
         fn enter() -> Self {
-            let flags = unsafe { crate::idt_asm::fast_cli_save() };
+            let flags = unsafe { crate::platform::idt_asm::fast_cli_save() };
             Self { flags }
         }
         #[cfg(not(target_arch = "x86"))]
@@ -8952,7 +8941,7 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
         fn drop(&mut self) {
             #[cfg(target_arch = "x86")]
             unsafe {
-                crate::idt_asm::fast_sti_restore(self.flags);
+                crate::platform::idt_asm::fast_sti_restore(self.flags);
             }
         }
     }
@@ -8989,7 +8978,7 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     vga::print_str("\nIterations per seed: ");
     print_u32(iters);
     vga::print_str("\nSeeds per round: ");
-    print_u32(crate::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
+    print_u32(crate::execution::wasm::JIT_FUZZ_REGRESSION_SEEDS.len() as u32);
     #[cfg(target_arch = "x86")]
     let user_mode = false;
     #[cfg(not(target_arch = "x86"))]
@@ -9003,11 +8992,11 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     }
     vga::print_str("\n\n");
 
-    crate::wasm::jit_runtime_recover_transient();
+    crate::execution::wasm::jit_runtime_recover_transient();
     let _jit_mode_guard = ScopedJitUserMode::enter(user_mode);
     let _irq_quiesce = ScopedFuzzIrqQuiesce::enter();
 
-    match crate::wasm::jit_fuzz_regression_soak_default(iters, rounds) {
+    match crate::execution::wasm::jit_fuzz_regression_soak_default(iters, rounds) {
         Ok(stats) => {
             vga::print_str("Rounds passed: ");
             print_u32(stats.rounds_passed);
@@ -9030,11 +9019,11 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
             vga::print_str("\nMax opcode bins hit: ");
             print_u32(stats.max_opcode_bins_hit);
             vga::print_str(" / ");
-            print_u32(crate::wasm::jit_fuzz_opcode_bins_total());
+            print_u32(crate::execution::wasm::jit_fuzz_opcode_bins_total());
             vga::print_str("\nMax opcode edges hit (full): ");
             print_u32(stats.max_opcode_edges_hit);
             vga::print_str(" / ");
-            print_u32(crate::wasm::jit_fuzz_opcode_edges_total());
+            print_u32(crate::execution::wasm::jit_fuzz_opcode_edges_total());
             vga::print_str("\nMax opcode edges hit (admissible): ");
             print_u32(stats.max_opcode_edges_hit_admissible);
             vga::print_str(" / ");
@@ -9067,11 +9056,11 @@ fn cmd_wasm_jit_fuzz_soak(mut parts: core::str::SplitWhitespace) {
         }
     }
 
-    crate::wasm::jit_runtime_recover_transient();
+    crate::execution::wasm::jit_runtime_recover_transient();
     vga::print_str("\n");
 }
 
-fn print_capnet_fuzz_failure(failure: crate::capnet::CapNetFuzzFailure) {
+fn print_capnet_fuzz_failure(failure: crate::net::capnet::CapNetFuzzFailure) {
     vga::print_str("Iter: ");
     print_u32(failure.iteration);
     vga::print_str("  Stage: ");
@@ -9116,7 +9105,7 @@ fn run_capnet_fuzz_with_seed(iters: u32, seed: u64) {
     print_u64(seed);
     vga::print_str("\n\n");
 
-    match run_capnet_with_irqs_masked(|| crate::capnet::capnet_fuzz(iters, seed)) {
+    match run_capnet_with_irqs_masked(|| crate::net::capnet::capnet_fuzz(iters, seed)) {
         Ok(stats) => {
             vga::print_str("Valid path OK: ");
             print_u32(stats.valid_path_ok);
@@ -9195,12 +9184,12 @@ fn cmd_capnet_fuzz_corpus(mut parts: core::str::SplitWhitespace) {
     vga::print_str("\n===== CapNet Regression Corpus =====\n\n");
     crate::serial_println!("===== CapNet Regression Corpus =====");
     vga::print_str("Seeds: ");
-    print_u32(crate::capnet::CAPNET_FUZZ_REGRESSION_SEEDS.len() as u32);
+    print_u32(crate::net::capnet::CAPNET_FUZZ_REGRESSION_SEEDS.len() as u32);
     vga::print_str("\nIterations per seed: ");
     print_u32(iters);
     vga::print_str("\n\n");
 
-    match run_capnet_with_irqs_masked(|| crate::capnet::capnet_fuzz_regression_default(iters)) {
+    match run_capnet_with_irqs_masked(|| crate::net::capnet::capnet_fuzz_regression_default(iters)) {
         Ok(stats) => {
             vga::print_str("Seeds passed: ");
             print_u32(stats.seeds_passed);
@@ -9288,10 +9277,10 @@ fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
     vga::print_str("\nIterations per seed: ");
     print_u32(iters);
     vga::print_str("\nSeeds per round: ");
-    print_u32(crate::capnet::CAPNET_FUZZ_REGRESSION_SEEDS.len() as u32);
+    print_u32(crate::net::capnet::CAPNET_FUZZ_REGRESSION_SEEDS.len() as u32);
     vga::print_str("\n\n");
 
-    match run_capnet_with_irqs_masked(|| crate::capnet::capnet_fuzz_regression_soak_default(iters, rounds)) {
+    match run_capnet_with_irqs_masked(|| crate::net::capnet::capnet_fuzz_regression_soak_default(iters, rounds)) {
         Ok(stats) => {
             vga::print_str("Rounds passed: ");
             print_u32(stats.rounds_passed);
@@ -9338,17 +9327,17 @@ fn cmd_capnet_fuzz_soak(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_wasm_jit_on() {
-    crate::wasm::jit_config().lock().enabled = true;
+    crate::execution::wasm::jit_config().lock().enabled = true;
     vga::print_str("WASM JIT enabled\n");
 }
 
 fn cmd_wasm_jit_off() {
-    crate::wasm::jit_config().lock().enabled = false;
+    crate::execution::wasm::jit_config().lock().enabled = false;
     vga::print_str("WASM JIT disabled\n");
 }
 
 fn cmd_wasm_jit_stats() {
-    let stats = crate::wasm::jit_stats().lock();
+    let stats = crate::execution::wasm::jit_stats().lock();
     vga::print_str("JIT stats:\n");
     vga::print_str("  Interpreter calls: ");
     print_u64(stats.interp_calls);
@@ -9369,7 +9358,7 @@ fn cmd_wasm_jit_threshold(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    crate::wasm::jit_config().lock().hot_threshold = val;
+    crate::execution::wasm::jit_config().lock().hot_threshold = val;
     vga::print_str("WASM JIT hot threshold set to ");
     print_u32(val);
     vga::print_str("\n");
@@ -9383,7 +9372,7 @@ fn cmd_wasm_replay_record(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    let info = crate::wasm::wasm_runtime().get_instance_mut(id, |instance| {
+    let info = crate::execution::wasm::wasm_runtime().get_instance_mut(id, |instance| {
         (instance.module_hash(), instance.module_len())
     });
     let (hash, len) = match info {
@@ -9395,7 +9384,7 @@ fn cmd_wasm_replay_record(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    match crate::replay::start_record(id, hash, len) {
+    match crate::execution::replay::start_record(id, hash, len) {
         Ok(()) => {
             vga::print_str("Replay recording enabled for instance ");
             print_usize(id);
@@ -9417,7 +9406,7 @@ fn cmd_wasm_replay_stop(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    match crate::replay::stop(id) {
+    match crate::execution::replay::stop(id) {
         Ok(()) => {
             vga::print_str("Replay stopped for instance ");
             print_usize(id);
@@ -9446,7 +9435,7 @@ fn cmd_wasm_replay_save(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    let transcript = match crate::replay::export_transcript(id) {
+    let transcript = match crate::execution::replay::export_transcript(id) {
         Ok(t) => t,
         Err(e) => {
             vga::print_str("Replay export error: ");
@@ -9540,7 +9529,7 @@ fn cmd_wasm_replay_load(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    let info = crate::wasm::wasm_runtime().get_instance_mut(id, |instance| {
+    let info = crate::execution::wasm::wasm_runtime().get_instance_mut(id, |instance| {
         (instance.module_hash(), instance.module_len())
     });
     let (hash, len) = match info {
@@ -9552,7 +9541,7 @@ fn cmd_wasm_replay_load(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    match crate::replay::load_transcript(id, hash, len, data) {
+    match crate::execution::replay::load_transcript(id, hash, len, data) {
         Ok(()) => {
             vga::print_str("Replay transcript loaded for instance ");
             print_usize(id);
@@ -9574,12 +9563,12 @@ fn cmd_wasm_replay_status(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    match crate::replay::status(id) {
+    match crate::execution::replay::status(id) {
         Some(status) => {
             let mode_str = match status.mode {
-                crate::replay::ReplayMode::Off => "off",
-                crate::replay::ReplayMode::Record => "record",
-                crate::replay::ReplayMode::Replay => "replay",
+                crate::execution::replay::ReplayMode::Off => "off",
+                crate::execution::replay::ReplayMode::Record => "record",
+                crate::execution::replay::ReplayMode::Replay => "replay",
             };
             vga::print_str("Replay status for instance ");
             print_usize(id);
@@ -9611,7 +9600,7 @@ fn cmd_wasm_replay_clear(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    crate::replay::clear(id);
+    crate::execution::replay::clear(id);
     vga::print_str("Replay session cleared for instance ");
     print_usize(id);
     vga::print_str("\n");
@@ -9625,7 +9614,7 @@ fn cmd_wasm_replay_verify(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    match crate::replay::is_complete(id) {
+    match crate::execution::replay::is_complete(id) {
         Some(true) => {
             vga::print_str("Replay complete for instance ");
             print_usize(id);
@@ -10060,15 +10049,15 @@ fn cmd_network_help() {
     vga::print_str("\n");
 }
 
-fn parse_capnet_policy(s: &str) -> Option<crate::capnet::PeerTrustPolicy> {
+fn parse_capnet_policy(s: &str) -> Option<crate::net::capnet::PeerTrustPolicy> {
     if s.eq_ignore_ascii_case("disabled") {
-        return Some(crate::capnet::PeerTrustPolicy::Disabled);
+        return Some(crate::net::capnet::PeerTrustPolicy::Disabled);
     }
     if s.eq_ignore_ascii_case("audit") {
-        return Some(crate::capnet::PeerTrustPolicy::Audit);
+        return Some(crate::net::capnet::PeerTrustPolicy::Audit);
     }
     if s.eq_ignore_ascii_case("enforce") {
-        return Some(crate::capnet::PeerTrustPolicy::Enforce);
+        return Some(crate::net::capnet::PeerTrustPolicy::Enforce);
     }
     None
 }
@@ -10111,7 +10100,7 @@ fn parse_capnet_cap_type(s: &str) -> Option<u8> {
 
 fn cmd_capnet_local() {
     vga::print_str("\n===== CapNet Local Identity =====\n");
-    match crate::capnet::local_device_id() {
+    match crate::net::capnet::local_device_id() {
         Some(id) => {
             vga::print_str("Device ID: 0x");
             print_u64_hex(id);
@@ -10158,15 +10147,15 @@ fn cmd_capnet_peer_add(mut parts: core::str::SplitWhitespace) {
         }
     };
     let measurement = parts.next().and_then(parse_u64_any).unwrap_or(0);
-    match crate::capnet::register_peer(peer_id, policy, measurement) {
+    match crate::net::capnet::register_peer(peer_id, policy, measurement) {
         Ok(()) => {
             vga::print_str("CapNet peer registered: peer=0x");
             print_u64_hex(peer_id);
             vga::print_str(" policy=");
             vga::print_str(match policy {
-                crate::capnet::PeerTrustPolicy::Disabled => "disabled",
-                crate::capnet::PeerTrustPolicy::Audit => "audit",
-                crate::capnet::PeerTrustPolicy::Enforce => "enforce",
+                crate::net::capnet::PeerTrustPolicy::Disabled => "disabled",
+                crate::net::capnet::PeerTrustPolicy::Audit => "audit",
+                crate::net::capnet::PeerTrustPolicy::Enforce => "enforce",
             });
             vga::print_str(" measurement=0x");
             print_u64_hex(measurement);
@@ -10195,16 +10184,16 @@ fn cmd_capnet_peer_show(mut parts: core::str::SplitWhitespace) {
             return;
         }
     };
-    match crate::capnet::peer_snapshot(peer_id) {
+    match crate::net::capnet::peer_snapshot(peer_id) {
         Some(s) => {
             vga::print_str("\n===== CapNet Peer =====\n");
             vga::print_str("Peer: 0x");
             print_u64_hex(s.peer_device_id);
             vga::print_str("\nPolicy: ");
             vga::print_str(match s.trust {
-                crate::capnet::PeerTrustPolicy::Disabled => "disabled",
-                crate::capnet::PeerTrustPolicy::Audit => "audit",
-                crate::capnet::PeerTrustPolicy::Enforce => "enforce",
+                crate::net::capnet::PeerTrustPolicy::Disabled => "disabled",
+                crate::net::capnet::PeerTrustPolicy::Audit => "audit",
+                crate::net::capnet::PeerTrustPolicy::Enforce => "enforce",
             });
             vga::print_str("\nMeasurement: 0x");
             print_u64_hex(s.measurement_hash);
@@ -10223,7 +10212,7 @@ fn cmd_capnet_peer_show(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_capnet_peer_list() {
-    let peers = crate::capnet::peer_snapshots();
+    let peers = crate::net::capnet::peer_snapshots();
     let mut active = 0usize;
     vga::print_str("\n===== CapNet Peer Table =====\n");
     for i in 0..peers.len() {
@@ -10235,9 +10224,9 @@ fn cmd_capnet_peer_list() {
             print_u64_hex(p.peer_device_id);
             vga::print_str(" policy=");
             vga::print_str(match p.trust {
-                crate::capnet::PeerTrustPolicy::Disabled => "disabled",
-                crate::capnet::PeerTrustPolicy::Audit => "audit",
-                crate::capnet::PeerTrustPolicy::Enforce => "enforce",
+                crate::net::capnet::PeerTrustPolicy::Disabled => "disabled",
+                crate::net::capnet::PeerTrustPolicy::Audit => "audit",
+                crate::net::capnet::PeerTrustPolicy::Enforce => "enforce",
             });
             vga::print_str(" key_epoch=");
             print_u32(p.key_epoch);
@@ -10292,7 +10281,7 @@ fn cmd_capnet_lease_list() {
 }
 
 fn cmd_capnet_hello(mut parts: core::str::SplitWhitespace) {
-    use crate::net_reactor;
+    use crate::net::net_reactor;
     let ip = match parts.next().and_then(parse_ipv4_netstack) {
         Some(ip) => ip,
         None => {
@@ -10329,7 +10318,7 @@ fn cmd_capnet_hello(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_capnet_heartbeat(mut parts: core::str::SplitWhitespace) {
-    use crate::net_reactor;
+    use crate::net::net_reactor;
     let ip = match parts.next().and_then(parse_ipv4_netstack) {
         Some(ip) => ip,
         None => {
@@ -10372,7 +10361,7 @@ fn cmd_capnet_heartbeat(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_capnet_lend(mut parts: core::str::SplitWhitespace) {
-    use crate::net_reactor;
+    use crate::net::net_reactor;
 
     let ip = match parts.next().and_then(parse_ipv4_netstack) {
         Some(ip) => ip,
@@ -10443,18 +10432,18 @@ fn cmd_capnet_lend(mut parts: core::str::SplitWhitespace) {
     let measurement_hash = parts.next().and_then(parse_u64_any).unwrap_or(0);
     let session_id = parts.next().and_then(parse_u32).unwrap_or(0);
 
-    let issuer_device_id = match crate::capnet::local_device_id() {
+    let issuer_device_id = match crate::net::capnet::local_device_id() {
         Some(id) => id,
         None => {
             vga::print_str("CapNet local identity not initialized\n");
             return;
         }
     };
-    let now = crate::pit::get_ticks() as u64;
+    let now = crate::scheduler::pit::get_ticks() as u64;
     let nonce_hi = crate::security::security().random_u32() as u64;
     let nonce_lo = crate::security::security().random_u32() as u64;
 
-    let mut token = crate::capnet::CapabilityTokenV1::empty();
+    let mut token = crate::net::capnet::CapabilityTokenV1::empty();
     token.cap_type = cap_type;
     token.issuer_device_id = issuer_device_id;
     token.subject_device_id = peer_id;
@@ -10471,16 +10460,16 @@ fn cmd_capnet_lend(mut parts: core::str::SplitWhitespace) {
     token.session_id = session_id;
     token.constraints_flags = 0;
     if max_uses > 0 {
-        token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
+        token.constraints_flags |= crate::net::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
     }
     if max_bytes > 0 {
-        token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BYTE_QUOTA;
+        token.constraints_flags |= crate::net::capnet::CAPNET_CONSTRAINT_REQUIRE_BYTE_QUOTA;
     }
     if measurement_hash != 0 {
-        token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_MEASUREMENT_BOUND;
+        token.constraints_flags |= crate::net::capnet::CAPNET_CONSTRAINT_MEASUREMENT_BOUND;
     }
     if session_id != 0 {
-        token.constraints_flags |= crate::capnet::CAPNET_CONSTRAINT_SESSION_BOUND;
+        token.constraints_flags |= crate::net::capnet::CAPNET_CONSTRAINT_SESSION_BOUND;
     }
 
     match net_reactor::capnet_send_token_offer(peer_id, ip, port, token) {
@@ -10504,7 +10493,7 @@ fn cmd_capnet_lend(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_capnet_accept(mut parts: core::str::SplitWhitespace) {
-    use crate::net_reactor;
+    use crate::net::net_reactor;
 
     let ip = match parts.next().and_then(parse_ipv4_netstack) {
         Some(ip) => ip,
@@ -10553,7 +10542,7 @@ fn cmd_capnet_accept(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_capnet_revoke(mut parts: core::str::SplitWhitespace) {
-    use crate::net_reactor;
+    use crate::net::net_reactor;
 
     let ip = match parts.next().and_then(parse_ipv4_netstack) {
         Some(ip) => ip,
@@ -10601,7 +10590,7 @@ fn cmd_capnet_revoke(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_capnet_stats() {
-    let peers = crate::capnet::peer_snapshots();
+    let peers = crate::net::capnet::peer_snapshots();
     let mut peer_active = 0usize;
     let mut peer_keyed = 0usize;
     let mut peer_policy_disabled = 0usize;
@@ -10615,9 +10604,9 @@ fn cmd_capnet_stats() {
                 peer_keyed += 1;
             }
             match peer.trust {
-                crate::capnet::PeerTrustPolicy::Disabled => peer_policy_disabled += 1,
-                crate::capnet::PeerTrustPolicy::Audit => peer_policy_audit += 1,
-                crate::capnet::PeerTrustPolicy::Enforce => peer_policy_enforce += 1,
+                crate::net::capnet::PeerTrustPolicy::Disabled => peer_policy_disabled += 1,
+                crate::net::capnet::PeerTrustPolicy::Audit => peer_policy_audit += 1,
+                crate::net::capnet::PeerTrustPolicy::Enforce => peer_policy_enforce += 1,
             }
         }
     }
@@ -10644,11 +10633,11 @@ fn cmd_capnet_stats() {
         }
     }
 
-    let journal = crate::capnet::journal_stats();
+    let journal = crate::net::capnet::journal_stats();
 
     vga::print_str("\n===== CapNet Stats =====\n");
     vga::print_str("Local device: ");
-    match crate::capnet::local_device_id() {
+    match crate::net::capnet::local_device_id() {
         Some(id) => {
             vga::print_str("0x");
             print_u64_hex(id);
@@ -10694,7 +10683,7 @@ fn cmd_capnet_stats() {
 }
 
 fn cmd_capnet_demo() {
-    let local_id = match crate::capnet::local_device_id() {
+    let local_id = match crate::net::capnet::local_device_id() {
         Some(id) => id,
         None => {
             vga::print_str("CapNet local identity not initialized\n");
@@ -10708,7 +10697,7 @@ fn cmd_capnet_demo() {
     // demo on one node without a second machine.
     let loopback_peer = local_id;
     if let Err(e) =
-        crate::capnet::register_peer(loopback_peer, crate::capnet::PeerTrustPolicy::Audit, 0)
+        crate::net::capnet::register_peer(loopback_peer, crate::net::capnet::PeerTrustPolicy::Audit, 0)
     {
         vga::print_str("Demo failed: peer registration: ");
         vga::print_str(e.as_str());
@@ -10726,15 +10715,15 @@ fn cmd_capnet_demo() {
         k0 = 1;
     }
     let key_epoch = (crate::security::security().random_u32() | 1).max(1);
-    if let Err(e) = crate::capnet::install_peer_session_key(loopback_peer, key_epoch, k0, k1, 0) {
+    if let Err(e) = crate::net::capnet::install_peer_session_key(loopback_peer, key_epoch, k0, k1, 0) {
         vga::print_str("Demo failed: session install: ");
         vga::print_str(e.as_str());
         vga::print_str("\n");
         return;
     }
 
-    let now = crate::pit::get_ticks() as u64;
-    let mut token = crate::capnet::CapabilityTokenV1::empty();
+    let now = crate::scheduler::pit::get_ticks() as u64;
+    let mut token = crate::net::capnet::CapabilityTokenV1::empty();
     token.cap_type = crate::capability::CapabilityType::Filesystem as u8;
     token.object_id = 0x4341_504E_4554_0000u64 ^ now.rotate_left(7);
     token.rights = crate::capability::Rights::FS_READ;
@@ -10743,7 +10732,7 @@ fn cmd_capnet_demo() {
     token.expires_at = now.saturating_add(512);
     token.nonce = ((crate::security::security().random_u32() as u64) << 32)
         | (crate::security::security().random_u32() as u64);
-    token.constraints_flags = crate::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
+    token.constraints_flags = crate::net::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
     token.max_uses = 2;
     token.context = 0; // owner_any lease for demo capability check.
 
@@ -10753,7 +10742,7 @@ fn cmd_capnet_demo() {
     }
 
     vga::print_str("Step 1: Build+process TOKEN_OFFER...\n");
-    let offer = match crate::capnet::build_token_offer_frame(loopback_peer, 0, &mut token) {
+    let offer = match crate::net::capnet::build_token_offer_frame(loopback_peer, 0, &mut token) {
         Ok(v) => v,
         Err(e) => {
             vga::print_str("Demo failed: build offer: ");
@@ -10762,9 +10751,9 @@ fn cmd_capnet_demo() {
             return;
         }
     };
-    let offer_rx = match crate::capnet::process_incoming_control_payload(
+    let offer_rx = match crate::net::capnet::process_incoming_control_payload(
         &offer.bytes[..offer.len],
-        crate::pit::get_ticks() as u64,
+        crate::scheduler::pit::get_ticks() as u64,
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -10774,7 +10763,7 @@ fn cmd_capnet_demo() {
             return;
         }
     };
-    if offer_rx.msg_type != crate::capnet::CapNetControlType::TokenOffer {
+    if offer_rx.msg_type != crate::net::capnet::CapNetControlType::TokenOffer {
         vga::print_str("Demo failed: unexpected rx type for offer\n");
         return;
     }
@@ -10811,7 +10800,7 @@ fn cmd_capnet_demo() {
 
     vga::print_str("Step 3: Build+process TOKEN_REVOKE...\n");
     let revoke =
-        match crate::capnet::build_token_revoke_frame(loopback_peer, offer.seq, offer.token_id) {
+        match crate::net::capnet::build_token_revoke_frame(loopback_peer, offer.seq, offer.token_id) {
             Ok(v) => v,
             Err(e) => {
                 vga::print_str("Demo failed: build revoke: ");
@@ -10820,9 +10809,9 @@ fn cmd_capnet_demo() {
                 return;
             }
         };
-    let revoke_rx = match crate::capnet::process_incoming_control_payload(
+    let revoke_rx = match crate::net::capnet::process_incoming_control_payload(
         &revoke.bytes[..revoke.len],
-        crate::pit::get_ticks() as u64,
+        crate::scheduler::pit::get_ticks() as u64,
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -10832,7 +10821,7 @@ fn cmd_capnet_demo() {
             return;
         }
     };
-    if revoke_rx.msg_type != crate::capnet::CapNetControlType::TokenRevoke {
+    if revoke_rx.msg_type != crate::net::capnet::CapNetControlType::TokenRevoke {
         vga::print_str("Demo failed: unexpected rx type for revoke\n");
         return;
     }
@@ -11029,7 +11018,7 @@ fn cmd_wifi_connect(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_wifi_status() {
-    use crate::wifi::WifiState;
+    use crate::net::wifi::WifiState;
 
     vga::print_str("\n");
     vga::print_str("===== WiFi Status =====\n");
@@ -11062,7 +11051,7 @@ fn cmd_wifi_status() {
     }
 
     if state == WifiState::Connected {
-        let wifi = crate::wifi::wifi().lock();
+        let wifi = crate::net::wifi::wifi().lock();
         let conn = wifi.connection();
 
         vga::print_str("SSID: ");
@@ -11087,7 +11076,7 @@ fn cmd_http_get(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_http_server_start(mut parts: core::str::SplitWhitespace) {
-    use crate::net_reactor;
+    use crate::net::net_reactor;
     let port = parts
         .next()
         .and_then(parse_number)
@@ -11108,7 +11097,7 @@ fn cmd_http_server_start(mut parts: core::str::SplitWhitespace) {
 }
 
 fn cmd_http_server_stop() {
-    use crate::net_reactor;
+    use crate::net::net_reactor;
     match net_reactor::http_server_stop() {
         Ok(()) => vga::print_str("HTTP server stopped\n"),
         Err(e) => {
@@ -11125,7 +11114,7 @@ fn cmd_dns_resolve(mut parts: core::str::SplitWhitespace) {
 }
 
 // Helper functions for network commands
-fn parse_ipv4_netstack(s: &str) -> Option<crate::netstack::Ipv4Addr> {
+fn parse_ipv4_netstack(s: &str) -> Option<crate::net::netstack::Ipv4Addr> {
     let mut octets = [0u8; 4];
     let mut count = 0usize;
     for part in s.split('.') {
@@ -11142,7 +11131,7 @@ fn parse_ipv4_netstack(s: &str) -> Option<crate::netstack::Ipv4Addr> {
     if count != 4 {
         return None;
     }
-    Some(crate::netstack::Ipv4Addr(octets))
+    Some(crate::net::netstack::Ipv4Addr(octets))
 }
 
 fn print_u64_hex(n: u64) {
@@ -11285,7 +11274,7 @@ fn cmd_pci_list() {
 
     vga::print_str("Scanning PCI bus...\n\n");
 
-    let mut scanner = crate::pci::PciScanner::new();
+    let mut scanner = crate::drivers::x86::pci::PciScanner::new();
     scanner.scan();
 
     let devices = scanner.devices();
@@ -11606,7 +11595,7 @@ fn cmd_eth_status() {
 }
 
 fn cmd_eth_info() {
-    use crate::e1000;
+    use crate::net::e1000;
 
     vga::print_str("\n");
     vga::print_str("===== Ethernet Information =====\n\n");
@@ -11635,7 +11624,7 @@ fn cmd_netstack_info() {
 }
 
 fn cmd_asm_test() {
-    use crate::asm_bindings;
+    use crate::memory::asm_bindings;
 
     vga::print_str("\n");
     vga::print_str("===== Assembly Performance Tests =====\n\n");
@@ -11817,7 +11806,7 @@ fn cmd_sched_stats() {
 
     #[cfg(target_arch = "x86_64")]
     {
-        let snapshot = crate::quantum_scheduler::scheduler()
+        let snapshot = crate::scheduler::quantum_scheduler::scheduler()
             .lock()
             .snapshot_overview();
 
@@ -11841,7 +11830,7 @@ fn cmd_sched_stats() {
 
     #[cfg(not(target_arch = "x86_64"))]
     {
-        use crate::interrupt_dag::{InterruptContext, DAG_LEVEL_SYSCALL};
+        use crate::platform::interrupt_dag::{InterruptContext, DAG_LEVEL_SYSCALL};
         use crate::scheduler;
 
         // Acquire scheduler lock through the DAG context (PMA §9).
@@ -11894,13 +11883,13 @@ fn cmd_sleep(mut parts: core::str::SplitWhitespace) {
     vga::print_str("Sleeping for ");
     print_u32(ms);
     vga::print_str("ms...\n");
-    crate::pit::sleep_ms(ms);
+    crate::scheduler::pit::sleep_ms(ms);
     vga::print_str("Awake!\n");
 }
 
 fn cmd_uptime() {
-    let ticks = crate::pit::get_ticks();
-    let freq = crate::pit::get_frequency() as u64;
+    let ticks = crate::scheduler::pit::get_ticks();
+    let freq = crate::scheduler::pit::get_frequency() as u64;
     let total_seconds = ticks / freq;
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
@@ -11919,7 +11908,7 @@ fn cmd_uptime() {
     vga::print_str("s\nTotal ticks:   ");
     print_u64(ticks);
     vga::print_str("\nTimer freq:    ");
-    print_u32(crate::pit::get_frequency());
+    print_u32(crate::scheduler::pit::get_frequency());
     vga::print_str(" Hz\n\n");
 }
 
@@ -11945,7 +11934,7 @@ fn cmd_test_page_fault() {
 fn cmd_user_test() {
     vga::print_str("Launching user mode entry test...\n");
     vga::print_str("Expected: INT 0x80 then INT3 (#BP) with CS=0x1B\n");
-    if let Err(err) = crate::usermode::enter_user_mode_test() {
+    if let Err(err) = crate::platform::usermode::enter_user_mode_test() {
         vga::print_str("user-test error: ");
         vga::print_str(err);
         vga::print_str("\n");
@@ -11956,7 +11945,7 @@ fn cmd_user_test() {
 
 fn cmd_fork_test() {
     vga::print_str("Running x86_64 fork/COW regression...\n");
-    if let Err(err) = crate::usermode::run_fork_test() {
+    if let Err(err) = crate::platform::usermode::run_fork_test() {
         vga::print_str("fork-test error: ");
         vga::print_str(err);
         vga::print_str("\n");
@@ -11982,7 +11971,7 @@ fn parse_u32_result(s: &str) -> Result<u32, ()> {
 // Security Commands
 // ============================================================================
 
-fn print_security_intent_policy(policy: crate::intent_graph::IntentPolicy) {
+fn print_security_intent_policy(policy: crate::security::intent_graph::IntentPolicy) {
     vga::print_str("  Window (seconds): ");
     print_u64(policy.window_seconds);
     vga::print_str("\n");
@@ -12038,13 +12027,13 @@ fn cmd_security_stats() {
 
     vga::print_str("WASM Execution Limits:\n");
     vga::print_str("  Max instructions/call: ");
-    print_usize(crate::wasm::MAX_INSTRUCTIONS_PER_CALL);
+    print_usize(crate::execution::wasm::MAX_INSTRUCTIONS_PER_CALL);
     vga::print_str("\n");
     vga::print_str("  Max memory ops/call: ");
-    print_usize(crate::wasm::MAX_MEMORY_OPS_PER_CALL);
+    print_usize(crate::execution::wasm::MAX_MEMORY_OPS_PER_CALL);
     vga::print_str("\n");
     vga::print_str("  Max syscalls/call: ");
-    print_usize(crate::wasm::MAX_SYSCALLS_PER_CALL);
+    print_usize(crate::execution::wasm::MAX_SYSCALLS_PER_CALL);
     vga::print_str("\n\n");
 
     vga::print_str("Rate Limiting:\n");
@@ -12151,7 +12140,7 @@ fn cmd_security_anomaly() {
 }
 
 fn apply_intent_policy_field(
-    policy: &mut crate::intent_graph::IntentPolicy,
+    policy: &mut crate::security::intent_graph::IntentPolicy,
     field: &str,
     value: usize,
 ) -> Result<(), &'static str> {
@@ -12370,7 +12359,7 @@ fn cmd_security_intent(mut parts: core::str::SplitWhitespace) {
         }
     };
 
-    let now = crate::pit::get_ticks();
+    let now = crate::scheduler::pit::get_ticks();
     let remaining_ticks = snapshot.restriction_until_tick.saturating_sub(now);
 
     vga::print_str("Scores:\n");
@@ -12503,10 +12492,10 @@ fn cmd_sched_net_soak(mut parts: core::str::SplitWhitespace) {
     print_u32(probe_ms);
     vga::print_str("\n\n");
 
-    let sched_before = crate::quantum_scheduler::scheduler().lock().get_stats();
+    let sched_before = crate::scheduler::quantum_scheduler::scheduler().lock().get_stats();
     let anomaly_before = crate::security::security().get_anomaly_stats();
-    let start_ticks = crate::pit::get_ticks();
-    let hz = (crate::pit::get_frequency() as u64).max(1);
+    let start_ticks = crate::scheduler::pit::get_ticks();
+    let hz = (crate::scheduler::pit::get_frequency() as u64).max(1);
     let probe_ticks = ((probe_ms as u64).saturating_mul(hz).saturating_add(999)) / 1000;
     let end_ticks = start_ticks.saturating_add((seconds as u64).saturating_mul(hz));
 
@@ -12516,8 +12505,8 @@ fn cmd_sched_net_soak(mut parts: core::str::SplitWhitespace) {
     let mut net_not_ready = 0u32;
     let mut first_err: Option<&'static str> = None;
 
-    while crate::pit::get_ticks() < end_ticks {
-        match crate::net_reactor::get_info() {
+    while crate::scheduler::pit::get_ticks() < end_ticks {
+        match crate::net::net_reactor::get_info() {
             Ok(info) => {
                 net_ok = net_ok.saturating_add(1);
                 if !info.ready {
@@ -12533,13 +12522,13 @@ fn cmd_sched_net_soak(mut parts: core::str::SplitWhitespace) {
         }
         probes = probes.saturating_add(1);
 
-        let wait_until = crate::pit::get_ticks().saturating_add(probe_ticks.max(1));
-        while crate::pit::get_ticks() < wait_until {
-            crate::quantum_scheduler::yield_now();
+        let wait_until = crate::scheduler::pit::get_ticks().saturating_add(probe_ticks.max(1));
+        while crate::scheduler::pit::get_ticks() < wait_until {
+            crate::scheduler::quantum_scheduler::yield_now();
         }
     }
 
-    let sched_after = crate::quantum_scheduler::scheduler().lock().get_stats();
+    let sched_after = crate::scheduler::quantum_scheduler::scheduler().lock().get_stats();
     let anomaly_after = crate::security::security().get_anomaly_stats();
 
     let delta_switches = sched_after
@@ -12613,7 +12602,7 @@ fn cmd_enclave_secret_policy(mut parts: core::str::SplitWhitespace) {
     match op {
         None | Some("show") => {
             vga::print_str("Enclave temporal secret redaction: ");
-            if crate::enclave::temporal_secret_redaction_enabled() {
+            if crate::security::enclave::temporal_secret_redaction_enabled() {
                 vga::print_str("on\n");
             } else {
                 vga::print_str("off\n");
@@ -12629,10 +12618,10 @@ fn cmd_enclave_secret_policy(mut parts: core::str::SplitWhitespace) {
             };
             match value {
                 "on" | "true" | "1" | "enable" | "enabled" => {
-                    crate::enclave::temporal_set_secret_redaction_enabled(true);
+                    crate::security::enclave::temporal_set_secret_redaction_enabled(true);
                 }
                 "off" | "false" | "0" | "disable" | "disabled" => {
-                    crate::enclave::temporal_set_secret_redaction_enabled(false);
+                    crate::security::enclave::temporal_set_secret_redaction_enabled(false);
                 }
                 _ => {
                     vga::print_str("Invalid value: ");
@@ -12644,7 +12633,7 @@ fn cmd_enclave_secret_policy(mut parts: core::str::SplitWhitespace) {
             }
             vga::print_str("Enclave temporal secret redaction updated.\n");
             vga::print_str("Now: ");
-            if crate::enclave::temporal_secret_redaction_enabled() {
+            if crate::security::enclave::temporal_secret_redaction_enabled() {
                 vga::print_str("on\n");
             } else {
                 vga::print_str("off\n");
@@ -12964,7 +12953,7 @@ fn cmd_cap_test_attenuation() {
 
 /// Test console service with capabilities
 fn cmd_cap_test_console() {
-    use crate::console_service;
+    use crate::shell::console_service;
     use crate::ipc::ProcessId;
 
     vga::print_str("Console Capability Test\n");
@@ -13075,7 +13064,7 @@ fn cmd_cap_arch() {
 
 /// Display CPU information and features
 fn cmd_cpu_info() {
-    use crate::asm_bindings::*;
+    use crate::memory::asm_bindings::*;
 
     vga::print_str("CPU Information\n");
     vga::print_str("===============\n\n");
@@ -13149,25 +13138,25 @@ fn cmd_cpu_info() {
 
     vga::print_str("\nMemory Protection:\n");
     vga::print_str("  SMEP:    ");
-    if crate::cpu_security::has_smep() {
+    if crate::security::cpu_security::has_smep() {
         vga::print_str("✓ Yes\n");
     } else {
         vga::print_str("✗ No\n");
     }
     vga::print_str("  SMAP:    ");
-    if crate::cpu_security::has_smap() {
+    if crate::security::cpu_security::has_smap() {
         vga::print_str("✓ Yes\n");
     } else {
         vga::print_str("✗ No\n");
     }
     vga::print_str("  KPTI:    ");
-    if crate::kpti::enabled() {
+    if crate::security::kpti::enabled() {
         vga::print_str("✓ Enabled\n");
     } else {
         vga::print_str("✗ Disabled\n");
     }
 
-    let iso = crate::memory_isolation::status();
+    let iso = crate::security::memory_isolation::status();
     vga::print_str("  MemTag:  ");
     if iso.tagging_enabled {
         vga::print_str("✓ Enabled\n");
@@ -13203,12 +13192,12 @@ fn cmd_cpu_info() {
     print_u32(iso.denied_user_mappings);
     vga::print_str("\n");
 
-    let enc = crate::enclave::status();
+    let enc = crate::security::enclave::status();
     vga::print_str("  Enclave backend: ");
     match enc.backend {
-        crate::enclave::EnclaveBackend::None => vga::print_str("none\n"),
-        crate::enclave::EnclaveBackend::IntelSgx => vga::print_str("intel-sgx\n"),
-        crate::enclave::EnclaveBackend::ArmTrustZone => vga::print_str("arm-trustzone\n"),
+        crate::security::enclave::EnclaveBackend::None => vga::print_str("none\n"),
+        crate::security::enclave::EnclaveBackend::IntelSgx => vga::print_str("intel-sgx\n"),
+        crate::security::enclave::EnclaveBackend::ArmTrustZone => vga::print_str("arm-trustzone\n"),
     }
     vga::print_str("  Enclave enabled: ");
     if enc.enabled {
@@ -13256,9 +13245,9 @@ fn cmd_cpu_info() {
     print_u32(enc.attestation_failed_total);
     vga::print_str("\n  Remote attest policy: ");
     match enc.remote_policy {
-        crate::enclave::RemoteAttestationPolicy::Disabled => vga::print_str("disabled"),
-        crate::enclave::RemoteAttestationPolicy::Audit => vga::print_str("audit"),
-        crate::enclave::RemoteAttestationPolicy::Enforce => vga::print_str("enforce"),
+        crate::security::enclave::RemoteAttestationPolicy::Disabled => vga::print_str("disabled"),
+        crate::security::enclave::RemoteAttestationPolicy::Audit => vga::print_str("audit"),
+        crate::security::enclave::RemoteAttestationPolicy::Enforce => vga::print_str("enforce"),
     }
     vga::print_str("\n  Remote verifiers: ");
     print_usize(enc.remote_verifiers_configured);
@@ -13308,7 +13297,7 @@ fn cmd_cpu_info() {
 
 /// Benchmark CPU instructions
 fn cmd_cpu_benchmark() {
-    use crate::asm_bindings::*;
+    use crate::memory::asm_bindings::*;
 
     vga::print_str("CPU Instruction Benchmarks\n");
     vga::print_str("==========================\n\n");
@@ -13408,7 +13397,7 @@ fn cmd_cpu_benchmark() {
 
 /// Test atomic operations
 fn cmd_atomic_test() {
-    use crate::asm_bindings::*;
+    use crate::memory::asm_bindings::*;
 
     vga::print_str("Atomic Operations Test\n");
     vga::print_str("======================\n\n");
@@ -13522,7 +13511,7 @@ fn cmd_atomic_test() {
 
 /// Test spinlock implementation
 fn cmd_spinlock_test() {
-    use crate::asm_bindings::Spinlock;
+    use crate::memory::asm_bindings::Spinlock;
 
     vga::print_str("Spinlock Implementation Test\n");
     vga::print_str("============================\n\n");
@@ -13564,12 +13553,12 @@ fn cmd_spinlock_test() {
 
     // Performance test
     vga::print_str("4. Lock/unlock performance (10000 iterations):\n");
-    let start = crate::asm_bindings::rdtsc_begin();
+    let start = crate::memory::asm_bindings::rdtsc_begin();
     for _ in 0..10000 {
         lock.lock();
         lock.unlock();
     }
-    let end = crate::asm_bindings::rdtsc_end();
+    let end = crate::memory::asm_bindings::rdtsc_end();
     let cycles = end.wrapping_sub(start);
     vga::print_str("   Total cycles: ");
     print_u32((cycles >> 32) as u32);
@@ -13582,7 +13571,7 @@ fn cmd_spinlock_test() {
 }
 
 fn cmd_paging_test() {
-    use crate::advanced_commands::print_hex;
+    use crate::shell::advanced_commands::print_hex;
 
     vga::print_str("=== Virtual Memory Paging Test ===\n\n");
 
@@ -13592,7 +13581,7 @@ fn cmd_paging_test() {
     let test_phys = 0x500000; // 5MB physical address
 
     // Get kernel address space
-    use crate::paging::KERNEL_ADDRESS_SPACE;
+    use crate::fs::paging::KERNEL_ADDRESS_SPACE;
     let mut space_opt = KERNEL_ADDRESS_SPACE.lock();
 
     let space = match space_opt.as_mut() {
@@ -13679,7 +13668,7 @@ fn cmd_paging_test() {
 
     // Test 6: COW Statistics
     vga::print_str("\nCOW Statistics (from assembly):\n");
-    let paging_stats = crate::paging::get_paging_stats();
+    let paging_stats = crate::fs::paging::get_paging_stats();
 
     vga::print_str("  Page faults:  ");
     print_u32(paging_stats.page_faults);
@@ -13695,7 +13684,7 @@ fn cmd_paging_test() {
 
     vga::print_str("\nPaging Status:\n");
     vga::print_str("  Paging enabled: ");
-    vga::print_str(if crate::paging::paging_enabled() {
+    vga::print_str(if crate::fs::paging::paging_enabled() {
         "yes"
     } else {
         "no"
@@ -13713,7 +13702,7 @@ fn cmd_syscall_test() {
     vga::print_str("=== System Call Interface Test ===\n\n");
 
     // Display syscall statistics
-    let stats = crate::syscall::get_stats();
+    let stats = crate::platform::syscall::get_stats();
 
     vga::print_str("Syscall Statistics:\n");
     vga::print_str("  Total calls: ");

@@ -126,7 +126,7 @@ impl PixelBufPool {
     fn claim(&mut self, w: u32, h: u32) -> Option<usize> {
         let pixels = (w as usize).saturating_mul(h as usize);
         let bytes = pixels.saturating_mul(BPP);
-        let page_size = crate::paging::PAGE_SIZE;
+        let page_size = crate::fs::paging::PAGE_SIZE;
         let pages = (bytes + page_size - 1) / page_size;
 
         for (i, slot) in self.slots.iter_mut().enumerate() {
@@ -184,7 +184,7 @@ impl PixelBufPool {
         let offset = (y as usize)
             .wrapping_mul(w as usize)
             .wrapping_add(x as usize);
-        let max_pixels = slot.pages * crate::paging::PAGE_SIZE / BPP;
+        let max_pixels = slot.pages * crate::fs::paging::PAGE_SIZE / BPP;
         if offset >= max_pixels {
             return 0;
         }
@@ -203,7 +203,7 @@ impl PixelBufPool {
         let offset = (y as usize)
             .wrapping_mul(w as usize)
             .wrapping_add(x as usize);
-        let max_pixels = slot.pages * crate::paging::PAGE_SIZE / BPP;
+        let max_pixels = slot.pages * crate::fs::paging::PAGE_SIZE / BPP;
         if offset < max_pixels {
             unsafe {
                 *slot.ptr.add(offset) = argb;
@@ -510,7 +510,7 @@ impl Compositor {
     /// Paint all dirty layers into the framebuffer.
     ///
     /// If `force` is false, this is a no-op when no layer has changed.
-    pub fn composite(&mut self, fb: &crate::gpu_support::GpuFramebuffer, force: bool) {
+    pub fn composite(&mut self, fb: &crate::drivers::x86::gpu_support::GpuFramebuffer, force: bool) {
         if !self.dirty && !force {
             return;
         }
@@ -560,7 +560,7 @@ impl Compositor {
     }
 
     /// Composite only the dirty region of a single window (fast path).
-    pub fn flush_window(&mut self, window_id: u32, fb: &crate::gpu_support::GpuFramebuffer) {
+    pub fn flush_window(&mut self, window_id: u32, fb: &crate::drivers::x86::gpu_support::GpuFramebuffer) {
         let (wx, wy, ww, wh, buf_idx) = match self.find_layer_ref(window_id) {
             Some(l) if l.dirty => (l.x, l.y, l.width, l.height, l.pixel_buf_idx),
             _ => return,

@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 use core::fmt;
@@ -129,13 +118,13 @@ static RX_RING: RxRingBuffer = RxRingBuffer::new();
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 unsafe fn outb(port: u16, value: u8) {
-    crate::asm_bindings::outb(port, value);
+    crate::memory::asm_bindings::outb(port, value);
 }
 
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 unsafe fn inb(port: u16) -> u8 {
-    crate::asm_bindings::inb(port)
+    crate::memory::asm_bindings::inb(port)
 }
 
 #[cfg(not(target_arch = "aarch64"))]
@@ -190,7 +179,7 @@ impl SerialPort {
     #[cfg(target_arch = "aarch64")]
     fn init(&mut self) {
         let _ = self.data;
-        crate::arch::aarch64_pl011::early_uart().init_early();
+        crate::arch::aarch64::aarch64_pl011::early_uart().init_early();
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -212,7 +201,7 @@ impl SerialPort {
     #[cfg(target_arch = "aarch64")]
     pub fn send_byte(&mut self, byte: u8) {
         let _ = self.data;
-        crate::arch::aarch64_pl011::early_uart().write_byte(byte);
+        crate::arch::aarch64::aarch64_pl011::early_uart().write_byte(byte);
     }
 }
 
@@ -253,7 +242,7 @@ pub fn enable_rx_interrupts() {
 
 #[cfg(target_arch = "aarch64")]
 pub fn enable_rx_interrupts() {
-    crate::arch::aarch64_pl011::early_uart().enable_rx_interrupts();
+    crate::arch::aarch64::aarch64_pl011::early_uart().enable_rx_interrupts();
 }
 
 #[cfg(not(target_arch = "aarch64"))]
@@ -266,7 +255,7 @@ pub fn disable_rx_interrupts() {
 
 #[cfg(target_arch = "aarch64")]
 pub fn disable_rx_interrupts() {
-    crate::arch::aarch64_pl011::early_uart().disable_interrupts();
+    crate::arch::aarch64::aarch64_pl011::early_uart().disable_interrupts();
 }
 
 #[cfg(not(target_arch = "aarch64"))]
@@ -276,7 +265,7 @@ pub fn try_read_rx_byte() -> Option<u8> {
 
 #[cfg(target_arch = "aarch64")]
 pub fn try_read_rx_byte() -> Option<u8> {
-    crate::arch::aarch64_pl011::early_uart().try_read_buffered_byte()
+    crate::arch::aarch64::aarch64_pl011::early_uart().try_read_buffered_byte()
 }
 
 pub fn drain_rx_into(buf: &mut [u8]) -> usize {
@@ -327,18 +316,18 @@ macro_rules! serial_println {
 /// Cross-architecture kernel text output: VGA on x86/x86_64, PL011 on AArch64.
 pub fn kprint_str(s: &str) {
     #[cfg(not(target_arch = "aarch64"))]
-    crate::drivers::vga::print_str(s);
+    crate::drivers::x86::vga::print_str(s);
     #[cfg(target_arch = "aarch64")]
-    crate::arch::aarch64_pl011::early_uart().write_str(s);
+    crate::arch::aarch64::aarch64_pl011::early_uart().write_str(s);
 }
 
 /// Cross-architecture single-character output.
 pub fn kprint_char(c: char) {
     #[cfg(not(target_arch = "aarch64"))]
-    crate::drivers::vga::print_char(c);
+    crate::drivers::x86::vga::print_char(c);
     #[cfg(target_arch = "aarch64")]
     {
         let mut buf = [0u8; 4];
-        crate::arch::aarch64_pl011::early_uart().write_str(c.encode_utf8(&mut buf));
+        crate::arch::aarch64::aarch64_pl011::early_uart().write_str(c.encode_utf8(&mut buf));
     }
 }

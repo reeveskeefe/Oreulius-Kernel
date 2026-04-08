@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 use core::cell::UnsafeCell;
@@ -538,7 +527,7 @@ pub fn init() {
             timeout -= 1;
         }
     }
-    crate::vga::print_str("[KEYBOARD] PS/2 Controller initialized (Translation enabled)\n");
+    crate::drivers::x86::vga::print_str("[KEYBOARD] PS/2 Controller initialized (Translation enabled)\n");
 }
 
 /// Poll the PS/2 controller and return a character (Set 1 scancodes).
@@ -615,7 +604,7 @@ pub unsafe fn handle_irq() {
         // buffered behind a misrouted interrupt.
         if (status & 0x20) != 0 {
             ERROR_STATUS.fetch_add(1, Ordering::Relaxed);
-            crate::mouse::handle_polled_aux_byte(scancode);
+            crate::drivers::x86::mouse::handle_polled_aux_byte(scancode);
             return;
         }
 
@@ -672,7 +661,7 @@ unsafe fn poll_controller_event() -> Option<KeyEvent> {
         // shared i8042 output buffer. If we do not drain them here, the
         // keyboard fallback path can appear to "lock" after a single key.
         let aux_byte = inb(DATA_PORT);
-        crate::mouse::handle_polled_aux_byte(aux_byte);
+        crate::drivers::x86::mouse::handle_polled_aux_byte(aux_byte);
         EVENTS_NONE.fetch_add(1, Ordering::Relaxed);
         return None;
     }
@@ -711,7 +700,7 @@ unsafe fn poll_controller_event() -> Option<KeyEvent> {
 /// discarded the byte; now the byte is consumed by the mouse driver and
 /// decoded events are available via `mouse::pop_event()`.
 pub unsafe fn handle_aux_irq() {
-    crate::mouse::handle_irq();
+    crate::drivers::x86::mouse::handle_irq();
 }
 
 fn event_to_char(ev: KeyEvent) -> Option<char> {

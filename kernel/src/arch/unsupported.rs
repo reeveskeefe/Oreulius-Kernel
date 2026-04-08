@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 use super::{ArchPlatform, BootInfo};
@@ -45,4 +34,54 @@ impl ArchPlatform for UnsupportedPlatform {
             core::hint::spin_loop();
         }
     }
+}
+
+#[inline]
+pub(super) fn platform_name() -> &'static str {
+    PLATFORM.name()
+}
+
+#[inline]
+pub(super) fn boot_info() -> BootInfo {
+    PLATFORM.boot_info()
+}
+
+#[inline]
+pub(super) fn init_cpu_tables() {
+    PLATFORM.init_cpu_tables()
+}
+
+#[inline]
+pub(super) fn init_trap_table() {
+    PLATFORM.init_trap_table()
+}
+
+#[inline]
+pub(super) fn init_interrupt_controller() {
+    PLATFORM.init_interrupt_controller()
+}
+
+#[inline]
+pub(super) fn init_timer() {
+    PLATFORM.init_timer()
+}
+
+#[inline]
+pub(super) fn enable_interrupts() {
+    PLATFORM.enable_interrupts()
+}
+
+#[inline]
+pub(super) fn halt_loop() -> ! {
+    PLATFORM.halt_loop()
+}
+
+#[inline]
+pub(super) fn enter_runtime() -> ! {
+    halt_loop()
+}
+
+#[inline]
+pub(super) fn shell_loop() -> ! {
+    halt_loop()
 }

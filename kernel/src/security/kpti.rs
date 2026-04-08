@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Kernel Page-Table Isolation (KPTI) support for user-mode execution.
@@ -25,13 +14,13 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 
-use crate::gdt;
-use crate::idt_asm::{
+use crate::platform::gdt;
+use crate::platform::idt_asm::{
     self, IdtEntry, IdtPointer, FLAG_DPL0, FLAG_DPL3, FLAG_PRESENT, GATE_INTERRUPT_32,
 };
 use crate::memory;
-use crate::paging;
-use crate::process_asm::{write_msr, MSR_IA32_SYSENTER_EIP};
+use crate::fs::paging;
+use crate::scheduler::process_asm::{write_msr, MSR_IA32_SYSENTER_EIP};
 
 #[no_mangle]
 pub static KPTI_KERNEL_CR3: AtomicU32 = AtomicU32::new(0);
@@ -149,7 +138,7 @@ fn write_trampoline_stub(
 
 fn set_idt_entry(idt: *mut IdtEntry, index: u8, handler: usize, flags: u8) {
     unsafe {
-        (*idt.add(index as usize)).set_handler(handler, crate::gdt::KERNEL_CS, flags);
+        (*idt.add(index as usize)).set_handler(handler, crate::platform::gdt::KERNEL_CS, flags);
     }
 }
 
@@ -269,7 +258,7 @@ pub fn init() -> Result<(), &'static str> {
     let _ = crate::arch::mmu::set_page_writable_range(idt_base, paging::PAGE_SIZE, false);
 
     KPTI_ENABLED.store(true, Ordering::SeqCst);
-    crate::vga::print_str("[KPTI] Trampoline + user IDT ready\n");
+    crate::drivers::x86::vga::print_str("[KPTI] Trampoline + user IDT ready\n");
     Ok(())
 }
 
@@ -319,9 +308,13 @@ pub fn map_user_support(
     space.map_page(state.tramp_base, tramp_phys, false, false)?;
     space.map_page(state.idt_base, idt_phys, false, false)?;
 
-    // Map GDT + TSS pages (supervisor only)
+    // Map GDT + TSS pages (supervisor only).
+    //
+    // The CPU may set accessed bits in segment descriptors when loading DS/ES/FS/GS,
+    // so the GDT page must remain writable to ring 0 even though user mode cannot
+    // access it directly.
     let (gdt_start, gdt_end) = gdt::gdt_range();
-    map_kernel_range(space, kernel_space, gdt_start, gdt_end, false)?;
+    map_kernel_range(space, kernel_space, gdt_start, gdt_end, true)?;
     let (tss_start, tss_end) = gdt::tss_range();
     map_kernel_range(space, kernel_space, tss_start, tss_end, true)?;
 

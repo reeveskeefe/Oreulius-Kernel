@@ -1,23 +1,15 @@
 name: release
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version tag (e.g. v0.1.0-alpha)'
-        required: true
-        default: 'v0.1.0-alpha'
+  workflow_dispatch: {}
 
 defaults:
   run:
     shell: bash
 
 permissions:
-  contents: write      # create GitHub Release + upload assets
-  packages: write      # push to ghcr.io
+  contents: write      # create GitHub Release + upload assets (tag push)
+  packages: read       # packaging/push reserved for package.yml
 
 env:
   REGISTRY: ghcr.io
@@ -29,15 +21,57 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
 
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      pkg_name: ${{ steps.meta.outputs.pkg_name }}
+      pkg_version: ${{ steps.meta.outputs.pkg_version }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
-      - name: Resolve release tag
+      - name: Read release name & version from Cargo.toml
         id: meta
-        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          file=kernel/Cargo.toml
+          if [[ ! -f "$file" ]]; then
+            echo "::error::Missing $file"
+            exit 1
+          fi
+          pkg_name=$(grep -E '^name\s*=' "$file" | head -n1 | sed -E 's/name\s*=\s*"(.*)"/\1/' | tr -d ' '\n)
+          pkg_version=$(grep -E '^version\s*=' "$file" | head -n1 | sed -E 's/version\s*=\s*"(.*)"/\1/' | tr -d ' '\n)
+          if [[ -z "$pkg_name" || -z "$pkg_version" ]]; then
+            echo "::error::Failed to parse package name/version from $file"
+            exit 1
+          fi
+          tag="${pkg_name}-${pkg_version}"
+          echo "pkg_name=$pkg_name" >> "$GITHUB_OUTPUT"
+          echo "pkg_version=$pkg_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Validate or create tag pointing to this commit
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "Checking remote for tag $TAG"
+          remote_sha=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}' | tail -n 1 || true)
+          if [[ -n "$remote_sha" ]]; then
+            if [[ "$remote_sha" != "$GITHUB_SHA" ]]; then
+              echo "::error::Requested tag ${TAG} already points to ${remote_sha:0:7}, but this run is building ${GITHUB_SHA:0:7}."
+              exit 1
+            else
+              echo "Tag ${TAG} already exists and matches current commit."
+            fi
+          else
+            echo "Creating and pushing tag ${TAG}"
+            git tag -a "${TAG}" -m "Release ${TAG}" "${GITHUB_SHA}"
+            git push origin "${TAG}"
+          fi
 
       - name: Verify packaging Dockerfiles exist
         run: |
@@ -167,171 +201,19 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   # Job 2: Build and push the toolchain image (runs in parallel with build-kernel).
   # ────────────────────────────────────────────────────────────────────────────
-  package-toolchain:
-    name: Package toolchain image
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
-    needs: [release-preflight]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract tag name
-        id: meta
-        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push toolchain image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.toolchain
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:${{ steps.meta.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:latest
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ env.NAMESPACE }}/Oreulius-Kernel
-            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  # Packaging (images) intentionally moved to package.yml
 
   # ────────────────────────────────────────────────────────────────────────────
   # Job 3: Build and push runner images (i686 and x86_64).
   # Waits for build-kernel (needs the compiled ISOs) and package-toolchain
   # (runner FROM-references the toolchain image).
   # ────────────────────────────────────────────────────────────────────────────
-  package-runners:
-    name: Package runner image (${{ matrix.arch }})
-    runs-on: ubuntu-22.04
-    timeout-minutes: 90
-    needs: [release-preflight, build-kernel, package-toolchain]
-
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [i686, x86_64]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download ${{ matrix.arch }} kernel artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-${{ matrix.arch }}
-          path: kernel-artifacts/${{ matrix.arch }}/
-
-      - name: Stage artifacts for runner build context
-        run: |
-          # The runner Dockerfile builds the kernel itself inside Docker, but
-          # we pre-stage artifacts so a future "copy-only" variant can use them.
-          mkdir -p kernel/target/${{ matrix.arch == 'x86_64' && 'x86_64-mb2' || '' }}
-          cp -r kernel-artifacts/${{ matrix.arch }}/. \
-            kernel/target/${{ matrix.arch == 'x86_64' && 'x86_64-mb2' || '.' }}/
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract tag name
-        id: meta
-        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push runner image (${{ matrix.arch }})
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.runner
-          push: true
-          build-args: |
-            ARCH=${{ matrix.arch }}
-            TAG=${{ steps.meta.outputs.tag }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-runner-${{ matrix.arch }}:${{ steps.meta.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-runner-${{ matrix.arch }}:latest
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ env.NAMESPACE }}/Oreulius-Kernel
-            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  # Packaging (images) intentionally moved to package.yml
 
   # ────────────────────────────────────────────────────────────────────────────
   # Job 4: Assemble OCI artifact image from all three arch builds and push.
   # ────────────────────────────────────────────────────────────────────────────
-  package-artifacts:
-    name: Package OCI artifact image
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    needs: [release-preflight, build-kernel]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download i686 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-i686
-          path: context/artifacts/i686/
-
-      - name: Download x86_64 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-x86_64
-          path: context/artifacts/x86_64/
-
-      - name: Download aarch64 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: kernel-aarch64
-          path: context/artifacts/aarch64/
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract tag name
-        id: meta
-        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push artifact image
-        uses: docker/build-push-action@v6
-        with:
-          context: context/
-          file: docker/Dockerfile.artifacts
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:${{ steps.meta.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:latest
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ env.NAMESPACE }}/Oreulius-Kernel
-            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
-            org.opencontainers.image.revision=${{ github.sha }}
+  # Packaging (OCI artifacts) intentionally moved to package.yml
 
   # ────────────────────────────────────────────────────────────────────────────
   # Job 5: Create a GitHub Release with all kernel binaries attached.
@@ -376,18 +258,14 @@ jobs:
           [[ -f Image ]]                            && mv Image                            oreulius-aarch64-Image
           ls -lh
 
-      - name: Extract tag name
-        id: meta
-        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: "Oreulius Kernel ${{ steps.meta.outputs.tag }}"
+          tag_name: ${{ needs.release-preflight.outputs.tag }}
+          name: "${{ needs.release-preflight.outputs.pkg_name }} ${{ needs.release-preflight.outputs.pkg_version }}"
           prerelease: true
           body: |
-            ## Oreulius Kernel ${{ steps.meta.outputs.tag }}
+            ## ${{ needs.release-preflight.outputs.pkg_name }} ${{ needs.release-preflight.outputs.tag }}
 
             Capability-native, WASM-first kernel for isolated workloads with temporal state
             and verification-oriented control surfaces.
@@ -402,18 +280,18 @@ jobs:
             ### Container Images
             ```
             # Reproducible build toolchain
-            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:${{ steps.meta.outputs.tag }}
+            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:${{ needs.release-preflight.outputs.tag }}
 
             # Boot in QEMU (i686)
-            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-i686:${{ steps.meta.outputs.tag }}
-            docker run --rm -it ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-i686:${{ steps.meta.outputs.tag }}
+            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-i686:${{ needs.release-preflight.outputs.tag }}
+            docker run --rm -it ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-i686:${{ needs.release-preflight.outputs.tag }}
 
             # Boot in QEMU (x86_64)
-            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-x86_64:${{ steps.meta.outputs.tag }}
-            docker run --rm -it ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-x86_64:${{ steps.meta.outputs.tag }}
+            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-x86_64:${{ needs.release-preflight.outputs.tag }}
+            docker run --rm -it ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-x86_64:${{ needs.release-preflight.outputs.tag }}
 
             # All binaries as OCI artifact
-            id=$(docker create ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:${{ steps.meta.outputs.tag }})
+            id=$(docker create ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:${{ needs.release-preflight.outputs.tag }})
             docker cp "$id":/artifacts ./artifacts && docker rm "$id"
             ```
 
@@ -421,3 +299,63 @@ jobs:
             Oreulius Community License — research/non-commercial use. See [LICENSE](LICENSE).
           files: release-assets/*
           fail_on_unmatched_files: false
+
+  trigger-package:
+    name: Trigger packaging workflow and wait
+    runs-on: ubuntu-22.04
+    needs: [release-preflight, github-release]
+    steps:
+      - name: Trigger `package.yml` via workflow_dispatch
+        uses: actions/github-script@v6
+        env:
+          PKG_TAG: ${{ needs.release-preflight.outputs.tag }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = process.env.PKG_TAG || '';
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'package.yml',
+              ref: tag,
+              inputs: { version: tag }
+            });
+            core.info(`Dispatched package.yml for ref '${tag}'`);
+
+      - name: Wait for package workflow run to complete
+        uses: actions/github-script@v6
+        env:
+          PKG_TAG: ${{ needs.release-preflight.outputs.tag }}
+          CHECK_INTERVAL_SECONDS: '15'
+          TIMEOUT_MIN: '120'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const workflow = 'package.yml';
+            const tag = process.env.PKG_TAG || '';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const intervalMs = parseInt(process.env.CHECK_INTERVAL_SECONDS || '15', 10) * 1000;
+            const timeoutMs = parseInt(process.env.TIMEOUT_MIN || '120', 10) * 60 * 1000;
+            const deadline = Date.now() + timeoutMs;
+            core.info(`Waiting for workflow '${workflow}' triggered for tag '${tag}'`);
+            while (Date.now() < deadline) {
+              const runs = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: workflow, per_page: 100
+              });
+              const run = runs.data.workflow_runs.find(r => r.head_branch === tag);
+              if (run) {
+                core.info(`Found run ${run.html_url} — status=${run.status} conclusion=${run.conclusion}`);
+                if (run.status === 'completed') {
+                  if (run.conclusion === 'success') {
+                    core.info('Package workflow succeeded.');
+                    return;
+                  }
+                  throw new Error(`Package workflow completed with conclusion: ${run.conclusion}`);
+                }
+              } else {
+                core.info('No matching workflow run found yet, retrying...');
+              }
+              await new Promise(res => setTimeout(res, intervalMs));
+            }
+            throw new Error('Timed out waiting for package workflow run.');

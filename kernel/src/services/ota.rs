@@ -31,8 +31,8 @@ use crate::crypto::{
     build_ota_manifest_signed_message, import_hex_file, read_hex_file, verify_detached_ed25519,
     DetachedSignatureStatus,
 };
-use crate::persistence;
-use crate::vfs;
+use crate::temporal::persistence;
+use crate::fs::vfs;
 // Cross-arch console output: VGA on x86/x86_64, PL011 on AArch64.
 mod vga {
     pub fn print_str(s: &str) { crate::serial::kprint_str(s); }
@@ -118,7 +118,7 @@ pub fn init_slots() {
     // Crash-rollback: if crash_count > 0 at boot and a sentinel is present,
     // the previous slot caused a crash — revert before continuing.
     #[cfg(not(target_arch = "aarch64"))]
-    let crash_count = crate::crash_log::crash_count();
+    let crash_count = crate::security::crash_log::crash_count();
     #[cfg(target_arch = "aarch64")]
     let crash_count = 0u32;
     let mut sentinel_buf = [0u8; 1];

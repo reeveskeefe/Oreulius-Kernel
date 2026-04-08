@@ -4,7 +4,7 @@
 
 Oreulius's filesystem stack is a two-layer design: a lower **persistence service** (`fs.rs`) that provides a capability-gated key-value store over RAM-backed storage, and an upper **Virtual File System** (`vfs.rs`) that projects a Unix-like inode tree — with paths, directories, symlinks, hard links, mount points, file descriptors, and per-process capability inheritance — on top of it. The two layers are coupled but separated by a clean IPC-style message protocol, allowing the VFS to delegate file payload storage to `fs.rs` via `Request`/`Response` messages while keeping namespace structure in its own inode table.
 
-A third thin shim, `vfs_platform.rs`, abstracts process management and tick queries so that the VFS core compiles identically on both `x86_64` (where it calls into `crate::process`) and `aarch64` (where process management differs).
+A third thin shim, `vfs_platform.rs`, abstracts process management and tick queries so that the VFS core compiles identically on both `x86_64` (where it calls into `crate::scheduler::process`) and `aarch64` (where process management differs).
 
 ---
 
@@ -325,7 +325,7 @@ If a channel is stale (capability resolution fails or IPC returns `InvalidCap` /
 
 Every watch event is also emitted into the wait-free telemetry ring:
 ```rust
-crate::wait_free_ring::TELEMETRY_RING.push(summary)
+crate::memory::wait_free_ring::TELEMETRY_RING.push(summary)
 ```
 The `score` field carries `min(detail.len(), 255)` as a coarse activity magnitude.
 
@@ -395,11 +395,11 @@ pub struct VfsPolicy {
 
 `vfs_platform.rs` is a thin `#[cfg]` shim that decouples the VFS from architecture-specific process management. On `x86_64`:
 
-- `Pid` = `crate::process::Pid` (a newtype over `u32`)
-- `current_pid()` calls `crate::process::current_pid()`
+- `Pid` = `crate::scheduler::process::Pid` (a newtype over `u32`)
+- `current_pid()` calls `crate::scheduler::process::current_pid()`
 - `alloc_fd(pid, handle_id)` calls `process_manager().alloc_fd(...)`
 - `get_fd_handle(pid, fd)` calls `process_manager().get_fd_handle(...)`
-- `ticks_now()` calls `crate::pit::get_ticks()`
+- `ticks_now()` calls `crate::scheduler::pit::get_ticks()`
 - `temporal_record_write(path, payload)` calls `crate::temporal::record_write(...)`
 
 On `aarch64`:
@@ -489,7 +489,7 @@ pub fn delete(path: &str)                    -> Result<(), &'static str>
 pub fn list_dir(path: &str, buf: &mut [u8])  -> Result<usize, &'static str>
 ```
 
-These use `crate::process::current_pid()` to obtain the calling process PID and dispatch to `vfs::open_for_current`, `vfs::read_fd`, `vfs::write_fd`, `vfs::close_fd`, `vfs::unlink`, and `vfs::list_dir` respectively.
+These use `crate::scheduler::process::current_pid()` to obtain the calling process PID and dispatch to `vfs::open_for_current`, `vfs::read_fd`, `vfs::write_fd`, `vfs::close_fd`, `vfs::unlink`, and `vfs::list_dir` respectively.
 
 ---
 

@@ -1,18 +1,7 @@
 /*!
  * Oreulius Kernel Project
  *
- * License-Identifier: Oreulius Community License v1.0 (see LICENSE)
- * Commercial use requires a separate written agreement (see COMMERCIAL.md)
- *
- * Copyright (c) 2026 Keefe Reeves and Oreulius Contributors
- *
- * Contributing:
- * - By contributing to this file, you agree that accepted contributions may
- *   be distributed and relicensed as part of Oreulius.
- * - Please see docs/CONTRIBUTING.md for contribution terms and review
- *   guidelines.
- *
- * ---------------------------------------------------------------------------
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
 //! Universal Network Stack
@@ -367,7 +356,7 @@ impl NetworkStack {
 
     #[inline]
     fn wait_timeout_ticks(default_ticks: u64) -> u64 {
-        let freq = crate::pit::get_frequency() as u64;
+        let freq = crate::scheduler::pit::get_frequency() as u64;
         if freq == 0 {
             return default_ticks;
         }
@@ -671,12 +660,12 @@ impl NetworkStack {
         }
 
         let link_deadline =
-            crate::pit::get_ticks() + Self::wait_timeout_ticks(NET_READY_DEFAULT_WAIT_TICKS);
+            crate::scheduler::pit::get_ticks() + Self::wait_timeout_ticks(NET_READY_DEFAULT_WAIT_TICKS);
         while !self.operational_link_ready() {
             if self.legacy_x86_probe_ready() {
                 break;
             }
-            if crate::pit::get_ticks() >= link_deadline {
+            if crate::scheduler::pit::get_ticks() >= link_deadline {
                 return Err("Link down");
             }
             let _ = self.poll_once()?;
@@ -686,8 +675,8 @@ impl NetworkStack {
         self.send_arp_request(ip)?;
 
         let deadline =
-            crate::pit::get_ticks() + Self::wait_timeout_ticks(ARP_DEFAULT_TIMEOUT_TICKS);
-        while crate::pit::get_ticks() < deadline {
+            crate::scheduler::pit::get_ticks() + Self::wait_timeout_ticks(ARP_DEFAULT_TIMEOUT_TICKS);
+        while crate::scheduler::pit::get_ticks() < deadline {
             let _ = self.poll_once()?;
 
             if let Some(mac) = self.arp_cache.lookup(ip) {
@@ -1092,7 +1081,7 @@ impl NetworkStack {
         slot.dest_port = dest_port;
         slot.seq = seq;
         slot.retries = 0;
-        slot.next_retry_tick = crate::pit::get_ticks().saturating_add(CAPNET_RETX_INTERVAL_TICKS);
+        slot.next_retry_tick = crate::scheduler::pit::get_ticks().saturating_add(CAPNET_RETX_INTERVAL_TICKS);
         slot.len = frame.len();
         slot.frame[..frame.len()].copy_from_slice(frame);
         self.capnet_retx[idx] = slot;
@@ -1201,7 +1190,7 @@ impl NetworkStack {
         }
 
         // ---- Negative-cache check ----
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         let dlen = domain.len().min(DNS_DOMAIN_MAX);
         for slot in self.dns_neg_cache.iter_mut() {
             if !slot.active {
@@ -1289,11 +1278,11 @@ impl NetworkStack {
             let response = unsafe { &mut *core::ptr::addr_of_mut!(DNS_RESPONSE_STAGE) };
             response.fill(0);
 
-            let dns_timeout_ticks = (crate::pit::get_frequency() as u64)
+            let dns_timeout_ticks = (crate::scheduler::pit::get_frequency() as u64)
                 .saturating_mul(DNS_RESPONSE_TIMEOUT_SECS)
                 .max(200);
-            let deadline = crate::pit::get_ticks().saturating_add(dns_timeout_ticks);
-            while crate::pit::get_ticks() < deadline {
+            let deadline = crate::scheduler::pit::get_ticks().saturating_add(dns_timeout_ticks);
+            while crate::scheduler::pit::get_ticks() < deadline {
                 match self.recv_udp(DNS_CLIENT_SRC_PORT, response) {
                     Ok(len) => {
                         let rx_txid = if len >= 2 {
@@ -1345,7 +1334,7 @@ impl NetworkStack {
         }
 
         // ---- Insert into negative cache on timeout ----
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         let dlen = domain.len().min(DNS_DOMAIN_MAX);
         // Find free slot or evict oldest
         let mut oldest_idx = 0usize;
@@ -1380,7 +1369,7 @@ impl NetworkStack {
 
     fn next_dns_txid(&mut self) -> u16 {
         if self.dns_next_txid == 0 {
-            self.dns_next_txid = (crate::pit::get_ticks() as u16).wrapping_add(0xA5C3);
+            self.dns_next_txid = (crate::scheduler::pit::get_ticks() as u16).wrapping_add(0xA5C3);
             if self.dns_next_txid == 0 {
                 self.dns_next_txid = 1;
             }
@@ -1592,7 +1581,7 @@ impl NetworkStack {
 
     /// Timer tick for retransmission/timers
     pub fn tick(&mut self) {
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         self.capnet_retx_tick(now);
         for i in 0..self.tcp.conns.len() {
             let action;
@@ -1813,7 +1802,7 @@ impl NetworkStack {
         payload[8..14].copy_from_slice(&self.my_mac.0);
         payload[14..18].copy_from_slice(&self.gateway_ip.0);
         payload[18..22].copy_from_slice(&self.dns_server.0);
-        payload[22..30].copy_from_slice(&crate::pit::get_ticks().to_le_bytes());
+        payload[22..30].copy_from_slice(&crate::scheduler::pit::get_ticks().to_le_bytes());
         let _ = crate::temporal::record_network_config_event(&payload);
     }
 
@@ -2191,7 +2180,7 @@ impl NetworkStack {
                     conn.last_payload[..copy_len].copy_from_slice(&preview[..copy_len]);
                 }
                 conn.last_payload_len = copy_len;
-                conn.last_send_tick = crate::pit::get_ticks();
+                conn.last_send_tick = crate::scheduler::pit::get_ticks();
             }
         }
 
@@ -2615,7 +2604,7 @@ impl TcpManager {
         let local_port = 40000 + (self.next_id % 10000);
         // RFC 6528: derive ISN from a keyed hash of the 4-tuple + tick to prevent
         // ISN prediction attacks.  SipHash-2-4 is already in the kernel.
-        let tick = crate::pit::get_ticks();
+        let tick = crate::scheduler::pit::get_ticks();
         let ip_seed = u32::from_be_bytes(stack.my_ip.0) as u64;
         let remote_seed = u32::from_be_bytes(remote_ip.0) as u64;
         let k0 = tick ^ (ip_seed << 32 | remote_seed);
@@ -2636,8 +2625,8 @@ impl TcpManager {
         conn.iss = iss;
         conn.snd_una = iss;
         conn.snd_nxt = iss;
-        conn.rto_ticks = (crate::pit::get_frequency() as u64) * 3;
-        conn.rtt_start = crate::pit::get_ticks();
+        conn.rto_ticks = (crate::scheduler::pit::get_frequency() as u64) * 3;
+        conn.rtt_start = crate::scheduler::pit::get_ticks();
         let ep = tcp_endpoint(conn);
         let adv_win = conn_recv_window(conn);
         let mut syn_result = Err("TX busy");
@@ -2811,7 +2800,7 @@ impl TcpManager {
     }
 
     fn tick(&mut self, stack: &mut NetworkStack) {
-        let now = crate::pit::get_ticks();
+        let now = crate::scheduler::pit::get_ticks();
         for i in 0..self.conns.len() {
             // Collect what work (if any) needs to be done outside the borrow.
             let delayed_ack: Option<(TcpEndpoint, u32, u32)>;
@@ -3121,7 +3110,7 @@ fn record_last(conn: &mut TcpConn, flags: u16, seq: u32, ack: u32, payload: &[u8
         "TCP segment payload exceeds MSS (1460); retransmit buffer would truncate"
     );
     conn.last_payload[..conn.last_payload_len].copy_from_slice(&payload[..conn.last_payload_len]);
-    conn.last_send_tick = crate::pit::get_ticks();
+    conn.last_send_tick = crate::scheduler::pit::get_ticks();
     // RFC 6298: reset rtt_start on every new segment so SRTT tracks real RTT,
     // not connection uptime.  Only update when payload advances snd_nxt.
     if !payload.is_empty() || (flags & TCP_FLAG_SYN != 0) {
@@ -3389,7 +3378,7 @@ impl NetworkStack {
         src_port: u16,
         payload: &[u8],
     ) -> Result<(), &'static str> {
-        let now = crate::pit::get_ticks() as u64;
+        let now = crate::scheduler::pit::get_ticks() as u64;
         let rx = match super::capnet::process_incoming_control_payload(payload, now) {
             Ok(v) => v,
             Err(e) => {
@@ -3513,7 +3502,7 @@ impl NetworkStack {
                     // Update the peer's advertised receive window (RFC 1323 §2.2).
                     // The raw 16-bit window is left-shifted by the peer's wscale.
                     conn.snd_wnd = (raw_window as u32) << (conn.peer_wscale as u32);
-                    let now = crate::pit::get_ticks();
+                    let now = crate::scheduler::pit::get_ticks();
                     let sample = now.saturating_sub(conn.rtt_start);
                     if conn.srtt == 0 {
                         conn.srtt = sample;
@@ -3602,7 +3591,7 @@ impl NetworkStack {
                     // before sending an ACK.  Force immediate ACK on PSH or buffer-full.
                     conn.ack_pending = conn.ack_pending.saturating_add(1);
                     if conn.ack_pending_since == 0 {
-                        conn.ack_pending_since = crate::pit::get_ticks();
+                        conn.ack_pending_since = crate::scheduler::pit::get_ticks();
                     }
                     let occupied = conn.recv_tail.wrapping_sub(conn.recv_head) & TCP_BUF_MASK;
                     let force_ack = (flags & TCP_FLAG_PSH != 0)
@@ -3651,7 +3640,7 @@ impl NetworkStack {
                         // Normal 4-way close: peer sent FIN after we got ACK for ours.
                         // Enter TIME_WAIT for 2×MSL before freeing the port.
                         conn.state = TcpState::TimeWait;
-                        conn.last_send_tick = crate::pit::get_ticks(); // start timer
+                        conn.last_send_tick = crate::scheduler::pit::get_ticks(); // start timer
                         Self::maybe_record_tcp_socket_state_event(
                             conn.id as u32,
                             conn.state as u8,
@@ -3716,7 +3705,7 @@ impl NetworkStack {
                     conn.remote_ip = src_ip;
                     conn.remote_port = src_port;
                     conn.state = TcpState::SynReceived;
-                    let tick = crate::pit::get_ticks();
+                    let tick = crate::scheduler::pit::get_ticks();
                     let k0 = tick ^ (u32::from_be_bytes(self.my_ip.0) as u64);
                     let k1 = ((dst_port as u64) << 16 | src_port as u64)
                         ^ tick.wrapping_add(0xBEEF_CAFE_DEAD_0001u64);
@@ -3733,7 +3722,7 @@ impl NetworkStack {
                     conn.irs = seq;
                     conn.rcv_nxt = seq.wrapping_add(1);
                     conn.listener_idx = idx as u8;
-                    conn.rto_ticks = (crate::pit::get_frequency() as u64) * 3;
+                    conn.rto_ticks = (crate::scheduler::pit::get_frequency() as u64) * 3;
                     // Record the client's window scale from its SYN options.
                     conn.peer_wscale = peer_wscale_opt.unwrap_or(0);
                     // Initial send window from the SYN (scaled by client's wscale).
