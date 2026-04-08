@@ -1,6 +1,6 @@
 [package]
 name = "oreulius-kernel"
-version = "0.1.1-alpha.3"
+version = "0.1.1-alpha"
 edition = "2021"
 autobins = false
 
