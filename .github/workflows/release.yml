@@ -324,15 +324,19 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const tag = process.env.RELEASE_TAG || '';
-            const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-            if (!release.data.draft) {
+            const releases = await github.rest.repos.listReleases({ owner, repo, per_page: 100 });
+            const release = releases.data.find(r => r.tag_name === tag);
+            if (!release) {
+              throw new Error(`Unable to find draft release for tag ${tag}.`);
+            }
+            if (!release.draft) {
               core.info(`Release ${tag} is already published.`);
               return;
             }
             await github.rest.repos.updateRelease({
               owner,
               repo,
-              release_id: release.data.id,
+              release_id: release.id,
               draft: false,
             });
             core.info(`Published GitHub Release for ${tag}.`);
