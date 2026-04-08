@@ -1,20 +1,19 @@
 name: release
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (for example v0.1.1-alpha)"
+        required: true
+        default: "v0.1.1-alpha"
 
 defaults:
   run:
     shell: bash
 
 permissions:
-  contents: write      # create GitHub Release + upload assets (tag push)
-  actions: write       # dispatch package.yml after the release is published
-  packages: read       # packaging/push reserved for package.yml
-
-env:
-  REGISTRY: ghcr.io
-  NAMESPACE: reeveskeefe
+  contents: write      # create GitHub Release + upload assets
 
 jobs:
   release-preflight:
@@ -24,99 +23,45 @@ jobs:
 
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
-      pkg_name: ${{ steps.meta.outputs.pkg_name }}
-      pkg_version: ${{ steps.meta.outputs.pkg_version }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
 
-      - name: Configure git identity for release tags
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Read release name & version from Cargo.toml
+      - name: Resolve release tag
         id: meta
         run: |
           set -euo pipefail
-          file=kernel/Cargo.toml
-          if [[ ! -f "$file" ]]; then
-            echo "::error::Missing $file"
+          tag="${{ inputs.version }}"
+          if [[ -z "$tag" ]]; then
+            echo "::error::Missing release tag input"
             exit 1
           fi
-          pkg_name=$(awk -F'"' '/^name[[:space:]]*=/ { print $2; exit }' "$file")
-          pkg_version=$(awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' "$file")
-          if [[ -z "$pkg_name" || -z "$pkg_version" ]]; then
-            echo "::error::Failed to parse package name/version from $file"
-            exit 1
-          fi
-          tag="${pkg_name}-${pkg_version}"
-          echo "pkg_name=$pkg_name" >> "$GITHUB_OUTPUT"
-          echo "pkg_version=$pkg_version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Validate or create tag pointing to this commit
+      - name: Validate release tag points to this commit
         env:
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
-          echo "Checking remote for tag $TAG"
+          echo "Checking remote for release tag $TAG"
           remote_ref_sha=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}' | tail -n 1 || true)
-          remote_commit_sha=$(git ls-remote --tags origin "refs/tags/${TAG}^{}" | awk '{print $1}' | tail -n 1 || true)
-          if [[ -n "$remote_ref_sha" ]]; then
-            if [[ -z "$remote_commit_sha" ]]; then
-              remote_commit_sha="$remote_ref_sha"
-            fi
-            if [[ "$remote_commit_sha" != "$GITHUB_SHA" ]]; then
-              echo "::error::Requested tag ${TAG} already points to ${remote_commit_sha:0:7}, but this run is building ${GITHUB_SHA:0:7}."
-              exit 1
-            else
-              echo "Tag ${TAG} already exists and matches current commit."
-            fi
-          else
-            echo "Creating and pushing tag ${TAG}"
-            git tag -a "${TAG}" -m "Release ${TAG}" "${GITHUB_SHA}"
-            git push origin "${TAG}"
-          fi
-
-      - name: Verify packaging Dockerfiles exist
-        run: |
-          missing=0
-          for file in \
-            docker/Dockerfile.toolchain \
-            docker/Dockerfile.runner \
-            docker/Dockerfile.artifacts
-          do
-            if [[ ! -f "$file" ]]; then
-              echo "::error::Missing required release packaging file: $file"
-              missing=1
-            fi
-          done
-          if [[ "$missing" -ne 0 ]]; then
-            echo "::error::This commit does not contain the full release packaging set."
+          if [[ -z "$remote_ref_sha" ]]; then
+            echo "::error::Release tag ${TAG} does not exist on origin."
+            echo "::error::This workflow no longer creates tags; run it against an existing tag."
             exit 1
           fi
-
-      - name: Validate manual release tag matches current commit
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          remote_ref_sha="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}' | tail -n 1 || true)"
-          remote_commit_sha="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}' | tail -n 1 || true)"
+          remote_commit_sha=$(git ls-remote --tags origin "refs/tags/${TAG}^{}" | awk '{print $1}' | tail -n 1 || true)
           if [[ -z "$remote_commit_sha" ]]; then
             remote_commit_sha="$remote_ref_sha"
           fi
-          if [[ -n "$remote_commit_sha" && "$remote_commit_sha" != "$GITHUB_SHA" ]]; then
-            echo "::error::Requested tag ${RELEASE_TAG} already points to ${remote_commit_sha:0:7}, but this run is building ${GITHUB_SHA:0:7}."
-            echo "::error::Use a new tag (for example ${RELEASE_TAG}.1) or move the protected tag in GitHub before re-running the release workflow."
+          if [[ "$remote_commit_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::Requested tag ${TAG} points to ${remote_commit_sha:0:7}, but this run is building ${GITHUB_SHA:0:7}."
             exit 1
           fi
+          echo "Tag ${TAG} matches the current commit."
 
   # ────────────────────────────────────────────────────────────────────────────
   # Job 1: Build all three kernel architectures and upload as GHA artifacts.
@@ -214,23 +159,6 @@ jobs:
           if-no-files-found: error
 
   # ────────────────────────────────────────────────────────────────────────────
-  # Job 2: Build and push the toolchain image (runs in parallel with build-kernel).
-  # ────────────────────────────────────────────────────────────────────────────
-  # Packaging (images) intentionally moved to package.yml
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Job 3: Build and push runner images (i686 and x86_64).
-  # Waits for build-kernel (needs the compiled ISOs) and package-toolchain
-  # (runner FROM-references the toolchain image).
-  # ────────────────────────────────────────────────────────────────────────────
-  # Packaging (images) intentionally moved to package.yml
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Job 4: Assemble OCI artifact image from all three arch builds and push.
-  # ────────────────────────────────────────────────────────────────────────────
-  # Packaging (OCI artifacts) intentionally moved to package.yml
-
-  # ────────────────────────────────────────────────────────────────────────────
   # Job 5: Create a GitHub Release with all kernel binaries attached.
   # ────────────────────────────────────────────────────────────────────────────
   github-release:
@@ -277,11 +205,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.release-preflight.outputs.tag }}
-          name: "${{ needs.release-preflight.outputs.pkg_name }} ${{ needs.release-preflight.outputs.pkg_version }}"
+          name: "Attach artifacts for ${{ needs.release-preflight.outputs.tag }}"
           draft: true
           prerelease: true
           body: |
-            ## ${{ needs.release-preflight.outputs.pkg_name }} ${{ needs.release-preflight.outputs.tag }}
+            ## ${{ needs.release-preflight.outputs.tag }}
 
             Capability-native, WASM-first kernel for isolated workloads with temporal state
             and verification-oriented control surfaces.
@@ -293,26 +221,8 @@ jobs:
             | x86_64 | Multiboot2 ISO + ELF | attached below |
             | aarch64 | ELF + raw Image | attached below |
 
-            ### Container Images
-            ```
-            # Reproducible build toolchain
-            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-toolchain:${{ needs.release-preflight.outputs.tag }}
-
-            # Boot in QEMU (i686)
-            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-i686:${{ needs.release-preflight.outputs.tag }}
-            docker run --rm -it ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-i686:${{ needs.release-preflight.outputs.tag }}
-
-            # Boot in QEMU (x86_64)
-            docker pull ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-x86_64:${{ needs.release-preflight.outputs.tag }}
-            docker run --rm -it ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-runner-x86_64:${{ needs.release-preflight.outputs.tag }}
-
-            # All binaries as OCI artifact
-            id=$(docker create ghcr.io/${{ env.NAMESPACE }}/oreulius-kernel-artifacts:${{ needs.release-preflight.outputs.tag }})
-            docker cp "$id":/artifacts ./artifacts && docker rm "$id"
-            ```
-
-            ### License
-            Oreulius Community License — research/non-commercial use. See [LICENSE](LICENSE).
+            ### Notes
+            Container images and OCI artifacts are produced separately by `package.yml`.
           files: release-assets/*
           fail_on_unmatched_files: false
 
@@ -341,63 +251,3 @@ jobs:
               draft: false,
             });
             core.info(`Published GitHub Release for ${tag}.`);
-
-  trigger-package:
-    name: Trigger packaging workflow and wait
-    runs-on: ubuntu-22.04
-    needs: [release-preflight, github-release]
-    steps:
-      - name: Trigger `package.yml` via workflow_dispatch
-        uses: actions/github-script@v6
-        env:
-          PKG_TAG: ${{ needs.release-preflight.outputs.tag }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const tag = process.env.PKG_TAG || '';
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'package.yml',
-              ref: tag,
-              inputs: { version: tag }
-            });
-            core.info(`Dispatched package.yml for ref '${tag}'`);
-
-      - name: Wait for package workflow run to complete
-        uses: actions/github-script@v6
-        env:
-          PKG_TAG: ${{ needs.release-preflight.outputs.tag }}
-          CHECK_INTERVAL_SECONDS: '15'
-          TIMEOUT_MIN: '120'
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const workflow = 'package.yml';
-            const tag = process.env.PKG_TAG || '';
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const intervalMs = parseInt(process.env.CHECK_INTERVAL_SECONDS || '15', 10) * 1000;
-            const timeoutMs = parseInt(process.env.TIMEOUT_MIN || '120', 10) * 60 * 1000;
-            const deadline = Date.now() + timeoutMs;
-            core.info(`Waiting for workflow '${workflow}' triggered for tag '${tag}'`);
-            while (Date.now() < deadline) {
-              const runs = await github.rest.actions.listWorkflowRuns({
-                owner, repo, workflow_id: workflow, per_page: 100
-              });
-              const run = runs.data.workflow_runs.find(r => r.head_branch === tag);
-              if (run) {
-                core.info(`Found run ${run.html_url} — status=${run.status} conclusion=${run.conclusion}`);
-                if (run.status === 'completed') {
-                  if (run.conclusion === 'success') {
-                    core.info('Package workflow succeeded.');
-                    return;
-                  }
-                  throw new Error(`Package workflow completed with conclusion: ${run.conclusion}`);
-                }
-              } else {
-                core.info('No matching workflow run found yet, retrying...');
-              }
-              await new Promise(res => setTimeout(res, intervalMs));
-            }
-            throw new Error('Timed out waiting for package workflow run.');
