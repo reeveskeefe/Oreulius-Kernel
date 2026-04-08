@@ -48,8 +48,8 @@ jobs:
             echo "::error::Missing $file"
             exit 1
           fi
-          pkg_name=$(grep -E '^name\s*=' "$file" | head -n1 | sed -E 's/name\s*=\s*"(.*)"/\1/' | tr -d ' '\n)
-          pkg_version=$(grep -E '^version\s*=' "$file" | head -n1 | sed -E 's/version\s*=\s*"(.*)"/\1/' | tr -d ' '\n)
+          pkg_name=$(awk -F'"' '/^name[[:space:]]*=/ { print $2; exit }' "$file")
+          pkg_version=$(awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' "$file")
           if [[ -z "$pkg_name" || -z "$pkg_version" ]]; then
             echo "::error::Failed to parse package name/version from $file"
             exit 1
