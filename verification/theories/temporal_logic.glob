@@ -1,18 +1,18 @@
-DIGEST b4b23318480d4d33698a4f19b54eddec
+DIGEST 66c3a8d7c7232155b0ba045e53e1fb2d
 Ftemporal_logic
-R124:137 Stdlib.Arith.PeanoNat <> <> lib
-def 152:164 <> temporal_step
-R174:176 Corelib.Init.Datatypes <> nat ind
-binder 167:170 <> tick:1
-R181:183 Corelib.Init.Datatypes <> nat ind
-R188:188 Corelib.Init.Datatypes <> S constr
-R190:193 temporal_logic <> tick:1 var
-prf 205:226 <> temporal_step_progress
-binder 237:240 <> tick:2
-R247:250 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
-R243:246 temporal_logic <> tick:2 var
-R251:263 temporal_logic <> temporal_step def
-R265:268 temporal_logic <> tick:2 var
-R301:313 temporal_logic <> temporal_step def
-R325:342 Stdlib.Arith.PeanoNat Nat le_succ_diag_r thm
-R325:342 Stdlib.Arith.PeanoNat Nat le_succ_diag_r thm
+R121:134 Stdlib.Arith.PeanoNat <> <> lib
+def 149:161 <> temporal_step
+R171:173 Corelib.Init.Datatypes <> nat ind
+binder 164:167 <> tick:1
+R178:180 Corelib.Init.Datatypes <> nat ind
+R185:185 Corelib.Init.Datatypes <> S constr
+R187:190 temporal_logic <> tick:1 var
+prf 202:223 <> temporal_step_progress
+binder 234:237 <> tick:2
+R244:247 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R240:243 temporal_logic <> tick:2 var
+R248:260 temporal_logic <> temporal_step def
+R262:265 temporal_logic <> tick:2 var
+R298:310 temporal_logic <> temporal_step def
+R322:339 Stdlib.Arith.PeanoNat Nat le_succ_diag_r thm
+R322:339 Stdlib.Arith.PeanoNat Nat le_succ_diag_r thm

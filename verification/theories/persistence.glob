@@ -1,225 +1,225 @@
-DIGEST b758ca5fbc01c499a5f6a76b282ae4a1
+DIGEST 7999302188d6c345c0dea5a451433dd1
 Fpersistence
-R2046:2053 Stdlib.Init.Nat <> <> lib
-R2083:2092 Stdlib.Lists.List <> <> lib
-R2122:2134 Stdlib.micromega.Lia <> <> lib
-R2144:2156 Stdlib.Lists.List ListNotations <> mod
-rec 2649:2661 <> SnapshotStore
-proj 2681:2689 <> snap_data
-proj 2708:2718 <> snap_offset
-proj 2730:2736 <> snap_ts
-R2695:2698 Corelib.Init.Datatypes <> list ind
-R2700:2702 Corelib.Init.Datatypes <> nat ind
-R2722:2724 Corelib.Init.Datatypes <> nat ind
-R2744:2746 Corelib.Init.Datatypes <> nat ind
-def 3017:3026 <> write_snap
-R3035:3047 persistence <> SnapshotStore rec
-binder 3029:3031 <> old:5
-R3080:3083 Corelib.Init.Datatypes <> list ind
-R3085:3087 Corelib.Init.Datatypes <> nat ind
-binder 3073:3076 <> data:6
-R3100:3102 Corelib.Init.Datatypes <> nat ind
-binder 3091:3093 <> off:7
-binder 3095:3096 <> ts:8
-R3107:3119 persistence <> SnapshotStore rec
-R3126:3135 persistence <> mkSnapshot constr
-R3137:3140 persistence <> data:6 var
-R3142:3144 persistence <> off:7 var
-R3146:3147 persistence <> ts:8 var
-def 3299:3307 <> read_snap
-R3314:3326 persistence <> SnapshotStore rec
-binder 3310:3310 <> s:9
-R3339:3341 Corelib.Init.Datatypes <> ::type_scope:x_'*'_x not
-R3331:3334 Corelib.Init.Datatypes <> list ind
-R3336:3338 Corelib.Init.Datatypes <> nat ind
-R3342:3344 Corelib.Init.Datatypes <> nat ind
-R3351:3351 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
-R3365:3366 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
-R3382:3382 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
-R3355:3363 persistence <> snap_data proj
-R3352:3352 persistence <> s:9 var
-R3370:3380 persistence <> snap_offset proj
-R3367:3367 persistence <> s:9 var
-ax 3754:3765 <> EncodedState
-ax 3979:3991 <> TemporalState
-ax 4131:4136 <> encode
-R4153:4156 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4140:4152 persistence <> TemporalState defax
-R4157:4168 persistence <> EncodedState defax
-ax 4301:4306 <> decode
-R4322:4325 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4310:4321 persistence <> EncodedState defax
-R4326:4331 Corelib.Init.Datatypes <> option ind
-R4333:4345 persistence <> TemporalState defax
-ax 4800:4814 <> codec_roundtrip
-R4832:4844 persistence <> TemporalState defax
-binder 4828:4828 <> s:18
-R4865:4867 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R4848:4853 persistence <> decode defax
-R4856:4861 persistence <> encode defax
-R4863:4863 persistence <> s:18 var
-R4868:4871 Corelib.Init.Datatypes <> Some constr
-R4873:4873 persistence <> s:18 var
-ax 5321:5328 <> NextTick
-R5335:5338 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R5332:5334 Corelib.Init.Datatypes <> nat ind
-R5339:5341 Corelib.Init.Datatypes <> nat ind
-ax 5351:5363 <> tick_monotone
-R5379:5381 Corelib.Init.Datatypes <> nat ind
-binder 5375:5375 <> t:23
-R5386:5389 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
-R5385:5385 persistence <> t:23 var
-R5390:5397 persistence <> NextTick defax
-R5399:5399 persistence <> t:23 var
-prf 5548:5571 <> write_timestamp_monotone
-R5591:5603 persistence <> SnapshotStore rec
-binder 5585:5587 <> old:26
-R5614:5617 Corelib.Init.Datatypes <> list ind
-R5619:5621 Corelib.Init.Datatypes <> nat ind
-binder 5607:5610 <> data:27
-R5631:5633 Corelib.Init.Datatypes <> nat ind
-binder 5625:5627 <> off:28
-R5654:5657 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
-R5646:5652 persistence <> snap_ts proj
-R5641:5643 persistence <> old:26 var
-R5710:5716 persistence <> snap_ts proj
-R5659:5668 persistence <> write_snap def
-R5670:5672 persistence <> old:26 var
-R5674:5677 persistence <> data:27 var
-R5679:5681 persistence <> off:28 var
-R5684:5691 persistence <> NextTick defax
-R5698:5704 persistence <> snap_ts proj
-R5693:5695 persistence <> old:26 var
-R5759:5768 persistence <> write_snap def
-R5789:5801 persistence <> tick_monotone prfax
-R5808:5814 persistence <> snap_ts proj
-R5789:5801 persistence <> tick_monotone prfax
-R5808:5814 persistence <> snap_ts proj
-prf 6128:6150 <> snapshot_roundtrip_data
-R6170:6182 persistence <> SnapshotStore rec
-binder 6164:6166 <> old:29
-R6193:6196 Corelib.Init.Datatypes <> list ind
-R6198:6200 Corelib.Init.Datatypes <> nat ind
-binder 6186:6189 <> data:30
-R6213:6215 Corelib.Init.Datatypes <> nat ind
-binder 6204:6206 <> off:31
-binder 6208:6209 <> ts:32
-R6267:6269 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R6223:6225 Corelib.Init.Datatypes <> fst def
-R6228:6236 persistence <> read_snap def
-R6239:6248 persistence <> write_snap def
-R6250:6252 persistence <> old:29 var
-R6254:6257 persistence <> data:30 var
-R6259:6261 persistence <> off:31 var
-R6263:6264 persistence <> ts:32 var
-R6270:6273 persistence <> data:30 var
-R6318:6327 persistence <> write_snap def
-R6330:6338 persistence <> read_snap def
-prf 6444:6468 <> snapshot_roundtrip_offset
-R6488:6500 persistence <> SnapshotStore rec
-binder 6482:6484 <> old:33
-R6511:6514 Corelib.Init.Datatypes <> list ind
-R6516:6518 Corelib.Init.Datatypes <> nat ind
-binder 6504:6507 <> data:34
-R6531:6533 Corelib.Init.Datatypes <> nat ind
-binder 6522:6524 <> off:35
-binder 6526:6527 <> ts:36
-R6585:6587 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R6541:6543 Corelib.Init.Datatypes <> snd def
-R6546:6554 persistence <> read_snap def
-R6557:6566 persistence <> write_snap def
-R6568:6570 persistence <> old:33 var
-R6572:6575 persistence <> data:34 var
-R6577:6579 persistence <> off:35 var
-R6581:6582 persistence <> ts:36 var
-R6588:6590 persistence <> off:35 var
-R6635:6644 persistence <> write_snap def
-R6647:6655 persistence <> read_snap def
-prf 6827:6849 <> snapshot_roundtrip_full
-R6869:6881 persistence <> SnapshotStore rec
-binder 6863:6865 <> old:37
-R6892:6895 Corelib.Init.Datatypes <> list ind
-R6897:6899 Corelib.Init.Datatypes <> nat ind
-binder 6885:6888 <> data:38
-R6912:6914 Corelib.Init.Datatypes <> nat ind
-binder 6903:6905 <> off:39
-binder 6907:6908 <> ts:40
-R6960:6962 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R6922:6930 persistence <> read_snap def
-R6933:6942 persistence <> write_snap def
-R6944:6946 persistence <> old:37 var
-R6948:6951 persistence <> data:38 var
-R6953:6955 persistence <> off:39 var
-R6957:6958 persistence <> ts:40 var
-R6963:6963 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
-R6968:6969 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
-R6973:6973 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
-R6964:6967 persistence <> data:38 var
-R6970:6972 persistence <> off:39 var
-R7018:7027 persistence <> write_snap def
-R7030:7038 persistence <> read_snap def
-prf 7540:7569 <> temporal_state_codec_roundtrip
-R7587:7599 persistence <> TemporalState defax
-binder 7583:7583 <> s:41
-R7624:7626 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R7607:7612 persistence <> decode defax
-R7615:7620 persistence <> encode defax
-R7622:7622 persistence <> s:41 var
-R7627:7630 Corelib.Init.Datatypes <> Some constr
-R7632:7632 persistence <> s:41 var
-R7650:7664 persistence <> codec_roundtrip prfax
-R7650:7664 persistence <> codec_roundtrip prfax
-prf 7750:7779 <> temporal_state_recovery_unique
-R7797:7809 persistence <> TemporalState defax
-binder 7793:7793 <> s:42
-R7817:7829 persistence <> TemporalState defax
-binder 7813:7813 <> r:43
-R7863:7866 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R7854:7856 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R7837:7842 persistence <> decode defax
-R7845:7850 persistence <> encode defax
-R7852:7852 persistence <> s:42 var
-R7857:7860 Corelib.Init.Datatypes <> Some constr
-R7862:7862 persistence <> r:43 var
-R7868:7870 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R7867:7867 persistence <> r:43 var
-R7871:7871 persistence <> s:42 var
-R7908:7922 persistence <> codec_roundtrip prfax
-R7908:7922 persistence <> codec_roundtrip prfax
-R7908:7922 persistence <> codec_roundtrip prfax
-prf 9205:9224 <> PersistenceRoundtrip
-R9245:9245 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R9366:9390 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R9450:9450 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R9260:9272 persistence <> SnapshotStore rec
-binder 9254:9256 <> old:44
-R9283:9286 Corelib.Init.Datatypes <> list ind
-R9288:9290 Corelib.Init.Datatypes <> nat ind
-binder 9276:9279 <> data:45
-R9303:9305 Corelib.Init.Datatypes <> nat ind
-binder 9294:9296 <> off:46
-binder 9298:9299 <> ts:47
-R9352:9354 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R9314:9322 persistence <> read_snap def
-R9325:9334 persistence <> write_snap def
-R9336:9338 persistence <> old:44 var
-R9340:9343 persistence <> data:45 var
-R9345:9347 persistence <> off:46 var
-R9349:9350 persistence <> ts:47 var
-R9355:9355 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
-R9360:9361 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
-R9365:9365 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
-R9356:9359 persistence <> data:45 var
-R9362:9364 persistence <> off:46 var
-R9403:9415 persistence <> TemporalState defax
-binder 9399:9399 <> s:48
-R9441:9443 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R9424:9429 persistence <> decode defax
-R9432:9437 persistence <> encode defax
-R9439:9439 persistence <> s:48 var
-R9444:9447 Corelib.Init.Datatypes <> Some constr
-R9449:9449 persistence <> s:48 var
-R9572:9594 persistence <> snapshot_roundtrip_full thm
-R9572:9594 persistence <> snapshot_roundtrip_full thm
-R9675:9689 persistence <> codec_roundtrip prfax
-R9675:9689 persistence <> codec_roundtrip prfax
+R2043:2050 Corelib.Init.Nat <> <> lib
+R2077:2086 Stdlib.Lists.List <> <> lib
+R2113:2125 Stdlib.micromega.Lia <> <> lib
+R2135:2147 Stdlib.Lists.List ListNotations <> mod
+rec 2640:2652 <> SnapshotStore
+proj 2672:2680 <> snap_data
+proj 2699:2709 <> snap_offset
+proj 2721:2727 <> snap_ts
+R2686:2689 Corelib.Init.Datatypes <> list ind
+R2691:2693 Corelib.Init.Datatypes <> nat ind
+R2713:2715 Corelib.Init.Datatypes <> nat ind
+R2735:2737 Corelib.Init.Datatypes <> nat ind
+def 3008:3017 <> write_snap
+R3026:3038 persistence <> SnapshotStore rec
+binder 3020:3022 <> old:5
+R3071:3074 Corelib.Init.Datatypes <> list ind
+R3076:3078 Corelib.Init.Datatypes <> nat ind
+binder 3064:3067 <> data:6
+R3091:3093 Corelib.Init.Datatypes <> nat ind
+binder 3082:3084 <> off:7
+binder 3086:3087 <> ts:8
+R3098:3110 persistence <> SnapshotStore rec
+R3117:3126 persistence <> mkSnapshot constr
+R3128:3131 persistence <> data:6 var
+R3133:3135 persistence <> off:7 var
+R3137:3138 persistence <> ts:8 var
+def 3290:3298 <> read_snap
+R3305:3317 persistence <> SnapshotStore rec
+binder 3301:3301 <> s:9
+R3330:3332 Corelib.Init.Datatypes <> ::type_scope:x_'*'_x not
+R3322:3325 Corelib.Init.Datatypes <> list ind
+R3327:3329 Corelib.Init.Datatypes <> nat ind
+R3333:3335 Corelib.Init.Datatypes <> nat ind
+R3342:3342 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
+R3356:3357 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
+R3373:3373 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
+R3346:3354 persistence <> snap_data proj
+R3343:3343 persistence <> s:9 var
+R3361:3371 persistence <> snap_offset proj
+R3358:3358 persistence <> s:9 var
+ax 3745:3756 <> EncodedState
+ax 3970:3982 <> TemporalState
+ax 4122:4127 <> encode
+R4144:4147 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4131:4143 persistence <> TemporalState defax
+R4148:4159 persistence <> EncodedState defax
+ax 4292:4297 <> decode
+R4313:4316 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4301:4312 persistence <> EncodedState defax
+R4317:4322 Corelib.Init.Datatypes <> option ind
+R4324:4336 persistence <> TemporalState defax
+ax 4791:4805 <> codec_roundtrip
+R4823:4835 persistence <> TemporalState defax
+binder 4819:4819 <> s:18
+R4856:4858 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4839:4844 persistence <> decode defax
+R4847:4852 persistence <> encode defax
+R4854:4854 persistence <> s:18 var
+R4859:4862 Corelib.Init.Datatypes <> Some constr
+R4864:4864 persistence <> s:18 var
+ax 5312:5319 <> NextTick
+R5326:5329 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5323:5325 Corelib.Init.Datatypes <> nat ind
+R5330:5332 Corelib.Init.Datatypes <> nat ind
+ax 5342:5354 <> tick_monotone
+R5370:5372 Corelib.Init.Datatypes <> nat ind
+binder 5366:5366 <> t:23
+R5377:5380 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R5376:5376 persistence <> t:23 var
+R5381:5388 persistence <> NextTick defax
+R5390:5390 persistence <> t:23 var
+prf 5539:5562 <> write_timestamp_monotone
+R5582:5594 persistence <> SnapshotStore rec
+binder 5576:5578 <> old:26
+R5605:5608 Corelib.Init.Datatypes <> list ind
+R5610:5612 Corelib.Init.Datatypes <> nat ind
+binder 5598:5601 <> data:27
+R5622:5624 Corelib.Init.Datatypes <> nat ind
+binder 5616:5618 <> off:28
+R5645:5648 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R5637:5643 persistence <> snap_ts proj
+R5632:5634 persistence <> old:26 var
+R5701:5707 persistence <> snap_ts proj
+R5650:5659 persistence <> write_snap def
+R5661:5663 persistence <> old:26 var
+R5665:5668 persistence <> data:27 var
+R5670:5672 persistence <> off:28 var
+R5675:5682 persistence <> NextTick defax
+R5689:5695 persistence <> snap_ts proj
+R5684:5686 persistence <> old:26 var
+R5750:5759 persistence <> write_snap def
+R5780:5792 persistence <> tick_monotone prfax
+R5799:5805 persistence <> snap_ts proj
+R5780:5792 persistence <> tick_monotone prfax
+R5799:5805 persistence <> snap_ts proj
+prf 6119:6141 <> snapshot_roundtrip_data
+R6161:6173 persistence <> SnapshotStore rec
+binder 6155:6157 <> old:29
+R6184:6187 Corelib.Init.Datatypes <> list ind
+R6189:6191 Corelib.Init.Datatypes <> nat ind
+binder 6177:6180 <> data:30
+R6204:6206 Corelib.Init.Datatypes <> nat ind
+binder 6195:6197 <> off:31
+binder 6199:6200 <> ts:32
+R6258:6260 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R6214:6216 Corelib.Init.Datatypes <> fst def
+R6219:6227 persistence <> read_snap def
+R6230:6239 persistence <> write_snap def
+R6241:6243 persistence <> old:29 var
+R6245:6248 persistence <> data:30 var
+R6250:6252 persistence <> off:31 var
+R6254:6255 persistence <> ts:32 var
+R6261:6264 persistence <> data:30 var
+R6309:6318 persistence <> write_snap def
+R6321:6329 persistence <> read_snap def
+prf 6435:6459 <> snapshot_roundtrip_offset
+R6479:6491 persistence <> SnapshotStore rec
+binder 6473:6475 <> old:33
+R6502:6505 Corelib.Init.Datatypes <> list ind
+R6507:6509 Corelib.Init.Datatypes <> nat ind
+binder 6495:6498 <> data:34
+R6522:6524 Corelib.Init.Datatypes <> nat ind
+binder 6513:6515 <> off:35
+binder 6517:6518 <> ts:36
+R6576:6578 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R6532:6534 Corelib.Init.Datatypes <> snd def
+R6537:6545 persistence <> read_snap def
+R6548:6557 persistence <> write_snap def
+R6559:6561 persistence <> old:33 var
+R6563:6566 persistence <> data:34 var
+R6568:6570 persistence <> off:35 var
+R6572:6573 persistence <> ts:36 var
+R6579:6581 persistence <> off:35 var
+R6626:6635 persistence <> write_snap def
+R6638:6646 persistence <> read_snap def
+prf 6818:6840 <> snapshot_roundtrip_full
+R6860:6872 persistence <> SnapshotStore rec
+binder 6854:6856 <> old:37
+R6883:6886 Corelib.Init.Datatypes <> list ind
+R6888:6890 Corelib.Init.Datatypes <> nat ind
+binder 6876:6879 <> data:38
+R6903:6905 Corelib.Init.Datatypes <> nat ind
+binder 6894:6896 <> off:39
+binder 6898:6899 <> ts:40
+R6951:6953 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R6913:6921 persistence <> read_snap def
+R6924:6933 persistence <> write_snap def
+R6935:6937 persistence <> old:37 var
+R6939:6942 persistence <> data:38 var
+R6944:6946 persistence <> off:39 var
+R6948:6949 persistence <> ts:40 var
+R6954:6954 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
+R6959:6960 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
+R6964:6964 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
+R6955:6958 persistence <> data:38 var
+R6961:6963 persistence <> off:39 var
+R7009:7018 persistence <> write_snap def
+R7021:7029 persistence <> read_snap def
+prf 7531:7560 <> temporal_state_codec_roundtrip
+R7578:7590 persistence <> TemporalState defax
+binder 7574:7574 <> s:41
+R7615:7617 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R7598:7603 persistence <> decode defax
+R7606:7611 persistence <> encode defax
+R7613:7613 persistence <> s:41 var
+R7618:7621 Corelib.Init.Datatypes <> Some constr
+R7623:7623 persistence <> s:41 var
+R7641:7655 persistence <> codec_roundtrip prfax
+R7641:7655 persistence <> codec_roundtrip prfax
+prf 7741:7770 <> temporal_state_recovery_unique
+R7788:7800 persistence <> TemporalState defax
+binder 7784:7784 <> s:42
+R7808:7820 persistence <> TemporalState defax
+binder 7804:7804 <> r:43
+R7854:7857 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R7845:7847 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R7828:7833 persistence <> decode defax
+R7836:7841 persistence <> encode defax
+R7843:7843 persistence <> s:42 var
+R7848:7851 Corelib.Init.Datatypes <> Some constr
+R7853:7853 persistence <> r:43 var
+R7859:7861 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R7858:7858 persistence <> r:43 var
+R7862:7862 persistence <> s:42 var
+R7899:7913 persistence <> codec_roundtrip prfax
+R7899:7913 persistence <> codec_roundtrip prfax
+R7899:7913 persistence <> codec_roundtrip prfax
+prf 9196:9215 <> PersistenceRoundtrip
+R9236:9236 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R9357:9381 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R9441:9441 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R9251:9263 persistence <> SnapshotStore rec
+binder 9245:9247 <> old:44
+R9274:9277 Corelib.Init.Datatypes <> list ind
+R9279:9281 Corelib.Init.Datatypes <> nat ind
+binder 9267:9270 <> data:45
+R9294:9296 Corelib.Init.Datatypes <> nat ind
+binder 9285:9287 <> off:46
+binder 9289:9290 <> ts:47
+R9343:9345 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R9305:9313 persistence <> read_snap def
+R9316:9325 persistence <> write_snap def
+R9327:9329 persistence <> old:44 var
+R9331:9334 persistence <> data:45 var
+R9336:9338 persistence <> off:46 var
+R9340:9341 persistence <> ts:47 var
+R9346:9346 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
+R9351:9352 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
+R9356:9356 Corelib.Init.Datatypes <> ::core_scope:'('_x_','_x_','_'..'_','_x_')' not
+R9347:9350 persistence <> data:45 var
+R9353:9355 persistence <> off:46 var
+R9394:9406 persistence <> TemporalState defax
+binder 9390:9390 <> s:48
+R9432:9434 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R9415:9420 persistence <> decode defax
+R9423:9428 persistence <> encode defax
+R9430:9430 persistence <> s:48 var
+R9435:9438 Corelib.Init.Datatypes <> Some constr
+R9440:9440 persistence <> s:48 var
+R9563:9585 persistence <> snapshot_roundtrip_full thm
+R9563:9585 persistence <> snapshot_roundtrip_full thm
+R9666:9680 persistence <> codec_roundtrip prfax
+R9666:9680 persistence <> codec_roundtrip prfax

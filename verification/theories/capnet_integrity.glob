@@ -1,151 +1,151 @@
-DIGEST ae37cdd1f059310b8c543942527ece33
+DIGEST 99216ff4b336da65cb645b3c0633b822
 Fcapnet_integrity
-R1499:1506 Stdlib.Init.Nat <> <> lib
-R1536:1548 Stdlib.micromega.Lia <> <> lib
-R1578:1587 Stdlib.Lists.List <> <> lib
-R1597:1609 Stdlib.Lists.List ListNotations <> mod
-rec 2084:2093 <> ForwardCap
-proj 2115:2125 <> fc_token_id
-proj 2141:2149 <> fc_rights
-proj 2167:2182 <> fc_revoked_epoch
-R2134:2136 Corelib.Init.Datatypes <> nat ind
-R2160:2162 Corelib.Init.Datatypes <> nat ind
-R2186:2188 Corelib.Init.Datatypes <> nat ind
-def 2646:2654 <> cap_valid
-R2661:2670 capnet_integrity <> ForwardCap rec
-binder 2657:2657 <> c:5
-R2700:2703 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R2696:2698 Corelib.Init.Peano <> ::nat_scope:x_'>'_x not
-R2685:2693 capnet_integrity <> fc_rights proj
-R2695:2695 capnet_integrity <> c:5 var
-R2722:2724 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R2704:2719 capnet_integrity <> fc_revoked_epoch proj
-R2721:2721 capnet_integrity <> c:5 var
-def 2850:2860 <> cap_revoked
-R2867:2876 capnet_integrity <> ForwardCap rec
-binder 2863:2863 <> c:6
-R2909:2911 Corelib.Init.Peano <> ::nat_scope:x_'>'_x not
-R2891:2906 capnet_integrity <> fc_revoked_epoch proj
-R2908:2908 capnet_integrity <> c:6 var
-ax 3296:3310 <> HoldsForwardCap
-R3317:3320 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3314:3316 Corelib.Init.Datatypes <> nat ind
-R3324:3327 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3321:3323 Corelib.Init.Datatypes <> nat ind
-R3338:3341 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3328:3337 capnet_integrity <> ForwardCap rec
-def 3483:3489 <> CanSend
-R3500:3502 Corelib.Init.Datatypes <> nat ind
-binder 3492:3493 <> p1:9
-binder 3495:3496 <> p2:10
-R3517:3523 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
-R3538:3539 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
-R3528:3537 capnet_integrity <> ForwardCap rec
-binder 3524:3524 <> c:11
-R3563:3566 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R3540:3554 capnet_integrity <> HoldsForwardCap defax
-R3556:3557 capnet_integrity <> p1:9 var
-R3559:3560 capnet_integrity <> p2:10 var
-R3562:3562 capnet_integrity <> c:11 var
-R3567:3575 capnet_integrity <> cap_valid def
-R3577:3577 capnet_integrity <> c:11 var
-prf 3954:3972 <> revoked_cap_invalid
-R3989:3998 capnet_integrity <> ForwardCap rec
-binder 3985:3985 <> c:12
-R4018:4021 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4005:4015 capnet_integrity <> cap_revoked def
-R4017:4017 capnet_integrity <> c:12 var
-R4022:4023 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R4024:4032 capnet_integrity <> cap_valid def
-R4034:4034 capnet_integrity <> c:12 var
-R4083:4093 capnet_integrity <> cap_revoked def
-prf 4242:4260 <> zero_rights_invalid
-R4277:4286 capnet_integrity <> ForwardCap rec
-binder 4273:4273 <> c:13
-R4308:4311 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4304:4306 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R4293:4301 capnet_integrity <> fc_rights proj
-R4303:4303 capnet_integrity <> c:13 var
-R4312:4313 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R4314:4322 capnet_integrity <> cap_valid def
-R4324:4324 capnet_integrity <> c:13 var
-prf 4461:4474 <> no_cap_no_send
-R4495:4497 Corelib.Init.Datatypes <> nat ind
-binder 4487:4488 <> p1:14
-binder 4490:4491 <> p2:15
-R4504:4504 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4540:4548 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-binder 4512:4512 <> c:16
-R4515:4516 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R4517:4531 capnet_integrity <> HoldsForwardCap defax
-R4533:4534 capnet_integrity <> p1:14 var
-R4536:4537 capnet_integrity <> p2:15 var
-R4539:4539 capnet_integrity <> c:16 var
-R4549:4550 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R4551:4557 capnet_integrity <> CanSend def
-R4559:4560 capnet_integrity <> p1:14 var
-R4562:4563 capnet_integrity <> p2:15 var
-prf 5097:5115 <> all_revoked_no_send
-R5136:5138 Corelib.Init.Datatypes <> nat ind
-binder 5128:5129 <> p1:17
-binder 5131:5132 <> p2:18
-R5145:5145 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R5196:5204 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-binder 5153:5153 <> c:19
-R5179:5182 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R5156:5170 capnet_integrity <> HoldsForwardCap defax
-R5172:5173 capnet_integrity <> p1:17 var
-R5175:5176 capnet_integrity <> p2:18 var
-R5178:5178 capnet_integrity <> c:19 var
-R5183:5193 capnet_integrity <> cap_revoked def
-R5195:5195 capnet_integrity <> c:19 var
-R5205:5206 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R5207:5213 capnet_integrity <> CanSend def
-R5215:5216 capnet_integrity <> p1:17 var
-R5218:5219 capnet_integrity <> p2:18 var
-R5279:5297 capnet_integrity <> revoked_cap_invalid thm
-R5279:5297 capnet_integrity <> revoked_cap_invalid thm
-prf 5470:5490 <> valid_cap_constructor
-R5517:5519 Corelib.Init.Datatypes <> nat ind
-binder 5504:5506 <> tid:20
-binder 5508:5513 <> rights:21
-R5537:5544 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R5533:5535 Corelib.Init.Peano <> ::nat_scope:x_'>'_x not
-R5527:5532 capnet_integrity <> rights:21 var
-R5545:5553 capnet_integrity <> cap_valid def
-R5556:5567 capnet_integrity <> mkForwardCap constr
-R5569:5571 capnet_integrity <> tid:20 var
-R5573:5578 capnet_integrity <> rights:21 var
-R5626:5634 capnet_integrity <> cap_valid def
-prf 6459:6482 <> capnet_message_integrity
-R6546:6546 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R6646:6735 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R6793:6793 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R6562:6564 Corelib.Init.Datatypes <> nat ind
-binder 6554:6555 <> p1:22
-binder 6557:6558 <> p2:23
-R6571:6571 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R6622:6630 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-binder 6579:6579 <> c:24
-R6605:6608 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R6582:6596 capnet_integrity <> HoldsForwardCap defax
-R6598:6599 capnet_integrity <> p1:22 var
-R6601:6602 capnet_integrity <> p2:23 var
-R6604:6604 capnet_integrity <> c:24 var
-R6609:6610 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R6611:6619 capnet_integrity <> cap_valid def
-R6621:6621 capnet_integrity <> c:24 var
-R6631:6632 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R6633:6639 capnet_integrity <> CanSend def
-R6641:6642 capnet_integrity <> p1:22 var
-R6644:6645 capnet_integrity <> p2:23 var
-R6747:6756 capnet_integrity <> ForwardCap rec
-binder 6743:6743 <> c:25
-R6776:6779 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R6763:6773 capnet_integrity <> cap_revoked def
-R6775:6775 capnet_integrity <> c:25 var
-R6780:6781 Corelib.Init.Logic <> ::type_scope:'~'_x not
-R6782:6790 capnet_integrity <> cap_valid def
-R6792:6792 capnet_integrity <> c:25 var
-R6899:6917 capnet_integrity <> revoked_cap_invalid thm
-R6899:6917 capnet_integrity <> revoked_cap_invalid thm
+R1496:1503 Corelib.Init.Nat <> <> lib
+R1530:1542 Stdlib.micromega.Lia <> <> lib
+R1569:1578 Stdlib.Lists.List <> <> lib
+R1588:1600 Stdlib.Lists.List ListNotations <> mod
+rec 2075:2084 <> ForwardCap
+proj 2106:2116 <> fc_token_id
+proj 2132:2140 <> fc_rights
+proj 2158:2173 <> fc_revoked_epoch
+R2125:2127 Corelib.Init.Datatypes <> nat ind
+R2151:2153 Corelib.Init.Datatypes <> nat ind
+R2177:2179 Corelib.Init.Datatypes <> nat ind
+def 2637:2645 <> cap_valid
+R2652:2661 capnet_integrity <> ForwardCap rec
+binder 2648:2648 <> c:5
+R2691:2694 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R2687:2689 Corelib.Init.Peano <> ::nat_scope:x_'>'_x not
+R2676:2684 capnet_integrity <> fc_rights proj
+R2686:2686 capnet_integrity <> c:5 var
+R2713:2715 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2695:2710 capnet_integrity <> fc_revoked_epoch proj
+R2712:2712 capnet_integrity <> c:5 var
+def 2841:2851 <> cap_revoked
+R2858:2867 capnet_integrity <> ForwardCap rec
+binder 2854:2854 <> c:6
+R2900:2902 Corelib.Init.Peano <> ::nat_scope:x_'>'_x not
+R2882:2897 capnet_integrity <> fc_revoked_epoch proj
+R2899:2899 capnet_integrity <> c:6 var
+ax 3287:3301 <> HoldsForwardCap
+R3308:3311 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3305:3307 Corelib.Init.Datatypes <> nat ind
+R3315:3318 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3312:3314 Corelib.Init.Datatypes <> nat ind
+R3329:3332 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3319:3328 capnet_integrity <> ForwardCap rec
+def 3474:3480 <> CanSend
+R3491:3493 Corelib.Init.Datatypes <> nat ind
+binder 3483:3484 <> p1:9
+binder 3486:3487 <> p2:10
+R3508:3514 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R3529:3530 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R3519:3528 capnet_integrity <> ForwardCap rec
+binder 3515:3515 <> c:11
+R3554:3557 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R3531:3545 capnet_integrity <> HoldsForwardCap defax
+R3547:3548 capnet_integrity <> p1:9 var
+R3550:3551 capnet_integrity <> p2:10 var
+R3553:3553 capnet_integrity <> c:11 var
+R3558:3566 capnet_integrity <> cap_valid def
+R3568:3568 capnet_integrity <> c:11 var
+prf 3945:3963 <> revoked_cap_invalid
+R3980:3989 capnet_integrity <> ForwardCap rec
+binder 3976:3976 <> c:12
+R4009:4012 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3996:4006 capnet_integrity <> cap_revoked def
+R4008:4008 capnet_integrity <> c:12 var
+R4013:4014 Corelib.Init.Logic <> ::type_scope:'~'_x not
+R4015:4023 capnet_integrity <> cap_valid def
+R4025:4025 capnet_integrity <> c:12 var
+R4074:4084 capnet_integrity <> cap_revoked def
+prf 4233:4251 <> zero_rights_invalid
+R4268:4277 capnet_integrity <> ForwardCap rec
+binder 4264:4264 <> c:13
+R4299:4302 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4295:4297 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4284:4292 capnet_integrity <> fc_rights proj
+R4294:4294 capnet_integrity <> c:13 var
+R4303:4304 Corelib.Init.Logic <> ::type_scope:'~'_x not
+R4305:4313 capnet_integrity <> cap_valid def
+R4315:4315 capnet_integrity <> c:13 var
+prf 4452:4465 <> no_cap_no_send
+R4486:4488 Corelib.Init.Datatypes <> nat ind
+binder 4478:4479 <> p1:14
+binder 4481:4482 <> p2:15
+R4495:4495 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4531:4539 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+binder 4503:4503 <> c:16
+R4506:4507 Corelib.Init.Logic <> ::type_scope:'~'_x not
+R4508:4522 capnet_integrity <> HoldsForwardCap defax
+R4524:4525 capnet_integrity <> p1:14 var
+R4527:4528 capnet_integrity <> p2:15 var
+R4530:4530 capnet_integrity <> c:16 var
+R4540:4541 Corelib.Init.Logic <> ::type_scope:'~'_x not
+R4542:4548 capnet_integrity <> CanSend def
+R4550:4551 capnet_integrity <> p1:14 var
+R4553:4554 capnet_integrity <> p2:15 var
+prf 5088:5106 <> all_revoked_no_send
+R5127:5129 Corelib.Init.Datatypes <> nat ind
+binder 5119:5120 <> p1:17
+binder 5122:5123 <> p2:18
+R5136:5136 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5187:5195 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+binder 5144:5144 <> c:19
+R5170:5173 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5147:5161 capnet_integrity <> HoldsForwardCap defax
+R5163:5164 capnet_integrity <> p1:17 var
+R5166:5167 capnet_integrity <> p2:18 var
+R5169:5169 capnet_integrity <> c:19 var
+R5174:5184 capnet_integrity <> cap_revoked def
+R5186:5186 capnet_integrity <> c:19 var
+R5196:5197 Corelib.Init.Logic <> ::type_scope:'~'_x not
+R5198:5204 capnet_integrity <> CanSend def
+R5206:5207 capnet_integrity <> p1:17 var
+R5209:5210 capnet_integrity <> p2:18 var
+R5270:5288 capnet_integrity <> revoked_cap_invalid thm
+R5270:5288 capnet_integrity <> revoked_cap_invalid thm
+prf 5461:5481 <> valid_cap_constructor
+R5508:5510 Corelib.Init.Datatypes <> nat ind
+binder 5495:5497 <> tid:20
+binder 5499:5504 <> rights:21
+R5528:5535 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5524:5526 Corelib.Init.Peano <> ::nat_scope:x_'>'_x not
+R5518:5523 capnet_integrity <> rights:21 var
+R5536:5544 capnet_integrity <> cap_valid def
+R5547:5558 capnet_integrity <> mkForwardCap constr
+R5560:5562 capnet_integrity <> tid:20 var
+R5564:5569 capnet_integrity <> rights:21 var
+R5617:5625 capnet_integrity <> cap_valid def
+prf 6450:6473 <> capnet_message_integrity
+R6537:6537 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R6637:6726 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R6784:6784 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R6553:6555 Corelib.Init.Datatypes <> nat ind
+binder 6545:6546 <> p1:22
+binder 6548:6549 <> p2:23
+R6562:6562 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6613:6621 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+binder 6570:6570 <> c:24
+R6596:6599 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6573:6587 capnet_integrity <> HoldsForwardCap defax
+R6589:6590 capnet_integrity <> p1:22 var
+R6592:6593 capnet_integrity <> p2:23 var
+R6595:6595 capnet_integrity <> c:24 var
+R6600:6601 Corelib.Init.Logic <> ::type_scope:'~'_x not
+R6602:6610 capnet_integrity <> cap_valid def
+R6612:6612 capnet_integrity <> c:24 var
+R6622:6623 Corelib.Init.Logic <> ::type_scope:'~'_x not
+R6624:6630 capnet_integrity <> CanSend def
+R6632:6633 capnet_integrity <> p1:22 var
+R6635:6636 capnet_integrity <> p2:23 var
+R6738:6747 capnet_integrity <> ForwardCap rec
+binder 6734:6734 <> c:25
+R6767:6770 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6754:6764 capnet_integrity <> cap_revoked def
+R6766:6766 capnet_integrity <> c:25 var
+R6771:6772 Corelib.Init.Logic <> ::type_scope:'~'_x not
+R6773:6781 capnet_integrity <> cap_valid def
+R6783:6783 capnet_integrity <> c:25 var
+R6890:6908 capnet_integrity <> revoked_cap_invalid thm
+R6890:6908 capnet_integrity <> revoked_cap_invalid thm

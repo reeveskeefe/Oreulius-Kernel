@@ -1,7 +1,7 @@
 (* Oreulius Verification Workspace
    SPDX-License-Identifier: LicenseRef-Oreulius-Community *)
 
-From Stdlib Require Import Arith.PeanoNat.
+From Coq Require Import Arith.PeanoNat.
 
 Definition temporal_step (tick : nat) : nat := S tick.
 

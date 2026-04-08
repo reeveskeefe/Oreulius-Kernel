@@ -35,8 +35,8 @@
  * Status: THM-PRIV-001 Proven.
  *)
 
-From Stdlib Require Import Init.Nat.
-From Stdlib Require Import micromega.Lia.
+From Coq Require Import Init.Nat.
+From Coq Require Import micromega.Lia.
 
 (* ------------------------------------------------------------------ *)
 (** ** §1  CPU privilege level model                                   *)

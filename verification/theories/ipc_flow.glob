@@ -1,47 +1,47 @@
-DIGEST 63c11a1d5444150d05a845200fb5392f
+DIGEST cf0f43bbd3f134014955d89e9adb00db
 Fipc_flow
-R124:137 Stdlib.Arith.PeanoNat <> <> lib
-def 152:160 <> attenuate
-R177:179 Corelib.Init.Datatypes <> nat ind
-binder 163:168 <> rights:1
-binder 170:173 <> mask:2
-R184:186 Corelib.Init.Datatypes <> nat ind
-R196:202 Stdlib.Arith.PeanoNat Nat leb def
-R204:209 ipc_flow <> rights:1 var
-R211:214 ipc_flow <> mask:2 var
-R233:236 ipc_flow <> mask:2 var
-R221:226 ipc_flow <> rights:1 var
-prf 248:279 <> attenuate_never_increases_rights
-binder 292:297 <> rights:3
-binder 299:302 <> mask:4
-R326:329 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
-R305:313 ipc_flow <> attenuate def
-R315:320 ipc_flow <> rights:3 var
-R322:325 ipc_flow <> mask:4 var
-R330:335 ipc_flow <> rights:3 var
-R376:384 ipc_flow <> attenuate def
-R399:405 Stdlib.Arith.PeanoNat Nat leb def
-R399:405 Stdlib.Arith.PeanoNat Nat leb def
-R441:450 Stdlib.Arith.PeanoNat Nat leb_le thm
-R441:450 Stdlib.Arith.PeanoNat Nat leb_le thm
-R472:475 Corelib.Init.Peano <> le_n constr
-R472:475 Corelib.Init.Peano <> le_n constr
-R488:497 Stdlib.Arith.PeanoNat Nat leb_gt thm
-R488:497 Stdlib.Arith.PeanoNat Nat leb_gt thm
-R519:532 Stdlib.Arith.PeanoNat Nat lt_le_incl thm
-R519:532 Stdlib.Arith.PeanoNat Nat lt_le_incl thm
-prf 566:593 <> attenuate_never_exceeds_mask
-binder 606:611 <> rights:5
-binder 613:616 <> mask:6
-R640:643 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
-R619:627 ipc_flow <> attenuate def
-R629:634 ipc_flow <> rights:5 var
-R636:639 ipc_flow <> mask:6 var
-R644:647 ipc_flow <> mask:6 var
-R688:696 ipc_flow <> attenuate def
-R711:717 Stdlib.Arith.PeanoNat Nat leb def
-R711:717 Stdlib.Arith.PeanoNat Nat leb def
-R753:762 Stdlib.Arith.PeanoNat Nat leb_le thm
-R753:762 Stdlib.Arith.PeanoNat Nat leb_le thm
-R801:804 Corelib.Init.Peano <> le_n constr
-R801:804 Corelib.Init.Peano <> le_n constr
+R121:134 Stdlib.Arith.PeanoNat <> <> lib
+def 149:157 <> attenuate
+R174:176 Corelib.Init.Datatypes <> nat ind
+binder 160:165 <> rights:1
+binder 167:170 <> mask:2
+R181:183 Corelib.Init.Datatypes <> nat ind
+R193:199 Stdlib.Arith.PeanoNat Nat leb def
+R201:206 ipc_flow <> rights:1 var
+R208:211 ipc_flow <> mask:2 var
+R230:233 ipc_flow <> mask:2 var
+R218:223 ipc_flow <> rights:1 var
+prf 245:276 <> attenuate_never_increases_rights
+binder 289:294 <> rights:3
+binder 296:299 <> mask:4
+R323:326 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R302:310 ipc_flow <> attenuate def
+R312:317 ipc_flow <> rights:3 var
+R319:322 ipc_flow <> mask:4 var
+R327:332 ipc_flow <> rights:3 var
+R373:381 ipc_flow <> attenuate def
+R396:402 Stdlib.Arith.PeanoNat Nat leb def
+R396:402 Stdlib.Arith.PeanoNat Nat leb def
+R438:447 Stdlib.Arith.PeanoNat Nat leb_le thm
+R438:447 Stdlib.Arith.PeanoNat Nat leb_le thm
+R469:472 Corelib.Init.Peano <> le_n constr
+R469:472 Corelib.Init.Peano <> le_n constr
+R485:494 Stdlib.Arith.PeanoNat Nat leb_gt thm
+R485:494 Stdlib.Arith.PeanoNat Nat leb_gt thm
+R516:529 Stdlib.Arith.PeanoNat Nat lt_le_incl thm
+R516:529 Stdlib.Arith.PeanoNat Nat lt_le_incl thm
+prf 563:590 <> attenuate_never_exceeds_mask
+binder 603:608 <> rights:5
+binder 610:613 <> mask:6
+R637:640 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R616:624 ipc_flow <> attenuate def
+R626:631 ipc_flow <> rights:5 var
+R633:636 ipc_flow <> mask:6 var
+R641:644 ipc_flow <> mask:6 var
+R685:693 ipc_flow <> attenuate def
+R708:714 Stdlib.Arith.PeanoNat Nat leb def
+R708:714 Stdlib.Arith.PeanoNat Nat leb def
+R750:759 Stdlib.Arith.PeanoNat Nat leb_le thm
+R750:759 Stdlib.Arith.PeanoNat Nat leb_le thm
+R798:801 Corelib.Init.Peano <> le_n constr
+R798:801 Corelib.Init.Peano <> le_n constr

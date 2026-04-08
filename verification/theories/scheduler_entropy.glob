@@ -1,47 +1,47 @@
-DIGEST c551ff813f92223eef0223b46a0b98dd
+DIGEST d1a0a70868b696d02e8735d93ea343f6
 Fscheduler_entropy
-R124:137 Stdlib.Arith.PeanoNat <> <> lib
-def 152:163 <> consume_fuel
-R182:184 Corelib.Init.Datatypes <> nat ind
-binder 166:171 <> budget:1
-binder 173:178 <> demand:2
-R189:191 Corelib.Init.Datatypes <> nat ind
-R201:207 Stdlib.Arith.PeanoNat Nat leb def
-R209:214 scheduler_entropy <> budget:1 var
-R216:221 scheduler_entropy <> demand:2 var
-R240:245 scheduler_entropy <> demand:2 var
-R228:233 scheduler_entropy <> budget:1 var
-prf 257:286 <> consume_fuel_bounded_by_budget
-binder 299:304 <> budget:3
-binder 306:311 <> demand:4
-R340:343 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
-R314:325 scheduler_entropy <> consume_fuel def
-R327:332 scheduler_entropy <> budget:3 var
-R334:339 scheduler_entropy <> demand:4 var
-R344:349 scheduler_entropy <> budget:3 var
-R392:403 scheduler_entropy <> consume_fuel def
-R418:424 Stdlib.Arith.PeanoNat Nat leb def
-R418:424 Stdlib.Arith.PeanoNat Nat leb def
-R462:471 Stdlib.Arith.PeanoNat Nat leb_le thm
-R462:471 Stdlib.Arith.PeanoNat Nat leb_le thm
-R493:496 Corelib.Init.Peano <> le_n constr
-R493:496 Corelib.Init.Peano <> le_n constr
-R509:518 Stdlib.Arith.PeanoNat Nat leb_gt thm
-R509:518 Stdlib.Arith.PeanoNat Nat leb_gt thm
-R540:553 Stdlib.Arith.PeanoNat Nat lt_le_incl thm
-R540:553 Stdlib.Arith.PeanoNat Nat lt_le_incl thm
-prf 587:616 <> consume_fuel_bounded_by_demand
-binder 629:634 <> budget:5
-binder 636:641 <> demand:6
-R670:673 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
-R644:655 scheduler_entropy <> consume_fuel def
-R657:662 scheduler_entropy <> budget:5 var
-R664:669 scheduler_entropy <> demand:6 var
-R674:679 scheduler_entropy <> demand:6 var
-R722:733 scheduler_entropy <> consume_fuel def
-R748:754 Stdlib.Arith.PeanoNat Nat leb def
-R748:754 Stdlib.Arith.PeanoNat Nat leb def
-R792:801 Stdlib.Arith.PeanoNat Nat leb_le thm
-R792:801 Stdlib.Arith.PeanoNat Nat leb_le thm
-R840:843 Corelib.Init.Peano <> le_n constr
-R840:843 Corelib.Init.Peano <> le_n constr
+R121:134 Stdlib.Arith.PeanoNat <> <> lib
+def 149:160 <> consume_fuel
+R179:181 Corelib.Init.Datatypes <> nat ind
+binder 163:168 <> budget:1
+binder 170:175 <> demand:2
+R186:188 Corelib.Init.Datatypes <> nat ind
+R198:204 Stdlib.Arith.PeanoNat Nat leb def
+R206:211 scheduler_entropy <> budget:1 var
+R213:218 scheduler_entropy <> demand:2 var
+R237:242 scheduler_entropy <> demand:2 var
+R225:230 scheduler_entropy <> budget:1 var
+prf 254:283 <> consume_fuel_bounded_by_budget
+binder 296:301 <> budget:3
+binder 303:308 <> demand:4
+R337:340 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R311:322 scheduler_entropy <> consume_fuel def
+R324:329 scheduler_entropy <> budget:3 var
+R331:336 scheduler_entropy <> demand:4 var
+R341:346 scheduler_entropy <> budget:3 var
+R389:400 scheduler_entropy <> consume_fuel def
+R415:421 Stdlib.Arith.PeanoNat Nat leb def
+R415:421 Stdlib.Arith.PeanoNat Nat leb def
+R459:468 Stdlib.Arith.PeanoNat Nat leb_le thm
+R459:468 Stdlib.Arith.PeanoNat Nat leb_le thm
+R490:493 Corelib.Init.Peano <> le_n constr
+R490:493 Corelib.Init.Peano <> le_n constr
+R506:515 Stdlib.Arith.PeanoNat Nat leb_gt thm
+R506:515 Stdlib.Arith.PeanoNat Nat leb_gt thm
+R537:550 Stdlib.Arith.PeanoNat Nat lt_le_incl thm
+R537:550 Stdlib.Arith.PeanoNat Nat lt_le_incl thm
+prf 584:613 <> consume_fuel_bounded_by_demand
+binder 626:631 <> budget:5
+binder 633:638 <> demand:6
+R667:670 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R641:652 scheduler_entropy <> consume_fuel def
+R654:659 scheduler_entropy <> budget:5 var
+R661:666 scheduler_entropy <> demand:6 var
+R671:676 scheduler_entropy <> demand:6 var
+R719:730 scheduler_entropy <> consume_fuel def
+R745:751 Stdlib.Arith.PeanoNat Nat leb def
+R745:751 Stdlib.Arith.PeanoNat Nat leb def
+R789:798 Stdlib.Arith.PeanoNat Nat leb_le thm
+R789:798 Stdlib.Arith.PeanoNat Nat leb_le thm
+R837:840 Corelib.Init.Peano <> le_n constr
+R837:840 Corelib.Init.Peano <> le_n constr

@@ -1,7 +1,7 @@
 (* Oreulius Verification Workspace
    SPDX-License-Identifier: LicenseRef-Oreulius-Community *)
 
-From Stdlib Require Import Arith.PeanoNat.
+From Coq Require Import Arith.PeanoNat.
 
 Definition consume_fuel (budget demand : nat) : nat :=
   if Nat.leb budget demand then budget else demand.

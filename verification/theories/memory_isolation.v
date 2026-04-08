@@ -35,9 +35,9 @@
  * Status: Proven ✅
  *)
 
-From Stdlib Require Import Init.Nat.
-From Stdlib Require Import Arith.PeanoNat.
-From Stdlib Require Import micromega.Lia.
+From Coq Require Import Init.Nat.
+From Coq Require Import Arith.PeanoNat.
+From Coq Require Import micromega.Lia.
 
 (* ================================================================== *)
 (** * §1  Memory Region Model                                           *)

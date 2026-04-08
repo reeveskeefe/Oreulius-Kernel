@@ -1,7 +1,7 @@
 (* Oreulius Verification Workspace
    SPDX-License-Identifier: LicenseRef-Oreulius-Community *)
 
-From Stdlib Require Import Arith.PeanoNat.
+From Coq Require Import Arith.PeanoNat.
 
 Definition attenuate (rights mask : nat) : nat :=
   if Nat.leb rights mask then rights else mask.

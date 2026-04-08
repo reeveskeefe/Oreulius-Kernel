@@ -1,176 +1,176 @@
-DIGEST 43b75c91b7431126aec2a377f6d72d51
+DIGEST 7909570ee8a9f1c977a10ccf28d6781d
 Fprivilege_safety
-R1764:1771 Stdlib.Init.Nat <> <> lib
-R1801:1813 Stdlib.micromega.Lia <> <> lib
-def 2323:2333 <> ring_kernel
-R2337:2339 Corelib.Init.Datatypes <> nat ind
-def 2358:2366 <> ring_user
-R2372:2374 Corelib.Init.Datatypes <> nat ind
-rec 2543:2550 <> CpuState
-proj 2570:2576 <> cs_ring
-proj 2591:2601 <> cs_via_gate
-R2584:2586 Corelib.Init.Datatypes <> nat ind
-R2605:2608 Corelib.Init.Datatypes <> bool ind
-def 2698:2715 <> initial_user_state
-R2719:2726 privilege_safety <> CpuState rec
-R2731:2740 privilege_safety <> mkCpuState constr
-R2742:2750 privilege_safety <> ring_user def
-R2752:2756 Corelib.Init.Datatypes <> false constr
-ind 3256:3272 <> SyscallTransition
-constr 3312:3331 <> trans_user_to_kernel
-constr 3457:3476 <> trans_kernel_to_user
-R3284:3287 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3276:3283 privilege_safety <> CpuState rec
-R3296:3299 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3288:3295 privilege_safety <> CpuState rec
-R3352:3359 privilege_safety <> CpuState rec
-binder 3348:3348 <> s:6
-R3391:3402 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3379:3381 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R3370:3376 privilege_safety <> cs_ring proj
-R3378:3378 privilege_safety <> s:6 var
-R3382:3390 privilege_safety <> ring_user def
-R3403:3419 privilege_safety <> SyscallTransition:4 ind
-R3424:3433 privilege_safety <> mkCpuState constr
-R3435:3445 privilege_safety <> ring_kernel def
-R3447:3450 Corelib.Init.Datatypes <> true constr
-R3421:3421 privilege_safety <> s:6 var
-R3497:3504 privilege_safety <> CpuState rec
-binder 3493:3493 <> s:7
-R3538:3549 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3524:3526 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R3515:3521 privilege_safety <> cs_ring proj
-R3523:3523 privilege_safety <> s:7 var
-R3527:3537 privilege_safety <> ring_kernel def
-R3550:3566 privilege_safety <> SyscallTransition:4 ind
-R3571:3580 privilege_safety <> mkCpuState constr
-R3582:3590 privilege_safety <> ring_user def
-R3592:3596 Corelib.Init.Datatypes <> false constr
-R3568:3568 privilege_safety <> s:7 var
-scheme 3256:3272 <> SyscallTransition_ind
-scheme 3256:3272 <> SyscallTransition_sind
-ind 3931:3945 <> Reachable_state
-constr 3985:3991 <> rs_refl
-constr 4054:4060 <> rs_step
-R3957:3960 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3949:3956 privilege_safety <> CpuState rec
-R3969:3972 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R3961:3968 privilege_safety <> CpuState rec
-R4012:4019 privilege_safety <> CpuState rec
-binder 4008:4008 <> s:10
-R4030:4044 privilege_safety <> Reachable_state:8 ind
-R4048:4048 privilege_safety <> s:10 var
-R4046:4046 privilege_safety <> s:10 var
-R4088:4095 privilege_safety <> CpuState rec
-binder 4077:4078 <> s1:11
-binder 4080:4081 <> s2:12
-binder 4083:4084 <> s3:13
-R4127:4138 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4106:4120 privilege_safety <> Reachable_state:8 ind
-R4125:4126 privilege_safety <> s2:12 var
-R4122:4123 privilege_safety <> s1:11 var
-R4162:4173 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4139:4155 privilege_safety <> SyscallTransition ind
-R4157:4158 privilege_safety <> s2:12 var
-R4160:4161 privilege_safety <> s3:13 var
-R4174:4188 privilege_safety <> Reachable_state:8 ind
-R4193:4194 privilege_safety <> s3:13 var
-R4190:4191 privilege_safety <> s1:11 var
-scheme 3931:3945 <> Reachable_state_ind
-scheme 3931:3945 <> Reachable_state_sind
-def 4677:4686 <> WellFormed
-R4693:4700 privilege_safety <> CpuState rec
-binder 4689:4689 <> s:14
-R4738:4741 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R4724:4726 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R4715:4721 privilege_safety <> cs_ring proj
-R4723:4723 privilege_safety <> s:14 var
-R4727:4737 privilege_safety <> ring_kernel def
-R4755:4757 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R4742:4752 privilege_safety <> cs_via_gate proj
-R4754:4754 privilege_safety <> s:14 var
-R4758:4761 Corelib.Init.Datatypes <> true constr
-prf 4902:4920 <> initial_well_formed
-R4924:4933 privilege_safety <> WellFormed def
-R4935:4952 privilege_safety <> initial_user_state def
-R4971:4980 privilege_safety <> WellFormed def
-R4983:5000 privilege_safety <> initial_user_state def
-R5019:5027 privilege_safety <> ring_user def
-R5030:5040 privilege_safety <> ring_kernel def
-prf 5352:5383 <> transition_preserves_well_formed
-R5403:5410 privilege_safety <> CpuState rec
-binder 5396:5396 <> s:15
-binder 5398:5399 <> s':16
-R5439:5442 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R5417:5433 privilege_safety <> SyscallTransition ind
-R5435:5435 privilege_safety <> s:15 var
-R5437:5438 privilege_safety <> s':16 var
-R5443:5452 privilege_safety <> WellFormed def
-R5454:5455 privilege_safety <> s':16 var
-R5519:5528 privilege_safety <> WellFormed def
-R5594:5602 privilege_safety <> ring_user def
-R5605:5615 privilege_safety <> ring_kernel def
-prf 6036:6056 <> reachable_well_formed
-R6076:6083 privilege_safety <> CpuState rec
-binder 6069:6070 <> s0:17
-binder 6072:6072 <> s:18
-R6110:6117 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R6090:6104 privilege_safety <> Reachable_state ind
-R6106:6107 privilege_safety <> s0:17 var
-R6109:6109 privilege_safety <> s:18 var
-R6131:6138 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R6118:6127 privilege_safety <> WellFormed def
-R6129:6130 privilege_safety <> s0:17 var
-R6139:6148 privilege_safety <> WellFormed def
-R6150:6150 privilege_safety <> s:18 var
-R6275:6306 privilege_safety <> transition_preserves_well_formed thm
-R6275:6306 privilege_safety <> transition_preserves_well_formed thm
-prf 6473:6501 <> initial_reachable_well_formed
-R6518:6525 privilege_safety <> CpuState rec
-binder 6514:6514 <> s:19
-R6568:6575 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R6532:6546 privilege_safety <> Reachable_state ind
-R6548:6565 privilege_safety <> initial_user_state def
-R6567:6567 privilege_safety <> s:19 var
-R6576:6585 privilege_safety <> WellFormed def
-R6587:6587 privilege_safety <> s:19 var
-R6625:6645 privilege_safety <> reachable_well_formed thm
-R6647:6664 privilege_safety <> initial_user_state def
-R6675:6693 privilege_safety <> initial_well_formed thm
-R6625:6645 privilege_safety <> reachable_well_formed thm
-R6647:6664 privilege_safety <> initial_user_state def
-R6675:6693 privilege_safety <> initial_well_formed thm
-prf 7715:7737 <> only_gate_enters_kernel
-R7821:7821 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R7942:8026 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R8129:8129 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R7833:7840 privilege_safety <> CpuState rec
-binder 7829:7829 <> s:20
-R7883:7890 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R7847:7861 privilege_safety <> Reachable_state ind
-R7863:7880 privilege_safety <> initial_user_state def
-R7882:7882 privilege_safety <> s:20 var
-R7914:7921 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R7900:7902 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R7891:7897 privilege_safety <> cs_ring proj
-R7899:7899 privilege_safety <> s:20 var
-R7903:7913 privilege_safety <> ring_kernel def
-R7935:7937 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R7922:7932 privilege_safety <> cs_via_gate proj
-R7934:7934 privilege_safety <> s:20 var
-R7938:7941 Corelib.Init.Datatypes <> true constr
-R8038:8045 privilege_safety <> CpuState rec
-binder 8034:8034 <> s:21
-R8073:8080 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8061:8063 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8052:8058 privilege_safety <> cs_ring proj
-R8060:8060 privilege_safety <> s:21 var
-R8064:8072 privilege_safety <> ring_user def
-R8122:8124 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8081:8091 privilege_safety <> cs_via_gate proj
-R8094:8103 privilege_safety <> mkCpuState constr
-R8105:8115 privilege_safety <> ring_kernel def
-R8117:8120 Corelib.Init.Datatypes <> true constr
-R8125:8128 Corelib.Init.Datatypes <> true constr
-R8186:8214 privilege_safety <> initial_reachable_well_formed thm
-R8186:8214 privilege_safety <> initial_reachable_well_formed thm
+R1761:1768 Corelib.Init.Nat <> <> lib
+R1795:1807 Stdlib.micromega.Lia <> <> lib
+def 2317:2327 <> ring_kernel
+R2331:2333 Corelib.Init.Datatypes <> nat ind
+def 2352:2360 <> ring_user
+R2366:2368 Corelib.Init.Datatypes <> nat ind
+rec 2537:2544 <> CpuState
+proj 2564:2570 <> cs_ring
+proj 2585:2595 <> cs_via_gate
+R2578:2580 Corelib.Init.Datatypes <> nat ind
+R2599:2602 Corelib.Init.Datatypes <> bool ind
+def 2692:2709 <> initial_user_state
+R2713:2720 privilege_safety <> CpuState rec
+R2725:2734 privilege_safety <> mkCpuState constr
+R2736:2744 privilege_safety <> ring_user def
+R2746:2750 Corelib.Init.Datatypes <> false constr
+ind 3250:3266 <> SyscallTransition
+constr 3306:3325 <> trans_user_to_kernel
+constr 3451:3470 <> trans_kernel_to_user
+R3278:3281 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3270:3277 privilege_safety <> CpuState rec
+R3290:3293 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3282:3289 privilege_safety <> CpuState rec
+R3346:3353 privilege_safety <> CpuState rec
+binder 3342:3342 <> s:6
+R3385:3396 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3373:3375 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3364:3370 privilege_safety <> cs_ring proj
+R3372:3372 privilege_safety <> s:6 var
+R3376:3384 privilege_safety <> ring_user def
+R3397:3413 privilege_safety <> SyscallTransition:4 ind
+R3418:3427 privilege_safety <> mkCpuState constr
+R3429:3439 privilege_safety <> ring_kernel def
+R3441:3444 Corelib.Init.Datatypes <> true constr
+R3415:3415 privilege_safety <> s:6 var
+R3491:3498 privilege_safety <> CpuState rec
+binder 3487:3487 <> s:7
+R3532:3543 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3518:3520 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3509:3515 privilege_safety <> cs_ring proj
+R3517:3517 privilege_safety <> s:7 var
+R3521:3531 privilege_safety <> ring_kernel def
+R3544:3560 privilege_safety <> SyscallTransition:4 ind
+R3565:3574 privilege_safety <> mkCpuState constr
+R3576:3584 privilege_safety <> ring_user def
+R3586:3590 Corelib.Init.Datatypes <> false constr
+R3562:3562 privilege_safety <> s:7 var
+scheme 3250:3266 <> SyscallTransition_ind
+scheme 3250:3266 <> SyscallTransition_sind
+ind 3925:3939 <> Reachable_state
+constr 3979:3985 <> rs_refl
+constr 4048:4054 <> rs_step
+R3951:3954 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3943:3950 privilege_safety <> CpuState rec
+R3963:3966 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3955:3962 privilege_safety <> CpuState rec
+R4006:4013 privilege_safety <> CpuState rec
+binder 4002:4002 <> s:10
+R4024:4038 privilege_safety <> Reachable_state:8 ind
+R4042:4042 privilege_safety <> s:10 var
+R4040:4040 privilege_safety <> s:10 var
+R4082:4089 privilege_safety <> CpuState rec
+binder 4071:4072 <> s1:11
+binder 4074:4075 <> s2:12
+binder 4077:4078 <> s3:13
+R4121:4132 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4100:4114 privilege_safety <> Reachable_state:8 ind
+R4119:4120 privilege_safety <> s2:12 var
+R4116:4117 privilege_safety <> s1:11 var
+R4156:4167 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4133:4149 privilege_safety <> SyscallTransition ind
+R4151:4152 privilege_safety <> s2:12 var
+R4154:4155 privilege_safety <> s3:13 var
+R4168:4182 privilege_safety <> Reachable_state:8 ind
+R4187:4188 privilege_safety <> s3:13 var
+R4184:4185 privilege_safety <> s1:11 var
+scheme 3925:3939 <> Reachable_state_ind
+scheme 3925:3939 <> Reachable_state_sind
+def 4671:4680 <> WellFormed
+R4687:4694 privilege_safety <> CpuState rec
+binder 4683:4683 <> s:14
+R4732:4735 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4718:4720 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4709:4715 privilege_safety <> cs_ring proj
+R4717:4717 privilege_safety <> s:14 var
+R4721:4731 privilege_safety <> ring_kernel def
+R4749:4751 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4736:4746 privilege_safety <> cs_via_gate proj
+R4748:4748 privilege_safety <> s:14 var
+R4752:4755 Corelib.Init.Datatypes <> true constr
+prf 4896:4914 <> initial_well_formed
+R4918:4927 privilege_safety <> WellFormed def
+R4929:4946 privilege_safety <> initial_user_state def
+R4965:4974 privilege_safety <> WellFormed def
+R4977:4994 privilege_safety <> initial_user_state def
+R5013:5021 privilege_safety <> ring_user def
+R5024:5034 privilege_safety <> ring_kernel def
+prf 5346:5377 <> transition_preserves_well_formed
+R5397:5404 privilege_safety <> CpuState rec
+binder 5390:5390 <> s:15
+binder 5392:5393 <> s':16
+R5433:5436 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5411:5427 privilege_safety <> SyscallTransition ind
+R5429:5429 privilege_safety <> s:15 var
+R5431:5432 privilege_safety <> s':16 var
+R5437:5446 privilege_safety <> WellFormed def
+R5448:5449 privilege_safety <> s':16 var
+R5513:5522 privilege_safety <> WellFormed def
+R5588:5596 privilege_safety <> ring_user def
+R5599:5609 privilege_safety <> ring_kernel def
+prf 6030:6050 <> reachable_well_formed
+R6070:6077 privilege_safety <> CpuState rec
+binder 6063:6064 <> s0:17
+binder 6066:6066 <> s:18
+R6104:6111 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6084:6098 privilege_safety <> Reachable_state ind
+R6100:6101 privilege_safety <> s0:17 var
+R6103:6103 privilege_safety <> s:18 var
+R6125:6132 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6112:6121 privilege_safety <> WellFormed def
+R6123:6124 privilege_safety <> s0:17 var
+R6133:6142 privilege_safety <> WellFormed def
+R6144:6144 privilege_safety <> s:18 var
+R6269:6300 privilege_safety <> transition_preserves_well_formed thm
+R6269:6300 privilege_safety <> transition_preserves_well_formed thm
+prf 6467:6495 <> initial_reachable_well_formed
+R6512:6519 privilege_safety <> CpuState rec
+binder 6508:6508 <> s:19
+R6562:6569 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6526:6540 privilege_safety <> Reachable_state ind
+R6542:6559 privilege_safety <> initial_user_state def
+R6561:6561 privilege_safety <> s:19 var
+R6570:6579 privilege_safety <> WellFormed def
+R6581:6581 privilege_safety <> s:19 var
+R6619:6639 privilege_safety <> reachable_well_formed thm
+R6641:6658 privilege_safety <> initial_user_state def
+R6669:6687 privilege_safety <> initial_well_formed thm
+R6619:6639 privilege_safety <> reachable_well_formed thm
+R6641:6658 privilege_safety <> initial_user_state def
+R6669:6687 privilege_safety <> initial_well_formed thm
+prf 7709:7731 <> only_gate_enters_kernel
+R7815:7815 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R7936:8020 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R8123:8123 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R7827:7834 privilege_safety <> CpuState rec
+binder 7823:7823 <> s:20
+R7877:7884 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R7841:7855 privilege_safety <> Reachable_state ind
+R7857:7874 privilege_safety <> initial_user_state def
+R7876:7876 privilege_safety <> s:20 var
+R7908:7915 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R7894:7896 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R7885:7891 privilege_safety <> cs_ring proj
+R7893:7893 privilege_safety <> s:20 var
+R7897:7907 privilege_safety <> ring_kernel def
+R7929:7931 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R7916:7926 privilege_safety <> cs_via_gate proj
+R7928:7928 privilege_safety <> s:20 var
+R7932:7935 Corelib.Init.Datatypes <> true constr
+R8032:8039 privilege_safety <> CpuState rec
+binder 8028:8028 <> s:21
+R8067:8074 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R8055:8057 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R8046:8052 privilege_safety <> cs_ring proj
+R8054:8054 privilege_safety <> s:21 var
+R8058:8066 privilege_safety <> ring_user def
+R8116:8118 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R8075:8085 privilege_safety <> cs_via_gate proj
+R8088:8097 privilege_safety <> mkCpuState constr
+R8099:8109 privilege_safety <> ring_kernel def
+R8111:8114 Corelib.Init.Datatypes <> true constr
+R8119:8122 Corelib.Init.Datatypes <> true constr
+R8180:8208 privilege_safety <> initial_reachable_well_formed thm
+R8180:8208 privilege_safety <> initial_reachable_well_formed thm
