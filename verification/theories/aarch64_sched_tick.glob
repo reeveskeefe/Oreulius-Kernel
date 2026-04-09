@@ -1,0 +1,261 @@
+DIGEST 8be0dbe3e0c39ff62892783fa821b341
+Faarch64_sched_tick
+R768:781 Stdlib.Arith.PeanoNat <> <> lib
+R811:823 Stdlib.micromega.Lia <> <> lib
+rec 834:846 <> A64SchedState
+proj 871:884 <> a64_tick_total
+proj 896:906 <> a64_quantum
+proj 918:929 <> a64_tick_pos
+proj 941:959 <> a64_resched_pending
+proj 972:991 <> a64_resched_requests
+proj 1003:1022 <> a64_context_switches
+R888:890 Corelib.Init.Datatypes <> nat ind
+R910:912 Corelib.Init.Datatypes <> nat ind
+R933:935 Corelib.Init.Datatypes <> nat ind
+R963:966 Corelib.Init.Datatypes <> bool ind
+R995:997 Corelib.Init.Datatypes <> nat ind
+R1026:1028 Corelib.Init.Datatypes <> nat ind
+def 1047:1067 <> a64_effective_quantum
+R1074:1086 aarch64_sched_tick <> A64SchedState rec
+binder 1070:1070 <> s:8
+R1091:1093 Corelib.Init.Datatypes <> nat ind
+R1100:1106 Stdlib.Arith.PeanoNat Nat max def
+R1111:1121 aarch64_sched_tick <> a64_quantum proj
+R1123:1123 aarch64_sched_tick <> s:8 var
+def 1139:1152 <> a64_timer_tick
+R1159:1171 aarch64_sched_tick <> A64SchedState rec
+binder 1155:1155 <> s:9
+R1176:1188 aarch64_sched_tick <> A64SchedState rec
+R1209:1209 Corelib.Init.Datatypes <> S constr
+R1212:1225 aarch64_sched_tick <> a64_tick_total proj
+R1227:1227 aarch64_sched_tick <> s:9 var
+binder 1199:1204 <> total':10
+R1250:1270 aarch64_sched_tick <> a64_effective_quantum def
+R1272:1272 aarch64_sched_tick <> s:9 var
+binder 1239:1245 <> quantum:11
+R1296:1300 Stdlib.Arith.PeanoNat <> ::nat_scope:x_'mod'_x not
+R1290:1295 aarch64_sched_tick <> total':10 var
+R1301:1307 aarch64_sched_tick <> quantum:11 var
+binder 1283:1285 <> pos:12
+R1337:1343 Stdlib.Arith.PeanoNat Nat eqb def
+R1345:1347 aarch64_sched_tick <> pos:12 var
+R1366:1384 aarch64_sched_tick <> a64_resched_pending proj
+R1386:1386 aarch64_sched_tick <> s:9 var
+R1356:1359 Corelib.Init.Datatypes <> true constr
+binder 1318:1325 <> pending':13
+R1417:1423 Stdlib.Arith.PeanoNat Nat eqb def
+R1425:1427 aarch64_sched_tick <> pos:12 var
+R1472:1491 aarch64_sched_tick <> a64_resched_requests proj
+R1493:1493 aarch64_sched_tick <> s:9 var
+R1436:1436 Corelib.Init.Datatypes <> S constr
+R1439:1458 aarch64_sched_tick <> a64_resched_requests proj
+R1460:1460 aarch64_sched_tick <> s:9 var
+binder 1397:1405 <> requests':14
+R1500:1514 aarch64_sched_tick <> mkA64SchedState constr
+R1520:1525 aarch64_sched_tick <> total':10 var
+R1532:1542 aarch64_sched_tick <> a64_quantum proj
+R1544:1544 aarch64_sched_tick <> s:9 var
+R1551:1553 aarch64_sched_tick <> pos:12 var
+R1559:1566 aarch64_sched_tick <> pending':13 var
+R1572:1580 aarch64_sched_tick <> requests':14 var
+R1587:1606 aarch64_sched_tick <> a64_context_switches proj
+R1608:1608 aarch64_sched_tick <> s:9 var
+def 1624:1646 <> a64_note_context_switch
+R1653:1665 aarch64_sched_tick <> A64SchedState rec
+binder 1649:1649 <> s:15
+R1670:1682 aarch64_sched_tick <> A64SchedState rec
+R1689:1703 aarch64_sched_tick <> mkA64SchedState constr
+R1710:1723 aarch64_sched_tick <> a64_tick_total proj
+R1725:1725 aarch64_sched_tick <> s:15 var
+R1733:1743 aarch64_sched_tick <> a64_quantum proj
+R1745:1745 aarch64_sched_tick <> s:15 var
+R1753:1764 aarch64_sched_tick <> a64_tick_pos proj
+R1766:1766 aarch64_sched_tick <> s:15 var
+R1773:1777 Corelib.Init.Datatypes <> false constr
+R1784:1803 aarch64_sched_tick <> a64_resched_requests proj
+R1805:1805 aarch64_sched_tick <> s:15 var
+R1813:1813 Corelib.Init.Datatypes <> S constr
+R1816:1835 aarch64_sched_tick <> a64_context_switches proj
+R1837:1837 aarch64_sched_tick <> s:15 var
+def 1854:1868 <> a64_set_quantum
+R1879:1881 Corelib.Init.Datatypes <> nat ind
+binder 1871:1875 <> ticks:16
+R1889:1901 aarch64_sched_tick <> A64SchedState rec
+binder 1885:1885 <> s:17
+R1906:1911 Corelib.Init.Datatypes <> option ind
+R1913:1925 aarch64_sched_tick <> A64SchedState rec
+R1935:1941 Stdlib.Arith.PeanoNat Nat eqb def
+R1943:1947 aarch64_sched_tick <> ticks:16 var
+R1972:1975 Corelib.Init.Datatypes <> Some constr
+R1985:1999 aarch64_sched_tick <> mkA64SchedState constr
+R2010:2023 aarch64_sched_tick <> a64_tick_total proj
+R2025:2025 aarch64_sched_tick <> s:17 var
+R2036:2040 aarch64_sched_tick <> ticks:16 var
+R2051:2062 aarch64_sched_tick <> a64_tick_pos proj
+R2064:2064 aarch64_sched_tick <> s:17 var
+R2076:2094 aarch64_sched_tick <> a64_resched_pending proj
+R2096:2096 aarch64_sched_tick <> s:17 var
+R2108:2127 aarch64_sched_tick <> a64_resched_requests proj
+R2129:2129 aarch64_sched_tick <> s:17 var
+R2141:2160 aarch64_sched_tick <> a64_context_switches proj
+R2162:2162 aarch64_sched_tick <> s:17 var
+R1956:1959 Corelib.Init.Datatypes <> None constr
+prf 2174:2217 <> a64_timer_tick_boundary_sets_resched_pending
+R2234:2246 aarch64_sched_tick <> A64SchedState rec
+binder 2230:2230 <> s:18
+R2288:2295 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2284:2286 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2253:2264 aarch64_sched_tick <> a64_tick_pos proj
+R2267:2280 aarch64_sched_tick <> a64_timer_tick def
+R2282:2282 aarch64_sched_tick <> s:18 var
+R2341:2348 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R2334:2336 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2296:2314 aarch64_sched_tick <> a64_resched_pending proj
+R2317:2330 aarch64_sched_tick <> a64_timer_tick def
+R2332:2332 aarch64_sched_tick <> s:18 var
+R2337:2340 Corelib.Init.Datatypes <> true constr
+R2388:2390 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2349:2368 aarch64_sched_tick <> a64_resched_requests proj
+R2371:2384 aarch64_sched_tick <> a64_timer_tick def
+R2386:2386 aarch64_sched_tick <> s:18 var
+R2391:2391 Corelib.Init.Datatypes <> S constr
+R2394:2413 aarch64_sched_tick <> a64_resched_requests proj
+R2415:2415 aarch64_sched_tick <> s:18 var
+R2457:2470 aarch64_sched_tick <> a64_timer_tick def
+R2512:2518 Stdlib.Arith.PeanoNat Nat eqb def
+R2541:2545 Stdlib.Arith.PeanoNat <> ::nat_scope:x_'mod'_x not
+R2521:2521 Corelib.Init.Datatypes <> S constr
+R2524:2537 aarch64_sched_tick <> a64_tick_total proj
+R2546:2566 aarch64_sched_tick <> a64_effective_quantum def
+R2512:2518 Stdlib.Arith.PeanoNat Nat eqb def
+R2541:2545 Stdlib.Arith.PeanoNat <> ::nat_scope:x_'mod'_x not
+R2521:2521 Corelib.Init.Datatypes <> S constr
+R2524:2537 aarch64_sched_tick <> a64_tick_total proj
+R2546:2566 aarch64_sched_tick <> a64_effective_quantum def
+R2595:2604 Stdlib.Arith.PeanoNat Nat eqb_eq thm
+R2595:2604 Stdlib.Arith.PeanoNat Nat eqb_eq thm
+R2661:2671 Stdlib.Arith.PeanoNat Nat eqb_neq thm
+R2661:2671 Stdlib.Arith.PeanoNat Nat eqb_neq thm
+prf 2746:2783 <> a64_note_context_switch_clears_pending
+R2800:2812 aarch64_sched_tick <> A64SchedState rec
+binder 2796:2796 <> s:19
+R2874:2881 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R2866:2868 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2819:2837 aarch64_sched_tick <> a64_resched_pending proj
+R2840:2862 aarch64_sched_tick <> a64_note_context_switch def
+R2864:2864 aarch64_sched_tick <> s:19 var
+R2869:2873 Corelib.Init.Datatypes <> false constr
+R2930:2938 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2882:2901 aarch64_sched_tick <> a64_context_switches proj
+R2904:2926 aarch64_sched_tick <> a64_note_context_switch def
+R2928:2928 aarch64_sched_tick <> s:19 var
+R2939:2939 Corelib.Init.Datatypes <> S constr
+R2942:2961 aarch64_sched_tick <> a64_context_switches proj
+R2963:2963 aarch64_sched_tick <> s:19 var
+R2995:3017 aarch64_sched_tick <> a64_note_context_switch def
+prf 3063:3090 <> a64_set_quantum_rejects_zero
+R3107:3119 aarch64_sched_tick <> A64SchedState rec
+binder 3103:3103 <> s:20
+R3145:3147 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3126:3140 aarch64_sched_tick <> a64_set_quantum def
+R3144:3144 aarch64_sched_tick <> s:20 var
+R3148:3151 Corelib.Init.Datatypes <> None constr
+R3182:3196 aarch64_sched_tick <> a64_set_quantum def
+prf 3235:3276 <> a64_set_quantum_success_preserves_positive
+binder 3289:3293 <> ticks:21
+binder 3295:3295 <> s:22
+binder 3297:3298 <> s':23
+R3338:3345 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3328:3330 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3305:3319 aarch64_sched_tick <> a64_set_quantum def
+R3321:3325 aarch64_sched_tick <> ticks:21 var
+R3327:3327 aarch64_sched_tick <> s:22 var
+R3331:3334 Corelib.Init.Datatypes <> Some constr
+R3336:3337 aarch64_sched_tick <> s':23 var
+R3364:3367 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R3347:3349 Corelib.Init.Peano <> ::nat_scope:x_'<'_x not
+R3350:3360 aarch64_sched_tick <> a64_quantum proj
+R3362:3363 aarch64_sched_tick <> s':23 var
+R3382:3384 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3368:3378 aarch64_sched_tick <> a64_quantum proj
+R3380:3381 aarch64_sched_tick <> s':23 var
+R3385:3389 aarch64_sched_tick <> ticks:21 var
+R3434:3448 aarch64_sched_tick <> a64_set_quantum def
+R3471:3477 Stdlib.Arith.PeanoNat Nat eqb def
+R3471:3477 Stdlib.Arith.PeanoNat Nat eqb def
+R3509:3518 Stdlib.Arith.PeanoNat Nat eqb_eq thm
+R3509:3518 Stdlib.Arith.PeanoNat Nat eqb_eq thm
+R3596:3606 Stdlib.Arith.PeanoNat Nat eqb_neq thm
+R3596:3606 Stdlib.Arith.PeanoNat Nat eqb_neq thm
+R3732:3744 Stdlib.Arith.PeanoNat Nat lt_0_succ thm
+R3732:3744 Stdlib.Arith.PeanoNat Nat lt_0_succ thm
+prf 3782:3819 <> a64_scheduler_tick_boundary_refinement
+R3836:3848 aarch64_sched_tick <> A64SchedState rec
+binder 3832:3832 <> s:24
+R3855:3855 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R4024:4032 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R3891:3900 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3887:3889 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3856:3867 aarch64_sched_tick <> a64_tick_pos proj
+R3870:3883 aarch64_sched_tick <> a64_timer_tick def
+R3885:3885 aarch64_sched_tick <> s:24 var
+R3946:3955 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R3939:3941 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3901:3919 aarch64_sched_tick <> a64_resched_pending proj
+R3922:3935 aarch64_sched_tick <> a64_timer_tick def
+R3937:3937 aarch64_sched_tick <> s:24 var
+R3942:3945 Corelib.Init.Datatypes <> true constr
+R3995:3997 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3956:3975 aarch64_sched_tick <> a64_resched_requests proj
+R3978:3991 aarch64_sched_tick <> a64_timer_tick def
+R3993:3993 aarch64_sched_tick <> s:24 var
+R3998:3998 Corelib.Init.Datatypes <> S constr
+R4001:4020 aarch64_sched_tick <> a64_resched_requests proj
+R4022:4022 aarch64_sched_tick <> s:24 var
+R4033:4033 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R4176:4184 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R4089:4098 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R4081:4083 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4034:4052 aarch64_sched_tick <> a64_resched_pending proj
+R4055:4077 aarch64_sched_tick <> a64_note_context_switch def
+R4079:4079 aarch64_sched_tick <> s:24 var
+R4084:4088 Corelib.Init.Datatypes <> false constr
+R4147:4149 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4099:4118 aarch64_sched_tick <> a64_context_switches proj
+R4121:4143 aarch64_sched_tick <> a64_note_context_switch def
+R4145:4145 aarch64_sched_tick <> s:24 var
+R4150:4150 Corelib.Init.Datatypes <> S constr
+R4153:4172 aarch64_sched_tick <> a64_context_switches proj
+R4174:4174 aarch64_sched_tick <> s:24 var
+R4185:4185 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R4212:4221 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R4332:4332 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R4205:4207 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4186:4200 aarch64_sched_tick <> a64_set_quantum def
+R4204:4204 aarch64_sched_tick <> s:24 var
+R4208:4211 Corelib.Init.Datatypes <> None constr
+binder 4229:4233 <> ticks:25
+binder 4235:4236 <> s':26
+R4278:4287 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4268:4270 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4245:4259 aarch64_sched_tick <> a64_set_quantum def
+R4261:4265 aarch64_sched_tick <> ticks:25 var
+R4267:4267 aarch64_sched_tick <> s:24 var
+R4271:4274 Corelib.Init.Datatypes <> Some constr
+R4276:4277 aarch64_sched_tick <> s':26 var
+R4306:4309 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R4289:4291 Corelib.Init.Peano <> ::nat_scope:x_'<'_x not
+R4292:4302 aarch64_sched_tick <> a64_quantum proj
+R4304:4305 aarch64_sched_tick <> s':26 var
+R4324:4326 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4310:4320 aarch64_sched_tick <> a64_quantum proj
+R4322:4323 aarch64_sched_tick <> s':26 var
+R4327:4331 aarch64_sched_tick <> ticks:25 var
+R4396:4439 aarch64_sched_tick <> a64_timer_tick_boundary_sets_resched_pending thm
+R4396:4439 aarch64_sched_tick <> a64_timer_tick_boundary_sets_resched_pending thm
+R4479:4516 aarch64_sched_tick <> a64_note_context_switch_clears_pending thm
+R4479:4516 aarch64_sched_tick <> a64_note_context_switch_clears_pending thm
+R4550:4577 aarch64_sched_tick <> a64_set_quantum_rejects_zero thm
+R4550:4577 aarch64_sched_tick <> a64_set_quantum_rejects_zero thm
+R4628:4669 aarch64_sched_tick <> a64_set_quantum_success_preserves_positive thm
+R4628:4669 aarch64_sched_tick <> a64_set_quantum_success_preserves_positive thm

@@ -1,7 +1,7 @@
 # Oreulius Verification Target Matrix
 
 Status: **Living Document — Alpha Roadmap**
-Last updated: 2026-04-04
+Last updated: 2026-04-09
 
 This document is the authoritative map of what it means to fully verify Oreulius.
 It defines:
@@ -249,12 +249,17 @@ Specific exclusions from any "verified" claim unless explicitly noted:
 
 **Goal:** Prove that the scheduler's state machine is correct, lock ordering prevents deadlock, and concurrency interference is bounded.
 
-### 10.1 Already Proven (T2)
+### 10.1 Already Proven
+
+This section now mixes the long-standing T2 scheduler properties with the
+AArch64 Program J boundary proof that has been promoted to T5. The row below
+is the only AArch64 entry in this table.
 
 | Theorem | Property | Tier | Theory |
 |---------|----------|------|--------|
 | THM-LOCK-001 | Lock DAG acyclicity — no deadlock cycle in the modeled lock order | **T2** | `lock_dag.v` |
 | THM-SCH-001 | Scheduler entropy / process-state transition safety | **T2** | `scheduler_entropy.v` |
+| A64-SCHED-001 | AArch64 timer tick / reschedule-pending boundary | **T5** | `aarch64_sched_tick.v` |
 
 ### 10.2 Open Properties (T1 or T0)
 
@@ -300,21 +305,34 @@ All properties in Program I are **T0 or T1**. No mechanized proofs exist yet.
 
 ### 12.1 Current Status
 
-All properties in Program J are **T0** unless noted. This is the honest hard boundary of the current proof corpus.
+The AArch64 rows in Program J are now **T5**. The x86/i686 rows remain **T0**
+unless separately noted. This is the honest hard boundary of the current proof
+corpus.
 
 | Property | Arch | Current Tier | Notes |
 |----------|------|-------------|-------|
 | i686 boot handoff correctness | i686 | **T0** | |
 | x86\_64 Multiboot2 bring-up | x86\_64 | **T0** | |
-| AArch64 Image + DTB bring-up | AArch64 | **T0** | |
+| AArch64 Image + DTB bring-up | AArch64 | **T5** | Proven by `A64-DTB-001` and `A64-BOOT-002`; raw-image firmware edges are bounded explicitly under `ASM-HW-001` |
 | Syscall entry stub correctness | x86\_64 | **T0** | Covered by `only_gate_enters_kernel` at ring model level (T2); actual asm stub not modeled |
 | Interrupt entry stub correctness | x86\_64 | **T0** | |
 | Context-switch assembly correctness | x86\_64 | **T0** | |
 | MMU backend — map/unmap/protect | x86\_64 | **T0** | |
 | TLB flush correctness | x86\_64 | **T0** | |
 | Privilege return instruction correctness | x86\_64 | **T0** | |
+| AArch64 exception vectors | AArch64 | **T5** | Proven by `A64-VECTOR-001` |
+| AArch64 trap entry / return | AArch64 | **T5** | Proven by `A64-VECTOR-001`; syscall return path is separately traced by `A64-SYSCALL-001` |
+| AArch64 MMU backend setup | AArch64 | **T5** | Proven by `A64-MMU-001` |
+| AArch64 scheduler tick / reschedule-pending boundary | AArch64 | **T5** | Proven by `A64-SCHED-001`; tick hook sets pending and context-switch bookkeeping clears it |
+| AArch64 syscall boundary stubs | AArch64 | **T5** | Proven by `A64-SYSCALL-001` |
+| AArch64 context-switch assembly | AArch64 | **T5** | Proven by `A64-SWITCH-001` |
 
-**Explicit TCB declaration:** Until the above properties are either proven or formally bounded, the architecture/assembly layer is in the Trusted Computing Base under `ASM-HW-001`. The ring-transition proof (THM-PRIV-001) holds at the abstract ring model level; it does not cover the assembly implementation.
+**Explicit TCB declaration:** The remaining raw-image / firmware handoff edge
+is bounded explicitly under `ASM-HW-001`. The ring-transition proof
+(THM-PRIV-001) still holds at the abstract ring model level; it does not cover
+the assembly implementation. The AArch64 target is intentionally tracked
+separately so a proof claim never silently generalizes from x86 to DTB-based
+bring-up.
 
 This boundary must be explicitly stated in every release claim.
 

@@ -1,0 +1,43 @@
+DIGEST 5c4337e7f203442902900a474b758d47
+Faarch64_trap
+R384:391 Stdlib.Init.Nat <> <> lib
+rec 402:413 <> A64TrapState
+proj 437:457 <> a64_trap_vector_valid
+proj 470:490 <> a64_trap_return_valid
+proj 503:525 <> a64_privilege_preserved
+R461:464 Corelib.Init.Datatypes <> bool ind
+R494:497 Corelib.Init.Datatypes <> bool ind
+R529:532 Corelib.Init.Datatypes <> bool ind
+def 551:572 <> a64_initial_trap_state
+R576:587 aarch64_trap <> A64TrapState rec
+R594:607 aarch64_trap <> mkA64TrapState constr
+R609:612 Corelib.Init.Datatypes <> true constr
+R614:617 Corelib.Init.Datatypes <> true constr
+R619:622 Corelib.Init.Datatypes <> true constr
+def 637:656 <> a64_trap_boundary_ok
+R663:674 aarch64_trap <> A64TrapState rec
+binder 659:659 <> s:5
+R719:724 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R712:714 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R689:709 aarch64_trap <> a64_trap_vector_valid proj
+R711:711 aarch64_trap <> s:5 var
+R715:718 Corelib.Init.Datatypes <> true constr
+R755:760 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R748:750 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R725:745 aarch64_trap <> a64_trap_return_valid proj
+R747:747 aarch64_trap <> s:5 var
+R751:754 Corelib.Init.Datatypes <> true constr
+R786:788 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R761:783 aarch64_trap <> a64_privilege_preserved proj
+R785:785 aarch64_trap <> s:5 var
+R789:792 Corelib.Init.Datatypes <> true constr
+prf 802:826 <> a64_trap_boundary_initial
+R832:851 aarch64_trap <> a64_trap_boundary_ok def
+R853:874 aarch64_trap <> a64_initial_trap_state def
+R893:912 aarch64_trap <> a64_trap_boundary_ok def
+R915:936 aarch64_trap <> a64_initial_trap_state def
+prf 966:991 <> a64_trap_boundary_scaffold
+R997:1016 aarch64_trap <> a64_trap_boundary_ok def
+R1018:1039 aarch64_trap <> a64_initial_trap_state def
+R1057:1081 aarch64_trap <> a64_trap_boundary_initial thm
+R1057:1081 aarch64_trap <> a64_trap_boundary_initial thm

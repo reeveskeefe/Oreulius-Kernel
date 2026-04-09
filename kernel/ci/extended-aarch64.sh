@@ -26,8 +26,50 @@ export A64_EXPECT_CMD_TIMEOUT="$expect_cmd_timeout"
 
 echo "=== Running AArch64 extended expect harness ===" | tee -a "$log_file"
 set +e
-timeout --foreground "$harness_timeout" expect -f ci/extended-aarch64.expect 2>&1 | tee -a "$log_file"
-status=${PIPESTATUS[0]}
+timeout_bin=""
+if command -v timeout >/dev/null 2>&1; then
+    timeout_bin="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin="gtimeout"
+fi
+
+if [[ -n "$timeout_bin" ]]; then
+    "$timeout_bin" --foreground "$harness_timeout" expect -f ci/extended-aarch64.expect 2>&1 | tee -a "$log_file"
+    status=${PIPESTATUS[0]}
+else
+    python3 - "$harness_timeout" <<'PY' 2>&1 | tee -a "$log_file"
+import subprocess
+import sys
+import time
+
+timeout_s = float(sys.argv[1])
+cmd = ["expect", "-f", "ci/extended-aarch64.expect"]
+proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+start = time.monotonic()
+
+try:
+    while True:
+        line = proc.stdout.readline()
+        if line:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            continue
+        if proc.poll() is not None:
+            break
+        if time.monotonic() - start >= timeout_s:
+            proc.kill()
+            proc.wait()
+            sys.exit(124)
+        time.sleep(0.1)
+    rc = proc.wait()
+    sys.exit(rc)
+except KeyboardInterrupt:
+    proc.kill()
+    proc.wait()
+    raise
+PY
+    status=${PIPESTATUS[0]}
+fi
 set -e
 
 case "$status" in

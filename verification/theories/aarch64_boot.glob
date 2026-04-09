@@ -1,0 +1,43 @@
+DIGEST 8af015f8ef4857e67710a47cac761591
+Faarch64_boot
+R400:407 Stdlib.Init.Nat <> <> lib
+rec 418:429 <> A64BootState
+proj 453:469 <> a64_entrypoint_ok
+proj 482:496 <> a64_dtb_present
+proj 509:531 <> a64_handoff_well_formed
+R473:476 Corelib.Init.Datatypes <> bool ind
+R500:503 Corelib.Init.Datatypes <> bool ind
+R535:538 Corelib.Init.Datatypes <> bool ind
+def 557:578 <> a64_initial_boot_state
+R582:593 aarch64_boot <> A64BootState rec
+R600:613 aarch64_boot <> mkA64BootState constr
+R615:618 Corelib.Init.Datatypes <> true constr
+R620:623 Corelib.Init.Datatypes <> true constr
+R625:628 Corelib.Init.Datatypes <> true constr
+def 643:661 <> a64_boot_handoff_ok
+R668:679 aarch64_boot <> A64BootState rec
+binder 664:664 <> s:5
+R720:725 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R713:715 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R694:710 aarch64_boot <> a64_entrypoint_ok proj
+R712:712 aarch64_boot <> s:5 var
+R716:719 Corelib.Init.Datatypes <> true constr
+R750:755 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R743:745 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R726:740 aarch64_boot <> a64_dtb_present proj
+R742:742 aarch64_boot <> s:5 var
+R746:749 Corelib.Init.Datatypes <> true constr
+R781:783 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R756:778 aarch64_boot <> a64_handoff_well_formed proj
+R780:780 aarch64_boot <> s:5 var
+R784:787 Corelib.Init.Datatypes <> true constr
+prf 797:818 <> a64_initial_handoff_ok
+R824:842 aarch64_boot <> a64_boot_handoff_ok def
+R844:865 aarch64_boot <> a64_initial_boot_state def
+R884:902 aarch64_boot <> a64_boot_handoff_ok def
+R905:926 aarch64_boot <> a64_initial_boot_state def
+prf 956:980 <> a64_boot_handoff_scaffold
+R986:1004 aarch64_boot <> a64_boot_handoff_ok def
+R1006:1027 aarch64_boot <> a64_initial_boot_state def
+R1045:1066 aarch64_boot <> a64_initial_handoff_ok thm
+R1045:1066 aarch64_boot <> a64_initial_handoff_ok thm

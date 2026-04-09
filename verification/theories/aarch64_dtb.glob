@@ -1,0 +1,132 @@
+DIGEST 20ff909a54b663e22cf12257b728cb9a
+Faarch64_dtb
+R637:644 Stdlib.Init.Nat <> <> lib
+R674:686 Stdlib.micromega.Lia <> <> lib
+rec 697:705 <> DtbHeader
+proj 726:739 <> dtb_total_size
+proj 751:767 <> dtb_off_dt_struct
+proj 779:796 <> dtb_off_dt_strings
+proj 808:825 <> dtb_off_mem_rsvmap
+proj 837:854 <> dtb_size_dt_struct
+proj 866:884 <> dtb_size_dt_strings
+R743:745 Corelib.Init.Datatypes <> nat ind
+R771:773 Corelib.Init.Datatypes <> nat ind
+R800:802 Corelib.Init.Datatypes <> nat ind
+R829:831 Corelib.Init.Datatypes <> nat ind
+R858:860 Corelib.Init.Datatypes <> nat ind
+R888:890 Corelib.Init.Datatypes <> nat ind
+def 909:930 <> dtb_header_well_formed
+R937:945 aarch64_dtb <> DtbHeader rec
+binder 933:933 <> h:8
+R982:987 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R962:965 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R966:979 aarch64_dtb <> dtb_total_size proj
+R981:981 aarch64_dtb <> h:8 var
+R1028:1033 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1008:1011 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R988:1005 aarch64_dtb <> dtb_off_mem_rsvmap proj
+R1007:1007 aarch64_dtb <> h:8 var
+R1012:1025 aarch64_dtb <> dtb_total_size proj
+R1027:1027 aarch64_dtb <> h:8 var
+R1096:1101 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1076:1079 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R1053:1055 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R1034:1050 aarch64_dtb <> dtb_off_dt_struct proj
+R1052:1052 aarch64_dtb <> h:8 var
+R1056:1073 aarch64_dtb <> dtb_size_dt_struct proj
+R1075:1075 aarch64_dtb <> h:8 var
+R1080:1093 aarch64_dtb <> dtb_total_size proj
+R1095:1095 aarch64_dtb <> h:8 var
+R1146:1149 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R1122:1124 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R1102:1119 aarch64_dtb <> dtb_off_dt_strings proj
+R1121:1121 aarch64_dtb <> h:8 var
+R1125:1143 aarch64_dtb <> dtb_size_dt_strings proj
+R1145:1145 aarch64_dtb <> h:8 var
+R1150:1163 aarch64_dtb <> dtb_total_size proj
+R1165:1165 aarch64_dtb <> h:8 var
+def 1180:1191 <> dtb_slice_ok
+R1218:1220 Corelib.Init.Datatypes <> nat ind
+binder 1194:1202 <> base_size:9
+binder 1204:1210 <> rel_off:10
+binder 1212:1214 <> len:11
+R1248:1251 Corelib.Init.Peano <> ::nat_scope:x_'<='_x not
+R1242:1244 Corelib.Init.Nat <> ::nat_scope:x_'+'_x not
+R1235:1241 aarch64_dtb <> rel_off:10 var
+R1245:1247 aarch64_dtb <> len:11 var
+R1252:1260 aarch64_dtb <> base_size:9 var
+def 1275:1294 <> dtb_runtime_parse_ok
+R1301:1309 aarch64_dtb <> DtbHeader rec
+binder 1297:1297 <> h:12
+R1348:1353 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1324:1345 aarch64_dtb <> dtb_header_well_formed def
+R1347:1347 aarch64_dtb <> h:12 var
+R1430:1435 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1354:1365 aarch64_dtb <> dtb_slice_ok def
+R1368:1381 aarch64_dtb <> dtb_total_size proj
+R1383:1383 aarch64_dtb <> h:12 var
+R1387:1403 aarch64_dtb <> dtb_off_dt_struct proj
+R1405:1405 aarch64_dtb <> h:12 var
+R1409:1426 aarch64_dtb <> dtb_size_dt_struct proj
+R1428:1428 aarch64_dtb <> h:12 var
+R1436:1447 aarch64_dtb <> dtb_slice_ok def
+R1450:1463 aarch64_dtb <> dtb_total_size proj
+R1465:1465 aarch64_dtb <> h:12 var
+R1469:1486 aarch64_dtb <> dtb_off_dt_strings proj
+R1488:1488 aarch64_dtb <> h:12 var
+R1492:1510 aarch64_dtb <> dtb_size_dt_strings proj
+R1512:1512 aarch64_dtb <> h:12 var
+prf 1523:1552 <> dtb_well_formed_implies_bounds
+R1569:1577 aarch64_dtb <> DtbHeader rec
+binder 1565:1565 <> h:13
+R1608:1615 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1584:1605 aarch64_dtb <> dtb_header_well_formed def
+R1607:1607 aarch64_dtb <> h:13 var
+R1692:1699 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1616:1627 aarch64_dtb <> dtb_slice_ok def
+R1630:1643 aarch64_dtb <> dtb_total_size proj
+R1645:1645 aarch64_dtb <> h:13 var
+R1649:1665 aarch64_dtb <> dtb_off_dt_struct proj
+R1667:1667 aarch64_dtb <> h:13 var
+R1671:1688 aarch64_dtb <> dtb_size_dt_struct proj
+R1690:1690 aarch64_dtb <> h:13 var
+R1700:1711 aarch64_dtb <> dtb_slice_ok def
+R1714:1727 aarch64_dtb <> dtb_total_size proj
+R1729:1729 aarch64_dtb <> h:13 var
+R1733:1750 aarch64_dtb <> dtb_off_dt_strings proj
+R1752:1752 aarch64_dtb <> h:13 var
+R1756:1774 aarch64_dtb <> dtb_size_dt_strings proj
+R1776:1776 aarch64_dtb <> h:13 var
+R1812:1823 aarch64_dtb <> dtb_slice_ok def
+rec 1927:1937 <> A64DtbModel
+proj 1960:1971 <> model_header
+proj 1989:2011 <> model_trusted_blob_size
+R1975:1983 aarch64_dtb <> DtbHeader rec
+R2015:2017 Corelib.Init.Datatypes <> nat ind
+def 2036:2059 <> a64_dtb_model_consistent
+R2066:2076 aarch64_dtb <> A64DtbModel rec
+binder 2062:2062 <> m:17
+R2150:2155 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R2116:2118 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2091:2113 aarch64_dtb <> model_trusted_blob_size proj
+R2115:2115 aarch64_dtb <> m:17 var
+R2119:2132 aarch64_dtb <> dtb_total_size proj
+R2135:2146 aarch64_dtb <> model_header proj
+R2148:2148 aarch64_dtb <> m:17 var
+R2156:2177 aarch64_dtb <> dtb_header_well_formed def
+R2180:2191 aarch64_dtb <> model_header proj
+R2193:2193 aarch64_dtb <> m:17 var
+prf 2206:2223 <> a64_dtb_refinement
+R2240:2250 aarch64_dtb <> A64DtbModel rec
+binder 2236:2236 <> m:18
+R2283:2290 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2257:2280 aarch64_dtb <> a64_dtb_model_consistent def
+R2282:2282 aarch64_dtb <> m:18 var
+R2291:2310 aarch64_dtb <> dtb_runtime_parse_ok def
+R2313:2324 aarch64_dtb <> model_header proj
+R2326:2326 aarch64_dtb <> m:18 var
+R2370:2389 aarch64_dtb <> dtb_runtime_parse_ok def
+R2415:2444 aarch64_dtb <> dtb_well_formed_implies_bounds thm
+R2447:2458 aarch64_dtb <> model_header proj
+R2415:2444 aarch64_dtb <> dtb_well_formed_implies_bounds thm
+R2447:2458 aarch64_dtb <> model_header proj

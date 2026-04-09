@@ -1,0 +1,114 @@
+DIGEST 0ba78cfafa8253ae43e07399e22da7df
+Faarch64_vectors
+R481:488 Stdlib.Init.Nat <> <> lib
+ind 502:514 <> A64VectorSlot
+constr 523:536 <> LowerElA64Sync
+constr 542:554 <> LowerElA64Irq
+constr 560:575 <> CurrentElSp0Sync
+constr 581:595 <> CurrentElSp0Irq
+scheme 502:514 <> A64VectorSlot_rect
+scheme 502:514 <> A64VectorSlot_ind
+scheme 502:514 <> A64VectorSlot_rec
+scheme 502:514 <> A64VectorSlot_sind
+ind 609:625 <> A64ExceptionClass
+constr 634:641 <> EC_SVC64
+constr 647:654 <> EC_BRK64
+constr 660:667 <> EC_OTHER
+scheme 609:625 <> A64ExceptionClass_rect
+scheme 609:625 <> A64ExceptionClass_ind
+scheme 609:625 <> A64ExceptionClass_rec
+scheme 609:625 <> A64ExceptionClass_sind
+rec 678:691 <> A64VectorState
+proj 717:727 <> vector_base
+proj 739:758 <> expected_vector_base
+proj 770:786 <> vectors_installed
+R731:733 Corelib.Init.Datatypes <> nat ind
+R762:764 Corelib.Init.Datatypes <> nat ind
+R790:793 Corelib.Init.Datatypes <> bool ind
+def 812:834 <> a64_vectors_well_formed
+R841:854 aarch64_vectors <> A64VectorState rec
+binder 837:837 <> s:9
+R895:900 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R888:890 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R869:885 aarch64_vectors <> vectors_installed proj
+R887:887 aarch64_vectors <> s:9 var
+R891:894 Corelib.Init.Datatypes <> true constr
+R914:916 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R901:911 aarch64_vectors <> vector_base proj
+R913:913 aarch64_vectors <> s:9 var
+R917:936 aarch64_vectors <> expected_vector_base proj
+R938:938 aarch64_vectors <> s:9 var
+def 953:979 <> a64_dispatch_returns_kernel
+R989:1001 aarch64_vectors <> A64VectorSlot ind
+binder 982:985 <> slot:10
+R1010:1026 aarch64_vectors <> A64ExceptionClass ind
+binder 1005:1006 <> ec:11
+R1031:1033 Corelib.Init.Datatypes <> nat ind
+R1052:1053 aarch64_vectors <> ec:11 var
+R1046:1049 aarch64_vectors <> slot:10 var
+R1064:1077 aarch64_vectors <> LowerElA64Sync constr
+R1080:1087 aarch64_vectors <> EC_SVC64 constr
+R1098:1111 aarch64_vectors <> LowerElA64Sync constr
+R1114:1121 aarch64_vectors <> EC_BRK64 constr
+R1132:1144 aarch64_vectors <> LowerElA64Irq constr
+R1158:1173 aarch64_vectors <> CurrentElSp0Sync constr
+R1187:1201 aarch64_vectors <> CurrentElSp0Irq constr
+def 1244:1272 <> a64_lower_el_sync_boundary_ok
+R1282:1294 aarch64_vectors <> A64VectorSlot ind
+binder 1275:1278 <> slot:14
+R1303:1319 aarch64_vectors <> A64ExceptionClass ind
+binder 1298:1299 <> ec:15
+R1346:1347 aarch64_vectors <> ec:15 var
+R1340:1343 aarch64_vectors <> slot:14 var
+R1358:1371 aarch64_vectors <> LowerElA64Sync constr
+R1374:1381 aarch64_vectors <> EC_SVC64 constr
+R1421:1423 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1386:1412 aarch64_vectors <> a64_dispatch_returns_kernel def
+R1414:1417 aarch64_vectors <> slot:14 var
+R1419:1420 aarch64_vectors <> ec:15 var
+R1430:1443 aarch64_vectors <> LowerElA64Sync constr
+R1446:1453 aarch64_vectors <> EC_BRK64 constr
+R1493:1495 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1458:1484 aarch64_vectors <> a64_dispatch_returns_kernel def
+R1486:1489 aarch64_vectors <> slot:14 var
+R1491:1492 aarch64_vectors <> ec:15 var
+R1510:1513 Corelib.Init.Logic <> True ind
+prf 1529:1560 <> a64_vectors_refine_lower_el_sync
+R1577:1590 aarch64_vectors <> A64VectorState rec
+binder 1573:1573 <> s:18
+R1622:1629 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1597:1619 aarch64_vectors <> a64_vectors_well_formed def
+R1621:1621 aarch64_vectors <> s:18 var
+R1683:1690 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1630:1658 aarch64_vectors <> a64_lower_el_sync_boundary_ok def
+R1660:1673 aarch64_vectors <> LowerElA64Sync constr
+R1675:1682 aarch64_vectors <> EC_SVC64 constr
+R1691:1719 aarch64_vectors <> a64_lower_el_sync_boundary_ok def
+R1721:1734 aarch64_vectors <> LowerElA64Sync constr
+R1736:1743 aarch64_vectors <> EC_BRK64 constr
+R1788:1816 aarch64_vectors <> a64_lower_el_sync_boundary_ok def
+R1819:1845 aarch64_vectors <> a64_dispatch_returns_kernel def
+prf 1882:1915 <> a64_vectors_install_preserves_base
+R1939:1941 Corelib.Init.Datatypes <> nat ind
+binder 1928:1935 <> expected:19
+R1948:1970 aarch64_vectors <> a64_vectors_well_formed def
+R1973:1988 aarch64_vectors <> mkA64VectorState constr
+R1990:1997 aarch64_vectors <> expected:19 var
+R1999:2006 aarch64_vectors <> expected:19 var
+R2008:2011 Corelib.Init.Datatypes <> true constr
+R2050:2072 aarch64_vectors <> a64_vectors_well_formed def
+prf 2102:2131 <> a64_vector_boundary_refinement
+R2148:2161 aarch64_vectors <> A64VectorState rec
+binder 2144:2144 <> s:20
+R2193:2200 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2168:2190 aarch64_vectors <> a64_vectors_well_formed def
+R2192:2192 aarch64_vectors <> s:20 var
+R2254:2261 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R2201:2229 aarch64_vectors <> a64_lower_el_sync_boundary_ok def
+R2231:2244 aarch64_vectors <> LowerElA64Sync constr
+R2246:2253 aarch64_vectors <> EC_SVC64 constr
+R2262:2290 aarch64_vectors <> a64_lower_el_sync_boundary_ok def
+R2292:2305 aarch64_vectors <> LowerElA64Sync constr
+R2307:2314 aarch64_vectors <> EC_BRK64 constr
+R2332:2363 aarch64_vectors <> a64_vectors_refine_lower_el_sync thm
+R2332:2363 aarch64_vectors <> a64_vectors_refine_lower_el_sync thm

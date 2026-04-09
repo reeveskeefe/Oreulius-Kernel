@@ -411,6 +411,7 @@ Targets:
 - wait-free ring guarantees, if claimed
 - interrupt scheduling interaction
 - starvation or fairness properties, if claimed
+- AArch64 timer tick / reschedule-pending boundary
 
 ### Program I: VFS, `mmap`, and storage semantics
 
@@ -431,12 +432,18 @@ Targets:
 - i686 boot and runtime
 - x86_64 Multiboot2 path
 - AArch64 raw image and DTB path
-- syscall stubs
+- AArch64 timer tick / reschedule-pending boundary
+- AArch64 syscall boundary stubs
+- AArch64 context-switch handoff
 - interrupt stubs
 - context switching
 - MMU backends
 - TLB flush and load correctness
 - architecture-specific privilege semantics
+
+These AArch64 Program J boundaries are the ones tracked as **T5** in the
+verification proof matrix. The residual raw-image / firmware edge remains a
+named TCB assumption under `ASM-HW-001`.
 
 ### Program K: Toolchain and TCB accounting
 
@@ -585,6 +592,7 @@ Required proof targets:
 - wait-free ring properties, if claimed
 - concurrency interference assumptions
 - fairness, starvation, and boundedness, if claimed
+- AArch64 timer tick / reschedule-pending boundary
 
 ### 8.10 Filesystem and VFS
 
@@ -682,6 +690,3 @@ To say Oreulius fully verified everything, the project must prove:
 - and the composition of all subsystems together
 
 If any one of those is missing, the project has not yet fully verified the entire system.
-
-
-

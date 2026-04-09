@@ -33,7 +33,6 @@ Fresh-state required reading completed:
 ## Verification Entry Point
 ```bash
 bash verification/scripts/proof_check.sh   # structural CI gate
-coqc verification/theories/ipc_flow.v      # capability + CTMC proofs (THM-CAP-001, Proven)
-coqc verification/theories/wx_cfi.v        # W^X invariant proof (THM-WX-001, Proven)
+make -C verification/theories -j1          # compile the tracked Coq theory set
 bash kernel/formal-verify.sh               # QEMU runtime gate
 ```

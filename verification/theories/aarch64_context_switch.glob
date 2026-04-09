@@ -1,0 +1,68 @@
+DIGEST 8f7fa31241bad44382ae0019dabf31da
+FTop.aarch64_context_switch
+R577:584 Stdlib.Init.Nat <> <> lib
+R614:626 Stdlib.micromega.Lia <> <> lib
+rec 637:646 <> A64Context
+proj 668:677 <> a64_ctx_pc
+proj 689:698 <> a64_ctx_sp
+proj 710:721 <> a64_ctx_daif
+proj 733:745 <> a64_ctx_ttbr0
+R681:683 Corelib.Init.Datatypes <> nat ind
+R702:704 Corelib.Init.Datatypes <> nat ind
+R725:727 Corelib.Init.Datatypes <> nat ind
+R749:751 Corelib.Init.Datatypes <> nat ind
+rec 766:786 <> A64ContextSwitchState
+proj 819:834 <> a64_switch_saved
+proj 853:869 <> a64_switch_target
+proj 888:904 <> a64_switch_loaded
+proj 923:938 <> a64_switch_count
+R838:847 Top.aarch64_context_switch <> A64Context rec
+R873:882 Top.aarch64_context_switch <> A64Context rec
+R908:917 Top.aarch64_context_switch <> A64Context rec
+R942:944 Corelib.Init.Datatypes <> nat ind
+def 963:992 <> a64_context_switch_boundary_ok
+R999:1019 Top.aarch64_context_switch <> A64ContextSwitchState rec
+binder 995:995 <> s:11
+R1075:1080 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1053:1055 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1034:1050 Top.aarch64_context_switch <> a64_switch_loaded proj
+R1052:1052 Top.aarch64_context_switch <> s:11 var
+R1056:1072 Top.aarch64_context_switch <> a64_switch_target proj
+R1074:1074 Top.aarch64_context_switch <> s:11 var
+R1103:1108 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1099:1101 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1081:1096 Top.aarch64_context_switch <> a64_switch_count proj
+R1098:1098 Top.aarch64_context_switch <> s:11 var
+R1146:1151 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1141:1144 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R1109:1118 Top.aarch64_context_switch <> a64_ctx_pc proj
+R1121:1137 Top.aarch64_context_switch <> a64_switch_target proj
+R1139:1139 Top.aarch64_context_switch <> s:11 var
+R1189:1194 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1184:1187 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R1152:1161 Top.aarch64_context_switch <> a64_ctx_sp proj
+R1164:1180 Top.aarch64_context_switch <> a64_switch_target proj
+R1182:1182 Top.aarch64_context_switch <> s:11 var
+R1230:1233 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R1195:1207 Top.aarch64_context_switch <> a64_ctx_ttbr0 proj
+R1210:1226 Top.aarch64_context_switch <> a64_switch_target proj
+R1228:1228 Top.aarch64_context_switch <> s:11 var
+def 1249:1280 <> a64_initial_context_switch_state
+R1284:1304 Top.aarch64_context_switch <> A64ContextSwitchState rec
+R1311:1333 Top.aarch64_context_switch <> mkA64ContextSwitchState constr
+R1340:1351 Top.aarch64_context_switch <> mkA64Context constr
+R1367:1378 Top.aarch64_context_switch <> mkA64Context constr
+R1394:1405 Top.aarch64_context_switch <> mkA64Context constr
+prf 1430:1465 <> a64_context_switch_boundary_scaffold
+R1482:1502 Top.aarch64_context_switch <> A64ContextSwitchState rec
+binder 1478:1478 <> s:12
+R1541:1548 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1509:1538 Top.aarch64_context_switch <> a64_context_switch_boundary_ok def
+R1540:1540 Top.aarch64_context_switch <> s:12 var
+R1549:1578 Top.aarch64_context_switch <> a64_context_switch_boundary_ok def
+R1580:1580 Top.aarch64_context_switch <> s:12 var
+prf 1629:1663 <> a64_context_switch_boundary_initial
+R1669:1698 Top.aarch64_context_switch <> a64_context_switch_boundary_ok def
+R1700:1731 Top.aarch64_context_switch <> a64_initial_context_switch_state def
+R1750:1781 Top.aarch64_context_switch <> a64_initial_context_switch_state def
+R1784:1813 Top.aarch64_context_switch <> a64_context_switch_boundary_ok def

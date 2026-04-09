@@ -1,0 +1,62 @@
+DIGEST 720210a28f9e638e85e540e8d0484b6d
+FTop.aarch64_syscall
+R568:575 Stdlib.Init.Nat <> <> lib
+rec 586:600 <> A64SyscallState
+proj 627:647 <> a64_syscall_gate_used
+proj 660:685 <> a64_syscall_entered_kernel
+proj 698:721 <> a64_syscall_privilege_ok
+proj 734:759 <> a64_syscall_frame_captured
+proj 772:796 <> a64_syscall_frame_cleared
+R651:654 Corelib.Init.Datatypes <> bool ind
+R689:692 Corelib.Init.Datatypes <> bool ind
+R725:728 Corelib.Init.Datatypes <> bool ind
+R763:766 Corelib.Init.Datatypes <> bool ind
+R800:803 Corelib.Init.Datatypes <> bool ind
+def 822:844 <> a64_syscall_boundary_ok
+R851:865 Top.aarch64_syscall <> A64SyscallState rec
+binder 847:847 <> s:7
+R910:915 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R903:905 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R880:900 Top.aarch64_syscall <> a64_syscall_gate_used proj
+R902:902 Top.aarch64_syscall <> s:7 var
+R906:909 Corelib.Init.Datatypes <> true constr
+R951:956 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R944:946 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R916:941 Top.aarch64_syscall <> a64_syscall_entered_kernel proj
+R943:943 Top.aarch64_syscall <> s:7 var
+R947:950 Corelib.Init.Datatypes <> true constr
+R990:995 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R983:985 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R957:980 Top.aarch64_syscall <> a64_syscall_privilege_ok proj
+R982:982 Top.aarch64_syscall <> s:7 var
+R986:989 Corelib.Init.Datatypes <> true constr
+R1031:1036 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1024:1026 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R996:1021 Top.aarch64_syscall <> a64_syscall_frame_captured proj
+R1023:1023 Top.aarch64_syscall <> s:7 var
+R1027:1030 Corelib.Init.Datatypes <> true constr
+R1064:1066 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1037:1061 Top.aarch64_syscall <> a64_syscall_frame_cleared proj
+R1063:1063 Top.aarch64_syscall <> s:7 var
+R1067:1070 Corelib.Init.Datatypes <> true constr
+def 1085:1109 <> a64_initial_syscall_state
+R1113:1127 Top.aarch64_syscall <> A64SyscallState rec
+R1134:1150 Top.aarch64_syscall <> mkA64SyscallState constr
+R1152:1155 Corelib.Init.Datatypes <> true constr
+R1157:1160 Corelib.Init.Datatypes <> true constr
+R1162:1165 Corelib.Init.Datatypes <> true constr
+R1167:1170 Corelib.Init.Datatypes <> true constr
+R1172:1175 Corelib.Init.Datatypes <> true constr
+prf 1185:1213 <> a64_syscall_boundary_scaffold
+R1230:1244 Top.aarch64_syscall <> A64SyscallState rec
+binder 1226:1226 <> s:8
+R1276:1283 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1251:1273 Top.aarch64_syscall <> a64_syscall_boundary_ok def
+R1275:1275 Top.aarch64_syscall <> s:8 var
+R1284:1306 Top.aarch64_syscall <> a64_syscall_boundary_ok def
+R1308:1308 Top.aarch64_syscall <> s:8 var
+prf 1357:1384 <> a64_syscall_boundary_initial
+R1390:1412 Top.aarch64_syscall <> a64_syscall_boundary_ok def
+R1414:1438 Top.aarch64_syscall <> a64_initial_syscall_state def
+R1457:1481 Top.aarch64_syscall <> a64_initial_syscall_state def
+R1484:1506 Top.aarch64_syscall <> a64_syscall_boundary_ok def

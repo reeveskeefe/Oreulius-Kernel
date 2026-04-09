@@ -23,7 +23,7 @@ Status: **Active**
 - **Deviations from default**: None. All `Require Import` paths use `Stdlib.*`
   (Rocq 9.x canonical path, replacing the `Coq.*` prefix from older releases).
 
-## Theorem Status Summary (as of 2026-03-15)
+## Theorem Status Summary (as of 2026-04-09)
 
 | Theorem ID    | Invariant     | Status         | Artifact                               |
 |--------------|--------------|---------------|---------------------------------------|
@@ -35,3 +35,4 @@ Status: **Active**
 | THM-PER-001  | INV-PER-001  | **Proven** ✅  | `verification/theories/persistence.v` (SnapshotStore model; PersistenceRoundtrip Theorem…Qed) |
 | THM-NET-001  | INV-NET-001  | **Proven** ✅  | `verification/theories/capnet_integrity.v` (ForwardCap model; capnet_message_integrity Theorem…Qed) |
 | THM-PRIV-001 | INV-PRIV-001 | **Proven** ✅  | `verification/theories/privilege_safety.v` (CpuState ring model; only_gate_enters_kernel Theorem…Qed) |
+| A64-SCHED-001 | INV-A64-006 | **Proven** ✅  | `verification/theories/aarch64_sched_tick.v` (A64SchedState model; a64_scheduler_tick_boundary_refinement Theorem…Qed) |

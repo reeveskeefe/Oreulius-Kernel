@@ -1,0 +1,59 @@
+DIGEST 14d1bea0c7f1b589fad5e435927cd964
+Faarch64_handoff
+R506:513 Stdlib.Init.Nat <> <> lib
+rec 524:539 <> A64BootInfoModel
+proj 567:579 <> model_dtb_ptr
+proj 598:615 <> model_raw_info_ptr
+proj 634:655 <> model_boot_protocol_ok
+R583:588 Corelib.Init.Datatypes <> option ind
+R590:592 Corelib.Init.Datatypes <> nat ind
+R619:624 Corelib.Init.Datatypes <> option ind
+R626:628 Corelib.Init.Datatypes <> nat ind
+R659:662 Corelib.Init.Datatypes <> bool ind
+def 681:707 <> a64_boot_handoff_consistent
+R714:729 aarch64_handoff <> A64BootInfoModel rec
+binder 710:710 <> m:5
+R775:780 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R768:770 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R744:765 aarch64_handoff <> model_boot_protocol_ok proj
+R767:767 aarch64_handoff <> m:5 var
+R771:774 Corelib.Init.Datatypes <> true constr
+R801:803 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R781:798 aarch64_handoff <> model_raw_info_ptr proj
+R800:800 aarch64_handoff <> m:5 var
+R804:816 aarch64_handoff <> model_dtb_ptr proj
+R818:818 aarch64_handoff <> m:5 var
+def 833:857 <> a64_runtime_sees_same_dtb
+R864:879 aarch64_handoff <> A64BootInfoModel rec
+binder 860:860 <> m:6
+R932:938 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1003:1003 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R914:916 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R894:911 aarch64_handoff <> model_raw_info_ptr proj
+R913:913 aarch64_handoff <> m:6 var
+R917:929 aarch64_handoff <> model_dtb_ptr proj
+R931:931 aarch64_handoff <> m:6 var
+R961:964 Corelib.Init.Logic <> ::type_scope:x_'\/'_x not
+R954:956 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R939:951 aarch64_handoff <> model_dtb_ptr proj
+R953:953 aarch64_handoff <> m:6 var
+R957:960 Corelib.Init.Datatypes <> None constr
+R965:971 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R975:976 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 972:974 <> ptr:7
+R992:994 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R977:989 aarch64_handoff <> model_dtb_ptr proj
+R991:991 aarch64_handoff <> m:6 var
+R995:998 Corelib.Init.Datatypes <> Some constr
+R1000:1002 aarch64_handoff <> ptr:7 var
+prf 1013:1050 <> a64_boot_handoff_preserves_dtb_pointer
+R1067:1082 aarch64_handoff <> A64BootInfoModel rec
+binder 1063:1063 <> m:8
+R1118:1125 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1089:1115 aarch64_handoff <> a64_boot_handoff_consistent def
+R1117:1117 aarch64_handoff <> m:8 var
+R1126:1150 aarch64_handoff <> a64_runtime_sees_same_dtb def
+R1152:1152 aarch64_handoff <> m:8 var
+R1196:1220 aarch64_handoff <> a64_runtime_sees_same_dtb def
+R1261:1273 aarch64_handoff <> model_dtb_ptr proj
+R1261:1273 aarch64_handoff <> model_dtb_ptr proj

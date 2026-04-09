@@ -1,0 +1,16 @@
+ipc_flow.v
+temporal_logic.v
+wx_cfi.v
+lock_dag.v
+scheduler_entropy.v
+memory_isolation.v
+persistence.v
+capnet_integrity.v
+privilege_safety.v
+aarch64_dtb.v
+aarch64_handoff.v
+aarch64_vectors.v
+aarch64_mmu.v
+aarch64_sched_tick.v
+aarch64_syscall.v
+aarch64_context_switch.v

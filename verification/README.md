@@ -10,7 +10,7 @@ live here so they do not become runtime dependencies.
 
 - `spec/` - assumptions and invariants that define the verification scope
 - `proof/` - theorem inventory and proof-governance records
-- `theories/` - Coq theory files that mechanize the proof artifacts
+- `theories/` - Coq theory files, `_CoqProject`, and the dependency-aware Makefile
 - `artifacts/` - generated evidence such as manifests and exported proof data
 - `scripts/` - CI-only verification checks and consistency gates
 
@@ -28,6 +28,8 @@ live here so they do not become runtime dependencies.
 - `spec/ASSUMPTIONS.md`
 - `spec/INVARIANTS.md`
 - `proof/THEOREM_INDEX.md`
+- `theories/_CoqProject`
+- `theories/Makefile`
 - `artifacts/manifest.json`
 - `scripts/proof_check.sh`
 
@@ -36,6 +38,6 @@ live here so they do not become runtime dependencies.
 1. Read `spec/ASSUMPTIONS.md` to understand the trusted base.
 2. Read `spec/INVARIANTS.md` to understand the properties being preserved.
 3. Read `proof/THEOREM_INDEX.md` to see which artifacts are tracked.
-4. Inspect `theories/` for the mechanized model surface.
+4. Inspect `theories/` for the mechanized model surface and the Coq build entry points.
 5. Use the runtime shell command `formal-verify` to exercise the kernel-side
    self-checks when you need an operational evidence surface.

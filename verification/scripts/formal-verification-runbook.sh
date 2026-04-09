@@ -21,7 +21,7 @@ Commands:
 
 Options:
   --force     Overwrite existing generated template files during bootstrap.
-  --strict    Enforce release-gating checks: .vo artifacts, coqc compile, CI jobs, manifest.
+  --strict    Enforce release-gating checks: .vo artifacts, dependency-aware Coq build, CI jobs, manifest.
   -h, --help  Show this help.
 EOF
 }
@@ -56,6 +56,8 @@ REQUIRED_FILES=(
     "verification/artifacts/manifest.schema.json"
     "verification/artifacts/manifest.json"
     "verification/artifacts/runtime_evidence.md"
+    "verification/theories/Makefile"
+    "verification/theories/_CoqProject"
     "verification/scripts/proof_check.sh"
     "verification/ci/proof-check.yml"
     ".github/workflows/proof-check.yml"
@@ -72,9 +74,16 @@ THEORY_FILES=(
     "verification/theories/persistence.v"
     "verification/theories/capnet_integrity.v"
     "verification/theories/privilege_safety.v"
+    "verification/theories/aarch64_dtb.v"
+    "verification/theories/aarch64_handoff.v"
+    "verification/theories/aarch64_vectors.v"
+    "verification/theories/aarch64_mmu.v"
+    "verification/theories/aarch64_sched_tick.v"
+    "verification/theories/aarch64_syscall.v"
+    "verification/theories/aarch64_context_switch.v"
 )
 
-# Compiled Coq artifacts — required in strict mode and after any coqc run.
+# Compiled Coq artifacts — required in strict mode and after any proof build.
 THEORY_VO_FILES=(
     "verification/theories/ipc_flow.vo"
     "verification/theories/temporal_logic.vo"
@@ -85,35 +94,55 @@ THEORY_VO_FILES=(
     "verification/theories/persistence.vo"
     "verification/theories/capnet_integrity.vo"
     "verification/theories/privilege_safety.vo"
+    "verification/theories/aarch64_dtb.vo"
+    "verification/theories/aarch64_handoff.vo"
+    "verification/theories/aarch64_vectors.vo"
+    "verification/theories/aarch64_mmu.vo"
+    "verification/theories/aarch64_sched_tick.vo"
+    "verification/theories/aarch64_syscall.vo"
+    "verification/theories/aarch64_context_switch.vo"
 )
 
 MANDATORY_INVARIANTS=(
-    "INV-CAP-001"
-    "INV-MEM-001"
-    "INV-WX-001"
-    "INV-CFI-001"
-    "INV-TMP-001"
-    "INV-PER-001"
-    "INV-NET-001"
-    "INV-PRIV-001"
+    "INV-001"
+    "INV-002"
+    "INV-003"
+    "INV-004"
+    "INV-005"
+    "INV-006"
+    "INV-A64-001"
+    "INV-A64-002"
+    "INV-A64-003"
+    "INV-A64-004"
+    "INV-A64-005"
+    "INV-A64-006"
 )
 
 MANDATORY_THEOREMS=(
-    "THM-CAP-001"
-    "THM-MEM-001"
-    "THM-WX-001"
-    "THM-CFI-001"
-    "THM-TMP-001"
-    "THM-PER-001"
-    "THM-NET-001"
-    "THM-PRIV-001"
+    "TEMP-001"
+    "IPC-001"
+    "WXCFI-001"
+    "LOCK-001"
+    "SCHED-001"
+    "A64-DTB-001"
+    "A64-BOOT-002"
+    "A64-VECTOR-001"
+    "A64-MMU-001"
+    "A64-SCHED-001"
+    "A64-SYSCALL-001"
+    "A64-SWITCH-001"
 )
 
 # Theorems whose status is Proven — strict mode verifies their .vo artifact is present.
 # Format: "artifact_path:theorem_id"
 PROVEN_THEOREM_ARTIFACTS=(
-    "verification/theories/ipc_flow.vo:THM-CAP-001"
-    "verification/theories/wx_cfi.vo:THM-WX-001"
+    "verification/theories/aarch64_dtb.vo:A64-DTB-001"
+    "verification/theories/aarch64_handoff.vo:A64-BOOT-002"
+    "verification/theories/aarch64_vectors.vo:A64-VECTOR-001"
+    "verification/theories/aarch64_mmu.vo:A64-MMU-001"
+    "verification/theories/aarch64_sched_tick.vo:A64-SCHED-001"
+    "verification/theories/aarch64_syscall.vo:A64-SYSCALL-001"
+    "verification/theories/aarch64_context_switch.vo:A64-SWITCH-001"
 )
 
 # Actual CI job names present in .github/workflows/proof-check.yml.
@@ -205,7 +234,7 @@ Houses the formal verification artifacts for the Oreulius kernel.
 
 - `spec/`       — invariants, assumptions, threat model
 - `proof/`      — theorem index and proof records
-- `theories/`   — Coq `.v` source files and compiled `.vo` artifacts
+- `theories/`   — Coq `.v` source files, `_CoqProject`, and the dependency-aware Makefile
 - `mapping/`    — code-to-model correspondence obligations
 - `artifacts/`  — verification manifest, runtime evidence
 - `scripts/`    — verification automation (`proof_check.sh`)
@@ -215,7 +244,7 @@ Houses the formal verification artifacts for the Oreulius kernel.
 ```bash
 bash verification/scripts/proof_check.sh        # structural + artifact gate (runs in CI)
 bash kernel/formal-verify.sh                    # QEMU-based runtime verification gate
-cd verification/theories && coqc temporal_logic.v ipc_flow.v wx_cfi.v lock_dag.v scheduler_entropy.v
+make -C verification/theories -j1                # dependency-aware Coq theory build
 ```
 EOF
 
@@ -257,6 +286,7 @@ Status: **Active**
 | THM-PER-001  | INV-PER-001  | **Proven** ✅  | `verification/theories/persistence.v` |
 | THM-NET-001  | INV-NET-001  | **Proven** ✅  | `verification/theories/capnet_integrity.v` |
 | THM-PRIV-001 | INV-PRIV-001 | **Proven** ✅  | `verification/theories/privilege_safety.v` |
+| A64-SCHED-001 | INV-A64-006 | **Proven** ✅ | `verification/theories/aarch64_sched_tick.v` |
 EOF
 
     write_template_file "verification/ENVIRONMENT.md" <<'EOF'
@@ -298,20 +328,15 @@ coqc --version
 
 ## Compiling Theories
 ```bash
-# Compile all .v files (from repo root):
-cd verification/theories
-coqc temporal_logic.v
-coqc ipc_flow.v
-coqc wx_cfi.v
-coqc lock_dag.v
-coqc scheduler_entropy.v
+# Compile all .v files with the dependency-aware Coq Makefile:
+make -C verification/theories -j1
 # Success: no output; .vo / .vok / .vos artifacts written alongside each .v file.
 ```
 
 ## Verification Entry Points
 - `bash verification/scripts/proof_check.sh`   — structural + artifact gate (runs in CI)
 - `bash kernel/formal-verify.sh`               — QEMU-based runtime verification gate
-- `coqc verification/theories/*.v`             — compile all Coq proofs directly
+- `make -C verification/theories -j1`          — dependency-aware Coq theory build
 EOF
 
     write_template_file "verification/BOOTSTRAP_NOTES.md" <<'EOF'
@@ -350,8 +375,7 @@ EOF
 ## Verification Entry Point
 ```bash
 bash verification/scripts/proof_check.sh        # structural CI gate
-coqc verification/theories/ipc_flow.v           # capability + CTMC proofs (THM-CAP-001, Proven)
-coqc verification/theories/wx_cfi.v             # W^X invariant proof (THM-WX-001, Proven)
+make -C verification/theories -j1               # compile the tracked Coq theory set
 bash kernel/formal-verify.sh                    # QEMU runtime gate
 ```
 EOF
@@ -359,14 +383,28 @@ EOF
     write_template_file "verification/spec/INVARIANTS.md" <<'EOF'
 # Canonical Invariants
 
-- INV-CAP-001: capability authority cannot increase without authorized derivation.
-- INV-MEM-001: no out-of-bounds memory access in modeled transitions.
-- INV-WX-001: no reachable RWX page state.
-- INV-CFI-001: indirect control transfers target only allowed entry sets.
-- INV-TMP-001: temporal rollback and merge preserve object consistency invariants.
-- INV-PER-001: persisted temporal decode rejects integrity-inconsistent payloads.
-- INV-NET-001: CapNet acceptance requires integrity + freshness + rights attenuation.
-- INV-PRIV-001: user/kernel privilege transitions preserve control-return integrity.
+- INV-001: Capability attenuation must never increase authority.
+- INV-002: Replay windows must reject duplicate or expired transcripts.
+- INV-003: Writable and executable memory states must remain disjoint where
+  W^X is claimed.
+- INV-004: Lock ordering must not admit self-deadlock edges in the modeled DAG.
+- INV-005: Scheduler fuel consumption must remain bounded by the declared
+  execution budget.
+- INV-006: Generated proof evidence must remain outside the runtime dependency
+  graph.
+- INV-A64-001: AArch64 boot handoff must preserve a well-formed handoff state
+  from QEMU `virt` into the kernel entrypoint.
+- INV-A64-002: AArch64 DTB parsing must not widen the trusted input set beyond
+  the selected boot-time device tree.
+- INV-A64-003: AArch64 exception vectors and trap return paths must preserve
+  kernel/user privilege separation.
+- INV-A64-004: AArch64 MMU setup must preserve the intended executable,
+  writable, and mapped regions for the bring-up profile.
+- INV-A64-005: AArch64 syscall entry stubs must remain the only modeled user to
+  kernel entry path for the verified profile.
+- INV-A64-006: AArch64 timer ticks must only mark reschedule-pending at
+  quantum boundaries, and context-switch bookkeeping must clear that pending
+  state before the next dispatch step.
 EOF
 
     write_template_file "verification/spec/ASSUMPTIONS.md" <<'EOF'
@@ -394,9 +432,22 @@ Hammer) are explicitly out of scope.
 
 ## ASM-TOOL-001 — Proof Checker Trustworthiness
 Proofs are mechanised in Coq (minimum version 8.17) using only the standard
-library (`Coq.Init`, `Coq.Lists`, `Coq.Bool`). The compiled `.vo` artifacts
-are the authoritative proof record. The Coq kernel is part of the TCB; no
-axioms beyond `Coq.Logic.Classical` are admitted.
+library (`Stdlib.*`). The compiled `.vo` artifacts are the authoritative proof
+record. The Coq kernel is part of the TCB; no axioms beyond classical logic
+are admitted.
+
+## ASM-A64-001 — AArch64 Bring-up Scope
+The AArch64 proof surface is limited to the QEMU `virt` raw-image + DTB
+bring-up path.
+
+## ASM-A64-002 — AArch64 Runtime Boundary
+AArch64 proof claims cover boot handoff, DTB parsing, exception vectors, MMU
+setup, timer/interrupt entry, and syscall boundary stubs only.
+
+## ASM-A64-003 — AArch64 Scheduler Boundary
+The AArch64 scheduler proof surface is limited to the timer tick /
+reschedule-pending boundary and its local quantum bookkeeping. It does not
+claim fairness, interrupt-controller fidelity, or full scheduler semantics.
 EOF
 
     write_template_file "verification/spec/THREAT_MODEL.md" <<'EOF'
@@ -430,16 +481,22 @@ EOF
 
     write_template_file "verification/proof/THEOREM_INDEX.md" <<'EOF'
 # Theorem Index
+This index tracks proof artifacts only. Runtime self-checks and shell-visible
+evidence surfaces are documented in the kernel tree and referenced here only by
+boundary.
 
-## Baseline Status
-- THM-CAP-001 (INV-CAP-001) Status: **Proven** ✅
-- THM-MEM-001 (INV-MEM-001) Status: **Proven** ✅ (MemRegion interval model; PMA-MEM-001–005; memory_region_isolation Theorem via lia)
-- THM-WX-001  (INV-WX-001)  Status: **Proven** ✅
-- THM-CFI-001 (INV-CFI-001) Status: InProgress (entry-point axiom proved; transfer-target completeness pending)
-- THM-TMP-001 (INV-TMP-001) Status: InProgress
-- THM-PER-001 (INV-PER-001) Status: **Proven** ✅ (SnapshotStore write→read identity; codec roundtrip axiom; PersistenceRoundtrip Theorem Qed)
-- THM-NET-001 (INV-NET-001) Status: **Proven** ✅ (ForwardCap model; capnet_message_integrity Theorem via lia)
-- THM-PRIV-001 (INV-PRIV-001) Status: **Proven** ✅ (CpuState ring model; only_gate_enters_kernel Theorem via WellFormed induction)
+| ID | Theory | Status | Notes |
+|---|---|---|---|
+| TEMP-001 | `theories/temporal_logic.v` | Scaffolded | Monotonic temporal step model |
+| IPC-001 | `theories/ipc_flow.v` | Scaffolded | Attenuation monotonicity |
+| WXCFI-001 | `theories/wx_cfi.v` | Scaffolded | Writable and executable states remain disjoint |
+| LOCK-001 | `theories/lock_dag.v` | Scaffolded | Lock ordering has no self-edge |
+| SCHED-001 | `theories/scheduler_entropy.v` | Scaffolded | Scheduler fuel consumption stays bounded |
+| A64-DTB-001 | `theories/aarch64_dtb.v` | Proven | DTB header and slice bounds remain within the declared blob |
+| A64-BOOT-002 | `theories/aarch64_handoff.v` | Proven | Boot handoff surfaces the same DTB pointer into runtime |
+| A64-VECTOR-001 | `theories/aarch64_vectors.v` | Proven | Installed vector base and lower-EL sync dispatch preserve the trap boundary |
+| A64-MMU-001 | `theories/aarch64_mmu.v` | Proven | MMU bring-up establishes a root and preserves modeled W^X separation |
+| A64-SCHED-001 | `theories/aarch64_sched_tick.v` | Proven | Timer tick boundary sets reschedule-pending only at quantum boundaries and quantum updates reject zero |
 
 ---
 
@@ -481,6 +538,8 @@ All trust boundary crossings in `THREAT_MODEL.md` must have a corresponding
 Coq lemma or axiom. Uncovered boundaries must be listed under ASM-MODEL-001.
 Status: Ring-0/Ring-3 and WASM linear-memory covered by THM-WX-001/THM-CFI-001.
 CapNet Peer Boundary covered by `ipc_flow.v` PMA-IPC-005.
+Scheduler Domain boundary is covered by `scheduler_entropy.v`, with the AArch64
+tick / pending boundary tracked separately by `aarch64_sched_tick.v`.
 Firmware/BIOS boundary is explicitly out of scope per ASM-MODEL-001.
 
 ## Per-Subsystem Mapping
@@ -492,6 +551,7 @@ Firmware/BIOS boundary is explicitly out of scope per ASM-MODEL-001.
 | CapNet | `kernel/src/net/capnet.rs` | `spec/capnet.*`, `theories/ipc_flow.v` (PMA-IPC-005) |
 | JIT | `kernel/src/execution/wasm_jit.rs` | `spec/jit.*` (pending), `theories/wx_cfi.v` |
 | Privilege Transitions | `kernel/src/arch/x86_runtime.rs`, `kernel/src/platform/syscall.rs` | `spec/priv.*` (pending) |
+| AArch64 scheduler tick boundary | `kernel/src/arch/aarch64_virt.rs`, `kernel/src/scheduler/quantum_scheduler.rs` | `spec/aarch64.*`, `theories/aarch64_sched_tick.v` |
 | Scheduler | `kernel/src/scheduler/quantum_scheduler.rs` | `spec/scheduler.*`, `theories/scheduler_entropy.v`, `theories/lock_dag.v` |
 EOF
 
@@ -563,6 +623,8 @@ required_files=(
   "verification/artifacts/manifest.schema.json"
   "verification/artifacts/manifest.json"
   "verification/artifacts/runtime_evidence.md"
+  "verification/theories/Makefile"
+  "verification/theories/_CoqProject"
 )
 
 for f in "${required_files[@]}"; do
@@ -575,6 +637,15 @@ theory_sources=(
   "verification/theories/wx_cfi.v"
   "verification/theories/lock_dag.v"
   "verification/theories/scheduler_entropy.v"
+  "verification/theories/memory_isolation.v"
+  "verification/theories/persistence.v"
+  "verification/theories/capnet_integrity.v"
+  "verification/theories/privilege_safety.v"
+  "verification/theories/aarch64_dtb.v"
+  "verification/theories/aarch64_handoff.v"
+  "verification/theories/aarch64_vectors.v"
+  "verification/theories/aarch64_mmu.v"
+  "verification/theories/aarch64_sched_tick.v"
 )
 
 for v in "${theory_sources[@]}"; do
@@ -587,6 +658,15 @@ theory_artifacts=(
   "verification/theories/wx_cfi.vo"
   "verification/theories/lock_dag.vo"
   "verification/theories/scheduler_entropy.vo"
+  "verification/theories/memory_isolation.vo"
+  "verification/theories/persistence.vo"
+  "verification/theories/capnet_integrity.vo"
+  "verification/theories/privilege_safety.vo"
+  "verification/theories/aarch64_dtb.vo"
+  "verification/theories/aarch64_handoff.vo"
+  "verification/theories/aarch64_vectors.vo"
+  "verification/theories/aarch64_mmu.vo"
+  "verification/theories/aarch64_sched_tick.vo"
 )
 
 for vo in "${theory_artifacts[@]}"; do
@@ -661,13 +741,7 @@ jobs:
       - name: Verify Coq version
         run: coqc --version
       - name: Compile Coq theories
-        working-directory: verification/theories
-        run: |
-          coqc temporal_logic.v
-          coqc ipc_flow.v
-          coqc wx_cfi.v
-          coqc lock_dag.v
-          coqc scheduler_entropy.v
+        run: make -C verification/theories -j1
       - name: Upload compiled proof artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -727,21 +801,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y coq
           coqc --version
-      - name: Compile temporal_logic.v
-        working-directory: verification/theories
-        run: coqc temporal_logic.v
-      - name: Compile ipc_flow.v
-        working-directory: verification/theories
-        run: coqc ipc_flow.v
-      - name: Compile wx_cfi.v
-        working-directory: verification/theories
-        run: coqc wx_cfi.v
-      - name: Compile lock_dag.v
-        working-directory: verification/theories
-        run: coqc lock_dag.v
-      - name: Compile scheduler_entropy.v
-        working-directory: verification/theories
-        run: coqc scheduler_entropy.v
+      - name: Build Coq theories
+        run: make -C verification/theories -j1
       - name: Upload .vo artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -797,7 +858,7 @@ EOF
 ## formal-verify
 - **Description**: Coq proof compilation of all `.v` theory files under `verification/theories/`.
 - **How to run**: `bash verification/scripts/proof_check.sh` or `bash kernel/formal-verify.sh`
-- **Expected output**: `coqc` exits 0 for all theory files; `.vo` artifacts written.
+- **Expected output**: `make` exits 0 for the tracked theory set under `verification/theories/`; `.vo` artifacts written.
 - **CI job**: `proof-check` workflow, `coq-proofs` step.
 - **Last known passing commit**: a2acf53
 
@@ -838,7 +899,8 @@ EOF
     { "id": "THM-TMP-001",  "status": "InProgress", "artifact": "verification/theories/temporal_logic.v", "invariant": "INV-TMP-001"  },
     { "id": "THM-PER-001",  "status": "Proven",     "artifact": "verification/theories/persistence.v",  "invariant": "INV-PER-001"  },
     { "id": "THM-NET-001",  "status": "Proven",     "artifact": "verification/theories/capnet_integrity.v",  "invariant": "INV-NET-001"  },
-    { "id": "THM-PRIV-001", "status": "Proven",     "artifact": "verification/theories/privilege_safety.v",  "invariant": "INV-PRIV-001" }
+    { "id": "THM-PRIV-001", "status": "Proven",     "artifact": "verification/theories/privilege_safety.v",  "invariant": "INV-PRIV-001" },
+    { "id": "A64-SCHED-001", "status": "Proven",    "artifact": "verification/theories/aarch64_sched_tick.v", "invariant": "INV-A64-006" }
   ],
   "ci_runs": [
     {
@@ -929,7 +991,7 @@ check_strict() {
     done
     if [[ "${#missing_vo[@]}" -gt 0 ]]; then
         printf '%s\n' "${missing_vo[@]}" >&2
-        die "strict mode: missing compiled .vo artifacts — run: cd verification/theories && coqc *.v"
+        die "strict mode: missing compiled .vo artifacts — run: make -C verification/theories -j1"
     fi
 
     # 2. Verify that proven theorems have their .vo artifacts present and non-empty.
@@ -941,17 +1003,12 @@ check_strict() {
     done
 
     # 3. Optionally recompile theories to confirm proofs still hold.
-    if command -v coqc >/dev/null 2>&1; then
-        log "coqc found — recompiling theories to confirm proofs..."
-        (
-            cd verification/theories
-            for v in temporal_logic.v ipc_flow.v wx_cfi.v lock_dag.v scheduler_entropy.v; do
-                [[ -f "$v" ]] && coqc "$v"
-            done
-        ) || die "strict mode: coqc compilation failed — one or more proofs are broken"
-        log "coqc compilation OK"
+    if command -v make >/dev/null 2>&1; then
+        log "make found — recompiling theories to confirm proofs..."
+        make -C verification/theories -j1 || die "strict mode: make compilation failed — one or more proofs are broken"
+        log "make compilation OK"
     else
-        warn "coqc not found; skipping recompilation (install Coq 9.1.1 to enable)"
+        warn "make not found; skipping recompilation (install GNU Make to enable)"
     fi
 
     # 4. Verify required CI job names are present in the workflow files.
@@ -1037,7 +1094,7 @@ status_runbook() {
         if [[ -f "$vo" ]]; then
             echo "[OK]    $vo"
         else
-            echo "[MISS]  $vo  (run: cd verification/theories && coqc $(basename "${vo%.vo}").v)"
+            echo "[MISS]  $vo  (run: make -C verification/theories -j1)"
             rc=1
         fi
     done

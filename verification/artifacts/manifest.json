@@ -27,6 +27,41 @@
       "id": "SCHED-001",
       "file": "theories/scheduler_entropy.v",
       "status": "scaffolded"
+    },
+    {
+      "id": "A64-DTB-001",
+      "file": "theories/aarch64_dtb.v",
+      "status": "proven"
+    },
+    {
+      "id": "A64-BOOT-002",
+      "file": "theories/aarch64_handoff.v",
+      "status": "proven"
+    },
+    {
+      "id": "A64-VECTOR-001",
+      "file": "theories/aarch64_vectors.v",
+      "status": "proven"
+    },
+    {
+      "id": "A64-MMU-001",
+      "file": "theories/aarch64_mmu.v",
+      "status": "proven"
+    },
+    {
+      "id": "A64-SCHED-001",
+      "file": "theories/aarch64_sched_tick.v",
+      "status": "proven"
+    },
+    {
+      "id": "A64-SYSCALL-001",
+      "file": "theories/aarch64_syscall.v",
+      "status": "proven"
+    },
+    {
+      "id": "A64-SWITCH-001",
+      "file": "theories/aarch64_context_switch.v",
+      "status": "proven"
     }
   ],
   "ci_runs": [

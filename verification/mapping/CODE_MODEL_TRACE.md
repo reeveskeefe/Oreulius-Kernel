@@ -36,8 +36,11 @@ boundary. If no proof exists, the boundary must be listed under
 **Status**: Ring-0/Ring-3 boundary and WASM linear-memory boundary are covered
 by the JIT bounds-checking invariant (THM-WX-001 / THM-CFI-001, InProgress).
 CapNet Peer Boundary is covered by `ipc_flow.v` PMA-IPC-005. Scheduler Domain
-boundary is covered by `scheduler_entropy.v`. The firmware/BIOS boundary is
-explicitly out of scope per `ASM-MODEL-001`.
+boundary is covered by `scheduler_entropy.v`, with the AArch64 tick / pending
+boundary tracked separately by `aarch64_sched_tick.v`. The AArch64 syscall
+boundary is covered by `aarch64_syscall.v`, and the AArch64 scheduler handoff
+boundary is covered by `aarch64_context_switch.v`. The firmware/BIOS boundary
+is explicitly out of scope per `ASM-MODEL-001`.
 
 ## Per-Subsystem Mapping
 
@@ -48,4 +51,11 @@ explicitly out of scope per `ASM-MODEL-001`.
 | CapNet | `kernel/src/net/capnet.rs` | `spec/capnet.*`, `theories/ipc_flow.v` (PMA-IPC-005) |
 | JIT | `kernel/src/execution/wasm_jit.rs` | `spec/jit.*` (pending) |
 | Privilege Transitions | `kernel/src/arch/x86_runtime.rs`, `kernel/src/platform/syscall.rs` | `spec/priv.*` (pending) |
+| AArch64 DTB discovery | `kernel/src/arch/aarch64_runtime.rs`, `kernel/src/arch/aarch64_dtb.rs`, `kernel/src/arch/aarch64_virt.rs` | `spec/aarch64.*`, `theories/aarch64_dtb.v` |
+| AArch64 boot handoff | `kernel/src/arch/aarch64_virt.rs`, `kernel/src/arch/aarch64_runtime.rs` | `spec/aarch64.*`, `theories/aarch64_handoff.v` |
+| AArch64 trap/vector boundary | `kernel/src/arch/aarch64_vectors.rs`, `kernel/src/arch/aarch64_virt.rs`, `kernel/src/arch/aarch64_runtime.rs` | `spec/aarch64.*`, `theories/aarch64_vectors.v` |
+| AArch64 MMU bring-up | `kernel/src/arch/mmu_aarch64.rs`, `kernel/src/arch/aarch64_runtime.rs`, `kernel/src/arch/aarch64_virt.rs` | `spec/aarch64.*`, `theories/aarch64_mmu.v` |
+| AArch64 scheduler tick boundary | `kernel/src/arch/aarch64_virt.rs`, `kernel/src/scheduler/quantum_scheduler.rs` | `spec/aarch64.*`, `theories/aarch64_sched_tick.v` |
+| AArch64 syscall boundary | `kernel/src/arch/aarch64_vectors.rs`, `kernel/src/platform/syscall.rs` | `spec/aarch64.*`, `theories/aarch64_syscall.v` |
+| AArch64 scheduler handoff / context-switch boundary | `kernel/src/scheduler/scheduler_platform.rs`, `kernel/src/asm/aarch64_scheduler.S`, `kernel/src/scheduler/quantum_scheduler.rs` | `spec/aarch64.*`, `theories/aarch64_context_switch.v` |
 | Scheduler | `kernel/src/scheduler/quantum_scheduler.rs` | `spec/scheduler.*`, `theories/scheduler_entropy.v`, `theories/lock_dag.v` |

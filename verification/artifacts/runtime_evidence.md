@@ -1,9 +1,9 @@
 # Runtime Evidence
 
 ## formal-verify
-- **Description**: Coq proof compilation of all `.v` theory files under `verification/theories/`.
-- **How to run**: `bash verification/scripts/proof_check.sh` or `bash kernel/formal-verify.sh`
-- **Expected output**: `coqc` exits 0 for `ipc_flow.v`, `temporal_logic.v`, `lock_dag.v`, `scheduler_entropy.v`; compiled `.vo` artifacts written to `verification/theories/`.
+- **Description**: Dependency-aware Coq proof compilation of all `.v` theory files under `verification/theories/` using the tracked `_CoqProject` and Makefile.
+- **How to run**: `make -C verification/theories -j1`, `bash verification/scripts/proof_check.sh`, or `bash kernel/formal-verify.sh`
+- **Expected output**: `make` exits 0 for all tracked theory files under `verification/theories/`; compiled `.vo` artifacts written to `verification/theories/`.
 - **CI job**: `proof-check` workflow, `coq-proofs` step.
 - **Last known passing commit**: a2acf53
 

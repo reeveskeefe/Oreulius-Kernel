@@ -23,21 +23,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y coq
           coqc --version
-      - name: Compile temporal_logic.v
-        working-directory: verification/theories
-        run: coqc temporal_logic.v
-      - name: Compile ipc_flow.v
-        working-directory: verification/theories
-        run: coqc ipc_flow.v
-      - name: Compile wx_cfi.v
-        working-directory: verification/theories
-        run: coqc wx_cfi.v
-      - name: Compile lock_dag.v
-        working-directory: verification/theories
-        run: coqc lock_dag.v
-      - name: Compile scheduler_entropy.v
-        working-directory: verification/theories
-        run: coqc scheduler_entropy.v
+      - name: Build Coq theories
+        run: make -C verification/theories -j1
       - name: Upload .vo artifacts
         uses: actions/upload-artifact@v4
         with:

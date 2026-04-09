@@ -16,6 +16,19 @@ required_paths=(
   "verification/theories/wx_cfi.v"
   "verification/theories/lock_dag.v"
   "verification/theories/scheduler_entropy.v"
+  "verification/theories/memory_isolation.v"
+  "verification/theories/persistence.v"
+  "verification/theories/capnet_integrity.v"
+  "verification/theories/privilege_safety.v"
+  "verification/theories/aarch64_dtb.v"
+  "verification/theories/aarch64_handoff.v"
+  "verification/theories/aarch64_vectors.v"
+  "verification/theories/aarch64_mmu.v"
+  "verification/theories/aarch64_sched_tick.v"
+  "verification/theories/aarch64_syscall.v"
+  "verification/theories/aarch64_context_switch.v"
+  "verification/theories/Makefile"
+  "verification/theories/_CoqProject"
 )
 
 for path in "${required_paths[@]}"; do

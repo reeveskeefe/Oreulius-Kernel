@@ -36,17 +36,12 @@ coqc --version
 
 ## Compiling Theories
 ```bash
-# Compile all .v files (from repo root):
-cd verification/theories
-coqc temporal_logic.v
-coqc ipc_flow.v
-coqc wx_cfi.v
-coqc lock_dag.v
-coqc scheduler_entropy.v
+# Compile all .v files with the dependency-aware Coq Makefile:
+make -C verification/theories -j1
 # Success: no output; .vo / .vok / .vos artifacts written alongside each .v file.
 ```
 
 ## Verification Entry Points
 - `bash verification/scripts/proof_check.sh`   — structural gate (runs in CI)
 - `bash kernel/formal-verify.sh`               — QEMU-based runtime verification gate
-- `coqc verification/theories/*.v`             — compile all Coq proofs directly
+- `make -C verification/theories -j1`          — dependency-aware Coq theory build

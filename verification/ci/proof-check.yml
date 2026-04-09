@@ -39,7 +39,7 @@ jobs:
         run: coqc --version
 
       - name: Compile Coq theories
-        run: bash verification/scripts/proof_check.sh
+        run: make -C verification/theories -j1
 
       - name: Upload compiled proof artifacts
         if: success()

@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Package version tag (for example v0.1.0-alpha)"
+        description: "Package version tag (for example v0.1.2-alpha)"
         required: true
-        default: "v0.1.0-alpha"
+        default: "v0.1.2-alpha"
 
 defaults:
   run:

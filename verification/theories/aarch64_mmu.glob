@@ -1,0 +1,99 @@
+DIGEST 7b77a396c59827d2915bcc5f16e66d50
+Faarch64_mmu
+R539:546 Stdlib.Init.Nat <> <> lib
+R576:588 Stdlib.micromega.Lia <> <> lib
+rec 599:609 <> A64MmuModel
+proj 632:649 <> model_root_present
+proj 662:688 <> model_kernel_mappings_ready
+proj 701:718 <> model_wx_separated
+proj 731:757 <> model_trust_bound_preserved
+R653:656 Corelib.Init.Datatypes <> bool ind
+R692:695 Corelib.Init.Datatypes <> bool ind
+R722:725 Corelib.Init.Datatypes <> bool ind
+R761:764 Corelib.Init.Datatypes <> bool ind
+def 783:797 <> a64_mmu_boot_ok
+R804:814 aarch64_mmu <> A64MmuModel rec
+binder 800:800 <> m:6
+R856:861 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R849:851 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R829:846 aarch64_mmu <> model_root_present proj
+R848:848 aarch64_mmu <> m:6 var
+R852:855 Corelib.Init.Datatypes <> true constr
+R898:903 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R891:893 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R862:888 aarch64_mmu <> model_kernel_mappings_ready proj
+R890:890 aarch64_mmu <> m:6 var
+R894:897 Corelib.Init.Datatypes <> true constr
+R931:936 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R924:926 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R904:921 aarch64_mmu <> model_wx_separated proj
+R923:923 aarch64_mmu <> m:6 var
+R927:930 Corelib.Init.Datatypes <> true constr
+R966:968 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R937:963 aarch64_mmu <> model_trust_bound_preserved proj
+R965:965 aarch64_mmu <> m:6 var
+R969:972 Corelib.Init.Datatypes <> true constr
+def 987:1014 <> a64_mmu_refines_boot_profile
+R1021:1031 aarch64_mmu <> A64MmuModel rec
+binder 1017:1017 <> m:7
+R1063:1068 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1046:1060 aarch64_mmu <> a64_mmu_boot_ok def
+R1062:1062 aarch64_mmu <> m:7 var
+R1096:1101 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1089:1091 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1069:1086 aarch64_mmu <> model_root_present proj
+R1088:1088 aarch64_mmu <> m:7 var
+R1092:1095 Corelib.Init.Datatypes <> true constr
+R1138:1143 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1131:1133 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1102:1128 aarch64_mmu <> model_kernel_mappings_ready proj
+R1130:1130 aarch64_mmu <> m:7 var
+R1134:1137 Corelib.Init.Datatypes <> true constr
+R1164:1166 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1144:1161 aarch64_mmu <> model_wx_separated proj
+R1163:1163 aarch64_mmu <> m:7 var
+R1167:1170 Corelib.Init.Datatypes <> true constr
+prf 1180:1220 <> a64_mmu_boot_profile_preserves_separation
+R1237:1247 aarch64_mmu <> A64MmuModel rec
+binder 1233:1233 <> m:8
+R1271:1278 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1254:1268 aarch64_mmu <> a64_mmu_boot_ok def
+R1270:1270 aarch64_mmu <> m:8 var
+R1299:1301 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1279:1296 aarch64_mmu <> model_wx_separated proj
+R1298:1298 aarch64_mmu <> m:8 var
+R1302:1305 Corelib.Init.Datatypes <> true constr
+prf 1368:1402 <> a64_mmu_boot_profile_preserves_root
+R1419:1429 aarch64_mmu <> A64MmuModel rec
+binder 1415:1415 <> m:9
+R1453:1460 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1436:1450 aarch64_mmu <> a64_mmu_boot_ok def
+R1452:1452 aarch64_mmu <> m:9 var
+R1481:1483 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1461:1478 aarch64_mmu <> model_root_present proj
+R1480:1480 aarch64_mmu <> m:9 var
+R1484:1487 Corelib.Init.Datatypes <> true constr
+prf 1548:1565 <> a64_mmu_refinement
+R1582:1592 aarch64_mmu <> A64MmuModel rec
+binder 1578:1578 <> m:10
+R1616:1623 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1599:1613 aarch64_mmu <> a64_mmu_boot_ok def
+R1615:1615 aarch64_mmu <> m:10 var
+R1651:1658 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1644:1646 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1624:1641 aarch64_mmu <> model_root_present proj
+R1643:1643 aarch64_mmu <> m:10 var
+R1647:1650 Corelib.Init.Datatypes <> true constr
+R1695:1702 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R1688:1690 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1659:1685 aarch64_mmu <> model_kernel_mappings_ready proj
+R1687:1687 aarch64_mmu <> m:10 var
+R1691:1694 Corelib.Init.Datatypes <> true constr
+R1723:1725 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1703:1720 aarch64_mmu <> model_wx_separated proj
+R1722:1722 aarch64_mmu <> m:10 var
+R1726:1729 Corelib.Init.Datatypes <> true constr
+R1784:1818 aarch64_mmu <> a64_mmu_boot_profile_preserves_root thm
+R1784:1818 aarch64_mmu <> a64_mmu_boot_profile_preserves_root thm
+R1893:1933 aarch64_mmu <> a64_mmu_boot_profile_preserves_separation thm
+R1893:1933 aarch64_mmu <> a64_mmu_boot_profile_preserves_separation thm
