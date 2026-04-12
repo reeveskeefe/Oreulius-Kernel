@@ -43,7 +43,7 @@ That path gives the fastest "aha" moment in this repo:
 [![Multiarch QEMU Smoke](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/multiarch-qemu-smoke.yml/badge.svg)](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/multiarch-qemu-smoke.yml)
 [![Proof Check](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/proof-check.yml/badge.svg)](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/proof-check.yml)
 
-[Start Here](#start-here) • [Some Reccomended Commands to run in the kernel](#Some-Recomended-Commands-to-run-in-the-kernel) • [Architecture](#architecture-at-a-glance) • [Verification](#verification-status) • [Build](#build-and-run) • [Docs](#documentation-map)
+[Start Here](#start-here) • [Recomended Commands](#Some-Recomended-Commands-to-run-in-the-kernel) • [Architecture](#architecture-at-a-glance) • [Verification](#verification-status) • [Build](#build-and-run) • [Docs](#documentation-map)
 
 </div>
 
