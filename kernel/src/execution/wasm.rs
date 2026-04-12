@@ -3567,10 +3567,21 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 instance.host_polyglot_link()?;
                 let wrong_export = instance.stack.pop()?.as_i32()?;
                 instance.stack.clear();
+                crate::serial_println!(
+                    "[polyglot-check] wrong_export_rc={} after revoke",
+                    wrong_export
+                );
                 if wrong_export != -3 {
                     return Err(WasmError::SyscallFailed);
                 }
                 let lineage = POLYGLOT_LINEAGE.lock();
+                let has_live_registration = lineage.records.iter().any(|rec| {
+                    rec.active && rec.object_id == registration.object_id
+                });
+                crate::serial_println!(
+                    "[polyglot-check] has_live_registration_after_revoke={}",
+                    has_live_registration
+                );
                 if lineage.records.iter().all(|rec| {
                     !rec.active || rec.object_id != registration.object_id
                 }) {
@@ -3584,6 +3595,10 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 instance.host_polyglot_link()?;
                 let missing_export = instance.stack.pop()?.as_i32()?;
                 instance.stack.clear();
+                crate::serial_println!(
+                    "[polyglot-check] missing_export_rc={} after revoke",
+                    missing_export
+                );
                 if missing_export != -3 {
                     return Err(WasmError::SyscallFailed);
                 }
