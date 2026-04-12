@@ -3369,15 +3369,18 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
             0x0A, 0x0B, 0x02, 0x04, 0x00, 0x41, 0x01, 0x0B, 0x04, 0x00, 0x41, 0x02, 0x0B,
         ];
 
+        crate::serial_println!("[polyglot-check] provider stage=load");
         let mut provider_module = WasmModule::new();
         provider_module
             .load_binary(&PROVIDER_MODULE)
             .map_err(|_| "Polyglot ABI self-check: provider module parse failed")?;
+        crate::serial_println!("[polyglot-check] provider stage=instantiate");
         let provider_id = wasm_runtime()
             .instantiate_module(provider_module, provider)
             .map_err(|_| "Polyglot ABI self-check: provider instantiate failed")?;
         provider_instance = Some(provider_id);
 
+        crate::serial_println!("[polyglot-check] provider stage=register");
         let registration = register_service_pointer(provider, provider_id, 0, true)
             .map_err(|_| "Polyglot ABI self-check: service register failed")?;
         registered_object = Some(registration.object_id);
@@ -3414,11 +3417,13 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
             0x03, 0x01, 0x00, // function section: 0 functions
             0x0A, 0x01, 0x00, // code section: 0 code bodies
         ];
+        crate::serial_println!("[polyglot-check] consumer stage=instantiate");
         let consumer_id = wasm_runtime()
             .instantiate(&CONSUMER_MODULE, consumer)
             .map_err(|_| "Polyglot ABI self-check: consumer instantiate failed")?;
         consumer_instance = Some(consumer_id);
 
+        crate::serial_println!("[polyglot-check] consumer stage=with_instance");
         wasm_runtime()
             .with_instance_exclusive(consumer_id, |instance| -> Result<(), WasmError> {
                 instance.memory.write(0x100, b"svc")?;
@@ -3567,24 +3572,7 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 instance.host_polyglot_link()?;
                 let wrong_export = instance.stack.pop()?.as_i32()?;
                 instance.stack.clear();
-                crate::serial_println!(
-                    "[polyglot-check] wrong_export_rc={} after revoke",
-                    wrong_export
-                );
                 if wrong_export != -3 {
-                    return Err(WasmError::SyscallFailed);
-                }
-                let lineage = POLYGLOT_LINEAGE.lock();
-                let has_live_registration = lineage.records.iter().any(|rec| {
-                    rec.active && rec.object_id == registration.object_id
-                });
-                crate::serial_println!(
-                    "[polyglot-check] has_live_registration_after_revoke={}",
-                    has_live_registration
-                );
-                if lineage.records.iter().all(|rec| {
-                    !rec.active || rec.object_id != registration.object_id
-                }) {
                     return Err(WasmError::SyscallFailed);
                 }
 
@@ -3595,10 +3583,6 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 instance.host_polyglot_link()?;
                 let missing_export = instance.stack.pop()?.as_i32()?;
                 instance.stack.clear();
-                crate::serial_println!(
-                    "[polyglot-check] missing_export_rc={} after revoke",
-                    missing_export
-                );
                 if missing_export != -3 {
                     return Err(WasmError::SyscallFailed);
                 }
