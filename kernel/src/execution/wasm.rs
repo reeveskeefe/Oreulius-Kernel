@@ -3569,6 +3569,7 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
         wasm_runtime()
             .with_instance_exclusive(consumer_id, |instance| -> Result<(), WasmError> {
                 instance.stack.clear();
+                crate::serial_println!("[polyglot-check] consumer step=lineage-query-all");
                 instance.host_polyglot_lineage_count()?;
                 let lineage_count = instance.stack.pop()?.as_i32()?;
                 instance.stack.clear();
@@ -3594,6 +3595,7 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 instance.memory.write(0x240, b"svc")?;
                 instance.memory.write(0x260, b"add")?;
                 instance.stack.clear();
+                crate::serial_println!("[polyglot-check] consumer step=lineage-filter-source");
                 instance.stack.push(Value::I32(0x300))?;
                 instance
                     .stack
@@ -3613,6 +3615,7 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 }
 
                 instance.stack.clear();
+                crate::serial_println!("[polyglot-check] consumer step=lineage-filter-export");
                 instance.stack.push(Value::I32(0x380))?;
                 instance
                     .stack
@@ -3631,11 +3634,8 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                     return Err(WasmError::SyscallFailed);
                 }
 
-                {
-                    let mut lineage = POLYGLOT_LINEAGE.lock();
-                    lineage.update_lifecycle(registration.object_id, PolyglotLifecycle::Rebound);
-                }
                 instance.stack.clear();
+                crate::serial_println!("[polyglot-check] consumer step=lineage-filter-lifecycle");
                 instance.stack.push(Value::I32(0x400))?;
                 instance
                     .stack
