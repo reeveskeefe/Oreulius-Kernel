@@ -3773,7 +3773,7 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
 
 /// Deterministic self-check for the frozen host dispatcher table.
 pub(crate) fn formal_host_dispatch_self_check() -> Result<HostDispatchConformanceSummary, &'static str> {
-    if HOST_FUNCTION_SPECS.len() != 137 {
+    if HOST_FUNCTION_SPECS.len() != 143 {
         return Err("Host dispatch self-check: unexpected table size");
     }
 
