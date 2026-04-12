@@ -161,7 +161,7 @@ expect {
 
 sleep 2
 after 600
-send -s -- "formal-verify\r"
+send -- "fv\r"
 expect {
     -re $prompt_re {}
     timeout {

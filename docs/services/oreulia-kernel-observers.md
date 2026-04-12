@@ -19,7 +19,7 @@ Host ABI:
 
 ## 1. What the observer system currently is
 
-Kernel observers let a WASM module subscribe to selected kernel event classes and receive those events asynchronously over a dedicated IPC channel.
+Kernel observers let a WASM module subscribe to selected kernel event classes and receive those events asynchronously over a dedicated IPC channel. In SDK terms, this is the `subscribe` / `query` / `events` vocabulary: `query` drains the channel directly, while `events()` presents the same feed as a small batch iterator.
 
 This is intentionally simple:
 
@@ -176,7 +176,7 @@ Current behavior:
 - returns `-1` for zero mask
 - returns `-2` if channel creation fails
 - returns `-3` if the observer table is full
-- otherwise returns the observer channel id
+- otherwise returns the observer channel id (`> 0`)
 
 After successful registration, the runtime emits a `POLYGLOT_LINK` notification containing the new observer's mask as a bootstrap signal.
 
@@ -201,7 +201,7 @@ Current behavior:
 - returns the number of events written
 - returns `-1` if the caller is not registered
 
-The SDK wrapper converts negative results into `0`, so SDK-level callers see "no events" for both empty and unsubscribed cases unless they drop to the raw ABI.
+The SDK wrapper preserves the error result rather than collapsing it into `0`, so SDK-level callers can distinguish "no events" from "not subscribed."
 
 ---
 
@@ -209,9 +209,10 @@ The SDK wrapper converts negative results into `0`, so SDK-level callers see "no
 
 The SDK wrapper in [`wasm/sdk/src/observer.rs`](../../wasm/sdk/src/observer.rs) currently exposes:
 
-- `subscribe(event_mask) -> Option<u32>`
-- `unsubscribe() -> bool`
-- `query(&mut [ObserverEvent]) -> usize`
+- `subscribe(event_mask) -> Result<u32, i32>`
+- `unsubscribe() -> Result<(), i32>`
+- `query(&mut [ObserverEvent]) -> Result<usize, i32>`
+- `events() -> ObserverEventIter`
 
 It also exposes the event-bit constants and the `ObserverEvent` struct used to decode the 32-byte frame.
 

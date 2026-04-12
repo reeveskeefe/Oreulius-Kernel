@@ -936,6 +936,9 @@ impl CapabilityManager {
     ) -> Result<u32, CapabilityError> {
         let mut tables = self.tables.lock();
 
+        if pid.0 as usize >= MAX_TASKS {
+            return Err(CapabilityError::TaskNotFound);
+        }
         if let Some(table) = tables[pid.0 as usize].as_mut() {
             let cap = OreuliusCapability::new(0, object_id, cap_type, rights, origin);
             let cap_id = table.install(cap)?;

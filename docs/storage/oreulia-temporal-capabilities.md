@@ -20,7 +20,7 @@ Together these two primitives make capability grants behave like **smart contrac
 | Deadline enforcement | `TEMPORAL_CAP_TABLE` (32 slots); swept by `temporal_cap_tick()` on every scheduler tick |
 | Resolution | 100 Hz PIT (10 ms per tick); minimum grant = 1 tick |
 | Manual revocation | `temporal_cap_revoke` (ID 117) or `CapabilityManager::revoke_capability` |
-| Lifetime query | `temporal_cap_check` (ID 118) returns remaining ticks |
+| Lifetime status | `temporal_cap_check` (ID 118) / SDK `status(cap_id)` returns remaining ticks |
 | Checkpoint capacity | 8 outstanding checkpoints per kernel; 16 capabilities per snapshot |
 | Rollback atomicity | All post-snapshot caps revoked first; then snapshot re-granted from temporal log |
 | Audit integration | Every grant and revoke written to `temporal::record_capability_event()` |
@@ -35,7 +35,7 @@ Together these two primitives make capability grants behave like **smart contrac
 │  WASM Module                                                     │
 │  temporal::cap_grant()  temporal::checkpoint_create()           │
 │  temporal::cap_revoke() temporal::checkpoint_rollback()         │
-│  temporal::cap_check()                                          │
+│  temporal::cap_check() / temporal::status()                     │
 └────────────────────────┬────────────────────────────────────────┘
                          │  WASM host ABI (IDs 116–120)
 ┌────────────────────────▼────────────────────────────────────────┐
@@ -65,7 +65,7 @@ Together these two primitives make capability grants behave like **smart contrac
 |---|---|
 | `kernel/src/execution/wasm.rs` | Host functions (IDs 116–120), `TEMPORAL_CAP_TABLE`, `TEMPORAL_CHECKPOINT_STORE`, `temporal_cap_tick()` |
 | `kernel/src/temporal/mod.rs` | `record_capability_event()`, temporal log persistence, `is_replay_active()` |
-| `wasm/sdk/src/temporal.rs` | High-level SDK: `cap_grant`, `cap_revoke`, `cap_check`, `checkpoint_create`, `checkpoint_rollback`, `TemporalCap` RAII guard |
+| `wasm/sdk/src/temporal.rs` | High-level SDK: `cap_grant`, `cap_revoke`, `cap_check` / `status`, `checkpoint_create`, `checkpoint_rollback`, `TemporalCap` RAII guard |
 | `wasm/sdk/src/raw/oreulius.rs` | Raw FFI bindings for IDs 116–120 |
 
 ---

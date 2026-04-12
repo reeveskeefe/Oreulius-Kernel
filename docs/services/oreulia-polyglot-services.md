@@ -1,6 +1,6 @@
 # Oreulius Polyglot Services
 
-**Status:** Implemented, but narrower than some earlier docs claimed.
+**Status:** Implemented and frozen for the current ABI version.
 
 Primary implementation surfaces:
 
@@ -12,20 +12,29 @@ Host ABI:
 - `103` `polyglot_register`
 - `104` `polyglot_resolve`
 - `105` `polyglot_link`
+- `132` `polyglot_lineage_count`
+- `133` `polyglot_lineage_query`
+- `134` `polyglot_lineage_query_filtered`
+- `135` `polyglot_lineage_lookup`
+- `136` `polyglot_lineage_lookup_object`
+- `137` `polyglot_lineage_revoke`
+- `138` `polyglot_lineage_rebind`
+- `139` `polyglot_lineage_status`
+- `140` `polyglot_lineage_status_object`
+- `141` `polyglot_lineage_query_page`
+- `142` `polyglot_lineage_event_query`
 
 ---
 
 ## 1. What polyglot services currently are
 
-The current polyglot subsystem gives Oreulius a **named registry of WASM modules by language-tagged service name**, plus a way to obtain a service-pointer handle to a registered module.
-
-It does **not** yet implement the stricter export-resolved ABI linker that some older documents described.
+The current polyglot subsystem gives Oreulius a **named registry of WASM modules by language-tagged service name**, plus an exact-export path to obtain a service-pointer handle to a registered callable export. The kernel now also keeps a durable lineage record so historical provenance can outlive live authority.
 
 Today the subsystem does three concrete things:
 
 1. register a module name with its runtime instance id and language tag
 2. resolve a name back to an instance id
-3. link that registered module to a service-pointer handle in the caller's WASM capability table
+3. link an exact exported function from that registered module to a service-pointer handle in the caller's WASM capability table
 
 ---
 
@@ -43,6 +52,7 @@ Each active entry stores:
 - `owner_pid`
 - `singleton` flag
 - `cap_object` placeholder field
+- `latest_record_id` pointing at the lineage ledger
 
 The language tag comes from the module's `oreulius_lang` custom section and defaults to `Unknown` if absent.
 
@@ -103,27 +113,27 @@ Return behavior:
 
 This is the most important place where older docs drifted.
 
-What the current implementation actually does:
+What the current implementation does:
 
 1. resolves the target module by name
-2. looks for the **first active service-pointer entry** whose `target_instance` matches that resolved instance
-3. injects a WASM-side `ServicePointer` handle into the caller's capability table
-4. logs source and target language information to serial
+2. resolves the requested export name against the target module's export table
+3. matches that exact export to a registered service-pointer entry by `(target_instance, function_index)`
+4. injects a WASM-side `ServicePointer` handle into the caller's capability table
+5. records a durable lineage entry for the link
+6. logs source and target language information to serial
 
-What it does **not** currently do:
+What it still does **not** do:
 
-- it does not resolve the requested export name against a per-export registry
-- it does not inject a persistent `CrossLanguage` capability into the kernel capability manager
-- it does not currently use `export_name` as a strict dispatch key beyond argument validation and logging
-
-So the current semantics are **instance-level polyglot linking backed by service-pointer registration**, not fully export-specific cross-language linkage.
+- it does not provide a general cross-language value marshaling layer beyond the typed service-slot ABI
+- it does not turn polyglot linking into an ambient name-based RPC namespace
+- it does not let lineage records act as authority without a live `ServicePointer`
 
 Return behavior:
 
 - `>= 0` Wasm capability handle on success
 - `-1` invalid arguments
 - `-2` module not found
-- `-3` no active service pointer found for the target instance
+- `-3` export missing or not registered as a service pointer
 - `-4` caller's Wasm capability table full
 
 ---
@@ -146,16 +156,14 @@ This dependency is important. Polyglot services are not an independent RPC subsy
 
 The SDK wrapper in [`wasm/sdk/src/polyglot.rs`](../../wasm/sdk/src/polyglot.rs) currently exposes:
 
-- `register(name: &str) -> bool`
-- `resolve(name: &str) -> Option<i32>`
-- `link(module_name: &str, export_name: &str) -> Option<u32>`
+- `register(name: &str) -> Result<(), PolyglotError>`
+- `resolve(name: &str) -> Result<i32, PolyglotError>`
+- `link(module_name: &str, export_name: &str) -> Result<u32, PolyglotError>`
 
 Convenience wrappers also exist:
 
 - `PolyglotService`
 - `ServiceHandle`
-
-The SDK currently matches the kernel's real behavior better than the old prose docs did, but the wording should still be read in light of the implementation caveat above: `link` is currently instance-level service-pointer resolution, not exact export resolution.
 
 ---
 
@@ -163,31 +171,62 @@ The SDK currently matches the kernel's real behavior better than the old prose d
 
 These limitations are real and should be documented explicitly.
 
-### 6.1 Export name is not yet authoritative
+### 6.1 Registry teardown remains manual
 
-`polyglot_link` accepts an export name, but the current host path does not use it to disambiguate multiple service-pointer exports from the same instance. It simply finds the first active service pointer for that instance.
-
-### 6.2 Registry teardown remains manual
-
-There is no dedicated polyglot unregister path today.
+There is still no dedicated polyglot unregister path today.
 
 Current consequence:
 
 - destroying a WASM instance revokes its service pointers
-- but the polyglot name registry entry is not explicitly cleared at destroy time
+- the polyglot name registry entry is purged at the same time
+- the durable lineage record is retained with a terminal lifecycle state
 
-That means `polyglot_resolve` can still return a stale instance id until the service is refreshed or replaced.
+So:
 
-In that stale case:
+- `polyglot_resolve` fails closed after teardown
+- `polyglot_link` fails closed after teardown
+- historical audit can still show the link existed and when it ended
 
-- `polyglot_resolve` may still succeed
-- `polyglot_link` will later fail with `-3` because no active service pointer exists for that dead instance
+### 6.2 Cross-language capability auditing is still partial
 
-### 6.3 Cross-language capability auditing is only partial
+The code now constructs both:
 
-The code currently constructs a `CrossLanguage` capability-shaped audit object through `new_polyglot_link`, but it is not yet installed as a durable kernel capability record. The real authority that reaches the caller today is the Wasm-side `ServicePointer` handle.
+- a live `ServicePointer` authority object
+- a durable polyglot lineage record in the kernel
 
-So older claims about full capability-manager-backed cross-language lineage were overstated.
+The real authority that reaches the caller is still the Wasm-side `ServicePointer` handle. The lineage record is the audit/replay source of truth and does not itself grant authority.
+
+### 6.3 Lineage query is read-only by design
+
+The new lineage host calls expose durable provenance for audit and replay. They do not create new authority, and they do not replace the `ServicePointer` handle returned by `polyglot_link`.
+
+- `polyglot_lineage_lookup` is the explicit live-handle audit path.
+- `polyglot_lineage_lookup_object` preserves the same record shape for terminal rebind/revocation inspection after the live handle is gone.
+- `polyglot_lineage_revoke` explicitly removes live authority and leaves the durable lineage entry behind for later audit.
+- `polyglot_lineage_rebind` explicitly retargets a live handle to a verified compatible instance owned by the same process.
+- `polyglot_lineage_status` and `polyglot_lineage_status_object` expose the current lifecycle summary without requiring a full lineage scan.
+- `polyglot_lineage_query_page` walks lineage records incrementally using a record-id cursor.
+- `polyglot_lineage_event_query` returns the append-only `Rebound` / `Revoked` transition feed.
+
+Example:
+
+```rust
+let mut pages = oreulius_sdk::polyglot::lineage_pages(16);
+while let Some(page) = pages.next() {
+    let page = page.expect("lineage page");
+    for record in page.iter() {
+        let _ = record.record_id;
+    }
+}
+
+let mut events = oreulius_sdk::polyglot::lineage_events(16);
+while let Some(batch) = events.next() {
+    let batch = batch.expect("lineage events");
+    for event in batch.iter() {
+        let _ = event.event_id;
+    }
+}
+```
 
 ---
 
@@ -198,13 +237,13 @@ Accurate claims:
 - language-tagged named registration is implemented
 - singleton refresh for Python and JS is implemented
 - name resolution to instance id is implemented
-- Wasm-side linking to a service-pointer handle is implemented
+- exact-export Wasm-side linking to a service-pointer handle is implemented
 - shell/runtime logging records the source and target language tags
 
 Claims that should not be made yet:
 
-- exact export-level link resolution
 - full kernel capability-manager installation of polyglot link objects
-- complete stale-entry cleanup on instance teardown
+- a fully general cross-language ABI linker or marshaler
+- using lineage records as ambient authority
 
-The correct public description is that Oreulius already has a real polyglot registry and link surface, but it is still a lightweight layer over service-pointer capabilities rather than a fully generalized cross-language ABI linker.
+The correct public description is that Oreulius already has a real polyglot registry and exact-export link surface, implemented as a capability-mediated layer over service-pointer capabilities rather than a fully generalized cross-language ABI linker.

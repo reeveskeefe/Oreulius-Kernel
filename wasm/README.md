@@ -23,6 +23,14 @@ wasm/
 ├── echo.wat            WASI fd_read→fd_write loop
 ├── hello.wat           "Hello from Oreulius!" via WASI fd_write
 ├── poll_demo.wat       WASI poll_oneoff clock-timeout demo
+├── polyglot_provider.wat polyglot service provider demo with exact exported services
+├── polyglot_consumer.wat polyglot consumer demo exercising exact-export link and negative path
+├── polyglot_lineage_audit.wat polyglot lineage lookup demo for live/rebound audit semantics
+├── polyglot_revocation_audit.wat polyglot lineage revoke demo for terminal audit semantics
+├── polyglot_status_audit.wat polyglot lineage status demo for compact lifecycle summaries
+├── polyglot_audit_stream.wat polyglot transition stream demo for rebind events
+├── polyglot_page_audit.wat polyglot cursor pagination demo for lineage scans
+├── wasi_admin_demo.wat WASI fd-metadata / sync / resize / renumber demo
 ├── spawn_children.wat  Oreulius proc_spawn demo (two child processes)
 ├── thread_demo.wat     Oreulius cooperative thread ABI demo
 └── sdk/                typed Rust bindings for the Oreulius host ABI
@@ -34,8 +42,8 @@ wasm/
         ├── io.rs        fd_read / fd_write helpers
         ├── process.rs   proc_spawn / proc_yield / proc_sleep
         ├── temporal.rs  time-bound capability grants + checkpoints
-        ├── ipc.rs       channel_open / channel_send / channel_recv
-        ├── fs.rs        WASI filesystem wrappers
+        ├── ipc.rs       handle-based channel send / recv helpers
+        ├── fs.rs        typed WASI filesystem and metadata wrappers
         ├── net.rs       TCP/UDP socket helpers
         ├── thread.rs    thread_spawn / thread_join / thread_yield
         ├── time.rs      WASI clock_time_get, poll_oneoff timer
@@ -101,7 +109,7 @@ by the kernel.  These can and do diverge independently.
 ### The Boundary Is the ABI Table
 
 The only coupling between the two sides is the **host ABI dispatch table**
-in `kernel/src/wasm.rs` — 132 `call_host_fn` match arms.  The WAT files and
+in `kernel/src/execution/wasm.rs` — 139 frozen host-function specs.  The WAT files and
 the SDK's `raw/oreulius.rs` / `raw/wasi.rs` are the guest-side mirror of that
 table.  As long as the IDs, signatures, and memory-layout conventions on both
 sides match, the two halves can be compiled, modified, and versioned
@@ -136,13 +144,14 @@ completely independently.
 │  WASM interpreter │◄──│  ← bytecode loaded into kernel │
 │  + JIT engine     │   │    linear memory sandbox       │
 │  (kernel/src/     │   │                                │
-│   wasm.rs)        │   │  host ABI calls resolved by    │
+│   execution/      │   │  host ABI calls resolved by    │
+│   wasm.rs)        │   │
 │                   │──►│  call_host_fn() match table    │
 └───────────────────┘   └────────────────────────────────┘
 ```
 
 1. **Kernel build** — `kernel/build.sh` (or CI) compiles `kernel/src/` into a
-   bare-metal binary.  The WASM runtime (`kernel/src/wasm.rs`) is compiled
+   bare-metal binary.  The WASM runtime (`kernel/src/execution/wasm.rs`) is compiled
    into that binary.  It contains the 132-arm dispatch table and both the
    interpreter and optional JIT paths.
 
@@ -181,7 +190,15 @@ Each `.wat` file is a focused integration test for one slice of the host ABI:
 |---|---|---|
 | `hello.wat` | `fd_write` (ID 71), `proc_exit` (ID 83) | Baseline: write path and clean exit work |
 | `echo.wat` | `fd_read` (ID 65), `fd_write` (ID 71) | Dual-direction WASI I/O; iovec memory layout |
-| `poll_demo.wat` | `poll_oneoff` (ID 79) | Timer/clock subscription path; event struct layout |
+| `poll_demo.wat` | `poll_oneoff` (ID 82) | Timer/clock subscription path; event struct layout |
+| `polyglot_provider.wat` | `service_register` (ID 9) | Exported service registration for the polyglot registry/link path |
+| `polyglot_consumer.wat` | `polyglot_link` (105), `service_invoke` (8) | Exact-export polyglot linking plus missing-export negative path |
+| `polyglot_lineage_audit.wat` | `polyglot_link` (105), `polyglot_lineage_lookup` (135) | Handle-based lineage lookup proving explicit live/rebound audit semantics |
+| `polyglot_revocation_audit.wat` | `polyglot_link` (105), `polyglot_lineage_lookup` (135), `polyglot_lineage_revoke` (137), `polyglot_lineage_lookup_object` (136) | Explicit revoke path with durable terminal audit |
+| `polyglot_status_audit.wat` | `polyglot_link` (105), `polyglot_lineage_status` (139), `polyglot_lineage_revoke` (137) | Compact lifecycle status query for live handles |
+| `polyglot_audit_stream.wat` | `polyglot_link` (105), `polyglot_lineage_rebind` (138), `polyglot_lineage_event_query` (142) | Transition event feed for rebind/revocation monitoring |
+| `polyglot_page_audit.wat` | `polyglot_link` (105), `polyglot_lineage_query_page` (141) | Cursor-based pagination of lineage records |
+| `wasi_admin_demo.wat` | `path_open`, `fd_allocate`, `fd_write`, `fd_tell`, `fd_filestat_set_size`, `fd_filestat_set_times`, `fd_renumber`, `fd_sync`, `proc_exit` | Guest-side regression artifact for the completed WASI admin surface |
 | `spawn_children.wat` | `proc_spawn` (100), `proc_yield` (101), `proc_sleep` (102) | Multi-process model; process scheduler interaction |
 | `thread_demo.wat` | `thread_spawn` (23), `thread_join` (24), `thread_id` (25), `thread_yield` (26), `thread_exit` (27) | Cooperative threading; join/exit handshake |
 

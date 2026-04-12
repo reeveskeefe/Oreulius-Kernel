@@ -18,3 +18,16 @@ boundary.
 | A64-SCHED-001 | `theories/aarch64_sched_tick.v` | Proven | Timer tick boundary sets reschedule-pending only at quantum boundaries and quantum updates reject zero |
 | A64-SYSCALL-001 | `theories/aarch64_syscall.v` | Proven | AArch64 syscall dispatcher and return-frame boundary remain within the modeled gate |
 | A64-SWITCH-001 | `theories/aarch64_context_switch.v` | Proven | AArch64 scheduler handoff preserves the selected ProcessContext and switch bookkeeping |
+
+## Runtime-Enforced ABI Boundaries
+
+These are not mechanized theorems yet. They are boundary records for runtime
+conformance checks that now gate `formal-verify` and must be modeled before any
+T2+ proof claim is made.
+
+| ID | Boundary | Status | Runtime Evidence |
+|---|---|---|---|
+| ABI-DISPATCH-001 | Frozen host-dispatch table preserves host ID, name, arity, result shape, and alias metadata | Runtime Checked | `kernel/src/execution/wasm.rs::formal_host_dispatch_self_check()` |
+| WASI-ABI-001 | Frozen WASI Preview 1 compatibility surface (IDs `45–90`) preserves dispatcher metadata and live ABI behavior | Runtime Checked | `kernel/src/execution/wasm.rs::formal_wasi_preview1_self_check()` |
+| POLYGLOT-ABI-001 | Frozen polyglot host surface (IDs `103–105`) preserves dispatcher metadata, exact-export linking, and teardown purge behavior | Runtime Checked | `kernel/src/execution/wasm.rs::formal_polyglot_abi_self_check()` |
+| SPTR-001 | Service-pointer import, invoke, revoke, typed-slot round-trip, and post-revoke rejection preserve typed service-pointer authority boundaries | Runtime Checked | `kernel/src/execution/wasm.rs::formal_service_pointer_conformance_self_check()` |

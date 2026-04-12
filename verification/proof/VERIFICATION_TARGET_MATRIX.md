@@ -159,9 +159,10 @@ Specific exclusions from any "verified" claim unless explicitly noted:
 | WASM interpreter semantic correctness — each opcode correctly advances state | **T0** | Large but tractable; foundation of JIT refinement |
 | JIT semantic equivalence — JIT-compiled code produces same observable output as interpreter | **T0** | Depends on interpreter correctness above |
 | JIT code emission correctness — emitted x86_64 bytes correctly encode the intended instructions | **T0** | Requires instruction-level model |
-| Host-call dispatch correctness — ABI shim correctly maps WASM calls to kernel services | **T1** | 132 host ABI functions; dispatch table not modeled |
-| Service pointer typing correctness — service pointers cannot be mis-typed at call site | **T1** | Described in `oreulia-app-dev-guide.md` |
-| WASI surface correctness — all WASI calls correctly implement the WASI spec | **T0** | Out of scope until WASM model exists |
+| Host-call dispatch correctness — ABI shim correctly maps WASM calls to kernel services | **T1** | Runtime-enforced by `formal_host_dispatch_self_check()`; abstract dispatcher theory still pending |
+| Service pointer typing correctness — service pointers cannot be mis-typed at call site | **T1** | Runtime-enforced by `formal_service_pointer_conformance_self_check()`; no mechanized service-pointer model yet |
+| WASI surface correctness — frozen WASI Preview 1 compatibility surface preserves documented metadata and live behavior | **T1** | Runtime-enforced by `formal_wasi_preview1_self_check()`; no mechanized WASI model yet |
+| Polyglot/native host resolution correctness — typed native host resolution preserves exact-export link identity and fail-closed teardown behavior across guest bindings | **T1** | Runtime-enforced by `formal_polyglot_abi_self_check()`; no mechanized polyglot model yet |
 
 **Note:** The JIT semantic equivalence proof (interpreter → JIT) is Program D's primary multi-year research obligation. For alpha, the honest claim is: W^X and CFI hold at the model level (T2); full execution semantic correctness is not claimed.
 

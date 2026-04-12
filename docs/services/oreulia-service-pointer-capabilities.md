@@ -145,7 +145,10 @@ Import is explicit:
 - shell demos call [`import_capability_from_ipc`](../../kernel/src/capability/mod.rs) after receiving the message
 - the WASM runtime automatically imports received service-pointer caps in the `channel_recv` host path and injects a WASM-side `ServicePointer` handle for them
 
-The runtime also tracks the most recently auto-imported service handle for the current instance through the `last_service_handle` host surface.
+The runtime also tracks the most recently auto-imported service handle for the current instance through the `last_service_cap` host surface.
+
+The SDK mirrors this through `oreulius_sdk::service::ServicePointer` and the
+`oreulius_sdk::service::invoke_typed` helper.
 
 This is important: service-pointer transfer is real and working, but it is not ambient. A receiver must still import or accept the transferred capability through the defined path.
 
@@ -185,6 +188,15 @@ That snapshot preserves:
 - signature tags
 
 So service pointers already participate in the broader temporal durability story, even though higher-level replay semantics still remain uneven elsewhere.
+
+### 6.4 Export identity and rebind behavior
+
+Service-pointer entries now retain the exported function name they were
+registered from. That matters in two places:
+
+- polyglot linking resolves exact exports, not just instance ownership
+- compatible-target rebinding on instance teardown requires both signature
+  compatibility and export-name compatibility
 
 ---
 

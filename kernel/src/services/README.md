@@ -9,7 +9,7 @@
 
 ## Purpose
 
-`kernel/src/services` implements the **kernel-resident layer of Oreulius's service architecture**. It defines what a "service" means inside the OS, how services register themselves, how consumers discover them, how the kernel tracks their health, how firmware is updated atomically across A/B slots, how the kernel attests its own runtime state to remote peers, and how WASM programs are mapped onto the full WASI Preview 1 ABI using Oreulius's capability model.
+`kernel/src/services` implements the **kernel-resident layer of Oreulius's service architecture**. It defines what a "service" means inside the OS, how services register themselves, how consumers discover them, how the kernel tracks their health, how firmware is updated atomically across A/B slots, how the kernel attests its own runtime state to remote peers, and how WASM programs are mapped onto Oreulius's frozen WASI Preview 1 compatibility surface using the capability model.
 
 The philosophy throughout is **no ambient authority**: services are not global names in a flat namespace. They are capability-mediated resources discovered through explicit *introduction* protocols. A process cannot access the filesystem service by importing a module — it must hold a valid `ServiceIntroductionCapability` and request an introduction from a registered introducer.
 
@@ -36,7 +36,7 @@ These services must live inside the kernel because:
 | `fleet.rs` | x86-64 | Attestation bundles, remote diagnostics, fleet trust key management |
 | `ota.rs` | x86-64 | A/B slot OTA update manager with SHA-256 manifest verification |
 | `telemetry.rs` | All | Lock-free `TelemetryQueue` — bridges Ring-0 observations to the out-of-band math daemon |
-| `wasi.rs` | x86-64 | Full WASI Preview 1 ABI implementation over Oreulius capabilities |
+| `wasi.rs` | x86-64 | Frozen WASI Preview 1 compatibility surface over Oreulius capabilities |
 
 Note: `fleet.rs`, `health.rs`, `ota.rs`, and `wasi.rs` are conditionally compiled only on `not(target_arch = "aarch64")`. `registry.rs` and `telemetry.rs` compile on all targets.
 
@@ -210,29 +210,26 @@ This module deliberately contains no floating-point, no `std`, and no dynamic al
 
 ---
 
-## `wasi.rs` — WASI Preview 1 ABI over Oreulius Capabilities
+## `wasi.rs` — Frozen WASI Preview 1 Compatibility over Oreulius Capabilities
 
-Enables WASM binaries compiled for **WASI Preview 1** (musl-libc, WASI-SDK, Emscripten) to run inside the Oreulius WASM sandbox **unmodified**, by mapping all 55+ WASI syscall functions onto the kernel's capability model.
+Enables WASM binaries compiled for **WASI Preview 1** (musl-libc, WASI-SDK, Emscripten) to run inside the Oreulius WASM sandbox against the frozen dispatcher-owned host range `45–90`. That surface is fully implemented and versioned by the dispatcher table in `kernel/src/execution/wasm.rs`.
 
 ### Design
 
 - Every WASI function has the signature `fn(&mut WasiCtx, ...) -> Errno`.
-- `WasiCtx` holds per-instance state: an fd table, a list of preopened directory capabilities, and a clock epoch offset.
+- `WasiCtx` holds per-instance state: an fd table, preopened directories, argv, PRNG state, and exit state.
 - All file I/O routes through `crate::capability` and `crate::fs` (no direct memory access).
 - All clock functions route through the kernel timer service.
 - Network I/O routes through `crate::net::rtl8139` for raw socket access.
-- **No heap allocations in the hot path** — the fd table and preopened dir table are fixed-size arrays.
+- The fd table and preopened dir table are fixed-size arrays; path-backed metadata and resize operations may use temporary buffers when materializing file contents.
 
-### WASM Host Function IDs (45–99)
+### WASM Host Function IDs (45–90)
 
 | ID Range | Functions |
 |---|---|
-| `45–48` | `args_get`, `args_sizes_get`, `environ_get`, `environ_sizes_get` |
-| `49–50` | `clock_res_get`, `clock_time_get` |
-| `51–71` | All `fd_*` operations: `fd_close`, `fd_read`, `fd_write`, `fd_seek`, `fd_stat`, `fd_pread`, `fd_pwrite`, `fd_readdir`, `fd_prestat_get`, `fd_prestat_dir_name` |
-| `72–80` | All `path_*` operations: `path_open`, `path_create_directory`, `path_filestat_get`, `path_rename`, `path_unlink_file`, `path_remove_directory` |
-| `81–85` | `poll_oneoff`, `proc_exit`, `proc_raise`, `sched_yield`, `random_get` |
-| `86–89` | `sock_accept`, `sock_recv`, `sock_send`, `sock_shutdown` |
-| `90–99` | Oreulius extensions and reserved |
+| `45–50` | Implemented argument, environment, and clock queries |
+| `51–71` | Fully implemented `fd_*` surface, including flags, rights, resize, sync, and renumbering |
+| `72–81` | Fully implemented `path_*` surface, including stat, links, symlinks, rename, and timestamp updates |
+| `82–90` | Fully implemented polling, process, randomness, scheduling, and socket entries |
 
-No-op stubs are provided for WASI functions that map to features outside the current kernel scope (`fd_advise`, `fd_allocate`, `fd_datasync`, `path_link`, `path_readlink`) to ensure ABI compatibility without breaking the import table.
+The authoritative exposure surface is the host dispatcher table in `kernel/src/execution/wasm.rs`. This service module contains the backing helpers for every live WASI entry in `45–90`.

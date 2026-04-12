@@ -35,12 +35,13 @@ Two layers of host functions are available:
 
 | Layer | Import module | IDs | Standard |
 |-------|---------------|-----|----------|
-| WASI Preview 1 | `wasi_snapshot_preview1` | 45–90 | Yes |
+| WASI Preview 1-shaped surface | `oreulius` | 45–90 | Frozen |
 | Oreulius native | `oreulius` or `env` | 0–44, 91–131 | Oreulius-specific |
 
-Any valid WASM binary targeting `wasm32-wasi` runs unmodified.  WASI-SDK,
-`wasi-sdk`, Emscripten, and `cargo build --target wasm32-wasi` are all
-supported.
+WASM binaries built with the usual `wasm32-wasi` toolchains are supported as
+long as their host imports are bound through the frozen `oreulius` namespace.
+WASI-SDK, `wasi-sdk`, Emscripten, and `cargo build --target wasm32-wasi` are
+all supported.
 
 ---
 
@@ -72,9 +73,9 @@ The `wasm` shell command:
 
 ```wat
 (module
-  (import "wasi_snapshot_preview1" "fd_write"
+  (import "oreulius" "fd_write"
     (func $fd_write (param i32 i32 i32 i32) (result i32)))
-  (import "wasi_snapshot_preview1" "proc_exit"
+  (import "oreulius" "proc_exit"
     (func $proc_exit (param i32)))
 
   (memory (export "memory") 1)
@@ -155,30 +156,47 @@ Full spec: https://github.com/WebAssembly/WASI/blob/main/legacy/preview1/docs.md
 | 48 | `environ_sizes_get` | |
 | 49 | `clock_res_get` | Clock resolution |
 | 50 | `clock_time_get` | Monotonic / realtime clock |
-| 51–52 | `fd_advise`, `fd_allocate` | No-ops |
+| 51–52 | `fd_advise`, `fd_allocate` | Advisory / allocation fd controls |
 | 53 | `fd_close` | Close fd |
-| 54 | `fd_datasync` | No-op |
+| 54 | `fd_datasync` | Flush file data |
 | 55 | `fd_fdstat_get` | fd metadata |
+| 56 | `fd_fdstat_set_flags` | Persist `APPEND` / `NONBLOCK` |
+| 57 | `fd_fdstat_set_rights` | Rights attenuation only |
+| 58 | `fd_filestat_get` | File metadata by fd |
+| 59 | `fd_filestat_set_size` | Truncate / extend file |
+| 60 | `fd_filestat_set_times` | Update fd-backed timestamps |
 | 61 | `fd_pread` | Positional read |
 | 64 | `fd_pwrite` | Positional write |
 | 65 | `fd_read` | Read from fd |
 | 66 | `fd_readdir` | Directory listing |
+| 67 | `fd_renumber` | Move one WASI fd to another slot |
 | 68 | `fd_seek` | Seek |
+| 69 | `fd_sync` | Flush file data and metadata |
 | 70 | `fd_tell` | Tell position |
 | 71 | `fd_write` | Write to fd |
 | 72 | `path_create_directory` | `mkdir` |
 | 73 | `path_filestat_get` | `stat` |
+| 74 | `path_filestat_set_times` | Update path timestamps using Oreulius's 6-arg ABI |
+| 75 | `path_link` | Hard link using Oreulius's absolute-path ABI |
 | 76 | `path_open` | Open file |
+| 77 | `path_readlink` | Read symlink target |
 | 78 | `path_remove_directory` | `rmdir` |
+| 79 | `path_rename` | Rename path using Oreulius's 5-arg ABI |
+| 80 | `path_symlink` | Create symlink |
 | 81 | `path_unlink_file` | `unlink` |
 | **82** | **`poll_oneoff`** | Wait for I/O or timeout |
 | 83 | `proc_exit` | Terminate process |
+| 84 | `proc_raise` | Reduced Oreulius signal model |
 | 85 | `sched_yield` | Cooperative yield |
 | 86 | `random_get` | RDRAND-seeded PRNG |
 | **87** | **`sock_accept`** | Accept inbound connection |
 | 88 | `sock_recv` | Receive from socket |
 | 89 | `sock_send` | Send via socket |
-| 90 | `sock_shutdown` | Close socket direction |
+| 90 | `sock_shutdown` | Shutdown socket receive/send half |
+
+The dispatcher-owned WASI surface in `45–90` is now fully implemented. Oreulius keeps a few
+ABI-shape deviations from canonical Preview 1, notably the 5-argument `path_rename` and
+6-argument `path_filestat_set_times` forms.
 
 ### `poll_oneoff` — blocking I/O wait
 
@@ -263,9 +281,9 @@ The current IPC/service host surface is:
 - `service_invoke`
 - `service_invoke_typed`
 
-Oreulius's current runtime does not expose the old `channel_open` import from
-this guide revision; channel creation and capability distribution are mediated
-through the kernel/runtime paths described in the ABI reference.
+Oreulius uses handle-based channel allocation; channels are handed out by the
+kernel/runtime paths and wrapped by the SDK as existing handles, as described
+in the ABI reference.
 
 ---
 
@@ -439,7 +457,7 @@ for f in *.wat; do wat2wasm "$f" -o "${f%.wat}.wasm"; done
 
 The current runtime keeps the following stability rules:
 
-- WASI Preview 1 function IDs `45–90` follow the current implemented Preview 1 profile.
+- WASI Preview 1 function IDs `45–90` are frozen as a fully implemented dispatcher-owned compatibility surface.
 - Oreulius native host IDs are append-only within the current runtime surface.
 - The implemented native ranges now extend through `131`.
 - New host IDs should be allocated above the current high-water mark rather than

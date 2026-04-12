@@ -1,88 +1,62 @@
-//! Raw Oreulius-native host-function bindings.
+//! Raw Oreulius host-function bindings.
 //!
-//! These functions are **Oreulius-specific extensions** beyond WASI Preview 1.
-//! They expose the capability system, IPC channels, and process lifecycle
-//! management that make Oreulius unique.
+//! These are the frozen kernel-facing host imports in the `oreulius`
+//! namespace. The field names here mirror the canonical host table in
+//! `kernel/src/execution/wasm.rs`.
 //!
-//! Import module: `"oreulius"` (the runtime also accepts `"env"`).
-//!
-//! | ID  | Name                  | Description |
-//! |-----|-----------------------|-------------|
-//! |   0 | `capability_create`   | Allocate a new capability object |
-//! |   1 | `capability_send`     | Send a message via a capability |
-//! |   2 | `capability_recv`     | Receive a message from a capability |
-//! |   3 | `capability_drop`     | Release a capability reference |
-//! |   4 | `channel_open`        | Open a named IPC channel |
-//! |   5 | `channel_send`        | Send bytes over a channel |
-//! |   6 | `channel_recv`        | Receive bytes from a channel |
-//! |   7 | `channel_close`       | Close a channel |
-//! |  10 | `mem_map`             | Map a shared memory region |
-//! |  11 | `mem_unmap`           | Unmap a shared memory region |
-//! |  23 | `oreulius_thread_spawn`| Spawn a cooperative WASM thread |
-//! |  24 | `oreulius_thread_join` | Join a cooperative WASM thread |
-//! |  25 | `oreulius_thread_id`   | Return the current WASM thread ID |
-//! |  26 | `oreulius_thread_yield`| Yield the current CPU quantum |
-//! |  27 | `oreulius_thread_exit` | Exit the current WASM thread |
-//! | 100 | `proc_spawn`          | Spawn a child WASM process |
-//! | 101 | `proc_yield`          | Cooperatively yield the CPU |
-//! | 102 | `proc_sleep`          | Sleep for N PIT ticks (~ms) |
-//!
-//! See `docs/runtime/oreulius-wasm-abi.md` for the complete stable ABI reference.
+//! This module intentionally exposes only the raw imports; higher-level typed
+//! wrappers live in the sibling SDK modules.
 
 #[link(wasm_import_module = "oreulius")]
 extern "C" {
     // -----------------------------------------------------------------------
-    // Capability management (IDs 0–3)
+    // Core ABI (IDs 0–12)
     // -----------------------------------------------------------------------
 
-    /// Allocate a new capability object.
-    /// Returns the object ID on success, or u32::MAX on failure.
-    pub fn capability_create() -> u32;
+    /// Write a debug line to the kernel log.
+    pub fn debug_log(msg_ptr: u32, msg_len: u32);
 
-    /// Send a message to a capability.
-    /// `data_ptr` / `data_len` — payload in linear memory.
-    /// Returns 0 on success, non-zero errno on failure.
-    pub fn capability_send(cap_id: u32, data_ptr: u32, data_len: u32) -> u32;
+    /// Read bytes from a filesystem capability-backed object.
+    pub fn fs_read(cap: u32, key_ptr: u32, key_len: u32, buf_ptr: u32, buf_len: u32) -> i32;
 
-    /// Receive a pending message from a capability.
-    /// Writes up to `buf_len` bytes into `buf_ptr`.
-    /// Returns actual bytes written, or 0 if no message.
-    pub fn capability_recv(cap_id: u32, buf_ptr: u32, buf_len: u32) -> u32;
+    /// Write bytes to a filesystem capability-backed object.
+    pub fn fs_write(cap: u32, key_ptr: u32, key_len: u32, data_ptr: u32, data_len: u32) -> i32;
 
-    /// Decrement the reference count of a capability.
-    /// When the count reaches zero the kernel reclaims it.
-    pub fn capability_drop(cap_id: u32);
+    /// Send bytes over a channel capability.
+    pub fn channel_send(cap: u32, msg_ptr: u32, msg_len: u32) -> i32;
 
-    // -----------------------------------------------------------------------
-    // IPC channels (IDs 4–7)
-    // -----------------------------------------------------------------------
+    /// Receive bytes from a channel capability into `buf_ptr`.
+    pub fn channel_recv(cap: u32, buf_ptr: u32, buf_len: u32) -> i32;
 
-    /// Open a named IPC channel.
-    /// `name_ptr` / `name_len` — UTF-8 channel name in linear memory.
-    /// Returns channel handle (u32), or u32::MAX on error.
-    pub fn channel_open(name_ptr: u32, name_len: u32) -> u32;
+    /// Perform an HTTP GET request into a caller-provided buffer.
+    pub fn net_http_get(url_ptr: u32, url_len: u32, buf_ptr: u32, buf_len: u32) -> i32;
 
-    /// Send bytes over a channel.
-    /// Returns 0 on success.
-    pub fn channel_send(handle: u32, data_ptr: u32, data_len: u32) -> u32;
+    /// Open a TCP connection to `host:port`.
+    pub fn net_connect(host_ptr: u32, host_len: u32, port: u32) -> i32;
 
-    /// Receive bytes from a channel into `buf_ptr`.
-    /// Returns actual bytes written, 0 if empty.
-    pub fn channel_recv(handle: u32, buf_ptr: u32, buf_len: u32) -> u32;
+    /// Resolve a domain name to an IPv4 address.
+    pub fn dns_resolve(domain_ptr: u32, domain_len: u32) -> i32;
 
-    /// Close a channel handle.
-    pub fn channel_close(handle: u32);
+    /// Invoke a service-pointer capability with raw `u32` arguments.
+    pub fn service_invoke(cap_handle: u32, args_ptr: u32, args_count: u32) -> i32;
 
-    // -----------------------------------------------------------------------
-    // Shared memory (IDs 10–11)
-    // -----------------------------------------------------------------------
+    /// Register a callable function as a service-pointer capability.
+    pub fn service_register(func_idx: i32, delegate: i32) -> i32;
 
-    /// Map a shared memory region identified by `region_id`.
-    /// Returns the linear-memory offset of the mapped region, or u32::MAX.
-    pub fn mem_map(region_id: u32, size: u32) -> u32;
+    /// Send a channel message and optionally attach one transferable capability.
+    pub fn channel_send_cap(chan_cap: u32, msg_ptr: u32, msg_len: u32, cap: u32) -> i32;
 
-    /// Unmap a previously mapped shared memory region.
-    pub fn mem_unmap(region_id: u32);
+    /// Return the most recently imported service-pointer capability, or `-1`.
+    pub fn last_service_cap() -> i32;
+
+    /// Invoke a service-pointer capability with typed arguments/results.
+    pub fn service_invoke_typed(
+        cap_handle: u32,
+        args_ptr: u32,
+        args_count: u32,
+        results_ptr: u32,
+        results_capacity: u32,
+    ) -> i32;
 
     // -----------------------------------------------------------------------
     // Cooperative WASM threads (IDs 23–27)
@@ -153,16 +127,72 @@ extern "C" {
     /// error code if the name is not found.
     pub fn polyglot_resolve(name_ptr: i32, name_len: i32) -> i32;
 
-    /// Obtain a cross-language capability handle for a named export on a
-    /// registered polyglot service.
+    /// Obtain a cross-language capability handle for an exact named export on
+    /// a registered polyglot service.
     ///
     /// `name_ptr` / `name_len`     — name of the target module.
     /// `export_ptr` / `export_len` — name of the specific export / method.
     ///
     /// Returns a capability handle (≥ 0) on success, or a negative error
-    /// code on failure.  Pass the handle to `service_invoke`.
+    /// code on failure. The requested export name must resolve against the
+    /// target module's export table and a matching registered service pointer.
+    /// Pass the handle to `service_invoke`.
     pub fn polyglot_link(name_ptr: i32, name_len: i32,
                          export_ptr: i32, export_len: i32) -> i32;
+
+    /// Return the number of active polyglot lineage records.
+    pub fn polyglot_lineage_count() -> i32;
+
+    /// Write polyglot lineage records into linear memory.
+    ///
+    /// `buf_ptr` points to the output buffer and `buf_len` is its byte length.
+    /// Returns the number of active records written, or a negative error code.
+    pub fn polyglot_lineage_query(buf_ptr: i32, buf_len: i32) -> i32;
+
+    /// Write filtered polyglot lineage records into linear memory.
+    ///
+    /// `filter_kind` selects the predicate:
+    /// `0=all`, `1=source_pid`, `2=target_instance`, `3=lifecycle`, `4=export_name`.
+    /// When `filter_kind=4`, `filter_a` points to the export-name bytes and `filter_b`
+    /// stores the byte length.
+    pub fn polyglot_lineage_query_filtered(
+        buf_ptr: i32,
+        buf_len: i32,
+        filter_kind: i32,
+        filter_a: i32,
+        filter_b: i32,
+    ) -> i32;
+
+    /// Write the latest lineage record for a live service-pointer handle.
+    pub fn polyglot_lineage_lookup(cap_handle: i32, buf_ptr: i32, buf_len: i32) -> i32;
+
+    /// Write the latest lineage record for a persistent lineage object id.
+    pub fn polyglot_lineage_lookup_object(
+        object_lo: i32,
+        object_hi: i32,
+        buf_ptr: i32,
+        buf_len: i32,
+    ) -> i32;
+
+    /// Explicitly revoke a live service-pointer capability and record the
+    /// terminal lifecycle transition.
+    pub fn polyglot_lineage_revoke(cap_handle: i32) -> i32;
+
+    /// Rebind a live service-pointer capability to a verified compatible
+    /// replacement instance owned by the same process.
+    pub fn polyglot_lineage_rebind(cap_handle: i32, target_instance: i32) -> i32;
+
+    /// Write a compact lifecycle summary for a live service-pointer handle.
+    pub fn polyglot_lineage_status(cap_handle: i32, buf_ptr: i32, buf_len: i32) -> i32;
+
+    /// Write a compact lifecycle summary for a persistent object id.
+    pub fn polyglot_lineage_status_object(object_lo: i32, object_hi: i32, buf_ptr: i32, buf_len: i32) -> i32;
+
+    /// Write a cursor-based page of lineage records.
+    pub fn polyglot_lineage_query_page(cursor: i32, limit: i32, buf_ptr: i32, buf_len: i32) -> i32;
+
+    /// Write a cursor-based page of rebinding/revocation events.
+    pub fn polyglot_lineage_event_query(cursor: i32, limit: i32, buf_ptr: i32, buf_len: i32) -> i32;
 
     // -----------------------------------------------------------------------
     // Kernel Observer services (IDs 106–108)
@@ -171,7 +201,7 @@ extern "C" {
     /// Register this module as a kernel observer for the given `event_mask`.
     ///
     /// `event_mask` is a bitwise OR of the `observer_events::*` constants.
-    /// Returns the IPC channel ID (≥ 0) used for event delivery, or -1 if
+    /// Returns the IPC channel ID (> 0) used for event delivery, or -1 if
     /// the observer table is full, -2 if channel allocation failed, or -3
     /// if `event_mask` is zero.
     pub fn observer_subscribe(event_mask: i32) -> i32;
@@ -222,7 +252,7 @@ extern "C" {
     /// Wrap the token at `buf_ptr` (`buf_len` must be 116) in a CapNet
     /// `TokenOffer` frame and emit it toward the named peer.
     ///
-    /// Returns the frame byte-length on success, or negative on failure.
+    /// Returns the frame byte-length (> 0) on success, or negative on failure.
     pub fn mesh_token_send(peer_lo: i32, peer_hi: i32, buf_ptr: i32, buf_len: i32) -> i32;
 
     /// Export an active remote capability lease visible to this process as a
@@ -249,7 +279,7 @@ extern "C" {
     /// - `rights`        — rights bitmask.
     /// - `expires_ticks` — lifetime in 100 Hz PIT ticks.
     ///
-    /// Returns the `cap_id` (≥ 0) on success, negative on failure.
+    /// Returns the `cap_id` (> 0) on success, negative on failure.
     pub fn temporal_cap_grant(cap_type: i32, rights: i32, expires_ticks: i32) -> i32;
 
     /// Manually revoke a capability held by this process.
@@ -296,7 +326,9 @@ extern "C" {
     /// Evaluate the policy contract bound to `cap_id` against the context
     /// bytes at `ctx_ptr`/`ctx_len`.
     ///
-    /// Returns `0`=permit, `1`=deny, `-1`=no policy bound to this cap.
+    /// Returns `0`=permit, `1`=deny. Missing bindings and unsupported
+    /// contracts are denied by default; use `policy_query` to distinguish
+    /// an unbound capability from an explicit deny.
     pub fn policy_eval(cap_id: i32, ctx_ptr: i32, ctx_len: i32) -> i32;
 
     /// Write 16-byte policy metadata for `cap_id` to `buf_ptr`.
@@ -334,7 +366,7 @@ extern "C" {
     /// little-endian u32 values.  `buf_len` is the number of **u32 slots**
     /// available (not bytes).
     ///
-    /// Returns the number of entangled cap IDs written (≥ 0), or `-1` if
+    /// Returns the number of entangled cap IDs written (> 0), or `-1` if
     /// `cap_id` has no entanglements.
     pub fn cap_entangle_query(cap_id: i32, buf_ptr: i32, buf_len: i32) -> i32;
 
@@ -348,7 +380,7 @@ extern "C" {
     ///
     /// `buf_len` is the number of edge slots available (not bytes).
     ///
-    /// Returns the number of edges written (≥ 0), or `-1` if none.
+    /// Returns the number of edges written (> 0), or `-1` if none.
     pub fn cap_graph_query(cap_id: i32, buf_ptr: i32, buf_len: i32) -> i32;
 
     /// Prospectively check whether delegating `cap_id` to `delegatee_pid`

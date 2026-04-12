@@ -43,7 +43,7 @@ That path gives the fastest "aha" moment in this repo:
 [![Multiarch QEMU Smoke](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/multiarch-qemu-smoke.yml/badge.svg)](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/multiarch-qemu-smoke.yml)
 [![Proof Check](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/proof-check.yml/badge.svg)](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/proof-check.yml)
 
-[Start Here](#start-here) • [One-Minute Demo](#one-minute-demo) • [Architecture](#architecture-at-a-glance) • [Verification](#verification-status) • [Build](#build-and-run) • [Docs](#documentation-map)
+[Start Here](#start-here) • [Some Reccomended Commands to run in the kernel](#Some-Recomended-Commands-to-run-in-the-kernel) • [Architecture](#architecture-at-a-glance) • [Verification](#verification-status) • [Build](#build-and-run) • [Docs](#documentation-map)
 
 </div>
 
@@ -118,7 +118,7 @@ That changes where the system draws its hard boundaries:
 - JIT execution is paired with hardening and validation, not treated as an opaque fast path
 - verification is exposed as a discipline with artifacts, assumptions, evidence, and runnable checks
 
-## One-Minute Demo
+## Some Recomended Commands to run in the kernel
 
 If you want a minimal "show me" path before reading the rest of the repo, boot the recommended `i686` target and run:
 
@@ -221,7 +221,7 @@ These are part of the project’s technical depth, but they are not the best pla
 
 | Area | What Oreulius Does | Why It Matters |
 |---|---|---|
-| Polyglot WASM runtime | WASM modules can register and resolve cross-language type bindings at runtime (IDs 103–105). | Multiple WASM language toolchains coexist in the same process without a global type registry. |
+| Polyglot WASM runtime | WASM modules can register, resolve, link, and inspect cross-language capabilities with durable lineage tracking (IDs 103–105, 132–142). | Multiple WASM language toolchains coexist in the same process without a global type registry, while audit history stays queryable after teardown. |
 | Kernel-mesh networking | Capability tokens are minted, routed, and migrated across an in-kernel peer mesh (IDs 109–115). | Authority delegation survives process migration and cross-node transfer without re-negotiation. |
 | Observer / event bus | Host-visible capability event subscriptions with filtered delivery (IDs 106–108). | Audit and reactive policy without polling loops or extra syscalls. |
 | Temporal capability checkpoints | Capabilities carry their own temporal checkpoint; rollback rewinds both state and access rights (IDs 116–120). | A revocation that happens after a checkpoint can be replayed rather than silently accepted. |

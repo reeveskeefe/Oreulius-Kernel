@@ -30,16 +30,45 @@
 //!
 //!     let mut events = [ObserverEvent::default(); 8];
 //!     loop {
-//!         let n = observer::query(&mut events);
+//!         let n = observer::query(&mut events).expect("observer query failed");
 //!         for i in 0..n {
 //!             // act on events[i]
 //!         }
 //!         oreulius_sdk::process::yield_now();
 //!     }
 //! }
+//!
+//! // Or, if you want batch iteration:
+//! // let mut batches = observer::events();
+//! // while let Some(batch) = batches.next() { /* inspect batch.iter() */ }
 //! ```
 
 use crate::raw::oreulius;
+
+const OBSERVER_EVENT_BYTES: usize = 32;
+
+#[inline]
+fn positive_channel_id_from_rc(result: i32) -> Result<u32, i32> {
+    match result {
+        rc if rc > 0 => Ok(rc as u32),
+        rc if rc < 0 => Err(rc),
+        _ => Err(-1),
+    }
+}
+
+#[inline]
+fn event_count_from_rc(result: i32, capacity: usize) -> Result<usize, i32> {
+    if result < 0 {
+        return Err(result);
+    }
+
+    let count = result as usize;
+    if count > capacity {
+        Err(-2)
+    } else {
+        Ok(count)
+    }
+}
 
 // ── Event mask constants ─────────────────────────────────────────────────────
 
@@ -67,7 +96,8 @@ pub const ALL:               u32 = 0x0000_003F;
 ///   `[4..7]`  `field_a: u32 LE`  (meaning is event-specific)
 ///   `[8..11]` `field_b: u32 LE`  (meaning is event-specific)
 ///   `[12..31]` reserved / zero
-#[derive(Clone, Copy, Default, Debug)]
+#[must_use]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct ObserverEvent {
     /// Event type — one of the `CAPABILITY_OP` / `ANOMALY_DETECTED` / … constants.
@@ -104,41 +134,145 @@ impl ObserverEvent {
 /// Register this WASM module as a kernel observer for the events described
 /// by `event_mask` (a bitwise OR of the mask constants above).
 ///
-/// Returns the IPC channel ID used for event delivery on success, or `None`
-/// if the kernel observer table is full or an error occurred.
-pub fn subscribe(event_mask: u32) -> Option<u32> {
+/// Returns the observer IPC channel ID on success or the kernel error code
+/// on failure.
+#[must_use]
+pub fn subscribe(event_mask: u32) -> Result<u32, i32> {
     let result = unsafe { oreulius::observer_subscribe(event_mask as i32) };
-    if result >= 0 {
-        Some(result as u32)
-    } else {
-        None
-    }
+    positive_channel_id_from_rc(result)
 }
 
 /// Deregister this WASM module as a kernel observer and release its delivery
-/// channel.  Returns `true` on success.
-pub fn unsubscribe() -> bool {
+/// channel.
+#[must_use]
+pub fn unsubscribe() -> Result<(), i32> {
     let result = unsafe { oreulius::observer_unsubscribe() };
-    result == 0
+    if result == 0 { Ok(()) } else { Err(result) }
 }
 
 /// Drain pending kernel events into the provided `events` slice.
 ///
 /// Decodes up to `events.len()` events from the caller's observer channel
 /// and writes them into `events`.  Returns the number of events actually
-/// written.  Returns `0` if there are no pending events or if the caller is
-/// not subscribed.
-pub fn query(events: &mut [ObserverEvent]) -> usize {
+/// written.  Returns `Ok(0)` when there are no pending events.
+#[must_use]
+pub fn query(events: &mut [ObserverEvent]) -> Result<usize, i32> {
     if events.is_empty() {
-        return 0;
+        return Ok(0);
     }
     // The raw buffer must be `events.len() * 32` bytes.
     let buf_ptr  = events.as_mut_ptr() as i32;
-    let buf_len  = (events.len() * 32) as i32;
+    let buf_len  = (events.len() * OBSERVER_EVENT_BYTES) as i32;
     let result   = unsafe { oreulius::observer_query(buf_ptr, buf_len) };
-    if result < 0 {
-        0
-    } else {
-        result as usize
+    event_count_from_rc(result, events.len())
+}
+
+/// A fixed-capacity batch of observer events.
+#[must_use]
+#[derive(Clone, Copy)]
+pub struct ObserverEventBatch {
+    events: [ObserverEvent; 32],
+    len: usize,
+}
+
+impl ObserverEventBatch {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    #[inline]
+    pub fn iter(&self) -> core::slice::Iter<'_, ObserverEvent> {
+        self.events[..self.len].iter()
+    }
+}
+
+/// Iterator that drains observer events in fixed-size batches.
+pub struct ObserverEventIter {
+    finished: bool,
+}
+
+impl ObserverEventIter {
+    #[inline]
+    pub const fn new() -> Self {
+        Self { finished: false }
+    }
+}
+
+impl Iterator for ObserverEventIter {
+    type Item = Result<ObserverEventBatch, i32>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        let mut events = [ObserverEvent::default(); 32];
+        match query(&mut events) {
+            Ok(0) => {
+                self.finished = true;
+                None
+            }
+            Ok(len) => {
+                let batch = ObserverEventBatch { events, len };
+                if batch.is_empty() {
+                    self.finished = true;
+                }
+                Some(Ok(batch))
+            }
+            Err(err) => Some(Err(err)),
+        }
+    }
+}
+
+/// Return an iterator that drains observer events batch-by-batch.
+///
+/// This is a convenience wrapper over [`query`] that presents the observer
+/// bus as a cursorless batch iterator.
+#[inline]
+pub fn events() -> ObserverEventIter {
+    ObserverEventIter::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positive_channel_id_from_rc_rejects_zero_and_preserves_errors() {
+        assert_eq!(positive_channel_id_from_rc(7), Ok(7));
+        assert_eq!(positive_channel_id_from_rc(0), Err(-1));
+        assert_eq!(positive_channel_id_from_rc(-3), Err(-3));
+    }
+
+    #[test]
+    fn event_count_from_rc_rejects_negative_and_overlarge_counts() {
+        assert_eq!(event_count_from_rc(0, 4), Ok(0));
+        assert_eq!(event_count_from_rc(3, 4), Ok(3));
+        assert_eq!(event_count_from_rc(-1, 4), Err(-1));
+        assert_eq!(event_count_from_rc(5, 4), Err(-2));
+    }
+
+    #[test]
+    fn observer_event_decodes_the_first_three_words() {
+        let bytes = [
+            1, 0, 0, 0,
+            2, 0, 0, 0,
+            3, 0, 0, 0,
+            9, 9, 9, 9,
+            8, 8, 8, 8,
+            7, 7, 7, 7,
+            6, 6, 6, 6,
+            5, 5, 5, 5,
+        ];
+        let event = ObserverEvent::from_bytes(&bytes);
+        assert_eq!(event.event_type, 1);
+        assert_eq!(event.field_a, 2);
+        assert_eq!(event.field_b, 3);
     }
 }

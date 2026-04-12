@@ -1,6 +1,6 @@
 # Oreulius — Wasm ABI (Host Interface)
 
-**Status:** Implemented / JIT-Native (Feb 8, 2026)
+**Status:** Implemented / Frozen (Apr 10, 2026)
 
 Oreulius is Wasm-native: applications run as WebAssembly modules. Unlike typical "Wasm on generic OS" approaches, Oreulius compiles Wasm modules directly to x86 kernel-mode code (Ring 0) or user-mode code (Ring 3) via an **In-Kernel JIT**.
 
@@ -35,7 +35,7 @@ Modules import kernel functionality from the `oreulius` namespace.
 A module **must** export an entry point:
 - `_start` or `oreulius_main`: The function called by the supervisor after instantiation.
 
-### 2.3 Syscall Loader Profile (Current)
+### 2.3 Syscall Loader Profile (Frozen)
 For `WasmLoad`/`WasmCall` syscall execution, the kernel now enforces strict binary-module validation:
 - Requires standard WASM header/version (`\0asm`, `0x01`).
 - Requires canonical section ordering.
@@ -135,7 +135,10 @@ Notes:
 
 Oreulius allows WASM modules written in **any** language to be registered as
 named kernel services and to call each other securely via capability handoffs,
-even across language boundaries.
+even across language boundaries. The exact-export link surface remains at
+IDs `103–105`; durable lineage, status, pagination, revoke/rebind, and event
+feed control are documented in the polyglot lineage ABI range below
+(`132–142`).
 
 #### `oreulius_lang` Custom Section
 
@@ -184,7 +187,9 @@ Offset  Size  Field
 - `polyglot_link(name_ptr: i32, name_len: i32, export_ptr: i32, export_len: i32) -> i32`  
   Obtain a cross-language `ServicePointer` capability handle for a specific
   export on a registered service.  Pass the returned handle to
-  `service_invoke` / `service_invoke_typed`.  
+  `service_invoke` / `service_invoke_typed`. The requested export must resolve
+  against the target module's export table and a matching registered service
+  pointer.
   Returns capability handle (≥ 0) on success, or a negative error code.
 
 **Error codes:**
@@ -195,7 +200,7 @@ Offset  Size  Field
 |  ≥ 0 | Instance ID (`polyglot_resolve`) or capability handle (`polyglot_link`) |
 |  -1  | Bad arguments (null pointer, zero length, name > 32 bytes) |
 |  -2  | Registry full (`polyglot_register`) or name not found (`polyglot_resolve` / `polyglot_link`) |
-|  -3  | Name taken by a non-singleton module (`polyglot_register`) or service has no registered export (`polyglot_link`) |
+|  -3  | Name taken by a non-singleton module (`polyglot_register`) or the requested export is missing or not service-registered (`polyglot_link`) |
 |  -4  | Capability table full (`polyglot_link`) |
 
 **Capability type**: Links created by `polyglot_link` carry a `CrossLanguage`
@@ -209,11 +214,111 @@ for the Python singleton, slot 1 for the JavaScript singleton (by convention).
 **SDK**: Use `oreulius_sdk::polyglot` for idiomatic Rust wrappers:
 ```rust
 // Service side
-oreulius_sdk::polyglot::register("py_math");
+oreulius_sdk::polyglot::register("py_math").unwrap();
 
 // Client side
 let cap = oreulius_sdk::polyglot::link("py_math", "add").unwrap();
 ```
+
+#### Polyglot lineage query ABI
+
+The kernel also exposes a durable lineage query surface:
+
+- `polyglot_lineage_count() -> i32`
+- `polyglot_lineage_query(buf_ptr: i32, buf_len: i32) -> i32`
+- `polyglot_lineage_query_filtered(buf_ptr: i32, buf_len: i32, filter_kind: i32, filter_a: i32, filter_b: i32) -> i32`
+- `polyglot_lineage_lookup(cap_handle: i32, buf_ptr: i32, buf_len: i32) -> i32`
+- `polyglot_lineage_lookup_object(object_lo: i32, object_hi: i32, buf_ptr: i32, buf_len: i32) -> i32`
+- `polyglot_lineage_revoke(cap_handle: i32) -> i32`
+- `polyglot_lineage_rebind(cap_handle: i32, target_instance: i32) -> i32`
+- `polyglot_lineage_status(cap_handle: i32, buf_ptr: i32, buf_len: i32) -> i32`
+- `polyglot_lineage_status_object(object_lo: i32, object_hi: i32, buf_ptr: i32, buf_len: i32) -> i32`
+- `polyglot_lineage_query_page(cursor: i32, limit: i32, buf_ptr: i32, buf_len: i32) -> i32`
+- `polyglot_lineage_event_query(cursor: i32, limit: i32, buf_ptr: i32, buf_len: i32) -> i32`
+
+These host functions are implemented at IDs `132` through `142`.
+
+`polyglot_lineage_count` returns the number of lineage records currently retained by the kernel. `polyglot_lineage_query` writes a packed snapshot into caller memory:
+
+This keeps the audit trail easy to read while the live handle stays separate.
+
+```
+Offset  Size  Field
+──────  ────  ───────────────────────────────────────────────
+  0       1   Wire version (`u8`, currently 1)
+  1       1   Record count (`u8`)
+  2       2   Max records (`u16`, currently 64)
+  4       4   Next record id (`u32`, low 32 bits)
+  8     96*n  Packed lineage records
+```
+
+Each 96-byte record is encoded as:
+
+```
+Offset  Size  Field
+──────  ────  ───────────────────────────────────────────────
+  0       1   Live flag (`u8`, 1 = live handle at query time)
+  1       1   Lifecycle state (`u8`)
+  2       2   Reserved
+  4       8   Record id (`u64`)
+ 12       4   Source pid (`u32`)
+ 16       4   Source instance (`u32`)
+ 20       4   Target instance (`u32`)
+ 24       8   Object id (`u64`)
+ 32       4   Capability id (`u32`)
+ 36       1   Language tag (`u8`)
+ 37       1   Export-name length (`u8`)
+ 38      32   Export name bytes
+ 70       4   Rights bitmask (`u32`)
+ 74       8   Created ticks (`u64`)
+ 82       8   Updated ticks (`u64`)
+ 90       6   Reserved
+```
+
+The query is intentionally read-only: it exposes durable provenance for audit and replay, but does not grant authority. Terminal records remain queryable after teardown with lifecycle `TornDown`.
+
+`polyglot_lineage_query_filtered` uses a simple selector model:
+
+- `0` = all records
+- `1` = match `source_pid` against `filter_a`
+- `2` = match `target_instance` against `filter_a`
+- `3` = match `lifecycle` against `filter_a`
+- `4` = match exact export name; `filter_a` points to the bytes and `filter_b` is the byte length
+
+`polyglot_lineage_lookup` and `polyglot_lineage_lookup_object` return the latest lineage record for a specific live handle or persistent object id, which makes rebind and revocation state inspectable without scanning the whole history.
+
+`polyglot_lineage_revoke` is the explicit terminal transition: it removes the live capability from the caller's table and marks the durable record `Revoked`. `polyglot_lineage_rebind` is the explicit retargeting transition: it verifies a caller-selected replacement instance with the same owner, export name, and signature before moving the handle and marking the durable record `Rebound`.
+
+`polyglot_lineage_status` and `polyglot_lineage_status_object` return a compact summary that carries:
+
+- current lifecycle
+- current target instance
+- last update tick
+- live-authority flag
+
+`polyglot_lineage_query_page` returns a cursor-based page of lineage records with the same 96-byte record shape as the full snapshot query. The `cursor` is a record-id watermark: only records with `record_id > cursor` are returned. This makes audit walks incremental instead of full-table scans.
+
+SDK usage is intentionally shaped as a plain Rust loop:
+
+```rust,no_run
+let mut pages = oreulius_sdk::polyglot::lineage_pages(16);
+while let Some(page) = pages.next() {
+    let page = page.expect("lineage page");
+    for record in page.iter() {
+        let _ = record.record_id;
+    }
+}
+
+let mut events = oreulius_sdk::polyglot::lineage_events(16);
+while let Some(batch) = events.next() {
+    let batch = batch.expect("lineage events");
+    for event in batch.iter() {
+        let _ = event.event_id;
+    }
+}
+```
+
+`polyglot_lineage_event_query` returns an append-only feed of `Rebound` and `Revoked` transition events. The event stream uses the same header form as lineage snapshots, but each record is a compact transition record instead of a full provenance record. Each event includes both the new lifecycle and the previous lifecycle so callers can diff the transition directly.
 
 ### 4.7 Temporal Objects ABI
 - `temporal_snapshot(cap: i32, path_ptr: i32, path_len: i32, out_meta_ptr: i32) -> i32`:
@@ -336,12 +441,12 @@ functions return `i32`; negative values indicate failure. Sessions are identifie
 
 ---
 
-### 4.8 Extended Runtime Services (Host IDs 106–131)
+### 4.8 Extended Runtime Services (Host IDs 106–142)
 
 The production runtime also exposes additional host ranges beyond the core
 process/TLS/polyglot surface documented above.
 
-| Host IDs | Category | Current surface |
+| Host IDs | Category | Frozen surface |
 |----------|----------|-----------------|
 | 106–108 | Kernel observer | `observer_subscribe`, `observer_unsubscribe`, `observer_query` |
 | 109–115 | Decentralized kernel mesh | `mesh_local_id`, `mesh_peer_register`, `mesh_peer_session`, `mesh_token_mint`, `mesh_token_send`, `mesh_token_recv`, `mesh_migrate` |
@@ -349,9 +454,35 @@ process/TLS/polyglot surface documented above.
 | 121–124 | Policy contracts | `policy_bind`, `policy_unbind`, `policy_eval`, `policy_query` |
 | 125–128 | Capability entanglement | `cap_entangle`, `cap_entangle_group`, `cap_disentangle`, `cap_entangle_query` |
 | 129–131 | Capability graph verification | `cap_graph_query`, `cap_graph_verify`, `cap_graph_depth` |
+| 132–142 | Polyglot lineage query and transition control | `polyglot_lineage_count`, `polyglot_lineage_query`, `polyglot_lineage_query_filtered`, `polyglot_lineage_lookup`, `polyglot_lineage_lookup_object`, `polyglot_lineage_revoke`, `polyglot_lineage_rebind`, `polyglot_lineage_status`, `polyglot_lineage_status_object`, `polyglot_lineage_query_page`, `polyglot_lineage_event_query` |
 
-These ranges are implemented in the current WASM host dispatcher in
-[kernel/src/execution/wasm.rs](/Users/keefereeves/Desktop/OreuliusKernel/TheActualKernelProject/oreulius/kernel/src/execution/wasm.rs). This document keeps the detailed wire layouts for the more commonly consumed host families above; for the extended ranges, the code is the current authority until dedicated per-service ABI docs are split out.
+These ranges are implemented in the frozen WASM host dispatcher in
+[kernel/src/execution/wasm.rs](/Users/keefereeves/Desktop/OreuliusKernel/TheActualKernelProject/oreulius/kernel/src/execution/wasm.rs). This document mirrors the frozen table for host IDs, names, arity, aliases, and result shapes. Any future per-service ABI docs must be generated from the same source of truth.
+
+### 4.9 ABI family modes
+
+Different ABI families are intentionally shaped around different primary access patterns:
+
+| Family | Primary mode | Notes |
+|--------|--------------|-------|
+| Temporal | status-first | `cap_check`, checkpointing, and rollback expose live state and replay state. |
+| Policy | status-first | `query` / `status` describe the current binding; `eval` is the enforcement path. |
+| Capability entanglement | query-first | `cap_entangle_query` describes the current peer set; revocation is the control path. |
+| Capability graph | query-and-verify | `cap_graph_query`, `cap_graph_verify`, and `cap_graph_depth` focus on audit and prospective safety. |
+| Observer | event-first | `observer_query` drains a stream of delivered kernel events. |
+| Polyglot lineage | snapshot/status/event | `query`, `query_page`, `status`, `event_query`, revoke, and rebind expose audit, terminal state, and transition history. |
+
+### 4.10 Polyglot invariants
+
+The polyglot subsystem is specified by a small set of invariants:
+
+1. `authority(c, t) ⇒ lineage(c, t)`: every live cross-language capability must have a corresponding lineage record.
+2. `lineage(c, t) ⇏ authority(c, t)`: a lineage record alone never grants authority.
+3. `rights_out ≤ rights_in`: cross-language link creation must not widen rights.
+4. `teardown(c) ⇒ lifecycle(c) = TornDown`: teardown removes live authority and preserves a terminal record for audit.
+5. `restore(G) = G`: snapshot/restore must preserve the lineage graph modulo explicitly revoked or torn-down edges.
+
+For implementers, the kernel treats these as runtime checks rather than purely documentary claims.
 
 ---
 

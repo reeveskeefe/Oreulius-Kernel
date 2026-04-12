@@ -19,9 +19,10 @@
 //! ## Full WASM contracts
 //!
 //! A 4 KiB WASM bytecode blob can be bound with [`bind`].  The kernel will
-//! invoke the contract synchronously when [`eval`] is called.  In the current
-//! implementation full-WASM contracts **fail-open** (permit) when the
-//! contract interpreter is not yet wired in; use OPOL stubs for hard denials.
+//! invoke the contract synchronously when [`eval`] is called.  Full-WASM
+//! contracts are **deny-by-default** until a real contract interpreter is
+//! wired in; use [`query`] if you need to distinguish a missing binding from
+//! an explicit deny.
 //!
 //! ## Example
 //!
@@ -48,8 +49,14 @@ pub enum PolicyResult {
     Permit,
     /// The policy explicitly denies the operation.
     Deny,
-    /// No policy is bound to this capability (fail-open: treated as permit).
-    NoPolicyBound,
+}
+
+impl PolicyResult {
+    /// Returns `true` when the policy explicitly permits the operation.
+    #[inline]
+    pub fn permits(self) -> bool {
+        matches!(self, PolicyResult::Permit)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -112,8 +119,9 @@ pub fn unbind(cap_id: u32) -> Result<(), i32> {
 /// `ctx` is arbitrary caller-defined context bytes passed to the contract.
 /// For OPOL stubs the first byte is compared against the configured value.
 ///
-/// Returns [`PolicyResult::NoPolicyBound`] (fail-open) when no contract is
-/// bound.
+/// Returns [`PolicyResult::Deny`] when no contract is bound or the host
+/// reports an error. Use [`query`] if you need to distinguish an unbound
+/// capability from an explicit deny.
 #[inline]
 pub fn eval(cap_id: u32, ctx: &[u8]) -> PolicyResult {
     let rc = unsafe {
@@ -126,7 +134,7 @@ pub fn eval(cap_id: u32, ctx: &[u8]) -> PolicyResult {
     match rc {
         0  => PolicyResult::Permit,
         1  => PolicyResult::Deny,
-        _  => PolicyResult::NoPolicyBound,
+        _  => PolicyResult::Deny,
     }
 }
 
@@ -151,6 +159,13 @@ pub fn query(cap_id: u32) -> Option<PolicyInfo> {
     let bound    = buf[10] != 0;
     let cap_id_r = u32::from_le_bytes(buf[12..16].try_into().ok()?);
     Some(PolicyInfo { hash, wasm_len, bound, cap_id: cap_id_r })
+}
+
+/// Alias for [`query`], used to keep policy aligned with the shared ABI
+/// status vocabulary.
+#[inline]
+pub fn status(cap_id: u32) -> Option<PolicyInfo> {
+    query(cap_id)
 }
 
 // ---------------------------------------------------------------------------

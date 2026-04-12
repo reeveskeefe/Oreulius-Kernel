@@ -448,14 +448,15 @@ let my_id: u32 = mesh::local_id();
 
 // 2. Register a remote peer (discovered via mDNS, CapNet beacon, or out-of-band)
 let remote_peer: u64 = 0xDEAD_BEEF_CAFE_0001;
-let registered: bool = mesh::peer_register(remote_peer, /*enforce=*/true);
+mesh::peer_register(remote_peer, /*enforce=*/true)
+    .expect("peer_register failed");
 
 // 3. Check session status (optional — session established out-of-band via Hello/Attest)
 match mesh::peer_session(remote_peer) {
-    Some(epoch) if epoch >= 1 => { /* active session */ }
-    Some(0)                   => { /* registered, no session yet */ }
-    None                      => { /* unknown peer */ }
-    _ => {}
+    Ok(mesh::PeerSession::Active(epoch)) => { let _ = epoch; /* active session */ }
+    Ok(mesh::PeerSession::Inactive)      => { /* registered, no session yet */ }
+    Err(-1)                              => { /* unknown peer */ }
+    Err(code)                            => panic!("peer_session failed: {code}"),
 }
 
 // 4. Mint a capability token

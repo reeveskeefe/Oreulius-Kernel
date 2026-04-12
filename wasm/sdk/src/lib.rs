@@ -6,10 +6,12 @@
 //!
 //! Oreulius exposes two sets of host functions to WASM modules:
 //!
-//! 1. **WASI Preview 1** (IDs 45–90) — standard `wasi_snapshot_preview1`
-//!    functions: file I/O, clocks, sockets, environment, etc.
-//! 2. **Oreulius native ABI** (IDs 0–44, 100–108) — capability messaging,
-//!    process management, IPC channels, JIT-compiled capabilities,
+//! 1. **WASI Preview 1-shaped surface** (IDs 45–90) — frozen kernel imports
+//!    exposed through the `oreulius` host namespace: file I/O, clocks,
+//!    sockets, environment, etc.
+//! 2. **Oreulius native ABI** (IDs 0–44, 100–142) — capability messaging,
+//!    process management, IPC channels, service-pointer helpers,
+//!    JIT-compiled capabilities,
 //!    cross-language polyglot kernel services, and kernel observer events.
 //!
 //! This crate wraps both in safe-ish Rust types so you can write Oreulius
@@ -54,6 +56,9 @@
 // Pull in core + (optionally) alloc.
 extern crate core;
 
+#[cfg(test)]
+extern crate std;
+
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
@@ -67,6 +72,7 @@ pub mod fs;
 pub mod io;
 pub mod ipc;
 pub mod mesh;
+pub mod service;
 pub mod net;
 pub mod observer;
 pub mod policy;
@@ -116,5 +122,31 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     #[cfg(not(target_arch = "wasm32"))]
     loop {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod abi_shape_tests {
+    use std::fs;
+
+    #[test]
+    fn runtime_abi_doc_contains_the_current_host_ranges() {
+        let doc = fs::read_to_string("../../docs/runtime/oreulia-wasm-abi.md")
+            .expect("runtime ABI doc should be readable from the SDK crate");
+
+        for needle in [
+            "### 4.8 Extended Runtime Services (Host IDs 106–142)",
+            "| 106–108 | Kernel observer | `observer_subscribe`, `observer_unsubscribe`, `observer_query` |",
+            "| 116–120 | Temporal capabilities / checkpoints",
+            "| 121–124 | Policy contracts",
+            "| 125–128 | Capability entanglement",
+            "| 129–131 | Capability graph verification",
+            "| 132–142 | Polyglot lineage query and transition control",
+        ] {
+            assert!(
+                doc.contains(needle),
+                "expected ABI doc to contain `{needle}`"
+            );
+        }
     }
 }

@@ -386,7 +386,7 @@ pub fn execute(input: &str) {
             );
             vga::print_str("  capnet-fuzz-soak - Repeat CapNet corpus replay (capnet-fuzz-soak <iters> <rounds>)\n");
             vga::print_str(
-                "  formal-verify - Run runtime verification self-checks (JIT + capability + CapNet)\n",
+                "  formal-verify - Run runtime verification self-checks (dispatcher + WASI + JIT + capability + CapNet)\n",
             );
             vga::print_str("  wasm-jit-on  - Enable WASM JIT\n");
             vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
@@ -8105,7 +8105,130 @@ fn cmd_wasm_jit_selftest() {
 
 fn cmd_formal_verify() {
     crate::drivers::x86::vga::print_str("\n===== Formal Verification =====\n\n");
-    crate::drivers::x86::vga::print_str("Formal verification checks: PASSED\n");
+
+    match wasm::formal_host_dispatch_self_check() {
+        Ok(summary) => {
+            vga::print_str("Host dispatcher self-check: PASSED (");
+            print_u32(summary.entries_checked);
+            vga::print_str(" entries, ");
+            print_u32(summary.aliases_checked);
+            vga::print_str(" aliases, ");
+            print_u32(summary.noop_entries);
+            vga::print_str(" no-ops)\n");
+        }
+        Err(e) => {
+            vga::print_str("Host dispatcher self-check: FAILED: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    match wasm::formal_wasi_preview1_self_check() {
+        Ok(summary) => {
+            vga::print_str("WASI Preview 1 ABI self-check: PASSED (");
+            print_u32(summary.entries_checked);
+            vga::print_str(" entries, ");
+            print_u32(summary.noop_entries);
+            vga::print_str(" frozen no-ops, ");
+            print_u32(summary.noop_behavior_checks);
+            vga::print_str(" frozen behavior checks, ");
+            print_u32(summary.implemented_behavior_checks);
+            vga::print_str(" implemented behavior checks)\n");
+        }
+        Err(e) => {
+            vga::print_str("WASI Preview 1 ABI self-check: FAILED: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    match wasm::formal_polyglot_abi_self_check() {
+        Ok(summary) => {
+            vga::print_str("Polyglot ABI self-check: PASSED (");
+            print_u32(summary.entries_checked);
+            vga::print_str(" entries, ");
+            print_u32(summary.behavior_checks);
+            vga::print_str(" behavior checks)\n");
+        }
+        Err(e) => {
+            vga::print_str("Polyglot ABI self-check: FAILED: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    match crate::execution::wasm_jit::formal_translation_self_check() {
+        Ok(()) => vga::print_str("WASM translation self-check: PASSED\n"),
+        Err(e) => {
+            vga::print_str("WASM translation self-check: FAILED: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    match crate::capability::formal_capability_self_check() {
+        Ok(()) => vga::print_str("Capability self-check: PASSED\n"),
+        Err(e) => {
+            vga::print_str("Capability self-check: FAILED: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    match crate::execution::wasm::formal_service_pointer_conformance_self_check() {
+        Ok(summary) => {
+            vga::print_str("Service pointer self-check: PASSED (");
+            print_u32(summary.delegate_checks);
+            vga::print_str(" delegate, ");
+            print_u32(summary.import_checks);
+            vga::print_str(" import, ");
+            print_u32(summary.invoke_checks);
+            vga::print_str(" invoke, ");
+            print_u32(summary.revoke_checks);
+            vga::print_str(" revoke, ");
+            print_u32(summary.typed_checks);
+            vga::print_str(" typed)\n");
+        }
+        Err(e) => {
+            vga::print_str("Service pointer self-check: FAILED: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    match crate::net::capnet::formal_capnet_self_check() {
+        Ok(()) => vga::print_str("CapNet self-check: PASSED\n"),
+        Err(e) => {
+            vga::print_str("CapNet self-check: FAILED: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    match crate::security::formal::run_mechanized_backend_check() {
+        Ok(summary) => {
+            vga::print_str("Mechanized backend check: PASSED (");
+            print_u32(summary.obligations);
+            vga::print_str(" obligations, ");
+            print_u32(summary.checked_states as u32);
+            vga::print_str(" states)\n");
+        }
+        Err(e) => {
+            vga::print_str("Mechanized backend check: FAILED: ");
+            vga::print_str(e);
+            vga::print_str("\n");
+            return;
+        }
+    }
+
+    crate::drivers::x86::vga::print_str("\nFormal verification checks: PASSED\n");
 }
 
 struct SharedJitUserMode {

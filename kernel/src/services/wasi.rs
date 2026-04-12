@@ -1,17 +1,22 @@
-//! # CapabilityWASI — WASI Preview 1 ABI over Oreulius Capabilities
+//! # CapabilityWASI — Frozen WASI Preview 1 Compatibility over Oreulius Capabilities
 //!
-//! Maps the full [WASI Preview 1](https://github.com/WebAssembly/WASI/blob/main/legacy/preview1/docs.md)
-//! syscall ABI onto Oreulius's capability-based kernel services, enabling
-//! musl-libc, WASI-SDK, and Emscripten binaries to run unmodified.
+//! Implements the dispatcher-owned [WASI Preview 1](https://github.com/WebAssembly/WASI/blob/main/legacy/preview1/docs.md)
+//! compatibility surface for host IDs `45–90`, enabling musl-libc, WASI-SDK,
+//! and Emscripten binaries to run against Oreulius's capability-based kernel
+//! services.
 //!
 //! ## Design
 //!
 //! - Every WASI function is a plain `fn(&mut WasiCtx, ...) -> Errno`.
-//! - `WasiCtx` holds per-instance state: fd table, preopened dirs, clock offset.
+//! - `WasiCtx` holds per-instance state: fd table, preopened dirs, argv, PRNG,
+//!   and exit state.
 //! - All I/O is routed through `crate::capability`, `crate::fs`, and `crate::net::rtl8139`.
-//! - No heap allocations in the hot path — all tables are fixed-size arrays.
+//! - Fixed-size fd and preopen tables; some path-backed metadata and resize
+//!   operations may materialize temporary file buffers.
+//! - The authoritative guest-visible exposure surface is the host dispatcher
+//!   table in `kernel/src/execution/wasm.rs`.
 //!
-//! ## WASM Host Function IDs (45–99)
+//! ## WASM Host Function IDs (45–90)
 //!
 //! | ID  | WASI name                   | Notes |
 //! |-----|-----------------------------|-------|
@@ -21,48 +26,58 @@
 //! | 48  | `environ_sizes_get`         | |
 //! | 49  | `clock_res_get`             | |
 //! | 50  | `clock_time_get`            | |
-//! | 51  | `fd_advise`                 | no-op |
-//! | 52  | `fd_allocate`               | no-op |
+//! | 51  | `fd_advise`                 | advisory hint validation |
+//! | 52  | `fd_allocate`               | ensure file capacity |
 //! | 53  | `fd_close`                  | |
-//! | 54  | `fd_datasync`               | no-op |
+//! | 54  | `fd_datasync`               | flush file data |
 //! | 55  | `fd_fdstat_get`             | |
-//! | 56  | `fd_fdstat_set_flags`       | no-op |
-//! | 57  | `fd_fdstat_set_rights`      | no-op |
+//! | 56  | `fd_fdstat_set_flags`       | persist `APPEND` / `NONBLOCK` |
+//! | 57  | `fd_fdstat_set_rights`      | rights attenuation |
 //! | 58  | `fd_filestat_get`           | |
-//! | 59  | `fd_filestat_set_size`      | no-op |
-//! | 60  | `fd_filestat_set_times`     | no-op |
+//! | 59  | `fd_filestat_set_size`      | truncate / extend file |
+//! | 60  | `fd_filestat_set_times`     | update fd timestamps |
 //! | 61  | `fd_pread`                  | |
 //! | 62  | `fd_prestat_get`            | |
 //! | 63  | `fd_prestat_dir_name`       | |
 //! | 64  | `fd_pwrite`                 | |
 //! | 65  | `fd_read`                   | |
 //! | 66  | `fd_readdir`                | |
-//! | 67  | `fd_renumber`               | |
+//! | 67  | `fd_renumber`               | move one WASI fd to another slot |
 //! | 68  | `fd_seek`                   | |
-//! | 69  | `fd_sync`                   | no-op |
+//! | 69  | `fd_sync`                   | flush file data and metadata |
 //! | 70  | `fd_tell`                   | |
 //! | 71  | `fd_write`                  | |
 //! | 72  | `path_create_directory`     | |
 //! | 73  | `path_filestat_get`         | |
-//! | 74  | `path_filestat_set_times`   | no-op |
-//! | 75  | `path_link`                 | no-op |
+//! | 74  | `path_filestat_set_times`   | update path timestamps |
+//! | 75  | `path_link`                 | |
 //! | 76  | `path_open`                 | |
-//! | 77  | `path_readlink`             | no-op |
+//! | 77  | `path_readlink`             | |
 //! | 78  | `path_remove_directory`     | |
-//! | 79  | `path_rename`               | no-op |
-//! | 80  | `path_symlink`              | no-op |
+//! | 79  | `path_rename`               | |
+//! | 80  | `path_symlink`              | |
 //! | 81  | `path_unlink_file`          | |
 //! | 82  | `poll_oneoff`               | |
 //! | 83  | `proc_exit`                 | |
-//! | 84  | `proc_raise`                | no-op |
+//! | 84  | `proc_raise`                | reduced Oreulius signal model |
 //! | 85  | `sched_yield`               | |
 //! | 86  | `random_get`                | RDRAND-seeded PRNG |
 //! | 87  | `sock_accept`               | |
 //! | 88  | `sock_recv`                 | |
 //! | 89  | `sock_send`                 | |
 //! | 90  | `sock_shutdown`             | |
+//!
+//! The dispatcher-owned WASI Preview 1 compatibility surface in `45–90` is
+//! fully implemented. Oreulius keeps a few ABI-shape deviations from canonical
+//! Preview 1, such as the 5-argument `path_rename` and 6-argument
+//! `path_filestat_set_times` forms.
 
 #![allow(dead_code)]
+
+extern crate alloc;
+
+use alloc::vec;
+use alloc::vec::Vec;
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -217,6 +232,43 @@ pub type Fd = u32;
 pub type Filesize = u64;
 pub type Timestamp = u64; // nanoseconds
 
+pub mod oflags {
+    pub const CREAT: u16 = 0x01;
+    pub const DIRECTORY: u16 = 0x02;
+    pub const EXCL: u16 = 0x04;
+    pub const TRUNC: u16 = 0x08;
+}
+
+pub mod fdflags {
+    pub const APPEND: u16    = 0x01;
+    pub const NONBLOCK: u16  = 0x02;
+    pub const SUPPORTED: u16 = APPEND | NONBLOCK; // = 0x0003
+
+    // ABI freeze: SUPPORTED must remain 0x0003 so that the formal-verify probe
+    // 0x40 (bit 6) always lands in the unsupported mask. Any intentional
+    // expansion of supported flags must also update the probe in
+    // formal_wasi_behavior_check_fd_fdstat_set_flags.
+    const _FREEZE: () = assert!(
+        SUPPORTED == 0x0003,
+        "fdflags::SUPPORTED drifted from ABI freeze 0x0003",
+    );
+}
+
+pub mod fstflags {
+    pub const ATIM: u32 = 1 << 0;
+    pub const ATIM_NOW: u32 = 1 << 1;
+    pub const MTIM: u32 = 1 << 2;
+    pub const MTIM_NOW: u32 = 1 << 3;
+}
+
+pub mod rights {
+    pub const FD_READ: u64 = 1 << 0;
+    pub const FD_WRITE: u64 = 1 << 1;
+    pub const FD_SEEK: u64 = 1 << 2;
+    pub const FD_TELL: u64 = 1 << 3;
+    pub const ALL: u64 = u64::MAX;
+}
+
 /// WASI fd_fdstat — stat for an open fd.
 #[derive(Copy, Clone, Default)]
 #[repr(C)]
@@ -276,6 +328,14 @@ pub mod filetype {
     pub const SYMBOLIC_LINK: u8 = 7;
 }
 
+fn vfs_entry_filetype(kind: crate::fs::vfs::InodeKind) -> u8 {
+    match kind {
+        crate::fs::vfs::InodeKind::File => filetype::REGULAR_FILE,
+        crate::fs::vfs::InodeKind::Directory => filetype::DIRECTORY,
+        crate::fs::vfs::InodeKind::Symlink => filetype::SYMBOLIC_LINK,
+    }
+}
+
 /// Standard file-descriptor numbers baked into every new WasiCtx.
 pub mod std_fd {
     pub const STDIN: u32 = 0;
@@ -315,6 +375,12 @@ pub struct OpenFd {
     pub path_len: u8,
     /// Cached file size (updated on open/write).
     pub size: u64,
+    /// Runtime fd flags persisted through fdstat.
+    pub fdflags: u16,
+    /// Base rights for operations through this fd.
+    pub rights_base: u64,
+    /// Inheriting rights for derived opens.
+    pub rights_inheriting: u64,
     /// For directories: index of last readdir entry returned.
     pub readdir_cookie: u64,
     /// Receive half has been shut down.
@@ -331,6 +397,9 @@ impl OpenFd {
             path: [0; 128],
             path_len: 0,
             size: 0,
+            fdflags: 0,
+            rights_base: 0,
+            rights_inheriting: 0,
             readdir_cookie: 0,
             shut_rd: false,
             shut_wr: false,
@@ -376,6 +445,56 @@ pub struct WasiCtx {
     pub exit_code: Option<i32>,
 }
 
+const ABI_FINGERPRINT_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const ABI_FINGERPRINT_PRIME: u64 = 0x0000_0001_0000_01b3;
+
+#[inline]
+fn abi_fingerprint_byte(mut hash: u64, byte: u8) -> u64 {
+    hash ^= byte as u64;
+    hash.wrapping_mul(ABI_FINGERPRINT_PRIME)
+}
+
+#[inline]
+fn abi_fingerprint_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    let mut i = 0usize;
+    while i < bytes.len() {
+        hash = abi_fingerprint_byte(hash, bytes[i]);
+        i += 1;
+    }
+    hash
+}
+
+#[inline]
+fn abi_fingerprint_u64(hash: u64, value: u64) -> u64 {
+    abi_fingerprint_bytes(hash, &value.to_le_bytes())
+}
+
+#[inline]
+fn abi_fingerprint_usize(hash: u64, value: usize) -> u64 {
+    abi_fingerprint_u64(hash, value as u64)
+}
+
+#[inline]
+fn abi_fingerprint_bool(hash: u64, value: bool) -> u64 {
+    abi_fingerprint_byte(hash, value as u8)
+}
+
+#[inline]
+fn abi_fingerprint_fd_kind(hash: u64, kind: FdKind) -> u64 {
+    abi_fingerprint_byte(
+        hash,
+        match kind {
+            FdKind::Closed => 0,
+            FdKind::Stdin => 1,
+            FdKind::Stdout => 2,
+            FdKind::Stderr => 3,
+            FdKind::File => 4,
+            FdKind::Dir => 5,
+            FdKind::TcpSocket => 6,
+        },
+    )
+}
+
 impl WasiCtx {
     pub fn new(instance_id: usize) -> Self {
         let mut ctx = WasiCtx {
@@ -390,8 +509,14 @@ impl WasiCtx {
         };
         // stdin/stdout/stderr are always open.
         ctx.fds[0].kind = FdKind::Stdin;
+        ctx.fds[0].rights_base = rights::ALL;
+        ctx.fds[0].rights_inheriting = rights::ALL;
         ctx.fds[1].kind = FdKind::Stdout;
+        ctx.fds[1].rights_base = rights::ALL;
+        ctx.fds[1].rights_inheriting = rights::ALL;
         ctx.fds[2].kind = FdKind::Stderr;
+        ctx.fds[2].rights_base = rights::ALL;
+        ctx.fds[2].rights_inheriting = rights::ALL;
         // Preopen "/" as fd 3.
         ctx.add_preopen(b"/");
         ctx
@@ -414,6 +539,8 @@ impl WasiCtx {
         self.fds[fd].kind = FdKind::Dir;
         self.fds[fd].path[..plen].copy_from_slice(&path[..plen]);
         self.fds[fd].path_len = plen as u8;
+        self.fds[fd].rights_base = rights::ALL;
+        self.fds[fd].rights_inheriting = rights::ALL;
         self.preopen_cnt += 1;
         true
     }
@@ -461,6 +588,101 @@ impl WasiCtx {
     fn path_str<'a>(o: &'a OpenFd) -> &'a [u8] {
         &o.path[..o.path_len as usize]
     }
+
+    pub(crate) fn abi_fingerprint(&self) -> u64 {
+        let mut hash = ABI_FINGERPRINT_OFFSET;
+        hash = abi_fingerprint_usize(hash, self.instance_id);
+        hash = abi_fingerprint_usize(hash, self.preopen_cnt);
+        hash = abi_fingerprint_usize(hash, self.argv0_len);
+        hash = abi_fingerprint_u64(hash, self.prng);
+        hash = abi_fingerprint_byte(hash, self.exit_code.is_some() as u8);
+        hash = abi_fingerprint_u64(hash, self.exit_code.unwrap_or(0) as i64 as u64);
+        hash = abi_fingerprint_bytes(hash, &self.argv0);
+
+        let mut fd_idx = 0usize;
+        while fd_idx < self.fds.len() {
+            let fd = &self.fds[fd_idx];
+            hash = abi_fingerprint_fd_kind(hash, fd.kind);
+            hash = abi_fingerprint_u64(hash, fd.offset);
+            hash = abi_fingerprint_bytes(hash, &fd.path);
+            hash = abi_fingerprint_byte(hash, fd.path_len);
+            hash = abi_fingerprint_u64(hash, fd.size);
+            hash = abi_fingerprint_u64(hash, fd.fdflags as u64);
+            hash = abi_fingerprint_u64(hash, fd.rights_base);
+            hash = abi_fingerprint_u64(hash, fd.rights_inheriting);
+            hash = abi_fingerprint_u64(hash, fd.readdir_cookie);
+            hash = abi_fingerprint_bool(hash, fd.shut_rd);
+            hash = abi_fingerprint_bool(hash, fd.shut_wr);
+            fd_idx += 1;
+        }
+
+        let mut preopen_idx = 0usize;
+        while preopen_idx < self.preopens.len() {
+            let preopen = &self.preopens[preopen_idx];
+            hash = abi_fingerprint_bytes(hash, &preopen.name);
+            hash = abi_fingerprint_byte(hash, preopen.name_len);
+            preopen_idx += 1;
+        }
+
+        hash
+    }
+}
+
+fn rights_include(current: u64, required: u64) -> bool {
+    current == rights::ALL || (current & required) == required
+}
+
+fn open_fd_path(fd: &OpenFd) -> Result<&str, Errno> {
+    core::str::from_utf8(WasiCtx::path_str(fd)).map_err(|_| Errno::Inval)
+}
+
+fn vfs_err_to_errno(err: &'static str) -> Errno {
+    match err {
+        "File not found" | "Path component not found" | "Directory not found" => Errno::Noent,
+        "Entry exists" => Errno::Exist,
+        "Not a directory" => Errno::Notdir,
+        "Not a file" => Errno::Inval,
+        "Invalid name" | "Invalid path" | "Invalid timestamp flags" => Errno::Inval,
+        "Permission denied" => Errno::Acces,
+        "Resize not supported" => Errno::Notsup,
+        "Partitions file is read-only" => Errno::Notsup,
+        "Directory not empty" => Errno::Notempty,
+        _ => Errno::Io,
+    }
+}
+
+fn read_full_path(path: &str) -> Result<Vec<u8>, Errno> {
+    let size = crate::fs::vfs::path_size(path).map_err(vfs_err_to_errno)?;
+    let mut data = vec![0u8; size];
+    let read = crate::fs::vfs::read_path(path, &mut data).map_err(vfs_err_to_errno)?;
+    data.truncate(read);
+    Ok(data)
+}
+
+fn file_stat_to_wasi(stat: crate::fs::vfs::VfsStat) -> FileStat {
+    FileStat {
+        dev: 0,
+        ino: stat.inode,
+        filetype: vfs_entry_filetype(stat.kind),
+        _pad: [0; 7],
+        nlink: stat.nlink as u64,
+        size: stat.size,
+        atim: stat.atime,
+        mtim: stat.mtime,
+        ctim: stat.ctime,
+    }
+}
+
+fn write_wasi_struct<T>(mem: &mut [u8], offset: usize, value: &T) -> Errno {
+    let size = core::mem::size_of::<T>();
+    if offset + size > mem.len() {
+        return Errno::Fault;
+    }
+    unsafe {
+        let src = value as *const T as *const u8;
+        core::ptr::copy_nonoverlapping(src, mem[offset..offset + size].as_mut_ptr(), size);
+    }
+    Errno::Success
 }
 
 // ---------------------------------------------------------------------------
@@ -570,11 +792,6 @@ pub fn fd_fdstat_get(ctx: &WasiCtx, mem: &mut [u8], fd: Fd, stat_ptr: u32) -> Er
         None => return Errno::Badf,
         Some(o) => o,
     };
-    let p = stat_ptr as usize;
-    let stat_size = core::mem::size_of::<FdStat>();
-    if p + stat_size > mem.len() {
-        return Errno::Fault;
-    }
     let ft = match o.kind {
         FdKind::Stdin | FdKind::Stdout | FdKind::Stderr => filetype::CHAR_DEVICE,
         FdKind::File => filetype::REGULAR_FILE,
@@ -585,18 +802,12 @@ pub fn fd_fdstat_get(ctx: &WasiCtx, mem: &mut [u8], fd: Fd, stat_ptr: u32) -> Er
     let st = FdStat {
         fs_filetype: ft,
         _pad: 0,
-        fs_flags: 0,
+        fs_flags: o.fdflags,
         _pad2: 0,
-        fs_rights_base: u64::MAX,
-        fs_rights_inheriting: u64::MAX,
+        fs_rights_base: o.rights_base,
+        fs_rights_inheriting: o.rights_inheriting,
     };
-    // Copy struct bytes safely.
-    unsafe {
-        let src = &st as *const FdStat as *const u8;
-        let dst = mem[p..p + stat_size].as_mut_ptr();
-        core::ptr::copy_nonoverlapping(src, dst, stat_size);
-    }
-    Errno::Success
+    write_wasi_struct(mem, stat_ptr as usize, &st)
 }
 
 /// fd_filestat_get — write a FileStat for `fd` into WASM memory.
@@ -605,35 +816,201 @@ pub fn fd_filestat_get(ctx: &WasiCtx, mem: &mut [u8], fd: Fd, stat_ptr: u32) -> 
         None => return Errno::Badf,
         Some(o) => o,
     };
-    let p = stat_ptr as usize;
-    let stat_size = core::mem::size_of::<FileStat>();
-    if p + stat_size > mem.len() {
-        return Errno::Fault;
-    }
-    let ft = match o.kind {
-        FdKind::Stdin | FdKind::Stdout | FdKind::Stderr => filetype::CHAR_DEVICE,
-        FdKind::File => filetype::REGULAR_FILE,
-        FdKind::Dir => filetype::DIRECTORY,
-        FdKind::TcpSocket => filetype::SOCKET_STREAM,
+    let stat = match o.kind {
+        FdKind::Stdin | FdKind::Stdout | FdKind::Stderr => FileStat {
+            dev: 0,
+            ino: fd as u64,
+            filetype: filetype::CHAR_DEVICE,
+            _pad: [0; 7],
+            nlink: 1,
+            size: 0,
+            atim: 0,
+            mtim: 0,
+            ctim: 0,
+        },
+        FdKind::TcpSocket => FileStat {
+            dev: 0,
+            ino: fd as u64,
+            filetype: filetype::SOCKET_STREAM,
+            _pad: [0; 7],
+            nlink: 1,
+            size: 0,
+            atim: 0,
+            mtim: 0,
+            ctim: 0,
+        },
+        FdKind::File | FdKind::Dir => {
+            let path = match open_fd_path(o) {
+                Ok(path) => path,
+                Err(errno) => return errno,
+            };
+            let vfs_stat = match crate::fs::vfs::stat_path(path) {
+                Ok(stat) => stat,
+                Err(err) => return vfs_err_to_errno(err),
+            };
+            file_stat_to_wasi(vfs_stat)
+        }
         FdKind::Closed => return Errno::Badf,
     };
-    let st = FileStat {
-        dev: 0,
-        ino: fd as u64,
-        filetype: ft,
-        _pad: [0; 7],
-        nlink: 1,
-        size: o.size,
-        atim: 0,
-        mtim: 0,
-        ctim: 0,
+    write_wasi_struct(mem, stat_ptr as usize, &stat)
+}
+
+pub fn fd_advise(ctx: &WasiCtx, fd: Fd, offset: u64, len: u64) -> Errno {
+    let open = match ctx.get_fd(fd) {
+        Some(open) => open,
+        None => return Errno::Badf,
     };
-    unsafe {
-        let src = &st as *const FileStat as *const u8;
-        let dst = mem[p..p + stat_size].as_mut_ptr();
-        core::ptr::copy_nonoverlapping(src, dst, stat_size);
+    if open.kind != FdKind::File {
+        return Errno::Badf;
+    }
+    if offset.checked_add(len).is_none() {
+        return Errno::Inval;
     }
     Errno::Success
+}
+
+pub fn fd_allocate(ctx: &mut WasiCtx, fd: Fd, offset: u64, len: u64) -> Errno {
+    let target_size = match offset.checked_add(len) {
+        Some(size) => size,
+        None => return Errno::Inval,
+    };
+    let open = match ctx.get_fd(fd) {
+        Some(open) => open,
+        None => return Errno::Badf,
+    };
+    if open.kind != FdKind::File {
+        return Errno::Badf;
+    }
+    let path = match open_fd_path(open) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    match crate::fs::vfs::resize_path(path, target_size as usize) {
+        Ok(()) => {
+            if let Some(open) = ctx.get_fd_mut(fd) {
+                open.size = target_size;
+            }
+            Errno::Success
+        }
+        Err(err) => vfs_err_to_errno(err),
+    }
+}
+
+pub fn fd_datasync(ctx: &WasiCtx, fd: Fd) -> Errno {
+    let open = match ctx.get_fd(fd) {
+        Some(open) => open,
+        None => return Errno::Badf,
+    };
+    if open.kind != FdKind::File {
+        return Errno::Badf;
+    }
+    let path = match open_fd_path(open) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    match crate::fs::vfs::sync_path(path) {
+        Ok(()) => Errno::Success,
+        Err(err) => vfs_err_to_errno(err),
+    }
+}
+
+pub fn fd_fdstat_set_flags(ctx: &mut WasiCtx, fd: Fd, flags: u16) -> Errno {
+    // All bits outside APPEND|NONBLOCK are unsupported; computed at compile time.
+    const UNSUPPORTED: u16 = !fdflags::SUPPORTED; // 0xFFFC
+    if flags & UNSUPPORTED != 0 {
+        return Errno::Notsup;
+    }
+    let open = match ctx.get_fd_mut(fd) {
+        Some(open) => open,
+        None => return Errno::Badf,
+    };
+    open.fdflags = flags;
+    Errno::Success
+}
+
+pub fn fd_fdstat_set_rights(
+    ctx: &mut WasiCtx,
+    fd: Fd,
+    rights_base: u64,
+    rights_inheriting: u64,
+) -> Errno {
+    let open = match ctx.get_fd_mut(fd) {
+        Some(open) => open,
+        None => return Errno::Badf,
+    };
+    if (rights_base | open.rights_base) != open.rights_base
+        || (rights_inheriting | open.rights_inheriting) != open.rights_inheriting
+    {
+        return Errno::Notcapable;
+    }
+    open.rights_base = rights_base;
+    open.rights_inheriting = rights_inheriting;
+    Errno::Success
+}
+
+pub fn fd_filestat_set_size(ctx: &mut WasiCtx, fd: Fd, size: u64) -> Errno {
+    let open = match ctx.get_fd(fd) {
+        Some(open) => open,
+        None => return Errno::Badf,
+    };
+    if open.kind != FdKind::File {
+        return Errno::Badf;
+    }
+    let path = match open_fd_path(open) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    match crate::fs::vfs::resize_path(path, size as usize) {
+        Ok(()) => {
+            if let Some(open) = ctx.get_fd_mut(fd) {
+                open.size = size;
+            }
+            Errno::Success
+        }
+        Err(err) => vfs_err_to_errno(err),
+    }
+}
+
+pub fn fd_filestat_set_times(ctx: &mut WasiCtx, fd: Fd, atim: u64, mtim: u64, fst_flags: u32) -> Errno {
+    let open = match ctx.get_fd(fd) {
+        Some(open) => open,
+        None => return Errno::Badf,
+    };
+    if open.kind != FdKind::File && open.kind != FdKind::Dir {
+        return Errno::Badf;
+    }
+    let path = match open_fd_path(open) {
+        Ok(path) => path,
+        Err(errno) => return errno,
+    };
+    match crate::fs::vfs::set_path_times(path, atim, mtim, fst_flags, true) {
+        Ok(()) => Errno::Success,
+        Err(err) => vfs_err_to_errno(err),
+    }
+}
+
+pub fn fd_renumber(ctx: &mut WasiCtx, from_fd: Fd, to_fd: Fd) -> Errno {
+    let reserved_limit = std_fd::PREOPEN_START + ctx.preopen_cnt as u32;
+    if from_fd as usize >= MAX_FDS || to_fd as usize >= MAX_FDS {
+        return Errno::Badf;
+    }
+    if from_fd < reserved_limit || to_fd < reserved_limit {
+        return Errno::Notsup;
+    }
+    if ctx.get_fd(from_fd).is_none() {
+        return Errno::Badf;
+    }
+    if from_fd == to_fd {
+        return Errno::Success;
+    }
+    let source = ctx.fds[from_fd as usize];
+    ctx.fds[to_fd as usize] = source;
+    ctx.fds[from_fd as usize] = OpenFd::closed();
+    Errno::Success
+}
+
+pub fn fd_sync(ctx: &WasiCtx, fd: Fd) -> Errno {
+    fd_datasync(ctx, fd)
 }
 
 /// fd_prestat_get — return prestat info for the fd at the given slot.
@@ -753,47 +1130,48 @@ pub fn fd_read(
             }
         }
         FdKind::File => {
-            let offset = ctx.fds[fd as usize].offset;
-            let path_len = ctx.fds[fd as usize].path_len as usize;
-            let path_bytes = ctx.fds[fd as usize].path[..path_len].to_owned_bytes();
-
-            let key_opt = core::str::from_utf8(&path_bytes[..path_len])
-                .ok()
-                .and_then(|s| crate::fs::FileKey::new(s).ok());
-            if let Some(key) = key_opt {
-                // We need to read up to the total iov capacity then copy into iovecs.
-                let data_vec = crate::fs::kernel_read_bytes(&key).unwrap_or_default();
-                let data: &[u8] = &data_vec;
-                let start = (offset as usize).min(data.len());
-                let available = &data[start..];
-
-                let mut remaining = available;
-                for i in 0..iovs_len as usize {
-                    if remaining.is_empty() {
-                        break;
-                    }
-                    let iov_off = iovs_ptr as usize + i * 8;
-                    if iov_off + 8 > mem.len() {
-                        break;
-                    }
-                    let buf_ptr =
-                        u32::from_le_bytes(mem[iov_off..iov_off + 4].try_into().unwrap_or([0; 4]))
-                            as usize;
-                    let buf_len = u32::from_le_bytes(
-                        mem[iov_off + 4..iov_off + 8].try_into().unwrap_or([0; 4]),
-                    ) as usize;
-                    if buf_ptr + buf_len > mem.len() {
-                        return Errno::Fault;
-                    }
-                    let chunk = remaining.len().min(buf_len);
-                    mem[buf_ptr..buf_ptr + chunk].copy_from_slice(&remaining[..chunk]);
-                    remaining = &remaining[chunk..];
-                    total += chunk as u32;
-                }
-                ctx.fds[fd as usize].offset += total as u64;
-            } else {
-                return Errno::Noent;
+            let open = &ctx.fds[fd as usize];
+            if !rights_include(open.rights_base, rights::FD_READ) {
+                return Errno::Notcapable;
             }
+            let offset = open.offset;
+            let path = match open_fd_path(open) {
+                Ok(path) => path,
+                Err(errno) => return errno,
+            };
+            let data = match read_full_path(path) {
+                Ok(data) => data,
+                Err(errno) => return errno,
+            };
+            let start = (offset as usize).min(data.len());
+            let mut remaining = &data[start..];
+
+            for i in 0..iovs_len as usize {
+                if remaining.is_empty() {
+                    break;
+                }
+                let iov_off = iovs_ptr as usize + i * 8;
+                if iov_off + 8 > mem.len() {
+                    break;
+                }
+                let buf_ptr =
+                    u32::from_le_bytes(mem[iov_off..iov_off + 4].try_into().unwrap_or([0; 4]))
+                        as usize;
+                let buf_len =
+                    u32::from_le_bytes(mem[iov_off + 4..iov_off + 8].try_into().unwrap_or([0; 4]))
+                        as usize;
+                if buf_ptr + buf_len > mem.len() {
+                    return Errno::Fault;
+                }
+                let chunk = remaining.len().min(buf_len);
+                mem[buf_ptr..buf_ptr + chunk].copy_from_slice(&remaining[..chunk]);
+                remaining = &remaining[chunk..];
+                total += chunk as u32;
+            }
+            ctx.fds[fd as usize].offset = ctx.fds[fd as usize]
+                .offset
+                .saturating_add(total as u64);
+            ctx.fds[fd as usize].size = data.len() as u64;
         }
         FdKind::Closed => return Errno::Badf,
         _ => return Errno::Notsup,
@@ -843,18 +1221,37 @@ pub fn fd_write(
                 crate::serial_print!("{}", s);
             }
         } else if kind == FdKind::File {
-            // Append-write to the Oreulius FS.
-            let path_len = ctx.fds[fd as usize].path_len as usize;
-            let path_bytes = ctx.fds[fd as usize].path[..path_len].to_owned_bytes();
-            let key_opt = core::str::from_utf8(&path_bytes[..path_len])
-                .ok()
-                .and_then(|s| crate::fs::FileKey::new(s).ok());
-            if let Some(key) = key_opt {
-                crate::fs::kernel_write_bytes(&key, slice);
-                ctx.fds[fd as usize].offset += buf_len as u64;
-                ctx.fds[fd as usize].size += buf_len as u64;
+            let open = &ctx.fds[fd as usize];
+            if !rights_include(open.rights_base, rights::FD_WRITE) {
+                return Errno::Notcapable;
+            }
+            let path = match open_fd_path(open) {
+                Ok(path) => path,
+                Err(errno) => return errno,
+            };
+            let mut data = match read_full_path(path) {
+                Ok(data) => data,
+                Err(Errno::Noent) => Vec::new(),
+                Err(errno) => return errno,
+            };
+            let effective_offset = if open.fdflags & fdflags::APPEND != 0 {
+                data.len()
             } else {
-                return Errno::Io;
+                open.offset as usize
+            };
+            if effective_offset > data.len() {
+                data.resize(effective_offset, 0);
+            }
+            if effective_offset + buf_len > data.len() {
+                data.resize(effective_offset + buf_len, 0);
+            }
+            data[effective_offset..effective_offset + buf_len].copy_from_slice(slice);
+            match crate::fs::vfs::write_path(path, &data) {
+                Ok(_) => {
+                    ctx.fds[fd as usize].offset = (effective_offset + buf_len) as u64;
+                    ctx.fds[fd as usize].size = data.len() as u64;
+                }
+                Err(err) => return vfs_err_to_errno(err),
             }
         } else {
             return Errno::Badf;
@@ -882,6 +1279,9 @@ pub fn fd_seek(
     if o.kind != FdKind::File {
         return Errno::Spipe;
     }
+    if !rights_include(o.rights_base, rights::FD_SEEK) {
+        return Errno::Notcapable;
+    }
     let new_off = match whence {
         0 => offset as u64,                                 // SET
         1 => (o.offset as i64).wrapping_add(offset) as u64, // CUR
@@ -899,10 +1299,14 @@ pub fn fd_seek(
 
 /// fd_tell — return current file offset.
 pub fn fd_tell(ctx: &WasiCtx, mem: &mut [u8], fd: Fd, offset_ptr: u32) -> Errno {
-    let off = match ctx.get_fd(fd) {
+    let open = match ctx.get_fd(fd) {
         None => return Errno::Badf,
-        Some(o) => o.offset,
+        Some(o) => o,
     };
+    if !rights_include(open.rights_base, rights::FD_TELL) {
+        return Errno::Notcapable;
+    }
+    let off = open.offset;
     let p = offset_ptr as usize;
     if p + 8 > mem.len() {
         return Errno::Fault;
@@ -918,36 +1322,78 @@ pub fn path_open(
     _dirfd: Fd,
     _dirflags: u32,
     path: &[u8],
-    _oflags: u16,
-    _rights: u64,
-    _rights_inheriting: u64,
-    _fdflags: u16,
+    open_flags: u16,
+    rights: u64,
+    rights_inheriting: u64,
+    fdflags_bits: u16,
     opened_fd_ptr: &mut Fd,
 ) -> Errno {
+    if fdflags_bits & !fdflags::SUPPORTED != 0 {
+        return Errno::Notsup;
+    }
+    if open_flags & oflags::DIRECTORY != 0
+        && open_flags & (oflags::CREAT | oflags::TRUNC | oflags::EXCL) != 0
+    {
+        return Errno::Inval;
+    }
+    let path_str = match core::str::from_utf8(path) {
+        Ok(path) => path,
+        Err(_) => return Errno::Inval,
+    };
+
+    let existing = crate::fs::vfs::stat_path(path_str);
+    if open_flags & oflags::EXCL != 0 && open_flags & oflags::CREAT != 0 && existing.is_ok() {
+        return Errno::Exist;
+    }
+    if existing.is_err() && open_flags & oflags::CREAT != 0 {
+        if let Err(err) = crate::fs::vfs::write_path(path_str, &[]) {
+            return vfs_err_to_errno(err);
+        }
+    }
+    if open_flags & oflags::TRUNC != 0 {
+        if let Err(err) = crate::fs::vfs::resize_path(path_str, 0) {
+            return vfs_err_to_errno(err);
+        }
+    }
+    let stat = match crate::fs::vfs::stat_path(path_str) {
+        Ok(stat) => stat,
+        Err(err) => return vfs_err_to_errno(err),
+    };
+    if open_flags & oflags::DIRECTORY != 0 && stat.kind != crate::fs::vfs::InodeKind::Directory {
+        return Errno::Notdir;
+    }
     let new_fd = match ctx.alloc_fd() {
         None => return Errno::Mfile,
         Some(fd) => fd,
     };
     let plen = path.len().min(127);
-    ctx.fds[new_fd as usize].kind = FdKind::File;
-    ctx.fds[new_fd as usize].offset = 0;
+    ctx.fds[new_fd as usize].kind = match stat.kind {
+        crate::fs::vfs::InodeKind::Directory => FdKind::Dir,
+        _ => FdKind::File,
+    };
+    ctx.fds[new_fd as usize].offset = if fdflags_bits & fdflags::APPEND != 0 {
+        stat.size
+    } else {
+        0
+    };
     ctx.fds[new_fd as usize].path[..plen].copy_from_slice(&path[..plen]);
     ctx.fds[new_fd as usize].path_len = plen as u8;
-    ctx.fds[new_fd as usize].size = 0;
+    ctx.fds[new_fd as usize].size = stat.size;
+    ctx.fds[new_fd as usize].fdflags = fdflags_bits;
+    ctx.fds[new_fd as usize].rights_base = rights;
+    ctx.fds[new_fd as usize].rights_inheriting = rights_inheriting;
     *opened_fd_ptr = new_fd;
     Errno::Success
 }
 
 /// path_unlink_file — remove a file.
 pub fn path_unlink_file(_ctx: &mut WasiCtx, path: &[u8]) -> Errno {
-    let key_opt = core::str::from_utf8(path)
-        .ok()
-        .and_then(|s| crate::fs::FileKey::new(s).ok());
-    if let Some(key) = key_opt {
-        crate::fs::kernel_delete(&key);
-        Errno::Success
-    } else {
-        Errno::Noent
+    let Ok(s) = core::str::from_utf8(path) else {
+        return Errno::Inval;
+    };
+    match crate::fs::vfs::unlink(s) {
+        Ok(()) => Errno::Success,
+        Err(err) => vfs_err_to_errno(err),
     }
 }
 
@@ -986,21 +1432,23 @@ pub fn path_symlink(_ctx: &mut WasiCtx, old_path: &[u8], new_path: &[u8]) -> Err
 }
 
 /// path_readlink — read the target of a symbolic link.
+///
+/// The WASM ABI exposes 5 parameters: `(fd, path_ptr, path_len, buf_ptr, buf_len)`.
+/// There is no `bufused` out-pointer in this kernel's calling convention; callers
+/// receive the result bytes in `buf` up to `buf_len` bytes.
 pub fn path_readlink(
     _ctx: &mut WasiCtx,
     mem: &mut [u8],
     path: &[u8],
     buf_ptr: u32,
     buf_len: u32,
-    buf_used_ptr: u32,
 ) -> Errno {
     let Ok(s) = core::str::from_utf8(path) else {
         return Errno::Inval;
     };
     let bp = buf_ptr as usize;
     let bl = buf_len as usize;
-    let up = buf_used_ptr as usize;
-    if up + 4 > mem.len() {
+    if bp.saturating_add(bl) > mem.len() {
         return Errno::Fault;
     }
     match crate::fs::vfs::readlink(s) {
@@ -1008,26 +1456,44 @@ pub fn path_readlink(
         Ok(target) => {
             let bytes = target.as_bytes();
             let copy = bytes.len().min(bl);
-            if bp + copy > mem.len() {
-                return Errno::Fault;
-            }
             mem[bp..bp + copy].copy_from_slice(&bytes[..copy]);
-            mem[up..up + 4].copy_from_slice(&(copy as u32).to_le_bytes());
             Errno::Success
         }
     }
 }
 
-/// path_link — create a hard link.  Hard links are not supported on this FS.
-pub fn path_link(_ctx: &mut WasiCtx, _old_path: &[u8], _new_path: &[u8]) -> Errno {
-    Errno::Notsup
+/// path_link — create a hard link.
+pub fn path_link(_ctx: &mut WasiCtx, old_path: &[u8], new_path: &[u8]) -> Errno {
+    let (Ok(existing), Ok(link)) = (core::str::from_utf8(old_path), core::str::from_utf8(new_path))
+    else {
+        return Errno::Inval;
+    };
+    match crate::fs::vfs::link(existing, link) {
+        Ok(()) => Errno::Success,
+        Err(_) => Errno::Io,
+    }
+}
+
+/// path_rename — rename a path.
+pub fn path_rename(_ctx: &mut WasiCtx, old_path: &[u8], new_path: &[u8]) -> Errno {
+    let (Ok(old_path), Ok(new_path)) =
+        (core::str::from_utf8(old_path), core::str::from_utf8(new_path))
+    else {
+        return Errno::Inval;
+    };
+    match crate::fs::vfs::rename(old_path, new_path) {
+        Ok(()) => Errno::Success,
+        Err(_) => Errno::Io,
+    }
 }
 
 /// fd_readdir — list files in a directory (fills the WASM buffer with dirent structs).
 ///
-/// Each dirent is: [ ino: u64, cookie: u64, namelen: u32, type: u8, pad: u8 ] = 22 bytes + name
+/// Each dirent: [ d_next: u64 | d_ino: u64 | d_namlen: u32 | d_type: u8 ] = 21 bytes + name.
+/// `cookie` is the 0-based entry index to start from; `d_next` carries the cookie for the
+/// subsequent call.  Entries are sourced from `crate::fs::vfs::list_dir_entries`.
 pub fn fd_readdir(
-    _ctx: &mut WasiCtx,
+    ctx: &mut WasiCtx,
     mem: &mut [u8],
     fd: Fd,
     buf_ptr: u32,
@@ -1035,18 +1501,71 @@ pub fn fd_readdir(
     cookie: u64,
     bufused_ptr: u32,
 ) -> Errno {
-    let _ = (fd, cookie);
     let p = buf_ptr as usize;
     let plen = buf_len as usize;
     let bp = bufused_ptr as usize;
     if bp + 4 > mem.len() {
         return Errno::Fault;
     }
-    if p + plen > mem.len() {
+    if p.saturating_add(plen) > mem.len() {
         return Errno::Fault;
     }
-    // We don't have a directory listing API yet — return empty.
-    mem[bp..bp + 4].copy_from_slice(&0u32.to_le_bytes());
+    let fd_idx = fd as usize;
+    if fd_idx >= MAX_FDS {
+        return Errno::Badf;
+    }
+    let open_fd = &ctx.fds[fd_idx];
+    if matches!(open_fd.kind, FdKind::Closed) {
+        return Errno::Badf;
+    }
+    let path_len = open_fd.path_len as usize;
+    if path_len == 0 {
+        return Errno::Notdir;
+    }
+    let path_str = match core::str::from_utf8(&open_fd.path[..path_len]) {
+        Ok(s) => s,
+        Err(_) => return Errno::Inval,
+    };
+
+    let entries = match crate::fs::vfs::list_dir_entries(path_str) {
+        Ok(entries) => entries,
+        Err(_) => return Errno::Notdir,
+    };
+
+    // Walk the structured directory entries and emit WASI dirent records.
+    // WASI dirent layout: d_next(u64) d_ino(u64) d_namlen(u32) d_type(u8) <name bytes>
+    let mut buf_cursor = 0usize;
+    let mut entry_index = 0u64;
+    for entry in &entries {
+        if entry_index < cookie {
+            entry_index += 1;
+            continue;
+        }
+
+        let name = entry.name.as_bytes();
+        let namlen = name.len();
+        let entry_size = 21 + namlen; // 21-byte fixed header + name bytes
+        if buf_cursor + entry_size > plen {
+            break; // output buffer full; caller re-invokes with d_next as cookie
+        }
+
+        let d_next: u64 = entry_index + 1;
+        let d_ino: u64 = entry.inode;
+        let d_namlen: u32 = namlen as u32;
+        let d_type: u8 = vfs_entry_filetype(entry.kind);
+
+        let base = p + buf_cursor;
+        mem[base..base + 8].copy_from_slice(&d_next.to_le_bytes());
+        mem[base + 8..base + 16].copy_from_slice(&d_ino.to_le_bytes());
+        mem[base + 16..base + 20].copy_from_slice(&d_namlen.to_le_bytes());
+        mem[base + 20] = d_type;
+        mem[base + 21..base + 21 + namlen].copy_from_slice(name);
+
+        buf_cursor += entry_size;
+        entry_index += 1;
+    }
+
+    mem[bp..bp + 4].copy_from_slice(&(buf_cursor as u32).to_le_bytes());
     Errno::Success
 }
 
@@ -1055,45 +1574,40 @@ pub fn path_filestat_get(
     _ctx: &WasiCtx,
     mem: &mut [u8],
     _dirfd: Fd,
-    _flags: u32,
+    flags: u32,
     path: &[u8],
     stat_ptr: u32,
 ) -> Errno {
-    let p = stat_ptr as usize;
-    let sz = core::mem::size_of::<FileStat>();
-    if p + sz > mem.len() {
-        return Errno::Fault;
-    }
-    if let Some(key) = core::str::from_utf8(path)
-        .ok()
-        .and_then(|s| crate::fs::FileKey::new(s).ok())
-    {
-        let data_len = crate::fs::kernel_read_bytes(&key)
-            .map(|d| d.len() as u64)
-            .unwrap_or(0);
-        let ft = if data_len > 0 {
-            filetype::REGULAR_FILE
-        } else {
-            filetype::DIRECTORY
-        };
-        let st = FileStat {
-            dev: 0,
-            ino: 0,
-            filetype: ft,
-            _pad: [0; 7],
-            nlink: 1,
-            size: data_len,
-            atim: 0,
-            mtim: 0,
-            ctim: 0,
-        };
-        unsafe {
-            let src = &st as *const FileStat as *const u8;
-            core::ptr::copy_nonoverlapping(src, mem[p..].as_mut_ptr(), sz);
-        }
-        Errno::Success
+    let path = match core::str::from_utf8(path) {
+        Ok(path) => path,
+        Err(_) => return Errno::Inval,
+    };
+    let follow_final_symlink = (flags & 1) != 0;
+    let stat = match if follow_final_symlink {
+        crate::fs::vfs::stat_path(path)
     } else {
-        Errno::Noent
+        crate::fs::vfs::stat_path_nofollow(path)
+    } {
+        Ok(stat) => stat,
+        Err(err) => return vfs_err_to_errno(err),
+    };
+    write_wasi_struct(mem, stat_ptr as usize, &file_stat_to_wasi(stat))
+}
+
+pub fn path_filestat_set_times(
+    _ctx: &mut WasiCtx,
+    path: &[u8],
+    atim: u64,
+    mtim: u64,
+    fst_flags: u32,
+) -> Errno {
+    let path = match core::str::from_utf8(path) {
+        Ok(path) => path,
+        Err(_) => return Errno::Inval,
+    };
+    match crate::fs::vfs::set_path_times(path, atim, mtim, fst_flags, true) {
+        Ok(()) => Errno::Success,
+        Err(err) => vfs_err_to_errno(err),
     }
 }
 
@@ -1121,6 +1635,17 @@ pub fn random_get(ctx: &mut WasiCtx, mem: &mut [u8], buf_ptr: u32, buf_len: u32)
 /// proc_exit — terminate the current WASM instance.
 pub fn proc_exit(ctx: &mut WasiCtx, code: i32) {
     ctx.exit_code = Some(code);
+}
+
+pub fn proc_raise(ctx: &mut WasiCtx, signal: u32) -> Errno {
+    match signal {
+        0 => Errno::Success,
+        2 | 6 | 9 | 15 => {
+            ctx.exit_code = Some(128 + signal as i32);
+            Errno::Success
+        }
+        _ => Errno::Notsup,
+    }
 }
 
 /// sched_yield — yield the current WASM thread's time slice.

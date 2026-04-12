@@ -24,8 +24,7 @@ This subsystem is not a monitoring tool bolted on after the fact. It is embedded
 ┌──────────────────────────────────────────────────────────────────┐
 │  WASM Module                                                     │
 │  capgraph::verify(cap_id, delegatee_pid)                        │
-│  capgraph::query(cap_id, &mut buf)                              │
-│  capgraph::depth(cap_id)                                        │
+│  capgraph::query(cap_id) / capgraph::depth(cap_id)              │
 └─────────────────────────┬────────────────────────────────────────┘
                           │  WASM host ABI (IDs 129–131)
 ┌─────────────────────────▼────────────────────────────────────────┐
@@ -62,7 +61,7 @@ This subsystem is not a monitoring tool bolted on after the fact. It is embedded
 | `kernel/src/capability/cap_graph.rs` | `CapGraph`, `CapDelegationEdge`, `ProvenanceChain`, all graph algorithms, `CAP_GRAPH` global |
 | `kernel/src/execution/wasm.rs` | Host functions (IDs 129–131), integration with `transfer_capability` |
 | `kernel/src/capability/manager.rs` | Calls `cap_graph::record_delegation()` and `cap_graph::prune_edges_for()` |
-| `wasm/sdk/src/capgraph.rs` | SDK: `query`, `verify`, `depth`, `VerifyResult` enum |
+| `wasm/sdk/src/capgraph.rs` | SDK: `query`, `verify`, `depth`, `assert_safe`, `VerifyResult` enum |
 
 ---
 
@@ -331,6 +330,7 @@ pub enum VerifyResult { Safe, RightsEscalation, Cycle, NotFound }
 pub fn verify(cap_id: u32, delegatee_pid: u32) -> VerifyResult
 pub fn query(cap_id: u32, buf: &mut [u8]) -> usize
 pub fn depth(cap_id: u32) -> u32
+pub fn assert_safe(cap_id: u32, delegatee_pid: u32) -> Result<(), VerifyResult>
 ```
 
 ---

@@ -32,7 +32,10 @@ echo ""
 if [[ $# -gt 0 ]]; then
     TARGETS=("$@")
 else
-    mapfile -t TARGETS < <(find "${SCRIPT_DIR}" -maxdepth 1 -name "*.wat" | sort)
+    TARGETS=()
+    while IFS= read -r wat; do
+        TARGETS+=("${wat}")
+    done < <(find "${SCRIPT_DIR}" -maxdepth 1 -name "*.wat" | sort)
 fi
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then

@@ -37,19 +37,31 @@
 
 use super::raw::oreulius as sys;
 
+#[inline]
+fn positive_id_from_rc(ret: i32) -> Result<u32, i32> {
+    match ret {
+        r if r > 0 => Ok(r as u32),
+        r if r < 0 => Err(r),
+        _ => Err(-1),
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Time-bound capability grants
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Grant the calling process a time-bound capability.
 ///
-/// - `cap_type`      — numeric capability type (see `oreulius_sdk::capability`
-///   or the kernel `CapabilityType` enum).
+/// - `cap_type`      — numeric capability type (see the kernel
+///   `CapabilityType` enum or your application-level capability taxonomy).
 /// - `rights`        — rights bitmask.
 /// - `expires_ticks` — lifetime in 100 Hz PIT ticks.  At tick 0 the kernel
 ///   auto-revokes the capability.
 ///
 /// Returns `Ok(cap_id)` on success, `Err(code)` on failure.
+///
+/// Successful kernel responses are strictly positive; `0` is treated as a
+/// malformed host response and mapped to `Err(-1)`.
 /// Common error codes:
 /// - `-1` — invalid `cap_type`
 /// - `-2` — capability table full for this process
@@ -59,7 +71,7 @@ pub fn cap_grant(cap_type: u8, rights: u32, expires_ticks: u32) -> Result<u32, i
     let ret = unsafe {
         sys::temporal_cap_grant(cap_type as i32, rights as i32, expires_ticks as i32)
     };
-    if ret >= 0 { Ok(ret as u32) } else { Err(ret) }
+    positive_id_from_rc(ret)
 }
 
 /// Manually revoke a time-bound (or any) capability held by this process.
@@ -81,18 +93,25 @@ pub fn cap_check(cap_id: u32) -> Option<u32> {
     if ret >= 0 { Some(ret as u32) } else { None }
 }
 
+/// Alias for [`cap_check`], so temporal capability inspection reads like the
+/// other ABI families' status helpers.
+#[inline]
+pub fn status(cap_id: u32) -> Option<u32> {
+    cap_check(cap_id)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Capability checkpoint & rollback
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Snapshot the calling process's current capability set.
 ///
-/// Returns `Ok(checkpoint_id)` (≥ 1) on success, or `Err(-1)` if the
-/// checkpoint store is full (at most 8 outstanding checkpoints).
+/// Returns `Ok(checkpoint_id)` (`checkpoint_id > 0`) on success, or `Err(-1)`
+/// if the checkpoint store is full (at most 8 outstanding checkpoints).
 #[inline]
 pub fn checkpoint_create() -> Result<u32, i32> {
     let ret = unsafe { sys::temporal_checkpoint_create() };
-    if ret >= 0 { Ok(ret as u32) } else { Err(ret) }
+    positive_id_from_rc(ret)
 }
 
 /// Roll back the calling process's capability set to the named checkpoint.
@@ -122,6 +141,7 @@ pub fn checkpoint_rollback(checkpoint_id: u32) -> Result<(), i32> {
 /// // … do work that requires FS_READ …
 /// // capability is revoked when `_guard` drops
 /// ```
+#[must_use]
 pub struct TemporalCap {
     cap_id: u32,
 }
@@ -137,6 +157,12 @@ impl TemporalCap {
     #[inline]
     pub fn id(&self) -> u32 {
         self.cap_id
+    }
+
+    /// Returns `true` if the wrapped capability ID is non-zero.
+    #[inline]
+    pub const fn is_valid(&self) -> bool {
+        self.cap_id != 0
     }
 }
 
@@ -156,6 +182,7 @@ impl Drop for TemporalCap {
 /// // … grant extra caps, do work …
 /// tx.commit(); // don't roll back
 /// ```
+#[must_use]
 pub struct CapTransaction {
     checkpoint_id: u32,
     committed:     bool,
@@ -176,6 +203,18 @@ impl CapTransaction {
     pub fn commit(mut self) {
         self.committed = true;
     }
+
+    /// Return the checkpoint ID managed by this transaction guard.
+    #[inline]
+    pub const fn checkpoint_id(&self) -> u32 {
+        self.checkpoint_id
+    }
+
+    /// Returns `true` if the guard has been committed and will not roll back.
+    #[inline]
+    pub const fn is_committed(&self) -> bool {
+        self.committed
+    }
 }
 
 impl Drop for CapTransaction {
@@ -183,5 +222,17 @@ impl Drop for CapTransaction {
         if !self.committed {
             let _ = checkpoint_rollback(self.checkpoint_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positive_id_from_rc_rejects_zero_but_preserves_negative_errors() {
+        assert_eq!(positive_id_from_rc(9), Ok(9));
+        assert_eq!(positive_id_from_rc(0), Err(-1));
+        assert_eq!(positive_id_from_rc(-7), Err(-7));
     }
 }

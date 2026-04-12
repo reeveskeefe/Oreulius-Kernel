@@ -34,6 +34,23 @@
 
 use super::raw::oreulius as raw;
 
+const MAX_GRAPH_EDGES: usize = 16;
+const MAX_DELEGATION_DEPTH: u32 = 32;
+
+#[inline]
+fn query_len_from_rc(rc: i32) -> Option<usize> {
+    if rc <= 0 {
+        return None;
+    }
+
+    let len = rc as usize;
+    if len > MAX_GRAPH_EDGES {
+        None
+    } else {
+        Some(len)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -53,6 +70,7 @@ pub struct DelegationEdge {
 }
 
 /// Result of a prospective invariant check via [`verify`].
+#[must_use]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VerifyResult {
     /// The delegation would be safe.
@@ -65,7 +83,19 @@ pub enum VerifyResult {
     NotFound,
 }
 
+impl VerifyResult {
+    /// Returns `true` if the prospective delegation is safe.
+    #[inline]
+    pub const fn is_safe(self) -> bool {
+        match self {
+            VerifyResult::Safe => true,
+            _ => false,
+        }
+    }
+}
+
 /// Fixed-capacity list of delegation edges returned by [`query`].
+#[must_use]
 #[derive(Clone, Copy)]
 pub struct EdgeList {
     data: [DelegationEdge; 16],
@@ -77,6 +107,16 @@ impl EdgeList {
     pub fn as_slice(&self) -> &[DelegationEdge] { &self.data[..self.len] }
     #[inline]
     pub fn len(&self) -> usize { self.len }
+    /// Return the delegation edge at `index`, if present.
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<DelegationEdge> {
+        self.as_slice().get(index).copied()
+    }
+    /// Iterate over the live delegation edges.
+    #[inline]
+    pub fn iter(&self) -> core::slice::Iter<'_, DelegationEdge> {
+        self.as_slice().iter()
+    }
     #[inline]
     pub fn is_empty(&self) -> bool { self.len == 0 }
 }
@@ -87,7 +127,8 @@ impl EdgeList {
 
 /// Query the live delegation edges for `cap_id` owned by this process.
 ///
-/// Returns up to 16 edges.  Returns `None` if no delegations exist.
+/// Returns up to 16 edges.  Returns `None` if no delegations exist or the
+/// host reports an invalid count larger than the fixed-capacity buffer.
 #[inline]
 pub fn query(cap_id: u32) -> Option<EdgeList> {
     // 16 edge slots × 20 bytes each = 320 bytes on the stack.
@@ -95,10 +136,7 @@ pub fn query(cap_id: u32) -> Option<EdgeList> {
     let rc = unsafe {
         raw::cap_graph_query(cap_id as i32, buf.as_mut_ptr() as i32, 16)
     };
-    if rc < 0 {
-        return None;
-    }
-    let n = rc as usize;
+    let n = query_len_from_rc(rc)?;
     let mut list = EdgeList {
         data: [DelegationEdge { from_pid: 0, from_cap: 0, to_pid: 0, to_cap: 0, rights: 0 }; 16],
         len: 0,
@@ -114,7 +152,7 @@ pub fn query(cap_id: u32) -> Option<EdgeList> {
         list.data[i] = DelegationEdge { from_pid, from_cap, to_pid, to_cap, rights };
         i += 1;
     }
-    list.len = n.min(16);
+    list.len = n;
     Some(list)
 }
 
@@ -137,10 +175,15 @@ pub fn verify(cap_id: u32, delegatee_pid: u32) -> VerifyResult {
 ///
 /// - `0` means the capability has never been delegated to another process.
 /// - `N` means there is a chain of N hops (capped at 32 by the kernel).
+///   Host responses above 32 are clamped to the documented ceiling.
 #[inline]
 pub fn depth(cap_id: u32) -> u32 {
     let rc = unsafe { raw::cap_graph_depth(cap_id as i32) };
-    if rc < 0 { 0 } else { rc as u32 }
+    if rc <= 0 {
+        0
+    } else {
+        (rc as u32).min(MAX_DELEGATION_DEPTH)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -153,8 +196,162 @@ pub fn depth(cap_id: u32) -> u32 {
 /// Typical use: call this right before `capability::transfer`.
 #[inline]
 pub fn assert_safe(cap_id: u32, delegatee_pid: u32) -> Result<(), VerifyResult> {
-    match verify(cap_id, delegatee_pid) {
-        VerifyResult::Safe => Ok(()),
-        v                  => Err(v),
+    let result = verify(cap_id, delegatee_pid);
+    if result.is_safe() {
+        Ok(())
+    } else {
+        Err(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_len_from_rc_rejects_nonpositive_and_overlarge_counts() {
+        assert_eq!(query_len_from_rc(-1), None);
+        assert_eq!(query_len_from_rc(0), None);
+        assert_eq!(query_len_from_rc(1), Some(1));
+        assert_eq!(query_len_from_rc(MAX_GRAPH_EDGES as i32), Some(MAX_GRAPH_EDGES));
+        assert_eq!(query_len_from_rc(MAX_GRAPH_EDGES as i32 + 1), None);
+    }
+
+    #[test]
+    fn verify_result_is_safe_only_for_safe() {
+        assert!(VerifyResult::Safe.is_safe());
+        assert!(!VerifyResult::Cycle.is_safe());
+        assert!(!VerifyResult::RightsEscalation.is_safe());
+        assert!(!VerifyResult::NotFound.is_safe());
+    }
+
+    #[test]
+    fn edge_list_accessors_cover_slice_helpers() {
+        let list = EdgeList {
+            data: [
+                DelegationEdge {
+                    from_pid: 1,
+                    from_cap: 11,
+                    to_pid: 2,
+                    to_cap: 22,
+                    rights: 0x1,
+                },
+                DelegationEdge {
+                    from_pid: 3,
+                    from_cap: 33,
+                    to_pid: 4,
+                    to_cap: 44,
+                    rights: 0x2,
+                },
+                DelegationEdge {
+                    from_pid: 5,
+                    from_cap: 55,
+                    to_pid: 6,
+                    to_cap: 66,
+                    rights: 0x3,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+                DelegationEdge {
+                    from_pid: 0,
+                    from_cap: 0,
+                    to_pid: 0,
+                    to_cap: 0,
+                    rights: 0,
+                },
+            ],
+            len: 3,
+        };
+
+        assert_eq!(list.get(0).map(|e| e.from_cap), Some(11));
+        assert_eq!(list.get(1).map(|e| e.to_cap), Some(44));
+        assert!(list.get(3).is_none());
+        let mut iter = list.iter();
+        assert_eq!(iter.next().map(|e| e.from_pid), Some(1));
+        assert_eq!(iter.next().map(|e| e.to_cap), Some(44));
+        assert_eq!(iter.next().map(|e| e.rights), Some(0x3));
+        assert!(iter.next().is_none());
     }
 }

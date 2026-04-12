@@ -19,7 +19,7 @@ defaults:
 jobs:
   smoke-i686:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -60,6 +60,11 @@ jobs:
           QEMU_AUDIO_DRV: none
           CI_LOG_DIR: ${{ github.workspace }}/kernel/ci/logs
         run: ./ci/smoke-i686.sh
+
+      - name: Run i686 formal verification
+        env:
+          QEMU_AUDIO_DRV: none
+        run: bash ./formal-verify.sh --build --formal-only --log ./ci/logs/formal-verify-i686.log
 
       - name: Upload smoke logs
         if: always()

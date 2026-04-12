@@ -37,6 +37,31 @@
 
 use super::raw::oreulius as raw;
 
+const MAX_ENTANGLE_PEERS: usize = 32;
+
+#[inline]
+fn positive_id_from_rc(rc: i32) -> Result<u32, i32> {
+    match rc {
+        r if r > 0 => Ok(r as u32),
+        r if r < 0 => Err(r),
+        _ => Err(-1),
+    }
+}
+
+#[inline]
+fn query_len_from_rc(rc: i32) -> Option<usize> {
+    if rc <= 0 {
+        return None;
+    }
+
+    let len = rc as usize;
+    if len > MAX_ENTANGLE_PEERS {
+        None
+    } else {
+        Some(len)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core entanglement API
 // ---------------------------------------------------------------------------
@@ -81,7 +106,7 @@ pub fn entangle_group(caps: &[u32]) -> Result<u32, i32> {
     let rc = unsafe {
         raw::cap_entangle_group(caps.as_ptr() as i32, caps.len() as i32)
     };
-    if rc > 0 { Ok(rc as u32) } else { Err(rc) }
+    positive_id_from_rc(rc)
 }
 
 /// Remove all entanglement links involving `cap_id` for this process.
@@ -98,8 +123,10 @@ pub fn disentangle(cap_id: u32) -> Result<(), i32> {
 
 /// Return the cap IDs currently entangled with `cap_id`.
 ///
-/// Returns `None` if `cap_id` has no entanglement links, or `Some(vec)`.
-/// Uses a fixed-size 32-slot read; caps beyond the 32nd link will be omitted.
+/// Returns `None` if `cap_id` has no entanglement links or the host reports
+/// an invalid count.  Uses a fixed-size 32-slot read; caps beyond the 32nd
+/// link will be omitted by the kernel and rejected here if the reported count
+/// exceeds the fixed-capacity buffer.
 #[inline]
 pub fn entangle_query(cap_id: u32) -> Option<EntangleList> {
     let mut buf = [0u32; 32];
@@ -110,11 +137,8 @@ pub fn entangle_query(cap_id: u32) -> Option<EntangleList> {
             buf.len() as i32,
         )
     };
-    if rc < 0 {
-        None
-    } else {
-        Some(EntangleList { data: buf, len: rc as usize })
-    }
+    let len = query_len_from_rc(rc)?;
+    Some(EntangleList { data: buf, len })
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +147,7 @@ pub fn entangle_query(cap_id: u32) -> Option<EntangleList> {
 
 /// A fixed-capacity list of entangled capability IDs returned by
 /// [`entangle_query`].
+#[must_use]
 #[derive(Clone, Copy)]
 pub struct EntangleList {
     data: [u32; 32],
@@ -140,6 +165,24 @@ impl EntangleList {
     #[inline]
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// Return the entangled capability ID at `index`, if present.
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<u32> {
+        self.as_slice().get(index).copied()
+    }
+
+    /// Iterate over the entangled capability IDs.
+    #[inline]
+    pub fn iter(&self) -> core::slice::Iter<'_, u32> {
+        self.as_slice().iter()
+    }
+
+    /// Returns `true` if `cap_id` is present in the entanglement set.
+    #[inline]
+    pub fn contains(&self, cap_id: u32) -> bool {
+        self.as_slice().contains(&cap_id)
     }
 
     /// Returns `true` if the list is empty (should not happen for a valid
@@ -166,6 +209,7 @@ impl EntangleList {
 /// // caps are linked here …
 /// // automatically disentangled when _guard is dropped
 /// ```
+#[must_use]
 pub struct EntangleGuard {
     cap_a: u32,
     cap_b: u32,
@@ -200,6 +244,10 @@ impl Drop for EntangleGuard {
 // ---------------------------------------------------------------------------
 
 /// A group entanglement that is automatically severed when dropped.
+///
+/// The capabilities themselves are not revoked on drop; only the group
+/// linkage is removed.
+#[must_use]
 pub struct GroupEntangleGuard {
     group_id: u32,
     /// Cap IDs in the group (for disentanglement on drop).
@@ -227,6 +275,46 @@ impl GroupEntangleGuard {
     #[inline]
     pub fn leak(self) {
         core::mem::forget(self);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_len_from_rc_rejects_nonpositive_and_overlarge_counts() {
+        assert_eq!(query_len_from_rc(-1), None);
+        assert_eq!(query_len_from_rc(0), None);
+        assert_eq!(query_len_from_rc(1), Some(1));
+        assert_eq!(query_len_from_rc(MAX_ENTANGLE_PEERS as i32), Some(MAX_ENTANGLE_PEERS));
+        assert_eq!(query_len_from_rc(MAX_ENTANGLE_PEERS as i32 + 1), None);
+    }
+
+    #[test]
+    fn positive_id_from_rc_rejects_zero_but_preserves_negative_errors() {
+        assert_eq!(positive_id_from_rc(7), Ok(7));
+        assert_eq!(positive_id_from_rc(0), Err(-1));
+        assert_eq!(positive_id_from_rc(-3), Err(-3));
+    }
+
+    #[test]
+    fn entangle_list_accessors_cover_slice_helpers() {
+        let list = EntangleList {
+            data: [10, 20, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            len: 3,
+        };
+
+        assert_eq!(list.get(0), Some(10));
+        assert_eq!(list.get(2), Some(30));
+        assert_eq!(list.get(3), None);
+        assert!(list.contains(20));
+        assert!(!list.contains(99));
+        let mut iter = list.iter();
+        assert_eq!(iter.next(), Some(&10));
+        assert_eq!(iter.next(), Some(&20));
+        assert_eq!(iter.next(), Some(&30));
+        assert_eq!(iter.next(), None);
     }
 }
 

@@ -14,7 +14,7 @@
 //!
 //! // Register a peer (e.g., device obtained via mDNS / CapNet beacon).
 //! let peer: u64 = 0xDEAD_BEEF_CAFE_0001;
-//! mesh::peer_register(peer, true);
+//! mesh::peer_register(peer, true).expect("peer register failed");
 //!
 //! // Mint a capability token valid for 10 000 ticks.
 //! let object_id: u64 = 0x1234_5678_0000_0001;
@@ -30,6 +30,45 @@ use super::raw::oreulius as sys;
 /// Byte length of an encoded `CapabilityTokenV1`.
 pub const TOKEN_LEN: usize = 116;
 
+#[inline]
+fn positive_len_from_rc(ret: i32) -> Result<usize, i32> {
+    match ret {
+        rc if rc > 0 => Ok(rc as usize),
+        rc if rc < 0 => Err(rc),
+        _ => Err(-1),
+    }
+}
+
+/// Session state for a registered mesh peer.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerSession {
+    /// The peer is known but has no active session yet.
+    Inactive,
+    /// The peer has an active session with the given epoch.
+    Active(u32),
+}
+
+impl PeerSession {
+    /// Returns `true` if the peer has an active mesh session.
+    #[inline]
+    pub const fn is_active(self) -> bool {
+        match self {
+            PeerSession::Active(_) => true,
+            PeerSession::Inactive => false,
+        }
+    }
+
+    /// Returns the active session epoch, if any.
+    #[inline]
+    pub const fn epoch(self) -> Option<u32> {
+        match self {
+            PeerSession::Active(epoch) => Some(epoch),
+            PeerSession::Inactive => None,
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Identity
 // ─────────────────────────────────────────────────────────────────────────────
@@ -39,6 +78,7 @@ pub const TOKEN_LEN: usize = 116;
 /// Use this value (e.g., as a rendezvous key) when advertising the node
 /// to other devices on the mesh.
 #[inline]
+#[must_use]
 pub fn local_id() -> u32 {
     unsafe { sys::mesh_local_id() as u32 }
 }
@@ -53,26 +93,34 @@ pub fn local_id() -> u32 {
 ///   when `false` it sets `PeerTrustPolicy::Audit` (allows the frame
 ///   through while logging anomalies).
 ///
-/// Returns `true` on success.
+/// Returns `Ok(())` on success or the negative kernel error code on failure.
 #[inline]
-pub fn peer_register(peer_id: u64, enforce: bool) -> bool {
+#[must_use]
+pub fn peer_register(peer_id: u64, enforce: bool) -> Result<(), i32> {
     let lo = (peer_id & 0xFFFF_FFFF) as i32;
     let hi = (peer_id >> 32) as i32;
     let trust = if enforce { 1 } else { 0 };
-    unsafe { sys::mesh_peer_register(lo, hi, trust) == 0 }
+    let ret = unsafe { sys::mesh_peer_register(lo, hi, trust) };
+    if ret == 0 { Ok(()) } else { Err(ret) }
 }
 
 /// Query the active session-key epoch for a registered peer.
 ///
-/// Returns `Some(epoch)` (≥ 1) if a session is active, `Some(0)` if the
-/// peer is registered but no session has been established, or `None` if the
-/// peer is not known.
+/// Returns the session state for a registered peer, or the negative kernel
+/// error code if the peer is not known.
 #[inline]
-pub fn peer_session(peer_id: u64) -> Option<i32> {
+#[must_use]
+pub fn peer_session(peer_id: u64) -> Result<PeerSession, i32> {
     let lo = (peer_id & 0xFFFF_FFFF) as i32;
     let hi = (peer_id >> 32) as i32;
     let v = unsafe { sys::mesh_peer_session(lo, hi) };
-    if v < 0 { None } else { Some(v) }
+    if v < 0 {
+        Err(v)
+    } else if v == 0 {
+        Ok(PeerSession::Inactive)
+    } else {
+        Ok(PeerSession::Active(v as u32))
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,6 +139,7 @@ pub fn peer_session(peer_id: u64) -> Option<i32> {
 /// Returns `Ok(())` on success, `Err(i32)` with the negative error code on
 /// failure.
 #[inline]
+#[must_use]
 pub fn token_mint(
     object_id:     u64,
     cap_type:      u8,
@@ -120,13 +169,14 @@ pub fn token_mint(
 ///
 /// Returns `Ok(frame_len)` on success, `Err(code)` on failure.
 #[inline]
+#[must_use]
 pub fn token_send(peer_id: u64, token: &[u8; TOKEN_LEN]) -> Result<usize, i32> {
     let lo = (peer_id & 0xFFFF_FFFF) as i32;
     let hi = (peer_id >> 32) as i32;
     let ret = unsafe {
         sys::mesh_token_send(lo, hi, token.as_ptr() as i32, TOKEN_LEN as i32)
     };
-    if ret >= 0 { Ok(ret as usize) } else { Err(ret) }
+    positive_len_from_rc(ret)
 }
 
 /// Receive a remote capability lease visible to this process as a
@@ -135,6 +185,7 @@ pub fn token_send(peer_id: u64, token: &[u8; TOKEN_LEN]) -> Result<usize, i32> {
 /// Returns `Ok(())` on success or `Err(-1)` if no visible lease is
 /// currently available.
 #[inline]
+#[must_use]
 pub fn token_recv(buf: &mut [u8; TOKEN_LEN]) -> Result<(), i32> {
     let ret = unsafe {
         sys::mesh_token_recv(buf.as_mut_ptr() as i32, TOKEN_LEN as i32)
@@ -154,6 +205,7 @@ pub fn token_recv(buf: &mut [u8; TOKEN_LEN]) -> Result<(), i32> {
 /// Returns `Ok(())` on success, `Err(-1)` if the migration queue is full,
 /// or `Err(-2)` if the bytecode exceeds the size limit.
 #[inline]
+#[must_use]
 pub fn migrate(peer_id: u64, bytecode: &[u8]) -> Result<(), i32> {
     let lo   = (peer_id & 0xFFFF_FFFF) as i32;
     let hi   = (peer_id >> 32) as i32;
@@ -161,4 +213,26 @@ pub fn migrate(peer_id: u64, bytecode: &[u8]) -> Result<(), i32> {
     let len  = bytecode.len() as i32;
     let ret  = unsafe { sys::mesh_migrate(lo, hi, ptr as i32, len) };
     if ret == 0 { Ok(()) } else { Err(ret) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positive_len_from_rc_rejects_zero_and_preserves_negative_errors() {
+        assert_eq!(positive_len_from_rc(12), Ok(12));
+        assert_eq!(positive_len_from_rc(0), Err(-1));
+        assert_eq!(positive_len_from_rc(-3), Err(-3));
+    }
+
+    #[test]
+    fn peer_session_helpers_expose_state() {
+        assert!(!PeerSession::Inactive.is_active());
+        assert_eq!(PeerSession::Inactive.epoch(), None);
+
+        let active = PeerSession::Active(9);
+        assert!(active.is_active());
+        assert_eq!(active.epoch(), Some(9));
+    }
 }

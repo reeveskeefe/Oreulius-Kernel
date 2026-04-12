@@ -256,7 +256,7 @@ pub struct WasmModule {
 | `Grain` | Grain language |
 | `Oreulius` | Oreulius-native module |
 
-`WasmModule::load(bytecode)` and `load_binary(bytecode)` parse the WASM binary format. Both respect `MAX_MODULE_SIZE`. `load_binary` performs stricter validation suitable for untrusted input.
+`load_binary(bytecode)` is the public WASM-module loader. It parses the binary format, respects `MAX_MODULE_SIZE`, and performs stricter validation suitable for untrusted input. The internal raw-bytecode helper used by kernel self-tests is not part of the public ABI.
 
 `Function` descriptor (per parsed function entry):
 

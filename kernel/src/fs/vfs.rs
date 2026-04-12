@@ -36,7 +36,7 @@ pub type MountFileNodeId = u64;
 
 pub const MAX_NAME_LEN: usize = 64;
 const VFS_PERSIST_MAGIC: u32 = 0x4F_56_46_53; // "OVFS"
-const VFS_PERSIST_VERSION: u16 = 3;
+const VFS_PERSIST_VERSION: u16 = 4;
 static NEXT_VFS_STORAGE_NAMESPACE: AtomicU32 = AtomicU32::new(1);
 const VFS_STORE_PREFIX: &str = "system/vfs/";
 const VFS_SNAPSHOT_KEY: &str = "system/vfs/snapshot.bin";
@@ -52,6 +52,24 @@ pub enum InodeKind {
     File,
     Directory,
     Symlink,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectoryEntryInfo {
+    pub inode: InodeId,
+    pub kind: InodeKind,
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VfsStat {
+    pub inode: InodeId,
+    pub kind: InodeKind,
+    pub nlink: u32,
+    pub size: u64,
+    pub atime: u64,
+    pub mtime: u64,
+    pub ctime: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,10 +124,15 @@ struct Inode {
 
 impl Inode {
     fn new(id: InodeId, kind: InodeKind, mode: u16) -> Self {
+        let mut meta = InodeMetadata::new(mode);
+        let now = vfs_timestamp_now();
+        meta.atime = now;
+        meta.mtime = now;
+        meta.ctime = now;
         Inode {
             id,
             kind,
-            meta: InodeMetadata::new(mode),
+            meta,
             data: Vec::new(),
             entries: Vec::new(),
         }
@@ -150,16 +173,23 @@ struct MountNode {
     data: Vec<u8>,
     entries: Vec<DirEntry>,
     nlink: u32,
+    atime: u64,
+    mtime: u64,
+    ctime: u64,
 }
 
 impl MountNode {
     fn new(id: MountNodeId, kind: MountNodeKind) -> Self {
+        let now = vfs_timestamp_now();
         MountNode {
             id,
             kind,
             data: Vec::new(),
             entries: Vec::new(),
             nlink: 1,
+            atime: now,
+            mtime: now,
+            ctime: now,
         }
     }
 
@@ -198,6 +228,11 @@ trait MountedBackendContract {
         flags: OpenFlags,
         full_path: &str,
     ) -> Result<HandleKind, &'static str>;
+    fn list_entries(
+        &mut self,
+        mount_idx: usize,
+        subpath: &str,
+    ) -> Result<Vec<DirectoryEntryInfo>, &'static str>;
     fn list(&mut self, subpath: &str, out: &mut [u8]) -> Result<usize, &'static str>;
     fn read(&mut self, subpath: &str, out: &mut [u8]) -> Result<usize, &'static str>;
     fn write(&mut self, subpath: &str, data: &[u8]) -> Result<usize, &'static str>;
@@ -208,6 +243,17 @@ trait MountedBackendContract {
         data: &[u8],
     ) -> Result<usize, &'static str>;
     fn path_size(&mut self, subpath: &str) -> Result<usize, &'static str>;
+    fn stat(&mut self, mount_idx: usize, subpath: &str) -> Result<VfsStat, &'static str>;
+    fn resize(&mut self, subpath: &str, new_size: usize) -> Result<(), &'static str>;
+    fn set_times(
+        &mut self,
+        subpath: &str,
+        atime: u64,
+        mtime: u64,
+        fst_flags: u32,
+        follow_final_symlink: bool,
+    ) -> Result<(), &'static str>;
+    fn sync(&mut self, subpath: &str) -> Result<(), &'static str>;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -245,6 +291,11 @@ struct MountHealthCounters {
     mutations: u64,
     errors: u64,
     last_error: Option<String>,
+}
+
+#[inline]
+fn vfs_timestamp_now() -> u64 {
+    crate::scheduler::pit::get_ticks().saturating_mul(1_000_000)
 }
 
 struct Mount {
@@ -481,6 +532,75 @@ impl VirtioMountState {
         }
     }
 
+    fn node_stat(&self, mount_idx: usize, node_id: MountNodeId) -> Result<VfsStat, &'static str> {
+        let node = self.get_node(node_id).ok_or("File not found")?;
+        let size = match node.kind {
+            MountNodeKind::Directory => 0,
+            _ => self.node_size(node_id)? as u64,
+        };
+        Ok(VfsStat {
+            inode: synthetic_mount_inode_id(mount_idx, node_id),
+            kind: mount_node_kind_to_inode_kind(node.kind),
+            nlink: node.nlink,
+            size,
+            atime: node.atime,
+            mtime: node.mtime,
+            ctime: node.ctime,
+        })
+    }
+
+    fn resize_node(&mut self, node_id: MountNodeId, new_size: usize) -> Result<(), &'static str> {
+        let now = vfs_timestamp_now();
+        let node = self.get_node_mut(node_id).ok_or("File not found")?;
+        match node.kind {
+            MountNodeKind::File => {
+                node.data.resize(new_size, 0);
+                node.mtime = now;
+                node.ctime = now;
+                Ok(())
+            }
+            MountNodeKind::VirtioRaw => Err("Resize not supported"),
+            MountNodeKind::VirtioPartitions => Err("Partitions file is read-only"),
+            MountNodeKind::Directory => Err("Not a file"),
+            MountNodeKind::Symlink => Err("Not a file"),
+        }
+    }
+
+    fn set_node_times(
+        &mut self,
+        node_id: MountNodeId,
+        atime: u64,
+        mtime: u64,
+        fst_flags: u32,
+    ) -> Result<(), &'static str> {
+        const FSTFLAGS_ATIM: u32 = 1 << 0;
+        const FSTFLAGS_ATIM_NOW: u32 = 1 << 1;
+        const FSTFLAGS_MTIM: u32 = 1 << 2;
+        const FSTFLAGS_MTIM_NOW: u32 = 1 << 3;
+
+        if fst_flags & (FSTFLAGS_ATIM | FSTFLAGS_ATIM_NOW) == (FSTFLAGS_ATIM | FSTFLAGS_ATIM_NOW)
+            || fst_flags & (FSTFLAGS_MTIM | FSTFLAGS_MTIM_NOW)
+                == (FSTFLAGS_MTIM | FSTFLAGS_MTIM_NOW)
+        {
+            return Err("Invalid timestamp flags");
+        }
+
+        let now = vfs_timestamp_now();
+        let node = self.get_node_mut(node_id).ok_or("File not found")?;
+        if fst_flags & FSTFLAGS_ATIM_NOW != 0 {
+            node.atime = now;
+        } else if fst_flags & FSTFLAGS_ATIM != 0 {
+            node.atime = atime;
+        }
+        if fst_flags & FSTFLAGS_MTIM_NOW != 0 {
+            node.mtime = now;
+        } else if fst_flags & FSTFLAGS_MTIM != 0 {
+            node.mtime = mtime;
+        }
+        node.ctime = now;
+        Ok(())
+    }
+
     fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), &'static str> {
         let node_count = self.nodes.iter().flatten().count() as u32;
         out.extend_from_slice(&node_count.to_le_bytes());
@@ -494,6 +614,9 @@ impl VirtioMountState {
                 MountNodeKind::VirtioPartitions => 4,
             });
             out.extend_from_slice(&node.nlink.to_le_bytes());
+            out.extend_from_slice(&node.atime.to_le_bytes());
+            out.extend_from_slice(&node.mtime.to_le_bytes());
+            out.extend_from_slice(&node.ctime.to_le_bytes());
             let data_len =
                 u32::try_from(node.data.len()).map_err(|_| "Persistent mount state too large")?;
             out.extend_from_slice(&data_len.to_le_bytes());
@@ -513,7 +636,7 @@ impl VirtioMountState {
         Ok(())
     }
 
-    fn decode_from(data: &[u8], cursor: &mut usize) -> Option<Self> {
+    fn decode_from(data: &[u8], cursor: &mut usize, version: u16) -> Option<Self> {
         let node_count = read_u32(data, *cursor)? as usize;
         *cursor += 4;
         let mut max_id = 0usize;
@@ -532,6 +655,17 @@ impl VirtioMountState {
             *cursor += 1;
             let nlink = read_u32(data, *cursor)?;
             *cursor += 4;
+            let (atime, mtime, ctime) = if version >= 4 {
+                let atime = read_u64(data, *cursor)?;
+                *cursor += 8;
+                let mtime = read_u64(data, *cursor)?;
+                *cursor += 8;
+                let ctime = read_u64(data, *cursor)?;
+                *cursor += 8;
+                (atime, mtime, ctime)
+            } else {
+                (0, 0, 0)
+            };
             let data_len = read_u32(data, *cursor)? as usize;
             *cursor += 4;
             let entry_count = read_u32(data, *cursor)? as usize;
@@ -558,6 +692,9 @@ impl VirtioMountState {
             }
             let mut node = MountNode::new(id, kind);
             node.nlink = nlink;
+            node.atime = atime;
+            node.mtime = mtime;
+            node.ctime = ctime;
             node.data = node_data;
             node.entries = entries;
             max_id = max_id.max(id as usize);
@@ -595,7 +732,13 @@ impl MountedBackendContract for VirtioMountState {
         let (parent, name) = VirtioMountState::split_parent(subpath)?;
         let parent_id = self.resolve_path(&parent)?;
         let node_id = self.alloc_node(MountNodeKind::Directory);
-        self.add_dir_entry(parent_id, &name, node_id)
+        self.add_dir_entry(parent_id, &name, node_id)?;
+        if let Some(parent) = self.get_node_mut(parent_id) {
+            let now = vfs_timestamp_now();
+            parent.mtime = now;
+            parent.ctime = now;
+        }
+        Ok(())
     }
 
     fn create_file(&mut self, subpath: &str) -> Result<MountNodeId, &'static str> {
@@ -603,6 +746,11 @@ impl MountedBackendContract for VirtioMountState {
         let parent_id = self.resolve_path(&parent)?;
         let node_id = self.alloc_node(MountNodeKind::File);
         self.add_dir_entry(parent_id, &name, node_id)?;
+        if let Some(parent) = self.get_node_mut(parent_id) {
+            let now = vfs_timestamp_now();
+            parent.mtime = now;
+            parent.ctime = now;
+        }
         Ok(node_id)
     }
 
@@ -633,8 +781,15 @@ impl MountedBackendContract for VirtioMountState {
         let node = slot.as_mut().ok_or("File not found")?;
         if node.nlink > 1 {
             node.nlink -= 1;
+            let now = vfs_timestamp_now();
+            node.ctime = now;
         } else {
             *slot = None;
+        }
+        if let Some(parent) = self.get_node_mut(parent_id) {
+            let now = vfs_timestamp_now();
+            parent.mtime = now;
+            parent.ctime = now;
         }
         Ok(())
     }
@@ -663,6 +818,11 @@ impl MountedBackendContract for VirtioMountState {
             .get_mut(node_id as usize)
             .ok_or("Directory not found")?;
         *slot = None;
+        if let Some(parent) = self.get_node_mut(parent_id) {
+            let now = vfs_timestamp_now();
+            parent.mtime = now;
+            parent.ctime = now;
+        }
         Ok(())
     }
 
@@ -707,6 +867,20 @@ impl MountedBackendContract for VirtioMountState {
                 return Err(e);
             }
         }
+        let now = vfs_timestamp_now();
+        if let Some(node) = self.get_node_mut(node_id) {
+            node.ctime = now;
+        }
+        if let Some(parent) = self.get_node_mut(old_parent_id) {
+            parent.mtime = now;
+            parent.ctime = now;
+        }
+        if old_parent_id != new_parent_id {
+            if let Some(parent) = self.get_node_mut(new_parent_id) {
+                parent.mtime = now;
+                parent.ctime = now;
+            }
+        }
         Ok(())
     }
 
@@ -723,6 +897,12 @@ impl MountedBackendContract for VirtioMountState {
         self.add_dir_entry(parent_id, &name, node_id)?;
         let node = self.get_node_mut(node_id).ok_or("File not found")?;
         node.nlink = node.nlink.saturating_add(1);
+        node.ctime = vfs_timestamp_now();
+        if let Some(parent) = self.get_node_mut(parent_id) {
+            let now = vfs_timestamp_now();
+            parent.mtime = now;
+            parent.ctime = now;
+        }
         Ok(())
     }
 
@@ -733,12 +913,21 @@ impl MountedBackendContract for VirtioMountState {
         let node_id = self.alloc_node(MountNodeKind::Symlink);
         let node = self.get_node_mut(node_id).ok_or("Symlink not found")?;
         node.data.extend_from_slice(target.as_bytes());
-        self.add_dir_entry(parent_id, &name, node_id)
+        node.mtime = vfs_timestamp_now();
+        node.ctime = node.mtime;
+        self.add_dir_entry(parent_id, &name, node_id)?;
+        if let Some(parent) = self.get_node_mut(parent_id) {
+            let now = vfs_timestamp_now();
+            parent.mtime = now;
+            parent.ctime = now;
+        }
+        Ok(())
     }
 
     fn readlink(&mut self, subpath: &str) -> Result<String, &'static str> {
         let node_id = self.resolve_path_nofollow(subpath)?;
-        let node = self.get_node(node_id).ok_or("File not found")?;
+        let node = self.get_node_mut(node_id).ok_or("File not found")?;
+        node.atime = vfs_timestamp_now();
         Ok(node.symlink_target()?.to_string())
     }
 
@@ -784,6 +973,31 @@ impl MountedBackendContract for VirtioMountState {
         }
     }
 
+    fn list_entries(
+        &mut self,
+        mount_idx: usize,
+        subpath: &str,
+    ) -> Result<Vec<DirectoryEntryInfo>, &'static str> {
+        let node_id = self.resolve_path(subpath)?;
+        let node = self.get_node(node_id).ok_or("Directory not found")?;
+        if node.kind != MountNodeKind::Directory {
+            return Err("Not a directory");
+        }
+
+        let mut entries = Vec::with_capacity(node.entries.len());
+        for entry in &node.entries {
+            let child = self
+                .get_node(entry.inode)
+                .ok_or("Directory entry target missing")?;
+            entries.push(DirectoryEntryInfo {
+                inode: synthetic_mount_inode_id(mount_idx, entry.inode),
+                kind: mount_node_kind_to_inode_kind(child.kind),
+                name: entry.name.clone(),
+            });
+        }
+        Ok(entries)
+    }
+
     fn list(&mut self, subpath: &str, out: &mut [u8]) -> Result<usize, &'static str> {
         let node_id = self.resolve_path(subpath)?;
         let node = self.get_node(node_id).ok_or("Directory not found")?;
@@ -802,9 +1016,12 @@ impl MountedBackendContract for VirtioMountState {
 
     fn read(&mut self, subpath: &str, out: &mut [u8]) -> Result<usize, &'static str> {
         let node_id = self.resolve_path(subpath)?;
-        let node = self.get_node(node_id).ok_or("File not found")?;
-        match node.kind {
+        let node_kind = self.get_node(node_id).ok_or("File not found")?.kind;
+        let now = vfs_timestamp_now();
+        match node_kind {
             MountNodeKind::File | MountNodeKind::Symlink => {
+                let node = self.get_node_mut(node_id).ok_or("File not found")?;
+                node.atime = now;
                 let len = min(out.len(), node.data.len());
                 out[..len].copy_from_slice(&node.data[..len]);
                 Ok(len)
@@ -831,6 +1048,9 @@ impl MountedBackendContract for VirtioMountState {
                         let node = self.get_node_mut(node_id).ok_or("File not found")?;
                         node.data.clear();
                         node.data.extend_from_slice(data);
+                        let now = vfs_timestamp_now();
+                        node.mtime = now;
+                        node.ctime = now;
                         Ok(data.len())
                     }
                     MountNodeKind::VirtioRaw => virtio_write_at(0, data),
@@ -843,6 +1063,9 @@ impl MountedBackendContract for VirtioMountState {
                 let node_id = self.create_file(&subpath)?;
                 let node = self.get_node_mut(node_id).ok_or("File not found")?;
                 node.data.extend_from_slice(data);
+                let now = vfs_timestamp_now();
+                node.mtime = now;
+                node.ctime = now;
                 Ok(data.len())
             }
         }
@@ -866,6 +1089,9 @@ impl MountedBackendContract for VirtioMountState {
                     node.data.resize(offset + data.len(), 0);
                 }
                 node.data[offset..offset + data.len()].copy_from_slice(data);
+                let now = vfs_timestamp_now();
+                node.mtime = now;
+                node.ctime = now;
                 Ok(data.len())
             }
             MountNodeKind::VirtioRaw => virtio_write_at(offset, data),
@@ -878,6 +1104,42 @@ impl MountedBackendContract for VirtioMountState {
     fn path_size(&mut self, subpath: &str) -> Result<usize, &'static str> {
         let node_id = self.resolve_path(subpath)?;
         self.node_size(node_id)
+    }
+
+    fn stat(&mut self, mount_idx: usize, subpath: &str) -> Result<VfsStat, &'static str> {
+        let node_id = self.resolve_path(subpath)?;
+        self.node_stat(mount_idx, node_id)
+    }
+
+    fn resize(&mut self, subpath: &str, new_size: usize) -> Result<(), &'static str> {
+        let node_id = self.resolve_path(subpath)?;
+        self.resize_node(node_id, new_size)
+    }
+
+    fn set_times(
+        &mut self,
+        subpath: &str,
+        atime: u64,
+        mtime: u64,
+        fst_flags: u32,
+        follow_final_symlink: bool,
+    ) -> Result<(), &'static str> {
+        let node_id = if follow_final_symlink {
+            self.resolve_path(subpath)?
+        } else {
+            self.resolve_path_nofollow(subpath)?
+        };
+        self.set_node_times(node_id, atime, mtime, fst_flags)
+    }
+
+    fn sync(&mut self, subpath: &str) -> Result<(), &'static str> {
+        let node_id = self.resolve_path(subpath)?;
+        match self.get_node(node_id).ok_or("File not found")?.kind {
+            MountNodeKind::File | MountNodeKind::VirtioRaw => Ok(()),
+            MountNodeKind::VirtioPartitions => Err("Partitions file is read-only"),
+            MountNodeKind::Directory => Err("Not a file"),
+            MountNodeKind::Symlink => Err("Not a file"),
+        }
     }
 }
 
@@ -948,6 +1210,16 @@ impl MountedBackendContract for MountState {
         }
     }
 
+    fn list_entries(
+        &mut self,
+        mount_idx: usize,
+        subpath: &str,
+    ) -> Result<Vec<DirectoryEntryInfo>, &'static str> {
+        match self {
+            MountState::VirtioBlock(state) => state.list_entries(mount_idx, subpath),
+        }
+    }
+
     fn list(&mut self, subpath: &str, out: &mut [u8]) -> Result<usize, &'static str> {
         match self {
             MountState::VirtioBlock(state) => state.list(subpath, out),
@@ -980,6 +1252,39 @@ impl MountedBackendContract for MountState {
     fn path_size(&mut self, subpath: &str) -> Result<usize, &'static str> {
         match self {
             MountState::VirtioBlock(state) => state.path_size(subpath),
+        }
+    }
+
+    fn stat(&mut self, mount_idx: usize, subpath: &str) -> Result<VfsStat, &'static str> {
+        match self {
+            MountState::VirtioBlock(state) => state.stat(mount_idx, subpath),
+        }
+    }
+
+    fn resize(&mut self, subpath: &str, new_size: usize) -> Result<(), &'static str> {
+        match self {
+            MountState::VirtioBlock(state) => state.resize(subpath, new_size),
+        }
+    }
+
+    fn set_times(
+        &mut self,
+        subpath: &str,
+        atime: u64,
+        mtime: u64,
+        fst_flags: u32,
+        follow_final_symlink: bool,
+    ) -> Result<(), &'static str> {
+        match self {
+            MountState::VirtioBlock(state) => {
+                state.set_times(subpath, atime, mtime, fst_flags, follow_final_symlink)
+            }
+        }
+    }
+
+    fn sync(&mut self, subpath: &str) -> Result<(), &'static str> {
+        match self {
+            MountState::VirtioBlock(state) => state.sync(subpath),
         }
     }
 }
@@ -1338,7 +1643,9 @@ impl Vfs {
         let inode = self.get_inode_mut(inode_id).ok_or("File not found")?;
         inode.data.clear();
         inode.meta.size = payload.len() as u64;
-        inode.meta.mtime = 0;
+        let now = vfs_timestamp_now();
+        inode.meta.mtime = now;
+        inode.meta.ctime = now;
         Ok(())
     }
 
@@ -1353,6 +1660,9 @@ impl Vfs {
         if let Some(inode) = self.get_inode_mut(inode_id) {
             inode.data.clear();
             inode.meta.size = 0;
+            let now = vfs_timestamp_now();
+            inode.meta.mtime = now;
+            inode.meta.ctime = now;
         }
     }
 
@@ -2829,7 +3139,7 @@ impl Vfs {
             return None;
         }
         let version = read_u16(data, 4)?;
-        if version != 1 && version != VFS_PERSIST_VERSION {
+        if version != 1 && version != 3 && version != VFS_PERSIST_VERSION {
             return None;
         }
         let mut cursor = 6usize;
@@ -2951,7 +3261,7 @@ impl Vfs {
             let state = match (backend, version) {
                 (MountBackend::VirtioBlock, 1) => MountState::VirtioBlock(VirtioMountState::new()),
                 (MountBackend::VirtioBlock, _) => {
-                    MountState::VirtioBlock(VirtioMountState::decode_from(data, &mut cursor)?)
+                    MountState::VirtioBlock(VirtioMountState::decode_from(data, &mut cursor, version)?)
                 }
             };
             mounts.push(Mount {
@@ -3578,6 +3888,66 @@ pub fn list_dir(path: &str, out: &mut [u8]) -> Result<usize, &'static str> {
     })
 }
 
+pub fn list_dir_entries(path: &str) -> Result<Vec<DirectoryEntryInfo>, &'static str> {
+    let normalized_path = normalize_path(path)?;
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
+            let chain = vfs.resolve_authority_chain(&normalized_path, true)?;
+            let _ = vfs.ensure_path_rights(
+                vfs_platform::current_pid(),
+                &normalized_path,
+                &chain,
+                VfsAccess::List,
+            )?;
+            let result = mount_list_entries(vfs, mount_idx, &sub);
+            match &result {
+                Ok(_) => vfs.note_mount_success(mount_idx, MountOperation::Read),
+                Err(e) => vfs.note_mount_error(mount_idx, MountOperation::Read, &sub, e),
+            }
+            let entries = result?;
+            vfs.record_watch_event(
+                VfsWatchKind::List,
+                &normalized_path,
+                Some(alloc::format!("entries={}", entries.len())),
+            );
+            return Ok(entries);
+        }
+
+        let chain = vfs.resolve_path_chain(&normalized_path, true)?;
+        let _ = vfs.ensure_path_rights(
+            vfs_platform::current_pid(),
+            &normalized_path,
+            &chain,
+            VfsAccess::List,
+        )?;
+        let inode_id = vfs.resolve_path(&normalized_path)?;
+        let inode = vfs.get_inode(inode_id).ok_or("Directory not found")?;
+        if inode.kind != InodeKind::Directory {
+            return Err("Not a directory");
+        }
+
+        let mut entries = Vec::with_capacity(inode.entries.len());
+        for entry in &inode.entries {
+            let child = vfs
+                .get_inode(entry.inode)
+                .ok_or("Directory entry target missing")?;
+            entries.push(DirectoryEntryInfo {
+                inode: entry.inode,
+                kind: child.kind,
+                name: entry.name.clone(),
+            });
+        }
+
+        vfs.record_watch_event(
+            VfsWatchKind::List,
+            &normalized_path,
+            Some(alloc::format!("entries={}", entries.len())),
+        );
+        Ok(entries)
+    })
+}
+
 pub fn path_size(path: &str) -> Result<usize, &'static str> {
     let normalized_path = normalize_path(path)?;
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
@@ -3610,6 +3980,231 @@ pub fn path_size(path: &str) -> Result<usize, &'static str> {
             InodeKind::File => vfs.inode_payload_len(inode_id),
             InodeKind::Symlink => Ok(inode.data.len()),
             InodeKind::Directory => Err("Not a file"),
+        }
+    })
+}
+
+fn stat_path_internal(path: &str, follow_final_symlink: bool) -> Result<VfsStat, &'static str> {
+    let normalized_path = normalize_path(path)?;
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
+            let chain = vfs.resolve_authority_chain(&normalized_path, follow_final_symlink)?;
+            let _ = vfs.ensure_path_rights(
+                vfs_platform::current_pid(),
+                &normalized_path,
+                &chain,
+                VfsAccess::Read,
+            )?;
+            let result = mount_stat(vfs, mount_idx, &sub);
+            match &result {
+                Ok(_) => vfs.note_mount_success(mount_idx, MountOperation::Read),
+                Err(e) => vfs.note_mount_error(mount_idx, MountOperation::Read, &sub, e),
+            }
+            return result;
+        }
+
+        let chain = vfs.resolve_path_chain(&normalized_path, follow_final_symlink)?;
+        let _ = vfs.ensure_path_rights(
+            vfs_platform::current_pid(),
+            &normalized_path,
+            &chain,
+            VfsAccess::Read,
+        )?;
+        let inode_id = if follow_final_symlink {
+            vfs.resolve_path(&normalized_path)?
+        } else {
+            vfs.resolve_path_nofollow(&normalized_path)?
+        };
+        let inode = vfs.get_inode(inode_id).ok_or("File not found")?;
+        let size = match inode.kind {
+            InodeKind::Directory => 0,
+            InodeKind::File => inode.meta.size,
+            InodeKind::Symlink => inode.data.len() as u64,
+        };
+        Ok(VfsStat {
+            inode: inode_id,
+            kind: inode.kind,
+            nlink: inode.meta.nlink,
+            size,
+            atime: inode.meta.atime,
+            mtime: inode.meta.mtime,
+            ctime: inode.meta.ctime,
+        })
+    })
+}
+
+pub fn stat_path(path: &str) -> Result<VfsStat, &'static str> {
+    stat_path_internal(path, true)
+}
+
+pub fn stat_path_nofollow(path: &str) -> Result<VfsStat, &'static str> {
+    stat_path_internal(path, false)
+}
+
+pub fn resize_path(path: &str, new_size: usize) -> Result<(), &'static str> {
+    let normalized_path = normalize_path(path)?;
+    let subject_pid = vfs_platform::current_pid();
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
+            let chain = vfs.resolve_authority_chain(&normalized_path, true)?;
+            let _ = vfs.ensure_path_rights(subject_pid, &normalized_path, &chain, VfsAccess::Write)?;
+            let result = mount_resize(vfs, mount_idx, &sub, new_size);
+            match &result {
+                Ok(_) => vfs.note_mount_success(mount_idx, MountOperation::Write),
+                Err(e) => vfs.note_mount_error(mount_idx, MountOperation::Write, &sub, e),
+            }
+            result?;
+            vfs.record_mutation_journal(
+                "resize",
+                &alloc::format!("path={} size={}", normalized_path, new_size),
+            );
+            vfs.record_watch_event(
+                VfsWatchKind::Write,
+                &normalized_path,
+                Some(alloc::format!("resize={}", new_size)),
+            );
+            vfs.persist_local_state();
+            return Ok(());
+        }
+
+        let chain = vfs.resolve_path_chain(&normalized_path, true)?;
+        let _ = vfs.ensure_path_rights(subject_pid, &normalized_path, &chain, VfsAccess::Write)?;
+        let inode_id = vfs.resolve_path(&normalized_path)?;
+        let inode = vfs.get_inode(inode_id).ok_or("File not found")?;
+        if inode.kind != InodeKind::File {
+            return Err("Not a file");
+        }
+        let old_size = vfs.inode_payload_len(inode_id)?;
+        vfs.ensure_file_size_allowed(new_size)?;
+        vfs.ensure_quota_allows(subject_pid, &chain, old_size, new_size, false)?;
+        let mut payload = vfs.read_file_payload(inode_id)?;
+        payload.resize(new_size, 0);
+        vfs.write_file_payload(inode_id, &payload)?;
+        vfs.record_mutation_journal(
+            "resize",
+            &alloc::format!("path={} size={}", normalized_path, new_size),
+        );
+        vfs.record_watch_event(
+            VfsWatchKind::Write,
+            &normalized_path,
+            Some(alloc::format!("resize={}", new_size)),
+        );
+        vfs.persist_local_state();
+        Ok(())
+    })
+}
+
+pub fn set_path_times(
+    path: &str,
+    atime: u64,
+    mtime: u64,
+    fst_flags: u32,
+    follow_final_symlink: bool,
+) -> Result<(), &'static str> {
+    const FSTFLAGS_ATIM: u32 = 1 << 0;
+    const FSTFLAGS_ATIM_NOW: u32 = 1 << 1;
+    const FSTFLAGS_MTIM: u32 = 1 << 2;
+    const FSTFLAGS_MTIM_NOW: u32 = 1 << 3;
+
+    if fst_flags & (FSTFLAGS_ATIM | FSTFLAGS_ATIM_NOW) == (FSTFLAGS_ATIM | FSTFLAGS_ATIM_NOW)
+        || fst_flags & (FSTFLAGS_MTIM | FSTFLAGS_MTIM_NOW)
+            == (FSTFLAGS_MTIM | FSTFLAGS_MTIM_NOW)
+    {
+        return Err("Invalid timestamp flags");
+    }
+
+    let normalized_path = normalize_path(path)?;
+    let subject_pid = vfs_platform::current_pid();
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
+            let chain = vfs.resolve_authority_chain(&normalized_path, follow_final_symlink)?;
+            let _ = vfs.ensure_path_rights(subject_pid, &normalized_path, &chain, VfsAccess::Write)?;
+            let result = mount_set_times(
+                vfs,
+                mount_idx,
+                &sub,
+                atime,
+                mtime,
+                fst_flags,
+                follow_final_symlink,
+            );
+            match &result {
+                Ok(_) => vfs.note_mount_success(mount_idx, MountOperation::Mutation),
+                Err(e) => vfs.note_mount_error(mount_idx, MountOperation::Mutation, &sub, e),
+            }
+            result?;
+            vfs.record_mutation_journal(
+                "set-times",
+                &alloc::format!("path={} flags={}", normalized_path, fst_flags),
+            );
+            vfs.persist_local_state();
+            return Ok(());
+        }
+
+        let chain = vfs.resolve_path_chain(&normalized_path, follow_final_symlink)?;
+        let _ = vfs.ensure_path_rights(subject_pid, &normalized_path, &chain, VfsAccess::Write)?;
+        let inode_id = if follow_final_symlink {
+            vfs.resolve_path(&normalized_path)?
+        } else {
+            vfs.resolve_path_nofollow(&normalized_path)?
+        };
+        let inode = vfs.get_inode_mut(inode_id).ok_or("File not found")?;
+        let now = vfs_timestamp_now();
+        if fst_flags & FSTFLAGS_ATIM_NOW != 0 {
+            inode.meta.atime = now;
+        } else if fst_flags & FSTFLAGS_ATIM != 0 {
+            inode.meta.atime = atime;
+        }
+        if fst_flags & FSTFLAGS_MTIM_NOW != 0 {
+            inode.meta.mtime = now;
+        } else if fst_flags & FSTFLAGS_MTIM != 0 {
+            inode.meta.mtime = mtime;
+        }
+        inode.meta.ctime = now;
+        vfs.record_mutation_journal(
+            "set-times",
+            &alloc::format!("path={} flags={}", normalized_path, fst_flags),
+        );
+        vfs.persist_local_state();
+        Ok(())
+    })
+}
+
+pub fn sync_path(path: &str) -> Result<(), &'static str> {
+    let normalized_path = normalize_path(path)?;
+    thread_context().acquire_lock(&VFS, |vfs, _sub| {
+        vfs.init();
+        if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
+            let chain = vfs.resolve_authority_chain(&normalized_path, true)?;
+            let _ = vfs.ensure_path_rights(
+                vfs_platform::current_pid(),
+                &normalized_path,
+                &chain,
+                VfsAccess::Write,
+            )?;
+            let result = mount_sync(vfs, mount_idx, &sub);
+            match &result {
+                Ok(_) => vfs.note_mount_success(mount_idx, MountOperation::Write),
+                Err(e) => vfs.note_mount_error(mount_idx, MountOperation::Write, &sub, e),
+            }
+            return result;
+        }
+
+        let chain = vfs.resolve_path_chain(&normalized_path, true)?;
+        let _ = vfs.ensure_path_rights(
+            vfs_platform::current_pid(),
+            &normalized_path,
+            &chain,
+            VfsAccess::Write,
+        )?;
+        let inode_id = vfs.resolve_path(&normalized_path)?;
+        let inode = vfs.get_inode(inode_id).ok_or("File not found")?;
+        match inode.kind {
+            InodeKind::File => Ok(()),
+            _ => Err("Not a file"),
         }
     })
 }
@@ -3785,8 +4380,12 @@ pub fn readlink(path: &str) -> Result<String, &'static str> {
     })
 }
 
-pub fn mount_virtio(path: &str) -> Result<(), &'static str> {
-    if !virtio_blk::is_present() {
+fn mount_virtio_internal(
+    path: &str,
+    require_device: bool,
+    allow_existing: bool,
+) -> Result<(), &'static str> {
+    if require_device && !virtio_blk::is_present() {
         return Err("No VirtIO block device present");
     }
     let norm = normalize_path(path)?;
@@ -3801,7 +4400,11 @@ pub fn mount_virtio(path: &str) -> Result<(), &'static str> {
             return Err("Mount point is not a directory");
         }
         if vfs.mounts.iter().any(|m| m.path == norm) {
-            return Err("Mount point already used");
+            return if allow_existing {
+                Ok(())
+            } else {
+                Err("Mount point already used")
+            };
         }
         let journal_path = norm.clone();
         vfs.mounts.push(Mount {
@@ -3822,6 +4425,14 @@ pub fn mount_virtio(path: &str) -> Result<(), &'static str> {
         vfs.persist_local_state();
         Ok(())
     })
+}
+
+pub fn mount_virtio(path: &str) -> Result<(), &'static str> {
+    mount_virtio_internal(path, true, false)
+}
+
+pub(crate) fn formal_mount_virtio(path: &str) -> Result<(), &'static str> {
+    mount_virtio_internal(path, false, true)
 }
 
 // ============================================================================
@@ -4466,6 +5077,16 @@ fn synthetic_mount_inode_id(mount_idx: usize, node_id: MountNodeId) -> InodeId {
     0x8000_0000_0000_0000u64 | ((mount_idx as u64) << 32) | (node_id & 0xFFFF_FFFF)
 }
 
+fn mount_node_kind_to_inode_kind(kind: MountNodeKind) -> InodeKind {
+    match kind {
+        MountNodeKind::File | MountNodeKind::VirtioRaw | MountNodeKind::VirtioPartitions => {
+            InodeKind::File
+        }
+        MountNodeKind::Directory => InodeKind::Directory,
+        MountNodeKind::Symlink => InodeKind::Symlink,
+    }
+}
+
 fn mount_mkdir(vfs: &mut Vfs, mount_idx: usize, subpath: &str) -> Result<(), &'static str> {
     mount_state_mut(vfs, mount_idx)?.mkdir(subpath)
 }
@@ -4538,6 +5159,14 @@ fn mount_list(
     mount_state_mut(vfs, mount_idx)?.list(subpath, out)
 }
 
+fn mount_list_entries(
+    vfs: &mut Vfs,
+    mount_idx: usize,
+    subpath: &str,
+) -> Result<Vec<DirectoryEntryInfo>, &'static str> {
+    mount_state_mut(vfs, mount_idx)?.list_entries(mount_idx, subpath)
+}
+
 fn mount_read(
     vfs: &mut Vfs,
     mount_idx: usize,
@@ -4568,6 +5197,41 @@ fn mount_write_at(
 
 fn mount_path_size(vfs: &mut Vfs, mount_idx: usize, subpath: &str) -> Result<usize, &'static str> {
     mount_state_mut(vfs, mount_idx)?.path_size(subpath)
+}
+
+fn mount_stat(vfs: &mut Vfs, mount_idx: usize, subpath: &str) -> Result<VfsStat, &'static str> {
+    mount_state_mut(vfs, mount_idx)?.stat(mount_idx, subpath)
+}
+
+fn mount_resize(
+    vfs: &mut Vfs,
+    mount_idx: usize,
+    subpath: &str,
+    new_size: usize,
+) -> Result<(), &'static str> {
+    mount_state_mut(vfs, mount_idx)?.resize(subpath, new_size)
+}
+
+fn mount_set_times(
+    vfs: &mut Vfs,
+    mount_idx: usize,
+    subpath: &str,
+    atime: u64,
+    mtime: u64,
+    fst_flags: u32,
+    follow_final_symlink: bool,
+) -> Result<(), &'static str> {
+    mount_state_mut(vfs, mount_idx)?.set_times(
+        subpath,
+        atime,
+        mtime,
+        fst_flags,
+        follow_final_symlink,
+    )
+}
+
+fn mount_sync(vfs: &mut Vfs, mount_idx: usize, subpath: &str) -> Result<(), &'static str> {
+    mount_state_mut(vfs, mount_idx)?.sync(subpath)
 }
 
 fn mount_file_read_at(

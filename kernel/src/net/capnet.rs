@@ -2892,9 +2892,34 @@ pub fn capnet_fuzz_regression_soak_default(
 /// - Replay window rejects duplicate control sequence.
 /// - Revocation precedence blocks descendants after parent revocation.
 pub fn formal_capnet_self_check() -> Result<(), &'static str> {
+    // The formal self-check mutates global peer / delegation / revocation state
+    // as a deterministic harness. Keep it non-preemptible and suppress temporal
+    // persistence side effects so timer-driven scheduling cannot interleave with
+    // the test state machine.
+    let _irq_guard = {
+        struct CapNetIrqGuard(crate::scheduler::scheduler_platform::IrqFlags);
+        impl Drop for CapNetIrqGuard {
+            fn drop(&mut self) {
+                unsafe { crate::scheduler::scheduler_platform::irq_restore(self.0) };
+            }
+        }
+        CapNetIrqGuard(unsafe { crate::scheduler::scheduler_platform::irq_save_disable() })
+    };
+    let _fuzz_active_guard = {
+        struct CapNetFormalHarnessGuard {
+            prev: bool,
+        }
+        impl Drop for CapNetFormalHarnessGuard {
+            fn drop(&mut self) {
+                CAPNET_FUZZ_ACTIVE.store(self.prev, Ordering::SeqCst);
+            }
+        }
+        let prev = CAPNET_FUZZ_ACTIVE.swap(true, Ordering::SeqCst);
+        CapNetFormalHarnessGuard { prev }
+    };
+
     init().map_err(|e| e.as_str())?;
     let local = local_device_id().ok_or("CapNet local identity unavailable")?;
-    register_peer(local, PeerTrustPolicy::Audit, 0).map_err(|e| e.as_str())?;
 
     let nonce_base = ((crate::scheduler::pit::get_ticks() as u64) << 16)
         ^ (security::security().random_u32() as u64)
@@ -2905,13 +2930,27 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
         k1 = 1;
     }
 
-    install_peer_session_key(local, 1, k0, k1, 0).map_err(|e| e.as_str())?;
+    reset_fuzz_harness_state(local, 1, k0, k1).map_err(|e| e.as_str())?;
 
     let mut parent = build_fuzz_token(local, nonce_base.wrapping_add(1));
     parent.rights = crate::capability::Rights::FS_READ | crate::capability::Rights::FS_WRITE;
     parent.max_uses = 16;
     parent.constraints_flags = CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
     let parent_offer = build_token_offer_frame(local, 0, &mut parent).map_err(|e| e.as_str())?;
+    let parent_frame = decode_control_frame(&parent_offer.bytes[..parent_offer.len]).map_err(|e| e.as_str())?;
+    if parent_frame.payload_len as usize != CAPNET_TOKEN_V1_LEN {
+        return Err("Formal CapNet self-check: parent offer payload length drifted");
+    }
+    let parent_payload = &parent_frame.payload[..CAPNET_TOKEN_V1_LEN];
+    if canonical_token_id_from_encoded_payload(parent_payload).map_err(|e| e.as_str())?
+        != parent_offer.token_id
+    {
+        return Err("Formal CapNet self-check: parent offer token_id drifted");
+    }
+    let decoded_parent = CapabilityTokenV1::decode_checked(parent_payload).map_err(|e| e.as_str())?;
+    if decoded_parent.encode_without_mac().as_slice() != &parent_payload[..CAPNET_TOKEN_V1_BODY_LEN] {
+        return Err("Formal CapNet self-check: parent offer token body drifted");
+    }
     match process_incoming_control_payload(&parent_offer.bytes[..parent_offer.len], 10_000) {
         Ok(v) if v.msg_type == CapNetControlType::TokenOffer => {}
         Ok(_) => return Err("Formal CapNet self-check: parent offer wrong control type"),
