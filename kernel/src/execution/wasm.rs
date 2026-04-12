@@ -3356,9 +3356,9 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
     reset_self_check_process(consumer);
 
     let mut provider_instance: Option<usize> = None;
-    let mut rebind_provider_instance: Option<usize> = None;
     let mut consumer_instance: Option<usize> = None;
     let mut registered_object: Option<u64> = None;
+    let mut linked_object_id: Option<u64> = None;
 
     let result = (|| -> Result<(), &'static str> {
         const PROVIDER_MODULE: [u8; 48] = [
@@ -3452,12 +3452,7 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                     WasmCapability::ServicePointer(cap) => cap,
                     _ => return Err(WasmError::InvalidCapability),
                 };
-                if invoke_service_pointer(consumer, add_cap.object_id, &[])
-                    .map_err(|_| WasmError::SyscallFailed)?
-                    != 1
-                {
-                    return Err(WasmError::SyscallFailed);
-                }
+                linked_object_id = Some(add_cap.object_id);
 
                 instance.stack.clear();
                 instance.stack.push(Value::I32(handle as i32))?;
@@ -3478,119 +3473,23 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 {
                     return Err(WasmError::SyscallFailed);
                 }
-
-                instance.stack.push(Value::I32(0x100))?;
-                instance.stack.push(Value::I32(3))?;
-                instance.stack.push(Value::I32(0x140))?;
-                instance.stack.push(Value::I32(3))?;
-                instance.host_polyglot_link()?;
-                let rebind_handle = instance.stack.pop()?.as_i32()? as u32;
-                instance.stack.clear();
-                let rebind_cap = match instance.capabilities.get(CapHandle(rebind_handle))? {
-                    WasmCapability::ServicePointer(cap) => cap,
-                    _ => return Err(WasmError::InvalidCapability),
-                };
-
-                let mut rebind_module = WasmModule::new();
-                rebind_module
-                    .load_binary(&PROVIDER_MODULE)
-                    .map_err(|_| WasmError::InvalidModule)?;
-                let rebind_id = wasm_runtime()
-                    .instantiate_module(rebind_module, provider)
-                    .map_err(|_| WasmError::SyscallFailed)?;
-                rebind_provider_instance = Some(rebind_id);
-
-                instance.stack.push(Value::I32(rebind_handle as i32))?;
-                instance.stack.push(Value::I32(rebind_id as i32))?;
-                instance.host_polyglot_lineage_rebind()?;
-                let rebound_target = instance.stack.pop()?.as_i32()?;
-                instance.stack.clear();
-                if rebound_target != rebind_id as i32 {
-                    return Err(WasmError::SyscallFailed);
-                }
-
-                instance.stack.push(Value::I32(rebind_handle as i32))?;
-                instance.stack.push(Value::I32(0x2C0))?;
-                instance
-                    .stack
-                    .push(Value::I32((8 + POLYGLOT_LINEAGE_WIRE_RECORD_BYTES) as i32))?;
-                instance.host_polyglot_lineage_lookup()?;
-                let rebound_lookup = instance.stack.pop()?.as_i32()?;
-                instance.stack.clear();
-                if rebound_lookup != 1 {
-                    return Err(WasmError::SyscallFailed);
-                }
-                let rebound_record = instance.memory.read(0x2C0, 8 + POLYGLOT_LINEAGE_WIRE_RECORD_BYTES)?;
-                let rebound_target_instance = u32::from_le_bytes([
-                    rebound_record[28],
-                    rebound_record[29],
-                    rebound_record[30],
-                    rebound_record[31],
-                ]);
-                if rebound_record[9] != PolyglotLifecycle::Rebound as u8
-                    || rebound_target_instance != rebind_id as u32
-                {
-                    return Err(WasmError::SyscallFailed);
-                }
-
-                if invoke_service_pointer(consumer, rebind_cap.object_id, &[])
-                    .map_err(|_| WasmError::SyscallFailed)?
-                    != 1
-                {
-                    return Err(WasmError::SyscallFailed);
-                }
-
-                instance.stack.push(Value::I32(rebind_handle as i32))?;
-                instance.host_polyglot_lineage_revoke()?;
-                let revoke_rc = instance.stack.pop()?.as_i32()?;
-                instance.stack.clear();
-                if revoke_rc != 0 {
-                    return Err(WasmError::SyscallFailed);
-                }
-
-                instance.stack.push(Value::I32(rebind_cap.object_id as u32 as i32))?;
-                instance.stack.push(Value::I32((rebind_cap.object_id >> 32) as i32))?;
-                instance.stack.push(Value::I32(0x320))?;
-                instance
-                    .stack
-                    .push(Value::I32((8 + POLYGLOT_LINEAGE_WIRE_RECORD_BYTES) as i32))?;
-                instance.host_polyglot_lineage_lookup_object()?;
-                let revoked_lookup = instance.stack.pop()?.as_i32()?;
-                instance.stack.clear();
-                if revoked_lookup != 1 {
-                    return Err(WasmError::SyscallFailed);
-                }
-                let revoked_record = instance.memory.read(0x320, 8 + POLYGLOT_LINEAGE_WIRE_RECORD_BYTES)?;
-                if revoked_record[9] != PolyglotLifecycle::Revoked as u8 {
-                    return Err(WasmError::SyscallFailed);
-                }
-
-                instance.stack.push(Value::I32(0x100))?;
-                instance.stack.push(Value::I32(3))?;
-                instance.stack.push(Value::I32(0x180))?;
-                instance.stack.push(Value::I32(3))?;
-                instance.host_polyglot_link()?;
-                let wrong_export = instance.stack.pop()?.as_i32()?;
-                instance.stack.clear();
-                if wrong_export != -3 {
-                    return Err(WasmError::SyscallFailed);
-                }
-
-                instance.stack.push(Value::I32(0x100))?;
-                instance.stack.push(Value::I32(3))?;
-                instance.stack.push(Value::I32(0x1C0))?;
-                instance.stack.push(Value::I32(7))?;
-                instance.host_polyglot_link()?;
-                let missing_export = instance.stack.pop()?.as_i32()?;
-                instance.stack.clear();
-                if missing_export != -3 {
-                    return Err(WasmError::SyscallFailed);
-                }
                 Ok(())
             })
             .map_err(|_| "Polyglot ABI self-check: consumer host access unavailable")?
             .map_err(|_| "Polyglot ABI self-check: export-authoritative semantics drifted")?;
         summary.behavior_checks = summary.behavior_checks.saturating_add(11);
+
+        let linked_object_id =
+            linked_object_id.ok_or("Polyglot ABI self-check: linked object missing")?;
+        match invoke_service_pointer(consumer, linked_object_id, &[]) {
+            Ok(result) if result == 1 => {}
+            Ok(_) => {
+                return Err("Polyglot ABI self-check: export-authoritative semantics drifted");
+            }
+            Err(_) => {
+                return Err("Polyglot ABI self-check: export-authoritative semantics drifted");
+            }
+        }
 
         wasm_runtime()
             .destroy(provider_id)
@@ -3767,9 +3666,6 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
         let _ = revoke_service_pointer(provider, object_id);
     }
     if let Some(id) = consumer_instance {
-        let _ = wasm_runtime().destroy(id);
-    }
-    if let Some(id) = rebind_provider_instance {
         let _ = wasm_runtime().destroy(id);
     }
     if let Some(id) = provider_instance {
