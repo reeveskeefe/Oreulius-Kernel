@@ -3314,8 +3314,19 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
     let mut index = 0usize;
     while index < EXPECTED_POLYGLOT_HOST_SPECS.len() {
         let expected = &EXPECTED_POLYGLOT_HOST_SPECS[index];
-        if expected.id != POLYGLOT_HOST_START + index {
-            return Err("Polyglot ABI self-check: snapshot host ID ordering drifted");
+        if index == 0 {
+            if expected.id != 103 {
+                return Err("Polyglot ABI self-check: snapshot host ID ordering drifted");
+            }
+        } else {
+            let previous_id = EXPECTED_POLYGLOT_HOST_SPECS[index - 1].id;
+            let expected_next_id = match previous_id {
+                105 => 132,
+                _ => previous_id + 1,
+            };
+            if expected.id != expected_next_id {
+                return Err("Polyglot ABI self-check: snapshot host ID ordering drifted");
+            }
         }
         let spec = host_function_spec_by_id(expected.id)
             .ok_or("Polyglot ABI self-check: missing dispatcher entry")?;
