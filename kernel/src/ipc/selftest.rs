@@ -39,6 +39,14 @@ const EMPTY_CASE: IpcSelftestCase = IpcSelftestCase {
 };
 
 pub fn run_selftest() -> IpcSelftestReport {
+    // Keep IPC self-check deterministic even when prior boot checks staged IPC transfer tickets.
+    let manager = crate::capability::capability_manager();
+    let mut pending = manager.pending_ipc_transfer_snapshots();
+    for slot in pending.iter_mut() {
+        *slot = None;
+    }
+    manager.replace_pending_ipc_transfers(pending);
+
     let mut report = IpcSelftestReport {
         total: IPC_SELFTEST_CASES,
         passed: 0,
