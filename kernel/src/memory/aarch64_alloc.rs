@@ -46,8 +46,10 @@ fn ensure_heap_initialized() {
 
     #[cfg(any(test, feature = "host-tests"))]
     let (start, end) = (
-        core::ptr::addr_of_mut!(HOST_TEST_AARCH64_HEAP) as usize,
-        core::ptr::addr_of_mut!(HOST_TEST_AARCH64_HEAP) as usize + HOST_TEST_AARCH64_HEAP_LEN,
+        unsafe { core::ptr::addr_of_mut!(HOST_TEST_AARCH64_HEAP) as usize },
+        unsafe {
+            core::ptr::addr_of_mut!(HOST_TEST_AARCH64_HEAP) as usize + HOST_TEST_AARCH64_HEAP_LEN
+        },
     );
 
     #[cfg(not(any(test, feature = "host-tests")))]
