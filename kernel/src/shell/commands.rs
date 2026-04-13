@@ -7,7 +7,7 @@
 extern crate alloc;
 
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::execution::elf;
 use crate::fs;
@@ -2351,10 +2351,10 @@ const TEMPORAL_IPC_VERSION: u8 = 1;
 const TEMPORAL_IPC_SESSION_BYTES: usize = 8;
 const TEMPORAL_IPC_REQUEST_HEADER_BYTES: usize = 16;
 const TEMPORAL_IPC_RESPONSE_HEADER_BYTES: usize = 20;
-static TEMPORAL_IPC_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+static TEMPORAL_IPC_SESSION_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 fn temporal_ipc_next_session_id() -> u64 {
-    TEMPORAL_IPC_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed).max(1)
+    u64::from(TEMPORAL_IPC_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed).max(1))
 }
 
 const TEMPORAL_IPC_OP_SNAPSHOT: u8 = 1;

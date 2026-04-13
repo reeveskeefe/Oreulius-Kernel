@@ -81,7 +81,7 @@ CARGO_BUILD_CMD=(
 if [[ -n "${CARGO_FEATURES}" ]]; then
   CARGO_BUILD_CMD+=(--features "${CARGO_FEATURES}")
 fi
-if ! CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-C relocation-model=static -C code-model=kernel" \
+if ! CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-C relocation-model=static -C code-model=kernel --cfg curve25519_dalek_backend=\"serial\"" \
   "${CARGO_BUILD_CMD[@]}"; then
   cat <<'EOF'
 Rust x86_64 build failed.

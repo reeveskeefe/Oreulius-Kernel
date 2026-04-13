@@ -1,6 +1,9 @@
 [build]
 target = "x86_64-unknown-none"
 
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["--cfg", "curve25519_dalek_backend=\"serial\""]
+
 [target.x86_64-unknown-none]
 rustflags = [
     "-C", "link-arg=-T/Users/keefereeves/Desktop/oreulius/kernel/kernel.ld",
