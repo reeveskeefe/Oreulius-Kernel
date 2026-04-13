@@ -798,8 +798,7 @@ fn case_ticketed_capability_transfer_once() -> Result<(), &'static str> {
         )
         .map_err(|_| "failed to grant source capability")?;
 
-    let envelope = crate::capability::export_capability_to_ipc(source, cap_id)
-        .map_err(|_| "failed to export ticketed capability")?;
+    let envelope = crate::capability::export_capability_to_ipc(source, cap_id)?;
 
     if manager
         .verify_and_get_object(
