@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Compositor service — global singleton and request dispatcher.
 //!
 //! `CompositorService` owns all compositor subsystems:

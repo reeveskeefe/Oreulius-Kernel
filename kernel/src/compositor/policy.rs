@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Compositor policy enforcement.
 //!
 //! Centralises all quota and bounds checks so that the main service dispatch

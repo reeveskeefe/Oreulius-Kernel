@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! HTTP header parsing and normalization.
 //!
 //! All parsing is zero-allocation, operating on slices of bytes.

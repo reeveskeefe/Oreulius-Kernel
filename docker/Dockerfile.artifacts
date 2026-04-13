@@ -1,5 +1,7 @@
 # Oreulius Kernel — OCI Artifact Image
 #
+# SPDX-License-Identifier: LicenseRef-Oreulius-Community
+#
 # A FROM-scratch image that carries compiled kernel binaries for all three
 # supported architectures. No operating system, no runtime — pure artifact
 # distribution via the OCI registry.

@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Origin model: same-origin enforcement and per-session allowlists.
 //!
 //! Every navigation or subresource request passes through `OriginTable` before

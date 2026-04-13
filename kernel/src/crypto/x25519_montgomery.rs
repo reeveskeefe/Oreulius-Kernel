@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * X25519 Montgomery ladder extracted for reuse outside TLS.
  */
 

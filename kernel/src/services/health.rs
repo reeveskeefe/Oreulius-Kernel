@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * Oreulius Kernel — System Health Telemetry
  *
  * Aggregates health data from the scheduler, filesystem, IPC, network, and

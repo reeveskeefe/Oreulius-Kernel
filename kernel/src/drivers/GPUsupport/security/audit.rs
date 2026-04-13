@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * GPU subsystem audit log.
  *
  * A fixed-capacity ring buffer that records security-relevant GPU events.

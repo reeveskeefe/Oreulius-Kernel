@@ -8151,6 +8151,7 @@ fn cmd_wasm_jit_selftest() {
 }
 
 fn cmd_formal_verify() {
+    let _irq_quiesce = FormalVerifyIrqQuiesce::enter();
     crate::drivers::x86::vga::print_str("\n===== Formal Verification =====\n\n");
 
     match wasm::formal_host_dispatch_self_check() {
@@ -8348,6 +8349,35 @@ impl SharedFuzzIrqQuiesce {
 }
 
 impl Drop for SharedFuzzIrqQuiesce {
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86")]
+        unsafe {
+            crate::platform::idt_asm::fast_sti_restore(self.flags);
+        }
+    }
+}
+
+struct FormalVerifyIrqQuiesce {
+    #[cfg(target_arch = "x86")]
+    flags: u32,
+    #[cfg(not(target_arch = "x86"))]
+    _dummy: (),
+}
+
+impl FormalVerifyIrqQuiesce {
+    #[cfg(target_arch = "x86")]
+    fn enter() -> Self {
+        let flags = unsafe { crate::platform::idt_asm::fast_cli_save() };
+        Self { flags }
+    }
+
+    #[cfg(not(target_arch = "x86"))]
+    fn enter() -> Self {
+        Self { _dummy: () }
+    }
+}
+
+impl Drop for FormalVerifyIrqQuiesce {
     fn drop(&mut self) {
         #[cfg(target_arch = "x86")]
         unsafe {

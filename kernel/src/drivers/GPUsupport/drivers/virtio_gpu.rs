@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * Virtio-gpu scanout backend scaffold.
  */
 

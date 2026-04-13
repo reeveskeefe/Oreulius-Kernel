@@ -4,6 +4,13 @@
  * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
+
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
 //! Hardware enclave backend manager.
 //!
 //! This module wires real backend primitives:

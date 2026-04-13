@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Window metadata and z-ordered window table.
 //!
 //! A `WindowMeta` record stores position, size, z-order and the backing

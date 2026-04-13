@@ -2135,7 +2135,11 @@ fn formal_wasi_behavior_check_path_readlink(
     instance: &mut WasmInstance,
     spec: &HostFunctionSpec,
 ) -> Result<u32, &'static str> {
-    let base_dir = alloc::format!("/tmp/wasi-readlink-{}", spec.id);
+    let base_dir = alloc::format!(
+        "/tmp/wasi-readlink-{}-{}",
+        spec.id,
+        crate::scheduler::pit::get_ticks()
+    );
     let target = alloc::format!("{}/target-file", base_dir);
     let link = alloc::format!("{}/link", base_dir);
     let missing = alloc::format!("{}/missing", base_dir);
@@ -3397,10 +3401,39 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 if rc != 0 {
                     return Err(WasmError::SyscallFailed);
                 }
+                let registry = POLYGLOT_REGISTRY.lock();
+                let Some(reg_idx) = registry.find_by_name(b"svc") else {
+                    return Err(WasmError::SyscallFailed);
+                };
+                let entry = registry.entries[reg_idx];
+                if !entry.active
+                    || entry.instance_id != provider_id
+                    || entry.owner_pid != provider
+                    || entry.latest_record_id == 0
+                    || entry.cap_object != 0
+                {
+                    return Err(WasmError::SyscallFailed);
+                }
                 let lineage = POLYGLOT_LINEAGE.lock();
-                if lineage.records.iter().all(|rec| {
-                    !rec.active || rec.object_id != registration.object_id
-                }) {
+                let mut matched = false;
+                let mut lineage_idx = 0usize;
+                while lineage_idx < lineage.records.len() {
+                    let rec = lineage.records[lineage_idx];
+                    if rec.active
+                        && rec.record_id == entry.latest_record_id
+                        && rec.source_pid == provider
+                        && rec.source_instance == provider_id
+                        && rec.target_instance == provider_id
+                        && rec.object_id == 0
+                        && rec.cap_id == provider_id as u32
+                        && rec.lifecycle == PolyglotLifecycle::Registered
+                        && rec.export_name[..3] == *b"svc"
+                    {
+                        matched = true;
+                    }
+                    lineage_idx += 1;
+                }
+                if !matched {
                     return Err(WasmError::SyscallFailed);
                 }
                 Ok(())

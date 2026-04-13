@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 use core::fmt;
 use core::sync::atomic::{AtomicU16, Ordering};
 

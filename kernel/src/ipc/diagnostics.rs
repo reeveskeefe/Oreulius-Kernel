@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 use super::{
     channel_capacity_wait_addr, channel_message_wait_addr, BackpressureAction, BackpressureLevel,
     Channel, ChannelId, ChannelTable, IpcError, IpcService, ProcessId, CHANNEL_CAPACITY,

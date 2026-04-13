@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! # TLS 1.3 Record Layer
 //!
 //! A complete TLS 1.3 implementation for Oreulius, built on top of the

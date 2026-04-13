@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Per-origin cookie storage with SameSite / Secure / HttpOnly enforcement.
 //!
 //! Cookies are stored in a fixed-size flat array; each entry is bounded to

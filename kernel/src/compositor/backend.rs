@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Display backend abstraction.
 //!
 //! Provides a hardware-independent interface that the compositor uses to push

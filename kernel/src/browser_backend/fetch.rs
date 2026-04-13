@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! High-level fetch pipeline.
 //!
 //! `fetch_request` drives the full DNS → connect → TLS → HTTP/1.1 → stream

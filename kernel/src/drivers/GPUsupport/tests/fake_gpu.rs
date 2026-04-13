@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 use crate::drivers::x86::gpu_support::backend::ScanoutOps;
 use crate::drivers::x86::gpu_support::engines::packets::{ComputePacket, TransferPacket};
 use crate::drivers::x86::gpu_support::errors::GpuError;

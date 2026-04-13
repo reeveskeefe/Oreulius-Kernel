@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * Oreulius Kernel — Crash Logging
  *
  * A lock-free in-kernel crash record ring buffer that is safe to write from

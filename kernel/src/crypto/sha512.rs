@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * SHA-512 (FIPS 180-4) for Ed25519 and manifest-grade hashing.
  */
 

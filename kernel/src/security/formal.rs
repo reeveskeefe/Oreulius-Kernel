@@ -4,6 +4,13 @@
  * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
+
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
 //! Runtime mechanized self-checks.
 //!
 //! This module provides deterministic, bounded verification helpers that can

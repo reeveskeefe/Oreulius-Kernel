@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Input routing and focus management for the compositor.
 //!
 //! The `FocusState` tracks which window currently holds keyboard focus and

@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Compositor audit log.
 //!
 //! Records significant compositor events for post-hoc inspection (debugging,

@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! HTTP response cache with ETag / Last-Modified validation and TTL eviction.
 //!
 //! The cache stores up to `MAX_CACHE_ENTRIES` fixed-size records.

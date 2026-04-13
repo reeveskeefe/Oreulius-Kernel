@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! # Runtime Capability Graph Verification
 //!
 //! Maintains a live delegation graph of capability authority edges.

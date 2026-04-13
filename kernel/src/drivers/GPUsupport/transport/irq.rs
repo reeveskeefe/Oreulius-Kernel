@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * GPU interrupt bookkeeping — handler registration and dispatch.
  *
  * The GPU subsystem registers a single top-half handler per IRQ line.

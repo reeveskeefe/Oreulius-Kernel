@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Transport layer: wraps the TLS session pool and provides a minimal
 //! HTTP/1.1 request builder + streaming response reader.
 //!

@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * NVIDIA family GPU plugin — Tier 1 scanout bringup.
  *
  * Covers NVIDIA NV50 (G80) and later display controllers.

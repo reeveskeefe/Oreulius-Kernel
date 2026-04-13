@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Surface allocator for the compositor.
 //!
 //! Each window owns a `Surface` that holds its pixel buffer.  Buffers are

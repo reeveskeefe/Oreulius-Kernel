@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 use crate::math::linear_capability::LinearCapability;
 
 use super::types::{ChannelId, ProcessId};

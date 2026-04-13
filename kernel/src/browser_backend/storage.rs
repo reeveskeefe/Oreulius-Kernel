@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Per-origin persistent storage slots backed by the kernel VFS.
 //!
 //! Each session gets a private directory under `/browser/<session_id>/`.

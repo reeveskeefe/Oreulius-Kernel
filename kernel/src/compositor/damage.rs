@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Damage accumulator for the compositor.
 //!
 //! Tracks which regions of the screen have changed since the last present.

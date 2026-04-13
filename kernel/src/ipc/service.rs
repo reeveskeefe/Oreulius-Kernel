@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use spin::{Mutex, Once};

@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Browser backend service — global singleton and request dispatcher.
 //!
 //! `BrowserBackendService` owns all browser subsystems:

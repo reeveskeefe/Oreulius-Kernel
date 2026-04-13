@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! WASM Thread Infrastructure for Oreulius
 //!
 //! This module implements the WebAssembly Threads proposal thread model for

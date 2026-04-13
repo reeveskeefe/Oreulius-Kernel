@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Compositor IPC protocol types.
 //!
 //! Clients communicate with the compositor service by sending and receiving

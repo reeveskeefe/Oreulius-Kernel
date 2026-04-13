@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Compositor present pass.
 //!
 //! `present_frame` iterates all live windows in z-order (bottom to top),

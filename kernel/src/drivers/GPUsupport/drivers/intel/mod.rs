@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * Intel family GPU plugin — Tier 1 scanout bringup.
  *
  * This module covers the Intel integrated graphics family (i915-class and

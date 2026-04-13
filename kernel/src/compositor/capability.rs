@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Capability registry for the compositor.
 //!
 //! Each surface, window, session and input-subscription is gated by an

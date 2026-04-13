@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * Buffer Object (BO) abstraction and slab allocator.
  *
  * A `BufferObject` represents a GPU-visible memory allocation.  All BOs are

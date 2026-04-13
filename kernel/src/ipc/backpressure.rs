@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 use super::{Channel, IpcDefer, IpcRefusal, SendDecision, CHANNEL_CAPACITY};
 
 const HIGH_PRESSURE_NUMERATOR: usize = 3;

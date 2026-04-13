@@ -1,7 +1,7 @@
 # Oreulius Kernel — Build Toolchain Image
 # Provides a reproducible build environment identical to the CI matrix.
 # Arch: builds for i686, x86_64, and aarch64 targets from one image.
-#
+# spdx-license-identifier: LicenseRef-Oreulius-Community
 # Usage:
 #   docker build -f docker/Dockerfile.toolchain -t oreulius-toolchain:local .
 #   docker run --rm -v "$PWD/kernel:/kernel" oreulius-toolchain:local bash -c "cd /kernel && ./build.sh"

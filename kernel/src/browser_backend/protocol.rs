@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! IPC protocol between the browser backend kernel service and frontend clients.
 //!
 //! Clients communicate over the kernel IPC service layer by sending

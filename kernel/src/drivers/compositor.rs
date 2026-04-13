@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Oreulius Compositor / Window Manager
 //!
 //! A lightweight compositing window manager for the Oreulius kernel.

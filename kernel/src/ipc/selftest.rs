@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 use super::{
     BackpressureAction, BackpressureLevel, Capability, CapabilityType, Channel, ChannelCapability,
     ChannelFlags, ChannelId, ChannelProtocolState, ChannelRights, ClosureState, DrainResult,

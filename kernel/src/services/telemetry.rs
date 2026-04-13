@@ -4,6 +4,13 @@
  * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
+
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
 //! Userspace Telemetry Daemon - Math Queue
 //!
 //! Implements an eBPF-style wait-free queue (utilizing atomic CAS) for dispatching

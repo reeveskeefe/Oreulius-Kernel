@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 use super::{backpressure, Channel, ChannelCapability, Message};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

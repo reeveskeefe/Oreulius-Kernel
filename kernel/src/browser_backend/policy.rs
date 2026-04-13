@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Browser backend security policy enforcement.
 //!
 //! `BrowserPolicy` is a zero-copy, stateless checker.  All state lives in

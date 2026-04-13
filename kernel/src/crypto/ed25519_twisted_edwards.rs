@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * Ed25519 signature verification on Edwards25519.
  *
  * This implementation is `no_std` friendly and self-contained. It prioritizes

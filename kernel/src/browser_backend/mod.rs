@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Browser backend kernel module.
 //!
 //! This module implements the in-kernel layer of the Oreulius browser stack:

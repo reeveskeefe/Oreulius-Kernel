@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * GPU firmware loader — VFS-backed loading path.
  *
  * Firmware blobs are loaded from `/firmware/gpu/<vendor_id>_<device_id>.bin`

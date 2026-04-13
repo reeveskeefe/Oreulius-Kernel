@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Framebuffer display backend.
 //!
 //! Implements `DisplayBackend` by delegating to the active GPU scanout

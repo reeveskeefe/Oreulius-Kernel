@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! # CapabilityWASI — Frozen WASI Preview 1 Compatibility over Oreulius Capabilities
 //!
 //! Implements the dispatcher-owned [WASI Preview 1](https://github.com/WebAssembly/WASI/blob/main/legacy/preview1/docs.md)

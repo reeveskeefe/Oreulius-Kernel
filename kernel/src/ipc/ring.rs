@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 use super::errors::IpcError;
 use super::message::Message;
 use super::types::CHANNEL_CAPACITY;

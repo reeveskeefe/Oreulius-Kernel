@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 /// Section 7: Exact Rational Arithmetic for JIT Confidence
 ///
 /// Implementing a bounded Exact Rational Number arithmetic trait to compute

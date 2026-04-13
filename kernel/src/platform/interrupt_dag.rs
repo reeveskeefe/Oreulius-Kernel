@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 /// Topologically Bounded Interrupt DAGs (Deadlock Freedom)
 ///
 /// Every kernel spinlock carries a compile-time priority level.  A context at

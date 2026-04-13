@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Temporal snapshot / restore for the browser backend.
 //!
 //! Persists session identity, navigation history, cookies and download jobs

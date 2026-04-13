@@ -1,5 +1,5 @@
 # Oreulius Kernel — QEMU Runner Image
-#
+# spdx-license-identifier: LicenseRef-Oreulius-Community
 # Single-stage runtime image:
 #   Packages a prebuilt ISO produced by the package workflow and boots it under
 #   QEMU. The kernel is built by CI before this image is assembled.

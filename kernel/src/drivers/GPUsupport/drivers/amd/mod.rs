@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * AMD family GPU plugin — Tier 1 scanout bringup.
  *
  * Covers AMD/ATI display controllers (DC/DCE/DCN generations).

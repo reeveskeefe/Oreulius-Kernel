@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 use super::{Channel, ChannelFlags, ChannelId, IpcError, ProcessId, MAX_CHANNELS};
 use alloc::collections::BTreeMap;
 

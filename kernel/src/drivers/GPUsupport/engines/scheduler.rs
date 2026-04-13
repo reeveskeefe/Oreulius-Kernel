@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * GPU engine scheduler — fixed-capacity submission ring.
  *
  * The scheduler manages an ordered ring of pending `CommandPacket`s with

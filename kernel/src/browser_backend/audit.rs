@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Browser backend audit log.
 //!
 //! Identical pattern to `compositor/audit.rs`: a fixed-size ring buffer of

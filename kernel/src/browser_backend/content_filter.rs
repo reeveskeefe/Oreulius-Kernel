@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Content filtering: MIME sniffing guardrails and
 //! attachment-vs-inline classification.
 //!

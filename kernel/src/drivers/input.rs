@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! # Unified Input Event Queue
 //!
 //! Merges keyboard ([`KeyEvent`]) and mouse ([`MouseEvent`]) events into a

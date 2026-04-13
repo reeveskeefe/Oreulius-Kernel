@@ -1,4 +1,11 @@
 /*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
+/*!
  * Oreulius Kernel — OTA Update Manager
  *
  * Implements A/B image slot management for over-the-air firmware updates:

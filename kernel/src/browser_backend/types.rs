@@ -1,3 +1,10 @@
+/*!
+ * Oreulius Kernel Project
+ *
+ * SPDX-License-Identifier: LicenseRef-Oreulius-Community
+ */
+
+
 //! Core types for the browser backend subsystem.
 //!
 //! All types in this module are `no_std`-compatible, heap-free, and use
