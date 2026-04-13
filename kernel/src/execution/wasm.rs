@@ -23835,10 +23835,14 @@ pub fn formal_service_pointer_conformance_self_check(
 }
 
 pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
-    let provider = ProcessId(100);
-    let consumer = ProcessId(101);
+    let provider = ProcessId(54);
+    let consumer = ProcessId(55);
     reset_self_check_process(provider);
     reset_self_check_process(consumer);
+    let _ = crate::security::security().clear_intent_restriction(provider);
+    let _ = crate::security::security().clear_intent_restriction(consumer);
+    let _ = capability::capability_manager().force_restore_quarantined_capabilities(provider);
+    let _ = capability::capability_manager().force_restore_quarantined_capabilities(consumer);
 
     let mut provider_instance: Option<usize> = None;
     let mut consumer_instance: Option<usize> = None;
@@ -23886,6 +23890,9 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
         if imported_object != registration.object_id {
             return Err("Typed service demo: imported object mismatch");
         }
+
+        let _ = crate::security::security().clear_intent_restriction(consumer);
+        let _ = capability::capability_manager().force_restore_quarantined_capabilities(consumer);
 
         // Consumer instance only needs memory + capability table.
         const CONSUMER_MODULE: [u8; 17] = [
@@ -24002,7 +24009,7 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
 }
 
 pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
-    let pid = ProcessId(102);
+    let pid = ProcessId(56);
     reset_self_check_process(pid);
 
     const PATH: &str = "/temporal-selfcheck";
