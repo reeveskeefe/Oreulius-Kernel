@@ -14,6 +14,11 @@ use super::{
 use crate::scheduler::process::{Pid, ProcessState};
 
 pub const IPC_SELFTEST_CASES: usize = 15;
+const IPC_SELFTEST_PID_BASE: u32 = 0x00F0_0000;
+
+fn selftest_pid(offset: u32) -> ProcessId {
+    ProcessId::new(IPC_SELFTEST_PID_BASE + offset)
+}
 
 #[derive(Clone, Copy)]
 pub struct IpcSelftestCase {
@@ -247,7 +252,7 @@ fn record_case(
 
 fn case_round_trip() -> Result<(), &'static str> {
     let id = ChannelId::new(0x10);
-    let owner = ProcessId::new(7);
+    let owner = selftest_pid(7);
     let mut channel = Channel::new(id, owner);
     let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
     let recv_cap = ChannelCapability::new(2, id, ChannelRights::receive_only(), owner);
@@ -262,7 +267,7 @@ fn case_round_trip() -> Result<(), &'static str> {
 
 fn case_bounded_queue_backpressure() -> Result<(), &'static str> {
     let id = ChannelId::new(0x11);
-    let owner = ProcessId::new(8);
+    let owner = selftest_pid(8);
     let mut channel = Channel::new(id, owner);
     let send_cap = ChannelCapability::new(3, id, ChannelRights::send_only(), owner);
 
@@ -290,7 +295,7 @@ fn case_bounded_queue_backpressure() -> Result<(), &'static str> {
 
 fn case_close_drain_then_closed() -> Result<(), &'static str> {
     let id = ChannelId::new(0x12);
-    let owner = ProcessId::new(9);
+    let owner = selftest_pid(9);
     let mut channel = Channel::new(id, owner);
     let send_cap = ChannelCapability::new(4, id, ChannelRights::send_only(), owner);
     let recv_cap = ChannelCapability::new(5, id, ChannelRights::receive_only(), owner);
@@ -329,7 +334,7 @@ fn case_close_drain_then_closed() -> Result<(), &'static str> {
 
 fn case_recv_aliases_try_recv_on_empty() -> Result<(), &'static str> {
     let id = ChannelId::new(0x13);
-    let owner = ProcessId::new(10);
+    let owner = selftest_pid(10);
     let mut channel = Channel::new(id, owner);
     let recv_cap = ChannelCapability::new(7, id, ChannelRights::receive_only(), owner);
 
@@ -346,7 +351,7 @@ fn case_recv_aliases_try_recv_on_empty() -> Result<(), &'static str> {
 }
 
 fn case_cap_attachment_surface() -> Result<(), &'static str> {
-    let owner = ProcessId::new(11);
+    let owner = selftest_pid(11);
     let mut msg = Message::with_data(owner, b"caps").map_err(|_| "failed to build cap message")?;
     let cap = Capability::with_type(
         88,
@@ -378,7 +383,7 @@ fn case_cap_attachment_surface() -> Result<(), &'static str> {
 
 fn case_backpressure_metrics() -> Result<(), &'static str> {
     let id = ChannelId::new(0x14);
-    let owner = ProcessId::new(12);
+    let owner = selftest_pid(12);
     let mut channel = Channel::new(id, owner);
     let send_cap = ChannelCapability::new(8, id, ChannelRights::send_only(), owner);
     let recv_cap = ChannelCapability::new(9, id, ChannelRights::receive_only(), owner);
@@ -430,7 +435,7 @@ fn case_backpressure_metrics() -> Result<(), &'static str> {
 
 fn case_async_high_pressure_policy() -> Result<(), &'static str> {
     let id = ChannelId::new(0x15);
-    let owner = ProcessId::new(13);
+    let owner = selftest_pid(13);
     let mut channel = Channel::new_with_flags(
         id,
         owner,
@@ -484,7 +489,7 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
     // Keep the runtime selftest on a high synthetic ID so its wait keys do not
     // collide with the normal monotonically allocated channel table.
     let id = ChannelId::new(0x3FFF_FF15);
-    let owner = ProcessId::new(14);
+    let owner = selftest_pid(14);
     let mut channel = Channel::new(id, owner);
     let send_cap = ChannelCapability::new(12, id, ChannelRights::send_only(), owner);
     let recv_cap = ChannelCapability::new(13, id, ChannelRights::receive_only(), owner);
@@ -576,7 +581,7 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
 /// that `EventId` round-trips through the sent message.
 fn case_causal_chain() -> Result<(), &'static str> {
     let id = ChannelId::new(0x30);
-    let owner = ProcessId::new(31);
+    let owner = selftest_pid(31);
     let mut channel = Channel::new(id, owner);
     let send_cap = ChannelCapability::new(60, id, ChannelRights::send_only(), owner);
     let recv_cap = ChannelCapability::new(61, id, ChannelRights::receive_only(), owner);
@@ -641,7 +646,7 @@ fn case_causal_chain() -> Result<(), &'static str> {
 /// and that `drain()` returns `DrainResult::Complete` after the last message.
 fn case_closure_drain_state_machine() -> Result<(), &'static str> {
     let id = ChannelId::new(0x31);
-    let owner = ProcessId::new(32);
+    let owner = selftest_pid(32);
     let mut channel = Channel::new(id, owner);
     let send_cap = ChannelCapability::new(62, id, ChannelRights::send_only(), owner);
     let recv_cap = ChannelCapability::new(63, id, ChannelRights::receive_only(), owner);
@@ -734,7 +739,7 @@ fn case_event_id_encodes_source_seq() -> Result<(), &'static str> {
 /// channel is not yet fully sealed).
 fn case_channel_draining_admission() -> Result<(), &'static str> {
     let id = ChannelId::new(0x32);
-    let owner = ProcessId::new(33);
+    let owner = selftest_pid(33);
     let mut channel = Channel::new(id, owner);
     let send_cap = ChannelCapability::new(65, id, ChannelRights::send_only(), owner);
     let recv_cap = ChannelCapability::new(66, id, ChannelRights::receive_only(), owner);
@@ -773,8 +778,8 @@ fn case_channel_draining_admission() -> Result<(), &'static str> {
 }
 
 fn case_ticketed_capability_transfer_once() -> Result<(), &'static str> {
-    let source = ProcessId::new(60);
-    let dest = ProcessId::new(61);
+    let source = selftest_pid(60);
+    let dest = selftest_pid(61);
     let source_guard = CapabilityTaskGuard::new(source);
     let dest_guard = CapabilityTaskGuard::new(dest);
     let _ = (&source_guard, &dest_guard);
@@ -836,7 +841,7 @@ fn case_ticketed_capability_transfer_once() -> Result<(), &'static str> {
 
 fn case_temporal_protocol_typing() -> Result<(), &'static str> {
     let id = ChannelId::new(0x34);
-    let owner = ProcessId::new(34);
+    let owner = selftest_pid(34);
     let mut channel = Channel::new(id, owner);
     let send_cap = ChannelCapability::new(68, id, ChannelRights::send_only(), owner);
     let recv_cap = ChannelCapability::new(69, id, ChannelRights::receive_only(), owner);
@@ -940,7 +945,7 @@ fn case_temporal_protocol_typing() -> Result<(), &'static str> {
 
 fn case_temporal_snapshot_roundtrip() -> Result<(), &'static str> {
     let id = ChannelId::new(0x35);
-    let owner = ProcessId::new(35);
+    let owner = selftest_pid(35);
     let mut channel = Channel::new(id, owner);
     let send_cap = ChannelCapability::new(70, id, ChannelRights::send_only(), owner);
     let recv_cap = ChannelCapability::new(71, id, ChannelRights::receive_only(), owner);
@@ -967,8 +972,8 @@ fn case_temporal_snapshot_roundtrip() -> Result<(), &'static str> {
         return Err("protocol refusal did not occur");
     }
 
-    channel.waiting_receivers.push_back(ProcessId::new(83));
-    channel.waiting_senders.push_back(ProcessId::new(84));
+    channel.waiting_receivers.push_back(selftest_pid(83));
+    channel.waiting_senders.push_back(selftest_pid(84));
     let _ = channel.persist_temporal_snapshot(
         crate::temporal::TEMPORAL_CHANNEL_EVENT_SEND_REFUSED,
         owner,
@@ -990,10 +995,10 @@ fn case_temporal_snapshot_roundtrip() -> Result<(), &'static str> {
     if wait_restored.waiting_receivers.len() != 1 || wait_restored.waiting_senders.len() != 1 {
         return Err("restored wait queue length mismatch");
     }
-    if wait_restored.waiting_receivers.pop_front() != Some(ProcessId::new(83)) {
+    if wait_restored.waiting_receivers.pop_front() != Some(selftest_pid(83)) {
         return Err("restored receiver wait queue mismatch");
     }
-    if wait_restored.waiting_senders.pop_front() != Some(ProcessId::new(84)) {
+    if wait_restored.waiting_senders.pop_front() != Some(selftest_pid(84)) {
         return Err("restored sender wait queue mismatch");
     }
     if !matches!(wait_restored.closure_state(), ClosureState::Open) {
