@@ -14,10 +14,8 @@ use super::{
 use crate::scheduler::process::{Pid, ProcessState};
 
 pub const IPC_SELFTEST_CASES: usize = 15;
-const IPC_SELFTEST_PID_BASE: u32 = 0x00F0_0000;
-
-fn selftest_pid(offset: u32) -> ProcessId {
-    ProcessId::new(IPC_SELFTEST_PID_BASE + offset)
+fn selftest_pid(_offset: u32) -> ProcessId {
+    ProcessId::KERNEL
 }
 
 #[derive(Clone, Copy)]
@@ -778,8 +776,8 @@ fn case_channel_draining_admission() -> Result<(), &'static str> {
 }
 
 fn case_ticketed_capability_transfer_once() -> Result<(), &'static str> {
-    let source = selftest_pid(60);
-    let dest = selftest_pid(61);
+    let source = ProcessId::new(60);
+    let dest = ProcessId::new(61);
     let source_guard = CapabilityTaskGuard::new(source);
     let dest_guard = CapabilityTaskGuard::new(dest);
     let _ = (&source_guard, &dest_guard);
@@ -972,8 +970,8 @@ fn case_temporal_snapshot_roundtrip() -> Result<(), &'static str> {
         return Err("protocol refusal did not occur");
     }
 
-    channel.waiting_receivers.push_back(selftest_pid(83));
-    channel.waiting_senders.push_back(selftest_pid(84));
+    channel.waiting_receivers.push_back(ProcessId::new(83));
+    channel.waiting_senders.push_back(ProcessId::new(84));
     let _ = channel.persist_temporal_snapshot(
         crate::temporal::TEMPORAL_CHANNEL_EVENT_SEND_REFUSED,
         owner,
@@ -995,10 +993,10 @@ fn case_temporal_snapshot_roundtrip() -> Result<(), &'static str> {
     if wait_restored.waiting_receivers.len() != 1 || wait_restored.waiting_senders.len() != 1 {
         return Err("restored wait queue length mismatch");
     }
-    if wait_restored.waiting_receivers.pop_front() != Some(selftest_pid(83)) {
+    if wait_restored.waiting_receivers.pop_front() != Some(ProcessId::new(83)) {
         return Err("restored receiver wait queue mismatch");
     }
-    if wait_restored.waiting_senders.pop_front() != Some(selftest_pid(84)) {
+    if wait_restored.waiting_senders.pop_front() != Some(ProcessId::new(84)) {
         return Err("restored sender wait queue mismatch");
     }
     if !matches!(wait_restored.closure_state(), ClosureState::Open) {
