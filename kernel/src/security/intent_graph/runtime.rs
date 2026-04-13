@@ -698,6 +698,7 @@ impl IntentGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capability::Rights;
 
     #[test]
     fn intent_graph_triggers_and_expires_restriction() {

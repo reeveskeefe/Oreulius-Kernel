@@ -849,7 +849,7 @@ AuditEntry {
     kind:        AuditKind   // 1 byte
     session_idx: i32         // -1 = not session-specific
     detail:      u64         // window_id, surface_idx, etc.
-    timestamp:   u64         // monotonic event counter (future: ns clock)
+    timestamp:   u64         // monotonic event counter
 }
 ```
 

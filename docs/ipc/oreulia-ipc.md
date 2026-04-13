@@ -1,6 +1,6 @@
 # Oreulius — IPC & Dataflow
 
-**Status:** Implemented core IPC subsystem with bounded channels, capability-gated access, admission control, scheduler-backed blocking at the service layer, diagnostics, and temporal service framing.
+**Status:** Implemented core IPC subsystem with bounded channels, capability-gated access, admission control, scheduler-backed blocking at the service layer, diagnostics, temporal service framing, ticketed zero-sum capability transfer, Temporal session typing, and replayable channel snapshots.
 
 For the internal implementation reference, see [`kernel/src/ipc/README.md`](../../kernel/src/ipc/README.md). For the remaining work, see [oreulius-ipc-implementation-roadmap.md](./oreulius-ipc-implementation-roadmap.md).
 
@@ -48,7 +48,7 @@ Oreulius uses message-carried capabilities to hand authority explicitly from one
 - `RECEIVE`
 - `CLOSE`
 
-The `ipc` module also includes an `AffineEndpoint<CAPACITY>` wrapper for linear endpoint delegation experiments, but the message-carried capability path is still the legacy signed-copy transfer path, not a complete zero-sum ownership-consuming transfer model.
+The `ipc` module also includes an `AffineEndpoint<CAPACITY>` wrapper for linear endpoint delegation experiments. Message-carried capability transfer now uses one-time ticketed transfer semantics: export consumes the live source authority, import is one-time, and duplicate or tampered ticket reuse fails closed.
 
 ---
 
@@ -164,7 +164,7 @@ Message-carried capabilities are currently:
 - available to the receiver for explicit validation and import
 - installable into the receiver's capability state through the existing import path
 
-This is already capability-gated and auditable, but it is **not yet zero-sum by construction**. The roadmap still includes a stronger ownership-consuming transfer path.
+This is now capability-gated, auditable, and zero-sum by construction. Export consumes the live source authority, ticketed import is one-time, and the kernel self-check rejects duplicate or tampered ticket reuse.
 
 ### 5.2 Service discovery
 
@@ -265,6 +265,18 @@ Temporal IPC enforces attached filesystem capability rights:
 
 Branch and merge operations are part of the current protocol surface and should be documented as such; older six-opcode descriptions are stale.
 
+### 6.5 Session typing
+
+Temporal channels can also be bound to a `TemporalSessionState` at the kernel layer.
+
+When a channel is bound this way:
+
+- the session id must match the frame payload
+- request and response phases are checked explicitly
+- malformed frames and invalid phase transitions are rejected by the channel validator
+
+This is the current Temporal pilot for protocol/session-typed IPC. Other IPC paths remain unbound unless they opt into a typed session state.
+
 ---
 
 ## 7. Wasm IPC Surface
@@ -311,16 +323,15 @@ This diagnostic surface is part of the actual implementation and should be used 
 
 ## 9. What Is Still Incomplete
 
-Oreulius's IPC subsystem is much further along than earlier docs suggested, but it is not feature-complete in every dimension.
+Oreulius's IPC subsystem is much further along than earlier docs suggested, but there are still a few open items on top of the implemented core.
 
-The most important remaining gaps are:
+The most important remaining gaps are now:
 
-- **Zero-sum message-carried capability transfer:** attachments are validated and transferable, but not ownership-consuming by construction.
-- **Protocol/session-typed channels:** channels are still general pipes rather than protocol-constrained endpoints.
-- **Replay completeness:** temporal capture and restore do not yet reconstruct a fully event-complete IPC state machine.
-- **SDK/documentation alignment:** some secondary ABI/docs surfaces still lag the kernel implementation.
+- **Broader protocol coverage:** Temporal is the first typed protocol; other IPC services can still remain unbound until they opt into a protocol state machine.
+- **Proof/refinement coverage:** the new IPC semantics are runtime-checked, but they still need stronger proof-trace and refinement coverage if the project wants higher verification tiers.
+- **Docs and wrapper parity:** some secondary ABI/docs surfaces still need to be kept aligned with the kernel implementation as IPC semantics continue to settle.
 
-Those gaps are real, but they sit on top of a production-usable IPC core rather than a hypothetical subsystem.
+Those gaps sit on top of a production-usable IPC core and runtime self-check surface, not a hypothetical subsystem.
 
 ---
 

@@ -13,6 +13,10 @@ fn next_msg_seq() -> u16 {
     MSG_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
+pub(crate) fn set_next_msg_seq(next: u16) {
+    MSG_SEQ.store(next, Ordering::Relaxed);
+}
+
 /// A message sent through a channel.
 #[derive(Clone, Copy)]
 pub struct Message {
@@ -84,6 +88,10 @@ impl Message {
     /// Add a capability to this message.
     pub fn add_capability(&mut self, cap: Capability) -> Result<(), IpcError> {
         if self.caps_len >= MAX_CAPS_PER_MESSAGE {
+            if cap.ticket_id != 0 {
+                let _ = crate::capability::capability_manager()
+                    .rollback_ipc_transfer(cap.owner_pid, cap.ticket_id);
+            }
             return Err(IpcError::TooManyCaps);
         }
 

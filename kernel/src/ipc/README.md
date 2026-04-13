@@ -1,6 +1,6 @@
 # `kernel/src/ipc` — Inter-Process Communication
 
-The IPC module is the **communication backbone** of Oreulius. It provides capability-gated, message-passing channels between processes with a formal causal event identity model, a multi-tier backpressure algebra, an affine linear capability constraint for endpoint delegation, a declarative admission control pipeline, and a well-typed closure state machine. Unlike monolithic shared-memory IPC designs, every primitive here is derived from a mathematical formalism: channels are bounded queues with proven capacity invariants, capabilities are affine tokens with zero-sum split semantics, and backpressure levels are threshold functions over queue occupancy ratios.
+The IPC module is the **communication backbone** of Oreulius. It provides capability-gated, message-passing channels between processes with a formal causal event identity model, a multi-tier backpressure algebra, an affine linear capability constraint for endpoint delegation, a declarative admission control pipeline, a well-typed closure state machine, and explicit Temporal session typing on bound channels. Unlike monolithic shared-memory IPC designs, every primitive here is derived from a mathematical formalism: channels are bounded queues with proven capacity invariants, capabilities are affine tokens with zero-sum split semantics, message-carried capability transfer is ticketed and one-time, and backpressure levels are threshold functions over queue occupancy ratios.
 
 ---
 
@@ -41,7 +41,7 @@ The IPC module is split into precisely-scoped layers:
 - **Policy layer** (`backpressure.rs`, `admission.rs`) — pure functions; no mutation. Only `observe_send_attempt` mutates (hit counters).
 - **Table layer** (`table.rs`) — `BTreeMap`-backed registry of all live channels.
 - **Service layer** (`service.rs`) — single-lock `IpcService` wrapping the table; `static Once` singleton; all public kernel API lives here.
-- **Instrumentation** (`diagnostics.rs`, `selftest.rs`) — read-only snapshot structs plus 27-case in-kernel self-test.
+- **Instrumentation** (`diagnostics.rs`, `selftest.rs`) — read-only snapshot structs plus 15-case in-kernel self-test.
 
 ---
 
@@ -61,7 +61,7 @@ The IPC module is split into precisely-scoped layers:
 | `table.rs` | 84 | `ChannelTable` — `BTreeMap`-backed channel registry |
 | `service.rs` | 398 | `IpcService` — single mutex, all public API, temporal restore |
 | `diagnostics.rs` | 99 | `ChannelDiagnostics`, `IpcDiagnostics` — read-only snapshots |
-| `selftest.rs` | 678 | 27-case `IpcSelftestReport` test suite |
+| `selftest.rs` | 678 | 15-case `IpcSelftestReport` test suite |
 
 ---
 
@@ -553,6 +553,7 @@ Every channel exposes a rich read-only `ChannelDiagnostics` snapshot:
 | `flags_bits` | `u32` | Raw `ChannelFlags` bitmask |
 | `send_refusals` | `u32` | Total send attempts that were refused |
 | `recv_refusals` | `u32` | Total recv attempts that were refused |
+| `protocol` | `ChannelProtocolState` | Current channel protocol binding and Temporal session state |
 | `pressure` | `BackpressureLevel` | Current load level |
 | `pressure_action` | `BackpressureAction` | What a send attempt would result in right now |
 | `high_watermark` | `usize` | Highest ever observed queue depth |
@@ -569,7 +570,7 @@ Every channel exposes a rich read-only `ChannelDiagnostics` snapshot:
 
 ## Temporal Persistence Protocol
 
-IPC channel state participates in the kernel's temporal log. Every significant channel event writes a compact binary record to the temporal log, enabling full reconstruction of IPC state across reboots.
+IPC channel state participates in the kernel's temporal log. Every significant channel event writes a compact event record to the temporal log, and version-2 channel snapshots capture the committed IPC state needed for replay across reboots.
 
 ### Event Types
 
@@ -593,6 +594,22 @@ IPC channel state participates in the kernel's temporal log. Every significant c
 | 16 | 2 | `caps_len` little-endian u16 |
 | 18 | 2 | `queue_depth` little-endian u16 |
 | 20 | 8 | reserved / future extension |
+
+### Version 2 Channel Snapshots
+
+The channel snapshot payload written by `persist_temporal_snapshot()` carries the
+committed replay state, not just the compact event record. It includes:
+
+- closure state
+- protocol/session state
+- send and recv refusal counters
+- backpressure counters and wake counters
+- channel-local wait queues
+- buffered messages with attached capabilities
+
+`restore_temporal_snapshot_payload()` restores the committed queue, wait queues,
+closure, protocol, counters, and pending ticketed IPC transfers from that
+versioned payload.
 
 ### Restoration Flow
 
@@ -639,6 +656,9 @@ flowchart TD
 | Affine delegation | `delegate_zero_sum::<A,B>` with $A+B=C$ succeeds; $A+B \neq C$ fails |
 | Multi-channel | Up to `MAX_CHANNELS = 16` channels coexist without interference |
 | Temporal restoration | Channel state restored correctly from synthetic 28-byte payload |
+| Ticketed transfer | One-time capability tickets consume source authority and reject duplicate/tampered import |
+| Protocol typing | Temporal channel session/phase state rejects malformed frames and invalid transitions |
+| Snapshot roundtrip | Channel snapshot restore round-trips queued payload, wait queues, protocol state, closure state, and counters |
 | Wakeup accounting | `sender_wakeups` / `receiver_wakeups` counters increment correctly |
 | Diagnostics | Snapshot fields match observed live state |
 

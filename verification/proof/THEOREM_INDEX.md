@@ -31,3 +31,17 @@ T2+ proof claim is made.
 | WASI-ABI-001 | Frozen WASI Preview 1 compatibility surface (IDs `45–90`) preserves dispatcher metadata and live ABI behavior | Runtime Checked | `kernel/src/execution/wasm.rs::formal_wasi_preview1_self_check()` |
 | POLYGLOT-ABI-001 | Frozen polyglot host surface (IDs `103–105`) preserves dispatcher metadata, exact-export linking, and teardown purge behavior | Runtime Checked | `kernel/src/execution/wasm.rs::formal_polyglot_abi_self_check()` |
 | SPTR-001 | Service-pointer import, invoke, revoke, typed-slot round-trip, and post-revoke rejection preserve typed service-pointer authority boundaries | Runtime Checked | `kernel/src/execution/wasm.rs::formal_service_pointer_conformance_self_check()` |
+| POLICY-ABI-001 | Full-WASM policy contracts fail closed unless they export `policy_check(ctx_ptr, ctx_len) -> i32` and remain host-import free | Runtime Checked | `kernel/src/execution/wasm.rs::policy_tests::full_wasm_policy_contract_permits_minimal_policy_check_blob` |
+| MESH-MIGRATE-001 | Zero-length `mesh_migrate` payloads snapshot the caller's stored module bytecode instead of queuing an empty blob | Runtime Checked | `kernel/src/execution/wasm.rs::policy_tests::mesh_migrate_uses_module_bytecode_when_payload_is_empty` |
+| NET-CONNECT-001 | `oreulius_net_connect` resolves IPv4 literals or DNS names and returns a real reactor-backed TCP connection handle | Runtime Checked | `kernel/src/execution/wasm.rs::policy_tests::parse_net_host_accepts_ipv4_literal` |
+| POLYGLOT-AUDIT-001 | `polyglot_link` records provenance/audit state when a cross-language service link is created | Runtime Checked | `kernel/src/execution/wasm.rs::host_polyglot_link` / `kernel/src/security/mod.rs::log_event` |
+
+## Runtime-Enforced IPC Boundaries
+
+These are runtime conformance checks exercised by `ipc::run_selftest()` and the `ipc-selftest` / `formal-verify` shell surfaces. They are not mechanized theorems yet.
+
+| ID | Boundary | Status | Runtime Evidence |
+|---|---|---|---|
+| IPC-TRANSFER-001 | Ticketed message-carried capability transfer is zero-sum and one-time; duplicate or tampered ticket reuse fails closed | Runtime Checked | `kernel/src/ipc/selftest.rs::case_ticketed_capability_transfer_once` |
+| IPC-PROTO-001 | Temporal-bound IPC channels enforce session ids and phase transitions when protocol state is bound | Runtime Checked | `kernel/src/ipc/selftest.rs::case_temporal_protocol_typing` |
+| IPC-SNAPSHOT-001 | IPC channel snapshots round-trip committed queue, wait queues, closure, protocol, and counter state | Runtime Checked | `kernel/src/ipc/selftest.rs::case_temporal_snapshot_roundtrip` |

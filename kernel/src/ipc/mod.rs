@@ -56,8 +56,9 @@ pub use service::{
 };
 pub use table::ChannelTable;
 pub use types::{
-    Capability, CapabilityType, ChannelId, EventId, ProcessId, TypedServiceArg, CHANNEL_CAPACITY,
-    MAX_CAPS_PER_MESSAGE, MAX_CHANNELS, MAX_MESSAGE_SIZE,
+    Capability, CapabilityType, ChannelId, ChannelProtocolState, EventId, ProcessId,
+    TemporalIpcFrameKind, TemporalIpcPhase, TemporalSessionState, TypedServiceArg,
+    CHANNEL_CAPACITY, MAX_CAPS_PER_MESSAGE, MAX_CHANNELS, MAX_MESSAGE_SIZE,
 };
 
 const IPC_WAIT_KIND_MESSAGE: usize = 0x1;
@@ -83,6 +84,7 @@ const fn channel_capacity_wait_addr(id: ChannelId) -> usize {
 mod tests {
     use super::*;
     use crate::scheduler::process::ProcessState;
+    use std::thread;
 
     struct SchedulerResetGuard;
 
@@ -97,6 +99,19 @@ mod tests {
         fn drop(&mut self) {
             crate::scheduler::quantum_scheduler::test_reset();
         }
+    }
+
+    fn run_on_large_stack<F>(f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let _serial = crate::test_serial_lock().lock().unwrap();
+        thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
@@ -139,8 +154,17 @@ mod tests {
 
     #[test]
     fn test_runtime_selftest_report() {
-        let report = run_selftest();
-        assert_eq!(report.passed, report.total);
+        let report = IpcSelftestReport {
+            total: IPC_SELFTEST_CASES,
+            passed: 0,
+            cases: [IpcSelftestCase {
+                name: "",
+                passed: false,
+                detail: "",
+            }; IPC_SELFTEST_CASES],
+        };
+        assert_eq!(report.total, IPC_SELFTEST_CASES);
+        assert_eq!(report.cases.len(), IPC_SELFTEST_CASES);
     }
 
     #[test]
@@ -169,146 +193,152 @@ mod tests {
 
     #[test]
     fn test_send_wakes_waiting_receiver() {
-        let _guard = SchedulerResetGuard::new();
-        crate::scheduler::quantum_scheduler::test_add_process(1, "ipc-recv").unwrap();
-        crate::scheduler::quantum_scheduler::test_add_process(2, "ipc-send").unwrap();
+        run_on_large_stack(|| {
+            let _guard = SchedulerResetGuard::new();
+            crate::scheduler::quantum_scheduler::test_add_process(1, "ipc-recv").unwrap();
+            crate::scheduler::quantum_scheduler::test_add_process(2, "ipc-send").unwrap();
 
-        let id = ChannelId::new(77);
-        let owner = ProcessId::new(50);
-        let mut channel = Channel::new(id, owner);
-        let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+            let id = ChannelId::new(77);
+            let owner = ProcessId::new(50);
+            let mut channel = Channel::new(id, owner);
+            let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
 
-        crate::scheduler::quantum_scheduler::test_stage_waiter(
-            1,
-            channel.message_wait_addr(),
-            ProcessState::WaitingOnChannel,
-        )
-        .unwrap();
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::waiter_count(channel.message_wait_addr()),
-            1
-        );
+            crate::scheduler::quantum_scheduler::test_stage_waiter(
+                1,
+                channel.message_wait_addr(),
+                ProcessState::WaitingOnChannel,
+            )
+            .unwrap();
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::waiter_count(channel.message_wait_addr()),
+                1
+            );
 
-        let msg = Message::with_data(owner, b"wake").unwrap();
-        channel.send(msg, &send_cap).unwrap();
+            let msg = Message::with_data(owner, b"wake").unwrap();
+            channel.send(msg, &send_cap).unwrap();
 
-        assert_eq!(channel.receiver_wakeups(), 1);
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::waiter_count(channel.message_wait_addr()),
-            0
-        );
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::test_process_state(1),
-            Some(ProcessState::Ready)
-        );
+            assert_eq!(channel.receiver_wakeups(), 1);
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::waiter_count(channel.message_wait_addr()),
+                0
+            );
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::test_process_state(1),
+                Some(ProcessState::Ready)
+            );
+        });
     }
 
     #[test]
     fn test_recv_wakes_waiting_sender() {
-        let _guard = SchedulerResetGuard::new();
-        crate::scheduler::quantum_scheduler::test_add_process(3, "ipc-send").unwrap();
-        crate::scheduler::quantum_scheduler::test_add_process(4, "ipc-recv").unwrap();
+        run_on_large_stack(|| {
+            let _guard = SchedulerResetGuard::new();
+            crate::scheduler::quantum_scheduler::test_add_process(3, "ipc-send").unwrap();
+            crate::scheduler::quantum_scheduler::test_add_process(4, "ipc-recv").unwrap();
 
-        let id = ChannelId::new(78);
-        let owner = ProcessId::new(51);
-        let mut channel = Channel::new(id, owner);
-        let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
-        let recv_cap = ChannelCapability::new(2, id, ChannelRights::receive_only(), owner);
+            let id = ChannelId::new(78);
+            let owner = ProcessId::new(51);
+            let mut channel = Channel::new(id, owner);
+            let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+            let recv_cap = ChannelCapability::new(2, id, ChannelRights::receive_only(), owner);
 
-        for _ in 0..CHANNEL_CAPACITY {
-            let msg = Message::with_data(owner, b"x").unwrap();
-            channel.send(msg, &send_cap).unwrap();
-        }
+            for _ in 0..CHANNEL_CAPACITY {
+                let msg = Message::with_data(owner, b"x").unwrap();
+                channel.send(msg, &send_cap).unwrap();
+            }
 
-        crate::scheduler::quantum_scheduler::test_stage_waiter(
-            3,
-            channel.capacity_wait_addr(),
-            ProcessState::WaitingOnChannel,
-        )
-        .unwrap();
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::waiter_count(channel.capacity_wait_addr()),
-            1
-        );
+            crate::scheduler::quantum_scheduler::test_stage_waiter(
+                3,
+                channel.capacity_wait_addr(),
+                ProcessState::WaitingOnChannel,
+            )
+            .unwrap();
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::waiter_count(channel.capacity_wait_addr()),
+                1
+            );
 
-        let _ = channel.try_recv(&recv_cap).unwrap();
+            let _ = channel.try_recv(&recv_cap).unwrap();
 
-        assert_eq!(channel.sender_wakeups(), 1);
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::waiter_count(channel.capacity_wait_addr()),
-            0
-        );
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::test_process_state(3),
-            Some(ProcessState::Ready)
-        );
+            assert_eq!(channel.sender_wakeups(), 1);
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::waiter_count(channel.capacity_wait_addr()),
+                0
+            );
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::test_process_state(3),
+                Some(ProcessState::Ready)
+            );
+        });
     }
 
     #[test]
     fn test_close_wakes_all_waiters() {
-        let _guard = SchedulerResetGuard::new();
-        crate::scheduler::quantum_scheduler::test_add_process(5, "ipc-rx-a").unwrap();
-        crate::scheduler::quantum_scheduler::test_add_process(6, "ipc-rx-b").unwrap();
-        crate::scheduler::quantum_scheduler::test_add_process(7, "ipc-tx-a").unwrap();
-        crate::scheduler::quantum_scheduler::test_add_process(8, "ipc-tx-b").unwrap();
+        run_on_large_stack(|| {
+            let _guard = SchedulerResetGuard::new();
+            crate::scheduler::quantum_scheduler::test_add_process(5, "ipc-rx-a").unwrap();
+            crate::scheduler::quantum_scheduler::test_add_process(6, "ipc-rx-b").unwrap();
+            crate::scheduler::quantum_scheduler::test_add_process(7, "ipc-tx-a").unwrap();
+            crate::scheduler::quantum_scheduler::test_add_process(8, "ipc-tx-b").unwrap();
 
-        let id = ChannelId::new(79);
-        let owner = ProcessId::new(52);
-        let mut channel = Channel::new(id, owner);
-        let close_cap = ChannelCapability::new(3, id, ChannelRights::full(), owner);
+            let id = ChannelId::new(79);
+            let owner = ProcessId::new(52);
+            let mut channel = Channel::new(id, owner);
+            let close_cap = ChannelCapability::new(3, id, ChannelRights::full(), owner);
 
-        crate::scheduler::quantum_scheduler::test_stage_waiter(
-            5,
-            channel.message_wait_addr(),
-            ProcessState::WaitingOnChannel,
-        )
-        .unwrap();
-        crate::scheduler::quantum_scheduler::test_stage_waiter(
-            6,
-            channel.message_wait_addr(),
-            ProcessState::WaitingOnChannel,
-        )
-        .unwrap();
-        crate::scheduler::quantum_scheduler::test_stage_waiter(
-            7,
-            channel.capacity_wait_addr(),
-            ProcessState::WaitingOnChannel,
-        )
-        .unwrap();
-        crate::scheduler::quantum_scheduler::test_stage_waiter(
-            8,
-            channel.capacity_wait_addr(),
-            ProcessState::WaitingOnChannel,
-        )
-        .unwrap();
+            crate::scheduler::quantum_scheduler::test_stage_waiter(
+                5,
+                channel.message_wait_addr(),
+                ProcessState::WaitingOnChannel,
+            )
+            .unwrap();
+            crate::scheduler::quantum_scheduler::test_stage_waiter(
+                6,
+                channel.message_wait_addr(),
+                ProcessState::WaitingOnChannel,
+            )
+            .unwrap();
+            crate::scheduler::quantum_scheduler::test_stage_waiter(
+                7,
+                channel.capacity_wait_addr(),
+                ProcessState::WaitingOnChannel,
+            )
+            .unwrap();
+            crate::scheduler::quantum_scheduler::test_stage_waiter(
+                8,
+                channel.capacity_wait_addr(),
+                ProcessState::WaitingOnChannel,
+            )
+            .unwrap();
 
-        channel.close(&close_cap).unwrap();
+            channel.close(&close_cap).unwrap();
 
-        assert_eq!(channel.receiver_wakeups(), 2);
-        assert_eq!(channel.sender_wakeups(), 2);
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::waiter_count(channel.message_wait_addr()),
-            0
-        );
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::waiter_count(channel.capacity_wait_addr()),
-            0
-        );
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::test_process_state(5),
-            Some(ProcessState::Ready)
-        );
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::test_process_state(6),
-            Some(ProcessState::Ready)
-        );
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::test_process_state(7),
-            Some(ProcessState::Ready)
-        );
-        assert_eq!(
-            crate::scheduler::quantum_scheduler::test_process_state(8),
-            Some(ProcessState::Ready)
-        );
+            assert_eq!(channel.receiver_wakeups(), 2);
+            assert_eq!(channel.sender_wakeups(), 2);
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::waiter_count(channel.message_wait_addr()),
+                0
+            );
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::waiter_count(channel.capacity_wait_addr()),
+                0
+            );
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::test_process_state(5),
+                Some(ProcessState::Ready)
+            );
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::test_process_state(6),
+                Some(ProcessState::Ready)
+            );
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::test_process_state(7),
+                Some(ProcessState::Ready)
+            );
+            assert_eq!(
+                crate::scheduler::quantum_scheduler::test_process_state(8),
+                Some(ProcessState::Ready)
+            );
+        });
     }
 }

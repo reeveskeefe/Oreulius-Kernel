@@ -138,106 +138,132 @@ const fn high_pressure_threshold() -> usize {
 mod tests {
     use super::*;
     use crate::ipc::{ChannelFlags, ChannelId, ChannelRights, Message, ProcessId};
+    use std::thread;
+
+    fn run_on_large_stack<F>(f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let _serial = crate::test_serial_lock().lock().unwrap();
+        thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn pressure_level_tracks_thresholds() {
-        let id = ChannelId::new(200);
-        let owner = ProcessId::new(1);
-        let mut channel = Channel::new(id, owner);
-        let send_cap = crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+        run_on_large_stack(|| {
+            let id = ChannelId::new(200);
+            let owner = ProcessId::new(1);
+            let mut channel = Channel::new(id, owner);
+            let send_cap =
+                crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
 
-        assert_eq!(level(&channel), BackpressureLevel::Idle);
+            assert_eq!(level(&channel), BackpressureLevel::Idle);
 
-        let msg = Message::with_data(owner, b"a").unwrap();
-        channel.send(msg, &send_cap).unwrap();
-        assert_eq!(level(&channel), BackpressureLevel::Available);
-
-        while channel.pending() < high_pressure_threshold() {
-            let msg = Message::with_data(owner, b"x").unwrap();
+            let msg = Message::with_data(owner, b"a").unwrap();
             channel.send(msg, &send_cap).unwrap();
-        }
-        assert_eq!(level(&channel), BackpressureLevel::High);
+            assert_eq!(level(&channel), BackpressureLevel::Available);
+
+            while channel.pending() < high_pressure_threshold() {
+                let msg = Message::with_data(owner, b"x").unwrap();
+                channel.send(msg, &send_cap).unwrap();
+            }
+            assert_eq!(level(&channel), BackpressureLevel::High);
+        });
     }
 
     #[test]
     fn async_mode_refuses_full_channel() {
-        let id = ChannelId::new(201);
-        let owner = ProcessId::new(2);
-        let mut channel = Channel::new_with_flags(
-            id,
-            owner,
-            ChannelFlags::new(
-                ChannelFlags::BOUNDED | ChannelFlags::ASYNC | ChannelFlags::HIGH_PRIORITY,
-            ),
-            128,
-        );
-        let send_cap = crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+        run_on_large_stack(|| {
+            let id = ChannelId::new(201);
+            let owner = ProcessId::new(2);
+            let mut channel = Channel::new_with_flags(
+                id,
+                owner,
+                ChannelFlags::new(
+                    ChannelFlags::BOUNDED | ChannelFlags::ASYNC | ChannelFlags::HIGH_PRIORITY,
+                ),
+                128,
+            );
+            let send_cap =
+                crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
 
-        while !channel.is_full() {
-            let msg = Message::with_data(owner, b"x").unwrap();
-            channel.send(msg, &send_cap).unwrap();
-        }
+            while !channel.is_full() {
+                let msg = Message::with_data(owner, b"x").unwrap();
+                channel.send(msg, &send_cap).unwrap();
+            }
 
-        assert_eq!(
-            send_decision(&channel),
-            Some(SendDecision::Refuse(IpcRefusal::QueueFull))
-        );
+            assert_eq!(
+                send_decision(&channel),
+                Some(SendDecision::Refuse(IpcRefusal::QueueFull))
+            );
+        });
     }
 
     #[test]
     fn async_mode_refuses_at_high_pressure_before_saturation() {
-        let id = ChannelId::new(203);
-        let owner = ProcessId::new(4);
-        let mut channel = Channel::new_with_flags(
-            id,
-            owner,
-            ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::ASYNC),
-            128,
-        );
-        let send_cap = crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+        run_on_large_stack(|| {
+            let id = ChannelId::new(203);
+            let owner = ProcessId::new(4);
+            let mut channel = Channel::new_with_flags(
+                id,
+                owner,
+                ChannelFlags::new(ChannelFlags::BOUNDED | ChannelFlags::ASYNC),
+                128,
+            );
+            let send_cap =
+                crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
 
-        while level(&channel) != BackpressureLevel::High {
-            let msg = Message::with_data(owner, b"x").unwrap();
-            channel.send(msg, &send_cap).unwrap();
-        }
+            while level(&channel) != BackpressureLevel::High {
+                let msg = Message::with_data(owner, b"x").unwrap();
+                channel.send(msg, &send_cap).unwrap();
+            }
 
-        assert!(!channel.is_full());
-        assert_eq!(
-            recommended_send_action(&channel),
-            BackpressureAction::Refuse
-        );
-        assert_eq!(
-            send_decision(&channel),
-            Some(SendDecision::Refuse(IpcRefusal::Backpressure))
-        );
+            assert!(!channel.is_full());
+            assert_eq!(
+                recommended_send_action(&channel),
+                BackpressureAction::Refuse
+            );
+            assert_eq!(
+                send_decision(&channel),
+                Some(SendDecision::Refuse(IpcRefusal::Backpressure))
+            );
+        });
     }
 
     #[test]
     fn observed_send_attempts_track_pressure_hits() {
-        let id = ChannelId::new(202);
-        let owner = ProcessId::new(3);
-        let mut channel = Channel::new(id, owner);
-        let send_cap = crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+        run_on_large_stack(|| {
+            let id = ChannelId::new(202);
+            let owner = ProcessId::new(3);
+            let mut channel = Channel::new(id, owner);
+            let send_cap =
+                crate::ipc::ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
 
-        while level(&channel) != BackpressureLevel::High {
-            let msg = Message::with_data(owner, b"x").unwrap();
+            while level(&channel) != BackpressureLevel::High {
+                let msg = Message::with_data(owner, b"x").unwrap();
+                channel.send(msg, &send_cap).unwrap();
+            }
+
+            let msg = Message::with_data(owner, b"y").unwrap();
             channel.send(msg, &send_cap).unwrap();
-        }
+            assert!(channel.high_pressure_hits() > 0);
 
-        let msg = Message::with_data(owner, b"y").unwrap();
-        channel.send(msg, &send_cap).unwrap();
-        assert!(channel.high_pressure_hits() > 0);
+            while !channel.is_full() {
+                let msg = Message::with_data(owner, b"z").unwrap();
+                channel.send(msg, &send_cap).unwrap();
+            }
 
-        while !channel.is_full() {
-            let msg = Message::with_data(owner, b"z").unwrap();
-            channel.send(msg, &send_cap).unwrap();
-        }
-
-        let overflow = Message::with_data(owner, b"!").unwrap();
-        assert!(matches!(
-            channel.send(overflow, &send_cap),
-            Err(crate::ipc::IpcError::WouldBlock)
-        ));
-        assert!(channel.saturated_hits() > 0);
+            let overflow = Message::with_data(owner, b"!").unwrap();
+            assert!(matches!(
+                channel.send(overflow, &send_cap),
+                Err(crate::ipc::IpcError::WouldBlock)
+            ));
+            assert!(channel.saturated_hits() > 0);
+        });
     }
 }

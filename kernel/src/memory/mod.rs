@@ -18,9 +18,13 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 #[cfg(any(test, feature = "host-tests"))]
-static HOST_TEST_HEAP: [u8; 2 * 1024 * 1024] = [0; 2 * 1024 * 1024];
+static mut HOST_TEST_HEAP: [u8; 2 * 1024 * 1024] = [0; 2 * 1024 * 1024];
 #[cfg(any(test, feature = "host-tests"))]
-static HOST_TEST_JIT_ARENA: [u8; 512 * 1024] = [0; 512 * 1024];
+static mut HOST_TEST_JIT_ARENA: [u8; 512 * 1024] = [0; 512 * 1024];
+#[cfg(any(test, feature = "host-tests"))]
+const HOST_TEST_HEAP_LEN: usize = 2 * 1024 * 1024;
+#[cfg(any(test, feature = "host-tests"))]
+const HOST_TEST_JIT_ARENA_LEN: usize = 512 * 1024;
 
 extern "C" {
     static _heap_start: usize;
@@ -49,8 +53,8 @@ impl BumpAllocator {
     pub unsafe fn init(&mut self) {
         #[cfg(any(test, feature = "host-tests"))]
         {
-            self.heap_start = HOST_TEST_HEAP.as_ptr() as usize;
-            self.heap_end = self.heap_start + HOST_TEST_HEAP.len();
+            self.heap_start = core::ptr::addr_of_mut!(HOST_TEST_HEAP) as usize;
+            self.heap_end = self.heap_start + HOST_TEST_HEAP_LEN;
             self.next = self.heap_start;
             HEAP_RANGE_START.store(self.heap_start, Ordering::Relaxed);
             HEAP_RANGE_END.store(self.heap_end, Ordering::Relaxed);
@@ -137,8 +141,8 @@ static JIT_ARENA: Mutex<JitArena> = Mutex::new(JitArena::new());
 fn init_jit_arena() {
     #[cfg(any(test, feature = "host-tests"))]
     let (start, end) = (
-        HOST_TEST_JIT_ARENA.as_ptr() as usize,
-        HOST_TEST_JIT_ARENA.as_ptr() as usize + HOST_TEST_JIT_ARENA.len(),
+        core::ptr::addr_of_mut!(HOST_TEST_JIT_ARENA) as usize,
+        core::ptr::addr_of_mut!(HOST_TEST_JIT_ARENA) as usize + HOST_TEST_JIT_ARENA_LEN,
     );
     #[cfg(not(any(test, feature = "host-tests")))]
     let start = unsafe { &_jit_arena_start as *const usize as usize };

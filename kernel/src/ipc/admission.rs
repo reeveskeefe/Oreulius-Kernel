@@ -1,10 +1,11 @@
-use super::{backpressure, Channel, ChannelCapability};
+use super::{backpressure, Channel, ChannelCapability, Message};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpcRefusal {
     PredictiveRestriction,
     PermissionDenied,
     InvalidCapability,
+    ProtocolMismatch,
     Closed,
     /// Channel is in `Draining` state: close initiated, messages still in flight.
     /// Distinguishable from `Closed` (fully sealed) so callers can adapt.
@@ -34,7 +35,11 @@ pub enum RecvDecision {
     Defer(IpcDefer),
 }
 
-pub(crate) fn evaluate_send(channel: &Channel, capability: &ChannelCapability) -> SendDecision {
+pub(crate) fn evaluate_send(
+    channel: &Channel,
+    capability: &ChannelCapability,
+    msg: &Message,
+) -> SendDecision {
     let sec = crate::security::security();
     if sec.is_predictively_restricted(
         capability.owner,
@@ -50,6 +55,10 @@ pub(crate) fn evaluate_send(channel: &Channel, capability: &ChannelCapability) -
 
     if capability.channel_id != channel.id {
         return SendDecision::Refuse(IpcRefusal::InvalidCapability);
+    }
+
+    if channel.validate_temporal_send(msg).is_err() {
+        return SendDecision::Refuse(IpcRefusal::ProtocolMismatch);
     }
 
     if channel.closure.is_closed() {
@@ -99,55 +108,77 @@ pub(crate) fn evaluate_recv(channel: &Channel, capability: &ChannelCapability) -
 mod tests {
     use super::*;
     use crate::ipc::{ChannelFlags, ChannelId, ChannelRights, ProcessId};
+    use std::thread;
+
+    fn run_on_large_stack<F>(f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let _serial = crate::test_serial_lock().lock().unwrap();
+        thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn reliable_full_channel_defers_send() {
-        let id = ChannelId::new(100);
-        let owner = ProcessId::new(1);
-        let mut channel = Channel::new(id, owner);
-        let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
-        for _ in 0..crate::ipc::CHANNEL_CAPACITY {
+        run_on_large_stack(|| {
+            let id = ChannelId::new(100);
+            let owner = ProcessId::new(1);
+            let mut channel = Channel::new(id, owner);
+            let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+            for _ in 0..crate::ipc::CHANNEL_CAPACITY {
+                let msg = crate::ipc::Message::with_data(owner, b"x").unwrap();
+                channel.send(msg, &send_cap).unwrap();
+            }
             let msg = crate::ipc::Message::with_data(owner, b"x").unwrap();
-            channel.send(msg, &send_cap).unwrap();
-        }
-        assert_eq!(
-            evaluate_send(&channel, &send_cap),
-            SendDecision::Defer(IpcDefer::WaitForCapacity)
-        );
+            assert_eq!(
+                evaluate_send(&channel, &send_cap, &msg),
+                SendDecision::Defer(IpcDefer::WaitForCapacity)
+            );
+        });
     }
 
     #[test]
     fn async_full_channel_refuses_send() {
-        let id = ChannelId::new(101);
-        let owner = ProcessId::new(2);
-        let mut channel = Channel::new_with_flags(
-            id,
-            owner,
-            ChannelFlags::new(
-                ChannelFlags::BOUNDED | ChannelFlags::ASYNC | ChannelFlags::HIGH_PRIORITY,
-            ),
-            128,
-        );
-        let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
-        for _ in 0..crate::ipc::CHANNEL_CAPACITY {
+        run_on_large_stack(|| {
+            let id = ChannelId::new(101);
+            let owner = ProcessId::new(2);
+            let mut channel = Channel::new_with_flags(
+                id,
+                owner,
+                ChannelFlags::new(
+                    ChannelFlags::BOUNDED | ChannelFlags::ASYNC | ChannelFlags::HIGH_PRIORITY,
+                ),
+                128,
+            );
+            let send_cap = ChannelCapability::new(1, id, ChannelRights::send_only(), owner);
+            for _ in 0..crate::ipc::CHANNEL_CAPACITY {
+                let msg = crate::ipc::Message::with_data(owner, b"x").unwrap();
+                channel.send(msg, &send_cap).unwrap();
+            }
             let msg = crate::ipc::Message::with_data(owner, b"x").unwrap();
-            channel.send(msg, &send_cap).unwrap();
-        }
-        assert_eq!(
-            evaluate_send(&channel, &send_cap),
-            SendDecision::Refuse(IpcRefusal::QueueFull)
-        );
+            assert_eq!(
+                evaluate_send(&channel, &send_cap, &msg),
+                SendDecision::Refuse(IpcRefusal::QueueFull)
+            );
+        });
     }
 
     #[test]
     fn empty_channel_defers_recv() {
-        let id = ChannelId::new(102);
-        let owner = ProcessId::new(3);
-        let channel = Channel::new(id, owner);
-        let recv_cap = ChannelCapability::new(1, id, ChannelRights::receive_only(), owner);
-        assert_eq!(
-            evaluate_recv(&channel, &recv_cap),
-            RecvDecision::Defer(IpcDefer::WaitForMessage)
-        );
+        run_on_large_stack(|| {
+            let id = ChannelId::new(102);
+            let owner = ProcessId::new(3);
+            let channel = Channel::new(id, owner);
+            let recv_cap = ChannelCapability::new(1, id, ChannelRights::receive_only(), owner);
+            assert_eq!(
+                evaluate_recv(&channel, &recv_cap),
+                RecvDecision::Defer(IpcDefer::WaitForMessage)
+            );
+        });
     }
 }

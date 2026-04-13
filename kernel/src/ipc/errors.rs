@@ -5,6 +5,7 @@ use core::fmt;
 pub enum IpcError {
     InvalidCap,
     PermissionDenied,
+    ProtocolMismatch,
     WouldBlock,
     Closed,
     /// The channel is in the `Draining` state: `close()` was called while
@@ -22,6 +23,7 @@ impl IpcError {
         match self {
             IpcError::InvalidCap => "Invalid capability",
             IpcError::PermissionDenied => "Permission denied",
+            IpcError::ProtocolMismatch => "Protocol mismatch",
             IpcError::WouldBlock => "Would block",
             IpcError::Closed => "Channel closed",
             IpcError::ChannelDraining => "Channel draining",
@@ -37,6 +39,7 @@ impl fmt::Display for IpcError {
         match self {
             IpcError::InvalidCap => write!(f, "Invalid capability"),
             IpcError::PermissionDenied => write!(f, "Permission denied"),
+            IpcError::ProtocolMismatch => write!(f, "Protocol mismatch"),
             IpcError::WouldBlock => write!(f, "Would block"),
             IpcError::Closed => write!(f, "Channel closed"),
             IpcError::ChannelDraining => write!(f, "Channel draining"),

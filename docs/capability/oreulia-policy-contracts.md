@@ -1,6 +1,6 @@
 # Oreulius Intensional Kernel: Policy-as-Contracts
 
-> **Status:** Fully implemented. WASM host ABI IDs 121–124. Core: `kernel/src/execution/wasm.rs` (`POLICY_STORE`, `run_policy_contract`). OPOL stub format fully deterministic. Full WASM engine integration: deny-by-default until a real interpreter is wired in. SDK: `wasm/sdk/src/policy.rs`.
+> **Status:** Fully implemented. WASM host ABI IDs 121–124. Core: `kernel/src/execution/wasm.rs` (`POLICY_STORE`, `run_policy_contract`). OPOL stub format fully deterministic. Full WASM policy contracts run in a strict fail-closed sandbox and must export `policy_check(ctx_ptr, ctx_len) -> i32` without importing host functions. SDK: `wasm/sdk/src/policy.rs`.
 
 ---
 
@@ -52,7 +52,7 @@ The term "intensional" comes from logic: an *intension* is a rule or predicate t
     │  Mode 2: OPOL stub (magic b'O','P','O','L' at bytes 0-3)     │
     │  Fully deterministic; no WASM engine required                │
     │                                                               │
-    │  Mode 1: Full WASM engine (deny until integrated)           │
+    │  Mode 1: Full WASM policy sandbox (self-contained export)  │
     └───────────────────────────────────────────────────────────────┘
 
 Hot path integration:
@@ -159,7 +159,9 @@ fn run_policy_contract(bytecode: &[u8], ctx: &[u8]) -> bool {
         }
         return true;
     }
-    // Mode 1: full WASM engine — deny until integrated
+    // Mode 1: full WASM policy sandbox — self-contained policy_check export
+    // required; any parse, validation, instantiation, or execution failure
+    // fails closed.
     false
 }
 ```
@@ -348,7 +350,7 @@ For the common no-policy case, this is a lock-acquire + linear scan of 16 u32 pa
 
 | Limitation | Detail |
 |---|---|
-| **Full WASM engine deny-by-default** | Mode 1 (arbitrary WASM bytecode) currently returns `false` (deny) until a real WASM interpreter is integrated. |
+| **Full WASM policy sandbox** | Mode 1 (arbitrary WASM bytecode) executes only self-contained policies that export `policy_check(ctx_ptr, ctx_len) -> i32`; any parse/validation/runtime failure denies. |
 | **4 KiB bytecode cap** | `MAX_POLICY_WASM_LEN = 4096`. Complex policies requiring more bytecode cannot be bound. |
 | **16-slot limit** | `MAX_POLICY_SLOTS = 16`. A process with more than 16 simultaneously active capability policies exhausts the store. |
 | **No policy delegation** | When a capability is delegated (transferred to another process), the policy binding is **not** automatically copied. The delegatee receives a capability with no policy and is denied until a policy is explicitly bound. |

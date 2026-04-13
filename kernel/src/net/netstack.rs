@@ -3837,90 +3837,114 @@ fn calculate_checksum(data: &[u8]) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{Ipv4Addr, NetworkStack, DNS_CLIENT_SRC_PORT, DNS_SERVER_PORT};
+    use std::thread;
+
+    fn run_on_large_stack<F>(f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let _serial = crate::test_serial_lock().lock().unwrap();
+        thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn handle_udp_queues_non_capnet_payloads() {
-        let mut stack = NetworkStack::new();
-        let payload = b"dns reply bytes";
-        let udp_len = (8 + payload.len()) as u16;
-        let mut datagram = [0u8; 8 + 15];
-        datagram[0..2].copy_from_slice(&53u16.to_be_bytes());
-        datagram[2..4].copy_from_slice(&53000u16.to_be_bytes());
-        datagram[4..6].copy_from_slice(&udp_len.to_be_bytes());
-        datagram[8..8 + payload.len()].copy_from_slice(payload);
+        run_on_large_stack(|| {
+            let mut stack = NetworkStack::new();
+            let dns_server = stack.get_dns_server();
+            let payload = b"dns reply bytes";
+            let udp_len = (8 + payload.len()) as u16;
+            let mut datagram = [0u8; 8 + 15];
+            datagram[0..2].copy_from_slice(&53u16.to_be_bytes());
+            datagram[2..4].copy_from_slice(&53000u16.to_be_bytes());
+            datagram[4..6].copy_from_slice(&udp_len.to_be_bytes());
+            datagram[8..8 + payload.len()].copy_from_slice(payload);
 
-        stack
-            .handle_udp(Ipv4Addr::new(8, 8, 8, 8), &datagram[..8 + payload.len()])
-            .expect("queue UDP payload");
+            stack
+                .handle_udp(dns_server, &datagram[..8 + payload.len()])
+                .expect("queue UDP payload");
 
-        let mut out = [0u8; 32];
-        let len = stack.recv_udp(53000, &mut out).expect("receive queued UDP");
-        assert_eq!(&out[..len], payload);
+            let mut out = [0u8; 32];
+            let len = stack.recv_udp(53000, &mut out).expect("receive queued UDP");
+            assert_eq!(&out[..len], payload);
+        });
     }
 
     #[test]
     fn recv_udp_keeps_non_matching_packets_queued() {
-        let mut stack = NetworkStack::new();
-        let payload = b"queued later";
-        let udp_len = (8 + payload.len()) as u16;
-        let mut datagram = [0u8; 8 + 12];
-        datagram[0..2].copy_from_slice(&53u16.to_be_bytes());
-        datagram[2..4].copy_from_slice(&53000u16.to_be_bytes());
-        datagram[4..6].copy_from_slice(&udp_len.to_be_bytes());
-        datagram[8..8 + payload.len()].copy_from_slice(payload);
+        run_on_large_stack(|| {
+            let mut stack = NetworkStack::new();
+            let dns_server = stack.get_dns_server();
+            let payload = b"queued later";
+            let udp_len = (8 + payload.len()) as u16;
+            let mut datagram = [0u8; 8 + 12];
+            datagram[0..2].copy_from_slice(&53u16.to_be_bytes());
+            datagram[2..4].copy_from_slice(&53000u16.to_be_bytes());
+            datagram[4..6].copy_from_slice(&udp_len.to_be_bytes());
+            datagram[8..8 + payload.len()].copy_from_slice(payload);
 
-        stack
-            .handle_udp(Ipv4Addr::new(1, 1, 1, 1), &datagram[..8 + payload.len()])
-            .expect("queue UDP payload");
+            stack
+                .handle_udp(dns_server, &datagram[..8 + payload.len()])
+                .expect("queue UDP payload");
 
-        let mut out = [0u8; 32];
-        assert_eq!(
-            stack.recv_udp(9999, &mut out),
-            Err("No UDP packet available")
-        );
-        let len = stack.recv_udp(53000, &mut out).expect("receive queued UDP");
-        assert_eq!(&out[..len], payload);
+            let mut out = [0u8; 32];
+            assert_eq!(
+                stack.recv_udp(9999, &mut out),
+                Err("No UDP packet available")
+            );
+            let len = stack.recv_udp(53000, &mut out).expect("receive queued UDP");
+            assert_eq!(&out[..len], payload);
+        });
     }
 
     #[test]
     fn next_dns_txid_advances_monotonically() {
-        let mut stack = NetworkStack::new();
-        let first = stack.next_dns_txid();
-        let second = stack.next_dns_txid();
-        let third = stack.next_dns_txid();
+        run_on_large_stack(|| {
+            let mut stack = NetworkStack::new();
+            let first = stack.next_dns_txid();
+            let second = stack.next_dns_txid();
+            let third = stack.next_dns_txid();
 
-        assert_ne!(first, 0);
-        assert_eq!(second, first.wrapping_add(1));
-        assert_eq!(third, second.wrapping_add(1));
+            assert_ne!(first, 0);
+            assert_eq!(second, first.wrapping_add(1));
+            assert_eq!(third, second.wrapping_add(1));
+        });
     }
 
     #[test]
     fn clear_stale_dns_responses_removes_only_dns_client_port_entries() {
-        let mut stack = NetworkStack::new();
-        stack.enqueue_udp(
-            Ipv4Addr::new(10, 0, 2, 3),
-            DNS_SERVER_PORT,
-            DNS_CLIENT_SRC_PORT,
-            &[0x12, 0x34],
-        );
-        stack.enqueue_udp(
-            Ipv4Addr::new(1, 1, 1, 1),
-            1111,
-            9999,
-            b"keep me",
-        );
+        run_on_large_stack(|| {
+            let mut stack = NetworkStack::new();
+            stack.enqueue_udp(
+                Ipv4Addr::new(10, 0, 2, 3),
+                DNS_SERVER_PORT,
+                DNS_CLIENT_SRC_PORT,
+                &[0x12, 0x34],
+            );
+            stack.enqueue_udp(
+                Ipv4Addr::new(1, 1, 1, 1),
+                1111,
+                9999,
+                b"keep me",
+            );
 
-        stack.clear_stale_dns_responses();
+            stack.clear_stale_dns_responses();
 
-        let mut dns_out = [0u8; 16];
-        assert_eq!(
-            stack.recv_udp(DNS_CLIENT_SRC_PORT, &mut dns_out),
-            Err("No UDP packet available")
-        );
+            let mut dns_out = [0u8; 16];
+            assert_eq!(
+                stack.recv_udp(DNS_CLIENT_SRC_PORT, &mut dns_out),
+                Err("No UDP packet available")
+            );
 
-        let mut other_out = [0u8; 16];
-        let len = stack.recv_udp(9999, &mut other_out).expect("non-DNS slot kept");
-        assert_eq!(&other_out[..len], b"keep me");
+            let mut other_out = [0u8; 16];
+            let len = stack.recv_udp(9999, &mut other_out).expect("non-DNS slot kept");
+            assert_eq!(&other_out[..len], b"keep me");
+        });
     }
 
     #[test]

@@ -382,7 +382,7 @@ pub fn irqs_disabled() -> bool {
     (flags & (1u64 << 9)) == 0
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(any(test, feature = "host-tests"))))]
 pub fn irqs_disabled() -> bool {
     let daif: u64;
     unsafe {
@@ -392,12 +392,17 @@ pub fn irqs_disabled() -> bool {
     (daif & (1u64 << 7)) != 0
 }
 
+#[cfg(all(target_arch = "aarch64", any(test, feature = "host-tests")))]
+pub fn irqs_disabled() -> bool {
+    false
+}
+
 #[cfg(target_arch = "x86")]
 pub unsafe fn irq_save_disable() -> IrqFlags {
     crate::platform::idt_asm::fast_cli_save()
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(any(test, feature = "host-tests"))))]
 pub unsafe fn irq_save_disable() -> IrqFlags {
     let flags: u64;
     core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
@@ -405,7 +410,12 @@ pub unsafe fn irq_save_disable() -> IrqFlags {
     flags
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "x86_64", any(test, feature = "host-tests")))]
+pub unsafe fn irq_save_disable() -> IrqFlags {
+    0
+}
+
+#[cfg(all(target_arch = "aarch64", not(any(test, feature = "host-tests"))))]
 pub unsafe fn irq_save_disable() -> IrqFlags {
     let flags: u64;
     core::arch::asm!("mrs {0}, DAIF", out(reg) flags, options(nomem, nostack, preserves_flags));
@@ -419,14 +429,25 @@ pub unsafe fn irq_restore(flags: IrqFlags) {
     crate::platform::idt_asm::fast_sti_restore(flags);
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(any(test, feature = "host-tests"))))]
 pub unsafe fn irq_restore(flags: IrqFlags) {
     if (flags & (1u64 << 9)) != 0 {
         core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "x86_64", any(test, feature = "host-tests")))]
+pub unsafe fn irq_restore(_flags: IrqFlags) {}
+
+#[cfg(all(target_arch = "aarch64", any(test, feature = "host-tests")))]
+pub unsafe fn irq_save_disable() -> IrqFlags {
+    0
+}
+
+#[cfg(all(target_arch = "aarch64", any(test, feature = "host-tests")))]
+pub unsafe fn irq_restore(_flags: IrqFlags) {}
+
+#[cfg(all(target_arch = "aarch64", not(any(test, feature = "host-tests"))))]
 pub unsafe fn irq_restore(flags: IrqFlags) {
     core::arch::asm!("msr DAIF, {0}", in(reg) flags, options(nomem, nostack, preserves_flags));
     core::arch::asm!("isb", options(nomem, nostack, preserves_flags));

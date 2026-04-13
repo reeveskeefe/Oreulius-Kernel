@@ -55,9 +55,9 @@ Oreulius does not treat verification as:
 
 Oreulius treats verification as the stronger claim:
 
-\[
+$$
 Assumptions \implies \text{the running system cannot violate the stated properties}
-\]
+$$
 
 for a clearly bounded configuration.
 
@@ -126,9 +126,9 @@ Full artifact verification requires:
 
 This is the minimum standard for the claim:
 
-\[
-\text{ArtifactClaim} \equiv \text{CompleteInventory} \land \text{ReproducibleArtifacts} \land \text{TraceableClaims}
-\]
+$$
+	ext{ArtifactClaim} \equiv \text{CompleteInventory} \land \text{ReproducibleArtifacts} \land \text{TraceableClaims}
+$$
 
 ### 3.3 Verify the formal models for each subsystem
 
@@ -199,9 +199,9 @@ The trusted base includes:
 
 An honest top-level statement therefore has the form:
 
-\[
-\text{VerifiedSystem} \text{ relative to } TCB \land HW\_Assumptions \land Model\_Assumptions
-\]
+$$
+	ext{VerifiedSystem} \text{ relative to } TCB \land HW\_Assumptions \land Model\_Assumptions
+$$
 
 ### 3.7 Verify composition across subsystems
 
@@ -641,15 +641,15 @@ This strategy is novel in emphasis, even if not novel in spirit. Traditional mic
 
 Formally, if \( C \) is the set of semantic control points, the claim is not:
 
-\[
+$$
 \forall code \in Kernel.\; Verified(code)
-\]
+$$
 
 The staged claim is closer to:
 
-\[
+$$
 \forall e \in Executions.\; Crossing(C, e) \implies PreservesInvariant(e)
-\]
+$$
 
 with the non-covered environment declared explicitly.
 

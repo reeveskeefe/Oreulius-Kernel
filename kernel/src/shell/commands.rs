@@ -7,6 +7,7 @@
 extern crate alloc;
 
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::execution::elf;
 use crate::fs;
@@ -386,7 +387,7 @@ pub fn execute(input: &str) {
             );
             vga::print_str("  capnet-fuzz-soak - Repeat CapNet corpus replay (capnet-fuzz-soak <iters> <rounds>)\n");
             vga::print_str(
-                "  formal-verify - Run runtime verification self-checks (dispatcher + WASI + JIT + capability + CapNet)\n",
+                "  formal-verify - Run runtime verification self-checks (dispatcher + WASI + JIT + capability + IPC + CapNet)\n",
             );
             vga::print_str("  wasm-jit-on  - Enable WASM JIT\n");
             vga::print_str("  wasm-jit-off - Disable WASM JIT\n");
@@ -2347,8 +2348,14 @@ fn cmd_temporal_retention(mut parts: core::str::SplitWhitespace) {
 
 const TEMPORAL_IPC_MAGIC: u32 = 0x3150_4D54; // "TMP1" in little-endian byte order
 const TEMPORAL_IPC_VERSION: u8 = 1;
+const TEMPORAL_IPC_SESSION_BYTES: usize = 8;
 const TEMPORAL_IPC_REQUEST_HEADER_BYTES: usize = 16;
 const TEMPORAL_IPC_RESPONSE_HEADER_BYTES: usize = 20;
+static TEMPORAL_IPC_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn temporal_ipc_next_session_id() -> u64 {
+    TEMPORAL_IPC_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed).max(1)
+}
 
 const TEMPORAL_IPC_OP_SNAPSHOT: u8 = 1;
 const TEMPORAL_IPC_OP_LATEST: u8 = 2;
@@ -2428,6 +2435,7 @@ fn temporal_ipc_read_u64(buf: &[u8], offset: usize) -> Option<u64> {
 }
 
 fn temporal_ipc_build_request_frame(
+    session_id: u64,
     opcode: u8,
     flags: u16,
     request_id: u32,
@@ -2436,13 +2444,16 @@ fn temporal_ipc_build_request_frame(
     if payload.len() > u16::MAX as usize {
         return Err("temporal IPC request payload too large");
     }
-    let total_len = TEMPORAL_IPC_REQUEST_HEADER_BYTES.saturating_add(payload.len());
+    let total_len = TEMPORAL_IPC_SESSION_BYTES
+        .saturating_add(TEMPORAL_IPC_REQUEST_HEADER_BYTES)
+        .saturating_add(payload.len());
     if total_len > ipc::MAX_MESSAGE_SIZE {
         return Err("temporal IPC request frame exceeds IPC message limit");
     }
 
     let mut out = alloc::vec::Vec::new();
     out.reserve(total_len);
+    out.extend_from_slice(&session_id.to_le_bytes());
     temporal_ipc_append_u32(&mut out, TEMPORAL_IPC_MAGIC);
     out.push(TEMPORAL_IPC_VERSION);
     out.push(opcode);
@@ -2454,10 +2465,12 @@ fn temporal_ipc_build_request_frame(
     Ok(out)
 }
 
-fn temporal_ipc_parse_request_frame(frame: &[u8]) -> Result<(u8, u16, u32, &[u8]), i32> {
-    if frame.len() < TEMPORAL_IPC_REQUEST_HEADER_BYTES {
+fn temporal_ipc_parse_request_frame(frame: &[u8]) -> Result<(u64, u8, u16, u32, &[u8]), i32> {
+    if frame.len() < TEMPORAL_IPC_SESSION_BYTES + TEMPORAL_IPC_REQUEST_HEADER_BYTES {
         return Err(TEMPORAL_IPC_STATUS_INVALID_FRAME);
     }
+    let session_id = temporal_ipc_read_u64(frame, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_FRAME)?;
+    let frame = &frame[TEMPORAL_IPC_SESSION_BYTES..];
     let magic = temporal_ipc_read_u32(frame, 0).ok_or(TEMPORAL_IPC_STATUS_INVALID_FRAME)?;
     if magic != TEMPORAL_IPC_MAGIC {
         return Err(TEMPORAL_IPC_STATUS_INVALID_FRAME);
@@ -2476,6 +2489,7 @@ fn temporal_ipc_parse_request_frame(frame: &[u8]) -> Result<(u8, u16, u32, &[u8]
         return Err(TEMPORAL_IPC_STATUS_INVALID_FRAME);
     }
     Ok((
+        session_id,
         opcode,
         flags,
         request_id,
@@ -2484,6 +2498,7 @@ fn temporal_ipc_parse_request_frame(frame: &[u8]) -> Result<(u8, u16, u32, &[u8]
 }
 
 fn temporal_ipc_build_response_frame(
+    session_id: u64,
     opcode: u8,
     flags: u16,
     request_id: u32,
@@ -2502,7 +2517,12 @@ fn temporal_ipc_build_response_frame(
     };
 
     let mut frame = alloc::vec::Vec::new();
-    frame.reserve(TEMPORAL_IPC_RESPONSE_HEADER_BYTES.saturating_add(use_payload.len()));
+    frame.reserve(
+        TEMPORAL_IPC_SESSION_BYTES
+            .saturating_add(TEMPORAL_IPC_RESPONSE_HEADER_BYTES)
+            .saturating_add(use_payload.len()),
+    );
+    frame.extend_from_slice(&session_id.to_le_bytes());
     temporal_ipc_append_u32(&mut frame, TEMPORAL_IPC_MAGIC);
     frame.push(TEMPORAL_IPC_VERSION);
     frame.push(opcode);
@@ -2520,10 +2540,12 @@ fn temporal_ipc_build_response_frame(
 
 fn temporal_ipc_parse_response_frame(
     frame: &[u8],
-) -> Result<(u8, u16, u32, i32, &[u8]), &'static str> {
-    if frame.len() < TEMPORAL_IPC_RESPONSE_HEADER_BYTES {
+) -> Result<(u64, u8, u16, u32, i32, &[u8]), &'static str> {
+    if frame.len() < TEMPORAL_IPC_SESSION_BYTES + TEMPORAL_IPC_RESPONSE_HEADER_BYTES {
         return Err("temporal IPC response frame too short");
     }
+    let session_id = temporal_ipc_read_u64(frame, 0).ok_or("temporal IPC response missing session")?;
+    let frame = &frame[TEMPORAL_IPC_SESSION_BYTES..];
     let magic = temporal_ipc_read_u32(frame, 0).ok_or("temporal IPC response missing magic")?;
     if magic != TEMPORAL_IPC_MAGIC {
         return Err("temporal IPC response magic mismatch");
@@ -2543,6 +2565,7 @@ fn temporal_ipc_parse_response_frame(
         return Err("temporal IPC response length mismatch");
     }
     Ok((
+        session_id,
         opcode,
         flags,
         request_id,
@@ -2700,9 +2723,18 @@ fn temporal_ipc_roundtrip(
     request_frame: &[u8],
     fs_cap: Option<fs::FilesystemCapability>,
 ) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    let (session_id, _, _, request_id, _) = temporal_ipc_parse_request_frame(request_frame)
+        .map_err(|_| "failed to parse temporal IPC request frame")?;
     let channel_id = ipc::ChannelId::new(0x544D_5001); // TMP1
     let owner = ipc::ProcessId(1);
     let mut channel = ipc::Channel::new(channel_id, owner);
+    channel.bind_temporal_protocol_state(ipc::TemporalSessionState {
+        session_id,
+        phase: ipc::TemporalIpcPhase::AwaitRequestSend,
+        next_request_id: request_id,
+        last_request_id: 0,
+        last_opcode: 0,
+    });
 
     let send_cap =
         ipc::ChannelCapability::new(1, channel_id, ipc::ChannelRights::send_only(), owner);
@@ -2750,12 +2782,13 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
     vfs::write_path(PATH, b"temporal-ipc-alpha").map_err(|_| "IPC self-check seed write failed")?;
 
     let fs_cap = fs::filesystem().create_capability(911, fs::FilesystemRights::all(), None);
+    let session_id = temporal_ipc_next_session_id();
 
     let snapshot_payload = temporal_ipc_build_path_payload(PATH)?;
     let snapshot_req =
-        temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_SNAPSHOT, 0, 1, &snapshot_payload)?;
+        temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_SNAPSHOT, 0, 1, &snapshot_payload)?;
     let snapshot_resp = temporal_ipc_roundtrip(&snapshot_req, Some(fs_cap.clone()))?;
-    let (snapshot_opcode, _snapshot_flags, snapshot_request_id, snapshot_status, snapshot_payload) =
+    let (_snapshot_session, snapshot_opcode, _snapshot_flags, snapshot_request_id, snapshot_status, snapshot_payload) =
         temporal_ipc_parse_response_frame(&snapshot_resp)?;
     if snapshot_opcode != TEMPORAL_IPC_OP_SNAPSHOT || snapshot_request_id != 1 {
         return Err("temporal IPC snapshot response header mismatch");
@@ -2770,9 +2803,9 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
 
     let latest_payload = temporal_ipc_build_path_payload(PATH)?;
     let latest_req =
-        temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_LATEST, 0, 2, &latest_payload)?;
+        temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_LATEST, 0, 2, &latest_payload)?;
     let latest_resp = temporal_ipc_roundtrip(&latest_req, Some(fs_cap.clone()))?;
-    let (latest_opcode, _latest_flags, latest_request_id, latest_status, latest_payload) =
+    let (_latest_session, latest_opcode, _latest_flags, latest_request_id, latest_status, latest_payload) =
         temporal_ipc_parse_response_frame(&latest_resp)?;
     if latest_opcode != TEMPORAL_IPC_OP_LATEST || latest_request_id != 2 {
         return Err("temporal IPC latest response header mismatch");
@@ -2788,9 +2821,9 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
 
     let history_payload = temporal_ipc_build_history_payload(PATH, 0, 4)?;
     let history_req =
-        temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_HISTORY, 0, 3, &history_payload)?;
+        temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_HISTORY, 0, 3, &history_payload)?;
     let history_resp = temporal_ipc_roundtrip(&history_req, Some(fs_cap.clone()))?;
-    let (history_opcode, _history_flags, history_request_id, history_status, history_payload) =
+    let (_history_session, history_opcode, _history_flags, history_request_id, history_status, history_payload) =
         temporal_ipc_parse_response_frame(&history_resp)?;
     if history_opcode != TEMPORAL_IPC_OP_HISTORY || history_request_id != 3 {
         return Err("temporal IPC history response header mismatch");
@@ -2803,9 +2836,9 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
         return Err("temporal IPC history response was empty");
     }
 
-    let stats_req = temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_STATS, 0, 4, &[])?;
+    let stats_req = temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_STATS, 0, 4, &[])?;
     let stats_resp = temporal_ipc_roundtrip(&stats_req, None)?;
-    let (stats_opcode, _stats_flags, stats_request_id, stats_status, stats_payload) =
+    let (_stats_session, stats_opcode, _stats_flags, stats_request_id, stats_status, stats_payload) =
         temporal_ipc_parse_response_frame(&stats_resp)?;
     if stats_opcode != TEMPORAL_IPC_OP_STATS || stats_request_id != 4 {
         return Err("temporal IPC stats response header mismatch");
@@ -2827,6 +2860,7 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
     let branch_create_payload =
         temporal_ipc_build_branch_create_payload(PATH, "ipc-alt", Some(snapshot_version))?;
     let branch_create_req = temporal_ipc_build_request_frame(
+        session_id,
         TEMPORAL_IPC_OP_BRANCH_CREATE,
         0,
         5,
@@ -2834,6 +2868,7 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
     )?;
     let branch_create_resp = temporal_ipc_roundtrip(&branch_create_req, Some(fs_cap.clone()))?;
     let (
+        _branch_create_session,
         branch_create_opcode,
         _branch_create_flags,
         branch_create_request_id,
@@ -2853,9 +2888,10 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
 
     let branch_list_payload = temporal_ipc_build_path_payload(PATH)?;
     let branch_list_req =
-        temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_BRANCH_LIST, 0, 6, &branch_list_payload)?;
+        temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_BRANCH_LIST, 0, 6, &branch_list_payload)?;
     let branch_list_resp = temporal_ipc_roundtrip(&branch_list_req, Some(fs_cap.clone()))?;
     let (
+        _branch_list_session,
         branch_list_opcode,
         _branch_list_flags,
         branch_list_request_id,
@@ -2880,9 +2916,9 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
         Some("ipc-alt"),
         crate::temporal::TemporalMergeStrategy::FastForwardOnly,
     )?;
-    let merge_req = temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_MERGE, 0, 7, &merge_payload)?;
+    let merge_req = temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_MERGE, 0, 7, &merge_payload)?;
     let merge_resp = temporal_ipc_roundtrip(&merge_req, Some(fs_cap.clone()))?;
-    let (merge_opcode, _merge_flags, merge_request_id, merge_status, merge_payload) =
+    let (_merge_session, merge_opcode, _merge_flags, merge_request_id, merge_status, merge_payload) =
         temporal_ipc_parse_response_frame(&merge_resp)?;
     if merge_opcode != TEMPORAL_IPC_OP_MERGE || merge_request_id != 7 {
         return Err("temporal IPC merge response header mismatch");
@@ -2900,9 +2936,9 @@ fn temporal_ipc_service_self_check() -> Result<(), &'static str> {
 
     let checkout_payload = temporal_ipc_build_branch_checkout_payload(PATH, "ipc-alt")?;
     let checkout_req =
-        temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_BRANCH_CHECKOUT, 0, 8, &checkout_payload)?;
+        temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_BRANCH_CHECKOUT, 0, 8, &checkout_payload)?;
     let checkout_resp = temporal_ipc_roundtrip(&checkout_req, Some(fs_cap.clone()))?;
-    let (checkout_opcode, _checkout_flags, checkout_request_id, checkout_status, checkout_payload) =
+    let (_checkout_session, checkout_opcode, _checkout_flags, checkout_request_id, checkout_status, checkout_payload) =
         temporal_ipc_parse_response_frame(&checkout_resp)?;
     if checkout_opcode != TEMPORAL_IPC_OP_BRANCH_CHECKOUT || checkout_request_id != 8 {
         return Err("temporal IPC branch-checkout response header mismatch");
@@ -2925,7 +2961,7 @@ fn print_temporal_ipc_response(label: &str, frame: &[u8]) {
     vga::print_str(label);
     vga::print_str(": ");
     match temporal_ipc_parse_response_frame(frame) {
-        Ok((opcode, _flags, request_id, status, payload)) => {
+        Ok((_session_id, opcode, _flags, request_id, status, payload)) => {
             vga::print_str("op=");
             vga::print_str(temporal_ipc_opcode_name(opcode));
             vga::print_str(" req=");
@@ -3032,8 +3068,9 @@ fn cmd_temporal_ipc_demo() {
     }
 
     let fs_cap = fs::filesystem().create_capability(910, fs::FilesystemRights::all(), None);
+    let session_id = temporal_ipc_next_session_id();
 
-    let stats_req = match temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_STATS, 0, 101, &[]) {
+    let stats_req = match temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_STATS, 0, 101, &[]) {
         Ok(v) => v,
         Err(e) => {
             vga::print_str("Failed to build STATS request: ");
@@ -3062,7 +3099,7 @@ fn cmd_temporal_ipc_demo() {
         }
     };
     let snapshot_req =
-        match temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_SNAPSHOT, 0, 102, &snapshot_payload)
+        match temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_SNAPSHOT, 0, 102, &snapshot_payload)
         {
             Ok(v) => v,
             Err(e) => {
@@ -3092,7 +3129,7 @@ fn cmd_temporal_ipc_demo() {
         }
     };
     let latest_req =
-        match temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_LATEST, 0, 103, &latest_payload) {
+        match temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_LATEST, 0, 103, &latest_payload) {
             Ok(v) => v,
             Err(e) => {
                 vga::print_str("Failed to build LATEST request: ");
@@ -3121,7 +3158,7 @@ fn cmd_temporal_ipc_demo() {
         }
     };
     let history_req =
-        match temporal_ipc_build_request_frame(TEMPORAL_IPC_OP_HISTORY, 0, 104, &history_payload) {
+        match temporal_ipc_build_request_frame(session_id, TEMPORAL_IPC_OP_HISTORY, 0, 104, &history_payload) {
             Ok(v) => v,
             Err(e) => {
                 vga::print_str("Failed to build HISTORY request: ");
@@ -3654,6 +3691,32 @@ fn print_ipc_channel_state(channel: &ipc::ChannelDiagnostics) {
     }
 }
 
+fn print_ipc_protocol_state(protocol: ipc::ChannelProtocolState) {
+    match protocol {
+        ipc::ChannelProtocolState::Unbound => {
+            vga::print_str("unbound");
+        }
+        ipc::ChannelProtocolState::Temporal(state) => {
+            vga::print_str("temporal(session=");
+            print_u64(state.session_id);
+            vga::print_str(", phase=");
+            vga::print_str(match state.phase {
+                ipc::TemporalIpcPhase::AwaitRequestSend => "await-request-send",
+                ipc::TemporalIpcPhase::AwaitRequestRecv => "await-request-recv",
+                ipc::TemporalIpcPhase::AwaitResponseSend => "await-response-send",
+                ipc::TemporalIpcPhase::AwaitResponseRecv => "await-response-recv",
+            });
+            vga::print_str(", next=");
+            print_u32(state.next_request_id);
+            vga::print_str(", last=");
+            print_u32(state.last_request_id);
+            vga::print_str(", opcode=0x");
+            print_hex_byte(state.last_opcode);
+            vga::print_str(")");
+        }
+    }
+}
+
 fn print_ipc_backpressure(level: ipc::BackpressureLevel) {
     vga::print_str(level.as_str());
 }
@@ -3842,6 +3905,8 @@ fn cmd_ipc_list() {
         print_number(channel.capacity);
         vga::print_str(" state=");
         print_ipc_channel_state(channel);
+        vga::print_str(" protocol=");
+        print_ipc_protocol_state(channel.protocol);
         vga::print_str(" priority=");
         print_u8_val(channel.priority);
         vga::print_str(" refusals=");
@@ -3897,6 +3962,8 @@ fn cmd_ipc_inspect(mut parts: core::str::SplitWhitespace) {
             print_number(channel.capacity);
             vga::print_str("\n  state: ");
             print_ipc_channel_state(&channel);
+            vga::print_str("\n  protocol: ");
+            print_ipc_protocol_state(channel.protocol);
             vga::print_str("\n  empty: ");
             vga::print_str(if channel.empty { "yes" } else { "no" });
             vga::print_str("\n  full: ");
@@ -5178,10 +5245,10 @@ fn temporal_ipc_encode_history_record(
 
 fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
     let frame = &message.payload[..message.payload_len];
-    let (opcode, flags, request_id, payload) = match temporal_ipc_parse_request_frame(frame) {
+    let (session_id, opcode, flags, request_id, payload) = match temporal_ipc_parse_request_frame(frame) {
         Ok(parsed) => parsed,
         Err(status) => {
-            return temporal_ipc_build_response_frame(0, 0, 0, status, &[]);
+            return temporal_ipc_build_response_frame(0, 0, 0, 0, status, &[]);
         }
     };
 
@@ -5191,8 +5258,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5203,8 +5269,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let path = match temporal_ipc_decode_path_payload(payload) {
                 Ok(path) => path,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5214,7 +5279,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             };
             if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ)
             {
-                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                return temporal_ipc_build_response_frame(session_id, opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::snapshot_path(&path)
                 .and_then(|_| crate::temporal::latest_version(&path))
@@ -5230,8 +5295,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5242,8 +5306,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let path = match temporal_ipc_decode_path_payload(payload) {
                 Ok(path) => path,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5253,7 +5316,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             };
             if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ)
             {
-                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                return temporal_ipc_build_response_frame(session_id, opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::latest_version(&path) {
                 Ok(meta) => {
@@ -5267,8 +5330,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5279,8 +5341,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let (path, version_id, preview_len) = match temporal_ipc_decode_read_payload(payload) {
                 Ok(v) => v,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5290,7 +5351,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             };
             if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ)
             {
-                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                return temporal_ipc_build_response_frame(session_id, opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::read_version(&path, version_id) {
                 Ok(data) => {
@@ -5311,8 +5372,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5323,8 +5383,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let (path, version_id) = match temporal_ipc_decode_rollback_payload(payload) {
                 Ok(v) => v,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5335,7 +5394,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             if let Err(status) =
                 authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE)
             {
-                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                return temporal_ipc_build_response_frame(session_id, opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::rollback_path(&path, version_id) {
                 Ok(result) => {
@@ -5349,8 +5408,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5362,8 +5420,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
                 match temporal_ipc_decode_history_payload(payload) {
                     Ok(v) => v,
                     Err(status) => {
-                        return temporal_ipc_build_response_frame(
-                            opcode,
+                        return temporal_ipc_build_response_frame(session_id, opcode,
                             flags,
                             request_id,
                             status,
@@ -5373,11 +5430,10 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
                 };
             if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ)
             {
-                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                return temporal_ipc_build_response_frame(session_id, opcode, flags, request_id, status, &[]);
             }
             if max_entries > TEMPORAL_IPC_MAX_HISTORY_ENTRIES {
-                return temporal_ipc_build_response_frame(
-                    opcode,
+                return temporal_ipc_build_response_frame(session_id, opcode,
                     flags,
                     request_id,
                     TEMPORAL_IPC_STATUS_INVALID_PAYLOAD,
@@ -5411,8 +5467,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5424,8 +5479,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
                 match temporal_ipc_decode_branch_create_payload(payload) {
                     Ok(v) => v,
                     Err(status) => {
-                        return temporal_ipc_build_response_frame(
-                            opcode,
+                        return temporal_ipc_build_response_frame(session_id, opcode,
                             flags,
                             request_id,
                             status,
@@ -5436,7 +5490,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             if let Err(status) =
                 authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE)
             {
-                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                return temporal_ipc_build_response_frame(session_id, opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::create_branch(&path, &branch, from_version) {
                 Ok(branch_id) => {
@@ -5450,8 +5504,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5462,8 +5515,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let (path, branch) = match temporal_ipc_decode_branch_checkout_payload(payload) {
                 Ok(v) => v,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5474,7 +5526,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             if let Err(status) =
                 authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE)
             {
-                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                return temporal_ipc_build_response_frame(session_id, opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::checkout_branch(&path, &branch) {
                 Ok((branch_id, head_version)) => {
@@ -5491,8 +5543,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5503,8 +5554,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let path = match temporal_ipc_decode_path_payload(payload) {
                 Ok(path) => path,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5514,7 +5564,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             };
             if let Err(status) = authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::READ)
             {
-                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                return temporal_ipc_build_response_frame(session_id, opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::list_branches(&path) {
                 Ok(branches) => {
@@ -5543,8 +5593,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             let fs_cap = match temporal_cap_from_message(message) {
                 Ok(cap) => cap,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5556,8 +5605,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             {
                 Ok(v) => v,
                 Err(status) => {
-                    return temporal_ipc_build_response_frame(
-                        opcode,
+                    return temporal_ipc_build_response_frame(session_id, opcode,
                         flags,
                         request_id,
                         status,
@@ -5568,7 +5616,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
             if let Err(status) =
                 authorize_temporal_path(&fs_cap, &path, fs::FilesystemRights::WRITE)
             {
-                return temporal_ipc_build_response_frame(opcode, flags, request_id, status, &[]);
+                return temporal_ipc_build_response_frame(session_id, opcode, flags, request_id, status, &[]);
             }
             match crate::temporal::merge_branch(&path, &source, target.as_deref(), strategy) {
                 Ok(result) => {
@@ -5580,8 +5628,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
         }
         TEMPORAL_IPC_OP_STATS => {
             if !payload.is_empty() {
-                return temporal_ipc_build_response_frame(
-                    opcode,
+                return temporal_ipc_build_response_frame(session_id, opcode,
                     flags,
                     request_id,
                     TEMPORAL_IPC_STATUS_INVALID_PAYLOAD,
@@ -5595,7 +5642,7 @@ fn handle_temporal_request(message: &ipc::Message) -> ipc::Message {
         _ => TEMPORAL_IPC_STATUS_UNSUPPORTED_OPCODE,
     };
 
-    temporal_ipc_build_response_frame(opcode, flags, request_id, status, &response_payload)
+    temporal_ipc_build_response_frame(session_id, opcode, flags, request_id, status, &response_payload)
 }
 
 /// Handle network service requests
@@ -8178,6 +8225,22 @@ fn cmd_formal_verify() {
             vga::print_str("\n");
             return;
         }
+    }
+
+    let ipc_report = ipc::run_selftest();
+    if ipc_report.passed == ipc_report.total {
+        vga::print_str("IPC self-check: PASSED (");
+        print_number(ipc_report.passed);
+        vga::print_str(" / ");
+        print_number(ipc_report.total);
+        vga::print_str(" cases)\n");
+    } else {
+        vga::print_str("IPC self-check: FAILED (");
+        print_number(ipc_report.passed);
+        vga::print_str(" / ");
+        print_number(ipc_report.total);
+        vga::print_str(" cases)\n");
+        return;
     }
 
     match crate::execution::wasm::formal_service_pointer_conformance_self_check() {

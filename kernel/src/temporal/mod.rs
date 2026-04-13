@@ -65,6 +65,7 @@ pub const TEMPORAL_OBJECT_ENCODING_V1: u8 = 1;
 pub const TEMPORAL_SOCKET_OBJECT_TCP_CONN: u8 = 1;
 pub const TEMPORAL_SOCKET_OBJECT_TCP_LISTENER: u8 = 2;
 pub const TEMPORAL_CHANNEL_OBJECT: u8 = 3;
+pub const TEMPORAL_IPC_TRANSFER_OBJECT: u8 = 19;
 pub const TEMPORAL_PROCESS_OBJECT: u8 = 4;
 pub const TEMPORAL_CAPABILITY_OBJECT: u8 = 5;
 pub const TEMPORAL_REGISTRY_OBJECT: u8 = 6;
@@ -1612,7 +1613,7 @@ impl TemporalService {
                     TemporalMergeStrategy::Ours => o,
                     TemporalMergeStrategy::Theirs => t,
                     TemporalMergeStrategy::FastForwardOnly | TemporalMergeStrategy::ThreeWay => {
-                        None
+                        return None;
                     }
                 }
             };
@@ -3219,6 +3220,10 @@ fn ensure_object_adapters_initialized() {
             register_object_adapter_internal("/socket/tcp/conn/", temporal_apply_tcp_conn_payload);
         let _ =
             register_object_adapter_internal("/ipc/channel/", temporal_apply_ipc_channel_payload);
+        let _ = register_object_adapter_internal(
+            "/ipc/capability-transfers",
+            crate::capability::temporal_apply_ipc_transfer_payload,
+        );
         let _ = register_object_adapter_internal("/process/", temporal_apply_process_payload);
         let _ = register_object_adapter_internal("/capability/", temporal_apply_capability_payload);
         let _ =
@@ -3611,6 +3616,10 @@ pub fn tcp_listener_object_key(listener_id: u32) -> String {
 
 pub fn ipc_channel_object_key(channel_id: u32) -> String {
     alloc::format!("/ipc/channel/{}", channel_id)
+}
+
+pub fn ipc_capability_transfer_object_key() -> &'static str {
+    "/ipc/capability-transfers"
 }
 
 pub fn process_object_key(pid: u32) -> String {

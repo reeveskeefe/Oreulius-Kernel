@@ -54,10 +54,10 @@ That path gives the fastest "aha" moment in this repo:
 ## Versioning
 
 What does "alpha" mean for this project?
-This is an experiment phase. Alpha is the pre-release version I'm comfortable putting in people's hands to explore, test, and poke at. It represents a real, functional architectural milestone not a toy. But it is not production-ready, the ABI isn't finalized, and there will absolutely be bugs. That's the point. Throughout the alpha versioning cycle I'll be working through those bugs, pushing fixes, and tightening things up as they surface.
+This is an experiment phase. Alpha is the pre-release version I'm comfortable putting in people's hands to explore, test, and poke at. It represents a real, functional architectural milestone, but the system as a whole is still not production-ready. Bugs can still exist. Throughout the alpha versioning cycle I'll be working through those bugs, pushing fixes, and tightening things up as they surface.
 
-Once the kernel clears its Verification Target Matrix, and other various bug fixes, panics, allocation errors, and the formal set of checks and proofs that define what this kernel actually guarantees it moves into beta. Beta will open it up for early, non-critical production experiments by people who want to run it in real (but low-stakes) environments.
-After beta, the goal is to fuzz it down further, close the remaining security gaps, and reach a point where I can stand behind genuine security guarantees. That's the destination.
+Once the kernel clears its Verification Target Matrix, and the remaining bug fixes, panics, allocation errors, and formal checks that define what this kernel actually guarantees, it moves into beta. Beta will open it up for early, non-critical production experiments by people who want to run it in real (but low-stakes) environments.
+After beta, the goal is to fuzz it down further, close the remaining security gaps, and reach a point where I can stand behind stronger security guarantees. That's the destination.
 
 ### Version number meaning
 
@@ -341,7 +341,7 @@ Current behavior:
 
 ## WASM Host ABI Reference
 
-Oreulius exposes a 132-function WASM host ABI spanning IDs `0–131`.
+Oreulius exposes a 143-function WASM host ABI spanning IDs `0–142`.
 
 Use these references:
 
@@ -356,7 +356,7 @@ High-level grouping:
 | Temporal objects | `13–22` | snapshot, history, rollback, branch, merge |
 | Threads and compositor/input | `23–44` | cooperative threading, windowing, input |
 | WASI and TLS | `45–99` | compatibility surface plus kernel TLS session control |
-| Process lifecycle and advanced capability/runtime features | `100–131` | process ops, polyglot runtime, observer bus, mesh, checkpoints, policy, entanglement, cap graph |
+| Process lifecycle and advanced capability/runtime features | `100–142` | process ops, polyglot runtime, observer bus, mesh, checkpoints, policy, entanglement, cap graph, lineage, and transition control |
 
 The in-kernel dispatch surface lives in [`kernel/src/execution/wasm.rs`](kernel/src/execution/wasm.rs).
 

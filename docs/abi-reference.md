@@ -4,7 +4,7 @@ Oreulius exposes a 143-function WASM host ABI across IDs `0–142`.
 
 This page is the short entry point. Use the full runtime ABI document for the exhaustive function-by-function reference.
 
-The frozen host dispatcher in [../kernel/src/execution/wasm.rs](../kernel/src/execution/wasm.rs) is the source of truth for host IDs, signatures, aliases, and result shapes.
+The host dispatcher in [../kernel/src/execution/wasm.rs](../kernel/src/execution/wasm.rs) is the source of truth for host IDs, signatures, aliases, and result shapes.
 
 ## Primary References
 

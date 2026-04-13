@@ -75,7 +75,7 @@
 
   <rect x="615" y="560" width="310" height="92" rx="16" fill="#FAECE7" stroke="#993C1D" stroke-width="1.2"/>
   <text x="770" y="590" text-anchor="middle" class="box-title">Oreulius native</text>
-  <text x="770" y="618" text-anchor="middle" class="box-sub">IDs 0–44, 100–131</text>
+  <text x="770" y="618" text-anchor="middle" class="box-sub">IDs 0–44, 100–142</text>
   <text x="770" y="641" text-anchor="middle" class="box-sub">import module: "oreulius"</text>
 
   <!-- Connections -->

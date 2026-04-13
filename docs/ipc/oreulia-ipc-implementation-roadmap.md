@@ -1,6 +1,6 @@
 # Oreulius IPC — Current State and Remaining Roadmap
 
-**Status:** Core IPC architecture is implemented. The remaining roadmap is about tightening semantics, finishing stronger transfer guarantees, and deepening replay/protocol fidelity, not about creating the basic subsystem from scratch.
+**Status:** Core IPC architecture is implemented. The remaining roadmap is now about broadening protocol coverage, refining proof posture, and keeping secondary surfaces aligned, not about creating the basic subsystem from scratch.
 
 This document replaces the older milestone plan that still described the `kernel/src/ipc/` split, admission layer, blocking service path, diagnostics, and selftests as future work. Those pieces are already in tree.
 
@@ -22,6 +22,9 @@ Oreulius IPC already provides:
 - runtime diagnostics and deterministic selftests
 - service-registry introduction flows built on top of IPC
 - temporal binary protocols that already use IPC as a transport
+- ticketed zero-sum message-carried capability transfer
+- Temporal session-typed channels for the typed Temporal IPC pilot
+- replayable channel snapshots that restore queue, wait queues, closure, protocol, and counter state
 
 This means the roadmap is now about **semantic strengthening**, not initial implementation.
 
@@ -99,45 +102,29 @@ The roadmap no longer needs to treat inspectability as a missing foundation.
 
 ## 3. Remaining Gaps
 
-The main unfinished work falls into four categories.
+The main unfinished work falls into three categories.
 
-### 3.1 Zero-sum capability transfer
+### 3.1 Broader protocol coverage
 
-Current message-carried capability transfer is signed, validated, and installable, but it is not yet **ownership-consuming by construction**.
-
-What remains:
-
-- sender-side authority should be consumed or attenuated explicitly when the zero-sum path is used
-- receiver installation should be represented as a first-class transfer outcome rather than a copy-style attachment story
-- selftests should prove that no duplicated live authority remains after a zero-sum transfer
-
-This is the biggest semantic gap between the current implementation and the stronger capability model Oreulius aims for.
-
-### 3.2 Protocol/session typing
-
-Channels are still general-purpose payload pipes.
+Temporal is now the first protocol that enforces a typed session machine on channels.
 
 What remains:
 
-- optional session/protocol state per channel
-- explicit protocol progression checks
-- at least one real kernel or Wasm service that runs on a protocol-constrained channel instead of a convention-only pipe
+- apply protocol/session typing to additional IPC services, not just the Temporal pilot
+- document and exercise protocol/session state transitions for each typed service
+- keep the channel validator and service-level protocol descriptions aligned as additional protocols land
 
-`TypedServiceArg` and the service registry are already useful building blocks, but they do not yet amount to protocol-typed IPC.
+### 3.2 Refinement and proof coverage
 
-### 3.3 Replay completeness
-
-Temporal capture exists, but IPC replay is still partial.
+The runtime semantics now exist, but the proof posture still lags the implementation.
 
 What remains:
 
-- richer event vocabulary for refusal, draining, transfer, and terminal closure transitions
-- replayable channel-state reconstruction rather than partial restoration placeholders
-- selftests that round-trip a nontrivial multi-message scenario
+- capture the new IPC semantics in the verification workspace as explicit invariants
+- add proof/refinement trace coverage where the project wants stronger than runtime-only guarantees
+- keep the self-check report, theorem index, and runtime evidence synchronized with the kernel cases
 
-The current system records enough for inspection and partial restore, not yet enough for a fully replay-complete IPC state machine.
-
-### 3.4 Secondary surface alignment
+### 3.3 Secondary surface alignment
 
 The kernel is ahead of several secondary documentation and wrapper surfaces.
 
@@ -147,7 +134,7 @@ What remains:
 - keep Wasm/raw ABI wrapper docs aligned with actual host function ids
 - keep shell/runtime diagnostic docs aligned with the commands in tree
 
-This is lower risk than the semantic gaps above, but it matters for public correctness.
+This is lower risk than the proof gap above, but it matters for public correctness.
 
 ---
 
@@ -155,7 +142,7 @@ This is lower risk than the semantic gaps above, but it matters for public corre
 
 The remaining work should proceed in this order.
 
-### Phase 1: zero-sum transfer path
+### Phase 1: verify and trace the implemented semantics
 
 Priority:
 
@@ -163,17 +150,17 @@ Priority:
 
 Why first:
 
-- it strengthens the authority model directly
-- it is a cleaner foundation for future replay and protocol typing
-- it removes the largest mismatch between Oreulius's current theory and message-carried capability behavior
+- it preserves the new authority, protocol, and snapshot semantics before broader protocol rollout
+- it turns the runtime self-checks into documented verification targets
+- it reduces the risk of docs or wrappers drifting behind the implementation again
 
 Concrete work:
 
-- extend capability-manager support for consuming transfer/install flows
-- represent transfer outcomes explicitly in IPC message handling
-- add selftests for consume/install/attenuate behavior
+- add the new IPC invariants to the verification workspace
+- keep the self-check report and evidence records synchronized with the kernel tests
+- decide which IPC semantics, if any, should be raised above runtime-only claims later
 
-### Phase 2: replay-complete event vocabulary
+### Phase 2: broaden protocol coverage
 
 Priority:
 
@@ -181,15 +168,16 @@ Priority:
 
 Why second:
 
-- replay needs stable semantics from transfer and closure before it becomes worth deepening
+- the Temporal pilot now exists; additional protocols can reuse the same pattern
+- protocol typing should expand only after the semantics are traceable and documented
 
 Concrete work:
 
-- extend IPC temporal events beyond send/recv/count placeholders
-- encode refusal, drain, transfer, and terminal close transitions
-- add reconstruction tests for realistic scenarios
+- apply typed channels to one additional IPC service path
+- reject invalid protocol transitions deterministically in that path
+- update the relevant docs and shell help text as the protocol surface grows
 
-### Phase 3: optional protocol/session state
+### Phase 3: ongoing doc and SDK cleanup
 
 Priority:
 
@@ -197,19 +185,7 @@ Priority:
 
 Why third:
 
-- protocol state should build on already-stable admission, transfer, and closure semantics
-
-Concrete work:
-
-- define a minimal channel session enum
-- reject invalid protocol transitions deterministically
-- migrate one real service path to a constrained protocol channel
-
-### Phase 4: ongoing doc and SDK cleanup
-
-Priority:
-
-- continuous
+- docs and wrappers should stay aligned with the implementation that now exists
 
 Concrete work:
 
@@ -241,9 +217,9 @@ Every remaining phase should preserve the current behavior that is already lande
 
 ### 5.3 New tests to add
 
-- zero-sum transfer consume/install cases
-- replay of a nontrivial multi-message multi-transition scenario
-- protocol-state acceptance and rejection cases
+- IPC self-check coverage for ticketed transfer, Temporal typing, and snapshot restore
+- verification workspace checks for the new IPC invariants
+- protocol-state expansion tests if a second typed IPC protocol is added
 
 ---
 
@@ -251,10 +227,29 @@ Every remaining phase should preserve the current behavior that is already lande
 
 The IPC subsystem should be considered materially complete for this roadmap when all of the following are true:
 
-1. message-carried capability transfer has a real zero-sum path
-2. draining and terminal closure are replayable as explicit state transitions
-3. at least one real service uses optional protocol/session state successfully
-4. temporal replay can reconstruct materially meaningful IPC state
-5. docs and ABI wrappers no longer materially lag the kernel implementation
+1. the implemented IPC semantics are represented as verification invariants and evidence records
+2. at least one additional typed IPC protocol path exists beyond Temporal, if the project wants to keep extending the pattern
+3. docs and ABI wrappers no longer materially lag the kernel implementation
+4. the `ipc-selftest` and `formal-verify` surfaces continue to gate the runtime checks that matter
 
 Oreulius does **not** need to wait for that full end state to claim it already has a real IPC subsystem. It does need that end state to claim the IPC model fully matches the stronger long-range capability and replay design.
+
+## 7. At-a-Glance Status
+
+Completed:
+
+- modular IPC implementation split into dedicated files
+- bounded channels with admission control and backpressure
+- scheduler-backed blocking at the service layer
+- draining-aware close semantics
+- service registry and introduction flows built on IPC
+- temporal IPC transport, diagnostics, and selftests
+- ticketed zero-sum message-carried capability transfer
+- Temporal session-typed channels for the typed Temporal pilot
+- replayable channel snapshots for committed IPC state, including wait queues
+
+Remaining:
+
+- broader protocol coverage beyond the Temporal pilot
+- verification/proof trace coverage for the implemented IPC semantics
+- final docs and wrapper parity cleanup

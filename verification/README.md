@@ -23,6 +23,25 @@ live here so they do not become runtime dependencies.
 - Formal/spec documents here describe the verification target, not the runtime
   implementation details.
 
+## Runtime Invariants In Scope
+
+The verification workspace should stay aligned with the kernel-side invariants
+that are exercised by `formal-verify` and the dedicated self-checks. Current
+runtime invariants that must remain documented here include:
+
+- full-WASM policy contracts are fail-closed, self-contained, and export `policy_check(ctx_ptr, ctx_len) -> i32`
+- `mesh_migrate(..., wasm_len = 0)` migrates the caller's stored bytecode rather than an empty payload
+- `oreulius_net_connect(...)` resolves IPv4 literals or DNS names and returns a real TCP handle from the reactor stack
+- `polyglot_link(...)` records provenance/audit state when a cross-language service link is created
+- ticketed message-carried capability transfer is zero-sum and one-time
+- Temporal-bound IPC channels enforce session and phase typing
+- IPC channel snapshots round-trip committed queue, wait queues, closure, protocol, and counter state
+- `formal-verify` now includes the IPC self-check report in the runtime gate
+
+When new runtime invariants are added in `kernel/src/execution/wasm.rs`, they
+should be reflected in `spec/INVARIANTS.md`, the relevant proof targets, and
+the runtime evidence records under `artifacts/`.
+
 ## Primary Files
 
 - `spec/ASSUMPTIONS.md`

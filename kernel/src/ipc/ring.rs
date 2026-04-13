@@ -36,6 +36,14 @@ impl RingBuffer {
         self.buffer.pop_front()
     }
 
+    pub(crate) fn peek(&self) -> Option<Message> {
+        self.buffer.front().copied()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = Message> + '_ {
+        self.buffer.iter().copied()
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.buffer.len()
     }

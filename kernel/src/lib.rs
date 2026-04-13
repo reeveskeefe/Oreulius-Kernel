@@ -8,7 +8,12 @@
 #![feature(alloc_error_handler)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 use alloc::boxed::Box;
+
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 pub mod arch;
 pub mod capability;
@@ -81,6 +86,12 @@ pub fn runtime_jit_arena_range() -> (usize, usize) {
 #[inline]
 pub fn runtime_background_maintenance() {
     runtime::background_maintenance()
+}
+
+#[cfg(test)]
+pub(crate) fn test_serial_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 // Host-side lib tests link against the platform test harness instead of the
@@ -178,7 +189,7 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
     crate::arch::halt_loop()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "aarch64")))]
 mod tests {
     use super::early_console_write_word;
 

@@ -801,6 +801,16 @@ mod tests {
 // ============================================================================
 
 const MAX_TASKS: usize = 64;
+const MAX_PENDING_IPC_TRANSFERS: usize = 128;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PendingIpcTransfer {
+    ticket_id: u64,
+    source_pid: ProcessId,
+    source_cap_id: u32,
+    envelope: crate::ipc::Capability,
+    restored_cap: Option<OreuliusCapability>,
+}
 
 /// Global capability manager
 #[repr(align(64))]
@@ -810,6 +820,8 @@ pub struct CapabilityManager {
     remote_leases: Mutex<[Option<RemoteCapabilityLease>; MAX_REMOTE_LEASES]>,
     quarantined_caps: Mutex<[Option<QuarantinedCapability>; MAX_QUARANTINED_CAPS]>,
     next_remote_cap_id: Mutex<u32>,
+    pending_ipc_transfers: Mutex<[Option<PendingIpcTransfer>; MAX_PENDING_IPC_TRANSFERS]>,
+    next_ipc_ticket_id: Mutex<u64>,
 }
 
 impl CapabilityManager {
@@ -826,6 +838,8 @@ impl CapabilityManager {
             remote_leases: Mutex::new([None; MAX_REMOTE_LEASES]),
             quarantined_caps: Mutex::new([None; MAX_QUARANTINED_CAPS]),
             next_remote_cap_id: Mutex::new(1),
+            pending_ipc_transfers: Mutex::new([None; MAX_PENDING_IPC_TRANSFERS]),
+            next_ipc_ticket_id: Mutex::new(1),
         }
     }
 
@@ -923,6 +937,326 @@ impl CapabilityManager {
         let id = *next;
         *next += 1;
         id
+    }
+
+    fn alloc_ipc_ticket_id(&self) -> u64 {
+        let mut next = self.next_ipc_ticket_id.lock();
+        let ticket = if *next == 0 { 1 } else { *next };
+        *next = (*next).wrapping_add(1).max(1);
+        ticket
+    }
+
+    fn pending_transfer_index(
+        transfers: &[Option<PendingIpcTransfer>; MAX_PENDING_IPC_TRANSFERS],
+        ticket_id: u64,
+    ) -> Option<usize> {
+        let mut i = 0usize;
+        while i < transfers.len() {
+            if let Some(transfer) = transfers[i] {
+                if transfer.ticket_id == ticket_id {
+                    return Some(i);
+                }
+            }
+            i += 1;
+        }
+        None
+    }
+
+    fn record_ipc_transfer_snapshot_locked(
+        &self,
+        transfers: &[Option<PendingIpcTransfer>; MAX_PENDING_IPC_TRANSFERS],
+    ) {
+        let mut payload = alloc::vec::Vec::new();
+        payload.push(crate::temporal::TEMPORAL_OBJECT_ENCODING_V1);
+        payload.push(19);
+        payload.push(crate::temporal::TEMPORAL_CAPABILITY_EVENT_GRANT);
+        payload.push(2);
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&(MAX_PENDING_IPC_TRANSFERS as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+
+        let mut i = 0usize;
+        while i < transfers.len() {
+            match transfers[i] {
+                Some(transfer) => {
+                    payload.push(1);
+                    payload.extend_from_slice(&[0u8; 7]);
+                    payload.extend_from_slice(&transfer.ticket_id.to_le_bytes());
+                    payload.extend_from_slice(&transfer.source_pid.0.to_le_bytes());
+                    payload.extend_from_slice(&transfer.source_cap_id.to_le_bytes());
+                    payload.extend_from_slice(&transfer.envelope.cap_id.to_le_bytes());
+                    payload.extend_from_slice(&transfer.envelope.ticket_id.to_le_bytes());
+                    payload.extend_from_slice(&transfer.envelope.object_id.to_le_bytes());
+                    payload.extend_from_slice(&transfer.envelope.rights.bits().to_le_bytes());
+                    payload.extend_from_slice(&(transfer.envelope.cap_type as u32).to_le_bytes());
+                    payload.extend_from_slice(&transfer.envelope.owner_pid.0.to_le_bytes());
+                    payload.extend_from_slice(&transfer.envelope.issued_at.to_le_bytes());
+                    payload.extend_from_slice(&transfer.envelope.expires_at.to_le_bytes());
+                    payload.extend_from_slice(&transfer.envelope.flags.to_le_bytes());
+                    let mut word_idx = 0usize;
+                    while word_idx < transfer.envelope.extra.len() {
+                        payload.extend_from_slice(&transfer.envelope.extra[word_idx].to_le_bytes());
+                        word_idx += 1;
+                    }
+                    payload.extend_from_slice(&transfer.envelope.token.to_le_bytes());
+                }
+                None => {
+                    payload.push(0);
+                    payload.extend_from_slice(&[0u8; 7]);
+                }
+            }
+            i += 1;
+        }
+
+        let _ = crate::temporal::record_object_write(
+            crate::temporal::ipc_capability_transfer_object_key(),
+            &payload,
+        );
+    }
+
+    fn persist_ipc_transfers_locked(
+        &self,
+        transfers: &[Option<PendingIpcTransfer>; MAX_PENDING_IPC_TRANSFERS],
+    ) {
+        self.record_ipc_transfer_snapshot_locked(transfers);
+    }
+
+    /// Remove and return a capability from the source table.
+    pub fn take_capability(
+        &self,
+        pid: ProcessId,
+        cap_id: u32,
+    ) -> Result<OreuliusCapability, CapabilityError> {
+        let mut tables = self.tables.lock();
+        let idx = pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return Err(CapabilityError::TaskNotFound);
+        }
+        let table = tables[idx].as_mut().ok_or(CapabilityError::TaskNotFound)?;
+        table.remove(cap_id)
+    }
+
+    /// Restore a capability to the source table after a failed staged transfer.
+    pub fn restore_capability(
+        &self,
+        pid: ProcessId,
+        cap: OreuliusCapability,
+    ) -> Result<u32, CapabilityError> {
+        let mut tables = self.tables.lock();
+        let idx = pid.0 as usize;
+        if idx >= MAX_TASKS {
+            return Err(CapabilityError::TaskNotFound);
+        }
+        let table = tables[idx].as_mut().ok_or(CapabilityError::TaskNotFound)?;
+        table.install_or_replace(Some(cap.cap_id), cap)
+    }
+
+    /// Export a local capability as a ticketed IPC envelope and stage the transfer.
+    pub fn export_ipc_capability(
+        &self,
+        owner: ProcessId,
+        cap_id: u32,
+    ) -> Result<crate::ipc::Capability, &'static str> {
+        let cap = self
+            .take_capability(owner, cap_id)
+            .map_err(|e| e.as_str())?;
+
+        if cap.cap_type == CapabilityType::ServicePointer && !cap.has_right(Rights::SERVICE_DELEGATE) {
+            let _ = self.restore_capability(owner, cap);
+            return Err("Service pointer requires delegate right for transfer");
+        }
+
+        let ticket_id = self.alloc_ipc_ticket_id();
+        let mut out = crate::ipc::Capability::with_type(
+            cap.cap_id,
+            cap.object_id,
+            cap.rights,
+            ipc_cap_type_for(cap.cap_type),
+        )
+        .with_owner(owner)
+        .with_validity(cap.granted_at, 0)
+        .with_flags(cap.cap_type as u32)
+        .with_ticket_id(ticket_id);
+        out.extra[0] = cap.label_hash;
+        out.extra[1] = cap.parent_cap_id.unwrap_or(0);
+        out.extra[3] = cap.cap_type as u32;
+        out.sign();
+
+        if let Err(err) = self.stage_ipc_transfer(owner, cap.cap_id, Some(cap), out) {
+            let _ = self.restore_capability(owner, cap);
+            return Err(err);
+        }
+
+        Ok(out)
+    }
+
+    /// Stage a ticketed IPC transfer in the pending ledger.
+    pub(crate) fn stage_ipc_transfer(
+        &self,
+        source_pid: ProcessId,
+        source_cap_id: u32,
+        restored_cap: Option<OreuliusCapability>,
+        envelope: crate::ipc::Capability,
+    ) -> Result<(), &'static str> {
+        let ticket_id = envelope.ticket_id;
+        if ticket_id == 0 {
+            return Err("IPC ticket id missing");
+        }
+
+        let transfer = PendingIpcTransfer {
+            ticket_id,
+            source_pid,
+            source_cap_id,
+            envelope,
+            restored_cap,
+        };
+        let mut transfers = self.pending_ipc_transfers.lock();
+        if let Some(idx) = Self::pending_transfer_index(&transfers, ticket_id) {
+            transfers[idx] = Some(transfer);
+        } else {
+            let mut inserted = false;
+            for entry in transfers.iter_mut() {
+                if entry.is_none() {
+                    *entry = Some(transfer);
+                    inserted = true;
+                    break;
+                }
+            }
+            if !inserted {
+                return Err("IPC transfer ledger full");
+            }
+        }
+        self.persist_ipc_transfers_locked(&transfers);
+        Ok(())
+    }
+
+    /// Rehydrate a pending ticket from restored IPC state.
+    pub(crate) fn restore_ipc_transfer_from_snapshot(
+        &self,
+        source_pid: ProcessId,
+        source_cap_id: u32,
+        envelope: crate::ipc::Capability,
+    ) -> Result<(), &'static str> {
+        if envelope.ticket_id == 0 {
+            return Ok(());
+        }
+        let restored_cap = rebuild_capability_from_ipc_envelope(&envelope);
+        let transfer = PendingIpcTransfer {
+            ticket_id: envelope.ticket_id,
+            source_pid,
+            source_cap_id,
+            envelope,
+            restored_cap,
+        };
+        let mut transfers = self.pending_ipc_transfers.lock();
+        if let Some(idx) = Self::pending_transfer_index(&transfers, envelope.ticket_id) {
+            let mut existing = transfers[idx].unwrap();
+            existing.source_pid = source_pid;
+            existing.source_cap_id = source_cap_id;
+            existing.envelope = transfer.envelope;
+            if existing.restored_cap.is_none() {
+                existing.restored_cap = transfer.restored_cap;
+            }
+            transfers[idx] = Some(existing);
+        } else {
+            let mut inserted = false;
+            for entry in transfers.iter_mut() {
+                if entry.is_none() {
+                    *entry = Some(transfer);
+                    inserted = true;
+                    break;
+                }
+            }
+            if !inserted {
+                return Err("IPC transfer ledger full");
+            }
+        }
+        self.persist_ipc_transfers_locked(&transfers);
+        Ok(())
+    }
+
+    /// Consume a pending IPC transfer exactly once.
+    pub(crate) fn consume_ipc_transfer(
+        &self,
+        source_pid: ProcessId,
+        ticket_id: u64,
+        cap: &crate::ipc::Capability,
+    ) -> Result<PendingIpcTransfer, &'static str> {
+        if ticket_id == 0 {
+            return Err("IPC ticket id missing");
+        }
+
+        let mut transfers = self.pending_ipc_transfers.lock();
+        let idx = Self::pending_transfer_index(&transfers, ticket_id)
+            .ok_or("IPC ticket not found")?;
+        let transfer = transfers[idx].ok_or("IPC ticket not found")?;
+        if transfer.source_pid != source_pid || transfer.source_cap_id != cap.cap_id {
+            return Err("IPC ticket/source mismatch");
+        }
+        if transfer.envelope.ticket_id != cap.ticket_id
+            || transfer.envelope.owner_pid != cap.owner_pid
+            || transfer.envelope.object_id != cap.object_id
+            || transfer.envelope.rights.bits() != cap.rights.bits()
+            || transfer.envelope.cap_type != cap.cap_type
+        {
+            return Err("IPC ticket envelope mismatch");
+        }
+
+        transfers[idx] = None;
+        self.persist_ipc_transfers_locked(&transfers);
+        Ok(transfer)
+    }
+
+    /// Roll back a staged IPC transfer, restoring source authority.
+    pub(crate) fn rollback_ipc_transfer(&self, source_pid: ProcessId, ticket_id: u64) -> bool {
+        let transfers = self.pending_ipc_transfers.lock();
+        let idx = match Self::pending_transfer_index(&transfers, ticket_id) {
+            Some(idx) => idx,
+            None => return false,
+        };
+        let transfer = match transfers[idx] {
+            Some(transfer) => transfer,
+            None => return false,
+        };
+        if transfer.source_pid != source_pid {
+            return false;
+        }
+        let restored_cap = match transfer.restored_cap {
+            Some(cap) => cap,
+            None => return false,
+        };
+        drop(transfers);
+        if self.restore_capability(source_pid, restored_cap).is_ok() {
+            let mut transfers = self.pending_ipc_transfers.lock();
+            if let Some(idx) = Self::pending_transfer_index(&transfers, ticket_id) {
+                if let Some(transfer) = transfers[idx] {
+                    if transfer.source_pid == source_pid {
+                        transfers[idx] = None;
+                        self.persist_ipc_transfers_locked(&transfers);
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub(crate) fn pending_ipc_transfer_snapshots(
+        &self,
+    ) -> [Option<PendingIpcTransfer>; MAX_PENDING_IPC_TRANSFERS] {
+        let transfers = self.pending_ipc_transfers.lock();
+        *transfers
+    }
+
+    pub(crate) fn replace_pending_ipc_transfers(
+        &self,
+        transfers_in: [Option<PendingIpcTransfer>; MAX_PENDING_IPC_TRANSFERS],
+    ) {
+        let mut transfers = self.pending_ipc_transfers.lock();
+        *transfers = transfers_in;
     }
 
     /// Grant a capability to a task
@@ -1619,6 +1953,239 @@ pub fn init() {
     // Create initial capabilities for kernel process
     let kernel_pid = ProcessId::new(0);
     CAPABILITY_MANAGER.init_task(kernel_pid);
+    let _ = restore_pending_ipc_transfer_ledger_from_latest_snapshot();
+}
+
+pub(crate) fn temporal_apply_ipc_transfer_payload(
+    path: &str,
+    payload: &[u8],
+    _mode: crate::temporal::TemporalRestoreMode,
+) -> Result<(), &'static str> {
+    if path != crate::temporal::ipc_capability_transfer_object_key() {
+        return Err("temporal ipc transfer key mismatch");
+    }
+    restore_pending_ipc_transfer_ledger_from_snapshot(payload)
+}
+
+pub(crate) fn restore_pending_ipc_transfer_ledger_from_snapshot(
+    payload: &[u8],
+) -> Result<(), &'static str> {
+    let transfers = decode_ipc_transfer_snapshot(payload)?;
+    capability_manager().replace_pending_ipc_transfers(transfers);
+    Ok(())
+}
+
+pub(crate) fn restore_pending_ipc_transfer_ledger_from_latest_snapshot(
+) -> Result<(), &'static str> {
+    let key = crate::temporal::ipc_capability_transfer_object_key();
+    let meta = match crate::temporal::latest_version(key) {
+        Ok(meta) => meta,
+        Err(crate::temporal::TemporalError::ObjectNotFound) => return Ok(()),
+        Err(err) => return Err(err.as_str()),
+    };
+    let payload = crate::temporal::read_version(key, meta.version_id).map_err(|e| e.as_str())?;
+    restore_pending_ipc_transfer_ledger_from_snapshot(&payload)
+}
+
+fn decode_ipc_transfer_snapshot(
+    payload: &[u8],
+) -> Result<[Option<PendingIpcTransfer>; MAX_PENDING_IPC_TRANSFERS], &'static str> {
+    const SNAPSHOT_VERSION: u8 = 2;
+    const HEADER_BYTES: usize = 28;
+    const ENTRY_BYTES: usize = 8 + 84;
+
+    if payload.len() < HEADER_BYTES {
+        return Err("IPC transfer snapshot too short");
+    }
+    if payload[0] != crate::temporal::TEMPORAL_OBJECT_ENCODING_V1
+        || payload[1] != crate::temporal::TEMPORAL_IPC_TRANSFER_OBJECT
+        || payload[3] != SNAPSHOT_VERSION
+    {
+        return Err("IPC transfer snapshot type mismatch");
+    }
+
+    let declared_slots = u16::from_le_bytes([payload[16], payload[17]]) as usize;
+    if declared_slots != MAX_PENDING_IPC_TRANSFERS {
+        return Err("IPC transfer snapshot slot mismatch");
+    }
+
+    let mut cursor = HEADER_BYTES;
+    let mut transfers = [None; MAX_PENDING_IPC_TRANSFERS];
+
+    let mut slot = 0usize;
+    while slot < MAX_PENDING_IPC_TRANSFERS {
+        if cursor.saturating_add(8) > payload.len() {
+            return Err("IPC transfer snapshot truncated");
+        }
+        let present = payload[cursor];
+        cursor = cursor.saturating_add(8);
+        match present {
+            0 => {}
+            1 => {
+                if cursor.saturating_add(ENTRY_BYTES - 8) > payload.len() {
+                    return Err("IPC transfer snapshot entry truncated");
+                }
+                let ticket_id = u64::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                    payload[cursor + 4],
+                    payload[cursor + 5],
+                    payload[cursor + 6],
+                    payload[cursor + 7],
+                ]);
+                cursor += 8;
+                let source_pid = ProcessId(u32::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                ]));
+                cursor += 4;
+                let source_cap_id = u32::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                ]);
+                cursor += 4;
+                let cap_id = u32::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                ]);
+                cursor += 4;
+                let envelope_ticket_id = u64::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                    payload[cursor + 4],
+                    payload[cursor + 5],
+                    payload[cursor + 6],
+                    payload[cursor + 7],
+                ]);
+                cursor += 8;
+                let object_id = u64::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                    payload[cursor + 4],
+                    payload[cursor + 5],
+                    payload[cursor + 6],
+                    payload[cursor + 7],
+                ]);
+                cursor += 8;
+                let rights_bits = u32::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                ]);
+                cursor += 4;
+                let cap_type_raw = u32::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                ]);
+                cursor += 4;
+                let owner_pid = ProcessId(u32::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                ]));
+                cursor += 4;
+                let issued_at = u64::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                    payload[cursor + 4],
+                    payload[cursor + 5],
+                    payload[cursor + 6],
+                    payload[cursor + 7],
+                ]);
+                cursor += 8;
+                let expires_at = u64::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                    payload[cursor + 4],
+                    payload[cursor + 5],
+                    payload[cursor + 6],
+                    payload[cursor + 7],
+                ]);
+                cursor += 8;
+                let flags = u32::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                ]);
+                cursor += 4;
+                let mut extra = [0u32; 4];
+                let mut word_idx = 0usize;
+                while word_idx < extra.len() {
+                    extra[word_idx] = u32::from_le_bytes([
+                        payload[cursor],
+                        payload[cursor + 1],
+                        payload[cursor + 2],
+                        payload[cursor + 3],
+                    ]);
+                    cursor += 4;
+                    word_idx += 1;
+                }
+                let token = u64::from_le_bytes([
+                    payload[cursor],
+                    payload[cursor + 1],
+                    payload[cursor + 2],
+                    payload[cursor + 3],
+                    payload[cursor + 4],
+                    payload[cursor + 5],
+                    payload[cursor + 6],
+                    payload[cursor + 7],
+                ]);
+                cursor += 8;
+
+                let cap_type = crate::ipc::CapabilityType::from_raw(cap_type_raw as u8)
+                    .ok_or("IPC transfer snapshot capability type invalid")?;
+                let envelope = crate::ipc::Capability {
+                    cap_id,
+                    ticket_id: envelope_ticket_id,
+                    object_id,
+                    rights: Rights::new(rights_bits),
+                    cap_type,
+                    owner_pid,
+                    issued_at,
+                    expires_at,
+                    flags,
+                    extra,
+                    token,
+                };
+                transfers[slot] = Some(PendingIpcTransfer {
+                    ticket_id,
+                    source_pid,
+                    source_cap_id,
+                    envelope,
+                    restored_cap: rebuild_capability_from_ipc_envelope(&envelope),
+                });
+            }
+            _ => return Err("IPC transfer snapshot entry marker invalid"),
+        }
+        slot += 1;
+    }
+
+    if cursor != payload.len() {
+        return Err("IPC transfer snapshot trailing data");
+    }
+
+    Ok(transfers)
 }
 
 pub fn temporal_apply_capability_event(
@@ -2249,29 +2816,35 @@ fn cap_type_from_ipc(
     }
 }
 
+fn rebuild_capability_from_ipc_envelope(
+    envelope: &crate::ipc::Capability,
+) -> Option<OreuliusCapability> {
+    let cap_type = cap_type_from_ipc(envelope.cap_type, envelope.extra)?;
+    let parent_cap_id = if envelope.extra[1] == 0 {
+        None
+    } else {
+        Some(envelope.extra[1])
+    };
+
+    Some(OreuliusCapability {
+        cap_id: envelope.cap_id,
+        object_id: envelope.object_id,
+        cap_type,
+        rights: envelope.rights,
+        origin: envelope.owner_pid,
+        granted_at: envelope.issued_at,
+        label_hash: envelope.extra[0],
+        token: envelope.token,
+        parent_cap_id,
+    })
+}
+
 /// Export a local capability as an authenticated IPC capability attachment.
 pub fn export_capability_to_ipc(
     owner: ProcessId,
     cap_id: u32,
 ) -> Result<crate::ipc::Capability, &'static str> {
-    let cap = capability_manager().get_capability(owner, cap_id)?;
-
-    if cap.cap_type == CapabilityType::ServicePointer && !cap.has_right(Rights::SERVICE_DELEGATE) {
-        return Err("Service pointer requires delegate right for transfer");
-    }
-
-    let mut out = crate::ipc::Capability::with_type(
-        cap.cap_id,
-        cap.object_id,
-        cap.rights,
-        ipc_cap_type_for(cap.cap_type),
-    )
-    .with_owner(cap.origin)
-    .with_validity(cap.granted_at, 0)
-    .with_flags(cap.cap_type as u32);
-    out.extra[3] = cap.cap_type as u32;
-    out.sign();
-    Ok(out)
+    capability_manager().export_ipc_capability(owner, cap_id)
 }
 
 /// Import an IPC-attached capability into a process capability table.
@@ -2288,13 +2861,37 @@ pub fn import_capability_from_ipc(
         cap_type_from_ipc(cap.cap_type, cap.extra).ok_or("Unsupported IPC capability type")?;
     let object_id = cap.object_id;
 
+    let manager = capability_manager();
+
     #[cfg(not(target_arch = "aarch64"))]
-    if cap_type == CapabilityType::ServicePointer && !crate::execution::wasm::service_pointer_exists(object_id)
+    if cap_type == CapabilityType::ServicePointer
+        && !crate::execution::wasm::service_pointer_exists(object_id)
     {
         return Err("Unknown service pointer object");
     }
 
-    capability_manager()
-        .grant_capability(owner, object_id, cap_type, cap.rights, source)
-        .map_err(|e| e.as_str())
+    if cap.ticket_id != 0 {
+        let transfer = manager
+            .consume_ipc_transfer(source, cap.ticket_id, cap)
+            .map_err(|e| e)?;
+        match manager.grant_capability(owner, object_id, cap_type, cap.rights, source) {
+            Ok(cap_id) => Ok(cap_id),
+            Err(err) => {
+                if let Some(restored_cap) = transfer.restored_cap {
+                    let _ = manager.restore_capability(source, restored_cap);
+                }
+                let _ = manager.stage_ipc_transfer(
+                    transfer.source_pid,
+                    transfer.source_cap_id,
+                    transfer.restored_cap,
+                    transfer.envelope,
+                );
+                Err(err.as_str())
+            }
+        }
+    } else {
+        capability_manager()
+            .grant_capability(owner, object_id, cap_type, cap.rights, source)
+            .map_err(|e| e.as_str())
+    }
 }

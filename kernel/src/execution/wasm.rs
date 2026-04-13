@@ -6147,8 +6147,152 @@ fn run_policy_contract(bytecode: &[u8], ctx: &[u8]) -> bool {
         return default_permit;
     }
 
-    // Mode 1: Full WASM — deny until an interpreter is integrated.
-    false
+    // Mode 1: Full WASM policy module.
+    //
+    // Keep this path strict: policy modules must be self-contained and export
+    // `policy_check(ctx_ptr: i32, ctx_len: i32) -> i32`. Any parse, instantiation,
+    // or execution error fails closed.
+    let mut module = WasmModule::new();
+    if module.load_binary(bytecode).is_err() {
+        return false;
+    }
+    if module.import_function_count != 0 {
+        return false;
+    }
+    let export_idx = match module.resolve_exported_function(b"policy_check") {
+        Ok(idx) => idx,
+        Err(_) => return false,
+    };
+    let (param_count, result_count) = match module.function_arity(export_idx) {
+        Ok(sig) => sig,
+        Err(_) => return false,
+    };
+    if param_count != 2 || result_count != 1 || !module.function_all_i32(export_idx).unwrap_or(false)
+    {
+        return false;
+    }
+
+    let mut instance = unsafe { WasmInstance::boxed_new_in_place(module, ProcessId(0), 0) };
+    if instance.initialize_from_module().is_err() {
+        return false;
+    }
+    if instance.memory.write(0, ctx).is_err() {
+        return false;
+    }
+    if instance
+        .stack
+        .push(Value::I32(0))
+        .and_then(|_| instance.stack.push(Value::I32(ctx.len() as i32)))
+        .is_err()
+    {
+        return false;
+    }
+    if instance.invoke_combined_function(export_idx).is_err() {
+        return false;
+    }
+    if instance.stack.len() != 1 {
+        return false;
+    }
+    match instance.stack.pop().and_then(|v| v.as_i32()) {
+        Ok(0) => false,
+        Ok(v) => v != 0,
+        Err(_) => false,
+    }
+}
+
+fn parse_net_host(host: &str) -> Option<crate::net::Ipv4Addr> {
+    let mut parts = [0u8; 4];
+    let mut idx = 0usize;
+    for chunk in host.split('.') {
+        if idx >= 4 || chunk.is_empty() || chunk.len() > 3 {
+            return None;
+        }
+        parts[idx] = chunk.parse::<u8>().ok()?;
+        idx += 1;
+    }
+    if idx != 4 {
+        return None;
+    }
+    Some(crate::net::Ipv4Addr::new(parts[0], parts[1], parts[2], parts[3]))
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    const MIN_POLICY_WASM: [u8; 48] = [
+        0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+        0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F, // type section
+        0x03, 0x02, 0x01, 0x00, // function section
+        0x07, 0x10, 0x01, 0x0C, 0x70, 0x6F, 0x6C, 0x69, 0x63, 0x79, 0x5F, 0x63,
+        0x68, 0x65, 0x63, 0x6B, 0x00, 0x00, // export policy_check
+        0x0A, 0x06, 0x01, 0x04, 0x00, 0x41, 0x01, 0x0B, // body: i32.const 1
+    ];
+
+    #[test]
+    fn full_wasm_policy_contract_permits_minimal_policy_check_blob() {
+        let pid = 0xA11CEu32;
+        let cap_id = 0xC0DEu32;
+        let ctx = [0xAAu8, 0xBB, 0xCC];
+        let hash = {
+            let mut h = 0u64;
+            let mut i = 0usize;
+            while i < MIN_POLICY_WASM.len() {
+                h = h.wrapping_mul(0x9E3779B97F4A7C15) ^ MIN_POLICY_WASM[i] as u64;
+                i += 1;
+            }
+            h
+        };
+
+        {
+            let mut store = POLICY_STORE.lock();
+            store.slots[0] = PolicySlot {
+                active: true,
+                pid,
+                cap_id,
+                wasm_hash: hash,
+                wasm_len: MIN_POLICY_WASM.len() as u16,
+                bytecode: {
+                    let mut bytecode = [0u8; MAX_POLICY_WASM_LEN];
+                    let mut i = 0usize;
+                    while i < MIN_POLICY_WASM.len() {
+                        bytecode[i] = MIN_POLICY_WASM[i];
+                        i += 1;
+                    }
+                    bytecode
+                },
+            };
+        }
+
+        assert!(policy_check_for_cap(pid, cap_id, &ctx));
+
+        let mut store = POLICY_STORE.lock();
+        store.slots[0] = PolicySlot::empty();
+    }
+
+    #[test]
+    fn mesh_migrate_uses_module_bytecode_when_payload_is_empty() {
+        const MODULE_BYTES: [u8; 27] = [
+            0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
+            0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7F, // type: () -> i32
+            0x03, 0x02, 0x01, 0x00, // function section
+            0x0A, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2A, 0x0B, // code: i32.const 42
+        ];
+
+        let mut module = WasmModule::new();
+        module.load_binary(&MODULE_BYTES).expect("module should load");
+
+        let instance = unsafe { WasmInstance::boxed_new_in_place(module, ProcessId(1), 0) };
+        let snapshot = instance.mesh_migrate_payload_bytes_for_test(0, 0);
+        assert_eq!(snapshot, MODULE_BYTES);
+    }
+
+    #[test]
+    fn parse_net_host_accepts_ipv4_literal() {
+        let ip = parse_net_host("10.20.30.40").expect("valid ipv4 literal");
+        assert_eq!(ip.0, [10, 20, 30, 40]);
+        assert!(parse_net_host("example.com").is_none());
+    }
 }
 
 pub fn temporal_cap_tick() {
@@ -11378,7 +11522,7 @@ impl WasmInstance {
 
     /// oreulius_net_connect(host_ptr: i32, host_len: i32, port: i32) -> i32
     fn host_net_connect(&mut self) -> Result<(), WasmError> {
-        let _port = self.stack.pop()?.as_i32()? as u16;
+        let port = self.stack.pop()?.as_i32()? as u16;
         let host_len = self.stack.pop()?.as_i32()? as usize;
         let host_ptr = self.stack.pop()?.as_i32()? as usize;
 
@@ -11389,7 +11533,7 @@ impl WasmInstance {
         let mut args_hash = replay::fnv1a64_init();
         args_hash = replay::hash_u16(args_hash, func_id);
         args_hash = replay::hash_u32(args_hash, host_len as u32);
-        args_hash = replay::hash_u32(args_hash, _port as u32);
+        args_hash = replay::hash_u32(args_hash, port as u32);
         args_hash = replay::hash_bytes(args_hash, host_bytes);
 
         let mode = self.replay_mode();
@@ -11402,17 +11546,28 @@ impl WasmInstance {
             self.stack.push(Value::I32(out.result))?;
             return Ok(());
         }
-        let _host_str = core::str::from_utf8(host_bytes).map_err(|_| WasmError::InvalidUtf8)?;
+        let host_str = core::str::from_utf8(host_bytes).map_err(|_| WasmError::InvalidUtf8)?;
+        let remote_ip = match parse_net_host(host_str) {
+            Some(ip) => ip,
+            None => {
+                let mut net = crate::net::network().lock();
+                net.dns_resolve(host_str).map_err(|_| WasmError::SyscallFailed)?
+            }
+        };
+        let conn_id = crate::net::net_reactor::tcp_connect(
+            crate::net::netstack::Ipv4Addr(remote_ip.0),
+            port,
+        )
+        .map_err(|_| WasmError::SyscallFailed)?;
 
-        // For v1, return success (real socket implementation would happen here)
-        self.stack.push(Value::I32(1))?; // Simulated socket ID
+        self.stack.push(Value::I32(conn_id as i32))?;
         if mode == ReplayMode::Record {
             replay::record_host_call(
                 self.instance_id,
                 func_id,
                 args_hash,
                 ReplayEventStatus::Ok,
-                1,
+                conn_id as i32,
                 &[],
             )
             .map_err(|_| WasmError::ReplayError)?;
@@ -14205,7 +14360,12 @@ impl WasmInstance {
             self.module.language_tag.as_str(),
             handle.0
         );
-        let _ = cap; // audit trail only for now; future: pass to security manager
+        crate::security::security().log_event(crate::security::AuditEntry::new(
+            crate::security::SecurityEvent::CapDelegationChain,
+            self.process_id,
+            cap.object_id as u32,
+        )
+        .with_context(object_id));
         POLYGLOT_LINEAGE
             .lock()
             .update_lifecycle(object_id, PolyglotLifecycle::Live);
@@ -14676,12 +14836,7 @@ impl WasmInstance {
     /// the mesh subsystem has not been initialised yet.
     fn host_mesh_local_id(&mut self) -> Result<(), WasmError> {
         let id = crate::net::capnet::local_device_id().unwrap_or(0);
-        // Expose the full 64-bit ID as two stacked i32 values is not ergonomic
-        // in i32-only WASM; we fold the high word in via XOR so the returned
-        // handle is unique but fits an i32.  WASM callers use mesh_peer_session
-        // to get the epoch handle; the full ID is logged to serial.
-        let folded = ((id ^ (id >> 32)) & 0xFFFF_FFFF) as i32;
-        self.stack.push(Value::I32(folded))
+        self.stack.push(Value::I32(id as u32 as i32))
     }
 
     /// `mesh_peer_register(peer_lo: i32, peer_hi: i32, trust: i32) -> i32`
@@ -14890,6 +15045,22 @@ impl WasmInstance {
     /// peer device.  The actual network transfer is performed by
     /// `mesh_migrate_flush()` from the scheduler tick.
     /// Returns 0 on success, -1 if the queue is full, -2 if bytes are too large.
+    fn mesh_migrate_payload_bytes(
+        &self,
+        wasm_ptr: usize,
+        wasm_len: usize,
+    ) -> Result<Vec<u8>, WasmError> {
+        if wasm_len > 0 {
+            return Ok(self.memory.read(wasm_ptr, wasm_len)?.to_vec());
+        }
+
+        if self.module.bytecode_len == 0 {
+            return Err(WasmError::InvalidModule);
+        }
+
+        Ok(self.module.bytecode[..self.module.bytecode_len].to_vec())
+    }
+
     fn host_mesh_migrate(&mut self) -> Result<(), WasmError> {
         let wasm_len = self.stack.pop()?.as_i32()? as usize;
         let wasm_ptr = self.stack.pop()?.as_i32()? as usize;
@@ -14900,11 +15071,9 @@ impl WasmInstance {
         if wasm_len > 65536 {
             return self.stack.push(Value::I32(-2));
         }
-        let data = if wasm_len > 0 {
-            self.memory.read(wasm_ptr, wasm_len)?.to_vec()
-        } else {
-            // Use the module's own raw bytecode (field: module.raw_bytes if present).
-            alloc::vec::Vec::new()
+        let data = match self.mesh_migrate_payload_bytes(wasm_ptr, wasm_len) {
+            Ok(data) => data,
+            Err(_) => return self.stack.push(Value::I32(-2)),
         };
 
         let mut q = MESH_MIGRATE_QUEUE.lock();
@@ -14935,6 +15104,12 @@ impl WasmInstance {
                 self.stack.push(Value::I32(0))
             }
         }
+    }
+
+    #[cfg(test)]
+    fn mesh_migrate_payload_bytes_for_test(&self, wasm_ptr: usize, wasm_len: usize) -> Vec<u8> {
+        self.mesh_migrate_payload_bytes(wasm_ptr, wasm_len)
+            .expect("mesh migrate payload should be available")
     }
 
     // ── Temporal Capabilities with Revocable History ─────────────────────

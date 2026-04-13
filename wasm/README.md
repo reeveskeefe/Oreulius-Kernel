@@ -109,7 +109,7 @@ by the kernel.  These can and do diverge independently.
 ### The Boundary Is the ABI Table
 
 The only coupling between the two sides is the **host ABI dispatch table**
-in `kernel/src/execution/wasm.rs` — 139 frozen host-function specs.  The WAT files and
+in `kernel/src/execution/wasm.rs` — 143 host-function specs.  The WAT files and
 the SDK's `raw/oreulius.rs` / `raw/wasi.rs` are the guest-side mirror of that
 table.  As long as the IDs, signatures, and memory-layout conventions on both
 sides match, the two halves can be compiled, modified, and versioned
@@ -152,7 +152,7 @@ completely independently.
 
 1. **Kernel build** — `kernel/build.sh` (or CI) compiles `kernel/src/` into a
    bare-metal binary.  The WASM runtime (`kernel/src/execution/wasm.rs`) is compiled
-   into that binary.  It contains the 132-arm dispatch table and both the
+   into that binary.  It contains the 143-entry dispatch table and both the
    interpreter and optional JIT paths.
 
 2. **WAT compilation** — `wasm/build.sh` calls `wat2wasm` on each `.wat`

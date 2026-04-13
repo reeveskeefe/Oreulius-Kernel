@@ -1,11 +1,12 @@
 use super::{
     BackpressureAction, BackpressureLevel, Capability, CapabilityType, Channel, ChannelCapability,
-    ChannelFlags, ChannelId, ChannelRights, ClosureState, DrainResult, EventId, IpcError, Message,
-    ProcessId, CHANNEL_CAPACITY,
+    ChannelFlags, ChannelId, ChannelProtocolState, ChannelRights, ClosureState, DrainResult,
+    EventId, IpcError, Message, ProcessId, TemporalIpcPhase, TemporalSessionState,
+    CHANNEL_CAPACITY,
 };
 use crate::scheduler::process::{Pid, ProcessState};
 
-pub const IPC_SELFTEST_CASES: usize = 12;
+pub const IPC_SELFTEST_CASES: usize = 15;
 
 #[derive(Clone, Copy)]
 pub struct IpcSelftestCase {
@@ -96,6 +97,24 @@ pub fn run_selftest() -> IpcSelftestReport {
         "channel_draining_admission",
         case_channel_draining_admission(),
     );
+    record_case(
+        &mut report,
+        12,
+        "ticketed_capability_transfer_once",
+        case_ticketed_capability_transfer_once(),
+    );
+    record_case(
+        &mut report,
+        13,
+        "temporal_protocol_typing",
+        case_temporal_protocol_typing(),
+    );
+    record_case(
+        &mut report,
+        14,
+        "temporal_snapshot_roundtrip",
+        case_temporal_snapshot_roundtrip(),
+    );
 
     report
 }
@@ -125,6 +144,75 @@ impl Drop for SyntheticWaiterGuard {
             let _ = crate::scheduler::quantum_scheduler::selftest_remove_process(pid);
         }
     }
+}
+
+struct CapabilityTaskGuard {
+    pid: ProcessId,
+}
+
+impl CapabilityTaskGuard {
+    fn new(pid: ProcessId) -> Self {
+        let manager = crate::capability::capability_manager();
+        manager.deinit_task(pid);
+        manager.init_task(pid);
+        Self { pid }
+    }
+}
+
+impl Drop for CapabilityTaskGuard {
+    fn drop(&mut self) {
+        crate::capability::capability_manager().deinit_task(self.pid);
+    }
+}
+
+fn temporal_ipc_build_request_frame(
+    session_id: u64,
+    opcode: u8,
+    flags: u16,
+    request_id: u32,
+    payload: &[u8],
+) -> alloc::vec::Vec<u8> {
+    let mut frame = alloc::vec::Vec::with_capacity(
+        super::types::TEMPORAL_IPC_SESSION_BYTES
+            + super::types::TEMPORAL_IPC_REQUEST_HEADER_BYTES
+            + payload.len(),
+    );
+    frame.extend_from_slice(&session_id.to_le_bytes());
+    frame.extend_from_slice(&super::types::TEMPORAL_IPC_MAGIC.to_le_bytes());
+    frame.push(super::types::TEMPORAL_IPC_VERSION);
+    frame.push(opcode);
+    frame.extend_from_slice(&flags.to_le_bytes());
+    frame.extend_from_slice(&request_id.to_le_bytes());
+    frame.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+    frame.extend_from_slice(&0u16.to_le_bytes());
+    frame.extend_from_slice(payload);
+    frame
+}
+
+fn temporal_ipc_build_response_frame(
+    session_id: u64,
+    opcode: u8,
+    flags: u16,
+    request_id: u32,
+    status: i32,
+    payload: &[u8],
+) -> alloc::vec::Vec<u8> {
+    let mut frame = alloc::vec::Vec::with_capacity(
+        super::types::TEMPORAL_IPC_SESSION_BYTES
+            + super::types::TEMPORAL_IPC_RESPONSE_HEADER_BYTES
+            + payload.len(),
+    );
+    frame.extend_from_slice(&session_id.to_le_bytes());
+    frame.extend_from_slice(&super::types::TEMPORAL_IPC_MAGIC.to_le_bytes());
+    frame.push(super::types::TEMPORAL_IPC_VERSION);
+    frame.push(opcode);
+    frame.extend_from_slice(&flags.to_le_bytes());
+    frame.extend_from_slice(&request_id.to_le_bytes());
+    frame.extend_from_slice(&status.to_le_bytes());
+    frame.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+    frame.extend_from_slice(&0u16.to_le_bytes());
+    frame.extend_from_slice(payload);
+    frame
 }
 
 fn record_case(
@@ -205,7 +293,7 @@ fn case_close_drain_then_closed() -> Result<(), &'static str> {
         return Err("channel did not enter closing state");
     }
     let blocked = Message::with_data(owner, b"blocked").map_err(|_| "failed to build blocked")?;
-    if !matches!(channel.send(blocked, &send_cap), Err(IpcError::Closed)) {
+    if !matches!(channel.send(blocked, &send_cap), Err(IpcError::ChannelDraining)) {
         return Err("send after close was not refused");
     }
     if channel.send_refusals() != 1 {
@@ -554,9 +642,11 @@ fn case_closure_drain_state_machine() -> Result<(), &'static str> {
         return Err("initial state is not Open");
     }
 
-    // Enqueue one message then initiate close
-    let msg = Message::with_data(owner, b"last").map_err(|_| "build failed")?;
-    channel.send(msg, &send_cap).map_err(|_| "send failed")?;
+    // Enqueue two messages then initiate close.
+    let first = Message::with_data(owner, b"keep").map_err(|_| "build failed")?;
+    channel.send(first, &send_cap).map_err(|_| "send failed")?;
+    let second = Message::with_data(owner, b"last").map_err(|_| "build failed")?;
+    channel.send(second, &send_cap).map_err(|_| "send failed")?;
     channel.close(&close_cap).map_err(|_| "close failed")?;
 
     // Must be Draining now
@@ -570,14 +660,14 @@ fn case_closure_drain_state_machine() -> Result<(), &'static str> {
         return Err("is_closed() returned true during Draining");
     }
 
-    // drain() with a message in the queue must be Pending
+    // drain() with messages in the queue must be Pending
     match channel.drain(&recv_cap) {
         Ok(DrainResult::Pending(remaining)) => {
             if remaining != 1 {
                 return Err("drain Pending count mismatch");
             }
         }
-        Ok(DrainResult::Complete) => return Err("drain reported Complete with message in queue"),
+        Ok(DrainResult::Complete) => return Err("drain reported Complete with messages in queue"),
         Ok(DrainResult::AlreadySealed) => {
             return Err("drain reported AlreadySealed while Draining")
         }
@@ -629,8 +719,9 @@ fn case_event_id_encodes_source_seq() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Verify that sending to a Draining channel returns `IpcError::Closed`
-/// (the admission policy must block new sends once draining starts).
+/// Verify that sending to a Draining channel returns `IpcError::ChannelDraining`
+/// (the admission policy must block new sends once draining starts, but the
+/// channel is not yet fully sealed).
 fn case_channel_draining_admission() -> Result<(), &'static str> {
     let id = ChannelId::new(0x32);
     let owner = ProcessId::new(33);
@@ -647,7 +738,7 @@ fn case_channel_draining_admission() -> Result<(), &'static str> {
     // A new send to a draining channel must be rejected
     let m2 = Message::with_data(owner, b"rejected").map_err(|_| "build m2 failed")?;
     match channel.send(m2, &send_cap) {
-        Err(IpcError::Closed) => {}
+        Err(IpcError::ChannelDraining) => {}
         Ok(()) => return Err("send to draining channel unexpectedly succeeded"),
         Err(e) => {
             let _ = e;
@@ -671,13 +762,319 @@ fn case_channel_draining_admission() -> Result<(), &'static str> {
     Ok(())
 }
 
+fn case_ticketed_capability_transfer_once() -> Result<(), &'static str> {
+    let source = ProcessId::new(60);
+    let dest = ProcessId::new(61);
+    let source_guard = CapabilityTaskGuard::new(source);
+    let dest_guard = CapabilityTaskGuard::new(dest);
+    let _ = (&source_guard, &dest_guard);
+
+    let manager = crate::capability::capability_manager();
+    let object_id = manager.create_object();
+    let rights = crate::capability::Rights::new(crate::capability::Rights::CHANNEL_SEND);
+    let cap_id = manager
+        .grant_capability(
+            source,
+            object_id,
+            crate::capability::CapabilityType::Channel,
+            rights,
+            source,
+        )
+        .map_err(|_| "failed to grant source capability")?;
+
+    let envelope = crate::capability::export_capability_to_ipc(source, cap_id)
+        .map_err(|_| "failed to export ticketed capability")?;
+
+    if manager
+        .verify_and_get_object(
+            source,
+            cap_id,
+            crate::capability::CapabilityType::Channel,
+            rights.bits(),
+        )
+        .is_ok()
+    {
+        return Err("source capability was not removed by export");
+    }
+
+    let mut tampered = envelope;
+    tampered.ticket_id ^= 1;
+    if crate::capability::import_capability_from_ipc(dest, &tampered, source).is_ok() {
+        return Err("tampered ticketed capability was accepted");
+    }
+
+    let imported_cap = crate::capability::import_capability_from_ipc(dest, &envelope, source)
+        .map_err(|_| "failed to import ticketed capability")?;
+    let imported_object = manager
+        .verify_and_get_object(
+            dest,
+            imported_cap,
+            crate::capability::CapabilityType::Channel,
+            rights.bits(),
+        )
+        .map_err(|_| "imported capability did not verify")?;
+    if imported_object != object_id {
+        return Err("imported capability object mismatch");
+    }
+
+    if crate::capability::import_capability_from_ipc(dest, &envelope, source).is_ok() {
+        return Err("duplicate ticket import unexpectedly succeeded");
+    }
+
+    Ok(())
+}
+
+fn case_temporal_protocol_typing() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x34);
+    let owner = ProcessId::new(34);
+    let mut channel = Channel::new(id, owner);
+    let send_cap = ChannelCapability::new(68, id, ChannelRights::send_only(), owner);
+    let recv_cap = ChannelCapability::new(69, id, ChannelRights::receive_only(), owner);
+
+    let session_id = 0x55AA_0001_u64;
+    channel.bind_temporal_protocol_state(TemporalSessionState {
+        session_id,
+        phase: TemporalIpcPhase::AwaitRequestSend,
+        next_request_id: 1,
+        last_request_id: 0,
+        last_opcode: 0,
+    });
+
+    let malformed = Message::with_data(owner, b"bad")
+        .map_err(|_| "failed to build malformed message")?;
+    if !matches!(channel.send(malformed, &send_cap), Err(IpcError::ProtocolMismatch)) {
+        return Err("malformed temporal frame was accepted");
+    }
+
+    let wrong_session_frame = temporal_ipc_build_request_frame(session_id ^ 1, 0x21, 0, 1, b"req");
+    let wrong_session = Message::with_data(owner, &wrong_session_frame)
+        .map_err(|_| "failed to build wrong-session request")?;
+    if !matches!(channel.send(wrong_session, &send_cap), Err(IpcError::ProtocolMismatch)) {
+        return Err("wrong-session temporal frame was accepted");
+    }
+
+    let request_frame = temporal_ipc_build_request_frame(session_id, 0x21, 0, 1, b"req");
+    let request = Message::with_data(owner, &request_frame).map_err(|_| "failed to build request")?;
+    if channel.send(request, &send_cap).is_err() {
+        return Err("valid temporal request send failed");
+    }
+    match channel.protocol_state() {
+        ChannelProtocolState::Temporal(state)
+            if state.phase == TemporalIpcPhase::AwaitRequestRecv
+                && state.session_id == session_id
+                && state.last_request_id == 1
+                && state.last_opcode == 0x21 =>
+        {
+        }
+        _ => return Err("request send did not advance protocol state"),
+    }
+
+    let received = channel
+        .try_recv(&recv_cap)
+        .map_err(|_| "valid temporal request recv failed")?;
+    if received.payload() != request_frame.as_slice() {
+        return Err("received temporal request payload mismatch");
+    }
+    match channel.protocol_state() {
+        ChannelProtocolState::Temporal(state)
+            if state.phase == TemporalIpcPhase::AwaitResponseSend
+                && state.session_id == session_id
+                && state.last_request_id == 1
+                && state.last_opcode == 0x21 =>
+        {
+        }
+        _ => return Err("request recv did not advance protocol state"),
+    }
+
+    let wrong_phase_frame = temporal_ipc_build_request_frame(session_id, 0x21, 0, 2, b"next");
+    let wrong_phase = Message::with_data(owner, &wrong_phase_frame)
+        .map_err(|_| "failed to build wrong-phase request")?;
+    if !matches!(channel.send(wrong_phase, &send_cap), Err(IpcError::ProtocolMismatch)) {
+        return Err("request frame was accepted in response-send phase");
+    }
+
+    let response_frame = temporal_ipc_build_response_frame(session_id, 0x21, 0, 1, 0, b"ok");
+    let response = Message::with_data(owner, &response_frame)
+        .map_err(|_| "failed to build response")?;
+    channel
+        .send(response, &send_cap)
+        .map_err(|_| "valid temporal response send failed")?;
+    match channel.protocol_state() {
+        ChannelProtocolState::Temporal(state)
+            if state.phase == TemporalIpcPhase::AwaitResponseRecv
+                && state.session_id == session_id
+                && state.last_request_id == 1
+                && state.last_opcode == 0x21 =>
+        {
+        }
+        _ => return Err("response send did not advance protocol state"),
+    }
+
+    let received_response = channel
+        .try_recv(&recv_cap)
+        .map_err(|_| "valid temporal response recv failed")?;
+    if received_response.payload() != response_frame.as_slice() {
+        return Err("received temporal response payload mismatch");
+    }
+    match channel.protocol_state() {
+        ChannelProtocolState::Temporal(state)
+            if state.phase == TemporalIpcPhase::AwaitRequestSend
+                && state.session_id == session_id =>
+        {
+        }
+        _ => return Err("response recv did not reset protocol state"),
+    }
+
+    Ok(())
+}
+
+fn case_temporal_snapshot_roundtrip() -> Result<(), &'static str> {
+    let id = ChannelId::new(0x35);
+    let owner = ProcessId::new(35);
+    let mut channel = Channel::new(id, owner);
+    let send_cap = ChannelCapability::new(70, id, ChannelRights::send_only(), owner);
+    let recv_cap = ChannelCapability::new(71, id, ChannelRights::receive_only(), owner);
+    let close_cap = ChannelCapability::new(72, id, ChannelRights::full(), owner);
+
+    let session_id = 0x66BB_0001_u64;
+    channel.bind_temporal_protocol_state(TemporalSessionState {
+        session_id,
+        phase: TemporalIpcPhase::AwaitRequestSend,
+        next_request_id: 1,
+        last_request_id: 0,
+        last_opcode: 0,
+    });
+
+    let request_frame = temporal_ipc_build_request_frame(session_id, 0x31, 0, 1, b"snapshot");
+    let request = Message::with_data(owner, &request_frame)
+        .map_err(|_| "failed to build snapshot request")?;
+    if channel.send(request, &send_cap).is_err() {
+        return Err("snapshot request send failed");
+    }
+
+    let refusal = Message::with_data(owner, b"bad").map_err(|_| "failed to build refusal message")?;
+    if !matches!(channel.send(refusal, &send_cap), Err(IpcError::ProtocolMismatch)) {
+        return Err("protocol refusal did not occur");
+    }
+
+    channel.waiting_receivers.push_back(ProcessId::new(83));
+    channel.waiting_senders.push_back(ProcessId::new(84));
+    let _ = channel.persist_temporal_snapshot(
+        crate::temporal::TEMPORAL_CHANNEL_EVENT_SEND_REFUSED,
+        owner,
+        0,
+        0,
+    );
+
+    let key = crate::temporal::ipc_channel_object_key(id.0);
+    let latest = crate::temporal::latest_version(&key)
+        .map_err(|_| "failed to read wait-queue snapshot version")?;
+    let payload = crate::temporal::read_version(&key, latest.version_id)
+        .map_err(|_| "failed to read wait-queue snapshot payload")?;
+
+    let mut wait_restored = Channel::new(id, owner);
+    wait_restored
+        .restore_temporal_snapshot_payload(&payload)
+        .map_err(|_| "failed to restore wait-queue snapshot")?;
+
+    if wait_restored.waiting_receivers.len() != 1 || wait_restored.waiting_senders.len() != 1 {
+        return Err("restored wait queue length mismatch");
+    }
+    if wait_restored.waiting_receivers.pop_front() != Some(ProcessId::new(83)) {
+        return Err("restored receiver wait queue mismatch");
+    }
+    if wait_restored.waiting_senders.pop_front() != Some(ProcessId::new(84)) {
+        return Err("restored sender wait queue mismatch");
+    }
+    if !matches!(wait_restored.closure_state(), ClosureState::Open) {
+        return Err("restored wait-queue snapshot closure mismatch");
+    }
+    match wait_restored.protocol_state() {
+        ChannelProtocolState::Temporal(state)
+            if state.session_id == session_id
+                && state.phase == TemporalIpcPhase::AwaitRequestRecv
+                && state.last_request_id == 1
+                && state.last_opcode == 0x31 =>
+        {
+        }
+        _ => return Err("restored wait-queue snapshot protocol mismatch"),
+    }
+    if wait_restored.pending() != 1 {
+        return Err("restored wait-queue snapshot queue depth mismatch");
+    }
+
+    channel.close(&close_cap).map_err(|_| "snapshot close failed")?;
+
+    let latest = crate::temporal::latest_version(&key)
+        .map_err(|_| "failed to read channel snapshot version")?;
+    let payload = crate::temporal::read_version(&key, latest.version_id)
+        .map_err(|_| "failed to read channel snapshot payload")?;
+
+    let mut restored = Channel::new(id, owner);
+    restored
+        .restore_temporal_snapshot_payload(&payload)
+        .map_err(|_| "failed to restore channel snapshot")?;
+
+    if restored.send_refusals() != 1 {
+        return Err("restored send refusal counter mismatch");
+    }
+    if !matches!(restored.closure_state(), ClosureState::Draining { .. }) {
+        return Err("restored closure state mismatch");
+    }
+    match restored.protocol_state() {
+        ChannelProtocolState::Temporal(state)
+            if state.session_id == session_id
+                && state.phase == TemporalIpcPhase::AwaitRequestRecv
+                && state.last_request_id == 1
+                && state.last_opcode == 0x31 =>
+        {
+        }
+        _ => return Err("restored protocol state mismatch"),
+    }
+    if restored.waiting_receivers.len() != 0 || restored.waiting_senders.len() != 0 {
+        return Err("restored closed snapshot wait queue mismatch");
+    }
+    if restored.pending() != 1 {
+        return Err("restored queue depth mismatch");
+    }
+
+    let received = restored
+        .try_recv(&recv_cap)
+        .map_err(|_| "restored channel recv failed")?;
+    if received.payload() != request_frame.as_slice() {
+        return Err("restored payload mismatch");
+    }
+
+    if restored.pending() != 0 {
+        return Err("restored queue was not drained");
+    }
+    if !restored.is_closed() {
+        return Err("restored channel was not sealed after final recv");
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn runtime_ipc_selftest_cases_pass() {
-        let report = run_selftest();
-        assert_eq!(report.passed, report.total);
+        // The scheduler and IPC selftest stack together are large enough to
+        // overflow the default libtest stack on host builds, so run the body
+        // on a larger stack to keep the test path representative.
+        let handle = std::thread::Builder::new()
+            .name("ipc-selftest-runner".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let report = run_selftest();
+                assert_eq!(report.passed, report.total);
+            })
+            .expect("failed to spawn IPC self-test thread");
+
+        handle
+            .join()
+            .expect("IPC self-test thread panicked");
     }
 }

@@ -15,6 +15,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// during bring-up; without this carve-out, general heap allocations can overwrite
 /// page tables and corrupt translations.
 pub(crate) const AARCH64_MMU_PT_RESERVE_BYTES: usize = 1024 * 1024; // 1 MiB
+#[cfg(any(test, feature = "host-tests"))]
+const HOST_TEST_AARCH64_HEAP_BYTES: usize = 16 * 1024 * 1024;
 
 struct AArch64BumpAllocator;
 
@@ -26,7 +28,10 @@ static HEAP_START: AtomicUsize = AtomicUsize::new(0);
 static HEAP_END: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(any(test, feature = "host-tests"))]
-static HOST_TEST_AARCH64_HEAP: [u8; 2 * 1024 * 1024] = [0; 2 * 1024 * 1024];
+static mut HOST_TEST_AARCH64_HEAP: [u8; HOST_TEST_AARCH64_HEAP_BYTES] =
+    [0; HOST_TEST_AARCH64_HEAP_BYTES];
+#[cfg(any(test, feature = "host-tests"))]
+const HOST_TEST_AARCH64_HEAP_LEN: usize = HOST_TEST_AARCH64_HEAP_BYTES;
 
 #[inline]
 fn align_up(value: usize, align: usize) -> usize {
@@ -41,8 +46,8 @@ fn ensure_heap_initialized() {
 
     #[cfg(any(test, feature = "host-tests"))]
     let (start, end) = (
-        HOST_TEST_AARCH64_HEAP.as_ptr() as usize,
-        HOST_TEST_AARCH64_HEAP.as_ptr() as usize + HOST_TEST_AARCH64_HEAP.len(),
+        core::ptr::addr_of_mut!(HOST_TEST_AARCH64_HEAP) as usize,
+        core::ptr::addr_of_mut!(HOST_TEST_AARCH64_HEAP) as usize + HOST_TEST_AARCH64_HEAP_LEN,
     );
 
     #[cfg(not(any(test, feature = "host-tests")))]
@@ -67,6 +72,10 @@ fn ensure_heap_initialized() {
         return;
     }
 
+    #[cfg(any(test, feature = "host-tests"))]
+    let alloc_start = start;
+
+    #[cfg(not(any(test, feature = "host-tests")))]
     let alloc_start = start.saturating_add(AARCH64_MMU_PT_RESERVE_BYTES).min(end);
     let alloc_start = align_up(alloc_start, 16);
     let _ = HEAP_START.compare_exchange(0, alloc_start, Ordering::AcqRel, Ordering::Acquire);

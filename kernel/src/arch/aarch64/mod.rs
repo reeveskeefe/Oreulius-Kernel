@@ -9,7 +9,7 @@
 //! This module owns the AArch64 boot/runtime entrypoints and keeps the current
 //! implementation files in place as path-based shims while the facade settles.
 
-pub(super) use super::{ArchPlatform, BootInfo, BootProtocol};
+pub(super) use super::{ArchPlatform, BootInfo};
 
 #[path = "../aarch64_dtb.rs"]
 pub(crate) mod aarch64_dtb;

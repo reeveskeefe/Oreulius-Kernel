@@ -63,7 +63,7 @@ impl IpcService {
                     .ok_or(IpcError::InvalidCap)?;
                 backpressure::observe_send_attempt(channel);
 
-                match admission::evaluate_send(channel, capability) {
+                match admission::evaluate_send(channel, capability, &send_msg) {
                     SendDecision::Commit => {
                         return channel.send_with_observed_pressure(send_msg, capability);
                     }
@@ -75,7 +75,14 @@ impl IpcService {
                             channel.capacity_wait_addr(),
                             crate::scheduler::process::ProcessState::WaitingOnChannel,
                         ) {
-                            Ok(plan) => plan,
+                            Ok(plan) => {
+                                if let Some(pid) = crate::scheduler::process::current_pid() {
+                                    channel
+                                        .waiting_senders
+                                        .push_back(crate::ipc::ProcessId(pid.0));
+                                }
+                                plan
+                            }
                             Err(_) => {
                                 return channel.defer_send(
                                     IpcDefer::WaitForCapacity,
@@ -122,7 +129,14 @@ impl IpcService {
                             channel.message_wait_addr(),
                             crate::scheduler::process::ProcessState::WaitingOnChannel,
                         ) {
-                            Ok(plan) => plan,
+                            Ok(plan) => {
+                                if let Some(pid) = crate::scheduler::process::current_pid() {
+                                    channel
+                                        .waiting_receivers
+                                        .push_back(crate::ipc::ProcessId(pid.0));
+                                }
+                                plan
+                            }
                             Err(_) => return Err(IpcError::WouldBlock),
                         }
                     }
@@ -377,6 +391,16 @@ pub fn temporal_apply_channel_payload(payload: &[u8]) -> Result<(), &'static str
     }
     if payload[1] != crate::temporal::TEMPORAL_CHANNEL_OBJECT {
         return Err("Temporal channel payload object mismatch");
+    }
+
+    if payload[3] == 2 {
+        let channel_id = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+        let owner_pid = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+        let mut table = ipc().channels.lock();
+        let channel = table
+            .ensure_channel_with_id(ChannelId(channel_id), ProcessId(owner_pid))
+            .map_err(|_| "Failed to ensure temporal channel")?;
+        return channel.restore_temporal_snapshot_payload(payload);
     }
 
     let event = payload[2];

@@ -20,9 +20,9 @@
 //!
 //! A 4 KiB WASM bytecode blob can be bound with [`bind`].  The kernel will
 //! invoke the contract synchronously when [`eval`] is called.  Full-WASM
-//! contracts are **deny-by-default** until a real contract interpreter is
-//! wired in; use [`query`] if you need to distinguish a missing binding from
-//! an explicit deny.
+//! contracts must export `policy_check(ctx_ptr, ctx_len) -> i32` and are
+//! executed in a fail-closed policy sandbox; use [`query`] if you need to
+//! distinguish a missing binding from an explicit deny.
 //!
 //! ## Example
 //!

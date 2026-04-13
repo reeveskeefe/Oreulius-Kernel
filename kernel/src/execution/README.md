@@ -355,7 +355,11 @@ pub fn policy_check_for_cap(pid: u32, cap_id: u32, ctx: &[u8]) -> bool
 pub fn temporal_cap_tick()
 ```
 
-`entangle_cascade_revoke` revokes a capability and all transitively entangled capabilities from `MAX_ENTANGLE_LINKS = 128` possible slots. `policy_check_for_cap` evaluates a WASM-bytecode policy module (up to `MAX_POLICY_WASM_LEN = 4096` bytes) against the calling context before issuing a capability.
+`entangle_cascade_revoke` revokes a capability and all transitively entangled capabilities from `MAX_ENTANGLE_LINKS = 128` possible slots. `policy_check_for_cap` evaluates a WASM-bytecode policy module (up to `MAX_POLICY_WASM_LEN = 4096` bytes) against the calling context before issuing a capability. Full-WASM policies are executed in a strict sandbox: they must be self-contained, export `policy_check(ctx_ptr, ctx_len) -> i32`, and may not import host functions.
+
+`oreulius_net_connect(host_ptr, host_len, port)` now resolves either a dotted-quad IPv4 literal or a DNS hostname and returns the real TCP connection handle from the reactor stack.
+
+`polyglot_link(...)` records a provenance audit entry when a cross-language service link is established.
 
 ### Observer Event System
 
@@ -1018,7 +1022,9 @@ Complete table of all numeric constants affecting execution behaviour:
 
 ### Security Module
 
-`policy_check_for_cap(pid, cap_id, ctx)` evaluates a stored WASM policy module (up to `MAX_POLICY_WASM_LEN = 4096` bytes) before a capability is exercised. `intent_wasm::infer_score` is called by the security intent graph on each process evaluation cycle, with the resulting score fed into the predictive restriction table. A score above the security module's admission threshold causes IPC `admission::SendDecision::Deny` for that process.
+`policy_check_for_cap(pid, cap_id, ctx)` evaluates a stored WASM policy module (up to `MAX_POLICY_WASM_LEN = 4096` bytes) before a capability is exercised. Full-WASM policies run in a fail-closed sandbox and must export `policy_check(ctx_ptr, ctx_len) -> i32` without importing host functions. `intent_wasm::infer_score` is called by the security intent graph on each process evaluation cycle, with the resulting score fed into the predictive restriction table. A score above the security module's admission threshold causes IPC `admission::SendDecision::Deny` for that process.
+
+`mesh_migrate(peer_lo, peer_hi, wasm_ptr, wasm_len)` now treats `wasm_len == 0` as a request to migrate the calling module's own stored bytecode instead of sending an empty payload.
 
 ### Temporal / Filesystem
 

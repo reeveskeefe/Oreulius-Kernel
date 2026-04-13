@@ -17,6 +17,7 @@ host-tests = []
 [dependencies]
 spin = "0.9"
 bitflags = "2.5"
+x25519-dalek = { version = "2", default-features = false }
 
 [dependencies.lazy_static]
 version = "1.4"

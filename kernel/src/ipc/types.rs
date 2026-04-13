@@ -1,4 +1,7 @@
+use alloc::vec::Vec;
+
 use crate::capability::Rights;
+use super::errors::IpcError;
 use crate::security::security;
 
 /// Errors returned by typed IPC argument codecs.
@@ -258,10 +261,227 @@ pub enum CapabilityType {
     ServicePointer = 4,
 }
 
+impl CapabilityType {
+    pub const fn from_raw(raw: u8) -> Option<Self> {
+        match raw {
+            0 => Some(CapabilityType::Generic),
+            1 => Some(CapabilityType::Channel),
+            2 => Some(CapabilityType::Filesystem),
+            3 => Some(CapabilityType::Store),
+            4 => Some(CapabilityType::ServicePointer),
+            _ => None,
+        }
+    }
+}
+
+/// Temporal IPC frame kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalIpcFrameKind {
+    Request,
+    Response,
+}
+
+/// Temporal IPC channel phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalIpcPhase {
+    AwaitRequestSend,
+    AwaitRequestRecv,
+    AwaitResponseSend,
+    AwaitResponseRecv,
+}
+
+/// Temporal IPC session state bound to a channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TemporalSessionState {
+    pub session_id: u64,
+    pub phase: TemporalIpcPhase,
+    pub next_request_id: u32,
+    pub last_request_id: u32,
+    pub last_opcode: u8,
+}
+
+impl TemporalSessionState {
+    pub const fn new(session_id: u64) -> Self {
+        TemporalSessionState {
+            session_id,
+            phase: TemporalIpcPhase::AwaitRequestSend,
+            next_request_id: 1,
+            last_request_id: 0,
+            last_opcode: 0,
+        }
+    }
+}
+
+/// Per-channel protocol binding state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelProtocolState {
+    Unbound,
+    Temporal(TemporalSessionState),
+}
+
+impl ChannelProtocolState {
+    pub const fn unbound() -> Self {
+        ChannelProtocolState::Unbound
+    }
+
+    pub const fn temporal(session_id: u64) -> Self {
+        ChannelProtocolState::Temporal(TemporalSessionState::new(session_id))
+    }
+
+    pub const fn is_unbound(&self) -> bool {
+        matches!(self, ChannelProtocolState::Unbound)
+    }
+
+    pub const fn session_id(&self) -> Option<u64> {
+        match self {
+            ChannelProtocolState::Temporal(state) => Some(state.session_id),
+            ChannelProtocolState::Unbound => None,
+        }
+    }
+}
+
+/// Temporal IPC request payload header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TemporalRequestFrame<'a> {
+    pub session_id: u64,
+    pub opcode: u8,
+    pub flags: u16,
+    pub request_id: u32,
+    pub payload: &'a [u8],
+}
+
+/// Temporal IPC response payload header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TemporalResponseFrame<'a> {
+    pub session_id: u64,
+    pub opcode: u8,
+    pub flags: u16,
+    pub request_id: u32,
+    pub status: i32,
+    pub payload: &'a [u8],
+}
+
+pub const TEMPORAL_IPC_MAGIC: u32 = 0x3150_4D54; // "TMP1" in little-endian byte order
+pub const TEMPORAL_IPC_VERSION: u8 = 1;
+pub const TEMPORAL_IPC_SESSION_BYTES: usize = 8;
+pub const TEMPORAL_IPC_REQUEST_HEADER_BYTES: usize = 16;
+pub const TEMPORAL_IPC_RESPONSE_HEADER_BYTES: usize = 20;
+
+pub(crate) fn temporal_ipc_append_u16(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+pub(crate) fn temporal_ipc_append_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+pub(crate) fn temporal_ipc_append_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+pub(crate) fn temporal_ipc_read_u16(buf: &[u8], offset: usize) -> Option<u16> {
+    let end = offset.checked_add(2)?;
+    let bytes = buf.get(offset..end)?;
+    Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+pub(crate) fn temporal_ipc_read_u32(buf: &[u8], offset: usize) -> Option<u32> {
+    let end = offset.checked_add(4)?;
+    let bytes = buf.get(offset..end)?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+pub(crate) fn temporal_ipc_read_u64(buf: &[u8], offset: usize) -> Option<u64> {
+    let end = offset.checked_add(8)?;
+    let bytes = buf.get(offset..end)?;
+    Some(u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]))
+}
+
+pub(crate) fn temporal_ipc_session_id(payload: &[u8]) -> Result<u64, IpcError> {
+    if payload.len() < TEMPORAL_IPC_SESSION_BYTES {
+        return Err(IpcError::ProtocolMismatch);
+    }
+    Ok(u64::from_le_bytes([
+        payload[0], payload[1], payload[2], payload[3], payload[4], payload[5], payload[6],
+        payload[7],
+    ]))
+}
+
+pub(crate) fn temporal_ipc_parse_request_payload(
+    payload: &[u8],
+) -> Result<TemporalRequestFrame<'_>, IpcError> {
+    if payload.len() < TEMPORAL_IPC_SESSION_BYTES + TEMPORAL_IPC_REQUEST_HEADER_BYTES {
+        return Err(IpcError::ProtocolMismatch);
+    }
+
+    let session_id = temporal_ipc_session_id(payload)?;
+    let frame = &payload[TEMPORAL_IPC_SESSION_BYTES..];
+    let magic = temporal_ipc_read_u32(frame, 0).ok_or(IpcError::ProtocolMismatch)?;
+    if magic != TEMPORAL_IPC_MAGIC || frame[4] != TEMPORAL_IPC_VERSION {
+        return Err(IpcError::ProtocolMismatch);
+    }
+
+    let opcode = frame[5];
+    let flags = temporal_ipc_read_u16(frame, 6).ok_or(IpcError::ProtocolMismatch)?;
+    let request_id = temporal_ipc_read_u32(frame, 8).ok_or(IpcError::ProtocolMismatch)?;
+    let payload_len = temporal_ipc_read_u16(frame, 12).ok_or(IpcError::ProtocolMismatch)? as usize;
+    let expected_len = TEMPORAL_IPC_REQUEST_HEADER_BYTES.saturating_add(payload_len);
+    if frame.len() != expected_len {
+        return Err(IpcError::ProtocolMismatch);
+    }
+
+    Ok(TemporalRequestFrame {
+        session_id,
+        opcode,
+        flags,
+        request_id,
+        payload: &frame[TEMPORAL_IPC_REQUEST_HEADER_BYTES..],
+    })
+}
+
+pub(crate) fn temporal_ipc_parse_response_payload(
+    payload: &[u8],
+) -> Result<TemporalResponseFrame<'_>, IpcError> {
+    if payload.len() < TEMPORAL_IPC_SESSION_BYTES + TEMPORAL_IPC_RESPONSE_HEADER_BYTES {
+        return Err(IpcError::ProtocolMismatch);
+    }
+
+    let session_id = temporal_ipc_session_id(payload)?;
+    let frame = &payload[TEMPORAL_IPC_SESSION_BYTES..];
+    let magic = temporal_ipc_read_u32(frame, 0).ok_or(IpcError::ProtocolMismatch)?;
+    if magic != TEMPORAL_IPC_MAGIC || frame[4] != TEMPORAL_IPC_VERSION {
+        return Err(IpcError::ProtocolMismatch);
+    }
+
+    let opcode = frame[5];
+    let flags = temporal_ipc_read_u16(frame, 6).ok_or(IpcError::ProtocolMismatch)?;
+    let request_id = temporal_ipc_read_u32(frame, 8).ok_or(IpcError::ProtocolMismatch)?;
+    let status = i32::from_le_bytes([frame[12], frame[13], frame[14], frame[15]]);
+    let payload_len = temporal_ipc_read_u16(frame, 16).ok_or(IpcError::ProtocolMismatch)? as usize;
+    let expected_len = TEMPORAL_IPC_RESPONSE_HEADER_BYTES.saturating_add(payload_len);
+    if frame.len() != expected_len {
+        return Err(IpcError::ProtocolMismatch);
+    }
+
+    Ok(TemporalResponseFrame {
+        session_id,
+        opcode,
+        flags,
+        request_id,
+        status,
+        payload: &frame[TEMPORAL_IPC_RESPONSE_HEADER_BYTES..],
+    })
+}
+
 /// IPC capability transfer envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capability {
     pub cap_id: u32,
+    /// One-time ticket identifier for zero-sum IPC transfers. `0` means the
+    /// capability is not part of the ticketed kernel transfer ledger.
+    pub ticket_id: u64,
     /// Full 64-bit kernel object identity.
     pub object_id: u64,
     pub rights: Rights,
@@ -284,6 +504,7 @@ impl Capability {
     pub const fn new(cap_id: u32, object_id: u64, rights: Rights) -> Self {
         Capability {
             cap_id,
+            ticket_id: 0,
             object_id,
             rights,
             cap_type: CapabilityType::Generic,
@@ -304,6 +525,7 @@ impl Capability {
     ) -> Self {
         Capability {
             cap_id,
+            ticket_id: 0,
             object_id,
             rights,
             cap_type,
@@ -318,6 +540,11 @@ impl Capability {
 
     pub const fn with_owner(mut self, owner_pid: ProcessId) -> Self {
         self.owner_pid = owner_pid;
+        self
+    }
+
+    pub const fn with_ticket_id(mut self, ticket_id: u64) -> Self {
+        self.ticket_id = ticket_id;
         self
     }
 
@@ -358,6 +585,7 @@ impl Capability {
         write_u32(&mut buf, &mut offset, TOKEN_CONTEXT);
         write_u32(&mut buf, &mut offset, TOKEN_WIRE_VERSION);
         write_u32(&mut buf, &mut offset, self.cap_id);
+        write_u64(&mut buf, &mut offset, self.ticket_id);
         write_u64(&mut buf, &mut offset, self.object_id);
         write_u32(&mut buf, &mut offset, self.rights.bits());
         write_u32(&mut buf, &mut offset, self.cap_type as u32);

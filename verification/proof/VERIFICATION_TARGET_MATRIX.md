@@ -163,6 +163,10 @@ Specific exclusions from any "verified" claim unless explicitly noted:
 | Service pointer typing correctness — service pointers cannot be mis-typed at call site | **T1** | Runtime-enforced by `formal_service_pointer_conformance_self_check()`; no mechanized service-pointer model yet |
 | WASI surface correctness — frozen WASI Preview 1 compatibility surface preserves documented metadata and live behavior | **T1** | Runtime-enforced by `formal_wasi_preview1_self_check()`; no mechanized WASI model yet |
 | Polyglot/native host resolution correctness — typed native host resolution preserves exact-export link identity and fail-closed teardown behavior across guest bindings | **T1** | Runtime-enforced by `formal_polyglot_abi_self_check()`; no mechanized polyglot model yet |
+| Full-WASM policy contract sandboxing — policies must fail closed unless they export the exact `policy_check(ctx_ptr, ctx_len) -> i32` entry point and remain host-import free | **T1** | Runtime-enforced by policy self-checks and the capability policy path |
+| Mesh migration self-bytecode fallback — zero-length `mesh_migrate` payloads must snapshot the caller's module bytecode | **T1** | Runtime-enforced by the mesh migration self-check path |
+| Net connect resolution path — `oreulius_net_connect` must resolve IPv4 literals or hostnames before opening a real reactor-backed TCP handle | **T1** | Runtime-enforced by the networking host path and parser self-check |
+| Polyglot provenance audit — `polyglot_link` must emit a provenance/audit record when a link is established | **T1** | Runtime-enforced by the polyglot link path and security audit log |
 
 **Note:** The JIT semantic equivalence proof (interpreter → JIT) is Program D's primary multi-year research obligation. For alpha, the honest claim is: W^X and CFI hold at the model level (T2); full execution semantic correctness is not claimed.
 
@@ -210,13 +214,25 @@ Specific exclusions from any "verified" claim unless explicitly noted:
 | Property | Current Tier | Notes |
 |----------|-------------|-------|
 | Send/receive ordering model — messages are delivered in channel order | **T1** | FIFO property not yet mechanized |
-| Capability passing correctness — passed caps are correctly transferred, not copied | **T1** | Depends on Program B transfer semantics |
+| Capability passing correctness — passed caps are correctly transferred, not copied | **T1** | Runtime-checked by `ipc::run_selftest()` and depends on Program B transfer semantics |
+| Protocol/session typing — Temporal-bound channels enforce session ids and phase transitions | **T1** | Runtime-checked by `ipc::run_selftest()`; no mechanized protocol model yet |
+| Replay-complete IPC state reconstruction — queue, wait queues, closure, protocol, and counter state round-trip through snapshot restore | **T1** | Runtime-checked by `ipc::run_selftest()`; no mechanized replay model yet |
 | Service registration correctness — names are unique in the registry | **T0** | |
 | Service lookup/invoke correctness — lookup always returns the registered handler | **T0** | |
 | Cross-PID pointer validity — no process may dereference another's raw pointers | **T1** | Depends on Program C page isolation |
 | Registry consistency under concurrent registration | **T0** | Depends on Program H lock model |
 
 **Implementation surfaces:** `kernel/src/ipc/channel.rs`, `kernel/src/ipc/`, `kernel/src/capability/mod.rs`
+
+### 8.3 Runtime-Enforced IPC Boundaries
+
+These are runtime conformance checks exercised by `ipc::run_selftest()` and the `ipc-selftest` / `formal-verify` shell surfaces. They are not mechanized theorems yet.
+
+| ID | Boundary | Status | Evidence |
+|---|---|---|---|
+| IPC-TRANSFER-001 | Ticketed message-carried capability transfer is zero-sum and one-time; duplicate or tampered ticket reuse fails closed | Runtime Checked | `kernel/src/ipc/selftest.rs::case_ticketed_capability_transfer_once` |
+| IPC-PROTO-001 | Temporal-bound IPC channels enforce session ids and phase transitions when protocol state is bound | Runtime Checked | `kernel/src/ipc/selftest.rs::case_temporal_protocol_typing` |
+| IPC-SNAPSHOT-001 | IPC channel snapshots round-trip committed queue, wait queues, closure, protocol, and counter state | Runtime Checked | `kernel/src/ipc/selftest.rs::case_temporal_snapshot_roundtrip` |
 
 ---
 

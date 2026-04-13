@@ -51,7 +51,7 @@ Each active entry stores:
 - `language`
 - `owner_pid`
 - `singleton` flag
-- `cap_object` placeholder field
+- `cap_object` stable object identifier used for lineage and audit correlation
 - `latest_record_id` pointing at the lineage ledger
 
 The language tag comes from the module's `oreulius_lang` custom section and defaults to `Unknown` if absent.

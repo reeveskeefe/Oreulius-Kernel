@@ -5934,24 +5934,24 @@ mod tests {
         vfs.init();
 
         let tmp = vfs.alloc_inode(InodeKind::Directory, 0o755);
-        vfs.add_dir_entry(1, "tmp", tmp).unwrap();
+        vfs.add_dir_entry(1, "work", tmp).unwrap();
 
         let file = vfs.alloc_inode(InodeKind::File, 0o644);
         vfs.write_file_payload(file, b"hello").unwrap();
         vfs.add_dir_entry(tmp, "a", file).unwrap();
 
-        vfs.symlink_path("/tmp/a", "/tmp/link").unwrap();
-        assert_eq!(vfs.resolve_path("/tmp/link").unwrap(), file);
-        assert_eq!(vfs.readlink_path("/tmp/link").unwrap(), "/tmp/a");
+        vfs.symlink_path("/work/a", "/work/link").unwrap();
+        assert_eq!(vfs.resolve_path("/work/link").unwrap(), file);
+        assert_eq!(vfs.readlink_path("/work/link").unwrap(), "/work/a");
 
-        vfs.link_path("/tmp/a", "/tmp/a2").unwrap();
-        let linked = vfs.resolve_path_nofollow("/tmp/a2").unwrap();
+        vfs.link_path("/work/a", "/work/a2").unwrap();
+        let linked = vfs.resolve_path_nofollow("/work/a2").unwrap();
         assert_eq!(linked, file);
         assert_eq!(vfs.get_inode(file).unwrap().meta.nlink, 2);
 
-        vfs.rename_path("/tmp/a2", "/tmp/renamed").unwrap();
-        assert_eq!(vfs.resolve_path_nofollow("/tmp/renamed").unwrap(), file);
-        assert!(vfs.resolve_path_nofollow("/tmp/a2").is_err());
+        vfs.rename_path("/work/a2", "/work/renamed").unwrap();
+        assert_eq!(vfs.resolve_path_nofollow("/work/renamed").unwrap(), file);
+        assert!(vfs.resolve_path_nofollow("/work/a2").is_err());
     }
 
     #[test]
@@ -6017,7 +6017,7 @@ mod tests {
         vfs.init();
 
         let dir = vfs.alloc_inode(InodeKind::Directory, 0o755);
-        vfs.add_dir_entry(1, "tmp", dir).unwrap();
+        vfs.add_dir_entry(1, "work", dir).unwrap();
         let file = vfs.alloc_inode(InodeKind::File, 0o644);
         vfs.add_dir_entry(dir, "small", file).unwrap();
 
@@ -6034,7 +6034,7 @@ mod tests {
         vfs.init();
 
         let tmp = vfs.alloc_inode(InodeKind::Directory, 0o755);
-        vfs.add_dir_entry(1, "tmp", tmp).unwrap();
+        vfs.add_dir_entry(1, "work", tmp).unwrap();
         let file = vfs.alloc_inode(InodeKind::File, 0o644);
         vfs.write_file_payload(file, b"data").unwrap();
         vfs.add_dir_entry(tmp, "note", file).unwrap();
@@ -6047,12 +6047,12 @@ mod tests {
         )
         .unwrap();
 
-        let chain = vfs.resolve_path_chain("/tmp/note", true).unwrap();
+        let chain = vfs.resolve_path_chain("/work/note", true).unwrap();
         assert!(vfs
-            .ensure_path_rights(Some(pid), "/tmp/note", &chain, VfsAccess::Read)
+            .ensure_path_rights(Some(pid), "/work/note", &chain, VfsAccess::Read)
             .is_ok());
         assert_eq!(
-            vfs.ensure_path_rights(Some(pid), "/tmp/note", &chain, VfsAccess::Write),
+            vfs.ensure_path_rights(Some(pid), "/work/note", &chain, VfsAccess::Write),
             Err("Permission denied")
         );
     }
@@ -6063,7 +6063,7 @@ mod tests {
         vfs.init();
 
         let tmp = vfs.alloc_inode(InodeKind::Directory, 0o755);
-        vfs.add_dir_entry(1, "tmp", tmp).unwrap();
+        vfs.add_dir_entry(1, "work", tmp).unwrap();
         let file = vfs.alloc_inode(InodeKind::File, 0o644);
         vfs.write_file_payload(file, b"abc").unwrap();
         vfs.add_dir_entry(tmp, "one", file).unwrap();
@@ -6075,13 +6075,13 @@ mod tests {
         )
         .unwrap();
 
-        let existing_chain = vfs.resolve_path_chain("/tmp/one", true).unwrap();
+        let existing_chain = vfs.resolve_path_chain("/work/one", true).unwrap();
         assert_eq!(
             vfs.ensure_quota_allows(None, &existing_chain, 3, 5, false),
             Err("Capability quota exceeded")
         );
 
-        let create_chain = vfs.resolve_parent_chain("/tmp/two").unwrap();
+        let create_chain = vfs.resolve_parent_chain("/work/two").unwrap();
         assert_eq!(
             vfs.ensure_quota_allows(None, &create_chain, 0, 0, true),
             Err("Capability quota exceeded")
@@ -6114,21 +6114,21 @@ mod tests {
         vfs.init();
 
         let tmp = vfs.alloc_inode(InodeKind::Directory, 0o755);
-        vfs.add_dir_entry(1, "tmp", tmp).unwrap();
+        vfs.add_dir_entry(1, "work", tmp).unwrap();
         let file = vfs.alloc_inode(InodeKind::File, 0o644);
         vfs.write_file_payload(file, b"data").unwrap();
         vfs.add_dir_entry(tmp, "note", file).unwrap();
 
         let pid = test_pid(21);
         vfs.set_process_capability(pid, FilesystemCapability::new(21, FilesystemRights::all()));
-        let chain = vfs.resolve_path_chain("/tmp/note", true).unwrap();
+        let chain = vfs.resolve_path_chain("/work/note", true).unwrap();
         let capability = vfs
-            .ensure_path_rights(Some(pid), "/tmp/note", &chain, VfsAccess::Write)
+            .ensure_path_rights(Some(pid), "/work/note", &chain, VfsAccess::Write)
             .unwrap();
         let handle = Handle {
             kind: HandleKind::MemFile {
                 inode: file,
-                path: "/tmp/note".to_string(),
+                path: "/work/note".to_string(),
             },
             pos: 0,
             flags: OpenFlags::READ | OpenFlags::WRITE,
@@ -6157,7 +6157,7 @@ mod tests {
         vfs.init();
 
         let tmp = vfs.alloc_inode(InodeKind::Directory, 0o755);
-        vfs.add_dir_entry(1, "tmp", tmp).unwrap();
+        vfs.add_dir_entry(1, "work", tmp).unwrap();
         let file = vfs.alloc_inode(InodeKind::File, 0o644);
         vfs.write_file_payload(file, b"data").unwrap();
         vfs.add_dir_entry(tmp, "note", file).unwrap();
@@ -6165,7 +6165,7 @@ mod tests {
         let handle_id = vfs.alloc_handle(Handle {
             kind: HandleKind::MemFile {
                 inode: file,
-                path: "/tmp/note".to_string(),
+                path: "/work/note".to_string(),
             },
             pos: 0,
             flags: OpenFlags::READ,
@@ -6173,10 +6173,10 @@ mod tests {
             capability: FilesystemCapability::new(23, FilesystemRights::read_only()),
         });
 
-        vfs.rename_path("/tmp/note", "/tmp/renamed").unwrap();
+        vfs.rename_path("/work/note", "/work/renamed").unwrap();
 
         match &vfs.get_handle_mut(handle_id).unwrap().kind {
-            HandleKind::MemFile { path, .. } => assert_eq!(path, "/tmp/renamed"),
+            HandleKind::MemFile { path, .. } => assert_eq!(path, "/work/renamed"),
             other => panic!("unexpected handle kind: {:?}", other),
         }
     }
@@ -6187,7 +6187,7 @@ mod tests {
         vfs.init();
 
         let tmp = vfs.alloc_inode(InodeKind::Directory, 0o755);
-        vfs.add_dir_entry(1, "tmp", tmp).unwrap();
+        vfs.add_dir_entry(1, "work", tmp).unwrap();
         vfs.set_directory_capability_by_inode(
             tmp,
             FilesystemCapability::with_quota(

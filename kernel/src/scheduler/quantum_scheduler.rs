@@ -119,11 +119,9 @@ fn kernel_thread_frame_top(
     stack_top: usize,
     required_bytes: usize,
 ) -> Result<usize, &'static str> {
-    debug_assert_eq!(
-        stack_top & 0xF,
-        0,
-        "kernel_thread_frame_top requires 16-byte aligned stack_top"
-    );
+    if stack_top & 0xF != 0 {
+        return Err("Stack address invalid");
+    }
     let frame_top = stack_top
         .checked_sub(required_bytes)
         .ok_or("Stack address invalid")?;
@@ -1206,11 +1204,20 @@ impl QuantumScheduler {
     }
 
     pub fn wake_process(&mut self, pid: Pid) -> Result<bool, &'static str> {
-        if let Some(ref mut info) = self.processes[pid.0 as usize] {
-            if matches!(
-                info.process.state,
-                ProcessState::Blocked | ProcessState::WaitingOnChannel
-            ) {
+        let idx = pid.0 as usize;
+        if idx >= self.processes.len() {
+            return Ok(false);
+        }
+
+        let should_wake = matches!(
+            self.processes[idx]
+                .as_ref()
+                .map(|info| info.process.state),
+            Some(ProcessState::Blocked | ProcessState::WaitingOnChannel)
+        );
+        if should_wake {
+            self.remove_from_wait_queues(pid);
+            if let Some(ref mut info) = self.processes[idx] {
                 info.process.state = ProcessState::Ready;
                 let priority = info.process.priority;
                 self.enqueue_ready(pid, priority);
@@ -1232,7 +1239,7 @@ impl QuantumScheduler {
             {
                 if let Some(pid) = self.wait_queues[i].waiting.pop_front() {
                     // Move to ready queue
-                    if let Some(ref mut info) = self.processes[pid.0 as usize] {
+                    if let Some(ref mut info) = self.processes.get_mut(pid.0 as usize).and_then(Option::as_mut) {
                         info.process.state = ProcessState::Ready;
                         let priority = info.process.priority;
                         self.enqueue_ready(pid, priority);
@@ -1261,7 +1268,7 @@ impl QuantumScheduler {
                 && self.wait_queues[i].wake_time == 0
             {
                 while let Some(pid) = self.wait_queues[i].waiting.pop_front() {
-                    if let Some(ref mut info) = self.processes[pid.0 as usize] {
+                    if let Some(ref mut info) = self.processes.get_mut(pid.0 as usize).and_then(Option::as_mut) {
                         info.process.state = ProcessState::Ready;
                         let priority = info.process.priority;
                         self.enqueue_ready(pid, priority);
@@ -4130,11 +4137,12 @@ mod tests {
         );
     }
 
-    #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "kernel_thread_frame_top requires 16-byte aligned stack_top")]
     fn kernel_thread_frame_top_requires_aligned_stack_top() {
-        let _ = kernel_thread_frame_top(0x2000, 0x2fff, 16);
+        assert_eq!(
+            kernel_thread_frame_top(0x2000, 0x2fff, 16),
+            Err("Stack address invalid")
+        );
     }
 
     #[test]
