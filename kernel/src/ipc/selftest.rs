@@ -233,7 +233,10 @@ fn record_case(
             report.passed += 1;
             (true, "ok")
         }
-        Err(detail) => (false, detail),
+        Err(detail) => {
+            crate::serial_println!("[ipc-selftest] case={} detail={}", name, detail);
+            (false, detail)
+        }
     };
     report.cases[idx] = IpcSelftestCase {
         name,
