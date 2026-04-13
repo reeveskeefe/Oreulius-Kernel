@@ -164,6 +164,8 @@ impl CapabilityTaskGuard {
     fn new(pid: ProcessId) -> Self {
         let manager = crate::capability::capability_manager();
         manager.deinit_task(pid);
+        crate::security::security().terminate_process(pid);
+        crate::security::security().init_process(pid);
         manager.init_task(pid);
         Self { pid }
     }
@@ -171,6 +173,7 @@ impl CapabilityTaskGuard {
 
 impl Drop for CapabilityTaskGuard {
     fn drop(&mut self) {
+        crate::security::security().terminate_process(self.pid);
         crate::capability::capability_manager().deinit_task(self.pid);
     }
 }
