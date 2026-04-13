@@ -8241,6 +8241,15 @@ fn cmd_formal_verify() {
         vga::print_str(" / ");
         print_number(ipc_report.total);
         vga::print_str(" cases)\n");
+        for case in ipc_report.cases.iter() {
+            if !case.passed && !case.name.is_empty() {
+                vga::print_str("  - ");
+                vga::print_str(case.name);
+                vga::print_str(": ");
+                vga::print_str(case.detail);
+                vga::print_str("\n");
+            }
+        }
         return;
     }
 
