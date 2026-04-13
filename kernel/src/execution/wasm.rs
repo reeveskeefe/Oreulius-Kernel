@@ -23835,8 +23835,8 @@ pub fn formal_service_pointer_conformance_self_check(
 }
 
 pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
-    let provider = ProcessId(240);
-    let consumer = ProcessId(241);
+    let provider = ProcessId(100);
+    let consumer = ProcessId(101);
     reset_self_check_process(provider);
     reset_self_check_process(consumer);
 
@@ -24002,7 +24002,7 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
 }
 
 pub fn temporal_hostpath_self_check() -> Result<(), &'static str> {
-    let pid = ProcessId(242);
+    let pid = ProcessId(102);
     reset_self_check_process(pid);
 
     const PATH: &str = "/temporal-selfcheck";
