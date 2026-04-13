@@ -139,9 +139,9 @@ pub fn enter_runtime() -> ! {
     let _scheduler_irq_flags = unsafe { crate::scheduler::scheduler_platform::irq_save_disable() };
     uart_log_line("[A64] bring-up complete; starting shared scheduler");
 
-    crate::scheduler::quantum_scheduler::init();
+    crate::scheduler::slice_scheduler::init();
     let launch = {
-        let mut sched = crate::scheduler::quantum_scheduler::scheduler().lock();
+        let mut sched = crate::scheduler::slice_scheduler::scheduler().lock();
         if super::aarch64_virt::discovered_virtio_net_base().is_some() {
             if let Err(e) = sched.add_kernel_thread(
                 network_scheduler_task,
@@ -166,7 +166,7 @@ pub fn enter_runtime() -> ! {
         }
         sched.prepare_start_locked()
     };
-    crate::scheduler::quantum_scheduler::QuantumScheduler::launch_prepared_context(
+    crate::scheduler::slice_scheduler::SliceScheduler::launch_prepared_context(
         launch.0, launch.1, launch.2,
     )
 }

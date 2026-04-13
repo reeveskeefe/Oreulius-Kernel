@@ -268,6 +268,6 @@ The syscall entry stubs push a `SavedRegisters` frame onto the kernel stack befo
 
 ## `usermode.rs` — Privilege Transition Tests
 
-Provides `enter_user_mode_test()` and `run_fork_test()` helpers used from the kernel shell to validate Ring-3 entry and process forking. These are debug/validation entry points — not part of the production process creation path (which goes through `process_manager().create()` + `quantum_scheduler::init()`).
+Provides `enter_user_mode_test()` and `run_fork_test()` helpers used from the kernel shell to validate Ring-3 entry and process forking. These are debug/validation entry points — not part of the production process creation path (which goes through `process_manager().create()` + `slice_scheduler::init()`).
 
 `set_current_wasm_module(id)` / `current_wasm_module()` track which WASM module the current process is executing in, used by the WASM sandbox to correctly restore context on WASI syscall return.

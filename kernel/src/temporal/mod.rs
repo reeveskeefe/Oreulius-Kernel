@@ -3076,7 +3076,7 @@ fn temporal_apply_scheduler_payload(
     if payload[2] != TEMPORAL_SCHEDULER_EVENT_STATE {
         return Err("temporal scheduler event unsupported");
     }
-    crate::scheduler::quantum_scheduler::temporal_apply_scheduler_payload(payload)
+    crate::scheduler::slice_scheduler::temporal_apply_scheduler_payload(payload)
 }
 
 fn temporal_apply_replay_manager_payload(

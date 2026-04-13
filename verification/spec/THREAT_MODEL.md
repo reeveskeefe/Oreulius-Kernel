@@ -18,7 +18,7 @@ boundary of this model:
    tokens without going through the kernel's `cap_grant` path (e.g. by
    writing directly to capability tables or manipulating raw integer PIDs).
 5. **Timing channels** (partial) — adversaries may attempt to infer secret
-   scheduler state via timing of context switches or quantum exhaustion, to
+   scheduler state via timing of context switches or slice exhaustion, to
    the extent measurable from user space.
 
 The adversary is **not** assumed to have:

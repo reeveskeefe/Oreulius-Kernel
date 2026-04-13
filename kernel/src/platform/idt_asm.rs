@@ -573,8 +573,8 @@ pub extern "C" fn rust_exception_handler(frame: *const InterruptFrame) {
     let frame = unsafe { &mut *(frame as *const _ as *mut InterruptFrame) };
 
     if frame.int_no == Exception::DeviceNotAvailable as u32 {
-        // Quantum scheduler is the primary advanced scheduler in Oreulius
-        crate::scheduler::quantum_scheduler::handle_fpu_trap();
+        // Slice scheduler is the primary advanced scheduler in Oreulius
+        crate::scheduler::slice_scheduler::handle_fpu_trap();
         return;
     }
 
@@ -726,7 +726,7 @@ pub extern "C" fn rust_irq_handler(frame: *const InterruptFrame) {
                 // }
 
                 if !jit_user_active && !jit_timed_out {
-                    crate::scheduler::quantum_scheduler::on_timer_tick();
+                    crate::scheduler::slice_scheduler::on_timer_tick();
                 }
                 return;
             }

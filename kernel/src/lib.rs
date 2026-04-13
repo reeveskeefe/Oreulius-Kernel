@@ -208,7 +208,7 @@ mod tests {
 
 /// Arch-neutral timer tick hook.
 ///
-/// On x86/x86_64 this feeds the existing quantum scheduler tick path.
+/// On x86/x86_64 this feeds the existing slice scheduler tick path.
 /// On AArch64 bring-up it routes to the AArch64 runtime hook until the
 /// full scheduler module is ported.
 #[allow(dead_code)]
@@ -216,13 +216,13 @@ mod tests {
 pub(crate) fn kernel_timer_tick_hook() {
     #[cfg(target_arch = "aarch64")]
     {
-        crate::scheduler::quantum_scheduler::on_timer_tick();
+        crate::scheduler::slice_scheduler::on_timer_tick();
         crate::arch::aarch64::aarch64_virt::scheduler_timer_tick_hook();
     }
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-        crate::scheduler::quantum_scheduler::on_timer_tick();
+        crate::scheduler::slice_scheduler::on_timer_tick();
     }
 
     // Pump compositor input + present dirty windows on every tick.

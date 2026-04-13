@@ -78,7 +78,7 @@ impl IpcService {
                         return channel.reject_send(refusal, capability, &send_msg);
                     }
                     SendDecision::Defer(IpcDefer::WaitForCapacity) => {
-                        match crate::scheduler::quantum_scheduler::prepare_block_on(
+                        match crate::scheduler::slice_scheduler::prepare_block_on(
                             channel.capacity_wait_addr(),
                             crate::scheduler::process::ProcessState::WaitingOnChannel,
                         ) {
@@ -105,7 +105,7 @@ impl IpcService {
                 }
             };
 
-            crate::scheduler::quantum_scheduler::commit_block(plan);
+            crate::scheduler::slice_scheduler::commit_block(plan);
         }
     }
 
@@ -132,7 +132,7 @@ impl IpcService {
                         return channel.reject_recv(refusal, capability)
                     }
                     RecvDecision::Defer(IpcDefer::WaitForMessage) => {
-                        match crate::scheduler::quantum_scheduler::prepare_block_on(
+                        match crate::scheduler::slice_scheduler::prepare_block_on(
                             channel.message_wait_addr(),
                             crate::scheduler::process::ProcessState::WaitingOnChannel,
                         ) {
@@ -151,7 +151,7 @@ impl IpcService {
                 }
             };
 
-            crate::scheduler::quantum_scheduler::commit_block(plan);
+            crate::scheduler::slice_scheduler::commit_block(plan);
         }
     }
 

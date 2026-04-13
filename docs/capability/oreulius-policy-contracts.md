@@ -1,6 +1,5 @@
 # Oreulius Intensional Kernel: Policy-as-Contracts
 
-> **Status:** Fully implemented. WASM host ABI IDs 121–124. Core: `kernel/src/execution/wasm.rs` (`POLICY_STORE`, `run_policy_contract`). OPOL stub format fully deterministic. Full WASM policy contracts run in a strict fail-closed sandbox and must export `policy_check(ctx_ptr, ctx_len) -> i32` without importing host functions. SDK: `wasm/sdk/src/policy.rs`.
 
 ---
 

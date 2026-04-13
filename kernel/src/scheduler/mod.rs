@@ -9,7 +9,7 @@ pub mod process;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod process_asm;
 pub mod process_platform;
-pub mod quantum_scheduler;
+pub mod slice_scheduler;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod scheduler;
 pub mod scheduler_platform;

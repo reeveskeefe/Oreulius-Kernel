@@ -39,12 +39,12 @@ The implementation was constrained by the following objectives:
 
 This document covers CapNet as implemented in:
 
-- `kernel/src/capnet.rs`
-- `kernel/src/capability.rs`
-- `kernel/src/netstack.rs`
-- `kernel/src/net_reactor.rs`
-- `kernel/src/enclave.rs`
-- `kernel/src/commands.rs`
+- `kernel/src/net/capnet/mod.rs` (and submodules: `session.rs`, `encoding.rs`, `audit.rs`, `metrics.rs`, `persistence.rs`)
+- `kernel/src/capability/mod.rs` (remote lease table, `install_remote_lease_from_capnet_token`)
+- `kernel/src/net/netstack.rs`
+- `kernel/src/net/net_reactor.rs`
+- `kernel/src/security/enclave.rs`
+- `kernel/src/shell/commands.rs`
 - `kernel/fuzz/*`
 - `.github/workflows/capnet-regression.yml`
 
@@ -119,7 +119,7 @@ where:
 - Physical compromise of trusted endpoints.
 - Full byzantine multi-party consensus.
 - Side-channel completeness beyond constant-time comparison and bounded-state behavior.
-- Post-quantum cryptographic claims.
+- PQC-resistant (lattice/hash-based cryptographic hardness) claims.
 
 ---
 

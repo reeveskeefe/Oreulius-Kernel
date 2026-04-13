@@ -95,15 +95,15 @@ pub fn fg_last_job() -> bool {
         for i in (0..JOB_TABLE_MAX).rev() {
             if let Some(j) = JOB_TABLE[i] {
                 // Use the public scheduler() accessor to avoid accessing the
-                // private QUANTUM_SCHEDULER static directly.
+                // private SLICE_SCHEDULER static directly.
                 {
-                    let _ = crate::scheduler::quantum_scheduler::scheduler()
+                    let _ = crate::scheduler::slice_scheduler::scheduler()
                         .lock()
                         .wake_one(j.pid.0 as usize);
                     // If the process is still Blocked (not on a wait queue),
                     // use the public enqueue_ready_pid free function.
                     let still_blocked = {
-                        let sched = crate::scheduler::quantum_scheduler::scheduler().lock();
+                        let sched = crate::scheduler::slice_scheduler::scheduler().lock();
                         sched
                             .get_process_info(j.pid)
                             .map(|info| info.process.state == crate::scheduler::process::ProcessState::Blocked)
@@ -111,12 +111,12 @@ pub fn fg_last_job() -> bool {
                     };
                     if still_blocked {
                         {
-                            let mut sched = crate::scheduler::quantum_scheduler::scheduler().lock();
+                            let mut sched = crate::scheduler::slice_scheduler::scheduler().lock();
                             if let Some(info_mut) = sched.get_process_info_mut(j.pid) {
                                 info_mut.process.state = crate::scheduler::process::ProcessState::Ready;
                                 let priority = info_mut.process.priority;
                                 drop(sched);
-                                crate::scheduler::quantum_scheduler::enqueue_ready_pid(j.pid, priority);
+                                crate::scheduler::slice_scheduler::enqueue_ready_pid(j.pid, priority);
                             }
                         }
                     }
@@ -666,7 +666,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
                 return;
             }
             if have_user_frame {
-                match crate::scheduler::quantum_scheduler::handle_current_user_page_fault(fault_addr, error) {
+                match crate::scheduler::slice_scheduler::handle_current_user_page_fault(fault_addr, error) {
                     Ok(true) => {
                         PF_LOOP_REPEAT_COUNT.store(0, Ordering::Relaxed);
                         return;
@@ -678,7 +678,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
                             error,
                             reason,
                         );
-                        crate::scheduler::quantum_scheduler::terminate_current_from_fault();
+                        crate::scheduler::slice_scheduler::terminate_current_from_fault();
                     }
                     Ok(false) => {}
                 }
@@ -767,7 +767,7 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
         if irq == 0 {
             crate::scheduler::pit::tick();
             crate::execution::wasm::on_timer_tick();
-            crate::scheduler::quantum_scheduler::on_timer_tick();
+            crate::scheduler::slice_scheduler::on_timer_tick();
             if !frame.is_null() {
                 let f = unsafe { &mut *frame };
                 if (f.cs & 0x3) == 0x3 {
@@ -1694,7 +1694,7 @@ fn serial_exec_command(cmd: &str) -> bool {
             Ok(()) => shell_println!("[X64] vmtest ok"),
             Err(e) => shell_println!("[X64] vmtest failed: {}", e),
         },
-        "sharedmmap" => match crate::scheduler::quantum_scheduler::selftest_shared_file_mapping_live() {
+        "sharedmmap" => match crate::scheduler::slice_scheduler::selftest_shared_file_mapping_live() {
             Ok((phys_a, phys_b, observed)) => shell_println!(
                 "[X64] sharedmmap ok: phys_a={:#x} phys_b={:#x} observed={:#x}",
                 phys_a,
@@ -2097,7 +2097,7 @@ extern "C" fn network_scheduler_task() -> ! {
 extern "C" fn idle_scheduler_task() -> ! {
     crate::arch::enable_interrupts();
     loop {
-        crate::scheduler::quantum_scheduler::yield_now();
+        crate::scheduler::slice_scheduler::yield_now();
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
         }
@@ -2140,7 +2140,7 @@ extern "C" fn init_wasm_task() -> ! {
     loop {
         crate::execution::wasm::drain_pending_spawns();
         crate::execution::wasm::tick_background_threads();
-        crate::scheduler::quantum_scheduler::yield_now();
+        crate::scheduler::slice_scheduler::yield_now();
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
         }
@@ -2200,8 +2200,8 @@ fn init_shared_runtime() {
     crate::capability::init();
     crate::serial_println!("[X64] init console service...");
     crate::shell::console_service::init();
-    crate::serial_println!("[X64] init quantum scheduler...");
-    crate::scheduler::quantum_scheduler::init();
+    crate::serial_println!("[X64] init slice scheduler...");
+    crate::scheduler::slice_scheduler::init();
     crate::serial_println!("[X64] init pci/network...");
     {
         let mut pci_scanner = crate::drivers::x86::pci::PciScanner::new();
@@ -2353,7 +2353,7 @@ pub fn enter_runtime() -> ! {
     crate::serial_println!("[X64] Runtime diagnostics complete; starting shared scheduler");
 
     {
-        let mut sched = crate::scheduler::quantum_scheduler::scheduler().lock();
+        let mut sched = crate::scheduler::slice_scheduler::scheduler().lock();
         if let Err(e) = sched.add_kernel_thread(
             shell_scheduler_task,
             crate::scheduler::process::ProcessPriority::Normal,
@@ -2383,7 +2383,7 @@ pub fn enter_runtime() -> ! {
             crate::arch::halt_loop();
         }
     }
-    crate::scheduler::quantum_scheduler::QuantumScheduler::start_scheduling()
+    crate::scheduler::slice_scheduler::SliceScheduler::start_scheduling()
 }
 
 pub fn wait_for_ticks(min_delta: u64, max_spin_hlt: usize) -> bool {
@@ -2413,7 +2413,7 @@ pub fn run_serial_shell() -> ! {
     let mut last_heartbeat = crate::scheduler::pit::get_ticks();
 
     loop {
-        crate::scheduler::quantum_scheduler::maybe_reschedule();
+        crate::scheduler::slice_scheduler::maybe_reschedule();
         crate::execution::wasm::drain_pending_spawns();
         crate::execution::wasm::tick_background_threads();
 
@@ -2451,7 +2451,7 @@ pub fn run_serial_shell() -> ! {
                     shell_println!("^Z");
                     let suspended = unsafe {
                         if let Some(fg_pid) = FOREGROUND_PID.take() {
-                            let mut sched = crate::scheduler::quantum_scheduler::scheduler().lock();
+                            let mut sched = crate::scheduler::slice_scheduler::scheduler().lock();
                             if let Some(info) = sched.get_process_info_mut(fg_pid) {
                                 info.process.state = crate::scheduler::process::ProcessState::Blocked;
                             }

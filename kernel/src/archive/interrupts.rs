@@ -87,7 +87,7 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
         // Sets CR0.TS so that if the preempted process re-enters FP code after
         // iretq it will fault cleanly into handle_fpu_trap() rather than silently
         // corrupting state.
-        crate::scheduler::quantum_scheduler::scheduler()
+        crate::scheduler::slice_scheduler::scheduler()
             .lock()
             .guard_irq_fpu_state();
 
@@ -119,7 +119,7 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
 /// Fired by the CPU when CR0.TS = 1 and a process executes an FP or SIMD
 /// instruction.  This is the entry point for the §5.1 lazy FPU context switch.
 ///
-/// Delegates to [`QuantumScheduler::handle_fpu_trap`] which:
+/// Delegates to [`SliceScheduler::handle_fpu_trap`] which:
 ///   1. Clears the trap (CLTS on x86_64 / re-enables FPEN on AArch64).
 ///   2. Saves the previous FPU owner's state into its `ExtFpuState` buffer.
 ///   3. Restores (or zero-initialises) the current process's FPU state.
@@ -131,7 +131,7 @@ extern "x86-interrupt" fn device_not_available_handler(_stack_frame: InterruptSt
     // so no partial FP write has occurred and no FP context is live in the
     // CPU's register file for the faulting instruction.
     unsafe {
-        crate::scheduler::quantum_scheduler::scheduler()
+        crate::scheduler::slice_scheduler::scheduler()
             .lock()
             .handle_fpu_trap();
     }

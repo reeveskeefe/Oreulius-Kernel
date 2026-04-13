@@ -62,5 +62,5 @@ Qed.
    - kernel/src/scheduler/scheduler_platform.rs::switch_context
    - kernel/src/asm/aarch64_scheduler.S::aarch64_sched_switch_context
    - kernel/src/asm/aarch64_scheduler.S::aarch64_sched_load_context
-   - kernel/src/scheduler/quantum_scheduler.rs::launch_prepared_context
+   - kernel/src/scheduler/slice_scheduler.rs::launch_prepared_context
 *)

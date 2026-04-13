@@ -1230,7 +1230,7 @@ pub fn validate_kernel_bootstrap() -> Result<(), &'static str> {
 }
 
 /// Legacy-x86 scheduler bootstrap normalizes the shared process backend to a
-/// clean pre-task state before the quantum scheduler takes over.
+/// clean pre-task state before the slice scheduler takes over.
 pub fn bootstrap_kernel_runtime() -> Result<(), &'static str> {
     let init_pid = Pid::new(1);
     let mut scheduler = PROCESS_MANAGER.scheduler.lock();

@@ -226,7 +226,7 @@ These are part of the project’s technical depth, but they are not the best pla
 | Observer / event bus | Host-visible capability event subscriptions with filtered delivery (IDs 106–108). | Audit and reactive policy without polling loops or extra syscalls. |
 | Temporal capability checkpoints | Capabilities carry their own temporal checkpoint; rollback rewinds both state and access rights (IDs 116–120). | A revocation that happens after a checkpoint can be replayed rather than silently accepted. |
 | Policy contracts | Named policy objects bind to capabilities and are evaluated inline on every access (IDs 121–124). | Runtime policy changes take effect without recompiling the kernel or restarting workloads. |
-| Quantum-inspired capability entanglement | Pairs or groups of capabilities are entangled; revoking any member automatically revokes all co-entangled members (IDs 125–128). | Authority collapse is atomic across capability groups, eliminating partial-revocation races. |
+| Collapse-linked capability entanglement | Pairs or groups of capabilities are entangled; revoking any member automatically revokes all co-entangled members (IDs 125–128). | Authority collapse is atomic across capability groups, eliminating partial-revocation races. |
 | Runtime capability graph verification | Every delegation is recorded in a live DAG; cycles and rights-escalation are detected and rejected before the transfer is committed (IDs 129–131). | The delegation graph is auditable at runtime; violations are counted and logged, not silently accepted. |
 
 ## Core Capabilities
@@ -314,7 +314,7 @@ Oreulius is cross-compatible at the boot/runtime abstraction layer across `i686`
 |---|---|---|
 | Capability manager | Fine-grained authority definition and transfer | `cap-list`, `cap-arch`, `cap-test-*` |
 | Security + intent graph | Audit stream, anomaly tracking, predictive policy | `security-*` commands |
-| Process + scheduler | Preemptive scheduling, process lifecycle, context handoff | `spawn`, `ps`, `kill`, `sched-stats`, `quantum-stats` |
+| Process + scheduler | Preemptive scheduling, process lifecycle, context handoff | `spawn`, `ps`, `kill`, `sched-stats`, `slice-stats` |
 | IPC + registry | Typed channels and service discovery | `ipc-*`, `svc-*`, `intro-demo` |
 | WASM runtime + JIT | Sandboxed execution + optional compilation path | `wasm-*`, `svcptr-*` |
 | Temporal service | Versioned object history, branch/merge/rollback | `temporal-*` |
@@ -567,7 +567,7 @@ Use `help` in-kernel for the exhaustive, source-of-truth command list. The taxon
 
 ### Process And Scheduling
 
-- `spawn`, `ps`, `kill`, `yield`, `whoami`, `sched-stats`, `quantum-stats`, `sched-net-soak`
+- `spawn`, `ps`, `kill`, `yield`, `whoami`, `sched-stats`, `slice-stats`, `sched-net-soak`
 
 ### Filesystem And VFS
 

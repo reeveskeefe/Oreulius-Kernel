@@ -100,7 +100,7 @@
 
   <rect x="755" y="58" width="150" height="44" rx="10" fill="#f3f4f6" stroke="#6b7280" class="participant-box"/>
   <text x="830" y="76" text-anchor="middle" class="participant-label">SCHED</text>
-  <text x="830" y="92" text-anchor="middle" class="participant-sub">QuantumScheduler</text>
+  <text x="830" y="92" text-anchor="middle" class="participant-sub">SliceScheduler</text>
 
   <rect x="990" y="58" width="150" height="44" rx="10" fill="#eefbf5" stroke="#10b981" class="participant-box"/>
   <text x="1065" y="76" text-anchor="middle" class="participant-label">R</text>

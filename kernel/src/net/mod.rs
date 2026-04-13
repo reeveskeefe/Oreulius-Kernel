@@ -481,7 +481,7 @@ impl NetworkService {
                         if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
                             return Err(NetworkError::TcpTimeout);
                         }
-                        crate::scheduler::quantum_scheduler::yield_now();
+                        crate::scheduler::slice_scheduler::yield_now();
                         continue;
                     }
                     sent_total = sent_total.saturating_add(sent_now);
@@ -492,7 +492,7 @@ impl NetworkService {
                         if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
                             return Err(NetworkError::TcpTimeout);
                         }
-                        crate::scheduler::quantum_scheduler::yield_now();
+                        crate::scheduler::slice_scheduler::yield_now();
                         continue;
                     }
                     return Err(NetworkError::TcpSendFailed);
@@ -636,7 +636,7 @@ impl NetworkService {
                 if headers_done {
                     break;
                 }
-                crate::scheduler::quantum_scheduler::yield_now();
+                crate::scheduler::slice_scheduler::yield_now();
                 continue;
             }
 
@@ -687,7 +687,7 @@ impl NetworkService {
                     break;
                 }
             }
-            crate::scheduler::quantum_scheduler::yield_now();
+            crate::scheduler::slice_scheduler::yield_now();
         }
 
         if !headers_done {

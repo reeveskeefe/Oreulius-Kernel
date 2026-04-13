@@ -26,7 +26,7 @@ Module compilation is architecture-conditional:
 | File | Compiled When | Role |
 |---|---|---|
 | `commands.rs` | `not(aarch64)` | Full x86-64 command set (~13,000 lines) |
-| `advanced_commands.rs` | `not(aarch64)` | Quantum scheduler / allocator diagnostic commands |
+| `advanced_commands.rs` | `not(aarch64)` | Slice scheduler / allocator diagnostic commands |
 | `commands_aarch64.rs` | `aarch64` | Reduced command set for the `aarch64-virt` QEMU target |
 | `commands_shared.rs` | All architectures | Shared VFS and filesystem commands used by both targets |
 | `terminal.rs` | `not(aarch64)` | Virtual terminal multiplexer (6 terminals, VGA-backed) |
@@ -49,7 +49,7 @@ pub fn execute(input: &str)
 The function splits input on whitespace, matches the first token against a large `match` arm, and calls the appropriate `cmd_*` function. Unrecognised input prints `unknown command: <input>`. All output goes through `vga::print_str` or the `VgaWriter` implementation of `core::fmt::Write`.
 
 ### `advanced_commands.rs`
-An addendum file hosting diagnostic commands for the quantum scheduler, memory allocator, and related kernel hardening features. Exported as `pub fn` and called from `commands.rs`'s dispatch table.
+An addendum file hosting diagnostic commands for the slice scheduler, memory allocator, and related kernel hardening features. Exported as `pub fn` and called from `commands.rs`'s dispatch table.
 
 ### `commands_shared.rs`
 Cross-architecture VFS and filesystem command handlers. Used by both the x86-64 shell and the AArch64 shell. Implements `parse_u64_auto` (hex and decimal), `write_line`, and the full VFS command surface (`vfs-mkdir`, `vfs-ls`, `vfs-open`, `vfs-read`, `vfs-write`, `vfs-close`).
@@ -221,7 +221,7 @@ The full command surface is grouped by subsystem:
 
 | Command | Description |
 |---|---|
-| `quantum-stats` | Quantum scheduler entropy and scheduling statistics |
+| `slice-stats` | Slice scheduler entropy and scheduling statistics |
 | `sched-entropy-bench` | Scheduler entropy source benchmark |
 | `alloc-stats` | Heap allocator utilization and fragmentation |
 | `leak-check` | Check for detected heap allocation leaks |

@@ -153,7 +153,7 @@ fn build_current_bundle() -> FleetAttestationBundle {
     let slot_hash = read_active_slot_hash();
 
     let sched_switches: u64 = {
-        let overview = crate::scheduler::quantum_scheduler::scheduler()
+        let overview = crate::scheduler::slice_scheduler::scheduler()
             .lock()
             .snapshot_overview();
         overview.total_switches
@@ -652,7 +652,7 @@ pub fn cmd_fleet_diag() {
 
     // --- Scheduler overview ---
     vga::print_str("[Scheduler]\n");
-    let overview = crate::scheduler::quantum_scheduler::scheduler()
+    let overview = crate::scheduler::slice_scheduler::scheduler()
         .lock()
         .snapshot_overview();
     vga::print_str("  Total processes         : ");

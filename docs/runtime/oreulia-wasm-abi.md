@@ -75,7 +75,7 @@ The following host functions are available to Wasm modules:
 - `oreulius_thread_spawn(func_idx: i32, arg: i32) -> tid`: Spawn a cooperative WASM thread.
 - `oreulius_thread_join(tid: i32) -> i32`: Join a cooperative WASM thread.
 - `oreulius_thread_id() -> i32`: Return the current cooperative WASM thread ID.
-- `oreulius_thread_yield()`: Yield the current CPU quantum.
+- `oreulius_thread_yield()`: Yield the current CPU time slice.
 - `oreulius_thread_exit(code: i32)`: Exit the current cooperative WASM thread.
 - `proc_yield()`: Voluntarily yield the CPU.
 - `proc_sleep(ticks: i32)`: Sleep for N PIT ticks (roughly milliseconds).

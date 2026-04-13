@@ -71,7 +71,7 @@ The `execution` module is the runtime heart of Oreulius. It provides everything 
 
 ## ELF Loader (`elf.rs`)
 
-The ELF loader maps position-independent and fixed-address ELF binaries into a fresh `AddressSpace` and hands the entry point and user stack pointer to the quantum scheduler. Both ELF32 (x86/i686) and ELF64 (x86-64 and AArch64) formats are supported with identical logic, differing only in header widths.
+The ELF loader maps position-independent and fixed-address ELF binaries into a fresh `AddressSpace` and hands the entry point and user stack pointer to the slice scheduler. Both ELF32 (x86/i686) and ELF64 (x86-64 and AArch64) formats are supported with identical logic, differing only in header widths.
 
 ### ELF Constants
 
@@ -143,8 +143,8 @@ pub struct LoadedElf64 {
 |---|---|
 | `load_elf32(bytes)` → `Result<LoadedElf>` | Parse and load an ELF32 binary |
 | `load_elf64(bytes)` → `Result<LoadedElf64>` | Parse and load an ELF64 binary |
-| `spawn_elf_process(name, bytes)` → `Result<()>` | Load ELF32 and register with quantum scheduler |
-| `spawn_elf64_process(name, bytes)` → `Result<()>` | Load ELF64 and register with quantum scheduler |
+| `spawn_elf_process(name, bytes)` → `Result<()>` | Load ELF32 and register with slice scheduler |
+| `spawn_elf64_process(name, bytes)` → `Result<()>` | Load ELF64 and register with slice scheduler |
 | `spawn_elf_process_any(name, bytes)` → `Result<()>` | Auto-detect EI_CLASS and dispatch to 32 or 64 branch |
 | `name_from_path(path)` → `String` | Extract basename from a filesystem path |
 
@@ -1012,7 +1012,7 @@ Complete table of all numeric constants affecting execution behaviour:
 
 ### Scheduler
 
-`spawn_elf_process_any` / `spawn_elf_process` / `spawn_elf64_process` all call `quantum_scheduler::scheduler().lock().add_user_process(proc, Box::new(space), entry, stack)` after loading the binary. The ELF loader constructs the `AddressSpace`; the scheduler takes ownership.
+`spawn_elf_process_any` / `spawn_elf_process` / `spawn_elf64_process` all call `slice_scheduler::scheduler().lock().add_user_process(proc, Box::new(space), entry, stack)` after loading the binary. The ELF loader constructs the `AddressSpace`; the scheduler takes ownership.
 
 `wasm_runtime().tick_thread_pools()` is called from `on_timer_tick()` which is invoked by the kernel timer ISR. This drives cooperative thread scheduling inside WASM instances without blocking the kernel scheduler.
 
@@ -1337,25 +1337,25 @@ Let $\mathcal{T} = \{T_0, \ldots, T_{N-1}\}$ be the set of $N \leq$ `MAX_WASM_TH
 
 > *If a thread $T_i$ executes `consume_fuel(n)` and $\phi_i < n$, then $T_i$ transitions to $\text{Runnable}$ and is descheduled.*
 
-**Proof.** `consume_fuel(n)` checks `phi_i >= n`. If false, returns `false`. The calling WASM execution loop checks the return value: on `false`, it calls `yield_now()`, which sets $\sigma_i \leftarrow \text{Runnable}$ and exits the current execution quantum. $\square$
+**Proof.** `consume_fuel(n)` checks `phi_i >= n`. If false, returns `false`. The calling WASM execution loop checks the return value: on `false`, it calls `yield_now()`, which sets $\sigma_i \leftarrow \text{Runnable}$ and exits the current execution timeslice. $\square$
 
 #### Theorem 7.3 — Cooperative Progress
 
 > *If there exists at least one thread in state $\text{Runnable}$, then `tick_all_pools()` makes forward progress: at least one instruction is executed.*
 
-**Proof.** `tick_all_pools()` calls `on_timer_tick()` on each registered pool. Each pool's `on_timer_tick()` calls `next_runnable()`, which returns the first thread with $\sigma_i \in \{\text{Running}, \text{Runnable}\}$. If such a thread exists, the pool assigns it a new quantum of `DEFAULT_THREAD_FUEL` instructions and executes at least one instruction before fuel is checked. $\square$
+**Proof.** `tick_all_pools()` calls `on_timer_tick()` on each registered pool. Each pool's `on_timer_tick()` calls `next_runnable()`, which returns the first thread with $\sigma_i \in \{\text{Running}, \text{Runnable}\}$. If such a thread exists, the pool assigns it a new timeslice of `DEFAULT_THREAD_FUEL` instructions and executes at least one instruction before fuel is checked. $\square$
 
-#### Lemma 7.4 — No Starvation within a Quantum
+#### Lemma 7.4 — No Starvation within a Slice
 
 > *A thread $T_i$ that is $\text{Runnable}$ at tick $t$ will become $\text{Running}$ within at most `MAX_WASM_THREADS` = 32 subsequent ticks, absent all threads being Joining or Finished.*
 
-**Proof.** The scheduler scans threads in round-robin order starting from a rotating index. Each tick, at most one thread holds $\text{Running}$ state. After a thread yields, the scan index advances. In the worst case, all 31 other threads execute one quantum before returning to $T_i$. Since each quantum executes in finite time by Lemma 7.2, $T_i$ obtains the CPU within 32 ticks. $\square$
+**Proof.** The scheduler scans threads in round-robin order starting from a rotating index. Each tick, at most one thread holds $\text{Running}$ state. After a thread yields, the scan index advances. In the worst case, all 31 other threads execute one timeslice before returning to $T_i$. Since each timeslice executes in finite time by Lemma 7.2, $T_i$ obtains the CPU within 32 ticks. $\square$
 
 #### Theorem 7.5 — Thread Pool Termination
 
 > *If all spawned threads have finite WASM programs (no infinite loops), then `drain_instance_background_threads(id, timeout_ticks)` terminates the pool within $\tau \leq N \cdot K / F$ ticks, where $K$ is the total instruction count across all threads and $F = $`DEFAULT_THREAD_FUEL`.*
 
-**Proof.** Each thread executes at most $K_i$ instructions (finite by assumption). Each tick grants one thread one quantum of $F$ instructions. Total ticks needed: $\sum_i \lceil K_i / F \rceil \leq N \cdot \lceil K / (N \cdot F) \rceil \cdot N \leq N \cdot K / F + N$. For the timeout $\tau = N \cdot K / F$ this is satisfied with at most $N$ ticks of slack. $\square$
+**Proof.** Each thread executes at most $K_i$ instructions (finite by assumption). Each tick grants one thread one timeslice of $F$ instructions. Total ticks needed: $\sum_i \lceil K_i / F \rceil \leq N \cdot \lceil K / (N \cdot F) \rceil \cdot N \leq N \cdot K / F + N$. For the timeout $\tau = N \cdot K / F$ this is satisfied with at most $N$ ticks of slack. $\square$
 
 ---
 

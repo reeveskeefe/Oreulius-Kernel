@@ -63,11 +63,11 @@ Read the matrix above first if you need to know whether a subsystem is implement
 
 ### Features
 
-#### **Quantum Scheduler with MLFQ**
+#### **Slice Scheduler with MLFQ**
 - Status: implemented across the current target matrix.
 - **O(1) constant-time** task scheduling using multi-level feedback queues
 - Three-tier priority system (High/Normal/Low) with queue-level dispatch ordering
-- Preemptive multitasking with configurable quantum slices (default: 10ms)
+- Preemptive multitasking with configurable time slices (default: 10ms)
 - Context switching optimized in Assembly with explicit general-register, EFLAGS, and control-context save/restore
 - Process capability tracking integrated into scheduler state
 - Real-time interrupt state verification with EFLAGS monitoring
@@ -189,7 +189,7 @@ All performance-critical kernel operations are hand-coded in NASM Assembly:
 ## Scientific Foundations
 
 ### Scheduling Theory
-The quantum scheduler implements a **multi-level feedback queue (MLFQ)** with per-priority quantum budgets and deterministic FIFO ordering inside each priority level. Dispatch selection is constant-time over three queues, and per-task accounting tracks CPU time, wait time, preemptions, and voluntary yields.
+The slice scheduler implements a **multi-level feedback queue (MLFQ)** with per-priority slice budgets and deterministic FIFO ordering inside each priority level. Dispatch selection is constant-time over three queues, and per-task accounting tracks CPU time, wait time, preemptions, and voluntary yields.
 
 Interrupt-state correctness is treated as a scheduling invariant: context handoff preserves saved EFLAGS semantics, and cooperative/preemptive transitions restore prior interrupt state on resume paths.
 
@@ -438,7 +438,7 @@ This kernel demonstrates several novel implementations:
 
 1. **WebAssembly in bare-metal context**: bare-metal kernel source tree with in-kernel Wasm JIT, translation certificates, and formalized proof obligations
 2. **WPA2 handshake stack from scratch**: In-tree 802.11i-oriented cryptographic and EAPOL flow implementation
-3. **Quantum scheduling**: Deterministic priority-aware scheduling with MLFQ + quantum accounting on embedded systems
+3. **Slice scheduling**: Deterministic priority-aware scheduling with MLFQ + slice accounting on embedded systems
 4. **Assembly-accelerated cryptography**: AES-NI integration with CPUID detection and fallback paths
 5. **Decentralized kernel capability networking**: CapNet portable token protocol with attestation-bound sessions, replay-safe control frames, lease bridging, and persistent revocation semantics
 6. **Kernel-native behavior-aware capability control**: Intent graph scoring and predictive revocation integrated directly into capability enforcement

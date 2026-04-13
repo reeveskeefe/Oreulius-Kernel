@@ -27,8 +27,8 @@ Loading oreulius kernel...
 [CAP]  Root kernel capability token: 0x0000_0000_0000_0001
 [CAP]  CapNet enforcement: ENABLED
 
-[SCHED] Quantum scheduler: EWMA entropy mode ENABLED
-[SCHED] QUANTUM_LOW=5  QUANTUM_HIGH=20  MAX_SAMPLE=65535
+[SCHED] Slice scheduler: EWMA entropy mode ENABLED
+[SCHED] SLICE_LOW=5  SLICE_HIGH=20  MAX_SAMPLE=65535
 [SCHED] Idle task registered: pid=0
 
 [VFS]  Virtual filesystem mounted: root '/'

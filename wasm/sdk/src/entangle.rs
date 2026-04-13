@@ -1,7 +1,7 @@
-//! # Quantum-Inspired Capability Entanglement
+//! # Collapse-Linked Capability Entanglement
 //!
 //! Link capabilities together so that revoking any one automatically cascades
-//! revocation to all its entangled peers.  This mirrors quantum entanglement:
+//! revocation to all its entangled peers.  This mirrors collapse-linked entanglement:
 //! once linked, the fate of each capability is inseparable from the others.
 //!
 //! ## How it works

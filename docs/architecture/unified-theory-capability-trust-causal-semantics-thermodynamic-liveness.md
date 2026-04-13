@@ -343,7 +343,7 @@ The role of the implementation language also becomes clearer at this point. Owne
 
 The section's final claim is therefore stronger than a roadmap and weaker than a proof. The complete system is not defined by a checklist of features, but by a closure property: authority is conserved, flow is lattice-respecting, history is causally reconstructible, and the machinery enforcing those facts is itself inside the same descriptive universe.
 
-## 7. Physical Foundations: Thermodynamic, Quantum, and Topological Constraints
+## 7. Physical Foundations: Thermodynamic, Causal, and Topological Constraints
 
 The preceding sections treat the kernel as a mathematical object. A complete theory must also account for the physical cost and physical limits of the object being described.
 
@@ -373,7 +373,7 @@ Timing and contention leakage therefore stand in a formally intelligible relatio
 
 Several architectural mitigations are nonetheless already visible at the design level. Constant-shape capability checks reduce branch-dependent leakage. Fixed-size queues bound one source of occupancy variation. Coarser user-visible clocks reduce timing resolution. Scheduler isolation or deterministic service disciplines reduce cross-process interference. None of these, by themselves, prove `I(X ; T) = 0`, but each narrows the channel that the later research agenda must close.
 
-**Remark 7.3 (Linear Types and No-Cloning).** Linear capability transfer is the classical structural analogue of the quantum no-cloning theorem. The analogy is mathematical rather than physical: both prohibit unrestricted duplication of an authority-bearing state.
+**Remark 7.3 (Linear Types and No-Cloning).** Linear capability transfer is the classical structural analogue of the no-cloning constraint. The analogy is mathematical rather than physical: both prohibit unrestricted duplication of an authority-bearing state.
 
 **Proposition 7.4 (Lyapunov Form of the Living Invariant).** If there exists a function `V: Sigma -> R_{>=0}` such that `V(Sigma) = 0` iff `Sigma in I` and `dV/dt < 0` whenever `Sigma notin I`, then `I` is an attractor of the system dynamics.
 

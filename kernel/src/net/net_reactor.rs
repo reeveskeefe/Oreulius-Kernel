@@ -266,7 +266,7 @@ fn drive_runtime_progress(stack: &mut NetworkStack, last_tick: &mut u64) -> bool
 }
 
 fn wait_for_runtime_progress() {
-    crate::scheduler::quantum_scheduler::yield_now();
+    crate::scheduler::slice_scheduler::yield_now();
 }
 
 fn dispatch_request(
@@ -628,7 +628,7 @@ pub fn run() -> ! {
             && NET_IRQ_PENDING.load(Ordering::Relaxed) == 0
             && REQ_STATE.load(Ordering::Relaxed) != 2
         {
-            crate::scheduler::quantum_scheduler::yield_now();
+            crate::scheduler::slice_scheduler::yield_now();
         }
     }
 }

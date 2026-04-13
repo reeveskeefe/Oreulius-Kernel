@@ -1,4 +1,4 @@
-This will be added to quantum_scheduler.rs:
+This will be added to slice_scheduler.rs:
 
 // Add these imports at top
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -9,7 +9,7 @@ use crate::fs::paging;
 // Add to ProcessInfo struct
 pub stack: Option<Box<[u8; crate::scheduler::process::STACK_SIZE]>>,
 
-// Add these functions to QuantumScheduler impl
+// Add these functions to SliceScheduler impl
 
 pub fn add_kernel_thread(&mut self, entry: extern "C" fn() -> !, priority: ProcessPriority) -> Result<Pid, &'static str> {
     let mut process = Process::new();
@@ -35,7 +35,7 @@ pub fn add_kernel_thread(&mut self, entry: extern "C" fn() -> !, priority: Proce
         process,
         context: ctx,
         stack: Some(stack),
-        quantum_remaining: QUANTUM_NORMAL,
+        slice_remaining: SLICE_NORMAL,
         total_cpu_time: 0,
         total_wait_time: 0,
         last_scheduled: 0,
@@ -63,7 +63,7 @@ pub fn start(&mut self) -> ! {
     
     SCHEDULER_STARTED.store(true, Ordering::Release);
     
-    unsafe { QUANTUM_SCHEDULER.force_unlock(); }
+    unsafe { SLICE_SCHEDULER.force_unlock(); }
     
     let ctx_ptr = if let Some(ref info) = self.processes[next_pid.0 as usize] {
         crate::serial_print!("[SCHED] Loading context, EIP=0x{:08x}\n", info.context.eip);

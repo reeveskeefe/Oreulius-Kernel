@@ -22,7 +22,7 @@ Fresh-state required reading completed:
 | Temporal objects | `kernel/src/temporal/` | Implemented — monotonic clock, snapshot/restore, crash-recovery roundtrip |
 | VFS / filesystem | `kernel/src/fs/` | Implemented — capability-gated key-value store, IPC glue, persistence journal |
 | IPC / CapNet | `kernel/src/ipc/`, `kernel/src/net/capnet.rs` | Implemented — channel table, capability-checked send/recv, revocation |
-| Scheduler | `kernel/src/scheduler/` | Implemented — preemptive MLFQ, context-switch assembly, per-process quantum |
+| Scheduler | `kernel/src/scheduler/` | Implemented — preemptive MLFQ, context-switch assembly, per-process timeslice |
 | Shell | `kernel/src/shell/commands.rs` | Implemented — all advertised commands dispatch to real kernel logic (0 stubs) |
 
 ## Toolchain

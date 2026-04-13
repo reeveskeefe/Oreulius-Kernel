@@ -100,13 +100,13 @@ pub fn fg_last_job() -> bool {
             if let Some(j) = JOB_TABLE[i] {
                 // Wake the process in the scheduler.
                 {
-                    let _ = crate::scheduler::quantum_scheduler::scheduler()
+                    let _ = crate::scheduler::slice_scheduler::scheduler()
                         .lock()
                         .wake_one(j.pid.0 as usize);
                     // If wake_one found no wait queue (process was just Blocked),
                     // re-enqueue it directly.
                     let still_blocked = {
-                        let sched = crate::scheduler::quantum_scheduler::scheduler().lock();
+                        let sched = crate::scheduler::slice_scheduler::scheduler().lock();
                         sched
                             .get_process_info(j.pid)
                             .map(|info| info.process.state == crate::scheduler::process::ProcessState::Blocked)
@@ -114,12 +114,12 @@ pub fn fg_last_job() -> bool {
                     };
                     if still_blocked {
                         {
-                            let mut sched2 = crate::scheduler::quantum_scheduler::scheduler().lock();
+                            let mut sched2 = crate::scheduler::slice_scheduler::scheduler().lock();
                             if let Some(info_mut) = sched2.get_process_info_mut(j.pid) {
                                 info_mut.process.state = crate::scheduler::process::ProcessState::Ready;
                                 let priority = info_mut.process.priority;
                                 drop(sched2);
-                                crate::scheduler::quantum_scheduler::enqueue_ready_pid(j.pid, priority);
+                                crate::scheduler::slice_scheduler::enqueue_ready_pid(j.pid, priority);
                             }
                         }
                     }
@@ -889,7 +889,7 @@ pub fn shell_loop() -> ! {
                     let suspended = unsafe {
                         if let Some(fg_pid) = FOREGROUND_PID.take() {
                             // Block the foreground process.
-                            let mut sched = crate::scheduler::quantum_scheduler::scheduler().lock();
+                            let mut sched = crate::scheduler::slice_scheduler::scheduler().lock();
                             if let Some(info) = sched.get_process_info_mut(fg_pid) {
                                 info.process.state = crate::scheduler::process::ProcessState::Blocked;
                             }
@@ -993,7 +993,7 @@ pub fn shell_loop() -> ! {
                     crate::shell::terminal::write_str("^Z\n");
                     let suspended = unsafe {
                         if let Some(fg_pid) = FOREGROUND_PID.take() {
-                            let mut sched = crate::scheduler::quantum_scheduler::scheduler().lock();
+                            let mut sched = crate::scheduler::slice_scheduler::scheduler().lock();
                             if let Some(info) = sched.get_process_info_mut(fg_pid) {
                                 info.process.state = crate::scheduler::process::ProcessState::Blocked;
                             }
@@ -1112,7 +1112,7 @@ pub fn shell_loop() -> ! {
         }
 
         #[cfg(not(target_arch = "x86"))]
-        crate::scheduler::quantum_scheduler::yield_now();
+        crate::scheduler::slice_scheduler::yield_now();
     }
 }
 

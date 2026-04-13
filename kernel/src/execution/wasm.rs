@@ -6005,7 +6005,7 @@ impl PolicyStore {
 static POLICY_STORE: Mutex<PolicyStore> = Mutex::new(PolicyStore::new());
 
 // ===========================================================================
-// Quantum-Inspired Capability Entanglement
+// Entangle-Linked Capability Entanglement
 // ===========================================================================
 //
 // Each `EntangleLink` connects two (pid, cap_id) pairs within a group.
@@ -8594,7 +8594,7 @@ impl WasmInstance {
         thread.call_depth = self.call_depth;
     }
 
-    fn run_background_thread_quantum(&mut self) -> Result<bool, WasmError> {
+    fn run_background_thread_slice(&mut self) -> Result<bool, WasmError> {
         let (slot_idx, mut thread) = match self.thread_pool.take_next_runnable() {
             Some(next) => next,
             None => return Ok(false),
@@ -14090,10 +14090,10 @@ impl WasmInstance {
 
     /// `proc_yield() -> ()`
     ///
-    /// Voluntarily yield the scheduler quantum so other processes can run.
+    /// Voluntarily yield the scheduler timeslice so other processes can run.
     fn host_proc_yield(&mut self) -> Result<(), WasmError> {
-        crate::scheduler::quantum_scheduler::yield_now();
-        let _ = self.run_background_thread_quantum();
+        crate::scheduler::slice_scheduler::yield_now();
+        let _ = self.run_background_thread_slice();
         Ok(())
     }
 
@@ -14111,18 +14111,18 @@ impl WasmInstance {
         let start = crate::scheduler::pit::get_ticks();
         let wake_time = start.saturating_add(ticks);
         let current_pid = {
-            let scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+            let scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
             scheduler.get_current_pid()
         };
         if current_pid == Some(self.process_id)
-            && crate::scheduler::quantum_scheduler::sleep_until(self.process_id, wake_time).is_ok()
+            && crate::scheduler::slice_scheduler::sleep_until(self.process_id, wake_time).is_ok()
         {
             return Ok(());
         }
 
         while crate::scheduler::pit::get_ticks().wrapping_sub(start) < ticks {
-            crate::scheduler::quantum_scheduler::yield_now();
-            let _ = self.run_background_thread_quantum();
+            crate::scheduler::slice_scheduler::yield_now();
+            let _ = self.run_background_thread_slice();
         }
         Ok(())
     }
@@ -15675,7 +15675,7 @@ impl WasmInstance {
     }
 
     // =======================================================================
-    // Quantum-Inspired Capability Entanglement (IDs 125–128)
+    // Entangle-Linked Capability Entanglement (IDs 125–128)
     // =======================================================================
 
     /// `cap_entangle(cap_a: i32, cap_b: i32) -> i32`
@@ -16114,7 +16114,7 @@ impl WasmInstance {
             JoinResult::Blocked if caller_tid != 0 => {
                 return Err(WasmError::ThreadBlockedOnJoin(target_tid));
             }
-            JoinResult::Blocked => -1, // main instance: try again next quantum
+            JoinResult::Blocked => -1, // main instance: try again next timeslice
         };
         self.stack.push(Value::I32(code))?;
         Ok(())
@@ -16131,9 +16131,9 @@ impl WasmInstance {
 
     /// oreulius_thread_yield() -> ()
     ///
-    /// Yields the current quantum.
+    /// Yields the current timeslice.
     fn host_thread_yield(&mut self) -> Result<(), WasmError> {
-        crate::scheduler::quantum_scheduler::yield_now();
+        crate::scheduler::slice_scheduler::yield_now();
         if self.active_thread_tid != 0 {
             return Err(WasmError::ThreadYielded);
         }
@@ -17086,7 +17086,7 @@ impl WasmRuntime {
     }
 
     /// Drain cooperative background threads for a single instance until the
-    /// pool is empty, becomes non-runnable, or hits a bounded quantum budget.
+    /// pool is empty, becomes non-runnable, or hits a bounded slice budget.
     pub fn drain_instance_background_threads(
         &self,
         instance_id: usize,
@@ -17096,7 +17096,7 @@ impl WasmRuntime {
 
         loop {
             let ran = self.with_instance_exclusive(instance_id, |instance| {
-                instance.run_background_thread_quantum()
+                instance.run_background_thread_slice()
             })??;
 
             if ran {
@@ -17142,12 +17142,12 @@ impl WasmRuntime {
         }
     }
 
-    /// Execute at most one cooperative WASM thread quantum per ready instance.
+    /// Execute at most one cooperative WASM thread timeslice per ready instance.
     pub fn tick_background_threads(&self) {
         let mut instance_id = 0usize;
         while instance_id < MAX_WASM_RUNTIME_INSTANCES {
             let _ = self.with_instance_exclusive(instance_id, |instance| {
-                let _ = instance.run_background_thread_quantum();
+                let _ = instance.run_background_thread_slice();
             });
             instance_id += 1;
         }
@@ -17479,7 +17479,7 @@ pub fn temporal_apply_syscall_module_table_payload(payload: &[u8]) -> Result<(),
 }
 
 fn syscall_caller_pid() -> ProcessId {
-    let scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+    let scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
     scheduler.get_current_pid().unwrap_or(ProcessId(0))
 }
 
@@ -17999,7 +17999,7 @@ fn jit_fault_exit() {
 }
 
 fn jit_select_kernel_esp0(current_esp: usize) -> u32 {
-    for (start, end) in crate::scheduler::quantum_scheduler::kernel_stack_bounds() {
+    for (start, end) in crate::scheduler::slice_scheduler::kernel_stack_bounds() {
         if current_esp >= start && current_esp < end {
             return (end as u32).saturating_sub(16);
         }

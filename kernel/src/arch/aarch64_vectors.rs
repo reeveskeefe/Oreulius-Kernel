@@ -252,7 +252,7 @@ pub extern "C" fn oreulius_aarch64_vector_dispatch(
         }
 
         if ec == EC_FP_ASIMD_TRAP {
-            crate::scheduler::quantum_scheduler::handle_fpu_trap();
+            crate::scheduler::slice_scheduler::handle_fpu_trap();
             return 0;
         }
 

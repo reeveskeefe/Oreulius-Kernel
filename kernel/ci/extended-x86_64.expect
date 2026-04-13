@@ -331,7 +331,7 @@ run_x64_cmd "help" {Available commands:|commands: help .*jitcall .*jitbench .*ji
 run_x64_cmd "syscall-test" {=== System Call Interface Test ===} "syscall-test"
 run_x64_cmd "user-test" {user-test ok} "user-test"
 run_x64_cmd "fork-test" {fork-test ok} "fork-test"
-run_x64_cmd "sched-stats" {Scheduler: QuantumScheduler \(x86_64 runtime path\)} "sched-stats"
+run_x64_cmd "sched-stats" {Scheduler: SliceScheduler \(x86_64 runtime path\)} "sched-stats"
 run_x64_cmd "mmu" {\[X64\] mmu backend=[^\r\n]+} "mmu"
 run_x64_cmd "regs" {\[X64\] cr0=[^\r\n]+ cr3=[^\r\n]+ cr4=[^\r\n]+ efer=[^\r\n]+} "regs"
 run_x64_cmd "ticks" {\[X64\] ticks=[0-9]+} "ticks"

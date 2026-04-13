@@ -465,7 +465,7 @@ pub fn execute(input: &str) {
             vga::print_str("  atomic-test    - Test atomic operations\n");
             vga::print_str("  spinlock-test  - Test spinlock implementation\n");
             vga::print_str("\nAdvanced System Commands:\n");
-            vga::print_str("  quantum-stats  - Show quantum scheduler statistics\n");
+            vga::print_str("  slice-stats  - Show slice scheduler statistics\n");
             vga::print_str("  sched-entropy-bench - Show entropy scheduler bench scenarios\n");
             vga::print_str("  prod-bench          - End-to-end production workload benchmark (cpu+jit+blk+sched)\n");
             vga::print_str("  sched-net-soak - Scheduler/network soak test (sched-net-soak <seconds> [probe_ms])\n");
@@ -993,8 +993,8 @@ pub fn execute(input: &str) {
         "spinlock-test" => {
             cmd_spinlock_test();
         }
-        "quantum-stats" => {
-            crate::shell::advanced_commands::cmd_quantum_stats();
+        "slice-stats" => {
+            crate::shell::advanced_commands::cmd_slice_stats();
         }
         "sched-entropy-bench" => {
             crate::shell::advanced_commands::cmd_sched_entropy_bench();
@@ -8072,17 +8072,17 @@ fn cmd_prod_bench() {
     // ── 4. Scheduler entropy adaptation ─────────────────────────────────────
     vga::print_str("\n[ 4/4 ] Scheduler entropy adaptation\n");
     total += 1;
-    for s in &crate::scheduler::quantum_scheduler::entropy_bench_results() {
+    for s in &crate::scheduler::slice_scheduler::entropy_bench_results() {
         vga::print_str("        ");
         vga::print_str(s.name);
         vga::print_str(": base=");
-        print_u32(s.base_quantum);
+        print_u32(s.base_slice);
         vga::print_str(" adj=");
-        print_u32(s.adjusted_quantum);
+        print_u32(s.adjusted_slice);
         vga::print_str("\n");
         crate::serial_println!(
             "[PROD-BENCH] sched scenario={} base_q={} adj_q={} yield_ewma={} fault_ewma={}",
-            s.name, s.base_quantum, s.adjusted_quantum,
+            s.name, s.base_slice, s.adjusted_slice,
             s.rolled_yield_ewma, s.rolled_fault_ewma
         );
     }
@@ -12031,7 +12031,7 @@ fn cmd_sched_stats() {
 
     #[cfg(target_arch = "x86_64")]
     {
-        let snapshot = crate::scheduler::quantum_scheduler::scheduler()
+        let snapshot = crate::scheduler::slice_scheduler::scheduler()
             .lock()
             .snapshot_overview();
 
@@ -12049,7 +12049,7 @@ fn cmd_sched_stats() {
         print_u64(snapshot.preemptions);
         vga::print_str("\n  Voluntary:   ");
         print_u64(snapshot.voluntary_yields);
-        vga::print_str("\n\nScheduler: QuantumScheduler (x86_64 runtime path)\n");
+        vga::print_str("\n\nScheduler: SliceScheduler (x86_64 runtime path)\n");
         vga::print_str("Priority Levels: High > Normal > Low\n\n");
     }
 
@@ -12717,7 +12717,7 @@ fn cmd_sched_net_soak(mut parts: core::str::SplitWhitespace) {
     print_u32(probe_ms);
     vga::print_str("\n\n");
 
-    let sched_before = crate::scheduler::quantum_scheduler::scheduler().lock().get_stats();
+    let sched_before = crate::scheduler::slice_scheduler::scheduler().lock().get_stats();
     let anomaly_before = crate::security::security().get_anomaly_stats();
     let start_ticks = crate::scheduler::pit::get_ticks();
     let hz = (crate::scheduler::pit::get_frequency() as u64).max(1);
@@ -12749,11 +12749,11 @@ fn cmd_sched_net_soak(mut parts: core::str::SplitWhitespace) {
 
         let wait_until = crate::scheduler::pit::get_ticks().saturating_add(probe_ticks.max(1));
         while crate::scheduler::pit::get_ticks() < wait_until {
-            crate::scheduler::quantum_scheduler::yield_now();
+            crate::scheduler::slice_scheduler::yield_now();
         }
     }
 
-    let sched_after = crate::scheduler::quantum_scheduler::scheduler().lock().get_stats();
+    let sched_after = crate::scheduler::slice_scheduler::scheduler().lock().get_stats();
     let anomaly_after = crate::security::security().get_anomaly_stats();
 
     let delta_switches = sched_after

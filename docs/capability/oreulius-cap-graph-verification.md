@@ -1,6 +1,5 @@
 # Oreulius Runtime Capability Graph Verification
 
-> **Status:** Fully implemented. WASM host ABI IDs 129–131. Core: `kernel/src/capability/cap_graph.rs` (462 lines). SDK: `wasm/sdk/src/capgraph.rs`. Integrated into `CapabilityManager::transfer_capability` and process teardown.
 
 ---
 
@@ -60,7 +59,7 @@ This subsystem is not a monitoring tool bolted on after the fact. It is embedded
 |---|---|
 | `kernel/src/capability/cap_graph.rs` | `CapGraph`, `CapDelegationEdge`, `ProvenanceChain`, all graph algorithms, `CAP_GRAPH` global |
 | `kernel/src/execution/wasm.rs` | Host functions (IDs 129–131), integration with `transfer_capability` |
-| `kernel/src/capability/manager.rs` | Calls `cap_graph::record_delegation()` and `cap_graph::prune_edges_for()` |
+| `kernel/src/capability/mod.rs` | Calls `cap_graph::record_delegation()` and `cap_graph::prune_edges_for()` (2897 lines) |
 | `wasm/sdk/src/capgraph.rs` | SDK: `query`, `verify`, `depth`, `assert_safe`, `VerifyResult` enum |
 
 ---
@@ -237,22 +236,47 @@ Both are called under lock. `prune_edges_for` is called from `revoke_capability`
 
 ### 5.5 `build_chain` (provenance reconstruction)
 
+Walks the live capability tables and `CAP_GRAPH` edge table to reconstruct the
+full delegation ancestry. Each hop resolves `parent_cap_id` from the capability
+table, then looks for an incoming cross-process delegation edge to determine
+which process was the parent.
+
 ```
 build_chain(pid, cap_id) -> ProvenanceChain:
     chain = ProvenanceChain { depth: 0, truncated: false }
     current_pid = pid
     current_cap = cap_id
     loop:
-        cap = capability_manager().query_capability(current_pid, current_cap)
-        chain.links[chain.depth] = ProvenanceLink { cap_id: current_cap, holder_pid: current_pid, rights_bits: cap.rights }
-        chain.depth += 1
-        if cap.parent_cap_id == 0: break  // root of chain
         if chain.depth >= PROVENANCE_MAX_DEPTH:
             chain.truncated = true; break
-        current_cap = cap.parent_cap_id
-        current_pid = find_parent_pid_for(current_cap)
-    chain
+        // Resolve via capability_manager().tables (acquires lock)
+        (rights_bits, parent_cap_id_opt) = lookup(current_pid, current_cap)
+        if lookup fails: break
+        chain.links[chain.depth] = ProvenanceLink {
+            cap_id: current_cap, holder_pid: current_pid, rights_bits
+        }
+        chain.depth += 1
+        match parent_cap_id_opt:
+            None => break  // root capability (no parent)
+            Some(parent_cap) =>
+                // Search CAP_GRAPH for cross-process edge to (current_pid, current_cap)
+                found_cross = false
+                for each active edge e where e.to_pid == current_pid
+                                         && e.to_cap == current_cap:
+                    current_pid = e.from_pid
+                    current_cap = e.from_cap
+                    found_cross = true; break
+                if not found_cross:
+                    // Intra-process attenuation: stay in same PID
+                    current_cap = parent_cap
+                    // current_pid unchanged
+    return chain
 ```
+
+Key notes:
+- `parent_cap_id` is `Option<u32>`, not a zero-sentinel; `None` means root.
+- Cross-process provenance is recovered from `CAP_GRAPH` edges, not just the `parent_cap_id` field.
+- The lock on `capability_manager().tables` and `CAP_GRAPH` are *not* held simultaneously; each hop releases and reacquires.
 
 ---
 
@@ -340,18 +364,27 @@ pub fn assert_safe(cap_id: u32, delegatee_pid: u32) -> Result<(), VerifyResult>
 ### 9.1 `transfer_capability` hot path
 
 ```
-CapabilityManager::transfer_capability(from_pid, from_cap, to_pid, proposed_rights):
-    // 1. Resolve delegator's rights
-    let delegator_rights = query_capability(from_pid, from_cap).rights
-    // 2. Check invariants
-    cap_graph::check_invariants(from_pid, from_cap, to_pid, delegator_rights, proposed_rights)?
-    // 3. Grant to recipient
-    let to_cap = grant_capability(to_pid, object_id, cap_type, proposed_rights, from_pid)
-    // 4. Record edge
-    cap_graph::record_delegation(from_pid, from_cap, to_pid, to_cap, proposed_rights)
+CapabilityManager::transfer_capability(from_pid, from_cap, to_pid):
+    // 1. Remove cap from source table (raises TaskNotFound if PID absent)
+    let cap = from_table.remove(from_cap)?
+    // 2. Check invariants BEFORE completing the transfer (same rights as delegator)
+    cap_graph::check_invariants(
+        from_pid, from_cap, to_pid,
+        delegator_rights = cap.rights.bits(),
+        proposed_rights  = cap.rights.bits(),
+    ).map_err(|_| CapabilityError::SecurityViolation)?
+    // 3. Stamp provenance
+    delegated_cap.parent_cap_id = Some(from_cap)
+    // 4. Install in destination table
+    let to_cap = to_table.install(delegated_cap)?
+    // 5. Record edge
+    cap_graph::record_delegation(from_pid, from_cap, to_pid, to_cap, cap.rights.bits())
+    // 6. Audit
+    security().log_event(CapabilityTransferred, from_pid, from_cap)
 ```
 
-The error returned by `check_invariants` propagates as `CapabilityError::SecurityViolation`.
+The capability is moved (not copied). The error returned by `check_invariants`
+propagates as `CapabilityError::SecurityViolation`.
 
 ### 9.2 `revoke_capability`
 

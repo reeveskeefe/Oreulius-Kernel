@@ -38,7 +38,7 @@ These invariants define the safety properties the verification workspace tracks.
 - INV-A64-005: AArch64 syscall entry stubs must remain the only modeled user to
   kernel entry path for the verified profile.
 - INV-A64-006: AArch64 timer ticks must only mark reschedule-pending at
-  quantum boundaries, and context-switch bookkeeping must clear that pending
+  slice boundaries, and context-switch bookkeeping must clear that pending
   state before the next dispatch step.
 - INV-A64-007: AArch64 context-switch handoff must preserve the selected
   `ProcessContext` fields across the modeled switch/load entrypoints and must

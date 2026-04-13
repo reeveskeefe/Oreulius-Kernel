@@ -1,7 +1,5 @@
 # Oreulius Intent Graph with Predictive Revocation
 
-**Status:** Implemented (kernel-integrated)  
-**Primary implementation:** `kernel/src/security/intent_graph.rs`, `kernel/src/execution/intent_wasm.rs`, `kernel/src/security/mod.rs`, `kernel/src/capability/mod.rs`, `kernel/src/ipc/mod.rs`, `kernel/src/platform/syscall.rs`, `kernel/src/shell/commands.rs`
 
 ## 1. Abstract
 
@@ -559,13 +557,13 @@ Quarantine is operationally temporary under active process behavior and non-conf
 
 | Concern | File(s) |
 |---|---|
-| Intent state machine, windows, escalation | `kernel/src/intent_graph.rs` |
-| VM inference bytecode and fallback | `kernel/src/intent_wasm.rs` |
-| Security manager integration and API exposure | `kernel/src/security.rs` |
-| Quarantine/revoke/restore mechanics | `kernel/src/capability.rs` |
+| Intent state machine, windows, escalation | `kernel/src/security/intent_graph.rs` |
+| VM inference bytecode and fallback | `kernel/src/execution/intent_wasm.rs` |
+| Security manager integration and API exposure | `kernel/src/security/mod.rs` |
+| Quarantine/revoke/restore mechanics | `kernel/src/capability/mod.rs` |
 | IPC enforcement hooks | `kernel/src/ipc/mod.rs` |
-| Syscall-boundary audit/block/termination consume | `kernel/src/syscall.rs` |
-| Operator command layer | `kernel/src/commands.rs` |
+| Syscall-boundary audit/block/termination consume | `kernel/src/platform/syscall.rs` |
+| Operator command layer | `kernel/src/shell/commands.rs` |
 
 ## 21. Conclusion
 

@@ -247,7 +247,7 @@ fn prepare_user_fork_test_space(
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn allocate_user_test_pid() -> Result<crate::scheduler::process::Pid, &'static str> {
-    let scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+    let scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
     let pid_raw = (3..crate::scheduler::process::MAX_PROCESSES as u32)
         .find(|raw| {
             scheduler
@@ -261,7 +261,7 @@ fn allocate_user_test_pid() -> Result<crate::scheduler::process::Pid, &'static s
 #[cfg(target_arch = "x86_64")]
 fn cleanup_user_test_process(pid: crate::scheduler::process::Pid) {
     let _ = crate::scheduler::process::process_manager().terminate(pid);
-    let _ = crate::scheduler::quantum_scheduler::scheduler()
+    let _ = crate::scheduler::slice_scheduler::scheduler()
         .lock()
         .remove_process(pid);
     crate::scheduler::process::process_manager().reap();
@@ -281,7 +281,7 @@ pub fn enter_user_mode_test() -> Result<(), &'static str> {
     let mut process = crate::scheduler::process::Process::new(pid, "user-test", None);
     process.priority = crate::scheduler::process::ProcessPriority::Normal;
 
-    if let Err(err) = crate::scheduler::quantum_scheduler::scheduler()
+    if let Err(err) = crate::scheduler::slice_scheduler::scheduler()
         .lock()
         .add_user_process(process, Box::new(space), USER_CODE_ADDR as u32, user_stack)
     {
@@ -292,7 +292,7 @@ pub fn enter_user_mode_test() -> Result<(), &'static str> {
 
     let deadline = crate::scheduler::pit::get_ticks().saturating_add(300);
     while crate::scheduler::pit::get_ticks() < deadline {
-        crate::scheduler::quantum_scheduler::yield_now();
+        crate::scheduler::slice_scheduler::yield_now();
         if crate::arch::x86::x86_64_runtime::exception_count(3) == bp_before {
             continue;
         }
@@ -326,7 +326,7 @@ fn prepare_user_test_space(
 #[cfg(target_arch = "aarch64")]
 fn cleanup_user_test_process(pid: crate::scheduler::process::Pid) {
     let _ = crate::scheduler::process::process_manager().terminate(pid);
-    let _ = crate::scheduler::quantum_scheduler::scheduler()
+    let _ = crate::scheduler::slice_scheduler::scheduler()
         .lock()
         .remove_process(pid);
     crate::scheduler::process::process_manager().reap();
@@ -346,7 +346,7 @@ pub fn enter_user_mode_test() -> Result<(), &'static str> {
     let mut process = crate::scheduler::process::Process::new(pid, "user-test", None);
     process.priority = crate::scheduler::process::ProcessPriority::Normal;
 
-    if let Err(err) = crate::scheduler::quantum_scheduler::scheduler()
+    if let Err(err) = crate::scheduler::slice_scheduler::scheduler()
         .lock()
         .add_user_process(process, Box::new(space), USER_CODE_ADDR as u32, user_stack)
     {
@@ -356,7 +356,7 @@ pub fn enter_user_mode_test() -> Result<(), &'static str> {
 
     let deadline = crate::scheduler::pit::get_ticks().saturating_add(300);
     while crate::scheduler::pit::get_ticks() < deadline {
-        crate::scheduler::quantum_scheduler::yield_now();
+        crate::scheduler::slice_scheduler::yield_now();
         if crate::arch::aarch64::aarch64_vectors::brk_exception_count() == brk_before {
             continue;
         }
@@ -409,7 +409,7 @@ fn snapshot_fork_test_page(
 
 #[cfg(target_arch = "x86_64")]
 fn find_child_fork_pid(parent_pid: crate::scheduler::process::Pid) -> Option<crate::scheduler::process::Pid> {
-    let scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+    let scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
     scheduler
         .list_processes()
         .into_iter()
@@ -428,7 +428,7 @@ fn find_child_fork_pid(parent_pid: crate::scheduler::process::Pid) -> Option<cra
 #[cfg(target_arch = "x86_64")]
 fn cleanup_fork_test_process(pid: crate::scheduler::process::Pid) {
     let _ = crate::scheduler::process::process_manager().terminate(pid);
-    let _ = crate::scheduler::quantum_scheduler::scheduler()
+    let _ = crate::scheduler::slice_scheduler::scheduler()
         .lock()
         .remove_process(pid);
     crate::scheduler::process::process_manager().reap();
@@ -447,7 +447,7 @@ pub fn run_fork_test() -> Result<(), &'static str> {
     let mut process = crate::scheduler::process::Process::new(parent_pid, "fork-test", None);
     process.priority = crate::scheduler::process::ProcessPriority::Normal;
 
-    if let Err(err) = crate::scheduler::quantum_scheduler::scheduler()
+    if let Err(err) = crate::scheduler::slice_scheduler::scheduler()
         .lock()
         .add_user_process(process, Box::new(space), USER_CODE_ADDR as u32, user_stack)
     {
@@ -459,7 +459,7 @@ pub fn run_fork_test() -> Result<(), &'static str> {
     let mut child_pid = None;
 
     while crate::scheduler::pit::get_ticks() < deadline {
-        crate::scheduler::quantum_scheduler::yield_now();
+        crate::scheduler::slice_scheduler::yield_now();
 
         if child_pid.is_none() {
             child_pid = find_child_fork_pid(parent_pid);
@@ -470,7 +470,7 @@ pub fn run_fork_test() -> Result<(), &'static str> {
         };
 
         let (parent_snapshot, child_snapshot) = {
-            let scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+            let scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
             let parent_space = scheduler
                 .get_process_info(parent_pid)
                 .and_then(|info| info.address_space.as_ref())

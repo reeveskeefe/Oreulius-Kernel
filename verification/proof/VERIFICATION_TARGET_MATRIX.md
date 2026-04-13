@@ -288,7 +288,7 @@ is the only AArch64 entry in this table.
 | Starvation freedom / fairness — if claimed, must be proven | **T0** | Not currently claimed |
 | Concurrency interference assumptions — all assumptions about concurrent execution are explicit | **T1** | `ASM-HW-001` covers atomicity; concurrent interference model not complete |
 
-**Implementation surfaces:** `kernel/src/scheduler/quantum_scheduler.rs`, `kernel/src/ipc/`
+**Implementation surfaces:** `kernel/src/scheduler/slice_scheduler.rs`, `kernel/src/ipc/`
 
 ---
 

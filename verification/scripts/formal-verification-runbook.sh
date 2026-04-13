@@ -364,7 +364,7 @@ EOF
 | Temporal objects | `kernel/src/temporal/` | Implemented — monotonic clock, snapshot/restore, crash-recovery roundtrip |
 | VFS / filesystem | `kernel/src/fs/` | Implemented — capability-gated key-value store, IPC glue, persistence journal |
 | IPC / CapNet | `kernel/src/ipc/`, `kernel/src/net/capnet.rs` | Implemented — channel table, capability-checked send/recv, revocation |
-| Scheduler | `kernel/src/scheduler/` | Implemented — preemptive MLFQ, context-switch assembly, per-process quantum |
+| Scheduler | `kernel/src/scheduler/` | Implemented — preemptive MLFQ, context-switch assembly, per-process timeslice |
 | Shell | `kernel/src/shell/commands.rs` | Implemented — all advertised commands dispatch to real kernel logic (0 stubs) |
 
 ## Toolchain
@@ -403,7 +403,7 @@ EOF
 - INV-A64-005: AArch64 syscall entry stubs must remain the only modeled user to
   kernel entry path for the verified profile.
 - INV-A64-006: AArch64 timer ticks must only mark reschedule-pending at
-  quantum boundaries, and context-switch bookkeeping must clear that pending
+  slice boundaries, and context-switch bookkeeping must clear that pending
   state before the next dispatch step.
 EOF
 
@@ -446,7 +446,7 @@ setup, timer/interrupt entry, and syscall boundary stubs only.
 
 ## ASM-A64-003 — AArch64 Scheduler Boundary
 The AArch64 scheduler proof surface is limited to the timer tick /
-reschedule-pending boundary and its local quantum bookkeeping. It does not
+reschedule-pending boundary and its local slice bookkeeping. It does not
 claim fairness, interrupt-controller fidelity, or full scheduler semantics.
 EOF
 
@@ -496,7 +496,7 @@ boundary.
 | A64-BOOT-002 | `theories/aarch64_handoff.v` | Proven | Boot handoff surfaces the same DTB pointer into runtime |
 | A64-VECTOR-001 | `theories/aarch64_vectors.v` | Proven | Installed vector base and lower-EL sync dispatch preserve the trap boundary |
 | A64-MMU-001 | `theories/aarch64_mmu.v` | Proven | MMU bring-up establishes a root and preserves modeled W^X separation |
-| A64-SCHED-001 | `theories/aarch64_sched_tick.v` | Proven | Timer tick boundary sets reschedule-pending only at quantum boundaries and quantum updates reject zero |
+| A64-SCHED-001 | `theories/aarch64_sched_tick.v` | Proven | Timer tick boundary sets reschedule-pending only at slice boundaries and timeslice updates reject zero |
 
 ---
 
@@ -551,8 +551,8 @@ Firmware/BIOS boundary is explicitly out of scope per ASM-MODEL-001.
 | CapNet | `kernel/src/net/capnet.rs` | `spec/capnet.*`, `theories/ipc_flow.v` (PMA-IPC-005) |
 | JIT | `kernel/src/execution/wasm_jit.rs` | `spec/jit.*` (pending), `theories/wx_cfi.v` |
 | Privilege Transitions | `kernel/src/arch/x86_runtime.rs`, `kernel/src/platform/syscall.rs` | `spec/priv.*` (pending) |
-| AArch64 scheduler tick boundary | `kernel/src/arch/aarch64_virt.rs`, `kernel/src/scheduler/quantum_scheduler.rs` | `spec/aarch64.*`, `theories/aarch64_sched_tick.v` |
-| Scheduler | `kernel/src/scheduler/quantum_scheduler.rs` | `spec/scheduler.*`, `theories/scheduler_entropy.v`, `theories/lock_dag.v` |
+| AArch64 scheduler tick boundary | `kernel/src/arch/aarch64_virt.rs`, `kernel/src/scheduler/slice_scheduler.rs` | `spec/aarch64.*`, `theories/aarch64_sched_tick.v` |
+| Scheduler | `kernel/src/scheduler/slice_scheduler.rs` | `spec/scheduler.*`, `theories/scheduler_entropy.v`, `theories/lock_dag.v` |
 EOF
 
     write_template_file "verification/artifacts/manifest.schema.json" <<'EOF'

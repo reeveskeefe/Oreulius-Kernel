@@ -23,7 +23,7 @@
 //! On bare-metal no_std with a spin-based allocator there are no OS threads.
 //! Each `WasmThread` is cooperative: it runs to the next yield-point or host
 //! call, then hands control back to the thread pool's `run_one_step` method.
-//! The kernel quantum scheduler calls `WasmRuntime::tick_threads()` once per
+//! The kernel slice scheduler calls `WasmRuntime::tick_threads()` once per
 //! timer interrupt to advance the pool.
 //!
 //! Thread-safe shared memory uses the atomic primitives already implemented on
@@ -226,7 +226,7 @@ pub struct WasmThread {
     pub call_stack_depth: usize,
     /// Current state.
     pub state: ThreadState,
-    /// Instruction budget remaining for this scheduling quantum.
+    /// Instruction budget remaining for this scheduling timeslice.
     pub fuel: u32,
     /// Cumulative instructions executed.
     pub total_instructions: u64,
@@ -360,7 +360,7 @@ impl WasmThread {
         self.state = ThreadState::Yielded;
     }
 
-    /// Instructions consumed this quantum.
+    /// Instructions consumed this timeslice.
     pub fn consume_fuel(&mut self, n: u32) -> bool {
         if self.fuel < n {
             self.fuel = 0;
@@ -382,7 +382,7 @@ pub const DEFAULT_THREAD_FUEL: u32 = 10_000;
 /// Result of one scheduling step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoolStepResult {
-    /// A thread ran for one quantum.
+    /// A thread ran for one timeslice.
     Ran(i32 /* tid */),
     /// All runnable threads are exhausted for this tick.
     Idle,

@@ -307,7 +307,7 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
     // Escalation stage: repeated predictive restrictions can request termination.
     if syscall != SyscallNumber::Exit && sec.take_intent_termination_recommendation(caller_pid) {
         let _ = crate::scheduler::process::process_manager().terminate(crate::scheduler::process::Pid(caller_pid.0));
-        let mut scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+        let mut scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
         let _ = scheduler.remove_process(caller_pid);
         return SyscallResult::err(EACCES);
     }
@@ -336,12 +336,12 @@ fn sys_exit(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
     let _ = crate::scheduler::process::process_manager().terminate(crate::scheduler::process::Pid(caller_pid.0));
 
     // Remove from runtime scheduler.
-    let mut scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+    let mut scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
     let _ = scheduler.remove_process(caller_pid);
 
     // Yield to next process
     drop(scheduler);
-    crate::scheduler::quantum_scheduler::yield_now();
+    crate::scheduler::slice_scheduler::yield_now();
 
     SyscallResult::ok(exit_code)
 }
@@ -360,7 +360,7 @@ fn sys_fork(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
         vga::print_str("\n");
     }
 
-    let mut scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+    let mut scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
     match scheduler.fork_current_cow() {
         Ok(child_pid) => {
             #[cfg(not(target_arch = "aarch64"))]
@@ -389,7 +389,7 @@ fn sys_yield(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallRes
     }
 
     // Mark process as yielding voluntarily (good for statistics)
-    let mut scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+    let mut scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
     scheduler.record_voluntary_yield();
     drop(scheduler);
 
@@ -403,7 +403,7 @@ fn sys_yield(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallRes
         vga::print_str(")\n");
     }
 
-    crate::scheduler::quantum_scheduler::yield_now();
+    crate::scheduler::slice_scheduler::yield_now();
     SyscallResult::ok(0)
 }
 
@@ -416,7 +416,7 @@ fn sys_sleep(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallRes
 
     if ms == 0 {
         // Sleep(0) is just a yield
-        crate::scheduler::quantum_scheduler::yield_now();
+        crate::scheduler::slice_scheduler::yield_now();
         return SyscallResult::ok(0);
     }
 
@@ -425,7 +425,7 @@ fn sys_sleep(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallRes
     let sleep_ticks = (ms as u64 * 100) / 1000; // Convert ms to ticks (100 Hz timer)
     let wake_time = current_ticks + sleep_ticks;
 
-    if crate::scheduler::quantum_scheduler::sleep_until(caller_pid, wake_time).is_err() {
+    if crate::scheduler::slice_scheduler::sleep_until(caller_pid, wake_time).is_err() {
         return SyscallResult::err(EINVAL);
     }
 
@@ -452,7 +452,7 @@ fn sys_exec(args: SyscallArgs, _caller_pid: capability::ProcessId) -> SyscallRes
     };
 
     {
-        let mut scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+        let mut scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
         if scheduler.exec_current_wasm(module_id as u32).is_err() {
             return SyscallResult::err(EINVAL);
         }
@@ -1045,12 +1045,12 @@ fn sys_memory_alloc(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sys
         return SyscallResult::err(EINVAL);
     }
 
-    let flags = crate::scheduler::quantum_scheduler::VmaFlags::READ
-        | crate::scheduler::quantum_scheduler::VmaFlags::WRITE
-        | crate::scheduler::quantum_scheduler::VmaFlags::USER;
+    let flags = crate::scheduler::slice_scheduler::VmaFlags::READ
+        | crate::scheduler::slice_scheduler::VmaFlags::WRITE
+        | crate::scheduler::slice_scheduler::VmaFlags::USER;
 
     let _ = caller_pid;
-    match crate::scheduler::quantum_scheduler::memory_alloc_current(requested_addr, size, flags) {
+    match crate::scheduler::slice_scheduler::memory_alloc_current(requested_addr, size, flags) {
         Ok(addr) => SyscallResult::ok(addr as i32),
         Err("virtual address space exhausted") => SyscallResult::err(ENOMEM),
         Err("memory alloc unsupported on this architecture") => SyscallResult::err(ENOSYS),
@@ -1074,7 +1074,7 @@ fn sys_memory_free(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysc
     }
 
     let _ = caller_pid;
-    match crate::scheduler::quantum_scheduler::memory_free_current(addr, size) {
+    match crate::scheduler::slice_scheduler::memory_free_current(addr, size) {
         Ok(()) => SyscallResult::ok(0),
         Err("memory free unsupported on this architecture") => SyscallResult::err(ENOSYS),
         Err(_) => SyscallResult::err(EINVAL),
@@ -1099,32 +1099,32 @@ fn sys_memory_map(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysca
         return SyscallResult::err(EINVAL);
     }
 
-    let mut flags = crate::scheduler::quantum_scheduler::VmaFlags::USER;
+    let mut flags = crate::scheduler::slice_scheduler::VmaFlags::USER;
     if (prot & 0x1) != 0 {
-        flags |= crate::scheduler::quantum_scheduler::VmaFlags::READ;
+        flags |= crate::scheduler::slice_scheduler::VmaFlags::READ;
     }
     if (prot & 0x2) != 0 {
-        flags |= crate::scheduler::quantum_scheduler::VmaFlags::WRITE;
+        flags |= crate::scheduler::slice_scheduler::VmaFlags::WRITE;
     }
     if (prot & 0x4) != 0 {
-        flags |= crate::scheduler::quantum_scheduler::VmaFlags::EXEC;
+        flags |= crate::scheduler::slice_scheduler::VmaFlags::EXEC;
     }
     if (map_flags & MAP_SHARED) != 0 {
-        flags |= crate::scheduler::quantum_scheduler::VmaFlags::SHARED;
+        flags |= crate::scheduler::slice_scheduler::VmaFlags::SHARED;
     }
     if !flags.intersects(
-        crate::scheduler::quantum_scheduler::VmaFlags::READ
-            | crate::scheduler::quantum_scheduler::VmaFlags::WRITE
-            | crate::scheduler::quantum_scheduler::VmaFlags::EXEC,
+        crate::scheduler::slice_scheduler::VmaFlags::READ
+            | crate::scheduler::slice_scheduler::VmaFlags::WRITE
+            | crate::scheduler::slice_scheduler::VmaFlags::EXEC,
     ) {
-        flags |= crate::scheduler::quantum_scheduler::VmaFlags::READ | crate::scheduler::quantum_scheduler::VmaFlags::WRITE;
+        flags |= crate::scheduler::slice_scheduler::VmaFlags::READ | crate::scheduler::slice_scheduler::VmaFlags::WRITE;
     }
 
     let requested_addr = if addr == 0 { None } else { Some(addr) };
 
     if (map_flags & MAP_ANONYMOUS) != 0 {
         let _ = caller_pid;
-        return match crate::scheduler::quantum_scheduler::memory_alloc_current(requested_addr, size, flags) {
+        return match crate::scheduler::slice_scheduler::memory_alloc_current(requested_addr, size, flags) {
             Ok(mapped) => SyscallResult::ok(mapped as i32),
             Err("memory alloc unsupported on this architecture")
             | Err("memory map unsupported on this architecture") => SyscallResult::err(ENOSYS),
@@ -1147,7 +1147,7 @@ fn sys_memory_map(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysca
         Err(_) => return SyscallResult::err(EINVAL),
     };
 
-    match crate::scheduler::quantum_scheduler::memory_map_file_current(
+    match crate::scheduler::slice_scheduler::memory_map_file_current(
         requested_addr,
         size,
         flags,
@@ -1596,7 +1596,7 @@ fn check_capability(
 
 /// Get current process PID from scheduler
 fn get_current_pid() -> capability::ProcessId {
-    let scheduler = crate::scheduler::quantum_scheduler::scheduler().lock();
+    let scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
     if let Some(pid) = scheduler.get_current_pid() {
         capability::ProcessId(pid.0)
     } else {

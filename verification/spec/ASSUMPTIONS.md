@@ -17,7 +17,7 @@ from the kernel runtime.
   vectors, MMU setup, timer/interrupt entry, syscall boundary stubs, and the
   scheduler handoff/context-switch path only.
 - ASM-A64-003: The AArch64 scheduler proof surface is limited to the timer
-  tick / reschedule-pending boundary and its local quantum bookkeeping. It
+  tick / reschedule-pending boundary and its local slice bookkeeping. It
   does not claim fairness, interrupt-controller fidelity, or full scheduler
   semantics.
 - ASM-A64-004: The AArch64 syscall proof surface is limited to the dispatcher

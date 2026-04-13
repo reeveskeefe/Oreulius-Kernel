@@ -32,7 +32,7 @@ Four invariants govern every subsystem. They are stated here precisely and refer
 
 **Invariant III (Degradation Monotonicity).** If any hardware feature (AVX2, NEON, a working serial port) is absent, the kernel falls back to a fully correct scalar implementation without altering security semantics or violating Invariant I. The fallback path is selected at compile time by Rust's `#[cfg(target_feature = …)]` conditional compilation, not at runtime. Therefore the degraded binary is a structurally different but equally safe program — not a runtime feature-probe that could silently fail.
 
-**Invariant IV (Proof Surface Partition).** The architecture partitions claims into three tiers: (a) *formally proved* — functorial composition, affine flow conservation, DAG deadlock freedom; (b) *statistically validated* — Bayesian JIT coverage, CTMC anomaly thresholds; (c) *heuristic* — EWMA entropy tie-breaking in the quantum scheduler. No tier-(c) claim is used to make a security decision. Tier-(b) claims may influence *scheduling* decisions but not capability grant/revoke decisions, which are reserved for tier-(a). This partition is enforced by the type-level separation in Invariant II.
+**Invariant IV (Proof Surface Partition).** The architecture partitions claims into three tiers: (a) *formally proved* — functorial composition, affine flow conservation, DAG deadlock freedom; (b) *statistically validated* — Bayesian JIT coverage, CTMC anomaly thresholds; (c) *heuristic* — EWMA entropy tie-breaking in the slice scheduler. No tier-(c) claim is used to make a security decision. Tier-(b) claims may influence *scheduling* decisions but not capability grant/revoke decisions, which are reserved for tier-(a). This partition is enforced by the type-level separation in Invariant II.
 
 ---
 
@@ -291,7 +291,7 @@ IRQ (20) ──→ SYSCALL (15) ──→ SCHEDULER (10) ──→ THREAD (8) �
 
 Each arrow indicates "may acquire the lock to the right while holding the lock on the left." The reverse is forbidden by the type system. For example, a VFS callback that upgrades to scheduler level to yield the CPU would require `InterruptContext<5>::acquire_lock<10, …>`, which triggers the assertion `10 < 5 = false` — a panic in debug mode and a compile-time failure with const-assert variants.
 
-The `quantum_scheduler` uses a raw `spin::Mutex` rather than `DagSpinlock` because it is invoked from the `#NM` (Device Not Available) exception handler at IRQ level 20 — above the entire DAG. It never acquires any lower lock while doing so. This is the one explicit exemption from the DAG discipline, documented precisely here to make it auditable.
+The `slice_scheduler` uses a raw `spin::Mutex` rather than `DagSpinlock` because it is invoked from the `#NM` (Device Not Available) exception handler at IRQ level 20 — above the entire DAG. It never acquires any lower lock while doing so. This is the one explicit exemption from the DAG discipline, documented precisely here to make it auditable.
 
 ---
 
@@ -721,7 +721,7 @@ Total: $\log_2(8) = 3$ reduction rounds. Each round halves the number of active 
 pub extern "x86-interrupt" fn device_not_available_handler(
     _stack_frame: InterruptStackFrame,
 ) {
-    quantum_scheduler::scheduler().lock().handle_fpu_trap();
+    slice_scheduler::scheduler().lock().handle_fpu_trap();
 }
 ```
 
@@ -919,7 +919,7 @@ Let $c = N_k/D_k \in (0,1)$. The expression becomes $c / (c + \epsilon_{\text{fp
 
 ---
 
-## 9. Entropic Quantum Scheduling
+## 9. Entropic Slice Scheduling
 
 ### 9.1 Information Theory: Shannon Entropy as a Process Characterization
 
@@ -933,11 +933,11 @@ By convention $0 \log_2 0 = 0$ (the zero term contributes nothing).
 - $H_i = 0$: the process is in exactly one state with probability 1 — perfectly predictable, deterministic, likely a tight compute loop.
 - $H_i = \log_2 N$: the process visits all states with equal probability — maximally unpredictable, likely an I/O-bound process waiting on external events.
 
-**The scheduling insight:** A compute-bound process (low entropy) benefits from long time quanta: it has warm CPU caches, hot TLB entries, and predictable branch behavior. Interrupting it prematurely discards this warm state. An I/O-bound process (high entropy) will block soon regardless of its quantum length — giving it a long quantum is wasteful since it will yield before the quantum expires.
+**The scheduling insight:** A compute-bound process (low entropy) benefits from long time slices: it has warm CPU caches, hot TLB entries, and predictable branch behavior. Interrupting it prematurely discards this warm state. An I/O-bound process (high entropy) will block soon regardless of its slice length — giving it a long slice is wasteful since it will yield before the slice expires.
 
-### 9.2 Quantum Assignment Formula
+### 9.2 Slice Assignment Formula
 
-The quantum assignment maps entropy linearly to quantum length:
+The slice assignment maps entropy linearly to slice length:
 
 $$q_i = q_{\max} - (q_{\max} - q_{\min}) \cdot \frac{H_i}{\log_2 N}$$
 
@@ -947,9 +947,9 @@ Differentiating with respect to $H_i$:
 
 $$\frac{\partial q_i}{\partial H_i} = -\frac{q_{\max} - q_{\min}}{\log_2 N} < 0$$
 
-The quantum is a strictly decreasing function of entropy — every bit of additional behavioral entropy subtracts $(q_{\max} - q_{\min})/\log_2 N$ milliseconds from the assigned quantum. For $N = 8$ states, $q_{\max} = 10$, $q_{\min} = 1$: each bit of entropy reduces the quantum by $9/3 = 3$ ms. A process at $H = 1$ bit gets $10 - 3 = 7$ ms; at $H = 2$ bits gets $4$ ms; at $H = 3$ bits gets $1$ ms.
+The slice is a strictly decreasing function of entropy — every bit of additional behavioral entropy subtracts $(q_{\max} - q_{\min})/\log_2 N$ milliseconds from the assigned slice. For $N = 8$ states, $q_{\max} = 10$, $q_{\min} = 1$: each bit of entropy reduces the timeslice by $9/3 = 3$ ms. A process at $H = 1$ bit gets $10 - 3 = 7$ ms; at $H = 2$ bits gets $4$ ms; at $H = 3$ bits gets $1$ ms.
 
-**Integration with Invariant IV:** This is explicitly a tier-(c) heuristic. The entropy-based quantum does not affect capability grants. If the scheduler assigns a very short quantum to a malicious process (because it appears high-entropy), the malicious process simply gets shorter CPU bursts — it cannot exploit this to escalate privileges, because privilege is determined by the capability type system (tier-a), not by scheduling state (tier-c).
+**Integration with Invariant IV:** This is explicitly a tier-(c) heuristic. The entropy-based slice does not affect capability grants. If the scheduler assigns a very short slice to a malicious process (because it appears high-entropy), the malicious process simply gets shorter CPU bursts — it cannot exploit this to escalate privileges, because privilege is determined by the capability type system (tier-a), not by scheduling state (tier-c).
 
 ### 9.3 EWMA Implementation on the Hot Path
 
@@ -1011,7 +1011,7 @@ The EWMA bias is at most 0.126% of the initial deviation from the true mean — 
 | Cheeger conductance check | `build.rs` | Lanczos offline $\lambda_1$ | Formally proved | Theorem 7.4 |
 | Mixing time / polling interval | telemetry daemon | $\tau_{\text{mix}} \leq \ln(n/\epsilon)/\gamma$ | Statistically validated | Corollary 7.3 |
 | Bayesian JIT confidence | `wasm.rs` | `ExactRational` multiplicative update | Statistically validated | Section 8.2 |
-| EWMA entropy scheduler | `quantum_scheduler.rs` | `ewma >> 3` update | Heuristic (tier-c) | Lemma 9.1 |
+| EWMA entropy scheduler | `slice_scheduler.rs` | `ewma >> 3` update | Heuristic (tier-c) | Lemma 9.1 |
 
 ---
 

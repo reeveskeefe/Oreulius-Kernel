@@ -283,7 +283,7 @@ The adapter registry contains the following prefixes:
 | `/wasm/service-pointers` | WASM service pointer registry | `10` | `wasm::temporal_apply_service_pointer_registry_payload` |
 | `/network/config` | Net reactor config | `11` | `net_reactor::temporal_apply_network_config_payload` |
 | `/wasm/syscall-modules` | WASM syscall module table | `12` | `wasm::temporal_apply_syscall_module_table_payload` |
-| `/scheduler/state` | Quantum scheduler runtime state | `13` | `quantum_scheduler::temporal_apply_scheduler_payload` |
+| `/scheduler/state` | Slice scheduler runtime state | `13` | `slice_scheduler::temporal_apply_scheduler_payload` |
 | `/replay/state` | Replay manager state | `14` | `replay::temporal_apply_replay_manager_payload` |
 | `/network/legacy/state` | Legacy network service state | `15` | `net::temporal_apply_network_service_payload` |
 | `/wifi/state` | WiFi driver state | `16` | `wifi::temporal_apply_wifi_driver_payload` |

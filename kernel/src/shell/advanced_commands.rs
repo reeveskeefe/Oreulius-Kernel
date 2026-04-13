@@ -38,14 +38,14 @@ fn print_usize(n: usize) {
     print_u32(n as u32);
 }
 
-/// Show quantum scheduler statistics and process accounting
-pub fn cmd_quantum_stats() {
-    use crate::scheduler::quantum_scheduler;
+/// Show slice scheduler statistics and process accounting
+pub fn cmd_slice_stats() {
+    use crate::scheduler::slice_scheduler;
 
-    vga::print_str("Quantum Scheduler Statistics\n");
+    vga::print_str("Slice Scheduler Statistics\n");
     vga::print_str("============================\n\n");
 
-    let stats = quantum_scheduler::scheduler().lock().get_stats();
+    let stats = slice_scheduler::scheduler().lock().get_stats();
 
     vga::print_str("Context Switches:\n");
     vga::print_str("  Total:       ");
@@ -63,10 +63,10 @@ pub fn cmd_quantum_stats() {
 
     // List processes with accounting
     vga::print_str("Process Accounting:\n");
-    vga::print_str("  PID | CPU Time | Wait Time | Switches | Quantum\n");
+    vga::print_str("  PID | CPU Time | Wait Time | Switches | Timeslice\n");
     vga::print_str("  ----+----------+-----------+----------+--------\n");
 
-    let scheduler_guard = quantum_scheduler::scheduler().lock();
+    let scheduler_guard = slice_scheduler::scheduler().lock();
     let processes = scheduler_guard.list_processes();
     for (pid, info) in processes {
         vga::print_str("  ");
@@ -78,7 +78,7 @@ pub fn cmd_quantum_stats() {
         vga::print_str(" | ");
         print_u64(info.switches);
         vga::print_str(" | ");
-        print_u32(info.quantum_remaining);
+        print_u32(info.slice_remaining);
         vga::print_str("\n");
     }
 
@@ -86,25 +86,25 @@ pub fn cmd_quantum_stats() {
 }
 
 pub fn cmd_sched_entropy_bench() {
-    use crate::scheduler::quantum_scheduler;
+    use crate::scheduler::slice_scheduler;
 
     vga::print_str("Scheduler Entropy Bench\n");
     vga::print_str("=======================\n\n");
     vga::print_str(
-        "Scenarios use the scheduler's canonical EWMA roll + quantum adjust helpers.\n\n",
+        "Scenarios use the scheduler's canonical EWMA roll + timeslice adjust helpers.\n\n",
     );
 
-    for scenario in quantum_scheduler::entropy_bench_results() {
+    for scenario in slice_scheduler::entropy_bench_results() {
         vga::print_str("Scenario: ");
         vga::print_str(scenario.name);
-        vga::print_str("\n  Base quantum:      ");
-        print_u32(scenario.base_quantum);
+        vga::print_str("\n  Base timeslice:      ");
+        print_u32(scenario.base_slice);
         vga::print_str("\n  Rolled yield EWMA: ");
         print_u32(scenario.rolled_yield_ewma);
         vga::print_str("\n  Rolled fault EWMA: ");
         print_u32(scenario.rolled_fault_ewma);
-        vga::print_str("\n  Adjusted quantum:  ");
-        print_u32(scenario.adjusted_quantum);
+        vga::print_str("\n  Adjusted timeslice:  ");
+        print_u32(scenario.adjusted_slice);
         vga::print_str("\n\n");
     }
 }
@@ -195,7 +195,7 @@ pub fn cmd_leak_check() {
 
 /// Test futex-like blocking primitives
 pub fn cmd_futex_test() {
-    use crate::scheduler::quantum_scheduler;
+    use crate::scheduler::slice_scheduler;
 
     vga::print_str("Futex-like Blocking Primitive Test\n");
     vga::print_str("===================================\n\n");
@@ -204,7 +204,7 @@ pub fn cmd_futex_test() {
     let futex_addr = 0x1000 as usize;
 
     vga::print_str("1. Testing wait queue creation:\n");
-    match quantum_scheduler::block_on(futex_addr) {
+    match slice_scheduler::block_on(futex_addr) {
         Ok(_) => vga::print_str("   ✓ Blocked on address 0x1000\n"),
         Err(e) => {
             vga::print_str("   ✗ Error: ");
@@ -214,7 +214,7 @@ pub fn cmd_futex_test() {
     }
 
     vga::print_str("\n2. Testing wake_one:\n");
-    match quantum_scheduler::wake_one(futex_addr) {
+    match slice_scheduler::wake_one(futex_addr) {
         Ok(true) => vga::print_str("   ✓ Woke one process\n"),
         Ok(false) => vga::print_str("   - No processes waiting\n"),
         Err(e) => {
@@ -225,7 +225,7 @@ pub fn cmd_futex_test() {
     }
 
     vga::print_str("\n3. Testing wake_all:\n");
-    match quantum_scheduler::wake_all(futex_addr) {
+    match slice_scheduler::wake_all(futex_addr) {
         Ok(count) => {
             vga::print_str("   ✓ Woke ");
             print_usize(count);

@@ -81,7 +81,7 @@ extern "C" {
     #[link_name = "oreulius_thread_id"]
     pub fn thread_id() -> i32;
 
-    /// Yield the current CPU quantum.
+    /// Yield the current CPU time slice.
     #[link_name = "oreulius_thread_yield"]
     pub fn thread_yield();
 
@@ -340,7 +340,7 @@ extern "C" {
     pub fn policy_query(cap_id: i32, buf_ptr: i32, buf_len: i32) -> i32;
 
     // -----------------------------------------------------------------------
-    // Quantum-Inspired Capability Entanglement (IDs 125–128)
+    // Collapse-Linked Capability Entanglement (IDs 125–128)
     // -----------------------------------------------------------------------
 
     /// Entangle two capabilities: revoking either one automatically revokes

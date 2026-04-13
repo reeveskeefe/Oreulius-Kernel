@@ -1139,7 +1139,7 @@ pub extern "C" fn rust_page_fault_handler_ex(
         vga::print_str("ESP: (unknown)\n");
     }
 
-    let stacks = crate::scheduler::quantum_scheduler::kernel_stack_bounds();
+    let stacks = crate::scheduler::slice_scheduler::kernel_stack_bounds();
     let mut esp_in_known_stack = false;
     for (idx, (start, end)) in stacks.iter().enumerate() {
         vga::print_str("KSTACK");

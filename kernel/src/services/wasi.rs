@@ -1792,7 +1792,7 @@ pub fn poll_oneoff(
         }
 
         // Not ready yet — yield and retry
-        crate::scheduler::quantum_scheduler::yield_now();
+        crate::scheduler::slice_scheduler::yield_now();
     }
 
     // --- Phase 3: write event structs for every triggered subscription ------

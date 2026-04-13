@@ -38,7 +38,7 @@
 <text class="th" x="540" y="170" text-anchor="middle" dominant-baseline="central">WaitQueue</text>
 <text class="ts" x="540" y="190" text-anchor="middle" dominant-baseline="central" fill="#888780">waiting_senders</text>
 
-<!-- Channel → wake → QuantumScheduler (right side) -->
+<!-- Channel → wake → SliceScheduler (right side) -->
 <path d="M420 70 L600 70 L600 286 L601 286" fill="none" stroke="#888780" stroke-width="1" marker-end="url(#arrow)"/>
 <text class="ts" x="630" y="180" text-anchor="end" dominant-baseline="central">wake</text>
 
@@ -46,9 +46,9 @@
 <path d="M260 70 L80 70 L80 286 L119 286" fill="none" stroke="#888780" stroke-width="1" marker-end="url(#arrow)"/>
 <text class="ts" x="68" y="180" text-anchor="end" dominant-baseline="central">record</text>
 
-<!-- QuantumScheduler -->
+<!-- SliceScheduler -->
 <rect x="420" y="258" width="180" height="56" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
-<text class="th" x="510" y="276" text-anchor="middle" dominant-baseline="central" fill="#412402">QuantumScheduler</text>
+<text class="th" x="510" y="276" text-anchor="middle" dominant-baseline="central" fill="#412402">SliceScheduler</text>
 <text class="ts" x="510" y="296" text-anchor="middle" dominant-baseline="central" fill="#854F0B">BlockOnPlan</text>
 
 <!-- TemporalLog -->

@@ -101,7 +101,7 @@
 
   <rect x="1090" y="60" width="140" height="44" rx="10" fill="#f3f4f6" stroke="#6b7280" class="participant-box"/>
   <text x="1160" y="78" text-anchor="middle" class="participant-label">SCHED</text>
-  <text x="1160" y="94" text-anchor="middle" class="msg-text">QuantumScheduler</text>
+  <text x="1160" y="94" text-anchor="middle" class="msg-text">SliceScheduler</text>
 
   <!-- Lifelines -->
   <line x1="100" y1="104" x2="100" y2="710" class="lifeline"/>

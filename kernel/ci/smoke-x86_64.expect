@@ -79,7 +79,7 @@ expect {
 
 send "sched-stats\r"
 expect {
-    -re {Scheduler: QuantumScheduler \(x86_64 runtime path\)} {}
+    -re {Scheduler: SliceScheduler \(x86_64 runtime path\)} {}
     timeout { puts "timeout waiting for x86_64 sched-stats output"; exit 1 }
 }
 expect {

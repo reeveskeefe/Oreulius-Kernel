@@ -8,8 +8,8 @@ The `scheduler` module is the **execution engine of the Oreulius kernel**. It ow
 
 The scheduler is a **multi-level feedback queue (MLFQ) preemptive scheduler** with the following properties:
 
-- **Three priority levels** (`High`, `Normal`, `Low`) with separate ready queues; a process dropped from High will re-enter at Normal after consuming its full quantum.
-- **Quantum decay**: each priority level has a fixed quantum in PIT ticks. A process that voluntarily yields early is rewarded; one that burns its entire quantum is demoted.
+- **Three priority levels** (`High`, `Normal`, `Low`) with separate ready queues; a process dropped from High will re-enter at Normal after consuming its full timeslice.
+- **Slice decay**: each priority level has a fixed timeslice in PIT ticks. A process that voluntarily yields early is rewarded; one that burns its entire timeslice is demoted.
 - **Entropy scheduling (PMA §3)**: each `ProcessInfo` tracks EWMA yield density and page-fault density. The scheduler uses these to distinguish CPU-bound processes from I/O-bound ones and adjusts scheduling pressure accordingly.
 - **Lazy FPU (PMA §5.1)**: FPU/SIMD registers are not saved on every context switch. A `CR0.TS` trap fires on first FPU use; `handle_fpu_trap()` saves the owner's state, restores the new process's state (if any), and clears the trap bit.
 - **Futex-like wait queues**: up to `MAX_WAIT_QUEUES = 64` wait queues keyed by arbitrary `usize` addresses allow processes to block on mutexes, IPC channels, and timer wakeups without polling.
@@ -25,10 +25,10 @@ The scheduler is a **multi-level feedback queue (MLFQ) preemptive scheduler** wi
 | `process.rs` | All | 939 | `Process` PCB, `ProcessTable`, `ProcessManager`, capability table, `ProcessState`, `ProcessPriority` |
 | `process_asm.rs` | x86 | 390 | `TaskContext`, `fast_context_switch`, `enter_user_mode`, TSS helpers (extern "C" assembly bindings) |
 | `process_platform.rs` | x86 | 53 | `Pid` newtype and platform-specific process helpers |
-| `quantum_scheduler.rs` | All | 3153 | `QuantumScheduler` — MLFQ, wait queues, entropy scheduling, temporal persistence |
+| `slice_scheduler.rs` | All | 3153 | `SliceScheduler` — MLFQ, wait queues, entropy scheduling, temporal persistence |
 | `scheduler.rs` | All | 604 | `Scheduler` facade, `SchedulerStats`, global instance, `on_timer_tick` |
 | `scheduler_platform.rs` | All | 615 | `ProcessContext`, `IrqFlags`, `irq_save_disable`, `irq_restore` — arch-specific context/IRQ primitives |
-| `scheduler_runtime_platform.rs` | All | 106 | Runtime platform helpers used within `quantum_scheduler.rs` |
+| `scheduler_runtime_platform.rs` | All | 106 | Runtime platform helpers used within `slice_scheduler.rs` |
 | `tasks.rs` | All | 233 | High-level task spawning helpers |
 
 ---
@@ -87,11 +87,11 @@ The global tick counter is split across two `AtomicU32` values (`TICKS_LO` + `TI
 
 ### `ProcessPriority`
 
-| Variant | Value | Quantum |
+| Variant | Value | Timeslice |
 |---|---|---|
-| `High` | `3` | `QUANTUM_HIGH = 20` ticks (200 ms) |
-| `Normal` | `2` | `QUANTUM_NORMAL = 10` ticks (100 ms) |
-| `Low` | `1` | `QUANTUM_LOW = 5` ticks (50 ms) |
+| `High` | `3` | `SLICE_HIGH = 20` ticks (200 ms) |
+| `Normal` | `2` | `SLICE_NORMAL = 10` ticks (100 ms) |
+| `Low` | `1` | `SLICE_LOW = 5` ticks (50 ms) |
 
 ### `Process` (PCB)
 
@@ -179,11 +179,11 @@ struct TaskContext {
 
 ---
 
-## `quantum_scheduler.rs` — MLFQ Core
+## `slice_scheduler.rs` — MLFQ Core
 
-The 3153-line heart of the scheduler. Contains `QuantumScheduler`, its ready/wait queue machinery, entropy scheduling state, block/wake primitives, and temporal persistence.
+The 3153-line heart of the scheduler. Contains `SliceScheduler`, its ready/wait queue machinery, entropy scheduling state, block/wake primitives, and temporal persistence.
 
-### `QuantumScheduler` Fields
+### `SliceScheduler` Fields
 
 | Field | Description |
 |---|---|
@@ -204,7 +204,7 @@ On top of the base `Process` PCB, each `ProcessInfo` adds:
 | `kernel_stack_top` | Top of per-process Ring-0 entry stack |
 | `stack` | `Option<Box<[u8; STACK_SIZE]>>` — kernel stack allocation |
 | `address_space` | `Option<Box<AddressSpace>>` — user address space (None for kernel threads) |
-| `quantum_remaining` | Ticks left in current scheduling slot |
+| `slice_remaining` | Ticks left in current scheduling slot |
 | `total_cpu_time` | Lifetime CPU ticks |
 | `total_wait_time` | Lifetime ticks spent waiting |
 | `last_scheduled` | PIT tick at last schedule-in |
@@ -217,13 +217,13 @@ On top of the base `Process` PCB, each `ProcessInfo` adds:
 | `fpu_dirty` | FPU registers contain unsaved state for this process |
 | `fpu_state` | `ExtFpuState` — 2816-byte XSAVE/XRSTOR area (covers full AVX-512 on x86-64; Q0–Q31/FPSR/FPCR on AArch64) |
 
-### Quantum Sizing
+### Slice Sizing
 
 | Priority | Constant | Value | Wall-Clock |
 |---|---|---|---|
-| High | `QUANTUM_HIGH` | 20 ticks | 200 ms |
-| Normal | `QUANTUM_NORMAL` | 10 ticks | 100 ms |
-| Low | `QUANTUM_LOW` | 5 ticks | 50 ms |
+| High | `SLICE_HIGH` | 20 ticks | 200 ms |
+| Normal | `SLICE_NORMAL` | 10 ticks | 100 ms |
+| Low | `SLICE_LOW` | 5 ticks | 50 ms |
 
 Stack sizes are capped on 32-bit x86 targets:
 
@@ -267,7 +267,7 @@ The scheduler participates in the temporal snapshot system. `temporal_apply_sche
 | Section | Bytes | Content |
 |---|---|---|
 | Header | 60 | Schema version, process count, wait queue count, tick, stats |
-| Per-process | 44 × N | Pid, state, priority, cpu_time, wait_time, quantum_remaining |
+| Per-process | 44 × N | Pid, state, priority, cpu_time, wait_time, slice_remaining |
 | Wait queue header | 12 × M | Address, waiter count, active flag, wake_time |
 
 ### Shell Commands
@@ -285,7 +285,7 @@ The scheduler participates in the temporal snapshot system. `temporal_apply_sche
 
 ## `scheduler.rs` — Facade and Global Instance
 
-Wraps `QuantumScheduler` in a `DagSpinlock<DAG_LEVEL_SCHEDULER>` for deadlock-safe access from IRQ handlers and syscall context. The `Scheduler` struct in this file serves as the minimal non-`QuantumScheduler` facade used during early boot before the full scheduler is initialised.
+Wraps `SliceScheduler` in a `DagSpinlock<DAG_LEVEL_SCHEDULER>` for deadlock-safe access from IRQ handlers and syscall context. The `Scheduler` struct in this file serves as the minimal non-`SliceScheduler` facade used during early boot before the full scheduler is initialised.
 
 | Global | Type | Description |
 |---|---|---|
@@ -294,7 +294,7 @@ Wraps `QuantumScheduler` in a `DagSpinlock<DAG_LEVEL_SCHEDULER>` for deadlock-sa
 | Function | Description |
 |---|---|
 | `scheduler()` | Return reference to the global `DagSpinlock` |
-| `on_timer_tick()` | Called by PIT IRQ handler — tick quantum, preempt if expired |
+| `on_timer_tick()` | Called by PIT IRQ handler — tick timeslice, preempt if expired |
 | `maybe_reschedule()` | Called at syscall return — yield if a higher-priority process is ready |
 | `yield_cpu()` | Public yield entry point |
 | `sleep(ms)` | Public sleep entry point |

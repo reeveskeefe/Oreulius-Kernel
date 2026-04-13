@@ -734,8 +734,8 @@ pub(crate) fn for_each_discovered_virtio_mmio(mut f: impl FnMut(usize, usize, u3
 #[inline]
 pub(crate) fn scheduler_timer_tick_hook() {
     let total = AARCH64_SCHED_TICK_TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
-    let quantum = AARCH64_SCHED_TIMESLICE_TICKS.load(Ordering::Relaxed).max(1);
-    let pos = (total % quantum) as u64;
+    let timeslice = AARCH64_SCHED_TIMESLICE_TICKS.load(Ordering::Relaxed).max(1);
+    let pos = (total % timeslice) as u64;
     AARCH64_SCHED_TIMESLICE_POS.store(pos, Ordering::Relaxed);
     if pos == 0 {
         AARCH64_SCHED_RESCHED_PENDING.store(true, Ordering::Release);
@@ -748,7 +748,7 @@ pub(crate) fn scheduler_timer_tick_hook() {
 /// running.
 ///
 /// Today this is exercised by debug shell commands (`pid-set`) because the full
-/// AArch64 quantum scheduler/context-switch path is not enabled yet.
+/// AArch64 slice scheduler/context-switch path is not enabled yet.
 pub(crate) fn scheduler_note_context_switch(pid: u32) -> Result<(), &'static str> {
     crate::scheduler::process::set_current_runtime_pid(crate::scheduler::process::Pid::new(pid))?;
     AARCH64_SCHED_CONTEXT_SWITCHES.fetch_add(1, Ordering::Relaxed);
@@ -772,9 +772,9 @@ fn scheduler_tick_backend_clear_pending() {
     AARCH64_SCHED_RESCHED_PENDING.store(false, Ordering::Release);
 }
 
-fn scheduler_tick_backend_set_quantum(ticks: u64) -> Result<(), &'static str> {
+fn scheduler_tick_backend_set_timeslice(ticks: u64) -> Result<(), &'static str> {
     if ticks == 0 || ticks > 10_000 {
-        return Err("quantum out of range");
+        return Err("timeslice out of range");
     }
     AARCH64_SCHED_TIMESLICE_TICKS.store(ticks, Ordering::Relaxed);
     Ok(())
@@ -2068,7 +2068,7 @@ fn shell_print_ticks() {
 }
 
 fn shell_print_scheduler_backend() {
-    let (ticks, pending, requests, switches, quantum, pos) = scheduler_tick_backend_snapshot();
+    let (ticks, pending, requests, switches, timeslice, pos) = scheduler_tick_backend_snapshot();
     let (_proc_count, _fd_count, current_pid) = crate::scheduler::process::runtime_fd_stats();
     let u = uart();
     u.write_str("[A64] sched-backend ticks=");
@@ -2081,8 +2081,8 @@ fn shell_print_scheduler_backend() {
     uart_write_hex_u64(switches);
     u.write_str(" pid=");
     uart_write_hex_u64(current_pid.map(|pid| pid.0 as u64).unwrap_or(1));
-    u.write_str(" quantum=");
-    uart_write_hex_u64(quantum);
+    u.write_str(" timeslice=");
+    uart_write_hex_u64(timeslice);
     u.write_str(" pos=");
     uart_write_hex_u64(pos);
     uart_newline();
@@ -3021,17 +3021,17 @@ fn shell_exec_command(cmd: &str) -> bool {
         shell_print_scheduler_backend();
         return true;
     }
-    if let Some(arg) = cmd.strip_prefix("sched quantum ") {
+    if let Some(arg) = cmd.strip_prefix("sched timeslice ") {
         match parse_u64_decimal(arg.trim())
-            .and_then(|v| scheduler_tick_backend_set_quantum(v).ok().map(|_| v))
+            .and_then(|v| scheduler_tick_backend_set_timeslice(v).ok().map(|_| v))
         {
             Some(v) => {
                 let u = uart();
-                u.write_str("[A64] sched quantum set=");
+                u.write_str("[A64] sched timeslice set=");
                 uart_write_hex_u64(v);
                 uart_newline();
             }
-            None => early_log("[A64] usage: sched quantum <ticks>\n"),
+            None => early_log("[A64] usage: sched timeslice <ticks>\n"),
         }
         shell_print_scheduler_backend();
         return true;

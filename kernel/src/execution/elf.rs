@@ -19,7 +19,7 @@ use core::ptr;
 use crate::arch::mmu::{self as arch_mmu, AddressSpace};
 use crate::fs::paging::{PAGE_SIZE, USER_TOP};
 use crate::scheduler::process::{self, ProcessPriority};
-use crate::scheduler::quantum_scheduler::{self, UserProcessLayout, UserRegionSpec, VmaFlags, VmaKind};
+use crate::scheduler::slice_scheduler::{self, UserProcessLayout, UserRegionSpec, VmaFlags, VmaKind};
 
 const EI_NIDENT: usize = 16;
 const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
@@ -529,7 +529,7 @@ pub fn spawn_elf_process(name: &str, bytes: &[u8]) -> Result<(), &'static str> {
         .get(pid)
         .ok_or("Process not found")?;
     proc.priority = ProcessPriority::Normal;
-    quantum_scheduler::scheduler().lock().add_user_process_with_layout(
+    slice_scheduler::scheduler().lock().add_user_process_with_layout(
         proc,
         Box::new(loaded.space),
         loaded.entry,
@@ -932,7 +932,7 @@ pub fn spawn_elf64_process(name: &str, bytes: &[u8]) -> Result<(), &'static str>
         .get(pid)
         .ok_or("ELF64: process not found after spawn")?;
     proc.priority = ProcessPriority::Normal;
-    quantum_scheduler::scheduler().lock().add_user_process_with_layout(
+    slice_scheduler::scheduler().lock().add_user_process_with_layout(
         proc,
         Box::new(loaded.space),
         loaded.entry as u32, // scheduler stores u32 VA; fine for 4 GiB user space

@@ -45,7 +45,7 @@ pub fn current_id() -> ThreadId {
     unsafe { oreulius::thread_id() }
 }
 
-/// Yield the current CPU quantum.
+/// Yield the current CPU time slice.
 pub fn yield_now() {
     unsafe { oreulius::thread_yield() }
 }

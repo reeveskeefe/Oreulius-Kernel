@@ -22,7 +22,7 @@
 <text class="ts" x="235" y="66" text-anchor="middle" dominant-baseline="central" fill="#0F6E56">IPC</text>
 
 <rect x="344" y="28" width="148" height="52" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
-<text class="th" x="418" y="48" text-anchor="middle" dominant-baseline="central" fill="#412402">QuantumScheduler</text>
+<text class="th" x="418" y="48" text-anchor="middle" dominant-baseline="central" fill="#412402">SliceScheduler</text>
 <text class="ts" x="418" y="66" text-anchor="middle" dominant-baseline="central" fill="#854F0B">SCHED</text>
 
 <rect x="532" y="28" width="130" height="52" rx="8" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>

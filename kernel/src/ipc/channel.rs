@@ -211,14 +211,14 @@ impl Channel {
     fn wake_one_receiver(&mut self) {
         let mut woke = false;
         while let Some(pid) = self.waiting_receivers.pop_front() {
-            if let Ok(true) = crate::scheduler::quantum_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
                 self.note_receiver_wakeups(1);
                 woke = true;
                 break;
             }
         }
         if !woke {
-            if let Ok(true) = crate::scheduler::quantum_scheduler::wake_one(self.message_wait_addr()) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_one(self.message_wait_addr()) {
                 self.note_receiver_wakeups(1);
             }
         }
@@ -227,14 +227,14 @@ impl Channel {
     fn wake_all_receivers(&mut self) {
         let mut count = 0;
         while let Some(pid) = self.waiting_receivers.pop_front() {
-            if let Ok(true) = crate::scheduler::quantum_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
                 count += 1;
             }
         }
         if count > 0 {
             self.note_receiver_wakeups(count);
         } else {
-            if let Ok(woken) = crate::scheduler::quantum_scheduler::wake_all(self.message_wait_addr()) {
+            if let Ok(woken) = crate::scheduler::slice_scheduler::wake_all(self.message_wait_addr()) {
                 if woken > 0 {
                     self.note_receiver_wakeups(woken);
                 }
@@ -245,14 +245,14 @@ impl Channel {
     fn wake_one_sender(&mut self) {
         let mut woke = false;
         while let Some(pid) = self.waiting_senders.pop_front() {
-            if let Ok(true) = crate::scheduler::quantum_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
                 self.note_sender_wakeups(1);
                 woke = true;
                 break;
             }
         }
         if !woke {
-            if let Ok(true) = crate::scheduler::quantum_scheduler::wake_one(self.capacity_wait_addr()) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_one(self.capacity_wait_addr()) {
                 self.note_sender_wakeups(1);
             }
         }
@@ -261,14 +261,14 @@ impl Channel {
     fn wake_all_senders(&mut self) {
         let mut count = 0;
         while let Some(pid) = self.waiting_senders.pop_front() {
-            if let Ok(true) = crate::scheduler::quantum_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
                 count += 1;
             }
         }
         if count > 0 {
             self.note_sender_wakeups(count);
         } else {
-            if let Ok(woken) = crate::scheduler::quantum_scheduler::wake_all(self.capacity_wait_addr()) {
+            if let Ok(woken) = crate::scheduler::slice_scheduler::wake_all(self.capacity_wait_addr()) {
                 if woken > 0 {
                     self.note_sender_wakeups(woken);
                 }

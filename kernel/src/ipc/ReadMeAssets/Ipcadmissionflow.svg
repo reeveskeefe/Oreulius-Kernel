@@ -70,12 +70,12 @@
 <text class="th" x="290" y="450" text-anchor="middle" dominant-baseline="central" fill="#26215C">Channel</text>
 <text class="ts" x="290" y="470" text-anchor="middle" dominant-baseline="central" fill="#534AB7">channel.rs</text>
 
-<!-- ADM → Defer → QuantumScheduler -->
+<!-- ADM → Defer → SliceScheduler -->
 <path d="M380 350 L430 350 L430 450 L401 450" fill="none" stroke="#888780" stroke-width="1" marker-end="url(#arrow)"/>
 <text class="ts" x="438" y="396" dominant-baseline="central">Defer</text>
 
 <rect x="400" y="430" width="160" height="56" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
-<text class="th" x="480" y="450" text-anchor="middle" dominant-baseline="central" fill="#412402">QuantumScheduler</text>
+<text class="th" x="480" y="450" text-anchor="middle" dominant-baseline="central" fill="#412402">SliceScheduler</text>
 <text class="ts" x="480" y="470" text-anchor="middle" dominant-baseline="central" fill="#854F0B">BlockOnPlan</text>
 
 <!-- ADM → Refuse → IpcError -->

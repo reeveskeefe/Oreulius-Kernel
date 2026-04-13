@@ -1,8 +1,6 @@
 # Oreulius Collapse-Linked Capability Entanglement
 
-> **Status:** Fully implemented. WASM host ABI IDs 125–128. Core: `kernel/src/execution/wasm.rs` (`ENTANGLE_TABLE`, `entangle_cascade_revoke`). SDK: `wasm/sdk/src/entangle.rs`. Cascade revocation integrated with `CapabilityManager::revoke_capability`.
 
----
 
 ## 1. Overview
 

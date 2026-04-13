@@ -338,7 +338,7 @@ Given the backpressure level and channel flags, the recommended action for a sen
 | `Saturated` | `ASYNC` | `Refuse` |
 | `Saturated` | `!ASYNC` (Reliable / Sync) | `Defer` |
 
-**Design rationale:** Reliable (non-async) channels block the sender when full — the caller is suspended via `QuantumScheduler::prepare_block_on` until capacity is available. Async channels cannot block, so they refuse. High-priority async channels are exempt from high-pressure refusal — they always commit as long as the queue is not physically full.
+**Design rationale:** Reliable (non-async) channels block the sender when full — the caller is suspended via `SliceScheduler::prepare_block_on` until capacity is available. Async channels cannot block, so they refuse. High-priority async channels are exempt from high-pressure refusal — they always commit as long as the queue is not physically full.
 
 The condition `ASYNC & BOUNDED & !HIGH_PRIORITY` is the conservative case: the channel is non-blocking, has an explicit capacity limit, and is not flagged as a priority path. All three conditions together trigger early refusal at `High` pressure, acting as a rate limiter before full saturation occurs.
 
@@ -407,7 +407,7 @@ The admission module (`admission.rs`) is a **pure decision function** — it tak
 
 ## Scheduler Integration — Blocking and Wakeup
 
-Blocking IPC sends and receives are deeply integrated with the `QuantumScheduler`. The integration is achieved via **channel wait addresses** — synthetic virtual addresses that uniquely identify the wait condition.
+Blocking IPC sends and receives are deeply integrated with the `SliceScheduler`. The integration is achieved via **channel wait addresses** — synthetic virtual addresses that uniquely identify the wait condition.
 
 ### Wait Address Computation
 
@@ -519,7 +519,7 @@ loop {
             }
             Defer(WaitForCapacity) => {
                 channel.record_defer_send()
-                let plan = quantum_scheduler::prepare_block_on(
+                let plan = slice_scheduler::prepare_block_on(
                     channel_capacity_wait_addr(channel_id), WaitingOnChannel
                 )?
                 plan   // exit lock scope
@@ -529,7 +529,7 @@ loop {
                 return Err(IpcError::WouldBlock)
             }
     };
-    quantum_scheduler::commit_block(plan);   // yield CPU
+    slice_scheduler::commit_block(plan);   // yield CPU
     // loop — retry from top on wakeup
 }
 ```

@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: LicenseRef-Oreulius-Community
  */
 
-//! Advanced Quantum-Based Preemptive Scheduler
+//! Advanced Slice-Based Preemptive Scheduler
 //!
 //! Features:
-//! - Per-process quantum tracking with decay
+//! - Per-process timeslice tracking with decay
 //! - Multi-level feedback queue (MLFQ) for adaptive priority
 //! - Blocking primitives (futex-like wait queues)
 //! - CPU affinity and load balancing (single-core for now)
@@ -64,10 +64,10 @@ static mut KERNEL_STACK_3: AlignedStack = AlignedStack {
     data: [0; KERNEL_THREAD_STACK_BYTES],
 };
 
-/// Quantum in ticks (100 Hz = 10ms per tick)
-const QUANTUM_HIGH: u32 = 20; // 200ms for high priority
-const QUANTUM_NORMAL: u32 = 10; // 100ms for normal
-const QUANTUM_LOW: u32 = 5; // 50ms for low priority
+/// ticks (100 Hz = 10ms per tick)
+const SLICE_HIGH: u32 = 20; // 200ms for high priority
+const SLICE_NORMAL: u32 = 10; // 100ms for normal
+const SLICE_LOW: u32 = 5; // 50ms for low priority
 
 /// Maximum wait queue entries
 const MAX_WAIT_QUEUES: usize = 64;
@@ -102,11 +102,11 @@ const fn priority_to_queue_idx(priority: ProcessPriority) -> usize {
     }
 }
 
-const fn base_quantum_for_priority(priority: ProcessPriority) -> u32 {
+const fn base_slice_for_priority(priority: ProcessPriority) -> u32 {
     match priority {
-        ProcessPriority::High => QUANTUM_HIGH,
-        ProcessPriority::Normal => QUANTUM_NORMAL,
-        ProcessPriority::Low => QUANTUM_LOW,
+        ProcessPriority::High => SLICE_HIGH,
+        ProcessPriority::Normal => SLICE_NORMAL,
+        ProcessPriority::Low => SLICE_LOW,
     }
 }
 
@@ -140,10 +140,10 @@ struct EntropyWindowState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntropyBenchResult {
     pub name: &'static str,
-    pub base_quantum: u32,
+    pub base_slice: u32,
     pub rolled_yield_ewma: u32,
     pub rolled_fault_ewma: u32,
-    pub adjusted_quantum: u32,
+    pub adjusted_slice: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,7 +231,7 @@ fn roll_entropy_window(
     }
 }
 
-/// Compute a per-process quantum adapted by Shannon entropy of its behavior.
+/// Compute a per-process timeslice adapted by Shannon entropy of its behavior.
 ///
 /// Uses the bit-shift EWMA approximation:
 ///   ΔS ≈ -( ewma_yield * log2(ewma_yield+1) + ewma_fault * log2(ewma_fault+1) ) / 64
@@ -241,23 +241,23 @@ fn roll_entropy_window(
 ///
 /// The `>> 4` scaling keeps the reward/penalty terms in the same rough range as the
 /// 5/10/20 tick base quanta used by the scheduler and by `sched-entropy-bench`.
-/// Values that exceed that envelope are clamped to `[QUANTUM_LOW, QUANTUM_HIGH]`
+/// Values that exceed that envelope are clamped to `[SLICE_LOW, SLICE_HIGH]`
 /// so tuning the EWMA inputs cannot starve or overrun the MLFQ bands.
-fn compute_entropy_quantum(ewma_yield: u32, ewma_fault: u32, base: u32) -> u32 {
+fn compute_entropy_slice(ewma_yield: u32, ewma_fault: u32, base: u32) -> u32 {
     let log2_yield = 31u32.saturating_sub((ewma_yield.saturating_add(1)).leading_zeros());
     let log2_fault = 31u32.saturating_sub((ewma_fault.saturating_add(1)).leading_zeros());
 
     let reward = ewma_yield.saturating_mul(log2_yield) >> 4;
     let penalty = ewma_fault.saturating_mul(log2_fault) >> 4;
     let adjusted = base.saturating_add(reward).saturating_sub(penalty);
-    adjusted.clamp(QUANTUM_LOW, QUANTUM_HIGH)
+    adjusted.clamp(SLICE_LOW, SLICE_HIGH)
 }
 
-fn entropy_adjusted_quantum(priority: ProcessPriority, rolled: EntropyWindowState) -> u32 {
-    compute_entropy_quantum(
+fn entropy_adjusted_slice(priority: ProcessPriority, rolled: EntropyWindowState) -> u32 {
+    compute_entropy_slice(
         rolled.ewma_yield,
         rolled.ewma_fault,
-        base_quantum_for_priority(priority),
+        base_slice_for_priority(priority),
     )
 }
 
@@ -271,10 +271,10 @@ fn entropy_bench_result(
     let rolled = roll_entropy_window(previous, yield_count, fault_count);
     EntropyBenchResult {
         name,
-        base_quantum: base_quantum_for_priority(priority),
+        base_slice: base_slice_for_priority(priority),
         rolled_yield_ewma: rolled.ewma_yield,
         rolled_fault_ewma: rolled.ewma_fault,
-        adjusted_quantum: entropy_adjusted_quantum(priority, rolled),
+        adjusted_slice: entropy_adjusted_slice(priority, rolled),
     }
 }
 
@@ -601,7 +601,7 @@ fn scheduler_read_u64(data: &[u8], offset: usize) -> Option<u64> {
 }
 
 /// Scheduler state
-pub struct QuantumScheduler {
+pub struct SliceScheduler {
     /// Process table
     processes: [Option<ProcessInfo>; MAX_PROCESSES],
     /// Currently running process
@@ -632,7 +632,7 @@ pub struct ProcessInfo {
     pub address_space: Option<Box<crate::arch::mmu::AddressSpace>>,
     /// Canonical per-process user virtual memory map.
     pub memory_map: Option<ProcessMemoryMap>,
-    pub quantum_remaining: u32,
+    pub slice_remaining: u32,
     pub total_cpu_time: u64,  // Total ticks this process ran
     pub total_wait_time: u64, // Total ticks waiting
     pub last_scheduled: u64,  // Tick when last scheduled
@@ -707,7 +707,7 @@ pub struct SchedulerOverview {
     pub voluntary_yields: u64,
 }
 
-impl QuantumScheduler {
+impl SliceScheduler {
     pub fn new() -> Self {
         const NONE_PROC: Option<ProcessInfo> = None;
 
@@ -715,7 +715,7 @@ impl QuantumScheduler {
         let wait_queues: [WaitQueue; MAX_WAIT_QUEUES] =
             core::array::from_fn(|_| WaitQueue::default());
 
-        QuantumScheduler {
+        SliceScheduler {
             processes: [NONE_PROC; MAX_PROCESSES],
             current_pid: None,
             fpu_owner: None,
@@ -812,7 +812,7 @@ impl QuantumScheduler {
             return Err("PID already in use");
         }
 
-        let quantum = base_quantum_for_priority(priority);
+        let timeslice = base_slice_for_priority(priority);
 
         let info = ProcessInfo {
             process,
@@ -822,7 +822,7 @@ impl QuantumScheduler {
             stack: None,
             address_space: None,
             memory_map: None,
-            quantum_remaining: quantum,
+            slice_remaining: timeslice,
             total_cpu_time: 0,
             total_wait_time: 0,
             last_scheduled: scheduler_platform::ticks_now(),
@@ -864,20 +864,20 @@ impl QuantumScheduler {
                 let elapsed = now.saturating_sub(info.last_scheduled);
                 info.total_cpu_time = info.total_cpu_time.saturating_add(elapsed);
 
-                // Decrement quantum
-                if info.quantum_remaining > 0 {
-                    info.quantum_remaining -= 1;
+                // Decrement timeslice
+                if info.slice_remaining > 0 {
+                    info.slice_remaining -= 1;
                 }
 
-                // If quantum expired, move to ready queue
-                if info.quantum_remaining == 0 {
+                // If timeslice expired, move to ready queue
+                if info.slice_remaining == 0 {
                     info.process.state = ProcessState::Ready;
                     let priority = info.process.priority;
 
-                    // Refill quantum
+                    // Refill timeslice
                     #[cfg(not(feature = "experimental_entropy_sched"))]
                     {
-                        info.quantum_remaining = base_quantum_for_priority(priority);
+                        info.slice_remaining = base_slice_for_priority(priority);
                     }
                     #[cfg(feature = "experimental_entropy_sched")]
                     {
@@ -891,7 +891,7 @@ impl QuantumScheduler {
                         );
                         info.ewma_yield = rolled.ewma_yield;
                         info.ewma_fault = rolled.ewma_fault;
-                        info.quantum_remaining = entropy_adjusted_quantum(priority, rolled);
+                        info.slice_remaining = entropy_adjusted_slice(priority, rolled);
                         info.yield_count = 0;
                         info.pagefault_count = 0;
                     }
@@ -903,7 +903,7 @@ impl QuantumScheduler {
             }
         }
 
-        // If we still have a running process with quantum remaining, keep running it
+        // If we still have a running process with timeslice remaining, keep running it
         if self.current_pid.is_some() {
             return None;
         }
@@ -1621,7 +1621,7 @@ impl QuantumScheduler {
             stack: None, // Stack is static, not heap-allocated
             address_space: None,
             memory_map: None,
-            quantum_remaining: base_quantum_for_priority(priority),
+            slice_remaining: base_slice_for_priority(priority),
             total_cpu_time: 0,
             total_wait_time: 0,
             last_scheduled: 0,
@@ -1659,7 +1659,7 @@ impl QuantumScheduler {
         scheduler_rt::logf(format_args!("[A64-SCHED] start_scheduling: before lock"));
 
         let (ctx_ptr, runtime_pid_raw, kernel_stack_top) = {
-            let mut scheduler = QUANTUM_SCHEDULER.lock();
+            let mut scheduler = SLICE_SCHEDULER.lock();
 
             #[cfg(target_arch = "aarch64")]
             scheduler_rt::logf(format_args!("[A64-SCHED] start_scheduling: lock acquired"));
@@ -1856,7 +1856,7 @@ impl QuantumScheduler {
             process.set_user_execution_image(entry as usize, user_stack as usize);
 
             let priority = process.priority;
-            let quantum = base_quantum_for_priority(priority);
+            let timeslice = base_slice_for_priority(priority);
 
             let frame_top = (stack_top - 8) as *mut u32;
             unsafe {
@@ -1881,7 +1881,7 @@ impl QuantumScheduler {
                 stack: Some(kernel_stack),
                 address_space: Some(space),
                 memory_map: Some(memory_map),
-                quantum_remaining: quantum,
+                slice_remaining: timeslice,
                 total_cpu_time: 0,
                 total_wait_time: 0,
                 last_scheduled: now,
@@ -1952,7 +1952,7 @@ impl QuantumScheduler {
             process.set_user_execution_image(entry as usize, user_stack as usize);
 
             let priority = process.priority;
-            let quantum = base_quantum_for_priority(priority);
+            let timeslice = base_slice_for_priority(priority);
 
             let mut ctx = scheduler_platform::context_new();
             ctx.rip = crate::memory::asm_bindings::kernel_user_entry_trampoline as usize as u64;
@@ -1971,7 +1971,7 @@ impl QuantumScheduler {
                 stack: Some(kernel_stack),
                 address_space: Some(space),
                 memory_map: Some(memory_map),
-                quantum_remaining: quantum,
+                slice_remaining: timeslice,
                 total_cpu_time: 0,
                 total_wait_time: 0,
                 last_scheduled: now,
@@ -2051,7 +2051,7 @@ impl QuantumScheduler {
             process.set_user_execution_image(entry as usize, user_stack as usize);
 
             let priority = process.priority;
-            let quantum = base_quantum_for_priority(priority);
+            let timeslice = base_slice_for_priority(priority);
 
             // Build the initial register context.
             let mut ctx = scheduler_platform::context_new();
@@ -2076,7 +2076,7 @@ impl QuantumScheduler {
                 stack: Some(kernel_stack),
                 address_space: Some(space),
                 memory_map: Some(memory_map),
-                quantum_remaining: quantum,
+                slice_remaining: timeslice,
                 total_cpu_time: 0,
                 total_wait_time: 0,
                 last_scheduled: now,
@@ -2663,7 +2663,7 @@ impl QuantumScheduler {
             let child_kernel_stack: Box<[u8; crate::scheduler::process::STACK_SIZE]> =
                 Box::new([0u8; crate::scheduler::process::STACK_SIZE]);
 
-            let quantum = base_quantum_for_priority(parent_priority);
+            let timeslice = base_slice_for_priority(parent_priority);
 
             let now = scheduler_platform::ticks_now();
             let child_info = ProcessInfo {
@@ -2679,7 +2679,7 @@ impl QuantumScheduler {
                     map.mark_cow_regions();
                     map
                 }),
-                quantum_remaining: quantum,
+                slice_remaining: timeslice,
                 total_cpu_time: 0,
                 total_wait_time: 0,
                 last_scheduled: now,
@@ -2783,7 +2783,7 @@ impl QuantumScheduler {
             child_ctx.cr3 = child_cr3.as_u64();
             child_ctx.rflags = 0x0000_0002;
 
-            let quantum = base_quantum_for_priority(parent_priority);
+            let timeslice = base_slice_for_priority(parent_priority);
 
             let now = scheduler_platform::ticks_now();
             let child_info = ProcessInfo {
@@ -2797,7 +2797,7 @@ impl QuantumScheduler {
                     map.mark_cow_regions();
                     map
                 }),
-                quantum_remaining: quantum,
+                slice_remaining: timeslice,
                 total_cpu_time: 0,
                 total_wait_time: 0,
                 last_scheduled: now,
@@ -2916,7 +2916,7 @@ impl QuantumScheduler {
             child_ctx.ttbr0_el1 = child_cr3.as_u64();
             child_ctx.daif = 0;
 
-            let quantum = base_quantum_for_priority(parent_priority);
+            let timeslice = base_slice_for_priority(parent_priority);
             let now = scheduler_platform::ticks_now();
             let child_info = ProcessInfo {
                 process: child_process,
@@ -2929,7 +2929,7 @@ impl QuantumScheduler {
                     map.mark_cow_regions();
                     map
                 }),
-                quantum_remaining: quantum,
+                slice_remaining: timeslice,
                 total_cpu_time: 0,
                 total_wait_time: 0,
                 last_scheduled: now,
@@ -3002,7 +3002,7 @@ impl QuantumScheduler {
         // execution happens outside the scheduler lock in the syscall path.
         info.process.set_program_counter_token(module_id as usize);
         info.process.state = ProcessState::Running;
-        info.quantum_remaining = base_quantum_for_priority(info.process.priority);
+        info.slice_remaining = base_slice_for_priority(info.process.priority);
         self.record_temporal_state_snapshot_locked(scheduler_rt::TEMPORAL_SCHEDULER_EVENT_STATE);
         scheduler_rt::logf(format_args!(
             "[SCHED] exec_current_wasm: pid={} module_id={}",
@@ -3079,7 +3079,7 @@ impl QuantumScheduler {
                 payload.push(scheduler_process_state_to_u8(info.process.state));
                 payload.push(scheduler_priority_to_u8(info.process.priority));
                 scheduler_append_u16(&mut payload, 0);
-                scheduler_append_u32(&mut payload, info.quantum_remaining);
+                scheduler_append_u32(&mut payload, info.slice_remaining);
                 scheduler_append_u64(&mut payload, info.total_cpu_time);
                 scheduler_append_u64(&mut payload, info.total_wait_time);
                 scheduler_append_u64(&mut payload, info.last_scheduled);
@@ -3151,23 +3151,23 @@ impl Default for WaitQueue {
 
 lazy_static::lazy_static! {
     /// Global scheduler instance
-    static ref QUANTUM_SCHEDULER: Mutex<QuantumScheduler> = Mutex::new(QuantumScheduler::new());
+    static ref SLICE_SCHEDULER: Mutex<SliceScheduler> = Mutex::new(SliceScheduler::new());
 }
 static SCHEDULER_STARTED: AtomicBool = AtomicBool::new(false);
 static RESCHED_REQUEST: AtomicBool = AtomicBool::new(false);
 
-/// Initialize quantum scheduler
+/// Initialize slice scheduler
 pub fn init() {
     // Scheduler is already initialized via static
 }
 
 /// Get reference to global scheduler
-pub fn scheduler() -> &'static Mutex<QuantumScheduler> {
-    &QUANTUM_SCHEDULER
+pub fn scheduler() -> &'static Mutex<SliceScheduler> {
+    &SLICE_SCHEDULER
 }
 
 pub fn handle_current_user_page_fault(fault_addr: usize, error: u64) -> Result<bool, &'static str> {
-    QUANTUM_SCHEDULER
+    SLICE_SCHEDULER
         .lock()
         .handle_current_user_page_fault(fault_addr, error)
 }
@@ -3187,7 +3187,7 @@ pub(crate) fn selftest_shared_file_mapping_live() -> Result<(usize, usize, u8), 
     crate::fs::vfs::write_path(path, &[0u8; 16])?;
     let source = crate::fs::vfs::mmap_source_for_path(path)?;
 
-    let mut sched = QuantumScheduler::new();
+    let mut sched = SliceScheduler::new();
     let mut proc_a = Process::new(pid_a, "sharedmmap-a", None);
     proc_a.priority = ProcessPriority::Normal;
     let mut proc_b = Process::new(pid_b, "sharedmmap-b", None);
@@ -3277,7 +3277,7 @@ pub(crate) fn selftest_shared_file_mapping_live() -> Result<(usize, usize, u8), 
 pub fn terminate_current_from_fault() -> ! {
     let flags = unsafe { scheduler_platform::irq_save_disable() };
     let (ctx_ptr, runtime_pid_raw, kernel_stack_top) = {
-        let mut sched = QUANTUM_SCHEDULER.lock();
+        let mut sched = SLICE_SCHEDULER.lock();
         let current = sched
             .get_current_pid()
             .expect("terminate_current_from_fault: no current pid");
@@ -3285,7 +3285,7 @@ pub fn terminate_current_from_fault() -> ! {
         sched.prepare_start_locked()
     };
     let _ = flags;
-    QuantumScheduler::launch_prepared_context(ctx_ptr, runtime_pid_raw, kernel_stack_top)
+    SliceScheduler::launch_prepared_context(ctx_ptr, runtime_pid_raw, kernel_stack_top)
 }
 
 pub fn memory_alloc_current(
@@ -3293,13 +3293,13 @@ pub fn memory_alloc_current(
     size: usize,
     flags: VmaFlags,
 ) -> Result<usize, &'static str> {
-    QUANTUM_SCHEDULER
+    SLICE_SCHEDULER
         .lock()
         .alloc_current_anonymous(requested_addr, size, flags)
 }
 
 pub fn memory_free_current(addr: usize, size: usize) -> Result<(), &'static str> {
-    QUANTUM_SCHEDULER.lock().free_current_mapping(addr, size)
+    SLICE_SCHEDULER.lock().free_current_mapping(addr, size)
 }
 
 pub fn memory_map_file_current(
@@ -3309,7 +3309,7 @@ pub fn memory_map_file_current(
     source: crate::fs::vfs::MappedFileSource,
     offset: usize,
 ) -> Result<usize, &'static str> {
-    QUANTUM_SCHEDULER
+    SLICE_SCHEDULER
         .lock()
         .map_current_file(requested_addr, size, flags, source, offset)
 }
@@ -3491,7 +3491,7 @@ pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static s
         pid: u32,
         state: ProcessState,
         priority: ProcessPriority,
-        quantum_remaining: u32,
+        slice_remaining: u32,
         total_cpu_time: u64,
         total_wait_time: u64,
         last_scheduled: u64,
@@ -3519,8 +3519,8 @@ pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static s
             .ok_or("temporal scheduler process state invalid")?;
         let priority = scheduler_priority_from_u8(payload[offset + 5])
             .ok_or("temporal scheduler process priority invalid")?;
-        let quantum_remaining = scheduler_read_u32(payload, offset + 8)
-            .ok_or("temporal scheduler process quantum missing")?;
+        let slice_remaining = scheduler_read_u32(payload, offset + 8)
+            .ok_or("temporal scheduler process timeslice missing")?;
         let total_cpu_time = scheduler_read_u64(payload, offset + 12)
             .ok_or("temporal scheduler process cpu missing")?;
         let total_wait_time = scheduler_read_u64(payload, offset + 20)
@@ -3533,7 +3533,7 @@ pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static s
             pid,
             state,
             priority,
-            quantum_remaining,
+            slice_remaining,
             total_cpu_time,
             total_wait_time,
             last_scheduled,
@@ -3604,7 +3604,7 @@ pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static s
         return Err("temporal scheduler payload trailing bytes");
     }
 
-    let mut sched = QUANTUM_SCHEDULER.lock();
+    let mut sched = SLICE_SCHEDULER.lock();
     sched.ready_queues[0].clear();
     sched.ready_queues[1].clear();
     sched.ready_queues[2].clear();
@@ -3622,7 +3622,7 @@ pub fn temporal_apply_scheduler_payload(payload: &[u8]) -> Result<(), &'static s
             if let Some(info) = sched.processes[idx].as_mut() {
                 info.process.state = update.state;
                 info.process.priority = update.priority;
-                info.quantum_remaining = update.quantum_remaining;
+                info.slice_remaining = update.slice_remaining;
                 info.total_cpu_time = update.total_cpu_time;
                 info.total_wait_time = update.total_wait_time;
                 info.last_scheduled = update.last_scheduled;
@@ -3715,7 +3715,7 @@ pub fn kernel_stack_bounds() -> [(usize, usize); 4] {
 
 /// Timer tick handler (called from PIT interrupt)
 pub fn on_timer_tick() {
-    if let Some(mut sched) = QUANTUM_SCHEDULER.try_lock() {
+    if let Some(mut sched) = SLICE_SCHEDULER.try_lock() {
         let now = scheduler_platform::ticks_now();
         let _ = sched.wake_expired_sleepers(now);
     }
@@ -3738,7 +3738,7 @@ pub fn maybe_reschedule() {
 
     let flags = unsafe { scheduler_platform::irq_save_disable() };
     let (switch, next_runtime_pid, next_kernel_stack_top) = {
-        let mut sched = QUANTUM_SCHEDULER.lock();
+        let mut sched = SLICE_SCHEDULER.lock();
         let switch = sched.schedule();
         let next_runtime_pid = sched.current_runtime_pid_raw();
         let next_kernel_stack_top = sched.current_kernel_stack_top();
@@ -3767,7 +3767,7 @@ pub fn maybe_reschedule() {
 pub fn sleep_until(pid: Pid, wake_time: u64) -> Result<(), &'static str> {
     let flags = unsafe { scheduler_platform::irq_save_disable() };
     let (result, next_runtime_pid, next_kernel_stack_top) = {
-        let mut sched = QUANTUM_SCHEDULER.lock();
+        let mut sched = SLICE_SCHEDULER.lock();
         let result = sched.block_process(pid, wake_time);
         let next_runtime_pid = sched.current_runtime_pid_raw();
         let next_kernel_stack_top = sched.current_kernel_stack_top();
@@ -3812,7 +3812,7 @@ pub fn yield_now() {
     let flags = unsafe { scheduler_platform::irq_save_disable() };
     RESCHED_REQUEST.store(false, Ordering::Release);
     let (switch, next_runtime_pid, next_kernel_stack_top) = {
-        let mut sched = QUANTUM_SCHEDULER.lock();
+        let mut sched = SLICE_SCHEDULER.lock();
         let switch = sched.yield_cpu();
         let next_runtime_pid = sched.current_runtime_pid_raw();
         let next_kernel_stack_top = sched.current_kernel_stack_top();
@@ -3847,7 +3847,7 @@ pub fn yield_now() {
 
 /// Re-enqueue a PID into the ready queues (used by job control `fg`).
 pub fn enqueue_ready_pid(pid: Pid, priority: ProcessPriority) {
-    let mut sched = QUANTUM_SCHEDULER.lock();
+    let mut sched = SLICE_SCHEDULER.lock();
     if let Some(info) = sched.get_process_info_mut(pid) {
         info.process.state = ProcessState::Ready;
     }
@@ -3864,7 +3864,7 @@ pub fn block_on(addr: usize) -> Result<(), &'static str> {
 pub fn prepare_block_custom(wait_state: ProcessState) -> Result<(Pid, BlockOnPlan), &'static str> {
     let irq_flags = unsafe { scheduler_platform::irq_save_disable() };
     let pid = {
-        let sched = QUANTUM_SCHEDULER.lock();
+        let sched = SLICE_SCHEDULER.lock();
         if let Some(pid) = sched.current_pid {
             // Also might want to check if process exists and wait state is valid?
             pid
@@ -3890,7 +3890,7 @@ pub fn prepare_block_on(
 ) -> Result<BlockOnPlan, &'static str> {
     let irq_flags = unsafe { scheduler_platform::irq_save_disable() };
     {
-        let sched = QUANTUM_SCHEDULER.lock();
+        let sched = SLICE_SCHEDULER.lock();
         if sched.current_pid.is_none() {
             unsafe { scheduler_platform::irq_restore(irq_flags) };
             return Err("No current process");
@@ -3908,7 +3908,7 @@ pub fn commit_block(mut plan: BlockOnPlan) {
     plan.is_committed = true;
 
     let (switch_opt, next_runtime_pid, next_kernel_stack_top) = {
-        let mut sched = QUANTUM_SCHEDULER.lock();
+        let mut sched = SLICE_SCHEDULER.lock();
         let result = match plan.action {
             BlockAction::Custom(state) => sched.block_current_process_custom(state),
             BlockAction::OnAddr(addr, state) => sched.block_on_with_state(addr, state),
@@ -3954,22 +3954,22 @@ pub fn commit_block(mut plan: BlockOnPlan) {
 }
 
 pub fn wake_process(pid: Pid) -> Result<bool, &'static str> {
-    QUANTUM_SCHEDULER.lock().wake_process(pid)
+    SLICE_SCHEDULER.lock().wake_process(pid)
 }
 
 /// Wake one waiter on address
 pub fn wake_one(addr: usize) -> Result<bool, &'static str> {
-    QUANTUM_SCHEDULER.lock().wake_one(addr)
+    SLICE_SCHEDULER.lock().wake_one(addr)
 }
 
 /// Wake all waiters on address
 pub fn wake_all(addr: usize) -> Result<usize, &'static str> {
-    QUANTUM_SCHEDULER.lock().wake_all(addr)
+    SLICE_SCHEDULER.lock().wake_all(addr)
 }
 
 /// Count non-sleep waiters on an address.
 pub fn waiter_count(addr: usize) -> usize {
-    QUANTUM_SCHEDULER.lock().waiter_count(addr)
+    SLICE_SCHEDULER.lock().waiter_count(addr)
 }
 
 /// Stage a synthetic waiting process for deterministic runtime selftests.
@@ -3978,7 +3978,7 @@ pub(crate) fn selftest_stage_waiter_process(
     addr: usize,
     wait_state: ProcessState,
 ) -> Result<Pid, &'static str> {
-    let mut sched = QUANTUM_SCHEDULER.lock();
+    let mut sched = SLICE_SCHEDULER.lock();
     let pid = (1..MAX_PROCESSES)
         .rev()
         .find_map(|idx| {
@@ -4009,12 +4009,12 @@ pub(crate) fn selftest_stage_waiter_process(
 
 /// Remove a synthetic process previously staged for runtime selftests.
 pub(crate) fn selftest_remove_process(pid: Pid) -> Result<(), &'static str> {
-    QUANTUM_SCHEDULER.lock().remove_process(pid)
+    SLICE_SCHEDULER.lock().remove_process(pid)
 }
 
 /// Inspect the scheduler-visible state of a synthetic selftest process.
 pub(crate) fn selftest_process_state(pid: Pid) -> Option<ProcessState> {
-    let sched = QUANTUM_SCHEDULER.lock();
+    let sched = SLICE_SCHEDULER.lock();
     sched
         .processes
         .get(pid.0 as usize)
@@ -4023,8 +4023,8 @@ pub(crate) fn selftest_process_state(pid: Pid) -> Option<ProcessState> {
 
 #[cfg(test)]
 pub fn test_reset() {
-    let mut sched = QUANTUM_SCHEDULER.lock();
-    *sched = QuantumScheduler::new();
+    let mut sched = SLICE_SCHEDULER.lock();
+    *sched = SliceScheduler::new();
     SCHEDULER_STARTED.store(false, Ordering::Release);
     RESCHED_REQUEST.store(false, Ordering::Release);
 }
@@ -4033,7 +4033,7 @@ pub fn test_reset() {
 pub fn test_add_process(pid_raw: u32, name: &str) -> Result<(), &'static str> {
     let mut process = Process::new(Pid(pid_raw), name, None);
     process.priority = ProcessPriority::Normal;
-    QUANTUM_SCHEDULER.lock().add_process(process)
+    SLICE_SCHEDULER.lock().add_process(process)
 }
 
 #[cfg(test)]
@@ -4042,7 +4042,7 @@ pub fn test_stage_waiter(
     addr: usize,
     wait_state: ProcessState,
 ) -> Result<(), &'static str> {
-    let mut sched = QUANTUM_SCHEDULER.lock();
+    let mut sched = SLICE_SCHEDULER.lock();
     let pid = Pid(pid_raw);
     let idx = pid.0 as usize;
     if sched.processes[idx].is_none() {
@@ -4069,7 +4069,7 @@ pub fn test_process_state(pid_raw: u32) -> Option<ProcessState> {
 /// Global hook for Device Not Available (FPU) trap
 pub fn handle_fpu_trap() {
     unsafe {
-        QUANTUM_SCHEDULER.lock().handle_fpu_trap();
+        SLICE_SCHEDULER.lock().handle_fpu_trap();
     }
 }
 
@@ -4084,14 +4084,14 @@ mod tests {
         assert_eq!(priority_to_queue_idx(ProcessPriority::Low), 2);
 
         assert_eq!(
-            base_quantum_for_priority(ProcessPriority::High),
-            QUANTUM_HIGH
+            base_slice_for_priority(ProcessPriority::High),
+            SLICE_HIGH
         );
         assert_eq!(
-            base_quantum_for_priority(ProcessPriority::Normal),
-            QUANTUM_NORMAL
+            base_slice_for_priority(ProcessPriority::Normal),
+            SLICE_NORMAL
         );
-        assert_eq!(base_quantum_for_priority(ProcessPriority::Low), QUANTUM_LOW);
+        assert_eq!(base_slice_for_priority(ProcessPriority::Low), SLICE_LOW);
     }
 
     #[test]
@@ -4171,13 +4171,13 @@ mod tests {
             }
         );
         assert_eq!(
-            entropy_adjusted_quantum(ProcessPriority::Normal, rolled),
-            QUANTUM_NORMAL
+            entropy_adjusted_slice(ProcessPriority::Normal, rolled),
+            SLICE_NORMAL
         );
     }
 
     #[test]
-    fn entropy_high_yield_low_fault_rewards_quantum() {
+    fn entropy_high_yield_low_fault_rewards_slice() {
         let rolled = roll_entropy_window(
             EntropyWindowState {
                 ewma_yield: 40,
@@ -4186,13 +4186,13 @@ mod tests {
             24,
             0,
         );
-        let adjusted = entropy_adjusted_quantum(ProcessPriority::Normal, rolled);
-        assert!(adjusted > QUANTUM_NORMAL);
-        assert!(adjusted <= QUANTUM_HIGH);
+        let adjusted = entropy_adjusted_slice(ProcessPriority::Normal, rolled);
+        assert!(adjusted > SLICE_NORMAL);
+        assert!(adjusted <= SLICE_HIGH);
     }
 
     #[test]
-    fn entropy_low_yield_high_fault_penalizes_quantum() {
+    fn entropy_low_yield_high_fault_penalizes_slice() {
         let rolled = roll_entropy_window(
             EntropyWindowState {
                 ewma_yield: 0,
@@ -4201,17 +4201,17 @@ mod tests {
             0,
             24,
         );
-        let adjusted = entropy_adjusted_quantum(ProcessPriority::Normal, rolled);
-        assert!(adjusted < QUANTUM_NORMAL);
-        assert!(adjusted >= QUANTUM_LOW);
+        let adjusted = entropy_adjusted_slice(ProcessPriority::Normal, rolled);
+        assert!(adjusted < SLICE_NORMAL);
+        assert!(adjusted >= SLICE_LOW);
     }
 
     #[test]
-    fn entropy_quantum_clamps_to_bounds() {
-        let reward_clamped = compute_entropy_quantum(512, 0, QUANTUM_NORMAL);
-        let penalty_clamped = compute_entropy_quantum(0, 512, QUANTUM_NORMAL);
-        assert_eq!(reward_clamped, QUANTUM_HIGH);
-        assert_eq!(penalty_clamped, QUANTUM_LOW);
+    fn entropy_slice_clamps_to_bounds() {
+        let reward_clamped = compute_entropy_slice(512, 0, SLICE_NORMAL);
+        let penalty_clamped = compute_entropy_slice(0, 512, SLICE_NORMAL);
+        assert_eq!(reward_clamped, SLICE_HIGH);
+        assert_eq!(penalty_clamped, SLICE_LOW);
     }
 
     #[test]
@@ -4251,18 +4251,18 @@ mod tests {
             4,
             0,
         );
-        let adjusted = entropy_adjusted_quantum(ProcessPriority::Normal, rolled);
-        let mixed_source = compute_entropy_quantum(
+        let adjusted = entropy_adjusted_slice(ProcessPriority::Normal, rolled);
+        let mixed_source = compute_entropy_slice(
             rolled.ewma_yield,
             0,
-            base_quantum_for_priority(ProcessPriority::Normal),
+            base_slice_for_priority(ProcessPriority::Normal),
         );
         assert_eq!(
             adjusted,
-            compute_entropy_quantum(
+            compute_entropy_slice(
                 rolled.ewma_yield,
                 rolled.ewma_fault,
-                base_quantum_for_priority(ProcessPriority::Normal),
+                base_slice_for_priority(ProcessPriority::Normal),
             )
         );
         assert_ne!(adjusted, mixed_source);
@@ -4270,7 +4270,7 @@ mod tests {
 
     #[test]
     fn block_process_requires_existing_current_process() {
-        let mut scheduler = QuantumScheduler::new();
+        let mut scheduler = SliceScheduler::new();
         scheduler.current_pid = Some(Pid(7));
         assert_eq!(
             scheduler.block_process(Pid(7), 42),
@@ -4281,7 +4281,7 @@ mod tests {
 
     #[test]
     fn exec_current_wasm_requires_existing_current_process() {
-        let mut scheduler = QuantumScheduler::new();
+        let mut scheduler = SliceScheduler::new();
         scheduler.current_pid = Some(Pid(3));
         assert_eq!(
             scheduler.exec_current_wasm(99),

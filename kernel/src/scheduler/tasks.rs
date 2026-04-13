@@ -6,7 +6,7 @@
 
 use crate::scheduler::process;
 use crate::scheduler::process::ProcessPriority;
-use crate::scheduler::quantum_scheduler;
+use crate::scheduler::slice_scheduler;
 use crate::drivers::x86::vga;
 
 #[no_mangle]
@@ -136,7 +136,7 @@ pub fn start() -> ! {
 
     vga::print_str("[TASK] Adding network task to scheduler...\n");
     let network_pid = {
-        let mut sched = quantum_scheduler::scheduler().lock();
+        let mut sched = slice_scheduler::scheduler().lock();
         sched.add_kernel_thread(network_task, ProcessPriority::Normal)
     };
     match network_pid {
@@ -158,7 +158,7 @@ pub fn start() -> ! {
 
     vga::print_str("[TASK] Adding shell task to scheduler...\n");
     let shell_pid = {
-        let mut sched = quantum_scheduler::scheduler().lock();
+        let mut sched = slice_scheduler::scheduler().lock();
         sched.add_kernel_thread(shell_task, ProcessPriority::Normal)
     };
     let shell_pid = match shell_pid {
@@ -180,7 +180,7 @@ pub fn start() -> ! {
 
     // Keep worker disabled for now - test single task first
     // vga::print_str("[TASK] Adding worker task to scheduler...\n");
-    // let _ = quantum_scheduler::scheduler()
+    // let _ = slice_scheduler::scheduler()
     //     .lock()
     //     .add_kernel_thread(worker_task, ProcessPriority::Normal);
     // vga::print_str("[TASK] Worker task registered\n");
@@ -189,5 +189,5 @@ pub fn start() -> ! {
     vga::print_str("[TASK] Ready to start scheduler (interrupts will be enabled in tasks)...\n");
 
     vga::print_str("[TASK] Entering scheduler...\n");
-    crate::scheduler::quantum_scheduler::QuantumScheduler::start_scheduling();
+    crate::scheduler::slice_scheduler::SliceScheduler::start_scheduling();
 }

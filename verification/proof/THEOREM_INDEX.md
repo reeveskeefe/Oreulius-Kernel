@@ -15,7 +15,7 @@ boundary.
 | A64-BOOT-002 | `theories/aarch64_handoff.v` | Proven | Boot handoff surfaces the same DTB pointer into runtime |
 | A64-VECTOR-001 | `theories/aarch64_vectors.v` | Proven | Installed vector base and lower-EL sync dispatch preserve the trap boundary |
 | A64-MMU-001 | `theories/aarch64_mmu.v` | Proven | MMU bring-up establishes a root and preserves modeled W^X separation |
-| A64-SCHED-001 | `theories/aarch64_sched_tick.v` | Proven | Timer tick boundary sets reschedule-pending only at quantum boundaries and quantum updates reject zero |
+| A64-SCHED-001 | `theories/aarch64_sched_tick.v` | Proven | Timer tick boundary sets reschedule-pending only at slice boundaries and timeslice updates reject zero |
 | A64-SYSCALL-001 | `theories/aarch64_syscall.v` | Proven | AArch64 syscall dispatcher and return-frame boundary remain within the modeled gate |
 | A64-SWITCH-001 | `theories/aarch64_context_switch.v` | Proven | AArch64 scheduler handoff preserves the selected ProcessContext and switch bookkeeping |
 

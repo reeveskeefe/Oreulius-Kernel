@@ -157,7 +157,7 @@ asm_load_context:
 ; Thread start trampoline — i686 kernel thread launch point
 ;
 ; Jumped to (not called) by asm_load_context / asm_switch_context when a new
-; thread is first dispatched by the quantum scheduler.
+; thread is first dispatched by the slice scheduler.
 ;
 ; Stack state on arrival, constructed by add_kernel_thread +
 ; scheduler_platform::init_kernel_thread_context:
