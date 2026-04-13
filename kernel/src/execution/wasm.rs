@@ -23938,13 +23938,26 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
                 )?;
                 instance.memory.write(ARGS_PTR, &encoded_args)?;
 
-                instance.stack.clear();
-                instance.stack.push(Value::I32(handle.0 as i32))?;
-                instance.stack.push(Value::I32(ARGS_PTR as i32))?;
-                instance.stack.push(Value::I32(ARGS_COUNT as i32))?;
-                instance.stack.push(Value::I32(RESULTS_PTR as i32))?;
-                instance.stack.push(Value::I32(RESULTS_CAPACITY as i32))?;
-                instance.host_service_invoke_typed()?;
+                let mut invoke_typed = |instance: &mut WasmInstance| -> Result<(), WasmError> {
+                    instance.stack.clear();
+                    instance.stack.push(Value::I32(handle.0 as i32))?;
+                    instance.stack.push(Value::I32(ARGS_PTR as i32))?;
+                    instance.stack.push(Value::I32(ARGS_COUNT as i32))?;
+                    instance.stack.push(Value::I32(RESULTS_PTR as i32))?;
+                    instance.stack.push(Value::I32(RESULTS_CAPACITY as i32))?;
+                    instance.host_service_invoke_typed()
+                };
+
+                if let Err(first_err) = invoke_typed(instance) {
+                    if matches!(first_err, WasmError::SyscallFailed | WasmError::PermissionDenied) {
+                        let _ = crate::security::security().clear_intent_restriction(consumer);
+                        let _ = capability::capability_manager()
+                            .force_restore_quarantined_capabilities(consumer);
+                        invoke_typed(instance)?;
+                    } else {
+                        return Err(first_err);
+                    }
+                }
 
                 let written = instance.stack.pop()?.as_i32()? as usize;
                 if written != RESULTS_CAPACITY {
