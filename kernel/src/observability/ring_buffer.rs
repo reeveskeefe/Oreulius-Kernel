@@ -9,7 +9,7 @@
 use crate::observability::event::{
     EventLevel, EventRecord, EventType, Subsystem, EVENT_PAYLOAD_BYTES, EVENT_SCHEMA_VERSION,
 };
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, AtomicUsize, Ordering};
 
 const RING_CAPACITY: usize = 256;
 const INVALID_SEQ: usize = usize::MAX;
@@ -36,7 +36,7 @@ impl AtomicU8Byte {
 pub struct AtomicEventSlot {
     seq: AtomicUsize,
     schema_version: AtomicU16,
-    timestamp: AtomicU64,
+    timestamp: AtomicUsize,
     subsystem: AtomicU8,
     level: AtomicU8,
     event_type: AtomicU8,
@@ -50,7 +50,7 @@ impl AtomicEventSlot {
         Self {
             seq: AtomicUsize::new(INVALID_SEQ),
             schema_version: AtomicU16::new(EVENT_SCHEMA_VERSION),
-            timestamp: AtomicU64::new(0),
+            timestamp: AtomicUsize::new(0),
             subsystem: AtomicU8::new(Subsystem::Core as u8),
             level: AtomicU8::new(EventLevel::Info as u8),
             event_type: AtomicU8::new(EventType::Generic as u8),
@@ -67,7 +67,7 @@ impl AtomicEventSlot {
         self.seq.store(INVALID_SEQ, Ordering::SeqCst);
         self.schema_version
             .store(record.schema_version, Ordering::SeqCst);
-        self.timestamp.store(record.timestamp, Ordering::SeqCst);
+        self.timestamp.store(record.timestamp as usize, Ordering::SeqCst);
         self.subsystem
             .store(record.subsystem.to_u8(), Ordering::SeqCst);
         self.level.store(record.level.to_u8(), Ordering::SeqCst);
@@ -88,7 +88,7 @@ impl AtomicEventSlot {
         }
         let mut out = EventRecord::empty();
         out.schema_version = self.schema_version.load(Ordering::SeqCst);
-        out.timestamp = self.timestamp.load(Ordering::SeqCst);
+        out.timestamp = self.timestamp.load(Ordering::SeqCst) as u64;
         out.subsystem = decode_subsystem(self.subsystem.load(Ordering::SeqCst));
         out.level = decode_level(self.level.load(Ordering::SeqCst));
         out.event_type = decode_event_type(self.event_type.load(Ordering::SeqCst));
