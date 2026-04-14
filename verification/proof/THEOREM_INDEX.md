@@ -46,3 +46,40 @@ These are runtime conformance checks exercised by `ipc::run_selftest()` and the 
 | IPC-TRANSFER-001 | Ticketed message-carried capability transfer is zero-sum and one-time; duplicate or tampered ticket reuse fails closed | Runtime Checked | `kernel/src/ipc/selftest.rs::case_ticketed_capability_transfer_once` |
 | IPC-PROTO-001 | Temporal-bound IPC channels enforce session ids and phase transitions when protocol state is bound | Runtime Checked | `kernel/src/ipc/selftest.rs::case_temporal_protocol_typing` |
 | IPC-SNAPSHOT-001 | IPC channel snapshots round-trip committed queue, wait queues, closure, protocol, and counter state | Runtime Checked | `kernel/src/ipc/selftest.rs::case_temporal_snapshot_roundtrip` |
+
+## Phase 1B: Runtime-Enforced Invariant & Boundary Checks
+
+These are severity-classified invariant checks with deterministic failure policy dispatch. They are exercised by five negative-trace tests and backed by structured observability emission.
+
+| ID | Boundary | Status | Runtime Evidence | Phase |
+|---|---|---|---|---|
+| INV-SCHED-FAIR-001 | Scheduler fairness window: runnable must be 0 OR serviced > 0 | Runtime Checked | `kernel/src/scheduler/process.rs::scheduler_negative_trace_closure_chain` (severity: Progress) | 1B |
+| INV-SYSCALL-NUM-001 | Syscall number must be ≤ configured maximum (64) | Runtime Checked | `kernel/src/platform/syscall.rs::syscall_negative_trace_closure_chain` (severity: Consistency) | 1B |
+| INV-SYSCALL-FRAME-001 | User exception frame pointer must be non-null and within address limit | Runtime Checked | `kernel/src/arch/aarch64_vectors.rs::trap_negative_trace_closure_chain` (severity: Safety) | 1B |
+| INV-MMU-MAP-001 | Virtual address and length must be page-aligned to page_size | Runtime Checked | `kernel/src/arch/mmu_aarch64.rs::mmu_negative_trace_closure_chain` (severity: Safety) | 1B |
+| INV-MMU-WX-001 | Write and execute permissions must remain disjoint (W^X enforcement) | Runtime Checked | See INV-MMU-MAP-001 test and `kernel/src/invariants/mmu.rs::check_permission_transition()` | 1B |
+| INV-DTB-HEADER-001 | Device tree blob header size must be within declared bounds | Runtime Checked | `kernel/src/arch/aarch64_dtb.rs::dtb_negative_trace_closure_chain` (severity: Safety) | 1B |
+
+### Failure Policy Runtime Dispatch
+
+All Phase 1B invariant checks route violations through `kernel/src/failure/policy.rs::classify()` and emit structured events:
+- **InvariantViolation** event at check failure
+- **FailurePolicyAction** event at dispatch decision
+- **TerminalFailure** event when action is FailStop (for non-recoverable violations)
+
+Policies are:
+- Scheduler violations → **Isolate** (process isolation)
+- Syscall violations → **Isolate** (process isolation)
+- MMU violations → **FailStop** (kernel fault, non-recoverable)
+- DTB violations → **Degrade** (graceful degradation)
+- Capability violations → **FailStop** (kernel fault, non-recoverable)
+- Depth > 1 (recursive failure) → **FailStop** (0xDEAD fallback)
+
+### Test Helper Utility
+
+Closure-chain test assertions are centralized in `kernel/src/observability/test_helpers.rs::assert_closure_chain_closure()` to:
+1. Verify event count increased (events were emitted)
+2. Check all expected event types are present in sequence
+3. Verify failure outcome subsystem and action match expected values
+
+This reduces test boilerplate by ~240 lines across five boundaries.
