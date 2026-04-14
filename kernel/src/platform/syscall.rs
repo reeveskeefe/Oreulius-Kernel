@@ -250,7 +250,32 @@ fn sys_cap_to_ipc(raw: &SysIpcCapability) -> Result<crate::ipc::Capability, ()> 
 
 /// Main syscall handler (called from interrupt/trap)
 pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResult {
+    crate::observability::emit_syscall_boundary(
+        crate::observability::EventType::SyscallBoundary,
+        0x3100,
+        b"handle_syscall_enter",
+    );
+
+    let syscall_number_check = crate::invariants::syscall::check_syscall_number(args.number as u16, 64);
+    if !syscall_number_check.valid {
+        crate::invariants::enforce(syscall_number_check, b"invalid syscall number at boundary");
+    }
+
     let syscall = SyscallNumber::from(args.number);
+
+    if syscall == SyscallNumber::Invalid {
+        let _ = crate::failure::handle_failure(
+            crate::failure::FailureSubsystem::Syscall,
+            crate::failure::FailureKind::InvalidState,
+            b"invalid syscall dispatch number",
+        );
+        crate::observability::emit_syscall_boundary(
+            crate::observability::EventType::SyscallBoundary,
+            0x31FF,
+            b"handle_syscall_invalid",
+        );
+        return SyscallResult::err(ENOSYS);
+    }
 
     let sec = crate::security::security();
     let syscall_args = [args.arg1, args.arg2, args.arg3, args.arg4, args.arg5];
@@ -1727,6 +1752,36 @@ static CURRENT_AARCH64_SYSCALL_FRAME: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(target_arch = "aarch64")]
 pub fn aarch64_syscall_from_exception(regs: *mut SavedRegisters) {
+    if regs.is_null() {
+        let _ = crate::failure::handle_failure(
+            crate::failure::FailureSubsystem::Syscall,
+            crate::failure::FailureKind::InvalidFrame,
+            b"aarch64 syscall frame pointer null",
+        );
+        return;
+    }
+
+    let frame_check = crate::invariants::syscall::check_user_frame(
+        regs as usize,
+        core::mem::size_of::<SavedRegisters>(),
+        usize::MAX,
+    );
+    if !frame_check.valid {
+        crate::invariants::enforce(frame_check, b"aarch64 syscall frame invariant failed");
+        let _ = crate::failure::handle_failure(
+            crate::failure::FailureSubsystem::Syscall,
+            crate::failure::FailureKind::InvalidFrame,
+            b"aarch64 syscall frame invalid",
+        );
+        return;
+    }
+
+    crate::observability::emit_syscall_boundary(
+        crate::observability::EventType::SyscallBoundary,
+        0x3101,
+        b"aarch64_syscall_exception_entry",
+    );
+
     let regs = unsafe { &mut *regs };
     // Store the current exception frame pointer so fork_current_cow can clone it.
     CURRENT_AARCH64_SYSCALL_FRAME.store(regs as *const _ as usize, Ordering::Release);
@@ -2053,4 +2108,47 @@ pub fn aarch64_smoke_test_current_process() -> Result<u32, &'static str> {
     }
 
     Ok(returned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{handle_syscall, SyscallArgs};
+    use crate::failure::policy::{last_failure_outcome, FailureAction, FailureSubsystem};
+    use crate::observability::{ring_buffer, EventType};
+
+    #[test]
+    fn syscall_negative_trace_closure_chain() {
+        let expected = crate::invariants::syscall::check_syscall_number(u16::MAX, 64);
+        assert!(!expected.valid);
+        assert_eq!(expected.id, "INV-SYSCALL-NUM-001");
+        assert_eq!(expected.severity, crate::invariants::InvariantSeverity::Consistency);
+
+        let before = ring_buffer::write_count();
+        let result = handle_syscall(
+            SyscallArgs {
+                number: u32::MAX,
+                arg1: 0,
+                arg2: 0,
+                arg3: 0,
+                arg4: 0,
+                arg5: 0,
+            },
+            crate::capability::ProcessId(0),
+        );
+        assert_ne!(result.errno, 0);
+
+        let after = ring_buffer::write_count();
+
+        crate::observability::assert_closure_chain_closure(
+            before,
+            after,
+            &[
+                EventType::InvariantViolation,
+                EventType::FailurePolicyAction,
+                EventType::TerminalFailure,
+            ],
+            FailureSubsystem::Syscall,
+            FailureAction::FailStop,
+        );
+    }
 }

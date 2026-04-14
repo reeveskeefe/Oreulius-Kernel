@@ -94,6 +94,12 @@
       "surface": "kernel runtime",
       "path": "kernel/src/security/formal.rs",
       "status": "runtime-self-check"
+    },
+    {
+      "name": "observability event schema v1",
+      "surface": "kernel runtime contract",
+      "path": "verification/artifacts/observability_event_schema_v1.md",
+      "status": "runtime-contract"
     }
   ]
 }

@@ -65,5 +65,18 @@ Coq theories, so they remain below T2 until modeled.
 | AArch64 MMU bring-up | `kernel/src/arch/mmu_aarch64.rs`, `kernel/src/arch/aarch64_runtime.rs`, `kernel/src/arch/aarch64_virt.rs` | `spec/aarch64.*`, `theories/aarch64_mmu.v` |
 | AArch64 scheduler tick boundary | `kernel/src/arch/aarch64_virt.rs`, `kernel/src/scheduler/slice_scheduler.rs` | `spec/aarch64.*`, `theories/aarch64_sched_tick.v` |
 | AArch64 syscall boundary | `kernel/src/arch/aarch64_vectors.rs`, `kernel/src/platform/syscall.rs` | `spec/aarch64.*`, `theories/aarch64_syscall.v` |
+| Observability schema contract | `kernel/src/observability/event.rs`, `kernel/src/observability/ring_buffer.rs`, `kernel/src/observability/logger.rs` | `verification/artifacts/observability_event_schema_v1.md` |
 | AArch64 scheduler handoff / context-switch boundary | `kernel/src/scheduler/scheduler_platform.rs`, `kernel/src/asm/aarch64_scheduler.S`, `kernel/src/scheduler/slice_scheduler.rs` | `spec/aarch64.*`, `theories/aarch64_context_switch.v` |
 | Scheduler | `kernel/src/scheduler/slice_scheduler.rs` | `spec/scheduler.*`, `theories/scheduler_entropy.v`, `theories/lock_dag.v` |
+
+### CO-A64-SYSCALL-EXT-001 — A64 Syscall Extension Correspondence
+
+`A64-SYSCALL-001` remains proven and is explicitly extended in the current wave
+to assert that invalid syscall frames cannot mutate kernel-state invariants
+before terminal or isolate policy dispatch.
+
+Implementation surface target:
+
+- `kernel/src/arch/aarch64_vectors.rs`
+- `kernel/src/platform/syscall.rs`
+- `kernel/src/invariants/syscall.rs`

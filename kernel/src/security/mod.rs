@@ -28,6 +28,7 @@ pub mod formal;
 #[path = "intent_graph/mod.rs"]
 pub mod intent_graph;
 pub mod intent_graph_data;
+pub mod capability_checks;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod kpti;
 #[cfg(not(target_arch = "aarch64"))]

@@ -223,6 +223,12 @@ pub extern "C" fn oreulius_aarch64_vector_dispatch(
     frame_ptr: u64,
 ) -> u64 {
     let slot_u8 = slot as u8;
+    crate::observability::emit_trap_boundary(
+        crate::observability::EventType::TrapBoundary,
+        0x4100,
+        b"aarch64_vector_entry",
+    );
+
     if let Some(counter) = VECTOR_COUNTS.get(slot as usize) {
         counter.fetch_add(1, Ordering::Relaxed);
     }
@@ -268,6 +274,26 @@ pub extern "C" fn oreulius_aarch64_vector_dispatch(
         }
 
         if slot_u8 == VectorSlot::LowerElA64Sync as u8 && ec == EC_SVC64 {
+            let frame_check = crate::invariants::syscall::check_user_frame(
+                frame_ptr as usize,
+                core::mem::size_of::<crate::platform::syscall::SavedRegisters>(),
+                usize::MAX,
+            );
+            if !frame_check.valid {
+                crate::invariants::enforce(frame_check, b"aarch64 vector syscall frame invalid");
+                let _ = crate::failure::handle_failure(
+                    crate::failure::FailureSubsystem::Syscall,
+                    crate::failure::FailureKind::InvalidFrame,
+                    b"vector syscall frame invalid",
+                );
+                return 4;
+            }
+
+            crate::observability::emit_trap_boundary(
+                crate::observability::EventType::TrapBoundary,
+                0x4101,
+                b"aarch64_vector_svc64",
+            );
             crate::platform::syscall::aarch64_syscall_from_exception(
                 frame_ptr as *mut crate::platform::syscall::SavedRegisters,
             );
@@ -382,4 +408,44 @@ pub(crate) fn dump_last_exception() {
     uart.write_str(" far=");
     uart_write_hex_u64(snap.far_el1);
     uart.write_str("\n");
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod tests {
+    use super::{oreulius_aarch64_vector_dispatch, VectorSlot, EC_SVC64};
+    use crate::failure::policy::{last_failure_outcome, FailureAction, FailureSubsystem};
+    use crate::observability::{ring_buffer, EventType};
+
+    #[test]
+    fn trap_negative_trace_closure_chain() {
+        let expected = crate::invariants::syscall::check_user_frame(
+            0,
+            core::mem::size_of::<crate::platform::syscall::SavedRegisters>(),
+            usize::MAX,
+        );
+        assert!(!expected.valid);
+        assert_eq!(expected.id, "INV-SYSCALL-FRAME-001");
+        assert_eq!(expected.severity, crate::invariants::InvariantSeverity::Safety);
+
+        let esr_svc = (EC_SVC64 as u64) << 26;
+        let before = ring_buffer::write_count();
+        let ret = oreulius_aarch64_vector_dispatch(
+            VectorSlot::LowerElA64Sync as u64,
+            esr_svc,
+            0,
+            0,
+            0,
+            0,
+        );
+        assert_eq!(ret, 4);
+        let after = ring_buffer::write_count();
+
+        crate::observability::assert_closure_chain_closure(
+            before,
+            after,
+            &[EventType::InvariantViolation, EventType::FailurePolicyAction],
+            FailureSubsystem::Syscall,
+            FailureAction::Isolate,
+        );
+    }
 }

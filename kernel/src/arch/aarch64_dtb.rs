@@ -576,10 +576,48 @@ pub(crate) fn parse_dtb_header(ptr_addr: usize) -> Option<DtbHeaderInfo> {
 }
 
 pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
-    let header = parse_dtb_header(ptr_addr)?;
+    crate::observability::emit_dtb_boundary(
+        crate::observability::EventType::DtbBoundary,
+        0x5100,
+        b"dtb_parse_platform_enter",
+    );
+
+    let header = match parse_dtb_header(ptr_addr) {
+        Some(h) => h,
+        None => {
+            let _ = crate::failure::handle_failure(
+                crate::failure::FailureSubsystem::Dtb,
+                crate::failure::FailureKind::ParseError,
+                b"dtb header parse failed",
+            );
+            crate::observability::emit_dtb_boundary(
+                crate::observability::EventType::DtbBoundary,
+                0x51FF,
+                b"dtb_parse_platform_header_fail",
+            );
+            return None;
+        }
+    };
+
+    let header_check = crate::invariants::mmu::check_mapping_bounds(header.ptr, header.total_size, 4);
+    if !header_check.valid {
+        crate::invariants::enforce(header_check, b"dtb header range invariant failed");
+        let _ = crate::failure::handle_failure(
+            crate::failure::FailureSubsystem::Dtb,
+            crate::failure::FailureKind::ParseError,
+            b"dtb header range invariant failed",
+        );
+        return None;
+    }
+
     let struct_start = header.ptr.checked_add(header.off_dt_struct)?;
     let struct_end = struct_start.checked_add(header.size_dt_struct)?;
     if struct_end < struct_start {
+        let _ = crate::failure::handle_failure(
+            crate::failure::FailureSubsystem::Dtb,
+            crate::failure::FailureKind::ParseError,
+            b"dtb struct range overflow",
+        );
         return None;
     }
 
@@ -886,6 +924,12 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
         }
     }
 
+    crate::observability::emit_dtb_boundary(
+        crate::observability::EventType::DtbBoundary,
+        0x5101,
+        b"dtb_parse_platform_ok",
+    );
+
     Some(info)
 }
 
@@ -902,4 +946,50 @@ pub(crate) fn bootargs_str(ptr: Option<usize>, len: usize) -> Option<&'static st
 #[inline]
 pub(crate) fn is_valid_dtb(ptr_addr: usize) -> bool {
     parse_dtb_header(ptr_addr).is_some()
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod tests {
+    use super::parse_platform_info;
+    use crate::failure::policy::{last_failure_outcome, FailureAction, FailureSubsystem};
+    use crate::observability::{ring_buffer, EventType};
+
+    #[test]
+    fn dtb_negative_trace_closure_chain() {
+        let expected = crate::invariants::mmu::check_mapping_bounds(0x1000, 49, 4);
+        assert!(!expected.valid);
+        assert_eq!(expected.id, "INV-MMU-MAP-001");
+        assert_eq!(expected.severity, crate::invariants::InvariantSeverity::Safety);
+
+        let mut blob = [0u8; 64];
+
+        fn be32(v: u32) -> [u8; 4] {
+            v.to_be_bytes()
+        }
+
+        blob[0..4].copy_from_slice(&be32(0xD00D_FEED));
+        blob[4..8].copy_from_slice(&be32(49));
+        blob[8..12].copy_from_slice(&be32(40));
+        blob[12..16].copy_from_slice(&be32(44));
+        blob[16..20].copy_from_slice(&be32(0));
+        blob[20..24].copy_from_slice(&be32(17));
+        blob[24..28].copy_from_slice(&be32(16));
+        blob[28..32].copy_from_slice(&be32(0));
+        blob[32..36].copy_from_slice(&be32(0));
+        blob[36..40].copy_from_slice(&be32(4));
+        blob[40..44].copy_from_slice(&be32(9));
+
+        let before = ring_buffer::write_count();
+        let parsed = parse_platform_info(blob.as_ptr() as usize);
+        assert!(parsed.is_none());
+        let after = ring_buffer::write_count();
+
+        crate::observability::assert_closure_chain_closure(
+            before,
+            after,
+            &[EventType::InvariantViolation, EventType::FailurePolicyAction],
+            FailureSubsystem::Dtb,
+            FailureAction::Degrade,
+        );
+    }
 }

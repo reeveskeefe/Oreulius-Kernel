@@ -16,7 +16,7 @@ boundary.
 | A64-VECTOR-001 | `theories/aarch64_vectors.v` | Proven | Installed vector base and lower-EL sync dispatch preserve the trap boundary |
 | A64-MMU-001 | `theories/aarch64_mmu.v` | Proven | MMU bring-up establishes a root and preserves modeled W^X separation |
 | A64-SCHED-001 | `theories/aarch64_sched_tick.v` | Proven | Timer tick boundary sets reschedule-pending only at slice boundaries and timeslice updates reject zero |
-| A64-SYSCALL-001 | `theories/aarch64_syscall.v` | Proven | AArch64 syscall dispatcher and return-frame boundary remain within the modeled gate |
+| A64-SYSCALL-001 | `theories/aarch64_syscall.v` | Proven (extension planned) | AArch64 syscall dispatcher and return-frame boundary remain within the modeled gate; current wave extends invalid-frame state-corruption exclusion |
 | A64-SWITCH-001 | `theories/aarch64_context_switch.v` | Proven | AArch64 scheduler handoff preserves the selected ProcessContext and switch bookkeeping |
 
 ## Runtime-Enforced ABI Boundaries
@@ -35,6 +35,7 @@ T2+ proof claim is made.
 | MESH-MIGRATE-001 | Zero-length `mesh_migrate` payloads snapshot the caller's stored module bytecode instead of queuing an empty blob | Runtime Checked | `kernel/src/execution/wasm.rs::policy_tests::mesh_migrate_uses_module_bytecode_when_payload_is_empty` |
 | NET-CONNECT-001 | `oreulius_net_connect` resolves IPv4 literals or DNS names and returns a real reactor-backed TCP connection handle | Runtime Checked | `kernel/src/execution/wasm.rs::policy_tests::parse_net_host_accepts_ipv4_literal` |
 | POLYGLOT-AUDIT-001 | `polyglot_link` records provenance/audit state when a cross-language service link is created | Runtime Checked | `kernel/src/execution/wasm.rs::host_polyglot_link` / `kernel/src/security/mod.rs::log_event` |
+| OBS-EVENT-SCHEMA-001 | Observability event schema v1 remains stable and versioned for proof-runtime evidence correlation | Runtime Checked | `verification/artifacts/observability_event_schema_v1.md` / `kernel/src/observability/event.rs` |
 
 ## Runtime-Enforced IPC Boundaries
 

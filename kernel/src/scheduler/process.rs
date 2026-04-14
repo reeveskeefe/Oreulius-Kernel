@@ -646,6 +646,18 @@ impl Scheduler {
     pub fn schedule_next(&mut self, table: &mut ProcessTable) -> Option<Pid> {
         let start_index = self.last_index;
         let mut checked = 0;
+        let runnable_count = table
+            .processes
+            .iter()
+            .flatten()
+            .filter(|proc| proc.is_runnable())
+            .count() as u32;
+
+        crate::observability::emit_scheduler_boundary(
+            crate::observability::EventType::SchedulerBoundary,
+            0x1100,
+            b"schedule_next_enter",
+        );
 
         // Round-robin through process table
         while checked < MAX_PROCESSES {
@@ -656,6 +668,13 @@ impl Scheduler {
                 if proc.is_runnable() && proc.state != ProcessState::Running {
                     proc.mark_running();
                     self.current_pid = Some(proc.pid);
+                    let check = crate::invariants::scheduler::check_fairness_window(runnable_count, 1);
+                    crate::invariants::enforce(check, b"scheduler selected runnable process");
+                    crate::observability::emit_scheduler_boundary(
+                        crate::observability::EventType::SchedulerBoundary,
+                        0x1101,
+                        b"schedule_next_selected",
+                    );
                     return Some(proc.pid);
                 }
             }
@@ -666,11 +685,24 @@ impl Scheduler {
             }
         }
 
+        let check = crate::invariants::scheduler::check_fairness_window(runnable_count, 0);
+        crate::invariants::enforce(check, b"scheduler found no runnable process");
+        crate::observability::emit_scheduler_boundary(
+            crate::observability::EventType::SchedulerBoundary,
+            0x11FF,
+            b"schedule_next_none",
+        );
+
         None
     }
 
     /// Yield current process (move to back of queue)
     pub fn yield_current(&mut self, table: &mut ProcessTable) -> Option<Pid> {
+        crate::observability::emit_scheduler_boundary(
+            crate::observability::EventType::SchedulerBoundary,
+            0x1110,
+            b"yield_current",
+        );
         if let Some(current) = self.current_pid {
             if let Some(proc) = table.get_mut(current) {
                 proc.mark_ready();
@@ -1324,5 +1356,40 @@ pub extern "C" fn rust_create_process(parent_pid_raw: u32, flags: u32) -> u32 {
     match process_manager().fork_process(Pid(parent_pid_raw), flags) {
         Ok(child_pid) => child_pid.0,
         Err(_) => u32::MAX,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProcessState, ProcessTable, Scheduler};
+    use crate::failure::policy::{last_failure_outcome, FailureAction, FailureSubsystem};
+    use crate::observability::{ring_buffer, EventType};
+
+    #[test]
+    fn scheduler_negative_trace_closure_chain() {
+        let expected = crate::invariants::scheduler::check_fairness_window(1, 0);
+        assert!(!expected.valid);
+        assert_eq!(expected.id, "INV-SCHED-FAIR-001");
+        assert_eq!(expected.severity, crate::invariants::InvariantSeverity::Progress);
+
+        let before = ring_buffer::write_count();
+
+        let mut table = ProcessTable::new();
+        let pid = table.spawn("negtrace", None).expect("spawn");
+        table.get_mut(pid).expect("proc").state = ProcessState::Running;
+
+        let mut scheduler = Scheduler::new();
+        let selected = scheduler.schedule_next(&mut table);
+        assert!(selected.is_none());
+
+        let after = ring_buffer::write_count();
+
+        crate::observability::assert_closure_chain_closure(
+            before,
+            after,
+            &[EventType::InvariantViolation, EventType::FailurePolicyAction],
+            FailureSubsystem::Scheduler,
+            FailureAction::Isolate,
+        );
     }
 }

@@ -188,17 +188,92 @@ impl AddressSpace {
         writable: bool,
         user_accessible: bool,
     ) -> Result<(), &'static str> {
-        map_page_4k(
+        crate::observability::emit_mmu_boundary(
+            crate::observability::EventType::MmuBoundary,
+            0x2200,
+            b"mmu_map_page_enter",
+        );
+
+        let bounds = crate::invariants::mmu::check_mapping_bounds(virt_addr, PAGE_SIZE_4K, PAGE_SIZE_4K);
+        if !bounds.valid {
+            crate::invariants::enforce(bounds, b"mmu map boundary invariant failed");
+            let _ = crate::failure::handle_failure(
+                crate::failure::FailureSubsystem::Mmu,
+                crate::failure::FailureKind::MappingViolation,
+                b"mmu map boundary invariant failed",
+            );
+            return Err("AArch64 map_page invariant failed");
+        }
+
+        let perms = crate::invariants::mmu::check_permission_transition(!writable, writable);
+        if !perms.valid {
+            crate::invariants::enforce(perms, b"mmu map permission transition invalid");
+            let _ = crate::failure::handle_failure(
+                crate::failure::FailureSubsystem::Mmu,
+                crate::failure::FailureKind::MappingViolation,
+                b"mmu permission transition invalid",
+            );
+            return Err("AArch64 map_page W^X invariant failed");
+        }
+
+        let result = map_page_4k(
             self.ttbr0_el1,
             virt_addr,
             phys_addr,
             writable,
             user_accessible,
-        )
+        );
+        if let Err(err) = result {
+            let _ = crate::failure::handle_failure(
+                crate::failure::FailureSubsystem::Mmu,
+                crate::failure::FailureKind::MappingViolation,
+                err.as_bytes(),
+            );
+            return Err(err);
+        }
+
+        crate::observability::emit_mmu_boundary(
+            crate::observability::EventType::MmuBoundary,
+            0x2201,
+            b"mmu_map_page_ok",
+        );
+        Ok(())
     }
 
     pub fn unmap_page(&mut self, virt_addr: usize) -> Result<(), &'static str> {
-        unmap_page_4k(self.ttbr0_el1, virt_addr)
+        crate::observability::emit_mmu_boundary(
+            crate::observability::EventType::MmuBoundary,
+            0x2202,
+            b"mmu_unmap_page_enter",
+        );
+
+        let bounds = crate::invariants::mmu::check_mapping_bounds(virt_addr, PAGE_SIZE_4K, PAGE_SIZE_4K);
+        if !bounds.valid {
+            crate::invariants::enforce(bounds, b"mmu unmap boundary invariant failed");
+            let _ = crate::failure::handle_failure(
+                crate::failure::FailureSubsystem::Mmu,
+                crate::failure::FailureKind::MappingViolation,
+                b"mmu unmap boundary invariant failed",
+            );
+            return Err("AArch64 unmap_page invariant failed");
+        }
+
+        let result = unmap_page_4k(self.ttbr0_el1, virt_addr);
+        if let Err(err) = result {
+            let _ = crate::failure::handle_failure(
+                crate::failure::FailureSubsystem::Mmu,
+                crate::failure::FailureKind::MappingViolation,
+                err.as_bytes(),
+            );
+            return Err(err);
+        }
+
+        crate::observability::emit_mmu_boundary(
+            crate::observability::EventType::MmuBoundary,
+            0x2203,
+            b"mmu_unmap_page_ok",
+        );
+        Ok(())
     }
 }
 
@@ -965,5 +1040,38 @@ fn nonzero_usize(v: usize) -> Option<usize> {
         None
     } else {
         Some(v)
+    }
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod tests {
+    use super::AddressSpace;
+    use crate::failure::policy::{last_failure_outcome, FailureAction, FailureSubsystem};
+    use crate::observability::{ring_buffer, EventType};
+
+    #[test]
+    fn mmu_negative_trace_closure_chain() {
+        let expected = crate::invariants::mmu::check_mapping_bounds(0x1003, 4096, 4096);
+        assert!(!expected.valid);
+        assert_eq!(expected.id, "INV-MMU-MAP-001");
+        assert_eq!(expected.severity, crate::invariants::InvariantSeverity::Safety);
+
+        let before = ring_buffer::write_count();
+        let mut aspace = AddressSpace { ttbr0_el1: 0 };
+        let result = aspace.map_page(0x1003, 0x2000, false, true);
+        assert!(result.is_err());
+        let after = ring_buffer::write_count();
+
+        crate::observability::assert_closure_chain_closure(
+            before,
+            after,
+            &[
+                EventType::InvariantViolation,
+                EventType::FailurePolicyAction,
+                EventType::TerminalFailure,
+            ],
+            FailureSubsystem::Mmu,
+            FailureAction::FailStop,
+        );
     }
 }
