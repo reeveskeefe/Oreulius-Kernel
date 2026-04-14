@@ -1,6 +1,6 @@
 # Oreulius Kernel
 
-Oreulius is a capability-native, WASM-first kernel for isolated workloads with temporal state and verification-oriented control surfaces.
+Most systems make authority boundaries hard to audit and state transitions hard to replay after failures. Oreulius is an experimental kernel for isolated workloads where explicit authority, replayable state, and verification evidence matter more than POSIX compatibility.
 
 ## Start Here
 
@@ -43,7 +43,7 @@ That path gives the fastest "aha" moment in this repo:
 [![Multiarch QEMU Smoke](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/multiarch-qemu-smoke.yml/badge.svg)](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/multiarch-qemu-smoke.yml)
 [![Proof Check](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/proof-check.yml/badge.svg)](https://github.com/reeveskeefe/Oreulius-Kernel/actions/workflows/proof-check.yml)
 
-[Start Here](#start-here) • [Recomended Commands](#Some-Recomended-Commands-to-run-in-the-kernel) • [Architecture](#architecture-at-a-glance) • [Verification](#verification-status) • [Build](#build-and-run) • [Docs](#documentation-map)
+[Start Here](#start-here) • [Recomended Commands](#Some-Recomended-Commands-to-run-in-the-kernel) • [Architecture](#target-bring-up-at-a-glance) • [Verification](#verification-status) • [Build](#build-and-run) • [Docs](#documentation-map)
 
 </div>
 
@@ -158,16 +158,18 @@ Why `i686` first:
 
 Also available:
 
-- `x86_64` for the modern Multiboot2 + GRUB bring-up shell path
+- `x86_64` for the Multiboot2 + GRUB bring-up shell path
 - `AArch64` for the QEMU `virt` raw `Image` + DTB serial shell path
 
-## Architecture At A Glance
+## Target Bring-Up At A Glance
+
+This table is a practical bring-up guide, not a processor taxonomy.
 
 | Arch | Role | First-Run Recommendation | Current Surface |
 |---|---|---|---|
-| `i686` | default onboarding path | Recommended first run | Most complete runtime path |
-| `x86_64` | modern bring-up path | Recommended after first success | Multiboot2 + GRUB + serial shell |
-| `AArch64` | alternate bring-up / portability path | Advanced / alternate target | QEMU `virt` + DTB + PL011 shell |
+| `i686` | Most complete and least surprising demo path | Recommended first run | VGA + serial shell with widest command/runtime coverage |
+| `x86_64` | 64-bit GRUB path for parity and migration | Recommended after first success | Multiboot2 + GRUB + serial shell |
+| `AArch64` | QEMU `virt` portability and arm64 bring-up path | Advanced / alternate target | Raw `Image` + DTB + PL011 serial shell |
 
 ## Repository Map
 

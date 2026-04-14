@@ -320,6 +320,9 @@ Targets:
 - traceability completeness
 - reproducibility of proof outputs
 - status and claim consistency across repo
+- Phase 1B: Observability event schema v1 versioning and event record traceability (runtime checked: `kernel/src/observability/event.rs`)
+- Phase 1B: Invariant framework classifications and enforcement routing (runtime checked: `kernel/src/invariants/mod.rs`, `kernel/src/failure/policy.rs`)
+- Phase 1B: Six new runtime invariants registered with severity and failure policy dispatch (see INVARIANTS.md: INV-SCHED-FAIR-001, INV-SYSCALL-NUM-001, INV-SYSCALL-FRAME-001, INV-MMU-MAP-001, INV-MMU-WX-001, INV-A64-DTB-HEADER-001)
 
 ### Program B: Capability and authority verification
 
@@ -350,6 +353,10 @@ Targets:
 - `W^X`
 - CFI
 - JIT sealing correctness
+- Phase 1B: MMU page mapping bounds and alignment enforcement (runtime checked: INV-MMU-MAP-001, `kernel/src/arch/mmu_aarch64.rs::mmu_negative_trace_closure_chain`)
+- Phase 1B: W^X enforcement at map/unmap boundaries (runtime checked: INV-MMU-WX-001, `kernel/src/arch/mmu_aarch64.rs`)
+- Phase 1B: User exception frame pointer validation before syscall dispatch (runtime checked: INV-SYSCALL-FRAME-001, `kernel/src/arch/aarch64_vectors.rs::trap_negative_trace_closure_chain`)
+- Phase 1B: Process isolation via failure policy dispatch (Isolate action on invariant violation)
 
 ### Program D: Execution semantics
 
@@ -361,6 +368,8 @@ Targets:
 - service pointer typing correctness
 - WASI surface correctness
 - host ABI correctness for the claimed host function set
+- Phase 1B: Syscall dispatcher number validation and rejection of invalid syscalls (runtime checked: INV-SYSCALL-NUM-001, `kernel/src/platform/syscall.rs::syscall_negative_trace_closure_chain`)
+- Phase 1B: Deterministic failure policy dispatch from ABI entry points (failure/policy.rs: classify → FailStop or Isolate)
 
 ### Program E: Temporal and persistence correctness
 
@@ -412,6 +421,8 @@ Targets:
 - interrupt scheduling interaction
 - starvation or fairness properties, if claimed
 - AArch64 timer tick / reschedule-pending boundary
+- Phase 1B: Scheduler fairness window enforcement (runnable must be 0 OR serviced > 0) (runtime checked: INV-SCHED-FAIR-001, `kernel/src/scheduler/process.rs::scheduler_negative_trace_closure_chain`)
+- Phase 1B: Process lifecycle state transitions with invariant enforcement
 
 ### Program I: VFS, `mmap`, and storage semantics
 
@@ -440,6 +451,9 @@ Targets:
 - MMU backends
 - TLB flush and load correctness
 - architecture-specific privilege semantics
+- Phase 1B: AArch64 DTB header bounds and size validation (runtime checked: INV-A64-DTB-HEADER-001, `kernel/src/arch/aarch64_dtb.rs::dtb_negative_trace_closure_chain`)
+- Phase 1B: AArch64 trap/vector entry with frame pointer validation and privilege preservation (runtime checked: INV-SYSCALL-FRAME-001, `kernel/src/arch/aarch64_vectors.rs::trap_negative_trace_closure_chain`)
+- Phase 1B: Observability emission at five AArch64 boundaries (DTB, MMU, trap/vector, syscall dispatching)
 
 These AArch64 Program J boundaries are the ones tracked as **T5** in the
 verification proof matrix. The residual raw-image / firmware edge remains a

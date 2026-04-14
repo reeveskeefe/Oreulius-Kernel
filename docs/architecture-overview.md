@@ -1,5 +1,7 @@
 # Architecture Overview
 
+Most operating systems make authority flow hard to audit and post-incident state hard to replay. Oreulius is an experimental kernel trying to make those two concerns first-class runtime behavior rather than after-the-fact tooling.
+
 Oreulius is best understood through four core ideas:
 
 - capability-mediated authority
@@ -23,6 +25,13 @@ This keeps the most important control surfaces explicit:
 - host ABI entry points
 - temporal snapshot / rollback / merge
 - scheduling and privilege transitions
+
+## Scope And Current Status
+
+- The default user-facing surface today is the serial shell.
+- Oreulius is not currently a desktop OS and does not ship a default GUI/window-manager experience.
+- Some subsystems are implementation-complete, some are target-gated, and some are still migration work.
+- For practical bring-up status by target, use the top-level README section "Target Bring-Up At A Glance" before diving deeper.
 
 ## Recommended Code Entry Points
 

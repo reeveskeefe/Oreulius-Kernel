@@ -97,7 +97,24 @@ Oreulius is not:
 - a completed production-hardened appliance OS
 - a broadly validated physical-hardware platform
 
+Oreulius is also not yet a desktop-first end-user OS today. A desktop direction
+is valid, but only as a staged program with explicit milestones and acceptance
+criteria, not as a marketing relabel.
+
 The project intentionally does **not** optimize around libc compatibility, `/proc`, ambient file/path semantics, or conventional Unix process personality.
+
+## 4.1 Desktop track (explicit program)
+
+To avoid identity drift, desktop capability is tracked as a separate execution
+program with clear phases:
+
+- Phase D0 (now): compositor and framebuffer paths are wired and testable; shell remains the default control surface.
+- Phase D1: single-session window demo with deterministic present, focus, and input routing on x86_64 QEMU.
+- Phase D2: capability-scoped multi-window session model and stable app-facing IPC contract.
+- Phase D3: desktop shell/session manager and daily-usable interaction loop.
+
+This keeps credibility: the project can pursue a GUI future without pretending
+it is already a finished desktop product.
 
 ---
 

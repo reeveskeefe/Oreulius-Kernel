@@ -2235,7 +2235,7 @@ fn init_shared_runtime() {
     {
         let boot_info = crate::arch::boot_info();
         let mb2_ptr = boot_info.raw_info_ptr.unwrap_or(0) as u32;
-        // crate::drivers::x86::gpu_support::init(mb2_ptr);
+        crate::drivers::x86::gpu_support::init(mb2_ptr);
     }
 
     // Initialise the new compositor subsystem.  We probe the framebuffer size
@@ -2244,7 +2244,7 @@ fn init_shared_runtime() {
     {
         let (w, h) = crate::drivers::x86::gpu_support::active_dimensions();
         crate::serial_println!("[X64] init compositor ({}x{})...", w, h);
-        // crate::compositor::init(w, h);
+        crate::compositor::init(w, h);
         crate::serial_println!("[X64] compositor ready");
     }
 }

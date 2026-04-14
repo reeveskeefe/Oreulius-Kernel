@@ -43,3 +43,20 @@ These invariants define the safety properties the verification workspace tracks.
 - INV-A64-007: AArch64 context-switch handoff must preserve the selected
   `ProcessContext` fields across the modeled switch/load entrypoints and must
   not invent a second privilege transition.
+- INV-SCHED-FAIR-001 (Phase 1B): Scheduler fairness window: runnable count must
+  be zero OR serviced count exceeds zero. Severity: Progress. Failure action:
+  Isolate. Evidence: `kernel/src/scheduler/process.rs::scheduler_negative_trace_closure_chain`
+- INV-SYSCALL-NUM-001 (Phase 1B): Syscall number must be ≤ configured maximum
+  (64). Severity: Consistency. Failure action: FailStop. Evidence:
+  `kernel/src/platform/syscall.rs::syscall_negative_trace_closure_chain`
+- INV-SYSCALL-FRAME-001 (Phase 1B): User exception frame pointer must be
+  non-null and within declared address limit. Severity: Safety. Failure action:
+  Isolate. Evidence: `kernel/src/arch/aarch64_vectors.rs::trap_negative_trace_closure_chain`
+- INV-MMU-MAP-001 (Phase 1B): Virtual address and length must be page-aligned
+  to page_size. Severity: Safety. Failure action: FailStop. Evidence:
+  `kernel/src/arch/mmu_aarch64.rs::mmu_negative_trace_closure_chain`
+- INV-MMU-WX-001 (Phase 1B): Write and execute permissions must remain disjoint
+  (W^X enforcement). Severity: Safety. Related: INV-003, INV-MMU-MAP-001.
+- INV-A64-DTB-HEADER-001 (Phase 1B): Device tree blob header size must remain
+  within declared bounds. Severity: Safety. Failure action: Degrade. Evidence:
+  `kernel/src/arch/aarch64_dtb.rs::dtb_negative_trace_closure_chain`

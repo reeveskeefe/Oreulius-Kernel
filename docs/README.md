@@ -16,6 +16,8 @@ Use it in this order:
 - [Verification Overview](verification-overview.md)
 - [ABI Reference](abi-reference.md)
 
+If you only read one architecture page first, start with [Architecture Overview](architecture-overview.md). It is the plain-language entry point and links outward to the deeper theory documents.
+
 ## By Goal
 
 ### I want to boot it and see it work
