@@ -1,6 +1,6 @@
 # Oreulius Kernel
 
-Oreulius is a kernel designed to run isolated WASI workloads in a secure operating environment, the kernel is meant to make authority explicit, control access through capabilities on a deep level, and in simple terms, make sure the behaviour of the work load is incredibally easy to insepct.
+Oreulius is a kernel designed to run isolated WASI workloads in a secure operating environment, the kernel is meant to make authority explicit, control access through capabilities on a deep level, and in simple terms, the end goal of developing this is too make sure the behaviour of the workload is incredibly easy to insepct.
 
 <image src="docs/assets/finalized repo image.png"></image>
 
