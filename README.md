@@ -130,9 +130,9 @@ cd kernel
 ```
 
 #### Step 5
-inside the kernel you now have full control to run the demo, track it, with tightened temporal replay, can send it through the peer to capability peer network called capnet, and it is securely sandboxed.
+Inside the kernel you now have full control to run the demo, track it, with tightened temporal replay, can send it through the peer to capability peer network called capnet, and it is securely sandboxed.
 
-(The kernel is in Alpha, so its not production ready, but that is the idea behind how this kernel works, by taking your WASM workload outside the kernel and giving you tight and secure control over it)
+(The kernel is in Alpha, so its not production ready, but that is the idea behind how this kernel works, by taking your WASM workload outside the tech-stack and your existing development environment and operating system, and giving you tight and secure control over the instance). the way a unikernel should be designed, for micro purposes. It could even be used to have tighter analytical and security within other megasecure kernels like sel-4, or to boost features and abilities without sacrificing the security you like of your exisitng operating system
 
 ```
 wasm /wasm/spawn_children.wasm
