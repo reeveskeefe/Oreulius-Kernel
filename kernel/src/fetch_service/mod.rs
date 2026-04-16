@@ -13,9 +13,9 @@
 // Change License: Apache License 2.0
 
 
-//! Browser backend kernel module.
+//! Fetch service kernel module.
 //!
-//! This module implements the in-kernel layer of the Oreulius browser stack:
+//! This module implements the in-kernel layer of the Oreulius fetch service:
 //!
 //! - **Network I/O**: DNS, TCP, TLS (transport.rs)
 //! - **HTTP/1.1**: request builder + streaming response parser (fetch.rs)
@@ -59,11 +59,11 @@ pub mod types;
 // ---------------------------------------------------------------------------
 
 pub use protocol::{
-    BrowserError, BrowserEvent, BrowserRequest, BrowserResponse, FetchErrorKind, PolicyBlockReason,
+    FetchError, FetchEvent, FetchRequest, FetchResponse, FetchErrorKind, PolicyBlockReason,
     ResponseHeader, TlsHandshakeResult,
 };
 pub use types::{
-    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, MimeType, Origin, RequestId, Scheme,
+    Cap, SessionId, DownloadId, HttpMethod, MimeType, Origin, RequestId, Scheme,
     StatusCode, Url,
 };
 
@@ -71,7 +71,7 @@ pub use types::{
 // Module lifecycle
 // ---------------------------------------------------------------------------
 
-/// Initialise the browser backend.  Called once at kernel boot.
+/// Initialise the fetch service.  Called once at kernel boot.
 pub fn init() {
     service::init();
 }
@@ -82,6 +82,6 @@ pub fn tick() {
 }
 
 /// Dispatch a single IPC request from a frontend client.
-pub fn handle_request(req: BrowserRequest) -> BrowserResponse {
+pub fn handle_request(req: FetchRequest) -> FetchResponse {
     service::handle_request(req)
 }

@@ -59,8 +59,8 @@ pub enum ServiceType {
     Temporal = 6,
     /// Compositor / display server
     Compositor = 7,
-    /// In-kernel browser backend (fetch, TLS, origin model, cookies, cache)
-    BrowserBackend = 8,
+    /// In-kernel fetch service (fetch, TLS, origin model, cookies, cache)
+    FetchService = 8,
     /// Custom user service (extensible)
     Custom(u32) = 1000,
 }
@@ -75,7 +75,7 @@ impl ServiceType {
             5 => Some(ServiceType::Console),
             6 => Some(ServiceType::Temporal),
             7 => Some(ServiceType::Compositor),
-            8 => Some(ServiceType::BrowserBackend),
+            8 => Some(ServiceType::FetchService),
             v if v >= 1000 => Some(ServiceType::Custom(v)),
             _ => None,
         }
@@ -90,7 +90,7 @@ impl ServiceType {
             ServiceType::Console => 5,
             ServiceType::Temporal => 6,
             ServiceType::Compositor => 7,
-            ServiceType::BrowserBackend => 8,
+            ServiceType::FetchService => 8,
             ServiceType::Custom(v) => *v,
         }
     }
@@ -104,7 +104,7 @@ impl ServiceType {
             ServiceType::Console => "Console",
             ServiceType::Temporal => "Temporal",
             ServiceType::Compositor => "Compositor",
-            ServiceType::BrowserBackend => "BrowserBackend",
+            ServiceType::FetchService => "FetchService",
             ServiceType::Custom(_) => "Custom",
         }
     }

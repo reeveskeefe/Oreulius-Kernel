@@ -13,16 +13,16 @@
 // Change License: Apache License 2.0
 
 
-//! IPC protocol between the browser backend kernel service and frontend clients.
+//! IPC protocol between the fetch service kernel service and frontend clients.
 //!
 //! Clients communicate over the kernel IPC service layer by sending
-//! `BrowserRequest` values and receiving `BrowserResponse` / `BrowserEvent`
+//! `FetchRequest` values and receiving `FetchResponse` / `FetchEvent`
 //! values back.  All types are fixed-size and heap-free.
 
 #![allow(dead_code)]
 
 use super::types::{
-    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, MimeType, RedirectPolicy, RequestId,
+    Cap, SessionId, DownloadId, HttpMethod, MimeType, RedirectPolicy, RequestId,
     StatusCode, Url, URL_MAX,
 };
 use crate::ipc::ProcessId;
@@ -31,9 +31,9 @@ use crate::ipc::ProcessId;
 // Request envelope
 // ---------------------------------------------------------------------------
 
-/// Every request from a frontend client to the browser backend service.
-pub enum BrowserRequest {
-    /// Open a new browser session (one per tab / navigation context).
+/// Every request from a frontend client to the fetch service.
+pub enum FetchRequest {
+    /// Open a new fetch session (one per tab / navigation context).
     /// The caller supplies its own PID for capability bookkeeping.
     OpenSession {
         pid: ProcessId,
@@ -43,14 +43,14 @@ pub enum BrowserRequest {
 
     /// Close a session and revoke all its capabilities.
     CloseSession {
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
     },
 
     /// Navigate the session to a URL (starts a fetch, streams events back).
     Navigate {
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
         url: [u8; URL_MAX],
         url_len: usize,
         method: HttpMethod,
@@ -62,27 +62,27 @@ pub enum BrowserRequest {
 
     /// Subscribe to events for a session (returns an event-channel capability).
     Subscribe {
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
     },
 
     /// Unsubscribe from events.
     Unsubscribe {
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
     },
 
     /// Abort an in-flight request.
     AbortRequest {
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
         request_id: RequestId,
     },
 
-    /// Accept or reject a download offered via `BrowserEvent::DownloadOffered`.
+    /// Accept or reject a download offered via `FetchEvent::DownloadOffered`.
     AcceptDownload {
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
         download_id: DownloadId,
         /// VFS path for the output file (capability-gated write).
         dest_path: [u8; 256],
@@ -90,15 +90,15 @@ pub enum BrowserRequest {
     },
 
     RejectDownload {
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
         download_id: DownloadId,
     },
 
     /// Poll for pending events (non-blocking).
     PollEvents {
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
     },
 }
 
@@ -106,12 +106,12 @@ pub enum BrowserRequest {
 // Response envelope
 // ---------------------------------------------------------------------------
 
-/// Synchronous response to a `BrowserRequest`.
-pub enum BrowserResponse {
+/// Synchronous response to a `FetchRequest`.
+pub enum FetchResponse {
     /// Session was opened successfully.
     SessionGranted {
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
     },
 
     /// A `Navigate` was accepted; `request_id` identifies the in-flight fetch.
@@ -124,11 +124,11 @@ pub enum BrowserResponse {
     Ok,
 
     /// Error response.
-    Error(BrowserError),
+    Error(FetchError),
 
     /// One or more pending events (up to 8 per poll).
     Events {
-        events: [Option<BrowserEvent>; 8],
+        events: [Option<FetchEvent>; 8],
         count: usize,
     },
 }
@@ -163,7 +163,7 @@ impl ResponseHeader {
     }
 }
 
-/// TLS handshake outcome delivered with `BrowserEvent::TlsState`.
+/// TLS handshake outcome delivered with `FetchEvent::TlsState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsHandshakeResult {
     /// TLS 1.3 established; the connection is secure.
@@ -176,7 +176,7 @@ pub enum TlsHandshakeResult {
 
 /// Events streamed to subscribed clients.
 #[derive(Clone, Copy)]
-pub enum BrowserEvent {
+pub enum FetchEvent {
     /// Response headers received.  Emitted once per redirect and once for
     /// the final response.
     Headers {
@@ -288,9 +288,9 @@ pub enum FetchErrorKind {
 // Error variants
 // ---------------------------------------------------------------------------
 
-/// Errors returned synchronously in `BrowserResponse::Error`.
+/// Errors returned synchronously in `FetchResponse::Error`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BrowserError {
+pub enum FetchError {
     /// The session ID does not exist.
     InvalidSession,
     /// The capability token is invalid or revoked.

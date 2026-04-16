@@ -23,7 +23,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{BrowserSessionId, DownloadId, MimeType, RequestId};
+use super::types::{SessionId, DownloadId, MimeType, RequestId};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,7 +58,7 @@ pub enum DownloadState {
 #[derive(Copy, Clone)]
 pub struct DownloadJob {
     pub id: DownloadId,
-    pub session: BrowserSessionId,
+    pub session: SessionId,
     pub request: RequestId,
     pub state: DownloadState,
     /// Suggested filename from `Content-Disposition`.
@@ -79,7 +79,7 @@ pub struct DownloadJob {
 impl DownloadJob {
     pub const EMPTY: Self = Self {
         id: DownloadId(0),
-        session: BrowserSessionId(0),
+        session: SessionId(0),
         request: RequestId(0),
         state: DownloadState::Rejected,
         filename: [0; FILENAME_MAX],
@@ -118,7 +118,7 @@ impl DownloadManager {
     /// the table is full.
     pub fn offer(
         &mut self,
-        session: BrowserSessionId,
+        session: SessionId,
         request: RequestId,
         filename: &[u8],
         mime: MimeType,
@@ -155,7 +155,7 @@ impl DownloadManager {
 
     /// Mark a download as accepted and record the destination path.
     /// Returns `false` if the id is unknown or not in `Pending` state.
-    pub fn accept(&mut self, id: DownloadId, session: BrowserSessionId, dest_path: &[u8]) -> bool {
+    pub fn accept(&mut self, id: DownloadId, session: SessionId, dest_path: &[u8]) -> bool {
         let job = match self.find_mut(id, session) {
             Some(j) => j,
             None => return false,
@@ -171,7 +171,7 @@ impl DownloadManager {
     }
 
     /// Reject a pending download.
-    pub fn reject(&mut self, id: DownloadId, session: BrowserSessionId) -> bool {
+    pub fn reject(&mut self, id: DownloadId, session: SessionId) -> bool {
         let job = match self.find_mut(id, session) {
             Some(j) => j,
             None => return false,
@@ -222,7 +222,7 @@ impl DownloadManager {
     }
 
     /// Remove all jobs belonging to `session`.
-    pub fn purge_session(&mut self, session: BrowserSessionId) {
+    pub fn purge_session(&mut self, session: SessionId) {
         for j in &mut self.jobs {
             if j.active && j.session == session {
                 j.active = false;
@@ -264,7 +264,7 @@ impl DownloadManager {
         self.jobs.iter_mut().find(|j| j.active && j.id == id)
     }
 
-    fn find_mut(&mut self, id: DownloadId, session: BrowserSessionId) -> Option<&mut DownloadJob> {
+    fn find_mut(&mut self, id: DownloadId, session: SessionId) -> Option<&mut DownloadJob> {
         self.jobs
             .iter_mut()
             .find(|j| j.active && j.id == id && j.session == session)

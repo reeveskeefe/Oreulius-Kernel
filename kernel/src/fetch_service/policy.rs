@@ -15,7 +15,7 @@
 
 //! Browser backend security policy enforcement.
 //!
-//! `BrowserPolicy` is a zero-copy, stateless checker.  All state lives in
+//! `FetchPolicy` is a zero-copy, stateless checker.  All state lives in
 //! `session.rs`; policy only inspects values passed to it and returns
 //! a verdict.
 
@@ -41,18 +41,18 @@ pub const DOWNLOAD_PROMPT_THRESHOLD: u64 = 1024 * 1024; // 1 MiB
 // Allowed URL schemes
 // ---------------------------------------------------------------------------
 
-/// Schemes the browser backend will actually fetch.
+/// Schemes the fetch service will actually fetch.
 /// All others are blocked with `SchemeNotAllowed`.
 pub const ALLOWED_SCHEMES: &[Scheme] = &[Scheme::Http, Scheme::Https];
 
 // ---------------------------------------------------------------------------
-// BrowserPolicy
+// FetchPolicy
 // ---------------------------------------------------------------------------
 
 /// Stateless policy checker.
-pub struct BrowserPolicy;
+pub struct FetchPolicy;
 
-impl BrowserPolicy {
+impl FetchPolicy {
     // -----------------------------------------------------------------------
     // Scheme check
     // -----------------------------------------------------------------------

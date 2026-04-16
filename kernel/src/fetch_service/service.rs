@@ -15,8 +15,8 @@
 
 //! Browser backend service — global singleton and request dispatcher.
 //!
-//! `BrowserBackendService` owns all browser subsystems:
-//!   - `SessionTable`   — client browser sessions
+//! `FetchServiceService` owns all browser subsystems:
+//!   - `SessionTable`   — client fetch sessions
 //!   - `OriginTable`    — per-session origin policy
 //!   - `CookieJar`      — per-origin cookies
 //!   - `ResponseCache`  — HTTP response cache
@@ -26,7 +26,7 @@
 //!
 //! Public API:
 //!   - `init()`                  — called once at boot
-//!   - `handle_request(req) → BrowserResponse` — process one IPC message
+//!   - `handle_request(req) → FetchResponse` — process one IPC message
 
 #![allow(dead_code)]
 
@@ -39,16 +39,16 @@ use super::cookie_jar::CookieJar;
 use super::downloads::DownloadManager;
 use super::fetch::{fetch_request, FetchContext, FetchOutcome};
 use super::origin::{OriginCheckResult, OriginPolicy, OriginTable};
-use super::policy::BrowserPolicy;
+use super::policy::FetchPolicy;
 use super::protocol::{
-    BrowserError, BrowserEvent, BrowserRequest, BrowserResponse, FetchErrorKind, PolicyBlockReason,
+    FetchError, FetchEvent, FetchRequest, FetchResponse, FetchErrorKind, PolicyBlockReason,
     TlsHandshakeResult, BODY_CHUNK_MAX, ERROR_MSG_MAX,
 };
 use super::session::{BrowserSession, SessionTable, MAX_BROWSER_SESSIONS};
 use super::storage::StorageTable;
 use super::temporal;
 use super::types::{
-    BrowserCap, BrowserSessionId, DownloadId, HttpMethod, Origin, RedirectPolicy, RequestId,
+    Cap, SessionId, DownloadId, HttpMethod, Origin, RedirectPolicy, RequestId,
     Scheme, Url, URL_MAX,
 };
 use crate::ipc::ProcessId;
@@ -57,13 +57,13 @@ use crate::ipc::ProcessId;
 // Global singleton
 // ---------------------------------------------------------------------------
 
-pub static BROWSER_SERVICE: Mutex<BrowserBackendService> = Mutex::new(BrowserBackendService::new());
+pub static BROWSER_SERVICE: Mutex<FetchServiceService> = Mutex::new(FetchServiceService::new());
 
 // ---------------------------------------------------------------------------
 // Service struct
 // ---------------------------------------------------------------------------
 
-pub struct BrowserBackendService {
+pub struct FetchServiceService {
     sessions: SessionTable,
     origins: OriginTable,
     cookies: CookieJar,
@@ -99,7 +99,7 @@ fn fetch_error_kind_bytes(kind: FetchErrorKind) -> &'static [u8] {
     }
 }
 
-impl BrowserBackendService {
+impl FetchServiceService {
     pub const fn new() -> Self {
         Self {
             sessions: SessionTable::new(),
@@ -134,11 +134,11 @@ impl BrowserBackendService {
     // Request dispatch
     // -----------------------------------------------------------------------
 
-    pub fn handle_request(&mut self, req: BrowserRequest) -> BrowserResponse {
+    pub fn handle_request(&mut self, req: FetchRequest) -> FetchResponse {
         match req {
-            BrowserRequest::OpenSession { pid, .. } => self.do_open_session(pid),
-            BrowserRequest::CloseSession { session, cap } => self.do_close_session(session, cap),
-            BrowserRequest::Navigate {
+            FetchRequest::OpenSession { pid, .. } => self.do_open_session(pid),
+            FetchRequest::CloseSession { session, cap } => self.do_close_session(session, cap),
+            FetchRequest::Navigate {
                 session,
                 cap,
                 url,
@@ -155,26 +155,26 @@ impl BrowserBackendService {
                 &body[..body_len],
                 redirect,
             ),
-            BrowserRequest::Subscribe { session, cap } => self.do_subscribe(session, cap),
-            BrowserRequest::Unsubscribe { session, cap } => self.do_unsubscribe(session, cap),
-            BrowserRequest::AbortRequest {
+            FetchRequest::Subscribe { session, cap } => self.do_subscribe(session, cap),
+            FetchRequest::Unsubscribe { session, cap } => self.do_unsubscribe(session, cap),
+            FetchRequest::AbortRequest {
                 session,
                 cap,
                 request_id,
             } => self.do_abort(session, cap, request_id),
-            BrowserRequest::AcceptDownload {
+            FetchRequest::AcceptDownload {
                 session,
                 cap,
                 download_id,
                 dest_path,
                 dest_len,
             } => self.do_accept_download(session, cap, download_id, &dest_path[..dest_len]),
-            BrowserRequest::RejectDownload {
+            FetchRequest::RejectDownload {
                 session,
                 cap,
                 download_id,
             } => self.do_reject_download(session, cap, download_id),
-            BrowserRequest::PollEvents { session, cap } => self.do_poll_events(session, cap),
+            FetchRequest::PollEvents { session, cap } => self.do_poll_events(session, cap),
         }
     }
 
@@ -182,14 +182,14 @@ impl BrowserBackendService {
     // OpenSession
     // -----------------------------------------------------------------------
 
-    fn do_open_session(&mut self, pid: ProcessId) -> BrowserResponse {
+    fn do_open_session(&mut self, pid: ProcessId) -> FetchResponse {
         // Limit one session per PID.
         if self.sessions.find_by_pid(pid).is_some() {
-            return BrowserResponse::Error(BrowserError::SessionQuotaExceeded);
+            return FetchResponse::Error(FetchError::SessionQuotaExceeded);
         }
         let idx = match self.sessions.open(pid) {
             Some(i) => i,
-            None => return BrowserResponse::Error(BrowserError::SessionQuotaExceeded),
+            None => return FetchResponse::Error(FetchError::SessionQuotaExceeded),
         };
         let s = self.sessions.get(idx).unwrap();
         let id = s.id;
@@ -202,20 +202,20 @@ impl BrowserBackendService {
         self.storage.register(id);
 
         self.audit.session_opened(id);
-        BrowserResponse::SessionGranted { session: id, cap }
+        FetchResponse::SessionGranted { session: id, cap }
     }
 
     // -----------------------------------------------------------------------
     // CloseSession
     // -----------------------------------------------------------------------
 
-    fn do_close_session(&mut self, session: BrowserSessionId, cap: BrowserCap) -> BrowserResponse {
+    fn do_close_session(&mut self, session: SessionId, cap: Cap) -> FetchResponse {
         if !self.verify_cap(session, cap) {
-            return BrowserResponse::Error(BrowserError::InvalidCapability);
+            return FetchResponse::Error(FetchError::InvalidCapability);
         }
         let idx = match self.sessions.find(session) {
             Some(i) => i,
-            None => return BrowserResponse::Error(BrowserError::InvalidSession),
+            None => return FetchResponse::Error(FetchError::InvalidSession),
         };
         self.sessions.close(idx);
         self.origins.unregister(session);
@@ -224,7 +224,7 @@ impl BrowserBackendService {
         self.downloads.purge_session(session);
         self.storage.unregister(session);
         self.audit.session_closed(session);
-        BrowserResponse::Ok
+        FetchResponse::Ok
     }
 
     // -----------------------------------------------------------------------
@@ -233,31 +233,31 @@ impl BrowserBackendService {
 
     fn do_navigate(
         &mut self,
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
         url_raw: &[u8],
         method: HttpMethod,
         body: &[u8],
         redirect: RedirectPolicy,
-    ) -> BrowserResponse {
+    ) -> FetchResponse {
         if !self.verify_cap(session, cap) {
-            return BrowserResponse::Error(BrowserError::InvalidCapability);
+            return FetchResponse::Error(FetchError::InvalidCapability);
         }
         let idx = match self.sessions.find(session) {
             Some(i) => i,
-            None => return BrowserResponse::Error(BrowserError::InvalidSession),
+            None => return FetchResponse::Error(FetchError::InvalidSession),
         };
 
         // Parse URL.
         let url = match Url::parse(url_raw) {
             Some(u) => u,
-            None => return BrowserResponse::Error(BrowserError::InvalidUrl),
+            None => return FetchResponse::Error(FetchError::InvalidUrl),
         };
 
         // Scheme check.
-        let policy_checker = BrowserPolicy;
+        let policy_checker = FetchPolicy;
         if policy_checker.check_scheme(url.scheme).is_some() {
-            return BrowserResponse::Error(BrowserError::UnsupportedScheme);
+            return FetchResponse::Error(FetchError::UnsupportedScheme);
         }
 
         // Origin check.
@@ -266,7 +266,7 @@ impl BrowserBackendService {
             _ => {
                 self.audit
                     .policy_blocked(session, RequestId(0), b"origin-blocked");
-                return BrowserResponse::Error(BrowserError::InternalError);
+                return FetchResponse::Error(FetchError::InternalError);
             }
         }
 
@@ -291,7 +291,7 @@ impl BrowserBackendService {
                 let read = self.cache.read_body(cache_idx, &mut body_chunk);
                 let is_last = read >= body_len
                     && body_off.saturating_add(read) <= super::cache::CACHE_BODY_POOL;
-                s.enqueue(BrowserEvent::Headers {
+                s.enqueue(FetchEvent::Headers {
                     request_id,
                     status,
                     mime,
@@ -300,16 +300,16 @@ impl BrowserBackendService {
                     header_count: 0,
                 });
                 if read > 0 {
-                    s.enqueue(BrowserEvent::BodyChunk {
+                    s.enqueue(FetchEvent::BodyChunk {
                         request_id,
                         data: body_chunk,
                         data_len: read,
                         is_last,
                     });
                 }
-                s.enqueue(BrowserEvent::Complete { request_id });
+                s.enqueue(FetchEvent::Complete { request_id });
                 self.audit.cache_hit(session, request_id);
-                return BrowserResponse::RequestAccepted { request_id };
+                return FetchResponse::RequestAccepted { request_id };
             }
         }
         self.audit.cache_miss(session, request_id);
@@ -324,7 +324,7 @@ impl BrowserBackendService {
             profile
         };
 
-        let mut events: [Option<BrowserEvent>; 64] = [None; 64];
+        let mut events: [Option<FetchEvent>; 64] = [None; 64];
         let mut event_count = 0usize;
 
         let outcome = fetch_request(
@@ -378,7 +378,7 @@ impl BrowserBackendService {
                     let msg = b"redirects disabled by policy";
                     let msg_len = msg.len().min(ERROR_MSG_MAX);
                     message[..msg_len].copy_from_slice(&msg[..msg_len]);
-                    s.enqueue(BrowserEvent::FetchError {
+                    s.enqueue(FetchEvent::FetchError {
                         request_id,
                         kind: FetchErrorKind::TooManyRedirects,
                         message,
@@ -386,14 +386,14 @@ impl BrowserBackendService {
                     });
                     self.audit
                         .internal_error(session, request_id, b"redirect-disabled");
-                    return BrowserResponse::RequestAccepted { request_id };
+                    return FetchResponse::RequestAccepted { request_id };
                 }
                 if !redirect.follow_cross_origin {
                     if let Some(target_url) = Url::parse(&location[..location_len]) {
                         let from_origin = Origin::from_url(&url);
                         let to_origin = Origin::from_url(&target_url);
                         if !from_origin.same_origin(&to_origin) {
-                            s.enqueue(BrowserEvent::PolicyBlocked {
+                            s.enqueue(FetchEvent::PolicyBlocked {
                                 request_id,
                                 reason: PolicyBlockReason::OriginNotAllowed,
                             });
@@ -402,7 +402,7 @@ impl BrowserBackendService {
                                 request_id,
                                 b"redirect-cross-origin",
                             );
-                            return BrowserResponse::RequestAccepted { request_id };
+                            return FetchResponse::RequestAccepted { request_id };
                         }
                     }
                 }
@@ -429,45 +429,45 @@ impl BrowserBackendService {
                 let mut to = [0u8; URL_MAX];
                 let tl = location_len.min(URL_MAX);
                 to[..tl].copy_from_slice(&location[..tl]);
-                s.enqueue(BrowserEvent::Redirect {
+                s.enqueue(FetchEvent::Redirect {
                     request_id,
                     from_url: from,
                     from_url_len: fl,
                     to_url: to,
                     to_url_len: tl,
-                    status: crate::browser_backend::types::StatusCode(status),
+                    status: crate::fetch_service::types::StatusCode(status),
                 });
             }
         }
 
-        BrowserResponse::RequestAccepted { request_id }
+        FetchResponse::RequestAccepted { request_id }
     }
 
     // -----------------------------------------------------------------------
     // Subscribe / Unsubscribe
     // -----------------------------------------------------------------------
 
-    fn do_subscribe(&mut self, session: BrowserSessionId, cap: BrowserCap) -> BrowserResponse {
+    fn do_subscribe(&mut self, session: SessionId, cap: Cap) -> FetchResponse {
         if !self.verify_cap(session, cap) {
-            return BrowserResponse::Error(BrowserError::InvalidCapability);
+            return FetchResponse::Error(FetchError::InvalidCapability);
         }
         if let Some(idx) = self.sessions.find(session) {
             self.sessions.get_mut(idx).unwrap().subscribed = true;
-            BrowserResponse::Subscribed
+            FetchResponse::Subscribed
         } else {
-            BrowserResponse::Error(BrowserError::InvalidSession)
+            FetchResponse::Error(FetchError::InvalidSession)
         }
     }
 
-    fn do_unsubscribe(&mut self, session: BrowserSessionId, cap: BrowserCap) -> BrowserResponse {
+    fn do_unsubscribe(&mut self, session: SessionId, cap: Cap) -> FetchResponse {
         if !self.verify_cap(session, cap) {
-            return BrowserResponse::Error(BrowserError::InvalidCapability);
+            return FetchResponse::Error(FetchError::InvalidCapability);
         }
         if let Some(idx) = self.sessions.find(session) {
             self.sessions.get_mut(idx).unwrap().subscribed = false;
-            BrowserResponse::Ok
+            FetchResponse::Ok
         } else {
-            BrowserResponse::Error(BrowserError::InvalidSession)
+            FetchResponse::Error(FetchError::InvalidSession)
         }
     }
 
@@ -477,17 +477,17 @@ impl BrowserBackendService {
 
     fn do_abort(
         &mut self,
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
         request_id: RequestId,
-    ) -> BrowserResponse {
+    ) -> FetchResponse {
         if !self.verify_cap(session, cap) {
-            return BrowserResponse::Error(BrowserError::InvalidCapability);
+            return FetchResponse::Error(FetchError::InvalidCapability);
         }
         self.audit.request_aborted(session, request_id);
         // Transport-level abort is best-effort; the session will see no more
         // events for this request_id after `AbortRequest`.
-        BrowserResponse::Ok
+        FetchResponse::Ok
     }
 
     // -----------------------------------------------------------------------
@@ -496,34 +496,34 @@ impl BrowserBackendService {
 
     fn do_accept_download(
         &mut self,
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
         download_id: DownloadId,
         dest_path: &[u8],
-    ) -> BrowserResponse {
+    ) -> FetchResponse {
         if !self.verify_cap(session, cap) {
-            return BrowserResponse::Error(BrowserError::InvalidCapability);
+            return FetchResponse::Error(FetchError::InvalidCapability);
         }
         if self.downloads.accept(download_id, session, dest_path) {
-            BrowserResponse::Ok
+            FetchResponse::Ok
         } else {
-            BrowserResponse::Error(BrowserError::InvalidDownload)
+            FetchResponse::Error(FetchError::InvalidDownload)
         }
     }
 
     fn do_reject_download(
         &mut self,
-        session: BrowserSessionId,
-        cap: BrowserCap,
+        session: SessionId,
+        cap: Cap,
         download_id: DownloadId,
-    ) -> BrowserResponse {
+    ) -> FetchResponse {
         if !self.verify_cap(session, cap) {
-            return BrowserResponse::Error(BrowserError::InvalidCapability);
+            return FetchResponse::Error(FetchError::InvalidCapability);
         }
         if self.downloads.reject(download_id, session) {
-            BrowserResponse::Ok
+            FetchResponse::Ok
         } else {
-            BrowserResponse::Error(BrowserError::InvalidDownload)
+            FetchResponse::Error(FetchError::InvalidDownload)
         }
     }
 
@@ -531,13 +531,13 @@ impl BrowserBackendService {
     // PollEvents
     // -----------------------------------------------------------------------
 
-    fn do_poll_events(&mut self, session: BrowserSessionId, cap: BrowserCap) -> BrowserResponse {
+    fn do_poll_events(&mut self, session: SessionId, cap: Cap) -> FetchResponse {
         if !self.verify_cap(session, cap) {
-            return BrowserResponse::Error(BrowserError::InvalidCapability);
+            return FetchResponse::Error(FetchError::InvalidCapability);
         }
         let idx = match self.sessions.find(session) {
             Some(i) => i,
-            None => return BrowserResponse::Error(BrowserError::InvalidSession),
+            None => return FetchResponse::Error(FetchError::InvalidSession),
         };
         let mut events = [None; 8];
         let count = self
@@ -545,14 +545,14 @@ impl BrowserBackendService {
             .get_mut(idx)
             .unwrap()
             .drain_events(&mut events);
-        BrowserResponse::Events { events, count }
+        FetchResponse::Events { events, count }
     }
 
     // -----------------------------------------------------------------------
     // Capability verification
     // -----------------------------------------------------------------------
 
-    fn verify_cap(&self, session: BrowserSessionId, cap: BrowserCap) -> bool {
+    fn verify_cap(&self, session: SessionId, cap: Cap) -> bool {
         match self.sessions.find(session) {
             Some(idx) => self
                 .sessions
@@ -579,6 +579,6 @@ pub fn tick() {
 }
 
 /// Dispatch a single IPC request.
-pub fn handle_request(req: BrowserRequest) -> BrowserResponse {
+pub fn handle_request(req: FetchRequest) -> FetchResponse {
     BROWSER_SERVICE.lock().handle_request(req)
 }

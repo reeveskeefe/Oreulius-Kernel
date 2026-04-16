@@ -21,7 +21,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{BrowserSessionId, RequestId};
+use super::types::{SessionId, RequestId};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -67,7 +67,7 @@ pub struct AuditEntry {
     /// Monotonic sequence number (wraps at u32::MAX).
     pub seq: u32,
     /// Which session this event belongs to (0 = kernel / no session).
-    pub session: BrowserSessionId,
+    pub session: SessionId,
     /// Which request triggered the event (0 = not applicable).
     pub request: RequestId,
     pub kind: AuditKind,
@@ -80,7 +80,7 @@ pub struct AuditEntry {
 impl AuditEntry {
     pub const EMPTY: Self = Self {
         seq: 0,
-        session: BrowserSessionId(0),
+        session: SessionId(0),
         request: RequestId(0),
         kind: AuditKind::InternalError,
         note: [0u8; 32],
@@ -90,7 +90,7 @@ impl AuditEntry {
     /// Build an entry with a short ASCII annotation.
     pub fn new(
         seq: u32,
-        session: BrowserSessionId,
+        session: SessionId,
         request: RequestId,
         kind: AuditKind,
         note: &[u8],
@@ -128,7 +128,7 @@ impl AuditLog {
     /// Append an entry, overwriting the oldest if the ring is full.
     pub fn push(
         &mut self,
-        session: BrowserSessionId,
+        session: SessionId,
         request: RequestId,
         kind: AuditKind,
         note: &[u8],
@@ -141,75 +141,75 @@ impl AuditLog {
 
     /// Convenience helpers — each maps to one `AuditKind` variant.
 
-    pub fn session_opened(&mut self, s: BrowserSessionId) {
+    pub fn session_opened(&mut self, s: SessionId) {
         self.push(s, RequestId(0), AuditKind::SessionOpened, b"");
     }
 
-    pub fn session_closed(&mut self, s: BrowserSessionId) {
+    pub fn session_closed(&mut self, s: SessionId) {
         self.push(s, RequestId(0), AuditKind::SessionClosed, b"");
     }
 
-    pub fn navigate_start(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn navigate_start(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::NavigateStart, b"");
     }
 
-    pub fn navigate_commit(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn navigate_commit(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::NavigateCommit, b"");
     }
 
-    pub fn fetch_start(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn fetch_start(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::FetchStart, b"");
     }
 
-    pub fn fetch_complete(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn fetch_complete(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::FetchComplete, b"");
     }
 
-    pub fn policy_blocked(&mut self, s: BrowserSessionId, r: RequestId, reason: &[u8]) {
+    pub fn policy_blocked(&mut self, s: SessionId, r: RequestId, reason: &[u8]) {
         self.push(s, r, AuditKind::PolicyBlocked, reason);
     }
 
-    pub fn tls_established(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn tls_established(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::TlsEstablished, b"");
     }
 
-    pub fn tls_failed(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn tls_failed(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::TlsFailed, b"");
     }
 
-    pub fn download_offered(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn download_offered(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::DownloadOffered, b"");
     }
 
-    pub fn download_complete(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn download_complete(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::DownloadComplete, b"");
     }
 
-    pub fn cookie_set(&mut self, s: BrowserSessionId, host: &[u8]) {
+    pub fn cookie_set(&mut self, s: SessionId, host: &[u8]) {
         self.push(s, RequestId(0), AuditKind::CookieSet, host);
     }
 
-    pub fn cache_hit(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn cache_hit(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::CacheHit, b"");
     }
 
-    pub fn cache_miss(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn cache_miss(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::CacheMiss, b"");
     }
 
-    pub fn request_aborted(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn request_aborted(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::RequestAborted, b"");
     }
 
-    pub fn redirect_followed(&mut self, s: BrowserSessionId, r: RequestId, to: &[u8]) {
+    pub fn redirect_followed(&mut self, s: SessionId, r: RequestId, to: &[u8]) {
         self.push(s, r, AuditKind::RedirectFollowed, to);
     }
 
-    pub fn content_filtered(&mut self, s: BrowserSessionId, r: RequestId) {
+    pub fn content_filtered(&mut self, s: SessionId, r: RequestId) {
         self.push(s, r, AuditKind::ContentFiltered, b"");
     }
 
-    pub fn internal_error(&mut self, s: BrowserSessionId, r: RequestId, msg: &[u8]) {
+    pub fn internal_error(&mut self, s: SessionId, r: RequestId, msg: &[u8]) {
         self.push(s, r, AuditKind::InternalError, msg);
     }
 

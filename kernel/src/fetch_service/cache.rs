@@ -21,7 +21,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{BrowserSessionId, MimeType, StatusCode, Url};
+use super::types::{SessionId, MimeType, StatusCode, Url};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,7 +43,7 @@ pub const MAX_CACHED_BODY: usize = 256 * 1024; // 256 KiB
 #[derive(Copy, Clone)]
 pub struct CacheEntry {
     /// Which session owns this cached response.
-    pub session: BrowserSessionId,
+    pub session: SessionId,
     /// URL key (host + path + query, fixed arrays from Url).
     pub url_digest: [u8; 512],
     pub url_digest_len: usize,
@@ -70,7 +70,7 @@ pub struct CacheEntry {
 
 impl CacheEntry {
     pub const EMPTY: Self = Self {
-        session: BrowserSessionId(0),
+        session: SessionId(0),
         url_digest: [0; 512],
         url_digest_len: 0,
         status: StatusCode(0),
@@ -157,7 +157,7 @@ impl ResponseCache {
     /// Returns the index of the matching entry, or `None` on miss / stale.
     pub fn lookup(
         &self,
-        session: BrowserSessionId,
+        session: SessionId,
         url: &Url,
         current_epoch: u64,
     ) -> Option<usize> {
@@ -236,7 +236,7 @@ impl ResponseCache {
     /// (200, 203, 300, 301, 410) are accepted.
     pub fn store(
         &mut self,
-        session: BrowserSessionId,
+        session: SessionId,
         url: &Url,
         status: StatusCode,
         mime: MimeType,
@@ -306,7 +306,7 @@ impl ResponseCache {
     // -----------------------------------------------------------------------
 
     /// Remove all entries for `session` (e.g., on session close).
-    pub fn purge_session(&mut self, session: BrowserSessionId) {
+    pub fn purge_session(&mut self, session: SessionId) {
         for e in &mut self.entries {
             if e.active && e.session == session {
                 e.active = false;

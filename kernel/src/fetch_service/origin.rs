@@ -21,7 +21,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{BrowserSessionId, Origin, Scheme, Url};
+use super::types::{SessionId, Origin, Scheme, Url};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -37,7 +37,7 @@ pub const MAX_SESSION_ORIGINS: usize = 16;
 // OriginPolicy
 // ---------------------------------------------------------------------------
 
-/// The top-level origin of a browser session (i.e. the page origin).
+/// The top-level origin of a fetch session (i.e. the page origin).
 ///
 /// A session may only embed cross-origin resources if they satisfy its policy.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -204,7 +204,7 @@ fn check_origin(policy: &OriginPolicy, target: &Origin, is_top_level: bool) -> O
 // OriginTable — per-kernel site-isolation map
 // ---------------------------------------------------------------------------
 
-/// A small global table mapping `BrowserSessionId` → `OriginPolicy`.
+/// A small global table mapping `SessionId` → `OriginPolicy`.
 ///
 /// The kernel service (`service.rs`) holds one instance; checked on every
 /// `Navigate` and subresource dispatch.
@@ -215,14 +215,14 @@ pub struct OriginTable {
 
 #[derive(Copy, Clone)]
 struct OriginEntry {
-    session: BrowserSessionId,
+    session: SessionId,
     policy: OriginPolicy,
     active: bool,
 }
 
 impl OriginEntry {
     const EMPTY: Self = Self {
-        session: BrowserSessionId(0),
+        session: SessionId(0),
         policy: OriginPolicy::same_origin_only(Origin::OPAQUE),
         active: false,
     };
@@ -238,7 +238,7 @@ impl OriginTable {
 
     /// Register a new session with an initial policy.
     /// Returns `false` if the table is full.
-    pub fn register(&mut self, session: BrowserSessionId, policy: OriginPolicy) -> bool {
+    pub fn register(&mut self, session: SessionId, policy: OriginPolicy) -> bool {
         if self.count >= MAX_SESSION_ORIGINS {
             return false;
         }
@@ -256,7 +256,7 @@ impl OriginTable {
     }
 
     /// Remove a session's entry.
-    pub fn unregister(&mut self, session: BrowserSessionId) {
+    pub fn unregister(&mut self, session: SessionId) {
         for e in &mut self.entries {
             if e.active && e.session == session {
                 e.active = false;
@@ -267,7 +267,7 @@ impl OriginTable {
     }
 
     /// Update the top-level origin for `session` (called on navigation commit).
-    pub fn update_top_origin(&mut self, session: BrowserSessionId, origin: Origin) {
+    pub fn update_top_origin(&mut self, session: SessionId, origin: Origin) {
         for e in &mut self.entries {
             if e.active && e.session == session {
                 e.policy.top_origin = origin;
@@ -277,7 +277,7 @@ impl OriginTable {
     }
 
     /// Look up the policy for a session.
-    pub fn policy(&self, session: BrowserSessionId) -> Option<&OriginPolicy> {
+    pub fn policy(&self, session: SessionId) -> Option<&OriginPolicy> {
         for e in &self.entries {
             if e.active && e.session == session {
                 return Some(&e.policy);
@@ -289,7 +289,7 @@ impl OriginTable {
     /// Check a navigation for `session`.
     pub fn check_navigation(
         &self,
-        session: BrowserSessionId,
+        session: SessionId,
         target_url: &Url,
     ) -> OriginCheckResult {
         match self.policy(session) {
@@ -301,7 +301,7 @@ impl OriginTable {
     /// Check a subresource for `session`.
     pub fn check_subresource(
         &self,
-        session: BrowserSessionId,
+        session: SessionId,
         resource_url: &Url,
     ) -> OriginCheckResult {
         match self.policy(session) {

@@ -13,7 +13,7 @@
 // Change License: Apache License 2.0
 
 
-//! Temporal snapshot / restore for the browser backend.
+//! Temporal snapshot / restore for the fetch service.
 //!
 //! Persists session identity, navigation history, cookies and download jobs
 //! across kernel lifecycle events (suspend/resume, soft-reboot).
@@ -71,7 +71,7 @@ use super::cookie_jar::{CookieEntry, CookieJar, SameSite};
 use super::downloads::{DownloadJob, DownloadManager, DownloadState};
 use super::session::{SessionTable, NAV_HISTORY_DEPTH};
 use super::types::{
-    BrowserCap, BrowserSessionId, DownloadId, MimeType, RequestId, MIME_MAX, URL_MAX,
+    Cap, SessionId, DownloadId, MimeType, RequestId, MIME_MAX, URL_MAX,
 };
 use crate::ipc::ProcessId;
 
@@ -471,9 +471,9 @@ pub fn restore(
             };
             if sessions.restore(
                 idx,
-                BrowserSessionId(session_id),
+                SessionId(session_id),
                 ProcessId(pid),
-                BrowserCap(cap),
+                Cap(cap),
             ) {
                 sessions.restore_nav(
                     idx,
@@ -543,7 +543,7 @@ pub fn restore(
         }
         entry.path_len = path_len;
 
-        entry.session = BrowserSessionId(session_id);
+        entry.session = SessionId(session_id);
         entry.expires = expires;
         entry.http_only = (flags & 0x01) != 0;
         entry.secure = (flags & 0x02) != 0;
@@ -619,7 +619,7 @@ pub fn restore(
         job.mime = MimeType::from_bytes(&mime_bytes[..mime_len]);
 
         job.id = DownloadId(id);
-        job.session = BrowserSessionId(session_id);
+        job.session = SessionId(session_id);
         job.size_hint = size_hint;
         job.bytes_written = bytes_written;
         job.state = match state_byte {

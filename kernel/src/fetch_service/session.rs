@@ -23,16 +23,16 @@ use super::cookie_jar::CookieJar;
 use super::downloads::DownloadManager;
 use super::origin::{OriginPolicy, OriginTable};
 use super::policy::PolicyProfile;
-use super::protocol::{BrowserError, BrowserEvent, BrowserRequest, BrowserResponse};
+use super::protocol::{FetchError, FetchEvent, FetchRequest, FetchResponse};
 use super::storage::StorageTable;
-use super::types::{BrowserCap, BrowserSessionId, DownloadId, HttpMethod, RequestId, Url, URL_MAX};
+use super::types::{Cap, SessionId, DownloadId, HttpMethod, RequestId, Url, URL_MAX};
 use crate::ipc::ProcessId;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Maximum open browser sessions.
+/// Maximum open fetch sessions.
 pub const MAX_BROWSER_SESSIONS: usize = 8;
 
 /// Navigation history depth per session.
@@ -65,9 +65,9 @@ impl NavigationEntry {
 // ---------------------------------------------------------------------------
 
 pub struct BrowserSession {
-    pub id: BrowserSessionId,
+    pub id: SessionId,
     pub pid: ProcessId,
-    pub cap: BrowserCap,
+    pub cap: Cap,
     pub policy: PolicyProfile,
     /// Input-event subscription flag.
     pub subscribed: bool,
@@ -79,7 +79,7 @@ pub struct BrowserSession {
     nav_count: usize,
 
     // Pending events outbox.
-    event_queue: [Option<BrowserEvent>; EVENT_QUEUE_DEPTH],
+    event_queue: [Option<FetchEvent>; EVENT_QUEUE_DEPTH],
     eq_head: usize,
     eq_tail: usize,
     eq_count: usize,
@@ -91,9 +91,9 @@ pub struct BrowserSession {
 impl BrowserSession {
     pub const fn empty() -> Self {
         Self {
-            id: BrowserSessionId(0),
+            id: SessionId(0),
             pid: ProcessId(0),
-            cap: BrowserCap(0),
+            cap: Cap(0),
             policy: PolicyProfile::DEFAULT,
             subscribed: false,
             alive: false,
@@ -203,7 +203,7 @@ impl BrowserSession {
     // -----------------------------------------------------------------------
 
     /// Enqueue an event.  Drops the event if the queue is full.
-    pub fn enqueue(&mut self, ev: BrowserEvent) {
+    pub fn enqueue(&mut self, ev: FetchEvent) {
         if self.eq_count >= EVENT_QUEUE_DEPTH {
             return;
         }
@@ -213,7 +213,7 @@ impl BrowserSession {
     }
 
     /// Drain up to `max` events into `out`.  Returns count drained.
-    pub fn drain_events(&mut self, out: &mut [Option<BrowserEvent>; 8]) -> usize {
+    pub fn drain_events(&mut self, out: &mut [Option<FetchEvent>; 8]) -> usize {
         let n = self.eq_count.min(8);
         for i in 0..n {
             out[i] = self.event_queue[self.eq_head].take();
@@ -242,19 +242,19 @@ impl SessionTable {
         }
     }
 
-    fn next_cap(&mut self) -> BrowserCap {
+    fn next_cap(&mut self) -> Cap {
         // LCG — same pattern as compositor/capability.rs.
         let x = self.cap_seed;
         self.cap_seed = x
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        BrowserCap(self.cap_seed | 1)
+        Cap(self.cap_seed | 1)
     }
 
     /// Open a new session for `pid`.  Returns slot index or `None`.
     pub fn open(&mut self, pid: ProcessId) -> Option<usize> {
         let slot = self.slots.iter().position(|s| !s.alive)?;
-        let id = BrowserSessionId((slot + 1) as u32);
+        let id = SessionId((slot + 1) as u32);
         let cap = self.next_cap();
         self.slots[slot] = BrowserSession::empty();
         self.slots[slot].id = id;
@@ -271,8 +271,8 @@ impl SessionTable {
         }
     }
 
-    /// Find by `BrowserSessionId`.
-    pub fn find(&self, id: BrowserSessionId) -> Option<usize> {
+    /// Find by `SessionId`.
+    pub fn find(&self, id: SessionId) -> Option<usize> {
         let idx = id.0.checked_sub(1)? as usize;
         if idx < MAX_BROWSER_SESSIONS && self.slots[idx].alive && self.slots[idx].id == id {
             Some(idx)
@@ -300,9 +300,9 @@ impl SessionTable {
     pub fn restore(
         &mut self,
         idx: usize,
-        id: BrowserSessionId,
+        id: SessionId,
         pid: ProcessId,
-        cap: BrowserCap,
+        cap: Cap,
     ) -> bool {
         if idx >= MAX_BROWSER_SESSIONS {
             return false;

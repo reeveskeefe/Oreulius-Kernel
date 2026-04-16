@@ -16,7 +16,7 @@
 //! High-level fetch pipeline.
 //!
 //! `fetch_request` drives the full DNS → connect → TLS → HTTP/1.1 → stream
-//! pipeline for a single request.  It emits `BrowserEvent`s into a
+//! pipeline for a single request.  It emits `FetchEvent`s into a
 //! fixed-size output array rather than allocating.
 
 #![allow(dead_code)]
@@ -25,13 +25,13 @@ use super::headers::{
     decode_chunked, is_chunked_transfer, parse_content_length, parse_content_type, parse_headers,
     parse_location, parse_status_line,
 };
-use super::policy::{BrowserPolicy, PolicyProfile};
+use super::policy::{FetchPolicy, PolicyProfile};
 use super::protocol::{
-    BrowserError, BrowserEvent, FetchErrorKind, PolicyBlockReason, ResponseHeader,
+    FetchError, FetchEvent, FetchErrorKind, PolicyBlockReason, ResponseHeader,
     TlsHandshakeResult, BODY_CHUNK_MAX, MAX_RESPONSE_HEADERS,
 };
 use super::transport::{TransportError, TransportHandle};
-use super::types::{BrowserSessionId, HttpMethod, MimeType, RequestId, Scheme, StatusCode, Url};
+use super::types::{SessionId, HttpMethod, MimeType, RequestId, Scheme, StatusCode, Url};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -49,7 +49,7 @@ const MAX_HEADER_BLOCK: usize = 16384;
 
 /// Everything needed to execute one HTTP request.
 pub struct FetchContext<'a> {
-    pub session: BrowserSessionId,
+    pub session: SessionId,
     pub request: RequestId,
     pub url: &'a Url,
     pub method: HttpMethod,
@@ -91,10 +91,10 @@ pub enum FetchOutcome {
 /// the URL on each iteration.
 pub fn fetch_request<const MAX_EVENTS: usize>(
     ctx: &FetchContext<'_>,
-    events: &mut [Option<BrowserEvent>; MAX_EVENTS],
+    events: &mut [Option<FetchEvent>; MAX_EVENTS],
     event_count: &mut usize,
 ) -> FetchOutcome {
-    let policy = BrowserPolicy;
+    let policy = FetchPolicy;
 
     // -----------------------------------------------------------------------
     // Scheme check
@@ -333,7 +333,7 @@ pub fn fetch_request<const MAX_EVENTS: usize>(
 
 fn stream_body<const N: usize>(
     transport: &mut TransportHandle,
-    events: &mut [Option<BrowserEvent>; N],
+    events: &mut [Option<FetchEvent>; N],
     event_count: &mut usize,
     request: RequestId,
     is_chunked: bool,
@@ -518,9 +518,9 @@ fn write_u16(buf: &mut [u8; 6], mut v: u16) -> usize {
 // ---------------------------------------------------------------------------
 
 fn push<const N: usize>(
-    events: &mut [Option<BrowserEvent>; N],
+    events: &mut [Option<FetchEvent>; N],
     count: &mut usize,
-    e: BrowserEvent,
+    e: FetchEvent,
 ) {
     if *count < N {
         events[*count] = Some(e);
@@ -529,7 +529,7 @@ fn push<const N: usize>(
 }
 
 fn push_policy_blocked<const N: usize>(
-    events: &mut [Option<BrowserEvent>; N],
+    events: &mut [Option<FetchEvent>; N],
     count: &mut usize,
     req: RequestId,
     reason: PolicyBlockReason,
@@ -537,7 +537,7 @@ fn push_policy_blocked<const N: usize>(
     push(
         events,
         count,
-        BrowserEvent::PolicyBlocked {
+        FetchEvent::PolicyBlocked {
             request_id: req,
             reason,
         },
@@ -545,7 +545,7 @@ fn push_policy_blocked<const N: usize>(
 }
 
 fn push_tls_state<const N: usize>(
-    events: &mut [Option<BrowserEvent>; N],
+    events: &mut [Option<FetchEvent>; N],
     count: &mut usize,
     req: RequestId,
     result: TlsHandshakeResult,
@@ -553,7 +553,7 @@ fn push_tls_state<const N: usize>(
     push(
         events,
         count,
-        BrowserEvent::TlsState {
+        FetchEvent::TlsState {
             request_id: req,
             result,
         },
@@ -561,7 +561,7 @@ fn push_tls_state<const N: usize>(
 }
 
 fn push_fetch_error<const N: usize>(
-    events: &mut [Option<BrowserEvent>; N],
+    events: &mut [Option<FetchEvent>; N],
     count: &mut usize,
     req: RequestId,
     kind: FetchErrorKind,
@@ -573,7 +573,7 @@ fn push_fetch_error<const N: usize>(
     push(
         events,
         count,
-        BrowserEvent::FetchError {
+        FetchEvent::FetchError {
             request_id: req,
             kind,
             message: msg,
@@ -583,7 +583,7 @@ fn push_fetch_error<const N: usize>(
 }
 
 fn push_headers<const N: usize>(
-    events: &mut [Option<BrowserEvent>; N],
+    events: &mut [Option<FetchEvent>; N],
     count: &mut usize,
     req: RequestId,
     status: u16,
@@ -595,7 +595,7 @@ fn push_headers<const N: usize>(
     push(
         events,
         count,
-        BrowserEvent::Headers {
+        FetchEvent::Headers {
             request_id: req,
             status: StatusCode(status),
             mime,
@@ -607,7 +607,7 @@ fn push_headers<const N: usize>(
 }
 
 fn push_body_chunk<const N: usize>(
-    events: &mut [Option<BrowserEvent>; N],
+    events: &mut [Option<FetchEvent>; N],
     count: &mut usize,
     req: RequestId,
     data: &[u8],
@@ -619,7 +619,7 @@ fn push_body_chunk<const N: usize>(
     push(
         events,
         count,
-        BrowserEvent::BodyChunk {
+        FetchEvent::BodyChunk {
             request_id: req,
             data: buf,
             data_len: len,
@@ -629,9 +629,9 @@ fn push_body_chunk<const N: usize>(
 }
 
 fn push_complete<const N: usize>(
-    events: &mut [Option<BrowserEvent>; N],
+    events: &mut [Option<FetchEvent>; N],
     count: &mut usize,
     req: RequestId,
 ) {
-    push(events, count, BrowserEvent::Complete { request_id: req });
+    push(events, count, FetchEvent::Complete { request_id: req });
 }

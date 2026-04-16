@@ -184,7 +184,7 @@ The registry currently models service types such as:
 - console
 - temporal
 - compositor
-- browser backend
+- fetch service
 
 The design goal remains the same: no ambient global lookup as the primary authority path. Services are introduced explicitly through capability-mediated channels.
 

@@ -64,7 +64,7 @@ The registry implements a **no-ambient-authority introduction protocol**:
 | `Console` | `5` | Output streams (capability-gated) |
 | `Temporal` | `6` | Versioned state system |
 | `Compositor` | `7` | Display / framebuffer compositor |
-| `BrowserBackend` | `8` | TLS, fetch, origin model, cookies |
+| `FetchService` | `8` | TLS, fetch, origin model, cookies |
 | `Custom(u32)` | `1000+` | User-defined extensible types |
 
 ### Capacity Limits

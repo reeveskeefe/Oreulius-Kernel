@@ -2358,17 +2358,6 @@ impl SliceScheduler {
         keys
     }
 
-    #[cfg(target_arch = "x86_64")]
-    fn release_shared_file_vma_refs(
-        &mut self,
-        space: &crate::arch::mmu::AddressSpace,
-        vma: &Vma,
-    ) {
-        for key in Self::collect_shared_file_vma_keys(space, vma) {
-            self.release_shared_file_page_ref(&key.source, key.file_page_offset);
-        }
-    }
-
     pub fn free_current_mapping(&mut self, addr: usize, size: usize) -> Result<(), &'static str> {
         let pid = self.require_current_pid(ERR_NO_CURRENT_PROCESS)?;
         self.free_mapping_for_pid(pid, addr, size)

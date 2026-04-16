@@ -23,7 +23,7 @@
 
 use crate::fs::vfs;
 
-use super::types::BrowserSessionId;
+use super::types::SessionId;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,7 +68,7 @@ impl OriginStorage {
     /// Create a new `OriginStorage` view for `session`.
     ///
     /// Does **not** create the directory — call `ensure_dir()` first.
-    pub fn new(session: BrowserSessionId) -> Self {
+    pub fn new(session: SessionId) -> Self {
         let mut base = [0u8; 64];
         let len = build_base_path(&mut base, session);
         Self {
@@ -152,7 +152,7 @@ impl OriginStorage {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn build_base_path(buf: &mut [u8; 64], session: BrowserSessionId) -> usize {
+fn build_base_path(buf: &mut [u8; 64], session: SessionId) -> usize {
     // "/browser/<decimal>/"
     let prefix = b"/browser/";
     let prefix_len = prefix.len();
@@ -201,7 +201,7 @@ fn validate_key(key: &[u8]) -> Result<(), StorageError> {
 // StorageTable — per-session OriginStorage registry
 // ---------------------------------------------------------------------------
 
-/// A small fixed-size table mapping `BrowserSessionId` → `OriginStorage`.
+/// A small fixed-size table mapping `SessionId` → `OriginStorage`.
 ///
 /// The kernel service holds one instance; storage views are allocated lazily.
 pub struct StorageTable {
@@ -211,14 +211,14 @@ pub struct StorageTable {
 
 #[derive(Clone)]
 struct StorageEntry {
-    session: BrowserSessionId,
+    session: SessionId,
     storage: OriginStorage,
     active: bool,
 }
 
 impl StorageEntry {
     const EMPTY: Self = Self {
-        session: BrowserSessionId(0),
+        session: SessionId(0),
         storage: OriginStorage {
             base: [0; 64],
             base_len: 0,
@@ -236,7 +236,7 @@ impl StorageTable {
     }
 
     /// Register a session and ensure its storage directory exists.
-    pub fn register(&mut self, session: BrowserSessionId) -> bool {
+    pub fn register(&mut self, session: SessionId) -> bool {
         if self.count >= 16 {
             return false;
         }
@@ -255,7 +255,7 @@ impl StorageTable {
     }
 
     /// Remove a session's storage entry (does **not** delete VFS files).
-    pub fn unregister(&mut self, session: BrowserSessionId) {
+    pub fn unregister(&mut self, session: SessionId) {
         for e in &mut self.entries {
             if e.active && e.session == session {
                 e.active = false;
@@ -266,7 +266,7 @@ impl StorageTable {
     }
 
     /// Get the `OriginStorage` for a session.
-    pub fn storage(&self, session: BrowserSessionId) -> Option<&OriginStorage> {
+    pub fn storage(&self, session: SessionId) -> Option<&OriginStorage> {
         for e in &self.entries {
             if e.active && e.session == session {
                 return Some(&e.storage);

@@ -13,7 +13,7 @@
 // Change License: Apache License 2.0
 
 
-//! Core types for the browser backend subsystem.
+//! Core types for the fetch service subsystem.
 //!
 //! All types in this module are `no_std`-compatible, heap-free, and use
 //! fixed-size arrays for all variable-length data.
@@ -24,9 +24,9 @@
 // ID Newtypes
 // ---------------------------------------------------------------------------
 
-/// Identifies an active browser session (one per tab/navigation context).
+/// Identifies an active fetch session (one per tab/navigation context).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BrowserSessionId(pub u32);
+pub struct SessionId(pub u32);
 
 /// Identifies a single in-flight or completed fetch request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,10 +35,10 @@ pub struct RequestId(pub u32);
 /// Opaque capability token issued to a client when a session is opened.
 /// The token is a 64-bit MAC — clients cannot forge or guess it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BrowserCap(pub u64);
+pub struct Cap(pub u64);
 
-impl BrowserCap {
-    pub const INVALID: BrowserCap = BrowserCap(0);
+impl Cap {
+    pub const INVALID: Cap = Cap(0);
     pub fn is_valid(self) -> bool {
         self.0 != 0
     }

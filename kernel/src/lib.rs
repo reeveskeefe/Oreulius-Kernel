@@ -25,7 +25,7 @@ use std::sync::{Mutex, OnceLock};
 
 pub mod arch;
 pub mod capability;
-pub mod browser_backend;
+pub mod fetch_service;
 pub mod compositor;
 pub mod crypto;
 pub mod drivers;

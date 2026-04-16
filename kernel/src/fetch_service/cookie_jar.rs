@@ -20,7 +20,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{BrowserSessionId, Origin, Scheme};
+use super::types::{SessionId, Origin, Scheme};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,7 +57,7 @@ pub struct CookieEntry {
     /// Path scope.
     pub path: [u8; 256],
     pub path_len: usize,
-    pub session: BrowserSessionId,
+    pub session: SessionId,
     pub http_only: bool,
     pub secure: bool,
     pub same_site: SameSite,
@@ -76,7 +76,7 @@ impl CookieEntry {
         domain_len: 0,
         path: [0; 256],
         path_len: 0,
-        session: BrowserSessionId(0),
+        session: SessionId(0),
         http_only: false,
         secure: false,
         same_site: SameSite::Lax,
@@ -236,7 +236,7 @@ impl CookieJar {
     /// `request_host` is the normalized hostname.
     pub fn set(
         &mut self,
-        session: BrowserSessionId,
+        session: SessionId,
         name: &[u8],
         value: &[u8],
         attrs: &SetCookieDirectives,
@@ -338,7 +338,7 @@ impl CookieJar {
     /// - `is_cross_site`:   for SameSite enforcement
     pub fn build_cookie_header(
         &mut self,
-        session: BrowserSessionId,
+        session: SessionId,
         out: &mut [u8],
         request_scheme: Scheme,
         request_host: &[u8],
@@ -415,7 +415,7 @@ impl CookieJar {
     // Delete / evict
     // -----------------------------------------------------------------------
 
-    pub fn delete(&mut self, session: BrowserSessionId, name: &[u8], domain: &[u8]) {
+    pub fn delete(&mut self, session: SessionId, name: &[u8], domain: &[u8]) {
         for e in &mut self.entries {
             if e.active
                 && e.session == session
@@ -430,7 +430,7 @@ impl CookieJar {
     }
 
     /// Remove all cookies belonging to `session`.
-    pub fn purge_session(&mut self, session: BrowserSessionId) {
+    pub fn purge_session(&mut self, session: SessionId) {
         for e in &mut self.entries {
             if e.active && e.session == session {
                 e.active = false;
