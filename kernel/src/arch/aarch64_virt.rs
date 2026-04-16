@@ -83,7 +83,7 @@ const VIRTIO_BLK_T_OUT: u32 = 1;
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
 const VIRTIO_BLK_SECTOR_SIZE: usize = 512;
-const VIRTIO_BLK_SYNC_WAIT_SPINS: usize = 2_000_000;
+const VIRTIO_BLK_SYNC_WAIT_SPINS: usize = 8_000_000;
 
 static BOOT_DTB_PTR: AtomicUsize = AtomicUsize::new(0);
 static BOOT_CMDLINE_PTR: AtomicUsize = AtomicUsize::new(0);
@@ -1239,6 +1239,12 @@ fn virtio_blk_wait_until_idle() -> Result<(), &'static str> {
         let _ = virtio_blk_harvest_completions_if_any();
         core::hint::spin_loop();
     }
+    let _ = virtio_blk_harvest_completions_if_any();
+    let posted = VIRTIO_BLK_REQ_POSTED.load(Ordering::Relaxed);
+    let done = VIRTIO_BLK_REQ_COMPLETED.load(Ordering::Relaxed);
+    if done >= posted {
+        return Ok(());
+    }
     VIRTIO_BLK_REQ_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
     Err("virtio-blk queue idle wait timeout")
 }
@@ -1326,6 +1332,20 @@ fn virtio_blk_submit_sync(
             }
             let _ = virtio_blk_harvest_completions_if_any();
             core::hint::spin_loop();
+        }
+
+        let _ = virtio_blk_harvest_completions_if_any();
+        let done = VIRTIO_BLK_REQ_COMPLETED.load(Ordering::Relaxed);
+        if done > completed_before {
+            let status = unsafe { read_volatile(VIRTIO_BLK_REQ.status.get() as *const u8) };
+            VIRTIO_BLK_REQ_LAST_STATUS.store(status as u32, Ordering::Relaxed);
+            if status != 0 {
+                return Err("virtio-blk I/O status error");
+            }
+            if req_type == VIRTIO_BLK_T_IN {
+                unsafe { buf.copy_from_slice(&*VIRTIO_BLK_REQ.data.get()) };
+            }
+            return Ok(());
         }
 
         VIRTIO_BLK_REQ_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
