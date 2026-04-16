@@ -23946,7 +23946,7 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
                 )?;
                 instance.memory.write(ARGS_PTR, &encoded_args)?;
 
-                let mut invoke_typed = |instance: &mut WasmInstance| -> Result<(), WasmError> {
+                let invoke_typed = |instance: &mut WasmInstance| -> Result<(), WasmError> {
                     instance.stack.clear();
                     instance.stack.push(Value::I32(handle.0 as i32))?;
                     instance.stack.push(Value::I32(ARGS_PTR as i32))?;
