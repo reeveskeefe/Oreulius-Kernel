@@ -23,7 +23,7 @@ To run in qemu, here is the AArch64 test command:
 8. Add TLB flush ordering verification,  host mocks for flush tlb's, so that page‑table logic can be unit tested without qemu
 9. Create a libFuzzer cargo target, for the cargo-fuzz command, to exercise map_page_4k, translate, and clone_table_recusive, as-well as wire a  CL job to run quick fuzz rounds.
 10. Create a second CL smoke test called extended-aarch64.sh. Make sure it includes all the regression tests in the smoke sweet for the virtio-blk boot. 
-11. improve invariant messaging, and more clear error messaging. 
+11. Improve invariant messaging, and create more clear error messaging. 
 12. Create a script that boots in qemu. runs the ptwalk, and saves a page-table snapshot to compare regressions. 
 
 
