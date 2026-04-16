@@ -1,6 +1,6 @@
 # Architecture Abstraction Layer
 
-This directory is for the boot and runtime code that the kernel relies on. This folder exposes the ArchpPlatform trait that the kerenl calls on for platform setup and theruntime entry. It isolates the CPU, the interrupt controller, the timer, and the differences in the MMU in order to create platform parity between the different ports. 
+This directory is for the boot and runtime code that the kernel relies on. This folder exposes the ArchPlatform trait that the kernel calls on for platform setup and theruntime entry. It isolates the CPU, the interrupt controller, the timer, and the differences in the MMU in order to create platform parity between the different ports. 
 
 ## Run 
 
