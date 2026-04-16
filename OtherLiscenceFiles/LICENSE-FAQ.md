@@ -1,27 +1,28 @@
-# Oreulius Community License FAQ (Non-Binding)
+# Oreulius BUSL-1.1 FAQ (Non-Binding)
 
-Effective Date: 2026-03-14
+Effective Date: 2026-04-15
 
-This document is for convenience only. It does not modify the Oreulius
-Community License. If there is any conflict, the License controls.
+This document is for convenience only. It does not modify the Business Source
+License 1.1 terms in the repository LICENSE file. If there is any conflict,
+the LICENSE file controls.
 
 ## Is this open source?
-No. Oreulius is source-available under the Oreulius Community License and is not
-an OSI-approved open-source project.
+No. Oreulius is source-available under Business Source License 1.1 and is not
+an OSI-approved open-source project at this time.
 
-## What can I do under the public license?
-You can study, run, modify, benchmark, fork publicly, and distribute Oreulius
-for research, evaluation, education, and other non-commercial uses.
+## What can I do under the repository license?
+You can study, run, modify, benchmark, and evaluate Oreulius for personal use,
+research, education, and internal non-production testing.
 
 ## Can a company evaluate Oreulius internally?
 Yes. Internal evaluation, testing, benchmarking, security review, and prototype
 work are allowed so long as Oreulius is not used in production and is not part
 of a paid or revenue-generating product or service.
 
-## What counts as non-commercial use?
+## What counts as non-production use?
 Typical examples include hobby projects, academic research, classroom use,
-public demonstrations, non-commercial prototypes, and open research
-collaboration.
+public demonstrations, non-production prototypes, and internal technical
+evaluation.
 
 ## What counts as commercial use?
 Commercial use generally means production deployment, use in a product or
@@ -36,18 +37,16 @@ Yes. The public license explicitly allows benchmarks, evaluations, and public
 technical discussion.
 
 ## Can I fork the repository publicly?
-Yes. Public forks are allowed under the Community License for permitted
-non-commercial uses.
+Yes, subject to the LICENSE terms and all stated restrictions.
 
-## What happens to contributions?
-Contributors retain copyright, but accepted contributions may be incorporated,
-distributed, and relicensed as part of Oreulius.
+## Are public core contributions accepted?
+Oreulius core is maintained under a controlled authorship model. General
+public code contributions to core kernel sources are not currently accepted.
 
 ## Is there a patent grant?
-Yes. The Community License includes a contributor patent grant and patent
-retaliation language.
+Refer to the LICENSE file terms for the applicable legal language.
 
-## Does the public license include support?
+## Does the repository license include support?
 No. Support or commercial deployment terms are handled separately.
 
 ## How do license updates apply?

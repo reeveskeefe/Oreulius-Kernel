@@ -1,6 +1,6 @@
 # Oreulius Kernel
 
-Oreulius is a kernel designed to run isolated WASI workloads in a secure operating environment, the kernel is meant to make authority explicit, control access through capabilities on a deep level, and in simple terms, the end goal of developing this is too make sure the behaviour of the workload is incredibly easy to insepct.
+Oreulius is a kernel designed to run isolated WASI workloads in a secure operating environment, the kernel is meant to make authority explicit, control access through capabilities on a deep level, and in simple terms, the end goal of developing this is too make sure the behaviour of the workload is incredibly easy to inspect.
 
 <image src="docs/assets/finalized repo image.png"></image>
 
@@ -13,7 +13,7 @@ The i686 path is effectively the legacy boot, and its the first boot I created, 
 
 I personally recommend starting with the i686 boot. These commands will boot it with qemu for you in an easy way to test it and play with it, as its currently in the alpha phase. 
 
-## Required dependencies, environment set up and tool chain
+## Required dependencies, environment set-up and tool chain
 
 #### 1. Set up environment
 #### MACOS
@@ -132,7 +132,7 @@ cd kernel
 #### Step 5
 Inside the kernel you now have full control to run the demo, track it, with tightened temporal replay, can send it through the peer to capability peer network called capnet, and it is securely sandboxed.
 
-(The kernel is in Alpha, so its not production ready, but that is the idea behind how this kernel works, by taking your WASM workload outside the tech-stack and your existing development environment and operating system, and giving you tight and secure control over the instance). the way a unikernel should be designed, for micro purposes. It could even be used to have tighter analytical and security within other megasecure kernels like sel-4, or to boost features and abilities without sacrificing the security you like of your exisitng operating system
+(The kernel is in Alpha, so its not production ready, but that is the idea behind how this kernel works, by taking your WASM workload outside the tech-stack and your existing development environment and operating system, and giving you tight and secure control over the instance). The way a unikernel should be designed, for micro purposes. the idea behind it is to give you tighter analytical contol, and security within other secure kernels, ike sel-4, or just your tech stack, or to boost features and abilities without sacrificing the security you like of your exisitng operating system
 
 ```bash
 wasm /wasm/spawn_children.wasm
@@ -168,7 +168,28 @@ The SDK's are compiled seperately from the kernel, and are not linked. the root 
 
 
 
-Thanks, 
-Keefe! 
+## License
+
+Oreulius is source-available under the Business Source License 1.1.
+
+The source is public for visibility, research, evaluation, and technical
+review. Personal use, research, education, benchmarking, and internal
+non-production testing are permitted under the repository license.
+
+Production use, commercial deployment, embedded commercial products, and paid
+hosted services require a separate commercial license.
+
+Oreulius is not open source at this time.
+
+See [LICENSE](LICENSE) and [COMMERCIAL.md](COMMERCIAL.md).
+
+## Project Governance
+
+Oreulius core development is currently maintained under a controlled
+authorship model.
+
+The public repository exists for visibility, research, evaluation, and
+technical review. General public code contributions to the core kernel are
+not being accepted at this time.
 
 

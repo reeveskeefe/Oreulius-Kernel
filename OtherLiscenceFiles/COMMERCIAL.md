@@ -1,11 +1,16 @@
 # Commercial Licensing
 
-Effective Date: 2026-03-14
+Oreulius core is available under the Business Source License 1.1.
 
-Oreulius is available for commercial use under a separate written agreement
-with the Licensor.  The public Oreulius Community License does not permit
-production deployment, paid services, or commercial distribution.  A
-commercial license is required for those uses.
+The free grant covers personal use, research, education, evaluation,
+benchmarking, and internal non-production testing.
+
+A separate commercial license is required for:
+
+- production use
+- commercial deployment
+- embedded commercial products
+- paid hosted or managed services
 
 ## What Requires a Commercial License
 
@@ -16,31 +21,23 @@ commercial license is required for those uses.
 - Providing paid integration, support, or consulting services centred on
   Oreulius.
 
-## What Is Permitted Under the Public License (No Commercial License Needed)
+## What Counts as Production or Commercial Use
 
-- Research, academic study, and education.
-- Internal evaluation and security review (without production deployment).
-- Non-commercial open-source forks and experiments.
-- Benchmarking and public technical discussion.
-- Prototype or hobby work that is not part of a revenue-generating product.
+Production or commercial use includes any deployment or integration where
+Oreulius is part of a revenue-generating system, customer-facing environment,
+or commercial product/service lifecycle.
 
-## What a Commercial Agreement Covers
+Common examples include:
 
-Commercial licensing terms are negotiated on a per-deployment basis and
-typically include:
+- running Oreulius in a business production environment
+- offering Oreulius-backed infrastructure as a paid or managed service
+- embedding Oreulius into a commercial hardware or software product
+- selling support, integration, or packaged offerings where Oreulius is a
+  material component
 
-- Production use rights scoped to agreed platforms and deployment scale.
-- Support obligations, response targets, and escalation paths.
-- SLA and uptime thresholds where applicable.
-- Security disclosure handling and patch access.
-- Sublicensing rights for embedded or OEM use cases.
+## Contact
 
-The specific terms, pricing, and scope depend on the nature of the deployment.
+For commercial licensing inquiries, contact: reeveskeefe@gmail.com
 
-## How to Start
-
-Contact the Licensor to discuss your use case.  Include a short description
-of your intended deployment (platform, scale, and commercial context) to
-expedite the conversation.
-
-**Email:** reeveskeefe@gmail.com
+This file is not the legal license itself. It is the human-readable
+commercial policy.

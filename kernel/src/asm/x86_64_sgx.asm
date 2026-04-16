@@ -1,5 +1,5 @@
 ; Oreulius Kernel Project
-; SPDX-License-Identifier: LicenseRef-Oreulius-Community
+; SPDX-License-Identifier: BUSL-1.1
 ;
 ; x86_64_sgx.asm — Intel SGX ENCLS/ENCLU wrappers and EPC discovery (64-bit)
 ;

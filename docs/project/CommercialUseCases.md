@@ -2,7 +2,7 @@
 
 **Status:** Potential commercial fit areas are clear, but the current project should still be described as pre-production and research-oriented.
 
-Oreulius is source-available under the Oreulius Community License. Commercial deployment and production use require a separate written agreement. That licensing fact matters because the commercial conversation is not just “where could this fit?” but also “under what support and hardening model would it be offered?”
+Oreulius is source-available under Business Source License 1.1. Commercial deployment and production use require a separate written agreement. That licensing fact matters because the commercial conversation is not just “where could this fit?” but also “under what support and hardening model would it be offered?”
 
 ---
 

@@ -1,6 +1,6 @@
 # Oreulius Kernel — OCI Artifact Image
 #
-# SPDX-License-Identifier: LicenseRef-Oreulius-Community
+# SPDX-License-Identifier: BUSL-1.1
 #
 # A FROM-scratch image that carries compiled kernel binaries for all three
 # supported architectures. No operating system, no runtime — pure artifact
@@ -31,7 +31,7 @@ FROM scratch
 
 LABEL org.opencontainers.image.source=https://github.com/reeveskeefe/Oreulius-Kernel
 LABEL org.opencontainers.image.description="Oreulius Kernel v0.1.0-alpha — compiled binaries for i686, x86_64, and aarch64"
-LABEL org.opencontainers.image.licenses=LicenseRef-OreuliusCommunityLicense
+LABEL org.opencontainers.image.licenses=BUSL-1.1
 
 # The build context must have been prepared with artifacts in these paths
 # (the release workflow downloads them from GitHub Actions artifact uploads):

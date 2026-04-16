@@ -1,15 +1,21 @@
 Below is the canonical first-party header for new scripts or modules. If you
-are creating a new file, include the SPDX block and document the file's purpose
-and features. If you are contributing to an existing file, keep the header
-intact and note material additions in the implementation docs or commit
-message.
+are creating a new file, include this license notice and document the file's
+purpose and features.
 
 ```rust
-/*!
- * Oreulius Kernel Project
- *
- * SPDX-License-Identifier: LicenseRef-Oreulius-Community
- */
+// Copyright (c) 2026 Keefe Reeves
+// SPDX-License-Identifier: BUSL-1.1
+//
+// Use of this file is governed by the Business Source License 1.1
+// included in the LICENSE file at the root of this repository.
+//
+// Additional Use Grant: Personal use, research, education, evaluation,
+// benchmarking, and internal non-production testing are permitted.
+// Production use, commercial deployment, embedded commercial products,
+// and paid hosted services require a separate commercial license.
+//
+// Change Date: 2030-04-15
+// Change License: Apache License 2.0
 ```
 
 ```rust
@@ -24,16 +30,13 @@ message.
 ## Contribution Instructions for New Scripts
 
 - **License and Copyright:**
-  - Every new script must begin with the SPDX header shown above.
+  - Every new core script must begin with the BUSL header shown above.
   - Do not remove or alter the SPDX notice.
 
-- **Contribution Guidelines:**
-  - By contributing, you agree that accepted contributions may be distributed
-    and relicensed as part of Oreulius.
-  - Follow the [CONTRIBUTING.md](CONTRIBUTING.md) file for code style,
-    review, and submission rules.
-  - If you add a new feature, update the feature list and notes in the script
-    header when practical.
+- **Authorship Model:**
+  - Oreulius core uses a controlled authorship model.
+  - General public code contributions to core kernel sources are not currently
+    accepted.
 
 - **Header Template Usage:**
   - Copy and paste the SPDX block at the top of every new script.
@@ -43,6 +46,5 @@ message.
 
 ---
 
-> For more details, see the main [CONTRIBUTING.md](CONTRIBUTING.md),
-> [LICENSE](../LICENSE), [COMMERCIAL.md](../COMMERCIAL.md), and
-> [CONTRIBUTOR-LICENSE.md](../CONTRIBUTOR-LICENSE.md) files in the repository.
+> For more details, see [LICENSE](../LICENSE), [COMMERCIAL.md](../COMMERCIAL.md),
+> and [CONTRIBUTOR-LICENSE.md](../CONTRIBUTOR-LICENSE.md).

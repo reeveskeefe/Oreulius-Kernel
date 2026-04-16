@@ -1,5 +1,5 @@
 (* Oreulius Verification Workspace
-   SPDX-License-Identifier: LicenseRef-Oreulius-Community *)
+   SPDX-License-Identifier: BUSL-1.1 *)
 
 From Coq Require Import Arith.PeanoNat.
 

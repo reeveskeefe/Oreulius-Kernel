@@ -1,5 +1,5 @@
 (* Oreulius Verification Workspace
-   SPDX-License-Identifier: LicenseRef-Oreulius-Community *)
+   SPDX-License-Identifier: BUSL-1.1 *)
 
 Inductive page_perm :=
   | Data

@@ -1,7 +1,7 @@
 # Oreulius Kernel — Build Toolchain Image
 # Provides a reproducible build environment identical to the CI matrix.
 # Arch: builds for i686, x86_64, and aarch64 targets from one image.
-# spdx-license-identifier: LicenseRef-Oreulius-Community
+# SPDX-License-Identifier: BUSL-1.1
 # Usage:
 #   docker build -f docker/Dockerfile.toolchain -t oreulius-toolchain:local .
 #   docker run --rm -v "$PWD/kernel:/kernel" oreulius-toolchain:local bash -c "cd /kernel && ./build.sh"
@@ -10,7 +10,7 @@ FROM ubuntu:22.04
 
 LABEL org.opencontainers.image.source=https://github.com/reeveskeefe/Oreulius-Kernel
 LABEL org.opencontainers.image.description="Oreulius Kernel — reproducible build toolchain (nightly-2024-01-01, NASM, cross-compilers, QEMU)"
-LABEL org.opencontainers.image.licenses=LicenseRef-OreuliusCommunityLicense
+LABEL org.opencontainers.image.licenses=BUSL-1.1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_HOME=/usr/local/cargo \
