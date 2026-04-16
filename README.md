@@ -13,7 +13,7 @@ The i686 path is effectively the legacy boot, and its the first boot I created, 
 
 I personally recommend starting with the i686 boot. These commands will boot it with qemu for you in an easy way to test it and play with it, as its currently in the alpha phase. 
 
-### Required dependencies, environment set up and tool chain
+## Required dependencies, environment set up and tool chain
 
 #### 1. Set up environment
 #### MACOS
@@ -78,7 +78,7 @@ BUS_SLOT=1 DISK_IMAGE=target/aarch64-virt/mydisk.img DISK_SIZE=64M ./run-aarch64
 ### Online Playground
 Or alternatively; you can just try a live no install boot on the site: https://www.oreulius.com/try
 
-### Want to run a demo? 
+## Want to run a demo? 
 
 There are a few demos to try in the WASM directory in the root of Oreulius, to help clarify how running a wasm workload will work in the kernel, here is step by step instructions to running one of these demos. For this instruction set lets start with the spawn_children.wat demo,  this script spawns two child WASM processes and prints the respective output. 
 
