@@ -1,125 +1,82 @@
-# `kernel/src/fs` — Filesystem and Storage Stack
+# Filesystem and Storage Stack
 
-The `fs` module is the full vertical storage stack for Oreulius. It contains everything from raw block I/O against physical and virtual hardware up through a capability-gated virtual filesystem with POSIX-like directory semantics, inode persistence, filesystem watching with IPC notification channels, and a high-level RAM-backed key-value store with thermal profiling. Sitting alongside the storage path is the x86 32-bit virtual memory management system, which is housed here because address-space management and block I/O are tightly coupled at the paging and mmap layers.
+The fs module is Oreulius's storage layer. It ties together block devices, the virtual filesystem, paging support, persistence hooks, and the RAM-backed storage pieces that other kernel subsystems depend on.
 
----
+## What It Does
 
-## Table of Contents
+It handles raw block I/O, filesystem access, paging, persistence, watches, and the storage glue that lets the rest of the kernel keep data around in a controlled way.
 
-1. [Module File Map](#module-file-map)
-2. [Layered Architecture](#layered-architecture)
-3. [Block Device Drivers](#block-device-drivers)
-   - [ATA / IDE (`ata.rs`, `disk.rs`)](#ata--ide-atars-diskrs)
-   - [NVMe (`nvme.rs`)](#nvme-nvmers)
-   - [VirtIO-blk (`virtio_blk.rs`)](#virtio-blk-virtio_blkrs)
-4. [RAM-Backed Key-Value Filesystem (`mod.rs`)](#ram-backed-key-value-filesystem-modrs)
-5. [Virtual Filesystem — VFS (`vfs.rs`)](#virtual-filesystem--vfs-vfsrs)
-6. [Paging and Virtual Memory (`paging.rs`)](#paging-and-virtual-memory-pagingrs)
-7. [VFS Platform Abstraction (`vfs_platform.rs`)](#vfs-platform-abstraction-vfs_platformrs)
-8. [Capability and Rights Model](#capability-and-rights-model)
-9. [Filesystem Watching and IPC Notification](#filesystem-watching-and-ipc-notification)
-10. [Temporal Persistence](#temporal-persistence)
-11. [Diagnostics and Health](#diagnostics-and-health)
+It exists so storage is managed by one coherent kernel layer instead of being scattered across unrelated code. That makes the state easier to inspect, recover, and secure.
 
----
-
-## Module File Map
-
-| File | Lines | Role |
-|---|---|---|
-| `mod.rs` | 1659 | RAM-backed key-value store, `FilesystemService`, capability types, public shims |
-| `vfs.rs` | 5519 | Virtual filesystem: inodes, directories, mounts, watches, FD table, POSIX ops |
-| `paging.rs` | 1515 | x86 32-bit page tables, `AddressSpace`, CoW fork, page fault dispatch |
-| `virtio_blk.rs` | 823 | VirtIO-blk PCI/MMIO driver, virtqueue ring, MBR/GPT partition table |
-| `ata.rs` | 881 | ATA/IDE PIO driver, LBA28/LBA48, IDENTIFY, dual-channel controller |
-| `nvme.rs` | 759 | NVMe PCIe driver, admin queues, IO queues, PRP transfer lists |
-| `vfs_platform.rs` | 124 | Platform abstraction: PID/FD management, tick source, temporal record |
-| `disk.rs` | 41 | IRQ 14/15 shims delegating to `ata::on_primary_irq` / `on_secondary_irq` |
 
 ---
 
 ## Layered Architecture
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  User / Kernel Process API                                   │
-│  vfs::open_for_pid  vfs::read_fd  vfs::mkdir  vfs::watch    │
-├──────────────────────────────────────────────────────────────┤
-│  Virtual Filesystem (vfs.rs)                                 │
-│  inodes · directories · symlinks · mounts · FD table        │
-│  capability-gated access · inode journal · fsck              │
-├────────────────┬─────────────────────────────────────────────┤
-│  RAM-KV Store  │  VirtIO mount backend (virtio_blk ↔ FAT)   │
-│  (mod.rs)      │  MountState::VirtioRaw                      │
-├────────────────┴─────────────────────────────────────────────┤
-│  Block Device Drivers                                        │
-│  virtio_blk.rs │ nvme.rs │ ata.rs                           │
-├──────────────────────────────────────────────────────────────┤
-│  Virtual Memory — paging.rs                                  │
-│  PageDirectory · AddressSpace · CoW · page fault handler     │
-└──────────────────────────────────────────────────────────────┘
-```
+The layered architecture means the filesystem is built in separate levels, with each layer handling a different job instead of everything being mixed together. Lower layers deal with storage and raw file access, while higher layers handle things like path lookup, permissions, and kernel-facing filesystem behavior. That separation makes the filesystem easier to understand, easier to control, and safer to use inside the kernel.
 
 ---
 
 ## Block Device Drivers
 
-### ATA / IDE (`ata.rs`, `disk.rs`)
+### ATA / IDE
 
 The ATA driver implements the classic IDE PIO protocol against the two legacy x86 IDE channels (0x1F0 primary, 0x170 secondary), each with a master and slave position. This driver is the lowest-level block I/O path for physical machines and QEMU `-hda` style disks.
 
 #### Port Map
 
-| Register | Offset from IO Base | Description |
-|---|---|---|
-| `REG_DATA` | 0x00 | 16-bit data register |
-| `REG_ERROR` | 0x01 | Error register (read) |
-| `REG_SECTOR_COUNT` | 0x02 | Sector count |
-| `REG_LBA_LO` | 0x03 | LBA bits [7:0] |
-| `REG_LBA_MID` | 0x04 | LBA bits [15:8] |
-| `REG_LBA_HI` | 0x05 | LBA bits [23:16] |
-| `REG_DRIVE_HEAD` | 0x06 | Drive/head register |
-| `REG_COMMAND` | 0x07 | Command (write) / Status (read) |
-| `REG_ALT_STATUS` | ctrl+0x00 | Alternate status (no interrupt clear) |
-| `REG_DEV_CONTROL` | ctrl+0x00 | Device control (SRST bit) |
+The ports function as I/O addresses the kernel uses to talk to an IDE and ATA disk controller. While IDE disk controllers are outdated, there are modern drive paths as-well. Currently, there is Virtio_blk for block storage, and VVMe storage. These modern storage dont apply to the file system ports in the same way. 
 
-Channel addresses:
+There are several ports involving the ATA and IDE disk controllers. Here is a what each one is for 
 
-| Channel | IO Base | Ctrl Base | IRQ |
-|---|---|---|---|
-| Primary | `0x1F0` | `0x3F6` | 14 |
-| Secondary | `0x170` | `0x376` | 15 |
+| Port | What its for |
+|---|---|
+|REG_DATA| reads and writes the sector data |
+|REG_ERROR | Reports error message for a failed command |
+|RGA_LBA_L0, LBA_MID, LBA_HI | these are responsible for the block addresses being accessed|
+|REG_DRIVE_HEAD | selects the drive and the upper part of the address |
+|REG_COMMAND | Where the kernel sends the command, and retrieves status |
+|REG_ALT_STATUS | checks status without clearing interrupt|
+|REG_DEV_CONTROL | used for device control, even for a software reset |
 
-#### IDENTIFY Flow
+The above ports tells the disk what to do, where to do it, and checks wether it has succeeded. 
 
-```
-select drive (master/slave) → 400 ns delay (read alt_status ×4)
-→ clear sector_count/LBA registers
-→ write CMD_IDENTIFY (0xEC)
-→ check status ≠ 0 (drive present test)
-→ wait BSY clear
-→ detect ATAPI signature (LBA_MID=0x14, LBA_HI=0xEB)
-→ if ATAPI: CMD_IDENTIFY_PACKET (0xA1)
-→ wait DRQ
-→ read 256 × 16-bit words from data port
-→ parse:
-    words 27–46: model string (byte-swapped per ATA spec)
-    word  49:    LBA support (bit 9), DMA support (bit 8)
-    words 60–61: LBA28 sector count
-    word  83:    LBA48 support (bit 10)
-    words 100–103: LBA48 sector count
-    words 106/117–118: logical sector size (if bit 12 of w106 set)
-```
+#### ATA Channels
+There are primary and second channels used on the controller, which is related to the master and slave of the ATA channels. The primary and secondary ports control which ATA channels are on the controller, and the Master and Slave decides which drive is on that channel. 
 
+| channel | Type |
+|---|---|
+|primary | uses the I/O base 0X1F0, control base 0x3F6, and interrupt line 14 |
+|secondary | uses the I/0 base 0x1F0, the control base 0x376, and interrupt line 15 |
+
+The kernel therefore has two places it can talk to the legacy IDE disks, giving each channel its own registers and interrupt line. These are used for attaching disks. 
+
+The primary channel is as the name implies for attaching primary hard drives, the main drive you would be using. and the secondary channel is for secondary hard drives or optical drives. They are not different types of connections, but different bus lanes each to carry one master and one slave device. Which one gets to come and go first is dependent on which bus lane is the primary or the secondary. 
+
+
+The layered architecture means the filesystem is built in separate levels, with each layer handling a different job instead of everything being mixed together. Lower layers deal with storage and raw file access, while higher layers handle things like path lookup, permissions, and kernel-facing filesystem behavior. That separation makes the filesystem easier to understand, easier to control, and safer to use inside the kernel.
+
+
+#### How the master and slave modes are selected. 
+
+The controller probes the channel, then identifies which drives are present on that channel. First the controller speaks to the master drive, but when or if no master is present, it will fall back to the slave. So, when a read or write happens the driver selets either the master or the slave drive, sending the drive through a shared channel. 
+
+In essence, the master and slave parts of the controller flow, are just which physical drive on the channel is being addressed. The master can be viewed simply as the primary drive on the cable, and the slave being the second one. 
 #### LBA28 vs LBA48 Dispatch
 
-```
-read_sectors(lba, count, buf):
-    if lba48_sectors > 0 AND lba >= 2^28:
-        → read_lba48  (max 65536 sectors/command, 48-bit LBA)
-    else:
-        → read_lba28  (max 256 sectors/command, 28-bit LBA + head nibble)
-```
+There are currentl two numbering modes within the kernel, LBA28, and LBA48. These are not the only possible storage addressing schemes across the whole kernel, these are just the two modes used for the the ATA/IDE storage driver in the file system layer. Specifically in the ata.rs file. 
+
+Think of it like this:
+
+if its a small addressing mode, then the LBA28 is selected, if it is a large addressing mode, then the LBA48 mode is selected.
+
+These are strategically selected dependning non which one can safely reach the part of a disk being read. 
+
+If thedatapoint is from a modern disk at sector, persee, 500,000,000 or beyond, then that would be too large for the LBA28, and the LBA48 mode would be required. 
+
+LBA28, is used in the boot sector, the partition table, and early filesystem metadata. 
+
+The capacity ceilings of these two modes are as follows:
 
 **LBA28 capacity ceiling:**
 
@@ -129,883 +86,1003 @@ $$C_{28} = 2^{28} \times 512 \text{ B} = 128 \text{ GiB}$$
 
 $$C_{48} = 2^{48} \times 512 \text{ B} = 128 \text{ PiB}$$
 
-#### `AtaIdentity`
+These two modes exists simply to make the kernel as resource efficient as possible. 
 
-| Field | Type | Description |
-|---|---|---|
-| `is_atapi` | `bool` | CD/DVD ATAPI device |
-| `model` | `[u8; 40]` | Model string, byte-swapped, null-padded |
-| `lba28_sectors` | `u32` | Total LBA28 sectors |
-| `lba48_sectors` | `u64` | Total LBA48 sectors (0 if not supported) |
-| `lba_supported` | `bool` | LBA addressing available |
-| `dma_supported` | `bool` | DMA mode available |
-| `logical_sector_size` | `u32` | Usually 512; can be 4096 for 4Kn drives |
+#### ATAError Variants
+There are many variants of ATA errors explaining how a disk operation can fail. NoDrive means the drive is not present. NoLbaSupport means the drive does not support LBA addressing. BufferTooSmall means the buffer is not large enough for the requested sector read or write. OutOfRange means the request goes past the end of the drive. DeviceError(u8) means the drive itself reported an error, and the byte value is the error register. NotInitialised means the channel has not been initialised yet.
 
-`total_sectors()` prefers LBA48 if non-zero. `capacity_bytes()` returns `total_sectors() * logical_sector_size`.
+heres a table to make things easier
 
-#### `AtaError` Variants
-
-| Variant | Cause |
+|Error message | Explanation 
 |---|---|
-| `NoDrive` | `present == false` |
-| `NoLbaSupport` | LBA not supported by drive |
-| `BufferTooSmall` | `buf.len() < count * SECTOR_SIZE` |
-| `OutOfRange` | `lba + count > total_sectors()` |
-| `DeviceError(u8)` | Drive-reported error; byte is the error register |
-| `NotInitialised` | Channel `init()` not yet called |
+| NoDrive | The ATA drive is not present|
+| NoLBaSupport | the drive does not support LBA addressing |
+| BufferTooSmall | the buffer is not large enough for the read/write action|
+|OutOfRange | the request goes beyond the end of the drive |
+|DeviceError(u8) | the drive itself is reporting an error, so this means the byte value is the error regiester | 
+|NotInitialised | the channel has not been initialized currently| 
 
 #### Global Singletons and Health
 
-```rust
-static PRIMARY:   Mutex<AtaController>  // 0x1F0 channel
-static SECONDARY: Mutex<AtaController>  // 0x170 channel
+The filesystem acts as a global singleton accessor, represened in the code as filesystem(). Whenever anything in the filesystem becomes requested one time, it creates a new service, further requests are then shared under that instance. This refrains from creating a new filesystem each and everytie, allowing the kernel to own the service object deeply. 
 
-pub fn init()               // soft-reset + IDENTIFY both channels
-pub fn primary()            // → MutexGuard<AtaController>
-pub fn secondary()          // → MutexGuard<AtaController>
-pub fn health() -> AtaHealth
-```
+Health is similar, but is not a singleton servie object. Instead, its been made to be a kernel-owned service object, that also gets used. The largest diffrence, is it doesnt store it under an instance, it stores it in the persistance and crash logs. 
 
-`AtaHealth` snapshot: `primary_irqs`, `secondary_irqs`, master/slave present flags for both channels.
+#### IRQ Shim 
 
-#### IRQ Shim (`disk.rs`)
+The IRQ Shim is a thin compatibility layer, that calls the primary and secodary layer. These two functions are not responsible for the disk work themselves, but they immediately forward it to the disk IRQ. The ATA layer increments the atomic counter for the right channel. 
 
-`disk::handle_primary_irq()` and `disk::handle_secondary_irq()` delegate to `ata::on_primary_irq()` / `ata::on_secondary_irq()`, which increment `ATA_PRIMARY_IRQS` / `ATA_SECONDARY_IRQS` atomics with `Relaxed` ordering.
+The reason the shim exists is to keep old entry points active, while the real state can live inside the ATA driver. 
+
+It's essentially a really elaborate redirection system to keep the old dispatch table stable, bookeeping well within the ATA layer, and avoid duplicating logic creating unnecessary resource overhead. 
 
 #### PCI Storage Enumeration
 
-`ata::detect_storage_devices(pci_devices)` scans a PCI device slice and categorises all `CLASS_STORAGE = 0x01` devices:
+Unlike linux which is designed for broad hardware compatibility, meaning it enumerates the PCI devices through its own model to expose them to a large general purposed operating space and interface, Oreulius is trying to keep the storage path inside the kernels service layer, and tie access back to capabilities. Discovery in Oreulius is more about controlled exposure. 
 
-| Subclass | `StorageKind` | Description |
-|---|---|---|
-| `0x01` | `Ide` | IDE controller |
-| `0x05` | `Ata` | ATA controller |
-| `0x06` | `Sata` | SATA / AHCI controller |
-| `0x07` | `Sas` | Serial Attached SCSI |
-| `0x08` | `Nvme` | NVM Express |
+The key difference is that Linux uses PCI enumeration to bind drivers to hardware, while Oreulius routes that hardware through kernel-managed services and keeps it under a tighter trusted state.
 
 ---
 
-### NVMe (`nvme.rs`)
+### NVMe 
 
-The NVMe driver implements the NVM Express specification against a PCIe MMIO BAR. It allocates one Admin queue pair and one IO queue pair, uses Physical Region Page (PRP) lists for transfers above one page, and supports the full set of IO commands plus the IDENTIFY admin command.
+Now this is where things get a little more modern in the kernel architecture. This is the modern storage interface for high speed flash storage and also uses the PCI above to talk to the drive. 
 
-#### Queue Configuration
+It is essentially like all NVMe storage layers, but has been tuned so that the storage devce is dicovered, initialized, and then exposed through the file systems capability gated service layer 
 
-| Parameter | Value | Description |
-|---|---|---|
-| `NVME_ADMIN_QUEUE_DEPTH` | 64 | Admin SQ/CQ entries |
-| `NVME_IO_QUEUE_DEPTH` | 256 | IO SQ/CQ entries |
-| `NVME_SQE_SIZE` | 64 bytes | Submission Queue Entry |
-| `NVME_CQE_SIZE` | 16 bytes | Completion Queue Entry |
-| `NVME_MAX_TRANSFER` | 128 KiB | Maximum single transfer |
-| `NVME_PAGE_SIZE` | 4096 bytes | Memory page size |
-| `NVME_MAX_PRP_ENTRIES` | 32 | PRP list entries (128 KiB / 4096) |
+It effectively stays inside the kernel-managed storage layer, feeding the filesystem and persistance paths, so that access is still controled through the authority model rather than being broad and far reaching. 
 
-#### Controller Configuration Register (CC)
+#### Queue Configuration and the Controller Configuration Register
 
-| Field | Setting | Meaning |
-|---|---|---|
-| `CC_CSS` | `0 << 4` | NVM Command Set |
-| `CC_MPS` | `0 << 7` | Memory Page Size = 4096 (MPS field = 0 → $2^{12+0}$) |
-| `CC_AMS` | `0 << 11` | Round-Robin arbitration |
-| `CC_IOSQES` | `6 << 16` | IO SQ Entry Size = $2^6 = 64$ bytes |
-| `CC_IOCQES` | `4 << 20` | IO CQ Entry Size = $2^4 = 16$ bytes |
+this is the place where the NVMe driver tells the controller how to behave, such as enabling it or changing its state. While the que configuration is where the driver queses command and completion that the NVMe uses to move requests between the kernel and the device. 
 
-#### `NvmeSqe` — 64-byte Submission Queue Entry
+The controller register turns on the device and configures it while the queue configuration sets up the lanes the driver uses to send work to the drives to get back the results of the loads. 
 
-| Field | Bytes | Description |
-|---|---|---|
-| `cdw0` | 4 | `[3:0]` OPC, `[15:14]` FUSE, `[31:16]` CID |
-| `nsid` | 4 | Namespace ID |
-| `cdw2`, `cdw3` | 4+4 | Reserved / command-specific |
-| `mptr` | 8 | Metadata pointer |
-| `prp1` | 8 | First data buffer page (physical address) |
-| `prp2` | 8 | Second page if transfer ≤ 2 pages; PRP list pointer if larger |
-| `cdw10`–`cdw15` | 6×4 | Command-specific dwords |
+This way, each workload will not. be allowed to retrieve raw controller access, and read and writes still safely happen strictly, and sternly, under the kernel-controlled policy. The storage path is completely part of the kernels service surface. 
 
-#### `NvmeCqe` — 16-byte Completion Queue Entry
+Each queue submission follows a 64-byte submission protocol. So the driver sends each request in a fixed-size command record instead of using an open-ended message format. That makes the NVMe path predictable and easy to parse. 
 
-| Field | Bits | Description |
-|---|---|---|
-| `dw0` | 32 | Command-specific result |
-| `dw1` | 32 | Reserved |
-| `sq_hd` | 16 | SQ head pointer (advance sender's knowledge of consumed entries) |
-| `sq_id` | 16 | SQ identifier |
-| `cid` | 16 | Command identifier (matches SQE `cdw0[31:16]`) |
-| `phase_status` | 16 | bit 0 = Phase Tag; bits 15:1 = Status Field |
+Secondly, there are 16-byte queue submission records that help keep the command path simple and structured, which makes it easier to layer the capability checks on top of the storage flow. The submission will queue under the 16-byte submission format if the request is valid and the controller is ready to accept it. The request is only valid when it has the right command format, so that 
 
-The Phase Tag is the mechanism by which the driver knows a CQE is newly posted without clearing the entry. On queue wrap, the expected phase bit flips.
+| Command | Submission Size |
+|---|---|
+| Command record | 16 bytes or 64 bytes |
+| Read | 64 bytes |
+| Write | 64 bytes |
+| Identify | 64 bytes |
+| Flush | 64 bytes |
+| Admin or control command | 64 bytes |
+| Simple queue submission record | 16 bytes |
 
-#### Admin Opcode Table
+Simple queue submission records for the 16byte protocol can be things like a standard singular requests, such as a read request, a write request, an identify request, an flush request, and a small admin command request. These are just for records that are one packaged storage commands that the controller needs to process as one singular unit. 
 
-| Opcode | Constant | Function |
-|---|---|---|
-| `0x00` | `NVME_ADMIN_DELETE_IO_SQ` | Delete IO Submission Queue |
-| `0x01` | `NVME_ADMIN_CREATE_IO_SQ` | Create IO Submission Queue |
-| `0x04` | `NVME_ADMIN_DELETE_IO_CQ` | Delete IO Completion Queue |
-| `0x05` | `NVME_ADMIN_CREATE_IO_CQ` | Create IO Completion Queue |
-| `0x06` | `NVME_ADMIN_IDENTIFY` | Identify (controller or namespace) |
-| `0x08` | `NVME_ADMIN_ABORT` | Abort command |
-| `0x09` | `NVME_ADMIN_SET_FEATURES` | Set Features |
-| `0x0A` | `NVME_ADMIN_GET_FEATURES` | Get Features |
+#### Admin Opcodes and how 16-byte queues are created
+
+in Oreulius, the Opcodes are used for things like creating and deleting th i/0 queues, idenitifying the controller and namespace, setting controller features, and aborting commands. 
+
+
+It works by setting up the admin submission and completion queues, then sends the command by filling in the 64-byte submission entry. The controler reads that entry, performs the management task required, and then writes back a 16byte entry. Before moving on it checks the completion status. 
+
+These opcodes act as a control submission plane for the NVMe, and helps with commands like read, write and flush. These 
+
+
 
 #### IO Opcode Table
+read is read on opcode 02, write, is on opcode 01, and flushes that write back cache and persistant media are on opcode value 00. 
+
+Here is a table to visualize it: 
+
 
 | Opcode | Constant | Function |
 |---|---|---|
-| `0x00` | `NVME_CMD_FLUSH` | Flush (write-back cache to persistent media) |
-| `0x01` | `NVME_CMD_WRITE` | Write sectors |
-| `0x02` | `NVME_CMD_READ` | Read sectors |
-
+| 0x00 | NVME_CMD_FLUSH | Flush |
+| 0x01 | NVME_CMD_WRITE | Write sectors |
+| 0x02 | NVME_CMD_READ  | Read sectors |
 #### Initialisation Sequence
 
-```
-1. Locate NVMe device in PCI scan (class=0x01, subclass=0x08, vendor=any)
-2. Read BAR0 → mmio_base (MMIO register space)
-3. Disable controller (CC.EN=0), wait CSTS.RDY=0 (up to 100K polls, yield)
-4. Allocate static Admin SQ (64 × 64 B) and Admin CQ (64 × 16 B)
-5. Write AQA, ASQ, ACQ registers
-6. Set CC: CSS=NVM, MPS=4K, AMS=RR, IOSQES=6, IOCQES=4; EN=1
-7. Wait CSTS.RDY=1
-8. Admin command: IDENTIFY (CNS=1) → controller info
-9. Admin command: IDENTIFY (CNS=0, NSID=1) → namespace block count + block size
-10. Admin command: CREATE_IO_CQ for IO queue
-11. Admin command: CREATE_IO_SQ for IO queue
-12. Doorbell calibration: read CAP.DSTRD (doorbell stride)
-```
+The initialization sequence for the NVMe drive works in this flow:
 
-#### `NvmeController` Public API
+1. turns on the bus mastering
+2. reads the controllers capabilities
+3. turns the conroller off it was running previously
+4. sets up the admin queues in the way explained in the sections above
+5. points the controller at these queues
+6. turns the controller back on
+7. waits for controller status to be ready
+8. asks the drive what it is
+9. queues the I/0 reads and writes
 
-| Method | Description |
-|---|---|
-| `new(mmio_base, pci)` | Construct uninitialised controller |
-| `init()` | Run full init sequence; returns `bool` (success) |
-| `read_sectors(lba, count, buf)` | PRP-based read; returns `bool` |
-| `write_sectors(lba, count, buf)` | PRP-based write; returns `bool` |
-| `flush()` | Issue FLUSH command; returns `bool` |
-| `block_size()` | → `u64` (from IDENTIFY namespace) |
-| `num_blocks()` | → `u64` (from IDENTIFY namespace) |
+this lets the controller move data without the CPU doing any heavy lifting, as optimized as possible, and automated. then the driver checks what hardware supports it, and its been spaced, giving the driver a clean and clear starting point. then controle queues the driver to speak with the harderware to retrieve memory addresses and completion queues. 
 
-Global access: `NVME: Mutex<Option<NvmeController>>`, `nvme::init(pci_devices)`, `nvme::read_sectors`, `nvme::write_sectors`.
+
+Once that happens its ready to accept commands and is considered live. The driver at this point sends a command for the controller and name space to know the size and block size. 
+
+
+
 
 ---
 
-### VirtIO-blk (`virtio_blk.rs`)
+### VirtIO-blk 
 
-The VirtIO block driver implements the VirtIO 1.0 legacy PCI protocol against QEMU's `-drive if=virtio` device (`vendor=0x1AF4`, `device_id=0x1001` legacy / `0x1042` modern). It uses a split virtqueue with descriptor ring, available ring, and used ring, plus a write-through block cache.
+Oreulis implements for the standard VirtiO device interface on the 1.0 protocol. it follows the older style ransport behaviour under legacy PCI for compatibility. 
+
+You can use this QEMU command prefix to attach a VirtIO block device to QEMU
+
+```
+-drive if=virtio
+```
+
+The virtio block runs on a split of three rings, the descriptor ring, and available ring, and a used ring alongside a write through block cache. 
+
+heres the scope of each ring 
+
+| Ring | Scope |
+|---|---|
+| Descriptor ring | Holds the request descriptors for one I/O transaction |
+| Available ring | Marks which descriptor chains are ready for the device |
+| Used ring | Marks which requests the device has finished |
+
+
+
 
 #### Virtqueue Ring Structures
+VirtqDesc is the list of memory chunks the driver wants the device to use for one request. VirtqAvail is the list of requests the driver has made ready for the device to process. VirtqUsed is the list of requests the device has finished and reported back. These three parts form the message system the kernel uses to hand work to the VirtIO block device and get the result back.
 
-```
-VirtqDesc[N]:   addr(u64), len(u32), flags(u16: NEXT=1, WRITE=2), next(u16)
-VirtqAvail:     flags(u16), idx(u16), ring[N](u16), used_event(u16)
-VirtqUsed:      flags(u16), idx(u16), ring[N] { id(u32), len(u32) }, avail_event(u16)
-```
 
-Each IO transaction chains three descriptors:
-1. `VirtioBlkReq` header (type=IN/OUT, sector=lba) → NEXT
-2. Data buffer → NEXT (+ WRITE flag for reads)
-3. 1-byte status → WRITE
+Each I/O request is built from three parts: a small header that says what to do and which sector to use, a data buffer that holds the bytes being read or written, and a one-byte status area where the device writes back success or failure.
 
-The driver posts the head descriptor index into `VirtqAvail.ring[]`, increments `avail.idx`, then notifies the device via `VIRTIO_PCI_QUEUE_NOTIFY`. It polls `VirtqUsed.idx` until the device increments it (synchronous PIO-equivalent).
+The driver puts the request into the ready list, updates the queue so the device knows there is work to do, and then tells the device to start. After that, it waits until the device marks the request as finished.
 
-#### VirtIO PCI Configuration Registers (I/O port)
+#### Status byte bits
 
-| Register | Offset | Description |
-|---|---|---|
-| `VIRTIO_PCI_HOST_FEATURES` | `0x00` | Device feature bits |
-| `VIRTIO_PCI_GUEST_FEATURES` | `0x04` | Driver-selected features |
-| `VIRTIO_PCI_QUEUE_PFN` | `0x08` | Virtqueue physical page frame |
-| `VIRTIO_PCI_QUEUE_SIZE` | `0x0C` | Queue size |
-| `VIRTIO_PCI_QUEUE_SELECT` | `0x0E` | Select queue index |
-| `VIRTIO_PCI_QUEUE_NOTIFY` | `0x10` | Doorbell |
-| `VIRTIO_PCI_STATUS` | `0x12` | Device status byte |
-| `VIRTIO_PCI_ISR` | `0x13` | ISR status |
-| `VIRTIO_PCI_CONFIG` | `0x14` | Device-specific config |
+The status byte bit flags the code uses to define wether it accepted the requests submitted, finished it or failed 
 
-Status byte bits: `ACKNOWLEDGE=1`, `DRIVER=2`, `DRIVER_OK=4`, `FAILED=0x80`.
+|Status byte bits | meaning
+|---|---|
+|ACKNOWLEDGE=1 | The device saw the request|
+|DRIVER=2 | The driver is active|
+|DRIVER_OK=4 | The device is ready to use|
+|FAILED=0x80| The device failed and reports back an error |
 
 #### Block Cache
 
-`BlockCache` is a fixed-capacity write-through LRU cache of `BlockCacheEntry` items. On each `read_sector`, the cache is checked first. On `write_sector`, the write is passed through to the device immediately, then the cache is updated.
+The block cache stores recently used disk blocks in memory so the kernel does not have to ask the device for the same block over and over again. When the kernel reads a sector, it checks the cache first. If the block is already there, it can return it immediately. If not, it reads it from the device and stores a copy in the cache for later. When the kernel writes a block, this implementation writes through to the device right away and then updates the cache, so the cached copy stays in sync with storage. It makes repeated disk access faster without letting the kernel lose track of what is actually on the drive.
+
+Currently, there is no shell command in this repo that prints the block-cache state, so it would be a good idea to make an Aarch64 specific command to check the block-cache down the road. 
+
+Its also important to note that while the cache is stored inside the filesystems capability gated security paths, they are not currently encrypted, perhaps tying in encryption from the crypto folder would be a good idea in future dev cycles. 
+
 
 #### Partition Table Parsing
 
-`virtio_blk::read_partitions(start, out_mbr, out_gpt)` reads sector 0 to check for MBR (`0x55AA` signature) and sector 1–33 for GPT (`"EFI PART"` signature at offset 0).
+Partitioning in oreulius is much more explicit than a simple background process. It is a direct, visible step in the kernels storage path rather than a something that is hidden. 
 
-`MbrPartition`: `bootable`, `part_type`, `lba_start`, `sectors`.
-`GptPartition`: `first_lba`, `last_lba`, `name: [u8; 36]` (UTF-16LE in spec; stored as raw bytes here).
+When the kernel read the first sector of a disk, and checks whether it looks like an MBR.  if the last two bytes are 0x55AA, it will treat the sector as a valid parition table and read the four standard MBR partition entries from the table. Each entry gives the partition type, whether it is bootable, and where it starts and how many sectors it covers. 
 
+If the MBR contains for example, a special GPT marker type 0xEE, the kernel will then check for a GPT layout, it reads sector one for a GPT header, and after will chekc for the EF1 part signature. Once it does, it reads the GPT partition entries from the LBA listed in the header. Once it aquires all of those entries it then pulls out the first and last sector and the partition name for up to four partitions. 
+
+If it would be easier to understand it as a flow, heres the breakdown:
+
+1. reads sector 0
+2. verify the MBR signatur
+3. Parse MBR entries 
+4. if GPT is indicated, reads the GPT header
+5. PArse the GPT partition entries 
+
+
+It basically just decides whether it is an MBR partition or a GPT partition and decides accordingly. 
+
+Oreulius treats the partition as something the kernel does directly in the storage layer, then exposes the result back to its own service flow. It immedidately stores the results in structures so the kernel can use it immediately. 
+
+For Aarch64, the boot and runtime code also keeps track of the parsed partitions for the debugging and block access. 
+
+>instead of hiding a partion handling behind a big general purpose stack, Oreulius makes the parsing step a part of the explicit storage path. In a space that is easier to trace, inspect, and analyze. 
+
+the shell commands to show the partitions directly in oreulius are as follows 
+
+show partitions directly:
+```
+blk-partitions
+```
+Some related storage commands for partitioning:
+
+
+show basic information about the active block device:
+```
+blk-info
+```
+
+read data from a block device:
+```
+blk-read
+```
+write data to a block device:
+```
+blk-write
+```
+run a simple block I/O performance test:
+```
+blk-bench
+```
 #### MMIO Variant
 
-The MMIO path (`init_mmio_active`, `read_sector`, `write_sector`, `read_sectors`, `write_sectors`) is used for the AArch64 virt machine profile where the virtio-blk device is mapped at a fixed MMIO address.
+The MMIO works because the kernel scans the device tree for VirtIO MMIO devices, it reads the MMIO registers to see what kind of device is present, then it sets up the virtqueue in memory, where it writes the queue and status values back through MMIO registers it notifies the device by writing to the queue-notifu register. One its wrtten via the queue-notify register, it waits for the device to update the used queue and finish the request. 
+
+In the code, for block storage heres what happens on the path
+
+|Code | what it does|
+|---|---|
+|virtio_mmio_probe_all() | discovers the device|
+|virtio_mmio_bringup_one() | Initializes the device |
+| virtio_blk_submit_sync() | Builds the request in memory |
+
+Then the driver writes queue state through the MMIO, and completes the requests, so the driver can read the status back. 
+
+MMIO is NOT a generic abstraction, instead, it is a concrete way the Aarch64 runtime talks to the VirtIO block device through the memory mapped registers instead of the old x86 ports. 
+
+Importantly these are the block-storage functions in the Virtiopaths for reading and writing 
+
+| Block-storage functions | what they're for |
+|---|---|
+|init_mmio_active |s ets up the active VirtIO MMIO block device |
+|read_sector | reads one 512-byte sector |
+|write_sector | writes on 512-byte sector|
+|read_sectors | this is a function that can read multiple sectors in one call |
+| write_sectors | this can write mutiple sectors in one call|
+
+the flow behind these functions is that the init_mmio_Active gets the device ready, read_sector and write_sector is for single block access, whereas the pluralized versions read_sectors and write_sectors are for multi-block access
+
+
 
 ---
 
-## RAM-Backed Key-Value Filesystem (`mod.rs`)
+## RAM-Backed Key-Value Filesystem 
 
-The `mod.rs` layer provides a flat, RAM-backed key-value store with capability-gated access, thermal file profiling, quota enforcement, and structured event logging. It is the persistent object store used by the kernel's internal services (telemetry, temporal log, VFS snapshot), independently of the POSIX-like VFS layer.
+The kernel provides a flat, RAM-backed key-value store that can be broken down into 
+1. capability-gated access 
+2. thermal file profiling 
+3. quota enforcement,  
+4. structured event logging. 
+
+It is the persistent object store used by the kernel's internal services such as telemetry,a temporal log, and VFS snapshot, it is completely independent of the POSIX-like VFS layer.
+
+This filesystem should come in handy for small, hot, short livef kernel that needs to stay simple and fast. For things such as the capability state, the boot and session metadata, the temporary service records, health snapshots, telemetry buffers, caches, and any config state that should not be treated like a normal file tree. Partly due to security, and partly due to strictor controls. This is because the ram backed file system gives you gewer ways to discover things by path, fewer chances to accidentlaly expose it, simpler access checks, less file syste overhead, and an easier way to keep it scoped within the trusted state. 
+
+Keep in mind its not automatically safer, but it is easier to secure correctly. it fits the design presece of removing security risks from the get-go by making sure important kernel sate shuld stay inside the controlled service layer, and not be outright exposed out of the box needing to be externally managed. 
 
 ### `FileKey`
 
-A `FileKey` is a UTF-8 path-like string of up to `FILE_KEY_MAX_LEN` bytes, with a packed 16-byte prefix representation for IPC capability matching.
 
-```rust
-pub struct FileKey { inner: String }
+The FileKey is the filesystems internal name for a stored object. It idenitifies a file-like oehct in the filesystem or Ram-backed store. it is used as a lookupkey to find bytes and cna be packed into a small binary form for IPC or capability handling. 
 
-pub const IPC_KEY_PREFIX_BYTES: usize = 16;
-pub const IPC_KEY_PREFIX_WORDS: usize = 4;  // 16 / size_of::<u32>()
-```
+The capability decides wether a caller is allowed to use that filekey, the filekey is just a thing being asked for and should e considered simply a label that a capability uses to access the stored bytes. 
 
-`pack_prefix()` → `[u32; 4]` — encodes the first 16 bytes of the key path into four u32 words for embedding in IPC capability `extra[]` fields.
-`unpack_prefix([u32; 4], len)` → `FileKey` — reconstructs the prefix from an IPC capability.
 
-### `AccessTemperature` — Thermal File Profiling
+### Thermal File Profiling
 
-| Variant | Meaning |
+Thermo profiling is a unusual thing in this repo that is a algorithim that tracks how odten files are accessed and classidies them as either hot, warm or cold.
+
+when an item is hot, it means it has been accessed a lot, warm means accesssed sometimes and cold means its barely used.
+
+This algorithmic tracking of usage levels sits inside the kernels storage layer and is part of the service model, not just a background stats counter.
+
+it has the ability to influence chache behaviour, storage health reporting, and kernel decisions about active vs inactive data. 
+
+
+it's not just simply a "file profiling system", it is the kernel keeping tracks of which data is getting used, and then deciding what should stay hot in the memory and what can cool off. 
+
+You can see the trend of efficiency keeps playing along when it comes to the filesystem. that is the ultimate goal is to create a system that is as efficient as possible. 
+
+Currently there is no shell command for oreulius that lets you see the hot/warm/cold status of a filekey, `health` can show the overall thermal profile, and `vfs-health` shows filesystem-level stats. 
+
+For future work, i should really consider adding a `file-temperature <key>` command.
+
+Ive even put in though of letting someone manually set a files temperature, but decided that would be too risky because the temperature is supposed to reflect raw natural usage patterns, and letting someone change that changes the monitoring, would let someone game cache behaviour, bias storage decisison, hide or exxagerate usage, and make the profile overall less trustworthy in a workplace. 
+
+Some better options, would be to make a command that can clear a score, reset the profile, or pin a file for caching, or apply a policy to override that is seperate from the measured temperature. 
+
+Thermal temperature is best as solely left an internal signal, not a user settable one. 
+
+### How files and file metadata in oreulius is special
+
+Files and file metadata in Oreulius are not just passive disk records. The filesystem treats them as part of the security model, so the kernel tracks the file itself, its access history, and how hot or important it is. That means a file can carry metadata like size, timestamps, read and write counts, last access time, and a rolling hot score.
+
+File access is tied to the capability model. A file does not become accessible just because it has a path. The kernel still checks whether the file exists, whether the caller has permission to use it, and whether the access matches the capability attached to that file.
+
+A file path does not mean anyone can open, read, or write the file. It is only the name the kernel uses to refer to it. The path is an address, not permission.
+
+So whats special and whats the point of even writing this? It's this, Oreulius does not treat files as just blobs on a disk, it tracks their access behaviour, classifies it, and ties them into the capability controlled service layer. Storage then becomes not merely storage, but becomes part of the kernels security, telemetry and scheduling system. 
+
+### Filesystem Rights
+
+rights in oreulius are decided based on what capability is attached to the caller. There are 3 different types of capabilities attached to file system callers in the capability system.
+
+| capability | What it decides |
+|---|----|
+|Rights | what operatings are allowed READ, WRITE, DELETE|
+|Key Prefix | what file names each caller is allowed to touch|
+|Quota | how much data the caller is allowed to use|
+
+A caller thus is only accessed if all of those line up, so the capability includes the right operation, the file key mathces the allowed prefix if one is set, and the request stays within quote, if one is set. 
+
+These capabilities match to the following code reference 
+
+| Capability | Code reference |
 |---|---|
-| `Hot` | `hot_score >= average_hot_score` |
-| `Warm` | `hot_score > 0 AND hot_score < average_hot_score` |
-| `Cold` | `hot_score == 0` (unaccessed) |
+| Rights | check_permission() |
+| Key prefix | check_permission() |
+| Quota | check_quota() |
 
-`hot_score` is incremented on every read and write. The storage thermal profile tracks aggregate hot/warm/cold distribution for capacity and caching decisions.
+Where, 
 
-### `File` and `FileMetadata`
+1. The check_permission() verifies the right and key scope
+2. check_quota() verifies the size and count limits
+3. handle_write() and handle_delete() enforces those checks before doing anything
 
-```rust
-pub struct File {
-    pub key:      FileKey,
-    pub data:     Vec<u8>,
-    pub metadata: FileMetadata,
-}
-pub struct FileMetadata {
-    pub size:        usize,
-    pub created:     u64,   // tick of creation
-    pub modified:    u64,   // tick of last write
-    pub accessed:    u64,   // tick of last read
-    pub read_count:  u64,
-    pub write_count: u64,
-    pub hot_score:   u64,   // accumulated access weight
-}
+
+In the file system rights system, attenuating rights measn to shrink the permission set. It takes the current rights, and the requested rights, and keeps the overlap between them, and drops anything extra. 
+
+For example if a capability already has READ | WRITE, you can attenuate it with just read. the important thing to remeber rights can only be reduced not increased. Just a simple safety rule, to make permissions smaller and can never be accidently increased. 
+
+Currently there is no direct command to attenuate the rights of a file. 
+
+The functionality is there however, and can be demonstrated by:
+```
+cap-test-atten
 ```
 
-`File::write(data, tick)` replaces content and updates `size`, `modified`, `write_count`, `hot_score`.
-`File::read(tick)` returns `&[u8]` and updates `accessed`, `read_count`, `hot_score`.
+This command creates a from scratch capability, and reduces its rights. 
 
-### `FilesystemRights`
+The planned command im going to develop to individually attenuate rights to a key will work like this.
 
-Bitmask capability rights for the key-value layer:
+`attenuate <key> set read=<enable|disable> write=<enable|disable> prefix=<path-prefix> quota=<bytes|files|bytes,files>`
 
-| Constant | Bit | Meaning |
-|---|---|---|
-| `NONE` | `0` | No access |
-| `READ` | `1 << 0` | Read file content |
-| `WRITE` | `1 << 1` | Write file content |
-| `DELETE` | `1 << 2` | Delete files |
-| `LIST` | `1 << 3` | Enumerate keys under prefix |
-| `ALL` | `0b1111` | Full access |
+For example, for this command you could set it up like this
 
-`attenuate(rights)` → produces a new `FilesystemRights` that is the bitwise AND of `self` and `rights` — rights can only be reduced, never amplified.
+`attenuate config/app.json set read=enable write=disable prefix=config/ quota=1048576`
 
-### `FilesystemCapability`
+prefix=congif/ means this capability can only touch keys under the config folder, and quota=1048576 means this capability can use up to 1mb. 
 
-```rust
-pub struct FilesystemCapability {
-    pub cap_id:     u32,
-    pub rights:     FilesystemRights,
-    pub key_prefix: Option<FileKey>,
-    pub quota:      Option<FilesystemQuota>,
-}
-```
 
-`can_access(key)` — returns true if `key_prefix` is `None` (global) or if `key` starts with the prefix.
-`attenuate(rights)` — reduces rights on a child capability.
-`to_ipc_capability()` — serialises into a `crate::ipc::Capability` by packing `cap_id` in `cap_id`, `rights.bits` in `rights`, and `key_prefix` as packed prefix words in `extra[0..4]` with `object_id` = prefix byte length.
-`from_ipc_capability(cap)` — deserialises, verifying MAC via `cap.verify()`.
+### Filesystem Service Deep Dive
 
-### `FilesystemQuota`
+The virtual filesystem can enforce the factors explained in the previous section through the Ram-backed filesystem layer, where files are stored in memory, the filesystem service is the thing that maps the label to the data. If the file is on a real block device or VFS layer, they can also be backed by storage, but the key idea is the same . the path is the name not the storage itself. This ties into the filesystem service as the mains storage manager for the kernel, it stores the file in the memory, decides who is allowed to touch them and tracks how the storage is being used. 
 
-```rust
-pub struct FilesystemQuota {
-    pub max_total_bytes:       Option<usize>,
-    pub max_file_count:        Option<usize>,
-    pub max_single_file_bytes: Option<usize>,
-}
-```
+Flow of the service functionality
+1. the kernel keeps on global filesystem service instance
+2. a file is idenitified by a filekey, and is just the name a kernel uses to find it
+3. each request comes in with a file system capability
+4. the service checks the capability rights, path scope and quota 
+5. if the request passes, the service reads, writes deletes or lists the file up for use
+6. while doing that, it updates the metadata like size, read/write counts, timestamps, and hotness
 
-`unlimited()` — all fields `None`. `bounded(total, count, single)` — fully specified.
+So in essence the workflow asks for file access, the kernel checks the capability, the filesystem service checks rights and quota, the storage layer performs the action and then metadata and health stats are updated. 
 
-### `FilesystemService`
+Because of how the ram-backed file system layers on our virtual file system, it becomes not a dumb filestore, but a kernel service with permission checks, scoped access, quotas, and live storage tracking built right in the core, and influences the functionality from the start, rather than is managed externally. 
 
-`FilesystemService` is a `Mutex`-protected singleton wrapping a `RamStorage` backend. It implements the full request handler loop with capability checking, quota enforcement, and event log.
 
-#### Public Methods
 
-| Method | Description |
-|---|---|
-| `new()` | Construct with default retention policy |
-| `handle_read(&key, &cap)` → `Response` | Capability-checked read |
-| `handle_write(&key, &cap, data)` → `Response` | Cap-checked write; quota enforcement |
-| `handle_delete(&key, &cap)` → `Response` | Cap-checked delete |
-| `handle_list(&cap)` → `Response` | List keys under capability's prefix |
-| `handle_request(request)` → `Response` | Dispatch by `RequestType` |
-| `create_capability(cap_id, rights)` → `FilesystemCapability` | New global-scope capability |
-| `create_capability_with_quota(...)` → `FilesystemCapability` | With quota limits |
-| `root_capability()` → `FilesystemCapability` | Full-access capability (`cap_id=0`) |
-| `stats()` → `(file_count, total_bytes)` | Aggregate size |
-| `metrics()` → `FilesystemMetrics` | Full operational counters |
-| `health()` → `FilesystemHealth` | Thermal distribution + metrics |
-| `recent_events(limit)` → `Vec<FilesystemEvent>` | Event log tail |
-| `scrub_and_repair()` → `FilesystemScrubReport` | Integrity check and repair |
-| `retention_policy()`, `set_retention_policy(policy)` | Event log retention control |
-
-`filesystem()` → `&'static FilesystemService` — global singleton accessor.
 
 #### Module-Level Shims
 
-```rust
-pub fn init()
-pub fn open(path: &str)                  -> Result<usize, &'static str>
-pub fn read(fd: usize, buf: &mut [u8])  -> Result<usize, &'static str>
-pub fn write(fd: usize, data: &[u8])    -> Result<usize, &'static str>
-pub fn close(fd: usize)                 -> Result<(), &'static str>
-pub fn delete(path: &str)               -> Result<(), &'static str>
-pub fn list_dir(path: &str, buf: &mut [u8]) -> Result<usize, &'static str>
-```
 
-Kernel internal helpers (bypass capability checks):
-```rust
-pub fn kernel_read_bytes(key: &FileKey)             -> Option<Vec<u8>>
-pub fn kernel_write_bytes(key: &FileKey, data: &[u8])
-pub fn kernel_delete(key: &FileKey)
-pub fn kernel_read_static(key: &FileKey)            -> &'static [u8]
-```
 
 ---
 
-## Virtual Filesystem — VFS (`vfs.rs`)
+## VFS 
 
-The VFS is a full POSIX-patterned inode-based virtual filesystem with directory trees, hard links, symbolic links, multiple mount backends, an open file descriptor table, inode journalling with `fsck`, and a capability-gated namespace model.
+The VFS is a full POSIX-patterned inode-based virtual filesystem with directory trees, hard links, symbolic links, multiple mount backends, an open file descriptor table, inode journalling with fsck, and a capability-gated namespace model. 
 
 ### Inode Model
+The inode model is what ties the Ram-backed filesystem and the VFS together, by holding the files real information, such as size, permissions, timestamps and where the data is allowed to live. THrough the inode model, it makes links possible, keeps file identity seperate from the file names, and lets the fule system manage metadata more clearly. 
 
-```rust
-pub type InodeId = u64;
-pub const MAX_NAME_LEN: usize = 64;
-```
+If the path is the label, then the inode is the files actual record underneith that label. The inode gives the kernel a way to treat those stored ojects as a real file record, with identity and not just loose blobs. The inode is one of the mechanisms in code that helps the VFS layer organize and refer to the memory backed files in a strict and consistant secure manner. 
 
-#### `InodeMetadata`
 
-| Field | Type | POSIX Analogue |
-|---|---|---|
-| `size` | `u64` | `st_size` |
-| `mode` | `u16` | `st_mode` |
-| `uid` | `u32` | `st_uid` |
-| `gid` | `u32` | `st_gid` |
-| `atime` | `u64` | `st_atime` |
-| `mtime` | `u64` | `st_mtime` |
-| `ctime` | `u64` | `st_ctime` |
-| `nlink` | `u32` | `st_nlink` |
-| `direct_blocks` | `[u32; 12]` | Direct block pointers |
-| `indirect_block` | `u32` | Single-indirect pointer |
-| `double_indirect_block` | `u32` | Double-indirect pointer |
-| `triple_indirect_block` | `u32` | Triple-indirect pointer |
 
-The block pointer model mirrors the classic Unix FFS layout. For purely in-memory files the block pointers are unused — the inode stores data in a `Vec<u8>` in the `RamStorage` backend. Block pointers become relevant when the VirtIO mount backend is active.
 
-#### `InodeKind`
+
+#### InodeKind
+There are three different kinds of inodes, file, directory, and symlink. 
+
+Heres a simple table to clarify what each inode does, this is pretty straightforward 
+
 
 | Variant | Meaning |
 |---|---|
-| `File` | Regular file |
-| `Directory` | Directory node |
-| `Symlink` | Symbolic link target string |
+| File | Regular file |
+| Directory | Directory node |
+| Symlink | Symbolic link target string |
 
 ### Mount System
 
-```mermaid
-graph TD
-    VFS[Vfs struct] --> MT[Mount table\nVec<Mount>]
-    MT --> ME1[Mount: path=/\nbackend: RamBackend]
-    MT --> ME2[Mount: path=/virtio\nbackend: VirtioRaw]
-    ME2 --> MN[MountNode tree\nBTreeMap<MountNodeId, MountNode>]
-    MN --> DIR[Directories]
-    MN --> FILE[Files\ndata in virtio_blk]
-```
+The VFS maintains a list of Mount objects, each are tied to a certain prefix, and assigns a contract trait. Each one says what, path it is mounted at, which backend it connects to, and what state that mount is in, as well as what health or usage stat is has collected. This is how the vfs remembers what path is served by that storage system, so that if someone has the path prefix, the vfs uses the mathcing mount to the route to request the right backend. 
 
-The VFS maintains a list of `Mount` objects, each bound to a path prefix and implementing the `MountedBackendContract` trait:
-
-| Method | Description |
+These are the following mount systems:
+| Mount Method | What its for |
 |---|---|
-| `open_kind(subpath)` | Determine if path is file/directory |
-| `read(subpath, offset, out)` | Read bytes from subpath |
-| `write(subpath, offset, data)` | Write bytes |
-| `write_at(subpath, offset, data)` | Write at specific offset |
-| `mkdir(subpath)` | Create directory |
-| `create_file(subpath)` | Create file |
-| `unlink(subpath)` | Delete file |
-| `rmdir(subpath)` | Remove directory |
-| `rename(old, new)` | Rename |
-| `link(existing, new)` | Hard link |
-| `symlink(target, link_path)` | Create symlink |
-| `readlink(subpath)` | Read symlink target |
-| `list(subpath, out)` | List directory entries |
-| `path_size(subpath)` | Get file size |
+|contract_info() | describes what the mount exposes |
+|mkdir() | creates a directory | 
+|create_file() | creates a file |
+|unlink() | removes a file|
+|rmdir() | removes a directory |
+|link() | creates a hard link |
+|symlink() | creates a symbolic link| 
+|readlink() | reads a symlink target |
+|open_kind() | describes what kind of handle to open |
+|list_entries() | lists directory entries |
+|list() | writes a directory listing into the buffer|
+|read() | reads the file data |
+||write() | writes the file data |
+|write_at() | writes at an offset |
+| path_size() | reports size for a path |
+|stat() | returns file metadata |
+|resize() | changes the file size | 
+set_times() | updates timestamps |
+|sync() | flushes or validates the file state | 
 
-**Mount backend variants:**
-- `MountBackend::Ram` — in-process `VecDeque`-backed in-memory tree (persisted via VFS snapshot)
-- `MountBackend::VirtioRaw` — reads/writes delegated to `virtio_blk::read_sectors` / `write_sectors`
+These mount objects are tied to shel aliases if one is currently available. Throughout the continued developing cycles, the missing commands will be decided, and planned to be implemented in a secure way if one currently isnt available. 
+
+| VFS method | Shell command |
+|---|---|
+| contract_info() | vfs-mounts |
+| mkdir() | vfs-mkdir, mkdir |
+| create_file() | vfs-write, fs-write |
+| unlink() | vfs-delete, rm, fs-delete |
+| rmdir() | vfs-rmdir|
+| link() | vfs-link |
+| symlink() | vfs-symlink |
+| readlink() | vfs-readlink |
+| open_kind() | vfs-open |
+| list_entries() | vfs-ls |
+| list() | vfs-ls |
+| read()| vfs-read, cat, fs-read |
+| write() | vfs-write, fs-write |
+| write_at() | none |
+| path_size() | none directly |
+| stat() | stat |
+| resize()| none |
+| set_times() | none |
+| sync() | none |
 
 ### Persistence
 
-```rust
-const VFS_PERSIST_MAGIC:   u32 = 0x4F_56_46_53; // "OVFS"
-const VFS_PERSIST_VERSION: u16 = 3;
-const VFS_SNAPSHOT_KEY:    &str = "system/vfs/snapshot.bin";
-const VFS_JOURNAL_KEY:     &str = "system/vfs/journal.log";
-```
+The kernel saves important state so it survives across reboots and recovery, in the VFS and filesystem layer, this works like the vfs keeping its state live in memory while the kerne is running, so that when the state changes it can write a snapshot and a journal entry into he kernels ram backed store. on revovery the kernel loads the snapshot first. Then it can replay the journal to rebuild any changes that happened after the snapshot. 
 
-On every mutating operation (`mkdir`, `create_file`, `write_path`, `unlink`, `rename`, `link`, `symlink`), the VFS appends a journal entry to `VFS_JOURNAL_KEY` in the RAM-KV store. On `recover_from_persistence()`, the snapshot is loaded and the journal is replayed. The `fsck_and_repair()` function performs a full forward pass over the inode table, repairing dangling directory entries, relinking orphaned inodes, correcting `nlink` counters, and creating `/lost+found` if any orphans were found.
+This means the kernel can recover filesystem structure after a reset, keep the mount and inode state consistent, and repaur damage with the fsck_and_repair() command to preserve a health and history data for commands like health-history. 
 
-### `VfsPolicy`
 
-```rust
-pub struct VfsPolicy {
-    pub max_mem_file_size: Option<usize>,
-}
 
-impl VfsPolicy {
-    pub const fn unbounded() -> Self          // max_mem_file_size: None
-    pub const fn bounded(max: usize) -> Self  // max_mem_file_size: Some(max)
-    pub fn runtime_default() -> Self          // set from platform config
-}
-```
 
-### `OpenFlags` Bitflags
 
-```rust
-pub struct OpenFlags: u32 {
-    const READ     = 1 << 0;
-    const WRITE    = 1 << 1;
-    const CREATE   = 1 << 2;
-    const TRUNCATE = 1 << 3;
-    const APPEND   = 1 << 4;
-    // ...
-}
-```
 
-### File Descriptor API
 
-```rust
-pub fn open_for_pid(pid: Pid, path: &str, flags: OpenFlags) -> Result<usize, &'static str>
-pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8])         -> Result<usize, &'static str>
-pub fn write_fd(pid: Pid, fd: usize, data: &[u8])           -> Result<usize, &'static str>
-pub fn close_fd(pid: Pid, fd: usize)                        -> Result<(), &'static str>
-```
 
-Each FD is a `Handle` tuple `(inode_id, position, flags)`. The per-process FD table is managed by `vfs_platform::alloc_fd` / `get_fd_handle` / `close_fd`.
 
-### Full POSIX-like Path API
 
-| Function | Signature | Description |
-|---|---|---|
-| `mkdir` | `(path) → Ok / Err` | Create directory (mkdir -p style for missing parents) |
-| `create_file` | `(path) → Ok(InodeId) / Err` | Create regular file |
-| `write_path` | `(path, data) → Ok(usize) / Err` | Write to file (creates if absent); tracked |
-| `write_path_untracked` | `(path, data) → Ok(usize) / Err` | Write without journal entry |
-| `read_path` | `(path, out) → Ok(usize) / Err` | Read file into buffer |
-| `list_dir` | `(path, out) → Ok(usize) / Err` | Serialise directory entries |
-| `path_size` | `(path) → Ok(usize) / Err` | File size in bytes |
-| `unlink` | `(path) → Ok / Err` | Delete file (decrements `nlink`) |
-| `rmdir` | `(path) → Ok / Err` | Remove empty directory |
-| `rename` | `(old, new) → Ok / Err` | Rename or move |
-| `link` | `(existing, new) → Ok / Err` | Hard link (increments `nlink`) |
-| `symlink` | `(target, link_path) → Ok / Err` | Symbolic link |
-| `readlink` | `(path) → Ok(String) / Err` | Resolve symlink target |
-| `mount_virtio` | `(path) → Ok / Err` | Mount VirtIO-blk at path |
 
-### `VfsFsckReport`
 
-| Field | Description |
-|---|---|
-| `inodes_scanned` | Total inodes inspected |
-| `dangling_entries_removed` | Directory entries pointing to absent inodes |
-| `orphaned_inodes_relinked` | Inodes with no parent — moved to `/lost+found` |
-| `nlink_repairs` | `nlink` counter corrections |
-| `size_repairs` | `size` field corrections |
-| `lost_found_created` | Whether `/lost+found` was created during repair |
 
-### `VfsHealth`
-
-| Field | Description |
-|---|---|
-| `total_inode_slots` | Inode table capacity |
-| `live_inodes` | Allocated inodes |
-| `file_count`, `directory_count`, `symlink_count` | By type |
-| `total_bytes` | Sum of all file sizes |
-| `open_handles` | Currently open FDs across all processes |
-| `mount_count` | Registered mounts |
-| `orphaned_inodes` | Inodes with `nlink == 0` (not yet reaped) |
-| `max_mem_file_size` | Policy limit |
-| `mount_health` | Per-mount `MountHealth` slice |
 
 ---
 
-## Paging and Virtual Memory (`paging.rs`)
+## Paging and Virtual Memory 
 
-The paging module implements x86 32-bit (i686 compat) two-level page table management. The kernel lives in the upper 1 GiB (`KERNEL_BASE = 0xC000_0000`), and user space occupies the lower 3 GiB.
+the way we implemented this in our kernel is y mappting virtual addresses to physical memory pages, and then keeping those mapping entirely under kernel control, such as the address space the kerenl or workload uses, physical memory, and the translation layer between those two things. our paging system works by creating an address space, mapping the virtual pages to the phsycial pages, and then unmapping when they are no longer necessary, this way it can translate back a virtual address to the physcal one for easier debugging. 
 
-### Constants
+the architectire layer owns the MMU specific parts, the memory module tracks the physical frames, the VFS and runtime code use paging for things like JIT memory, user-mode memory, and temporal mappings. the kernel then uses capability and safety checks around those memory operations instead of exposing raw memory access to workloads. Essentially in oreulius, we turned paging into a security layer. 
 
-| Constant | Value | Description |
-|---|---|---|
-| `PAGE_SIZE` | `4096` | Page size in bytes |
-| `KERNEL_BASE` | `0xC000_0000` | Kernel base virtual address |
-| `USER_TOP` | `0xC000_0000` | Top of user address space |
-| `PAGE_ENTRIES` | `1024` | Entries per page directory / page table |
-
-### `PageFlags` Bitflags
-
-| Bit | Name | Meaning |
-|---|---|---|
-| 0 | `PRESENT` | Page is present |
-| 1 | `WRITABLE` | Page is writable |
-| 2 | `USER_ACCESSIBLE` | Ring 3 access allowed |
-| 3 | `WRITE_THROUGH` | Write-through caching |
-| 4 | `CACHE_DISABLE` | Caching disabled |
-| 5 | `ACCESSED` | CPU sets on access |
-| 6 | `DIRTY` | CPU sets on write |
-| 9 | `COPY_ON_WRITE` | Oreulius-defined software CoW bit (bit 9 = OS-available) |
-
-### `PageDirEntry` and `PageTableEntry`
-
-Both are `u32` newtype wrappers over physical addresses plus flag bits:
+If you would like to see a demo on how it works you can use the shell command 
 
 ```
-PageDirEntry(u32):
-  bits[31:12] = physical address of PageTable (4K-aligned)
-  bits[11:0]  = flags (PRESENT, WRITABLE, USER_ACCESSIBLE, ...)
+paging-test
+```
+this command maps a test virtual page and verifies the translation and unmaps it again. 
 
-PageTableEntry(u32):
-  bits[31:12] = physical frame address (4K-aligned)
-  bits[11:0]  = flags (PRESENT, WRITABLE, USER_ACCESSIBLE, DIRTY, ACCESSED, COW, ...)
+Production paging commands are still in the works, the commands in the works will be in order to expose a real, controlled paging operation that the kernel would need at runtime. It will need to do these jobs. 
+
+1. show a current mapping for a virtual address
+2. map a new page into a process or address space
+3. unmap a page
+4. mark a page read-only or writable
+5. create or inspect a copy on write mapping
+6. report whether a page is enabled and healthy 
+
+the commands when made will look something like this:
+1. map a phsucal page into the processes virtual address space. 
+```
+paging-map <pid> <virt_addr> <phys_addr> <read|write> <user|kernel>
+```
+2. remove the mapping for a cirtual address in the chosen processes address space
+```
+paging-unmap <pid> <virt_addr>
+```
+3. display the current mapping for the slected virtual address
+```
+paging-show <pid> <virt_addr>
+```
+4. mark the page at that virtual address as a copy-on-write for the selected process. 
+```
+paging-cow <pid> <virt_addr>
 ```
 
-### `AddressSpace`
+With these commands the caller would be fully able to get the right capabilities they need. target real processes or kernel owned spaces, validate alignment, permission and range before doing anything, and return a clear success or failure result. 
 
-`AddressSpace` owns exactly one `PageDirectory` (1024 × `PageDirEntry`) allocated at a 4K-aligned physical address.
+
+
+## Constants
+
+### Page Flags and Bitflags
+In Oreulius, PageFlags are the small control bits that describe how a memory page is allowed to behave. They tell the kernel whether the page is present, whether it can be written, whether user code can touch it, and whether it has special handling like copy-on-write. That matters because paging is not just about where memory lives, but also about what kinds of access are allowed on that memory.
+
+Bitflags are just a compact way to store multiple yes or no settings in one number. Each bit stands for one property, so the kernel can combine several page properties into a single flag value. For paging, that is useful because a page entry needs to carry both the address and the access rules for that page.
+
+The BitFlag values are best represented under this table:
+| BitFlag | what it means |
+|---|---|
+| Present | The page is mapped |
+| writable | this means writes are allowed |
+| UserAccessible | UserMode can access it |
+| CopyOnWrite | the page is shared untilthe first write | 
+| Dirty | The page has been written already |
+| Accessed | the page has been touched | 
+| Allocated | the page is reserved in the kernels paging logic | 
+
+Some commands in future dev cycles will be useful to use these flags for inspection.
+
+These commands currently exist: 
+|current commands | What it does |
+|---|---|
+|paging-test | paging demo and self test |
+|cow-test | the x86 copy-on-write self test |
+| health | paging snapshot as part of the system health profile |
+
+What commands in future use will be:
+| Future command | What it will do |
+|---|---|
+| paging-stats | Show page faults, COW faults, and page copies |
+| paging-show <pid> <virt_addr> | Show what a virtual address maps to |
+| vm-health | Show whether paging is healthy and consistent |
+> The commands below are included for reference in other parts of this doc. But are repeated here so the full future command set is easy to see in one place. 
+
+### PageDirEntry and PageTableEntry
+PageDirEntry and PageTableEntry are low level records the kernel uses to describe how the virtual memory is mapped. 
+
+1. PageDirEntry points to a page table
+2. PageTableEntry points to an actual physical page.
+
+Some useful commands for future dev cycles would be for mapping inspectionm, and if you would like to change a mapping behaviour. 
+
+These commands would thus need to be capability gated, pid scoped, and split into read only versus mutation. 
+
+Future inspection commands
+| Future command | What it will do |
+|---|---|
+| paging-show <pid> <virt_addr> | Show what a virtual address maps to |
+| paging-stats | Show page faults, COW faults, and page copies |
+| vm-health | Show whether paging is healthy and consistent |
+
+Mutation commands for only trusted callers
+| Future command | What it will do |
+|---|---|
+| paging-map <pid> <virt_addr> <phys_addr> <read|write> <user|kernel> | Map a physical page into a process |
+| paging-unmap <pid> <virt_addr> | Remove a mapping from a process |
+| paging-cow <pid> <virt_addr> | Mark a page copy-on-write |
+
+Wether a caller is trusted or not is determined by checking capailities and teh callers idenitty not by guessing, 
+
+The kernel will need to ask 
+
+1. does this caller hold the right capability
+2. does that capability allow mapping changes or only inspection
+3. is the target PID allowed
+4. is the address range valid
+5. is the caller operating in a trusted runtime path
+
+The code already enforces deterministic trust, but only for file system and service  access right at the moment.  for these future mutation commands, the enforecement code will need to be added through reuse of the capability model, rather than creating a new system
+
+### How does AddressSpace work on the oreulius Kernel? 
+
+The address space in the kernels container is for the processes memory map. It is used to keep track of which virtual address point that the physical pages allocate themselves too. the kernel can therefore isolate one processes memory from another and manage those mappings in the paging accordingly. It acts as another layer in the paging.  It is the layer that tells the kernel where each piece of memory lives for that process.
+
+There are various test commands in place, but not any physical commands as of yet. 
+
+These are the current test commands in place for the address space 
+
+| Address space test command | what it does |
+|---|---|
+|paging-test | maps a page, checks the translation, tests copy-on-write, then unmaps it. Serves as a demonstration and a test|
+|cow-test | runs the x86 copy-on-write self-test |
+| test-pf| triggers a on-purpose page fault |
+|fork-test | runs the x86_64 fork and cow regression |
+| vmtest | runs a virtual memory self test |
+
+Production commands for actually making use of the address space are still currently under development and will be phased out in future releases. 
+
+These commands will look and work like this: 
+| Future command | What it will do |
+|---|---|
+| paging-show <pid> <virt_addr> | Show what a virtual address maps to |
+| paging-map <pid> <virt_addr> <phys_addr> <read|write> <user|kernel> | Create a mapping |
+| paging-unmap <pid> <virt_addr> | Remove a mapping |
+| paging-cow <pid> <virt_addr> | Mark a page copy-on-write |
+| paging-stats | Show page faults, COW faults, and page copies |
+| vm-space <pid> | Show the current address-space layout |
+| vm-health | Show whether paging is healthy and consistent |
+
 
 #### Construction Variants
+Construction variants are the ways the kernel can create an address space. Such as creating a fresh empty address space, clone an existing one for a new process, create copy-on-write versions for fork, and build a special snadbox or JIt-oriented address space. 
 
-| Constructor | Description |
+These are the various construction variants and their purposed functionality: 
+
+| Construction variant | Functionality |
 |---|---|
-| `new()` | Full kernel-mapped space: identity maps all physical RAM; maps kernel `.text`/`.rodata` as R/X, `.data`/`.bss` as R/W |
-| `new_user_minimal()` | Minimal user space with only kernel mapping inherited; user pages to be added via `map_page` |
-| `new_jit_sandbox()` | JIT-specific space: user + kernel, with a mapped executable region for JIT output |
+| Fresh creation | Gives the process a new clean memory map |
+| Clone | Copies an existing map so a new process starts with the same structure |
+| Copy-on-write clone | Shares pages first, then makes private copies only when one side writes |
+| Special-purpose construction | Sets up memory with extra rules for things like JIT code or kernel-controlled user memory |
 
-#### `clone_cow()` — Copy-on-Write Fork
+There arent any production commands as of yet in the kernel for these aspects either, they are to be made in future dev cycles and planned accordingly to security, architecture alignment, and breadth of capability. 
 
-```rust
-pub fn clone_cow(&mut self) -> Result<AddressSpace, &'static str>
-```
+These future commands will look something like:
+| Future variant command | Future use case |
+|---|---|
+| vm-space-create | Create a fresh address space for a new process |
+| vm-space-clone | Copy an existing address space for a new process |
+| vm-space-cow | Create a shared copy-on-write address space for fork |
+| vm-space-sandbox | Create a restricted address space for a JIT or isolated workload |
+
+
+#### Copy-On-Write Forking
+
+Copy-on-write forking lets the kernel create a new process without copying every memory page right away. The parent and child start out sharing the same pages, and the kernel only makes a private copy when one of them writes to shared memory. That keeps process creation fast and efficient while still preserving isolation between the two processes.
+
+Some useful ones for this would be
+| Production Command | Functionality | 
+|---|---|
+| cow-fork | mark a page as copy-on-write/create a forked process using copy-on-write |
+|paging-stats | confirm if COW faults and page copies are infact happening |
+
+Ways to use paging-cow will be as follows 
+| Argument varieties for paging-cow | what it performs |
+|---|---|
+|cow-fork <pid> <virt_addr> | marks a page copy-on-write |
+|cow-fork <pid> <virt_addr> | verify the page is shared or cow-marked |
+
 
 Clones the address space for process forking:
-1. Allocates a new `AddressSpace`.
-2. For every present user-space `PageTableEntry`, marks the page `COPY_ON_WRITE` in both the parent and the child — the page becomes read-only.
-3. On the next write to a CoW page, `handle_cow_fault` allocates a fresh page, copies the contents, and makes the new page writable in the faulting process's address space.
+1. Allocates a new address space.
+2. Marks each shared user page as copy-on-write in both the parent and the child. The page `COPY_ON_WRITE` in both the parent and the child the page becomes read-only.
+3. Leaves the pages read-only until one side writes to them.
+4. When a write happens, the kernel makes a fresh private copy of that page.
+5. The writing process gets the new writable page, while the other process keeps the original.
 
-**Invariant:** After `clone_cow`, the parent and child share physical pages for all user mappings. Neither can write without triggering a fault. The first writer gets an exclusive copy; the other retains the original.
+Production commands for the copy on write forking 
+
+#### What stays true after the operation finishes:
+
+the moment after a kernel has finished creating the forked address space, the parent and child start by sharing the same memory, so the kernel does not duplicate everything right away. If either one tries to write to a shared page, the kernel stops that write, makes a private copy of the page for the writer, and then lets the write continue. The other process keeps using the original page. 
 
 #### Key Methods
 
-| Method | Description |
+When actions are performed on the meomory through the AddressSpace, they are called key methods. 
+
+Key methods include but are not limited to the following:
+
+1. mapping a page
+2. unmapping a page
+3. checking wether a virtual address is mapped
+4. converting a virtual address to a physical address
+5. cloning an address space
+6. handling a copy-on-write fault.
+
+They are the core operations the kernel uses to build, inspect and change a processes memory map. 
+
+aside from the commands paging-test, cow-test and fork-test on x86_64, there is one more test that is currently implemented for testing key methods. that eing vmtest, which runs the architecture side virtual memory self-test. 
+
+For production it would be wise to create commands that target a specific process while requiring explicit permissions that avoid ambient memory access. 
+
+Specifically its important to avoid commands that silently operate on the current process without a PID, or commands that mix inspection and mutation in one action, and commands that expose raw-pagetale internals to the workload. 
+
+The commands that align with such a security architecture are as follows:
+
+| Future key method commands | Action it will perform |
 |---|---|
-| `map_page(virt, phys, flags)` | Install a single PTE; allocates PageTable if absent |
-| `unmap_page(virt)` | Clear PTE, flush TLB entry |
-| `mark_copy_on_write(virt)` | Set `COW` bit, clear `WRITABLE` |
-| `handle_cow_fault(virt)` | Allocate fresh page, `copy_physical_page`, remap writable |
-| `map_mmio_range(phys, size)` | Map MMIO range with `CACHE_DISABLE` set |
-| `map_user_range_phys(virt, phys, size, flags)` | Bulk user-space mapping |
-| `virt_to_phys(virt)` | Walk page tables → physical address |
-| `is_mapped(virt)` | Test if a virtual address has a present PTE |
-| `activate()` | Write `phys_addr()` to `CR3` (flush TLB) |
-| `flush_tlb_all()` | Write/read `CR3` to flush all TLB entries |
+| vm-space-show <pid> | Show the address space layout for a process |
+| vm-map <pid> <virt_addr> <phys_addr> <read|write> <user|kernel> | Map a physical page into a process |
+| vm-unmap <pid> <virt_addr> | Remove a mapping from a process |
+| vm-translate <pid> <virt_addr> | Show which physical page a virtual address points to |
+| vm-cow <pid> <virt_addr> | Mark a page copy-on-write |
+| vm-clone <pid> | Clone a process address space |
+| vm-stats | Show page faults, COW faults, and page copies |
+| vm-health | Show whether paging state is consistent |
 
-#### `PageFaultError`
-
-| Field | Source | Meaning |
-|---|---|---|
-| `present` | Error code bit 0 | 0 = not present, 1 = protection violation |
-| `write` | bit 1 | 0 = read fault, 1 = write fault |
-| `user` | bit 2 | 0 = kernel-mode fault, 1 = user-mode fault |
-| `reserved` | bit 3 | Reserved PTE bit was set |
-| `instruction` | bit 4 | Instruction fetch fault (NX) |
+#### PageFaultErrors 
 
 #### Page Fault Dispatch
 
-```rust
-pub extern "C" fn rust_page_fault_handler(error_code: u32, fault_addr: usize)
-pub extern "C" fn rust_page_fault_handler_ex(error_code: u32, fault_addr: usize, ...)
-```
+Page fault dispatch is how the kernels decision path works when it needs to decide what to do when code touches a memory address that is not currently valid. 
 
-The fault handler:
-1. Parses `error_code` via `PageFaultError::from_code`.
-2. If `write && !present` at a CoW page → `handle_cow_fault` → resume.
-3. If `present && write` at a CoW page → `handle_cow_fault` → resume.
-4. Otherwise → kernel panic with full fault details.
 
-`PagingStats`: `page_faults` (total), `cow_faults` (CoW resolved), `page_copies` (physical page copy operations).
+It reads the fault error code, checks wheter the fault looks like a copy-on-write error, and if it is, it hands the fault to. the COW handler. If it is not a a copy-on-write error, it treats it as a deeper fault and stops with detailed fault information. 
+
+It works like this so it protects the memory isolation, and makes copy-on-write work safely so it can prevent bad or unecpected memory access silently corrupting the state. That gives the kernel a controlled response instead of crashing unpredictably. 
+
+Fault error codes are the small set of bits the cpu give the kernel when a page fault happens, so the kernel can tell and read back to you what kind of memory access failed. 
+
+The fault error codes are as follows: 
+| Fault error code | What it means |
+|---|---|
+| Present | The page was mapped, but the access was not allowed |
+| Write | The fault happened on a write |
+| User | The fault came from user mode |
+| Reserved bit | A page table entry had invalid reserved bits set |
+| Instruction fetch | The fault happened while fetching an instruction |
 
 #### Global Kernel Address Space
+The global kernel address space is the one shared, long lived address space the kernel keeps around for core memory mappings, this is vital for efficiency in order to keep the regular address space less resource intensive for constant usage. 
 
-```rust
-pub static KERNEL_ADDRESS_SPACE: Mutex<Option<AddressSpace>> = Mutex::new(None);
+It remains stable and reused, while the regular one can be switeched, cloned and insepected as part of paging work. 
 
-pub fn init() -> Result<(), &'static str>     // init KERNEL_ADDRESS_SPACE
-pub fn kernel_space() -> &'static Mutex<Option<AddressSpace>>
-pub fn kernel_page_directory_addr() -> Option<u32>
-pub fn get_paging_stats() -> PagingStats
-```
+Essentially the global space acts as an anchor over the workhorse. 
 
 ---
 
-## VFS Platform Abstraction (`vfs_platform.rs`)
+## VFS Platform Abstraction 
 
-This thin module decouples `vfs.rs` from kernel internals, enabling the VFS (a 5500-line module) to compile without direct dependencies on the process manager or scheduler.
+This is a small and thin abstraction layer in the overall filesystem architecture that allows the VFS to talk to the kernel specific services without being coupled and bound tightly to each other. 
 
-| Function | Description |
-|---|---|
-| `current_pid() -> Option<Pid>` | Get the PID of the currently running process |
-| `pid_from_raw(u32) -> Pid` | Convert a raw u32 to a PID |
-| `pid_to_raw(Pid) -> u32` | Convert PID to raw u32 |
-| `alloc_fd(pid, handle_id) -> Result<usize, ...>` | Allocate next available FD for `pid`, mapping to `handle_id` |
-| `get_fd_handle(pid, fd) -> Result<u64, ...>` | Retrieve handle ID for an open FD |
-| `close_fd(pid, fd) -> Result<...>` | Close and deallocate an FD |
-| `spawn_process(parent_pid) -> Result<Pid, ...>` | Create a new process (for VFS-side privilege spawning) |
-| `destroy_process(pid) -> Result<...>` | Tear down a process (called during `purge_channels_for_process`) |
-| `process_fd_stats() -> (open_fds, max_fds, current_pid)` | Telemetry |
-| `ticks_now() -> u64` | Monotonic tick counter (varies by platform target) |
-| `temporal_record_write(path, payload) -> Result<u64, ...>` | Append temporal log entry |
-| `temporal_record_object_write(path, payload) -> Result<u64, ...>` | Append typed temporal object entry |
+It acts as the bridge between the filesystem code and the rest of the kernel. It allows the VFS to see what process is running, and at what time, removing a direct dependency on the time slice scheduler, or other low level core subsystems. 
+
+This keeps the code across the whole kernel clean, and lets the vfs compile in ways wihtout dragging down the efficiency of the kernel. Plus adds reusability across the platform and the boot modes. 
+
+This isolates the platform from the handling and storage logic, while maintaining compatibility and enhancing both security and efficiency. 
+
 
 ---
 
 ## Capability and Rights Model
 
-The `fs` module implements a two-level capability model that mirrors the IPC capability system.
+The fs module implements a two-level capability model that mirrors the IPC capability system.
 
-### RAM-KV Layer (`FilesystemCapability`)
+### RAM-KV Layer 
+The RAM-KV (stands for RAM-Key Value) layer is the in memory key-value the kernel needs for fast filesystem style data, that is alot to compartmentalize, so to break that down, heres how that works
 
-Every operation on `FilesystemService` requires a `FilesystemCapability`:
+1. Each item is stored under a key, such as a path-like name
+2. The key points to a file record in memory
+3. The file system does a service check of capabilities before letting a caller read, write or delete anything. 
 
-```
-FilesystemCapability
-  ├── cap_id: u32                    unique identifier
-  ├── rights: FilesystemRights       bitmask: READ, WRITE, DELETE, LIST
-  ├── key_prefix: Option<FileKey>    namespace scope (None = global)
-  └── quota: Option<FilesystemQuota> per-capability resource limit
-```
+it does not work like a normal disk backed tree system, instead it is managed by a map of names stored to values within the kernel. 
 
-Capabilities are attenuated (never amplified):
+The key is the label, the value is the stored file data, and the service in the file system is the gatekeeper. Good for the internal kernel state, temporary data and fast look ups. 
 
-```rust
-cap.attenuate(FilesystemRights::read_only())
-// → new cap with rights = cap.rights & READ; same prefix and quota
-```
 
-Capabilities are serialisable to/from `ipc::Capability` via `to_ipc_capability()` / `from_ipc_capability()`, allowing filesystem capabilities to be passed over IPC channels with MAC protection.
+for the RAM-KV layer, the most useful commadns to develop, will be ones taht allow you to inspect and manage live kernel state without leaking internals everywhere. 
 
-### VFS Layer (`FilesystemCapability` for VFS)
+These are wise commands that will increase the usability of the kernel, without diverging in architecture. 
+| Future command | What it will do |
+|---|---|
+| fs-show <key> | Show the value and metadata for one stored item |
+| fs-list | List stored keys |
+| fs-stats | Show filesystem totals and health |
+| fs-delete <key> | Remove a stored item |
+| fs-set <key> <data> | Write or update a stored item |
+| fs-quota <pid> | Show or set the quota for a process |
+| fs-cap <pid> | Show the filesystem capability for a process |
+| fs-watch <key> | Watch a key for changes |
+| fs-health | Show whether the RAM-KV store is healthy |
+
+
+### VFS Layer 
 
 The VFS capability model operates on paths:
 
-```
-set_directory_capability(path, cap)   // grant cap to all files under path
-clear_directory_capability(path)      // revoke
-set_process_capability(pid, cap)      // grant cap to a process
-clear_process_capability(pid)         // revoke
-inherit_process_capability(child, parent, attenuated_rights)
-effective_capability_for_pid(pid, path) // compute effective rights
-```
+The code surface of `effective_capability_for_pid` merges directory-scoped and process-scoped capabilities, applying the tightest quota and the intersection of rights, it is the VFS equivalent of the IPC admission pipeline.
 
-`effective_capability_for_pid` merges directory-scoped and process-scoped capabilities, applying the tightest quota and the intersection of rights — it is the VFS equivalent of the IPC admission pipeline.
+The capability model means the kernel checks permissions on the path being accessed, when looking at `effective_capability_for_pid` it showcases the look at the processes capability, look at the directories capability, merfes them, keeps the smaller quota, and keeps only the rights both sides allow. 
+
+It it a admission pipeline where the caller does not get full access automatically, and only what oth path rules and the process rules permit. 
+
+The permissions it checks are:
+
+1. whether the caller can read the path
+2. whether the caller can write the path
+3. whether the caller can delete or rename the path
+4. whether the caller can create new entries under that path
+5. whether the caller can list the directory
+6. whether the caller can use the request within its quota
+
 
 ---
 
-## Filesystem Watching and IPC Notification
+### Filesystem Watching and IPC Notification
 
 The VFS provides a filesystem event watch system with two delivery mechanisms: polling and IPC channel push.
 
 ### Watch API
 
-```rust
-pub fn watch(path: &str, recursive: bool) -> Result<u64, &'static str>
-// Returns watch_id
+The kernel watch API is the part of the VFS that lets the kernel notice file systems and report them out. Allowing it to subscribe a path or directory and get notified when file changes happen. this is good for tracking updates, reacting to new files or deletes, and feeding the notifications into IPC or telemetry, and avoiding constant polling. 
 
-pub fn unwatch(id: u64) -> bool
+its basically there to watch events, and allow the kernel to see if something changed here instead of forcing a caller to keep checking manually, keeping it light and nimble. 
 
-pub fn watches() -> Vec<VfsWatchInfo>
-// VfsWatchInfo: { id: u64, path: String, recursive: bool }
+Theres no need for user operation in the Watch-API, however, some diagnostics exist currently that would come in handy, as well as asic filesystem insepction and repair commands. 
 
-pub fn notify(limit: usize) -> Vec<VfsWatchEvent>
-// Poll for pending events (up to limit)
-```
-
-### `VfsWatchKind`
-
-| Variant | Trigger |
+The diagnostic commands currently are:
+| Current command | What it does |
 |---|---|
-| `Created` | File or directory created |
-| `Deleted` | File or directory deleted |
-| `Modified` | File content written |
-| `Renamed` | File or directory renamed |
-| `Mounted` | Filesystem mounted at path |
-| `Unmounted` | Filesystem unmounted |
-| `PermissionDenied` | Access denied by capability check |
+| vfs-watch | Start watching a path for changes |
+| vfs-watch-list | Show active watches |
+| vfs-notify | Show recent filesystem notifications |
+| vfs-fsck | Inspect and repair VFS structure |
+| vfs-health | Show VFS health and mount statistics |
+| fs-scrub | Validate and repair filesystem accounting |
 
-### `VfsWatchEvent`
+however, some potential future development is going to need to be necessary to enhance the quality of these commands. Some of them do currently have arguements some of them dont. 
 
-```rust
-pub struct VfsWatchEvent {
-    pub sequence:  u64,            // monotonic event sequence number
-    pub watch_id:  u64,            // which watch triggered
-    pub kind:      VfsWatchKind,   // what happened
-    pub path:      String,         // which path
-    pub detail:    Option<String>, // rename target, mount path, etc.
-}
-```
+| Command | Arguments |
+|---|---|
+| vfs-watch | <path> |
+| vfs-unwatch | <id> |
+| vfs-watch-list | none |
+| vfs-notify | none |
+| vfs-fsck | none |
+| vfs-health | none |
+| fs-scrub | none |
+
+Here are some arguments for future development we are going to need,
+
+Where arguments might be useful for later dev cycles. 
+
+1. vfs-watch-list <path> to filter watches
+2. vfs-notify <count> to limit output
+3. vfs-health <detail|summary> to choose verbosity
+4. fs-scrub <path> to target one subtree instead of the whole store
+
+
+Not all of them should gain arguments, the rule decided here is that only add arguments if something needs to target something or control the scope of behaviour within the system. 
+
+### VFS Watch
+VFS watch (command: vfs-watch) works by registering a watch entry in the recodring events when the watched path changes. 
+
+First, you call the vfs-watch on a path, then the VFS stores the watch in its internal watch list, when something changes under the path, the vfs creates a watch event. Then, the even is added to the notification queue. Where you can check the queued events with vfs-notify.
+
+If an IPC channel is subscribed, the kernel can push events there too, the reciever acknowledges it with the vfs-ipc-ack, which then frees the paths for the next batch. 
+
+It basically just tells the kernel to keep an eye on a filesystem path, so the kernel can report back whenever that path changes. 
+
+### VFS watch events
+
+Events caught under the vfs watch event can include what kind of event change happened, which path changed, and sometimes some extra details about the change.. 
+
+| Kind of event change | What it is |
+|---|---|
+| Create | A file or directory was added |
+| Delete | A file or directory was removed |
+| Write | File contents changed |
+| Rename | A path changed name or moved |
+| Link | A hard link was created or removed |
+| Symlink | A symbolic link was created, changed, or removed |
+| Metadata change | Permissions, timestamps, size, or similar file info changed |
+| Mount change | A mount was added, removed, or updated |
 
 ### IPC Push Notifications
 
-Processes can subscribe an IPC channel to receive filesystem events:
+Event changes can be subscribed through IPC push notification, to allow the kernel to send filesystem events directly to a channel instead of making a caller poll for them. 
 
-```rust
-pub fn subscribe_notify_channel(channel_id: ChannelId) -> Result<(), &'static str>
-pub fn unsubscribe_notify_channel(channel_id: ChannelId) -> bool
-pub fn notify_channels() -> Vec<ChannelId>
-pub fn notify_subscribers() -> Vec<VfsWatchSubscriberInfo>
-pub fn notify_channel_stats(channel_id: ChannelId) -> Option<VfsWatchSubscriberInfo>
-pub fn ack_notify_channel(channel_id: ChannelId, up_to_sequence: u64) -> bool
-```
+A way to think about it is this, a process can listen to fulesystem changes, and when osmehting in the kernel happens, it pushes the notice to the subscribed IPC channel.
 
-`VfsWatchSubscriberInfo` tracks per-channel delivery state:
+A useful command for future development cycles would be to take advantage of this aspect of the kernel for analaysis sake. 
 
-| Field | Description |
+I think a command along the lines of IPC-listen would be useful in the shell. 
+
+it would give a process a clean way to recieve filesystem or service events, and help it avoid constant polling. It will fit the kernels event drive mode, and make sure wathes and notifications are easier to use operationally. 
+
+What it should do is this:
+
+1. subscribe a process or channel to a specific event source
+2. let the caller choose a path, servie or channel scope
+3. require capability checks
+4. show whether the subscription suceeded or failed 
+5. finally, return a subscritption ID so it can be cancelled later. 
+
+it should not listen to everything by default, expose raw kernel internals, bypass the capability model, or become a background snooping tool 
+
+The ipc listen command will be formatted like this:
+
+| Future command | What it does |
 |---|---|
-| `channel_id` | IPC channel receiving events |
-| `pending_events` | Events queued for delivery |
-| `in_flight` | Sequence number of the event currently in the IPC ring |
-| `last_acked_sequence` | Last sequence number acked by subscriber |
-| `dropped_count` | Events dropped due to backpressure (channel full) |
-
-The kernel delivers events asynchronously: it calls `ack_notify_channel` when the subscriber confirms receipt, allowing the next batch to be delivered. This back-pressure model integrates directly with the IPC module's `BackpressureLevel` tracking.
-
+| ipc-listen <channel> <source> | Subscribe a channel to a scoped event source |
+| ipc-unlisten <id> | Cancel a subscription by ID |
+| ipc-listeners | List active IPC listeners |
+| ipc-stats <channel> | Show backlog and delivery stats for a channel |
 ---
 
 ## Temporal Persistence
 
-The VFS and block layer both participate in the kernel's temporal persistence system. This enables replay of storage operations across reboots.
+Temporal persistance is deeply integrated in the kernels fule system and storage change processes described above. it measn the kernel does not jsut write data once and forgets about itt. it keeps a record of what changed saves that record and allows it to replay. It is constantly doing this. 
 
-### VFS Temporal Backend Writes
+Not only is it useful after a system restart, it is also good for preserving recent writes, replaying backend storage changes, and keeping the kernels view of storage consistant as time goes on. 
 
-On every VFS write to a VirtIO mount backend, `capture_temporal_backend_write(path, offset, data, written)` records a temporal payload:
+Backend writes are done automatically, there arent really any need for any special commands in order to make temporal backend capture happen because the kernel hooks it during VFS writes. 
 
-| Constant | Value | Description |
-|---|---|---|
-| `TEMPORAL_DEVICE_ENCODING_V1` | `1` | First encoding version |
-| `TEMPORAL_DEVICE_ENCODING_V2` | `2` | Extended encoding |
-| `TEMPORAL_DEVICE_OBJECT_VIRTIO_RAW` | `1` | VirtIO raw block object |
-| `TEMPORAL_DEVICE_EVENT_WRITE` | `1` | Write event |
-| `TEMPORAL_DEVICE_FLAG_PARTIAL_CAPTURE` | `1 << 0` | Data was truncated |
-| `TEMPORAL_DEVICE_CAPTURE_MAX_BYTES` | `240 × 1024` | Max captured bytes per event |
+But in terms of what commands do need to exist, the snapshot, history, rollback and branching are all operational features in the code, and do infact have current existing commands. 
 
-`temporal_try_apply_backend_payload(path, payload)` — on boot, replays a temporal write event back into the VFS backend.
+Heres a table to represent these commands that are currently live (though not all perfect in terms of functionality) 
 
-### VFS Snapshot and Journal
+| Command | What it does |
+|---|---|
+| temporal-write <path> <data> | Write data and record a new version |
+| temporal-snapshot <path> | Capture the current state of a path |
+| temporal-history <path> | Show the version history for a path |
+| temporal-read <path> <version_id> | Read a specific stored version |
+| temporal-rollback <path> <version_id> | Restore a path to an older version |
+| temporal-branch-create <path> <branch> [from_version] | Create a named branch from a version |
+| temporal-branch-list <path> | List branches for a path |
+| temporal-branch-checkout <path> <branch> | Switch a path to a branch head |
+| temporal-merge <path> <source_branch> [target_branch] [ff-only|ours|theirs|three-way] | Merge one branch into another |
+| temporal-stats | Show temporal object statistics |
+| temporal-retention [show|set|reset|gc] | View or change retention behavior |
 
-```
-system/vfs/snapshot.bin   — full point-in-time VFS serialisation
-system/vfs/journal.log    — delta log of mutations since last snapshot
-```
-
-`recover_from_persistence()` loads the snapshot, replays the journal, and returns. The journal grows at most `VFS_JOURNAL_MAX_BYTES_MULTIPLIER × snapshot_size` bytes before a new snapshot is taken.
-
----
 
 ## Diagnostics and Health
 
-### `FilesystemHealth` (RAM-KV layer)
+We covered alot of high level details on diagnostics and health but here is a deeper dive. 
 
-```rust
-pub struct FilesystemHealth {
-    pub file_count:         usize,
-    pub total_bytes:        usize,
-    pub average_file_size:  usize,
-    pub hottest_key:        Option<FileKey>,
-    pub hottest_score:      u64,
-    pub hot_files:          usize,
-    pub warm_files:         usize,
-    pub cold_files:         usize,
-    pub hot_bytes:          usize,
-    pub warm_bytes:         usize,
-    pub cold_bytes:         usize,
-    pub average_hot_score:  u64,
-    pub total_operations:   u64,
-    pub permission_denials: u64,
-    pub quota_denials:      u64,
-    pub not_found:          u64,
-    pub event_log_len:      usize,
-    pub event_log_capacity: Option<usize>,
-    pub last_event:         Option<FilesystemEvent>,
-    pub last_error:         Option<FilesystemEvent>,
-}
-```
+### Filesystem Health
+In oreulius, filesystem health means these crucual things:
+1. Files still match their recorded metadata
+2. sizes and counts line up
+3. mounts are still healthy
+4. no unexpected errors have piled up
+5. the RAM-KV store and VFS state are still in sync with what the kernel thinks is true, such as if a file still exists, if it still is 128 ytes long, if a mount is active or inactive, a journal and snapshot match, the vfs tree is in a certain shape, or if a file was last written at certain time. 
 
-### `FilesystemMetrics`
+For 5, syncs can happen when the kernel can write its current state out in a certain way that can be recovered later. 
 
-| Field | Type | Description |
-|---|---|---|
-| `quota_denials` | `u64` | Writes rejected by quota |
-| `not_found` | `u64` | Reads/deletes of absent keys |
-| `repairs` | `u64` | Self-heal corrections applied |
-| `bytes_read` | `u64` | Total bytes read |
-| `bytes_written` | `u64` | Total bytes written |
-| `net_bytes_added` | `i64` | Live storage delta (can be negative) |
-| `bytes_deleted` | `u64` | Bytes freed by deletes |
-| `last_tick` | `u64` | Tick of last operation |
+These syncs specifically happen when the VFS updates its live in memroy state, records a journal entry or snapshot update into the ram-backed fs, on recovery when a snapshot is loaded, and whenever the journal is replayed. It is partially automated and partially manual when other actions are performed. 
 
-### `FilesystemScrubReport`
+For the basic sync mechanism itself, no active commands are necessary or recomended. it happens automatically whenever these example commands are called or performed by the kernel in a operating environemnt. 
 
-```rust
-pub struct FilesystemScrubReport {
-    pub files_scanned:    usize,
-    pub issues_found:     usize,
-    pub repaired_files:   usize,
-    pub bytes_recounted:  usize,
-}
-```
+1. temporal-write
+2. temporal-snapshot
+3. temporal-history
+4. temporal-rollback
+5. vfs-fsck
+6. fs-scrub
 
-`scrub_and_repair()` verifies that every `File.metadata.size` matches `File.data.len()` and resets mismatches. Repaired file count is reported.
+This should give you a pretty clear picture of how it is a automatic response to both automatic actions the kernel performs, and manual actions that the user performs. 
 
-### `MountHealth` (VFS layer)
 
-| Field | Type | Description |
-|---|---|---|
-| `path` | `String` | Mount point path |
-| `backend` | `&'static str` | Backend type name |
-| `reads` | `u64` | Read operations |
-| `writes` | `u64` | Write operations |
-| `mutations` | `u64` | Directory-mutating operations |
-| `errors` | `u64` | Failed operations |
-| `last_error` | `Option<String>` | Most recent error message |
+### File system metrics
 
-### `PagingStats`
+file system metrics are the set of numbers the kernel uses to measure how the filesystem is behaving. it is pretty much a scoreboard, that tells you how many files exist, how much data is stored, how many reads and writes have happened. How mahy permission denials occured, and how many mounts are active, how many errors or repairs have been seen.
 
-```rust
-pub struct PagingStats {
-    pub page_faults: u32,   // total page faults handled
-    pub cow_faults:  u32,   // CoW faults resolved without panic
-    pub page_copies: u32,   // physical page copy-on-write operations
-}
-```
+the closest production commands that exist today that let you operate these features in the code are 
+
+|Command| Action |
+|---|---|
+| fs-stats | shows filesystem totals and health for the RAM-KV layer|
+| vfs-health | shows the VFS health and mount stats |
+|health | shows the full system healthand mount stats|
+
+The best fit is fs-stats, there needs to be some arguments developed into this command to take full advantage of the things the code can tell you in terms of metrics. 
+
+These arguments that should be implemented in later development cycles into the kernel as follows 
+
+| Future argument for fs-stats | What it will do |
+|---|---|
+| none | Show the full filesystem metrics |
+| detail | Show a more verbose metrics breakdown |
+| health | Focus on filesystem health only |
+| mounts | Show mount-related metrics only |
+| key <key> | Show metrics for one specific stored item |
+
+
+## Conclusion
+The filesystem in oreulius is entirely memory backed for efficiency. It is capability gated, and health-aware. The vfs connects names to storage backends through mounts. 
+
+Watches, temporal persistance and heath tracking let the kernel observe and recover the state. Paging and address spaces keep memory isolated for workloads
+
+The whole system is built to support secure WASI and rust workloads, this is why its not built like a general pupose-style desktop filesyste,. 
+
+
