@@ -1,917 +1,942 @@
-# `kernel/src/capability` — Oreulius Capability Security Subsystem
+# The Oreulius Capability Security Subsystem
 
-The central authority model of the Oreulius kernel.  Every operation that crosses
-a process boundary — IPC send, filesystem access, task spawn, console write,
-service invocation — is gated by an unforgeable, attenuatable, auditable
-capability token.  POSIX-style ambient authority (UID, process groups, setuid,
-global namespaces) does not exist at any layer of the kernel.
+The oreulius capability security subsystem is the kernels authority system, designed for tasks like defining the rights as bitflags, storing capabiltiie sin per task tables, signing the capabilties with a kernel MAC so they cannot be forged by tasks.
 
-This module implements the full authority lifecycle: creation, attenuation,
-transfer, revocation, remote lease installation from CapNet tokens, predictive
-revocation driven by the security manager, and runtime delegation graph
-verification.
+Or other important duties in the systems run time, such as verifying a capability is valid before use, attenuating capabilties so rights can be reduced rather than increased, tracking delegation and provenance chains. Recording capaility creation, use transger, and revocations in the audit trail.
 
----
+It supports the remote capaility leases through the capnet, applies quota time and transfer constraints and checks for right escalation and delegation cycles.
 
-## Table of Contents
 
-1. [Module Inventory](#1-module-inventory)
-2. [Foundational Principles](#2-foundational-principles)
-3. [Architectural Diagrams](#3-architectural-diagrams)
-4. [Capability Type Taxonomy](#4-capability-type-taxonomy)
-5. [Rights Bitflags](#5-rights-bitflags)
-6. [`OreuliusCapability` Structure](#6-oreulius-capability-structure)
-7. [Cryptographic Token MAC](#7-cryptographic-token-mac)
-8. [Per-Task Capability Table](#8-per-task-capability-table)
-9. [Global `CapabilityManager`](#9-global-capabilitymanager)
-10. [Lifecycle Operations](#10-lifecycle-operations)
-11. [Attenuation and the Subset Law](#11-attenuation-and-the-subset-law)
-12. [Transfer and Delegation](#12-transfer-and-delegation)
-13. [Predictive and Quota-Based Revocation](#13-predictive-and-quota-based-revocation)
-14. [Capability Quarantine](#14-capability-quarantine)
-15. [Remote Capability Leases (CapNet)](#15-remote-capability-leases-capnet)
-16. [`cap_graph` — Delegation Graph Verification](#16-cap_graph--delegation-graph-verification)
-17. [Provenance Chains (Def A.28)](#17-provenance-chains-def-a28)
-18. [Capability Check Hot Path](#18-capability-check-hot-path)
-19. [IPC Capability Export / Import](#19-ipc-capability-export--import)
-20. [Temporal Integration](#20-temporal-integration)
-21. [Formal Self-Check](#21-formal-self-check)
-22. [Static Capacity Limits](#22-static-capacity-limits)
-23. [Security Event Audit Trail](#23-security-event-audit-trail)
-24. [Integration Points](#24-integration-points)
+## What It Does
+Compared to other capability based systems, capabolities are not just permissions, they are actual kernel owned objects, with dienity, rights, provenance, and cyrptographic verification. These rights can be narrowed, but not widened, and the subsystem trerats delefation as a graph problem not just a token lookup.
 
----
+Other things that differntiate it from other capability based kernels and operating systems, it integrates with the IPC, the filesystem, security logging, the termporal restore, and remote lease handling all in the core.
+
+## Why It Exists
+
+So capailities can be signed by the kernel, so the verification checks both integruty and the type/right match. so invalid capability use is logged as a security event. So that remote leases expire, can be revoked, can be bounded by use counts and time. So the graph code can reject escalation and cycle patersn and that the validation helpers fail closed on noce mismatch, rights escalation or invalid coditios, and that the overall operating system has a next level and forward thinking capability system that is enforced across the whole kernel.
+
+It exists so the kernel can be told who is allowed to do what, so that things can be issued kernel issued tokens, so that the kernel prevents privilged widening, and  so that the kernel can keep a record of where authority came froma and where it went
+
 
 ## 1. Module Inventory
+This is the list of capability subsystem pieces and what each one is responsible for.
 
-Two source files, 2,713 lines of `no_std` Rust (with `alloc` for
-`Box<CapabilityTable>`):
+It is broken down into these effective parts:
 
-| File | Lines | Role |
+1. the main capaility manager that holds and validates capabilities.
+2. the capability graph which tracks delegation and checks for cycles or escalation
+3. the security validation helpers that check nonce, rights and transfer constraints
+4. the security subsystem that records audit, events, and enforecement results.
+5. the IPC layer that can export and import capability related states
+6. The temporal layer can restore capaility related snapshots
+7. The CapNet path that handles remote leases.
+
+these act together as a wole to keep authority handling seperated from the normal kernel work, and to make the code easier to verify.
+
+It also limits how much of the system any one capability path can actually impact, and let the kernel audit, revoke, and restore the capability state in a controlled way.
+
+### Token definitions
+Token definitions are the capability record and the signed payload that proves the capability is valid. In essence, the token is the kernel’s signed seal on that record. Without the token, the record is just data. With the token, the kernel can trust that the capability was issued by the kernel and has not been tampered with.
+
+A good way to think about that record is as a signed authroty card, that says who issued it, what it is allowed to do, what object it applies to, and when it was granted. Also it says wether it came from another capability.
+
+The rercord is the capability object, the current capability objects are as follows:
+| Record field | What it means | Why the token signs it |
 |---|---|---|
-| `mod.rs` | 2,235 | Core subsystem: types, tables, manager, check hot path, IPC bridge |
-| `cap_graph.rs` | 478 | Live delegation DAG, invariant checking, provenance chains |
-| **Total** | **2,713** | |
+| cap_id | Local capability slot ID | Prevents the capability from being moved or relabeled without detection |
+| object_id | The kernel object the capability refers to | Binds the authority to one specific target |
+| cap_type | What kind of capability it is | Prevents a channel, filesystem, or task capability from being misrepresented as another type |
+| rights | What actions it allows | Stops rights from being widened silently |
+| origin | Which process the capability came from | Preserves provenance and auditability |
+| granted_at | When the capability was issued | Binds the capability to the grant event |
+| label_hash | Optional debug or audit label | Keeps the label tied to the signed record |
+| parent_cap_id | Which capability it was derived from | Preserves delegation and attenuation lineage |
 
----
+The tokens then prove the records fields, the token distribution in the code works like this:
+| Token check | What it proves |
+|---|---|
+| token | The capability was issued by the kernel and carries a valid signed proof |
+| verify_token() | The stored token still matches the capability record |
+| sign() | The kernel created or refreshed the proof for that record |
+| token_payload() | The exact record fields that were signed together |
+
+The flow between the records impacting the tokens work like this, the record holds the various data such as the capability ID, the object ID, the capability type, the rights, the origin, where it was granted at, the hash label, and the parent capability ID,
+
+Thus, the data gets serialized by the token_payload() function into a fixed byte array, and then signed into the feed as a payload to the kernel MAC and stored as a token. this is thus verified through the function verify_token() and chekcd whether the stored token still matches the capability record.
+
+To understand that better, you need to understand that the capability record exists as fields in the memory, the token_payload() function serializes those fields into bytes, the kernel signs those bytes, the stored token is checked later against freshly rebuilt payloads to ensure it matches and is consistant with the original intent.
+
+
+So when any of the records changes, the kernel rejects the capability as invalid so that the security is never compromised and nothing can ever be forged.
+
+### So, what if someone tampered with the memory and thus, the orginal record itself.
+Well, if someone does tamper with the memory, the capability system is designed just for cases like this, so that tampering can be detected and rejected.
+
+The capability records live in kernel owned tables, each capabilits signed capaility goes through the lookup() function to check the stored token before trusting a capability. the verify token recomputes the payload from the current record fields and compares, so that any important "field changes" (What would happen if the memory gets tampered with) would be detected against the token. The kernel treats that capaility as invalid, and invalid use is logged as a seucirty event.
+
+It goes through owership, authentication, verification, suset rules, graph checks and audit.
+
+Metaphorically, not mathematically literally, the kernel owned tables can be viewed as a inverse matrix that makes the source of the security issue a part of the protection, so its gated on either side (The memory and the token creation)
+
+The signed proof is the core of what makes either incompromosible.
+
+### So the question left is can you compromise the signed proof?
+In the current state, it is incredibly difficult to put signed proof into a state that would allow the signed proof to be compromised.
+
+This would require a complete and total systemic compromise and take over the system. The code at the current state makes it hard to forge or silently tamper with, but it is still a software system  and it dpends on the kernel staying trusted.
+
+What prevents compromise currently is capabilities living in the kernel per-task capability tables, not user controlled memory. Lookups going through the table, not through raw caller input.
+
+Through the signed capability tokems, such as each capability having a necessated and signed token field, that is verified on each time it is enacted upon by the kernel.
+
+via the payload binding where the signed payload needs to include important identify fields, such as cap_id, object_id, cap_type, rights, origin, granted_at, label_hash, parent_cap_id, and if any of those fields get tampered with or forged the token check fails.
+
+It is protected on another angle from the fail-closed validation system where the lookup() further rejects entries if the token does not verify so the token cant be falsified as an entirely new token via replacing the old token mathcing the machine opcodes or other various "counterfeiting checks".
+
+Everythign is then rights attenuated onlu, which means only a subset of each rights is then sliced out for each capability per action, think of it as a determinsitc but advancely determisnist and complex intelligence the kernel has.
+
+After that, there are further delegation checls where the rights if escalated or just excessive in the capability rejects the capability.
+
+Capabilitys can be removed from the table should they be implemented not follwing the kernels strict structure, and remote leases are then revokes and there is quentine support for isolating capabilitys.
+
+The audit trail can then give you clarity if anytihng goes wrong, because that is another security measure that should never be left out, no matter how secure a system claims to be, thinks it is, OR even actually is as claimed.
+
+Remote leases have constains, so capnet leases use budgets and owner scoping that keep the remote capability use bounded in time and strict to the scope.
+
+it is hard to break because you cannot do these things.
+1. a task cannot just be invented as a valid token
+2. a task cannot make a forged record pass verification if the payload changes.
+3. delegation is checked for cycles and escalation
+4. invalid capability states are rejected before each use.
+
+But. in terms of is there a current possbility to compromise that critical point in the secutity?
+
+Well, in the current state, the tampering is not imposible if the kernel itself is compromised physically, perhaps within the organzation using the kernel when someone who you trust to access it uses it wrong. It is not memory corruption bug proofed, bugs get discovered all the time, and we try to validate that and fix bugs as soon as reported within a short and prompt timeframe. They become a priority over all other project maintenance when reported.
+
+>Please read: SECURITY.md in the root and email bugs privately to `reeveskeefe@gmail.com` for bug reporting!
+
+It does not replace the need for proper kenrel memory safety and correct implementations in the code.
+
+It may not be totally impenetrable when looking at it from a proper security philosphy that all tech should follow, but it does make a layer fail-closed and kernel authenticated explicit verifiable and narrow, limited compromise surface. Infact it is extrememly, almost excessivly small attack surface. Which makes it not the best general purpose OS when looked at its potential when made as a desktop OS. But that does not discount its ability to be a desktop OS. Even if that isn't the goal of oreulius in the current term, medium term and near long-term future.
+
+#### what we are going to do to harden the software even further
+While you cannot make any software totally bullet proof, you CAN infact always introduce further measures and review security for improvements in a agile way.
+
+Upon review here are the things we have planned for future dev cycles to increase security:
+
+**Phase one:**
+| Measure | Why it helps |
+|---|---|
+| Remove the hardcoded fallback key in SecurityManager::new() | Prevents a predictable key from existing before init() runs |
+| Fail closed until SecurityManager::init() succeeds | Stops capability issuance before real key material is ready |
+| Rotate the capability signing key per boot | Makes old proofs useless after reboot or rekey |
+| Derive per-subsystem or per-table subkeys from a master key | Reduces the blast radius if one context leaks |
+| Add a random per-capability nonce or serial to the payload | Prevents replay or copied-record attacks from staying valid |
+| Add a boot-session ID or key epoch to the payload | Binds proofs to the current kernel session |
+| Keep key material in zeroizable, non-swappable kernel memory | Makes key extraction harder |
+| Zeroize old keys on rotation | Reduces memory-residue exposure |
+| Use a dedicated MAC format with versioning and algorithm agility | Makes future upgrades and stronger authentication easier |
+| Make token comparison constant-time | Avoids side-channel leakage during verification |
+| Extend the formal checks to cover sign/verify round trips | Catches serialization and verification regressions early |
+| Seal remote lease keys behind attestation or a hardware root of trust when available | Strengthens cross-device and remote capability trust |
+| Keep capability tables writable only through the manager path | Prevents accidental or concurrent tampering of live records |
+
+**Phase two**
+There is a hardcoded default token key in SecurityManager::new() function, which is fine as a bootstrap conviencinec but we need to remove that before we pass the alpha and replace it with a capability issuance until we have a dynamic and capability tied boot-time key. So we will need to create a module that allows this to materialize into a algorithim
+
+What this would give Oreulius:
+1. no fixed default key
+2. per-boot rekeying
+3. per-table/per-subsystem derived keys
+4. nonce or sequence binding in the payload
+5. constant-time verification
+6. zeroized key memory
+7. hardware-sealed keys if the platform supports it
+
+
+### Deep dive into the parent capability
+The parent capability is important enough to get its own little subsection because its waht makes capability lineage deeply visbile and verifable.
+
+It does these things for the proof;
+
+1. It records where a capability came from,and when it was attenuated or transferded.
+2. it lets the build_chain() funciton in the rust code reconstruct the full provenance chain
+3. it helps the kernel audit the deleagation instead of treating every capability as unrelated.
+4. it is included in the signed payhload so the lineadfe changes invalidate the token.
+5. it links directly into the graph and the IPC import/export paths.
+
+It's not important becasue it grants authority, but because it explains each asepct of authority to the chain of events.
+
+The parent capability is represented as parent_cap_id
+
+If rights says what the capability can do, and if tokens prove the capability is real, then the parent capability says where the capability even came from. This makes it incredibally difficult to forge the proof even further, even in the current pre-hardeded context that will later be bolstered in future dev hardening cycles.
+
+Its important to note it is seperate from origin, the two work together at making the proof on a next level difficulty of forging without first hand access to the kernel.
+
+### the Origin field
+The origin isnt a function in the capability code, it is infact a field on the record.
+
+To see how it adds a layer of authenticity checks to the parent capability it is best represented under a table:
+| Field | What it means | How it works with the other one |
+|---|---|---|
+| origin | The process that introduced the capability into the system | Stays attached to the capability as process-level attribution |
+| parent_cap_id | The capability this one was derived from | Tracks capability-level ancestry and delegation |
+
+so when Oreulius creates a new capability, it sets a origin as a field when the capability gets first created. then it attenuates the same origin but sets a parent capaility to it, so that when it transers, it ensures it matches the origin on any any delegated copy.
+
+Any chains built based off the capability must mathch the orgigin and the capability on any delegated copy. After that the delegation graphs the ancestral walk so that any payloads must include the origin or it breaks the token verification. it is essentially two deep checks in the multi-tude of checks on top of them.
+
+Anything rebuilt must restore the origilnal origin and capaility when things go through the IPC.
+
+origin answers who originally introduce the capability, and the parent capability ID answers which capability did this come from. The origin is the process-level source, and the paret capability ID is the lineage level source. BUT, both act as hidden stamps of anti-counterfitting measures of authenticity in the fibres of the being of the capability. The origin is apart of the signed payload, and the parent_cap_id is tracked seperately and used by the graph/IPC paths.
+
 
 ## 2. Foundational Principles
 
-These are not aspirational goals — they are enforced by the implementation at
-every call site:
+There are 9 foundational principles implemented in the capability module in the kernels SRC folder.
 
-| Principle | Implementation |
-|---|---|
-| **No ambient authority** | PID 0 (kernel) is the only entity that bypasses capability checks; all other PIDs must present a valid capability |
-| **Unforgeable references** | Every `OreuliusCapability` carries a SipHash-2-4 MAC over its identity fields; `verify_token()` is called on every `lookup()` and every access check |
-| **Transferable** | `CapabilityManager::transfer_capability()` moves a cap from one task's table to another; the source entry is removed atomically |
-| **Attenuatable** | `attenuate(new_rights)` returns an error if `new_rights` is not a strict subset of the current rights; escalation is impossible |
-| **Auditable** | Every grant, use, transfer, revocation, and policy denial emits a `SecurityEvent` to the kernel `SecurityManager` audit log |
+### 2a Explicit authority
+As in nothing is allowed by default, because any task needs a capability to do anything meaningful with a protected object.
 
----
+### 2b Kernel-Issued, kernel-verified authority
+As in capabilities are created by the kernel, they must carry a signed token, and the kernel checks that token before trusting the capability.
 
-## 3. Architectural Diagrams
+### 2c Least Privilage
+Aas in, rights can be reduced and never widened, the attenuate() function thus can allow allow a subset of pre-existing rights. Thus the validation of those subset of rights and invariant checks always must reject any form of escalation EVEN if they are benign.
 
-### 3.1 — Authority Flow: Kernel → Task → Delegatee
+### 2d Provenance
+As in the origin records which process introduces the capability, the parent capability id records which capability it came from and together they let the kenrel reconstruct the authority so it loosens rigidity while retaining the same level of authority
 
-![AuthorityFlow](Charts/AuthorityFlow.svg)
-### 3.2 — `check_capability()` Decision Tree
+### 2e Object Binding
+As in, the capability is tied to a specific object id, so it cannot be a generic permission binding blob. Guarded by a token that binds to the object too.
 
-```mermaid
-flowchart TD
-    A[check_capability pid,object_id,cap_type,rights] --> B{pid == 0 kernel?}
-    B -- yes --> ALLOW[return true]
-    B -- no --> C[restore_quarantined_capabilities]
-    C --> D[sec.intent_capability_probe]
-    D --> E{is_predictively_restricted?}
-    E -- yes --> F[predictive_revoke_capabilities\nquarantine matching caps]
-    F --> DENY1[return false log PermissionDenied]
-    E -- no --> G{rate limit OK?}
-    G -- no --> DENY2[return false]
-    G -- yes --> H[iterate capability table entries]
-    H --> I{cap matches type+rights+object?}
-    I -- no --> H
-    I -- yes --> J[verify_token SipHash MAC]
-    J -- fail --> K1[log InvalidCapability\ncontinue to next entry]
-    J -- pass --> L{evaluate_mapped_remote_capability}
-    L -- Allow --> ALLOW2[return true]
-    L -- Deny --> K2[log InvalidCapability\ncontinue]
-    L -- NotMapped --> ALLOW3[log CapabilityUsed\nreturn true]
-    H -- exhausted --> M{check_remote_capability_access\nCapNet leases}
-    M -- found --> ALLOW4[return true]
-    M -- not found --> DENY3[intent_capability_denied\nlog PermissionDenied\nreturn false]
-```
+### 2f fail-closed
+As in, if verification fails the capability must be rejected. Even if it creates a pain in the behind. As in, if the delegation contraints fail, it is rejected. As in, if the graph check finds escalation or a cycle, it is rejected.
 
-### 3.3 — CapNet Remote Lease Lifecycle
+### 2g Auditable authority
+As in, if the capability is granted, transfered revoked, or in an invalid state, it is all logged. That the authority changes are visibile and never silent.
+
+### 2h bounded transport.
+As in, if the capabilities can move through the IPC, they must still ALWAYS be revalidated when important, and that remote or transferred authority is not trusted just because it arrived over a channel
+
+The foundational principles are built on explicit, kernel issued verification. in all cases through those 9 forms of enforcement, and they must all align, must all pass and must all be available. This includes the users responsbility and giving them the tools to do so if they see fit.
+
+
+## 3. Architectural Flow
+Authority moves as a directed provenance graph of signed capability records. For one capability, that becomes a provenance chain.
+
+### 3.1 Kernel → Task → Delegatee
+
+These are the source componenets of flow events. They produce these events
+
+- Kernel: grant, sign, install, verify, revoke
+- Task: hold the capability, use it, attenuate it, or transfer it
+- Delegatee: receive the narrowed or transferred capability and use it under the new authority
+
+The kernel creates the capability and signs it.
+The task receives it in its capability table.
+The task uses it only after verification.
+If allowed, the task either attenuates or transgers it.
+
+
+The delegatee receives the new capability, then
+the kernel records the provenance with parent_cap_id and the delegation graph.
+
+If the capability moves through IPC, it becomes exported then re-imported verified.
+
+If policy allows it, the kernel can revoke or quarantine it. Then, the kernel can later reconstruct the chain with build_chain().
+
+Therefore authority flows from the kernel to a task, and from that task to a delegatee only through signed, verified, and provenance-tracked capability records.
+
+Heres a chart that shows how things work from kernel, to task to delegatee in a more detailed arraged manner"
+Use this in the README:
 
 ```mermaid
 sequenceDiagram
-    participant CapNet as CapNet Token\n(remote issuer)
-    participant Install as install_remote_lease_from_capnet_token
-    participant Mgr as CapabilityManager
-    participant LocalTable as CapabilityTable pid=N
-    participant Check as check_capability
+    participant K as Kernel
+    participant T as Task
+    participant G as Provenance graph
+    participant I as IPC
+    participant D as Delegatee
 
-    CapNet->>Install: CapabilityTokenV1 { token_id, cap_type, rights, expires_at, ... }
-    Install->>Install: capability_type_from_capnet(token.cap_type)
-    Install->>Mgr: install_remote_lease(owner_pid, owner_any, rights, ...)
-    Mgr->>Mgr: gc expired / revoked leases from array
-    Mgr->>Mgr: find or allocate lease slot (MAX_REMOTE_LEASES=128)
-    alt owner_any == false
-        Mgr->>LocalTable: install_or_replace(preferred_cap_id, cap)
-        LocalTable-->>Mgr: mapped_cap_id
-    else owner_any == true
-        Note over Mgr: lease is process-agnostic\nno local table entry
-    end
-    Mgr-->>Install: mapped_cap_id
-    Install-->>CapNet: Ok(mapped_cap_id)
-
-    Check->>Check: iterate local table entries
-    Note over Check: evaluate_mapped_remote_capability checks lease expiry + budget
-    Check->>Mgr: lease.uses_remaining -= 1 if budgeted
-    Check-->>Check: Allow / Deny / NotMapped
-
-    alt lease expires or budget exhausted
-        Mgr->>LocalTable: remove_remote_cap_mapping
-        Mgr->>Mgr: entry = None
-    end
+    K->>T: grant_capability() / sign() / install()
+    T->>T: verify_token() before use
+    T->>T: use capability
+    T->>T: attenuate() or transfer_capability()
+    T->>G: record_delegation() / parent_cap_id
+    T->>I: export_capability_to_ipc() if needed
+    I->>D: import_capability_from_ipc() / verify()
+    D->>D: verify_token() before use
+    K->>G: revoke_capability() / prune_edges_for()
+    G->>T: build_chain() / reconstruct ancestry
+    G->>D: build_chain() / reconstruct ancestry
 ```
+
+### 3.2 Decision Tree
+The decision tree is a fail-closed gate. It does these things.
+
+1. if the pid is 0, the kernel allows it to go through immediately
+2. if there are any quarentined capabilities where the cooldown has expired, then the kerenl tries to restore those capabilities.
+3. If the security manager sees a process trying to access a capability, it records an intent probe for that request.
+4. If a current process is restricted, the kernel revokes the mathcing capabilities, logs the denial and stop here, this part of the decision tree is called the predictive restriction check.
+5. the security manager applies its own validation and rate limit checks under the capability validation gate, and if they fail, the request is denied immediately.
+6. The kernel scans the process's capability table, and each candidate is checked with verify_capability_access() function for a valid token, the correct capability type, and the required rights.
+7. When a local capability matches, the kernel checks whether that the capability is actually even mapped to a remote lease. The remote lease should say allow, and if so, the access is granted. This is the remote lease evaluation phase of each decision phase process.
+8. If the local capability doesnt say allow, or no local capability suceeds, the kernel checks the capnet remote leases then moves onto phase 9.
+9. this is the final denial phase. if nothing matches, the request is denied and logged.
+
+The decision tree asks these questions,
+is the kernel trusted? is the quarentine clear? is it restricted? is it rate-limited? is it even a valid local capability to begin with? will the remote lease allow it? and should if not, to otherwise deny it.
+
+#### Intent probe deep dive
+The intent probe is not a authorization check, but rather a signal record where the security manager watches what the process is trying to do.
+
+
+It records the process ID, the capability type, the rights mask, and the object hint.
+
+It can be used for building behavioral history, detecting suspicious access patterns, feeding the predicitve restriction syste, and generating audit and anomaly telemetry.
+
+On its own, it does not grant access, deny access, or replace the necessity of the capability table look up.
+
+Its just simply there to decipher what process is attempting to get what type of capability access, and decides whether it is normal, suspicious, or needs restriction.
+
+When looking at it's placement and action within the decision tree, it happens before the kernel checks the predictive restriction,before the capability lookup, and before any remote lease fallback.
+
+#### How the capability validation gate works in the decision tree
+This is a complex part of the decision tree and earns its own little subsection to help explain how it works.
+
+Its basically a policy checkpoint that the kernel must follow before searching the capability table.
+
+It first asks the rate limiter whether this process is still allowed to make this request, if the limiter says no, the request fails immediately. it checks the requested access, and passes only if actual rights contain required rights. if it fails, its like another access point it must cross. like a border, where if it fails, it gets blocked, denied access, and logged.
+
+Its not a token verification step, not a table look up step, nor is it an object type match step. Those steps happen later in the decision tree. it helps keep resource efficiency in check, keeps the potential to develop hacks deeper in the major places where you can counterfeit and fraud on a even deeper level, and creates one more obstacle for people with first hand access to the kernel within orgs.
+
+### 3.3 CapNet Remote Lease Lifecycle
+The remote lease lifecycle refers to how the kernel accepts, installs enforces, and revokes the remote capabilities it recieves over the CapNet. Its how a remote machine can offer a siged capability token over the CapNet. If a token is valid, the local kernel turns it into a temporary local lease of authority. this lease can allow access to a kernel object, but only within the tokens limits.
+
+The tokens limits on each lease can include these things:
+1. right bits
+2. object ID
+3. time window
+4. Use budget
+5. Peer identity
+6. session key
+7. revocation status
+
+In the remote capability lease, it stores various important bits of data that is rigidly used to enforce whether something is authentic in the capability system from each oreulius machine
+
+| Data Stored in the lease over the capnet | What it means or is for |
+|---|---|
+|token_id| Identity of the remote token|
+|mapped_cap_id| this is the local capability id if thelease is mapped into a process table|
+|owner_pid and owner_any| these assess wheter the lease is bound to one process or is usable by any local process|
+|issuer_device_id| the id of the remote device that issues the lease|
+|measurement_hash and session_id| used for remote and trust session bindings|
+|object_id, cap_type and rights| determines what object is being passed over, what type the capability is, and what actions it should grant,|
+|not_before and expires_at| the time window that gets enforced over each token and capability being passed over the CapNet|
+|uses_remaning| this is an optional bounded-use counter that can be set to limit the amount of times something can be used|
+|revoked and active| these determine the lifecycle state assigned by the kernel|
+
+#### On that lifecycle in the last column of the table...
+The lifecycle can be understand under this flow
+1. remote peer sends a TokenOffer Frame where the capnet decodes the control frame
+2. the frame itself becomes authenticated, and the kernel checks the target device id, the peer session key epoch (each iteration of the key being passed down)
+3. the embedded capability token is validated, then the TokenOffer function chekcs the token length, the canonical token id, the token encoding, the temporal validity, the measurement binding, the session MAC address, and the nonce replay
+4. delegation rules are check, and if the token is derived from another token, the function verify_delegation_chain() makes sure it does not widen authority.
+5. the token becomes a local remote release, and the function install_remote_lease_from_capnet_token() then converts the CapNet token fields into local capability-manager fields. then install_remote_lease() istalls or updates the lease manager.
+6. if the capability sent over the network is process-bound, it gets local mapping. For example, if the token context does not equal 0, the lease is bound to that PID and gets a real local mapped ID under mapped_cap_id, if the context is 0, than anyone owns it, and the function owner_any can be used to check if it has an unmapped lease fall-back.
+7. on use, the lease is always rechecked, the normal capability hot path first tries local capabilities, then, it falls back to active remote leases. the remote checks enforce these things:
+a) active/ not revoked
+b) type
+c) object id
+d) time window
+e) rights
+f) use budgets
+8. when it comes time to remove the local mappings, the functiong TokenRevoke calls the function apply_token_revocation(), adds tombstones and cascades through delegated children, and persists the revocation infor and calls the revoke_remote_lease_by_token() to remove local mappings.
+
+The point of the cap net remote lease lifecycle is so that all remote authority issues from one oreulius device to another is not blindly trusted, it is only accepted after the capnet session verifies the token mac, anti-replay checks, delegation checks, temporal checks, and then can only be installed as a bounded local lease that espires, runs out of uses or be revoked.
+
+#### What commands in the remote lease lifecycel should and shouldnt do
+Currently the rmeote lease lifecycle has various commands already implemented.
+
+|capnet remote lease command | what it does |
+|---|---|
+| capnet-lend <ip> <port> <peer_id> <cap_type> <object_id> <rights> <ttl_ticks> [context_pid] [max_uses] [max_bytes] [measurement] [session_id] | Creates and sends a remote lease offer to another CapNet peer. It says: this peer may use this object, with these rights, for this amount of time, optionally limited to a process, number of uses, byte budget, measurement, or session. |
+| capnet-accept <ip> <port> <peer_id> <token_id> [ack] | Sends an acceptance message for a lease token. It tells the peer that a specific offered token was accepted or acknowledged. |
+| capnet-revoke <ip> <port> <peer_id> <token_id> | Sends a revocation message for a lease token. It tells the peer to tear down that remote lease, revoke matching delegated children, and remove any local mapping created from it. |
+| capnet-lease-list | Shows the active remote leases currently installed in the local kernel. It is used to inspect which tokens are active, who owns them, what object/type they apply to, and when they expire. |
+
+for exmaple using the capnet-lend command would look something like this out in the field:
+
+Example:
+
+capnet-lend 192.168.1.50 48123 0x123456789abcdef0 filesystem 0x1000 0x00000001 5000 42 10 0 0 7
+
+This means:
+
+Send a remote lease offer to peer 0x123456789abcdef0 at 192.168.1.50:48123. The lease is for a filesystem capability on object 0x1000, with rights 0x00000001, valid for 5000 ticks. It is bound to process 42, can be used at most 10 times, has no byte quota, has no measurement binding, and is bound to session id 7.
+
+The missing or weak area is peer/session setup and lifecycle management around them
+
+These are the commands that will need to be made in future dev cycles so that you can set up the capnet, those commands will be as follows.
+
+| needed command | what it would do |
+|---|---|
+| capnet-session-key <peer_id> <epoch> <k0_hex> <k1_hex> | Install a CapNet session key for a peer from the main native shell. This already exists in commands_shared.rs, but does not appear wired into the main commands.rs dispatcher. |
+| capnet-session-show <peer_id> | Show whether a peer has an active session key, key epoch, replay state, and last-seen tick. |
+| capnet-session-clear <peer_id> | Remove a peer’s session key and force future lease commands to fail until a new session is installed. |
+| capnet-peer-remove <peer_id> | Remove a peer from the CapNet peer table. Currently there is peer add/show/list, but no obvious removal command. |
+| capnet-lease-revoke-local <token_id> | Revoke a locally installed remote lease without sending a network revoke frame. Useful if the local kernel wants to drop trust immediately. |
+| capnet-lease-clear-expired | Sweep expired or exhausted leases and remove stale local mappings on demand. Some cleanup happens during install/use, but a direct operator command would make it explicit. |
+| capnet-lease-show <token_id> | Show one lease in detail, including issuer, owner, object, rights, expiry, use budget, mapped cap id, measurement, and session id. |
+| capnet-handshake <ip> <port> <peer_id> | Higher-level setup command that registers/checks a peer, exchanges hello/attest/heartbeat, and establishes or verifies a session before lend/revoke commands are used. |
+| capnet-lifecycle-check <peer_id> | Preflight command that says whether lend/accept/revoke can work for this peer: peer exists, trust policy ok, measurement ok, key epoch installed, network reachable, and local identity initialized. |
+
+The most important immediate one is wiring capnet-session-key into the main shell dispatcher, because without a peer session key, TokenOffer/TokenAccept/TokenRevoke frames cannot be signed and verified properly for real peer-to-peer use.
+
+
+The next issue is with the current state of the exisitng capnet-lend command, it is really complex to use, and is highly manual at the current state.
+
+Right now the operator has to know the peer IP, port, peer id, capability type, object id, raw rights mask, TTL ticks, optional PID, budgets, measurement hash, and session id. That is fine for testing, but not ergonomic.
+
+A better design would be to add helper commands that discover or fill those fields automatically before calling the same underlying TokenOffer path.
+
+| easier command | what it would do |
+|---|---|
+| capnet-lend-to <peer_alias> <cap_type> <object_id> <rights_name> [ttl] | Uses a saved peer alias to find peer id, IP, port, measurement, and session id automatically. |
+| capnet-lend-peer <peer_id> <cap_type> <object_id> <rights_name> [ttl] | Looks up the peer in the peer table and uses its known network/session info instead of requiring IP and port every time. |
+| capnet-lend-channel <peer_alias> <channel_id> <send\|recv\|full> [ttl] | Specialized command for lending channel capabilities without raw type and rights numbers. |
+| capnet-lend-fs <peer_alias> <object_id> <read\|write\|rw> [ttl] | Specialized filesystem lease command using named rights instead of hex masks. |
+| capnet-lend-template <template_name> <peer_alias> <object_id> | Uses a saved lease profile, such as short-read, bounded-debug, or one-shot-transfer. |
+| capnet-peer-discover | Finds reachable CapNet peers and records their IP, port, peer id, and advertised trust/measurement info. |
+| capnet-peer-alias <alias> <peer_id> <ip> <port> | Saves a friendly name for a peer so later commands do not need full network details. |
+| capnet-rights-list <cap_type> | Shows valid named rights for a capability type so users do not need to remember bitmasks. |
+| capnet-lend-dry-run ... | Builds and validates the token locally, prints what would be sent, but does not transmit it. |
+
+The most useful immediate improvement would be a wrapper like:
+
+capnet-lend-to storage-node filesystem 0x1000 read 5000
+
+That would internally expand to something like:
+
+capnet-lend 192.168.1.50 48123 0x123456789abcdef0 filesystem 0x1000 0x00000001 5000 0 0 0 <peer_measurement> <session_id>
+
+The bigger idea is that `capnet-lend` should stay as the low-level explicit command, while friendlier commands sit on top of it. The low-level command is useful for testing and exact control. The automated commands are better for normal operation because they can fetch peer info, choose the right port, reuse session metadata, translate named rights into masks, apply safe defaults, and reduce operator mistakes.
+
+there are still some issues, the file system as numbers such as 0x1000 is quite difficult to rememeber, so it would be good to be able to alias the file system. The filesystem, which is functions as objects in the current state would require that you use object idenitfiers, which is why its named 0x1000 etc,..
+
+But if you could alias the file system names then it would be easier, and quite simple to set up in future dev cycles, so lets say you call the filesystem you want to lend over the capnet "logs". Right now capnet-lend wants an object_id, which is just a number. That works for the kernel, but it is annoying for a person. So instead of typing something like:
+
+capnet-lend 192.168.1.50 48123 0x1234 filesystem 0x00001000 0x1 5000
+
+It would be easier to have the command be typed as something freindlier like so,
+
+capnet-lend-fs storage-node logs read 5000
+
+Then the kernel just looks up logs, finds that it means 0x00001000, turns read into the right permission bits, and calls the existing lease logic.
+
+So the alias layer would be pretty simple:
+
+| alias | object id | meaning |
+|---|---:|---|
+| rootfs | 0x00000001 | root filesystem |
+| logs | 0x00001000 | log storage |
+| config | 0x00002000 | config storage |
+| tmp | 0x00003000 | temp storage |
+
+The important thing is that the lease token should still store the number, not the name. Names are just to make things easier. The kernel should resolve the name before it builds the token.
+
+This does not need to be super complex, the user could alias filesystems like so,
+
+| future command | what it does |
+|---|---|
+| fs-alias-list | shows known filesystem aliases |
+| fs-alias-add logs 0x1000 | adds an alias |
+| fs-alias-remove logs | removes an alias |
+| capnet-lend-fs storage-node logs read 5000 | lends filesystem access using names instead of raw ids |
+
+Eventually on deeper dev-cycles, this could become fancier with path lookup or peer-advertised resources. But for the first dev cycle over the capabiliy componenets, all we would need is a simple local alias table.
+
+Heres how it would flow
+
+| action | command |
+|---|---|
+| Name a filesystem object | fs-alias-add logs 0x00001000 |
+| Name another filesystem object | fs-alias-add config 0x00002000 |
+| List current aliases | fs-alias-list |
+| Remove an alias | fs-alias-remove logs |
+| Re-add the alias | fs-alias-add logs 0x00001000 |
+| Lend read access by alias | capnet-lend-fs storage-node logs read 5000 |
+| Lend read/write access by alias | capnet-lend-fs storage-node config rw 5000 |
+| Lend access with a use limit | capnet-lend-fs storage-node logs read 5000 --max-uses 10 |
+| Lend access to one PID only | capnet-lend-fs storage-node logs read 5000 --pid 42 |
+
+##### A full example could look like this:
+```
+# aliasing the filesystem object. 0x00001000
+fs-alias-add logs 0x00001000
+
+# aliasing the fileobject 0x00002000 and naming it config
+fs-alias-add config 0x00002000
+
+# listing off the aliases made
+fs-alias-list
+
+# sending over the aliased filesystem object
+capnet-lend-fs storage-node logs read 5000
+```
+
+Its important to note that the filesystem object is not a filesystem in the virtual file system (VFS), but a capability-system authority target that represents what filesystem-related rights can be granted, checked, leased, or revoked against.
+
+##### is there a command that allows you to create filesystem objects?
+The next important commands to create would be to create filesystem objects. currently there is no bare filesystem object create command. the closest thing in the internal code is the function under capability_manager().create_object(). But there is no command in the kernel that calls upon this code.
+
+a good command to create for future dev cycles would be a command such as this to call upon that and make use of it
+
+```
+fs-object-create
+```
+A clean command shape to use that would look like this:
+
+```text
+fs-object-create <name> [rights] [owner_pid]
+```
+
+For example, if we were to create an authoriy object named logs, ad give it read-oriented defaiult policy, it is going to look something like this
+
+```
+fs-object-create config rw 42
+```
+Where rw means read/write rights, and 42 is the process id given to it.
+
+if you do not want to grant it a process you could just write it like
+
+```
+fs-object-create config rw
+```
+
+that command would create the object with a readable default rights label but not give it to process 42 across the CapNet
+
+So the table to the fs object create would look like this for a further detailed breakdown to make things clearer:
+
+| argument | required | what it means |
+|---|---:|---|
+| name | yes | Human-friendly alias for the new filesystem authority object, such as logs, config, or tmp-workspace. |
+| rights | no | Optional default rights policy for the object, such as read, write, rw, or all. |
+| owner_pid | no | Optional process that should receive an initial local filesystem capability for this object. If omitted, it only creates the object and records the alias. |
+
+### so what is the difference between file system objects, and the virtual file system (vfs vs fs)
+
+The virtial file system, or VFS, is where the actual filesystem name spaces live, the part of the kernel that works with paths like /logs, /config/ or /tmp/data.txt. If for example, you create a storage directory for your files, a folder, or rname something or delete something you are using the VFS.
+
+When however, you are creating an authority object in the kernel, in the capability system. such as a protected target the kernel can attach permissions to and capability instructions for the capability system to use as what is allowed to read, write, lend, revoke, or lease filesystem-related aythority, then you are using the fs system. A file system object is not a file or folder by itself, it is simply a authority object.
+
+So, the vfs answers what file or directory exists, and the filesystem capability object answers, who is allowed to use what?
+
+### what are ticks in the file system objects?
+A tick is the current x86 timer code, on tick is 10 milliseconds.
+
+when looking at the command such as this
+
+```
+capnet-lend-fs storage-node logs read 5000
+
+```
+
+there are 5000 ticks, that means simply that the lease will last for about 50 seoconds. When the ticks run out, the remote lease expires and any permissions sent throught the CapNet expires.
+
+Its important to note that the alength of time in ticks in aarch64 may vary differently than the amount of ticks in x86 platforms and may vary further once other timer backends such as HPET and APIC are implemented in future dev cycles.
+
+
+### Summary of the architectural flow
+To summarize we just described in section 3, how authority moves through the oreulius capability system.
+
+To recap how it flows through the system
+
+1. local capabilities begin as kernel issues signed records
+2. they move through the task ownership, verification, delegation IPC transfer, revocation and quarentine.
+3. Every access request passes through the decision tree
+4. The kernel checks trust, quarentine state, predictive restrictions, rate limits, local capability validity, mapped remote leases, ad remote lease fallback
+5. then it systemically denies or allows access.
+
+The capnet remote leases extend all of this, across machines, and connects them together. a remote token must be authenticated, checked for replay, sees if its bounded by rights, time, object, owner, session and its use bufget.
+
+It is then prompty installed as a temporary authroity that can expire or be revoked.
+
+Section 3 shows that authority in oreulius is never assumed, it is strictly issued, checked narrowed, audited, and removed through explicity kernel-controlled paths.
+
+
+
 
 ---
 
 ## 4. Capability Type Taxonomy
+this part of the capability systm is the kernels list of what each capability controls, and what kind of authority they actually are allowed to be authoritive over.
 
-`CapabilityType` controls which rights bits are meaningful and which syscalls
-accept a capability:
+Importantly, a capability is ot just permission is given in a yes or no way. The "type" makes it distinctive. The type tells the kernel what subsystem in the kernel the capability belongs to, and what kind of authority objects the rights are supposed to apply to. Rights are categorized into explicit camps.
 
-| Variant | Raw | Grants authority over |
+Heres a table to make it simple to know what each capability types in the kernel, what numeric values the kernel has for each one, and what it controls.
+
+The current capability types in the kernel are:
+
+| capability type | numeric value | what it controls |
+|---|---:|---|
+| Channel | 0 | IPC channel authority, such as sending or receiving messages. |
+| Task | 1 | Authority over a task/process object. |
+| Spawner | 2 | Authority to create or spawn new tasks. |
+| Console | 10 | Authority to read from or write to console objects. |
+| Clock | 11 | Authority to access time/clock-related operations. |
+| Store | 12 | Authority over persistent store or storage-service operations. |
+| Filesystem | 13 | Authority over filesystem-related operations or filesystem authority objects. |
+| ServicePointer | 14 | Authority to register, invoke, delegate, or revoke service pointer entries. |
+| CrossLanguage | 15 | Authority for cross-language/polyglot service links. |
+| Reserved | 255 | Placeholder/reserved value, not a normal usable capability type. |
+
+So, when a CapNet Token says cap_type = 13, oreulius understands that as Filesystem capaility.
+
+But another OS, another kernel, or another capability system will not automaitcally know that 13 measn the filesystem. These numbers are strictly part of the oreulius capability ABI and protocol. They become only standard for oreulius components. So it is essential that it is standard across all oreulius systems.
+
+### Taxonomy groups of the capability types.
+further down in the system organization, the taxonomy is split into two groups of types.
+
+There are kernel level, and system service level capailities. They exist to prevent one kind of authority to be reused as another, a file system capability should not be accepted as a channel capability, and a console capability should notever be accepted as a task spawning capability. This is essentially to prevent yet another possible attack surface in the kernel.
+
+Heres a table to explain the difference in these two type of capabilities given either locally or globally across systems.
+
+| group | types | meaning |
 |---|---|---|
-| `Channel` | 0 | IPC channels (send, receive, clone, create) |
-| `Task` | 1 | Another task (signal, join) |
-| `Spawner` | 2 | Spawning new tasks |
-| `Console` | 10 | Serial/console I/O (write, read) |
-| `Clock` | 11 | Monotonic clock reads |
-| `Store` | 12 | Log store (append, read, write/read snapshots) |
-| `Filesystem` | 13 | VFS operations (read, write, delete, list) |
-| `ServicePointer` | 14 | Named kernel services (invoke, delegate, introspect) |
-| `CrossLanguage` | 15 | Polyglot service links; carries `lang_tag` in `label_hash` |
-| `Reserved` | 255 | Placeholder / invalid |
+| Kernel-level capabilities | Channel, Task, Spawner | These protect core kernel/task/IPC operations. |
+| System service capabilities | Console, Clock, Store, Filesystem, ServicePointer, CrossLanguage | These protect kernel services exposed to tasks or WASM/service layers. |
 
-`CapabilityType::from_raw(u8)` is used wherever a `u8` arrives from an IPC
-message or a WASM host-function argument to safely decode a type discriminant
-without panicking on unknown values.
+### principles we will need to follow when developing new capabilities in the system
+Currently we dont plan to make new capabilities in the next dev cycle of the capability componenets.
+
+But there are some important principles we should follow, because each type is a authroity boundary and needs to follow strong principles. Each type should therefore have aclear protected objects, only have small meaningful rights, be completely and utterly totally capable of fail-closed checks. A stable numeric value once exposed through the IPC, audit logs, and the CapNet.
+
+New capabilities should only support attenuation instead of escalation, be auditable across creation, use, transfer and revocation.
+
+They should define whether they are local-only, IPC-transferrable, remotely leasale through the capnet, or restricted to kernel internal use.
+
+
+Heres a table of solidified and bonified principles:
+| principle | what it means |
+|---|---|
+| Create a new type only for a real authority boundary | Add a capability type when the kernel needs to protect a distinct class of object or operation. Do not add a new type just because a feature exists. |
+| Keep the type narrow | A capability type should be specific enough that its rights are meaningful. Avoid huge “god” capability types that control unrelated subsystems. |
+| Pair the type with clear rights | Define what actions are allowed for that type, such as read, write, send, receive, invoke, revoke, or delegate. |
+| Bind it to an object_id | The capability should point at a specific protected object when possible, not vague global authority. |
+| Fail closed on type mismatch | If an operation expects a Console capability, a Filesystem or Channel capability must not work, even if the rights bits look similar. |
+| Allow attenuation, not escalation | Delegated or transferred capabilities should only reduce rights, scope, time, or budget. They should never widen authority. |
+| Make it auditable | Creation, use, transfer, denial, and revocation should be logged with enough context to understand what happened. |
+| Make it serializable only when safe | If the capability can cross IPC or CapNet, define exactly how its type, object id, rights, and metadata are encoded and verified. |
+| Preserve compatibility | Once a numeric type value is used in tokens, IPC, logs, or CapNet, treat it as stable. Do not reuse old numbers for new meanings. |
+| Avoid overlapping meanings | If two capability types protect the same thing, the model gets confusing. Either merge them or clearly separate their authority boundaries. |
+| Decide local vs remote behavior | For every new type, decide whether it can be leased over CapNet, transferred over IPC, both, or neither. |
+| Define lifecycle behavior | Say how the capability is created, checked, delegated, revoked, quarantined, restored, and cleaned up. |
+
+
 
 ---
 
 ## 5. Rights Bitflags
+The rights bitflags have already been touched on in a few places already. Section 5 is going to cover the generic kernel capability rights bitflags, and not filesystem rights.
 
-`Rights` is a `u32` bitset with 21 defined bits.  `Rights::ALL = 0xFFFFFFFF`
-and `Rights::NONE = 0` are provided for completeness.
+Rghts bitflags are action bits inside a capability, the capability type asks, "What kind of things will this capability control?"
 
-| Bit | Constant | Applies to |
-|---|---|---|
-| 0 | `CHANNEL_SEND` | Channel |
-| 1 | `CHANNEL_RECEIVE` | Channel |
-| 2 | `CHANNEL_CLONE_SENDER` | Channel |
-| 3 | `CHANNEL_CREATE` | Channel |
-| 4 | `TASK_SIGNAL` | Task |
-| 5 | `TASK_JOIN` | Task |
-| 6 | `SPAWNER_SPAWN` | Spawner |
-| 7 | `CONSOLE_WRITE` | Console |
-| 8 | `CONSOLE_READ` | Console |
-| 9 | `CLOCK_READ_MONOTONIC` | Clock |
-| 10 | `STORE_APPEND_LOG` | Store |
-| 11 | `STORE_READ_LOG` | Store |
-| 12 | `STORE_WRITE_SNAPSHOT` | Store |
-| 13 | `STORE_READ_SNAPSHOT` | Store |
-| 14 | `FS_READ` | Filesystem |
-| 15 | `FS_WRITE` | Filesystem |
-| 16 | `FS_DELETE` | Filesystem |
-| 17 | `FS_LIST` | Filesystem |
-| 18 | `SERVICE_INVOKE` | ServicePointer, CrossLanguage |
-| 19 | `SERVICE_DELEGATE` | ServicePointer |
-| 20 | `SERVICE_INTROSPECT` | ServicePointer |
+The rights bitflags answer "heres what is allowed and for exactly what"
 
-**Key operations on `Rights`:**
+So if the capability of channel is being analyzed by the kernel, and it is programmed to send across channels, then it will check if it has the right bitflag channel_send. if ot it is not allowed to do that, because the type is wrong.
 
-```rust
-rights.contains(bit)          // single-bit membership test
-rights.is_subset_of(&other)   // (self.bits & !other.bits) == 0
-rights.attenuate(mask)        // self.bits & mask — always reduces or preserves
-```
+Here are all the rights bitflags for conviencience represented as tables, I myself find them quite easy to digest.
 
-`is_subset_of` is the core invariant check used by both `attenuate()` and
-`cap_graph::check_invariants()`.
+| right | bit | capability type | what it allows |
+|---|---:|---|---|
+| CHANNEL_SEND | 1 << 0 | Channel | Send messages on a channel. |
+| CHANNEL_RECEIVE | 1 << 1 | Channel | Receive messages from a channel. |
+| CHANNEL_CLONE_SENDER | 1 << 2 | Channel | Clone or delegate a sender endpoint. |
+| CHANNEL_CREATE | 1 << 3 | Channel | Create a new channel. |
+| TASK_SIGNAL | 1 << 4 | Task | Signal another task. |
+| TASK_JOIN | 1 << 5 | Task | Join or wait on a task. |
+| SPAWNER_SPAWN | 1 << 6 | Spawner | Spawn a new task. |
+| CONSOLE_WRITE | 1 << 7 | Console | Write to a console. |
+| CONSOLE_READ | 1 << 8 | Console | Read from a console. |
+| CLOCK_READ_MONOTONIC | 1 << 9 | Clock | Read monotonic time. |
+| STORE_APPEND_LOG | 1 << 10 | Store | Append to a persistence log. |
+| STORE_READ_LOG | 1 << 11 | Store | Read from a persistence log. |
+| STORE_WRITE_SNAPSHOT | 1 << 12 | Store | Write a persistence snapshot. |
+| STORE_READ_SNAPSHOT | 1 << 13 | Store | Read a persistence snapshot. |
+| FS_READ | 1 << 14 | Filesystem | Read filesystem data or authority target. |
+| FS_WRITE | 1 << 15 | Filesystem | Write filesystem data or authority target. |
+| FS_DELETE | 1 << 16 | Filesystem | Delete filesystem data or authority target. |
+| FS_LIST | 1 << 17 | Filesystem | List filesystem data or namespace entries. |
+| SERVICE_INVOKE | 1 << 18 | ServicePointer | Invoke a service pointer. |
+| SERVICE_DELEGATE | 1 << 19 | ServicePointer | Delegate a service pointer capability. |
+| SERVICE_INTROSPECT | 1 << 20 | ServicePointer | Inspect service pointer metadata. |
+| NONE | 0 | Any | No rights. |
+| ALL | 0xFFFFFFFF | Any | All bits set; powerful and should be avoided outside trusted/internal paths. |
+
+Rights bits are not enough by themselves. The type must also match. A raw rights mask only becomes meaningful when paired with the correct capability type.
+
+### Why right bitflags cannot be counterfeited
+This is the most interesting parts about the rights bitflags. They cannot be safely counterfeited because the kernel does not trsut the raw number by itself. The rights bits are part of the actual signed capability record, which is chained and stamped for authenticity like money, and unlike people analyzing it, its machine verified instantly for where it came from, and if it was actually minted by the kernel federation.
+
+
+On top of the delegation chain, and the stamps of parent objects, and temporal detection of priori, there are also other various protections in place:
+
+| protection | what it prevents |
+|---|---|
+| Kernel-owned tables | Tasks cannot hand the kernel arbitrary memory and call it a capability. |
+| Token verification | Modified rights break the signed proof. |
+| Type checks | Rights bits only work with the correct capability type. |
+| Subset checks | Delegation can reduce rights, but cannot add new rights. |
+| Audit logging | Invalid or suspicious capability use is recorded. |
+| Fail-closed behavior | If verification fails, access is denied. |
+
+
+
 
 ---
 
-## 6. `OreuliusCapability` Structure
-
-```
-OreuliusCapability {
-    cap_id:        u32             // local index in the owning CapabilityTable
-    object_id:     u64             // kernel object this cap authorises access to
-    cap_type:      CapabilityType  // what kind of object
-    rights:        Rights          // bitmask of permitted operations
-    origin:        ProcessId       // PID that originally held this capability
-    granted_at:    u64             // PIT tick counter at installation time
-    label_hash:    u32             // optional debug label / CrossLanguage tag
-    token:         u64             // SipHash-2-4 MAC over identity fields
-    parent_cap_id: Option<u32>     // provenance: None = root, Some = derived from
-}
-```
+## 6. A deep dive into the oreulius capability structure.
+In section 6 we are going to look into how the kernels main records for a single capability are structured.
 
 ### Invariants
+The invarients in the capability structure are things that must stay true so a capability can be trusted, if even ONE of these things are off, the kernel must reject the capability.
 
-- `cap_id` is in the range `[0, MAX_CAPABILITIES)` and matches the slot in the
-  owning `CapabilityTable`.
-- `token` must verify under `verify_token(owner_pid)` before any operation is
-  permitted on the capability.  Tampering with any field breaks the MAC.
-- `parent_cap_id` is `None` for capabilities created directly by the kernel via
-  `grant_capability()`.  It is `Some(original_id)` for attenuated or transferred
-  copies, establishing the provenance chain used by `build_chain()`.
+Heres a table to represent ALL the invarients that must rmemain true and what each invariant means
 
-### `new_polyglot_link(origin, object_id, lang_tag)`
+| invariant | what it means |
+|---|---|
+| Capability ID must match its table slot | The capability ID inside the capability must match the slot the kernel looked up. If it does not match, the capability is invalid. |
+| Capability ID 0 is invalid | Capability ID 0 is reserved and should not be used as a real local capability. |
+| Object ID must match the requested object | If an operation asks for object A, a capability for object B should not work. |
+| Capability type must match the operation | A filesystem capability cannot authorize a channel operation, even if the rights bits look useful. |
+| Rights must contain the required right | The capability must include the specific right needed for the operation. |
+| Rights may be reduced, not expanded | Attenuation can only create a subset of the original rights. It cannot add new authority. |
+| Token must verify | The signed token must match the capability fields. If the record was changed, verification fails. |
+| Owner is part of the signed proof | A capability signed for one task table should not be valid as if it belonged to another owner. |
+| Provenance should be preserved | If a capability is derived from another one, the parent capability ID should point back to the parent. |
+| Invalid states fail closed | If lookup, token verification, type check, object check, or rights check fails, access is denied. |
 
-Synthesises a `CrossLanguage` capability for a polyglot service invocation
-(WASM host syscall 105 `polyglot_link`).  Stores `lang_tag as u32` in
-`label_hash` so the audit reader can identify the destination language without
-deserialising the full capability record.
+
+### Field layout recap and unified explanation, in the capability structure
+We have covered most of the field layout in broken up bits across this readme, but for easier to understand purposes, here is precisely how each capability is laid out and what fields are required in each capability.
+
+| field | what it does |
+|---|---|
+| cap_id | Local capability ID inside a task’s capability table. It identifies the capability slot for that task. |
+| object_id | The protected kernel object this capability applies to. |
+| cap_type | The kind of authority this capability represents, such as Channel, Filesystem, Console, or ServicePointer. |
+| rights | The bitflag permissions granted by this capability. |
+| origin | The process that originally introduced or received the capability. Used for audit and provenance. |
+| granted_at | The kernel tick when the capability was granted or installed. |
+| label_hash | Optional label/debug/audit value attached to the capability. |
+| token | Signed proof that the capability fields have not been forged or changed. |
+| parent_cap_id | Optional parent capability ID if this capability was derived or attenuated from another capability. |
+
+### signed payloads
+This has also been explained in pieces across the readme. But for furhter clarificaiton this part of section 6 will tell you exactly which fields are included in the token proof, and why changing them invalidates the capaility.
+
+The signed payloads include the table owner, the capability ID, the object ID, the capability type, the rights, the origin, grant time, and label hash.
+
+These fields in the signed payloads describe who owns the capability, which slot it lives in and what object it controls, aswell as determining what kind of authority it is, what actions it allwos and where it came from, when it was granted, and if any, labels attached to it.
+
+If any of these are changed however after signing, the kernel rebuilds the payload during verificaiton, and the token no longer mathces. The capability becomes invalid.
+
+These fields in the signed payloads are another anti-counterfeiting measure used in the kernel. They prevent silent changing a read only capability into a read/write one.
+
+Heres a table for your reading convienience.
+
+| signed payload field | why it is included |
+|---|---|
+| owner | Binds the capability to the task table that owns it. |
+| cap_id | Binds the proof to the local capability slot. |
+| object_id | Prevents the capability from being retargeted to another object. |
+| cap_type | Prevents one capability type from being reused as another type. |
+| rights | Prevents rights from being silently added or changed. |
+| origin | Preserves who originally introduced or received the capability. |
+| granted_at | Binds the proof to the grant/install event time. |
+| label_hash | Keeps optional label or audit metadata tied to the proof. |
+
+### Creation path
+Creation paths are the ways a capability record becomes a real, usable capability in a task table. In this kernel, a capability usually starts as an "OreuliusCapability" record with an object ID, type, rights, and origin. It is not fully trusted until it is installed into a capability table, assigned a real capability ID, timestamped, signed, and audited.
+
+The main creation paths are:
+
+| creation path | what it does |
+|---|---|
+| Direct new record | Builds a basic capability record with object ID, capability type, rights, origin, grant time, no token yet, and no parent. |
+| Table install | Assigns the capability a real local capability ID, refreshes the grant time, signs the token, stores it in the task table, and logs creation. |
+| Grant capability | Main manager path for giving a process a new capability. It creates the record, installs it into the process table, records temporal state, and notifies observers. |
+| Channel capability creation | Specialized helper that creates a Channel capability using the channel ID as the object ID. |
+| Attenuation creation | Creates a derived capability with fewer rights than the original and records the parent capability ID. |
+| IPC import creation | Recreates a capability from a verified IPC transfer and grants it into the receiving process table. |
+| Remote lease mapping | Creates a local mapped capability from a verified CapNet remote lease when the lease is bound to a specific process. |
+| Cross-language capability creation | Creates a CrossLanguage capability for polyglot/service-link authority and signs it with language metadata. |
+
+A capability is created in two stages. First, the kernel builds an OreuliusCapability record with the target object, capability type, rights, origin, and grant time. At this point it is only a candidate record. Then the record is installed into a task’s capability table, where the kernel assigns the real local cap_id, refreshes the grant timestamp, signs the token, stores the entry, and logs the creation. Most higher-level creation paths, such as granting a capability, importing one from IPC, mapping a CapNet remote lease, or creating a channel capability, eventually pass through this same install-and-sign step.
+
+The creation path is not automatically trusted because a struct exists in memory. The kernel seperates between building a capability-shaped record, and installing a valid capability.
+
+For example, the new record starts with the requested object, type rights and origin, but the important thing to remember is that it is only usable after the capability table assigns it to a real slot, regreshes its grant time, signs it, stores it and then logs the creation.
+
+The secure part of all this, is that final authority is created in the kernel owned table, not by the caller. The token is only signed after the kernel assings it a real cap_id, and owner context, someone  cannot safely create a task to forge a capability by copying fields or inventing rights.
+
+In such a scenario, lets say, someone changes the object, the type, the rights, the owner , the grant time, or label after the creation.. then the signed proof no longer mathces and verification fails.
+
+The path also at the same time has another important layer of security where rights cannot ever be escalated, only narrowed.
+
+
+Creation, is not just simply the allocation of  a task, it is also table ownership, signing, provenance, and auditing all at once, all the time. In all the cases.
+
+
+### Verification path
+The next important path is the verification path, this path, is the route a capability must always pass throught before the kernel trusts the creation. the kernel will never accept any capability just because it exists in a table.
+
+The kernel will check that every capability ID, will match the table slot, and that each singed token stll matches these follwoing things
+
+1. the capability fields
+2. the capability type to the requested operation
+3. the object id to the target object
+4. the right mask to the required rights
+
+they all must pass, even if 1, 3, and 4 pass, if 2 fails for example, they all fail.
+
+### Attenuation path
+this the the path that the kernel uses to create a weaker capability from a stronger one. A task can delegate and derive authority, but can never add new rights DURING the process. The new rights care only ever allowed to be subsets from the original rights.
+
+It exists so that authority can be delefated without giving away everything. For example, if a process has a powerful capability, it likely is going to need to hand some of that to another process in the kernel so it can execute the full capability.
+
+When something gets handed to another part of the kernel as a piece of the capabiliy, it naturally creates an attack surface. If we give that part of the kernel that needs the capability the full capability, with the full authoruty, it leaves it open to be hijacked, manipulated, or opens acess in. So it is necessary for the mechanism to have a weaker copy attneuated to be handed off to give to that process with just the rights it needs.
+
+
+Here are security properties that get attenuated throughout the entire process of a capability creation that runs a task.
+| security property | what attenuation provides |
+|---|---|
+| Least privilege | A delegate gets only the rights it needs. |
+| No rights escalation | A child capability cannot gain rights the parent did not have. |
+| Safer delegation | Processes can share limited authority instead of full authority. |
+| Provenance tracking | The new capability records which parent it came from. |
+| Better containment | If the delegate is compromised, the damage is limited to the attenuated rights. |
+| Audit clarity | The kernel can see that the weaker capability came from a stronger parent. |
+
+Each attenuation of the security property follows the kernel value of rights being only ever able to become smaller, narrower, and less powerful
+
+### Origin and parent capability ID
+In the capability in terms of where it comes from, the origin and the parent_cap_id both describe this but answer different questions.
+
+Orgigin is the process level source, and the parent capaility id is the capability level source.
+
+The origin recordds which process introduced, revieved or caused the capability to be created, while the parent cap Id records which earlier capability this one was derived from. Its important for delegation and attenuation because it answers where did this capability come from.
+
+This was covered earlier, but its important to have these details all consolodated and organized in one chapter of this readme for review sakes, and digestibility
+
+
+### Failure behavior
+Finally, failure behavior descries what the kernel does when a capaility does ot pass validation.
+
+Oreulias alwaus remains failclosed when a capability is missing, malformed, tampered with, expired, revoked, has the wrong type, points at the wrong object, or lacks the required rights.
+
+The kernel never guesses, or half passes things, or accepts things as they are unless they are what exactly was intended and intentional from the caller across the system
+
 
 ---
+
+## How tampering in the kernels capabilities are detected
+Tampering in the kernel is detected by checking the signed capability token against the original record.
+
+The record is tamper evident beause the kernel can tell when important fields have been changed without being resigned.
+
+It is thus, difficult to sign, or resign any record change, because the singing is not something a nromal task can do bu itself, it belongs to the kernels security manager, and the signing path is reached only through controlled kernel code.
+
+If for example someone changes a record directly in memrroy, they have changed the data, they have not created the amthcing token.
+
+They thus cannot simply create a matching token because the token is a MAC, not a checksum. It requires a secret key, so if the attacker guessed or inventd a token or even built a solid one, it will not match.
+
+They need a 128-bit siphash key, stored as two 64 bit values that match the decryption.
+
+Heres a neat way to understand why this is secure, rute forcing is not the realistic threat. Even at a billion guesses per second, 2^64 tag guessing is still hundreds of years on average for one matching tag, and 2^128 key search is astronomically beyond that. The realistic risk is not “cracking SipHash”; it is stealing the key, corrupting kernel memory, or finding a logic bug in the signing/creation path.
+
+The average timeframe of a capability windows is 50 seconds. Even if its indefinite, obtaining a sip key even with todays most advanced computers and possibly even future quantum computers is astronimcally longer, because the attacker is not trying to solve a short password or decode a readable value. They would need to produce a valid MAC for the exact changed capability payload without knowing the kernel’s secret signing key. That search space is far larger than the useful lifetime of a normal remote lease. So in practice, the security question is not “can they brute force the token before the lease expires?” The practical question is whether they can compromise the kernel, steal the signing key, or abuse a trusted signing path while the capability is still live. That is why short lease windows, revocation, use budgets, kernel-owned tables, and fail-closed verification all matter together.
+
+The kernel key is the primary attack surface in htis case, and its hard to obtain, it is not exposed as an object, file, syscall result, or user-space value, it lives inside the kernels security manager and is only used by controlled kernel code when signing or verifying payloads, a normal task can hold a caopability but will never recieve the kernel key or singing key that created it.
+
+To steal it, the attacker would need somehting more serious than a bad capability. They will need kernel memory disclosure, arbitrary kernel read, arbitrary kernel write, control-flow hijack, or a bug that lets them abuse the signing path. In other words, they would already need to break through core kernel isolation.
+
+If an attacker can do that, the problem is no longer just a capability forgery problem; it is a kernel compromise problem. So the capability on this audit has been assessed as as fail closed and secure.
+
+
+
 
 ## 7. Cryptographic Token MAC
+Now that we have talked about the kernel MAC process and its Key, this is a great cummulative opportunity to dicuss the kernels cryptographic aspects of the Token Mac, another layer of what makes it difficult to achieve and steal the kernels signing key.
 
-The SipHash-2-4 MAC prevents a process from forging or modifying a capability it
-holds.
+It is the result stored on the capability, from the signing of the key to be more distinctive. It is just the signed output that is produced from the capability payload using the key.
 
-**Token payload layout (48 bytes, little-endian):**
+If, for example the signing key is the anti-counterfeitting stamp, then the token mac is the stamp mark on the capability.
 
-| Bytes | Field |
-|---|---|
-| 0–3 | Context discriminant `0x4B43_4150` ("KCAP") |
-| 4–7 | Owner PID |
-| 8–11 | `cap_id` |
-| 12–19 | `object_id` (8 bytes) |
-| 20–23 | `cap_type as u32` |
-| 24–27 | `rights.bits` |
-| 28–31 | `origin.0` |
-| 32–39 | `granted_at` (8 bytes) |
-| 40–43 | `label_hash` |
-| 44–47 | Padding (zero) |
-
-`cap.sign(owner_pid)` computes the MAC and writes it to `cap.token`.
-`cap.verify_token(owner_pid)` re-derives the payload and invokes
-`security().cap_token_verify()`.  Any field modification causes MAC mismatch.
-
-**Practical attack prevention:** Even if a WASM guest reads a `cap_id` integer from
-a message it is not supposed to receive, it cannot construct a valid `token` for
-that cap in a different `object_id`, `cap_type`, or `rights` context, because it
-does not have access to the SipHash key held in the `SecurityManager`.
-
----
+Its best to keep this simple more like a short differentiator, and glossery like explanation than a full in depth technical jargon section for your reading sake.
 
 ## 8. Per-Task Capability Table
+This is where capabilities live and thrive after the kernel creates them.
 
-`CapabilityTable` stores up to **256** (`MAX_CAPABILITIES`) capabilities for a
-single task.  It is heap-allocated per-task (`Box<CapabilityTable>`) so that the
-`CapabilityManager`'s global `tables` array does not bloat the static kernel BSS.
+A record, on its own is never enough, it must be stored in a kernel owned table for a specific task. The table is the tasks authority inventory, it tells the kernel which capabilitys the process holds, what object ecah one applies to, what type it is and what rights it grants.
 
-```
-CapabilityTable {
-    entries:      [Option<OreuliusCapability>; 256]
-    next_cap_id:  u32                               // monotonic counter (unused in slot-based alloc)
-    owner:        ProcessId
-}
-```
-
-Slot allocation is first-fit scan from index 0.  The returned `cap_id` is the
-slot index — O(1) lookup for most operations.  `lookup(cap_id)` linearly scans
-`entries` to find the entry whose `cap.cap_id == cap_id`, verifying the MAC on
-every found entry.
+For clarification and to make this simplified and a good informative organzied way to read across the table operations on the table, here is a table to explain what each operation does, so you can map it for analysis sake.
 
 ### Table Operations
 
-| Method | Description |
+| operation | what it does |
 |---|---|
-| `install(cap)` | Find first `None` slot; re-sign with owner; record `CapabilityCreated` audit event |
-| `install_or_replace(preferred_id, cap)` | Install at fixed slot if valid; used for lease remapping |
-| `lookup(cap_id)` | Find by ID; verify SipHash token; emit `InvalidCapability` event on MAC failure |
-| `remove(cap_id)` | Extract and return; verify token first; emit `CapabilityRevoked` |
-| `attenuate(cap_id, new_rights)` | Lookup + `attenuate()` + `install()` returning new ID |
-| `revoke_matching(cap_type, rights_mask)` | Bulk remove by type and rights filter |
-| `revoke_all()` | Remove every entry; returns count of revoked caps |
-| `count_by_type(cap_type)` | Counting helper for audit statistics |
-| `list_all()` | Iterator over live entries; used for snapshotting and audit |
-| `create_channel_capability(channel_id, rights, origin)` | Convenience: wraps `install()` with Channel type |
+| Table ownership | Gives each task its own capability table, so a capability signed for one owner is not treated as valid for another owner. |
+| Slot IDs | Addresses capabilities by local capability ID, with capability ID 0 reserved as invalid. |
+| Install | Assigns a slot, signs the capability, stores it in the table, and logs creation. |
+| Lookup | Checks that the slot exists, the capability ID matches, and the token verifies. |
+| Remove | Removes a capability during revocation, transfer, or cleanup. |
+| Attenuate | Creates a weaker derived capability and installs it as a new table entry. |
+| Audit | Records creation, invalid lookup, use, transfer, and removal events where appropriate. |
+| Forgery resistance | Prevents user code from inventing table entries because the kernel owns and verifies the table. |
 
----
+This next table can help you move knowledge around in your mind, and bounce back and fourth to how it works for research puposes, I find putting two tables side by side is a great way to cross reference.
 
-## 9. Global `CapabilityManager`
+Cross referencing is how I learn so well when I do learn well, at all, if any:
 
-```
-CapabilityManager {                                         // repr(align(64))
-    tables:               Mutex<[Option<Box<CapabilityTable>>; 64]>
-    next_object_id:       Mutex<u64>
-    remote_leases:        Mutex<[Option<RemoteCapabilityLease>; 128]>
-    quarantined_caps:     Mutex<[Option<QuarantinedCapability>; 256]>
-    next_remote_cap_id:   Mutex<u32>
-}
-```
-
-The global singleton is:
-
-```rust
-static CAPABILITY_MANAGER: CapabilityManager = CapabilityManager::new();
-pub fn capability_manager() -> &'static CapabilityManager { &CAPABILITY_MANAGER }
-```
-
-`align(64)` places the struct on a cache line boundary to avoid false sharing
-between the multiple `Mutex` fields.  All five fields have independent locks;
-no single operation holds more than two simultaneously (and when it does, it takes
-them in a fixed order: `tables` before `leases` before `quarantined_caps`).
-
-### Task Lifecycle in the Manager
-
-| Event | Manager method | Effect |
-|---|---|---|
-| Task created | `init_task(pid)` | Allocate and install `Box<CapabilityTable::new(pid)>` at `tables[pid]` |
-| Task forked/cloned | `clone_task_capabilities(parent, child)` | Copy all parent cap entries; re-sign each with `child_pid`; preserve slot layout |
-| Task destroyed | `deinit_task(pid)` | `revoke_all()` on table; drop quarantined caps owned by pid; revoke owner-bound remote leases |
-
----
-
-## 10. Lifecycle Operations
-
-### Create / Grant
-
-```rust
-capability_manager().grant_capability(pid, object_id, cap_type, rights, origin)
-```
-
-1. Lock `tables`.
-2. Find `tables[pid]`, call `table.install(cap)`.
-3. If temporal replay is not active, record event to the temporal log
-   (`TEMPORAL_CAPABILITY_EVENT_GRANT`).
-4. Notify WASM observer via `observer_notify(CAPABILITY_OP, &payload)` (x86 only).
-5. Return `cap_id`.
-
-`create_object()` generates a fresh monotonic `object_id` that is used as the
-unforgeable kernel-side identity of a new resource.
-
-### Verify / Check
-
-See [§18 — Capability Check Hot Path](#18-capability-check-hot-path).
-
-### Revoke (single)
-
-```rust
-capability_manager().revoke_capability(pid, cap_id)
-```
-
-1. Lock `tables[pid]`; `lookup` + `remove`.
-2. Record temporal `TEMPORAL_CAPABILITY_EVENT_REVOKE`.
-3. `cap_graph::prune_edges_for(pid, cap_id)` — remove delegation edges.
-4. Notify WASM observer.
-
-### Revoke (bulk)
-
-| Method | Scope |
+| operation | how it works |
 |---|---|
-| `revoke_all_capabilities(pid)` | All caps for one PID |
-| `revoke_object_capabilities(cap_type, object_id)` | All caps across all tasks pointing to a specific object |
-| `revoke_matching_for_pid(pid, cap_type, object_id)` | Targeted object/type within one task |
+| Table ownership | The capability table is created for one process owner. When capabilities are installed, the token is signed with that owner context, so the same record cannot simply be moved to another task table and still verify. |
+| Slot IDs | The table assigns a local capability ID when a capability is installed. ID 0 is reserved as invalid, so real capabilities start at nonzero slots. |
+| Install | The table finds a free slot, writes the capability ID into the record, refreshes the grant tick, signs the payload, stores the entry, and logs capability creation. |
+| Lookup | The kernel uses the requested capability ID to find the table slot. It then checks that the stored record has the same ID and that the signed token still verifies. |
+| Remove | The table verifies the capability before removing it, clears the slot, makes the slot reusable, and logs the revocation/removal. |
+| Attenuate | The table looks up the original capability, checks that the requested new rights are a subset, creates a derived copy with the weaker rights and parent ID, then installs it as a new signed entry. |
+| Audit | The capability system emits security events when capabilities are created, used, revoked, or found invalid. |
+| Forgery resistance | User code never gets to create trusted table entries directly. The kernel assigns slots, signs records, and verifies tokens before use. |
 
 ---
 
-## 11. Attenuation and the Subset Law
+## 9. The global capability manager
+Understood as the kernel wide authority manager. It owns the per-task capability tables, creates new protecrted object IDs, grants capanbiliy tasks, revokes capabilities, handles attenuation, and transfers remote CapNetLeases, manages quarentined capabilities, and most importantly, provides the main check path used when the kernel needs to decide whether a process is allowed to do soemthing.
 
-Attenuation is the mechanism by which a capability holder can produce a
-**weaker** copy of a capability to pass to a less-trusted party.
+Heres a table to showcase what its responsibilities, and what each responsibility does
 
-```
-cap.attenuate(new_rights) -> Result<OreuliusCapability, CapabilityError>
-```
 
-The subset law is enforced unconditionally:
-
-```
-if !new_rights.is_subset_of(&self.rights) {
-    return Err(CapabilityError::InvalidAttenuation);
-}
-```
-
-The attenuated capability:
-- Gets a fresh `cap_id` when installed in the table.
-- Has `parent_cap_id = Some(original.cap_id)` for provenance tracking.
-- Is signed with the owning task's PID token.
-
-**Why attenuation matters:** A WASM module that has full `FS_READ | FS_WRITE |
-FS_DELETE` on a store object can create an attenuated `FS_READ`-only capability
-and pass it to an untrusted helper.  The helper cannot escalate back to
-`FS_WRITE` because the MAC covers the rights field and the cap graph rejects
-escalation.
-
-### `CapabilityTable::attenuate(cap_id, new_rights)`
-
-Convenience method: looks up `cap_id`, calls `attenuate()`, installs the result,
-and returns the new slot index — all under the same table lock in the manager.
-
----
-
-## 12. Transfer and Delegation
-
-`transfer_capability(from_pid, to_pid, cap_id)` is a **move**: the capability is
-removed from the source table and installed in the destination.
-
-```
-1. tables[from_pid].remove(cap_id)                  // atomic remove (source destroyed)
-2. cap_graph::check_invariants(from, cap, to, rights, rights)
-   → rights escalation check (same rights, so always passes for exact transfer)
-   → delegation cycle check (DFS from to_pid → must not reach from_pid)
-3. delegated_cap.parent_cap_id = Some(cap_id)       // stamp provenance
-4. tables[to_pid].install(delegated_cap)            // install in destination
-5. cap_graph::record_delegation(from, cap, to, new_cap, rights)
-6. audit: SecurityEvent::CapabilityTransferred
-```
-
-If the graph invariant check fails (would create a cycle), the entire transfer
-is rejected with `CapabilityError::SecurityViolation` and the source table is
-left with the cap removed.  In practice the source table entry was already
-consumed, so the cap is effectively revoked — fail-closed.
-
----
-
-## 13. Predictive and Quota-Based Revocation
-
-The `SecurityManager` (`crate::security`) monitors process intent signals
-(capability access patterns) and can mark a process as "predictively restricted"
-before a violation actually occurs.  When `is_predictively_restricted()` returns
-true for a `(pid, cap_type, rights)` tuple, `check_capability()` calls:
-
-```rust
-let revoked = CAPABILITY_MANAGER.predictive_revoke_capabilities(
-    pid, cap_type, required_rights.bits, restore_at_tick
-);
-```
-
-This **quarantines** the matching capabilities rather than permanently deleting
-them.  After the security restriction expires (`restore_at_tick`), the caps are
-automatically restored on the next `check_capability()` call via
-`restore_quarantined_capabilities()`.
-
-### `predictive_revoke_capabilities(pid, cap_type, rights_mask, restore_at_tick)`
-
-1. Enumerate all matching local table entries.
-2. `table.remove(cap_id)` → `quarantine_insert(pid, cap, restore_at_tick)`.
-3. Revoke matching remote leases (both process-specific and process-agnostic).
-4. Return count of revoked items.
-
-The minimum `restore_at_tick` is clamped to `now + pit_frequency` (≥ 1 second
-at standard PIT rates) to prevent immediate restore loops.
-
----
-
-## 14. Capability Quarantine
-
-`QuarantinedCapability { owner_pid, cap, restore_at_tick }` is stored in a
-256-slot fixed array (`MAX_QUARANTINED_CAPS`).  Quarantine provides a
-time-limited suspension window:
-
-- The cap is **removed from the active table** so all checks fail during suspension.
-- The original `cap` record is preserved verbatim — including `cap_id`, `object_id`,
-  and rights — so it can be restored to the exact same slot.
-- `restore_quarantined_inner()` skips restore if the destination slot is currently
-  occupied (to avoid clobbering newer authority installed since revocation).
-- `force_restore_quarantined_capabilities(pid)` bypasses the timer, used by
-  kernel subsystems that need manual override.
-
----
-
-## 15. Remote Capability Leases (CapNet)
-
-`RemoteCapabilityLease` represents an authority grant that originates outside
-the local kernel instance — from a remote device's CapNet token issued over a
-mesh network link.
-
-### Lease Fields
-
-| Field | Type | Purpose |
-|---|---|---|
-| `token_id` | `u64` | Unique identifier from the issuer |
-| `mapped_cap_id` | `u32` | Local `cap_id` installed in owner's table (0 if `owner_any`) |
-| `owner_pid` | `ProcessId` | Bound process (ignored if `owner_any`) |
-| `owner_any` | `bool` | `true` for ambient leases valid for any local process |
-| `issuer_device_id` | `u64` | Identity of the remote device that issued the token |
-| `measurement_hash` | `u64` | TPM / WASM attestation measurement expected at use time |
-| `session_id` | `u32` | CapNet session this lease belongs to |
-| `object_id` | `u64` | Kernel object the lease grants access to |
-| `cap_type` | `CapabilityType` | Resource class |
-| `rights` | `Rights` | Granted rights |
-| `not_before` | `u64` | PIT tick before which the lease is invalid |
-| `expires_at` | `u64` | PIT tick after which the lease auto-expires (0 = no expiry) |
-| `revoked` | `bool` | Explicit revocation flag |
-| `enforce_use_budget` | `bool` | True if `uses_remaining` is a hard limit |
-| `uses_remaining` | `u16` | Remaining authorised uses (decremented on each check) |
-
-### Installation via `install_remote_lease_from_capnet_token(token)`
-
-1. Map `token.cap_type: u8` → `CapabilityType` (rejects unknown types).
-2. Determine `owner_any = (token.context == 0)`.
-3. Garbage-collect expired / revoked / budget-exhausted leases.
-4. If the same `token_id` exists, update in-place preserving `mapped_cap_id`.
-5. If `!owner_any`: call `install_or_replace()` to put a local table entry into
-   the process cap table — so the check hot path can find it without touching the
-   lease table.
-6. Record `SecurityEvent::CapabilityCreated`.
-
-### Check Paths
-
-Two separate code paths handle remote lease checks:
-
-- **`evaluate_mapped_remote_capability(pid, mapped_cap_id, ...)`** — called from
-  the hot path after a local table entry matches.  Finds the lease by
-  `mapped_cap_id`, validates expiry and budget, decrements `uses_remaining` if
-  budgeted.  Returns `Allow / Deny / NotMapped`.
-
-- **`check_remote_capability_access(pid, object_id, cap_type, rights)`** — fallback
-  for ambient (`owner_any`) leases that have no local table entry.  Linear scan of
-  the lease table; validates type, object, expiry, and budget.
-
----
-
-## 16. `cap_graph` — Delegation Graph Verification
-
-`cap_graph.rs` maintains a live directed acyclic graph (DAG) of capability
-delegation edges.  It enforces three invariants that the rest of the kernel
-cannot enforce through type checking alone.
-
-### Edge Structure
-
-```
-CapDelegationEdge {
-    active:     bool
-    from_pid:   u32
-    from_cap:   u32
-    to_pid:     u32
-    to_cap:     u32
-    rights_bits: u32
-}
-```
-
-Up to **256** (`MAX_GRAPH_EDGES`) live edges are stored in a fixed array in the
-global `CAP_GRAPH: Mutex<CapGraph>`.
-
-### Invariant 1 — No Rights Escalation
-
-```rust
-if proposed_rights & !delegator_rights != 0 {
-    violations += 1;
-    return Err("cap_graph: rights escalation");
-}
-```
-
-A delegatee can never receive a rights bit that the delegator does not currently
-hold.  This is checked redundantly alongside `Rights::is_subset_of()` in the
-attenuation path.
-
-### Invariant 2 — No Delegation Cycles
-
-```
-would_create_cycle(from_pid, from_cap, to_pid):
-    iterative DFS from to_pid
-    if to_pid can reach from_pid through existing edges → cycle detected
-    stack depth capped at MAX_CHAIN_DEPTH=32
-    stack overflow → conservatively returns true (fail-closed)
-```
-
-A cycle `A→B→C→A` would allow a revoked authority chain to remain valid through
-a re-grant, enabling privilege re-escalation over time.
-
-### Invariant 3 — No Orphan Edges
-
-- `prune_edges_for(pid, cap_id)` — removes all edges where `from == (pid, cap_id)`
-  or `to == (pid, cap_id)`.  Called on every `revoke_capability()`.
-- `prune_edges_for_pid(pid)` — removes all edges involving any cap owned by `pid`.
-  Called on task destruction.
-
-### Violation Counter
-
-`CAP_GRAPH.violations: u64` is a monotonic, never-resetting counter of invariant
-breaches.  Readable via WASM host function 131 (`cap_graph_violations()`).
-
----
-
-## 17. Provenance Chains (Def A.28)
-
-`ProvenanceChain` implements the lineage model from the formal specification
-§Def A.28.  It traces a capability back to its kernel-issued root through the
-`parent_cap_id` links embedded in each `OreuliusCapability`.
-
-```
-ProvenanceChain {
-    links:     [ProvenanceLink; 32]   // links[0] = leaf, links[depth-1] = root
-    depth:     usize
-    truncated: bool                   // true if chain exceeded PROVENANCE_MAX_DEPTH=32
-}
-
-ProvenanceLink {
-    cap_id:      u32
-    holder_pid:  u32
-    rights_bits: u32
-}
-```
-
-### `build_chain(pid, cap_id)`
-
-```
-1. Resolve (pid, cap_id) in CapabilityManager → (rights, parent_cap_id)
-2. Append ProvenanceLink to chain
-3. If parent_cap_id is Some:
-     a. Check CapGraph for an incoming cross-process edge (to_pid==current_pid, to_cap==current_cap)
-        → if found, hop to (from_pid, from_cap)
-     b. Otherwise, intra-process attenuation: current_cap = parent_cap
-4. Repeat until parent_cap_id is None (root) or depth == PROVENANCE_MAX_DEPTH
-```
-
-### Serialisation
-
-`ProvenanceChain::serialize(out: &mut [u8])` produces a compact binary format:
-
-```
-[0]      depth as u8
-[1]      truncated as u8
-[2..N]   per link: cap_id (4B LE) | holder_pid (4B LE) | rights (4B LE)
-```
-
-12 bytes per link, max 32 links = max 386 bytes.  Used by `AuditEntry::context`
-embedding and temporal log records.
-
----
-
-## 18. Capability Check Hot Path
-
-`check_capability(pid, object_id, cap_type, required_rights) -> bool` is called
-on every kernel syscall that accesses a guarded resource.  It must be fast but
-complete.
-
-**Full decision sequence:**
-
-```
-1. pid == 0 → true (kernel bypass)
-
-2. restore_quarantined_capabilities(pid)
-   (opportunistic: restores caps whose cooldown expired, O(256) scan)
-
-3. sec.intent_capability_probe(pid, cap_type, rights, object_id)
-   (SecurityManager intent signal)
-
-4. sec.is_predictively_restricted(pid, cap_type, rights) ?
-   → yes: predictive_revoke → quarantine matching caps → return false
-
-5. sec.validate_capability(pid, rights, rights) → rate limit check
-   → fail: return false
-
-6. Lock capability tables
-   for each entry in tables[pid].entries:
-       verify_capability_access(owner, cap, {object_id, cap_type, required_right})
-         → type check, object_id match (0 == wildcard), rights subset check, token MAC
-       if ok:
-           evaluate_mapped_remote_capability(pid, cap.cap_id, ...)
-             → Allow: return true
-             → Deny: log InvalidCapability, continue
-             → NotMapped: log CapabilityUsed, return true
-
-7. check_remote_capability_access(pid, object_id, cap_type, required_rights)
-   (ambient CapNet leases)
-   → found: return true
-
-8. intent_capability_denied + log PermissionDenied → return false
-```
-
-**Object ID wildcard:** `verify_capability_access` treats `object_id == 0` on
-either side as "don't check object"; this allows a capability created with
-`object_id = channel.id` to match a check against object_id `0` (type-only
-check) and vice versa.
-
----
-
-## 19. IPC Capability Export / Import
-
-Capabilities can cross IPC channel boundaries as `crate::ipc::Capability`
-attachments.  Two functions handle the codec:
-
-### `export_capability_to_ipc(owner, cap_id)`
-
-Reads the local `OreuliusCapability` from `owner`'s table.  Enforces: if
-`cap_type == ServicePointer`, the cap must have `SERVICE_DELEGATE` right.
-Packs into `ipc::Capability`:
-
-```
-out.cap_id  = cap.cap_id
-out.object  = cap.object_id as u32
-out.rights  = cap.rights.bits
-out.extra[0] = (cap.object_id >> 32) as u32   // high 32 bits of object_id
-out.extra[1] = cap.origin.0
-out.extra[2] = cap.granted_at as u32
-out.extra[3] = cap.cap_type as u32
-out.sign()                                     // HMAC the IPC wrapper
-```
-
-### `import_capability_from_ipc(owner, cap, source)`
-
-1. `cap.verify()` — verify the IPC-level HMAC.
-2. Decode `cap_type_from_ipc(cap.cap_type, cap.extra)`.
-3. For `ServicePointer`: verify `service_pointer_exists(object_id)` (x86 only).
-4. `capability_manager().grant_capability(owner, object_id, cap_type, rights, source)`.
-
-This path is used by the IPC layer when a message is received that includes a
-capability attachment, allowing a sender to delegate authority to a receiver
-atomically with the message delivery.
-
-### `resolve_channel_capability(pid, channel_id, access)`
-
-Bridges the IPC channel object model to the capability table.  Finds the first
-local table entry that:
-- Has type `Channel`
-- Has `object_id` matching `channel_id.0` (or wildcard `0`)
-- Passes MAC verification
-- Has the required right (`SEND`, `RECEIVE`, or both for `CLOSE`)
-
-Falls back to remote lease check.  If pid == 0 (kernel), returns a full-rights
-capability unconditionally.
-
----
-
-## 20. Temporal Integration
-
-The temporal subsystem (`crate::temporal`) enables deterministic replay of
-capability events for fault recovery and audit verification.
-
-**On grant:** If `!is_replay_active()`:
-```rust
-temporal::record_capability_event(
-    pid.0, cap_type as u8, object_id, rights.bits(), origin.0,
-    TEMPORAL_CAPABILITY_EVENT_GRANT, cap_id
-);
-```
-
-**On revoke:** If `!is_replay_active()`:
-```rust
-temporal::record_capability_event(
-    pid.0, cap.cap_type as u8, cap.object_id, cap.rights.bits(), cap.origin.0,
-    TEMPORAL_CAPABILITY_EVENT_REVOKE, cap_id
-);
-```
-
-**Replay application:** `temporal_apply_capability_event()` is called by the
-temporal engine to re-execute capability operations from the log:
-
-```
-TEMPORAL_CAPABILITY_EVENT_GRANT  → grant_capability(...)
-TEMPORAL_CAPABILITY_EVENT_REVOKE → revoke_capability(cap_id_hint)
-                                   + revoke_matching_for_pid(pid, type, object)
-```
-
-This allows a crashed kernel instance to reconstruct the exact capability state
-of all live processes from the temporal log — a prerequisite for the
-fault-tolerant edge deployment model described in `docs/project/oreulius-vision.md`.
-
----
-
-## 21. Formal Self-Check
-
-`formal_capability_self_check()` is called at boot to verify five proof
-obligations:
-
-| Obligation | Checks |
+| responsibility | what it does |
 |---|---|
-| 1 | Valid token + matching type/rights/object passes `verify_capability_access` |
-| 2 | Wrong right is rejected |
-| 3 | Wrong type is rejected |
-| 4 | Token tamper (`token ^= 1`) is detected |
-| 5 | Valid attenuation succeeds; non-subset attenuation returns `Err` |
+| Task tables | Creates, stores, and tears down capability tables for processes. |
+| Object IDs | Allocates new protected object IDs. |
+| Grants | Gives a process a capability for an object, type, and rights. |
+| Checks | Verifies whether a process has the required capability for an operation. |
+| Revocation | Removes capabilities by ID, type, object, rights, or owner. |
+| Attenuation | Creates weaker derived capabilities from stronger ones. |
+| Transfer | Moves or imports capabilities through IPC. |
+| Remote leases | Installs, checks, and revokes CapNet remote leases. |
+| Quarantine | Temporarily isolates capabilities that should not be active. |
+| Audit integration | Logs capability creation, use, denial, invalid state, and revocation. |
 
-If any check fails, the return value is an `Err(&'static str)` that the boot
-sequence can treat as a fatal precondition violation.  This is the runtime
-equivalent of a type-checker asserting the core security properties before
-user code runs.
 
----
+## Conclusion
 
-## 22. Static Capacity Limits
+The Oreulius capability subsystem is the kernel’s authority layer. It defines what a process is allowed to do, stores that authority in kernel-owned per-task tables, signs capability records so they cannot be silently forged, and verifies them before use. Rights can be narrowed through attenuation, but not widened, and every meaningful authority change can be audited.
 
-| Constant | Value | Location | Description |
-|---|---|---|---|
-| `MAX_CAPABILITIES` | 256 | `mod.rs` | Per-task capability table size |
-| `MAX_TASKS` | 64 | `mod.rs` | Max concurrent tasks with capability tables |
-| `MAX_REMOTE_LEASES` | 128 | `mod.rs` | Live CapNet lease entries |
-| `MAX_QUARANTINED_CAPS` | 256 | `mod.rs` | Caps in predictive revocation quarantine |
-| `MAX_GRAPH_EDGES` | 256 | `cap_graph.rs` | Live delegation DAG edges |
-| `MAX_CHAIN_DEPTH` | 32 | `cap_graph.rs` | Max DFS depth for cycle detection |
-| `PROVENANCE_MAX_DEPTH` | 32 | `cap_graph.rs` | Max provenance chain length |
-
-**Static memory footprint (upper bound, excluding heap-allocated tables):**
-
-| Allocation | Calculation | Size |
-|---|---|---|
-| `CapGraph.edges` | `256 × CapDelegationEdge (~24 B)` | ~6 KB |
-| `remote_leases` | `128 × RemoteCapabilityLease (~72 B)` | ~9 KB |
-| `quarantined_caps` | `256 × QuarantinedCapability (~84 B)` | ~21 KB |
-| Heap (per task) | `64 × Box<CapabilityTable>` max = `64 × 256 × sizeof(Option<OreuliusCapability>)` | ~768 KB max |
-| **Total static** | | **~36 KB** |
-| **Total heap (all 64 tasks)** | | **~768 KB max** |
-
-The heap allocation arises from `Box<CapabilityTable>` per task.  With a
-`sizeof(OreuliusCapability) ≈ 48 B` and 256 slots per table, one fully-loaded
-task table consumes ~12 KB of heap.  At 64 tasks maximum that is 768 KB —
-acceptable for a kernel targeting embedded/edge nodes with 64–256 MB of RAM.
-
----
-
-## 23. Security Event Audit Trail
-
-Every operation emits at least one `SecurityEvent` via
-`security::security().log_event(AuditEntry)`:
-
-| Event | Emitted when |
-|---|---|
-| `CapabilityCreated` | `install()` succeeds; remote lease installed |
-| `CapabilityUsed` | `verify_and_get_object()` returns Ok; hot path find succeeds |
-| `CapabilityRevoked` | `remove()` in revoke path; deinit_task cascade; lease expiry |
-| `CapabilityTransferred` | `transfer_capability()` completes |
-| `InvalidCapability` | MAC verification fails on any lookup; forged cap presented |
-| `PermissionDenied` | `check_capability()` returns false; predictive revocation fires |
-
-`AuditEntry::context` is a `u64` that carries additional detail: object_id on
-creation/use, target PID on transfer, revoke count on deinit, token_id on remote
-lease events.
-
----
-
-## 24. Integration Points
-
-### Syscall Layer (`kernel/src/syscall.rs`)
-Every capability-guarded syscall calls `check_capability(pid, object_id, type,
-rights)` before accessing the underlying resource.  The `resolve_channel_capability()`
-function gates all IPC operations.
-
-### WASM Host Functions (`kernel/src/wasm.rs`)
-- Host functions 129–131 expose the `cap_graph` query API to WASM modules:
-  - 129: `cap_graph_edge_count(pid, cap_id)` → delegation depth
-  - 130: `cap_graph_query_edges(pid, cap_id, out_ptr, max_edges)` → raw edges
-  - 131: `cap_graph_violations()` → lifetime violation counter
-- Host syscall 105 `polyglot_link` calls `OreuliusCapability::new_polyglot_link()`
-  to issue a `CrossLanguage` capability.
-- `observer_notify(CAPABILITY_OP, &payload)` is called on every grant and revoke,
-  allowing WASM observer modules to react to authority changes in real time.
-
-### IPC Subsystem (`kernel/src/ipc.rs`)
-`export_capability_to_ipc` / `import_capability_from_ipc` are called by the IPC
-message routing layer when a message carries a `Capability` attachment.
-`resolve_channel_capability()` is called on every `ipc_send` / `ipc_receive`.
-
-### Security Manager (`kernel/src/security.rs`)
-`check_capability()` consults the Security Manager for:
-- Intent probes (`intent_capability_probe`)
-- Predictive restriction flags (`is_predictively_restricted`)
-- Rate limiting (`validate_capability`)
-- Denied-access notifications (`intent_capability_denied`)
-
-The Security Manager has no direct capability table access — it signals
-intent and restriction decisions; this module executes the actual revocation.
-
-### Temporal Engine (`kernel/src/temporal.rs`)
-Capability grant and revoke events are logged to the temporal record when not
-in replay mode.  During replay, `temporal_apply_capability_event()` reconstructs
-the exact capability state, which is required for deterministic process
-restoration after a crash.
-
-### CapNet Mesh Layer (`kernel/src/capnet.rs`)
-`install_remote_lease_from_capnet_token(&CapabilityTokenV1)` is called whenever a
-verified CapNet token arrives from the mesh.  The CapNet layer is responsible for
-cryptographically verifying the token; this module installs the resulting lease and
-manages its lifecycle.
-
-### Capability Documentation (`docs/capability/`)
-The formal specification this module implements is at:
-- [oreulius-capabilities.md](../../../../docs/capability/oreulius-capabilities.md) — capability model overview
-- [capnet.md](../../../../docs/capability/capnet.md) — CapNet distributed capability network
-- [oreulius-cap-graph-verification.md](../../../../docs/capability/oreulius-cap-graph-verification.md) — formal graph invariants
-- [oreulius-capability-entanglement.md](../../../../docs/capability/oreulius-capability-entanglement.md) — capability entanglement model
-- [oreulius-intent-graph-predictive-revocation.md](../../../../docs/capability/oreulius-intent-graph-predictive-revocation.md) — predictive revocation algorithm
-
----
-
-## Summary
-
-`kernel/src/capability` is the kernel's access control backbone.  It replaces the
-POSIX ambient authority model entirely: there are no UIDs, no setuid, no filesystem
-permission bits, no global port namespaces.  Every cross-boundary operation requires
-an unforgeable, MAC-protected capability token that can be attenuated to weaker
-rights but never escalated.  The delegation graph provides real-time invariant
-enforcement — a rights escalation or cyclic delegation chain are detected and
-recorded before completion.  Remote lease integration with CapNet extends this model
-across the distributed mesh with time-bounded, use-budgeted, and device-attested
-authority grants.  The complete system is designed to be formally verified against
-the specifications in `docs/capability/`.
+The important idea is that authority is never assumed. A capability must have the correct type, object, rights, owner context, and valid token before the kernel trusts it. Local capabilities, IPC transfers, and CapNet remote leases all follow that same model: explicit authority, bounded scope, fail-closed verification, provenance tracking, and revocation when trust no longer applies.
