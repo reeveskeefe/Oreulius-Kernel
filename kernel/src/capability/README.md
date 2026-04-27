@@ -249,8 +249,7 @@ If policy allows it, the kernel can revoke or quarantine it. Then, the kernel ca
 
 Therefore authority flows from the kernel to a task, and from that task to a delegatee only through signed, verified, and provenance-tracked capability records.
 
-Heres a chart that shows how things work from kernel, to task to delegatee in a more detailed arraged manner"
-Use this in the README:
+Heres a chart that shows how things work from kernel, to task to delegatee in a more detailed arraged manner
 
 ```mermaid
 flowchart TD
