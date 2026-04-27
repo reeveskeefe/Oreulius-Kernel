@@ -253,24 +253,18 @@ Heres a chart that shows how things work from kernel, to task to delegatee in a 
 Use this in the README:
 
 ```mermaid
-sequenceDiagram
-    participant K as Kernel
-    participant T as Task
-    participant G as Provenance graph
-    participant I as IPC
-    participant D as Delegatee
-
-    K->>T: grant_capability() / sign() / install()
-    T->>T: verify_token() before use
-    T->>T: use capability
-    T->>T: attenuate() or transfer_capability()
-    T->>G: record_delegation() / parent_cap_id
-    T->>I: export_capability_to_ipc() if needed
-    I->>D: import_capability_from_ipc() / verify()
-    D->>D: verify_token() before use
-    K->>G: revoke_capability() / prune_edges_for()
-    G->>T: build_chain() / reconstruct ancestry
-    G->>D: build_chain() / reconstruct ancestry
+flowchart TD
+    K[Kernel] -->|grant, sign, and install| T[Task]
+    T -->|verify before use| V[Token check]
+    V -->|use allowed capability| U[Capability use]
+    T -->|attenuate or transfer| G[Provenance graph]
+    G -->|record delegation and parent cap id| P[Delegation record]
+    T -->|export if needed| I[IPC]
+    I -->|import and verify| D[Delegatee]
+    D -->|verify before use| DV[Delegatee token check]
+    K -->|revoke and prune edges| G
+    G -->|reconstruct ancestry| T
+    G -->|reconstruct ancestry| D
 ```
 
 ### 3.2 Decision Tree
