@@ -1912,7 +1912,7 @@ E is the main executable, L is the library set, M is package metadata, F is file
    The ingestor needs a deterministic rule for choosing the launch target.
 
 $$
-E_{main} = \operatorname{best}(E)
+E_{main} = \mathrm{best}(E)
 $$
 
 3. Discover shared library dependencies.
@@ -1926,28 +1926,28 @@ $$
    Every required library should be resolved before the ELF loader receives the app state.
 
 $$
-L_{closed} = \operatorname{closure}(E_{main}, G_L)
+L_{closed} = \mathrm{closure}(E_{main}, G_L)
 $$
 
 5. Parse package metadata.
    Metadata should become normalized app facts, not loose package text.
 
 $$
-M_n = \operatorname{normalize}(M)
+M_n = \mathrm{normalize}(M)
 $$
 
 6. Detect runtime needs.
    The ingestor should infer filesystem, network, graphics, audio, IPC, threading, timer, and device needs.
 
 $$
-R_n = \operatorname{detect}(E_{main}, L_{closed}, M_n, F)
+R_n = \mathrm{detect}(E_{main}, L_{closed}, M_n, F)
 $$
 
 7. Build the capability profile.
    Runtime needs must be converted into explicit Oreulius authority.
 
 $$
-C = \operatorname{map}(R_n) \rightarrow \mathrm{Capabilities}
+C = \mathrm{map}(R_n) \rightarrow \mathrm{Capabilities}
 $$
 
 8. Enforce least authority.
@@ -1961,14 +1961,14 @@ $$
    Linux-style paths need to map into Oreulius-controlled storage.
 
 $$
-P: \mathrm{path}_{linux} \rightarrow \mathrm{path}_{oreulius}
+P: \mathrm{path}_{\mathrm{linux}} \rightarrow \mathrm{path}_{\mathrm{oreulius}}
 $$
 
 10. Build syscall and service bindings.
    Expected native behavior must be connected to Oreulius services.
 
 $$
-B_s: \mathrm{syscall}_{native} \rightarrow \mathrm{service}_{oreulius}
+B_s: \mathrm{syscall}_{\mathrm{native}} \rightarrow \mathrm{service}_{\mathrm{oreulius}}
 $$
 
 11. Assign resource policy.
@@ -1996,18 +1996,18 @@ $$
    The final state should be rejected if authority, dependency, or resource rules fail.
 
 $$
-\operatorname{valid}(O) =
-\operatorname{deps}(O) \land
-\operatorname{caps}(O) \land
-\operatorname{resources}(O) \land
-\operatorname{paths}(O)
+\mathrm{valid}(O) =
+\mathrm{deps}(O) \land
+\mathrm{caps}(O) \land
+\mathrm{resources}(O) \land
+\mathrm{paths}(O)
 $$
 
 15. Hand off to the ELF loader.
    The ELF loader should receive the prepared native load state, not raw package chaos.
 
 $$
-\operatorname{ELFLoader}(O) \rightarrow \mathrm{Process}
+\mathrm{ELFLoader}(O) \rightarrow \mathrm{Process}
 $$
 
 
