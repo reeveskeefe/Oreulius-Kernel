@@ -1,0 +1,16 @@
+[package]
+name = "oreulius-crypto-math-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+x25519-dalek = { version = "2", default-features = false }
+
+[[test]]
+name = "run_derivations"
+path = "tests/run_derivations.rs"
+harness = false
+
+# Standalone host-side test crate for the AES primitives defined in
+# kernel/src/crypto/mod.rs.  Runs under std with plain `cargo test` and is
+# not affected by kernel/.cargo/config.toml (build-std / bare-metal target).
