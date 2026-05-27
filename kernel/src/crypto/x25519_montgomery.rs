@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 /*!
  * X25519 Montgomery ladder extracted for reuse outside TLS.
  */

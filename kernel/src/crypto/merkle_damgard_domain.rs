@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 /*!
  * Domain-separated hashing helpers for transcript binding and Merkle-style trees.
  */

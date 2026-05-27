@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 /*!
  * RFC 5869 HKDF using the kernel's HMAC-SHA256 primitive.
  */

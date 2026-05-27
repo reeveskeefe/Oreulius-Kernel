@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 /*!
  * SHA-512 (FIPS 180-4) for Ed25519 and manifest-grade hashing.
  */

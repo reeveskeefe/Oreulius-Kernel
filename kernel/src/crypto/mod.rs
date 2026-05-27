@@ -43,6 +43,14 @@ pub use signing_formats::{
 };
 pub use x25519_montgomery::{x25519, x25519_public_key, x25519_shared_secret};
 
+#[cfg(test)]
+#[path = "tests/MathematicalDerivations/AES-Primitives-And-Oreulius-Specific-Constants.rs"]
+mod aes_primitives_and_oreulius_specific_constants_derivation_tests;
+
+#[cfg(test)]
+#[path = "tests/MathematicalDerivations/AES-CTRCounterMode.rs"]
+mod aes_ctr_counter_mode_derivation_tests;
+
 static AES128_CTR_TRACE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // =============================================================================
