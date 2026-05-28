@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Input routing and focus management for the compositor.
 //!
 //! The `FocusState` tracks which window currently holds keyboard focus and

@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Damage accumulator for the compositor.
 //!
 //! Tracks which regions of the screen have changed since the last present.

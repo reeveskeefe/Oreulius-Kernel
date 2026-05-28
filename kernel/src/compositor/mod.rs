@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Oreulius Compositor Subsystem
 //!
 //! A first-class kernel display service providing:

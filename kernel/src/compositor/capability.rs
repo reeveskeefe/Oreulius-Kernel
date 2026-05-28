@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Capability registry for the compositor.
 //!
 //! Each surface, window, session and input-subscription is gated by an

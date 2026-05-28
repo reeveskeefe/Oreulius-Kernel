@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Window metadata and z-ordered window table.
 //!
 //! A `WindowMeta` record stores position, size, z-order and the backing

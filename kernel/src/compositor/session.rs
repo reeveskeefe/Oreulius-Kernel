@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Compositor sessions — one session per GUI client process.
 //!
 //! A `CompositorSession` tracks:

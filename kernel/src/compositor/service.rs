@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Compositor service — global singleton and request dispatcher.
 //!
 //! `CompositorService` owns all compositor subsystems:

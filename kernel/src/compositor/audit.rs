@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Compositor audit log.
 //!
 //! Records significant compositor events for post-hoc inspection (debugging,
