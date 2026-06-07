@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Per-origin cookie storage with SameSite / Secure / HttpOnly enforcement.
 //!
 //! Cookies are stored in a fixed-size flat array; each entry is bounded to
@@ -20,7 +19,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{SessionId, Origin, Scheme};
+use super::types::{Origin, Scheme, SessionId};
 
 // ---------------------------------------------------------------------------
 // Constants

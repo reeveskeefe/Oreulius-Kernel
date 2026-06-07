@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! IPC protocol between the fetch service kernel service and frontend clients.
 //!
 //! Clients communicate over the kernel IPC service layer by sending
@@ -22,8 +21,8 @@
 #![allow(dead_code)]
 
 use super::types::{
-    Cap, SessionId, DownloadId, HttpMethod, MimeType, RedirectPolicy, RequestId,
-    StatusCode, Url, URL_MAX,
+    Cap, DownloadId, HttpMethod, MimeType, RedirectPolicy, RequestId, SessionId, StatusCode, Url,
+    URL_MAX,
 };
 use crate::ipc::ProcessId;
 
@@ -42,10 +41,7 @@ pub enum FetchRequest {
     },
 
     /// Close a session and revoke all its capabilities.
-    CloseSession {
-        session: SessionId,
-        cap: Cap,
-    },
+    CloseSession { session: SessionId, cap: Cap },
 
     /// Navigate the session to a URL (starts a fetch, streams events back).
     Navigate {
@@ -61,16 +57,10 @@ pub enum FetchRequest {
     },
 
     /// Subscribe to events for a session (returns an event-channel capability).
-    Subscribe {
-        session: SessionId,
-        cap: Cap,
-    },
+    Subscribe { session: SessionId, cap: Cap },
 
     /// Unsubscribe from events.
-    Unsubscribe {
-        session: SessionId,
-        cap: Cap,
-    },
+    Unsubscribe { session: SessionId, cap: Cap },
 
     /// Abort an in-flight request.
     AbortRequest {
@@ -96,10 +86,7 @@ pub enum FetchRequest {
     },
 
     /// Poll for pending events (non-blocking).
-    PollEvents {
-        session: SessionId,
-        cap: Cap,
-    },
+    PollEvents { session: SessionId, cap: Cap },
 }
 
 // ---------------------------------------------------------------------------
@@ -109,10 +96,7 @@ pub enum FetchRequest {
 /// Synchronous response to a `FetchRequest`.
 pub enum FetchResponse {
     /// Session was opened successfully.
-    SessionGranted {
-        session: SessionId,
-        cap: Cap,
-    },
+    SessionGranted { session: SessionId, cap: Cap },
 
     /// A `Navigate` was accepted; `request_id` identifies the in-flight fetch.
     RequestAccepted { request_id: RequestId },

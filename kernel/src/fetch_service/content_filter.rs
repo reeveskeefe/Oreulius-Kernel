@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Content filtering: MIME sniffing guardrails and
 //! attachment-vs-inline classification.
 //!

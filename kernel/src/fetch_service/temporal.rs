@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Temporal snapshot / restore for the fetch service.
 //!
 //! Persists session identity, navigation history, cookies and download jobs
@@ -70,9 +69,7 @@
 use super::cookie_jar::{CookieEntry, CookieJar, SameSite};
 use super::downloads::{DownloadJob, DownloadManager, DownloadState};
 use super::session::{SessionTable, NAV_HISTORY_DEPTH};
-use super::types::{
-    Cap, SessionId, DownloadId, MimeType, RequestId, MIME_MAX, URL_MAX,
-};
+use super::types::{Cap, DownloadId, MimeType, RequestId, SessionId, MIME_MAX, URL_MAX};
 use crate::ipc::ProcessId;
 
 // ---------------------------------------------------------------------------
@@ -261,20 +258,15 @@ pub fn snapshot(
             SameSite::Strict => 1,
             SameSite::None => 2,
         };
-        let flags = (entry.http_only as u8)
-            | ((entry.secure as u8) << 1)
-            | (ss_bits << 2);
+        let flags = (entry.http_only as u8) | ((entry.secure as u8) << 1) | (ss_bits << 2);
 
         let name_len = entry.name_len.min(128) as u8;
         let value_len = entry.value_len.min(4096) as u16;
         let domain_len = entry.domain_len.min(253) as u8;
         let path_len = entry.path_len.min(255) as u8;
 
-        let rec_size = 18
-            + name_len as usize
-            + value_len as usize
-            + domain_len as usize
-            + path_len as usize;
+        let rec_size =
+            18 + name_len as usize + value_len as usize + domain_len as usize + path_len as usize;
         if pos + rec_size > out.len() {
             return 0;
         }
@@ -313,11 +305,7 @@ pub fn snapshot(
         // Fixed: id(4)+session(4)+state(1)+filename_len(1)+mime_len(1)
         //        +size_hint(8)+bytes_written(8) = 27 bytes
         // Variable: filename + dest_path_len(1) + dest_path + mime
-        let rec_size = 27
-            + filename_len as usize
-            + 1
-            + dest_path_len as usize
-            + mime_len as usize;
+        let rec_size = 27 + filename_len as usize + 1 + dest_path_len as usize + mime_len as usize;
         if pos + rec_size > out.len() {
             return 0;
         }
@@ -469,19 +457,8 @@ pub fn restore(
                 Some(i) => i,
                 None => continue,
             };
-            if sessions.restore(
-                idx,
-                SessionId(session_id),
-                ProcessId(pid),
-                Cap(cap),
-            ) {
-                sessions.restore_nav(
-                    idx,
-                    next_request_id,
-                    nav_head,
-                    nav_count,
-                    &nav_entries,
-                );
+            if sessions.restore(idx, SessionId(session_id), ProcessId(pid), Cap(cap)) {
+                sessions.restore_nav(idx, next_request_id, nav_head, nav_count, &nav_entries);
                 restored += 1;
             }
         }

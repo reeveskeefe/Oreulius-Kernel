@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Browser backend audit log.
 //!
 //! Identical pattern to `compositor/audit.rs`: a fixed-size ring buffer of
@@ -21,7 +20,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{SessionId, RequestId};
+use super::types::{RequestId, SessionId};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -126,13 +125,7 @@ impl AuditLog {
     }
 
     /// Append an entry, overwriting the oldest if the ring is full.
-    pub fn push(
-        &mut self,
-        session: SessionId,
-        request: RequestId,
-        kind: AuditKind,
-        note: &[u8],
-    ) {
+    pub fn push(&mut self, session: SessionId, request: RequestId, kind: AuditKind, note: &[u8]) {
         let seq = self.seq;
         self.seq = self.seq.wrapping_add(1);
         self.ring[self.head] = AuditEntry::new(seq, session, request, kind, note);

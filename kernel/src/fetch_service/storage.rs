@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Per-origin persistent storage slots backed by the kernel VFS.
 //!
 //! Each session gets a private directory under `/browser/<session_id>/`.

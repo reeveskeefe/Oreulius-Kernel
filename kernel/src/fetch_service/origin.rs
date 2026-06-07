@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Origin model: same-origin enforcement and per-session allowlists.
 //!
 //! Every navigation or subresource request passes through `OriginTable` before
@@ -21,7 +20,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{SessionId, Origin, Scheme, Url};
+use super::types::{Origin, Scheme, SessionId, Url};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -287,11 +286,7 @@ impl OriginTable {
     }
 
     /// Check a navigation for `session`.
-    pub fn check_navigation(
-        &self,
-        session: SessionId,
-        target_url: &Url,
-    ) -> OriginCheckResult {
+    pub fn check_navigation(&self, session: SessionId, target_url: &Url) -> OriginCheckResult {
         match self.policy(session) {
             Some(p) => check_navigation(p, target_url),
             None => OriginCheckResult::Allowed, // session not yet registered
@@ -299,11 +294,7 @@ impl OriginTable {
     }
 
     /// Check a subresource for `session`.
-    pub fn check_subresource(
-        &self,
-        session: SessionId,
-        resource_url: &Url,
-    ) -> OriginCheckResult {
+    pub fn check_subresource(&self, session: SessionId, resource_url: &Url) -> OriginCheckResult {
         match self.policy(session) {
             Some(p) => check_subresource(p, resource_url),
             None => OriginCheckResult::Allowed,

@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Fetch service kernel module.
 //!
 //! This module implements the in-kernel layer of the Oreulius fetch service:
@@ -59,12 +58,11 @@ pub mod types;
 // ---------------------------------------------------------------------------
 
 pub use protocol::{
-    FetchError, FetchEvent, FetchRequest, FetchResponse, FetchErrorKind, PolicyBlockReason,
+    FetchError, FetchErrorKind, FetchEvent, FetchRequest, FetchResponse, PolicyBlockReason,
     ResponseHeader, TlsHandshakeResult,
 };
 pub use types::{
-    Cap, SessionId, DownloadId, HttpMethod, MimeType, Origin, RequestId, Scheme,
-    StatusCode, Url,
+    Cap, DownloadId, HttpMethod, MimeType, Origin, RequestId, Scheme, SessionId, StatusCode, Url,
 };
 
 // ---------------------------------------------------------------------------

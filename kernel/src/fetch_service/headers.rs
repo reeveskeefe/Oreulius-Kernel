@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! HTTP header parsing and normalization.
 //!
 //! All parsing is zero-allocation, operating on slices of bytes.

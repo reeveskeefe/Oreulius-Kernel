@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Browser backend service — global singleton and request dispatcher.
 //!
 //! `FetchServiceService` owns all browser subsystems:
@@ -41,15 +40,14 @@ use super::fetch::{fetch_request, FetchContext, FetchOutcome};
 use super::origin::{OriginCheckResult, OriginPolicy, OriginTable};
 use super::policy::FetchPolicy;
 use super::protocol::{
-    FetchError, FetchEvent, FetchRequest, FetchResponse, FetchErrorKind, PolicyBlockReason,
+    FetchError, FetchErrorKind, FetchEvent, FetchRequest, FetchResponse, PolicyBlockReason,
     TlsHandshakeResult, BODY_CHUNK_MAX, ERROR_MSG_MAX,
 };
 use super::session::{BrowserSession, SessionTable, MAX_BROWSER_SESSIONS};
 use super::storage::StorageTable;
 use super::temporal;
 use super::types::{
-    Cap, SessionId, DownloadId, HttpMethod, Origin, RedirectPolicy, RequestId,
-    Scheme, Url, URL_MAX,
+    Cap, DownloadId, HttpMethod, Origin, RedirectPolicy, RequestId, Scheme, SessionId, Url, URL_MAX,
 };
 use crate::ipc::ProcessId;
 
@@ -475,12 +473,7 @@ impl FetchServiceService {
     // Abort
     // -----------------------------------------------------------------------
 
-    fn do_abort(
-        &mut self,
-        session: SessionId,
-        cap: Cap,
-        request_id: RequestId,
-    ) -> FetchResponse {
+    fn do_abort(&mut self, session: SessionId, cap: Cap, request_id: RequestId) -> FetchResponse {
         if !self.verify_cap(session, cap) {
             return FetchResponse::Error(FetchError::InvalidCapability);
         }

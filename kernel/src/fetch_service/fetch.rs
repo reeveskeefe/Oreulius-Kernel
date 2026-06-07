@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! High-level fetch pipeline.
 //!
 //! `fetch_request` drives the full DNS → connect → TLS → HTTP/1.1 → stream
@@ -27,11 +26,11 @@ use super::headers::{
 };
 use super::policy::{FetchPolicy, PolicyProfile};
 use super::protocol::{
-    FetchError, FetchEvent, FetchErrorKind, PolicyBlockReason, ResponseHeader,
-    TlsHandshakeResult, BODY_CHUNK_MAX, MAX_RESPONSE_HEADERS,
+    FetchError, FetchErrorKind, FetchEvent, PolicyBlockReason, ResponseHeader, TlsHandshakeResult,
+    BODY_CHUNK_MAX, MAX_RESPONSE_HEADERS,
 };
 use super::transport::{TransportError, TransportHandle};
-use super::types::{SessionId, HttpMethod, MimeType, RequestId, Scheme, StatusCode, Url};
+use super::types::{HttpMethod, MimeType, RequestId, Scheme, SessionId, StatusCode, Url};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -517,11 +516,7 @@ fn write_u16(buf: &mut [u8; 6], mut v: u16) -> usize {
 // Event push helpers
 // ---------------------------------------------------------------------------
 
-fn push<const N: usize>(
-    events: &mut [Option<FetchEvent>; N],
-    count: &mut usize,
-    e: FetchEvent,
-) {
+fn push<const N: usize>(events: &mut [Option<FetchEvent>; N], count: &mut usize, e: FetchEvent) {
     if *count < N {
         events[*count] = Some(e);
         *count += 1;

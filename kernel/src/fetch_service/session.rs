@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Browser session: navigation history and per-session state.
 
 #![allow(dead_code)]
@@ -25,7 +24,7 @@ use super::origin::{OriginPolicy, OriginTable};
 use super::policy::PolicyProfile;
 use super::protocol::{FetchError, FetchEvent, FetchRequest, FetchResponse};
 use super::storage::StorageTable;
-use super::types::{Cap, SessionId, DownloadId, HttpMethod, RequestId, Url, URL_MAX};
+use super::types::{Cap, DownloadId, HttpMethod, RequestId, SessionId, Url, URL_MAX};
 use crate::ipc::ProcessId;
 
 // ---------------------------------------------------------------------------
@@ -297,13 +296,7 @@ impl SessionTable {
         }
     }
 
-    pub fn restore(
-        &mut self,
-        idx: usize,
-        id: SessionId,
-        pid: ProcessId,
-        cap: Cap,
-    ) -> bool {
+    pub fn restore(&mut self, idx: usize, id: SessionId, pid: ProcessId, cap: Cap) -> bool {
         if idx >= MAX_BROWSER_SESSIONS {
             return false;
         }

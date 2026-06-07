@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! HTTP response cache with ETag / Last-Modified validation and TTL eviction.
 //!
 //! The cache stores up to `MAX_CACHE_ENTRIES` fixed-size records.
@@ -21,7 +20,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{SessionId, MimeType, StatusCode, Url};
+use super::types::{MimeType, SessionId, StatusCode, Url};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -155,12 +154,7 @@ impl ResponseCache {
     /// Find a fresh cache entry for `url` within `session`.
     ///
     /// Returns the index of the matching entry, or `None` on miss / stale.
-    pub fn lookup(
-        &self,
-        session: SessionId,
-        url: &Url,
-        current_epoch: u64,
-    ) -> Option<usize> {
+    pub fn lookup(&self, session: SessionId, url: &Url, current_epoch: u64) -> Option<usize> {
         let (digest, digest_len) = Self::url_digest(url);
         for (i, e) in self.entries.iter().enumerate() {
             if !e.active {

@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Capability-gated download job management.
 //!
 //! A `DownloadJob` is created when `ContentFilter` or `Policy` decides a
@@ -23,7 +22,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{SessionId, DownloadId, MimeType, RequestId};
+use super::types::{DownloadId, MimeType, RequestId, SessionId};
 
 // ---------------------------------------------------------------------------
 // Constants

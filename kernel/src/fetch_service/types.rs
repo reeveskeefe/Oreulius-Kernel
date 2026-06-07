@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! Core types for the fetch service subsystem.
 //!
 //! All types in this module are `no_std`-compatible, heap-free, and use
