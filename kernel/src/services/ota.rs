@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 /*!
  * Oreulius Kernel — OTA Update Manager
  *
@@ -46,12 +45,16 @@ use crate::crypto::{
     build_ota_manifest_signed_message, import_hex_file, read_hex_file, verify_detached_ed25519,
     DetachedSignatureStatus,
 };
-use crate::temporal::persistence;
 use crate::fs::vfs;
+use crate::temporal::persistence;
 // Cross-arch console output: VGA on x86/x86_64, PL011 on AArch64.
 mod vga {
-    pub fn print_str(s: &str) { crate::serial::kprint_str(s); }
-    pub fn print_char(c: char) { crate::serial::kprint_char(c); }
+    pub fn print_str(s: &str) {
+        crate::serial::kprint_str(s);
+    }
+    pub fn print_char(c: char) {
+        crate::serial::kprint_char(c);
+    }
 }
 use alloc::string::{String, ToString};
 

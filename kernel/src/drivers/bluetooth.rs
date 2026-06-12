@@ -526,7 +526,8 @@ pub fn init() {
                 crate::drivers::x86::usb::UsbSpeed::Low => 0u8,
                 crate::drivers::x86::usb::UsbSpeed::Full => 1u8,
                 crate::drivers::x86::usb::UsbSpeed::High => 2u8,
-                crate::drivers::x86::usb::UsbSpeed::Super | crate::drivers::x86::usb::UsbSpeed::Super20 => 2u8,
+                crate::drivers::x86::usb::UsbSpeed::Super
+                | crate::drivers::x86::usb::UsbSpeed::Super20 => 2u8,
             };
             result = Some(UsbHandle {
                 dev_addr: d.address,

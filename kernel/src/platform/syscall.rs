@@ -18,14 +18,14 @@
 //! Includes capability checking at the syscall boundary.
 
 use crate::capability::{self, CapabilityType, Rights};
+#[cfg(not(target_arch = "aarch64"))]
+use crate::drivers::x86::vga;
 #[cfg(target_arch = "x86")]
 use crate::platform::gdt;
 #[cfg(target_arch = "x86")]
 use crate::scheduler::process_asm::{
     write_msr, MSR_IA32_SYSENTER_CS, MSR_IA32_SYSENTER_EIP, MSR_IA32_SYSENTER_ESP,
 };
-#[cfg(not(target_arch = "aarch64"))]
-use crate::drivers::x86::vga;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -264,7 +264,8 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
         b"handle_syscall_enter",
     );
 
-    let syscall_number_check = crate::invariants::syscall::check_syscall_number(args.number as u16, 64);
+    let syscall_number_check =
+        crate::invariants::syscall::check_syscall_number(args.number as u16, 64);
     if !syscall_number_check.valid {
         crate::invariants::enforce(syscall_number_check, b"invalid syscall number at boundary");
     }
@@ -339,7 +340,8 @@ pub fn handle_syscall(args: SyscallArgs, caller_pid: capability::ProcessId) -> S
 
     // Escalation stage: repeated predictive restrictions can request termination.
     if syscall != SyscallNumber::Exit && sec.take_intent_termination_recommendation(caller_pid) {
-        let _ = crate::scheduler::process::process_manager().terminate(crate::scheduler::process::Pid(caller_pid.0));
+        let _ = crate::scheduler::process::process_manager()
+            .terminate(crate::scheduler::process::Pid(caller_pid.0));
         let mut scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
         let _ = scheduler.remove_process(caller_pid);
         return SyscallResult::err(EACCES);
@@ -366,7 +368,8 @@ fn sys_exit(args: SyscallArgs, caller_pid: capability::ProcessId) -> SyscallResu
     }
 
     // Remove process from process/security/capability subsystems.
-    let _ = crate::scheduler::process::process_manager().terminate(crate::scheduler::process::Pid(caller_pid.0));
+    let _ = crate::scheduler::process::process_manager()
+        .terminate(crate::scheduler::process::Pid(caller_pid.0));
 
     // Remove from runtime scheduler.
     let mut scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
@@ -474,7 +477,8 @@ fn sys_exec(args: SyscallArgs, _caller_pid: capability::ProcessId) -> SyscallRes
         return SyscallResult::err(EINVAL);
     }
 
-    if buf_ptr >= crate::fs::paging::KERNEL_BASE || buf_ptr + len >= crate::fs::paging::KERNEL_BASE {
+    if buf_ptr >= crate::fs::paging::KERNEL_BASE || buf_ptr + len >= crate::fs::paging::KERNEL_BASE
+    {
         return SyscallResult::err(EFAULT);
     }
 
@@ -696,7 +700,8 @@ fn sys_channel_send_caps(args: SyscallArgs, caller_pid: capability::ProcessId) -
     let user_slice = unsafe { core::slice::from_raw_parts(msg_ptr as *const u8, msg_len) };
     message_vec.copy_from_slice(user_slice);
     let message = &message_vec;
-    let mut caps = [crate::ipc::Capability::new(0, 0, Rights::new(0)); crate::ipc::MAX_CAPS_PER_MESSAGE];
+    let mut caps =
+        [crate::ipc::Capability::new(0, 0, Rights::new(0)); crate::ipc::MAX_CAPS_PER_MESSAGE];
     if caps_count > 0 {
         let raw_caps =
             unsafe { core::slice::from_raw_parts(caps_ptr as *const SysIpcCapability, caps_count) };
@@ -751,7 +756,8 @@ fn sys_channel_recv_caps(args: SyscallArgs, caller_pid: capability::ProcessId) -
     }
 
     let mut buffer_vec = alloc::vec![0u8; buf_len];
-    let mut caps = [crate::ipc::Capability::new(0, 0, Rights::new(0)); crate::ipc::MAX_CAPS_PER_MESSAGE];
+    let mut caps =
+        [crate::ipc::Capability::new(0, 0, Rights::new(0)); crate::ipc::MAX_CAPS_PER_MESSAGE];
 
     match crate::ipc::receive_message_with_caps_for_process(
         crate::ipc::ProcessId(caller_pid.0),
@@ -1150,14 +1156,19 @@ fn sys_memory_map(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysca
             | crate::scheduler::slice_scheduler::VmaFlags::WRITE
             | crate::scheduler::slice_scheduler::VmaFlags::EXEC,
     ) {
-        flags |= crate::scheduler::slice_scheduler::VmaFlags::READ | crate::scheduler::slice_scheduler::VmaFlags::WRITE;
+        flags |= crate::scheduler::slice_scheduler::VmaFlags::READ
+            | crate::scheduler::slice_scheduler::VmaFlags::WRITE;
     }
 
     let requested_addr = if addr == 0 { None } else { Some(addr) };
 
     if (map_flags & MAP_ANONYMOUS) != 0 {
         let _ = caller_pid;
-        return match crate::scheduler::slice_scheduler::memory_alloc_current(requested_addr, size, flags) {
+        return match crate::scheduler::slice_scheduler::memory_alloc_current(
+            requested_addr,
+            size,
+            flags,
+        ) {
             Ok(mapped) => SyscallResult::ok(mapped as i32),
             Err("memory alloc unsupported on this architecture")
             | Err("memory map unsupported on this architecture") => SyscallResult::err(ENOSYS),
@@ -1171,9 +1182,7 @@ fn sys_memory_map(args: SyscallArgs, caller_pid: capability::ProcessId) -> Sysca
     let offset = page_offset.saturating_mul(crate::arch::mmu::page_size());
     let source = match crate::fs::vfs::mmap_source_for_fd(caller_pid, fd) {
         Ok(source) => source,
-        Err("mmap: raw block handles unsupported") => {
-            return SyscallResult::err(ENODEV)
-        }
+        Err("mmap: raw block handles unsupported") => return SyscallResult::err(ENODEV),
         Err("mmap: not a file") | Err("Invalid handle") | Err("FD not open") => {
             return SyscallResult::err(EBADF)
         }
@@ -2129,7 +2138,10 @@ mod tests {
         let expected = crate::invariants::syscall::check_syscall_number(u16::MAX, 64);
         assert!(!expected.valid);
         assert_eq!(expected.id, "INV-SYSCALL-NUM-001");
-        assert_eq!(expected.severity, crate::invariants::InvariantSeverity::Consistency);
+        assert_eq!(
+            expected.severity,
+            crate::invariants::InvariantSeverity::Consistency
+        );
 
         let before = ring_buffer::write_count();
         let result = handle_syscall(

@@ -163,7 +163,7 @@ fn present_rect(
 
 #[cfg(test)]
 mod tests {
-    use super::present_frame;
+    use super::{alpha_blend, present_frame};
     use crate::compositor::backend::DisplayBackend;
     use crate::compositor::damage::DamageAccumulator;
     use crate::compositor::surface::SurfacePool;
@@ -206,6 +206,14 @@ mod tests {
         fn is_available(&self) -> bool {
             true
         }
+    }
+
+    #[test]
+    fn alpha_blend_handles_transparent_opaque_and_partial_sources() {
+        let dst = 0xFF20_4060;
+        assert_eq!(alpha_blend(dst, 0x0020_3040), dst);
+        assert_eq!(alpha_blend(dst, 0xFFAA_BBCC), 0xFFAA_BBCC);
+        assert_eq!(alpha_blend(0xFF00_0000, 0x80FF_FFFF), 0xFF80_8080);
     }
 
     #[test]

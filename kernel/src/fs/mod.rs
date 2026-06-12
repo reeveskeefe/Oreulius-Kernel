@@ -1482,7 +1482,9 @@ pub fn open(path: &str) -> Result<usize, &'static str> {
     let _ = FileKey::new(path).map_err(|_| "Invalid path")?;
     crate::fs::vfs::open_for_current(
         path,
-        crate::fs::vfs::OpenFlags::READ | crate::fs::vfs::OpenFlags::WRITE | crate::fs::vfs::OpenFlags::CREATE,
+        crate::fs::vfs::OpenFlags::READ
+            | crate::fs::vfs::OpenFlags::WRITE
+            | crate::fs::vfs::OpenFlags::CREATE,
     )
 }
 

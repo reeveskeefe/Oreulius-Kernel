@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! # CapabilityWASI — Frozen WASI Preview 1 Compatibility over Oreulius Capabilities
 //!
 //! Implements the dispatcher-owned [WASI Preview 1](https://github.com/WebAssembly/WASI/blob/main/legacy/preview1/docs.md)
@@ -255,8 +254,8 @@ pub mod oflags {
 }
 
 pub mod fdflags {
-    pub const APPEND: u16    = 0x01;
-    pub const NONBLOCK: u16  = 0x02;
+    pub const APPEND: u16 = 0x01;
+    pub const NONBLOCK: u16 = 0x02;
     pub const SUPPORTED: u16 = APPEND | NONBLOCK; // = 0x0003
 
     // ABI freeze: SUPPORTED must remain 0x0003 so that the formal-verify probe
@@ -986,7 +985,13 @@ pub fn fd_filestat_set_size(ctx: &mut WasiCtx, fd: Fd, size: u64) -> Errno {
     }
 }
 
-pub fn fd_filestat_set_times(ctx: &mut WasiCtx, fd: Fd, atim: u64, mtim: u64, fst_flags: u32) -> Errno {
+pub fn fd_filestat_set_times(
+    ctx: &mut WasiCtx,
+    fd: Fd,
+    atim: u64,
+    mtim: u64,
+    fst_flags: u32,
+) -> Errno {
     let open = match ctx.get_fd(fd) {
         Some(open) => open,
         None => return Errno::Badf,
@@ -1183,9 +1188,7 @@ pub fn fd_read(
                 remaining = &remaining[chunk..];
                 total += chunk as u32;
             }
-            ctx.fds[fd as usize].offset = ctx.fds[fd as usize]
-                .offset
-                .saturating_add(total as u64);
+            ctx.fds[fd as usize].offset = ctx.fds[fd as usize].offset.saturating_add(total as u64);
             ctx.fds[fd as usize].size = data.len() as u64;
         }
         FdKind::Closed => return Errno::Badf,
@@ -1436,8 +1439,10 @@ pub fn path_remove_directory(_ctx: &mut WasiCtx, path: &[u8]) -> Errno {
 
 /// path_symlink — create a symbolic link.
 pub fn path_symlink(_ctx: &mut WasiCtx, old_path: &[u8], new_path: &[u8]) -> Errno {
-    let (Ok(target), Ok(link)) = (core::str::from_utf8(old_path), core::str::from_utf8(new_path))
-    else {
+    let (Ok(target), Ok(link)) = (
+        core::str::from_utf8(old_path),
+        core::str::from_utf8(new_path),
+    ) else {
         return Errno::Inval;
     };
     match crate::fs::vfs::symlink(target, link) {
@@ -1479,8 +1484,10 @@ pub fn path_readlink(
 
 /// path_link — create a hard link.
 pub fn path_link(_ctx: &mut WasiCtx, old_path: &[u8], new_path: &[u8]) -> Errno {
-    let (Ok(existing), Ok(link)) = (core::str::from_utf8(old_path), core::str::from_utf8(new_path))
-    else {
+    let (Ok(existing), Ok(link)) = (
+        core::str::from_utf8(old_path),
+        core::str::from_utf8(new_path),
+    ) else {
         return Errno::Inval;
     };
     match crate::fs::vfs::link(existing, link) {
@@ -1491,9 +1498,10 @@ pub fn path_link(_ctx: &mut WasiCtx, old_path: &[u8], new_path: &[u8]) -> Errno 
 
 /// path_rename — rename a path.
 pub fn path_rename(_ctx: &mut WasiCtx, old_path: &[u8], new_path: &[u8]) -> Errno {
-    let (Ok(old_path), Ok(new_path)) =
-        (core::str::from_utf8(old_path), core::str::from_utf8(new_path))
-    else {
+    let (Ok(old_path), Ok(new_path)) = (
+        core::str::from_utf8(old_path),
+        core::str::from_utf8(new_path),
+    ) else {
         return Errno::Inval;
     };
     match crate::fs::vfs::rename(old_path, new_path) {

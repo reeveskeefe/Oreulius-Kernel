@@ -22,8 +22,8 @@
 use crate::capability::{
     capability_manager, CapabilityError, CapabilityType, OreuliusCapability, Rights,
 };
-use crate::ipc::ProcessId;
 use crate::drivers::x86::vga;
+use crate::ipc::ProcessId;
 use spin::Mutex;
 
 // ============================================================================

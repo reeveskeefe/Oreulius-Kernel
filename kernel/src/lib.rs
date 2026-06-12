@@ -25,27 +25,27 @@ use std::sync::{Mutex, OnceLock};
 
 pub mod arch;
 pub mod capability;
-pub mod fetch_service;
 pub mod compositor;
 pub mod crypto;
 pub mod drivers;
 pub mod execution;
+pub mod failure;
+pub mod fetch_service;
 pub mod fs;
-pub mod ipc;
 pub mod invariants;
+pub mod ipc;
 pub mod math;
 pub mod memory;
 pub mod net;
 pub mod observability;
 pub mod platform;
+pub mod runtime;
 pub mod scheduler;
 pub mod security;
 pub mod serial;
 pub mod services;
 pub mod shell;
 pub mod storage;
-pub mod failure;
-pub mod runtime;
 pub mod temporal;
 
 /// Helper to ensure Box is available for heap allocations across modules.

@@ -101,7 +101,11 @@ pub fn classify(subsystem: FailureSubsystem, kind: FailureKind) -> FailurePolicy
     }
 }
 
-pub fn handle_failure(subsystem: FailureSubsystem, kind: FailureKind, detail: &[u8]) -> FailureOutcome {
+pub fn handle_failure(
+    subsystem: FailureSubsystem,
+    kind: FailureKind,
+    detail: &[u8],
+) -> FailureOutcome {
     let depth = FAILURE_DEPTH.fetch_add(1, Ordering::SeqCst) + 1;
     let recursive_fallback = depth > 1;
     let policy = if recursive_fallback {

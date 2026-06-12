@@ -202,7 +202,8 @@ impl AddressSpace {
             b"mmu_map_page_enter",
         );
 
-        let bounds = crate::invariants::mmu::check_mapping_bounds(virt_addr, PAGE_SIZE_4K, PAGE_SIZE_4K);
+        let bounds =
+            crate::invariants::mmu::check_mapping_bounds(virt_addr, PAGE_SIZE_4K, PAGE_SIZE_4K);
         if !bounds.valid {
             crate::invariants::enforce(bounds, b"mmu map boundary invariant failed");
             let _ = crate::failure::handle_failure(
@@ -255,7 +256,8 @@ impl AddressSpace {
             b"mmu_unmap_page_enter",
         );
 
-        let bounds = crate::invariants::mmu::check_mapping_bounds(virt_addr, PAGE_SIZE_4K, PAGE_SIZE_4K);
+        let bounds =
+            crate::invariants::mmu::check_mapping_bounds(virt_addr, PAGE_SIZE_4K, PAGE_SIZE_4K);
         if !bounds.valid {
             crate::invariants::enforce(bounds, b"mmu unmap boundary invariant failed");
             let _ = crate::failure::handle_failure(
@@ -1062,7 +1064,10 @@ mod tests {
         let expected = crate::invariants::mmu::check_mapping_bounds(0x1003, 4096, 4096);
         assert!(!expected.valid);
         assert_eq!(expected.id, "INV-MMU-MAP-001");
-        assert_eq!(expected.severity, crate::invariants::InvariantSeverity::Safety);
+        assert_eq!(
+            expected.severity,
+            crate::invariants::InvariantSeverity::Safety
+        );
 
         let before = ring_buffer::write_count();
         let mut aspace = AddressSpace { ttbr0_el1: 0 };

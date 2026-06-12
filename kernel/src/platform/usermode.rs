@@ -416,7 +416,9 @@ fn snapshot_fork_test_page(
 }
 
 #[cfg(target_arch = "x86_64")]
-fn find_child_fork_pid(parent_pid: crate::scheduler::process::Pid) -> Option<crate::scheduler::process::Pid> {
+fn find_child_fork_pid(
+    parent_pid: crate::scheduler::process::Pid,
+) -> Option<crate::scheduler::process::Pid> {
     let scheduler = crate::scheduler::slice_scheduler::scheduler().lock();
     scheduler
         .list_processes()

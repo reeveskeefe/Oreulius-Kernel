@@ -150,9 +150,7 @@ fn init_jit_arena() {
     #[cfg(any(test, feature = "host-tests"))]
     let (start, end) = (
         unsafe { core::ptr::addr_of_mut!(HOST_TEST_JIT_ARENA) as usize },
-        unsafe {
-            core::ptr::addr_of_mut!(HOST_TEST_JIT_ARENA) as usize + HOST_TEST_JIT_ARENA_LEN
-        },
+        unsafe { core::ptr::addr_of_mut!(HOST_TEST_JIT_ARENA) as usize + HOST_TEST_JIT_ARENA_LEN },
     );
     #[cfg(not(any(test, feature = "host-tests")))]
     let start = unsafe { &_jit_arena_start as *const usize as usize };

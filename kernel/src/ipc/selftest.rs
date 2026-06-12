@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 use super::{
     BackpressureAction, BackpressureLevel, Capability, CapabilityType, Channel, ChannelCapability,
     ChannelFlags, ChannelId, ChannelProtocolState, ChannelRights, ClosureState, DrainResult,
@@ -325,7 +324,10 @@ fn case_close_drain_then_closed() -> Result<(), &'static str> {
         return Err("channel did not enter closing state");
     }
     let blocked = Message::with_data(owner, b"blocked").map_err(|_| "failed to build blocked")?;
-    if !matches!(channel.send(blocked, &send_cap), Err(IpcError::ChannelDraining)) {
+    if !matches!(
+        channel.send(blocked, &send_cap),
+        Err(IpcError::ChannelDraining)
+    ) {
         return Err("send after close was not refused");
     }
     if channel.send_refusals() != 1 {
@@ -517,7 +519,9 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
     for cycle in 0..2 {
         let waiter =
             SyntheticWaiterGuard::stage("ipc-selftest-rx", super::channel_message_wait_addr(id))?;
-        if crate::scheduler::slice_scheduler::waiter_count(super::channel_message_wait_addr(id)) != 1 {
+        if crate::scheduler::slice_scheduler::waiter_count(super::channel_message_wait_addr(id))
+            != 1
+        {
             return Err("receiver waiter was not staged");
         }
 
@@ -528,7 +532,9 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
             .send(msg, &send_cap)
             .map_err(|_| "receiver wake send failed")?;
 
-        if crate::scheduler::slice_scheduler::waiter_count(super::channel_message_wait_addr(id)) != 0 {
+        if crate::scheduler::slice_scheduler::waiter_count(super::channel_message_wait_addr(id))
+            != 0
+        {
             return Err("receiver waiter did not clear");
         }
         if crate::scheduler::slice_scheduler::selftest_process_state(waiter.pid())
@@ -556,7 +562,9 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
 
         let waiter =
             SyntheticWaiterGuard::stage("ipc-selftest-tx", super::channel_capacity_wait_addr(id))?;
-        if crate::scheduler::slice_scheduler::waiter_count(super::channel_capacity_wait_addr(id)) != 1 {
+        if crate::scheduler::slice_scheduler::waiter_count(super::channel_capacity_wait_addr(id))
+            != 1
+        {
             return Err("sender waiter was not staged");
         }
 
@@ -564,7 +572,9 @@ fn case_runtime_wakeup_surface() -> Result<(), &'static str> {
             .try_recv(&recv_cap)
             .map_err(|_| "sender wake recv failed")?;
 
-        if crate::scheduler::slice_scheduler::waiter_count(super::channel_capacity_wait_addr(id)) != 0 {
+        if crate::scheduler::slice_scheduler::waiter_count(super::channel_capacity_wait_addr(id))
+            != 0
+        {
             return Err("sender waiter did not clear");
         }
         if crate::scheduler::slice_scheduler::selftest_process_state(waiter.pid())
@@ -871,21 +881,28 @@ fn case_temporal_protocol_typing() -> Result<(), &'static str> {
         last_opcode: 0,
     });
 
-    let malformed = Message::with_data(owner, b"bad")
-        .map_err(|_| "failed to build malformed message")?;
-    if !matches!(channel.send(malformed, &send_cap), Err(IpcError::ProtocolMismatch)) {
+    let malformed =
+        Message::with_data(owner, b"bad").map_err(|_| "failed to build malformed message")?;
+    if !matches!(
+        channel.send(malformed, &send_cap),
+        Err(IpcError::ProtocolMismatch)
+    ) {
         return Err("malformed temporal frame was accepted");
     }
 
     let wrong_session_frame = temporal_ipc_build_request_frame(session_id ^ 1, 0x21, 0, 1, b"req");
     let wrong_session = Message::with_data(owner, &wrong_session_frame)
         .map_err(|_| "failed to build wrong-session request")?;
-    if !matches!(channel.send(wrong_session, &send_cap), Err(IpcError::ProtocolMismatch)) {
+    if !matches!(
+        channel.send(wrong_session, &send_cap),
+        Err(IpcError::ProtocolMismatch)
+    ) {
         return Err("wrong-session temporal frame was accepted");
     }
 
     let request_frame = temporal_ipc_build_request_frame(session_id, 0x21, 0, 1, b"req");
-    let request = Message::with_data(owner, &request_frame).map_err(|_| "failed to build request")?;
+    let request =
+        Message::with_data(owner, &request_frame).map_err(|_| "failed to build request")?;
     if channel.send(request, &send_cap).is_err() {
         return Err("valid temporal request send failed");
     }
@@ -894,9 +911,7 @@ fn case_temporal_protocol_typing() -> Result<(), &'static str> {
             if state.phase == TemporalIpcPhase::AwaitRequestRecv
                 && state.session_id == session_id
                 && state.last_request_id == 1
-                && state.last_opcode == 0x21 =>
-        {
-        }
+                && state.last_opcode == 0x21 => {}
         _ => return Err("request send did not advance protocol state"),
     }
 
@@ -911,22 +926,23 @@ fn case_temporal_protocol_typing() -> Result<(), &'static str> {
             if state.phase == TemporalIpcPhase::AwaitResponseSend
                 && state.session_id == session_id
                 && state.last_request_id == 1
-                && state.last_opcode == 0x21 =>
-        {
-        }
+                && state.last_opcode == 0x21 => {}
         _ => return Err("request recv did not advance protocol state"),
     }
 
     let wrong_phase_frame = temporal_ipc_build_request_frame(session_id, 0x21, 0, 2, b"next");
     let wrong_phase = Message::with_data(owner, &wrong_phase_frame)
         .map_err(|_| "failed to build wrong-phase request")?;
-    if !matches!(channel.send(wrong_phase, &send_cap), Err(IpcError::ProtocolMismatch)) {
+    if !matches!(
+        channel.send(wrong_phase, &send_cap),
+        Err(IpcError::ProtocolMismatch)
+    ) {
         return Err("request frame was accepted in response-send phase");
     }
 
     let response_frame = temporal_ipc_build_response_frame(session_id, 0x21, 0, 1, 0, b"ok");
-    let response = Message::with_data(owner, &response_frame)
-        .map_err(|_| "failed to build response")?;
+    let response =
+        Message::with_data(owner, &response_frame).map_err(|_| "failed to build response")?;
     channel
         .send(response, &send_cap)
         .map_err(|_| "valid temporal response send failed")?;
@@ -935,9 +951,7 @@ fn case_temporal_protocol_typing() -> Result<(), &'static str> {
             if state.phase == TemporalIpcPhase::AwaitResponseRecv
                 && state.session_id == session_id
                 && state.last_request_id == 1
-                && state.last_opcode == 0x21 =>
-        {
-        }
+                && state.last_opcode == 0x21 => {}
         _ => return Err("response send did not advance protocol state"),
     }
 
@@ -950,9 +964,7 @@ fn case_temporal_protocol_typing() -> Result<(), &'static str> {
     match channel.protocol_state() {
         ChannelProtocolState::Temporal(state)
             if state.phase == TemporalIpcPhase::AwaitRequestSend
-                && state.session_id == session_id =>
-        {
-        }
+                && state.session_id == session_id => {}
         _ => return Err("response recv did not reset protocol state"),
     }
 
@@ -983,8 +995,12 @@ fn case_temporal_snapshot_roundtrip() -> Result<(), &'static str> {
         return Err("snapshot request send failed");
     }
 
-    let refusal = Message::with_data(owner, b"bad").map_err(|_| "failed to build refusal message")?;
-    if !matches!(channel.send(refusal, &send_cap), Err(IpcError::ProtocolMismatch)) {
+    let refusal =
+        Message::with_data(owner, b"bad").map_err(|_| "failed to build refusal message")?;
+    if !matches!(
+        channel.send(refusal, &send_cap),
+        Err(IpcError::ProtocolMismatch)
+    ) {
         return Err("protocol refusal did not occur");
     }
 
@@ -1025,16 +1041,16 @@ fn case_temporal_snapshot_roundtrip() -> Result<(), &'static str> {
             if state.session_id == session_id
                 && state.phase == TemporalIpcPhase::AwaitRequestRecv
                 && state.last_request_id == 1
-                && state.last_opcode == 0x31 =>
-        {
-        }
+                && state.last_opcode == 0x31 => {}
         _ => return Err("restored wait-queue snapshot protocol mismatch"),
     }
     if wait_restored.pending() != 1 {
         return Err("restored wait-queue snapshot queue depth mismatch");
     }
 
-    channel.close(&close_cap).map_err(|_| "snapshot close failed")?;
+    channel
+        .close(&close_cap)
+        .map_err(|_| "snapshot close failed")?;
 
     let latest = crate::temporal::latest_version(&key)
         .map_err(|_| "failed to read channel snapshot version")?;
@@ -1057,9 +1073,7 @@ fn case_temporal_snapshot_roundtrip() -> Result<(), &'static str> {
             if state.session_id == session_id
                 && state.phase == TemporalIpcPhase::AwaitRequestRecv
                 && state.last_request_id == 1
-                && state.last_opcode == 0x31 =>
-        {
-        }
+                && state.last_opcode == 0x31 => {}
         _ => return Err("restored protocol state mismatch"),
     }
     if restored.waiting_receivers.len() != 0 || restored.waiting_senders.len() != 0 {
@@ -1104,8 +1118,6 @@ mod tests {
             })
             .expect("failed to spawn IPC self-test thread");
 
-        handle
-            .join()
-            .expect("IPC self-test thread panicked");
+        handle.join().expect("IPC self-test thread panicked");
     }
 }

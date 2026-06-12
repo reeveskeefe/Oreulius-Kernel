@@ -25,6 +25,7 @@
 
 #![allow(dead_code)]
 
+pub mod capability_checks;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod cpu_security;
 #[cfg(not(target_arch = "aarch64"))]
@@ -36,17 +37,16 @@ pub mod formal;
 #[path = "intent_graph/mod.rs"]
 pub mod intent_graph;
 pub mod intent_graph_data;
-pub mod capability_checks;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod kpti;
 #[cfg(not(target_arch = "aarch64"))]
 pub mod memory_isolation;
 
-use crate::capability::CapabilityType;
 use self::intent_graph::{
     IntentDecision, IntentGraph, IntentGraphStats, IntentPolicy, IntentPolicyError,
     IntentProcessSnapshot, IntentSignal,
 };
+use crate::capability::CapabilityType;
 use crate::ipc::ProcessId;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};

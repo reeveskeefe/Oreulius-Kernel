@@ -58,7 +58,10 @@ pub fn validate_capability(input: CapabilityValidationInput) -> CapabilityValida
         };
     }
     if !validate_rights_subset(input.source_rights, input.target_rights) {
-        report_violation(CAP_CHECK_RIGHTS_ESCALATION, b"capability rights escalation attempt");
+        report_violation(
+            CAP_CHECK_RIGHTS_ESCALATION,
+            b"capability rights escalation attempt",
+        );
         return CapabilityValidationResult {
             valid: false,
             reason_code: CAP_CHECK_RIGHTS_ESCALATION,

@@ -535,7 +535,9 @@ impl WifiDriver {
 
         // If no real hardware, show that no networks were found
         if self.scan_count == 0 {
-            crate::drivers::x86::vga::print_str("[WiFi] No networks detected (hardware may not be present)\n");
+            crate::drivers::x86::vga::print_str(
+                "[WiFi] No networks detected (hardware may not be present)\n",
+            );
         }
 
         Ok(())
@@ -1951,7 +1953,9 @@ impl WifiDriver {
         // RX PN replay window floor — any frame arriving with PN <= this is a replay and dropped.
         self.rx_pn_threshold = 0;
 
-        crate::drivers::x86::vga::print_str("[WiFi] Installing PTK/GTK: key_idx=1, TX PN reset to 1\n");
+        crate::drivers::x86::vga::print_str(
+            "[WiFi] Installing PTK/GTK: key_idx=1, TX PN reset to 1\n",
+        );
 
         let device = match self.pci_device {
             Some(d) => d,

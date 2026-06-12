@@ -258,8 +258,8 @@ impl SurfacePool {
 }
 
 // ---------------------------------------------------------------------------
-// 8×8 bitmap font (identical to legacy compositor, copied here so surface.rs
-// is self-contained and doesn't depend on drivers/compositor.rs)
+// 8×8 bitmap font retained from the retired driver compositor. Keeping it
+// here makes surface drawing self-contained.
 // ---------------------------------------------------------------------------
 
 struct Font8x8;

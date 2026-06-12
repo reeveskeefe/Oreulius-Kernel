@@ -34,7 +34,9 @@ use crate::fs::{
     FileKey, FilesystemCapability, FilesystemError, FilesystemQuota, FilesystemRights, Request,
     ResponseStatus,
 };
-use crate::platform::interrupt_dag::{DagSpinlock, InterruptContext, DAG_LEVEL_THREAD, DAG_LEVEL_VFS};
+use crate::platform::interrupt_dag::{
+    DagSpinlock, InterruptContext, DAG_LEVEL_THREAD, DAG_LEVEL_VFS,
+};
 
 use crate::fs::vfs_platform::{self, Pid};
 use crate::fs::virtio_blk;
@@ -1551,17 +1553,26 @@ impl Vfs {
         if !self.inodes.is_empty() {
             return;
         }
-        // Inode 0 is unused; root is inode 1.
-        self.inodes.push(None);
-        let root_id = self.alloc_inode(InodeKind::Directory, 0o755);
-        self.bootstrap_runtime_layout(root_id);
+        self.bootstrap_runtime_layout();
     }
 
-    fn bootstrap_runtime_layout(&mut self, root_id: InodeId) {
+    fn bootstrap_runtime_layout(&mut self) {
         // Provide a minimal predictable workspace for shell demos and
         // first-run temporal/VFS flows without requiring manual mkdir.
-        let tmp_id = self.alloc_inode(InodeKind::Directory, 0o755);
-        self.add_dir_entry(root_id, "tmp", tmp_id)
+        const ROOT_ID: InodeId = 1;
+        const TMP_ID: InodeId = 2;
+        self.inodes = vec![
+            None,
+            Some(Inode::new(ROOT_ID, InodeKind::Directory, 0o755)),
+            Some(Inode::new(TMP_ID, InodeKind::Directory, 0o755)),
+        ];
+        debug_assert_eq!(self.inodes[ROOT_ID as usize].as_ref().unwrap().id, ROOT_ID);
+        debug_assert_eq!(self.inodes[TMP_ID as usize].as_ref().unwrap().id, TMP_ID);
+        debug_assert_eq!(
+            self.inodes[ROOT_ID as usize].as_ref().unwrap().kind,
+            InodeKind::Directory
+        );
+        self.add_dir_entry(ROOT_ID, "tmp", TMP_ID)
             .expect("fresh VFS bootstrap must create /tmp");
     }
 
@@ -3268,9 +3279,9 @@ impl Vfs {
             cursor += path_len;
             let state = match (backend, version) {
                 (MountBackend::VirtioBlock, 1) => MountState::VirtioBlock(VirtioMountState::new()),
-                (MountBackend::VirtioBlock, _) => {
-                    MountState::VirtioBlock(VirtioMountState::decode_from(data, &mut cursor, version)?)
-                }
+                (MountBackend::VirtioBlock, _) => MountState::VirtioBlock(
+                    VirtioMountState::decode_from(data, &mut cursor, version)?,
+                ),
             };
             mounts.push(Mount {
                 path,
@@ -4057,7 +4068,8 @@ pub fn resize_path(path: &str, new_size: usize) -> Result<(), &'static str> {
         vfs.init();
         if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
             let chain = vfs.resolve_authority_chain(&normalized_path, true)?;
-            let _ = vfs.ensure_path_rights(subject_pid, &normalized_path, &chain, VfsAccess::Write)?;
+            let _ =
+                vfs.ensure_path_rights(subject_pid, &normalized_path, &chain, VfsAccess::Write)?;
             let result = mount_resize(vfs, mount_idx, &sub, new_size);
             match &result {
                 Ok(_) => vfs.note_mount_success(mount_idx, MountOperation::Write),
@@ -4117,8 +4129,7 @@ pub fn set_path_times(
     const FSTFLAGS_MTIM_NOW: u32 = 1 << 3;
 
     if fst_flags & (FSTFLAGS_ATIM | FSTFLAGS_ATIM_NOW) == (FSTFLAGS_ATIM | FSTFLAGS_ATIM_NOW)
-        || fst_flags & (FSTFLAGS_MTIM | FSTFLAGS_MTIM_NOW)
-            == (FSTFLAGS_MTIM | FSTFLAGS_MTIM_NOW)
+        || fst_flags & (FSTFLAGS_MTIM | FSTFLAGS_MTIM_NOW) == (FSTFLAGS_MTIM | FSTFLAGS_MTIM_NOW)
     {
         return Err("Invalid timestamp flags");
     }
@@ -4129,7 +4140,8 @@ pub fn set_path_times(
         vfs.init();
         if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
             let chain = vfs.resolve_authority_chain(&normalized_path, follow_final_symlink)?;
-            let _ = vfs.ensure_path_rights(subject_pid, &normalized_path, &chain, VfsAccess::Write)?;
+            let _ =
+                vfs.ensure_path_rights(subject_pid, &normalized_path, &chain, VfsAccess::Write)?;
             let result = mount_set_times(
                 vfs,
                 mount_idx,
@@ -4743,7 +4755,11 @@ pub fn read_fd(pid: Pid, fd: usize, out: &mut [u8]) -> Result<usize, &'static st
     })
 }
 
-pub fn read_inode_at(inode_id: InodeId, offset: usize, out: &mut [u8]) -> Result<usize, &'static str> {
+pub fn read_inode_at(
+    inode_id: InodeId,
+    offset: usize,
+    out: &mut [u8],
+) -> Result<usize, &'static str> {
     thread_context().acquire_lock(&VFS, |vfs, _sub| {
         vfs.init();
         let inode = vfs.get_inode(inode_id).ok_or("File not found")?;
@@ -4771,9 +4787,7 @@ pub fn mmap_source_for_fd(pid: Pid, fd: usize) -> Result<MappedFileSource, &'sta
         match &handle.kind {
             HandleKind::MemFile { inode, .. } => Ok(MappedFileSource::MemFile { inode_id: *inode }),
             HandleKind::MountFile {
-                mount_idx,
-                node_id,
-                ..
+                mount_idx, node_id, ..
             } => Ok(MappedFileSource::MountFile {
                 mount_idx: *mount_idx,
                 node_id: *node_id,
@@ -4792,10 +4806,9 @@ pub fn mmap_source_for_path(path: &str) -> Result<MappedFileSource, &'static str
         vfs.init();
         if let Some((mount_idx, _backend, sub)) = vfs.find_mount(&normalized_path) {
             return match mount_open_kind(vfs, mount_idx, &sub, OpenFlags::READ, &normalized_path)? {
-                HandleKind::MountFile { node_id, .. } => Ok(MappedFileSource::MountFile {
-                    mount_idx,
-                    node_id,
-                }),
+                HandleKind::MountFile { node_id, .. } => {
+                    Ok(MappedFileSource::MountFile { mount_idx, node_id })
+                }
                 _ => Err("mmap: not a file"),
             };
         }
@@ -5931,7 +5944,9 @@ mod tests {
         let mut vfs = Vfs::new();
         vfs.init();
 
-        let tmp = vfs.resolve_path("/tmp").expect("fresh VFS should provide /tmp");
+        let tmp = vfs
+            .resolve_path("/tmp")
+            .expect("fresh VFS should provide /tmp");
         let inode = vfs.get_inode(tmp).expect("/tmp inode must exist");
         assert_eq!(inode.kind, InodeKind::Directory);
     }
@@ -6363,6 +6378,11 @@ mod tests {
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MappedFileSource {
-    MemFile { inode_id: InodeId },
-    MountFile { mount_idx: usize, node_id: MountFileNodeId },
+    MemFile {
+        inode_id: InodeId,
+    },
+    MountFile {
+        mount_idx: usize,
+        node_id: MountFileNodeId,
+    },
 }

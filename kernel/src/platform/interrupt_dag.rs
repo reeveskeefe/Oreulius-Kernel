@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 /// Topologically Bounded Interrupt DAGs (Deadlock Freedom)
 ///
 /// Every kernel spinlock carries a compile-time priority level.  A context at

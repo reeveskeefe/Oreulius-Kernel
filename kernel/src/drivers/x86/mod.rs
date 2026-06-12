@@ -23,8 +23,6 @@ pub mod acpi_asm;
 pub mod audio;
 #[path = "../bluetooth.rs"]
 pub mod bluetooth;
-#[path = "../compositor.rs"]
-pub mod compositor;
 #[path = "../dma_asm.rs"]
 pub mod dma_asm;
 #[path = "../framebuffer.rs"]

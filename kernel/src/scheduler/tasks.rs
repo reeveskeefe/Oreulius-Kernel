@@ -12,10 +12,10 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
+use crate::drivers::x86::vga;
 use crate::scheduler::process;
 use crate::scheduler::process::ProcessPriority;
 use crate::scheduler::slice_scheduler;
-use crate::drivers::x86::vga;
 
 #[no_mangle]
 extern "C" fn shell_task() -> ! {

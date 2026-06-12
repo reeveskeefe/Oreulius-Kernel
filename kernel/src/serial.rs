@@ -12,12 +12,12 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-use core::fmt;
-use spin::Mutex;
 #[cfg(not(target_arch = "aarch64"))]
 use core::cell::UnsafeCell;
+use core::fmt;
 #[cfg(not(target_arch = "aarch64"))]
 use core::sync::atomic::{AtomicUsize, Ordering};
+use spin::Mutex;
 
 /// Simple serial port implementation (COM1, 0x3F8)
 pub struct SerialPort {

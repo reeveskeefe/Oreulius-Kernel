@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 use crate::drivers::x86::gpu_support::backend::ScanoutOps;
 use crate::drivers::x86::gpu_support::engines::packets::{ComputePacket, TransferPacket};
 use crate::drivers::x86::gpu_support::errors::GpuError;

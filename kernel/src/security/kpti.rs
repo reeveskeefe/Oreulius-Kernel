@@ -22,12 +22,12 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 
+use crate::fs::paging;
+use crate::memory;
 use crate::platform::gdt;
 use crate::platform::idt_asm::{
     self, IdtEntry, IdtPointer, FLAG_DPL0, FLAG_DPL3, FLAG_PRESENT, GATE_INTERRUPT_32,
 };
-use crate::memory;
-use crate::fs::paging;
 use crate::scheduler::process_asm::{write_msr, MSR_IA32_SYSENTER_EIP};
 
 #[no_mangle]

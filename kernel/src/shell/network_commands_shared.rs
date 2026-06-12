@@ -223,12 +223,19 @@ pub fn cmd_netstack_info<W: Write>(out: &mut W) {
         }
     };
 
-    let _ = writeln!(out, "Status: {}", if info.ready { "READY" } else { "NOT READY" });
+    let _ = writeln!(
+        out,
+        "Status: {}",
+        if info.ready { "READY" } else { "NOT READY" }
+    );
     let _ = writeln!(out);
     let _ = writeln!(out, "Features:");
     let _ = writeln!(out, "  [x] ARP Protocol (address resolution)");
     let _ = writeln!(out, "  [x] UDP Protocol (for DNS)");
-    let _ = writeln!(out, "  [x] DNS Client (QEMU usernet resolver / configured DNS)");
+    let _ = writeln!(
+        out,
+        "  [x] DNS Client (QEMU usernet resolver / configured DNS)"
+    );
     #[cfg(target_arch = "aarch64")]
     let _ = writeln!(out, "  [x] Real packet I/O via virtio-net MMIO");
     #[cfg(not(target_arch = "aarch64"))]

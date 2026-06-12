@@ -117,17 +117,23 @@ pub fn fg_last_job() -> bool {
                         let sched = crate::scheduler::slice_scheduler::scheduler().lock();
                         sched
                             .get_process_info(j.pid)
-                            .map(|info| info.process.state == crate::scheduler::process::ProcessState::Blocked)
+                            .map(|info| {
+                                info.process.state
+                                    == crate::scheduler::process::ProcessState::Blocked
+                            })
                             .unwrap_or(false)
                     };
                     if still_blocked {
                         {
                             let mut sched2 = crate::scheduler::slice_scheduler::scheduler().lock();
                             if let Some(info_mut) = sched2.get_process_info_mut(j.pid) {
-                                info_mut.process.state = crate::scheduler::process::ProcessState::Ready;
+                                info_mut.process.state =
+                                    crate::scheduler::process::ProcessState::Ready;
                                 let priority = info_mut.process.priority;
                                 drop(sched2);
-                                crate::scheduler::slice_scheduler::enqueue_ready_pid(j.pid, priority);
+                                crate::scheduler::slice_scheduler::enqueue_ready_pid(
+                                    j.pid, priority,
+                                );
                             }
                         }
                     }
@@ -443,7 +449,9 @@ pub fn enter_runtime() -> ! {
             core::hint::spin_loop();
         }
     }
-    crate::drivers::x86::vga::print_str("[PAGING] Virtual memory enabled (4KB pages, user/kernel separation)\n");
+    crate::drivers::x86::vga::print_str(
+        "[PAGING] Virtual memory enabled (4KB pages, user/kernel separation)\n",
+    );
     crate::drivers::x86::vga::print_str("[PAGING] Kernel root addr: 0x");
     crate::shell::advanced_commands::print_hex(
         crate::arch::mmu::kernel_page_table_root_addr().unwrap_or(0),
@@ -526,7 +534,9 @@ pub fn enter_runtime() -> ! {
     crate::arch::init_timer();
     crate::scheduler::process::debug_kernel_bootstrap("x86:after timer init");
     crate::drivers::x86::vga::print_str("[SCHED] Preemptive scheduler ready\n");
-    crate::drivers::x86::vga::print_str("[IRQ] Deferring interrupt enable until scheduler tasks start\n");
+    crate::drivers::x86::vga::print_str(
+        "[IRQ] Deferring interrupt enable until scheduler tasks start\n",
+    );
 
     crate::drivers::x86::vga::print_str("[DEBUG] Timer initialized successfully\n");
     crate::drivers::x86::vga::print_str("[PCI] Scanning for devices...\n");
@@ -551,7 +561,9 @@ pub fn enter_runtime() -> ! {
                 }
             }
             match crate::temporal::recover_from_persistence() {
-                Ok(()) => crate::drivers::x86::vga::print_str("[TEMPORAL] Recovery check complete\n"),
+                Ok(()) => {
+                    crate::drivers::x86::vga::print_str("[TEMPORAL] Recovery check complete\n")
+                }
                 Err(e) => {
                     crate::drivers::x86::vga::print_str("[TEMPORAL] Recovery skipped: ");
                     crate::drivers::x86::vga::print_str(e);
@@ -600,10 +612,14 @@ pub fn enter_runtime() -> ! {
 
         match crate::net::e1000::init(eth_device) {
             Ok(()) => {
-                crate::scheduler::process::debug_kernel_bootstrap_layout("x86:before qemu net seed");
+                crate::scheduler::process::debug_kernel_bootstrap_layout(
+                    "x86:before qemu net seed",
+                );
                 crate::scheduler::process::debug_kernel_bootstrap("x86:after e1000 init");
                 crate::scheduler::process::debug_kernel_bootstrap_layout("x86:after e1000 init");
-                crate::drivers::x86::vga::print_str("[NET] E1000 initialized - Ready for DNS/ARP/UDP\n");
+                crate::drivers::x86::vga::print_str(
+                    "[NET] E1000 initialized - Ready for DNS/ARP/UDP\n",
+                );
             }
             Err(e) => {
                 crate::drivers::x86::vga::print_str("[NET] E1000 init failed: ");
@@ -634,7 +650,8 @@ pub fn enter_runtime() -> ! {
 
     {
         let nvme_pci = pci_scanner.find_all_nvme_controllers();
-        let mut nvme_flat: [crate::drivers::x86::pci::PciDevice; 4] = unsafe { core::mem::zeroed() };
+        let mut nvme_flat: [crate::drivers::x86::pci::PciDevice; 4] =
+            unsafe { core::mem::zeroed() };
         let mut nvme_count = 0usize;
         for opt in nvme_pci.iter() {
             if let Some(d) = opt {
@@ -655,7 +672,9 @@ pub fn enter_runtime() -> ! {
         crate::drivers::x86::vga::print_str("[AUDIO] Audio ready\n");
     }
 
-    crate::drivers::x86::vga::print_str("[GPU] Skipping framebuffer/compositor init on x86 legacy path\n");
+    crate::drivers::x86::vga::print_str(
+        "[GPU] Skipping framebuffer/compositor init on x86 legacy path\n",
+    );
 
     crate::drivers::x86::vga::print_str("[MOUSE] Enabling PS/2 auxiliary port...\n");
     crate::drivers::x86::mouse::init();
@@ -677,7 +696,9 @@ pub fn enter_runtime() -> ! {
         }
     }
 
-    crate::drivers::x86::vga::print_str("\n[INIT] Initialization complete, starting scheduler...\n");
+    crate::drivers::x86::vga::print_str(
+        "\n[INIT] Initialization complete, starting scheduler...\n",
+    );
     crate::scheduler::tasks::start();
 }
 
@@ -758,7 +779,8 @@ pub fn shell_loop() -> ! {
                 *vga.add(row_offset + 22) = 0x0F00 | (hex[((dropped >> 4) & 0xF) as usize] as u16);
                 *vga.add(row_offset + 23) = 0x0F00 | (hex[(dropped & 0xF) as usize] as u16);
 
-                let (pushed, _popped, none, errors) = crate::drivers::x86::keyboard::get_event_stats();
+                let (pushed, _popped, none, errors) =
+                    crate::drivers::x86::keyboard::get_event_stats();
                 *vga.add(row_offset + 30) = 0x0F50;
                 *vga.add(row_offset + 31) = 0x0F3A;
                 *vga.add(row_offset + 32) = 0x0F00 | (hex[((pushed >> 4) & 0xF) as usize] as u16);
@@ -887,7 +909,8 @@ pub fn shell_loop() -> ! {
                     crate::shell::terminal::write_str("^C\n> ");
                     reset_shell_line(&mut input, &mut len, &mut cursor);
                     prompt_pos = crate::shell::terminal::cursor_position();
-                    _max_len = crate::drivers::x86::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    _max_len =
+                        crate::drivers::x86::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
                 }
                 26 => {
                     // ^Z — suspend foreground process into job table
@@ -899,7 +922,8 @@ pub fn shell_loop() -> ! {
                             // Block the foreground process.
                             let mut sched = crate::scheduler::slice_scheduler::scheduler().lock();
                             if let Some(info) = sched.get_process_info_mut(fg_pid) {
-                                info.process.state = crate::scheduler::process::ProcessState::Blocked;
+                                info.process.state =
+                                    crate::scheduler::process::ProcessState::Blocked;
                             }
                             drop(sched);
                             let job_num = job_add(fg_pid, &input[..len]);
@@ -993,7 +1017,8 @@ pub fn shell_loop() -> ! {
                     crate::shell::terminal::write_str("^C\n> ");
                     reset_shell_line(&mut input, &mut len, &mut cursor);
                     prompt_pos = crate::shell::terminal::cursor_position();
-                    _max_len = crate::drivers::x86::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
+                    _max_len =
+                        crate::drivers::x86::vga::SCREEN_WIDTH.saturating_sub(prompt_pos.1 + 1);
                 }
                 crate::drivers::x86::keyboard::KeyEvent::Ctrl('z') => {
                     crate::shell::terminal::set_cursor(prompt_pos.0, prompt_pos.1);
@@ -1003,7 +1028,8 @@ pub fn shell_loop() -> ! {
                         if let Some(fg_pid) = FOREGROUND_PID.take() {
                             let mut sched = crate::scheduler::slice_scheduler::scheduler().lock();
                             if let Some(info) = sched.get_process_info_mut(fg_pid) {
-                                info.process.state = crate::scheduler::process::ProcessState::Blocked;
+                                info.process.state =
+                                    crate::scheduler::process::ProcessState::Blocked;
                             }
                             drop(sched);
                             let job_num = job_add(fg_pid, &input[..len]);

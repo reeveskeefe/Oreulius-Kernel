@@ -52,7 +52,10 @@ impl InvariantCheckResult {
     }
 }
 
-pub fn enforce(result: InvariantCheckResult, detail: &[u8]) -> Option<crate::failure::FailureOutcome> {
+pub fn enforce(
+    result: InvariantCheckResult,
+    detail: &[u8],
+) -> Option<crate::failure::FailureOutcome> {
     if result.valid {
         return None;
     }

@@ -534,8 +534,14 @@ impl NetworkStack {
         self.arp_cache = ArpCache::new();
         crate::serial_println!(
             "[NET] static ip={}.{}.{}.{} gw={}.{}.{}.{}",
-            ip.0[0], ip.0[1], ip.0[2], ip.0[3],
-            gw.0[0], gw.0[1], gw.0[2], gw.0[3],
+            ip.0[0],
+            ip.0[1],
+            ip.0[2],
+            ip.0[3],
+            gw.0[0],
+            gw.0[1],
+            gw.0[2],
+            gw.0[3],
         );
     }
 
@@ -667,8 +673,8 @@ impl NetworkStack {
             return Ok(mac);
         }
 
-        let link_deadline =
-            crate::scheduler::pit::get_ticks() + Self::wait_timeout_ticks(NET_READY_DEFAULT_WAIT_TICKS);
+        let link_deadline = crate::scheduler::pit::get_ticks()
+            + Self::wait_timeout_ticks(NET_READY_DEFAULT_WAIT_TICKS);
         while !self.operational_link_ready() {
             if self.legacy_x86_probe_ready() {
                 break;
@@ -682,8 +688,8 @@ impl NetworkStack {
         // Send ARP request
         self.send_arp_request(ip)?;
 
-        let deadline =
-            crate::scheduler::pit::get_ticks() + Self::wait_timeout_ticks(ARP_DEFAULT_TIMEOUT_TICKS);
+        let deadline = crate::scheduler::pit::get_ticks()
+            + Self::wait_timeout_ticks(ARP_DEFAULT_TIMEOUT_TICKS);
         while crate::scheduler::pit::get_ticks() < deadline {
             let _ = self.poll_once()?;
 
@@ -1089,7 +1095,8 @@ impl NetworkStack {
         slot.dest_port = dest_port;
         slot.seq = seq;
         slot.retries = 0;
-        slot.next_retry_tick = crate::scheduler::pit::get_ticks().saturating_add(CAPNET_RETX_INTERVAL_TICKS);
+        slot.next_retry_tick =
+            crate::scheduler::pit::get_ticks().saturating_add(CAPNET_RETX_INTERVAL_TICKS);
         slot.len = frame.len();
         slot.frame[..frame.len()].copy_from_slice(frame);
         self.capnet_retx[idx] = slot;
@@ -3392,8 +3399,12 @@ impl NetworkStack {
             Err(e) => {
                 crate::serial_println!(
                     "[CAPNET-MULTI] rx src={}.{}.{}.{}:{} status=fail reason={}",
-                    src_ip.0[0], src_ip.0[1], src_ip.0[2], src_ip.0[3],
-                    src_port, e.as_str()
+                    src_ip.0[0],
+                    src_ip.0[1],
+                    src_ip.0[2],
+                    src_ip.0[3],
+                    src_port,
+                    e.as_str()
                 );
                 crate::security::security().log_event(
                     crate::security::AuditEntry::new(
@@ -3417,7 +3428,9 @@ impl NetworkStack {
         };
         crate::serial_println!(
             "[CAPNET-MULTI] rx event={} peer=0x{:016x} seq={} status=ok",
-            event_name, rx.peer_device_id, rx.seq
+            event_name,
+            rx.peer_device_id,
+            rx.seq
         );
 
         self.capnet_ack_seq(rx.peer_device_id, rx.ack);
@@ -3934,12 +3947,7 @@ mod tests {
                 DNS_CLIENT_SRC_PORT,
                 &[0x12, 0x34],
             );
-            stack.enqueue_udp(
-                Ipv4Addr::new(1, 1, 1, 1),
-                1111,
-                9999,
-                b"keep me",
-            );
+            stack.enqueue_udp(Ipv4Addr::new(1, 1, 1, 1), 1111, 9999, b"keep me");
 
             stack.clear_stale_dns_responses();
 
@@ -3950,7 +3958,9 @@ mod tests {
             );
 
             let mut other_out = [0u8; 16];
-            let len = stack.recv_udp(9999, &mut other_out).expect("non-DNS slot kept");
+            let len = stack
+                .recv_udp(9999, &mut other_out)
+                .expect("non-DNS slot kept");
             assert_eq!(&other_out[..len], b"keep me");
         });
     }

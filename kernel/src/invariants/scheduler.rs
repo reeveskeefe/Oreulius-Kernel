@@ -20,7 +20,11 @@ pub fn scheduler_state_valid(quantum: u32, tick_pos: u32) -> bool {
 
 pub fn check_scheduler_state(quantum: u32, tick_pos: u32) -> InvariantCheckResult {
     if scheduler_state_valid(quantum, tick_pos) {
-        InvariantCheckResult::ok("INV-SCHED-STATE-001", InvariantSeverity::Consistency, 0x7101)
+        InvariantCheckResult::ok(
+            "INV-SCHED-STATE-001",
+            InvariantSeverity::Consistency,
+            0x7101,
+        )
     } else {
         InvariantCheckResult::violation(
             "INV-SCHED-STATE-001",

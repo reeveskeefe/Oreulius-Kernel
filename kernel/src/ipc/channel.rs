@@ -12,21 +12,20 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 use alloc::vec::Vec;
 
 use super::ring::RingBuffer;
-use super::{
-    admission, backpressure, channel_capacity_wait_addr, channel_message_wait_addr, AffineEndpoint,
-    BackpressureAction, BackpressureLevel, Capability, ChannelCapability, ChannelId, EventId,
-    IpcDefer, IpcError, IpcRefusal, Message, ProcessId, RecvDecision, SendDecision,
-    CHANNEL_CAPACITY, MAX_CAPS_PER_MESSAGE, MAX_MESSAGE_SIZE,
-};
 use super::types::{
     temporal_ipc_append_u16, temporal_ipc_append_u32, temporal_ipc_append_u64,
     temporal_ipc_parse_request_payload, temporal_ipc_parse_response_payload, temporal_ipc_read_u16,
     temporal_ipc_read_u32, temporal_ipc_read_u64, ChannelProtocolState, TemporalIpcFrameKind,
     TemporalIpcPhase, TemporalRequestFrame, TemporalResponseFrame, TemporalSessionState,
+};
+use super::{
+    admission, backpressure, channel_capacity_wait_addr, channel_message_wait_addr, AffineEndpoint,
+    BackpressureAction, BackpressureLevel, Capability, ChannelCapability, ChannelId, EventId,
+    IpcDefer, IpcError, IpcRefusal, Message, ProcessId, RecvDecision, SendDecision,
+    CHANNEL_CAPACITY, MAX_CAPS_PER_MESSAGE, MAX_MESSAGE_SIZE,
 };
 
 // ============================================================================
@@ -219,14 +218,17 @@ impl Channel {
     fn wake_one_receiver(&mut self) {
         let mut woke = false;
         while let Some(pid) = self.waiting_receivers.pop_front() {
-            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(
+                crate::scheduler::process::Pid(pid.0),
+            ) {
                 self.note_receiver_wakeups(1);
                 woke = true;
                 break;
             }
         }
         if !woke {
-            if let Ok(true) = crate::scheduler::slice_scheduler::wake_one(self.message_wait_addr()) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_one(self.message_wait_addr())
+            {
                 self.note_receiver_wakeups(1);
             }
         }
@@ -235,14 +237,17 @@ impl Channel {
     fn wake_all_receivers(&mut self) {
         let mut count = 0;
         while let Some(pid) = self.waiting_receivers.pop_front() {
-            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(
+                crate::scheduler::process::Pid(pid.0),
+            ) {
                 count += 1;
             }
         }
         if count > 0 {
             self.note_receiver_wakeups(count);
         } else {
-            if let Ok(woken) = crate::scheduler::slice_scheduler::wake_all(self.message_wait_addr()) {
+            if let Ok(woken) = crate::scheduler::slice_scheduler::wake_all(self.message_wait_addr())
+            {
                 if woken > 0 {
                     self.note_receiver_wakeups(woken);
                 }
@@ -253,14 +258,17 @@ impl Channel {
     fn wake_one_sender(&mut self) {
         let mut woke = false;
         while let Some(pid) = self.waiting_senders.pop_front() {
-            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(
+                crate::scheduler::process::Pid(pid.0),
+            ) {
                 self.note_sender_wakeups(1);
                 woke = true;
                 break;
             }
         }
         if !woke {
-            if let Ok(true) = crate::scheduler::slice_scheduler::wake_one(self.capacity_wait_addr()) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_one(self.capacity_wait_addr())
+            {
                 self.note_sender_wakeups(1);
             }
         }
@@ -269,14 +277,18 @@ impl Channel {
     fn wake_all_senders(&mut self) {
         let mut count = 0;
         while let Some(pid) = self.waiting_senders.pop_front() {
-            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(crate::scheduler::process::Pid(pid.0)) {
+            if let Ok(true) = crate::scheduler::slice_scheduler::wake_process(
+                crate::scheduler::process::Pid(pid.0),
+            ) {
                 count += 1;
             }
         }
         if count > 0 {
             self.note_sender_wakeups(count);
         } else {
-            if let Ok(woken) = crate::scheduler::slice_scheduler::wake_all(self.capacity_wait_addr()) {
+            if let Ok(woken) =
+                crate::scheduler::slice_scheduler::wake_all(self.capacity_wait_addr())
+            {
                 if woken > 0 {
                     self.note_sender_wakeups(woken);
                 }
@@ -309,7 +321,10 @@ impl Channel {
         self.protocol
     }
 
-    fn temporal_request_frame<'a>(&self, msg: &'a Message) -> Result<TemporalRequestFrame<'a>, IpcError> {
+    fn temporal_request_frame<'a>(
+        &self,
+        msg: &'a Message,
+    ) -> Result<TemporalRequestFrame<'a>, IpcError> {
         temporal_ipc_parse_request_payload(msg.payload())
     }
 
@@ -320,7 +335,10 @@ impl Channel {
         temporal_ipc_parse_response_payload(msg.payload())
     }
 
-    pub(crate) fn validate_temporal_send(&self, msg: &Message) -> Result<TemporalIpcFrameKind, IpcError> {
+    pub(crate) fn validate_temporal_send(
+        &self,
+        msg: &Message,
+    ) -> Result<TemporalIpcFrameKind, IpcError> {
         let state = match self.protocol {
             ChannelProtocolState::Unbound => return Ok(TemporalIpcFrameKind::Request),
             ChannelProtocolState::Temporal(state) => state,
@@ -329,7 +347,8 @@ impl Channel {
         match state.phase {
             TemporalIpcPhase::AwaitRequestSend => {
                 let frame = self.temporal_request_frame(msg)?;
-                if frame.session_id != state.session_id || frame.request_id != state.next_request_id {
+                if frame.session_id != state.session_id || frame.request_id != state.next_request_id
+                {
                     return Err(IpcError::ProtocolMismatch);
                 }
                 Ok(TemporalIpcFrameKind::Request)
@@ -350,7 +369,10 @@ impl Channel {
         }
     }
 
-    pub(crate) fn validate_temporal_recv(&self, msg: &Message) -> Result<TemporalIpcFrameKind, IpcError> {
+    pub(crate) fn validate_temporal_recv(
+        &self,
+        msg: &Message,
+    ) -> Result<TemporalIpcFrameKind, IpcError> {
         let state = match self.protocol {
             ChannelProtocolState::Unbound => return Ok(TemporalIpcFrameKind::Request),
             ChannelProtocolState::Temporal(state) => state,
@@ -568,7 +590,10 @@ impl Channel {
         caps_len: usize,
     ) -> Result<u64, crate::temporal::TemporalError> {
         let payload = self.encode_temporal_snapshot_payload(event, owner, payload_len, caps_len);
-        crate::temporal::record_object_write(&crate::temporal::ipc_channel_object_key(self.id.0), &payload)
+        crate::temporal::record_object_write(
+            &crate::temporal::ipc_channel_object_key(self.id.0),
+            &payload,
+        )
     }
 
     pub(crate) fn restore_temporal_snapshot_payload(
@@ -585,27 +610,39 @@ impl Channel {
             return Err("temporal ipc channel snapshot type mismatch");
         }
 
-        let channel_id = temporal_ipc_read_u32(payload, 4).ok_or("temporal ipc channel snapshot missing id")?;
+        let channel_id =
+            temporal_ipc_read_u32(payload, 4).ok_or("temporal ipc channel snapshot missing id")?;
         if channel_id != self.id.0 {
             return Err("temporal ipc channel snapshot id mismatch");
         }
 
-        let owner_pid = temporal_ipc_read_u32(payload, 8).ok_or("temporal ipc channel snapshot missing owner")?;
-        let payload_len = temporal_ipc_read_u32(payload, 12).ok_or("temporal ipc channel snapshot missing payload length")? as usize;
-        let caps_len = temporal_ipc_read_u16(payload, 16).ok_or("temporal ipc channel snapshot missing caps length")? as usize;
-        let queue_depth = temporal_ipc_read_u16(payload, 18).ok_or("temporal ipc channel snapshot missing queue depth")? as usize;
+        let owner_pid = temporal_ipc_read_u32(payload, 8)
+            .ok_or("temporal ipc channel snapshot missing owner")?;
+        let payload_len = temporal_ipc_read_u32(payload, 12)
+            .ok_or("temporal ipc channel snapshot missing payload length")?
+            as usize;
+        let caps_len = temporal_ipc_read_u16(payload, 16)
+            .ok_or("temporal ipc channel snapshot missing caps length")?
+            as usize;
+        let queue_depth = temporal_ipc_read_u16(payload, 18)
+            .ok_or("temporal ipc channel snapshot missing queue depth")?
+            as usize;
         if owner_pid != self.creator.0 {
             return Err("temporal ipc channel snapshot owner mismatch");
         }
 
         let mut cursor = 28usize;
-        let closure_tag = *payload.get(cursor).ok_or("temporal ipc channel snapshot missing closure tag")?;
+        let closure_tag = *payload
+            .get(cursor)
+            .ok_or("temporal ipc channel snapshot missing closure tag")?;
         cursor = cursor.saturating_add(4);
         let initiator = ProcessId(
-            temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot missing closure initiator")?,
+            temporal_ipc_read_u32(payload, cursor)
+                .ok_or("temporal ipc channel snapshot missing closure initiator")?,
         );
         cursor = cursor.saturating_add(4);
-        let initiated_at = temporal_ipc_read_u64(payload, cursor).ok_or("temporal ipc channel snapshot missing closure tick")?;
+        let initiated_at = temporal_ipc_read_u64(payload, cursor)
+            .ok_or("temporal ipc channel snapshot missing closure tick")?;
         cursor = cursor.saturating_add(8);
         self.closure = match closure_tag {
             0 => ClosureState::Open,
@@ -617,18 +654,27 @@ impl Channel {
             _ => return Err("temporal ipc channel snapshot closure mismatch"),
         };
 
-        let protocol_kind = *payload.get(cursor).ok_or("temporal ipc channel snapshot missing protocol kind")?;
+        let protocol_kind = *payload
+            .get(cursor)
+            .ok_or("temporal ipc channel snapshot missing protocol kind")?;
         cursor = cursor.saturating_add(1);
-        let phase_raw = *payload.get(cursor).ok_or("temporal ipc channel snapshot missing protocol phase")?;
+        let phase_raw = *payload
+            .get(cursor)
+            .ok_or("temporal ipc channel snapshot missing protocol phase")?;
         cursor = cursor.saturating_add(1);
         cursor = cursor.saturating_add(2);
-        let session_id = temporal_ipc_read_u64(payload, cursor).ok_or("temporal ipc channel snapshot missing session id")?;
+        let session_id = temporal_ipc_read_u64(payload, cursor)
+            .ok_or("temporal ipc channel snapshot missing session id")?;
         cursor = cursor.saturating_add(8);
-        let next_request_id = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot missing next request id")?;
+        let next_request_id = temporal_ipc_read_u32(payload, cursor)
+            .ok_or("temporal ipc channel snapshot missing next request id")?;
         cursor = cursor.saturating_add(4);
-        let last_request_id = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot missing last request id")?;
+        let last_request_id = temporal_ipc_read_u32(payload, cursor)
+            .ok_or("temporal ipc channel snapshot missing last request id")?;
         cursor = cursor.saturating_add(4);
-        let last_opcode = *payload.get(cursor).ok_or("temporal ipc channel snapshot missing last opcode")?;
+        let last_opcode = *payload
+            .get(cursor)
+            .ok_or("temporal ipc channel snapshot missing last opcode")?;
         cursor = cursor.saturating_add(4);
         self.protocol = match protocol_kind {
             0 => ChannelProtocolState::Unbound,
@@ -651,53 +697,77 @@ impl Channel {
             _ => return Err("temporal ipc channel snapshot protocol mismatch"),
         };
 
-        self.send_refusals = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot send refusals missing")?;
+        self.send_refusals = temporal_ipc_read_u32(payload, cursor)
+            .ok_or("temporal ipc channel snapshot send refusals missing")?;
         cursor = cursor.saturating_add(4);
-        self.recv_refusals = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot recv refusals missing")?;
+        self.recv_refusals = temporal_ipc_read_u32(payload, cursor)
+            .ok_or("temporal ipc channel snapshot recv refusals missing")?;
         cursor = cursor.saturating_add(4);
-        self.high_watermark = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot high watermark missing")? as usize;
+        self.high_watermark = temporal_ipc_read_u32(payload, cursor)
+            .ok_or("temporal ipc channel snapshot high watermark missing")?
+            as usize;
         cursor = cursor.saturating_add(4);
-        self.high_pressure_hits = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot high pressure hits missing")?;
+        self.high_pressure_hits = temporal_ipc_read_u32(payload, cursor)
+            .ok_or("temporal ipc channel snapshot high pressure hits missing")?;
         cursor = cursor.saturating_add(4);
-        self.saturated_hits = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot saturated hits missing")?;
+        self.saturated_hits = temporal_ipc_read_u32(payload, cursor)
+            .ok_or("temporal ipc channel snapshot saturated hits missing")?;
         cursor = cursor.saturating_add(4);
-        self.sender_wakeups = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot sender wakeups missing")?;
+        self.sender_wakeups = temporal_ipc_read_u32(payload, cursor)
+            .ok_or("temporal ipc channel snapshot sender wakeups missing")?;
         cursor = cursor.saturating_add(4);
-        self.receiver_wakeups = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot receiver wakeups missing")?;
+        self.receiver_wakeups = temporal_ipc_read_u32(payload, cursor)
+            .ok_or("temporal ipc channel snapshot receiver wakeups missing")?;
         cursor = cursor.saturating_add(4);
 
-        let receiver_count = *payload.get(cursor).ok_or("temporal ipc channel snapshot receiver count missing")? as usize;
+        let receiver_count = *payload
+            .get(cursor)
+            .ok_or("temporal ipc channel snapshot receiver count missing")?
+            as usize;
         cursor = cursor.saturating_add(1);
-        let sender_count = *payload.get(cursor).ok_or("temporal ipc channel snapshot sender count missing")? as usize;
+        let sender_count = *payload
+            .get(cursor)
+            .ok_or("temporal ipc channel snapshot sender count missing")?
+            as usize;
         cursor = cursor.saturating_add(1);
         cursor = cursor.saturating_add(2);
-        let stored_receiver_count = temporal_ipc_read_u16(payload, cursor).ok_or("temporal ipc channel snapshot stored receiver count missing")? as usize;
+        let stored_receiver_count = temporal_ipc_read_u16(payload, cursor)
+            .ok_or("temporal ipc channel snapshot stored receiver count missing")?
+            as usize;
         cursor = cursor.saturating_add(2);
-        let stored_sender_count = temporal_ipc_read_u16(payload, cursor).ok_or("temporal ipc channel snapshot stored sender count missing")? as usize;
+        let stored_sender_count = temporal_ipc_read_u16(payload, cursor)
+            .ok_or("temporal ipc channel snapshot stored sender count missing")?
+            as usize;
         cursor = cursor.saturating_add(2);
         let mut recv_queue = WaitQueue::new();
         let mut sender_queue = WaitQueue::new();
         let mut i = 0usize;
         while i < stored_receiver_count {
-            let pid = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot receiver pid missing")?;
+            let pid = temporal_ipc_read_u32(payload, cursor)
+                .ok_or("temporal ipc channel snapshot receiver pid missing")?;
             cursor = cursor.saturating_add(4);
             recv_queue.push_back(ProcessId(pid));
             i += 1;
         }
         i = 0;
         while i < stored_sender_count {
-            let pid = temporal_ipc_read_u32(payload, cursor).ok_or("temporal ipc channel snapshot sender pid missing")?;
+            let pid = temporal_ipc_read_u32(payload, cursor)
+                .ok_or("temporal ipc channel snapshot sender pid missing")?;
             cursor = cursor.saturating_add(4);
             sender_queue.push_back(ProcessId(pid));
             i += 1;
         }
         self.waiting_receivers = recv_queue;
         self.waiting_senders = sender_queue;
-        if self.waiting_receivers.len() != receiver_count || self.waiting_senders.len() != sender_count {
+        if self.waiting_receivers.len() != receiver_count
+            || self.waiting_senders.len() != sender_count
+        {
             return Err("temporal ipc channel snapshot wait queue mismatch");
         }
 
-        let restored_messages = temporal_ipc_read_u16(payload, cursor).ok_or("temporal ipc channel snapshot message count missing")? as usize;
+        let restored_messages = temporal_ipc_read_u16(payload, cursor)
+            .ok_or("temporal ipc channel snapshot message count missing")?
+            as usize;
         cursor = cursor.saturating_add(2);
         self.buffer.clear();
         let mut restored_max_seq = 0u16;
@@ -1394,23 +1464,32 @@ fn temporal_snapshot_read_capability(
     payload: &[u8],
     cursor: &mut usize,
 ) -> Result<Capability, &'static str> {
-    let cap_id = temporal_ipc_read_u32(payload, *cursor).ok_or("temporal ipc snapshot capability id missing")?;
+    let cap_id = temporal_ipc_read_u32(payload, *cursor)
+        .ok_or("temporal ipc snapshot capability id missing")?;
     *cursor = (*cursor).saturating_add(4);
-    let ticket_id = temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot ticket id missing")?;
+    let ticket_id =
+        temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot ticket id missing")?;
     *cursor = (*cursor).saturating_add(8);
-    let object_id = temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot object id missing")?;
+    let object_id =
+        temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot object id missing")?;
     *cursor = (*cursor).saturating_add(8);
-    let rights = temporal_ipc_read_u32(payload, *cursor).ok_or("temporal ipc snapshot rights missing")?;
+    let rights =
+        temporal_ipc_read_u32(payload, *cursor).ok_or("temporal ipc snapshot rights missing")?;
     *cursor = (*cursor).saturating_add(4);
-    let cap_type_raw = temporal_ipc_read_u32(payload, *cursor).ok_or("temporal ipc snapshot cap type missing")?;
+    let cap_type_raw =
+        temporal_ipc_read_u32(payload, *cursor).ok_or("temporal ipc snapshot cap type missing")?;
     *cursor = (*cursor).saturating_add(4);
-    let owner_pid = temporal_ipc_read_u32(payload, *cursor).ok_or("temporal ipc snapshot owner missing")?;
+    let owner_pid =
+        temporal_ipc_read_u32(payload, *cursor).ok_or("temporal ipc snapshot owner missing")?;
     *cursor = (*cursor).saturating_add(4);
-    let issued_at = temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot issued_at missing")?;
+    let issued_at =
+        temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot issued_at missing")?;
     *cursor = (*cursor).saturating_add(8);
-    let expires_at = temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot expires_at missing")?;
+    let expires_at = temporal_ipc_read_u64(payload, *cursor)
+        .ok_or("temporal ipc snapshot expires_at missing")?;
     *cursor = (*cursor).saturating_add(8);
-    let flags = temporal_ipc_read_u32(payload, *cursor).ok_or("temporal ipc snapshot flags missing")?;
+    let flags =
+        temporal_ipc_read_u32(payload, *cursor).ok_or("temporal ipc snapshot flags missing")?;
     *cursor = (*cursor).saturating_add(4);
     let mut extra = [0u32; 4];
     let mut idx = 0usize;
@@ -1420,7 +1499,8 @@ fn temporal_snapshot_read_capability(
         *cursor = (*cursor).saturating_add(4);
         idx += 1;
     }
-    let token = temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot token missing")?;
+    let token =
+        temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot token missing")?;
     *cursor = (*cursor).saturating_add(8);
 
     let mut cap = Capability::with_type(
@@ -1459,22 +1539,31 @@ fn temporal_snapshot_read_message(
     payload: &[u8],
     cursor: &mut usize,
 ) -> Result<Message, &'static str> {
-    let msg_id = temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot message id missing")?;
+    let msg_id = temporal_ipc_read_u64(payload, *cursor)
+        .ok_or("temporal ipc snapshot message id missing")?;
     *cursor = (*cursor).saturating_add(8);
-    let has_cause = *payload.get(*cursor).ok_or("temporal ipc snapshot message cause flag missing")? != 0;
+    let has_cause = *payload
+        .get(*cursor)
+        .ok_or("temporal ipc snapshot message cause flag missing")?
+        != 0;
     *cursor = (*cursor).saturating_add(4);
     let source = ProcessId(
-        temporal_ipc_read_u32(payload, *cursor).ok_or("temporal ipc snapshot message source missing")?,
+        temporal_ipc_read_u32(payload, *cursor)
+            .ok_or("temporal ipc snapshot message source missing")?,
     );
     *cursor = (*cursor).saturating_add(4);
-    let payload_len = temporal_ipc_read_u16(payload, *cursor).ok_or("temporal ipc snapshot message payload length missing")? as usize;
+    let payload_len = temporal_ipc_read_u16(payload, *cursor)
+        .ok_or("temporal ipc snapshot message payload length missing")?
+        as usize;
     *cursor = (*cursor).saturating_add(2);
-    let caps_len = temporal_ipc_read_u16(payload, *cursor).ok_or("temporal ipc snapshot message caps length missing")? as usize;
+    let caps_len = temporal_ipc_read_u16(payload, *cursor)
+        .ok_or("temporal ipc snapshot message caps length missing")? as usize;
     *cursor = (*cursor).saturating_add(2);
     *cursor = (*cursor).saturating_add(2);
     let cause = if has_cause {
         Some(EventId(
-            temporal_ipc_read_u64(payload, *cursor).ok_or("temporal ipc snapshot message cause missing")?,
+            temporal_ipc_read_u64(payload, *cursor)
+                .ok_or("temporal ipc snapshot message cause missing")?,
         ))
     } else {
         None

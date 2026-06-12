@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 #[test]
 fn transfer_queue_rejects_zero_length() {
     let mut queue = crate::drivers::x86::gpu_support::engines::transfer::TransferQueue::new();

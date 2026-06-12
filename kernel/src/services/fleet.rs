@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 /*!
  * Oreulius Kernel — Fleet Operations & Attestation
  *
@@ -47,17 +46,21 @@
 
 extern crate alloc;
 
-use crate::net::capnet;
 use crate::crypto::{
     build_fleet_attestation_signed_message, import_hex_file, read_small_vfs_file,
     verify_detached_ed25519, DetachedSignatureStatus,
 };
+use crate::net::capnet;
 use crate::net::net_reactor;
 use crate::temporal::persistence;
 // Cross-arch console output: VGA on x86/x86_64, PL011 on AArch64.
 mod vga {
-    pub fn print_str(s: &str) { crate::serial::kprint_str(s); }
-    pub fn print_char(c: char) { crate::serial::kprint_char(c); }
+    pub fn print_str(s: &str) {
+        crate::serial::kprint_str(s);
+    }
+    pub fn print_char(c: char) {
+        crate::serial::kprint_char(c);
+    }
 }
 
 // ============================================================================

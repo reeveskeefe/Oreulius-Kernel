@@ -114,17 +114,23 @@ pub fn fg_last_job() -> bool {
                         let sched = crate::scheduler::slice_scheduler::scheduler().lock();
                         sched
                             .get_process_info(j.pid)
-                            .map(|info| info.process.state == crate::scheduler::process::ProcessState::Blocked)
+                            .map(|info| {
+                                info.process.state
+                                    == crate::scheduler::process::ProcessState::Blocked
+                            })
                             .unwrap_or(false)
                     };
                     if still_blocked {
                         {
                             let mut sched = crate::scheduler::slice_scheduler::scheduler().lock();
                             if let Some(info_mut) = sched.get_process_info_mut(j.pid) {
-                                info_mut.process.state = crate::scheduler::process::ProcessState::Ready;
+                                info_mut.process.state =
+                                    crate::scheduler::process::ProcessState::Ready;
                                 let priority = info_mut.process.priority;
                                 drop(sched);
-                                crate::scheduler::slice_scheduler::enqueue_ready_pid(j.pid, priority);
+                                crate::scheduler::slice_scheduler::enqueue_ready_pid(
+                                    j.pid, priority,
+                                );
                             }
                         }
                     }
@@ -674,7 +680,9 @@ pub extern "C" fn x86_64_trap_dispatch(vector: u64, error: u64, frame: *mut Trap
                 return;
             }
             if have_user_frame {
-                match crate::scheduler::slice_scheduler::handle_current_user_page_fault(fault_addr, error) {
+                match crate::scheduler::slice_scheduler::handle_current_user_page_fault(
+                    fault_addr, error,
+                ) {
                     Ok(true) => {
                         PF_LOOP_REPEAT_COUNT.store(0, Ordering::Relaxed);
                         return;
@@ -1356,7 +1364,8 @@ fn serial_write_prompt() {
     }
 }
 
-const X64_MINI_HELP: &str = "help help-all help-mini ticks irq0 int3 traps pfstats cowtest vmtest sharedmmap \
+const X64_MINI_HELP: &str =
+    "help help-all help-mini ticks irq0 int3 traps pfstats cowtest vmtest sharedmmap \
      jitpre jitcall jitbench jitfuzz jitfuzz24dbg heartbeat console kbdtest \
      mmu regs halt";
 
@@ -1702,15 +1711,17 @@ fn serial_exec_command(cmd: &str) -> bool {
             Ok(()) => shell_println!("[X64] vmtest ok"),
             Err(e) => shell_println!("[X64] vmtest failed: {}", e),
         },
-        "sharedmmap" => match crate::scheduler::slice_scheduler::selftest_shared_file_mapping_live() {
-            Ok((phys_a, phys_b, observed)) => shell_println!(
-                "[X64] sharedmmap ok: phys_a={:#x} phys_b={:#x} observed={:#x}",
-                phys_a,
-                phys_b,
-                observed
-            ),
-            Err(e) => shell_println!("[X64] sharedmmap failed: {}", e),
-        },
+        "sharedmmap" => {
+            match crate::scheduler::slice_scheduler::selftest_shared_file_mapping_live() {
+                Ok((phys_a, phys_b, observed)) => shell_println!(
+                    "[X64] sharedmmap ok: phys_a={:#x} phys_b={:#x} observed={:#x}",
+                    phys_a,
+                    phys_b,
+                    observed
+                ),
+                Err(e) => shell_println!("[X64] sharedmmap failed: {}", e),
+            }
+        }
         "jitpre" => match crate::execution::wasm::jit_x86_64_sandbox_preflight() {
             Ok(()) => shell_println!("[X64] jitpre ok"),
             Err(e) => shell_println!("[X64] jitpre failed: {}", e),
@@ -1801,13 +1812,21 @@ fn native_jit_exec_self_test() -> Result<(), &'static str> {
     // x86_64: mov eax, 0x12345678 ; ret
     const CODE: [u8; 6] = [0xB8, 0x78, 0x56, 0x34, 0x12, 0xC3];
     let exec = crate::memory::jit_allocate_pages(1)?;
-    let _ = crate::security::memory_isolation::tag_jit_code_kernel(exec, crate::fs::paging::PAGE_SIZE, false);
+    let _ = crate::security::memory_isolation::tag_jit_code_kernel(
+        exec,
+        crate::fs::paging::PAGE_SIZE,
+        false,
+    );
     crate::arch::mmu::set_page_writable_range(exec, crate::fs::paging::PAGE_SIZE, true)?;
     unsafe {
         core::ptr::copy_nonoverlapping(CODE.as_ptr(), exec as *mut u8, CODE.len());
     }
     crate::arch::mmu::set_page_writable_range(exec, crate::fs::paging::PAGE_SIZE, false)?;
-    let _ = crate::security::memory_isolation::tag_jit_code_kernel(exec, crate::fs::paging::PAGE_SIZE, true);
+    let _ = crate::security::memory_isolation::tag_jit_code_kernel(
+        exec,
+        crate::fs::paging::PAGE_SIZE,
+        true,
+    );
 
     let f: extern "C" fn() -> u32 = unsafe { core::mem::transmute(exec) };
     let ret = f();
@@ -1881,8 +1900,8 @@ fn jit_fuzz_smoke_self_test() -> Result<(u32, u32, u32), &'static str> {
         .checked_add(crate::fs::paging::PAGE_SIZE - 1)
         .ok_or("jitfuzz state size overflow")?
         / crate::fs::paging::PAGE_SIZE;
-    let state_base =
-        crate::memory::jit_allocate_pages(state_pages)? as *mut crate::execution::wasm::JitUserState;
+    let state_base = crate::memory::jit_allocate_pages(state_pages)?
+        as *mut crate::execution::wasm::JitUserState;
     if state_base.is_null() {
         return Err("jitfuzz state alloc failed");
     }
@@ -2130,7 +2149,8 @@ extern "C" fn init_wasm_task() -> ! {
     match instance_id {
         Ok(id) => {
             crate::serial_println!("[INIT] init WASM instance id={}", id);
-            let result = crate::execution::wasm::wasm_runtime().get_instance_mut(id, |inst| inst.call(0));
+            let result =
+                crate::execution::wasm::wasm_runtime().get_instance_mut(id, |inst| inst.call(0));
             match result {
                 Ok(Ok(_)) => crate::serial_println!("[INIT] init WASM _start returned OK"),
                 Ok(Err(e)) => crate::serial_println!("[INIT] init WASM _start error: {:?}", e),
@@ -2369,9 +2389,10 @@ pub fn enter_runtime() -> ! {
             crate::serial_println!("[X64] scheduler add shell task failed: {}", e);
             crate::arch::halt_loop();
         }
-        if let Err(e) =
-            sched.add_kernel_thread(init_wasm_task, crate::scheduler::process::ProcessPriority::Low)
-        {
+        if let Err(e) = sched.add_kernel_thread(
+            init_wasm_task,
+            crate::scheduler::process::ProcessPriority::Low,
+        ) {
             crate::serial_println!(
                 "[X64] scheduler add init-wasm task failed (non-fatal): {}",
                 e
@@ -2384,9 +2405,10 @@ pub fn enter_runtime() -> ! {
             crate::serial_println!("[X64] scheduler add network task failed: {}", e);
             crate::arch::halt_loop();
         }
-        if let Err(e) =
-            sched.add_kernel_thread(idle_scheduler_task, crate::scheduler::process::ProcessPriority::Normal)
-        {
+        if let Err(e) = sched.add_kernel_thread(
+            idle_scheduler_task,
+            crate::scheduler::process::ProcessPriority::Normal,
+        ) {
             crate::serial_println!("[X64] scheduler add idle task failed: {}", e);
             crate::arch::halt_loop();
         }
@@ -2461,7 +2483,8 @@ pub fn run_serial_shell() -> ! {
                         if let Some(fg_pid) = FOREGROUND_PID.take() {
                             let mut sched = crate::scheduler::slice_scheduler::scheduler().lock();
                             if let Some(info) = sched.get_process_info_mut(fg_pid) {
-                                info.process.state = crate::scheduler::process::ProcessState::Blocked;
+                                info.process.state =
+                                    crate::scheduler::process::ProcessState::Blocked;
                             }
                             drop(sched);
                             let job_num = job_add(fg_pid, &buf[..len]);

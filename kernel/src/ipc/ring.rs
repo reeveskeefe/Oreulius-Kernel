@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 use super::errors::IpcError;
 use super::message::Message;
 use super::types::CHANNEL_CAPACITY;

@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 use super::{
     channel_capacity_wait_addr, channel_message_wait_addr, BackpressureAction, BackpressureLevel,
     Channel, ChannelId, ChannelTable, IpcError, IpcService, ProcessId, CHANNEL_CAPACITY,
@@ -73,12 +72,12 @@ impl Channel {
             saturated_hits: self.saturated_hits,
             sender_wakeups: self.sender_wakeups,
             receiver_wakeups: self.receiver_wakeups,
-            waiting_receivers: crate::scheduler::slice_scheduler::waiter_count(channel_message_wait_addr(
-                self.id,
-            )),
-            waiting_senders: crate::scheduler::slice_scheduler::waiter_count(channel_capacity_wait_addr(
-                self.id,
-            )),
+            waiting_receivers: crate::scheduler::slice_scheduler::waiter_count(
+                channel_message_wait_addr(self.id),
+            ),
+            waiting_senders: crate::scheduler::slice_scheduler::waiter_count(
+                channel_capacity_wait_addr(self.id),
+            ),
         }
     }
 }

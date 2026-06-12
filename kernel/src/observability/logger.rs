@@ -112,7 +112,13 @@ pub fn emit_fmt(
 ) {
     let mut payload = PayloadBuf::new();
     let _ = payload.write_fmt(args);
-    emit_structured(level, subsystem, event_type, code, &payload.data[..payload.len]);
+    emit_structured(
+        level,
+        subsystem,
+        event_type,
+        code,
+        &payload.data[..payload.len],
+    );
 }
 
 #[inline]
@@ -161,7 +167,10 @@ fn should_emit(level: EventLevel, event_type: EventType) -> bool {
     matches!(
         event_type,
         EventType::SecurityViolation | EventType::InvariantViolation | EventType::TerminalFailure
-    ) || matches!(level, EventLevel::Warn | EventLevel::Error | EventLevel::InvariantViolation)
+    ) || matches!(
+        level,
+        EventLevel::Warn | EventLevel::Error | EventLevel::InvariantViolation
+    )
 }
 
 fn update_floor_counters(event_type: EventType, code: u16) {

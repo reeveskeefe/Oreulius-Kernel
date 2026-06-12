@@ -21,10 +21,10 @@
 #[path = "../capnet.rs"]
 mod legacy;
 
-pub mod encoding;
-pub mod session;
-pub mod persistence;
 pub mod audit;
+pub mod encoding;
 pub mod metrics;
+pub mod persistence;
+pub mod session;
 
 pub use legacy::*;

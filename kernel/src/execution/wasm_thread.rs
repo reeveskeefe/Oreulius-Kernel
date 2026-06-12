@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! WASM Thread Infrastructure for Oreulius
 //!
 //! This module implements the WebAssembly Threads proposal thread model for

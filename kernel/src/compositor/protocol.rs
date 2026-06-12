@@ -108,6 +108,12 @@ pub enum CompositorRequest {
         z: u8,
     },
 
+    /// Query dimensions for a window owned by the presented capability.
+    GetWindowSize {
+        window: WindowId,
+        cap: CompositorCap,
+    },
+
     /// Write one ARGB pixel into the window's surface.
     SetPixel {
         surface: SurfaceId,
@@ -134,9 +140,9 @@ pub enum CompositorRequest {
         cap: CompositorCap,
         x: u32,
         y: u32,
-        /// Text bytes (UTF-8 encoded, max 128 chars).
-        text: [u8; 128],
-        text_len: u8,
+        /// Text bytes (UTF-8 encoded, max 512 bytes).
+        text: [u8; 512],
+        text_len: u16,
         fg_argb: u32,
     },
 
@@ -199,6 +205,12 @@ pub enum CompositorResponse {
 
     /// A present pass was scheduled / completed.
     PresentScheduled,
+
+    /// Dimensions returned for an authenticated window query.
+    WindowSize { width: u32, height: u32 },
+
+    /// Number of glyphs rendered by `DrawText`.
+    TextDrawn { glyphs: u32 },
 
     /// Generic success acknowledgement.
     Ok,

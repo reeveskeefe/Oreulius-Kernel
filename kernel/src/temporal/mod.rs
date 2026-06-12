@@ -4577,8 +4577,8 @@ pub fn vfs_fd_capture_self_check() -> Result<(), &'static str> {
 
         let flags = crate::fs::vfs::OpenFlags::READ | crate::fs::vfs::OpenFlags::WRITE;
         let vfs_pid = crate::fs::vfs_platform::pid_from_raw(pid.0);
-        let fd =
-            crate::fs::vfs::open_for_pid(vfs_pid, PATH, flags).map_err(|_| "open_for_pid failed")?;
+        let fd = crate::fs::vfs::open_for_pid(vfs_pid, PATH, flags)
+            .map_err(|_| "open_for_pid failed")?;
         let write_res = crate::fs::vfs::write_fd(vfs_pid, fd, b"x").map_err(|_| "write_fd failed");
         let _ = crate::fs::vfs::close_fd(vfs_pid, fd);
         write_res?;
@@ -4970,7 +4970,8 @@ pub fn branch_merge_self_check() -> Result<(), &'static str> {
 
     let branch_id =
         create_branch(PATH, BRANCH_NAME, None).map_err(|_| "branch self-check create failed")?;
-    crate::fs::vfs::write_path(PATH, MAIN_UPDATE).map_err(|_| "branch self-check main write failed")?;
+    crate::fs::vfs::write_path(PATH, MAIN_UPDATE)
+        .map_err(|_| "branch self-check main write failed")?;
     let main_head = latest_version(PATH)
         .map_err(|_| "branch self-check latest lookup failed")?
         .version_id;
@@ -4997,8 +4998,8 @@ pub fn branch_merge_self_check() -> Result<(), &'static str> {
 
     let mut read_buf = Vec::new();
     read_buf.resize(MAIN_UPDATE.len().saturating_add(32), 0);
-    let read =
-        crate::fs::vfs::read_path(PATH, &mut read_buf).map_err(|_| "branch self-check read failed")?;
+    let read = crate::fs::vfs::read_path(PATH, &mut read_buf)
+        .map_err(|_| "branch self-check read failed")?;
     read_buf.truncate(read);
     if read_buf.as_slice() != MAIN_UPDATE {
         return Err("branch self-check payload mismatch");
@@ -5387,7 +5388,9 @@ pub fn hardening_deterministic_merge_self_check() -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TemporalConflictArtifactInfo, TemporalMergeKind, TemporalMergeStrategy, TemporalService};
+    use super::{
+        TemporalConflictArtifactInfo, TemporalMergeKind, TemporalMergeStrategy, TemporalService,
+    };
 
     #[test]
     fn span_merge_preserves_non_overlapping_binary_edits() {
@@ -5415,8 +5418,12 @@ mod tests {
         let base = b"aaaa";
         let ours = b"baaa";
         let theirs = b"caaa";
-        let merged =
-            TemporalService::try_three_way_byte_merge(base, ours, theirs, TemporalMergeStrategy::ThreeWay);
+        let merged = TemporalService::try_three_way_byte_merge(
+            base,
+            ours,
+            theirs,
+            TemporalMergeStrategy::ThreeWay,
+        );
         assert!(merged.is_none());
     }
 

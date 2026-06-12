@@ -26,8 +26,8 @@
 extern crate alloc;
 
 use crate::ipc::ProcessId;
-use crate::temporal::persistence;
 use crate::security::{self, AuditEntry, SecurityEvent};
+use crate::temporal::persistence;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
@@ -1841,28 +1841,29 @@ pub fn process_incoming_control_payload(
     // on a single-core preemptive kernel another task can run between the lock
     // release and the re-acquisition inside verify_incoming_token, potentially
     // calling accept_nonce on the same peer and causing a spurious ReplayDetected.
-    let token_offer_verified: Option<CapabilityTokenV1> =
-        if frame.msg_type == CapNetControlType::TokenOffer {
-            if frame.payload_len as usize != CAPNET_TOKEN_V1_LEN {
-                audit_capnet(SecurityEvent::InvalidCapability, frame.token_id);
-                return Err(CapNetError::InvalidControlFrame);
-            }
-            let token_payload = &frame.payload[..CAPNET_TOKEN_V1_LEN];
-            let canonical_token_id = canonical_token_id_from_encoded_payload(token_payload)?;
-            let tok = CapabilityTokenV1::decode_checked(token_payload)?;
-            let roundtrip_body = tok.encode_without_mac();
-            if roundtrip_body.as_slice() != &token_payload[..CAPNET_TOKEN_V1_BODY_LEN] {
-                audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.token_id);
-                return Err(CapNetError::InvalidControlFrame);
-            }
-            if canonical_token_id != frame.token_id {
-                if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
-                    crate::serial_println!(
-                        "TOKEN-ID-DIAG computed={:#x} frame={:#x}",
-                        canonical_token_id,
-                        frame.token_id
-                    );
-                    crate::serial_println!(
+    let token_offer_verified: Option<CapabilityTokenV1> = if frame.msg_type
+        == CapNetControlType::TokenOffer
+    {
+        if frame.payload_len as usize != CAPNET_TOKEN_V1_LEN {
+            audit_capnet(SecurityEvent::InvalidCapability, frame.token_id);
+            return Err(CapNetError::InvalidControlFrame);
+        }
+        let token_payload = &frame.payload[..CAPNET_TOKEN_V1_LEN];
+        let canonical_token_id = canonical_token_id_from_encoded_payload(token_payload)?;
+        let tok = CapabilityTokenV1::decode_checked(token_payload)?;
+        let roundtrip_body = tok.encode_without_mac();
+        if roundtrip_body.as_slice() != &token_payload[..CAPNET_TOKEN_V1_BODY_LEN] {
+            audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.token_id);
+            return Err(CapNetError::InvalidControlFrame);
+        }
+        if canonical_token_id != frame.token_id {
+            if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+                crate::serial_println!(
+                    "TOKEN-ID-DIAG computed={:#x} frame={:#x}",
+                    canonical_token_id,
+                    frame.token_id
+                );
+                crate::serial_println!(
                         "TOKEN-FIELDS: n={:#x} iss={:#x} sub={:#x} c={} r={:#x} exp={:#x} mac={:#x} obj={:#x} nbf={} dd={} mu={} rq={}",
                         tok.nonce,
                         tok.issuer_device_id,
@@ -1877,52 +1878,52 @@ pub fn process_incoming_control_payload(
                         tok.max_uses,
                         tok.resource_quota,
                     );
-                }
-                audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.token_id);
-                return Err(CapNetError::TokenIdMismatch);
             }
-            // Stateless semantic and temporal checks – no lock required but
-            // done here to fail fast before mutating replay state.
-            tok.validate_semantics()?;
-            if !tok.is_temporally_valid(now_epoch) {
-                return Err(CapNetError::TokenExpired);
+            audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.token_id);
+            return Err(CapNetError::TokenIdMismatch);
+        }
+        // Stateless semantic and temporal checks – no lock required but
+        // done here to fail fast before mutating replay state.
+        tok.validate_semantics()?;
+        if !tok.is_temporally_valid(now_epoch) {
+            return Err(CapNetError::TokenExpired);
+        }
+        if tok.subject_device_id != local {
+            return Err(CapNetError::UnknownPeer);
+        }
+        if (tok.constraints_flags & CAPNET_CONSTRAINT_MEASUREMENT_BOUND) != 0
+            && peer.measurement_hash != 0
+            && tok.measurement_hash != peer.measurement_hash
+        {
+            if peer.trust == PeerTrustPolicy::Enforce {
+                return Err(CapNetError::MeasurementMismatch);
             }
-            if tok.subject_device_id != local {
-                return Err(CapNetError::UnknownPeer);
+        }
+        if peer.key_epoch == 0 {
+            return Err(CapNetError::SessionNotEstablished);
+        }
+        if !tok.verify_with_session_key(peer.key_k0, peer.key_k1) {
+            audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.issuer_device_id);
+            return Err(CapNetError::MacMismatch);
+        }
+        // Nonce replay check – performed under the peer lock to eliminate
+        // the preemption race window.
+        if !accept_nonce(peer, tok.nonce) {
+            if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
+                crate::serial_println!(
+                    "NONCE-REPLAY-FAIL: nonce={:#x} high={:#x} bitmap={:#x}",
+                    tok.nonce,
+                    peer.replay_high_nonce,
+                    peer.replay_bitmap,
+                );
             }
-            if (tok.constraints_flags & CAPNET_CONSTRAINT_MEASUREMENT_BOUND) != 0
-                && peer.measurement_hash != 0
-                && tok.measurement_hash != peer.measurement_hash
-            {
-                if peer.trust == PeerTrustPolicy::Enforce {
-                    return Err(CapNetError::MeasurementMismatch);
-                }
-            }
-            if peer.key_epoch == 0 {
-                return Err(CapNetError::SessionNotEstablished);
-            }
-            if !tok.verify_with_session_key(peer.key_k0, peer.key_k1) {
-                audit_capnet(SecurityEvent::IntegrityCheckFailed, frame.issuer_device_id);
-                return Err(CapNetError::MacMismatch);
-            }
-            // Nonce replay check – performed under the peer lock to eliminate
-            // the preemption race window.
-            if !accept_nonce(peer, tok.nonce) {
-                if CAPNET_FUZZ_ACTIVE.load(Ordering::Relaxed) {
-                    crate::serial_println!(
-                        "NONCE-REPLAY-FAIL: nonce={:#x} high={:#x} bitmap={:#x}",
-                        tok.nonce,
-                        peer.replay_high_nonce,
-                        peer.replay_bitmap,
-                    );
-                }
-                audit_capnet(SecurityEvent::RateLimitExceeded, frame.issuer_device_id);
-                return Err(CapNetError::ReplayDetected);
-            }
-            Some(tok)
-        } else {
-            None
-        };
+            audit_capnet(SecurityEvent::RateLimitExceeded, frame.issuer_device_id);
+            return Err(CapNetError::ReplayDetected);
+        }
+        Some(tok)
+    } else {
+        None
+    };
 
     peer.last_seen_epoch = now_epoch;
     drop(peers);
@@ -2945,7 +2946,8 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
     parent.max_uses = 16;
     parent.constraints_flags = CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
     let parent_offer = build_token_offer_frame(local, 0, &mut parent).map_err(|e| e.as_str())?;
-    let parent_frame = decode_control_frame(&parent_offer.bytes[..parent_offer.len]).map_err(|e| e.as_str())?;
+    let parent_frame =
+        decode_control_frame(&parent_offer.bytes[..parent_offer.len]).map_err(|e| e.as_str())?;
     if parent_frame.payload_len as usize != CAPNET_TOKEN_V1_LEN {
         return Err("Formal CapNet self-check: parent offer payload length drifted");
     }
@@ -2955,8 +2957,10 @@ pub fn formal_capnet_self_check() -> Result<(), &'static str> {
     {
         return Err("Formal CapNet self-check: parent offer token_id drifted");
     }
-    let decoded_parent = CapabilityTokenV1::decode_checked(parent_payload).map_err(|e| e.as_str())?;
-    if decoded_parent.encode_without_mac().as_slice() != &parent_payload[..CAPNET_TOKEN_V1_BODY_LEN] {
+    let decoded_parent =
+        CapabilityTokenV1::decode_checked(parent_payload).map_err(|e| e.as_str())?;
+    if decoded_parent.encode_without_mac().as_slice() != &parent_payload[..CAPNET_TOKEN_V1_BODY_LEN]
+    {
         return Err("Formal CapNet self-check: parent offer token body drifted");
     }
     match process_incoming_control_payload(&parent_offer.bytes[..parent_offer.len], 10_000) {
@@ -3247,7 +3251,8 @@ mod tests {
         assert_eq!(decoded.token_id, token_id);
         assert_eq!(decoded.payload_len as usize, CAPNET_TOKEN_V1_LEN);
         assert_eq!(
-            canonical_token_id_from_encoded_payload(&decoded.payload[..CAPNET_TOKEN_V1_LEN]).unwrap(),
+            canonical_token_id_from_encoded_payload(&decoded.payload[..CAPNET_TOKEN_V1_LEN])
+                .unwrap(),
             token_id
         );
     }
@@ -3256,7 +3261,8 @@ mod tests {
     fn fixed_regression_seed_no_longer_fails() {
         let stats = capnet_fuzz(100, 3_870_443_198).unwrap();
         assert_eq!(
-            stats.failures, 0,
+            stats.failures,
+            0,
             "stage={} reason={}",
             stats.first_failure.map(|f| f.stage).unwrap_or("none"),
             stats.first_failure.map(|f| f.reason).unwrap_or("none")
