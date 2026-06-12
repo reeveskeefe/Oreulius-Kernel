@@ -36,12 +36,24 @@ pub fn init() {
 
 #[inline]
 pub fn emit_scheduler_boundary(event_type: EventType, code: u16, payload: &[u8]) {
-    logger::emit_structured(EventLevel::Info, Subsystem::Scheduler, event_type, code, payload);
+    logger::emit_structured(
+        EventLevel::Info,
+        Subsystem::Scheduler,
+        event_type,
+        code,
+        payload,
+    );
 }
 
 #[inline]
 pub fn emit_syscall_boundary(event_type: EventType, code: u16, payload: &[u8]) {
-    logger::emit_structured(EventLevel::Info, Subsystem::Syscall, event_type, code, payload);
+    logger::emit_structured(
+        EventLevel::Info,
+        Subsystem::Syscall,
+        event_type,
+        code,
+        payload,
+    );
 }
 
 #[inline]
@@ -51,7 +63,13 @@ pub fn emit_mmu_boundary(event_type: EventType, code: u16, payload: &[u8]) {
 
 #[inline]
 pub fn emit_trap_boundary(event_type: EventType, code: u16, payload: &[u8]) {
-    logger::emit_structured(EventLevel::Info, Subsystem::TrapVector, event_type, code, payload);
+    logger::emit_structured(
+        EventLevel::Info,
+        Subsystem::TrapVector,
+        event_type,
+        code,
+        payload,
+    );
 }
 
 #[inline]

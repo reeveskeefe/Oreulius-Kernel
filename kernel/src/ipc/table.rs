@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 use super::{Channel, ChannelFlags, ChannelId, IpcError, ProcessId, MAX_CHANNELS};
 use alloc::collections::BTreeMap;
 

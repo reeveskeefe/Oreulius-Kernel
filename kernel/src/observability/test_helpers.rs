@@ -17,13 +17,13 @@
 //! Eliminates duplication when validating invariant→event→failure→outcome chains.
 
 #[cfg(test)]
-use crate::failure::policy::{FailureAction, FailureSubsystem};
-#[cfg(test)]
 use crate::failure::policy::last_failure_outcome;
 #[cfg(test)]
-use crate::observability::EventType;
+use crate::failure::policy::{FailureAction, FailureSubsystem};
 #[cfg(test)]
 use crate::observability::ring_buffer;
+#[cfg(test)]
+use crate::observability::EventType;
 
 /// Asserts the complete closure chain for a negative-trace violation:
 /// 1. Event count increased (before < after)

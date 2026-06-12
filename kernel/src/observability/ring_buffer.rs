@@ -75,7 +75,8 @@ impl AtomicEventSlot {
         self.seq.store(INVALID_SEQ, Ordering::SeqCst);
         self.schema_version
             .store(record.schema_version, Ordering::SeqCst);
-        self.timestamp.store(record.timestamp as usize, Ordering::SeqCst);
+        self.timestamp
+            .store(record.timestamp as usize, Ordering::SeqCst);
         self.subsystem
             .store(record.subsystem.to_u8(), Ordering::SeqCst);
         self.level.store(record.level.to_u8(), Ordering::SeqCst);
@@ -101,7 +102,10 @@ impl AtomicEventSlot {
         out.level = decode_level(self.level.load(Ordering::SeqCst));
         out.event_type = decode_event_type(self.event_type.load(Ordering::SeqCst));
         out.code = self.code.load(Ordering::SeqCst);
-        out.payload_len = self.payload_len.load(Ordering::SeqCst).min(EVENT_PAYLOAD_BYTES as u8);
+        out.payload_len = self
+            .payload_len
+            .load(Ordering::SeqCst)
+            .min(EVENT_PAYLOAD_BYTES as u8);
         for idx in 0..EVENT_PAYLOAD_BYTES {
             out.payload[idx] = self.payload[idx].load();
         }

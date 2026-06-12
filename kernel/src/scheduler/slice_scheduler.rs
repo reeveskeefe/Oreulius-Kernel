@@ -163,7 +163,9 @@ pub enum VmaKind {
         source: crate::fs::vfs::MappedFileSource,
         offset: u64,
     },
-    PhysicalMap { phys_start: usize },
+    PhysicalMap {
+        phys_start: usize,
+    },
     KernelSynthetic,
 }
 
@@ -378,7 +380,10 @@ impl ProcessMemoryMap {
         for vma in &mut self.vmas {
             if vma.flags.contains(VmaFlags::WRITE)
                 && !vma.flags.contains(VmaFlags::SHARED)
-                && matches!(vma.kind, VmaKind::Anonymous | VmaKind::Heap | VmaKind::File { .. })
+                && matches!(
+                    vma.kind,
+                    VmaKind::Anonymous | VmaKind::Heap | VmaKind::File { .. }
+                )
             {
                 vma.flags.insert(VmaFlags::COW);
             }
@@ -422,8 +427,12 @@ fn default_user_layout(entry: usize, user_stack: usize) -> UserProcessLayout {
 }
 
 fn build_process_memory_map(layout: UserProcessLayout) -> Result<ProcessMemoryMap, &'static str> {
-    let mut map =
-        ProcessMemoryMap::new(layout.heap_base, layout.heap_end, layout.mmap_base, layout.mmap_limit);
+    let mut map = ProcessMemoryMap::new(
+        layout.heap_base,
+        layout.heap_end,
+        layout.mmap_base,
+        layout.mmap_limit,
+    );
     for region in layout.regions {
         map.insert_vma(Vma {
             start: region.start,
@@ -1218,9 +1227,7 @@ impl SliceScheduler {
         }
 
         let should_wake = matches!(
-            self.processes[idx]
-                .as_ref()
-                .map(|info| info.process.state),
+            self.processes[idx].as_ref().map(|info| info.process.state),
             Some(ProcessState::Blocked | ProcessState::WaitingOnChannel)
         );
         if should_wake {
@@ -1247,7 +1254,11 @@ impl SliceScheduler {
             {
                 if let Some(pid) = self.wait_queues[i].waiting.pop_front() {
                     // Move to ready queue
-                    if let Some(ref mut info) = self.processes.get_mut(pid.0 as usize).and_then(Option::as_mut) {
+                    if let Some(ref mut info) = self
+                        .processes
+                        .get_mut(pid.0 as usize)
+                        .and_then(Option::as_mut)
+                    {
                         info.process.state = ProcessState::Ready;
                         let priority = info.process.priority;
                         self.enqueue_ready(pid, priority);
@@ -1276,7 +1287,11 @@ impl SliceScheduler {
                 && self.wait_queues[i].wake_time == 0
             {
                 while let Some(pid) = self.wait_queues[i].waiting.pop_front() {
-                    if let Some(ref mut info) = self.processes.get_mut(pid.0 as usize).and_then(Option::as_mut) {
+                    if let Some(ref mut info) = self
+                        .processes
+                        .get_mut(pid.0 as usize)
+                        .and_then(Option::as_mut)
+                    {
                         info.process.state = ProcessState::Ready;
                         let priority = info.process.priority;
                         self.enqueue_ready(pid, priority);
@@ -2147,7 +2162,10 @@ impl SliceScheduler {
             let page = crate::arch::mmu::page_size();
             let len = align_up_usize(size, page);
             let info = self.process_info_mut(pid, "memory alloc: process missing")?;
-            let memory_map = info.memory_map.as_mut().ok_or("memory alloc: no memory map")?;
+            let memory_map = info
+                .memory_map
+                .as_mut()
+                .ok_or("memory alloc: no memory map")?;
             let start = match requested_addr {
                 Some(addr) if addr != 0 => {
                     let aligned = align_down_usize(addr, page);
@@ -2158,7 +2176,9 @@ impl SliceScheduler {
                 }
                 _ => memory_map.allocate_range(len, page)?,
             };
-            let end = start.checked_add(len).ok_or("memory alloc: range overflow")?;
+            let end = start
+                .checked_add(len)
+                .ok_or("memory alloc: range overflow")?;
             let writable = flags.contains(VmaFlags::WRITE);
             let space = info
                 .address_space
@@ -2196,23 +2216,28 @@ impl SliceScheduler {
             let len = align_up_usize(size, page);
             let file_offset = align_down_usize(offset, page);
             let info = self.process_info_mut(pid, "memory map: process missing")?;
-            let memory_map = info.memory_map.as_mut().ok_or("memory map: no memory map")?;
+            let memory_map = info
+                .memory_map
+                .as_mut()
+                .ok_or("memory map: no memory map")?;
             let start = match requested_addr {
                 Some(addr) if addr != 0 => {
                     let aligned = align_down_usize(addr, page);
                     let end = aligned
                         .checked_add(len)
                         .ok_or("memory map: range overflow")?;
-                    if memory_map.vmas.iter().any(|vma| aligned < vma.end && vma.start < end) {
+                    if memory_map
+                        .vmas
+                        .iter()
+                        .any(|vma| aligned < vma.end && vma.start < end)
+                    {
                         return Err("memory map: address already mapped");
                     }
                     aligned
                 }
                 _ => memory_map.allocate_range(len, page)?,
             };
-            let end = start
-                .checked_add(len)
-                .ok_or("memory map: range overflow")?;
+            let end = start.checked_add(len).ok_or("memory map: range overflow")?;
             memory_map.insert_vma(Vma {
                 start,
                 end,
@@ -2261,7 +2286,8 @@ impl SliceScheduler {
                         page,
                     );
                 }
-                let write_offset = file_base_offset.saturating_add(page_addr.saturating_sub(vma.start));
+                let write_offset =
+                    file_base_offset.saturating_add(page_addr.saturating_sub(vma.start));
                 crate::fs::vfs::write_mapped_file_at(source, write_offset, &page_buf)?;
             }
             page_addr = page_addr.saturating_add(page);
@@ -2378,7 +2404,10 @@ impl SliceScheduler {
                 .ok_or("memory free: range overflow")?;
             let shared_keys = {
                 let info = self.process_info_mut(pid, "memory free: process missing")?;
-                let memory_map = info.memory_map.as_mut().ok_or("memory free: no memory map")?;
+                let memory_map = info
+                    .memory_map
+                    .as_mut()
+                    .ok_or("memory free: no memory map")?;
                 let vma = memory_map.remove_exact_vma(start, end)?;
                 let space = info
                     .address_space
@@ -2433,7 +2462,10 @@ impl SliceScheduler {
             if is_exec && !vma.flags.contains(VmaFlags::EXEC) {
                 return Err("page fault: execute permission denied");
             }
-            if is_write && !vma.flags.contains(VmaFlags::WRITE) && !vma.flags.contains(VmaFlags::COW) {
+            if is_write
+                && !vma.flags.contains(VmaFlags::WRITE)
+                && !vma.flags.contains(VmaFlags::COW)
+            {
                 return Err("page fault: write permission denied");
             }
             if !is_write && !vma.flags.contains(VmaFlags::READ) && !is_exec {
@@ -2464,7 +2496,8 @@ impl SliceScheduler {
                 VmaKind::File { source, offset } => {
                     let file_page_offset = offset
                         .checked_add(page_addr.saturating_sub(vma.start) as u64)
-                        .ok_or("page fault: file offset overflow")? as usize;
+                        .ok_or("page fault: file offset overflow")?
+                        as usize;
                     let writable = vma.flags.contains(VmaFlags::WRITE);
                     let cached_phys = if vma.flags.contains(VmaFlags::SHARED) {
                         self.retain_shared_file_page(&source, file_page_offset)
@@ -2485,15 +2518,22 @@ impl SliceScheduler {
                     space.map_page(page_addr, phys_addr, writable, true)?;
 
                     let mut page_buf = alloc::vec![0u8; page];
-                    let _ =
-                        crate::fs::vfs::read_mapped_file_at(&source, file_page_offset, &mut page_buf)?;
+                    let _ = crate::fs::vfs::read_mapped_file_at(
+                        &source,
+                        file_page_offset,
+                        &mut page_buf,
+                    )?;
 
                     let old = crate::arch::mmu::current_page_table_root_addr();
                     unsafe {
                         space.activate();
                     }
                     unsafe {
-                        core::ptr::copy_nonoverlapping(page_buf.as_ptr(), page_addr as *mut u8, page);
+                        core::ptr::copy_nonoverlapping(
+                            page_buf.as_ptr(),
+                            page_addr as *mut u8,
+                            page,
+                        );
                     }
                     crate::arch::mmu::set_page_table_root(old)?;
                     if vma.flags.contains(VmaFlags::SHARED) {
@@ -2690,7 +2730,11 @@ impl SliceScheduler {
                 fpu_state: crate::arch::fpu::ExtFpuState::new(),
             };
 
-            crate::scheduler::process_platform::on_process_spawn(child_pid, Some(parent_pid), "forked");
+            crate::scheduler::process_platform::on_process_spawn(
+                child_pid,
+                Some(parent_pid),
+                "forked",
+            );
             self.processes[child_idx] = Some(child_info);
             self.enqueue_ready(child_pid, parent_priority);
             self.record_temporal_state_snapshot_locked(
@@ -2747,9 +2791,11 @@ impl SliceScheduler {
             // Non-IRQ process fork path: child kernel stack allocation is expected here.
             let child_kernel_stack: Box<[u8; crate::scheduler::process::STACK_SIZE]> =
                 Box::new([0u8; crate::scheduler::process::STACK_SIZE]);
-            let child_stack_top =
-                (child_kernel_stack.as_ptr() as usize + crate::scheduler::process::STACK_SIZE) & !15usize;
-            let child_rsp = crate::platform::syscall::clone_current_syscall_return_frame(child_stack_top, 0)?;
+            let child_stack_top = (child_kernel_stack.as_ptr() as usize
+                + crate::scheduler::process::STACK_SIZE)
+                & !15usize;
+            let child_rsp =
+                crate::platform::syscall::clone_current_syscall_return_frame(child_stack_top, 0)?;
 
             let mut child_process = match crate::scheduler::process::process_manager()
                 .fork_process_with_pid(parent_pid, child_pid)
@@ -2878,8 +2924,9 @@ impl SliceScheduler {
 
             // Copy the parent's SVC exception frame onto the child's kernel stack
             // with x0 = 0 (fork returns 0 in child).
-            let child_sp =
-                crate::platform::syscall::clone_current_aarch64_syscall_return_frame(child_stack_top)?;
+            let child_sp = crate::platform::syscall::clone_current_aarch64_syscall_return_frame(
+                child_stack_top,
+            )?;
 
             // Build child PCB.
             let mut child_process = parent_process_clone;
@@ -2940,7 +2987,11 @@ impl SliceScheduler {
                 fpu_state: crate::arch::fpu::ExtFpuState::new(),
             };
 
-            crate::scheduler::process_platform::on_process_spawn(child_pid, Some(parent_pid), "forked");
+            crate::scheduler::process_platform::on_process_spawn(
+                child_pid,
+                Some(parent_pid),
+                "forked",
+            );
             self.processes[child_idx] = Some(child_info);
             self.enqueue_ready(child_pid, parent_priority);
             self.record_temporal_state_snapshot_locked(
@@ -4080,10 +4131,7 @@ mod tests {
         assert_eq!(priority_to_queue_idx(ProcessPriority::Normal), 1);
         assert_eq!(priority_to_queue_idx(ProcessPriority::Low), 2);
 
-        assert_eq!(
-            base_slice_for_priority(ProcessPriority::High),
-            SLICE_HIGH
-        );
+        assert_eq!(base_slice_for_priority(ProcessPriority::High), SLICE_HIGH);
         assert_eq!(
             base_slice_for_priority(ProcessPriority::Normal),
             SLICE_NORMAL

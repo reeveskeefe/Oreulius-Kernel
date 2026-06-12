@@ -607,7 +607,8 @@ pub(crate) fn parse_platform_info(ptr_addr: usize) -> Option<DtbPlatformInfo> {
         }
     };
 
-    let header_check = crate::invariants::mmu::check_mapping_bounds(header.ptr, header.total_size, 4);
+    let header_check =
+        crate::invariants::mmu::check_mapping_bounds(header.ptr, header.total_size, 4);
     if !header_check.valid {
         crate::invariants::enforce(header_check, b"dtb header range invariant failed");
         let _ = crate::failure::handle_failure(
@@ -967,7 +968,10 @@ mod tests {
         let expected = crate::invariants::mmu::check_mapping_bounds(0x1000, 49, 4);
         assert!(!expected.valid);
         assert_eq!(expected.id, "INV-MMU-MAP-001");
-        assert_eq!(expected.severity, crate::invariants::InvariantSeverity::Safety);
+        assert_eq!(
+            expected.severity,
+            crate::invariants::InvariantSeverity::Safety
+        );
 
         let mut blob = [0u8; 64];
 
@@ -995,7 +999,10 @@ mod tests {
         crate::observability::assert_closure_chain_closure(
             before,
             after,
-            &[EventType::InvariantViolation, EventType::FailurePolicyAction],
+            &[
+                EventType::InvariantViolation,
+                EventType::FailurePolicyAction,
+            ],
             FailureSubsystem::Dtb,
             FailureAction::Degrade,
         );

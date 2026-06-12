@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 use crate::math::linear_capability::LinearCapability;
 
 use super::types::{ChannelId, ProcessId};

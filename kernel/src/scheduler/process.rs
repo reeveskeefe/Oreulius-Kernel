@@ -417,10 +417,7 @@ impl ProcessTable {
     }
 
     fn pid_in_use(&self, pid: Pid) -> bool {
-        self.processes
-            .iter()
-            .flatten()
-            .any(|proc| proc.pid == pid)
+        self.processes.iter().flatten().any(|proc| proc.pid == pid)
     }
 
     pub const fn new() -> Self {
@@ -676,7 +673,8 @@ impl Scheduler {
                 if proc.is_runnable() && proc.state != ProcessState::Running {
                     proc.mark_running();
                     self.current_pid = Some(proc.pid);
-                    let check = crate::invariants::scheduler::check_fairness_window(runnable_count, 1);
+                    let check =
+                        crate::invariants::scheduler::check_fairness_window(runnable_count, 1);
                     crate::invariants::enforce(check, b"scheduler selected runnable process");
                     crate::observability::emit_scheduler_boundary(
                         crate::observability::EventType::SchedulerBoundary,
@@ -1078,9 +1076,7 @@ fn advance_kernel_bootstrap_phase(from: u8, to: u8) -> Result<(), &'static str> 
             (KERNEL_BOOTSTRAP_SEEDED, KERNEL_BOOTSTRAP_UNSEEDED) => {
                 "kernel bootstrap regressed to unseeded"
             }
-            (KERNEL_BOOTSTRAP_SEEDED, KERNEL_BOOTSTRAP_SEALED) => {
-                "kernel bootstrap already sealed"
-            }
+            (KERNEL_BOOTSTRAP_SEEDED, KERNEL_BOOTSTRAP_SEALED) => "kernel bootstrap already sealed",
             _ => "invalid kernel bootstrap phase transition",
         })
 }
@@ -1203,10 +1199,7 @@ pub fn init() {
     let mut table = PROCESS_MANAGER.table.lock();
     let _ = reconcile_kernel_bootstrap_locked(&mut table, &mut scheduler, "init:before");
     if KERNEL_BOOTSTRAP_PHASE.load(Ordering::Acquire) == KERNEL_BOOTSTRAP_UNSEEDED {
-        let _ = advance_kernel_bootstrap_phase(
-            KERNEL_BOOTSTRAP_UNSEEDED,
-            KERNEL_BOOTSTRAP_SEEDED,
-        );
+        let _ = advance_kernel_bootstrap_phase(KERNEL_BOOTSTRAP_UNSEEDED, KERNEL_BOOTSTRAP_SEEDED);
     }
     trace_kernel_bootstrap_locked("init:after", &table, &scheduler);
 }
@@ -1378,7 +1371,10 @@ mod tests {
         let expected = crate::invariants::scheduler::check_fairness_window(1, 0);
         assert!(!expected.valid);
         assert_eq!(expected.id, "INV-SCHED-FAIR-001");
-        assert_eq!(expected.severity, crate::invariants::InvariantSeverity::Progress);
+        assert_eq!(
+            expected.severity,
+            crate::invariants::InvariantSeverity::Progress
+        );
 
         let before = ring_buffer::write_count();
 
@@ -1395,7 +1391,10 @@ mod tests {
         crate::observability::assert_closure_chain_closure(
             before,
             after,
-            &[EventType::InvariantViolation, EventType::FailurePolicyAction],
+            &[
+                EventType::InvariantViolation,
+                EventType::FailurePolicyAction,
+            ],
             FailureSubsystem::Scheduler,
             FailureAction::Isolate,
         );

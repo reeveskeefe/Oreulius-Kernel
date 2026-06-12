@@ -119,8 +119,8 @@ const BMDMA_PRDT: u16 = 4;
 
 const BMDMA_CMD_START: u8 = 1 << 0; // Start/Stop bus master
 const BMDMA_CMD_WRITE: u8 = 1 << 3; // Direction: 1=write, 0=read
-const BMDMA_STS_ERR:   u8 = 1 << 1; // DMA error (set by hardware)
-const BMDMA_STS_INTR:  u8 = 1 << 2; // Interrupt received (set by hardware)
+const BMDMA_STS_ERR: u8 = 1 << 1; // DMA error (set by hardware)
+const BMDMA_STS_INTR: u8 = 1 << 2; // Interrupt received (set by hardware)
 
 /// Maximum sectors per single DMA command: one PRD entry can hold at most
 /// 65535 bytes (fields of 0 mean 64 KiB), so 127 × 512 = 65024 bytes is safe.
@@ -144,7 +144,11 @@ struct PrdEntry {
 
 // SAFETY: Only accessed under the per-channel `Mutex<AtaController>` lock;
 // single-entry table re-initialised at the start of every DMA command.
-static mut ATA_PRDT: PrdEntry = PrdEntry { base: 0, count: 0, flags: 0 };
+static mut ATA_PRDT: PrdEntry = PrdEntry {
+    base: 0,
+    count: 0,
+    flags: 0,
+};
 
 // ============================================================================
 // Drive select masks
@@ -718,8 +722,8 @@ impl AtaDrive {
 
         // Program PRDT base address (32-bit, little-endian).
         let p = self.bus_master_base + BMDMA_PRDT;
-        outb(p,     (prdt_phys & 0xFF) as u8);
-        outb(p + 1, ((prdt_phys >>  8) & 0xFF) as u8);
+        outb(p, (prdt_phys & 0xFF) as u8);
+        outb(p + 1, ((prdt_phys >> 8) & 0xFF) as u8);
         outb(p + 2, ((prdt_phys >> 16) & 0xFF) as u8);
         outb(p + 3, ((prdt_phys >> 24) & 0xFF) as u8);
 
@@ -772,8 +776,11 @@ impl AtaDrive {
             let off = done * SECTOR_SIZE;
             let this_lba = lba + done as u32;
 
-            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER })
-                | DRIVE_LBA
+            let sel = (if self.slave {
+                DRIVE_SLAVE
+            } else {
+                DRIVE_MASTER
+            }) | DRIVE_LBA
                 | ((this_lba >> 24) & 0x0F) as u8;
             outb(self.io_base + REG_DRIVE_HEAD, sel);
             for _ in 0..4 {
@@ -782,9 +789,9 @@ impl AtaDrive {
             self.wait_not_busy();
 
             outb(self.io_base + REG_SECTOR_COUNT, (n & 0xFF) as u8);
-            outb(self.io_base + REG_LBA_LO,  (this_lba & 0xFF) as u8);
-            outb(self.io_base + REG_LBA_MID, ((this_lba >>  8) & 0xFF) as u8);
-            outb(self.io_base + REG_LBA_HI,  ((this_lba >> 16) & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_LO, (this_lba & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_MID, ((this_lba >> 8) & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_HI, ((this_lba >> 16) & 0xFF) as u8);
 
             self.bmdma_setup(buf[off..].as_ptr(), n * SECTOR_SIZE, false);
             outb(self.io_base + REG_COMMAND, CMD_READ_DMA);
@@ -797,12 +804,7 @@ impl AtaDrive {
         Ok(())
     }
 
-    unsafe fn write_lba28_dma(
-        &self,
-        lba: u32,
-        count: usize,
-        buf: &[u8],
-    ) -> Result<(), AtaError> {
+    unsafe fn write_lba28_dma(&self, lba: u32, count: usize, buf: &[u8]) -> Result<(), AtaError> {
         let mut done = 0;
         let mut remaining = count;
         while remaining > 0 {
@@ -810,8 +812,11 @@ impl AtaDrive {
             let off = done * SECTOR_SIZE;
             let this_lba = lba + done as u32;
 
-            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER })
-                | DRIVE_LBA
+            let sel = (if self.slave {
+                DRIVE_SLAVE
+            } else {
+                DRIVE_MASTER
+            }) | DRIVE_LBA
                 | ((this_lba >> 24) & 0x0F) as u8;
             outb(self.io_base + REG_DRIVE_HEAD, sel);
             for _ in 0..4 {
@@ -820,9 +825,9 @@ impl AtaDrive {
             self.wait_not_busy();
 
             outb(self.io_base + REG_SECTOR_COUNT, (n & 0xFF) as u8);
-            outb(self.io_base + REG_LBA_LO,  (this_lba & 0xFF) as u8);
-            outb(self.io_base + REG_LBA_MID, ((this_lba >>  8) & 0xFF) as u8);
-            outb(self.io_base + REG_LBA_HI,  ((this_lba >> 16) & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_LO, (this_lba & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_MID, ((this_lba >> 8) & 0xFF) as u8);
+            outb(self.io_base + REG_LBA_HI, ((this_lba >> 16) & 0xFF) as u8);
 
             self.bmdma_setup(buf[off..].as_ptr(), n * SECTOR_SIZE, true);
             outb(self.io_base + REG_COMMAND, CMD_WRITE_DMA);
@@ -852,7 +857,11 @@ impl AtaDrive {
             let off = done * SECTOR_SIZE;
             let this_lba = lba + done as u64;
 
-            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER }) | DRIVE_LBA;
+            let sel = (if self.slave {
+                DRIVE_SLAVE
+            } else {
+                DRIVE_MASTER
+            }) | DRIVE_LBA;
             outb(self.io_base + REG_DRIVE_HEAD, sel);
             for _ in 0..4 {
                 let _ = self.alt_status();
@@ -871,12 +880,7 @@ impl AtaDrive {
         Ok(())
     }
 
-    unsafe fn write_lba48_dma(
-        &self,
-        lba: u64,
-        count: usize,
-        buf: &[u8],
-    ) -> Result<(), AtaError> {
+    unsafe fn write_lba48_dma(&self, lba: u64, count: usize, buf: &[u8]) -> Result<(), AtaError> {
         let mut done = 0;
         let mut remaining = count;
         while remaining > 0 {
@@ -884,7 +888,11 @@ impl AtaDrive {
             let off = done * SECTOR_SIZE;
             let this_lba = lba + done as u64;
 
-            let sel = (if self.slave { DRIVE_SLAVE } else { DRIVE_MASTER }) | DRIVE_LBA;
+            let sel = (if self.slave {
+                DRIVE_SLAVE
+            } else {
+                DRIVE_MASTER
+            }) | DRIVE_LBA;
             outb(self.io_base + REG_DRIVE_HEAD, sel);
             for _ in 0..4 {
                 let _ = self.alt_status();

@@ -337,13 +337,17 @@ pub unsafe fn switch_context(from: *mut ProcessContext, to: *const ProcessContex
 #[cfg(target_arch = "x86")]
 #[inline]
 pub fn runtime_pid_sync(pid_raw: u32) {
-    let _ = crate::scheduler::process::set_current_runtime_pid(crate::scheduler::process::Pid::new(pid_raw));
+    let _ = crate::scheduler::process::set_current_runtime_pid(
+        crate::scheduler::process::Pid::new(pid_raw),
+    );
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn runtime_pid_sync(pid_raw: u32) {
-    let _ = crate::scheduler::process::set_current_runtime_pid(crate::scheduler::process::Pid::new(pid_raw));
+    let _ = crate::scheduler::process::set_current_runtime_pid(
+        crate::scheduler::process::Pid::new(pid_raw),
+    );
 }
 
 #[cfg(target_arch = "aarch64")]

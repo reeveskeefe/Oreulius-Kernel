@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! # Unified Input Event Queue
 //!
 //! Merges keyboard ([`KeyEvent`]) and mouse ([`MouseEvent`]) events into a

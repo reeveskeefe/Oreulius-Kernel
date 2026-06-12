@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 // Copyright (c) 2026 Keefe Reeves
 // SPDX-License-Identifier: BUSL-1.1
 //
@@ -2389,7 +2388,9 @@ pub fn init() {
             }
             crate::drivers::x86::vga::print_str("[ENCLAVE] FLC: launch key hash written\n");
         } else {
-            crate::drivers::x86::vga::print_str("[ENCLAVE] FLC: skipped (lock bit set or LC not enabled)\n");
+            crate::drivers::x86::vga::print_str(
+                "[ENCLAVE] FLC: skipped (lock bit set or LC not enabled)\n",
+            );
         }
     }
 

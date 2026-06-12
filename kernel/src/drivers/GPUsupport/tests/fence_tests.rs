@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 #[test]
 fn fence_ids_increase() {
     let a = crate::drivers::x86::gpu_support::GpuFence::alloc();

@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 //! # TLS 1.3 Record Layer
 //!
 //! A complete TLS 1.3 implementation for Oreulius, built on top of the

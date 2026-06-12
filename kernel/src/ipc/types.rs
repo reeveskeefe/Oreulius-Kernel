@@ -12,11 +12,10 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 use alloc::vec::Vec;
 
-use crate::capability::Rights;
 use super::errors::IpcError;
+use crate::capability::Rights;
 use crate::security::security;
 
 /// Errors returned by typed IPC argument codecs.
@@ -658,12 +657,8 @@ mod tests {
 
     #[test]
     fn capability_token_changes_when_context_changes() {
-        let mut base = Capability::with_type(
-            7,
-            11,
-            Rights::new(0xAA55),
-            CapabilityType::Filesystem,
-        );
+        let mut base =
+            Capability::with_type(7, 11, Rights::new(0xAA55), CapabilityType::Filesystem);
         base.extra = [0x10, 0x20, 0x30, 0x40];
         let original = base.token_payload();
 

@@ -15,6 +15,5 @@
 pub mod policy;
 
 pub use policy::{
-    FailureAction, FailureKind, FailureOutcome, FailurePolicy, FailureSubsystem,
-    handle_failure,
+    handle_failure, FailureAction, FailureKind, FailureOutcome, FailurePolicy, FailureSubsystem,
 };

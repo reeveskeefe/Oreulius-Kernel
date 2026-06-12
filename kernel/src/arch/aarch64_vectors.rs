@@ -252,7 +252,9 @@ pub extern "C" fn oreulius_aarch64_vector_dispatch(
     #[cfg(not(any(test, feature = "host-tests")))]
     {
         let sp_el0: u64;
-        unsafe { core::arch::asm!("mrs {}, SP_EL0", out(reg) sp_el0, options(nomem, nostack, preserves_flags)) };
+        unsafe {
+            core::arch::asm!("mrs {}, SP_EL0", out(reg) sp_el0, options(nomem, nostack, preserves_flags))
+        };
         LAST_SP_EL0.store(sp_el0, Ordering::Relaxed);
     }
 
@@ -433,7 +435,10 @@ mod tests {
         );
         assert!(!expected.valid);
         assert_eq!(expected.id, "INV-SYSCALL-FRAME-001");
-        assert_eq!(expected.severity, crate::invariants::InvariantSeverity::Safety);
+        assert_eq!(
+            expected.severity,
+            crate::invariants::InvariantSeverity::Safety
+        );
 
         let esr_svc = (EC_SVC64 as u64) << 26;
         let before = ring_buffer::write_count();
@@ -451,7 +456,10 @@ mod tests {
         crate::observability::assert_closure_chain_closure(
             before,
             after,
-            &[EventType::InvariantViolation, EventType::FailurePolicyAction],
+            &[
+                EventType::InvariantViolation,
+                EventType::FailurePolicyAction,
+            ],
             FailureSubsystem::Syscall,
             FailureAction::Isolate,
         );

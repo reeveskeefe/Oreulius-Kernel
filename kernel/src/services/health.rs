@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 /*!
  * Oreulius Kernel — System Health Telemetry
  *
@@ -29,8 +28,12 @@ extern crate alloc;
 use crate::temporal::persistence;
 // Cross-arch console output: VGA on x86/x86_64, PL011 on AArch64.
 mod vga {
-    pub fn print_str(s: &str) { crate::serial::kprint_str(s); }
-    pub fn print_char(c: char) { crate::serial::kprint_char(c); }
+    pub fn print_str(s: &str) {
+        crate::serial::kprint_str(s);
+    }
+    pub fn print_char(c: char) {
+        crate::serial::kprint_char(c);
+    }
 }
 
 // ============================================================================
@@ -326,12 +329,16 @@ pub fn cmd_crash_log_show() {
             vga::print_str(") ---\n");
             vga::print_str("  Location: ");
             for &b in &loc {
-                if b == 0 { break; }
+                if b == 0 {
+                    break;
+                }
                 vga::print_char(b as char);
             }
             vga::print_str("\n  Message : ");
             for &b in &msg {
-                if b == 0 { break; }
+                if b == 0 {
+                    break;
+                }
                 vga::print_char(b as char);
             }
             vga::print_str("\n");

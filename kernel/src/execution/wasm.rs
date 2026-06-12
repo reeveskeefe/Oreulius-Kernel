@@ -30,18 +30,18 @@ extern crate alloc;
 
 use crate::arch::mmu as arch_mmu;
 use crate::capability::{self, CapabilityType, Rights};
+use crate::execution::replay::{self, ReplayEventStatus, ReplayMode};
 use crate::fs;
+use crate::fs::paging;
+use crate::ipc::{ChannelId, ProcessId};
+use crate::memory;
 #[cfg(not(target_arch = "x86_64"))]
 use crate::platform::gdt;
 use crate::platform::idt_asm;
-use crate::ipc::{ChannelId, ProcessId};
-use crate::security::kpti;
-use crate::memory;
-use crate::security::memory_isolation;
-use crate::fs::paging;
-use crate::scheduler::process_asm;
-use crate::execution::replay::{self, ReplayEventStatus, ReplayMode};
 use crate::platform::syscall::SYSCALL_JIT_RETURN;
+use crate::scheduler::process_asm;
+use crate::security::kpti;
+use crate::security::memory_isolation;
 use alloc::alloc::{alloc, handle_alloc_error, Layout};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -850,10 +850,7 @@ enum HostAliasPolicy {
 #[derive(Clone, Copy)]
 enum HostBehavior {
     Method(fn(&mut WasmInstance) -> Result<(), WasmError>),
-    Noop {
-        pop_count: usize,
-        push_zero: bool,
-    },
+    Noop { pop_count: usize, push_zero: bool },
 }
 
 #[derive(Clone, Copy)]
@@ -987,16 +984,12 @@ impl HostAliasPolicy {
                         .map(|suffix| suffix == canonical_name)
                         .unwrap_or(false)
             }
-            HostAliasPolicy::DebugLog => {
-                candidate == "debug_log" || candidate == "oreulius_log"
-            }
+            HostAliasPolicy::DebugLog => candidate == "debug_log" || candidate == "oreulius_log",
             HostAliasPolicy::ChannelSendCap => {
-                candidate == "channel_send_cap"
-                    || candidate == "oreulius_channel_send_cap"
+                candidate == "channel_send_cap" || candidate == "oreulius_channel_send_cap"
             }
             HostAliasPolicy::LastServiceCap => {
-                candidate == "last_service_cap"
-                    || candidate == "oreulius_last_service_cap"
+                candidate == "last_service_cap" || candidate == "oreulius_last_service_cap"
             }
             HostAliasPolicy::ServiceRegister => {
                 candidate == "service_register"
@@ -1014,7 +1007,8 @@ impl HostFunctionSpec {
     }
 
     fn matches_signature(&self, signature: ParsedFunctionType) -> bool {
-        if signature.param_count != self.param_count || signature.result_count != self.result_count {
+        if signature.param_count != self.param_count || signature.result_count != self.result_count
+        {
             return false;
         }
 
@@ -1090,159 +1084,1287 @@ fn host_function_signature_from_types(
 const HOST_FUNCTION_SPECS: [HostFunctionSpec; 143] = [
     host_spec!(0, "debug_log", 2, 0, ExactI32, DebugLog, Method(host_log)),
     host_spec!(1, "fs_read", 5, 1, ExactI32, Standard, Method(host_fs_read)),
-    host_spec!(2, "fs_write", 5, 1, ExactI32, Standard, Method(host_fs_write)),
-    host_spec!(3, "channel_send", 3, 1, ExactI32, Standard, Method(host_channel_send)),
-    host_spec!(4, "channel_recv", 3, 1, ExactI32, Standard, Method(host_channel_recv)),
-    host_spec!(5, "net_http_get", 4, 1, ExactI32, Standard, Method(host_net_http_get)),
-    host_spec!(6, "net_connect", 3, 1, ExactI32, Standard, Method(host_net_connect)),
-    host_spec!(7, "dns_resolve", 2, 1, ExactI32, Standard, Method(host_dns_resolve)),
-    host_spec!(8, "service_invoke", 3, 1, ExactI32, Standard, Method(host_service_invoke)),
-    host_spec!(9, "service_register", 2, 1, ServiceRegister, ServiceRegister, Method(host_service_register)),
-    host_spec!(10, "channel_send_cap", 4, 1, ExactI32, ChannelSendCap, Method(host_channel_send_with_cap)),
-    host_spec!(11, "last_service_cap", 0, 1, ExactI32, LastServiceCap, Method(host_last_service_handle)),
-    host_spec!(12, "service_invoke_typed", 5, 1, ExactI32, Standard, Method(host_service_invoke_typed)),
-    host_spec!(13, "temporal_snapshot", 4, 1, ExactI32, Standard, Method(host_temporal_snapshot)),
-    host_spec!(14, "temporal_latest", 4, 1, ExactI32, Standard, Method(host_temporal_latest)),
-    host_spec!(15, "temporal_read", 7, 1, ExactI32, Standard, Method(host_temporal_read)),
-    host_spec!(16, "temporal_rollback", 6, 1, ExactI32, Standard, Method(host_temporal_rollback)),
-    host_spec!(17, "temporal_stats", 1, 1, ExactI32, Standard, Method(host_temporal_stats)),
-    host_spec!(18, "temporal_history", 7, 1, ExactI32, Standard, Method(host_temporal_history)),
-    host_spec!(19, "temporal_branch_create", 8, 1, ExactI32, Standard, Method(host_temporal_branch_create)),
-    host_spec!(20, "temporal_branch_checkout", 6, 1, ExactI32, Standard, Method(host_temporal_branch_checkout)),
-    host_spec!(21, "temporal_branch_list", 5, 1, ExactI32, Standard, Method(host_temporal_branch_list)),
-    host_spec!(22, "temporal_merge", 9, 1, ExactI32, Standard, Method(host_temporal_merge)),
-    host_spec!(23, "thread_spawn", 2, 1, ExactI32, Standard, Method(host_thread_spawn)),
-    host_spec!(24, "thread_join", 1, 1, ExactI32, Standard, Method(host_thread_join)),
-    host_spec!(25, "thread_id", 0, 1, ExactI32, Standard, Method(host_thread_id)),
-    host_spec!(26, "thread_yield", 0, 0, ExactI32, Standard, Method(host_thread_yield)),
-    host_spec!(27, "thread_exit", 1, 0, ExactI32, Standard, Method(host_thread_exit)),
-    host_spec!(28, "compositor_create_window", 4, 1, ExactI32, Standard, Method(host_compositor_create_window)),
-    host_spec!(29, "compositor_destroy_window", 1, 1, ExactI32, Standard, Method(host_compositor_destroy_window)),
-    host_spec!(30, "compositor_set_pixel", 4, 0, ExactI32, Standard, Method(host_compositor_set_pixel)),
-    host_spec!(31, "compositor_fill_rect", 6, 0, ExactI32, Standard, Method(host_compositor_fill_rect)),
-    host_spec!(32, "compositor_flush", 1, 0, ExactI32, Standard, Method(host_compositor_flush)),
-    host_spec!(33, "compositor_move_window", 3, 0, ExactI32, Standard, Method(host_compositor_move_window)),
-    host_spec!(34, "compositor_set_z_order", 2, 0, ExactI32, Standard, Method(host_compositor_set_z_order)),
-    host_spec!(35, "compositor_get_width", 1, 1, ExactI32, Standard, Method(host_compositor_get_width)),
-    host_spec!(36, "compositor_get_height", 1, 1, ExactI32, Standard, Method(host_compositor_get_height)),
-    host_spec!(37, "compositor_draw_text", 6, 1, ExactI32, Standard, Method(host_compositor_draw_text)),
-    host_spec!(38, "input_poll", 0, 1, ExactI32, Standard, Method(host_input_poll)),
-    host_spec!(39, "input_read", 2, 1, ExactI32, Standard, Method(host_input_read)),
-    host_spec!(40, "input_event_type", 0, 1, ExactI32, Standard, Method(host_input_event_type)),
-    host_spec!(41, "input_flush", 0, 1, ExactI32, Standard, Method(host_input_flush)),
-    host_spec!(42, "input_key_poll", 0, 1, ExactI32, Standard, Method(host_input_key_poll)),
-    host_spec!(43, "input_mouse_poll", 0, 1, ExactI32, Standard, Method(host_input_mouse_poll)),
-    host_spec!(44, "input_gamepad_poll", 0, 1, ExactI32, Standard, Method(host_input_gamepad_poll)),
-    host_spec!(45, "args_get", 2, 1, ExactI32, Standard, Method(host_wasi_args_get)),
-    host_spec!(46, "args_sizes_get", 2, 1, ExactI32, Standard, Method(host_wasi_args_sizes_get)),
-    host_spec!(47, "environ_get", 2, 1, ExactI32, Standard, Method(host_wasi_environ_get)),
-    host_spec!(48, "environ_sizes_get", 2, 1, ExactI32, Standard, Method(host_wasi_environ_sizes_get)),
-    host_spec!(49, "clock_res_get", 2, 1, ExactI32, Standard, Method(host_wasi_clock_res_get)),
-    host_spec!(50, "clock_time_get", 3, 1, ExactI32, Standard, Method(host_wasi_clock_time_get)),
-    host_spec!(51, "fd_advise", 3, 1, ExactI32, Standard, Method(host_wasi_fd_advise)),
-    host_spec!(52, "fd_allocate", 3, 1, ExactI32, Standard, Method(host_wasi_fd_allocate)),
-    host_spec!(53, "fd_close", 1, 1, ExactI32, Standard, Method(host_wasi_fd_close)),
-    host_spec!(54, "fd_datasync", 1, 1, ExactI32, Standard, Method(host_wasi_fd_datasync)),
-    host_spec!(55, "fd_fdstat_get", 2, 1, ExactI32, Standard, Method(host_wasi_fd_fdstat_get)),
-    host_spec!(56, "fd_fdstat_set_flags", 2, 1, ExactI32, Standard, Method(host_wasi_fd_fdstat_set_flags)),
-    host_spec!(57, "fd_fdstat_set_rights", 3, 1, ExactI32, Standard, Method(host_wasi_fd_fdstat_set_rights)),
-    host_spec!(58, "fd_filestat_get", 2, 1, ExactI32, Standard, Method(host_wasi_fd_filestat_get)),
-    host_spec!(59, "fd_filestat_set_size", 2, 1, ExactI32, Standard, Method(host_wasi_fd_filestat_set_size)),
-    host_spec!(60, "fd_filestat_set_times", 4, 1, ExactI32, Standard, Method(host_wasi_fd_filestat_set_times)),
-    host_spec!(61, "fd_pread", 5, 1, ExactI32, Standard, Method(host_wasi_fd_pread)),
-    host_spec!(62, "fd_prestat_get", 2, 1, ExactI32, Standard, Method(host_wasi_fd_prestat_get)),
-    host_spec!(63, "fd_prestat_dir_name", 3, 1, ExactI32, Standard, Method(host_wasi_fd_prestat_dir_name)),
-    host_spec!(64, "fd_pwrite", 5, 1, ExactI32, Standard, Method(host_wasi_fd_pwrite)),
-    host_spec!(65, "fd_read", 4, 1, ExactI32, Standard, Method(host_wasi_fd_read)),
-    host_spec!(66, "fd_readdir", 5, 1, ExactI32, Standard, Method(host_wasi_fd_readdir)),
-    host_spec!(67, "fd_renumber", 2, 1, ExactI32, Standard, Method(host_wasi_fd_renumber)),
-    host_spec!(68, "fd_seek", 4, 1, ExactI32, Standard, Method(host_wasi_fd_seek)),
-    host_spec!(69, "fd_sync", 1, 1, ExactI32, Standard, Method(host_wasi_fd_sync)),
-    host_spec!(70, "fd_tell", 2, 1, ExactI32, Standard, Method(host_wasi_fd_tell)),
-    host_spec!(71, "fd_write", 4, 1, ExactI32, Standard, Method(host_wasi_fd_write)),
-    host_spec!(72, "path_create_directory", 3, 1, ExactI32, Standard, Method(host_wasi_path_create_directory)),
-    host_spec!(73, "path_filestat_get", 5, 1, ExactI32, Standard, Method(host_wasi_path_filestat_get)),
-    host_spec!(74, "path_filestat_set_times", 6, 1, ExactI32, Standard, Method(host_wasi_path_filestat_set_times)),
-    host_spec!(75, "path_link", 6, 1, ExactI32, Standard, Method(host_wasi_path_link)),
-    host_spec!(76, "path_open", 9, 1, ExactI32, Standard, Method(host_wasi_path_open)),
-    host_spec!(77, "path_readlink", 5, 1, ExactI32, Standard, Method(host_wasi_path_readlink)),
-    host_spec!(78, "path_remove_directory", 3, 1, ExactI32, Standard, Method(host_wasi_path_remove_directory)),
-    host_spec!(79, "path_rename", 5, 1, ExactI32, Standard, Method(host_wasi_path_rename)),
-    host_spec!(80, "path_symlink", 5, 1, ExactI32, Standard, Method(host_wasi_path_symlink)),
-    host_spec!(81, "path_unlink_file", 3, 1, ExactI32, Standard, Method(host_wasi_path_unlink_file)),
-    host_spec!(82, "poll_oneoff", 4, 1, ExactI32, Standard, Method(host_wasi_poll_oneoff)),
-    host_spec!(83, "proc_exit", 1, 0, ExactI32, Standard, Method(host_wasi_proc_exit)),
-    host_spec!(84, "proc_raise", 1, 1, ExactI32, Standard, Method(host_wasi_proc_raise)),
-    host_spec!(85, "sched_yield", 0, 1, ExactI32, Standard, Method(host_wasi_sched_yield)),
-    host_spec!(86, "random_get", 2, 1, ExactI32, Standard, Method(host_wasi_random_get)),
-    host_spec!(87, "sock_accept", 3, 1, ExactI32, Standard, Method(host_wasi_sock_accept)),
-    host_spec!(88, "sock_recv", 6, 1, ExactI32, Standard, Method(host_wasi_sock_recv)),
-    host_spec!(89, "sock_send", 5, 1, ExactI32, Standard, Method(host_wasi_sock_send)),
-    host_spec!(90, "sock_shutdown", 2, 1, ExactI32, Standard, Method(host_wasi_sock_shutdown)),
-    host_spec!(91, "tls_connect", 4, 1, ExactI32, Standard, Method(host_tls_connect)),
-    host_spec!(92, "tls_write", 3, 1, ExactI32, Standard, Method(host_tls_write)),
-    host_spec!(93, "tls_read", 3, 1, ExactI32, Standard, Method(host_tls_read)),
-    host_spec!(94, "tls_close", 1, 1, ExactI32, Standard, Method(host_tls_close)),
-    host_spec!(95, "tls_state", 1, 1, ExactI32, Standard, Method(host_tls_state)),
-    host_spec!(96, "tls_error", 3, 1, ExactI32, Standard, Method(host_tls_error)),
-    host_spec!(97, "tls_handshake_done", 1, 1, ExactI32, Standard, Method(host_tls_handshake_done)),
-    host_spec!(98, "tls_tick", 1, 1, ExactI32, Standard, Method(host_tls_tick)),
-    host_spec!(99, "tls_free", 1, 1, ExactI32, Standard, Method(host_tls_free)),
-    host_spec!(100, "proc_spawn", 2, 1, ExactI32, Standard, Method(host_proc_spawn)),
-    host_spec!(101, "proc_yield", 0, 0, ExactI32, Standard, Method(host_proc_yield)),
-    host_spec!(102, "proc_sleep", 1, 0, ExactI32, Standard, Method(host_proc_sleep)),
-    host_spec!(103, "polyglot_register", 2, 1, ExactI32, Standard, Method(host_polyglot_register)),
-    host_spec!(104, "polyglot_resolve", 2, 1, ExactI32, Standard, Method(host_polyglot_resolve)),
-    host_spec!(105, "polyglot_link", 4, 1, ExactI32, Standard, Method(host_polyglot_link)),
-    host_spec!(106, "observer_subscribe", 1, 1, ExactI32, Standard, Method(host_observer_subscribe)),
-    host_spec!(107, "observer_unsubscribe", 0, 1, ExactI32, Standard, Method(host_observer_unsubscribe)),
-    host_spec!(108, "observer_query", 2, 1, ExactI32, Standard, Method(host_observer_query)),
-    host_spec!(109, "mesh_local_id", 0, 1, ExactI32, Standard, Method(host_mesh_local_id)),
-    host_spec!(110, "mesh_peer_register", 3, 1, ExactI32, Standard, Method(host_mesh_peer_register)),
-    host_spec!(111, "mesh_peer_session", 2, 1, ExactI32, Standard, Method(host_mesh_peer_session)),
-    host_spec!(112, "mesh_token_mint", 6, 1, ExactI32, Standard, Method(host_mesh_token_mint)),
-    host_spec!(113, "mesh_token_send", 4, 1, ExactI32, Standard, Method(host_mesh_token_send)),
-    host_spec!(114, "mesh_token_recv", 2, 1, ExactI32, Standard, Method(host_mesh_token_recv)),
-    host_spec!(115, "mesh_migrate", 4, 1, ExactI32, Standard, Method(host_mesh_migrate)),
-    host_spec!(116, "temporal_cap_grant", 3, 1, ExactI32, Standard, Method(host_temporal_cap_grant)),
-    host_spec!(117, "temporal_cap_revoke", 1, 1, ExactI32, Standard, Method(host_temporal_cap_revoke)),
-    host_spec!(118, "temporal_cap_check", 1, 1, ExactI32, Standard, Method(host_temporal_cap_check)),
-    host_spec!(119, "temporal_checkpoint_create", 0, 1, ExactI32, Standard, Method(host_temporal_checkpoint_create)),
-    host_spec!(120, "temporal_checkpoint_rollback", 1, 1, ExactI32, Standard, Method(host_temporal_checkpoint_rollback)),
-    host_spec!(121, "policy_bind", 3, 1, ExactI32, Standard, Method(host_policy_bind)),
-    host_spec!(122, "policy_unbind", 1, 1, ExactI32, Standard, Method(host_policy_unbind)),
-    host_spec!(123, "policy_eval", 3, 1, ExactI32, Standard, Method(host_policy_eval)),
-    host_spec!(124, "policy_query", 3, 1, ExactI32, Standard, Method(host_policy_query)),
-    host_spec!(125, "cap_entangle", 2, 1, ExactI32, Standard, Method(host_cap_entangle)),
-    host_spec!(126, "cap_entangle_group", 2, 1, ExactI32, Standard, Method(host_cap_entangle_group)),
-    host_spec!(127, "cap_disentangle", 1, 1, ExactI32, Standard, Method(host_cap_disentangle)),
-    host_spec!(128, "cap_entangle_query", 3, 1, ExactI32, Standard, Method(host_cap_entangle_query)),
-    host_spec!(129, "cap_graph_query", 3, 1, ExactI32, Standard, Method(host_cap_graph_query)),
-    host_spec!(130, "cap_graph_verify", 2, 1, ExactI32, Standard, Method(host_cap_graph_verify)),
-    host_spec!(131, "cap_graph_depth", 1, 1, ExactI32, Standard, Method(host_cap_graph_depth)),
-    host_spec!(132, "polyglot_lineage_count", 0, 1, ExactI32, Standard, Method(host_polyglot_lineage_count)),
-    host_spec!(133, "polyglot_lineage_query", 2, 1, ExactI32, Standard, Method(host_polyglot_lineage_query)),
-    host_spec!(134, "polyglot_lineage_query_filtered", 5, 1, ExactI32, Standard, Method(host_polyglot_lineage_query_filtered)),
-    host_spec!(135, "polyglot_lineage_lookup", 3, 1, ExactI32, Standard, Method(host_polyglot_lineage_lookup)),
-    host_spec!(136, "polyglot_lineage_lookup_object", 4, 1, ExactI32, Standard, Method(host_polyglot_lineage_lookup_object)),
-    host_spec!(137, "polyglot_lineage_revoke", 1, 1, ExactI32, Standard, Method(host_polyglot_lineage_revoke)),
-    host_spec!(138, "polyglot_lineage_rebind", 2, 1, ExactI32, Standard, Method(host_polyglot_lineage_rebind)),
-    host_spec!(139, "polyglot_lineage_status", 3, 1, ExactI32, Standard, Method(host_polyglot_lineage_status)),
-    host_spec!(140, "polyglot_lineage_status_object", 4, 1, ExactI32, Standard, Method(host_polyglot_lineage_status_object)),
-    host_spec!(141, "polyglot_lineage_query_page", 4, 1, ExactI32, Standard, Method(host_polyglot_lineage_query_page)),
-    host_spec!(142, "polyglot_lineage_event_query", 4, 1, ExactI32, Standard, Method(host_polyglot_lineage_event_query)),
+    host_spec!(
+        2,
+        "fs_write",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_fs_write)
+    ),
+    host_spec!(
+        3,
+        "channel_send",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_channel_send)
+    ),
+    host_spec!(
+        4,
+        "channel_recv",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_channel_recv)
+    ),
+    host_spec!(
+        5,
+        "net_http_get",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_net_http_get)
+    ),
+    host_spec!(
+        6,
+        "net_connect",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_net_connect)
+    ),
+    host_spec!(
+        7,
+        "dns_resolve",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_dns_resolve)
+    ),
+    host_spec!(
+        8,
+        "service_invoke",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_service_invoke)
+    ),
+    host_spec!(
+        9,
+        "service_register",
+        2,
+        1,
+        ServiceRegister,
+        ServiceRegister,
+        Method(host_service_register)
+    ),
+    host_spec!(
+        10,
+        "channel_send_cap",
+        4,
+        1,
+        ExactI32,
+        ChannelSendCap,
+        Method(host_channel_send_with_cap)
+    ),
+    host_spec!(
+        11,
+        "last_service_cap",
+        0,
+        1,
+        ExactI32,
+        LastServiceCap,
+        Method(host_last_service_handle)
+    ),
+    host_spec!(
+        12,
+        "service_invoke_typed",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_service_invoke_typed)
+    ),
+    host_spec!(
+        13,
+        "temporal_snapshot",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_snapshot)
+    ),
+    host_spec!(
+        14,
+        "temporal_latest",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_latest)
+    ),
+    host_spec!(
+        15,
+        "temporal_read",
+        7,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_read)
+    ),
+    host_spec!(
+        16,
+        "temporal_rollback",
+        6,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_rollback)
+    ),
+    host_spec!(
+        17,
+        "temporal_stats",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_stats)
+    ),
+    host_spec!(
+        18,
+        "temporal_history",
+        7,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_history)
+    ),
+    host_spec!(
+        19,
+        "temporal_branch_create",
+        8,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_branch_create)
+    ),
+    host_spec!(
+        20,
+        "temporal_branch_checkout",
+        6,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_branch_checkout)
+    ),
+    host_spec!(
+        21,
+        "temporal_branch_list",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_branch_list)
+    ),
+    host_spec!(
+        22,
+        "temporal_merge",
+        9,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_merge)
+    ),
+    host_spec!(
+        23,
+        "thread_spawn",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_thread_spawn)
+    ),
+    host_spec!(
+        24,
+        "thread_join",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_thread_join)
+    ),
+    host_spec!(
+        25,
+        "thread_id",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_thread_id)
+    ),
+    host_spec!(
+        26,
+        "thread_yield",
+        0,
+        0,
+        ExactI32,
+        Standard,
+        Method(host_thread_yield)
+    ),
+    host_spec!(
+        27,
+        "thread_exit",
+        1,
+        0,
+        ExactI32,
+        Standard,
+        Method(host_thread_exit)
+    ),
+    host_spec!(
+        28,
+        "compositor_create_window",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_compositor_create_window)
+    ),
+    host_spec!(
+        29,
+        "compositor_destroy_window",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_compositor_destroy_window)
+    ),
+    host_spec!(
+        30,
+        "compositor_set_pixel",
+        4,
+        0,
+        ExactI32,
+        Standard,
+        Method(host_compositor_set_pixel)
+    ),
+    host_spec!(
+        31,
+        "compositor_fill_rect",
+        6,
+        0,
+        ExactI32,
+        Standard,
+        Method(host_compositor_fill_rect)
+    ),
+    host_spec!(
+        32,
+        "compositor_flush",
+        1,
+        0,
+        ExactI32,
+        Standard,
+        Method(host_compositor_flush)
+    ),
+    host_spec!(
+        33,
+        "compositor_move_window",
+        3,
+        0,
+        ExactI32,
+        Standard,
+        Method(host_compositor_move_window)
+    ),
+    host_spec!(
+        34,
+        "compositor_set_z_order",
+        2,
+        0,
+        ExactI32,
+        Standard,
+        Method(host_compositor_set_z_order)
+    ),
+    host_spec!(
+        35,
+        "compositor_get_width",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_compositor_get_width)
+    ),
+    host_spec!(
+        36,
+        "compositor_get_height",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_compositor_get_height)
+    ),
+    host_spec!(
+        37,
+        "compositor_draw_text",
+        6,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_compositor_draw_text)
+    ),
+    host_spec!(
+        38,
+        "input_poll",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_input_poll)
+    ),
+    host_spec!(
+        39,
+        "input_read",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_input_read)
+    ),
+    host_spec!(
+        40,
+        "input_event_type",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_input_event_type)
+    ),
+    host_spec!(
+        41,
+        "input_flush",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_input_flush)
+    ),
+    host_spec!(
+        42,
+        "input_key_poll",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_input_key_poll)
+    ),
+    host_spec!(
+        43,
+        "input_mouse_poll",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_input_mouse_poll)
+    ),
+    host_spec!(
+        44,
+        "input_gamepad_poll",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_input_gamepad_poll)
+    ),
+    host_spec!(
+        45,
+        "args_get",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_args_get)
+    ),
+    host_spec!(
+        46,
+        "args_sizes_get",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_args_sizes_get)
+    ),
+    host_spec!(
+        47,
+        "environ_get",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_environ_get)
+    ),
+    host_spec!(
+        48,
+        "environ_sizes_get",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_environ_sizes_get)
+    ),
+    host_spec!(
+        49,
+        "clock_res_get",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_clock_res_get)
+    ),
+    host_spec!(
+        50,
+        "clock_time_get",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_clock_time_get)
+    ),
+    host_spec!(
+        51,
+        "fd_advise",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_advise)
+    ),
+    host_spec!(
+        52,
+        "fd_allocate",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_allocate)
+    ),
+    host_spec!(
+        53,
+        "fd_close",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_close)
+    ),
+    host_spec!(
+        54,
+        "fd_datasync",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_datasync)
+    ),
+    host_spec!(
+        55,
+        "fd_fdstat_get",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_fdstat_get)
+    ),
+    host_spec!(
+        56,
+        "fd_fdstat_set_flags",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_fdstat_set_flags)
+    ),
+    host_spec!(
+        57,
+        "fd_fdstat_set_rights",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_fdstat_set_rights)
+    ),
+    host_spec!(
+        58,
+        "fd_filestat_get",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_filestat_get)
+    ),
+    host_spec!(
+        59,
+        "fd_filestat_set_size",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_filestat_set_size)
+    ),
+    host_spec!(
+        60,
+        "fd_filestat_set_times",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_filestat_set_times)
+    ),
+    host_spec!(
+        61,
+        "fd_pread",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_pread)
+    ),
+    host_spec!(
+        62,
+        "fd_prestat_get",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_prestat_get)
+    ),
+    host_spec!(
+        63,
+        "fd_prestat_dir_name",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_prestat_dir_name)
+    ),
+    host_spec!(
+        64,
+        "fd_pwrite",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_pwrite)
+    ),
+    host_spec!(
+        65,
+        "fd_read",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_read)
+    ),
+    host_spec!(
+        66,
+        "fd_readdir",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_readdir)
+    ),
+    host_spec!(
+        67,
+        "fd_renumber",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_renumber)
+    ),
+    host_spec!(
+        68,
+        "fd_seek",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_seek)
+    ),
+    host_spec!(
+        69,
+        "fd_sync",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_sync)
+    ),
+    host_spec!(
+        70,
+        "fd_tell",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_tell)
+    ),
+    host_spec!(
+        71,
+        "fd_write",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_fd_write)
+    ),
+    host_spec!(
+        72,
+        "path_create_directory",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_path_create_directory)
+    ),
+    host_spec!(
+        73,
+        "path_filestat_get",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_path_filestat_get)
+    ),
+    host_spec!(
+        74,
+        "path_filestat_set_times",
+        6,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_path_filestat_set_times)
+    ),
+    host_spec!(
+        75,
+        "path_link",
+        6,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_path_link)
+    ),
+    host_spec!(
+        76,
+        "path_open",
+        9,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_path_open)
+    ),
+    host_spec!(
+        77,
+        "path_readlink",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_path_readlink)
+    ),
+    host_spec!(
+        78,
+        "path_remove_directory",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_path_remove_directory)
+    ),
+    host_spec!(
+        79,
+        "path_rename",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_path_rename)
+    ),
+    host_spec!(
+        80,
+        "path_symlink",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_path_symlink)
+    ),
+    host_spec!(
+        81,
+        "path_unlink_file",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_path_unlink_file)
+    ),
+    host_spec!(
+        82,
+        "poll_oneoff",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_poll_oneoff)
+    ),
+    host_spec!(
+        83,
+        "proc_exit",
+        1,
+        0,
+        ExactI32,
+        Standard,
+        Method(host_wasi_proc_exit)
+    ),
+    host_spec!(
+        84,
+        "proc_raise",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_proc_raise)
+    ),
+    host_spec!(
+        85,
+        "sched_yield",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_sched_yield)
+    ),
+    host_spec!(
+        86,
+        "random_get",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_random_get)
+    ),
+    host_spec!(
+        87,
+        "sock_accept",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_sock_accept)
+    ),
+    host_spec!(
+        88,
+        "sock_recv",
+        6,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_sock_recv)
+    ),
+    host_spec!(
+        89,
+        "sock_send",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_sock_send)
+    ),
+    host_spec!(
+        90,
+        "sock_shutdown",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_wasi_sock_shutdown)
+    ),
+    host_spec!(
+        91,
+        "tls_connect",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_tls_connect)
+    ),
+    host_spec!(
+        92,
+        "tls_write",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_tls_write)
+    ),
+    host_spec!(
+        93,
+        "tls_read",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_tls_read)
+    ),
+    host_spec!(
+        94,
+        "tls_close",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_tls_close)
+    ),
+    host_spec!(
+        95,
+        "tls_state",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_tls_state)
+    ),
+    host_spec!(
+        96,
+        "tls_error",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_tls_error)
+    ),
+    host_spec!(
+        97,
+        "tls_handshake_done",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_tls_handshake_done)
+    ),
+    host_spec!(
+        98,
+        "tls_tick",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_tls_tick)
+    ),
+    host_spec!(
+        99,
+        "tls_free",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_tls_free)
+    ),
+    host_spec!(
+        100,
+        "proc_spawn",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_proc_spawn)
+    ),
+    host_spec!(
+        101,
+        "proc_yield",
+        0,
+        0,
+        ExactI32,
+        Standard,
+        Method(host_proc_yield)
+    ),
+    host_spec!(
+        102,
+        "proc_sleep",
+        1,
+        0,
+        ExactI32,
+        Standard,
+        Method(host_proc_sleep)
+    ),
+    host_spec!(
+        103,
+        "polyglot_register",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_register)
+    ),
+    host_spec!(
+        104,
+        "polyglot_resolve",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_resolve)
+    ),
+    host_spec!(
+        105,
+        "polyglot_link",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_link)
+    ),
+    host_spec!(
+        106,
+        "observer_subscribe",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_observer_subscribe)
+    ),
+    host_spec!(
+        107,
+        "observer_unsubscribe",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_observer_unsubscribe)
+    ),
+    host_spec!(
+        108,
+        "observer_query",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_observer_query)
+    ),
+    host_spec!(
+        109,
+        "mesh_local_id",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_mesh_local_id)
+    ),
+    host_spec!(
+        110,
+        "mesh_peer_register",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_mesh_peer_register)
+    ),
+    host_spec!(
+        111,
+        "mesh_peer_session",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_mesh_peer_session)
+    ),
+    host_spec!(
+        112,
+        "mesh_token_mint",
+        6,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_mesh_token_mint)
+    ),
+    host_spec!(
+        113,
+        "mesh_token_send",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_mesh_token_send)
+    ),
+    host_spec!(
+        114,
+        "mesh_token_recv",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_mesh_token_recv)
+    ),
+    host_spec!(
+        115,
+        "mesh_migrate",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_mesh_migrate)
+    ),
+    host_spec!(
+        116,
+        "temporal_cap_grant",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_cap_grant)
+    ),
+    host_spec!(
+        117,
+        "temporal_cap_revoke",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_cap_revoke)
+    ),
+    host_spec!(
+        118,
+        "temporal_cap_check",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_cap_check)
+    ),
+    host_spec!(
+        119,
+        "temporal_checkpoint_create",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_checkpoint_create)
+    ),
+    host_spec!(
+        120,
+        "temporal_checkpoint_rollback",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_temporal_checkpoint_rollback)
+    ),
+    host_spec!(
+        121,
+        "policy_bind",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_policy_bind)
+    ),
+    host_spec!(
+        122,
+        "policy_unbind",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_policy_unbind)
+    ),
+    host_spec!(
+        123,
+        "policy_eval",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_policy_eval)
+    ),
+    host_spec!(
+        124,
+        "policy_query",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_policy_query)
+    ),
+    host_spec!(
+        125,
+        "cap_entangle",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_cap_entangle)
+    ),
+    host_spec!(
+        126,
+        "cap_entangle_group",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_cap_entangle_group)
+    ),
+    host_spec!(
+        127,
+        "cap_disentangle",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_cap_disentangle)
+    ),
+    host_spec!(
+        128,
+        "cap_entangle_query",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_cap_entangle_query)
+    ),
+    host_spec!(
+        129,
+        "cap_graph_query",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_cap_graph_query)
+    ),
+    host_spec!(
+        130,
+        "cap_graph_verify",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_cap_graph_verify)
+    ),
+    host_spec!(
+        131,
+        "cap_graph_depth",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_cap_graph_depth)
+    ),
+    host_spec!(
+        132,
+        "polyglot_lineage_count",
+        0,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_count)
+    ),
+    host_spec!(
+        133,
+        "polyglot_lineage_query",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_query)
+    ),
+    host_spec!(
+        134,
+        "polyglot_lineage_query_filtered",
+        5,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_query_filtered)
+    ),
+    host_spec!(
+        135,
+        "polyglot_lineage_lookup",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_lookup)
+    ),
+    host_spec!(
+        136,
+        "polyglot_lineage_lookup_object",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_lookup_object)
+    ),
+    host_spec!(
+        137,
+        "polyglot_lineage_revoke",
+        1,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_revoke)
+    ),
+    host_spec!(
+        138,
+        "polyglot_lineage_rebind",
+        2,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_rebind)
+    ),
+    host_spec!(
+        139,
+        "polyglot_lineage_status",
+        3,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_status)
+    ),
+    host_spec!(
+        140,
+        "polyglot_lineage_status_object",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_status_object)
+    ),
+    host_spec!(
+        141,
+        "polyglot_lineage_query_page",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_query_page)
+    ),
+    host_spec!(
+        142,
+        "polyglot_lineage_event_query",
+        4,
+        1,
+        ExactI32,
+        Standard,
+        Method(host_polyglot_lineage_event_query)
+    ),
 ];
 
 const WASI_PREVIEW1_HOST_START: usize = 45;
 const WASI_PREVIEW1_HOST_END: usize = 90;
-const WASI_PREVIEW1_HOST_COUNT: usize =
-    WASI_PREVIEW1_HOST_END - WASI_PREVIEW1_HOST_START + 1;
+const WASI_PREVIEW1_HOST_COUNT: usize = WASI_PREVIEW1_HOST_END - WASI_PREVIEW1_HOST_START + 1;
 const POLYGLOT_HOST_START: usize = 103;
 const POLYGLOT_HOST_END: usize = 105;
 const POLYGLOT_HOST_COUNT: usize = 14;
 const POLYGLOT_LINEAGE_HOST_START: usize = 132;
 const POLYGLOT_LINEAGE_HOST_END: usize = 142;
-const POLYGLOT_LINEAGE_HOST_COUNT: usize = POLYGLOT_LINEAGE_HOST_END - POLYGLOT_LINEAGE_HOST_START + 1;
+const POLYGLOT_LINEAGE_HOST_COUNT: usize =
+    POLYGLOT_LINEAGE_HOST_END - POLYGLOT_LINEAGE_HOST_START + 1;
 
 const EXPECTED_WASI_PREVIEW1_HOST_SPECS: [ExpectedWasiHostSpec; WASI_PREVIEW1_HOST_COUNT] = [
     expected_wasi_host_spec(45, "args_get", 2, 1, WasiAbiClass::Implemented),
@@ -1274,7 +2396,13 @@ const EXPECTED_WASI_PREVIEW1_HOST_SPECS: [ExpectedWasiHostSpec; WASI_PREVIEW1_HO
     expected_wasi_host_spec(71, "fd_write", 4, 1, WasiAbiClass::Implemented),
     expected_wasi_host_spec(72, "path_create_directory", 3, 1, WasiAbiClass::Implemented),
     expected_wasi_host_spec(73, "path_filestat_get", 5, 1, WasiAbiClass::Implemented),
-    expected_wasi_host_spec(74, "path_filestat_set_times", 6, 1, WasiAbiClass::Implemented),
+    expected_wasi_host_spec(
+        74,
+        "path_filestat_set_times",
+        6,
+        1,
+        WasiAbiClass::Implemented,
+    ),
     expected_wasi_host_spec(75, "path_link", 6, 1, WasiAbiClass::Implemented),
     expected_wasi_host_spec(76, "path_open", 9, 1, WasiAbiClass::Implemented),
     expected_wasi_host_spec(77, "path_readlink", 5, 1, WasiAbiClass::Implemented),
@@ -1728,10 +2856,7 @@ fn formal_wasi_dispatch_errno(
     instance.stack.clear();
     let mut i = 0usize;
     while i < args.len() {
-        instance
-            .stack
-            .push(args[i])
-            .map_err(|_| label)?;
+        instance.stack.push(args[i]).map_err(|_| label)?;
         i += 1;
     }
 
@@ -1981,10 +3106,16 @@ fn formal_wasi_behavior_check_fd_readdir(
 ) -> Result<u32, &'static str> {
     const EXPECTED: [(&str, u8); 5] = [
         ("alpha", crate::services::wasi::filetype::REGULAR_FILE),
-        ("name with space", crate::services::wasi::filetype::REGULAR_FILE),
+        (
+            "name with space",
+            crate::services::wasi::filetype::REGULAR_FILE,
+        ),
         ("nested.dir", crate::services::wasi::filetype::DIRECTORY),
         ("sym-link", crate::services::wasi::filetype::SYMBOLIC_LINK),
-        ("punctuation-_.txt", crate::services::wasi::filetype::REGULAR_FILE),
+        (
+            "punctuation-_.txt",
+            crate::services::wasi::filetype::REGULAR_FILE,
+        ),
     ];
 
     let plain_dir = alloc::format!("/tmp/wasi-readdir-plain-{}", spec.id);
@@ -1993,7 +3124,12 @@ fn formal_wasi_behavior_check_fd_readdir(
     formal_seed_wasi_noop_instance(instance, spec.id)?;
     formal_wasi_seed_dir_fd(instance, 8, &plain_dir)?;
     formal_wasi_fill_region(instance, FORMAL_WASI_BUFUSED_OFFSET, 4, 0xA5)?;
-    formal_wasi_fill_region(instance, FORMAL_WASI_BUFFER_OFFSET, FORMAL_WASI_BUFFER_LEN, 0xCC)?;
+    formal_wasi_fill_region(
+        instance,
+        FORMAL_WASI_BUFFER_OFFSET,
+        FORMAL_WASI_BUFFER_LEN,
+        0xCC,
+    )?;
     let errno = formal_wasi_dispatch_errno(
         instance,
         spec,
@@ -2035,7 +3171,12 @@ fn formal_wasi_behavior_check_fd_readdir(
     formal_seed_wasi_noop_instance(instance, spec.id + 1)?;
     formal_wasi_seed_dir_fd(instance, 8, &plain_dir)?;
     formal_wasi_fill_region(instance, FORMAL_WASI_BUFUSED_OFFSET, 4, 0xA5)?;
-    formal_wasi_fill_region(instance, FORMAL_WASI_BUFFER_OFFSET, FORMAL_WASI_BUFFER_LEN, 0xCC)?;
+    formal_wasi_fill_region(
+        instance,
+        FORMAL_WASI_BUFFER_OFFSET,
+        FORMAL_WASI_BUFFER_LEN,
+        0xCC,
+    )?;
     let errno = formal_wasi_dispatch_errno(
         instance,
         spec,
@@ -2070,7 +3211,12 @@ fn formal_wasi_behavior_check_fd_readdir(
     formal_seed_wasi_noop_instance(instance, spec.id + 2)?;
     formal_wasi_seed_dir_fd(instance, 8, &plain_dir)?;
     formal_wasi_fill_region(instance, FORMAL_WASI_BUFUSED_OFFSET, 4, 0xA5)?;
-    formal_wasi_fill_region(instance, FORMAL_WASI_BUFFER_OFFSET, FORMAL_WASI_BUFFER_LEN, 0xCC)?;
+    formal_wasi_fill_region(
+        instance,
+        FORMAL_WASI_BUFFER_OFFSET,
+        FORMAL_WASI_BUFFER_LEN,
+        0xCC,
+    )?;
     let errno = formal_wasi_dispatch_errno(
         instance,
         spec,
@@ -2106,7 +3252,12 @@ fn formal_wasi_behavior_check_fd_readdir(
     formal_seed_wasi_noop_instance(instance, spec.id + 3)?;
     formal_wasi_seed_dir_fd(instance, 8, &mount_dir)?;
     formal_wasi_fill_region(instance, FORMAL_WASI_BUFUSED_OFFSET, 4, 0xA5)?;
-    formal_wasi_fill_region(instance, FORMAL_WASI_BUFFER_OFFSET, FORMAL_WASI_BUFFER_LEN, 0xCC)?;
+    formal_wasi_fill_region(
+        instance,
+        FORMAL_WASI_BUFFER_OFFSET,
+        FORMAL_WASI_BUFFER_LEN,
+        0xCC,
+    )?;
     let errno = formal_wasi_dispatch_errno(
         instance,
         spec,
@@ -2158,13 +3309,8 @@ fn formal_wasi_behavior_check_path_readlink(
     crate::fs::vfs::symlink(&target, &link)?;
 
     formal_seed_wasi_noop_instance(instance, spec.id)?;
-    let path_len = formal_wasi_write_region(
-        instance,
-        FORMAL_WASI_ARG_A_OFFSET,
-        128,
-        0,
-        link.as_bytes(),
-    )?;
+    let path_len =
+        formal_wasi_write_region(instance, FORMAL_WASI_ARG_A_OFFSET, 128, 0, link.as_bytes())?;
     formal_wasi_fill_region(instance, FORMAL_WASI_BUFFER_OFFSET, 64, 0xCC)?;
     let errno = formal_wasi_dispatch_errno(
         instance,
@@ -2187,13 +3333,8 @@ fn formal_wasi_behavior_check_path_readlink(
     }
 
     formal_seed_wasi_noop_instance(instance, spec.id + 1)?;
-    let path_len = formal_wasi_write_region(
-        instance,
-        FORMAL_WASI_ARG_A_OFFSET,
-        128,
-        0,
-        link.as_bytes(),
-    )?;
+    let path_len =
+        formal_wasi_write_region(instance, FORMAL_WASI_ARG_A_OFFSET, 128, 0, link.as_bytes())?;
     formal_wasi_fill_region(instance, FORMAL_WASI_BUFFER_OFFSET, 64, 0xDD)?;
     let trunc_len = target.len().saturating_sub(2);
     let errno = formal_wasi_dispatch_errno(
@@ -2211,7 +3352,8 @@ fn formal_wasi_behavior_check_path_readlink(
     if errno != crate::services::wasi::Errno::Success.as_i32() {
         return Err("WASI Preview 1 ABI self-check: path_readlink truncation failed");
     }
-    let truncated = formal_wasi_read_bytes(&instance.memory, FORMAL_WASI_BUFFER_OFFSET, trunc_len + 2)?;
+    let truncated =
+        formal_wasi_read_bytes(&instance.memory, FORMAL_WASI_BUFFER_OFFSET, trunc_len + 2)?;
     if truncated[..trunc_len] != target.as_bytes()[..trunc_len]
         || truncated[trunc_len] != 0xDD
         || truncated[trunc_len + 1] != 0xDD
@@ -2220,13 +3362,8 @@ fn formal_wasi_behavior_check_path_readlink(
     }
 
     formal_seed_wasi_noop_instance(instance, spec.id + 2)?;
-    let path_len = formal_wasi_write_region(
-        instance,
-        FORMAL_WASI_ARG_A_OFFSET,
-        128,
-        0,
-        link.as_bytes(),
-    )?;
+    let path_len =
+        formal_wasi_write_region(instance, FORMAL_WASI_ARG_A_OFFSET, 128, 0, link.as_bytes())?;
     formal_wasi_fill_region(instance, FORMAL_WASI_BUFFER_OFFSET, 8, 0xEE)?;
     let errno = formal_wasi_dispatch_errno(
         instance,
@@ -2273,13 +3410,8 @@ fn formal_wasi_behavior_check_path_readlink(
     }
 
     formal_seed_wasi_noop_instance(instance, spec.id + 4)?;
-    let path_len = formal_wasi_write_region(
-        instance,
-        FORMAL_WASI_ARG_A_OFFSET,
-        128,
-        0,
-        link.as_bytes(),
-    )?;
+    let path_len =
+        formal_wasi_write_region(instance, FORMAL_WASI_ARG_A_OFFSET, 128, 0, link.as_bytes())?;
     let out_of_bounds = instance.memory.active_len().saturating_sub(2);
     let errno = formal_wasi_dispatch_errno(
         instance,
@@ -2327,13 +3459,8 @@ fn formal_wasi_behavior_check_path_symlink(
         0,
         target.as_bytes(),
     )?;
-    let link_len = formal_wasi_write_region(
-        instance,
-        FORMAL_WASI_ARG_B_OFFSET,
-        128,
-        0,
-        link.as_bytes(),
-    )?;
+    let link_len =
+        formal_wasi_write_region(instance, FORMAL_WASI_ARG_B_OFFSET, 128, 0, link.as_bytes())?;
     let errno = formal_wasi_dispatch_errno(
         instance,
         spec,
@@ -2366,7 +3493,8 @@ fn formal_wasi_behavior_check_path_symlink(
     if errno != crate::services::wasi::Errno::Success.as_i32() {
         return Err("WASI Preview 1 ABI self-check: path_symlink readback failed");
     }
-    let readback = formal_wasi_read_bytes(&instance.memory, FORMAL_WASI_BUFFER_OFFSET, target.len())?;
+    let readback =
+        formal_wasi_read_bytes(&instance.memory, FORMAL_WASI_BUFFER_OFFSET, target.len())?;
     if readback.as_slice() != target.as_bytes() {
         return Err("WASI Preview 1 ABI self-check: path_symlink readback drifted");
     }
@@ -2379,13 +3507,8 @@ fn formal_wasi_behavior_check_path_symlink(
         0,
         target.as_bytes(),
     )?;
-    let link_len = formal_wasi_write_region(
-        instance,
-        FORMAL_WASI_ARG_B_OFFSET,
-        128,
-        0,
-        link.as_bytes(),
-    )?;
+    let link_len =
+        formal_wasi_write_region(instance, FORMAL_WASI_ARG_B_OFFSET, 128, 0, link.as_bytes())?;
     let errno = formal_wasi_dispatch_errno(
         instance,
         spec,
@@ -2404,20 +3527,10 @@ fn formal_wasi_behavior_check_path_symlink(
 
     formal_seed_wasi_noop_instance(instance, spec.id + 2)?;
     let invalid_path = [0xFFu8, 0xFEu8];
-    let invalid_len = formal_wasi_write_region(
-        instance,
-        FORMAL_WASI_ARG_A_OFFSET,
-        16,
-        0,
-        &invalid_path,
-    )?;
-    let link_len = formal_wasi_write_region(
-        instance,
-        FORMAL_WASI_ARG_B_OFFSET,
-        128,
-        0,
-        link.as_bytes(),
-    )?;
+    let invalid_len =
+        formal_wasi_write_region(instance, FORMAL_WASI_ARG_A_OFFSET, 16, 0, &invalid_path)?;
+    let link_len =
+        formal_wasi_write_region(instance, FORMAL_WASI_ARG_B_OFFSET, 128, 0, link.as_bytes())?;
     let errno = formal_wasi_dispatch_errno(
         instance,
         spec,
@@ -2575,10 +3688,30 @@ fn formal_wasi_behavior_check_sock_shutdown(
     spec: &HostFunctionSpec,
 ) -> Result<u32, &'static str> {
     let expectations = [
-        (0i32, true, false, crate::services::wasi::Errno::Success.as_i32()),
-        (1i32, false, true, crate::services::wasi::Errno::Success.as_i32()),
-        (2i32, true, true, crate::services::wasi::Errno::Success.as_i32()),
-        (9i32, false, false, crate::services::wasi::Errno::Inval.as_i32()),
+        (
+            0i32,
+            true,
+            false,
+            crate::services::wasi::Errno::Success.as_i32(),
+        ),
+        (
+            1i32,
+            false,
+            true,
+            crate::services::wasi::Errno::Success.as_i32(),
+        ),
+        (
+            2i32,
+            true,
+            true,
+            crate::services::wasi::Errno::Success.as_i32(),
+        ),
+        (
+            9i32,
+            false,
+            false,
+            crate::services::wasi::Errno::Inval.as_i32(),
+        ),
     ];
     let mut checks = 0u32;
     let mut idx = 0usize;
@@ -2589,9 +3722,10 @@ fn formal_wasi_behavior_check_sock_shutdown(
             .stack
             .push(Value::I32(9))
             .map_err(|_| "WASI Preview 1 ABI self-check: sock_shutdown arg push failed")?;
-        instance.stack.push(Value::I32(expectations[idx].0)).map_err(|_| {
-            "WASI Preview 1 ABI self-check: sock_shutdown arg push failed"
-        })?;
+        instance
+            .stack
+            .push(Value::I32(expectations[idx].0))
+            .map_err(|_| "WASI Preview 1 ABI self-check: sock_shutdown arg push failed")?;
         spec.dispatch(instance)
             .map_err(|_| "WASI Preview 1 ABI self-check: sock_shutdown host dispatch failed")?;
         if instance.stack.len() != spec.result_count {
@@ -2785,7 +3919,9 @@ fn formal_wasi_behavior_check_fd_fdstat_set_flags(
     }
     let fdstat = formal_wasi_parse_fd_stat(&instance.memory, FORMAL_WASI_STAT_OFFSET)?;
     if fdstat.flags as i32 != flags {
-        return Err("WASI Preview 1 ABI self-check: fd_fdstat_get no longer reports persisted flags");
+        return Err(
+            "WASI Preview 1 ABI self-check: fd_fdstat_get no longer reports persisted flags",
+        );
     }
 
     let errno = formal_wasi_dispatch_errno(
@@ -2795,7 +3931,9 @@ fn formal_wasi_behavior_check_fd_fdstat_set_flags(
         "WASI Preview 1 ABI self-check: fd_fdstat_set_flags unsupported dispatch failed",
     )?;
     if errno != crate::services::wasi::Errno::Notsup.as_i32() {
-        return Err("WASI Preview 1 ABI self-check: fd_fdstat_set_flags unsupported-bit mapping drifted");
+        return Err(
+            "WASI Preview 1 ABI self-check: fd_fdstat_set_flags unsupported-bit mapping drifted",
+        );
     }
     Ok(3)
 }
@@ -2825,7 +3963,11 @@ fn formal_wasi_behavior_check_fd_fdstat_set_rights(
     let errno = formal_wasi_dispatch_errno(
         instance,
         spec,
-        &[Value::I32(8), Value::I32(reduced as i32), Value::I32(reduced as i32)],
+        &[
+            Value::I32(8),
+            Value::I32(reduced as i32),
+            Value::I32(reduced as i32),
+        ],
         "WASI Preview 1 ABI self-check: fd_fdstat_set_rights attenuation failed",
     )?;
     if errno != crate::services::wasi::Errno::Success.as_i32() {
@@ -2842,7 +3984,9 @@ fn formal_wasi_behavior_check_fd_fdstat_set_rights(
     }
     let fdstat = formal_wasi_parse_fd_stat(&instance.memory, FORMAL_WASI_STAT_OFFSET)?;
     if fdstat.rights_base != reduced || fdstat.rights_inheriting != reduced {
-        return Err("WASI Preview 1 ABI self-check: fd_fdstat_set_rights no longer persists attenuation");
+        return Err(
+            "WASI Preview 1 ABI self-check: fd_fdstat_set_rights no longer persists attenuation",
+        );
     }
     let errno = formal_wasi_dispatch_errno(
         instance,
@@ -2855,7 +3999,9 @@ fn formal_wasi_behavior_check_fd_fdstat_set_rights(
         "WASI Preview 1 ABI self-check: fd_fdstat_set_rights expansion dispatch failed",
     )?;
     if errno != crate::services::wasi::Errno::Notcapable.as_i32() {
-        return Err("WASI Preview 1 ABI self-check: fd_fdstat_set_rights expansion rejection drifted");
+        return Err(
+            "WASI Preview 1 ABI self-check: fd_fdstat_set_rights expansion rejection drifted",
+        );
     }
     Ok(3)
 }
@@ -3005,7 +4151,10 @@ fn formal_wasi_behavior_check_fd_filestat_set_times(
         return Err("WASI Preview 1 ABI self-check: fd_filestat_get after now times drifted");
     }
     let now_stat = formal_wasi_parse_file_stat(&instance.memory, FORMAL_WASI_STAT_OFFSET)?;
-    if now_stat.atim < explicit.atim || now_stat.mtim < explicit.mtim || now_stat.ctim < explicit.ctim {
+    if now_stat.atim < explicit.atim
+        || now_stat.mtim < explicit.mtim
+        || now_stat.ctim < explicit.ctim
+    {
         return Err("WASI Preview 1 ABI self-check: fd_filestat_set_times now semantics drifted");
     }
     Ok(2)
@@ -3024,8 +4173,22 @@ fn formal_wasi_behavior_check_fd_renumber(
     crate::fs::vfs::write_path(&file_b, b"b")?;
 
     formal_seed_wasi_noop_instance(instance, spec.id)?;
-    formal_wasi_seed_file_fd(instance, 8, &file_a, crate::services::wasi::rights::ALL, crate::services::wasi::rights::ALL, 0)?;
-    formal_wasi_seed_file_fd(instance, 10, &file_b, crate::services::wasi::rights::ALL, crate::services::wasi::rights::ALL, 0)?;
+    formal_wasi_seed_file_fd(
+        instance,
+        8,
+        &file_a,
+        crate::services::wasi::rights::ALL,
+        crate::services::wasi::rights::ALL,
+        0,
+    )?;
+    formal_wasi_seed_file_fd(
+        instance,
+        10,
+        &file_b,
+        crate::services::wasi::rights::ALL,
+        crate::services::wasi::rights::ALL,
+        0,
+    )?;
     let errno = formal_wasi_dispatch_errno(
         instance,
         spec,
@@ -3104,7 +4267,8 @@ fn formal_wasi_behavior_check_path_filestat_set_times(
     crate::fs::vfs::write_path(&file, b"time")?;
 
     formal_seed_wasi_noop_instance(instance, spec.id)?;
-    let path_len = formal_wasi_write_region(instance, FORMAL_WASI_ARG_A_OFFSET, 128, 0, file.as_bytes())?;
+    let path_len =
+        formal_wasi_write_region(instance, FORMAL_WASI_ARG_A_OFFSET, 128, 0, file.as_bytes())?;
     let errno = formal_wasi_dispatch_errno(
         instance,
         spec,
@@ -3122,7 +4286,9 @@ fn formal_wasi_behavior_check_path_filestat_set_times(
         "WASI Preview 1 ABI self-check: path_filestat_set_times explicit dispatch failed",
     )?;
     if errno != crate::services::wasi::Errno::Success.as_i32() {
-        return Err("WASI Preview 1 ABI self-check: path_filestat_set_times explicit update failed");
+        return Err(
+            "WASI Preview 1 ABI self-check: path_filestat_set_times explicit update failed",
+        );
     }
     let errno = formal_wasi_dispatch_errno(
         instance,
@@ -3137,11 +4303,15 @@ fn formal_wasi_behavior_check_path_filestat_set_times(
         "WASI Preview 1 ABI self-check: path_filestat_get after explicit path times failed",
     )?;
     if errno != crate::services::wasi::Errno::Success.as_i32() {
-        return Err("WASI Preview 1 ABI self-check: path_filestat_get after explicit path times drifted");
+        return Err(
+            "WASI Preview 1 ABI self-check: path_filestat_get after explicit path times drifted",
+        );
     }
     let explicit = formal_wasi_parse_file_stat(&instance.memory, FORMAL_WASI_STAT_OFFSET)?;
     if explicit.atim != 333 || explicit.mtim != 444 {
-        return Err("WASI Preview 1 ABI self-check: path_filestat_set_times explicit values drifted");
+        return Err(
+            "WASI Preview 1 ABI self-check: path_filestat_set_times explicit values drifted",
+        );
     }
 
     let errno = formal_wasi_dispatch_errno(
@@ -3176,7 +4346,9 @@ fn formal_wasi_behavior_check_path_filestat_set_times(
         "WASI Preview 1 ABI self-check: path_filestat_get after now path times failed",
     )?;
     if errno != crate::services::wasi::Errno::Success.as_i32() {
-        return Err("WASI Preview 1 ABI self-check: path_filestat_get after now path times drifted");
+        return Err(
+            "WASI Preview 1 ABI self-check: path_filestat_get after now path times drifted",
+        );
     }
     let now_stat = formal_wasi_parse_file_stat(&instance.memory, FORMAL_WASI_STAT_OFFSET)?;
     if now_stat.atim < explicit.atim || now_stat.mtim < explicit.mtim {
@@ -3196,7 +4368,9 @@ fn formal_wasi_behavior_check_proc_raise(
         &[Value::I32(0)],
         "WASI Preview 1 ABI self-check: proc_raise(0) dispatch failed",
     )?;
-    if errno != crate::services::wasi::Errno::Success.as_i32() || instance.wasi_ctx.exit_code != Some(7) {
+    if errno != crate::services::wasi::Errno::Success.as_i32()
+        || instance.wasi_ctx.exit_code != Some(7)
+    {
         return Err("WASI Preview 1 ABI self-check: proc_raise(0) semantics drifted");
     }
 
@@ -3208,7 +4382,9 @@ fn formal_wasi_behavior_check_proc_raise(
         &[Value::I32(15)],
         "WASI Preview 1 ABI self-check: proc_raise(15) dispatch failed",
     )?;
-    if errno != crate::services::wasi::Errno::Success.as_i32() || instance.wasi_ctx.exit_code != Some(143) {
+    if errno != crate::services::wasi::Errno::Success.as_i32()
+        || instance.wasi_ctx.exit_code != Some(143)
+    {
         return Err("WASI Preview 1 ABI self-check: proc_raise termination semantics drifted");
     }
 
@@ -3374,11 +4550,10 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
 
     let result = (|| -> Result<(), &'static str> {
         const PROVIDER_MODULE: [u8; 48] = [
-            0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
-            0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7F,
-            0x03, 0x03, 0x02, 0x00, 0x00,
-            0x07, 0x0D, 0x02, 0x03, b'a', b'd', b'd', 0x00, 0x00, 0x03, b's', b'u', b'b', 0x00, 0x01,
-            0x0A, 0x0B, 0x02, 0x04, 0x00, 0x41, 0x01, 0x0B, 0x04, 0x00, 0x41, 0x02, 0x0B,
+            0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01,
+            0x7F, 0x03, 0x03, 0x02, 0x00, 0x00, 0x07, 0x0D, 0x02, 0x03, b'a', b'd', b'd', 0x00,
+            0x00, 0x03, b's', b'u', b'b', 0x00, 0x01, 0x0A, 0x0B, 0x02, 0x04, 0x00, 0x41, 0x01,
+            0x0B, 0x04, 0x00, 0x41, 0x02, 0x0B,
         ];
 
         crate::serial_println!("[polyglot-check] provider stage=load");
@@ -3507,7 +4682,9 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 if live_lookup != 1 {
                     return Err(WasmError::SyscallFailed);
                 }
-                let live_record = instance.memory.read(0x280, 8 + POLYGLOT_LINEAGE_WIRE_RECORD_BYTES)?;
+                let live_record = instance
+                    .memory
+                    .read(0x280, 8 + POLYGLOT_LINEAGE_WIRE_RECORD_BYTES)?;
                 if live_record[0] != POLYGLOT_LINEAGE_WIRE_VERSION
                     || live_record[1] != 1
                     || live_record[9] != PolyglotLifecycle::Live as u8
@@ -3540,8 +4717,12 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
         wasm_runtime()
             .with_instance_exclusive(consumer_id, |instance| -> Result<(), WasmError> {
                 instance.stack.clear();
-                instance.stack.push(Value::I32(registration.object_id as u32 as i32))?;
-                instance.stack.push(Value::I32((registration.object_id >> 32) as i32))?;
+                instance
+                    .stack
+                    .push(Value::I32(registration.object_id as u32 as i32))?;
+                instance
+                    .stack
+                    .push(Value::I32((registration.object_id >> 32) as i32))?;
                 instance.stack.push(Value::I32(0x4C0))?;
                 instance
                     .stack
@@ -3552,7 +4733,9 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 if torn_lookup != 1 {
                     return Err(WasmError::SyscallFailed);
                 }
-                let torn_record = instance.memory.read(0x4C0, 8 + POLYGLOT_LINEAGE_WIRE_RECORD_BYTES)?;
+                let torn_record = instance
+                    .memory
+                    .read(0x4C0, 8 + POLYGLOT_LINEAGE_WIRE_RECORD_BYTES)?;
                 if torn_record[9] != PolyglotLifecycle::TornDown as u8 {
                     return Err(WasmError::SyscallFailed);
                 }
@@ -3578,8 +4761,12 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                     return Err(WasmError::SyscallFailed);
                 }
                 instance.stack.clear();
-                instance.stack.push(Value::I32(registration.object_id as u32 as i32))?;
-                instance.stack.push(Value::I32((registration.object_id >> 32) as i32))?;
+                instance
+                    .stack
+                    .push(Value::I32(registration.object_id as u32 as i32))?;
+                instance
+                    .stack
+                    .push(Value::I32((registration.object_id >> 32) as i32))?;
                 instance.stack.push(Value::I32(0x4C0))?;
                 instance
                     .stack
@@ -3590,7 +4777,9 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 if torn_lookup != 1 {
                     return Err(WasmError::SyscallFailed);
                 }
-                let torn_record = instance.memory.read(0x4C0, 8 + POLYGLOT_LINEAGE_WIRE_RECORD_BYTES)?;
+                let torn_record = instance
+                    .memory
+                    .read(0x4C0, 8 + POLYGLOT_LINEAGE_WIRE_RECORD_BYTES)?;
                 if torn_record[9] != PolyglotLifecycle::TornDown as u8 {
                     return Err(WasmError::SyscallFailed);
                 }
@@ -3638,9 +4827,9 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 instance.stack.clear();
                 crate::serial_println!("[polyglot-check] consumer step=lineage-filter-source");
                 instance.stack.push(Value::I32(0x300))?;
-                instance
-                    .stack
-                    .push(Value::I32((8 + 64 * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES) as i32))?;
+                instance.stack.push(Value::I32(
+                    (8 + 64 * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES) as i32,
+                ))?;
                 instance.stack.push(Value::I32(1))?;
                 instance.stack.push(Value::I32(provider.0 as i32))?;
                 instance.stack.push(Value::I32(0))?;
@@ -3658,9 +4847,9 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 instance.stack.clear();
                 crate::serial_println!("[polyglot-check] consumer step=lineage-filter-export");
                 instance.stack.push(Value::I32(0x380))?;
-                instance
-                    .stack
-                    .push(Value::I32((8 + 64 * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES) as i32))?;
+                instance.stack.push(Value::I32(
+                    (8 + 64 * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES) as i32,
+                ))?;
                 instance.stack.push(Value::I32(4))?;
                 instance.stack.push(Value::I32(0x240))?;
                 instance.stack.push(Value::I32(3))?;
@@ -3678,11 +4867,13 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                 instance.stack.clear();
                 crate::serial_println!("[polyglot-check] consumer step=lineage-filter-lifecycle");
                 instance.stack.push(Value::I32(0x400))?;
+                instance.stack.push(Value::I32(
+                    (8 + 64 * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES) as i32,
+                ))?;
+                instance.stack.push(Value::I32(3))?;
                 instance
                     .stack
-                    .push(Value::I32((8 + 64 * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES) as i32))?;
-                instance.stack.push(Value::I32(3))?;
-                instance.stack.push(Value::I32(PolyglotLifecycle::TornDown as i32))?;
+                    .push(Value::I32(PolyglotLifecycle::TornDown as i32))?;
                 instance.stack.push(Value::I32(0))?;
                 instance.host_polyglot_lineage_query_filtered()?;
                 let lifecycle_filtered = instance.stack.pop()?.as_i32()?;
@@ -3691,7 +4882,8 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
                     return Err(WasmError::SyscallFailed);
                 }
                 let lifecycle_header = instance.memory.read(0x400, 8)?;
-                if lifecycle_header[0] != POLYGLOT_LINEAGE_WIRE_VERSION || lifecycle_header[1] == 0 {
+                if lifecycle_header[0] != POLYGLOT_LINEAGE_WIRE_VERSION || lifecycle_header[1] == 0
+                {
                     return Err(WasmError::SyscallFailed);
                 }
                 Ok(())
@@ -3719,7 +4911,8 @@ pub(crate) fn formal_polyglot_abi_self_check() -> Result<PolyglotAbiSummary, &'s
 }
 
 /// Deterministic self-check for the frozen host dispatcher table.
-pub(crate) fn formal_host_dispatch_self_check() -> Result<HostDispatchConformanceSummary, &'static str> {
+pub(crate) fn formal_host_dispatch_self_check(
+) -> Result<HostDispatchConformanceSummary, &'static str> {
     if HOST_FUNCTION_SPECS.len() != 143 {
         return Err("Host dispatch self-check: unexpected table size");
     }
@@ -3738,8 +4931,8 @@ pub(crate) fn formal_host_dispatch_self_check() -> Result<HostDispatchConformanc
             return Err("Host dispatch self-check: host ID mismatch");
         }
 
-        let by_id = host_function_spec_by_id(index)
-            .ok_or("Host dispatch self-check: missing host ID")?;
+        let by_id =
+            host_function_spec_by_id(index).ok_or("Host dispatch self-check: missing host ID")?;
         if by_id.id != spec.id
             || by_id.canonical_name != spec.canonical_name
             || by_id.param_count != spec.param_count
@@ -5307,8 +6500,10 @@ impl PolyglotLineageStore {
                 let previous = self.records[i].lifecycle;
                 self.records[i].lifecycle = lifecycle;
                 self.records[i].updated_at = now;
-                if matches!(lifecycle, PolyglotLifecycle::Revoked | PolyglotLifecycle::Rebound)
-                    && previous != lifecycle
+                if matches!(
+                    lifecycle,
+                    PolyglotLifecycle::Revoked | PolyglotLifecycle::Rebound
+                ) && previous != lifecycle
                 {
                     self.push_event(
                         object_id,
@@ -5353,7 +6548,11 @@ impl PolyglotLineageStore {
         self.serialize_filtered(out, PolyglotLineageFilterKind::All, 0, 0, None)
     }
 
-    fn serialize_latest_by_object(&self, out: &mut [u8], object_id: u64) -> Result<usize, &'static str> {
+    fn serialize_latest_by_object(
+        &self,
+        out: &mut [u8],
+        object_id: u64,
+    ) -> Result<usize, &'static str> {
         let Some(idx) = self.find_latest_by_object(object_id) else {
             return Err("polyglot lineage record not found");
         };
@@ -5409,7 +6608,8 @@ impl PolyglotLineageStore {
             }
             i += 1;
         }
-        let needed = PolyglotLineageWireHeaderV1::BYTES + count * PolyglotLineageEventWireRecordV1::BYTES;
+        let needed =
+            PolyglotLineageWireHeaderV1::BYTES + count * PolyglotLineageEventWireRecordV1::BYTES;
         if out.len() < needed {
             return Err("polyglot lineage query buffer too small");
         }
@@ -5425,7 +6625,11 @@ impl PolyglotLineageStore {
         Ok(count)
     }
 
-    fn serialize_status_by_object(&self, out: &mut [u8], object_id: u64) -> Result<usize, &'static str> {
+    fn serialize_status_by_object(
+        &self,
+        out: &mut [u8],
+        object_id: u64,
+    ) -> Result<usize, &'static str> {
         let Some(idx) = self.find_latest_by_object(object_id) else {
             return Err("polyglot lineage record not found");
         };
@@ -5512,7 +6716,8 @@ impl PolyglotLineageStore {
             }
             i += 1;
         }
-        let needed = PolyglotLineageWireHeaderV1::BYTES + count * PolyglotLineageWireRecordV1::BYTES;
+        let needed =
+            PolyglotLineageWireHeaderV1::BYTES + count * PolyglotLineageWireRecordV1::BYTES;
         if out.len() < needed {
             return Err("polyglot lineage query buffer too small");
         }
@@ -6208,7 +7413,9 @@ fn run_policy_contract(bytecode: &[u8], ctx: &[u8]) -> bool {
         Ok(sig) => sig,
         Err(_) => return false,
     };
-    if param_count != 2 || result_count != 1 || !module.function_all_i32(export_idx).unwrap_or(false)
+    if param_count != 2
+        || result_count != 1
+        || !module.function_all_i32(export_idx).unwrap_or(false)
     {
         return false;
     }
@@ -6254,7 +7461,9 @@ fn parse_net_host(host: &str) -> Option<crate::net::Ipv4Addr> {
     if idx != 4 {
         return None;
     }
-    Some(crate::net::Ipv4Addr::new(parts[0], parts[1], parts[2], parts[3]))
+    Some(crate::net::Ipv4Addr::new(
+        parts[0], parts[1], parts[2], parts[3],
+    ))
 }
 
 #[cfg(test)]
@@ -6265,8 +7474,8 @@ mod policy_tests {
         0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic + version
         0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F, // type section
         0x03, 0x02, 0x01, 0x00, // function section
-        0x07, 0x10, 0x01, 0x0C, 0x70, 0x6F, 0x6C, 0x69, 0x63, 0x79, 0x5F, 0x63,
-        0x68, 0x65, 0x63, 0x6B, 0x00, 0x00, // export policy_check
+        0x07, 0x10, 0x01, 0x0C, 0x70, 0x6F, 0x6C, 0x69, 0x63, 0x79, 0x5F, 0x63, 0x68, 0x65, 0x63,
+        0x6B, 0x00, 0x00, // export policy_check
         0x0A, 0x06, 0x01, 0x04, 0x00, 0x41, 0x01, 0x0B, // body: i32.const 1
     ];
 
@@ -6321,7 +7530,9 @@ mod policy_tests {
         ];
 
         let mut module = WasmModule::new();
-        module.load_binary(&MODULE_BYTES).expect("module should load");
+        module
+            .load_binary(&MODULE_BYTES)
+            .expect("module should load");
 
         let instance = unsafe { WasmInstance::boxed_new_in_place(module, ProcessId(1), 0) };
         let snapshot = instance.mesh_migrate_payload_bytes_for_test(0, 0);
@@ -6826,7 +8037,13 @@ pub fn register_service_pointer(
                             .module
                             .exported_function_name_for_combined(resolved)
                             .ok_or(WasmError::FunctionNotFound)?;
-                        Ok((instance.process_id, resolved, signature, export_name, export_name_len))
+                        Ok((
+                            instance.process_id,
+                            resolved,
+                            signature,
+                            export_name,
+                            export_name_len,
+                        ))
                     }
                     CallTarget::Host(_) => Err(WasmError::PermissionDenied),
                 }
@@ -7955,8 +9172,13 @@ impl WasmModule {
             if total_locals > MAX_LOCALS {
                 return Err(WasmError::InvalidLocalIndex);
             }
-            let defined_idx =
-                self.add_function(Function::from_signature(code_offset, code_len, local_count, type_idx, sig))?;
+            let defined_idx = self.add_function(Function::from_signature(
+                code_offset,
+                code_len,
+                local_count,
+                type_idx,
+                sig,
+            ))?;
             let combined_idx = self
                 .import_function_count
                 .checked_add(defined_idx)
@@ -8316,6 +9538,79 @@ pub(crate) struct ControlFrame {
     active_exception_values: [Value; MAX_EXCEPTION_ARITY],
 }
 
+const MAX_WASM_COMPOSITOR_WINDOWS: usize = 8;
+
+#[derive(Clone, Copy)]
+struct WasmCompositorWindow {
+    handle: u32,
+    window: crate::compositor::protocol::WindowId,
+    window_cap: crate::compositor::protocol::CompositorCap,
+    surface: crate::compositor::protocol::SurfaceId,
+    surface_cap: crate::compositor::protocol::CompositorCap,
+}
+
+#[derive(Clone)]
+struct WasmCompositorState {
+    session: Option<crate::compositor::protocol::SessionId>,
+    session_cap: crate::compositor::protocol::CompositorCap,
+    windows: [Option<WasmCompositorWindow>; MAX_WASM_COMPOSITOR_WINDOWS],
+    next_handle: u32,
+}
+
+impl WasmCompositorState {
+    const fn new() -> Self {
+        Self {
+            session: None,
+            session_cap: crate::compositor::protocol::CompositorCap::INVALID,
+            windows: [None; MAX_WASM_COMPOSITOR_WINDOWS],
+            next_handle: 1,
+        }
+    }
+
+    fn find(&self, handle: u32) -> Option<WasmCompositorWindow> {
+        self.windows
+            .iter()
+            .flatten()
+            .find(|entry| entry.handle == handle)
+            .copied()
+    }
+
+    fn insert(
+        &mut self,
+        window: crate::compositor::protocol::WindowId,
+        window_cap: crate::compositor::protocol::CompositorCap,
+        surface: crate::compositor::protocol::SurfaceId,
+        surface_cap: crate::compositor::protocol::CompositorCap,
+    ) -> Option<u32> {
+        let slot = self.windows.iter_mut().find(|slot| slot.is_none())?;
+        let handle = self.next_handle;
+        self.next_handle = self.next_handle.wrapping_add(1).max(1);
+        *slot = Some(WasmCompositorWindow {
+            handle,
+            window,
+            window_cap,
+            surface,
+            surface_cap,
+        });
+        Some(handle)
+    }
+
+    fn remove(&mut self, handle: u32) -> Option<WasmCompositorWindow> {
+        for slot in &mut self.windows {
+            if slot.map(|entry| entry.handle) == Some(handle) {
+                return slot.take();
+            }
+        }
+        None
+    }
+
+    fn clear(&mut self) {
+        self.session = None;
+        self.session_cap = crate::compositor::protocol::CompositorCap::INVALID;
+        self.windows = [None; MAX_WASM_COMPOSITOR_WINDOWS];
+    }
+}
+
 /// A running WASM instance
 pub struct WasmInstance {
     /// The module being executed
@@ -8339,6 +9634,8 @@ pub struct WasmInstance {
     capabilities: CapabilityTable,
     /// Process ID
     pub process_id: ProcessId,
+    /// Host-owned compositor session and opaque window handles.
+    compositor: WasmCompositorState,
     /// Instance ID (slot index)
     instance_id: usize,
     /// Shadow instance for JIT validation (skip replay/record)
@@ -8407,6 +9704,7 @@ impl WasmInstance {
         core::ptr::addr_of_mut!((*raw).pc).write(0);
         core::ptr::addr_of_mut!((*raw).capabilities).write(capabilities);
         core::ptr::addr_of_mut!((*raw).process_id).write(process_id);
+        core::ptr::addr_of_mut!((*raw).compositor).write(WasmCompositorState::new());
         core::ptr::addr_of_mut!((*raw).instance_id).write(instance_id);
         core::ptr::addr_of_mut!((*raw).is_shadow).write(false);
         core::ptr::addr_of_mut!((*raw).instruction_count).write(0);
@@ -8421,9 +9719,11 @@ impl WasmInstance {
         core::ptr::addr_of_mut!((*raw).jit_hot).write([0; 64]);
         core::ptr::addr_of_mut!((*raw).jit_validate_remaining).write([JIT_VALIDATE_CALLS; 64]);
         core::ptr::addr_of_mut!((*raw).last_received_service_handle).write(None);
-        core::ptr::addr_of_mut!((*raw).thread_pool).write(crate::execution::wasm_thread::WasmThreadPool::new());
+        core::ptr::addr_of_mut!((*raw).thread_pool)
+            .write(crate::execution::wasm_thread::WasmThreadPool::new());
         core::ptr::addr_of_mut!((*raw).active_thread_tid).write(0);
-        core::ptr::addr_of_mut!((*raw).wasi_ctx).write(crate::services::wasi::WasiCtx::new(instance_id));
+        core::ptr::addr_of_mut!((*raw).wasi_ctx)
+            .write(crate::services::wasi::WasiCtx::new(instance_id));
     }
 
     fn alloc_jit_state() -> (*mut JitUserState, usize) {
@@ -8440,7 +9740,8 @@ impl WasmInstance {
             if crate::arch::mmu::set_page_writable_range(base as usize, span, true).is_err() {
                 return (core::ptr::null_mut(), 0);
             }
-            let _ = crate::security::memory_isolation::tag_jit_user_state(base as usize, span, false);
+            let _ =
+                crate::security::memory_isolation::tag_jit_user_state(base as usize, span, false);
             unsafe {
                 core::ptr::write_bytes(base as *mut u8, 0, span);
             }
@@ -8648,7 +9949,8 @@ impl WasmInstance {
                     }
                     Err(WasmError::ThreadBlockedOnJoin(target_tid)) => {
                         self.save_thread_execution(&mut thread);
-                        thread.state = crate::execution::wasm_thread::ThreadState::Joining(target_tid);
+                        thread.state =
+                            crate::execution::wasm_thread::ThreadState::Joining(target_tid);
                         thread.fuel = crate::execution::wasm_thread::DEFAULT_THREAD_FUEL;
                         self.active_thread_tid = 0;
                         return Ok(());
@@ -9258,14 +10560,17 @@ impl WasmInstance {
                     return Err(WasmError::Trap);
                 }
             }
-            let _ =
-                crate::security::memory_isolation::tag_jit_user_state(self.jit_state as usize, span, false);
+            let _ = crate::security::memory_isolation::tag_jit_user_state(
+                self.jit_state as usize,
+                span,
+                false,
+            );
         }
         self.module.load_raw_bytecode(code)?;
         self.module.reset_functions();
-        let _ = self
-            .module
-            .add_function(Function::synthetic_i32(0, code.len(), 0, 1, locals_total))?;
+        let _ =
+            self.module
+                .add_function(Function::synthetic_i32(0, code.len(), 0, 1, locals_total))?;
         self.stack.clear();
         self.locals = [Value::I32(0); MAX_LOCALS];
         self.globals = [None; MAX_WASM_GLOBALS];
@@ -9405,9 +10710,8 @@ impl WasmInstance {
                     if let Ok((cs, ce)) = self.function_code_range(callee_func) {
                         let callee_code = &self.module.bytecode[cs..ce];
                         let callee_locals = callee_func.param_count + callee_func.local_count;
-                        let callee_hash = hash_code(callee_code, callee_locals)
-                            ^ type_sig_hash
-                            ^ global_sig_hash;
+                        let callee_hash =
+                            hash_code(callee_code, callee_locals) ^ type_sig_hash ^ global_sig_hash;
                         if let Some(entry) = jit_cache_get_or_compile(
                             callee_hash,
                             callee_code,
@@ -9512,6 +10816,7 @@ impl WasmInstance {
             pc: 0,
             capabilities,
             process_id,
+            compositor: WasmCompositorState::new(),
             instance_id,
             is_shadow: false,
             instruction_count: 0,
@@ -9896,6 +11201,7 @@ impl WasmInstance {
             pc: self.pc,
             capabilities: self.capabilities.clone(),
             process_id: self.process_id,
+            compositor: WasmCompositorState::new(),
             instance_id: self.instance_id,
             is_shadow: true,
             instruction_count: 0,
@@ -10088,13 +11394,12 @@ impl WasmInstance {
             let (code_start, end_pc) = self.function_code_range(func)?;
             self.pc = code_start;
             self.current_func_end = end_pc;
-            let mut fuzz_trace_budget = if JIT_FUZZ_ACTIVE.load(Ordering::Relaxed)
-                && jit_fuzz_verbose_trace_enabled()
-            {
-                16usize
-            } else {
-                0usize
-            };
+            let mut fuzz_trace_budget =
+                if JIT_FUZZ_ACTIVE.load(Ordering::Relaxed) && jit_fuzz_verbose_trace_enabled() {
+                    16usize
+                } else {
+                    0usize
+                };
 
             while self.pc < end_pc {
                 if fuzz_trace_budget != 0 {
@@ -11592,14 +12897,13 @@ impl WasmInstance {
             Some(ip) => ip,
             None => {
                 let mut net = crate::net::network().lock();
-                net.dns_resolve(host_str).map_err(|_| WasmError::SyscallFailed)?
+                net.dns_resolve(host_str)
+                    .map_err(|_| WasmError::SyscallFailed)?
             }
         };
-        let conn_id = crate::net::net_reactor::tcp_connect(
-            crate::net::netstack::Ipv4Addr(remote_ip.0),
-            port,
-        )
-        .map_err(|_| WasmError::SyscallFailed)?;
+        let conn_id =
+            crate::net::net_reactor::tcp_connect(crate::net::netstack::Ipv4Addr(remote_ip.0), port)
+                .map_err(|_| WasmError::SyscallFailed)?;
 
         self.stack.push(Value::I32(conn_id as i32))?;
         if mode == ReplayMode::Record {
@@ -13221,7 +14525,11 @@ impl WasmInstance {
 
     fn host_input_poll(&mut self) -> Result<(), WasmError> {
         crate::drivers::x86::input::pump();
-        let v = if crate::drivers::x86::input::poll() { 1 } else { 0 };
+        let v = if crate::drivers::x86::input::poll() {
+            1
+        } else {
+            0
+        };
         self.stack.push(Value::I32(v))
     }
 
@@ -13238,8 +14546,9 @@ impl WasmInstance {
                 {
                     return self.stack.push(Value::I32(0));
                 }
-                let written =
-                    ev.serialise(&mut mem[buf_ptr..buf_ptr + crate::drivers::x86::input::INPUT_EVENT_BYTES]);
+                let written = ev.serialise(
+                    &mut mem[buf_ptr..buf_ptr + crate::drivers::x86::input::INPUT_EVENT_BYTES],
+                );
                 self.stack.push(Value::I32(written as i32))
             }
         }
@@ -13258,13 +14567,21 @@ impl WasmInstance {
 
     fn host_input_key_poll(&mut self) -> Result<(), WasmError> {
         crate::drivers::x86::input::pump();
-        let v = if crate::drivers::x86::input::poll_key() { 1 } else { 0 };
+        let v = if crate::drivers::x86::input::poll_key() {
+            1
+        } else {
+            0
+        };
         self.stack.push(Value::I32(v))
     }
 
     fn host_input_mouse_poll(&mut self) -> Result<(), WasmError> {
         crate::drivers::x86::input::pump();
-        let v = if crate::drivers::x86::input::poll_mouse() { 1 } else { 0 };
+        let v = if crate::drivers::x86::input::poll_mouse() {
+            1
+        } else {
+            0
+        };
         self.stack.push(Value::I32(v))
     }
 
@@ -13304,7 +14621,8 @@ impl WasmInstance {
         let buf_size_ptr = self.stack.pop()?.as_i32()? as u32;
         let cnt_ptr = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::services::wasi::environ_sizes_get(&self.wasi_ctx, mem, cnt_ptr, buf_size_ptr);
+        let e =
+            crate::services::wasi::environ_sizes_get(&self.wasi_ctx, mem, cnt_ptr, buf_size_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -13321,7 +14639,8 @@ impl WasmInstance {
         let precision = self.stack.pop()?.as_i32()? as u64;
         let clock_id = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::services::wasi::clock_time_get(&self.wasi_ctx, mem, clock_id, precision, ts_ptr);
+        let e =
+            crate::services::wasi::clock_time_get(&self.wasi_ctx, mem, clock_id, precision, ts_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -13428,7 +14747,14 @@ impl WasmInstance {
             o.offset = offset;
         }
         let mem = self.memory.as_mut_slice();
-        let e = crate::services::wasi::fd_read(&mut self.wasi_ctx, mem, fd, iovs_ptr, iovs_len, nread_ptr);
+        let e = crate::services::wasi::fd_read(
+            &mut self.wasi_ctx,
+            mem,
+            fd,
+            iovs_ptr,
+            iovs_len,
+            nread_ptr,
+        );
         if let Some(o) = self.wasi_ctx.fds.get_mut(fd as usize) {
             o.offset = saved;
         }
@@ -13448,7 +14774,8 @@ impl WasmInstance {
         let path_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::services::wasi::fd_prestat_dir_name(&self.wasi_ctx, mem, fd, path_ptr, path_len);
+        let e =
+            crate::services::wasi::fd_prestat_dir_name(&self.wasi_ctx, mem, fd, path_ptr, path_len);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -13488,7 +14815,14 @@ impl WasmInstance {
         let iovs_ptr = self.stack.pop()?.as_i32()? as u32;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::services::wasi::fd_read(&mut self.wasi_ctx, mem, fd, iovs_ptr, iovs_len, nread_ptr);
+        let e = crate::services::wasi::fd_read(
+            &mut self.wasi_ctx,
+            mem,
+            fd,
+            iovs_ptr,
+            iovs_len,
+            nread_ptr,
+        );
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -13524,7 +14858,8 @@ impl WasmInstance {
         let offset = self.stack.pop()?.as_i32()? as i64;
         let fd = self.stack.pop()?.as_i32()? as u32;
         let mem = self.memory.as_mut_slice();
-        let e = crate::services::wasi::fd_seek(&mut self.wasi_ctx, mem, fd, offset, whence, newoff_ptr);
+        let e =
+            crate::services::wasi::fd_seek(&mut self.wasi_ctx, mem, fd, offset, whence, newoff_ptr);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -13592,8 +14927,14 @@ impl WasmInstance {
         let mut pathbuf = [0u8; 128];
         let l = path_len.min(127);
         pathbuf[..l].copy_from_slice(&mem[path_ptr..path_ptr + l]);
-        let e =
-            crate::services::wasi::path_filestat_get(&self.wasi_ctx, mem, fd, flags, &pathbuf[..l], stat_ptr);
+        let e = crate::services::wasi::path_filestat_get(
+            &self.wasi_ctx,
+            mem,
+            fd,
+            flags,
+            &pathbuf[..l],
+            stat_ptr,
+        );
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -13778,11 +15119,8 @@ impl WasmInstance {
         let nl = new_path_len.min(127);
         old_buf[..ol].copy_from_slice(&mem[old_path_ptr..old_path_ptr + ol]);
         new_buf[..nl].copy_from_slice(&mem[new_path_ptr..new_path_ptr + nl]);
-        let e = crate::services::wasi::path_symlink(
-            &mut self.wasi_ctx,
-            &old_buf[..ol],
-            &new_buf[..nl],
-        );
+        let e =
+            crate::services::wasi::path_symlink(&mut self.wasi_ctx, &old_buf[..ol], &new_buf[..nl]);
         self.stack.push(Value::I32(e.as_i32()))
     }
 
@@ -14067,10 +15405,11 @@ impl WasmInstance {
         } else {
             Some(self.process_id)
         };
-        let child_pid = match crate::scheduler::process::process_manager().spawn("wasm-child", parent) {
-            Ok(pid) => pid,
-            Err(_) => return self.stack.push(Value::I32(0)),
-        };
+        let child_pid =
+            match crate::scheduler::process::process_manager().spawn("wasm-child", parent) {
+                Ok(pid) => pid,
+                Err(_) => return self.stack.push(Value::I32(0)),
+            };
 
         // Queue the spawn for deferred execution outside this lock to avoid
         // re-entrancy into the WASM runtime mutex.
@@ -14325,19 +15664,21 @@ impl WasmInstance {
             }
         };
 
-        let resolved_export = match wasm_runtime().get_instance_mut(target_instance_id, |instance| {
-            instance
-                .module
-                .resolve_exported_function(&export_arr_raw[..export_len])
-        }) {
-            Ok(Ok(idx)) => idx,
-            _ => return self.stack.push(Value::I32(-3)),
-        };
+        let resolved_export =
+            match wasm_runtime().get_instance_mut(target_instance_id, |instance| {
+                instance
+                    .module
+                    .resolve_exported_function(&export_arr_raw[..export_len])
+            }) {
+                Ok(Ok(idx)) => idx,
+                _ => return self.stack.push(Value::I32(-3)),
+            };
 
         // Find the exact export in the service-pointer registry.
         let object_id: u64 = {
             let sp_reg = SERVICE_POINTERS.lock();
-            match sp_reg.find_by_target_and_export(target_instance_id, &export_arr_raw[..export_len])
+            match sp_reg
+                .find_by_target_and_export(target_instance_id, &export_arr_raw[..export_len])
             {
                 Some(entry) if entry.function_index == resolved_export => entry.object_id,
                 _ => return self.stack.push(Value::I32(-3)),
@@ -14360,10 +15701,8 @@ impl WasmInstance {
             Ok(cap_id) => cap_id,
             Err(_) => return self.stack.push(Value::I32(-4)),
         };
-        let wasm_cap = WasmCapability::ServicePointer(ServicePointerCapability {
-            object_id,
-            cap_id,
-        });
+        let wasm_cap =
+            WasmCapability::ServicePointer(ServicePointerCapability { object_id, cap_id });
         let handle = match self.capabilities.inject(wasm_cap) {
             Ok(handle) => handle,
             Err(_) => {
@@ -14401,12 +15740,14 @@ impl WasmInstance {
             self.module.language_tag.as_str(),
             handle.0
         );
-        crate::security::security().log_event(crate::security::AuditEntry::new(
-            crate::security::SecurityEvent::CapDelegationChain,
-            self.process_id,
-            cap.object_id as u32,
-        )
-        .with_context(object_id));
+        crate::security::security().log_event(
+            crate::security::AuditEntry::new(
+                crate::security::SecurityEvent::CapDelegationChain,
+                self.process_id,
+                cap.object_id as u32,
+            )
+            .with_context(object_id),
+        );
         POLYGLOT_LINEAGE
             .lock()
             .update_lifecycle(object_id, PolyglotLifecycle::Live);
@@ -14439,7 +15780,10 @@ impl WasmInstance {
             Ok(count) => count,
             Err(_) => return self.stack.push(Value::I32(-2)),
         };
-        self.memory.write(buf_ptr, &buf[..8 + count * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES])?;
+        self.memory.write(
+            buf_ptr,
+            &buf[..8 + count * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES],
+        )?;
         self.stack.push(Value::I32(count as i32))
     }
 
@@ -14479,7 +15823,10 @@ impl WasmInstance {
             Ok(count) => count,
             Err(_) => return self.stack.push(Value::I32(-2)),
         };
-        self.memory.write(buf_ptr, &buf[..8 + count * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES])?;
+        self.memory.write(
+            buf_ptr,
+            &buf[..8 + count * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES],
+        )?;
         self.stack.push(Value::I32(count as i32))
     }
 
@@ -14502,11 +15849,17 @@ impl WasmInstance {
         };
 
         let mut buf = alloc::vec![0u8; buf_len];
-        let count = match POLYGLOT_LINEAGE.lock().serialize_latest_by_object(&mut buf, object_id) {
+        let count = match POLYGLOT_LINEAGE
+            .lock()
+            .serialize_latest_by_object(&mut buf, object_id)
+        {
             Ok(count) => count,
             Err(_) => return self.stack.push(Value::I32(-2)),
         };
-        self.memory.write(buf_ptr, &buf[..8 + count * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES])?;
+        self.memory.write(
+            buf_ptr,
+            &buf[..8 + count * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES],
+        )?;
         self.stack.push(Value::I32(count as i32))
     }
 
@@ -14524,11 +15877,17 @@ impl WasmInstance {
         }
         let object_id = (object_lo as u64) | ((object_hi as u64) << 32);
         let mut buf = alloc::vec![0u8; buf_len];
-        let count = match POLYGLOT_LINEAGE.lock().serialize_latest_by_object(&mut buf, object_id) {
+        let count = match POLYGLOT_LINEAGE
+            .lock()
+            .serialize_latest_by_object(&mut buf, object_id)
+        {
             Ok(count) => count,
             Err(_) => return self.stack.push(Value::I32(-2)),
         };
-        self.memory.write(buf_ptr, &buf[..8 + count * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES])?;
+        self.memory.write(
+            buf_ptr,
+            &buf[..8 + count * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES],
+        )?;
         self.stack.push(Value::I32(count as i32))
     }
 
@@ -14557,27 +15916,31 @@ impl WasmInstance {
     fn host_polyglot_lineage_rebind(&mut self) -> Result<(), WasmError> {
         let target_instance = self.stack.pop()?.as_i32()? as usize;
         let cap_handle = CapHandle(self.stack.pop()?.as_u32()?);
-        let (object_id, owner_pid, export_name, signature) = match self.capabilities.get(cap_handle)? {
-            WasmCapability::ServicePointer(ptr) => {
-                let registry = SERVICE_POINTERS.lock();
-                let Some(idx) = registry.find_index(ptr.object_id) else {
-                    return self.stack.push(Value::I32(-2));
-                };
-                let live = registry.entries[idx];
-                if !live.active {
-                    return self.stack.push(Value::I32(-2));
+        let (object_id, owner_pid, export_name, signature) =
+            match self.capabilities.get(cap_handle)? {
+                WasmCapability::ServicePointer(ptr) => {
+                    let registry = SERVICE_POINTERS.lock();
+                    let Some(idx) = registry.find_index(ptr.object_id) else {
+                        return self.stack.push(Value::I32(-2));
+                    };
+                    let live = registry.entries[idx];
+                    if !live.active {
+                        return self.stack.push(Value::I32(-2));
+                    }
+                    (
+                        live.object_id,
+                        live.owner_pid,
+                        live.export_name,
+                        live.signature,
+                    )
                 }
-                (
-                    live.object_id,
-                    live.owner_pid,
-                    live.export_name,
-                    live.signature,
-                )
-            }
-            _ => return self.stack.push(Value::I32(-2)),
-        };
+                _ => return self.stack.push(Value::I32(-2)),
+            };
 
-        let export_len = export_name.iter().position(|&b| b == 0).unwrap_or(export_name.len());
+        let export_len = export_name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(export_name.len());
         let export_name = &export_name[..export_len];
         let target_function_index = match wasm_runtime().get_instance_mut(
             target_instance,
@@ -14646,11 +16009,17 @@ impl WasmInstance {
             _ => return self.stack.push(Value::I32(-2)),
         };
         let mut buf = alloc::vec![0u8; buf_len];
-        let count = match POLYGLOT_LINEAGE.lock().serialize_status_by_object(&mut buf, object_id) {
+        let count = match POLYGLOT_LINEAGE
+            .lock()
+            .serialize_status_by_object(&mut buf, object_id)
+        {
             Ok(count) => count,
             Err(_) => return self.stack.push(Value::I32(-2)),
         };
-        self.memory.write(buf_ptr, &buf[..8 + count * POLYGLOT_LINEAGE_STATUS_WIRE_BYTES])?;
+        self.memory.write(
+            buf_ptr,
+            &buf[..8 + count * POLYGLOT_LINEAGE_STATUS_WIRE_BYTES],
+        )?;
         self.stack.push(Value::I32(count as i32))
     }
 
@@ -14668,11 +16037,17 @@ impl WasmInstance {
         }
         let object_id = (object_lo as u64) | ((object_hi as u64) << 32);
         let mut buf = alloc::vec![0u8; buf_len];
-        let count = match POLYGLOT_LINEAGE.lock().serialize_status_by_object(&mut buf, object_id) {
+        let count = match POLYGLOT_LINEAGE
+            .lock()
+            .serialize_status_by_object(&mut buf, object_id)
+        {
             Ok(count) => count,
             Err(_) => return self.stack.push(Value::I32(-2)),
         };
-        self.memory.write(buf_ptr, &buf[..8 + count * POLYGLOT_LINEAGE_STATUS_WIRE_BYTES])?;
+        self.memory.write(
+            buf_ptr,
+            &buf[..8 + count * POLYGLOT_LINEAGE_STATUS_WIRE_BYTES],
+        )?;
         self.stack.push(Value::I32(count as i32))
     }
 
@@ -14688,11 +16063,17 @@ impl WasmInstance {
             return self.stack.push(Value::I32(-1));
         }
         let mut buf = alloc::vec![0u8; buf_len];
-        let count = match POLYGLOT_LINEAGE.lock().serialize_page(&mut buf, cursor, limit.max(1)) {
+        let count = match POLYGLOT_LINEAGE
+            .lock()
+            .serialize_page(&mut buf, cursor, limit.max(1))
+        {
             Ok(count) => count,
             Err(_) => return self.stack.push(Value::I32(-2)),
         };
-        self.memory.write(buf_ptr, &buf[..8 + count * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES])?;
+        self.memory.write(
+            buf_ptr,
+            &buf[..8 + count * POLYGLOT_LINEAGE_WIRE_RECORD_BYTES],
+        )?;
         self.stack.push(Value::I32(count as i32))
     }
 
@@ -14708,11 +16089,17 @@ impl WasmInstance {
             return self.stack.push(Value::I32(-1));
         }
         let mut buf = alloc::vec![0u8; buf_len];
-        let count = match POLYGLOT_LINEAGE.lock().serialize_events(&mut buf, cursor, limit.max(1)) {
+        let count = match POLYGLOT_LINEAGE
+            .lock()
+            .serialize_events(&mut buf, cursor, limit.max(1))
+        {
             Ok(count) => count,
             Err(_) => return self.stack.push(Value::I32(-2)),
         };
-        self.memory.write(buf_ptr, &buf[..8 + count * POLYGLOT_LINEAGE_EVENT_WIRE_BYTES])?;
+        self.memory.write(
+            buf_ptr,
+            &buf[..8 + count * POLYGLOT_LINEAGE_EVENT_WIRE_BYTES],
+        )?;
         self.stack.push(Value::I32(count as i32))
     }
 
@@ -15069,7 +16456,8 @@ impl WasmInstance {
                     lease.owner_pid.0
                 };
                 if lease.enforce_use_budget {
-                    token.constraints_flags |= crate::net::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
+                    token.constraints_flags |=
+                        crate::net::capnet::CAPNET_CONSTRAINT_REQUIRE_BOUNDED_USE;
                     token.max_uses = lease.uses_remaining;
                 }
                 let encoded = token.encode();
@@ -16165,6 +17553,47 @@ impl WasmInstance {
     // Compositor host functions (IDs 28–37)
     // ========================================================================
 
+    #[cfg(not(target_arch = "aarch64"))]
+    fn ensure_compositor_session(&mut self) -> bool {
+        if self.compositor.session.is_some() {
+            return true;
+        }
+        match crate::compositor::service::handle_request(
+            crate::compositor::protocol::CompositorRequest::OpenSession {
+                pid: self.process_id,
+            },
+        ) {
+            crate::compositor::protocol::CompositorResponse::SessionGranted {
+                session,
+                session_cap,
+                ..
+            } => {
+                self.compositor.session = Some(session);
+                self.compositor.session_cap = session_cap;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn ensure_compositor_session(&mut self) -> bool {
+        false
+    }
+
+    fn close_compositor_session(&mut self) {
+        #[cfg(not(target_arch = "aarch64"))]
+        if let Some(session) = self.compositor.session {
+            let _ = crate::compositor::service::handle_request(
+                crate::compositor::protocol::CompositorRequest::CloseSession {
+                    session,
+                    cap: self.compositor.session_cap,
+                },
+            );
+        }
+        self.compositor.clear();
+    }
+
     /// compositor_create_window(x: i32, y: i32, w: i32, h: i32) -> i32
     fn host_compositor_create_window(&mut self) -> Result<(), WasmError> {
         let h = self.stack.pop()?.as_i32()?;
@@ -16175,15 +17604,72 @@ impl WasmInstance {
             self.stack.push(Value::I32(0))?;
             return Ok(());
         }
-        let wid = crate::compositor::compositor().create_window(x, y, w as u32, h as u32);
-        self.stack.push(Value::I32(wid as i32))?;
+        if !self.ensure_compositor_session() {
+            self.stack.push(Value::I32(0))?;
+            return Ok(());
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        let handle = match crate::compositor::service::handle_request(
+            crate::compositor::protocol::CompositorRequest::CreateWindow {
+                session: self.compositor.session.unwrap(),
+                cap: self.compositor.session_cap,
+                x,
+                y,
+                width: w as u32,
+                height: h as u32,
+            },
+        ) {
+            crate::compositor::protocol::CompositorResponse::WindowCreated {
+                window,
+                window_cap,
+                surface,
+                surface_cap,
+            } => match self
+                .compositor
+                .insert(window, window_cap, surface, surface_cap)
+            {
+                Some(handle) => handle,
+                None => {
+                    let _ = crate::compositor::service::handle_request(
+                        crate::compositor::protocol::CompositorRequest::DestroyWindow {
+                            window,
+                            cap: window_cap,
+                        },
+                    );
+                    0
+                }
+            },
+            _ => 0,
+        };
+        #[cfg(target_arch = "aarch64")]
+        let handle = 0;
+        self.stack.push(Value::I32(handle as i32))?;
         Ok(())
     }
 
     /// compositor_destroy_window(window_id: i32) -> i32  (1 = found, 0 = not found)
     fn host_compositor_destroy_window(&mut self) -> Result<(), WasmError> {
-        let wid = self.stack.pop()?.as_i32()?;
-        let ok = crate::compositor::compositor().destroy_window(wid as u32);
+        let handle = self.stack.pop()?.as_i32()? as u32;
+        let entry = self.compositor.find(handle);
+        #[cfg(not(target_arch = "aarch64"))]
+        let ok = entry
+            .map(|entry| {
+                matches!(
+                    crate::compositor::service::handle_request(
+                        crate::compositor::protocol::CompositorRequest::DestroyWindow {
+                            window: entry.window,
+                            cap: entry.window_cap,
+                        },
+                    ),
+                    crate::compositor::protocol::CompositorResponse::Ok
+                )
+            })
+            .unwrap_or(false);
+        #[cfg(target_arch = "aarch64")]
+        let ok = false;
+        if ok {
+            self.compositor.remove(handle);
+        }
         self.stack.push(Value::I32(if ok { 1 } else { 0 }))?;
         Ok(())
     }
@@ -16193,8 +17679,19 @@ impl WasmInstance {
         let argb = self.stack.pop()?.as_i32()? as u32;
         let y = self.stack.pop()?.as_i32()? as u32;
         let x = self.stack.pop()?.as_i32()? as u32;
-        let wid = self.stack.pop()?.as_i32()? as u32;
-        crate::compositor::compositor().set_pixel(wid, x, y, argb);
+        let handle = self.stack.pop()?.as_i32()? as u32;
+        #[cfg(not(target_arch = "aarch64"))]
+        if let Some(entry) = self.compositor.find(handle) {
+            let _ = crate::compositor::service::handle_request(
+                crate::compositor::protocol::CompositorRequest::SetPixel {
+                    surface: entry.surface,
+                    cap: entry.surface_cap,
+                    x,
+                    y,
+                    argb,
+                },
+            );
+        }
         Ok(())
     }
 
@@ -16205,8 +17702,21 @@ impl WasmInstance {
         let w = self.stack.pop()?.as_i32()? as u32;
         let y = self.stack.pop()?.as_i32()? as u32;
         let x = self.stack.pop()?.as_i32()? as u32;
-        let wid = self.stack.pop()?.as_i32()? as u32;
-        crate::compositor::compositor().fill_rect(wid, x, y, w, h, argb);
+        let handle = self.stack.pop()?.as_i32()? as u32;
+        #[cfg(not(target_arch = "aarch64"))]
+        if let Some(entry) = self.compositor.find(handle) {
+            let _ = crate::compositor::service::handle_request(
+                crate::compositor::protocol::CompositorRequest::FillRect {
+                    surface: entry.surface,
+                    cap: entry.surface_cap,
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                    argb,
+                },
+            );
+        }
         Ok(())
     }
 
@@ -16214,10 +17724,16 @@ impl WasmInstance {
     ///
     /// Flush changes for a single window to the physical framebuffer.
     fn host_compositor_flush(&mut self) -> Result<(), WasmError> {
-        let wid = self.stack.pop()?.as_i32()? as u32;
-        let fb_guard = crate::drivers::x86::gpu_support::GPU_FB.lock();
-        if let Some(ref fb) = *fb_guard {
-            crate::compositor::compositor().flush_window(wid, fb);
+        let handle = self.stack.pop()?.as_i32()? as u32;
+        #[cfg(not(target_arch = "aarch64"))]
+        if let Some(entry) = self.compositor.find(handle) {
+            let _ = crate::compositor::service::handle_request(
+                crate::compositor::protocol::CompositorRequest::CommitSurface {
+                    surface: entry.surface,
+                    cap: entry.surface_cap,
+                    dirty: (0, 0, 0, 0),
+                },
+            );
         }
         Ok(())
     }
@@ -16226,37 +17742,84 @@ impl WasmInstance {
     fn host_compositor_move_window(&mut self) -> Result<(), WasmError> {
         let y = self.stack.pop()?.as_i32()?;
         let x = self.stack.pop()?.as_i32()?;
-        let wid = self.stack.pop()?.as_i32()? as u32;
-        crate::compositor::compositor().move_window(wid, x, y);
+        let handle = self.stack.pop()?.as_i32()? as u32;
+        #[cfg(not(target_arch = "aarch64"))]
+        if let Some(entry) = self.compositor.find(handle) {
+            let _ = crate::compositor::service::handle_request(
+                crate::compositor::protocol::CompositorRequest::MoveWindow {
+                    window: entry.window,
+                    cap: entry.window_cap,
+                    x,
+                    y,
+                },
+            );
+        }
         Ok(())
     }
 
     /// compositor_set_z_order(window_id: i32, z: i32) -> ()
     fn host_compositor_set_z_order(&mut self) -> Result<(), WasmError> {
         let z = (self.stack.pop()?.as_i32()? & 0xFF) as u8;
-        let wid = self.stack.pop()?.as_i32()? as u32;
-        crate::compositor::compositor().set_z_order(wid, z);
+        let handle = self.stack.pop()?.as_i32()? as u32;
+        #[cfg(not(target_arch = "aarch64"))]
+        if let Some(entry) = self.compositor.find(handle) {
+            let _ = crate::compositor::service::handle_request(
+                crate::compositor::protocol::CompositorRequest::SetZOrder {
+                    window: entry.window,
+                    cap: entry.window_cap,
+                    z,
+                },
+            );
+        }
         Ok(())
     }
 
     /// compositor_get_width(window_id: i32) -> i32
     fn host_compositor_get_width(&mut self) -> Result<(), WasmError> {
-        let wid = self.stack.pop()?.as_i32()? as u32;
-        let w = crate::compositor::compositor()
-            .window_size(wid)
-            .map(|(w, _)| w as i32)
+        let handle = self.stack.pop()?.as_i32()? as u32;
+        #[cfg(not(target_arch = "aarch64"))]
+        let w = self
+            .compositor
+            .find(handle)
+            .and_then(|entry| match crate::compositor::service::handle_request(
+                crate::compositor::protocol::CompositorRequest::GetWindowSize {
+                    window: entry.window,
+                    cap: entry.window_cap,
+                },
+            ) {
+                crate::compositor::protocol::CompositorResponse::WindowSize { width, .. } => {
+                    Some(width as i32)
+                }
+                _ => None,
+            })
             .unwrap_or(-1);
+        #[cfg(target_arch = "aarch64")]
+        let w = -1;
         self.stack.push(Value::I32(w))?;
         Ok(())
     }
 
     /// compositor_get_height(window_id: i32) -> i32
     fn host_compositor_get_height(&mut self) -> Result<(), WasmError> {
-        let wid = self.stack.pop()?.as_i32()? as u32;
-        let h = crate::compositor::compositor()
-            .window_size(wid)
-            .map(|(_, h)| h as i32)
+        let handle = self.stack.pop()?.as_i32()? as u32;
+        #[cfg(not(target_arch = "aarch64"))]
+        let h = self
+            .compositor
+            .find(handle)
+            .and_then(|entry| match crate::compositor::service::handle_request(
+                crate::compositor::protocol::CompositorRequest::GetWindowSize {
+                    window: entry.window,
+                    cap: entry.window_cap,
+                },
+            ) {
+                crate::compositor::protocol::CompositorResponse::WindowSize { height, .. } => {
+                    Some(height as i32)
+                }
+                _ => None,
+            })
             .unwrap_or(-1);
+        #[cfg(target_arch = "aarch64")]
+        let h = -1;
         self.stack.push(Value::I32(h))?;
         Ok(())
     }
@@ -16268,7 +17831,7 @@ impl WasmInstance {
         let ptr = self.pop_nonneg_i32_as_usize()?;
         let y = self.stack.pop()?.as_i32()? as u32;
         let x = self.stack.pop()?.as_i32()? as u32;
-        let wid = self.stack.pop()?.as_i32()? as u32;
+        let handle = self.stack.pop()?.as_i32()? as u32;
 
         let text_bytes = self.memory.read(ptr, len)?;
         let text = match core::str::from_utf8(text_bytes) {
@@ -16280,11 +17843,31 @@ impl WasmInstance {
         };
         // We need to make a copy to avoid borrow issues with compositor.
         let mut buf = [0u8; 512];
-        let copy_len = text.len().min(511);
+        let copy_len = text.len().min(buf.len());
         buf[..copy_len].copy_from_slice(&text.as_bytes()[..copy_len]);
-        // SAFETY: we just validated it was valid UTF-8 above.
-        let text_ref = unsafe { core::str::from_utf8_unchecked(&buf[..copy_len]) };
-        let drawn = crate::compositor::compositor().draw_text(wid, x, y, text_ref, fg_argb);
+        #[cfg(not(target_arch = "aarch64"))]
+        let drawn = self
+            .compositor
+            .find(handle)
+            .and_then(|entry| match crate::compositor::service::handle_request(
+                crate::compositor::protocol::CompositorRequest::DrawText {
+                    surface: entry.surface,
+                    cap: entry.surface_cap,
+                    x,
+                    y,
+                    text: buf,
+                    text_len: copy_len as u16,
+                    fg_argb,
+                },
+            ) {
+                crate::compositor::protocol::CompositorResponse::TextDrawn { glyphs } => {
+                    Some(glyphs)
+                }
+                _ => None,
+            })
+            .unwrap_or(0);
+        #[cfg(target_arch = "aarch64")]
+        let drawn = 0;
         self.stack.push(Value::I32(drawn as i32))?;
         Ok(())
     }
@@ -16875,6 +18458,7 @@ impl WasmRuntime {
             crate::serial_println!("[X64-JF] instantiate=init-from-module");
         }
         if let Err(e) = instance.initialize_from_module() {
+            instance.close_compositor_session();
             let _ = clear_reserved_slot(self);
             #[cfg(target_arch = "x86_64")]
             if x64_diag {
@@ -16887,6 +18471,7 @@ impl WasmRuntime {
             crate::serial_println!("[X64-JF] instantiate=run-start");
         }
         if let Err(e) = instance.run_start_if_present() {
+            instance.close_compositor_session();
             let _ = clear_reserved_slot(self);
             #[cfg(target_arch = "x86_64")]
             if x64_diag {
@@ -16911,6 +18496,7 @@ impl WasmRuntime {
                 if x64_diag {
                     crate::serial_println!("[X64-JF] instantiate=commit-lock-timeout");
                 }
+                instance.close_compositor_session();
                 let _ = clear_reserved_slot(self);
                 return Err(WasmError::InstanceBusy);
             }
@@ -16921,6 +18507,7 @@ impl WasmRuntime {
             crate::serial_println!("[X64-JF] instantiate=commit-lock-acquired");
         }
         if slot_idx >= instances.len() {
+            instance.close_compositor_session();
             let _ = clear_reserved_slot(self);
             return Err(WasmError::InvalidModule);
         }
@@ -16934,9 +18521,14 @@ impl WasmRuntime {
                 }
                 Ok(slot_idx)
             }
-            RuntimeInstanceSlot::Busy(_) => Err(WasmError::InstanceBusy),
-            RuntimeInstanceSlot::Ready(_) => Err(WasmError::InstanceBusy),
-            RuntimeInstanceSlot::Empty => Err(WasmError::InvalidModule),
+            RuntimeInstanceSlot::Busy(_) | RuntimeInstanceSlot::Ready(_) => {
+                instance.close_compositor_session();
+                Err(WasmError::InstanceBusy)
+            }
+            RuntimeInstanceSlot::Empty => {
+                instance.close_compositor_session();
+                Err(WasmError::InvalidModule)
+            }
         }
     }
 
@@ -17048,13 +18640,18 @@ impl WasmRuntime {
         if instance_id >= MAX_WASM_RUNTIME_INSTANCES {
             return Err(WasmError::InvalidModule);
         }
-        match &instances[instance_id] {
-            RuntimeInstanceSlot::Busy(_) => return Err(WasmError::InstanceBusy),
-            RuntimeInstanceSlot::Empty => return Err(WasmError::InvalidModule),
-            RuntimeInstanceSlot::Ready(_) => {}
-        }
-        instances[instance_id] = RuntimeInstanceSlot::Empty;
+        let mut instance =
+            match core::mem::replace(&mut instances[instance_id], RuntimeInstanceSlot::Empty) {
+                RuntimeInstanceSlot::Busy(owner) => {
+                    instances[instance_id] = RuntimeInstanceSlot::Busy(owner);
+                    return Err(WasmError::InstanceBusy);
+                }
+                RuntimeInstanceSlot::Empty => return Err(WasmError::InvalidModule),
+                RuntimeInstanceSlot::Ready(instance) => instance,
+            };
         drop(instances);
+        instance.close_compositor_session();
+        drop(instance);
         let _ = POLYGLOT_REGISTRY.lock().purge_instance(instance_id);
         let _ = POLYGLOT_LINEAGE.lock().purge_instance(instance_id);
         let _ = revoke_service_pointers_for_instance(instance_id);
@@ -17258,7 +18855,8 @@ pub fn drain_pending_spawns() {
                         }
                         Ok(Err(e)) => {
                             let _ = wasm_runtime().destroy(instance_id);
-                            let _ = crate::scheduler::process::process_manager().terminate(spawn.pid);
+                            let _ =
+                                crate::scheduler::process::process_manager().terminate(spawn.pid);
                             crate::serial_println!(
                                 "[WASM] drain_pending_spawns: start pid={} failed: {:?}",
                                 spawn.pid.0,
@@ -17267,7 +18865,8 @@ pub fn drain_pending_spawns() {
                         }
                         Err(e) => {
                             let _ = wasm_runtime().destroy(instance_id);
-                            let _ = crate::scheduler::process::process_manager().terminate(spawn.pid);
+                            let _ =
+                                crate::scheduler::process::process_manager().terminate(spawn.pid);
                             crate::serial_println!(
                                 "[WASM] drain_pending_spawns: access pid={} failed: {:?}",
                                 spawn.pid.0,
@@ -17619,8 +19218,10 @@ static JIT_CONFIG: Mutex<JitConfig> = Mutex::new(JitConfig::new());
 static JIT_STATS: Mutex<JitStats> = Mutex::new(JitStats::new());
 static JIT_CACHE: Mutex<JitCache> = Mutex::new(JitCache::new());
 static JIT_FUZZ_SCRATCH: Mutex<Option<JitFuzzScratch>> = Mutex::new(None);
-static JIT_FUZZ_COMPILER: Mutex<Option<crate::execution::wasm_jit::FuzzCompiler>> = Mutex::new(None);
-static JIT_SELFTEST_COMPILER: Mutex<Option<crate::execution::wasm_jit::FuzzCompiler>> = Mutex::new(None);
+static JIT_FUZZ_COMPILER: Mutex<Option<crate::execution::wasm_jit::FuzzCompiler>> =
+    Mutex::new(None);
+static JIT_SELFTEST_COMPILER: Mutex<Option<crate::execution::wasm_jit::FuzzCompiler>> =
+    Mutex::new(None);
 static JIT_FUZZ_INSTANCES: Mutex<Option<(usize, usize)>> = Mutex::new(None);
 static JIT_FUZZ_ACTIVE: AtomicBool = AtomicBool::new(false);
 static JIT_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -17668,8 +19269,11 @@ fn ensure_fuzz_compiler_ready() -> Result<(), &'static str> {
     if compiler_slot.is_none() {
         crate::serial_println!("[WASM-JIT] compiler-init stage=create");
         *compiler_slot = Some(
-            crate::execution::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
-                .map_err(|_| "Fuzz compiler init failed")?,
+            crate::execution::wasm_jit::FuzzCompiler::new(
+                MAX_FUZZ_JIT_CODE_SIZE,
+                MAX_FUZZ_CODE_SIZE,
+            )
+            .map_err(|_| "Fuzz compiler init failed")?,
         );
         crate::serial_println!("[WASM-JIT] compiler-init stage=created");
     }
@@ -17687,8 +19291,11 @@ fn ensure_selftest_compiler_ready() -> Result<(), &'static str> {
     if compiler_slot.is_none() {
         crate::serial_println!("[WASM-JIT] compiler-init stage=create");
         *compiler_slot = Some(
-            crate::execution::wasm_jit::FuzzCompiler::new(MAX_FUZZ_JIT_CODE_SIZE, MAX_FUZZ_CODE_SIZE)
-                .map_err(|_| "Fuzz compiler init failed")?,
+            crate::execution::wasm_jit::FuzzCompiler::new(
+                MAX_FUZZ_JIT_CODE_SIZE,
+                MAX_FUZZ_CODE_SIZE,
+            )
+            .map_err(|_| "Fuzz compiler init failed")?,
         );
         crate::serial_println!("[WASM-JIT] compiler-init stage=created");
     }
@@ -19786,7 +21393,9 @@ fn hash_jit_type_signatures(type_sigs: &[crate::execution::wasm_jit::JitTypeSign
     hash
 }
 
-fn hash_jit_global_signatures(global_sigs: &[crate::execution::wasm_jit::JitGlobalSignature]) -> u64 {
+fn hash_jit_global_signatures(
+    global_sigs: &[crate::execution::wasm_jit::JitGlobalSignature],
+) -> u64 {
     let mut hash: u64 = 14695981039346656037;
     for sig in global_sigs {
         hash ^= if sig.mutable { 1 } else { 0 };
@@ -19799,7 +21408,9 @@ fn hash_jit_global_signatures(global_sigs: &[crate::execution::wasm_jit::JitGlob
     hash
 }
 
-fn collect_jit_type_signatures(module: &WasmModule) -> Vec<crate::execution::wasm_jit::JitTypeSignature> {
+fn collect_jit_type_signatures(
+    module: &WasmModule,
+) -> Vec<crate::execution::wasm_jit::JitTypeSignature> {
     let mut out = Vec::with_capacity(module.type_count);
     let mut idx = 0usize;
     while idx < module.type_count {
@@ -19822,7 +21433,9 @@ fn collect_jit_type_signatures(module: &WasmModule) -> Vec<crate::execution::was
     out
 }
 
-fn collect_jit_global_signatures(module: &WasmModule) -> Vec<crate::execution::wasm_jit::JitGlobalSignature> {
+fn collect_jit_global_signatures(
+    module: &WasmModule,
+) -> Vec<crate::execution::wasm_jit::JitGlobalSignature> {
     let mut out = Vec::with_capacity(module.global_count);
     let mut idx = 0usize;
     while idx < module.global_count {
@@ -19903,7 +21516,12 @@ fn jit_cache_get_or_compile(
     if let Some(entry) = jit_cache_get(hash, code, locals_total, type_sig_hash, global_sig_hash) {
         return Some(entry);
     }
-    let jit = match crate::execution::wasm_jit::compile_with_env(code, locals_total, type_sigs, global_sigs) {
+    let jit = match crate::execution::wasm_jit::compile_with_env(
+        code,
+        locals_total,
+        type_sigs,
+        global_sigs,
+    ) {
         Ok(j) => j,
         Err(_) => {
             jit_stats().lock().failed += 1;
@@ -21288,11 +22906,7 @@ pub fn jit_compare_shift_fixed_vector_self_test() -> Result<(), &'static str> {
             let entry = match compiler.compile(&case.code, case.locals_total) {
                 Ok(entry) => entry,
                 Err(e) => {
-                    crate::serial_println!(
-                        "[JIT-ST] compile-fail case={} reason={}",
-                        case.name,
-                        e
-                    );
+                    crate::serial_println!("[JIT-ST] compile-fail case={} reason={}", case.name, e);
                     return Err("jit compare/shift self-test: jit compile failed");
                 }
             };
@@ -22509,7 +24123,10 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
         Some(locals_total)
     }
 
-    fn validate_jit_fuzz_generated_subset(code: &[u8], locals_total: usize) -> Result<(), WasmError> {
+    fn validate_jit_fuzz_generated_subset(
+        code: &[u8],
+        locals_total: usize,
+    ) -> Result<(), WasmError> {
         let mut pc = 0usize;
         let mut saw_terminal_end = false;
         let mut stack_depth = 0i32;
@@ -23280,17 +24897,19 @@ pub fn jit_fuzz(iterations: u32, seed: u64) -> Result<JitFuzzStats, &'static str
             }
         }
         #[cfg(target_arch = "x86_64")]
-        let compile_with_irqs_masked = |compiler_ref: &mut crate::execution::wasm_jit::FuzzCompiler| {
-            // x86_64 bring-up uses trap/MMU recovery paths during fuzz JIT compile;
-            // masking IRQs here can stall those paths and hang long runs.
-            compiler_ref.compile(&code, locals_total)
-        };
+        let compile_with_irqs_masked =
+            |compiler_ref: &mut crate::execution::wasm_jit::FuzzCompiler| {
+                // x86_64 bring-up uses trap/MMU recovery paths during fuzz JIT compile;
+                // masking IRQs here can stall those paths and hang long runs.
+                compiler_ref.compile(&code, locals_total)
+            };
         #[cfg(not(target_arch = "x86_64"))]
-        let compile_with_irqs_masked = |compiler_ref: &mut crate::execution::wasm_jit::FuzzCompiler| {
-            let flags = unsafe { crate::platform::idt_asm::fast_cli_save() };
-            let _guard = IrqGuard(flags);
-            compiler_ref.compile(&code, locals_total)
-        };
+        let compile_with_irqs_masked =
+            |compiler_ref: &mut crate::execution::wasm_jit::FuzzCompiler| {
+                let flags = unsafe { crate::platform::idt_asm::fast_cli_save() };
+                let _guard = IrqGuard(flags);
+                compiler_ref.compile(&code, locals_total)
+            };
         let entry = match compile_with_irqs_masked(compiler) {
             Ok(entry) => entry,
             Err(first_err) => {
@@ -23778,11 +25397,9 @@ pub fn formal_service_pointer_conformance_self_check(
     let result = (|| -> Result<(), &'static str> {
         // Provider module exports `ping` returning 42.
         const PROVIDER_MODULE: [u8; 37] = [
-            0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
-            0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7F,
-            0x03, 0x02, 0x01, 0x00,
-            0x07, 0x08, 0x01, 0x04, b'p', b'i', b'n', b'g', 0x00, 0x00,
-            0x0A, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2A, 0x0B,
+            0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01,
+            0x7F, 0x03, 0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, b'p', b'i', b'n', b'g', 0x00,
+            0x00, 0x0A, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2A, 0x0B,
         ];
         let mut provider_module = WasmModule::new();
         provider_module
@@ -23862,7 +25479,8 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
             0x01, 0x0C, 0x01, 0x60, 0x04, 0x7E, 0x7D, 0x7C, 0x70, 0x04, 0x7E, 0x7D, 0x7C,
             0x70, // type section
             0x03, 0x02, 0x01, 0x00, // function section
-            0x07, 0x09, 0x01, 0x05, b't', b'y', b'p', b'e', b'd', 0x00, 0x00, // export section
+            0x07, 0x09, 0x01, 0x05, b't', b'y', b'p', b'e', b'd', 0x00,
+            0x00, // export section
             0x0A, 0x16, 0x01, 0x14, // code section header
             0x00, // local decl count
             0x42, 0x09, // i64.const 9
@@ -23904,8 +25522,8 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
 
         // Consumer instance only needs memory + capability table.
         const CONSUMER_MODULE: [u8; 17] = [
-            0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
-            0x01, 0x01, 0x00, 0x03, 0x01, 0x00, 0x0A, 0x01, 0x00,
+            0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x03, 0x01, 0x00,
+            0x0A, 0x01, 0x00,
         ];
         let consumer_id = wasm_runtime()
             .instantiate(&CONSUMER_MODULE, consumer)
@@ -23957,7 +25575,10 @@ pub fn service_pointer_typed_hostpath_self_check() -> Result<(), &'static str> {
                 };
 
                 if let Err(first_err) = invoke_typed(instance) {
-                    if matches!(first_err, WasmError::SyscallFailed | WasmError::PermissionDenied) {
+                    if matches!(
+                        first_err,
+                        WasmError::SyscallFailed | WasmError::PermissionDenied
+                    ) {
                         let _ = crate::security::security().clear_intent_restriction(consumer);
                         let _ = capability::capability_manager()
                             .force_restore_quarantined_capabilities(consumer);

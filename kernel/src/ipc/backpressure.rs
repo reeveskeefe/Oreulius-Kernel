@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 use super::{Channel, IpcDefer, IpcRefusal, SendDecision, CHANNEL_CAPACITY};
 
 const HIGH_PRESSURE_NUMERATOR: usize = 3;

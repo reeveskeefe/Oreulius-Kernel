@@ -676,7 +676,10 @@ impl E1000Driver {
                 return Err("Buffer too small");
             }
 
-            crate::memory::asm_bindings::fast_memcpy(&mut buffer[..len], &RX_BUFFERS.data[desc_idx][..len]);
+            crate::memory::asm_bindings::fast_memcpy(
+                &mut buffer[..len],
+                &RX_BUFFERS.data[desc_idx][..len],
+            );
 
             RX_DESCS[desc_idx].status = 0;
             self.rx_tail = desc_idx;

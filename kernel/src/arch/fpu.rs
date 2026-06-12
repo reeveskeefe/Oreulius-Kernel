@@ -179,7 +179,10 @@ pub unsafe fn save_fpu_state_ext(buf: *mut u8) {
     core::arch::asm!("mrs {r}, fpcr", r = out(reg) fpcr, options(nostack));
     core::ptr::write_unaligned(buf.add(AARCH64_FPSR_OFFSET) as *mut u64, fpsr);
     core::ptr::write_unaligned(buf.add(AARCH64_FPCR_OFFSET) as *mut u64, fpcr);
-    core::ptr::write_unaligned(buf.add(AARCH64_META_MAGIC_OFFSET) as *mut u32, AARCH64_STATE_MAGIC);
+    core::ptr::write_unaligned(
+        buf.add(AARCH64_META_MAGIC_OFFSET) as *mut u32,
+        AARCH64_STATE_MAGIC,
+    );
     core::ptr::write_unaligned(
         buf.add(AARCH64_META_VERSION_OFFSET) as *mut u32,
         AARCH64_STATE_VERSION,

@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 #[test]
 fn unknown_gpu_is_probe_only() {
     let dev = crate::drivers::x86::pci::PciDevice {
@@ -29,5 +28,8 @@ fn unknown_gpu_is_probe_only() {
         interrupt_pin: 0,
     };
     let report = crate::drivers::x86::gpu_support::probe::probe_pci_device(dev, 0);
-    assert_eq!(report.tier, crate::drivers::x86::gpu_support::GpuTier::ProbeOnly);
+    assert_eq!(
+        report.tier,
+        crate::drivers::x86::gpu_support::GpuTier::ProbeOnly
+    );
 }

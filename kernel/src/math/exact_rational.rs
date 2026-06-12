@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 /// Section 7: Exact Rational Arithmetic for JIT Confidence
 ///
 /// Implementing a bounded Exact Rational Number arithmetic trait to compute

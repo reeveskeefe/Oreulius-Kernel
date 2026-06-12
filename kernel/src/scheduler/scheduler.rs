@@ -22,7 +22,9 @@
 //! - Uses assembly context switching for speed
 
 use crate::memory::asm_bindings::{asm_switch_context, ProcessContext};
-use crate::platform::interrupt_dag::{DagSpinlock, InterruptContext, DAG_LEVEL_SCHEDULER, DAG_LEVEL_SYSCALL};
+use crate::platform::interrupt_dag::{
+    DagSpinlock, InterruptContext, DAG_LEVEL_SCHEDULER, DAG_LEVEL_SYSCALL,
+};
 use crate::scheduler::pit;
 use crate::scheduler::process::{Pid, Process, ProcessPriority, ProcessState, MAX_PROCESSES};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -310,7 +312,8 @@ impl Scheduler {
         } else {
             // No processes to run, idle
             self.current_pid = None;
-            let interrupts_enabled = unsafe { crate::scheduler::process_asm::get_interrupt_state() } != 0;
+            let interrupts_enabled =
+                unsafe { crate::scheduler::process_asm::get_interrupt_state() } != 0;
             if interrupts_enabled {
                 // Enhanced power management during idle
                 // Verify interrupt delivery will wake from HLT

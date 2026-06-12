@@ -238,6 +238,10 @@ impl CompositorService {
 
             CompositorRequest::SetZOrder { window, cap, z } => self.do_set_z_order(window, cap, z),
 
+            CompositorRequest::GetWindowSize { window, cap } => {
+                self.do_get_window_size(window, cap)
+            }
+
             CompositorRequest::SetPixel {
                 surface,
                 cap,
@@ -593,6 +597,25 @@ impl CompositorService {
         CompositorResponse::Ok
     }
 
+    fn do_get_window_size(&self, window: WindowId, cap: CompositorCap) -> CompositorResponse {
+        let (session_idx, resource_id) = match self.caps.validate(cap, CapKind::WindowManage) {
+            Some(v) => v,
+            None => return CompositorResponse::Error(CompositorError::InvalidCapability),
+        };
+        if resource_id != window.0 as u64 {
+            return CompositorResponse::Error(CompositorError::InvalidCapability);
+        }
+        let win = match self.windows.find(window) {
+            Some(w) if w.session_idx == session_idx => w,
+            Some(_) => return CompositorResponse::Error(CompositorError::InvalidCapability),
+            None => return CompositorResponse::Error(CompositorError::InvalidWindow),
+        };
+        CompositorResponse::WindowSize {
+            width: win.width,
+            height: win.height,
+        }
+    }
+
     // ----------------------------------------------------------------
     // SetPixel
     // ----------------------------------------------------------------
@@ -661,7 +684,7 @@ impl CompositorService {
         cap: CompositorCap,
         x: u32,
         y: u32,
-        text: &[u8; 128],
+        text: &[u8; 512],
         text_len: usize,
         fg_argb: u32,
     ) -> CompositorResponse {
@@ -677,11 +700,11 @@ impl CompositorService {
             Some(s) => s,
             None => return CompositorResponse::Error(CompositorError::InvalidSurface),
         };
-        let len = text_len.min(128);
+        let len = text_len.min(512);
         // Convert the fixed-size byte array to a &str (best-effort UTF-8).
         let text_str = core::str::from_utf8(&text[..len]).unwrap_or("");
-        surf.draw_text(x, y, text_str, fg_argb);
-        CompositorResponse::Ok
+        let glyphs = surf.draw_text(x, y, text_str, fg_argb);
+        CompositorResponse::TextDrawn { glyphs }
     }
 
     // ----------------------------------------------------------------
@@ -1029,5 +1052,61 @@ mod tests {
             }),
             CompositorError::InvalidCapability,
         );
+    }
+
+    #[test]
+    fn authenticated_window_queries_and_text_drawing_use_service_caps() {
+        let mut svc = test_service();
+        let (session, session_cap) =
+            match svc.dispatch(CompositorRequest::OpenSession { pid: ProcessId(5) }) {
+                CompositorResponse::SessionGranted {
+                    session,
+                    session_cap,
+                    ..
+                } => (session, session_cap),
+                other => panic!("unexpected response: {:?}", other),
+            };
+        let (window, window_cap, surface, surface_cap) =
+            match svc.dispatch(CompositorRequest::CreateWindow {
+                session,
+                cap: session_cap,
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 16,
+            }) {
+                CompositorResponse::WindowCreated {
+                    window,
+                    window_cap,
+                    surface,
+                    surface_cap,
+                } => (window, window_cap, surface, surface_cap),
+                other => panic!("unexpected response: {:?}", other),
+            };
+
+        match svc.dispatch(CompositorRequest::GetWindowSize {
+            window,
+            cap: window_cap,
+        }) {
+            CompositorResponse::WindowSize { width, height } => {
+                assert_eq!((width, height), (64, 16));
+            }
+            other => panic!("unexpected response: {:?}", other),
+        }
+
+        let mut text = [0u8; 512];
+        text[..2].copy_from_slice(b"OK");
+        match svc.dispatch(CompositorRequest::DrawText {
+            surface,
+            cap: surface_cap,
+            x: 0,
+            y: 0,
+            text,
+            text_len: 2,
+            fg_argb: 0xFFFF_FFFF,
+        }) {
+            CompositorResponse::TextDrawn { glyphs } => assert_eq!(glyphs, 2),
+            other => panic!("unexpected response: {:?}", other),
+        }
     }
 }

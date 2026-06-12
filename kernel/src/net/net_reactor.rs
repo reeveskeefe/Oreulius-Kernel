@@ -314,7 +314,9 @@ fn dispatch_request(
                         None => break NetResponse::Err("TCP connect failed"),
                     }
 
-                    if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                    if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks)
+                        > timeout_ticks
+                    {
                         break NetResponse::Err("TCP connect timeout");
                     }
 
@@ -349,7 +351,9 @@ fn dispatch_request(
                         if stack.tcp_connection_eof(*conn_id) {
                             break NetResponse::U64(0);
                         }
-                        if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                        if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks)
+                            > timeout_ticks
+                        {
                             break NetResponse::U64(0);
                         }
                         if !drive_runtime_progress(stack, last_tick) {

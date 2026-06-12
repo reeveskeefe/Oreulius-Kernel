@@ -535,7 +535,9 @@ pub fn init() {
             timeout -= 1;
         }
     }
-    crate::drivers::x86::vga::print_str("[KEYBOARD] PS/2 Controller initialized (Translation enabled)\n");
+    crate::drivers::x86::vga::print_str(
+        "[KEYBOARD] PS/2 Controller initialized (Translation enabled)\n",
+    );
 }
 
 /// Poll the PS/2 controller and return a character (Set 1 scancodes).

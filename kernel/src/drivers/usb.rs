@@ -4304,12 +4304,14 @@ impl UsbHidDevice {
             UhciXferResult::Ok => {
                 let report = HidMouseReport::from_bytes(&buf);
                 // Forward mouse deltas into the shared mouse event pipeline.
-                crate::drivers::x86::mouse::submit_usb_report(crate::drivers::x86::mouse::UsbMouseReport {
-                    buttons: report.buttons,
-                    dx: report.dx,
-                    dy: report.dy,
-                    dwheel: report.wheel,
-                });
+                crate::drivers::x86::mouse::submit_usb_report(
+                    crate::drivers::x86::mouse::UsbMouseReport {
+                        buttons: report.buttons,
+                        dx: report.dx,
+                        dy: report.dy,
+                        dwheel: report.wheel,
+                    },
+                );
                 Some(report)
             }
             _ => None,
@@ -4351,12 +4353,14 @@ impl UsbHidDevice {
             &mut self.toggle,
         ) {
             let report = HidMouseReport::from_bytes(&buf);
-            crate::drivers::x86::mouse::submit_usb_report(crate::drivers::x86::mouse::UsbMouseReport {
-                buttons: report.buttons,
-                dx: report.dx,
-                dy: report.dy,
-                dwheel: report.wheel,
-            });
+            crate::drivers::x86::mouse::submit_usb_report(
+                crate::drivers::x86::mouse::UsbMouseReport {
+                    buttons: report.buttons,
+                    dx: report.dx,
+                    dy: report.dy,
+                    dwheel: report.wheel,
+                },
+            );
             Some(report)
         } else {
             None

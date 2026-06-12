@@ -18,22 +18,22 @@
 //! exposes a stable interface to the rest of the kernel while the x86-family
 //! and AArch64 implementation files remain behind `#[path]` shims.
 
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64;
 /// Architecture-specific FPU/SIMD context save/restore (PMA §5.1).
 pub mod fpu;
 pub mod mmu;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub mod x86;
-#[cfg(target_arch = "aarch64")]
-pub mod aarch64;
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
 mod unsupported;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub mod x86;
 
 #[cfg(target_arch = "aarch64")]
 use self::aarch64 as backend;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use self::x86 as backend;
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
 use self::unsupported as backend;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use self::x86 as backend;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BootProtocol {

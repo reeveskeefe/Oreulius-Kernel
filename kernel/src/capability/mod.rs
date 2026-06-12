@@ -1072,7 +1072,9 @@ impl CapabilityManager {
             .take_capability(owner, cap_id)
             .map_err(|e| e.as_str())?;
 
-        if cap.cap_type == CapabilityType::ServicePointer && !cap.has_right(Rights::SERVICE_DELEGATE) {
+        if cap.cap_type == CapabilityType::ServicePointer
+            && !cap.has_right(Rights::SERVICE_DELEGATE)
+        {
             let _ = self.restore_capability(owner, cap);
             return Err("Service pointer requires delegate right for transfer");
         }
@@ -1198,8 +1200,8 @@ impl CapabilityManager {
         }
 
         let mut transfers = self.pending_ipc_transfers.lock();
-        let idx = Self::pending_transfer_index(&transfers, ticket_id)
-            .ok_or("IPC ticket not found")?;
+        let idx =
+            Self::pending_transfer_index(&transfers, ticket_id).ok_or("IPC ticket not found")?;
         let transfer = transfers[idx].ok_or("IPC ticket not found")?;
         if transfer.source_pid != source_pid || transfer.source_cap_id != cap.cap_id {
             return Err("IPC ticket/source mismatch");
@@ -1308,7 +1310,10 @@ impl CapabilityManager {
                 0,
             ];
             #[cfg(not(target_arch = "aarch64"))]
-            crate::execution::wasm::observer_notify(crate::execution::wasm::observer_events::CAPABILITY_OP, &payload);
+            crate::execution::wasm::observer_notify(
+                crate::execution::wasm::observer_events::CAPABILITY_OP,
+                &payload,
+            );
             Ok(cap_id)
         } else {
             Err(CapabilityError::TaskNotFound)
@@ -1983,8 +1988,8 @@ pub(crate) fn restore_pending_ipc_transfer_ledger_from_snapshot(
     Ok(())
 }
 
-pub(crate) fn restore_pending_ipc_transfer_ledger_from_latest_snapshot(
-) -> Result<(), &'static str> {
+pub(crate) fn restore_pending_ipc_transfer_ledger_from_latest_snapshot() -> Result<(), &'static str>
+{
     let key = crate::temporal::ipc_capability_transfer_object_key();
     let meta = match crate::temporal::latest_version(key) {
         Ok(meta) => meta,
@@ -2630,7 +2635,10 @@ impl CapabilityManager {
             0, // 1 = revoke
         ];
         #[cfg(not(target_arch = "aarch64"))]
-        crate::execution::wasm::observer_notify(crate::execution::wasm::observer_events::CAPABILITY_OP, &payload);
+        crate::execution::wasm::observer_notify(
+            crate::execution::wasm::observer_events::CAPABILITY_OP,
+            &payload,
+        );
         Ok(())
     }
 

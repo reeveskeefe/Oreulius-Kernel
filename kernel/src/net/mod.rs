@@ -41,9 +41,9 @@ extern crate alloc;
 
 #[cfg(not(target_arch = "aarch64"))]
 use self::wifi::{WifiNetwork, WifiState};
-use crate::ipc::ProcessId;
 #[cfg(not(target_arch = "aarch64"))]
 use crate::drivers::x86::pci::PciDevice;
+use crate::ipc::ProcessId;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -486,7 +486,9 @@ impl NetworkService {
             match net_reactor::tcp_send(conn_id, &data[sent_total..]) {
                 Ok(sent_now) => {
                     if sent_now == 0 {
-                        if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                        if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks)
+                            > timeout_ticks
+                        {
                             return Err(NetworkError::TcpTimeout);
                         }
                         crate::scheduler::slice_scheduler::yield_now();
@@ -497,7 +499,9 @@ impl NetworkService {
                 Err(e) => {
                     // SYN/SYN-ACK progression can race with immediate send attempts.
                     if e == "Connection not established" || e == "TX busy" {
-                        if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks) > timeout_ticks {
+                        if crate::scheduler::pit::get_ticks().saturating_sub(start_ticks)
+                            > timeout_ticks
+                        {
                             return Err(NetworkError::TcpTimeout);
                         }
                         crate::scheduler::slice_scheduler::yield_now();
@@ -1215,8 +1219,7 @@ mod http_client_tests {
 
     #[test]
     fn chunked_transfer_header_detection_is_case_insensitive() {
-        let headers =
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\nConnection: close\r\n\r\n";
+        let headers = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\nConnection: close\r\n\r\n";
         assert!(http_transfer_chunked(headers));
     }
 }
@@ -1289,10 +1292,7 @@ fn find_http_header_end(data: &[u8]) -> Option<usize> {
     }
     let mut i = 0usize;
     while i + 4 <= data.len() {
-        if data[i] == b'\r'
-            && data[i + 1] == b'\n'
-            && data[i + 2] == b'\r'
-            && data[i + 3] == b'\n'
+        if data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n'
         {
             return Some(i);
         }

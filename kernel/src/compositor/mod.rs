@@ -88,25 +88,6 @@ pub use service::CompositorService;
 pub use service::COMPOSITOR_SERVICE;
 
 // ---------------------------------------------------------------------------
-// Legacy backward-compatibility shim
-// ---------------------------------------------------------------------------
-//
-// The WASM runtime (execution/wasm.rs) calls `crate::compositor::compositor()`
-// to obtain a guard with the old low-level drawing API (create_window, set_pixel,
-// draw_text, …).  We delegate to the legacy drivers::compositor instance so
-// that existing WASM host functions continue working unmodified.
-//
-// New code should use `COMPOSITOR_SERVICE` / `CompositorRequest` IPC instead.
-
-/// Return a lock-guard for the legacy compositor, preserving the old API.
-///
-/// Delegates to `crate::drivers::x86::compositor::compositor()`.
-#[cfg(not(target_arch = "aarch64"))]
-pub fn compositor() -> spin::MutexGuard<'static, crate::drivers::x86::compositor::Compositor> {
-    crate::drivers::x86::compositor::compositor()
-}
-
-// ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
 

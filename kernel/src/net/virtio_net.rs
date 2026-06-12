@@ -378,8 +378,7 @@ impl VirtQueue {
         fence(Ordering::Acquire);
         while self.used_idx_shadow != used_idx {
             let slot = (self.used_idx_shadow as usize) % QUEUE_SIZE;
-            let elem =
-                unsafe { read_volatile(&self.used.ring[slot] as *const VirtqUsedElem) };
+            let elem = unsafe { read_volatile(&self.used.ring[slot] as *const VirtqUsedElem) };
             out.push((elem.id as u16, elem.len));
             self.used_idx_shadow = self.used_idx_shadow.wrapping_add(1);
         }
@@ -472,8 +471,7 @@ impl VirtioNet {
                     let frame_len = total - VIRTIO_NET_HDR_SIZE;
                     if frame_len <= RX_BUF_SIZE - VIRTIO_NET_HDR_SIZE {
                         frames.push(
-                            rx.buffers[idx]
-                                [VIRTIO_NET_HDR_SIZE..VIRTIO_NET_HDR_SIZE + frame_len]
+                            rx.buffers[idx][VIRTIO_NET_HDR_SIZE..VIRTIO_NET_HDR_SIZE + frame_len]
                                 .to_vec(),
                         );
                     }
@@ -629,8 +627,7 @@ pub fn poll_rx<F: FnMut(&[u8])>(mut cb: F) -> usize {
                 let frame_len = total - VIRTIO_NET_HDR_SIZE;
                 if frame_len <= RX_BUF_SIZE - VIRTIO_NET_HDR_SIZE {
                     frames.push(
-                        rx.buffers[idx]
-                            [VIRTIO_NET_HDR_SIZE..VIRTIO_NET_HDR_SIZE + frame_len]
+                        rx.buffers[idx][VIRTIO_NET_HDR_SIZE..VIRTIO_NET_HDR_SIZE + frame_len]
                             .to_vec(),
                     );
                 }
@@ -695,8 +692,10 @@ pub fn is_link_up() -> bool {
     if (dev.negotiated_features & VIRTIO_NET_F_STATUS) == 0 {
         return true;
     }
-    let status =
-        u16::from_le_bytes([mmio_read8(dev.mmio_base + VIRTIO_MMIO_CONFIG + 6), mmio_read8(dev.mmio_base + VIRTIO_MMIO_CONFIG + 7)]);
+    let status = u16::from_le_bytes([
+        mmio_read8(dev.mmio_base + VIRTIO_MMIO_CONFIG + 6),
+        mmio_read8(dev.mmio_base + VIRTIO_MMIO_CONFIG + 7),
+    ]);
     (status & VIRTIO_NET_S_LINK_UP) != 0
 }
 
@@ -712,10 +711,7 @@ fn setup_queue(base: usize, queue: &VirtQueue) -> Result<(), &'static str> {
     }
     let size = (QUEUE_SIZE as u32).min(max_size);
     mmio_write32(base + VIRTIO_MMIO_QUEUE_NUM, size);
-    mmio_write32(
-        base + VIRTIO_MMIO_QUEUE_DESC_LOW,
-        queue.desc_addr() as u32,
-    );
+    mmio_write32(base + VIRTIO_MMIO_QUEUE_DESC_LOW, queue.desc_addr() as u32);
     mmio_write32(
         base + VIRTIO_MMIO_QUEUE_DESC_HIGH,
         (queue.desc_addr() >> 32) as u32,

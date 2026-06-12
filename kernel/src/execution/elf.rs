@@ -27,7 +27,9 @@ use core::ptr;
 use crate::arch::mmu::{self as arch_mmu, AddressSpace};
 use crate::fs::paging::{PAGE_SIZE, USER_TOP};
 use crate::scheduler::process::{self, ProcessPriority};
-use crate::scheduler::slice_scheduler::{self, UserProcessLayout, UserRegionSpec, VmaFlags, VmaKind};
+use crate::scheduler::slice_scheduler::{
+    self, UserProcessLayout, UserRegionSpec, VmaFlags, VmaKind,
+};
 
 const EI_NIDENT: usize = 16;
 const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
@@ -291,10 +293,10 @@ fn apply_relocations(
 
     for d in dyns {
         match d.d_tag {
-            DT_REL    => rel_addr  = d.d_val,
-            DT_RELSZ  => rel_size  = d.d_val,
-            DT_RELENT => rel_ent   = d.d_val,
-            DT_RELA   => rela_addr = d.d_val,
+            DT_REL => rel_addr = d.d_val,
+            DT_RELSZ => rel_size = d.d_val,
+            DT_RELENT => rel_ent = d.d_val,
+            DT_RELA => rela_addr = d.d_val,
             DT_RELASZ => rela_size = d.d_val,
             DT_RELAENT => rela_ent = d.d_val,
             DT_JMPREL => {}
@@ -303,7 +305,9 @@ fn apply_relocations(
     }
 
     let old = crate::arch::mmu::current_page_table_root_addr();
-    unsafe { space.activate(); }
+    unsafe {
+        space.activate();
+    }
 
     // ---- REL table (implicit addend stored at relocation site) ----
     if rel_addr != 0 && rel_size != 0 {
@@ -537,13 +541,15 @@ pub fn spawn_elf_process(name: &str, bytes: &[u8]) -> Result<(), &'static str> {
         .get(pid)
         .ok_or("Process not found")?;
     proc.priority = ProcessPriority::Normal;
-    slice_scheduler::scheduler().lock().add_user_process_with_layout(
-        proc,
-        Box::new(loaded.space),
-        loaded.entry,
-        loaded.user_stack,
-        loaded.layout,
-    )?;
+    slice_scheduler::scheduler()
+        .lock()
+        .add_user_process_with_layout(
+            proc,
+            Box::new(loaded.space),
+            loaded.entry,
+            loaded.user_stack,
+            loaded.layout,
+        )?;
     Ok(())
 }
 
@@ -940,13 +946,15 @@ pub fn spawn_elf64_process(name: &str, bytes: &[u8]) -> Result<(), &'static str>
         .get(pid)
         .ok_or("ELF64: process not found after spawn")?;
     proc.priority = ProcessPriority::Normal;
-    slice_scheduler::scheduler().lock().add_user_process_with_layout(
-        proc,
-        Box::new(loaded.space),
-        loaded.entry as u32, // scheduler stores u32 VA; fine for 4 GiB user space
-        loaded.user_stack as u32,
-        loaded.layout,
-    )?;
+    slice_scheduler::scheduler()
+        .lock()
+        .add_user_process_with_layout(
+            proc,
+            Box::new(loaded.space),
+            loaded.entry as u32, // scheduler stores u32 VA; fine for 4 GiB user space
+            loaded.user_stack as u32,
+            loaded.layout,
+        )?;
     Ok(())
 }
 

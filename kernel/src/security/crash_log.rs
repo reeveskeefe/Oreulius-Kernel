@@ -12,7 +12,6 @@
 // Change Date: 2030-04-15
 // Change License: Apache License 2.0
 
-
 /*!
  * Oreulius Kernel — Crash Logging
  *
@@ -306,8 +305,10 @@ pub fn flush_to_persistence() {
         return; // Already flushed this session.
     }
 
-    let cap =
-        crate::temporal::persistence::StoreCapability::new(0xCCCC, crate::temporal::persistence::StoreRights::all());
+    let cap = crate::temporal::persistence::StoreCapability::new(
+        0xCCCC,
+        crate::temporal::persistence::StoreRights::all(),
+    );
 
     for_each_crash(|seq, tick, session, loc, msg| {
         // Build a 8 + MSG_CAP + MSG_CAP = 264-byte payload.
@@ -332,16 +333,19 @@ pub fn flush_to_persistence() {
 
 /// Emit a BootEvent record into persistence.
 fn emit_boot_event(session: u32) {
-    let cap =
-        crate::temporal::persistence::StoreCapability::new(0xBBBB, crate::temporal::persistence::StoreRights::all());
+    let cap = crate::temporal::persistence::StoreCapability::new(
+        0xBBBB,
+        crate::temporal::persistence::StoreRights::all(),
+    );
     // Payload: [session:u32LE, crash_count:u32LE]
     let mut payload = [0u8; 8];
     payload[0..4].copy_from_slice(&session.to_le_bytes());
     payload[4..8].copy_from_slice(&CRASH_COUNT.load(Ordering::SeqCst).to_le_bytes());
 
-    if let Ok(record) =
-        crate::temporal::persistence::LogRecord::new(crate::temporal::persistence::RecordType::BootEvent, &payload)
-    {
+    if let Ok(record) = crate::temporal::persistence::LogRecord::new(
+        crate::temporal::persistence::RecordType::BootEvent,
+        &payload,
+    ) {
         let mut svc = crate::temporal::persistence::persistence().lock();
         let _ = svc.append_log(&cap, record);
     }

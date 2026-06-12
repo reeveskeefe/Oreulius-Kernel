@@ -2681,7 +2681,11 @@ fn shell_cmd_blk_readn(cmd: &str) {
         return;
     }
     let mut buf = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
-    match crate::fs::virtio_blk::read_sectors(lba, count, &mut buf[..count * VIRTIO_BLK_SECTOR_SIZE]) {
+    match crate::fs::virtio_blk::read_sectors(
+        lba,
+        count,
+        &mut buf[..count * VIRTIO_BLK_SECTOR_SIZE],
+    ) {
         Ok(()) => {
             let u = uart();
             u.write_str("[A64] blk-readn ok lba=");
@@ -2733,7 +2737,8 @@ fn shell_cmd_blk_writen(cmd: &str) {
     }
     let mut data = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
     data[..count * VIRTIO_BLK_SECTOR_SIZE].fill(value);
-    match crate::fs::virtio_blk::write_sectors(lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE]) {
+    match crate::fs::virtio_blk::write_sectors(lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE])
+    {
         Ok(()) => {
             let u = uart();
             u.write_str("[A64] blk-writen ok lba=");
@@ -2983,8 +2988,11 @@ fn shell_cmd_vfs_blk_write(cmd: &str) {
     let abs_lba = base.saturating_add(rel_lba);
     let mut data = [0u8; VIRTIO_BLK_SECTOR_SIZE * 8];
     data[..count * VIRTIO_BLK_SECTOR_SIZE].fill(value);
-    match crate::fs::virtio_blk::write_sectors(abs_lba, count, &data[..count * VIRTIO_BLK_SECTOR_SIZE])
-    {
+    match crate::fs::virtio_blk::write_sectors(
+        abs_lba,
+        count,
+        &data[..count * VIRTIO_BLK_SECTOR_SIZE],
+    ) {
         Ok(()) => {
             let u = uart();
             u.write_str("[A64] vfs-blk-write ok ");
