@@ -1,6 +1,6 @@
 # Oreulius Kernel
 
-Oreulius is a kernel designed to run isolated WASI workloads in a secure operating environment, the kernel is meant to make authority explicit, control access through capabilities on a deep level, and in simple terms, the end goal of developing this is too make sure the behaviour of the workload is incredibly easy to inspect.
+Oreulius is a capability-native research kernel designed to make authority explicit, control access through kernel-managed capabilities, and make workload behavior easier to inspect. It is being built to study isolated execution, temporal state, capability-based access control, and verifiable operating-system boundaries across real kernel subsystems. 
 
 <image src="docs/assets/finalized repo image.png"></image>
 
@@ -15,7 +15,7 @@ I personally recommend starting with the i686 boot. These commands will boot it 
 
 ## Required dependencies, environment set-up and tool chain
 
-#### 1. Set up environment
+### 1. Set up environment
 #### MACOS
 ```bash
 brew update
@@ -39,7 +39,7 @@ rustup target add aarch64-unknown-none x86_64-unknown-none i686-unknown-none --t
 ```
 
 
-### i686 boot
+#### i686 boot
 
 ```bash
 cd kernel
@@ -47,13 +47,13 @@ cd kernel
 ./run.sh
 ```
 
-### x86-64 boot
+#### x86-64 boot
 ```bash
 cd kernel
 ./build-x86_64-mb2-iso.sh
 ./run-x86_64-mb2-grub.sh
 ```
-### If you already have the ISO, use this command to run it in qemu directly for x86-64
+#### If you already have the ISO, use this command to run it in qemu directly for x86-64
 ```bash
 qemu-system-x86_64 -cdrom target/x86_64-mb2/oreulius-x86_64-mb2.iso -serial stdio
 ```
@@ -65,7 +65,7 @@ cd kernel
 ./run-aarch64-virt-image.sh
 ```
 
-### Booting Aarch64 on the virtio block
+#### Booting Aarch64 on the virtio block
 
 ```bash
 # default
@@ -75,12 +75,14 @@ cd kernel
 BUS_SLOT=1 DISK_IMAGE=target/aarch64-virt/mydisk.img DISK_SIZE=64M ./run-aarch64-virt-image-virtio-blk-mmio.sh
 ```
 
-### Online Playground
+#### Online Playground
 Or alternatively; you can just try a live no install boot on the site: https://www.oreulius.com/try
 
 ## Want to run a demo? 
 
 There are a few demos to try in the WASM directory in the root of Oreulius, to help clarify how running a wasm workload will work in the kernel, here is step by step instructions to running one of these demos. For this instruction set lets start with the spawn_children.wat demo,  this script spawns two child WASM processes and prints the respective output. 
+
+Oreulius is particularly efficient at running WASI workloads, as Oreulius includes an efficient WASI execution path for constrained workloads. WebAssembly execution is integrated directly into the kernel’s capability model, where access to services, storage, IPC, and networking is mediated through explicit authority checks.
 
 #### Step 1
 Build the demo
@@ -158,7 +160,7 @@ Output:
 target/wasm32-wasi/release/<your_crate>.wasm
 ```
 
-to auther tests in wat and compile run this command
+to author tests in wat and compile run this command
 ```
 cd wasm
 ./build.sh your.wat #application
@@ -170,7 +172,7 @@ The SDK's are compiled seperately from the kernel, and are not linked. the root 
 
 ## License
 
-Oreulius is source-available under the Business Source License 1.1.
+Oreulius is source-available under the Business Source License 1.1. It is destined to transition to Apache 2.0 within a 4 year timeframe, and possibly sooner. 
 
 The source is public for visibility, research, evaluation, and technical
 review. Personal use, research, education, benchmarking, and internal
