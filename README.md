@@ -13,7 +13,7 @@ The i686 path is effectively the legacy boot, and its the first boot I created, 
 
 I personally recommend starting with the i686 boot. These commands will boot it with qemu for you in an easy way to test it and play with it, as its currently in the alpha phase. 
 
-## Required dependencies, environment set-up and tool chain
+### Required dependencies, environment set-up and tool chain
 
 ### 1. Set up environment
 #### MACOS
