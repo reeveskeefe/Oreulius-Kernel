@@ -2,7 +2,7 @@
 
 Oreulius is a capability-native research kernel designed to make authority explicit, control access through kernel-managed capabilities, and make workload behavior easier to inspect. It is being built to study isolated execution, temporal state, capability-based access control, and verifiable operating-system boundaries across real kernel subsystems. 
 
-<image src="docs/assets/finalized repo image.png"></image>
+<image src="docs/assets/OreuliusReadme.png"></image>
 
 
 ## How to run
