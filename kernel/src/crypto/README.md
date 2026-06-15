@@ -4,6 +4,29 @@
 ## Whats Inside
 This folder acts as the kernels own crypto toolbox. It gives the rest of the kernel hashing, MACs, symmetric encryption, TLS key exchange pieces, signature verification, and canonical signed-message formats without pulling in much external machinery.
 
+## Cryptographic status and non-goals
+
+This crate exists so I can test kernel cryptographic integration in a normal host-side `cargo test` environment. The code mirrored here is code under test and regression evidence. It is not a cryptographic proof, not an independent security audit, and not a production cryptographic assurance claim.
+
+I am not trying to design or maintain my own cryptographic primitives. Oreulius is focused on capability-based authority, kernel-mediated isolation, temporal state, and explicit verification boundaries. Cryptographic algorithms are infrastructure dependencies, not the research contribution of this kernel.
+
+Any primitive currently present as kernel scaffolding, including non-cryptographic hashes, xorshift-style random generation, placeholder integrity checks, or hand-written MAC/KDF constructions, is treated as research-only. I will not present these primitives as production cryptography, and I will not rely on them for adversarial security.
+
+Before any production or adversarial deployment, security-critical cryptographic code will be replaced by reviewed, test-vector-covered implementations from established cryptographic libraries or standards-track implementations suitable for the target environment. I am not planning to make homegrown primitives production-ready through a custom audit. The production path is replacement, not ownership of custom cryptography.
+
+The minimum bar for any security-critical cryptographic boundary is:
+
+1. Use reviewed implementations for hashing, MACs, KDFs, AEAD, signatures, key exchange, and random generation.
+2. Include official known-answer test vectors for every primitive and mode of operation.
+3. Include negative tests for malformed tags, wrong keys, wrong context strings, replayed nonces, corrupted ciphertexts, invalid public keys, and failed transcript binding.
+4. Use explicit domain separation for every derived key, token, transcript, capability, and authority context.
+5. Use constant-time comparison for authentication tags, MACs, signatures, and capability-token authenticators.
+6. Document which kernel paths are protected by each primitive and which primitives are non-security placeholders.
+7. Treat this crate as regression evidence only, not as a substitute for reviewed cryptographic implementations.
+
+Until that replacement boundary is complete, I describe the Oreulius cryptographic layer as research scaffolding and test infrastructure, not production cryptography.
+
+In short: I do not want Oreulius to roll its own crypto. Any custom or placeholder primitive in the current tree exists only to support research, testing, or early integration, and must be replaced before the system is described as cryptographically production-ready.
 
 ## How it routes and protects through the rest of the kernel 
 The crypto folder is routed through  mod.rs file, which acts as the
